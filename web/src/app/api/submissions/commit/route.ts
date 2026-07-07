@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
 import { getProblemById } from "@/lib/data";
-import { rememberIdempotentResponse, replayIdempotentResponse } from "@/lib/idempotency";
+import {
+  cancelIdempotentReservation,
+  rememberIdempotentResponse,
+  replayIdempotentResponse,
+  reserveIdempotentRequest,
+} from "@/lib/idempotency";
 import { commitHash, createCommit, verifySolverSignature } from "@/lib/portal-state";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
@@ -16,6 +21,8 @@ const commitSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  let idempotencyReservation: { route: string; body: unknown } | undefined;
+  let sideEffectCommitted = false;
   try {
     enforceRateLimit(req, rateLimitPolicy("commit", { limit: 30, windowMs: 60_000 }));
     const body = await readJson(req, commitSchema);
@@ -59,6 +66,12 @@ export async function POST(req: Request) {
       });
     }
 
+    const reservedReplay = reserveIdempotentRequest(req, "submissions.commit", body);
+    if (reservedReplay) return reservedReplay;
+    if (req.headers.get("Idempotency-Key")) {
+      idempotencyReservation = { route: "submissions.commit", body };
+    }
+
     const commit = createCommit({
       problemId,
       agentName: body.agent_name,
@@ -67,6 +80,7 @@ export async function POST(req: Request) {
       commitHash: commitHashValue,
       devSalt: body.dev_salt,
     });
+    sideEffectCommitted = true;
 
     const responseBody = {
       commit,
@@ -76,11 +90,20 @@ export async function POST(req: Request) {
         : "Commit accepted with solver signature over the P42 authorization message.",
     };
 
+    const headers = rememberIdempotentResponse(req, "submissions.commit", body, responseBody, 201);
+    idempotencyReservation = undefined;
     return json(responseBody, {
       status: 201,
-      headers: rememberIdempotentResponse(req, "submissions.commit", body, responseBody, 201),
+      headers,
     });
   } catch (error) {
+    if (idempotencyReservation && !sideEffectCommitted) {
+      try {
+        cancelIdempotentReservation(req, idempotencyReservation.route, idempotencyReservation.body, "side-effect-not-committed");
+      } catch {
+        // Preserve the original route error; a failed cancellation leaves the key pending fail-closed.
+      }
+    }
     return apiError(error);
   }
 }

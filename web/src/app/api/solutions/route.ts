@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
 import { getProblemById } from "@/lib/data";
-import { rememberIdempotentResponse, replayIdempotentResponse } from "@/lib/idempotency";
+import {
+  cancelIdempotentReservation,
+  rememberIdempotentResponse,
+  replayIdempotentResponse,
+  reserveIdempotentRequest,
+} from "@/lib/idempotency";
 import { appendPortalEvent, updatePortalState } from "@/lib/portal-store";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 import { runCanonicalVerifier } from "@/lib/verifier-runner";
@@ -13,6 +18,8 @@ const solutionSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  let idempotencyReservation: { route: string; body: unknown } | undefined;
+  let sideEffectCommitted = false;
   try {
     enforceRateLimit(req, rateLimitPolicy("solutions", { limit: 15, windowMs: 60_000 }));
     const body = await readJson(req, solutionSchema);
@@ -26,6 +33,12 @@ export async function POST(req: Request) {
         { error: "Only hadamard-mini has a canonical verifier runner in this portal slice" },
         { status: 409 },
       );
+    }
+
+    const reservedReplay = reserveIdempotentRequest(req, "solutions.verify", body);
+    if (reservedReplay) return reservedReplay;
+    if (req.headers.get("Idempotency-Key")) {
+      idempotencyReservation = { route: "solutions.verify", body };
     }
 
     const verdict = await runCanonicalVerifier({ problemSlug: problem.slug, solutionRaw: body.solution_raw });
@@ -45,13 +58,23 @@ export async function POST(req: Request) {
         },
       });
     });
+    sideEffectCommitted = true;
     const status = verdict.valid ? 201 : 422;
     const responseBody = { status: verdict.valid ? "accepted" : "rejected", verdict };
+    const headers = rememberIdempotentResponse(req, "solutions.verify", body, responseBody, status);
+    idempotencyReservation = undefined;
     return json(responseBody, {
       status,
-      headers: rememberIdempotentResponse(req, "solutions.verify", body, responseBody, status),
+      headers,
     });
   } catch (error) {
+    if (idempotencyReservation && !sideEffectCommitted) {
+      try {
+        cancelIdempotentReservation(req, idempotencyReservation.route, idempotencyReservation.body, "side-effect-not-committed");
+      } catch {
+        // Preserve the original route error; a failed cancellation leaves the key pending fail-closed.
+      }
+    }
     return apiError(error);
   }
 }

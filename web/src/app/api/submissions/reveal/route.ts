@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
 import { getProblemById } from "@/lib/data";
-import { rememberIdempotentResponse, replayIdempotentResponse } from "@/lib/idempotency";
+import {
+  cancelIdempotentReservation,
+  rememberIdempotentResponse,
+  replayIdempotentResponse,
+  reserveIdempotentRequest,
+} from "@/lib/idempotency";
 import { revealCommit } from "@/lib/portal-state";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
@@ -14,6 +19,8 @@ const revealSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  let idempotencyReservation: { route: string; body: unknown } | undefined;
+  let sideEffectCommitted = false;
   try {
     enforceRateLimit(req, rateLimitPolicy("reveal", { limit: 20, windowMs: 60_000 }));
     const body = await readJson(req, revealSchema);
@@ -26,6 +33,12 @@ export async function POST(req: Request) {
       return json({ error: "External verifier runner is not wired in this Phase 0 portal" }, { status: 409 });
     }
 
+    const reservedReplay = reserveIdempotentRequest(req, "submissions.reveal", body);
+    if (reservedReplay) return reservedReplay;
+    if (req.headers.get("Idempotency-Key")) {
+      idempotencyReservation = { route: "submissions.reveal", body };
+    }
+
     const result = await revealCommit({
       commitId: body.commit_id,
       salt: body.salt,
@@ -33,12 +46,22 @@ export async function POST(req: Request) {
       problemSlug: problem.slug,
       solverAddress: body.solver_address,
     });
+    sideEffectCommitted = true;
     const status = result.submission.state === "revealed" ? 201 : 422;
+    const headers = rememberIdempotentResponse(req, "submissions.reveal", body, result, status);
+    idempotencyReservation = undefined;
     return json(result, {
       status,
-      headers: rememberIdempotentResponse(req, "submissions.reveal", body, result, status),
+      headers,
     });
   } catch (error) {
+    if (idempotencyReservation && !sideEffectCommitted) {
+      try {
+        cancelIdempotentReservation(req, idempotencyReservation.route, idempotencyReservation.body, "side-effect-not-committed");
+      } catch {
+        // Preserve the original route error; a failed cancellation leaves the key pending fail-closed.
+      }
+    }
     return apiError(error);
   }
 }

@@ -189,6 +189,7 @@ describe("mutable API routes", () => {
       error: "Idempotency-Key was already used for a different request body",
     });
     expect(readPortalState().events.map((event) => event.type)).toEqual([
+      "idempotency.reserved",
       "commit.created",
       "idempotency.stored",
       "idempotency.replayed",
@@ -200,7 +201,7 @@ describe("mutable API routes", () => {
     );
     const eventsBody = await eventsResponse.json();
     expect(eventsResponse.status).toBe(200);
-    expect(eventsBody).toMatchObject({ count: 1, total: 4, chainComplete: false, chainVerified: true });
+    expect(eventsBody).toMatchObject({ count: 1, total: 5, chainComplete: false, chainVerified: true });
     expect(eventsBody.events[0]).toMatchObject({
       type: "commit.created",
       subjectId: firstBody.commit.id,
@@ -297,7 +298,7 @@ describe("mutable API routes", () => {
     ]);
   });
 
-  it("reports verifier infrastructure failures as 502s, not user 400s", async () => {
+  it("reports verifier infrastructure failures as 502s and lets the same idempotency key retry", async () => {
     const fakePython = path.join(stateDir, "fake-python");
     writeFileSync(
       fakePython,
@@ -310,20 +311,46 @@ describe("mutable API routes", () => {
     chmodSync(fakePython, 0o755);
     process.env.P42_PYTHON = fakePython;
 
+    const body = {
+      problem_id: 1,
+      agent_name: "CHRONOS",
+      solution_raw: solutionRaw,
+    };
     const response = await solutionsPost(
-      jsonRequest("/api/solutions", {
-        problem_id: 1,
-        agent_name: "CHRONOS",
-        solution_raw: solutionRaw,
-      }),
+      jsonRequest("/api/solutions", body, { "Idempotency-Key": "verify-retry-1" }),
     );
-    const body = await response.json();
+    const responseBody = await response.json();
 
     expect(response.status).toBe(502);
-    expect(body).toEqual({
+    expect(responseBody).toEqual({
       error: "Canonical verifier runner failed",
       code: "VERIFIER_INFRA_ERROR",
     });
+    expect(readPortalState().idempotency).toMatchObject([
+      {
+        key: "verify-retry-1",
+        route: "solutions.verify",
+        state: "cancelled",
+      },
+    ]);
+    expect(readPortalState().events.map((event) => event.type)).toEqual([
+      "idempotency.reserved",
+      "idempotency.cancelled",
+    ]);
+
+    delete process.env.P42_PYTHON;
+    const retry = await solutionsPost(
+      jsonRequest("/api/solutions", body, { "Idempotency-Key": "verify-retry-1" }),
+    );
+    expect(retry.status).toBe(201);
+    expect(retry.headers.get("Idempotency-Status")).toBe("stored");
+    expect(readPortalState().events.map((event) => event.type)).toEqual([
+      "idempotency.reserved",
+      "idempotency.cancelled",
+      "idempotency.reserved",
+      "verification.completed",
+      "idempotency.stored",
+    ]);
   });
 
   it("reveals only raw bytes matching the committed content hash", async () => {
@@ -395,6 +422,7 @@ describe("mutable API routes", () => {
     expect(replayBody.submission.id).toBe(firstBody.submission.id);
     expect(readPortalState().events.map((event) => event.type)).toEqual([
       "commit.created",
+      "idempotency.reserved",
       "submission.rejected",
       "idempotency.stored",
       "idempotency.replayed",

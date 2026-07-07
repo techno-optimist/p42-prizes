@@ -29,9 +29,12 @@ export interface IdempotencyRecord {
   key: string;
   route: string;
   requestHash: string;
+  state?: "pending" | "completed" | "cancelled";
   status: number;
   response: unknown;
   createdAt: string;
+  completedAt?: string;
+  cancelledAt?: string;
 }
 
 export type PortalEventType =
@@ -40,6 +43,8 @@ export type PortalEventType =
   | "submission.rejected"
   | "verification.completed"
   | "idempotency.stored"
+  | "idempotency.reserved"
+  | "idempotency.cancelled"
   | "idempotency.replayed"
   | "idempotency.conflict";
 

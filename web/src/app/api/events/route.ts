@@ -7,6 +7,8 @@ const EVENT_TYPES: PortalEventType[] = [
   "submission.revealed",
   "submission.rejected",
   "verification.completed",
+  "idempotency.reserved",
+  "idempotency.cancelled",
   "idempotency.stored",
   "idempotency.replayed",
   "idempotency.conflict",
