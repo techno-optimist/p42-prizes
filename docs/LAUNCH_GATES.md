@@ -13,6 +13,7 @@ filled in and reviewed by a human owner.
 - [x] Challenge route fails closed until bonded challenges exist.
 - [x] Every problem exposes a testnet-only deposit wallet in API/UI.
 - [x] Coinbase Onramp route fails closed until mainnet pool gates are met.
+- [x] Coinbase Onramp gate requires explicit real-ETH approval, reviewed Base pool invariants, trusted client IP, and redirect allowlisting before session creation.
 - [x] Mutable API routes have process-local rate limits for the local pilot.
 - [x] Retryable submission/verifier POSTs support local `Idempotency-Key` replay.
 - [x] Local diagnostic event ledger exposes hash-chained commit/reveal/idempotency events.
@@ -44,7 +45,7 @@ filled in and reviewed by a human owner.
 - [ ] Production wallet/session policy is reviewed across portal, contracts, and solver agents.
 - [ ] Distributed rate limits, idempotency store, API keys, abuse monitoring, and payload quarantine are live.
 - [ ] Transactional event ledger/indexer can reconstruct portal and on-chain state.
-- [ ] Coinbase Onramp is enabled only for reviewed Base mainnet pool addresses.
+- [ ] Coinbase Onramp is enabled only for reviewed Base mainnet pool addresses with approved redirect origins and deployment client-IP provenance.
 - [ ] Incident-response drill completed.
 - [ ] Bug bounty / responsible disclosure path is live.
 

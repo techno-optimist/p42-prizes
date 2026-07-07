@@ -32,8 +32,8 @@ green.
 - Duplicate/tie/worse submissions receive zero incremental frontier credit.
 - Challenge route returns `501`, not fake `opened`.
 - Every listed problem exposes a copyable Base Sepolia deposit wallet in API/UI.
-- Coinbase Onramp session route exists but fails closed until reviewed Base mainnet pools and server credentials are configured.
-- Coinbase Onramp `clientIp` binding can only come from a configured trusted deployment header, not request JSON.
+- Coinbase Onramp session route exists but fails closed until reviewed Base mainnet pools, explicit real-ETH gate approval, server credentials, trusted client IP, and redirect allowlisting are configured.
+- Coinbase Onramp `clientIp` binding is required and can only come from a configured trusted deployment header, not request JSON.
 - Commits and dynamic submissions persist to a local JSON store at `web/data/portal-state.json` instead of module memory.
 - Mutable API routes use controlled JSON parsing and `no-store` responses.
 - Mutable and verifier-expensive API routes have process-local fixed-window rate limits with `Retry-After` / `X-RateLimit-*` headers.

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
 import { getProblemBySlug } from "@/lib/data";
+import { assertFundingLaunchGate, assertRedirectAllowed } from "@/lib/funding-gates";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
 const onrampSchema = z.object({
@@ -21,54 +22,27 @@ function coinbaseOnrampUrl(token: string, input: z.infer<typeof onrampSchema>) {
   return url.toString();
 }
 
-function trustedClientIp(req: Request): string | undefined {
-  const header = process.env.P42_TRUSTED_CLIENT_IP_HEADER;
-  if (!header) return undefined;
-  return req.headers.get(header) ?? undefined;
-}
-
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
     enforceRateLimit(req, rateLimitPolicy("coinbase_onramp", { limit: 10, windowMs: 60_000 }));
     const body = await readJson(req, onrampSchema);
+    assertRedirectAllowed(body.redirect_url);
     const { slug } = await params;
     const problem = getProblemBySlug(slug);
     if (!problem) return json({ error: "Problem not found" }, { status: 404 });
 
     const wallet = problem.donationWallet;
-    if (wallet.chain !== "Base" || wallet.status !== "enabled") {
-      return json(
-        {
-          error: "Coinbase Onramp is gated until a reviewed Base mainnet pool is configured",
-          donationWallet: wallet,
-          required_next: "Set a real Base pool address, pass audit/legal gates, then mark the wallet enabled.",
-        },
-        { status: 409 },
-      );
-    }
-
-    const bearer = process.env.COINBASE_ONRAMP_BEARER_TOKEN;
-    if (process.env.P42_ENABLE_COINBASE_ONRAMP !== "1" || !bearer) {
-      return json(
-        {
-          error: "Coinbase Onramp server credentials are not configured",
-          required_env: ["P42_ENABLE_COINBASE_ONRAMP=1", "COINBASE_ONRAMP_BEARER_TOKEN"],
-        },
-        { status: 503 },
-      );
-    }
-
-    const clientIp = trustedClientIp(req);
+    const gate = assertFundingLaunchGate(problem, req);
     const response = await fetch("https://api.developer.coinbase.com/onramp/v1/token", {
       method: "POST",
       headers: {
-        authorization: `Bearer ${bearer}`,
+        authorization: `Bearer ${gate.bearerToken}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
         addresses: [{ address: wallet.address, blockchains: ["base"] }],
         assets: [wallet.asset],
-        ...(clientIp ? { clientIp } : {}),
+        clientIp: gate.clientIp,
       }),
     });
 

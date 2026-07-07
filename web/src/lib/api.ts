@@ -12,6 +12,7 @@ export class ApiError extends Error {
     message: string,
     readonly status = 400,
     readonly headers: HeadersInit = {},
+    readonly body: Record<string, unknown> = {},
   ) {
     super(message);
   }
@@ -54,7 +55,7 @@ export function json(data: unknown, init: ResponseInit = {}) {
 
 export function apiError(error: unknown) {
   if (error instanceof ApiError) {
-    return json({ error: error.message }, { status: error.status, headers: error.headers });
+    return json({ error: error.message, ...error.body }, { status: error.status, headers: error.headers });
   }
   return json({ error: error instanceof Error ? error.message : "request failed" }, { status: 400 });
 }
