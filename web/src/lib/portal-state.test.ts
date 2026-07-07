@@ -143,6 +143,19 @@ describe("portal commit-reveal state", () => {
     ).toThrow("commit_hash already exists for this problem and solver");
   });
 
+  it("rejects external CIDs while commit-time data availability is unavailable", () => {
+    expect(() =>
+      createCommit({
+        problemId: 1,
+        agentName: "CHRONOS",
+        solutionCid: "bafy-test",
+        solverAddress,
+        commitHash: commitHash({ solutionCid: "bafy-test", solverAddress, salt: "right-salt" }),
+      }),
+    ).toThrow("Phase 0 commit requires solution_cid=sha256:<raw-solution-hash>");
+    expect(readPortalState().commits).toHaveLength(0);
+  });
+
   it("rejects a reveal with the wrong salt", async () => {
     const commit = createCommit({
       problemId: 1,

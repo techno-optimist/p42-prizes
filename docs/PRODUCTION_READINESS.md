@@ -11,7 +11,7 @@ green.
 | Problem standard | `p42-problem/v1` fixture, schema validation, AST exact-path lint, and local repeated-run admission evidence for the seed verifier | External verifier admission review and N-host admission evidence for every funded problem |
 | Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence with advisory lock + fsync/rename writes, local diagnostic event ledger, process-local rate limits, local idempotency reservations for retryable verifier/submission POSTs, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
-| Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
+| Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, external CID fail-closed commit gate, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
 | Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout and rejects any `VerdictReport` not bound to the manifest verifier identity and exact solution bytes; `p42_prizes.cli admit` emits local repeated-run evidence | Canonical sandbox runner, pinned immutable image digest, N-host identical verdict matrix |
 | Settlement math | Final-denominator pool simulator, red-team bond/threshold helpers, and incremental portal credit model | Contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
 | Challenges | Endpoint returns `501` until implemented | Bond escrow, challenge window checks, resolver transcript, slashing path |
@@ -25,6 +25,7 @@ green.
 - Commit reveal now verifies `keccak256("p42:v0|cid:<len>:<cid>|solver:<lowercase-addr>|salt:<len>:<salt>")` before reveal.
 - Non-local commits require an EIP-191 solver signature over the problem id, solver address, solution CID, and commit hash.
 - Reveal now verifies raw solution bytes against `solution_cid=sha256:<hash>`.
+- Commit now rejects DA-backed external CIDs in Phase 0 instead of recording unretrievable content references.
 - Portal verification now calls the problem repo's configured verifier through `p42_prizes.cli`; the TypeScript verifier mirror was removed.
 - The CLI enforces `verifier.max_compute.wall_seconds`.
 - The CLI and web verifier runner reject stdout that is noisy, non-canonical, not schema-exact, not manifest-bound, not raw-byte-bound, or inconsistent with the verifier exit code.

@@ -11,6 +11,7 @@ import { runCanonicalVerifier } from "@/lib/verifier-runner";
 
 const EVM_ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 const COMMIT_HASH = /^0x[a-fA-F0-9]{64}$/;
+const LOCAL_SOLUTION_CID = /^sha256:[a-f0-9]{64}$/;
 
 export function allSubmissions(): Submission[] {
   return [...submissions, ...readPortalState().submissions];
@@ -83,12 +84,28 @@ export function sha256SolutionCid(rawSolution: string): string {
   return `sha256:${createHash("sha256").update(rawSolution, "utf8").digest("hex")}`;
 }
 
+export function isLocalSolutionCid(solutionCid: string): boolean {
+  return LOCAL_SOLUTION_CID.test(solutionCid);
+}
+
+function assertLocalSolutionCid(solutionCid: string) {
+  if (!isLocalSolutionCid(solutionCid)) {
+    throw new ApiError(
+      "Phase 0 commit requires solution_cid=sha256:<raw-solution-hash>; DA-backed external CIDs are gated until commit-time availability is implemented",
+      409,
+    );
+  }
+}
+
 function assertSolutionMatchesCid(solutionCid: string, rawSolution: string) {
-  if (!solutionCid.startsWith("sha256:")) {
-    throw new ApiError("Phase 0 reveal requires solution_cid=sha256:<raw-solution-hash>; external CID retrieval is not wired", 409);
+  if (!isLocalSolutionCid(solutionCid)) {
+    throw new ApiError(
+      "Phase 0 reveal requires solution_cid=sha256:<raw-solution-hash>; external CID retrieval is not wired",
+      409,
+    );
   }
   const actual = sha256SolutionCid(rawSolution);
-  if (actual !== solutionCid.toLowerCase()) {
+  if (actual !== solutionCid) {
     throw new ApiError("revealed solution bytes do not match committed solution_cid", 400);
   }
 }
@@ -102,6 +119,7 @@ export function createCommit(input: {
   devSalt?: string;
 }): CommitRecord {
   const solverAddress = normalizeSolverAddress(input.solverAddress);
+  assertLocalSolutionCid(input.solutionCid);
   const computedHash = input.devSalt
     ? commitHash({ solutionCid: input.solutionCid, solverAddress, salt: input.devSalt })
     : undefined;

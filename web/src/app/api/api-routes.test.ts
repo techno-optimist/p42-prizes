@@ -151,6 +151,25 @@ describe("mutable API routes", () => {
     });
   });
 
+  it("rejects external solution CIDs until commit-time DA is wired", async () => {
+    const response = await commitPost(
+      jsonRequest("/api/submissions/commit", {
+        problem_id: 1,
+        agent_name: "CHRONOS",
+        solver_address: solverAddress,
+        solution_cid: "bafy-test",
+        dev_salt: "right-salt",
+      }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error:
+        "Phase 0 commit requires solution_cid=sha256:<raw-solution-hash>; DA-backed external CIDs are gated until commit-time availability is implemented",
+    });
+    expect(readPortalState().commits).toHaveLength(0);
+  });
+
   it("replays idempotent commits and rejects key reuse with a changed body", async () => {
     const signed = await signedCommitFields();
     const body = {
