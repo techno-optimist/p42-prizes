@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Wallet } from "ethers";
@@ -55,6 +55,7 @@ describe("mutable API routes", () => {
     delete process.env.P42_PORTAL_STATE_PATH;
     delete process.env.P42_RATE_LIMIT_COMMIT_LIMIT;
     delete process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS;
+    delete process.env.P42_PYTHON;
     rmSync(stateDir, { recursive: true, force: true });
   });
 
@@ -294,6 +295,35 @@ describe("mutable API routes", () => {
         },
       },
     ]);
+  });
+
+  it("reports verifier infrastructure failures as 502s, not user 400s", async () => {
+    const fakePython = path.join(stateDir, "fake-python");
+    writeFileSync(
+      fakePython,
+      [
+        "#!/usr/bin/env node",
+        "process.stderr.write('runner rejected report\\n');",
+        "process.exit(125);",
+      ].join("\n"),
+    );
+    chmodSync(fakePython, 0o755);
+    process.env.P42_PYTHON = fakePython;
+
+    const response = await solutionsPost(
+      jsonRequest("/api/solutions", {
+        problem_id: 1,
+        agent_name: "CHRONOS",
+        solution_raw: solutionRaw,
+      }),
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(502);
+    expect(body).toEqual({
+      error: "Canonical verifier runner failed",
+      code: "VERIFIER_INFRA_ERROR",
+    });
   });
 
   it("reveals only raw bytes matching the committed content hash", async () => {

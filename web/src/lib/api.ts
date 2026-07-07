@@ -57,5 +57,19 @@ export function apiError(error: unknown) {
   if (error instanceof ApiError) {
     return json({ error: error.message, ...error.body }, { status: error.status, headers: error.headers });
   }
-  return json({ error: error instanceof Error ? error.message : "request failed" }, { status: 400 });
+  const publicError = error as {
+    publicStatus?: unknown;
+    publicMessage?: unknown;
+    publicCode?: unknown;
+  };
+  if (typeof publicError.publicStatus === "number") {
+    return json(
+      {
+        error: typeof publicError.publicMessage === "string" ? publicError.publicMessage : "request failed",
+        ...(typeof publicError.publicCode === "string" ? { code: publicError.publicCode } : {}),
+      },
+      { status: publicError.publicStatus },
+    );
+  }
+  return json({ error: "request failed" }, { status: 500 });
 }

@@ -25,6 +25,20 @@ const REQUIRED_VERDICT_KEYS = [
 const SHA256_REF = /^sha256:[a-f0-9]{64}$/;
 const RATIONAL = /^-?[0-9]+\/[1-9][0-9]*$/;
 
+export class VerifierRunnerError extends Error {
+  readonly publicStatus = 502;
+  readonly publicCode = "VERIFIER_INFRA_ERROR";
+  readonly publicMessage = "Canonical verifier runner failed";
+  readonly exitCode?: number | string;
+
+  constructor(message: string, options: { cause?: unknown; exitCode?: number | string } = {}) {
+    super(message);
+    this.name = "VerifierRunnerError";
+    this.cause = options.cause;
+    this.exitCode = options.exitCode;
+  }
+}
+
 function repoRoot(): string {
   return process.env.P42_REPO_ROOT ?? path.resolve(process.cwd(), "..");
 }
@@ -142,14 +156,31 @@ export async function runCanonicalVerifier(input: {
         timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
       });
-      return parseBoundVerdict(stdout, expected);
+      try {
+        return parseBoundVerdict(stdout, expected);
+      } catch (error) {
+        throw new VerifierRunnerError("canonical verifier emitted an invalid VerdictReport", { cause: error });
+      }
     } catch (error) {
       const stdout = typeof (error as { stdout?: unknown }).stdout === "string"
         ? (error as { stdout: string }).stdout
         : "";
       const code = (error as { code?: unknown }).code;
-      if (code === 1 && stdout.trim()) return parseBoundVerdict(stdout, expected);
-      throw error;
+      if (code === 1 && stdout.trim()) {
+        try {
+          return parseBoundVerdict(stdout, expected);
+        } catch (parseError) {
+          throw new VerifierRunnerError("canonical verifier emitted an invalid rejection VerdictReport", {
+            cause: parseError,
+            exitCode: code,
+          });
+        }
+      }
+      if (error instanceof VerifierRunnerError) throw error;
+      throw new VerifierRunnerError("canonical verifier process failed", {
+        cause: error,
+        exitCode: typeof code === "number" || typeof code === "string" ? code : undefined,
+      });
     }
   } finally {
     await rm(tempDir, { recursive: true, force: true });

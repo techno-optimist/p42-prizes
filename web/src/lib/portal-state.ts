@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "crypto";
 import { keccak_256 } from "@noble/hashes/sha3";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 import { verifyMessage } from "ethers";
+import { ApiError } from "@/lib/api";
 import { getProblemById, submissions } from "@/lib/data";
 import { incrementalFrontierCredit } from "@/lib/frontier";
 import type { Submission } from "@/lib/types";
@@ -16,7 +17,9 @@ export function allSubmissions(): Submission[] {
 }
 
 export function normalizeSolverAddress(address: string): string {
-  if (!EVM_ADDRESS.test(address)) throw new Error("solver_address must be a 20-byte 0x-prefixed EVM address");
+  if (!EVM_ADDRESS.test(address)) {
+    throw new ApiError("solver_address must be a 20-byte 0x-prefixed EVM address", 400);
+  }
   return address.toLowerCase();
 }
 
@@ -45,7 +48,7 @@ export function commitAuthorizationMessage(input: {
   commitHash: string;
 }): string {
   const solverAddress = normalizeSolverAddress(input.solverAddress);
-  if (!isCommitHash(input.commitHash)) throw new Error("commit_hash must be a 32-byte 0x-prefixed hash");
+  if (!isCommitHash(input.commitHash)) throw new ApiError("commit_hash must be a 32-byte 0x-prefixed hash", 400);
   return [
     "P42 Prizes commit authorization",
     "version: p42-commit-v0",
@@ -69,10 +72,10 @@ export function verifySolverSignature(input: {
   try {
     recovered = verifyMessage(commitAuthorizationMessage(input), input.signature).toLowerCase();
   } catch {
-    throw new Error("solver_signature is not a valid EIP-191 signature");
+    throw new ApiError("solver_signature is not a valid EIP-191 signature", 400);
   }
   if (recovered !== expected) {
-    throw new Error("solver_signature does not recover solver_address");
+    throw new ApiError("solver_signature does not recover solver_address", 400);
   }
 }
 
@@ -82,11 +85,11 @@ export function sha256SolutionCid(rawSolution: string): string {
 
 function assertSolutionMatchesCid(solutionCid: string, rawSolution: string) {
   if (!solutionCid.startsWith("sha256:")) {
-    throw new Error("Phase 0 reveal requires solution_cid=sha256:<raw-solution-hash>; external CID retrieval is not wired");
+    throw new ApiError("Phase 0 reveal requires solution_cid=sha256:<raw-solution-hash>; external CID retrieval is not wired", 409);
   }
   const actual = sha256SolutionCid(rawSolution);
   if (actual !== solutionCid.toLowerCase()) {
-    throw new Error("revealed solution bytes do not match committed solution_cid");
+    throw new ApiError("revealed solution bytes do not match committed solution_cid", 400);
   }
 }
 
@@ -104,9 +107,9 @@ export function createCommit(input: {
     : undefined;
   const commitHashValue = input.commitHash ?? computedHash;
   if (!commitHashValue) {
-    throw new Error("commit_hash is required unless dev_salt is supplied for local simulation");
+    throw new ApiError("commit_hash is required unless dev_salt is supplied for local simulation", 400);
   }
-  if (!isCommitHash(commitHashValue)) throw new Error("commit_hash must be a 32-byte 0x-prefixed hash");
+  if (!isCommitHash(commitHashValue)) throw new ApiError("commit_hash must be a 32-byte 0x-prefixed hash", 400);
 
   const record: CommitRecord = {
     id: `commit_${randomUUID().slice(0, 8)}`,
@@ -125,7 +128,7 @@ export function createCommit(input: {
       commit.solverAddress === record.solverAddress &&
       commit.commitHash === record.commitHash
     ));
-    if (duplicate) throw new Error("commit_hash already exists for this problem and solver");
+    if (duplicate) throw new ApiError("commit_hash already exists for this problem and solver", 409);
     state.commits.push(record);
     appendPortalEvent(state, {
       type: "commit.created",
@@ -153,20 +156,20 @@ export async function revealCommit(input: {
 }) {
   const state = readPortalState();
   const record = state.commits.find((commit) => commit.id === input.commitId);
-  if (!record) throw new Error("commit not found");
-  if (record.revealed) throw new Error("commit already revealed");
+  if (!record) throw new ApiError("commit not found", 404);
+  if (record.revealed) throw new ApiError("commit already revealed", 409);
   const problem = getProblemById(record.problemId);
-  if (!problem) throw new Error("problem not found");
-  if (problem.slug !== input.problemSlug) throw new Error("problem does not match commit");
+  if (!problem) throw new ApiError("problem not found", 404);
+  if (problem.slug !== input.problemSlug) throw new ApiError("problem does not match commit", 400);
 
   const solverAddress = normalizeSolverAddress(input.solverAddress);
-  if (solverAddress !== record.solverAddress) throw new Error("solver_address does not match commit owner");
+  if (solverAddress !== record.solverAddress) throw new ApiError("solver_address does not match commit owner", 400);
 
   const openedHash = commitHash({ solutionCid: record.solutionCid, solverAddress, salt: input.salt });
-  if (openedHash !== record.commitHash) throw new Error("commit preimage does not match recorded hash");
+  if (openedHash !== record.commitHash) throw new ApiError("commit preimage does not match recorded hash", 400);
 
   if (input.problemSlug !== "hadamard-mini") {
-    throw new Error("external verifier runner is not wired in the Phase 0 portal");
+    throw new ApiError("external verifier runner is not wired in the Phase 0 portal", 409);
   }
   assertSolutionMatchesCid(record.solutionCid, input.solutionRaw);
 
@@ -195,8 +198,8 @@ export async function revealCommit(input: {
   };
   updatePortalState((nextState) => {
     const storedCommit = nextState.commits.find((commit) => commit.id === input.commitId);
-    if (!storedCommit) throw new Error("commit not found");
-    if (storedCommit.revealed) throw new Error("commit already revealed");
+    if (!storedCommit) throw new ApiError("commit not found", 404);
+    if (storedCommit.revealed) throw new ApiError("commit already revealed", 409);
     storedCommit.revealed = true;
     nextState.submissions.push(submission);
     appendPortalEvent(nextState, {

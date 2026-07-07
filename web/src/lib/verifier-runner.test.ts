@@ -114,7 +114,10 @@ describe("runCanonicalVerifier", () => {
       process.env.P42_PYTHON = fakePython;
       const solutionRaw = readFileSync("../problems/hadamard-mini/examples/valid-4.json", "utf8");
       await expect(runCanonicalVerifier({ problemSlug: "hadamard-mini", solutionRaw })).rejects.toMatchObject({
-        code: 125,
+        name: "VerifierRunnerError",
+        publicStatus: 502,
+        publicCode: "VERIFIER_INFRA_ERROR",
+        exitCode: 125,
       });
     } finally {
       if (oldPython === undefined) {
