@@ -10,9 +10,9 @@ negative fixtures, and N-host determinism evidence pass admission.
 | Slot | Slug | Status | Artifact | Exact verifier shape | Admission work |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `hadamard-mini` | runnable pilot | 4x4 sign matrix | integer row-pair dot products | keep as fixture and regression target |
-| 2 | `erdos-min-overlap` | locked | step-function vector as integers plus denominator | exact normalization and finite-lag rational overlap | package repo from `arena/erdos_note`, freeze seed witness, add H1/H5/H6 fixtures |
-| 3 | `edges-vs-triangles` | locked | rational distribution or reduced knot certificate | exact row normalization, moment curve, area/max-gap model | rationalize incumbent and harden against the trapezoid/scoring trap |
-| 4 | `arithmetic-kakeya` | locked marquee | proof/certificate object | self-certifying proof interface, not a heuristic judge | refresh official problem status, write dossier, define verifier before funding |
+| 2 | `erdos-min-overlap` | locked | step-function vector as integers plus denominator | exact normalization and finite-lag rational overlap for Q < 0.3808669097979875909124431 | package repo from `arena/erdos_note`, freeze seed witness, add H1/H5/H6 fixtures |
+| 3 | `edges-vs-triangles` | locked exploit pilot | graph/certificate artifact to be finalized | exact graph objective with all constraints covered | keep locked as an adversarial packaging target; no live leaderboard rows until admission |
+| 4 | `arithmetic-kakeya` | locked marquee, unfunded | proof/certificate object | self-certifying proof interface, not a heuristic judge | refresh official problem status, write dossier, define verifier before funding or accepting real value |
 | 5 | `autoconvolution-c1-upper` | locked | nonnegative integer step heights | exact integer convolution and rational upper-bound score | canonical encoding, runtime cap, claimed-score negative fixture |
 | 6 | `autoconvolution-c2-lower` | locked | chunked nonnegative integer vector | exact `L1`, `L2`, `Linf` and lower-bound score | chunked payload format, memory bound, N-host timing |
 | 7 | `signed-autoconvolution-c3-upper` | locked | signed step heights | exact signed convolution with sign/max checks | sign-flip fixtures and strict normalization tests |
@@ -50,3 +50,7 @@ A board moves from locked to pilot only when:
 - the runner records exact version/image/output evidence,
 - the N-host determinism matrix passes,
 - the board has a reviewed testnet pool and no real-ETH gate is bypassed.
+
+Locked boards may expose reserved testnet-only deposit wallets for UI/API dry
+runs, but they must not show finalized submissions, challenge state, payout
+claims, or mainnet funding affordances before admission.

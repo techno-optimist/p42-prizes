@@ -56,7 +56,7 @@ def validate_problem(problem_dir: str | Path) -> list[str]:
         errors.append(f"problem.yaml:{at}: {err.message}")
 
     objective = manifest.get("objective", {})
-    for key in ("seed_best", "optimum", "min_improvement"):
+    for key in ("seed_best", "current_best", "optimum", "min_improvement"):
         if key in objective:
             try:
                 parse_rational(objective[key])
@@ -69,4 +69,3 @@ def validate_problem(problem_dir: str | Path) -> list[str]:
         errors.append(f"solution.schema.json: invalid JSON schema file: {exc}")
 
     return errors
-

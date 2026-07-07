@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { json } from "@/lib/api";
-import { readPortalState, type PortalEventType } from "@/lib/portal-store";
+import { readPortalState, verifyEventChain, type PortalEventType } from "@/lib/portal-store";
 
 const EVENT_TYPES: PortalEventType[] = [
   "commit.created",
@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
   }
 
   const allEvents = readPortalState().events;
+  const chain = verifyEventChain(allEvents);
   const events = allEvents.filter((event) => (
     (problemId === undefined || event.problemId === problemId) &&
     (!typeParam || event.type === typeParam)
@@ -37,8 +38,10 @@ export async function GET(req: NextRequest) {
   return json({
     count: events.length,
     total: allEvents.length,
-    chainComplete: problemId === undefined && !typeParam,
-    latestHash: allEvents.at(-1)?.eventHash ?? "genesis",
+    chainComplete: problemId === undefined && !typeParam && chain.ok,
+    chainVerified: chain.ok,
+    ...(chain.error ? { chainError: chain.error } : {}),
+    latestHash: chain.latestHash,
     events,
   });
 }

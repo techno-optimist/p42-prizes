@@ -11,7 +11,7 @@ import { POST as solutionsPost } from "@/app/api/solutions/route";
 import { POST as commitPost } from "@/app/api/submissions/commit/route";
 import { POST as revealPost } from "@/app/api/submissions/reveal/route";
 import { commitAuthorizationMessage, commitHash, sha256SolutionCid } from "@/lib/portal-state";
-import { readPortalState, resetPortalStateForTests } from "@/lib/portal-store";
+import { readPortalState, resetPortalStateForTests, writePortalState } from "@/lib/portal-store";
 import { resetRateLimitsForTests } from "@/lib/rate-limit";
 
 const solverWallet = new Wallet("0x59c6995e998f97a5a0044966f0945387f6d6616d07a16c6fbfcaeab4f7fca6e5");
@@ -199,7 +199,7 @@ describe("mutable API routes", () => {
     );
     const eventsBody = await eventsResponse.json();
     expect(eventsResponse.status).toBe(200);
-    expect(eventsBody).toMatchObject({ count: 1, total: 4, chainComplete: false });
+    expect(eventsBody).toMatchObject({ count: 1, total: 4, chainComplete: false, chainVerified: true });
     expect(eventsBody.events[0]).toMatchObject({
       type: "commit.created",
       subjectId: firstBody.commit.id,
@@ -220,6 +220,35 @@ describe("mutable API routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: "Bonded challenges are not implemented in the Phase 0 portal",
     });
+  });
+
+  it("reports event-chain tampering instead of claiming diagnostic completeness", async () => {
+    const signed = await signedCommitFields();
+    const body = {
+      problem_id: 1,
+      agent_name: "RouteAgent",
+      solver_address: solverAddress,
+      solution_cid: signed.solutionCid,
+      commit_hash: signed.commitHash,
+      solver_signature: signed.solverSignature,
+    };
+    const response = await commitPost(jsonRequest("/api/submissions/commit", body));
+    expect(response.status).toBe(201);
+
+    const state = readPortalState();
+    state.events[0].payload = { tampered: true };
+    writePortalState(state);
+
+    const eventsResponse = await eventsGet(new NextRequest("http://localhost/api/events"));
+    const eventsBody = await eventsResponse.json();
+
+    expect(eventsResponse.status).toBe(200);
+    expect(eventsBody).toMatchObject({
+      chainComplete: false,
+      chainVerified: false,
+      latestHash: "genesis",
+    });
+    expect(eventsBody.chainError).toContain("eventHash does not match");
   });
 
   it("gates Coinbase Onramp sessions for testnet-only donation wallets", async () => {

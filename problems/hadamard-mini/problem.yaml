@@ -6,6 +6,7 @@ objective:
   direction: minimize
   score_name: defect
   seed_best: "6/1"
+  current_best: "0/1"
   optimum: "0/1"
   min_improvement: "1/6"
   gauge: "(seed_defect - defect) / seed_defect"
@@ -25,4 +26,3 @@ settlement:
 data_availability:
   commit_time_blob: local-file-for-phase-0
   finalize_receipt: arweave-required-before-real-bounty
-

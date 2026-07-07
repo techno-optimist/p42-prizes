@@ -8,7 +8,8 @@ and submit against.
 
 Every problem lives under `problems/<problem-id>/` and must provide:
 
-- `problem.yaml`: manifest pinned by the registry.
+- `problem.yaml`: manifest pinned by the registry, including exact
+  `seed_best`, `current_best`, `optimum`, and `min_improvement` rationals.
 - `SPEC.md`: exact statement, objective, score, and improvement metric.
 - `solution.schema.json`: canonical raw solution format.
 - `verifier/`: code for the certified path.
@@ -27,8 +28,11 @@ only integer, rational, or enclosed-interval arithmetic; no native float may
 influence `valid`, `score`, or `improvement`.
 
 The canonical report is stable JSON with sorted keys, exact rationals serialized
-as `"num/den"`, and a `sha256:` hash of the raw solution bytes. The report is
-the unit of dispute in the optimistic oracle.
+as `"num/den"`, and a `sha256:` hash of the raw solution bytes. Runners reject
+reports that are noisy, missing/adding fields, not normalized, not bound to the
+manifest verifier identity, not bound to the original raw solution bytes, or
+inconsistent with verifier exit status. The report is the unit of dispute in the
+optimistic oracle.
 
 ## Local developer loop
 
@@ -42,4 +46,3 @@ make verify-seed
 The seed problem is intentionally tiny (`hadamard-mini`) so this loop can run in
 seconds while exercising the same exactness and hardening constraints expected
 from real launch problems.
-

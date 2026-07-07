@@ -12,12 +12,13 @@
     "status": { "type": "string" },
     "objective": {
       "type": "object",
-      "required": ["direction", "score_name", "seed_best", "optimum", "min_improvement"],
+      "required": ["direction", "score_name", "seed_best", "current_best", "optimum", "min_improvement"],
       "additionalProperties": false,
       "properties": {
         "direction": { "enum": ["minimize", "maximize"] },
         "score_name": { "type": "string", "minLength": 1 },
         "seed_best": { "$ref": "#/$defs/rational" },
+        "current_best": { "$ref": "#/$defs/rational" },
         "optimum": { "$ref": "#/$defs/rational" },
         "min_improvement": { "$ref": "#/$defs/rational" },
         "gauge": { "type": "string" }
@@ -71,4 +72,3 @@
     }
   }
 }
-

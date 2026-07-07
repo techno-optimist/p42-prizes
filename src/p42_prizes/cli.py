@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shlex
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
-from p42_prizes.verdict import canonical_json
+from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file, validate_verdict_report
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -35,27 +37,95 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_verifier_stdout(stdout: str, manifest: dict, solution_hash: str) -> dict:
+    lines = [line for line in stdout.splitlines() if line.strip()]
+    if len(lines) != 1:
+        raise ValueError(f"expected exactly one VerdictReport JSON line on stdout, got {len(lines)}")
+    try:
+        raw_report = json.loads(lines[0])
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"stdout is not valid VerdictReport JSON: {exc}") from exc
+
+    verifier = manifest["verifier"]
+    return validate_verdict_report(
+        raw_report,
+        problem_id=manifest["problem_id"],
+        verifier_version=verifier["version"],
+        verifier_image=verifier["image"],
+        solution_hash=solution_hash,
+    )
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     problem = Path(args.problem).resolve()
     solution = Path(args.solution).resolve()
+    solution_bytes = solution.read_bytes()
+    solution_hash = sha256_bytes(solution_bytes)
     manifest = load_manifest(problem)
     command_template = manifest["verifier"]["command"]
-    command = [
-        part.format(solution=str(solution))
-        for part in shlex.split(command_template)
-    ]
     wall_seconds = int(manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
 
     env = dict(os.environ)
     repo_root = repo_root_from_problem(problem)
     src = str(repo_root / "src")
     env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
-    try:
-        completed = subprocess.run(command, cwd=problem, env=env, check=False, timeout=wall_seconds)
-    except subprocess.TimeoutExpired:
-        print(f"verifier timed out after {wall_seconds}s", file=sys.stderr)
-        return 124
-    return completed.returncode
+
+    with TemporaryDirectory(prefix="p42-verify-") as temp_dir:
+        runner_solution = Path(temp_dir) / solution.name
+        runner_solution.write_bytes(solution_bytes)
+        command = [
+            part.format(solution=str(runner_solution))
+            for part in shlex.split(command_template)
+        ]
+
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=problem,
+                env=env,
+                check=False,
+                timeout=wall_seconds,
+                text=True,
+                capture_output=True,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"verifier timed out after {wall_seconds}s", file=sys.stderr)
+            return 124
+
+        if completed.stderr:
+            print(completed.stderr, end="", file=sys.stderr)
+
+        try:
+            runner_solution_hash = sha256_file(runner_solution)
+        except Exception:
+            print("verifier report rejected: verifier removed the solution bytes", file=sys.stderr)
+            return 125
+        if runner_solution_hash != solution_hash:
+            print("verifier report rejected: verifier mutated the solution bytes", file=sys.stderr)
+            return 125
+
+        try:
+            report = _parse_verifier_stdout(completed.stdout, manifest, solution_hash)
+        except Exception as exc:
+            print(f"verifier report rejected: {exc}", file=sys.stderr)
+            return 125
+
+        if report["valid"] and completed.returncode != 0:
+            print(
+                f"verifier report rejected: exit code {completed.returncode} "
+                "does not match valid=True",
+                file=sys.stderr,
+            )
+            return 125
+        if not report["valid"] and completed.returncode == 0:
+            print(
+                "verifier report rejected: exit code 0 does not match valid=False",
+                file=sys.stderr,
+            )
+            return 125
+
+        print(canonical_json(report))
+        return 0 if report["valid"] else 1
 
 
 def _cmd_simulate(args: argparse.Namespace) -> int:

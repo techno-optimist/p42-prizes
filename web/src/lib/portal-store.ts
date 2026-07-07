@@ -54,6 +54,12 @@ export interface PortalStateSnapshot {
   events: PortalEventRecord[];
 }
 
+export interface EventChainVerification {
+  ok: boolean;
+  latestHash: string;
+  error?: string;
+}
+
 const EMPTY_STATE: PortalStateSnapshot = {
   schemaVersion: 1,
   commits: [],
@@ -153,6 +159,39 @@ export function appendPortalEvent(
   };
   state.events.push(event);
   return event;
+}
+
+export function verifyEventChain(events: PortalEventRecord[]): EventChainVerification {
+  let priorHash = "genesis";
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    const expectedSequence = index + 1;
+    if (event.sequence !== expectedSequence) {
+      return {
+        ok: false,
+        latestHash: priorHash,
+        error: `event ${event.id} has sequence ${event.sequence}; expected ${expectedSequence}`,
+      };
+    }
+    if (event.prevHash !== priorHash) {
+      return {
+        ok: false,
+        latestHash: priorHash,
+        error: `event ${event.id} prevHash does not match prior event hash`,
+      };
+    }
+    const { eventHash: _eventHash, ...eventWithoutHash } = event;
+    const recomputed = portalEventHash(eventWithoutHash);
+    if (event.eventHash !== recomputed) {
+      return {
+        ok: false,
+        latestHash: priorHash,
+        error: `event ${event.id} eventHash does not match its canonical payload`,
+      };
+    }
+    priorHash = event.eventHash;
+  }
+  return { ok: true, latestHash: priorHash };
 }
 
 export function resetPortalStateForTests(): void {

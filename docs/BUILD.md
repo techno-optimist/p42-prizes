@@ -38,7 +38,7 @@ Each decision states the choice, the rationale, the rejected alternative, and �
 
 3. **Oracle: optimistic verification.** *Rationale:* the chain cannot afford to run heavy exact verifiers, and it doesn't need to — determinism makes a public re-run a proof, not an opinion. Submit + bond → challenge window → bonded dispute → deterministic re-run → loser forfeits bond. *Rejected:* on-chain verification (gas-fatal) and a trusted committee-of-record (reintroduces the referee the whole design removes). **Red-team change:** the v1 resolver committee is *not* trusted-final for real ETH. It must post the full re-run transcript on-chain, members bond per decision, and no decision is final until a fraud-proof window (v2: RISC Zero / interactive bisection over the deterministic verifier) also closes.
 
-4. **Submissions: commit-reveal, CID-in-preimage.** *Rationale:* a public L2 mempool lets a searcher copy a broadcast solution and front-run the reveal. Commit binds ordering before the answer is public. *Rejected:* naive open submission (trivially sniped). **Red-team change:** the *full solution CID* goes inside the commit preimage (`commit = keccak(cid ‖ addr ‖ salt)`) and the blob is posted to DA **at commit time**; reveal only opens the salt. A commit with no retrievable blob at commit-block is slashed. This removes the "commit garbage, watch the honest reveal, then decide whether to reveal" free option.
+4. **Submissions: commit-reveal, CID-in-preimage.** *Rationale:* a public L2 mempool lets a searcher copy a broadcast solution and front-run the reveal. Commit binds ordering before the answer is public. *Rejected:* naive open submission (trivially sniped). **Red-team change:** the *full solution CID* goes inside the length-prefixed commit preimage (`commit = keccak256(bytes("p42:v0|cid:<len>:<cid>|solver:<lowercase-addr>|salt:<len>:<salt>"))`) and the blob is posted to DA **at commit time**; reveal only opens the salt. A commit with no retrievable blob at commit-block is slashed. This removes the "commit garbage, watch the honest reveal, then decide whether to reveal" free option.
 
 5. **Problems: exact, deterministic, self-certifiable only.** *Rationale:* on-chain money multiplies verifier-exploit pressure by orders of magnitude; a float-vs-exact trap that costs a leaderboard rank in a free arena becomes theft here. Integer / rational / enclosed-interval arithmetic only. *Rejected:* floating-point scorers and sampled/Monte-Carlo verifiers (both are theft vectors — the seeded-sampling gap and float-vs-exact trap are exploits we've already caught). Admission is gated by the P42 Verifier Standard (R1–R5 + hardening checklist H1–H6). **Red-team change:** determinism is enforced by an *N-host admission matrix* (x86 + ARM + two glibc versions hashing identically) plus AST-lint banning `float`/`math.`/float-dtype on the certified path — not the weak "two runs on two similar hosts" check.
 
@@ -277,7 +277,7 @@ event Claimed(address indexed solver, uint256 amount);
 
 // --- SubmissionManager: commit-reveal to defeat mempool solution-sniping ---
 struct Sub {
-    uint256 problemId; address solver; bytes32 commit; // keccak(answerCID, salt, solver) — CID in preimage
+    uint256 problemId; address solver; bytes32 commit; // keccak256(bytes(p42:v0 length-prefixed CID/solver/salt preimage))
     string  answerCID;   int256 claimedScore;          // filled at reveal
     uint64  revealedAt;  uint8  state;                  // enum below
     uint128 bond;
@@ -301,7 +301,7 @@ function currentBest(uint256 problemId) external view returns (int256);
 event FrontierAdvanced(uint256 indexed problemId, address indexed solver, int256 newBest, int256 improvement);
 ```
 
-> **[SPINE OVERRIDE].** The commit preimage is `keccak(answerCID ‖ solverAddr ‖ salt)` — the *CID is inside the preimage* and the blob is posted to a DA layer **at commit time**, not reveal (red-team finding #6 / tech #3). `resolve()` is role-gated behind `onlyResolver` so the v1 verifiable-committee can be swapped for a fraud-proof resolver; **the committee is not trusted-final for real ETH** (tech #2). `PayoutLedger` reserves are *claimable-but-locked until CLOSE/RESOLVED* per mechanism finding #1.
+> **[SPINE OVERRIDE].** The commit preimage is `keccak256(bytes("p42:v0|cid:<len>:<cid>|solver:<lowercase-addr>|salt:<len>:<salt>"))` — the *CID is inside a length-prefixed preimage* and the blob is posted to a DA layer **at commit time**, not reveal (red-team finding #6 / tech #3). `resolve()` is role-gated behind `onlyResolver` so the v1 verifiable-committee can be swapped for a fraud-proof resolver; **the committee is not trusted-final for real ETH** (tech #2). `PayoutLedger` reserves are *claimable-but-locked until CLOSE/RESOLVED* per mechanism finding #1.
 
 ### 3. Submission state machine
 
@@ -376,13 +376,14 @@ A verifier is **admissible** for a P42 problem iff it satisfies all of the follo
   "solution_hash": "sha256:0a11…",
   "valid": true,
   "improvement": "1/1",          // exact rational as a string "num/den"
-  "score": "668",                // exact, problem-defined units
+  "score": "668/1",              // exact, problem-defined units
   "reason": "",                  // machine-readable code on failure
-  "recomputed_at_commit": "…"
+  "recomputed_at_commit": "…",
+  "details": {}
 }
 ```
 
-`improvement` and `score` are **exact rationals serialized as `"num/den"`** (den = 1 for integers). No floats appear anywhere in the report. `valid` is boolean; a `false` verdict carries a `reason` code (`R2_CLAIMED_VALUE_IGNORED`, `CONSTRAINT_VIOLATED_ROW_17`, `NOT_STRICT_IMPROVEMENT`, `MALFORMED`, …) so challenges are self-explaining.
+`improvement` and `score` are **exact rationals serialized as `"num/den"`** (den = 1 for integers). No floats appear anywhere in the report. `valid` is boolean; a `false` verdict carries a `reason` code (`R2_CLAIMED_VALUE_IGNORED`, `CONSTRAINT_VIOLATED_ROW_17`, `NOT_STRICT_IMPROVEMENT`, `MALFORMED`, …) so challenges are self-explaining. Runners must reject schema-shaped reports that are not canonical, not manifest-bound, not tied to the exact raw solution bytes, or inconsistent with the verifier process exit.
 
 ### 2. Adversarial-hardening checklist (distilled from real catches)
 
@@ -479,7 +480,7 @@ Reference objects (defined in Mechanism and Contracts): the **payout formula** `
 
 ### (b) Mempool / MEV attacks
 
-**Front-running a submission — CRITICAL.** A searcher reads the solution from the mempool and lands a copy earlier. *Mitigation:* **commit-reveal.** Phase 1: `commit = keccak(cid ‖ solverAddr ‖ salt)` on-chain with the bond, blob posted to DA at commit time; only the hash is public. Phase 2, after `T_commit` and within `T_reveal`, solver reveals the salt; the contract binds the claim to `solverAddr` from the commit. A front-runner sees only an opaque hash and cannot reveal a solution they don't have, nor rebind another's commit. Ordering is decided at *commit* time. *Residual:* commit-censorship (see below); commit-reveal adds a round-trip. Private/encrypted mempool is defense-in-depth.
+**Front-running a submission — CRITICAL.** A searcher reads the solution from the mempool and lands a copy earlier. *Mitigation:* **commit-reveal.** Phase 1: `commit = keccak256(bytes("p42:v0|cid:<len>:<cid>|solver:<lowercase-addr>|salt:<len>:<salt>"))` on-chain with the bond, blob posted to DA at commit time; only the hash is public. Phase 2, after `T_commit` and within `T_reveal`, solver reveals the salt; the contract binds the claim to `solverAddr` from the commit. A front-runner sees only an opaque hash and cannot reveal a solution they don't have, nor rebind another's commit. Ordering is decided at *commit* time. *Residual:* commit-censorship (see below); commit-reveal adds a round-trip. Private/encrypted mempool is defense-in-depth.
 
 ### (c) Oracle / dispute attacks
 
@@ -630,9 +631,9 @@ id: erdos-min-overlap
 title: "Erdős minimum-overlap constant — upper bound"
 objective: minimize          # or maximize
 score_type: rational         # rational | integer | bignum — NEVER float
-current_best: "1.50285031"   # exact; mirrors on-chain frontier
-baseline: "1.5031"
-min_improvement: "1e-6"      # gate: submissions must beat best by >= this (exact compare)
+current_best: "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401"
+baseline: "380926853433087/1000000000000000"
+min_improvement: "1/1000000" # gate: submissions must beat best by >= this exact rational
 verifier:
   image: "ghcr.io/p42/erdos-min-overlap@sha256:…"
   entrypoint: "make verify SUB=/in/submission.json"
@@ -735,7 +736,7 @@ Preserved verbatim for the implementing team; the fixes are already folded into 
 
 **2. Resolver = trusted 3-of-5 multisig is the oracle, not the verifier — CRITICAL.** Optimistic verification is only trustless if the *disputed re-run* is trustless; the committee **is** the oracle and can collude. "Swap for a fraud-proof later" is a rewrite of the trust root. *Fix:* real ETH cannot ship on a bare multisig. For mainnet-small require the resolver to post the full re-run transcript on-chain, members bonded per decision and slashable if a later fraud-proof overturns them; no decision final until a fraud-proof window closes. v2: RISC Zero / interactive bisection over the deterministic verifier.
 
-**3. Commit-reveal has no forced reveal + is grief-farmable — HIGH.** `commit = keccak(answerHash‖addr‖salt)` forces nothing to *exist* at commit time. Attacker commits garbage in block N, watches Alice's reveal in N+2, reveals their own only if it's better — a free option on every problem. *Fix:* put the *full solution CID* inside the commit preimage (`commit = keccak(cid‖addr‖salt)`) with the blob posted to DA **at commit time**; reveal only opens the salt. A commit with no retrievable blob at commit-block is slashed.
+**3. Commit-reveal has no forced reveal + is grief-farmable — HIGH.** A hash over only an answer hash, address, and salt forces nothing to *exist* at commit time. Attacker commits garbage in block N, watches Alice's reveal in N+2, reveals their own only if it's better — a free option on every problem. *Fix:* put the *full solution CID* inside the length-prefixed commit preimage (`commit = keccak256(bytes("p42:v0|cid:<len>:<cid>|solver:<lowercase-addr>|salt:<len>:<salt>"))`) with the blob posted to DA **at commit time**; reveal only opens the salt. A commit with no retrievable blob at commit-block is slashed.
 
 **4. Data-availability: `T_chal < blobRetention` is necessary, not sufficient — HIGH.** Payout vests over 14–30 days and the frontier is permanent; a challenger contesting a *later* submission needs the *earlier* winning solution (`v*`) to recompute `Δ`, and `v*`'s blob may have expired (EIP-4844 blobs ~18 days). *Fix:* mandatory **Arweave permanence receipt** verified on-chain at finalize; store the Arweave txid, not just the CID.
 
