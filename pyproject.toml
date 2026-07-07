@@ -1,0 +1,17 @@
+[project]
+name = "p42-prizes"
+version = "0.1.0"
+description = "Phase 0 tooling for exact, deterministic P42 prize problem repositories."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "jsonschema>=4.0",
+  "PyYAML>=6.0",
+]
+
+[project.scripts]
+p42-prizes = "p42_prizes.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests", "problems"]

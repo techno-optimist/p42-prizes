@@ -1,0 +1,12 @@
+FROM python:3.14.2-slim
+
+ENV PYTHONHASHSEED=0
+ENV OMP_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+
+WORKDIR /problem
+COPY . /problem
+
+CMD ["make", "verify"]
+

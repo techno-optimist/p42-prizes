@@ -1,0 +1,28 @@
+schema_version: p42-problem/v1
+problem_id: hadamard-mini
+title: Hadamard Mini, order 4 verifier fixture
+status: phase-0-fixture
+objective:
+  direction: minimize
+  score_name: defect
+  seed_best: "6/1"
+  optimum: "0/1"
+  min_improvement: "1/6"
+  gauge: "(seed_defect - defect) / seed_defect"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "make verify SOLUTION={solution}"
+  max_compute:
+    wall_seconds: 5
+    memory_mb: 128
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: arweave-required-before-real-bounty
+

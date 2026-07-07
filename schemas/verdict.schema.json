@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/verdict-report-v1.json",
+  "title": "P42 VerdictReport v1",
+  "type": "object",
+  "required": [
+    "problem_id",
+    "verifier_version",
+    "verifier_image",
+    "solution_hash",
+    "valid",
+    "improvement",
+    "score",
+    "reason",
+    "recomputed_at_commit",
+    "details"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "problem_id": { "type": "string" },
+    "verifier_version": { "type": "string" },
+    "verifier_image": { "type": "string" },
+    "solution_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "valid": { "type": "boolean" },
+    "improvement": { "$ref": "#/$defs/rational" },
+    "score": { "$ref": "#/$defs/rational" },
+    "reason": { "type": "string" },
+    "recomputed_at_commit": { "type": "string" },
+    "details": { "type": "object" }
+  },
+  "$defs": {
+    "rational": {
+      "type": "string",
+      "pattern": "^-?[0-9]+/[1-9][0-9]*$"
+    }
+  }
+}
+

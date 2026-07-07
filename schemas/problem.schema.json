@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/p42-problem-v1.json",
+  "title": "P42 Problem Manifest v1",
+  "type": "object",
+  "required": ["schema_version", "problem_id", "title", "objective", "verifier", "settlement", "data_availability"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-problem/v1" },
+    "problem_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,63}$" },
+    "title": { "type": "string", "minLength": 1 },
+    "status": { "type": "string" },
+    "objective": {
+      "type": "object",
+      "required": ["direction", "score_name", "seed_best", "optimum", "min_improvement"],
+      "additionalProperties": false,
+      "properties": {
+        "direction": { "enum": ["minimize", "maximize"] },
+        "score_name": { "type": "string", "minLength": 1 },
+        "seed_best": { "$ref": "#/$defs/rational" },
+        "optimum": { "$ref": "#/$defs/rational" },
+        "min_improvement": { "$ref": "#/$defs/rational" },
+        "gauge": { "type": "string" }
+      }
+    },
+    "verifier": {
+      "type": "object",
+      "required": ["version", "image", "command", "max_compute"],
+      "additionalProperties": false,
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "image": { "type": "string", "minLength": 1 },
+        "command": { "type": "string", "minLength": 1 },
+        "max_compute": {
+          "type": "object",
+          "required": ["wall_seconds", "memory_mb"],
+          "additionalProperties": false,
+          "properties": {
+            "wall_seconds": { "type": "integer", "minimum": 1 },
+            "memory_mb": { "type": "integer", "minimum": 16 }
+          }
+        }
+      }
+    },
+    "settlement": {
+      "type": "object",
+      "required": ["chain", "challenge_window_seconds", "posting_bond_wei", "challenge_bond_wei"],
+      "additionalProperties": false,
+      "properties": {
+        "chain": { "type": "string", "minLength": 1 },
+        "pool_address": { "type": ["string", "null"] },
+        "challenge_window_seconds": { "type": "integer", "minimum": 3600 },
+        "posting_bond_wei": { "type": "string", "pattern": "^[0-9]+$" },
+        "challenge_bond_wei": { "type": "string", "pattern": "^[0-9]+$" }
+      }
+    },
+    "data_availability": {
+      "type": "object",
+      "required": ["commit_time_blob", "finalize_receipt"],
+      "additionalProperties": false,
+      "properties": {
+        "commit_time_blob": { "type": "string", "minLength": 1 },
+        "finalize_receipt": { "type": "string", "minLength": 1 }
+      }
+    }
+  },
+  "$defs": {
+    "rational": {
+      "type": "string",
+      "pattern": "^-?[0-9]+/[1-9][0-9]*$"
+    }
+  }
+}
+
