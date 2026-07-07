@@ -41,8 +41,16 @@ make validate
 make lint
 make test
 make verify-seed
+python -m p42_prizes.cli admit \
+  --problem problems/hadamard-mini \
+  --solution problems/hadamard-mini/examples/valid-4.json \
+  --runs 2
 ```
 
 The seed problem is intentionally tiny (`hadamard-mini`) so this loop can run in
 seconds while exercising the same exactness and hardening constraints expected
-from real launch problems.
+from real launch problems. The `admit` command is local evidence only: it
+validates the manifest, runs the exact-path lint, forces deterministic Python
+hashing and single-thread numeric libraries, then requires repeated canonical
+`VerdictReport` hashes to match. A real funded problem still needs the full
+x86/ARM/glibc N-host admission matrix.

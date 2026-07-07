@@ -8,11 +8,11 @@ green.
 
 | Area | Current state | Required before real ETH |
 | --- | --- | --- |
-| Problem standard | `p42-problem/v1` fixture, schema validation, exact Python verifier | External verifier admission review for every funded problem |
+| Problem standard | `p42-problem/v1` fixture, schema validation, AST exact-path lint, and local repeated-run admission evidence for the seed verifier | External verifier admission review and N-host admission evidence for every funded problem |
 | Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence with advisory lock + fsync/rename writes, local diagnostic event ledger, process-local rate limits, local idempotency reservations for retryable verifier/submission POSTs, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
-| Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout and rejects any `VerdictReport` not bound to the manifest verifier identity and exact solution bytes | Canonical sandbox runner, pinned immutable image digest, N-host identical verdict matrix |
+| Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout and rejects any `VerdictReport` not bound to the manifest verifier identity and exact solution bytes; `p42_prizes.cli admit` emits local repeated-run evidence | Canonical sandbox runner, pinned immutable image digest, N-host identical verdict matrix |
 | Settlement math | Final-denominator pool simulator and incremental portal credit model | Contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
 | Challenges | Endpoint returns `501` until implemented | Bond escrow, challenge window checks, resolver transcript, slashing path |
 | Resolver | Spec only | Verifiable transcript committee on testnet; fraud-proof track before scale |
@@ -28,6 +28,7 @@ green.
 - Portal verification now calls the problem repo's configured verifier through `p42_prizes.cli`; the TypeScript verifier mirror was removed.
 - The CLI enforces `verifier.max_compute.wall_seconds`.
 - The CLI and web verifier runner reject stdout that is noisy, non-canonical, not schema-exact, not manifest-bound, not raw-byte-bound, or inconsistent with the verifier exit code.
+- The CLI emits local verifier admission evidence with repeated canonical report hashes and single-thread/hash-seed environment controls.
 - Unsupported external verifiers fail closed; no placeholder `valid: true`.
 - Duplicate/tie/worse submissions receive zero incremental frontier credit.
 - Challenge route returns `501`, not fake `opened`.
@@ -55,7 +56,7 @@ green.
 - No reviewed Base mainnet pool addresses or enabled Coinbase Onramp funding sessions.
 - No permanent DA or CID retrieval for `bafy...` / Arweave payloads.
 - No containerized canonical sandbox runner for arbitrary problem repos.
-- No N-host determinism CI artifacts.
+- No N-host determinism CI artifacts; current admission evidence is local only.
 - No bonded resolver implementation.
 - No external security audit or legal sign-off.
 

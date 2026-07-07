@@ -33,6 +33,11 @@ def write_fake_problem(tmp_path: Path, mode: str) -> tuple[Path, Path]:
     problem = tmp_path / "bound-report"
     verifier = problem / "verifier"
     verifier.mkdir(parents=True)
+    for name in ("SPEC.md", "HARDENING.md", "BOUNTY.md", "LEADERBOARD.md", "requirements.lock"):
+        (problem / name).write_text("fixture\n")
+    (problem / "Dockerfile").write_text("FROM python:3.12-slim\n")
+    (problem / "Makefile").write_text("verify:\n\tpython3 verifier/report.py --solution $(SOLUTION) --mode ok\n")
+    (problem / "solution.schema.json").write_text('{"type":"object"}')
     (problem / "problem.yaml").write_text(
         "\n".join(
             [
@@ -117,6 +122,9 @@ def write_fake_problem(tmp_path: Path, mode: str) -> tuple[Path, Path]:
                 "    exit_code = 0",
                 "elif args.mode == 'valid_true_exit_one':",
                 "    exit_code = 1",
+                "elif args.mode == 'nondeterministic':",
+                "    import os",
+                "    report['details'] = {'nonce': os.urandom(8).hex()}",
                 "elif args.mode == 'mutate_solution':",
                 "    mutated = b'{\"answer\":99}'",
                 "    open(args.solution, 'wb').write(mutated)",
@@ -165,6 +173,46 @@ def test_verdict_matches_schema() -> None:
     report = json.loads(completed.stdout)
     schema = json.loads((ROOT / "schemas" / "verdict.schema.json").read_text())
     jsonschema.validate(report, schema)
+
+
+def test_admit_outputs_local_determinism_evidence() -> None:
+    completed = run_cli(
+        "admit",
+        "--problem",
+        "problems/hadamard-mini",
+        "--solution",
+        "problems/hadamard-mini/examples/valid-4.json",
+        "--runs",
+        "2",
+        "--host-label",
+        "test-host",
+    )
+    assert completed.returncode == 0, completed.stderr
+    evidence = json.loads(completed.stdout)
+    assert evidence["schema_version"] == "p42-admission/v1"
+    assert evidence["problem_id"] == "hadamard-mini"
+    assert evidence["host"]["label"] == "test-host"
+    assert evidence["checks"] == {
+        "manifest_valid": True,
+        "lint_clean": True,
+        "local_runs": 2,
+        "identical_verdict_hash": evidence["runs"][0]["verdict_hash"],
+    }
+    assert [run["verdict_hash"] for run in evidence["runs"]] == [
+        evidence["checks"]["identical_verdict_hash"],
+        evidence["checks"]["identical_verdict_hash"],
+    ]
+    assert evidence["report"]["valid"] is True
+    assert evidence["report"]["solution_hash"] == sha256_file(ROOT / "problems/hadamard-mini/examples/valid-4.json")
+
+
+def test_admit_rejects_nondeterministic_verifier(tmp_path: Path) -> None:
+    problem, solution = write_fake_problem(tmp_path, "nondeterministic")
+
+    completed = run_cli("admit", "--problem", str(problem), "--solution", str(solution), "--runs", "2")
+
+    assert completed.returncode == 1
+    assert "verifier is not deterministic across local admission runs" in completed.stderr
 
 
 def test_verifier_wall_clock_timeout_is_enforced(tmp_path: Path) -> None:

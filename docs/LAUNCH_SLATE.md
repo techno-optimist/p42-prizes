@@ -64,7 +64,7 @@ A board moves from locked to pilot only when:
 - `make verify SOLUTION=...` returns a schema-valid `VerdictReport`,
 - the verifier recomputes from raw artifact bytes and ignores claimed scores,
 - hardening fixtures cover invalid, near-miss, and lying-score cases,
-- the runner records exact version/image/output evidence,
+- `p42_prizes.cli admit` records exact version/image/output evidence from repeated local runs,
 - the N-host determinism matrix passes,
 - the board has a reviewed testnet pool and no real-ETH gate is bypassed.
 
