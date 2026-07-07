@@ -42,6 +42,7 @@ green.
 - Non-runnable arena-derived problems are locked in portal data.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
 - CI runs problem validation, Python tests, web tests, production build, and npm audit.
+- `SECURITY.md` documents the private vulnerability disclosure path and no-real-ETH status.
 
 ## Known Production Blockers
 

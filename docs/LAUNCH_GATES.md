@@ -18,7 +18,7 @@ filled in and reviewed by a human owner.
 - [x] Retryable submission/verifier POSTs support local `Idempotency-Key` replay.
 - [x] Local diagnostic event ledger exposes hash-chained commit/reveal/idempotency events.
 - [x] CLI and web runner reject unbound or non-canonical `VerdictReport` output.
-- [ ] `SECURITY.md` contact and disclosure channel published.
+- [x] `SECURITY.md` contact and disclosure channel published.
 
 ## Gate 1: Base Sepolia Testnet
 
