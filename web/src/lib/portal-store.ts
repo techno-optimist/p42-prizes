@@ -1,5 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import type { Submission } from "@/lib/types";
 
@@ -67,6 +77,9 @@ const EMPTY_STATE: PortalStateSnapshot = {
   idempotency: [],
   events: [],
 };
+const LOCK_WAIT_MS = 25;
+const DEFAULT_LOCK_TIMEOUT_MS = 2_000;
+const DEFAULT_STALE_LOCK_MS = 30_000;
 
 export function portalStatePath(): string {
   if (process.env.NODE_ENV === "test" && process.env.P42_PORTAL_STATE_PATH) {
@@ -100,8 +113,33 @@ function portalEventHash(event: Omit<PortalEventRecord, "eventHash">): string {
   return `sha256:${createHash("sha256").update(canonicalJson(event), "utf8").digest("hex")}`;
 }
 
-export function readPortalState(): PortalStateSnapshot {
-  const filePath = portalStatePath();
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function fsyncPath(filePath: string): void {
+  const fd = openSync(filePath, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function fsyncDirectory(dirPath: string): void {
+  try {
+    fsyncPath(dirPath);
+  } catch {
+    // Some local/dev filesystems do not allow opening directories; the atomic
+    // rename still protects readers, but production needs a real datastore.
+  }
+}
+
+function portalStateLockPath(filePath: string): string {
+  return `${filePath}.lock`;
+}
+
+function readPortalStateUnlocked(filePath: string): PortalStateSnapshot {
   if (!existsSync(filePath)) return cloneState(EMPTY_STATE);
   const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Partial<PortalStateSnapshot>;
   if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.commits) || !Array.isArray(parsed.submissions)) {
@@ -116,19 +154,78 @@ export function readPortalState(): PortalStateSnapshot {
   });
 }
 
+function writePortalStateUnlocked(filePath: string, state: PortalStateSnapshot): void {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  writeFileSync(tempPath, `${JSON.stringify(cloneState(state), null, 2)}\n`, "utf8");
+  fsyncPath(tempPath);
+  renameSync(tempPath, filePath);
+  fsyncDirectory(path.dirname(filePath));
+}
+
+function withPortalStateLock<T>(filePath: string, operation: () => T): T {
+  const lockPath = portalStateLockPath(filePath);
+  const lockTimeoutMs = Number(process.env.P42_PORTAL_STATE_LOCK_TIMEOUT_MS ?? DEFAULT_LOCK_TIMEOUT_MS);
+  const staleLockMs = Number(process.env.P42_PORTAL_STATE_STALE_LOCK_MS ?? DEFAULT_STALE_LOCK_MS);
+  const startedAt = Date.now();
+  mkdirSync(path.dirname(filePath), { recursive: true });
+
+  for (;;) {
+    try {
+      mkdirSync(lockPath);
+      try {
+        writeFileSync(
+          path.join(lockPath, "owner.json"),
+          `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+          "utf8",
+        );
+        return operation();
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code !== "EEXIST") throw error;
+
+      try {
+        const owner = JSON.parse(readFileSync(path.join(lockPath, "owner.json"), "utf8")) as { createdAt?: string };
+        const createdAt = owner.createdAt ? Date.parse(owner.createdAt) : Number.NaN;
+        if (Number.isFinite(createdAt) && Date.now() - createdAt > staleLockMs) {
+          rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        if (Date.now() - startedAt > staleLockMs) {
+          rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      }
+
+      if (Date.now() - startedAt > lockTimeoutMs) {
+        throw new Error("portal state lock acquisition timed out");
+      }
+      sleepSync(LOCK_WAIT_MS);
+    }
+  }
+}
+
+export function readPortalState(): PortalStateSnapshot {
+  return readPortalStateUnlocked(portalStatePath());
+}
+
 export function writePortalState(state: PortalStateSnapshot): void {
   const filePath = portalStatePath();
-  mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tempPath, `${JSON.stringify(cloneState(state), null, 2)}\n`, "utf8");
-  renameSync(tempPath, filePath);
+  withPortalStateLock(filePath, () => writePortalStateUnlocked(filePath, state));
 }
 
 export function updatePortalState(mutator: (state: PortalStateSnapshot) => void): PortalStateSnapshot {
-  const state = readPortalState();
-  mutator(state);
-  writePortalState(state);
-  return state;
+  const filePath = portalStatePath();
+  return withPortalStateLock(filePath, () => {
+    const state = readPortalStateUnlocked(filePath);
+    mutator(state);
+    writePortalStateUnlocked(filePath, state);
+    return state;
+  });
 }
 
 export function appendPortalEvent(
@@ -195,5 +292,7 @@ export function verifyEventChain(events: PortalEventRecord[]): EventChainVerific
 }
 
 export function resetPortalStateForTests(): void {
-  rmSync(portalStatePath(), { force: true });
+  const filePath = portalStatePath();
+  rmSync(filePath, { force: true });
+  rmSync(portalStateLockPath(filePath), { recursive: true, force: true });
 }

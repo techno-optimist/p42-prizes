@@ -9,7 +9,7 @@ green.
 | Area | Current state | Required before real ETH |
 | --- | --- | --- |
 | Problem standard | `p42-problem/v1` fixture, schema validation, exact Python verifier | External verifier admission review for every funded problem |
-| Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence, local diagnostic event ledger, process-local rate limits, local idempotency for retryable verifier/submission POSTs, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
+| Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence with advisory lock + fsync/rename writes, local diagnostic event ledger, process-local rate limits, local idempotency for retryable verifier/submission POSTs, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
 | Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout and rejects any `VerdictReport` not bound to the manifest verifier identity and exact solution bytes | Canonical sandbox runner, pinned immutable image digest, N-host identical verdict matrix |
@@ -35,6 +35,7 @@ green.
 - Coinbase Onramp session route exists but fails closed until reviewed Base mainnet pools, explicit real-ETH gate approval, server credentials, trusted client IP, and redirect allowlisting are configured.
 - Coinbase Onramp `clientIp` binding is required and can only come from a configured trusted deployment header, not request JSON.
 - Commits and dynamic submissions persist to a local JSON store at `web/data/portal-state.json` instead of module memory.
+- Local JSON state writes use an advisory lock directory, fsynced temp-file writes, atomic rename, stale-lock recovery, and lock-timeout fail-closed behavior.
 - Mutable API routes use controlled JSON parsing and `no-store` responses.
 - Mutable and verifier-expensive API routes have process-local fixed-window rate limits with `Retry-After` / `X-RateLimit-*` headers.
 - Commit, reveal, and verifier shortcut POSTs support `Idempotency-Key` replay with body-hash conflict detection.
@@ -47,7 +48,7 @@ green.
 ## Known Production Blockers
 
 - No transactional database or event-sourced ledger for multi-instance/serverless production.
-- The current event ledger is local diagnostic evidence only; it has no file lock, fsync proof, shared storage, or chain/indexer source of truth.
+- The current event ledger is local diagnostic evidence only; it has local lock/fsync protection but no shared storage, transactional database, or chain/indexer source of truth.
 - No distributed idempotency store with atomic reserve/commit semantics.
 - No production wallet session policy, distributed rate limiting, API keys, abuse controls, or payload quarantine.
 - No on-chain contracts, indexer, or Base Sepolia deployment.
