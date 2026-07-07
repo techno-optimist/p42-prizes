@@ -13,7 +13,7 @@ green.
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
 | Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout and rejects any `VerdictReport` not bound to the manifest verifier identity and exact solution bytes; `p42_prizes.cli admit` emits local repeated-run evidence | Canonical sandbox runner, pinned immutable image digest, N-host identical verdict matrix |
-| Settlement math | Final-denominator pool simulator and incremental portal credit model | Contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
+| Settlement math | Final-denominator pool simulator, red-team bond/threshold helpers, and incremental portal credit model | Contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
 | Challenges | Endpoint returns `501` until implemented | Bond escrow, challenge window checks, resolver transcript, slashing path |
 | Resolver | Spec only | Verifiable transcript committee on testnet; fraud-proof track before scale |
 | Contracts | Spec only | Audit, invariant tests, timelock/multisig rehearsals |
@@ -31,6 +31,7 @@ green.
 - The CLI emits local verifier admission evidence with repeated canonical report hashes and single-thread/hash-seed environment controls.
 - Unsupported external verifiers fail closed; no placeholder `valid: true`.
 - Duplicate/tie/worse submissions receive zero incremental frontier credit.
+- Mechanism tests cover final-denominator settlement, claim caps, submission/finalization bond scaling, counter-bond sizing, sybil neutrality, and current-gap `minImprovement`.
 - Challenge route returns `501`, not fake `opened`.
 - Every listed problem exposes a copyable Base Sepolia deposit wallet in API/UI.
 - Coinbase Onramp session route exists but fails closed until reviewed Base mainnet pools, explicit real-ETH gate approval, server credentials, trusted client IP, and redirect allowlisting are configured.
