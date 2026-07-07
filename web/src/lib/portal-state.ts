@@ -120,6 +120,12 @@ export function createCommit(input: {
     revealed: false,
   };
   updatePortalState((state) => {
+    const duplicate = state.commits.find((commit) => (
+      commit.problemId === record.problemId &&
+      commit.solverAddress === record.solverAddress &&
+      commit.commitHash === record.commitHash
+    ));
+    if (duplicate) throw new Error("commit_hash already exists for this problem and solver");
     state.commits.push(record);
     appendPortalEvent(state, {
       type: "commit.created",

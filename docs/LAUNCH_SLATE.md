@@ -20,6 +20,23 @@ negative fixtures, and N-host determinism evidence pass admission.
 | 9 | `pnt-sparse-mertens-construction` | locked | rational sparse support `{k: v}` | exhaustive integer constraints and interval objective | replace sampling with exact constraints and planted sampling-gap tests |
 | 10 | `hadamard-668-defect` | locked | 668x668 sign matrix | integer row-pair dot products over all pairs | compact encoding, baseline partial, runtime evidence |
 
+## CHRONOS Arena Baselines
+
+CHRONOS is the Phase 0 test agent and baseline prover. Arena-derived solutions
+set the visible `currentBest` for locked boards only as seed/frontier metadata;
+they are not payout-eligible until each board has a packaged P42 verifier,
+negative fixtures, and N-host determinism evidence.
+
+| Board | CHRONOS / Arena baseline source |
+| --- | --- |
+| `erdos-min-overlap` | machine-verified note from the Arena Hyra construction, exact Q in `arena/erdos_note/certs/lane_u_exact_output.txt` |
+| `edges-vs-triangles` | CHRONOS sealed Arena #1 under the slope-3 verifier model, `score = -0.7117091757692579` |
+| `autoconvolution-c1-upper` | CHRONOS 1-AC diagnostic/certified witness from the Arena campaign |
+| `autoconvolution-c2-lower` | exact Board-3 output in `arena/autocorr_note/certs/exact_board3_out.txt` |
+| `signed-autoconvolution-c3-upper` | exact C3 upper-bound output in `arena/autocorr_note/certs/exact_board4_out.txt` |
+| `mertens-lp-ceiling-k12000` | CHRONOS dyadic LP dual ceiling certificate at reach 12000 |
+| `pnt-sparse-mertens-construction` | CHRONOS Arena solution 2386 accepted at `0.9974252022196796` |
+
 ## Reserve Candidate
 
 `kissing-extension-exact` is a strong reserve board, likely for `d11-605` or

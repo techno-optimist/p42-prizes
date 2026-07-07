@@ -39,6 +39,9 @@ export interface Problem {
   verifierStandard: string[];
   solutionSchema: unknown;
   sampleSolution: unknown;
+  baselineAgent?: string;
+  baselineSource?: string;
+  baselineArtifact?: string;
 }
 
 export interface Submission {

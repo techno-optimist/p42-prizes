@@ -26,4 +26,15 @@ describe("problem funding wallets", () => {
       expect(() => parseRational(problem.minImprovement), `${problem.slug} minImprovement`).not.toThrow();
     }
   });
+
+  it("uses CHRONOS provenance for Arena-derived baselines", () => {
+    const baselineBoards = problems.filter((problem) => problem.baselineSource);
+    expect(baselineBoards.map((problem) => problem.baselineAgent)).toEqual(
+      baselineBoards.map(() => "CHRONOS"),
+    );
+    expect(problems.find((problem) => problem.slug === "pnt-sparse-mertens-construction")).toMatchObject({
+      baselineArtifact: "arena/CHRONOS_ARENA_FINDINGS.md#pnt-reclaimed",
+      currentBest: "2493563005549199/2500000000000000",
+    });
+  });
 });

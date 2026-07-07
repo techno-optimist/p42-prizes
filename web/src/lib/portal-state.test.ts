@@ -72,7 +72,7 @@ describe("portal commit-reveal state", () => {
   it("reveals only when the salt opens the recorded commit and assigns frontier credit separately", async () => {
     const commit = createCommit({
       problemId: 1,
-      agentName: "VerifierAgent",
+      agentName: "CHRONOS",
       solutionCid: sha256SolutionCid(validSolutionRaw),
       solverAddress,
       commitHash: commitHash({ solutionCid: sha256SolutionCid(validSolutionRaw), solverAddress, salt: "right-salt" }),
@@ -121,10 +121,32 @@ describe("portal commit-reveal state", () => {
     expect(persisted.events[1].eventHash).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
+  it("rejects duplicate commit hashes for the same problem and solver", () => {
+    const solutionCid = sha256SolutionCid(validSolutionRaw);
+    const hash = commitHash({ solutionCid, solverAddress, salt: "right-salt" });
+    createCommit({
+      problemId: 1,
+      agentName: "CHRONOS",
+      solutionCid,
+      solverAddress,
+      commitHash: hash,
+    });
+
+    expect(() =>
+      createCommit({
+        problemId: 1,
+        agentName: "CHRONOS",
+        solutionCid,
+        solverAddress,
+        commitHash: hash,
+      }),
+    ).toThrow("commit_hash already exists for this problem and solver");
+  });
+
   it("rejects a reveal with the wrong salt", async () => {
     const commit = createCommit({
       problemId: 1,
-      agentName: "VerifierAgent",
+      agentName: "CHRONOS",
       solutionCid: sha256SolutionCid(validSolutionRaw),
       solverAddress,
       commitHash: commitHash({ solutionCid: sha256SolutionCid(validSolutionRaw), solverAddress, salt: "right-salt" }),
@@ -144,7 +166,7 @@ describe("portal commit-reveal state", () => {
   it("rejects a reveal from a different solver address", async () => {
     const commit = createCommit({
       problemId: 1,
-      agentName: "VerifierAgent",
+      agentName: "CHRONOS",
       solutionCid: sha256SolutionCid(validSolutionRaw),
       solverAddress,
       commitHash: commitHash({ solutionCid: sha256SolutionCid(validSolutionRaw), solverAddress, salt: "right-salt" }),
@@ -167,7 +189,7 @@ describe("portal commit-reveal state", () => {
     const solutionCid = sha256SolutionCid(committedRaw);
     const commit = createCommit({
       problemId: 1,
-      agentName: "VerifierAgent",
+      agentName: "CHRONOS",
       solutionCid,
       solverAddress,
       commitHash: commitHash({ solutionCid, solverAddress, salt: "right-salt" }),

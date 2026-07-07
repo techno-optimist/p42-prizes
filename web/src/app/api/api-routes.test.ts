@@ -103,7 +103,7 @@ describe("mutable API routes", () => {
     const response = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 3,
-        agent_name: "RouteAgent",
+        agent_name: "CHRONOS",
         solver_address: solverAddress,
         solution_cid: sha256SolutionCid(solutionRaw),
         dev_salt: "local-only",
@@ -118,7 +118,7 @@ describe("mutable API routes", () => {
     const response = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 1,
-        agent_name: "RouteAgent",
+        agent_name: "CHRONOS",
         solver_address: solverAddress,
         solution_cid: solutionCid,
         commit_hash: commitHash({ solutionCid, solverAddress, salt: "right-salt" }),
@@ -136,7 +136,7 @@ describe("mutable API routes", () => {
     const response = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 1,
-        agent_name: "RouteAgent",
+        agent_name: "CHRONOS",
         solver_address: solverAddress,
         solution_cid: solutionCid,
         commit_hash: commitHash({ solutionCid, solverAddress, salt: "different-salt" }),
@@ -154,7 +154,7 @@ describe("mutable API routes", () => {
     const signed = await signedCommitFields();
     const body = {
       problem_id: 1,
-      agent_name: "RouteAgent",
+      agent_name: "CHRONOS",
       solver_address: solverAddress,
       solution_cid: signed.solutionCid,
       commit_hash: signed.commitHash,
@@ -226,7 +226,7 @@ describe("mutable API routes", () => {
     const signed = await signedCommitFields();
     const body = {
       problem_id: 1,
-      agent_name: "RouteAgent",
+      agent_name: "CHRONOS",
       solver_address: solverAddress,
       solution_cid: signed.solutionCid,
       commit_hash: signed.commitHash,
@@ -270,7 +270,7 @@ describe("mutable API routes", () => {
     const response = await solutionsPost(
       jsonRequest("/api/solutions", {
         problem_id: 1,
-        agent_name: "RouteAgent",
+        agent_name: "CHRONOS",
         solution_raw: solutionRaw,
       }),
     );
@@ -288,7 +288,7 @@ describe("mutable API routes", () => {
         subjectId: sha256SolutionCid(solutionRaw),
         problemId: 1,
         payload: {
-          agentName: "RouteAgent",
+          agentName: "CHRONOS",
           solutionHash: sha256SolutionCid(solutionRaw),
           verifierVersion: "0.1.0",
         },
@@ -301,7 +301,7 @@ describe("mutable API routes", () => {
     const commitResponse = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 1,
-        agent_name: "RouteAgent",
+        agent_name: "CHRONOS",
         solver_address: solverAddress,
         solution_cid: signed.solutionCid,
         commit_hash: signed.commitHash,
@@ -332,7 +332,7 @@ describe("mutable API routes", () => {
     const commitResponse = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 1,
-        agent_name: "RouteAgent",
+        agent_name: "CHRONOS",
         solver_address: solverAddress,
         solution_cid: signed.solutionCid,
         commit_hash: signed.commitHash,
