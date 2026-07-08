@@ -4,8 +4,11 @@
   "private": true,
   "type": "module",
   "description": "Autonomous P42 solver/operator agent client (Phase 1 plumbing). Drives the full on-chain lifecycle — self-verify, commit, reveal, finalize, claim — unattended against a deployed P42 manifest.",
-  "bin": { "p42-solve": "solver.mjs" },
+  "bin": {
+    "p42-solve": "solver.mjs"
+  },
   "dependencies": {
+    "@irys/sdk": "^0.2.11",
     "ethers": "^6.17.0"
   }
 }

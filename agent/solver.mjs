@@ -32,6 +32,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { atomsFromImprovement, runVerifier } from "./lib.mjs";
 import { putBlob } from "./da-local.mjs";
+import { uploadToArweave } from "./da-arweave.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -49,6 +50,7 @@ const SOLUTION = arg("solution");
 const FUND = arg("fund", null);        // ETH string, e.g. "0.003"
 const CLOSE = arg("close", false);
 const DA_DIR = arg("da-dir", null);    // post the solution blob to a local DA store
+const ARWEAVE = arg("arweave", false); // post the solution blob to live Arweave (Irys devnet); bind the txid on-chain
 const FORCE = arg("force", false);     // adversarial test: submit even if the local verifier says invalid
 const IMPROVEMENT_OVERRIDE = arg("improvement", null); // adversarial test: claim an inflated improvement
 const SUBMIT_ONLY = arg("submit-only", false);         // stop after reveal (leave it for the operator to challenge)
@@ -101,8 +103,19 @@ async function main() {
   // solution bytes -> CID; DA + permanence hashes are LOCAL PLACEHOLDERS (live provider = next sub-task)
   const solutionBytes = readFileSync(resolve(SOLUTION));
   const cid = "sha256:" + ethers.sha256(solutionBytes).slice(2);
-  const daHash = ethers.keccak256(solutionBytes);               // placeholder for a live DA blob hash
-  if (DA_DIR) { putBlob(DA_DIR, solutionBytes); log(`  DA: posted solution blob to local store ${DA_DIR}`); }
+  // DA: bind the solution's availability into the on-chain commitDaHash.
+  let daHash, arweave = null;
+  if (ARWEAVE) {
+    log("  DA: uploading solution to Arweave (Irys devnet)…");
+    const up = await uploadToArweave(solutionBytes, {});
+    daHash = up.txidBytes32;            // the Arweave txid IS the on-chain commitDaHash (32 bytes)
+    arweave = { txid: up.txid, url: up.url, network: up.network };
+    log(`  DA: on Arweave — txid ${up.txid}`);
+    log(`      ${up.url}`);
+  } else {
+    daHash = ethers.keccak256(solutionBytes);   // local placeholder DA hash
+    if (DA_DIR) { putBlob(DA_DIR, solutionBytes); log(`  DA: posted solution blob to local store ${DA_DIR}`); }
+  }
   const salt = "p42-agent-" + Date.now().toString();
   const permanenceHash = ethers.keccak256(ethers.toUtf8Bytes("permanence:" + cid)); // placeholder Arweave receipt
 
@@ -126,6 +139,7 @@ async function main() {
 
   if (SUBMIT_ONLY) {
     log(`\n[submit-only] committed + revealed (submission #${submissionId}); exiting before finalize.`);
+    if (arweave) log(`solution on Arweave: ${arweave.url}`);
     log(`final balance: ${ethers.formatEther(await provider.getBalance(solver))} ETH`);
     return;
   }
@@ -166,6 +180,7 @@ async function main() {
   }
 
   log(`\n=== DONE ===`);
+  if (arweave) log(`solution on Arweave: ${arweave.url}`);
   log(`final balance: ${ethers.formatEther(await provider.getBalance(solver))} ETH`);
   log(`txs:`);
   for (const r of receipts) log(`  ${r.label.padEnd(14)} ${r.hash}`);

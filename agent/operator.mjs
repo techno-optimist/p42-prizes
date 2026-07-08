@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { atomsFromImprovement, runVerifier } from "./lib.mjs";
 import { getBlob } from "./da-local.mjs";
+import { fetchFromArweave, findTxidByCid, cidOf } from "./da-arweave.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -38,11 +39,12 @@ const RPC = arg("rpc", "https://sepolia.base.org");
 const MANIFEST = arg("manifest");
 const PROBLEM = arg("problem");
 const DA_DIR = arg("da-dir");
+const ARWEAVE = arg("arweave", false); // fetch the solution from live Arweave via the on-chain commitDaHash
 const TRANSCRIPTS = resolve(arg("transcripts", `${HERE}/transcripts`));
 const MAX_BOND = ethers.parseEther(String(arg("max-challenge-bond", "0.01")));
 const ONCE = arg("once", false);
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
-if (!MANIFEST || !PROBLEM || !DA_DIR) { console.error("required: --manifest --problem --da-dir"); process.exit(2); }
+if (!MANIFEST || !PROBLEM || (!DA_DIR && !ARWEAVE)) { console.error("required: --manifest --problem and one of --da-dir / --arweave"); process.exit(2); }
 const KEY = process.env.OPERATOR_PRIVATE_KEY;
 if (!KEY) { console.error("set OPERATOR_PRIVATE_KEY"); process.exit(2); }
 
@@ -74,8 +76,19 @@ async function scanOnce() {
     if (Number(sub.status) !== 2) { seen.add(key); continue; } // not Revealed anymore (finalized/challenged/rejected)
 
     log(`\n[reveal] submission #${id}  claimedAtoms=${claimedAtoms}  cid=${cid.slice(0, 20)}…`);
-    const blob = getBlob(DA_DIR, cid);
-    if (!blob) { log(`  DA MISS: no blob for ${cid} — cannot re-verify, leaving for now`); continue; }
+    let blob;
+    if (ARWEAVE) {
+      log(`  locating solution on Arweave by CID…`);
+      const txid = await findTxidByCid(cid, {});
+      if (!txid) { log(`  DA MISS: ${cid} not found on Arweave yet — leaving for now`); continue; }
+      log(`  fetching from Arweave txid ${txid}…`);
+      try { blob = await fetchFromArweave(txid); }
+      catch (e) { log(`  Arweave fetch failed: ${e.message} — leaving for now`); continue; }
+      if (cidOf(blob) !== cid) { log(`  DA FAULT: Arweave bytes do not match the on-chain CID (itself challengeable)`); }
+    } else {
+      blob = getBlob(DA_DIR, cid);
+      if (!blob) { log(`  DA MISS: no blob for ${cid} — cannot re-verify, leaving for now`); continue; }
+    }
 
     // Independent re-run of the exact verifier on the fetched bytes.
     const tmp = `${tmpdir()}/p42-op-${key}.json`;

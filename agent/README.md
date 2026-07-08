@@ -75,10 +75,13 @@ fraud is profitable* — proven live).
 This proves the **transaction plumbing** runs autonomously. It does NOT yet close
 the two hard walls from the autonomy debate, and it takes deliberate shortcuts:
 
-- **DA/permanence are local placeholders.** `daHash`/`permanenceHash` are keccak
-  hashes of the solution bytes, not a live Arweave/DA upload. Wiring a real
-  provider (Irys/Bundlr) that stores + returns bytes, and making `da-verify`
-  fetch them, is the next Phase-1 sub-task.
+- **Commit-time DA is LIVE Arweave** (`--arweave`, `da-arweave.mjs`): the solution
+  is uploaded to real Arweave (Irys), `commitDaHash` binds `keccak(txid)` on-chain,
+  and the operator fetches it back from the public gateway by CID to re-verify —
+  see `deployments/base-sepolia/arweave-demo-run.json`. Still placeholder: the
+  **finalize permanence receipt**; and devnet retention is ~60 days (mainnet
+  Arweave, funded, gives true permanence). Local `da-local.mjs` remains for the
+  no-network path.
 - **One key, all roles.** owner = treasury = resolver = solver here. Real value
   needs ERC-4337 session keys with spend caps + role separation behind
   multisig/timelock (Phase 2).
@@ -90,8 +93,7 @@ the two hard walls from the autonomy debate, and it takes deliberate shortcuts:
 
 ## Next in Phase 1
 
-Live DA/Arweave provider (replace the local `da-local.mjs` placeholder with real
-uploads + retrieval proofs); a container/cgroup sandbox for untrusted verifier
-payloads; ERC-4337 session keys with spend caps; role separation (split the
-single EOA); and a funded pool + running operator on the canonical (72h)
-deployment.
+The finalize **permanence receipt** on mainnet Arweave (funded); a container/cgroup
+**sandbox** for untrusted verifier payloads; **ERC-4337 session keys** with spend
+caps; **role separation** (split the single EOA); and a funded pool + a
+continuously-running operator on the canonical (72h) deployment.
