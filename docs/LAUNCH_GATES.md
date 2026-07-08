@@ -33,7 +33,7 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] Finalize requires permanence receipt.
 - [ ] DGX CHRONOS/Hermes verifier runner watches testnet reveals and publishes transcripts.
 - [ ] Runner queue/OOM guard rehearsal validates with `p42-prizes runner-burst-validate`.
-- [ ] Invalid-reveal alerts produce agent challenge candidates with a bounded challenge key, spend cap, and revocation path.
+- [ ] Invalid-reveal alerts produce agent challenge candidates with a bounded challenge key, spend cap, and revocation path (`docs/CHALLENGE_KEY_POLICY.md`).
 - [ ] Resolver posts full re-run transcript for every challenged decision.
 - [ ] Testnet adversarial run catches planted verifier exploits.
 - [ ] Every known red-team attack is represented by an executable test.
