@@ -10,7 +10,7 @@ negative fixtures, and N-host determinism evidence pass admission.
 | Slot | Slug | Status | Artifact | Exact verifier shape | Admission work |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `hadamard-mini` | runnable pilot | 4x4 sign matrix | integer row-pair dot products | keep as fixture and regression target |
-| 2 | `erdos-min-overlap` | locked | step-function vector as integers plus denominator | exact normalization and finite-lag rational overlap | package repo from `arena/erdos_note`, freeze seed witness, add H1/H5/H6 fixtures |
+| 2 | `erdos-min-overlap` | packaged, locked | step-function dyadic numerators | exact normalization and all-lag rational overlap | collect immutable image, N-host matrix, and external H6 reduction review |
 | 3 | `edges-vs-triangles` | locked | rational distribution or reduced knot certificate | exact row normalization, moment curve, area/max-gap model | rationalize incumbent and harden against the trapezoid/scoring trap |
 | 4 | `arithmetic-kakeya` | locked marquee | proof/certificate object | self-certifying proof interface, not a heuristic judge | refresh official problem status, write dossier, define verifier before funding |
 | 5 | `autoconvolution-c1-upper` | locked | nonnegative integer step heights | exact integer convolution and rational upper-bound score | canonical encoding, runtime cap, claimed-score negative fixture |

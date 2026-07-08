@@ -1,26 +1,42 @@
 PYTHON ?= python3
 PYTHONPATH := $(CURDIR)/src
+PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap
 
-.PHONY: test validate lint verify-seed admit-host-seed contracts-test all
+.PHONY: test validate lint verify-seed verify-hadamard-seed verify-erdos-seed admit-host-seed admit-host-erdos contracts-test all
 
 all: validate lint test verify-seed
 
 validate:
-	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli validate --problem problems/hadamard-mini
+	@for problem in $(PROBLEMS); do \
+		PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli validate --problem $$problem || exit $$?; \
+	done
 
 lint:
-	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli lint --problem problems/hadamard-mini
+	@for problem in $(PROBLEMS); do \
+		PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli lint --problem $$problem || exit $$?; \
+	done
 
 test:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q
 
-verify-seed:
+verify-seed: verify-hadamard-seed verify-erdos-seed
+
+verify-hadamard-seed:
 	@$(MAKE) -C problems/hadamard-mini verify
+
+verify-erdos-seed:
+	@$(MAKE) -C problems/erdos-min-overlap verify
 
 admit-host-seed:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
 		--problem problems/hadamard-mini \
 		--solution problems/hadamard-mini/examples/valid-4.json \
+		--runs 2
+
+admit-host-erdos:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
+		--problem problems/erdos-min-overlap \
+		--solution problems/erdos-min-overlap/examples/hyra-upper.json \
 		--runs 2
 
 contracts-test:

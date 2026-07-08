@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/erdos-min-overlap/solution.schema.json",
+  "type": "object",
+  "required": ["n", "denominator_power", "values"],
+  "additionalProperties": true,
+  "properties": {
+    "n": { "const": 2400 },
+    "denominator_power": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 128
+    },
+    "values": {
+      "type": "array",
+      "minItems": 2400,
+      "maxItems": 2400,
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  }
+}

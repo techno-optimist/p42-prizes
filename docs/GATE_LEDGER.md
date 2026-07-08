@@ -78,7 +78,8 @@ Latest ten-board math/verifier audit:
 | Problem | Current portal status | Verifier readiness |
 | --- | --- | --- |
 | `hadamard-mini` | Pilot runnable | Local exact verifier passes; host-evidence generator works; still needs pinned image digest and collected four-host matrix before funding |
-| Other 9 launch boards | Locked | Need self-contained repo, exact verifier, negative fixtures, resource bounds, image digest, collected N-host matrix, admission review |
+| `erdos-min-overlap` | Packaged, locked | Local exact verifier package passes for the Hyra upper-bound witness; host-evidence generator works on one Mac host; still needs immutable image digest, collected four-host matrix, and external review of the piecewise-linearity/reduction lemma before funding |
+| Other 8 launch boards | Locked | Need self-contained repo, exact verifier, negative fixtures, resource bounds, image digest, collected N-host matrix, admission review |
 
 ## Current Verification Commands
 
