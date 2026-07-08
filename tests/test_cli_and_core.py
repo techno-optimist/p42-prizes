@@ -560,6 +560,19 @@ def _runner_drain(
     return run_cli(*args)
 
 
+def _runner_alerts(transcript_dir: Path, *, fail_on_alert: bool = False) -> subprocess.CompletedProcess[str]:
+    args = [
+        "runner-alerts",
+        "--transcripts",
+        str(transcript_dir),
+        "--now-utc",
+        "2026-07-08T12:00:00Z",
+    ]
+    if fail_on_alert:
+        args.append("--fail-on-alert")
+    return run_cli(*args)
+
+
 def _read_transcript(path: str) -> dict:
     transcript = json.loads(Path(path).read_text(encoding="utf-8"))
     schema = json.loads((ROOT / "schemas" / "runner-transcript.schema.json").read_text())
@@ -572,6 +585,17 @@ def _read_runner_loop(stdout: str) -> dict:
     schema = json.loads((ROOT / "schemas" / "runner-loop.schema.json").read_text())
     jsonschema.validate(loop, schema)
     return loop
+
+
+def _read_runner_alerts(stdout: str) -> dict:
+    alerts = json.loads(stdout)
+    schema = json.loads((ROOT / "schemas" / "runner-alerts.schema.json").read_text())
+    jsonschema.validate(alerts, schema)
+    expected_hash = alerts["alerts_hash"]
+    without_hash = dict(alerts)
+    without_hash.pop("alerts_hash")
+    assert expected_hash == sha256_bytes(canonical_json(without_hash).encode("utf-8"))
+    return alerts
 
 
 def test_runner_work_once_persists_successful_transcript_and_queue_state(tmp_path: Path) -> None:
@@ -662,6 +686,129 @@ def test_runner_work_once_marks_invalid_solution_failed_with_transcript(tmp_path
     updated = json.loads(queue.read_text(encoding="utf-8"))
     assert updated["jobs"][0]["status"] == "failed"
     assert updated["jobs"][0]["transcript_hash"] == transcript["transcript_hash"]
+
+
+def test_runner_alerts_are_empty_for_clean_valid_transcript(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "local-success",
+                "status": "queued",
+                "required_memory_mb": 512,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/valid-4.json",
+            }
+        ],
+    )
+    assert _runner_work_once(queue, transcripts, available_mb=8192).returncode == 0
+
+    completed = _runner_alerts(transcripts)
+
+    assert completed.returncode == 0, completed.stderr
+    alerts = _read_runner_alerts(completed.stdout)
+    assert alerts["transcript_count"] == 1
+    assert alerts["alert_count"] == 0
+    assert alerts["alerts"] == []
+
+
+def test_runner_alerts_mark_invalid_transcript_as_challenge_candidate(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "local-invalid",
+                "status": "queued",
+                "required_memory_mb": 512,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/lying-claim.json",
+            }
+        ],
+    )
+    assert _runner_work_once(queue, transcripts, available_mb=8192).returncode == 0
+
+    completed = _runner_alerts(transcripts, fail_on_alert=True)
+
+    assert completed.returncode == 2, completed.stderr
+    alerts = _read_runner_alerts(completed.stdout)
+    assert alerts["alert_count"] == 1
+    alert = alerts["alerts"][0]
+    assert alert["category"] == "verifier_rejected"
+    assert alert["severity"] == "high"
+    assert alert["recommended_action"] == "challenge_submission"
+    assert alert["requires_human_key"] is True
+    assert alert["job_id"] == "local-invalid"
+    assert alert["report_hash"].startswith("sha256:")
+    assert alert["reason"] == "NOT_STRICT_IMPROVEMENT"
+
+
+def test_runner_alerts_quarantine_transcript_when_self_hash_mismatches(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "tampered",
+                "status": "queued",
+                "required_memory_mb": 512,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/valid-4.json",
+            }
+        ],
+    )
+    assert _runner_work_once(queue, transcripts, available_mb=8192).returncode == 0
+    transcript_path = next(transcripts.glob("*.json"))
+    transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    transcript["job_id"] = "tampered-edited"
+    transcript_path.write_text(canonical_json(transcript) + "\n", encoding="utf-8")
+
+    completed = _runner_alerts(transcripts, fail_on_alert=True)
+
+    assert completed.returncode == 2, completed.stderr
+    alerts = _read_runner_alerts(completed.stdout)
+    assert alerts["alert_count"] == 1
+    alert = alerts["alerts"][0]
+    assert alert["category"] == "transcript_hash_mismatch"
+    assert alert["severity"] == "critical"
+    assert alert["recommended_action"] == "quarantine_transcript"
+    assert alert["requires_human_key"] is True
+    assert "expected sha256:" in alert["reason"]
+
+
+def test_runner_alerts_stay_schema_valid_when_transcript_hash_is_malformed(tmp_path: Path) -> None:
+    transcripts = tmp_path / "transcripts"
+    transcripts.mkdir()
+    (transcripts / "bad-hash.json").write_text(
+        canonical_json(
+            {
+                "schema_version": "p42-runner-transcript/v1",
+                "job_id": "bad-hash",
+                "generated_at_utc": "2026-07-08T12:00:00Z",
+                "started_at_utc": "2026-07-08T12:00:00Z",
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/valid-4.json",
+                "da": None,
+                "verifier": {"ok": True, "valid": True, "elapsed_ms": 1},
+                "transcript_hash": "not-a-sha256",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = _runner_alerts(transcripts, fail_on_alert=True)
+
+    assert completed.returncode == 2, completed.stderr
+    alerts = _read_runner_alerts(completed.stdout)
+    alert = alerts["alerts"][0]
+    assert alert["category"] == "transcript_hash_mismatch"
+    assert alert["transcript_hash"] is None
+    assert "got not-a-sha256" in alert["reason"]
 
 
 def test_runner_drain_processes_submission_burst_one_job_at_a_time(tmp_path: Path) -> None:

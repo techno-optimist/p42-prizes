@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/runner-alerts-v1.json",
+  "title": "P42 Runner Alerts v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at_utc",
+    "transcript_count",
+    "alert_count",
+    "alerts",
+    "alerts_hash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-runner-alerts/v1" },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "transcript_count": { "type": "integer", "minimum": 0 },
+    "alert_count": { "type": "integer", "minimum": 0 },
+    "alerts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "category",
+          "severity",
+          "recommended_action",
+          "requires_human_key",
+          "transcript_path",
+          "job_id",
+          "problem",
+          "solution",
+          "transcript_hash",
+          "report_hash",
+          "reason",
+          "alert_id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "enum": [
+              "transcript_malformed",
+              "transcript_hash_mismatch",
+              "da_failed",
+              "verifier_rejected",
+              "verifier_execution_inconsistent"
+            ]
+          },
+          "severity": { "enum": ["high", "critical"] },
+          "recommended_action": {
+            "enum": [
+              "challenge_submission",
+              "challenge_or_block_finalize",
+              "quarantine_transcript"
+            ]
+          },
+          "requires_human_key": { "const": true },
+          "transcript_path": { "type": "string", "minLength": 1 },
+          "job_id": { "type": ["string", "null"] },
+          "problem": { "type": ["string", "null"] },
+          "solution": { "type": ["string", "null"] },
+          "transcript_hash": {
+            "type": ["string", "null"],
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "report_hash": {
+            "type": ["string", "null"],
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "reason": { "type": "string", "minLength": 1 },
+          "alert_id": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        }
+      }
+    },
+    "alerts_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

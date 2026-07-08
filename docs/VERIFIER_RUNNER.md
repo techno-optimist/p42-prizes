@@ -53,8 +53,8 @@ are:
 Verifier execution must be queued. A submission burst should increase latency,
 not memory pressure. Queue, plan, and transcript schemas live at
 `schemas/runner-queue.schema.json`, `schemas/runner-plan.schema.json`,
-`schemas/runner-transcript.schema.json`, and `schemas/runner-loop.schema.json`.
-The default runner policy is:
+`schemas/runner-transcript.schema.json`, `schemas/runner-loop.schema.json`, and
+`schemas/runner-alerts.schema.json`. The default runner policy is:
 
 - `max_running = 1` until every launch problem has measured peak RSS.
 - FIFO by chain event order, not API arrival order.
@@ -165,6 +165,31 @@ operator action, it records a `wait` event and sleeps before trying again. This
 is the burst behavior we want: many submissions create queue depth and latency,
 not simultaneous verifier processes or box-level OOM pressure. Use
 `--max-jobs` for a bounded batch and `--max-iterations` for rehearsals.
+
+## Alerts And Challenge Candidates
+
+Transcripts are not enough by themselves; the runner also needs a deterministic
+way to say which failures need human/challenge action. Build an alert bundle
+from the transcript directory:
+
+```bash
+PYTHONPATH=src python3 -m p42_prizes.cli runner-alerts \
+  --transcripts runs/verifier-transcripts \
+  --fail-on-alert \
+  --output runs/verifier-alerts.json
+```
+
+The command emits `p42-runner-alerts/v1` with a tamper-evident `alerts_hash`.
+Clean valid transcripts produce `alert_count: 0`. Failed DA evidence produces
+`recommended_action: "challenge_or_block_finalize"`. Verifier rejection produces
+`recommended_action: "challenge_submission"`. Malformed or self-hash-mismatched
+transcripts produce `recommended_action: "quarantine_transcript"`, because a
+corrupt transcript is not safe challenge evidence.
+
+Every alert has `requires_human_key: true`. This is intentional: alert
+generation is allowed in Phase 1 automation, but spending counter-bonds or
+submitting challenges requires the separate funded-key policy, spend caps, and
+human-approved runbook.
 
 ## Gate 1 Runner Dry Run
 

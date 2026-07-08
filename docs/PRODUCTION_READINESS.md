@@ -52,7 +52,7 @@ ledger, exit criteria, and external sign-offs.
 - Base Sepolia deployment and reconciliation scaffolds now exist: `npm run deploy:base-sepolia` writes the manifest shape, and `npm run reconcile:base-sepolia` writes a read-only event/state consistency report once real testnet addresses exist.
 - Agent and owner handoff is now explicit: `AGENTS.md` defines shared-branch/deploy discipline, and `docs/HUMAN_ACTIONS.md` lists repo-owner, deployer, audit, legal, governance, and incident-drill actions that agents cannot close alone.
 - `docs/WALLET_SESSION_POLICY.md` now drafts the Gate 2 wallet/session, API-key, payload-quarantine, session-key, KYC/sanctions, and Coinbase Onramp posture; the portal has an opt-in hashed mutation API-key gate for mutable routes.
-- `docs/VERIFIER_RUNNER.md` defines DGX CHRONOS/Hermes as the immediate reveal verifier, transcript publisher, and alert/auto-challenge candidate while keeping runner output outside the settlement trust root; `p42-prizes runner-plan` and `p42-prizes runner-work-once` add local queue/OOM admission, queue leases, verifier transcripts, and failed-submission reports.
+- `docs/VERIFIER_RUNNER.md` defines DGX CHRONOS/Hermes as the immediate reveal verifier, transcript publisher, and alert/auto-challenge candidate while keeping runner output outside the settlement trust root; `p42-prizes runner-plan`, `runner-work-once`, `runner-drain`, and `runner-alerts` add local queue/OOM admission, queue leases, FIFO draining, verifier transcripts, and tamper-evident alert/challenge-candidate bundles.
 
 ## Known Production Blockers
 
@@ -62,7 +62,7 @@ ledger, exit criteria, and external sign-offs.
 - No distributed idempotency store with atomic reserve/commit semantics.
 - No reviewed production wallet/session policy, distributed rate limiting, API audit logs, abuse controls, or payload quarantine; a draft policy and opt-in hashed mutation API-key gate exist locally.
 - No complete/deployed on-chain system: the local scaffold still lacks real DA/permanence receipt verification, production indexer service, verified Base Sepolia addresses, broader fuzzing/formal review, audit, and a non-owner-trusted resolver slashing path.
-- No live DGX/Hermes reveal watcher yet; the runbook and local queue/transcript worker exist, but event subscriptions, pinned-image sandbox execution, alerting, transcript publication, and auto-challenge key/spend policy are not wired.
+- No live DGX/Hermes reveal watcher yet; the runbook and local queue/transcript/alert workers exist, but event subscriptions, pinned-image sandbox execution, durable transcript publication, and auto-challenge key/spend policy are not wired.
 - No reviewed Base mainnet pool addresses or enabled Coinbase Onramp funding sessions.
 - No live permanent DA or CID retrieval for `bafy...` / Arweave payloads; local `da-verify` evidence exists, but provider receipt fetching and unavailable-payload slashing are not wired.
 - No containerized canonical sandbox runner or reviewed immutable verifier image digests for arbitrary problem repos; local `admit-ready` tooling rejects placeholders but does not produce real images.

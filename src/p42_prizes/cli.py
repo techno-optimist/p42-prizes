@@ -19,6 +19,7 @@ from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
 from p42_prizes.readiness import validate_fundable_admission
+from p42_prizes.runner_alerts import RunnerAlertError, build_runner_alerts
 from p42_prizes.runner_queue import (
     MemorySnapshot,
     RunnerPolicy,
@@ -259,6 +260,25 @@ def _cmd_runner_drain(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_runner_alerts(args: argparse.Namespace) -> int:
+    transcript_paths: list[str] = []
+    if args.transcripts:
+        transcript_paths.extend(str(path) for path in sorted(Path(args.transcripts).glob("*.json")))
+    transcript_paths.extend(args.transcript or [])
+    if not transcript_paths:
+        print("no runner transcripts provided", file=sys.stderr)
+        return 1
+    try:
+        result = build_runner_alerts(transcript_paths, now_utc=args.now_utc)
+    except RunnerAlertError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(result, args.output)
+    if args.fail_on_alert and result["alert_count"] > 0:
+        return 2
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -400,6 +420,25 @@ def build_parser() -> argparse.ArgumentParser:
     runner_drain.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_drain.add_argument("--memory-safety-factor", type=float, default=2.0)
     runner_drain.set_defaults(func=_cmd_runner_drain)
+
+    runner_alerts = subparsers.add_parser(
+        "runner-alerts",
+        help="build challenge/ops alerts from runner transcripts",
+    )
+    runner_alerts.add_argument("--transcripts", help="directory containing runner transcript JSON files")
+    runner_alerts.add_argument(
+        "--transcript",
+        action="append",
+        help="single runner transcript JSON file; repeat as needed",
+    )
+    runner_alerts.add_argument("--now-utc")
+    runner_alerts.add_argument("--output")
+    runner_alerts.add_argument(
+        "--fail-on-alert",
+        action="store_true",
+        help="return exit code 2 when any alert is emitted",
+    )
+    runner_alerts.set_defaults(func=_cmd_runner_alerts)
 
     return parser
 
