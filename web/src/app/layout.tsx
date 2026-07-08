@@ -8,6 +8,7 @@ import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
 import "katex/dist/katex.min.css";
 import "./globals.css";
+import { HadamardEasterEgg } from "@/components/HadamardEasterEgg";
 import { Mark } from "@/components/Mark";
 import { sitePath } from "@/lib/site-paths";
 
@@ -31,12 +32,20 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en">
       <body>
         <div className="shell">
+          <div className="mark-accent mark-accent-top" aria-hidden="true">
+            <Mark size={360} animated />
+          </div>
+          <div className="mark-accent mark-accent-lower" aria-hidden="true">
+            <Mark size={260} animated />
+          </div>
           <header className="masthead">
             <div className="masthead-inner">
-              <Link href="/" className="brand" aria-label="P42 Prizes home">
-                <Mark size={30} />
-                <span className="brand-name">P42 Prizes</span>
-              </Link>
+              <div className="brand" aria-label="P42 Prizes">
+                <HadamardEasterEgg />
+                <Link href="/" className="brand-name" aria-label="P42 Prizes home">
+                  P42 Prizes
+                </Link>
+              </div>
               <nav className="masthead-line" aria-label="Primary navigation">
                 <Link href="/">Problems</Link>
                 <Link href="/standings">Standings</Link>
@@ -57,7 +66,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               <div>
                 <h3>The mark</h3>
                 <div className="mark-story">
-                  <Mark size={40} />
+                  <Mark size={40} animated />
                   <p>
                     The mark is H₄, the order-4 Hadamard matrix — the protocol’s pilot problem, solved. Solid cells
                     are +1, faint cells are −1; every pair of rows is orthogonal, defect 0/1. The logo itself passes{" "}

@@ -106,6 +106,8 @@ pre,
   min-height: 100vh;
   display: flex;
   flex-direction: column;
+  position: relative;
+  overflow: hidden;
 }
 
 .page {
@@ -113,12 +115,83 @@ pre,
   margin: 0 auto;
   padding: 0 0 96px;
   flex: 1;
+  position: relative;
+  z-index: 1;
+}
+
+.mark-accent {
+  position: fixed;
+  pointer-events: none;
+  z-index: 0;
+  color: var(--ink);
+  opacity: 0.018;
+  mix-blend-mode: multiply;
+}
+
+.mark-accent-top {
+  top: 118px;
+  right: max(-92px, calc((100vw - 1140px) / 2 - 180px));
+  transform: rotate(-8deg);
+}
+
+.mark-accent-lower {
+  left: max(-86px, calc((100vw - 1140px) / 2 - 150px));
+  bottom: 210px;
+  transform: rotate(10deg);
+  opacity: 0.012;
+}
+
+@media (prefers-color-scheme: dark) {
+  .mark-accent {
+    mix-blend-mode: normal;
+    opacity: 0.026;
+  }
+
+  .mark-accent-lower {
+    opacity: 0.018;
+  }
+}
+
+.p42-mark-cell {
+  fill: currentColor;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.p42-mark-cell.is-minus {
+  opacity: 0.18;
+}
+
+.p42-mark-animated .p42-mark-cell {
+  animation: mark-breathe 8.5s ease-in-out infinite;
+  animation-delay: calc(var(--mark-i) * 90ms);
+}
+
+@keyframes mark-breathe {
+  0%,
+  78%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  84% {
+    transform: scale(0.82);
+    opacity: 0.5;
+  }
+  90% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
 }
 
 /* ---------- masthead ---------- */
 
 .masthead {
   border-bottom: 2px solid var(--record);
+  position: relative;
+  z-index: 2;
+  background: color-mix(in srgb, var(--paper) 92%, transparent);
+  backdrop-filter: blur(12px);
 }
 
 .masthead-inner {
@@ -139,9 +212,31 @@ pre,
   color: var(--ink);
 }
 
-.brand .p42-mark {
-  flex: 0 0 auto;
+.brand-mark-button {
+  width: 36px;
+  height: 36px;
+  border: 0;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
   transform: translateY(4px);
+}
+
+.brand-mark-button .p42-mark {
+  flex: 0 0 auto;
+}
+
+.brand-mark-button:hover,
+.brand-mark-button:focus-visible {
+  color: var(--record);
+  outline: none;
+}
+
+.brand-mark-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--paper), 0 0 0 4px var(--record);
 }
 
 .brand-name {
@@ -149,6 +244,12 @@ pre,
   font-weight: 600;
   letter-spacing: 0.005em;
   white-space: nowrap;
+}
+
+.brand-name:hover,
+.brand-name:focus-visible {
+  color: var(--record);
+  outline: none;
 }
 
 .masthead-line {
@@ -177,6 +278,285 @@ pre,
 
 .masthead-status {
   color: var(--gate);
+}
+
+/* ---------- Hadamard easter egg ---------- */
+
+.hadamard-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: start center;
+  padding: clamp(18px, 5vh, 56px) 24px 24px;
+  background:
+    linear-gradient(rgba(24, 21, 17, 0.44), rgba(24, 21, 17, 0.34)),
+    radial-gradient(circle at 52% 44%, rgba(250, 248, 242, 0.2), transparent 36%);
+}
+
+.hadamard-dialog {
+  width: min(920px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 32px));
+  overflow: auto;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1fr);
+  gap: 0;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
+}
+
+.hadamard-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--rule);
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  background: var(--paper);
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.hadamard-close:hover,
+.hadamard-close:focus-visible {
+  border-color: var(--record);
+  color: var(--record);
+  outline: none;
+}
+
+.hadamard-stage {
+  min-height: 460px;
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: var(--ink);
+  background:
+    linear-gradient(90deg, rgba(24, 21, 17, 0.05) 1px, transparent 1px),
+    linear-gradient(rgba(24, 21, 17, 0.05) 1px, transparent 1px),
+    var(--well);
+  background-size: 24px 24px;
+  border-right: 1px solid var(--rule);
+}
+
+.hadamard-orbit {
+  position: absolute;
+  inset: auto;
+  width: 280px;
+  height: 280px;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  opacity: 0.065;
+  animation: theorem-orbit 18s linear infinite;
+}
+
+.hadamard-stage-mark {
+  transform: rotate(45deg);
+}
+
+.hadamard-matrix {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4, 58px);
+  grid-template-rows: repeat(4, 58px);
+  gap: 8px;
+  padding: 18px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--paper) 84%, transparent);
+  border: 1px solid var(--ink);
+  box-shadow: 0 16px 40px rgba(24, 21, 17, 0.16);
+  overflow: visible;
+  transform: scale(0.92);
+  animation: matrix-arrive 900ms cubic-bezier(0.2, 0.7, 0.1, 1) forwards;
+}
+
+.hadamard-readout {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 22px;
+  display: grid;
+  gap: 7px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.hadamard-readout div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hadamard-readout code {
+  color: var(--ink-soft);
+}
+
+.hadamard-readout i {
+  height: 1px;
+  overflow: hidden;
+  background: var(--rule-faint);
+}
+
+.hadamard-readout i::after {
+  content: "";
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--record);
+  transform: scaleX(var(--readout-progress));
+  transform-origin: left center;
+  transition: transform 160ms linear;
+}
+
+.hadamard-cell {
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 24px;
+  line-height: 1;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  opacity: 0;
+  filter: blur(1px);
+  transform: translate(var(--from-x), var(--from-y)) scale(0.56) rotate(var(--from-rotate));
+  will-change: transform, opacity, filter;
+}
+
+.hadamard-cell.is-plus {
+  color: var(--paper);
+  background: var(--ink);
+  border-color: var(--ink);
+}
+
+.hadamard-cell.is-minus {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--paper) 68%, var(--well));
+}
+
+.hadamard-cell.is-live {
+  opacity: 1;
+  filter: blur(0);
+  transform: translate(0, 0) scale(1) rotate(0deg);
+  transition:
+    opacity 420ms ease,
+    filter 520ms ease,
+    transform 520ms cubic-bezier(0.2, 0.7, 0.1, 1);
+}
+
+.hadamard-proof {
+  padding: 54px 46px 40px;
+  display: grid;
+  align-content: center;
+  gap: 18px;
+}
+
+.hadamard-proof h2 {
+  font-size: 32px;
+}
+
+.hadamard-proof p:not(.smallcaps) {
+  max-width: 46ch;
+  color: var(--ink-soft);
+}
+
+.proof-trace {
+  display: grid;
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.proof-line {
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--rule-faint);
+  color: var(--muted);
+}
+
+.proof-line span {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.proof-line code {
+  min-width: 0;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.proof-line.is-live {
+  color: var(--ink);
+}
+
+.proof-line.is-live code {
+  color: var(--good);
+}
+
+.verdict-seal {
+  margin-top: 6px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 2px;
+  border: 1px solid var(--rule);
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.verdict-seal span {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.verdict-seal strong {
+  color: var(--good);
+  font-weight: 600;
+}
+
+.verdict-seal.is-live {
+  opacity: 1;
+  transform: translateY(0);
+  transition:
+    opacity 480ms ease,
+    transform 480ms ease;
+}
+
+@keyframes matrix-arrive {
+  from {
+    transform: scale(0.72);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+
+@keyframes theorem-orbit {
+  from {
+    transform: rotate(0deg) scale(1.2);
+  }
+  to {
+    transform: rotate(360deg) scale(1.2);
+  }
 }
 
 /* ---------- type ---------- */
@@ -1273,6 +1653,9 @@ h3 {
 .colophon {
   border-top: 2px solid var(--ink);
   margin-top: 96px;
+  position: relative;
+  z-index: 1;
+  background: color-mix(in srgb, var(--paper) 94%, transparent);
 }
 
 .colophon-inner {
@@ -1390,6 +1773,16 @@ h3 {
     gap: 36px;
   }
 
+  .hadamard-dialog {
+    grid-template-columns: 1fr;
+  }
+
+  .hadamard-stage {
+    min-height: 360px;
+    border-right: 0;
+    border-bottom: 1px solid var(--rule);
+  }
+
   .margin-rail {
     position: static;
   }
@@ -1403,6 +1796,45 @@ h3 {
 @media (max-width: 760px) {
   html {
     font-size: 16px;
+  }
+
+  .mark-accent-top {
+    right: -170px;
+    top: 170px;
+    opacity: 0.014;
+  }
+
+  .mark-accent-lower {
+    display: none;
+  }
+
+  .hadamard-modal {
+    padding: 12px;
+  }
+
+  .hadamard-dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .hadamard-stage {
+    min-height: 316px;
+  }
+
+  .hadamard-matrix {
+    grid-template-columns: repeat(4, 44px);
+    grid-template-rows: repeat(4, 44px);
+    gap: 6px;
+    padding: 12px;
+  }
+
+  .hadamard-proof {
+    padding: 30px 24px 24px;
+    gap: 14px;
+  }
+
+  .hadamard-proof h2 {
+    font-size: 26px;
   }
 
   .register .hide-md {
@@ -1426,6 +1858,28 @@ h3 {
 @media (max-width: 540px) {
   .register .hide-sm {
     display: none;
+  }
+
+  .brand {
+    gap: 8px;
+  }
+
+  .brand-name {
+    font-size: 22px;
+  }
+
+  .proof-line {
+    grid-template-columns: 58px minmax(0, 1fr);
+    min-height: 30px;
+    padding: 4px 0;
+  }
+
+  .proof-trace {
+    gap: 4px;
+  }
+
+  .verdict-seal {
+    padding: 10px 12px;
   }
 
   .masthead-line {
