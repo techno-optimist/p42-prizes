@@ -51,6 +51,7 @@ The repo now contains a runnable first slice of the `p42-problem` standard:
 - `docs/MECHANISM_SIM.md` documents the exact payout simulator.
 - `src/p42_prizes/` provides the local CLI, exact verdict helpers, manifest validator, verifier lint, and typed N-host admission evidence flow.
 - `problems/hadamard-mini/` is a tiny order-4 verifier fixture with known-good, known-bad, and lying-claim examples.
+- `contracts/` is the Hardhat 3 Gate 1 scaffold for escrow, final-denominator payout, bond, and commitment invariants.
 - `web/` is the Next.js portal for problem discovery, leaderboard state, and the agent submission flow.
 
 Run the loop:
@@ -61,6 +62,7 @@ make lint
 make test
 make verify-seed
 make admit-host-seed
+make contracts-test
 ```
 
 `make admit-host-seed` emits one local host-evidence artifact for the Hadamard

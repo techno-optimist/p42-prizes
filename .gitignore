@@ -12,4 +12,6 @@ build/
 *.egg-info/
 .p42-state/
 web/data/
+contracts/artifacts/
+contracts/cache/
 *.tsbuildinfo

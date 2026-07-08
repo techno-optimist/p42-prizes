@@ -25,7 +25,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Gate | Current status | Evidence today | Exit criteria |
 | --- | --- | --- | --- |
 | Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text | Repo owner enables GitHub private vulnerability reporting and publishes the GitHub Actions workflow with `workflow` scope |
-| Gate 1: Base Sepolia testnet | Blocked | Python reference model and portal-local commit/reveal only | Deployed verified contracts, testnet addresses, DA/permanence flow, resolver transcript, indexer reconciliation, adversarial run report |
+| Gate 1: Base Sepolia testnet | Blocked | Python reference model, portal-local commit/reveal, and local Hardhat contract scaffold tests | Deployed verified contracts, testnet addresses, DA/permanence flow, resolver transcript, indexer reconciliation, adversarial run report |
 | Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, and tested N-host matrix tooling | External audit, legal memo, KYC/sanctions/ToS approval, collected N-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
 
@@ -48,9 +48,9 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Blocker | Required artifact | Owner/sign-off |
 | --- | --- | --- |
-| No on-chain contracts | Solidity/Foundry or equivalent implementation for registry, pool, submission, challenge, resolver, payout ledger; invariant/fuzz tests | Engineering + external auditor |
+| Contract system incomplete | Local Hardhat 3 scaffold now covers escrow pool, payout ledger, submission bonds, CID-bound commitment helper, and six invariant tests; still needs registry, challenge manager, resolver transcript path, DA/permanence, deployment scripts, fuzzing, and audit | Engineering + external auditor |
 | No Base Sepolia deployment | Verified source links, addresses, deploy txs, constructor/proxy metadata, role assignments | Human deployer |
-| No on-chain bond/claim enforcement | Tests for `alpha * pool_at_submission`, `min(vested, final_entitlement)`, unpausable `claim()` | Engineering + auditor |
+| Bond/claim scaffold not deployed or audited | Local tests cover `alpha * pool_at_submission`, empty-pool/self-fund finalization coverage, final-denominator claim cap, escrow until close, and pause-not-claim; still needs integration with full challenge/resolve/close state machine | Engineering + auditor |
 | No DA/permanence path | Commit-time availability evidence, finalize-time Arweave receipt, slashing on missing data | Engineering |
 | No funding reconciliation | Indexer report reconstructing deposits, credits, slashes, claims, dust, fee, and pool balances | Engineering + ops |
 | No resolver transcript path | Challenged decision posts full re-run transcript and bonded signer attestations | Engineering + resolver signers |
@@ -84,8 +84,23 @@ make lint
 make test
 make verify-seed
 make admit-host-seed
+make contracts-test
 cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
 ```
+
+Contract evidence now has a local Hardhat 3 scaffold:
+
+```bash
+cd contracts
+npm run build
+npm run test
+npm audit --audit-level=moderate
+```
+
+The scaffold is not a deployment artifact. It proves selected red-team
+invariants locally, but Gate 1 remains blocked until the full contract system is
+deployed to Base Sepolia with verified source, role assignments, resolver
+transcripts, DA/permanence, and indexer reconciliation.
 
 N-host verifier admission now has a typed artifact flow:
 

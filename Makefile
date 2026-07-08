@@ -1,7 +1,7 @@
 PYTHON ?= python3
 PYTHONPATH := $(CURDIR)/src
 
-.PHONY: test validate lint verify-seed admit-host-seed all
+.PHONY: test validate lint verify-seed admit-host-seed contracts-test all
 
 all: validate lint test verify-seed
 
@@ -22,3 +22,6 @@ admit-host-seed:
 		--problem problems/hadamard-mini \
 		--solution problems/hadamard-mini/examples/valid-4.json \
 		--runs 2
+
+contracts-test:
+	@cd contracts && npm run build && npm run test && npm audit --audit-level=moderate

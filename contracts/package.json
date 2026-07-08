@@ -1,0 +1,19 @@
+{
+  "name": "p42-prizes-contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Gate 1 Solidity scaffold for P42 Prizes escrow, payout, and submission invariants.",
+  "scripts": {
+    "build": "hardhat compile",
+    "test": "hardhat test"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "4.0.14",
+    "@nomicfoundation/hardhat-node-test-runner": "3.0.17",
+    "hardhat": "3.9.1"
+  },
+  "overrides": {
+    "@actions/http-client": "4.0.1"
+  }
+}

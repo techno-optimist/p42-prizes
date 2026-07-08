@@ -16,10 +16,10 @@ ledger, exit criteria, and external sign-offs.
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
 | Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; `admit-host`/`admit-matrix` enforce typed N-host evidence locally | Canonical sandbox runner, pinned image digest, collected N-host identical verdict matrix artifacts |
-| Settlement math | Final-denominator pool simulator and incremental portal credit model | Contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
+| Settlement math | Final-denominator pool simulator, incremental portal credit model, and Hardhat scaffold tests for escrow-until-close / final-denominator claims | Complete contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
 | Challenges | Endpoint returns `501` until implemented | Bond escrow, challenge window checks, resolver transcript, slashing path |
 | Resolver | Spec only | Verifiable transcript committee on testnet; fraud-proof track before scale |
-| Contracts | Spec only | Audit, invariant tests, timelock/multisig rehearsals |
+| Contracts | Local Hardhat 3 scaffold for pool, payout ledger, submission bond checks, and CID-bound commitment helper | Full registry/challenge/resolver/DA/indexer contracts, Base Sepolia deployment, audit, fuzzing, timelock/multisig rehearsals |
 | Legal | Spec risk register only | Written counsel memo covering prize/bounty, KYC/sanctions, tax, ToS |
 | Operations | This register plus incident/governance docs | Named owners, monitored deploys, key custody, incident drills |
 
@@ -45,6 +45,7 @@ ledger, exit criteria, and external sign-offs.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
 - Local/Render verification covers problem validation, certified-path exactness lint, Python tests, seed verification, web typecheck, web tests, production build, and `npm audit`. Publishing the GitHub Actions workflow is pending a repo token or human owner with `workflow` scope.
 - N-host verifier admission now has typed host and matrix artifacts: `p42-prizes admit-host` emits repeated-run host evidence, and `p42-prizes admit-matrix` rejects duplicate hosts, missing x86/ARM coverage, insufficient glibc diversity, or mismatched canonical `VerdictReport` hashes.
+- Contract scaffold now compiles and tests under Hardhat 3 with zero npm audit findings: escrow pool, final-denominator payout ledger, submission bond pricing, CID-bound commitment helper, and six red-team invariant tests.
 
 ## Known Production Blockers
 
@@ -53,7 +54,7 @@ ledger, exit criteria, and external sign-offs.
 - Render can be configured with `P42_PORTAL_STATE_PATH=/app/data/portal-state.json` on a persistent disk for demo continuity, but that disk is not settlement truth.
 - No distributed idempotency store with atomic reserve/commit semantics.
 - No production wallet session policy, distributed rate limiting, API keys, abuse controls, or payload quarantine.
-- No on-chain contracts, indexer, or Base Sepolia deployment.
+- No complete/deployed on-chain system: the local scaffold still lacks registry, challenge manager, resolver transcript path, DA/permanence enforcement, indexer, deployment scripts, verified Base Sepolia addresses, and audit.
 - No reviewed Base mainnet pool addresses or enabled Coinbase Onramp funding sessions.
 - No permanent DA or CID retrieval for `bafy...` / Arweave payloads.
 - No containerized canonical sandbox runner for arbitrary problem repos.
@@ -67,5 +68,6 @@ ledger, exit criteria, and external sign-offs.
 ```bash
 make test
 make admit-host-seed
+make contracts-test
 cd web && npm run test && npm run build && npm audit --audit-level=moderate
 ```

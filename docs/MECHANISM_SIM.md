@@ -6,8 +6,10 @@
 payout_i = pool_available * improvement_i / sum(improvement_j)
 ```
 
-It exists to make the red-team invariants executable while the contracts are
-still being designed.
+It exists to make the red-team invariants executable beside the Solidity
+scaffold in `contracts/`. The Python model remains the easiest way to inspect
+exact rational payout math; the contract tests pin the corresponding escrow,
+claim, and bond invariants at the EVM boundary.
 
 Example:
 
@@ -23,4 +25,3 @@ PYTHONPATH=src python3 -m p42_prizes.cli simulate \
 The result pays Alice `600`, Bob `300`, and Carol `400` wei: exactly their
 `6:3:4` share of final frontier distance. No payout is computed against a
 temporary denominator.
-
