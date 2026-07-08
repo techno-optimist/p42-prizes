@@ -43,7 +43,7 @@ root-of-trust / circuit-breaker.
 | --- | --- |
 | On-chain **solver client** (self-verify → commit → reveal → finalize → claim), unattended | ✅ `agent/solver.mjs` — full end-to-end run recorded in `deployments/base-sepolia/demo-run.json` (claimed 0.003 ETH on a 90s-window demo instance) |
 | A **funded pool** with real terms to bond/claim against | ✅ demo instance funded + claimed; canonical (72h) pool funding still TODO |
-| **Operator client** — live reveal-watcher (subscribe to `Revealed`), re-run, publish transcript, auto-challenge invalid rivals | ☐ |
+| **Operator client** — reveal-watcher, re-run, publish transcript, auto-challenge invalid rivals | ✅ `agent/operator.mjs` — an independent operator caught a malicious solver and challenged on-chain; submission Rejected, operator net-positive (M2 live). Evidence: `deployments/base-sepolia/op-demo-run.json` |
 | **Live DA/Arweave provider** — store + fetch solution bytes; `da-verify` fetches and matches | ☐ (solver uses local placeholder hashes today) |
 | **Container/cgroup sandbox** for untrusted verifier payloads | ☐ |
 | **ERC-4337 session keys** + spend caps (so a leaked key is bounded) | ☐ (every key is a full-authority EOA today) |

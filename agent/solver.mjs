@@ -28,9 +28,10 @@
 
 import { ethers } from "ethers";
 import { readFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { atomsFromImprovement, runVerifier } from "./lib.mjs";
+import { putBlob } from "./da-local.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -47,6 +48,10 @@ const PROBLEM = arg("problem");
 const SOLUTION = arg("solution");
 const FUND = arg("fund", null);        // ETH string, e.g. "0.003"
 const CLOSE = arg("close", false);
+const DA_DIR = arg("da-dir", null);    // post the solution blob to a local DA store
+const FORCE = arg("force", false);     // adversarial test: submit even if the local verifier says invalid
+const IMPROVEMENT_OVERRIDE = arg("improvement", null); // adversarial test: claim an inflated improvement
+const SUBMIT_ONLY = arg("submit-only", false);         // stop after reveal (leave it for the operator to challenge)
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 if (!MANIFEST || !PROBLEM || !SOLUTION) {
   console.error("required: --manifest <path> --problem <dir> --solution <file>");
@@ -77,40 +82,27 @@ async function send(label, txPromise) {
   return rec;
 }
 
-// ---- Step 0: autonomous self-verify with the problem's exact verifier ----
-function selfVerify() {
-  const out = execFileSync("python3", [`${PROBLEM}/verifier/verify.py`, "--solution", SOLUTION], {
-    encoding: "utf8",
-    env: { ...process.env, PYTHONPATH: `${REPO_ROOT}/src` },
-  });
-  return JSON.parse(out.trim());
-}
-
-// improvement "num/den" -> integer atoms over a fixed 1e6 denominator (single-solver-safe).
-const IMPROVEMENT_SCALE = 1_000_000n;
-function atomsFromImprovement(improvement) {
-  const [num, den = "1"] = improvement.split("/");
-  const atoms = (BigInt(num) * IMPROVEMENT_SCALE) / BigInt(den);
-  if (atoms <= 0n) throw new Error(`non-positive improvement atoms from ${improvement}`);
-  return atoms;
-}
-
 async function main() {
   log(`P42 autonomous solver — agent ${solver}`);
   log(`network: ${RPC}  manifest: ${MANIFEST}`);
   log(`balance: ${ethers.formatEther(await provider.getBalance(solver))} ETH\n`);
 
-  // 0. self-verify
-  const verdict = selfVerify();
+  // 0. self-verify (an honest solver aborts on an invalid solution; --force submits anyway)
+  const verdict = runVerifier(PROBLEM, SOLUTION, REPO_ROOT);
   log(`[0] self-verify: valid=${verdict.valid} improvement=${verdict.improvement} score=${verdict.score}`);
-  if (!verdict.valid) { log("solution is not valid per the local verifier — aborting before spending gas."); process.exit(1); }
-  const improvementAtoms = atomsFromImprovement(verdict.improvement);
+  if (!verdict.valid && !FORCE) { log("solution is not valid per the local verifier — aborting (use --force to submit anyway)."); process.exit(1); }
+  const claimedImprovement = IMPROVEMENT_OVERRIDE || verdict.improvement;
+  const improvementAtoms = atomsFromImprovement(claimedImprovement);
+  if (improvementAtoms <= 0n) { log("claimed improvement is zero — nothing to submit."); process.exit(1); }
+  if (!verdict.valid) log("  [--force] submitting an INVALID solution (adversarial test — expect the operator to challenge).");
+  if (IMPROVEMENT_OVERRIDE) log(`  [--improvement] claiming ${IMPROVEMENT_OVERRIDE} vs true ${verdict.improvement}.`);
   const claimedScoreAtoms = 0n; // informational; score is carried in the DA'd solution
 
   // solution bytes -> CID; DA + permanence hashes are LOCAL PLACEHOLDERS (live provider = next sub-task)
   const solutionBytes = readFileSync(resolve(SOLUTION));
   const cid = "sha256:" + ethers.sha256(solutionBytes).slice(2);
   const daHash = ethers.keccak256(solutionBytes);               // placeholder for a live DA blob hash
+  if (DA_DIR) { putBlob(DA_DIR, solutionBytes); log(`  DA: posted solution blob to local store ${DA_DIR}`); }
   const salt = "p42-agent-" + Date.now().toString();
   const permanenceHash = ethers.keccak256(ethers.toUtf8Bytes("permanence:" + cid)); // placeholder Arweave receipt
 
@@ -131,6 +123,12 @@ async function main() {
   // 3. reveal (open the salt; publish CID + claimed improvement)
   log(`\n[3] reveal  improvementAtoms=${improvementAtoms}`);
   await send("reveal", subs.reveal(submissionId, cid, claimedScoreAtoms, improvementAtoms, salt));
+
+  if (SUBMIT_ONLY) {
+    log(`\n[submit-only] committed + revealed (submission #${submissionId}); exiting before finalize.`);
+    log(`final balance: ${ethers.formatEther(await provider.getBalance(solver))} ETH`);
+    return;
+  }
 
   // 4. wait out the challenge window
   const sub = await subs.submissions(submissionId);

@@ -1,0 +1,65 @@
+{
+  "schema": "p42-phase1-operator-demo/v1",
+  "what": "An INDEPENDENT autonomous operator caught a malicious solver on-chain, with no human: watched a reveal, fetched the solution by CID, re-ran the exact verifier, found it invalid/inflated, and filed a bonded challenge. The resolver upheld it, the submission was Rejected, and the operator ended NET-POSITIVE — proving the M2 audit fix (policing fraud is profitable) live.",
+  "environment": "base-sepolia (chainId 84532)",
+  "demo_manifest": "deployments/base-sepolia/op-demo-p42-prizes.json",
+  "challenge_window_seconds": 90,
+  "roles": {
+    "malicious_solver_and_sponsor_and_resolver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61 (one EOA — single-key demo caveat)",
+    "independent_operator": "0x43e1f121429E255719F91f5415EC6EFAfb07e4b8"
+  },
+  "contracts": {
+    "pool": "0x483439c6b719847Fc1659bFfcd3fBD39695b9c83",
+    "ledger": "0x88203E6B1dFf12a0DF6dE2FC4bf3630BAB5fEEDe",
+    "submissions": "0x73A0a0db5d04798c6F10d576d4413944BB9F5622",
+    "challenges": "0x9cCB61abB9B7Fa0eE7C9Ec859E91b7cd00B03378",
+    "registry": "0xF73Efa26111E22cE47214e5f5aa03D820fBE4170"
+  },
+  "attack": "malicious solver submitted problems/hadamard-mini/examples/lying-claim.json (all-++++, true improvement 0/1) while CLAIMING improvement 1/1",
+  "outcome": {
+    "submission_status": "Rejected",
+    "operator_net_eth": "+0.0004 (own challenge bond returned + forfeited solver bond, minus gas)"
+  },
+  "transactions": [
+    {
+      "step": "solver.fund (sponsor)",
+      "tx": "0x2b21167b48956db2041af57e230c14b5383033b05b5d376ca8b278e16aaf8553",
+      "explorer": "https://sepolia.basescan.org/tx/0x2b21167b48956db2041af57e230c14b5383033b05b5d376ca8b278e16aaf8553"
+    },
+    {
+      "step": "solver.commit (invalid)",
+      "tx": "0xea1a688b3b4691c0975eb9980472000207f8d24f645bfec9eb1e051a1ec034bb",
+      "explorer": "https://sepolia.basescan.org/tx/0xea1a688b3b4691c0975eb9980472000207f8d24f645bfec9eb1e051a1ec034bb"
+    },
+    {
+      "step": "solver.reveal (claims 1/1)",
+      "tx": "0x9c0aa5f8b99b1da13e2581da53a36575f30e42f55ed35f2638fd04d7eaa30bb2",
+      "explorer": "https://sepolia.basescan.org/tx/0x9c0aa5f8b99b1da13e2581da53a36575f30e42f55ed35f2638fd04d7eaa30bb2"
+    },
+    {
+      "step": "OPERATOR.challenge",
+      "tx": "0x8b13bfa1526c4728880c95a359cee02249d991bf5903b0a300b8838e9a7371c0",
+      "explorer": "https://sepolia.basescan.org/tx/0x8b13bfa1526c4728880c95a359cee02249d991bf5903b0a300b8838e9a7371c0"
+    },
+    {
+      "step": "resolver.resolve(win)",
+      "tx": "0xcc6b98ff53de9225d95fd78e8fceebaa16091fcb9af1741f898601e90dc8b661",
+      "explorer": "https://sepolia.basescan.org/tx/0xcc6b98ff53de9225d95fd78e8fceebaa16091fcb9af1741f898601e90dc8b661"
+    },
+    {
+      "step": "OPERATOR.claimBond(challenge)",
+      "tx": "0x4146444dddd72d52205816d572e63e6ffd3dd4dc9332338a205d7d7b9f42b834",
+      "explorer": "https://sepolia.basescan.org/tx/0x4146444dddd72d52205816d572e63e6ffd3dd4dc9332338a205d7d7b9f42b834"
+    },
+    {
+      "step": "OPERATOR.claimBond(forfeited solver bond)",
+      "tx": "0xe30802fdb86511d7373ec0930f20303eb046f58b4164b7518872561e86aa77c7",
+      "explorer": "https://sepolia.basescan.org/tx/0xe30802fdb86511d7373ec0930f20303eb046f58b4164b7518872561e86aa77c7"
+    }
+  ],
+  "honest_caveats": [
+    "DA is a LOCAL store (agent/da-local.mjs) — the operator fetches the blob by CID and re-derives the verdict independently, but this is a placeholder for a real Arweave/DA provider.",
+    "The operator (key B) is genuinely independent, but solver+sponsor+resolver are one EOA (key A) — full role separation is Phase 2, and one-stack-plays-all-sides is the wash-trading concern in docs/AUTONOMY.md.",
+    "Resolution is still a TRUSTED key (Phase 3 wall) — the operator proves detection+challenge, not trustless adjudication."
+  ]
+}

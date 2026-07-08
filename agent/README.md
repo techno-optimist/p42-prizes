@@ -40,6 +40,36 @@ pool, committed, revealed, waited out the window, finalized, closed, **claimed
 the 0.003 ETH payout**, and reclaimed its bond — seven signed transactions, one
 command, no human step.
 
+## Operator client — the defensive half
+
+`operator.mjs` is the autonomous **operator**: it watches on-chain reveals,
+independently re-runs the exact verifier on the solution it fetches by CID from
+the DA store (`da-local.mjs`), publishes a transcript, and **auto-challenges** any
+submission that is invalid or whose claimed improvement is inflated — filing a
+bonded challenge on-chain, with a hard `--max-challenge-bond` cap as the safety
+backstop. It never needs the solver to tell it the answer.
+
+```bash
+OPERATOR_PRIVATE_KEY=0x... node operator.mjs \
+  --rpc https://sepolia.base.org \
+  --manifest ../deployments/base-sepolia/op-demo-p42-prizes.json \
+  --problem ../problems/hadamard-mini \
+  --da-dir /tmp/p42-da --transcripts ./transcripts \
+  --max-challenge-bond 0.01 --once
+```
+
+### Proof it works (adversarial, both-sides autonomous)
+
+Recorded in
+[`../deployments/base-sepolia/op-demo-run.json`](../deployments/base-sepolia/op-demo-run.json):
+a **malicious solver** committed + revealed the invalid `lying-claim` (true
+improvement `0/1`) while claiming `1/1`; an **independent operator** (a separate
+funded key) watched the reveal, fetched the blob, re-ran the verifier, found it
+fraudulent, and **challenged it on-chain**. The resolver upheld the challenge, the
+submission was **Rejected**, and the operator ended **net-positive** — collecting
+its own bond back plus the forfeited solver bond (the M2 audit fix — *policing
+fraud is profitable* — proven live).
+
 ## Honest caveats (what is still plumbing)
 
 This proves the **transaction plumbing** runs autonomously. It does NOT yet close
@@ -60,7 +90,8 @@ the two hard walls from the autonomy debate, and it takes deliberate shortcuts:
 
 ## Next in Phase 1
 
-Operator client (a live reveal-watcher that subscribes to `Revealed` events,
-re-runs the verifier, publishes transcripts, and auto-challenges invalid rivals);
-live DA/Arweave provider; container sandbox; ERC-4337 session keys; role split;
-and a funded pool on the canonical (72h) deployment.
+Live DA/Arweave provider (replace the local `da-local.mjs` placeholder with real
+uploads + retrieval proofs); a container/cgroup sandbox for untrusted verifier
+payloads; ERC-4337 session keys with spend caps; role separation (split the
+single EOA); and a funded pool + running operator on the canonical (72h)
+deployment.
