@@ -170,7 +170,12 @@ try {
   const challengedSubmissionIds = unique(challengeEvents.map((event) => event.args.submissionId));
   const challengeStates = [];
   for (const submissionId of challengedSubmissionIds) {
-    const challenge = await challenges.challenges(submissionId);
+    // The resolver decision bond lives in the separate `resolverBonds` mapping,
+    // not on the Challenge struct; read both so the report reflects real bonds.
+    const [challenge, resolverBond] = await Promise.all([
+      challenges.challenges(submissionId),
+      challenges.resolverBonds(submissionId)
+    ]);
     challengeStates.push({
       submissionId,
       challenger: challenge.challenger,
@@ -181,7 +186,9 @@ try {
       transcriptHash: challenge.transcriptHash,
       transcriptURI: challenge.transcriptURI,
       verdictHash: challenge.verdictHash,
-      resolverBondWei: challenge.resolverBondWei
+      resolverBondWei: resolverBond.amountWei,
+      resolverBondReleaseAt: resolverBond.releaseAt,
+      resolverBondSlashProofHash: resolverBond.slashProofHash
     });
   }
 
