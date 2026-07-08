@@ -124,7 +124,12 @@ describe("P42 Gate 1 contract scaffold", function () {
     const solver = overrides.solver ?? fixture.alice;
     const claimedScoreAtoms = overrides.claimedScoreAtoms ?? 1000;
     const improvementAtoms = overrides.improvementAtoms ?? 1;
-    const commitment = await fixture.submissions.computeCommitment(solutionCid, solver.address, salt);
+    const commitment = await fixture.submissions["computeCommitment(string,address,bytes32,string)"](
+      solutionCid,
+      solver.address,
+      DA_HASH,
+      salt
+    );
     const bond = overrides.bond ?? (await fixture.submissions.requiredPostingBondNow());
 
     const tx = await fixture.submissions.connect(solver).commit(commitment, DA_HASH, { value: bond });
@@ -217,7 +222,27 @@ describe("P42 Gate 1 contract scaffold", function () {
       `p42:v0|cid:9:bafy-test|solver:${alice.address.toLowerCase()}|salt:6:s3cret`;
     assert.equal(await submissions.commitPreimage("bafy-test", alice.address, "s3cret"), expectedPreimage);
     assert.equal(
-      await submissions.computeCommitment("bafy-test", alice.address, "s3cret"),
+      await submissions["computeCommitment(string,address,string)"]("bafy-test", alice.address, "s3cret"),
+      ethers.keccak256(ethers.toUtf8Bytes(expectedPreimage))
+    );
+  });
+
+  it("binds commit-time DA hash evidence into the on-chain commitment preimage", async function () {
+    const { alice, submissions } = await deployFixture();
+
+    const expectedPreimage =
+      `p42:v1|cid:9:bafy-test|solver:${alice.address.toLowerCase()}|da:${DA_HASH}|salt:6:s3cret`;
+    assert.equal(
+      await submissions.commitPreimageWithDa("bafy-test", alice.address, DA_HASH, "s3cret"),
+      expectedPreimage
+    );
+    assert.equal(
+      await submissions["computeCommitment(string,address,bytes32,string)"](
+        "bafy-test",
+        alice.address,
+        DA_HASH,
+        "s3cret"
+      ),
       ethers.keccak256(ethers.toUtf8Bytes(expectedPreimage))
     );
   });
@@ -250,7 +275,12 @@ describe("P42 Gate 1 contract scaffold", function () {
     const { alice, pool, submissions, minBond } = await deployFixture({ alphaBps: 200n });
     const solutionCid = "bafy-empty-pool";
     const salt = "empty-pool-salt";
-    const commitment = await submissions.computeCommitment(solutionCid, alice.address, salt);
+    const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
+      solutionCid,
+      alice.address,
+      DA_HASH,
+      salt
+    );
 
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
     await pool.fund({ value: ethers.parseEther("100") });
@@ -274,7 +304,12 @@ describe("P42 Gate 1 contract scaffold", function () {
     const { alice, bob, submissions, minBond } = await deployFixture();
     const solutionCid = "bafy-solution-a";
     const salt = "s3cret";
-    const commitment = await submissions.computeCommitment(solutionCid, alice.address, salt);
+    const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
+      solutionCid,
+      alice.address,
+      DA_HASH,
+      salt
+    );
 
     await expectCustomError(
       submissions.connect(alice).commit(commitment, ethers.ZeroHash, { value: minBond }),
@@ -315,7 +350,12 @@ describe("P42 Gate 1 contract scaffold", function () {
 
     const solutionCid = "bafy-winning-solution";
     const salt = "finalize-salt";
-    const commitment = await submissions.computeCommitment(solutionCid, alice.address, salt);
+    const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
+      solutionCid,
+      alice.address,
+      DA_HASH,
+      salt
+    );
     const required = await submissions.requiredPostingBondNow();
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: required });
     await submissions.connect(alice).reveal(1, solutionCid, 1000, 25, salt);
@@ -369,7 +409,12 @@ describe("P42 Gate 1 contract scaffold", function () {
 
   it("blocks ledger close while committed submissions can still reveal", async function () {
     const { alice, treasury, ledger, submissions, minBond } = await deployFixture();
-    const commitment = await submissions.computeCommitment("bafy-abandoned-commit", alice.address, "abandoned");
+    const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
+      "bafy-abandoned-commit",
+      alice.address,
+      DA_HASH,
+      "abandoned"
+    );
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
     assert.equal(await submissions.openSubmissionCount(), 1n);
 

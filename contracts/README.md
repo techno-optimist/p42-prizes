@@ -13,8 +13,9 @@ red-team invariants that must hold before Base Sepolia.
 - `P42PayoutLedger`: final-denominator improvement accounting with a scoped
   one-time credit-recorder role; claims are zero before close and are not
   blocked by the pause for new actions.
-- `P42SubmissionManager`: commit storage with DA hash evidence,
-  pool-at-submission bond pricing, CID-bound reveal, challenge-window-gated
+- `P42SubmissionManager`: commit storage with DA hash bound into the on-chain
+  `p42:v1` commitment, pool-at-submission bond pricing, CID-bound reveal,
+  challenge-window-gated
   finalization with a permanence hash, finalization bond coverage check against
   projected entitlement, bond top-ups, solver bond return/slash accounting,
   close guards for unresolved submissions, abandoned commit/reveal expiry,
@@ -51,7 +52,7 @@ event/state consistency report under `deployments/base-sepolia/reconciliation/`.
 
 ## Still Missing For Gate 1
 
-- real DA/permanence receipt verification, not just nonzero hash gates
+- real DA/permanence receipt verification, not just hash gates
 - resolver-bond fraud window/slashing beyond immediate scaffold release
 - actual Base Sepolia deployment, committed manifest, and verified source/address artifacts
 - real committed Base Sepolia reconciliation report and production indexer

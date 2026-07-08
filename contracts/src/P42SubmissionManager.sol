@@ -235,7 +235,9 @@ contract P42SubmissionManager {
         if (bytes(solutionCid).length == 0) revert P42_EMPTY_SOLUTION_CID();
         if (improvementAtoms == 0) revert P42_ZERO_IMPROVEMENT();
 
-        bytes32 revealedCommitment = keccak256(bytes(commitPreimage(solutionCid, msg.sender, salt)));
+        bytes32 revealedCommitment = keccak256(
+            bytes(commitPreimageWithDa(solutionCid, msg.sender, submission.commitDaHash, salt))
+        );
         if (revealedCommitment != submission.commitment) revert P42_BAD_COMMITMENT_REVEAL();
 
         uint64 challengeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
@@ -361,6 +363,15 @@ contract P42SubmissionManager {
         return keccak256(bytes(commitPreimage(solutionCid, solver, salt)));
     }
 
+    function computeCommitment(
+        string calldata solutionCid,
+        address solver,
+        bytes32 commitDaHash,
+        string calldata salt
+    ) external pure returns (bytes32) {
+        return keccak256(bytes(commitPreimageWithDa(solutionCid, solver, commitDaHash, salt)));
+    }
+
     function commitPreimage(
         string calldata solutionCid,
         address solver,
@@ -373,6 +384,28 @@ contract P42SubmissionManager {
             solutionCid,
             "|solver:",
             _addressToLowerHex(solver),
+            "|salt:",
+            _uintToString(bytes(salt).length),
+            ":",
+            salt
+        );
+    }
+
+    function commitPreimageWithDa(
+        string calldata solutionCid,
+        address solver,
+        bytes32 commitDaHash,
+        string calldata salt
+    ) public pure returns (string memory) {
+        return string.concat(
+            "p42:v1|cid:",
+            _uintToString(bytes(solutionCid).length),
+            ":",
+            solutionCid,
+            "|solver:",
+            _addressToLowerHex(solver),
+            "|da:",
+            _bytes32ToLowerHex(commitDaHash),
             "|salt:",
             _uintToString(bytes(salt).length),
             ":",
@@ -404,6 +437,19 @@ contract P42SubmissionManager {
         output[0] = bytes1("0");
         output[1] = bytes1("x");
         for (uint256 i = 0; i < 20; i++) {
+            uint8 value = uint8(data[i]);
+            output[2 + i * 2] = symbols[value >> 4];
+            output[3 + i * 2] = symbols[value & 0x0f];
+        }
+        return string(output);
+    }
+
+    function _bytes32ToLowerHex(bytes32 data) private pure returns (string memory) {
+        bytes16 symbols = "0123456789abcdef";
+        bytes memory output = new bytes(66);
+        output[0] = bytes1("0");
+        output[1] = bytes1("x");
+        for (uint256 i = 0; i < 32; i++) {
             uint8 value = uint8(data[i]);
             output[2 + i * 2] = symbols[value >> 4];
             output[3 + i * 2] = symbols[value & 0x0f];
