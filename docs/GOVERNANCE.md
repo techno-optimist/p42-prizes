@@ -53,3 +53,45 @@ It may not:
 - alter a verifier hash for a funded pool,
 - finalize a disputed submission without transcript evidence,
 - redirect pool funds.
+
+## On-chain governance: `P42MultisigTimelock`
+
+`contracts/src/P42MultisigTimelock.sol` is the on-chain root of trust that
+replaces the single immutable EOA owner (the top real-value risk the deep audit
+and the autonomy debate both flagged). It is deployed as the `owner` of the P42
+contracts so **no single key** can pause, close, sweep fees, slash, or re-wire
+the protocol.
+
+- **M-of-N multisig.** A signer `schedule`s a privileged call; it executes only
+  after `threshold` signer confirmations.
+- **Timelock.** Execution is gated on `now >= scheduled + delay` — a public
+  window (e.g. 48h) in which the pending action is visible before it can land.
+- **Guardian veto.** The guardian may `cancel` any pending op (emergency brake).
+  It can ONLY cancel — never propose or execute — so it can delay governance but
+  never move funds. Signers cannot cancel (they simply withhold confirmations).
+- **Permissionless execute** once approved + past the timelock; **immutable
+  signers** in v1 (rotation = a governance-scheduled successor or redeploy).
+
+Proven live on Base Sepolia: `deployments/base-sepolia/governance-demo-run.json`
+(2-of-3 + 60s timelock enforced; single-signer and early execution blocked;
+guardian veto).
+
+### Production deploy options
+
+Because the P42 contracts have an **immutable** `owner`, there are two ways to
+put the live system under governance:
+
+1. **Governance-owned from deploy (no contract change).** Deploy the timelock,
+   deploy the P42 contracts with `owner = timelock`, then perform the one-shot
+   wiring (`setLedger` / `setCreditRecorder` / `setChallengeManager`) and problem
+   registration as **governance ops** (schedule → confirm → execute). The wiring
+   is itself timelock-gated and publicly observable — a feature at launch.
+2. **Ownable2Step transfer (recommended; requires a contract change + re-audit).**
+   Give the five P42 contracts a 2-step transferable owner, deploy with the
+   deployer as owner, do the wiring directly, then `transferOwnership(timelock)`
+   and have governance `acceptOwnership`. Cleaner operationally; adds a
+   transfer-ownership surface that must be audited.
+
+**Production still requires NAMED human signers, a named guardian, a real delay
+(e.g. 48h), rehearsal evidence, and external review** — the on-chain contract is
+the mechanism, not the attestation (`p42-prizes governance-signoff-validate`).

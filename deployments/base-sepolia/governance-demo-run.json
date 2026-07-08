@@ -1,0 +1,69 @@
+{
+  "schema": "p42-phase-gov/v1",
+  "what": "Multisig + timelock + guardian governance over the P42 contracts. A privileged action (pause) required 2-of-3 signer confirmations AND a 60s timelock before executing; a single signer could not execute; the guardian vetoed a pending op. This is the fix for the single-EOA-owner risk the audit and debate flagged.",
+  "contract": "contracts/src/P42MultisigTimelock.sol",
+  "timelock": "0xB14a09aC9a55bb0A9E88aa0FF840691F7B7525aE",
+  "governed_contract_ledger": "0xB387d0E76dB319502367f50d697a35E34C0a9ABC",
+  "config": {
+    "signers": 3,
+    "threshold": 2,
+    "delay_seconds": 60,
+    "guardian": "0xACcF6506112710469b0140cDF0236e2E07cBf50D"
+  },
+  "proven": [
+    "needs threshold confirmations (1-of-3 blocked)",
+    "needs timelock elapsed (early execute blocked)",
+    "permissionless execute after approval",
+    "guardian can veto a pending op"
+  ],
+  "events": [
+    {
+      "step": "fund s2",
+      "tx": "0x04c1084ca91ccdc0cc1e6b3f420159b5b2d8abee57c6f4b9011a9e348dcfaa01",
+      "explorer": "https://sepolia.basescan.org/tx/0x04c1084ca91ccdc0cc1e6b3f420159b5b2d8abee57c6f4b9011a9e348dcfaa01"
+    },
+    {
+      "step": "fund guardian",
+      "tx": "0xd91f87be6be170c36efd23d202aa199e056a7ec82eef0850b9c666608ff41ce5",
+      "explorer": "https://sepolia.basescan.org/tx/0xd91f87be6be170c36efd23d202aa199e056a7ec82eef0850b9c666608ff41ce5"
+    },
+    {
+      "step": "signer1 schedule pause",
+      "tx": "0xcc55a86fded21285978729f0cd6b369033780dba5e39286a031f64bf24c2ff54",
+      "explorer": "https://sepolia.basescan.org/tx/0xcc55a86fded21285978729f0cd6b369033780dba5e39286a031f64bf24c2ff54"
+    },
+    {
+      "step": "execute immediately",
+      "blocked": "NotReady"
+    },
+    {
+      "step": "execute after delay w/ 1 confirmation",
+      "blocked": "NotEnoughConfirmations"
+    },
+    {
+      "step": "signer2 confirm",
+      "tx": "0x54071dd5223ab83c9343bd6eec1369487196bfb64140ff88831b6b66dc57b671",
+      "explorer": "https://sepolia.basescan.org/tx/0x54071dd5223ab83c9343bd6eec1369487196bfb64140ff88831b6b66dc57b671"
+    },
+    {
+      "step": "execute (2-of-3 + timelock met)",
+      "tx": "0xe61e6bb941562f0c7169b0e6d76f624bb98a8d60f59e7c2316ab5609af42a180",
+      "explorer": "https://sepolia.basescan.org/tx/0xe61e6bb941562f0c7169b0e6d76f624bb98a8d60f59e7c2316ab5609af42a180"
+    },
+    {
+      "step": "signer1 schedule unpause",
+      "tx": "0x7af415a523b60853802ecb2319f65b31388b20fd81b953b228f19f91559a38d2",
+      "explorer": "https://sepolia.basescan.org/tx/0x7af415a523b60853802ecb2319f65b31388b20fd81b953b228f19f91559a38d2"
+    },
+    {
+      "step": "GUARDIAN cancel",
+      "tx": "0x1a6b19fd681b4027b76e0fc277b9b287a0d0b883aebd7f339b2de7667f7869fb",
+      "explorer": "https://sepolia.basescan.org/tx/0x1a6b19fd681b4027b76e0fc277b9b287a0d0b883aebd7f339b2de7667f7869fb"
+    },
+    {
+      "step": "execute vetoed op",
+      "blocked": "UnknownOp"
+    }
+  ],
+  "honest_note": "Signers here are agent-generated demo keys; PRODUCTION requires NAMED human signers + guardian. Deploying the full P42 system under governance means the one-shot wiring (setLedger/setCreditRecorder/setChallengeManager) also goes through governance — see docs/GOVERNANCE.md."
+}
