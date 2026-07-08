@@ -83,9 +83,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 <div className="mark-story">
                   <Mark size={40} animated />
                   <p>
-                    The mark is H₄, the order-4 Hadamard matrix — the protocol’s pilot problem, solved. Solid cells
-                    are +1, faint cells are −1; every pair of rows is orthogonal, defect 0/1. The logo itself passes{" "}
-                    <code>make verify</code>.
+                    The mark rests as an unsolved digital 42 display, then resolves into H₄, the order-4 Hadamard
+                    matrix. In the solved state, solid cells are +1, faint cells are −1; every pair of rows is
+                    orthogonal, defect 0/1. The witness itself passes <code>make verify</code>.
                   </p>
                 </div>
               </div>

@@ -249,8 +249,8 @@ export function HadamardEasterEgg() {
               <p className="smallcaps">The mark is not decoration</p>
               <h2 id="hadamard-dialog-title">H₄ verifies itself.</h2>
               <p>
-                The logo is the solved order-4 Hadamard instance: sixteen signs, six row-pair checks, one canonical
-                zero-defect witness.
+                The logo starts as an unsolved digital 42 display, then resolves into the order-4 Hadamard witness:
+                sixteen signs, six row-pair checks, one canonical zero-defect certificate.
               </p>
               <div className="proof-trace" aria-label="Hadamard row orthogonality trace">
                 {proofRows.map((row, index) => {

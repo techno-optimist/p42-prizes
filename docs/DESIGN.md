@@ -78,17 +78,19 @@ Derived from the evidence audit; these bind copy and layout, not just intent.
    array), glowing "live" dots — banned. A ledger is append-only and checkable or it is not called
    a ledger.
 
-## 3. Identity — the mark is a theorem
+## 3. Identity — the mark becomes a theorem
 
-**The mark is H₄, the order-4 Hadamard matrix** — the protocol's pilot problem, solved: a 4×4 grid
-of cells, solid where the entry is +1, faint where it is −1 (rows `++++`, `+-+-`, `++--`, `+--+`).
-Every pair of rows is orthogonal; the defect is `0/1`; the improvement is `1/1`. **The logo itself
-passes `make verify`.** That story is printed in the colophon of every page, which makes the mark
-the smallest instance of the design thesis: an ornament a forger would have to do mathematics to
-counterfeit.
+**The mark rests as an unsolved digital `42` display and resolves into H₄, the order-4 Hadamard
+matrix** — the protocol's pilot problem, solved. The base state is a seven-segment `42` over a faint
+4×4 candidate grid; the animated state cycles into cells that are solid where the H₄ entry is +1 and
+faint where it is −1 (rows `++++`, `+-+-`, `++--`, `+--+`). Every pair of rows is orthogonal; the
+defect is `0/1`; the improvement is `1/1`. **The resolved witness passes `make verify`.** That story
+is printed in the colophon of every page, which makes the mark the smallest instance of the design
+thesis: an ornament a forger would have to do mathematics to counterfeit.
 
-- Component: `web/src/components/Mark.tsx` (inherits `currentColor`; −1 cells at 18% opacity).
-- Favicon: `web/src/app/icon.svg` (ink cells on paper tile).
+- Component: `web/src/components/Mark.tsx` (inherits `currentColor`; base `42` display, animated H₄
+  solve cycle; −1 cells at 18% opacity in the solved state).
+- Favicon: `web/src/app/icon.svg` (static unsolved `42` base mark on paper tile).
 - Wordmark: "P42 Prizes" in the display serif beside the mark; no taglines inside the lockup.
 - The old assets (radar-ring logo, fake terminal screenshot, arena map render) are deleted, not
   merely unreferenced.

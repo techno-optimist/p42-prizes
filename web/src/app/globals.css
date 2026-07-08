@@ -190,33 +190,77 @@ pre,
 
 .p42-mark-cell {
   fill: currentColor;
+  opacity: 0.1;
   transform-box: fill-box;
   transform-origin: center;
 }
 
-.p42-mark-cell.is-minus {
-  opacity: 0.18;
+.p42-mark-digit-segment {
+  fill: currentColor;
+  opacity: 0.92;
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
 .p42-mark-animated .p42-mark-cell {
-  animation: mark-breathe 8.5s ease-in-out infinite;
-  animation-delay: calc(var(--mark-i) * 90ms);
+  animation: mark-cell-solve-cycle 9.6s ease-in-out infinite;
+  animation-delay: calc(var(--mark-i) * 45ms);
 }
 
-@keyframes mark-breathe {
+.p42-mark-animated .p42-mark-digit-segment {
+  animation: mark-digit-cycle 9.6s ease-in-out infinite;
+  animation-delay: calc(var(--segment-i) * 36ms);
+}
+
+@keyframes mark-cell-solve-cycle {
   0%,
-  78%,
+  18%,
   100% {
+    opacity: 0.1;
+    transform: scale(0.86);
+  }
+  24% {
+    opacity: 0.14;
+    transform: scale(0.74);
+  }
+  34%,
+  58% {
+    opacity: var(--mark-solved-opacity);
     transform: scale(1);
-    opacity: 1;
   }
-  84% {
-    transform: scale(0.82);
-    opacity: 0.5;
+  66% {
+    opacity: var(--mark-solved-opacity);
+    transform: scale(0.86);
   }
-  90% {
-    transform: scale(1.05);
+  74% {
+    opacity: 0.1;
+    transform: scale(0.92);
+  }
+}
+
+@keyframes mark-digit-cycle {
+  0%,
+  18%,
+  74%,
+  100% {
+    opacity: 0.92;
+    transform: scale(1);
+    filter: none;
+  }
+  22% {
     opacity: 1;
+    transform: scale(1.04);
+    filter: brightness(1.7);
+  }
+  34%,
+  58% {
+    opacity: 0.06;
+    transform: scale(0.94);
+    filter: none;
+  }
+  66% {
+    opacity: 0.16;
+    transform: scale(0.96);
   }
 }
 
