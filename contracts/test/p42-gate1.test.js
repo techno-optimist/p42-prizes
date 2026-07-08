@@ -769,25 +769,28 @@ describe("P42 Gate 1 contract scaffold", function () {
     // The resolver never posts a decision; anyone can time the challenge out.
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await challenges.connect(alice).expireChallenge(submissionId);
+    // The one-shot challenge slot is cleared so a fresh challenge stays
+    // possible in the re-armed window (F3).
     const expired = await challenges.challenges(submissionId);
-    assert.equal(expired.resolved, true);
-    assert.equal(expired.challengerWins, false);
+    assert.equal(expired.challenger, ethers.ZeroAddress);
     // No adjudication occurred, so the challenger's posted bond is returned.
     assert.equal(await challenges.claimableBondWei(challenger.address), required);
 
-    // The submission is back to Revealed; the solver can finalize and unblock close.
+    // The submission is back to Revealed with a re-armed challenge window
+    // (F5); once it elapses the solver can finalize and unblock close.
     assert.equal((await submissions.submissions(submissionId)).status, 2n);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
 
-    // A timed-out challenge cannot be re-expired or resolved afterwards.
+    // The cleared slot cannot be re-expired afterwards.
     await expectCustomError(
       challenges.expireChallenge(submissionId),
       challenges,
-      "P42_ALREADY_RESOLVED"
+      "P42_UNKNOWN_CHALLENGE"
     );
   });
 

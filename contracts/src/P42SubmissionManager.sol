@@ -371,6 +371,11 @@ contract P42SubmissionManager {
             _decrementOpenSubmission();
         } else {
             submission.status = SubmissionStatus.Revealed;
+            // Re-arm a fresh full challenge window. Without this the submission
+            // returns to Revealed with the STALE pre-challenge challengeEndsAt,
+            // so expireRevealed could immediately strip the prevailing solver's
+            // bond before they have any chance to finalize (F5).
+            submission.challengeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
         }
         emit SubmissionChallengeResolved(submissionId, challengerWins);
     }
@@ -383,6 +388,12 @@ contract P42SubmissionManager {
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Revealed);
         return ledger.provisionalEntitlement(submission.solver, submission.improvementAtoms);
+    }
+
+    /// @notice Minimal solver lookup used by the challenge manager to reject
+    /// self-challenges (F3). Reverts for unknown submissions.
+    function solverOf(uint256 submissionId) external view returns (address) {
+        return _requireSubmission(submissionId).solver;
     }
 
     function expireCommitted(uint256 submissionId) external {

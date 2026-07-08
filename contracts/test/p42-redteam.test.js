@@ -340,4 +340,122 @@ describe("P42 red-team attack coverage", function () {
     assert.equal((await submissions.submissions(aliceId)).status, 2n);
     assert.equal((await submissions.submissions(aliceId)).solver, alice.address);
   });
+
+  // ---------------------------------------------------------------------------
+  // F3 — self-challenge slot burn. A fraudulent solver challenges their own
+  // submission to consume the one-shot challenge slot, immunizing the fraud
+  // for the whole window, then expires it with both bonds refunded.
+  // F5 — stale challengeEndsAt. After the solver prevails in a challenge the
+  // submission returned to Revealed with the pre-challenge deadline, letting
+  // expireRevealed instantly strip the honest winner's bond.
+  // ---------------------------------------------------------------------------
+
+  // Commit + reveal as alice via plain signer transactions.
+  async function revealAsAlice(fixture) {
+    const { alice, submissions } = fixture;
+    return commitReveal(fixture, {
+      solverAddr: alice.address,
+      sendCommit: async (commitment, bond) => {
+        await submissions.connect(alice).commit(commitment, DA_HASH, { value: bond });
+      },
+      sendReveal: async (id, cid, improvement, salt) => {
+        await submissions.connect(alice).reveal(id, cid, 0, improvement, salt, "0x");
+      },
+    });
+  }
+
+  it("f3: a solver cannot self-challenge to burn the challenge slot, but an honest challenger still can", async function () {
+    const fixture = await deployFixture();
+    const { alice, bob, submissions, challenges } = fixture;
+    const { submissionId } = await revealAsAlice(fixture);
+    const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
+    const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("sock-puppet self challenge"));
+
+    // (a) The solver's own challenge is rejected outright.
+    await expectCustomError(
+      challenges.connect(alice).challenge(submissionId, reasonHash, { value: required }),
+      challenges,
+      "P42_SELF_CHALLENGE"
+    );
+    assert.equal((await submissions.submissions(submissionId)).status, 2n); // still Revealed
+
+    // (b) A third-party challenger is unaffected by the guard.
+    await challenges.connect(bob).challenge(submissionId, reasonHash, { value: required });
+    assert.equal((await submissions.submissions(submissionId)).status, 3n); // Challenged
+    assert.equal((await challenges.challenges(submissionId)).challenger, bob.address);
+  });
+
+  it("f3: an expired frivolous challenge frees the slot for a fresh challenger in the re-armed window", async function () {
+    const fixture = await deployFixture();
+    const { alice, bob, submissions, challenges } = fixture;
+    const carol = (await ethers.getSigners())[5];
+    const { submissionId } = await revealAsAlice(fixture);
+    const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
+
+    // Bob posts a frivolous challenge and lets it time out unresolved.
+    await challenges
+      .connect(bob)
+      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("frivolous")), { value: required });
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await challenges.expireChallenge(submissionId);
+
+    // The slot is cleared, bob's bond is refunded, the submission is Revealed
+    // again — and it is NOT immunized: the solver still cannot self-challenge...
+    assert.equal((await challenges.challenges(submissionId)).challenger, ethers.ZeroAddress);
+    assert.equal(await challenges.claimableBondWei(bob.address), required);
+    assert.equal((await submissions.submissions(submissionId)).status, 2n);
+    await expectCustomError(
+      challenges.connect(alice).challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("re-burn")), {
+        value: required,
+      }),
+      challenges,
+      "P42_SELF_CHALLENGE"
+    );
+
+    // ...and a different party can post a fresh challenge in the re-armed window.
+    await challenges
+      .connect(carol)
+      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("real fraud evidence")), { value: required });
+    assert.equal((await submissions.submissions(submissionId)).status, 3n);
+    assert.equal((await challenges.challenges(submissionId)).challenger, carol.address);
+  });
+
+  it("f5: a solver-favorable resolution re-arms the window so expireRevealed cannot instantly strip the bond", async function () {
+    const fixture = await deployFixture();
+    const { alice, bob, resolver, submissions, challenges, minBond } = fixture;
+    const { submissionId } = await revealAsAlice(fixture);
+    const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
+    await challenges
+      .connect(bob)
+      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("meritless dispute")), { value: required });
+
+    // Let far more than the original reveal-time window elapse before the
+    // resolver rules for the solver — the pre-challenge challengeEndsAt (and
+    // even its permanence grace) are now deep in the past.
+    await increaseTime(2n * CHALLENGE_WINDOW_SECONDS + 2n);
+    await challenges.connect(resolver).resolve(
+      submissionId,
+      false,
+      ethers.keccak256(ethers.toUtf8Bytes("solver prevails transcript")),
+      "ar://solver-prevails",
+      ethers.keccak256(ethers.toUtf8Bytes("solver prevails verdict")),
+      { value: await challenges.resolverDecisionBondWei() }
+    );
+    assert.equal((await submissions.submissions(submissionId)).status, 2n); // Revealed again
+
+    // With the stale deadline, expireRevealed would strip the honest winner's
+    // bond right now. The re-armed window blocks it (and gates finalize).
+    await expectCustomError(submissions.expireRevealed(submissionId), submissions, "P42_PERMANENCE_GRACE_OPEN");
+    await expectCustomError(
+      submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH),
+      submissions,
+      "P42_CHALLENGE_WINDOW_OPEN"
+    );
+
+    // After the fresh window the solver finalizes and recovers their bond.
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
+    assert.equal((await submissions.submissions(submissionId)).status, 4n); // Finalized
+    assert.equal(await submissions.claimableBondWei(alice.address), minBond);
+  });
 });

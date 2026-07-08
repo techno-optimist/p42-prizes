@@ -5,6 +5,7 @@ interface IP42SubmissionChallengeHook {
     function markChallenged(uint256 submissionId) external;
     function resolveChallenge(uint256 submissionId, bool challengerWins, address beneficiary) external;
     function disputedEntitlementWei(uint256 submissionId) external view returns (uint256);
+    function solverOf(uint256 submissionId) external view returns (address);
 }
 
 /// @notice Optimistic challenge scaffold for Phase 1.
@@ -18,6 +19,7 @@ contract P42ChallengeManager {
     error P42_BAD_SUBMISSION();
     error P42_EMPTY_REASON();
     error P42_ALREADY_CHALLENGED();
+    error P42_SELF_CHALLENGE();
     error P42_UNKNOWN_CHALLENGE();
     error P42_ALREADY_RESOLVED();
     error P42_INSUFFICIENT_CHALLENGE_BOND(uint256 required, uint256 received);
@@ -171,6 +173,13 @@ contract P42ChallengeManager {
         Challenge storage existing = challenges[submissionId];
         if (existing.challenger != address(0)) revert P42_ALREADY_CHALLENGED();
 
+        // A solver must not challenge their own submission: a free self-
+        // challenge would consume the challenge slot and shield a fraudulent
+        // submission for the whole window, then be expired with both bonds
+        // refunded (F3). Sock puppets at other addresses are further defused
+        // by clearing the slot on expiry (see expireChallenge).
+        if (submissionManager.solverOf(submissionId) == msg.sender) revert P42_SELF_CHALLENGE();
+
         // Size the counter-bond from the ledger-derived disputed entitlement so
         // a caller cannot collapse the value-proportional bond to the floor by
         // under-reporting it (H2). The submission manager is the trusted oracle.
@@ -262,15 +271,23 @@ contract P42ChallengeManager {
             revert P42_DISPUTE_WINDOW_OPEN(current.disputeEndsAt, uint64(block.timestamp));
         }
 
-        current.resolved = true;
-        current.challengerWins = false;
+        address challenger = current.challenger;
         uint256 refund = current.challengeBondWei;
-        claimableBondWei[current.challenger] += refund;
+        claimableBondWei[challenger] += refund;
+        // Clear the challenge slot instead of marking it resolved: the
+        // submission returns to Revealed with a re-armed window (see
+        // P42SubmissionManager.resolveChallenge), so a DIFFERENT party can
+        // still post a fresh challenge. Without this, a sock-puppet challenge
+        // left to expire would burn the one-shot slot and permanently immunize
+        // a fraudulent submission (F3). No resolver bond can exist on this
+        // path (resolve() was never called), so deleting the record cannot
+        // orphan resolverBonds accounting.
+        delete challenges[submissionId];
         // Return the submission to Revealed so the solver can finalize; the
         // beneficiary argument is unused because the solver prevails by default.
         submissionManager.resolveChallenge(submissionId, false, address(0));
 
-        emit ChallengeExpired(submissionId, current.challenger, refund);
+        emit ChallengeExpired(submissionId, challenger, refund);
         emit Resolved(submissionId, false);
     }
 
