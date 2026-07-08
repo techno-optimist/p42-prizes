@@ -492,6 +492,131 @@ def test_runner_plan_waits_for_stale_lease_reap_before_starting_next_job(tmp_pat
     assert plan["stale_running_job_ids"] == ["running-1"]
 
 
+def _runner_work_once(path: Path, transcript_dir: Path, *, available_mb: int) -> subprocess.CompletedProcess[str]:
+    return run_cli(
+        "runner-work-once",
+        "--queue",
+        str(path),
+        "--transcripts",
+        str(transcript_dir),
+        "--total-memory-mb",
+        "131072",
+        "--available-memory-mb",
+        str(available_mb),
+        "--swap-used-mb",
+        "0",
+        "--max-running",
+        "1",
+        "--reserve-memory-mb",
+        "4096",
+        "--max-swap-used-mb",
+        "1024",
+        "--memory-safety-factor",
+        "2",
+        "--lease-seconds",
+        "3600",
+        "--now-utc",
+        "2026-07-08T12:00:00Z",
+    )
+
+
+def _read_transcript(path: str) -> dict:
+    transcript = json.loads(Path(path).read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "schemas" / "runner-transcript.schema.json").read_text())
+    jsonschema.validate(transcript, schema)
+    return transcript
+
+
+def test_runner_work_once_persists_successful_transcript_and_queue_state(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "local-success",
+                "status": "queued",
+                "required_memory_mb": 512,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/valid-4.json",
+                "chain_block_number": 1,
+                "chain_log_index": 0,
+            }
+        ],
+    )
+
+    completed = _runner_work_once(queue, transcripts, available_mb=8192)
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    transcript = _read_transcript(result["transcript_path"])
+    assert transcript["job_id"] == "local-success"
+    assert transcript["verifier"]["ok"] is True
+    assert transcript["verifier"]["valid"] is True
+    updated = json.loads(queue.read_text(encoding="utf-8"))
+    job = updated["jobs"][0]
+    assert job["status"] == "succeeded"
+    assert job["transcript_hash"] == transcript["transcript_hash"]
+    assert "lease_expires_at_utc" not in job
+
+
+def test_runner_work_once_waits_without_mutating_when_memory_is_low(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "local-wait",
+                "status": "queued",
+                "required_memory_mb": 4096,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/valid-4.json",
+            }
+        ],
+    )
+
+    completed = _runner_work_once(queue, transcripts, available_mb=8192)
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["decision"] == "wait"
+    assert result["reason"] == "memory_guard_tripped"
+    updated = json.loads(queue.read_text(encoding="utf-8"))
+    assert updated["jobs"][0]["status"] == "queued"
+    assert not transcripts.exists()
+
+
+def test_runner_work_once_marks_invalid_solution_failed_with_transcript(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "local-invalid",
+                "status": "queued",
+                "required_memory_mb": 512,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/lying-claim.json",
+            }
+        ],
+    )
+
+    completed = _runner_work_once(queue, transcripts, available_mb=8192)
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    transcript = _read_transcript(result["transcript_path"])
+    assert transcript["verifier"]["ok"] is False
+    assert transcript["verifier"]["valid"] is False
+    assert transcript["verifier"]["report"]["reason"] == "NOT_STRICT_IMPROVEMENT"
+    assert transcript["verifier"]["report_hash"].startswith("sha256:")
+    updated = json.loads(queue.read_text(encoding="utf-8"))
+    assert updated["jobs"][0]["status"] == "failed"
+    assert updated["jobs"][0]["transcript_hash"] == transcript["transcript_hash"]
+
+
 def test_verifier_wall_clock_timeout_is_enforced(tmp_path: Path) -> None:
     schemas = tmp_path / "schemas"
     schemas.mkdir()

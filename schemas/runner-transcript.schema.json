@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/runner-transcript-v1.json",
+  "title": "P42 Runner Transcript v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "job_id",
+    "generated_at_utc",
+    "started_at_utc",
+    "problem",
+    "solution",
+    "da",
+    "verifier",
+    "transcript_hash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-runner-transcript/v1" },
+    "job_id": { "type": "string", "minLength": 1 },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "started_at_utc": { "type": "string", "minLength": 1 },
+    "problem": { "type": "string", "minLength": 1 },
+    "solution": { "type": "string", "minLength": 1 },
+    "da": {
+      "anyOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "required": ["ok"],
+          "additionalProperties": true,
+          "properties": {
+            "ok": { "type": "boolean" },
+            "evidence_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "error": { "type": "string" }
+          }
+        }
+      ]
+    },
+    "verifier": {
+      "type": "object",
+      "required": ["ok", "valid", "elapsed_ms"],
+      "additionalProperties": true,
+      "properties": {
+        "ok": { "type": "boolean" },
+        "valid": { "type": "boolean" },
+        "elapsed_ms": { "type": "integer", "minimum": 0 },
+        "returncode": { "type": "integer" },
+        "report_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "error": { "type": "string" },
+        "report": { "type": "object" }
+      }
+    },
+    "transcript_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

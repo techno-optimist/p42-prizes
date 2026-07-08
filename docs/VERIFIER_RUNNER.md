@@ -51,9 +51,9 @@ are:
 ## Queue And OOM Guard
 
 Verifier execution must be queued. A submission burst should increase latency,
-not memory pressure. Queue/plan schemas live at
-`schemas/runner-queue.schema.json` and `schemas/runner-plan.schema.json`. The
-default runner policy is:
+not memory pressure. Queue, plan, and transcript schemas live at
+`schemas/runner-queue.schema.json`, `schemas/runner-plan.schema.json`, and
+`schemas/runner-transcript.schema.json`. The default runner policy is:
 
 - `max_running = 1` until every launch problem has measured peak RSS.
 - FIFO by chain event order, not API arrival order.
@@ -106,6 +106,42 @@ Minimal queue shape:
 The launch rule is fail-closed: if queue state is malformed, a stale lease needs
 reaping, memory headroom is too low, swap usage is above threshold, or the active
 runner slot is full, no verifier starts and no auto-challenge key is touched.
+
+## Worker Once
+
+`runner-plan` only decides whether a job may start. The local worker path leases
+one queued job, runs optional `da-verify`, runs the exact verifier, writes a
+canonical transcript, and updates the queue:
+
+```bash
+PYTHONPATH=src python3 -m p42_prizes.cli runner-work-once \
+  --queue runner-queue.json \
+  --transcripts runs/verifier-transcripts \
+  --max-running 1 \
+  --reserve-memory-mb 8192 \
+  --max-swap-used-mb 1024 \
+  --memory-safety-factor 2
+```
+
+Additional job fields used by the worker:
+
+```json
+{
+  "job_id": "base-sepolia:123:4",
+  "status": "queued",
+  "required_memory_mb": 4096,
+  "problem": "problems/hadamard-mini",
+  "solution": "submissions/base-sepolia-123-4/solution.json",
+  "da_evidence": "submissions/base-sepolia-123-4/da-evidence.json"
+}
+```
+
+When the runner starts a job, it writes `status: "running"` and a lease expiry.
+On completion it writes `status: "succeeded"` or `status: "failed"` plus
+`transcript_path` and `transcript_hash`. Invalid submissions are failed, but the
+transcript still records the reproduced `VerdictReport` and report hash whenever
+the verifier emitted canonical JSON. Low-memory or full-runner decisions return a
+`p42-runner-plan/v1` `wait` response and leave the queue untouched.
 
 ## Gate 1 Runner Dry Run
 

@@ -26,6 +26,7 @@ from p42_prizes.runner_queue import (
     memory_snapshot_from_proc,
     plan_runner_queue,
 )
+from p42_prizes.runner_worker import RunnerWorkerError, run_next_job_once
 from p42_prizes.verdict import canonical_json
 
 
@@ -199,6 +200,46 @@ def _cmd_runner_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _runner_memory_from_args(args: argparse.Namespace) -> MemorySnapshot:
+    if (
+        args.total_memory_mb is None
+        or args.available_memory_mb is None
+        or args.swap_used_mb is None
+    ):
+        return memory_snapshot_from_proc()
+    return MemorySnapshot(
+        total_mb=args.total_memory_mb,
+        available_mb=args.available_memory_mb,
+        swap_used_mb=args.swap_used_mb,
+    )
+
+
+def _runner_policy_from_args(args: argparse.Namespace) -> RunnerPolicy:
+    return RunnerPolicy(
+        max_running=args.max_running,
+        reserve_memory_mb=args.reserve_memory_mb,
+        max_swap_used_mb=args.max_swap_used_mb,
+        memory_safety_factor=args.memory_safety_factor,
+    )
+
+
+def _cmd_runner_work_once(args: argparse.Namespace) -> int:
+    try:
+        result = run_next_job_once(
+            args.queue,
+            args.transcripts,
+            memory=_runner_memory_from_args(args),
+            policy=_runner_policy_from_args(args),
+            now_utc=args.now_utc,
+            lease_seconds=args.lease_seconds,
+        )
+    except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(canonical_json(result))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -304,6 +345,23 @@ def build_parser() -> argparse.ArgumentParser:
     runner_plan.add_argument("--memory-safety-factor", type=float, default=2.0)
     runner_plan.add_argument("--now-utc")
     runner_plan.set_defaults(func=_cmd_runner_plan)
+
+    runner_work = subparsers.add_parser(
+        "runner-work-once",
+        help="lease one queued verifier job, run it, write transcript, update queue",
+    )
+    runner_work.add_argument("--queue", required=True)
+    runner_work.add_argument("--transcripts", required=True)
+    runner_work.add_argument("--lease-seconds", type=int, default=3600)
+    runner_work.add_argument("--total-memory-mb", type=int)
+    runner_work.add_argument("--available-memory-mb", type=int)
+    runner_work.add_argument("--swap-used-mb", type=int)
+    runner_work.add_argument("--max-running", type=int, default=1)
+    runner_work.add_argument("--reserve-memory-mb", type=int, default=8192)
+    runner_work.add_argument("--max-swap-used-mb", type=int, default=1024)
+    runner_work.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_work.add_argument("--now-utc")
+    runner_work.set_defaults(func=_cmd_runner_work_once)
 
     return parser
 
