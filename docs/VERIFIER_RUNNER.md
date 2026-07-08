@@ -64,6 +64,13 @@ not memory pressure. Queue, plan, and transcript schemas live at
   box begins sustained swapping.
 - The worker starts a queued job only when
   `available_memory_mb >= reserve_memory_mb + ceil(required_memory_mb * safety_factor)`.
+- If that minimum exceeds total host memory, the runner returns
+  `job_exceeds_host_capacity` and leaves the queue untouched for operator
+  action; it does not skip FIFO to run later jobs.
+- On Linux runner hosts, every verifier subprocess is launched with an
+  address-space limit of `ceil(required_memory_mb * safety_factor)` via
+  `RLIMIT_AS`, so an adversarial or buggy verifier fails its own transcript
+  instead of putting the worker host into OOM pressure.
 - `required_memory_mb` comes from the problem manifest/runtime admission evidence,
   then gets raised to observed peak RSS after dry runs.
 - Queue depth, oldest queued age, active lease, memory headroom, and swap usage
@@ -159,12 +166,40 @@ PYTHONPATH=src python3 -m p42_prizes.cli runner-drain \
 ```
 
 `runner-drain` re-reads memory before every lease. If the queue is empty it exits
-with a `p42-runner-loop/v1` summary. If the oldest queued job does not fit, swap
-is above threshold, a runner slot is already occupied, or a stale lease needs
-operator action, it records a `wait` event and sleeps before trying again. This
-is the burst behavior we want: many submissions create queue depth and latency,
-not simultaneous verifier processes or box-level OOM pressure. Use
-`--max-jobs` for a bounded batch and `--max-iterations` for rehearsals.
+with a `p42-runner-loop/v1` summary. If the oldest queued job does not fit, can
+never fit the host, swap is above threshold, a runner slot is already occupied,
+or a stale lease needs operator action, it records a `wait` event and sleeps
+before trying again. This is the burst behavior we want: many submissions create
+queue depth and latency, not simultaneous verifier processes or box-level OOM
+pressure. Use `--max-jobs` for a bounded batch and `--max-iterations` for
+rehearsals.
+
+Transcripts include `resource_limits.required_memory_mb`,
+`resource_limits.child_address_space_limit_mb`, and whether the address-space
+guard was supported on that host. A transcript whose verifier error says it
+exceeded the memory limit before emitting `VerdictReport` is a failed
+submission/run, not a runner outage, as long as the worker stays healthy and
+the queue continues draining.
+
+## Portal Shortcut Guard
+
+The Render portal still has a Phase 0 developer shortcut that invokes the local
+canonical verifier for `hadamard-mini`. That path is not the settlement runner,
+but it is also guarded: `web/src/lib/verifier-runner.ts` keeps one active
+verifier slot per Node process, queues burst requests FIFO, and checks Linux
+`/proc/meminfo` (or explicit `P42_VERIFIER_*` overrides) before spawning Python.
+If the queue is full or the host cannot provide the configured memory headroom
+before `P42_VERIFIER_QUEUE_MAX_WAIT_MS`, the API returns a public
+`VERIFIER_QUEUE_BUSY` 503 instead of starting another verifier.
+
+Production defaults should stay conservative:
+
+- `P42_VERIFIER_MAX_QUEUE_DEPTH=25`
+- `P42_VERIFIER_REQUIRED_MEMORY_MB=128` for the current mini pilot; raise per
+  problem from admission evidence.
+- `P42_VERIFIER_RESERVE_MEMORY_MB=512`
+- `P42_VERIFIER_MEMORY_SAFETY_FACTOR=2`
+- `P42_VERIFIER_MAX_SWAP_USED_MB=512`
 
 ## Alerts And Challenge Candidates
 

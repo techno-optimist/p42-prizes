@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import jsonschema
 
@@ -418,6 +419,7 @@ def test_runner_plan_starts_oldest_queued_job_when_memory_is_safe(tmp_path: Path
     assert plan["reason"] == "ready"
     assert plan["selected_job_id"] == "sub-1"
     assert plan["min_available_memory_mb"] == 6144
+    assert plan["oldest_queued_age_seconds"] == 0
 
 
 def test_runner_plan_waits_when_memory_guard_would_risk_oom(tmp_path: Path) -> None:
@@ -433,6 +435,29 @@ def test_runner_plan_waits_when_memory_guard_would_risk_oom(tmp_path: Path) -> N
     assert plan["reason"] == "memory_guard_tripped"
     assert plan["selected_job_id"] == "sub-1"
     assert plan["min_available_memory_mb"] == 12288
+
+
+def test_runner_plan_waits_when_job_exceeds_host_capacity(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "too-large",
+                "status": "queued",
+                "required_memory_mb": 70000,
+                "created_at_utc": "2026-07-08T11:59:00Z",
+            }
+        ],
+    )
+
+    plan = _runner_plan(queue, available_mb=131072)
+
+    assert plan["decision"] == "wait"
+    assert plan["reason"] == "job_exceeds_host_capacity"
+    assert plan["selected_job_id"] == "too-large"
+    assert plan["min_available_memory_mb"] == 144096
+    assert plan["oldest_queued_age_seconds"] == 60
 
 
 def test_runner_plan_waits_when_swap_guard_is_tripped(tmp_path: Path) -> None:
@@ -624,6 +649,11 @@ def test_runner_work_once_persists_successful_transcript_and_queue_state(tmp_pat
     assert transcript["job_id"] == "local-success"
     assert transcript["verifier"]["ok"] is True
     assert transcript["verifier"]["valid"] is True
+    limits = transcript["resource_limits"]
+    assert limits["required_memory_mb"] == 512
+    assert limits["memory_safety_factor"] == 2.0
+    assert limits["child_address_space_limit_mb"] == 1024
+    assert isinstance(limits["address_space_limit_supported"], bool)
     updated = json.loads(queue.read_text(encoding="utf-8"))
     job = updated["jobs"][0]
     assert job["status"] == "succeeded"
@@ -686,6 +716,68 @@ def test_runner_work_once_marks_invalid_solution_failed_with_transcript(tmp_path
     updated = json.loads(queue.read_text(encoding="utf-8"))
     assert updated["jobs"][0]["status"] == "failed"
     assert updated["jobs"][0]["transcript_hash"] == transcript["transcript_hash"]
+
+
+def test_runner_work_once_contains_memory_hungry_verifier(tmp_path: Path) -> None:
+    resource_module = pytest.importorskip("resource")
+    if not sys.platform.startswith("linux") or not hasattr(resource_module, "RLIMIT_AS"):
+        pytest.skip("Linux address-space limit is not available on this platform")
+
+    root = tmp_path / "repo"
+    (root / "schemas").mkdir(parents=True)
+    (root / "schemas" / "problem.schema.json").write_text("{}")
+    problem = root / "problems" / "memory-hungry"
+    verifier = problem / "verifier"
+    verifier.mkdir(parents=True)
+    (problem / "problem.yaml").write_text(
+        "\n".join(
+            [
+                "schema_version: p42-problem/v1",
+                "problem_id: memory-hungry",
+                "verifier:",
+                '  command: "python3 verifier/allocate.py --solution {solution}"',
+                "  max_compute:",
+                "    wall_seconds: 5",
+                "    memory_mb: 96",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (verifier / "allocate.py").write_text(
+        "import json\n"
+        "blob = bytearray(512 * 1024 * 1024)\n"
+        "print(json.dumps({'schema_version':'p42-verdict/v1','valid':True,'solution_hash':'sha256:' + '1' * 64}))\n",
+        encoding="utf-8",
+    )
+    solution = problem / "solution.json"
+    solution.write_text("{}", encoding="utf-8")
+
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "memory-contained",
+                "status": "queued",
+                "required_memory_mb": 96,
+                "problem": str(problem),
+                "solution": str(solution),
+            }
+        ],
+    )
+
+    completed = _runner_work_once(queue, transcripts, available_mb=8192)
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    transcript = _read_transcript(result["transcript_path"])
+    assert transcript["resource_limits"]["child_address_space_limit_mb"] == 192
+    assert transcript["verifier"]["ok"] is False
+    assert transcript["verifier"]["valid"] is False
+    assert "memory limit" in transcript["verifier"]["error"].lower() or "verdictreport" in transcript["verifier"]["error"].lower()
+    updated = json.loads(queue.read_text(encoding="utf-8"))
+    assert updated["jobs"][0]["status"] == "failed"
 
 
 def test_runner_alerts_are_empty_for_clean_valid_transcript(tmp_path: Path) -> None:

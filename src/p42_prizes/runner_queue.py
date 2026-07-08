@@ -39,6 +39,7 @@ def plan_runner_queue(
     now_utc: str | None = None,
 ) -> dict[str, Any]:
     policy = policy or RunnerPolicy()
+    _validate_memory(memory)
     _validate_policy(policy)
     now = _parse_utc(now_utc) if now_utc else datetime.now(timezone.utc)
     now_text = _format_utc(now)
@@ -66,6 +67,7 @@ def plan_runner_queue(
         "reason": "",
         "selected_job_id": None,
         "queued_count": len(queued),
+        "oldest_queued_age_seconds": _oldest_queued_age_seconds(queued, now),
         "active_running_count": len(active_running),
         "stale_running_job_ids": [job["job_id"] for job in stale_running],
         "memory": asdict(memory),
@@ -86,6 +88,12 @@ def plan_runner_queue(
     required_memory_mb = _required_memory_mb(selected)
     min_available = policy.reserve_memory_mb + math.ceil(required_memory_mb * policy.memory_safety_factor)
     base["min_available_memory_mb"] = min_available
+    if min_available > memory.total_mb:
+        return {
+            **base,
+            "reason": "job_exceeds_host_capacity",
+            "selected_job_id": selected["job_id"],
+        }
     if memory.available_mb < min_available:
         return {
             **base,
@@ -122,14 +130,38 @@ def memory_snapshot_from_proc(meminfo_path: str | Path = "/proc/meminfo") -> Mem
 
 
 def _validate_policy(policy: RunnerPolicy) -> None:
-    if policy.max_running < 1:
+    if not isinstance(policy.max_running, int) or isinstance(policy.max_running, bool) or policy.max_running < 1:
         raise RunnerQueueError("policy.max_running must be >= 1")
-    if policy.reserve_memory_mb < 0:
+    if (
+        not isinstance(policy.reserve_memory_mb, int)
+        or isinstance(policy.reserve_memory_mb, bool)
+        or policy.reserve_memory_mb < 0
+    ):
         raise RunnerQueueError("policy.reserve_memory_mb must be >= 0")
-    if policy.max_swap_used_mb < 0:
+    if (
+        not isinstance(policy.max_swap_used_mb, int)
+        or isinstance(policy.max_swap_used_mb, bool)
+        or policy.max_swap_used_mb < 0
+    ):
         raise RunnerQueueError("policy.max_swap_used_mb must be >= 0")
-    if policy.memory_safety_factor < 1:
-        raise RunnerQueueError("policy.memory_safety_factor must be >= 1")
+    if (
+        not isinstance(policy.memory_safety_factor, (int, float))
+        or isinstance(policy.memory_safety_factor, bool)
+        or not math.isfinite(policy.memory_safety_factor)
+        or policy.memory_safety_factor < 1
+    ):
+        raise RunnerQueueError("policy.memory_safety_factor must be a finite number >= 1")
+
+
+def _validate_memory(memory: MemorySnapshot) -> None:
+    for key in ("total_mb", "available_mb", "swap_used_mb"):
+        value = getattr(memory, key)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise RunnerQueueError(f"memory.{key} must be a non-negative integer")
+    if memory.total_mb < 1:
+        raise RunnerQueueError("memory.total_mb must be >= 1")
+    if memory.available_mb > memory.total_mb:
+        raise RunnerQueueError("memory.available_mb must be <= memory.total_mb")
 
 
 def _validate_jobs(queue: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -153,6 +185,11 @@ def _validate_jobs(queue: Mapping[str, Any]) -> list[dict[str, Any]]:
         if status not in JOB_STATUSES:
             raise RunnerQueueError(f"queue.jobs[{index}].status must be one of {', '.join(sorted(JOB_STATUSES))}")
         _required_memory_mb(job, prefix=f"queue.jobs[{index}]")
+        created_at = job.get("created_at_utc")
+        if created_at is not None:
+            if not isinstance(created_at, str):
+                raise RunnerQueueError(f"queue.jobs[{index}].created_at_utc must be a UTC timestamp string")
+            _parse_utc(created_at)
         normalized.append(dict(job))
     return normalized
 
@@ -175,6 +212,17 @@ def _job_sort_key(job: Mapping[str, Any]) -> tuple[int, int, str, str]:
     if not isinstance(created_at, str):
         created_at = ""
     return (block_number, log_index, created_at, str(job["job_id"]))
+
+
+def _oldest_queued_age_seconds(queued: list[Mapping[str, Any]], now: datetime) -> int | None:
+    created: list[datetime] = []
+    for job in queued:
+        raw = job.get("created_at_utc")
+        if isinstance(raw, str):
+            created.append(_parse_utc(raw))
+    if not created:
+        return None
+    return max(0, int((now - min(created)).total_seconds()))
 
 
 def _parse_utc(value: str) -> datetime:

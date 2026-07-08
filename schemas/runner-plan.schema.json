@@ -10,6 +10,7 @@
     "reason",
     "selected_job_id",
     "queued_count",
+    "oldest_queued_age_seconds",
     "active_running_count",
     "stale_running_job_ids",
     "memory",
@@ -24,6 +25,7 @@
     "reason": { "type": "string", "minLength": 1 },
     "selected_job_id": { "type": ["string", "null"] },
     "queued_count": { "type": "integer", "minimum": 0 },
+    "oldest_queued_age_seconds": { "type": ["integer", "null"], "minimum": 0 },
     "active_running_count": { "type": "integer", "minimum": 0 },
     "stale_running_job_ids": {
       "type": "array",

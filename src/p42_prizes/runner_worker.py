@@ -4,10 +4,12 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import shlex
 import subprocess
+import sys
 import time
 from typing import Any, Callable, Iterator, Mapping
 
@@ -20,6 +22,11 @@ from p42_prizes.runner_queue import (
     plan_runner_queue,
 )
 from p42_prizes.verdict import canonical_json, sha256_bytes
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - resource is POSIX-only.
+    resource = None  # type: ignore[assignment]
 
 
 RUNNER_TRANSCRIPT_SCHEMA_VERSION = "p42-runner-transcript/v1"
@@ -42,11 +49,12 @@ def run_next_job_once(
     if lease_seconds < 60:
         raise RunnerWorkerError("lease_seconds must be at least 60")
     now = _parse_or_now(now_utc)
+    effective_policy = policy or RunnerPolicy()
     queue_file = Path(queue_path)
     transcript_root = Path(transcript_dir)
 
     with _locked_queue(queue_file) as queue:
-        plan = plan_runner_queue(queue, memory=memory, policy=policy, now_utc=_format_utc(now))
+        plan = plan_runner_queue(queue, memory=memory, policy=effective_policy, now_utc=_format_utc(now))
         if plan["decision"] != "start":
             return plan
         job_id = plan["selected_job_id"]
@@ -56,7 +64,7 @@ def run_next_job_once(
         job["lease_expires_at_utc"] = _format_utc(now + timedelta(seconds=lease_seconds))
 
     transcript_root.mkdir(parents=True, exist_ok=True)
-    transcript = _run_job(job, transcript_root)
+    transcript = _run_job(job, transcript_root, policy=effective_policy)
 
     finished_at = _parse_or_now(None)
     with _locked_queue(queue_file) as queue:
@@ -186,6 +194,7 @@ def _loop_event_from_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "reason": result.get("reason"),
         "selected_job_id": result.get("selected_job_id"),
         "queued_count": result.get("queued_count"),
+        "oldest_queued_age_seconds": result.get("oldest_queued_age_seconds"),
         "active_running_count": result.get("active_running_count"),
         "min_available_memory_mb": result.get("min_available_memory_mb"),
         "memory": result.get("memory"),
@@ -202,11 +211,12 @@ def _find_job(queue: Mapping[str, Any], job_id: str | None) -> dict[str, Any]:
     raise RunnerWorkerError(f"runner job not found: {job_id}")
 
 
-def _run_job(job: Mapping[str, Any], transcript_dir: Path) -> dict[str, Any]:
+def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPolicy) -> dict[str, Any]:
     job_id = _require_string(job, "job_id")
     problem = Path(_require_string(job, "problem")).resolve()
     solution = Path(_require_string(job, "solution")).resolve()
     da_evidence = job.get("da_evidence")
+    resource_limits = _resource_limits_for_job(job, policy)
 
     started = _parse_or_now(None)
     da_result: dict[str, Any] | None = None
@@ -224,7 +234,11 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path) -> dict[str, Any]:
         else:
             da_result = {"ok": True, "evidence_hash": evidence["evidence_hash"]}
 
-    verifier = _run_verifier_for_transcript(problem, solution)
+    verifier = _run_verifier_for_transcript(
+        problem,
+        solution,
+        child_address_space_limit_mb=resource_limits["child_address_space_limit_mb"],
+    )
 
     if da_result is not None and da_result["ok"] is False:
         verifier["ok"] = False
@@ -238,6 +252,7 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path) -> dict[str, Any]:
         "problem": str(problem),
         "solution": str(solution),
         "da": da_result,
+        "resource_limits": resource_limits,
         "verifier": verifier,
     }
     transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
@@ -254,7 +269,45 @@ def _require_string(mapping: Mapping[str, Any], key: str) -> str:
     return value
 
 
-def _run_verifier_for_transcript(problem: Path, solution: Path) -> dict[str, Any]:
+def _resource_limits_for_job(job: Mapping[str, Any], policy: RunnerPolicy) -> dict[str, Any]:
+    required = job.get("required_memory_mb")
+    if not isinstance(required, int) or isinstance(required, bool) or required < 1:
+        raise RunnerWorkerError("job.required_memory_mb must be a positive integer")
+    return {
+        "required_memory_mb": required,
+        "memory_safety_factor": policy.memory_safety_factor,
+        "child_address_space_limit_mb": math.ceil(required * policy.memory_safety_factor),
+        "address_space_limit_supported": _address_space_limit_supported(),
+    }
+
+
+def _address_space_limit_supported() -> bool:
+    return sys.platform.startswith("linux") and resource is not None and hasattr(resource, "RLIMIT_AS")
+
+
+def _memory_limit_preexec(limit_mb: int):
+    if not _address_space_limit_supported():
+        return None
+
+    limit_bytes = int(limit_mb) * 1024 * 1024
+
+    def apply_limit() -> None:
+        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        new_soft = limit_bytes
+        new_hard = hard
+        if hard != resource.RLIM_INFINITY:
+            new_soft = min(limit_bytes, hard)
+        resource.setrlimit(resource.RLIMIT_AS, (new_soft, new_hard))
+
+    return apply_limit
+
+
+def _run_verifier_for_transcript(
+    problem: Path,
+    solution: Path,
+    *,
+    child_address_space_limit_mb: int,
+) -> dict[str, Any]:
     started = time.monotonic()
     try:
         manifest = load_manifest(problem)
@@ -272,6 +325,7 @@ def _run_verifier_for_transcript(problem: Path, solution: Path) -> dict[str, Any
             capture_output=True,
             check=False,
             timeout=wall_seconds,
+            preexec_fn=_memory_limit_preexec(child_address_space_limit_mb),
         )
     except subprocess.TimeoutExpired:
         return {
@@ -301,7 +355,7 @@ def _run_verifier_for_transcript(problem: Path, solution: Path) -> dict[str, Any
 
     stdout = completed.stdout.strip()
     if not stdout:
-        result["error"] = "verifier emitted no VerdictReport JSON"
+        result["error"] = _no_stdout_error(completed.returncode, stderr_tail)
         return result
     try:
         report = json.loads(stdout)
@@ -326,6 +380,23 @@ def _run_verifier_for_transcript(problem: Path, solution: Path) -> dict[str, Any
     else:
         result["error"] = f"verifier returned non-zero exit code {completed.returncode}"
     return result
+
+
+def _no_stdout_error(returncode: int, stderr_tail: str) -> str:
+    if _looks_like_memory_failure(returncode, stderr_tail):
+        return "verifier exceeded memory limit before emitting VerdictReport JSON"
+    if returncode < 0:
+        return f"verifier terminated by signal {-returncode} before emitting VerdictReport JSON"
+    return "verifier emitted no VerdictReport JSON"
+
+
+def _looks_like_memory_failure(returncode: int, stderr_tail: str) -> bool:
+    lowered = stderr_tail.lower()
+    if "memoryerror" in lowered or "cannot allocate memory" in lowered or "out of memory" in lowered:
+        return True
+    # Linux frequently reports SIGKILL for cgroup/OOM termination. Under an
+    # rlimit this still means the submission was contained and failed closed.
+    return returncode == -9
 
 
 def _safe_job_id(job_id: str) -> str:

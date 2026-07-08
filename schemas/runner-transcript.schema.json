@@ -11,6 +11,7 @@
     "problem",
     "solution",
     "da",
+    "resource_limits",
     "verifier",
     "transcript_hash"
   ],
@@ -36,6 +37,22 @@
           }
         }
       ]
+    },
+    "resource_limits": {
+      "type": "object",
+      "required": [
+        "required_memory_mb",
+        "memory_safety_factor",
+        "child_address_space_limit_mb",
+        "address_space_limit_supported"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "required_memory_mb": { "type": "integer", "minimum": 1 },
+        "memory_safety_factor": { "type": "number", "minimum": 1 },
+        "child_address_space_limit_mb": { "type": "integer", "minimum": 1 },
+        "address_space_limit_supported": { "type": "boolean" }
+      }
     },
     "verifier": {
       "type": "object",
