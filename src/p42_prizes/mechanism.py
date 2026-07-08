@@ -7,7 +7,9 @@ from typing import Any, Iterable
 from p42_prizes.verdict import parse_rational, rational_to_string
 
 
-MAX_FEE_BPS = 500
+# Hard ceiling on the protocol fee. Matches the public "capped 2.5% protocol fee" commitment in
+# the README; the settlement code must never allow a higher fee than what is promised.
+MAX_FEE_BPS = 250
 MAX_BOND_BPS = 10_000
 MAX_THRESHOLD_BPS = 10_000
 

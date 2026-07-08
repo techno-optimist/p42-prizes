@@ -45,6 +45,7 @@ describe("mutable API routes", () => {
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "p42-api-state-"));
     process.env.P42_PORTAL_STATE_PATH = path.join(stateDir, "state.json");
+    process.env.P42_ALLOW_DEV_SALT = "1";
     resetPortalStateForTests();
     resetRateLimitsForTests();
   });
@@ -53,6 +54,7 @@ describe("mutable API routes", () => {
     resetPortalStateForTests();
     resetRateLimitsForTests();
     delete process.env.P42_PORTAL_STATE_PATH;
+    delete process.env.P42_ALLOW_DEV_SALT;
     delete process.env.P42_RATE_LIMIT_COMMIT_LIMIT;
     delete process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS;
     delete process.env.P42_PYTHON;
@@ -167,6 +169,53 @@ describe("mutable API routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       error:
         "Phase 0 commit requires solution_cid=sha256:<raw-solution-hash>; DA-backed external CIDs are gated until commit-time availability is implemented",
+    });
+    expect(readPortalState().commits).toHaveLength(0);
+  });
+
+  it("does not expose solution_cid in the pre-reveal commit event (anti-sniping)", async () => {
+    const signed = await signedCommitFields();
+    const response = await commitPost(
+      jsonRequest("/api/submissions/commit", {
+        problem_id: 1,
+        agent_name: "CHRONOS",
+        solver_address: solverAddress,
+        solution_cid: signed.solutionCid,
+        commit_hash: signed.commitHash,
+        solver_signature: signed.solverSignature,
+      }),
+    );
+    expect(response.status).toBe(201);
+
+    const created = readPortalState().events.filter((event) => event.type === "commit.created");
+    expect(created).toHaveLength(1);
+    const payload = created[0].payload as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("solutionCid");
+    expect(payload).not.toHaveProperty("solution_cid");
+    // The commit record still retains the CID internally so reveal can verify it.
+    expect(readPortalState().commits[0].solutionCid).toBe(signed.solutionCid);
+
+    // The public events endpoint must not surface the CID before reveal either.
+    const eventsResponse = await eventsGet(new NextRequest("http://localhost/api/events"));
+    const eventsBody = await eventsResponse.json();
+    expect(JSON.stringify(eventsBody)).not.toContain(signed.solutionCid);
+  });
+
+  it("rejects dev_salt commits unless P42_ALLOW_DEV_SALT is enabled", async () => {
+    delete process.env.P42_ALLOW_DEV_SALT;
+    const response = await commitPost(
+      jsonRequest("/api/submissions/commit", {
+        problem_id: 1,
+        agent_name: "CHRONOS",
+        solver_address: solverAddress,
+        solution_cid: sha256SolutionCid(solutionRaw),
+        dev_salt: "right-salt",
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "dev_salt is disabled unless P42_ALLOW_DEV_SALT=1 (local development only)",
     });
     expect(readPortalState().commits).toHaveLength(0);
   });

@@ -197,10 +197,12 @@ export function createCommit(input: {
       subjectId: record.id,
       problemId: record.problemId,
       actor: record.solverAddress,
+      // Do NOT expose solutionCid before reveal. It is sha256(solution); publishing it in the
+      // public event stream (GET /api/events) lets a competitor brute-force an enumerable
+      // solution space and front-run the reveal. The CID is only revealed post-reveal.
       payload: {
         agentName: record.agentName,
         solverAddress: record.solverAddress,
-        solutionCid: record.solutionCid,
         commitHash: record.commitHash,
         commitAlgorithm: record.commitAlgorithm,
       },
@@ -221,28 +223,10 @@ export async function revealCommit(input: {
     const problem = getProblemById(record.problemId);
     if (!problem) throw new ApiError("problem not found", 404);
     const verdict = await runCanonicalVerifier({ problemSlug: input.problemSlug, solutionRaw: input.solutionRaw });
-    const settlement = verdict.valid
-      ? incrementalFrontierCredit(problem, verdict.score, allSubmissions())
-      : { credit: "0/1", priorBest: frontierFallback(problem), eligible: false };
 
-    const now = new Date();
-    const windowEnd = new Date(now.getTime() + 72 * 60 * 60 * 1000);
-    const submission: Submission = {
-      id: `sub_${randomUUID().slice(0, 8)}`,
-      problemId: record.problemId,
-      problemSlug: input.problemSlug,
-      agentName: record.agentName,
-      state: verdict.valid && settlement.eligible ? "revealed" : "rejected",
-      score: verdict.score,
-      improvement: settlement.credit,
-      credit: settlement.credit,
-      payoutEth: "0.000",
-      solutionCid: record.solutionCid,
-      commitHash: record.commitHash,
-      submittedAt: now.toISOString(),
-      windowEndsAt: windowEnd.toISOString(),
-      transcriptCid: null,
-    };
+    let settled:
+      | { submission: Submission; settlement: { credit: string; priorBest: string; eligible: boolean } }
+      | undefined;
     updatePortalState((nextState) => {
       const storedCommit = nextState.commits.find((commit) => commit.id === input.commitId);
       if (!storedCommit) throw new ApiError("commit not found", 404);
@@ -250,6 +234,32 @@ export async function revealCommit(input: {
       if (storedCommit.revealState !== "pending") {
         throw new ApiError("commit reveal reservation missing", 409);
       }
+
+      // Settle against the write-time frontier while holding the state lock. Computing the credit
+      // here (instead of before the lock, off a snapshot) prevents two concurrent reveals of
+      // different commits from each being credited the same delta over a stale prior best.
+      const settlement = verdict.valid
+        ? incrementalFrontierCredit(problem, verdict.score, [...submissions, ...nextState.submissions])
+        : { credit: "0/1", priorBest: frontierFallback(problem), eligible: false };
+
+      const now = new Date();
+      const windowEnd = new Date(now.getTime() + 72 * 60 * 60 * 1000);
+      const submission: Submission = {
+        id: `sub_${randomUUID().slice(0, 8)}`,
+        problemId: record.problemId,
+        problemSlug: input.problemSlug,
+        agentName: record.agentName,
+        state: verdict.valid && settlement.eligible ? "revealed" : "rejected",
+        score: verdict.score,
+        improvement: settlement.credit,
+        credit: settlement.credit,
+        payoutEth: "0.000",
+        solutionCid: record.solutionCid,
+        commitHash: record.commitHash,
+        submittedAt: now.toISOString(),
+        windowEndsAt: windowEnd.toISOString(),
+        transcriptCid: null,
+      };
       storedCommit.revealed = true;
       delete storedCommit.revealState;
       nextState.submissions.push(submission);
@@ -269,8 +279,10 @@ export async function revealCommit(input: {
           eligible: settlement.eligible,
         },
       });
+      settled = { submission, settlement };
     });
-    return { submission, verdict, settlement };
+    if (!settled) throw new Error("reveal settlement did not complete");
+    return { submission: settled.submission, verdict, settlement: settled.settlement };
   } catch (error) {
     cancelCommitRevealReservation(record.id);
     throw error;

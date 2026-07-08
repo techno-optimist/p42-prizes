@@ -48,7 +48,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
 
     const payload = await response.json();
     if (!response.ok) {
-      return json({ error: "Coinbase Onramp session creation failed", details: payload }, { status: 502 });
+      // Do not echo the upstream Coinbase error body to the client; it can leak integration
+      // internals. Log server-side and return a generic failure.
+      console.error("Coinbase Onramp session creation failed", { status: response.status, payload });
+      return json({ error: "Coinbase Onramp session creation failed" }, { status: 502 });
     }
 
     return json({

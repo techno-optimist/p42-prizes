@@ -35,8 +35,12 @@ export async function POST(req: Request) {
     if (problem.status === "locked" || problem.status === "resolved" || problem.slug !== "hadamard-mini") {
       return json({ error: "Submissions are enabled only for runnable Phase 0 pilot problems" }, { status: 409 });
     }
-    if (body.dev_salt && process.env.NODE_ENV === "production" && process.env.P42_ALLOW_DEV_SALT !== "1") {
-      return json({ error: "dev_salt is disabled outside local development" }, { status: 400 });
+    // dev_salt lets the server compute the commit hash and skips the solver signature, so it is a
+    // signature bypass. Gate it on an explicit opt-in flag in EVERY environment (not just when
+    // NODE_ENV === "production") — otherwise any preview/staging/testnet deploy where NODE_ENV is
+    // not exactly "production" lets anyone commit under an arbitrary solver_address.
+    if (body.dev_salt && process.env.P42_ALLOW_DEV_SALT !== "1") {
+      return json({ error: "dev_salt is disabled unless P42_ALLOW_DEV_SALT=1 (local development only)" }, { status: 400 });
     }
     if (!body.commit_hash && !body.dev_salt) {
       return json({ error: "commit_hash is required unless dev_salt is supplied for local simulation" }, { status: 400 });
