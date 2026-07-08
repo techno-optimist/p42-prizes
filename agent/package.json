@@ -1,0 +1,11 @@
+{
+  "name": "p42-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Autonomous P42 solver/operator agent client (Phase 1 plumbing). Drives the full on-chain lifecycle — self-verify, commit, reveal, finalize, claim — unattended against a deployed P42 manifest.",
+  "bin": { "p42-solve": "solver.mjs" },
+  "dependencies": {
+    "ethers": "^6.17.0"
+  }
+}
