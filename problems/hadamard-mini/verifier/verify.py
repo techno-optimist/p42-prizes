@@ -17,6 +17,9 @@ VERIFIER_IMAGE = "sha256:local-dev"
 ORDER = 4
 SEED_DEFECT = Fraction(6, 1)
 MIN_IMPROVEMENT = Fraction(1, 6)
+# An order-4 solution is a few dozen bytes; reject anything wildly oversized
+# before doing any parsing work (HARDENING.md R4: bounded before scoring).
+MAX_SOLUTION_BYTES = 4096
 
 
 class VerifierFailure(Exception):
@@ -27,6 +30,11 @@ class VerifierFailure(Exception):
 
 
 def parse_solution(raw: bytes) -> list[list[int]]:
+    if len(raw) > MAX_SOLUTION_BYTES:
+        raise VerifierFailure(
+            "OVERSIZED",
+            f"solution is {len(raw)} bytes; limit is {MAX_SOLUTION_BYTES}",
+        )
     try:
         data = json.loads(raw.decode("utf-8"))
     except Exception as exc:
@@ -80,7 +88,9 @@ def report_for_solution(path: Path) -> VerdictReport:
         rows = parse_solution(raw)
         defect, violations = compute_defect(rows)
         score = Fraction(defect, 1)
-        improvement = max(Fraction(0, 1), (SEED_DEFECT - score) / SEED_DEFECT)
+        # Exact rational ratio: Fraction(numerator, denominator) with Fraction
+        # operands stays exact and avoids the float that `/` would introduce.
+        improvement = max(Fraction(0, 1), Fraction(SEED_DEFECT - score, SEED_DEFECT))
         valid = improvement >= MIN_IMPROVEMENT
         reason = "" if valid else "NOT_STRICT_IMPROVEMENT"
         details: dict[str, Any] = {

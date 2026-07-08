@@ -3,6 +3,7 @@ import { keccak_256 } from "@noble/hashes/sha3";
 import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 import { verifyMessage } from "ethers";
 import { getProblemById, submissions } from "@/lib/data";
+import { ClientError } from "@/lib/errors";
 import { incrementalFrontierCredit } from "@/lib/frontier";
 import type { Submission } from "@/lib/types";
 import { appendPortalEvent, readPortalState, updatePortalState, type CommitRecord } from "@/lib/portal-store";
@@ -16,7 +17,7 @@ export function allSubmissions(): Submission[] {
 }
 
 export function normalizeSolverAddress(address: string): string {
-  if (!EVM_ADDRESS.test(address)) throw new Error("solver_address must be a 20-byte 0x-prefixed EVM address");
+  if (!EVM_ADDRESS.test(address)) throw new ClientError("solver_address must be a 20-byte 0x-prefixed EVM address");
   return address.toLowerCase();
 }
 
@@ -45,7 +46,7 @@ export function commitAuthorizationMessage(input: {
   commitHash: string;
 }): string {
   const solverAddress = normalizeSolverAddress(input.solverAddress);
-  if (!isCommitHash(input.commitHash)) throw new Error("commit_hash must be a 32-byte 0x-prefixed hash");
+  if (!isCommitHash(input.commitHash)) throw new ClientError("commit_hash must be a 32-byte 0x-prefixed hash");
   return [
     "P42 Prizes commit authorization",
     "version: p42-commit-v0",
@@ -69,10 +70,10 @@ export function verifySolverSignature(input: {
   try {
     recovered = verifyMessage(commitAuthorizationMessage(input), input.signature).toLowerCase();
   } catch {
-    throw new Error("solver_signature is not a valid EIP-191 signature");
+    throw new ClientError("solver_signature is not a valid EIP-191 signature");
   }
   if (recovered !== expected) {
-    throw new Error("solver_signature does not recover solver_address");
+    throw new ClientError("solver_signature does not recover solver_address");
   }
 }
 
@@ -82,11 +83,11 @@ export function sha256SolutionCid(rawSolution: string): string {
 
 function assertSolutionMatchesCid(solutionCid: string, rawSolution: string) {
   if (!solutionCid.startsWith("sha256:")) {
-    throw new Error("Phase 0 reveal requires solution_cid=sha256:<raw-solution-hash>; external CID retrieval is not wired");
+    throw new ClientError("Phase 0 reveal requires solution_cid=sha256:<raw-solution-hash>; external CID retrieval is not wired");
   }
   const actual = sha256SolutionCid(rawSolution);
   if (actual !== solutionCid.toLowerCase()) {
-    throw new Error("revealed solution bytes do not match committed solution_cid");
+    throw new ClientError("revealed solution bytes do not match committed solution_cid");
   }
 }
 
@@ -104,9 +105,9 @@ export function createCommit(input: {
     : undefined;
   const commitHashValue = input.commitHash ?? computedHash;
   if (!commitHashValue) {
-    throw new Error("commit_hash is required unless dev_salt is supplied for local simulation");
+    throw new ClientError("commit_hash is required unless dev_salt is supplied for local simulation");
   }
-  if (!isCommitHash(commitHashValue)) throw new Error("commit_hash must be a 32-byte 0x-prefixed hash");
+  if (!isCommitHash(commitHashValue)) throw new ClientError("commit_hash must be a 32-byte 0x-prefixed hash");
 
   const record: CommitRecord = {
     id: `commit_${randomUUID().slice(0, 8)}`,
@@ -120,6 +121,9 @@ export function createCommit(input: {
     revealed: false,
   };
   updatePortalState((state) => {
+    if (state.commits.some((commit) => commit.commitHash === record.commitHash)) {
+      throw new ClientError("a commit with this commit_hash already exists");
+    }
     state.commits.push(record);
     appendPortalEvent(state, {
       type: "commit.created",
@@ -147,70 +151,102 @@ export async function revealCommit(input: {
 }) {
   const state = readPortalState();
   const record = state.commits.find((commit) => commit.id === input.commitId);
-  if (!record) throw new Error("commit not found");
-  if (record.revealed) throw new Error("commit already revealed");
+  if (!record) throw new ClientError("commit not found");
+  if (record.revealed) throw new ClientError("commit already revealed");
   const problem = getProblemById(record.problemId);
-  if (!problem) throw new Error("problem not found");
-  if (problem.slug !== input.problemSlug) throw new Error("problem does not match commit");
+  if (!problem) throw new ClientError("problem not found");
+  if (problem.slug !== input.problemSlug) throw new ClientError("problem does not match commit");
 
   const solverAddress = normalizeSolverAddress(input.solverAddress);
-  if (solverAddress !== record.solverAddress) throw new Error("solver_address does not match commit owner");
+  if (solverAddress !== record.solverAddress) throw new ClientError("solver_address does not match commit owner");
 
   const openedHash = commitHash({ solutionCid: record.solutionCid, solverAddress, salt: input.salt });
-  if (openedHash !== record.commitHash) throw new Error("commit preimage does not match recorded hash");
+  if (openedHash !== record.commitHash) throw new ClientError("commit preimage does not match recorded hash");
 
   if (input.problemSlug !== "hadamard-mini") {
-    throw new Error("external verifier runner is not wired in the Phase 0 portal");
+    throw new ClientError("external verifier runner is not wired in the Phase 0 portal");
   }
   assertSolutionMatchesCid(record.solutionCid, input.solutionRaw);
 
-  const verdict = await runCanonicalVerifier({ problemSlug: input.problemSlug, solutionRaw: input.solutionRaw });
-  const settlement = verdict.valid
-    ? incrementalFrontierCredit(problem, verdict.score, allSubmissions())
-    : { credit: "0/1", priorBest: frontierFallback(problem), eligible: false };
-
-  const now = new Date();
-  const windowEnd = new Date(now.getTime() + 72 * 60 * 60 * 1000);
-  const submission: Submission = {
-    id: `sub_${randomUUID().slice(0, 8)}`,
-    problemId: record.problemId,
-    problemSlug: input.problemSlug,
-    agentName: record.agentName,
-    state: verdict.valid && settlement.eligible ? "revealed" : "rejected",
-    score: verdict.score,
-    improvement: settlement.credit,
-    credit: settlement.credit,
-    payoutEth: "0.000",
-    solutionCid: record.solutionCid,
-    commitHash: record.commitHash,
-    submittedAt: now.toISOString(),
-    windowEndsAt: windowEnd.toISOString(),
-    transcriptCid: null,
-  };
-  updatePortalState((nextState) => {
-    const storedCommit = nextState.commits.find((commit) => commit.id === input.commitId);
-    if (!storedCommit) throw new Error("commit not found");
-    if (storedCommit.revealed) throw new Error("commit already revealed");
-    storedCommit.revealed = true;
-    nextState.submissions.push(submission);
-    appendPortalEvent(nextState, {
-      type: submission.state === "revealed" ? "submission.revealed" : "submission.rejected",
-      subjectId: submission.id,
-      problemId: submission.problemId,
-      actor: solverAddress,
-      payload: {
-        commitId: input.commitId,
-        commitHash: record.commitHash,
-        solutionCid: record.solutionCid,
-        solutionHash: verdict.solution_hash,
-        valid: verdict.valid,
-        score: verdict.score,
-        credit: submission.credit,
-        eligible: settlement.eligible,
-      },
-    });
+  // Reserve the reveal atomically before the expensive verifier call so two
+  // concurrent reveals of the same commit can't both run the verifier and both
+  // record a submission.
+  updatePortalState((state) => {
+    const storedCommit = state.commits.find((commit) => commit.id === input.commitId);
+    if (!storedCommit) throw new ClientError("commit not found");
+    if (storedCommit.revealed) throw new ClientError("commit already revealed");
+    if (storedCommit.revealState === "pending") throw new ClientError("commit reveal already in progress");
+    storedCommit.revealState = "pending";
   });
-  return { submission, verdict, settlement };
+
+  try {
+    const verdict = await runCanonicalVerifier({ problemSlug: input.problemSlug, solutionRaw: input.solutionRaw });
+
+    let submission!: Submission;
+    let settlement!: ReturnType<typeof incrementalFrontierCredit>;
+    updatePortalState((nextState) => {
+      const storedCommit = nextState.commits.find((commit) => commit.id === input.commitId);
+      if (!storedCommit) throw new ClientError("commit not found");
+      if (storedCommit.revealed) throw new ClientError("commit already revealed");
+
+      // Compute the credit against the frontier under the same lock that
+      // persists it, using the committed submissions, so a concurrent reveal
+      // can't be credited for the same delta.
+      settlement = verdict.valid
+        ? incrementalFrontierCredit(problem, verdict.score, [...submissions, ...nextState.submissions])
+        : { credit: "0/1", priorBest: frontierFallback(problem), eligible: false };
+
+      const now = new Date();
+      const windowEnd = new Date(now.getTime() + 72 * 60 * 60 * 1000);
+      submission = {
+        id: `sub_${randomUUID().slice(0, 8)}`,
+        problemId: record.problemId,
+        problemSlug: input.problemSlug,
+        agentName: record.agentName,
+        state: verdict.valid && settlement.eligible ? "revealed" : "rejected",
+        score: verdict.score,
+        improvement: settlement.credit,
+        credit: settlement.credit,
+        payoutEth: "0.000",
+        solutionCid: record.solutionCid,
+        commitHash: record.commitHash,
+        submittedAt: now.toISOString(),
+        windowEndsAt: windowEnd.toISOString(),
+        transcriptCid: null,
+      };
+
+      storedCommit.revealed = true;
+      delete storedCommit.revealState;
+      nextState.submissions.push(submission);
+      appendPortalEvent(nextState, {
+        type: submission.state === "revealed" ? "submission.revealed" : "submission.rejected",
+        subjectId: submission.id,
+        problemId: submission.problemId,
+        actor: solverAddress,
+        payload: {
+          commitId: input.commitId,
+          commitHash: record.commitHash,
+          solutionCid: record.solutionCid,
+          solutionHash: verdict.solution_hash,
+          valid: verdict.valid,
+          score: verdict.score,
+          credit: submission.credit,
+          eligible: settlement.eligible,
+        },
+      });
+    });
+    return { submission, verdict, settlement };
+  } catch (error) {
+    // Release the reservation so a transient verifier failure doesn't wedge the
+    // commit as permanently un-revealable.
+    updatePortalState((state) => {
+      const storedCommit = state.commits.find((commit) => commit.id === input.commitId);
+      if (storedCommit && !storedCommit.revealed && storedCommit.revealState === "pending") {
+        delete storedCommit.revealState;
+      }
+    });
+    throw error;
+  }
 }
 
 function frontierFallback(problem: NonNullable<ReturnType<typeof getProblemById>>): string {

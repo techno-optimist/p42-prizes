@@ -39,3 +39,4 @@ NEXT_PUBLIC_BASE_PATH=/prizes
 - Do not present placeholder pools as real ETH.
 - Do not enable mainnet Coinbase Onramp, real deposits, or settlement until audit, legal review, N-host determinism CI, and the verifiable resolver gates are closed.
 - Every problem page must preserve the machine route, exact verifier command, challenge-window terms, and deposit donation wallet.
+- Treat `docs/GATE_LEDGER.md` as the current production-readiness source of truth. A gate is not closed because code exists; it closes only when the evidence link and human/external sign-off fields are filled.

@@ -9,6 +9,11 @@ from p42_prizes.verdict import parse_rational, rational_to_string
 
 MAX_FEE_BPS = 500
 MAX_BOND_BPS = 10_000
+# The on-chain settlement target is Solidity uint256. Improvements whose reduced
+# common denominator exceeds this cannot be represented exactly on-chain, so the
+# reference model refuses them rather than settling a case the contract can't.
+# Production must additionally pin a fixed per-problem denominator (BUILD.md §3).
+MAX_SETTLEMENT_DENOMINATOR = 2**256 - 1
 
 
 @dataclass(frozen=True)
@@ -16,17 +21,24 @@ class Credit:
     solver: str
     improvement: Fraction
 
+    def __post_init__(self) -> None:
+        # Enforced for every construction path, not just Credit.parse: the spec
+        # defines improvement as Delta = max(0, ...) > 0, and a negative credit
+        # would let another payout row exceed the pool (conservation break).
+        if not self.solver:
+            raise ValueError("solver cannot be empty")
+        if not isinstance(self.improvement, Fraction):
+            raise TypeError("improvement must be a Fraction")
+        if self.improvement <= 0:
+            raise ValueError("improvement must be positive")
+
     @classmethod
     def parse(cls, value: str) -> "Credit":
         if "=" not in value:
             raise ValueError("credit must have form solver=num/den")
         solver, raw_improvement = value.split("=", 1)
         solver = solver.strip()
-        if not solver:
-            raise ValueError("solver cannot be empty")
         improvement = parse_rational(raw_improvement)
-        if improvement <= 0:
-            raise ValueError("improvement must be positive")
         return cls(solver=solver, improvement=improvement)
 
 
@@ -63,6 +75,7 @@ def settle_pool(
     pool_wei: int,
     credits: Iterable[Credit],
     fee_bps: int = 250,
+    max_denominator: int = MAX_SETTLEMENT_DENOMINATOR,
 ) -> dict[str, Any]:
     if pool_wei < 0:
         raise ValueError("pool_wei must be non-negative")
@@ -71,19 +84,30 @@ def settle_pool(
 
     credit_list = list(credits)
     total_improvement = sum((credit.improvement for credit in credit_list), Fraction(0, 1))
-    fee_wei = pool_wei * fee_bps // 10_000
-    available_wei = pool_wei - fee_wei
+
+    if total_improvement.denominator > max_denominator:
+        raise ValueError(
+            "combined improvement denominator "
+            f"{total_improvement.denominator} exceeds the settlement bound "
+            f"{max_denominator}; pin a fixed per-problem denominator"
+        )
 
     if total_improvement == 0:
+        # No accepted improvement means no payout occurred, so the protocol fee
+        # (a skim on payouts, not on funding) is zero and the whole pool is
+        # refundable to funders (BUILD.md §3, CLOSE refund rules).
         return {
             "pool_wei": pool_wei,
             "fee_bps": fee_bps,
-            "fee_wei": fee_wei,
-            "available_wei": available_wei,
+            "fee_wei": 0,
+            "available_wei": pool_wei,
             "total_improvement": "0/1",
             "payouts": [],
-            "dust_wei": available_wei,
+            "dust_wei": pool_wei,
         }
+
+    fee_wei = pool_wei * fee_bps // 10_000
+    available_wei = pool_wei - fee_wei
 
     payouts: list[dict[str, Any]] = []
     paid = 0

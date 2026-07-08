@@ -30,7 +30,17 @@ Environment:
 
 ```bash
 NEXT_PUBLIC_BASE_PATH=/prizes
+P42_PORTAL_STATE_PATH=/app/data/portal-state.json
 ```
+
+Disk:
+
+```bash
+mountPath=/app/data
+sizeGB=1
+```
+
+The disk-backed JSON state is still a Phase 0 demo ledger only. Real settlement requires on-chain events plus a transactional indexer; do not treat the Render disk as the source of truth for funded pools.
 
 Health check path:
 

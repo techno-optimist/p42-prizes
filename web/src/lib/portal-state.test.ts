@@ -12,7 +12,7 @@ import {
   sha256SolutionCid,
   verifySolverSignature,
 } from "@/lib/portal-state";
-import { readPortalState, resetPortalStateForTests } from "@/lib/portal-store";
+import { portalStatePath, readPortalState, resetPortalStateForTests } from "@/lib/portal-store";
 
 const solverAddress = "0x1111111111111111111111111111111111111111";
 const solverWallet = new Wallet("0x59c6995e998f97a5a0044966f0945387f6d6616d07a16c6fbfcaeab4f7fca6e5");
@@ -36,6 +36,10 @@ describe("portal commit-reveal state", () => {
     const preimage = commitPreimage({ solutionCid: "bafy-test", solverAddress, salt: "s3cret" });
     expect(preimage).toBe("p42:v0|cid:9:bafy-test|solver:0x1111111111111111111111111111111111111111|salt:6:s3cret");
     expect(commitHash({ solutionCid: "bafy-test", solverAddress, salt: "s3cret" })).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  it("honors the explicit portal state path outside test-only code paths", () => {
+    expect(portalStatePath()).toBe(path.join(stateDir, "state.json"));
   });
 
   it("verifies solver address ownership for commit authorization", async () => {

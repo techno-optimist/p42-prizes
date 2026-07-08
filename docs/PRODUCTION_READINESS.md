@@ -4,6 +4,9 @@ Status: Phase 0 local/testnet-shaped portal. Not audited. Not legally reviewed.
 No real ETH should be accepted until every Phase 2 gate in this register is
 green.
 
+See [`GATE_LEDGER.md`](GATE_LEDGER.md) for the current gate-by-gate readiness
+ledger, exit criteria, and external sign-offs.
+
 ## Current Evidence
 
 | Area | Current state | Required before real ETH |
@@ -40,12 +43,13 @@ green.
 - Commit/reveal, verifier shortcut, and idempotency decisions append hash-chained diagnostic events exposed through `GET /api/events`.
 - Non-runnable arena-derived problems are locked in portal data.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
-- CI runs problem validation, Python tests, web tests, production build, and npm audit.
+- Local/Render verification covers problem validation, certified-path exactness lint, Python tests, seed verification, web typecheck, web tests, production build, and `npm audit`. Publishing the GitHub Actions workflow is pending a repo token or human owner with `workflow` scope.
 
 ## Known Production Blockers
 
 - No transactional database or event-sourced ledger for multi-instance/serverless production.
-- The current event ledger is local diagnostic evidence only; it has no file lock, fsync proof, shared storage, or chain/indexer source of truth.
+- The current event ledger is local diagnostic evidence only; state mutations now take a local advisory file lock and fsync on write, but there is still no shared storage or chain/indexer source of truth for multi-instance production.
+- Render can be configured with `P42_PORTAL_STATE_PATH=/app/data/portal-state.json` on a persistent disk for demo continuity, but that disk is not settlement truth.
 - No distributed idempotency store with atomic reserve/commit semantics.
 - No production wallet session policy, distributed rate limiting, API keys, abuse controls, or payload quarantine.
 - No on-chain contracts, indexer, or Base Sepolia deployment.
@@ -55,6 +59,7 @@ green.
 - No N-host determinism CI artifacts.
 - No bonded resolver implementation.
 - No external security audit or legal sign-off.
+- No published GitHub Actions workflow yet; the current OAuth token cannot push `.github/workflows/*` without `workflow` scope.
 
 ## Verification Commands
 

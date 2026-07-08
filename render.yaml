@@ -13,3 +13,9 @@ services:
     envVars:
       - key: NEXT_PUBLIC_BASE_PATH
         value: /prizes
+      - key: P42_PORTAL_STATE_PATH
+        value: /app/data/portal-state.json
+    disk:
+      name: p42-prizes-state
+      mountPath: /app/data
+      sizeGB: 1

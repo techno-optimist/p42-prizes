@@ -14,6 +14,29 @@ DISALLOWED_IMPORT_ROOTS = {
     "socket",
     "requests",
     "urllib",
+    "http",
+    "subprocess",
+    "ctypes",
+    "importlib",
+    "platform",
+    "uuid",
+    "tempfile",
+    "threading",
+    "multiprocessing",
+    "numpy",
+    "operator",
+    "scipy",
+    "pandas",
+    "torch",
+}
+
+# `os` and `sys` have legitimate plumbing uses (exit codes, path building), so
+# they are not banned wholesale; only their nondeterministic entry points are.
+DISALLOWED_ATTRIBUTES = {
+    ("os", "urandom"),
+    ("os", "getrandom"),
+    ("os", "getenv"),
+    ("os", "environ"),
 }
 
 FLOAT_DTYPE_NAMES = {
@@ -22,6 +45,18 @@ FLOAT_DTYPE_NAMES = {
     "float32",
     "float64",
     "double",
+}
+
+# Callables that defeat static analysis by dispatching to code chosen at
+# runtime; on the certified path they can smuggle banned imports or float math
+# past the name/import checks below.
+DYNAMIC_DISPATCH_NAMES = {
+    "eval",
+    "exec",
+    "compile",
+    "__import__",
+    "getattr",
+    "setattr",
 }
 
 
@@ -53,6 +88,32 @@ class ExactPathVisitor(ast.NodeVisitor):
     def visit_Constant(self, node: ast.Constant) -> None:
         if isinstance(node.value, float):
             self.add(node, "R1_FLOAT_LITERAL", "float literals are banned on the certified path")
+        elif isinstance(node.value, complex):
+            self.add(node, "R1_COMPLEX_LITERAL", "complex literals are banned on the certified path")
+        self.generic_visit(node)
+
+    def visit_BinOp(self, node: ast.BinOp) -> None:
+        # Python 3 `/` (true division) always returns a float when its operands
+        # are ints, so a boundary decision like `(seed - score) / seed >= t`
+        # silently becomes float-influenced and can flip at the frontier. Exact
+        # ratios must use `Fraction(numerator, denominator)` or `//`.
+        if isinstance(node.op, ast.Div):
+            self.add(
+                node,
+                "R1_TRUE_DIVISION",
+                "true division '/' yields float; use Fraction(a, b) for exact ratios or '//' for integers",
+            )
+        # `**` returns a float for negative or non-integer exponents. Allow only
+        # a statically non-negative integer literal exponent.
+        if isinstance(node.op, ast.Pow):
+            exponent = node.right
+            safe = isinstance(exponent, ast.Constant) and isinstance(exponent.value, int) and exponent.value >= 0
+            if not safe:
+                self.add(
+                    node,
+                    "R1_FLOAT_POW",
+                    "'**' yields float for negative or non-integer exponents; use exact integer/Fraction arithmetic",
+                )
         self.generic_visit(node)
 
     def visit_Import(self, node: ast.Import) -> None:
@@ -69,14 +130,40 @@ class ExactPathVisitor(ast.NodeVisitor):
                 self.add(node, "R3_IMPORT", f"import from nondeterministic or float-prone module '{node.module}'")
         self.generic_visit(node)
 
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in DYNAMIC_DISPATCH_NAMES:
+            self.add(
+                node,
+                "R2_DYNAMIC_DISPATCH",
+                f"'{func.id}' dispatches to runtime-chosen code and defeats exact-path analysis",
+            )
+        if isinstance(func, ast.Name) and func.id == "pow" and len(node.args) >= 2:
+            exponent = node.args[1]
+            safe = isinstance(exponent, ast.Constant) and isinstance(exponent.value, int) and exponent.value >= 0
+            if not safe:
+                self.add(
+                    node,
+                    "R1_FLOAT_POW",
+                    "'pow' yields float for negative or non-integer exponents; use exact integer/Fraction arithmetic",
+                )
+        self.generic_visit(node)
+
     def visit_Name(self, node: ast.Name) -> None:
         if node.id in FLOAT_DTYPE_NAMES:
             self.add(node, "R1_FLOAT_NAME", f"float-like name '{node.id}' is banned")
         self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
-        if isinstance(node.value, ast.Name) and node.value.id == "math":
-            self.add(node, "R1_MATH_ATTR", "math.* is banned on the certified path")
+        if isinstance(node.value, ast.Name):
+            if node.value.id == "math":
+                self.add(node, "R1_MATH_ATTR", "math.* is banned on the certified path")
+            if (node.value.id, node.attr) in DISALLOWED_ATTRIBUTES:
+                self.add(
+                    node,
+                    "R3_NONDETERMINISTIC_ATTR",
+                    f"nondeterministic entry point '{node.value.id}.{node.attr}' is banned on the certified path",
+                )
         if node.attr in FLOAT_DTYPE_NAMES:
             self.add(node, "R1_FLOAT_ATTR", f"float-like attribute '{node.attr}' is banned")
         self.generic_visit(node)
@@ -95,4 +182,3 @@ def lint_verifier(problem_dir: str | Path) -> list[Finding]:
     for path in sorted(verifier_dir.rglob("*.py")):
         findings.extend(lint_python_file(path))
     return findings
-

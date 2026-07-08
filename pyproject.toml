@@ -4,9 +4,16 @@ version = "0.1.0"
 description = "Phase 0 tooling for exact, deterministic P42 prize problem repositories."
 readme = "README.md"
 requires-python = ">=3.11"
+# Bounded ranges so the toolchain is reproducible across machines and CI. Bump
+# the upper bounds deliberately when validating against a new major.
 dependencies = [
-  "jsonschema>=4.0",
-  "PyYAML>=6.0",
+  "jsonschema>=4.0,<5",
+  "PyYAML>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0,<10",
 ]
 
 [project.scripts]

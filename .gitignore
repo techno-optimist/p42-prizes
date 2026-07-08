@@ -12,3 +12,4 @@ build/
 *.egg-info/
 .p42-state/
 web/data/
+*.tsbuildinfo

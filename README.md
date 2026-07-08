@@ -10,6 +10,7 @@ A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 
 - **[`docs/BUILD.md`](docs/BUILD.md)** — the full design spec (v1.0). Read the spine (Section 0) first, then Section 3 (the Verifier Standard — nothing is sound without it), then Section 1 (the mechanism). Everything a new agent/team needs to start building is there: contract interfaces, the payout math, the verifier standard, the threat model, the legal register, the phased roadmap, and both adversarial red-team passes.
 - **[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)** and **[`docs/LAUNCH_GATES.md`](docs/LAUNCH_GATES.md)** — the current evidence register and go/no-go gates. These are authoritative for what is live versus specified.
+- **[`docs/GATE_LEDGER.md`](docs/GATE_LEDGER.md)** — the production gate ledger: what has evidence, what is blocked, and which external sign-offs are required before real ETH.
 - **[`docs/FUNDING.md`](docs/FUNDING.md)** — per-problem deposit wallets and the gated Coinbase Onramp plan.
 - **[`docs/LAUNCH_SLATE.md`](docs/LAUNCH_SLATE.md)** — the ten-board target slate, reserve candidates, and admission work before a locked board can launch.
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — the design specification for the portal and identity: design as a costly signal. The mark is the solved order-4 Hadamard matrix; the register leads with what is *not* live; every plate carries the command that regenerates it.

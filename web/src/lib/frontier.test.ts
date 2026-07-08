@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { incrementalFrontierCredit } from "@/lib/frontier";
+import { problems } from "@/lib/data";
+import { compareRational, parseRational } from "@/lib/exact";
+import { frontierBest, incrementalFrontierCredit } from "@/lib/frontier";
 import type { Problem, Submission } from "@/lib/types";
 
 const problem: Problem = {
@@ -24,6 +26,14 @@ const problem: Problem = {
   verifierCommand: "make verify",
   repoPath: "problems/defect-pilot",
   poolAddress: null,
+  donationWallet: {
+    chain: "Base Sepolia",
+    asset: "ETH",
+    address: "0x0000000000000000000000000000000000000000",
+    status: "testnet-only",
+    explorerUrl: "https://sepolia.basescan.org/address/0x0000000000000000000000000000000000000000",
+    note: "fixture",
+  },
   tagline: "fixture",
   description: "fixture",
   verifierStandard: [],
@@ -71,5 +81,23 @@ describe("incrementalFrontierCredit", () => {
       priorBest: "5/1",
       eligible: true,
     });
+  });
+});
+
+describe("problem anchor invariants", () => {
+  // A seed that is strictly better than the published record makes the launch
+  // frontier start at (or past) the record, so no submission can ever be
+  // credited. Every board's seedBest must be no better than its currentBest.
+  it.each(problems.map((p) => [p.slug, p] as const))("%s: seed is not better than currentBest", (_slug, p) => {
+    const seed = parseRational(p.seedBest);
+    const current = parseRational(p.currentBest);
+    const cmp = compareRational(seed, current);
+    if (p.direction === "minimize") {
+      expect(cmp).toBeGreaterThanOrEqual(0); // seed >= current (higher is worse)
+    } else {
+      expect(cmp).toBeLessThanOrEqual(0); // seed <= current (lower is worse)
+    }
+    // The launch frontier must equal the published record, not something better.
+    expect(frontierBest(p, [])).toBe(p.currentBest);
   });
 });

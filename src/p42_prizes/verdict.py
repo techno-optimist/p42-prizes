@@ -5,7 +5,15 @@ from fractions import Fraction
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Mapping
+
+
+# Canonical rational grammar shared with the TypeScript parser
+# (web/src/lib/exact.ts): an optional ASCII sign, ASCII digits, and an optional
+# `/denominator`. Kept strict so the verifier and the portal accept exactly the
+# same strings — any divergence is a consensus-split hazard.
+_RATIONAL_RE = re.compile(r"^[+-]?[0-9]+(?:/[+-]?[0-9]+)?$")
 
 
 def canonical_json(value: Mapping[str, Any]) -> str:
@@ -23,13 +31,21 @@ def sha256_file(path: str | Path) -> str:
 
 
 def parse_rational(value: str | int | Fraction) -> Fraction:
+    if isinstance(value, bool):
+        # bool is an int subclass; reject it so True/False can't stand in for 1/0.
+        raise ValueError("rational value must not be a bool")
     if isinstance(value, Fraction):
         return value
     if isinstance(value, int):
         return Fraction(value, 1)
+    if not isinstance(value, str) or not _RATIONAL_RE.match(value):
+        raise ValueError(f"invalid rational literal: {value!r}")
     if "/" in value:
         num, den = value.split("/", 1)
-        return Fraction(int(num), int(den))
+        denominator = int(den)
+        if denominator == 0:
+            raise ValueError("rational denominator must be non-zero")
+        return Fraction(int(num), denominator)
     return Fraction(int(value), 1)
 
 

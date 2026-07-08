@@ -22,6 +22,15 @@ REQUIRED_PROBLEM_FILES = [
     "solution.schema.json",
 ]
 
+# P42_PROBLEM_V1.md lists both directories as MUST-provide: `verifier/` holds the
+# certified-path code and `tests/` holds the known-good/known-bad/hardening
+# fixtures. Without these checks a manifest-complete repo shipping no verifier
+# code validates and lints clean (lint has nothing to walk).
+REQUIRED_PROBLEM_DIRS = [
+    "verifier",
+    "tests",
+]
+
 
 def repo_root_from_problem(problem_dir: str | Path) -> Path:
     path = Path(problem_dir).resolve()
@@ -47,6 +56,13 @@ def validate_problem(problem_dir: str | Path) -> list[str]:
     for relative in REQUIRED_PROBLEM_FILES:
         if not (problem_path / relative).exists():
             errors.append(f"missing required file: {relative}")
+
+    for relative in REQUIRED_PROBLEM_DIRS:
+        directory = problem_path / relative
+        if not directory.is_dir():
+            errors.append(f"missing required directory: {relative}/")
+        elif not any(directory.iterdir()):
+            errors.append(f"required directory is empty: {relative}/")
 
     manifest = load_manifest(problem_path)
     schema = json.loads((repo_root / "schemas" / "problem.schema.json").read_text(encoding="utf-8"))

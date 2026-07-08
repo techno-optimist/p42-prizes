@@ -1,7 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import type { Submission } from "@/lib/types";
+
+const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
+const DEFAULT_STALE_LOCK_MS = 30_000;
 
 export interface CommitRecord {
   id: string;
@@ -13,6 +26,9 @@ export interface CommitRecord {
   commitAlgorithm: "keccak256-p42-v0";
   createdAt: string;
   revealed: boolean;
+  // Set while a reveal is executing the verifier so concurrent reveals of the
+  // same commit are rejected before the expensive, duplicated work.
+  revealState?: "pending";
 }
 
 export interface IdempotencyRecord {
@@ -63,7 +79,7 @@ const EMPTY_STATE: PortalStateSnapshot = {
 };
 
 export function portalStatePath(): string {
-  if (process.env.NODE_ENV === "test" && process.env.P42_PORTAL_STATE_PATH) {
+  if (process.env.P42_PORTAL_STATE_PATH) {
     return process.env.P42_PORTAL_STATE_PATH;
   }
   return path.join(/*turbopackIgnore: true*/ process.cwd(), "data", "portal-state.json");
@@ -110,19 +126,98 @@ export function readPortalState(): PortalStateSnapshot {
   });
 }
 
+function fsyncPath(filePath: string): void {
+  const fd = openSync(filePath, "r");
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function fsyncDirectory(dirPath: string): void {
+  try {
+    fsyncPath(dirPath);
+  } catch {
+    // Some local/dev filesystems refuse to open directories; the atomic rename
+    // still protects readers, but production needs a real datastore.
+  }
+}
+
 export function writePortalState(state: PortalStateSnapshot): void {
   const filePath = portalStatePath();
   mkdirSync(path.dirname(filePath), { recursive: true });
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
   writeFileSync(tempPath, `${JSON.stringify(cloneState(state), null, 2)}\n`, "utf8");
+  fsyncPath(tempPath);
   renameSync(tempPath, filePath);
+  fsyncDirectory(path.dirname(filePath));
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// A cross-process advisory lock (atomic mkdir) so the read-modify-write in
+// updatePortalState is serialized: without it, two settlements can both read the
+// same frontier, credit the same delta, and race their writes. This is a local
+// stopgap — multi-instance production still needs a transactional datastore
+// (see docs/PRODUCTION_READINESS.md Known Production Blockers).
+function withPortalStateLock<T>(operation: () => T): T {
+  const filePath = portalStatePath();
+  const lockPath = `${filePath}.lock`;
+  const lockTimeoutMs = Number(process.env.P42_PORTAL_STATE_LOCK_TIMEOUT_MS ?? DEFAULT_LOCK_TIMEOUT_MS);
+  const staleLockMs = Number(process.env.P42_PORTAL_STATE_STALE_LOCK_MS ?? DEFAULT_STALE_LOCK_MS);
+  const startedAt = Date.now();
+  mkdirSync(path.dirname(filePath), { recursive: true });
+
+  for (;;) {
+    try {
+      mkdirSync(lockPath);
+      try {
+        writeFileSync(
+          path.join(lockPath, "owner.json"),
+          `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+          "utf8",
+        );
+        return operation();
+      } finally {
+        rmSync(lockPath, { recursive: true, force: true });
+      }
+    } catch (error) {
+      const code = (error as { code?: unknown }).code;
+      if (code !== "EEXIST") throw error;
+
+      // Reclaim a lock left behind by a crashed writer.
+      try {
+        const owner = JSON.parse(readFileSync(path.join(lockPath, "owner.json"), "utf8")) as { createdAt?: string };
+        const createdAt = owner.createdAt ? Date.parse(owner.createdAt) : Number.NaN;
+        if (Number.isFinite(createdAt) && Date.now() - createdAt > staleLockMs) {
+          rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        if (Date.now() - startedAt > staleLockMs) {
+          rmSync(lockPath, { recursive: true, force: true });
+          continue;
+        }
+      }
+
+      if (Date.now() - startedAt > lockTimeoutMs) {
+        throw new Error("timed out acquiring portal state lock");
+      }
+      sleepSync(25);
+    }
+  }
 }
 
 export function updatePortalState(mutator: (state: PortalStateSnapshot) => void): PortalStateSnapshot {
-  const state = readPortalState();
-  mutator(state);
-  writePortalState(state);
-  return state;
+  return withPortalStateLock(() => {
+    const state = readPortalState();
+    mutator(state);
+    writePortalState(state);
+    return state;
+  });
 }
 
 export function appendPortalEvent(
