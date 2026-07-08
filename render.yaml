@@ -1,0 +1,15 @@
+# P42 Prizes standalone portal.
+# Canonical public route: https://projectforty2.ai/prizes
+services:
+  - type: web
+    name: p42-prizes
+    runtime: node
+    rootDir: ./web
+    buildCommand: npm ci && npm run build:prizes
+    startCommand: npm run start:prizes
+    plan: starter
+    region: oregon
+    healthCheckPath: /prizes
+    envVars:
+      - key: NEXT_PUBLIC_BASE_PATH
+        value: /prizes

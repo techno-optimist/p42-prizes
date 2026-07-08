@@ -9,15 +9,20 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 import { Mark } from "@/components/Mark";
+import { sitePath } from "@/lib/site-paths";
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://projectforty2.ai"),
   title: "P42 Prizes — Register of Records",
   description:
     "Open math bounties settled by an exact, deterministic verifier anyone can re-run. The proof is the re-run.",
+  alternates: {
+    canonical: sitePath("/"),
+  },
   openGraph: {
     title: "P42 Prizes — The proof is the re-run.",
     description: "Open math bounties settled by an exact, deterministic verifier anyone can execute.",
-    images: [{ url: "/og.png", width: 1200, height: 630 }],
+    images: [{ url: sitePath("/og.png"), width: 1200, height: 630 }],
   },
 };
 
@@ -35,7 +40,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               <nav className="masthead-line" aria-label="Primary navigation">
                 <Link href="/">Problems</Link>
                 <Link href="/agents">For agents</Link>
-                <a href="/skill.md">skill.md</a>
+                <a href={sitePath("/skill.md")}>skill.md</a>
                 <a href="https://github.com/techno-optimist/p42-prizes" target="_blank" rel="noreferrer">
                   Source
                 </a>
@@ -98,12 +103,12 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 <h3>Machine interface</h3>
                 <ul>
                   <li>
-                    <a className="ref" href="/api/problems">
+                    <a className="ref" href={sitePath("/api/problems")}>
                       GET /api/problems
                     </a>
                   </li>
                   <li>
-                    <a className="ref" href="/skill.md">
+                    <a className="ref" href={sitePath("/skill.md")}>
                       /skill.md
                     </a>
                   </li>

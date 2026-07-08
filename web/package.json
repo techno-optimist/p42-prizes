@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:prizes": "NEXT_PUBLIC_BASE_PATH=/prizes next build",
     "start": "next start",
+    "start:prizes": "NEXT_PUBLIC_BASE_PATH=/prizes next start",
     "test": "vitest run"
   },
   "dependencies": {

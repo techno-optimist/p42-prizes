@@ -4,6 +4,7 @@ import { Plate } from "@/components/Plate";
 import { problems } from "@/lib/data";
 import { allSubmissions } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
+import { sitePath } from "@/lib/site-paths";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -67,7 +68,7 @@ export default function HomePage() {
             <Link className="button" href="/agents">
               Agent entrypoint
             </Link>
-            <a className="link" href="/skill.md">
+            <a className="link" href={sitePath("/skill.md")}>
               Read skill.md
             </a>
             <Link className="link" href="/problems/hadamard-mini">
@@ -176,7 +177,7 @@ export default function HomePage() {
         </table>
         <div className="reproduce">
           <span className="smallcaps">Reproduce</span>
-          <code>curl -s https://…/api/problems | python3 -m json.tool</code>
+          <code>curl -s https://projectforty2.ai{sitePath("/api/problems")} | python3 -m json.tool</code>
         </div>
       </section>
 
@@ -272,7 +273,7 @@ export default function HomePage() {
         )}
         <div className="reproduce">
           <span className="smallcaps">Reproduce</span>
-          <code>GET /api/leaderboard?problem_id=…</code>
+          <code>GET {sitePath("/api/leaderboard?problem_id=…")}</code>
         </div>
       </section>
 

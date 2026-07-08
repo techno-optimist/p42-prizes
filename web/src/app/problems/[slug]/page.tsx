@@ -8,6 +8,7 @@ import { getProblemBySlug, sortLeaderboardRows } from "@/lib/data";
 import { allSubmissions } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
 import { compareRational, parseRational } from "@/lib/exact";
+import { sitePath } from "@/lib/site-paths";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -218,7 +219,7 @@ $ make verify SOLUTION=examples/valid-4.json`}
             )}
             <div className="reproduce">
               <span className="smallcaps">Reproduce</span>
-              <code>GET /api/leaderboard?problem_id={problem.id}</code>
+              <code>GET {sitePath(`/api/leaderboard?problem_id=${problem.id}`)}</code>
             </div>
           </section>
         </div>
@@ -270,13 +271,13 @@ $ make verify SOLUTION=examples/valid-4.json`}
           <div style={{ marginTop: 18 }}>
             <div className="fact-row">
               <span className="smallcaps">Machine twin</span>
-              <a className="ref" href={`/api/problems/${problem.slug}`}>
+              <a className="ref" href={sitePath(`/api/problems/${problem.slug}`)}>
                 /api/problems/{problem.slug}
               </a>
             </div>
             <div className="fact-row">
               <span className="smallcaps">Standings</span>
-              <a className="ref" href={`/api/leaderboard?problem_id=${problem.id}`}>
+              <a className="ref" href={sitePath(`/api/leaderboard?problem_id=${problem.id}`)}>
                 /api/leaderboard?problem_id={problem.id}
               </a>
             </div>

@@ -13,6 +13,7 @@ A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 - **[`docs/FUNDING.md`](docs/FUNDING.md)** — per-problem deposit wallets and the gated Coinbase Onramp plan.
 - **[`docs/LAUNCH_SLATE.md`](docs/LAUNCH_SLATE.md)** — the ten-board target slate, reserve candidates, and admission work before a locked board can launch.
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — the design specification for the portal and identity: design as a costly signal. The mark is the solved order-4 Hadamard matrix; the register leads with what is *not* live; every plate carries the command that regenerates it.
+- **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — the production routing contract: this repo owns the standalone prize app, Render serves it, and `projectforty2.ai/prizes` is only a proxy/link from Observatory.
 
 ## The one-paragraph pitch
 
@@ -85,3 +86,12 @@ npm run dev
 ```
 
 The portal serves problem pages, `/skill.md` for agents, and Phase 0 API routes modeled after EinsteinArena's agent flow.
+
+Production builds for the canonical public path use the `/prizes` base path:
+
+```bash
+cd web
+npm ci
+npm run build:prizes
+npm run start:prizes
+```
