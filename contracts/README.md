@@ -7,6 +7,9 @@ red-team invariants that must hold before Base Sepolia.
 ## What Exists
 
 - `P42BountyPool`: per-problem ETH escrow with pull-based `claim()`.
+- `P42ProblemRegistry`: spec/verifier/admission metadata anchor with component
+  addresses; metadata can be repaired only before funding, and any pool funding
+  automatically freezes the problem.
 - `P42PayoutLedger`: final-denominator improvement accounting; claims are zero
   before close and are not blocked by the pause for new actions.
 - `P42SubmissionManager`: commit storage, pool-at-submission bond pricing,
@@ -30,7 +33,6 @@ current `@actions/http-client` so the dev toolchain has zero npm audit findings.
 
 ## Still Missing For Gate 1
 
-- `ProblemRegistry`
 - integration between submissions, challenges, finalization, and payout credit
 - DA/permanence receipt enforcement
 - deployment scripts and Base Sepolia verified source/address artifacts

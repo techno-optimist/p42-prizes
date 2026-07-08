@@ -68,8 +68,102 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
     await challenges.waitForDeployment();
 
-    return { owner, treasury, resolver, alice, bob, challenger, pool, ledger, submissions, challenges, minBond };
+    const Registry = await ethers.getContractFactory("P42ProblemRegistry");
+    const registry = await Registry.deploy(owner.address);
+    await registry.waitForDeployment();
+
+    return { owner, treasury, resolver, alice, bob, challenger, pool, ledger, submissions, challenges, registry, minBond };
   }
+
+  async function registryConfig(fixture, overrides = {}) {
+    return {
+      specHash: ethers.keccak256(ethers.toUtf8Bytes("hadamard-mini spec v1")),
+      verifierSourceHash: ethers.keccak256(ethers.toUtf8Bytes("hadamard-mini verifier source v1")),
+      verifierImageHash: ethers.keccak256(ethers.toUtf8Bytes("sha256:local-dev")),
+      admissionMatrixHash: ethers.keccak256(ethers.toUtf8Bytes("p42-admission-matrix/v1 local fixture")),
+      metadataURI: "ipfs://hadamard-mini/problem.yaml",
+      pool: await fixture.pool.getAddress(),
+      ledger: await fixture.ledger.getAddress(),
+      submissionManager: await fixture.submissions.getAddress(),
+      challengeManager: await fixture.challenges.getAddress(),
+      challengeWindowSeconds: 72n * 60n * 60n,
+      minImprovementAtoms: 1n,
+      ...overrides,
+    };
+  }
+
+  it("registers problem metadata anchors and component addresses", async function () {
+    const fixture = await deployFixture();
+    const config = await registryConfig(fixture);
+
+    await fixture.registry.register(config);
+    assert.equal(await fixture.registry.problemCount(), 1n);
+    assert.equal(await fixture.registry.isFrozen(1), false);
+
+    const problem = await fixture.registry.problems(1);
+    assert.equal(problem.specHash, config.specHash);
+    assert.equal(problem.verifierSourceHash, config.verifierSourceHash);
+    assert.equal(problem.verifierImageHash, config.verifierImageHash);
+    assert.equal(problem.admissionMatrixHash, config.admissionMatrixHash);
+    assert.equal(problem.metadataURI, config.metadataURI);
+    assert.equal(problem.pool, config.pool);
+    assert.equal(problem.ledger, config.ledger);
+    assert.equal(problem.submissionManager, config.submissionManager);
+    assert.equal(problem.challengeManager, config.challengeManager);
+    assert.equal(problem.challengeWindowSeconds, config.challengeWindowSeconds);
+    assert.equal(problem.minImprovementAtoms, config.minImprovementAtoms);
+  });
+
+  it("rejects incomplete problem registry configs", async function () {
+    const fixture = await deployFixture();
+    const config = await registryConfig(fixture);
+
+    await expectCustomError(fixture.registry.register({ ...config, specHash: ethers.ZeroHash }), fixture.registry, "P42_ZERO_HASH");
+    await expectCustomError(fixture.registry.register({ ...config, metadataURI: "" }), fixture.registry, "P42_EMPTY_URI");
+    await expectCustomError(fixture.registry.register({ ...config, pool: ethers.ZeroAddress }), fixture.registry, "P42_ZERO_ADDRESS");
+    await expectCustomError(
+      fixture.registry.register({ ...config, challengeWindowSeconds: 0 }),
+      fixture.registry,
+      "P42_BAD_WINDOW"
+    );
+  });
+
+  it("allows registry metadata repair only before funding", async function () {
+    const fixture = await deployFixture();
+    const config = await registryConfig(fixture);
+    await fixture.registry.register(config);
+
+    const repairedHash = ethers.keccak256(ethers.toUtf8Bytes("hadamard-mini spec v2"));
+    await fixture.registry.updateBeforeFunding(1, {
+      ...(await registryConfig(fixture)),
+      specHash: repairedHash,
+      metadataURI: "ipfs://hadamard-mini/problem-v2.yaml",
+    });
+    assert.equal((await fixture.registry.problems(1)).specHash, repairedHash);
+    assert.equal((await fixture.registry.problems(1)).metadataURI, "ipfs://hadamard-mini/problem-v2.yaml");
+
+    await fixture.pool.fund({ value: 1n });
+    assert.equal(await fixture.registry.isFrozen(1), true);
+    await expectCustomError(
+      fixture.registry.updateBeforeFunding(1, { ...(await registryConfig(fixture)), specHash: config.specHash }),
+      fixture.registry,
+      "P42_ALREADY_FROZEN"
+    );
+  });
+
+  it("supports explicit registry freeze before funding", async function () {
+    const fixture = await deployFixture();
+    await fixture.registry.register(await registryConfig(fixture));
+
+    await fixture.registry.freeze(1);
+    assert.equal(await fixture.registry.isFrozen(1), true);
+    await expectCustomError(fixture.registry.freeze(1), fixture.registry, "P42_ALREADY_FROZEN");
+    await expectCustomError(
+      fixture.registry.updateBeforeFunding(1, await registryConfig(fixture)),
+      fixture.registry,
+      "P42_ALREADY_FROZEN"
+    );
+  });
 
   it("matches the portal's length-framed CID-bound commit preimage", async function () {
     const { alice, submissions } = await deployFixture();
