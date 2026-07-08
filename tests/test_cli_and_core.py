@@ -323,6 +323,39 @@ def test_da_verify_rejects_tampered_permanence_receipt(tmp_path: Path) -> None:
     assert "contract.permanence_hash does not match canonical permanence receipt" in verified.stderr
 
 
+def test_da_verify_without_solution_is_flagged_structure_only(tmp_path: Path) -> None:
+    # Omitting --solution skips the sha256 content binding, so the pass must be
+    # explicitly downgraded: distinct exit code 3 plus a structure-only banner,
+    # never the plain "OK" content/availability receipt (audit F30).
+    solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
+    evidence_path = tmp_path / "da-evidence.json"
+    completed = run_cli(
+        "da-receipt",
+        "--problem", "problems/hadamard-mini",
+        "--solution", str(solution),
+        "--solution-cid", sha256_file(solution),
+        "--solver-address", "0x1111111111111111111111111111111111111111",
+        "--salt", "right-salt",
+        "--commit-provider", "base-sepolia-calldata",
+        "--commit-receipt-uri", "https://sepolia.basescan.org/tx/0x" + "2" * 64,
+        "--commit-block-reference", "base-sepolia:12345",
+        "--arweave-txid", "a" * 43,
+        "--output", str(evidence_path),
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    verified = run_cli("da-verify", "--evidence", str(evidence_path))
+
+    assert verified.returncode == 3
+    assert "structure only; solution bytes NOT verified" in verified.stdout
+    assert not verified.stdout.startswith("OK: DA evidence")
+
+    # The full invocation with --solution still yields the unqualified pass.
+    full = run_cli("da-verify", "--evidence", str(evidence_path), "--solution", str(solution))
+    assert full.returncode == 0, full.stderr
+    assert full.stdout.startswith("OK: DA evidence")
+
+
 def test_da_receipt_rejects_sha256_cid_that_does_not_match_solution() -> None:
     completed = run_cli(
         "da-receipt",

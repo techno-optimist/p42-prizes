@@ -197,6 +197,16 @@ def _cmd_da_verify(args: argparse.Namespace) -> int:
     except (AdmissionError, DaEvidenceError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    if args.solution is None:
+        # Without --solution the sha256 content binding to the actual solution
+        # bytes is skipped, so this pass proves structure only. Say so loudly and
+        # exit 3 (distinct from 0/1) so a structure-only pass can never be
+        # mistaken for a content/availability proof (audit F30).
+        print(
+            "OK (structure only; solution bytes NOT verified): "
+            f"DA evidence {evidence['evidence_hash']}"
+        )
+        return 3
     print(f"OK: DA evidence {evidence['evidence_hash']}")
     return 0
 
@@ -315,7 +325,8 @@ def _cmd_runner_alerts(args: argparse.Namespace) -> int:
 def _cmd_runner_burst_validate(args: argparse.Namespace) -> int:
     try:
         report = normalize_runner_burst_report(load_evidence_file(args.report))
-    except (AdmissionError, RunnerBurstError) as exc:
+        _enforce_gate_schema(report, "runner-burst.schema.json")
+    except (AdmissionError, RunnerBurstError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(report, args.output)
@@ -462,7 +473,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     da_verify.add_argument("--evidence", required=True)
     da_verify.add_argument("--problem")
-    da_verify.add_argument("--solution")
+    da_verify.add_argument(
+        "--solution",
+        help="solution file to bind by sha256; omitting it downgrades the pass to structure-only (exit 3)",
+    )
     da_verify.set_defaults(func=_cmd_da_verify)
 
     runner_plan = subparsers.add_parser(

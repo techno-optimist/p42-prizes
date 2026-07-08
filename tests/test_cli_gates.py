@@ -11,6 +11,7 @@ from test_adversarial import valid_campaign_report
 from test_governance import valid_governance_report
 from test_incident import valid_drill_report
 from test_legal import valid_legal_memo
+from test_runner_burst import valid_burst_report
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,7 @@ GATE_CASES = [
     ("governance-signoff-validate", valid_governance_report),
     ("incident-drill-validate", valid_drill_report),
     ("adversarial-campaign-validate", valid_campaign_report),
+    ("runner-burst-validate", valid_burst_report),
 ]
 
 
