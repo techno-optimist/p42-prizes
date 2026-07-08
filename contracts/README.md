@@ -45,6 +45,9 @@ writes `deployments/base-sepolia/p42-prizes.json`. It requires
 and frozen problem/verifier/admission hashes. See
 `deployments/base-sepolia/README.md`.
 
+`npm run reconcile:base-sepolia` reads that manifest and writes a read-only
+event/state consistency report under `deployments/base-sepolia/reconciliation/`.
+
 ## Still Missing For Gate 1
 
 - real DA/permanence receipt verification, not just nonzero hash gates
@@ -52,5 +55,5 @@ and frozen problem/verifier/admission hashes. See
   excluded by premature ledger close
 - resolver-bond fraud window/slashing beyond immediate scaffold release
 - actual Base Sepolia deployment, committed manifest, and verified source/address artifacts
-- indexer reconciliation
+- real committed Base Sepolia reconciliation report and production indexer
 - fuzz/property testing and external audit

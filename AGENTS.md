@@ -63,3 +63,8 @@ It writes `deployments/base-sepolia/p42-prizes.json` and requires real RPC,
 deployer, treasury, resolver, and frozen problem hash inputs. Do not mark Gate 1
 as deployed until that manifest contains real tx hashes, verified source links,
 and an indexer start block.
+
+After a testnet deploy, run `npm run reconcile:base-sepolia` from `contracts/`
+with `BASE_SEPOLIA_RPC_URL` set. The report belongs at
+`deployments/base-sepolia/reconciliation/latest.json`; Gate 1 needs that report
+reviewed against the manifest before the portal can claim chain-backed state.

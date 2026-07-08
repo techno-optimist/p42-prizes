@@ -29,3 +29,16 @@ npm run deploy:base-sepolia
 The deployer is the immutable owner in the current scaffold. Real ETH remains
 blocked until the governance/multisig design replaces that testnet shortcut and
 the manifest points at verified source plus an indexer reconciliation report.
+
+After deployment, generate a read-only reconciliation report:
+
+```bash
+BASE_SEPOLIA_RPC_URL=... npm run reconcile:base-sepolia
+```
+
+The default output is
+`deployments/base-sepolia/reconciliation/latest.json`. It reconstructs event
+counts, funding/claim/credit sums, submission states, challenge states, and
+consistency checks from the manifest start block through the latest indexed
+block. Gate 1 still requires a real committed report from Base Sepolia and a
+production indexer plan for reorg handling, monitoring, and portal reads.
