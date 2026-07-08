@@ -1,0 +1,41 @@
+{
+  "schema": "p42-crossarch-determinism/v1",
+  "what": "Byte-identical canonical VerdictReport across two real architectures (arm64 native + amd64 emulated via Colima/qemu), same python:3.14.2-slim base. Real cross-arch determinism evidence vs the audit's self-attested N-host concern.",
+  "arches": [
+    "linux/arm64",
+    "linux/amd64"
+  ],
+  "results": [
+    {
+      "problem": "hadamard-mini",
+      "report_sha256": "sha256:a467fe839cc164040fa9b5e5b93f2984a8909217989d1ad9f8d4bad9b28b6069",
+      "identical_arm64_amd64": true
+    },
+    {
+      "problem": "hadamard-668-defect",
+      "report_sha256": "sha256:bffcaed217c9e7391e4936a9f6b753d861df284ef8c7c775c458820ba4b9ffc0",
+      "identical_arm64_amd64": true
+    },
+    {
+      "problem": "edges-vs-triangles",
+      "report_sha256": "sha256:c6186318e07be65a054e0c55fce4a5e0d5842b5e4e5f7aca46c485b4f9ca9789",
+      "identical_arm64_amd64": true
+    },
+    {
+      "problem": "arithmetic-kakeya",
+      "report_sha256": "sha256:9ef40fecc1476a9641c7acbd3eaea6644e491007db1c0f71109f5c6c68b958db",
+      "identical_arm64_amd64": true
+    },
+    {
+      "problem": "erdos-min-overlap",
+      "report_sha256": "sha256:167e87b48b7bc12acdc1f03ae9babddb75dfe5345b2791a3e92d57353e938193",
+      "identical_arm64_amd64": true
+    },
+    {
+      "problem": "autoconvolution-c1-upper",
+      "report_sha256": "sha256:17e83e287863039799097dc9825a16434c308b7bd949ec56516465fe5b93a0ff",
+      "identical_arm64_amd64": true
+    }
+  ],
+  "all_identical": true
+}

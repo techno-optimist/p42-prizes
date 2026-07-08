@@ -33,7 +33,7 @@ is P42, and what's left?" It complements the granular gate docs
 | Item | Blocked on |
 | --- | --- |
 | Pinned verifier image **registry digests** (kill `sha256:local-dev`) | Images now build + run in the sandbox (digests recorded); a **registry** (GHCR/Docker Hub creds) to push + get a pullable RepoDigest, then update `problem.yaml` + `admit-ready` |
-| N-host determinism CI (x86 + ARM + 2 glibc identical-hash) | **`workflow`-scope** to publish `.github/workflows/ci.yml` + multi-arch CI runners |
+| N-host determinism CI (x86 + ARM + 2 glibc identical-hash) | **Real cross-arch evidence demonstrated** — 6 diverse verifiers produce byte-identical canonical `VerdictReport`s on arm64 + amd64 (`deployments/base-sepolia/crossarch-determinism.json`). Remaining: 2 distinct glibc versions, **`workflow`-scope** to automate it in CI, and **attested/independent** hosts (vs the self-attested admission matrix the audit flagged) |
 | Continuous operator + indexer as a running service | A **host** to run them (the code is ready; `operator.mjs` has a loop mode) |
 | Mainnet Arweave permanence (finalize receipt) | An **Arweave-funded wallet** (devnet is used today; ~60-day retention) |
 | Governance-owned production deploy | Deploy under the timelock + wire via governance (see `GOVERNANCE.md`) |
