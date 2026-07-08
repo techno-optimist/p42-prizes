@@ -26,7 +26,7 @@ from p42_prizes.runner_queue import (
     memory_snapshot_from_proc,
     plan_runner_queue,
 )
-from p42_prizes.runner_worker import RunnerWorkerError, run_next_job_once
+from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
 from p42_prizes.verdict import canonical_json
 
 
@@ -240,6 +240,25 @@ def _cmd_runner_work_once(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_runner_drain(args: argparse.Namespace) -> int:
+    try:
+        result = drain_runner_queue(
+            args.queue,
+            args.transcripts,
+            memory_provider=lambda: _runner_memory_from_args(args),
+            policy=_runner_policy_from_args(args),
+            lease_seconds=args.lease_seconds,
+            poll_seconds=args.poll_seconds,
+            max_iterations=args.max_iterations,
+            max_jobs=args.max_jobs,
+        )
+    except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(canonical_json(result))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -362,6 +381,25 @@ def build_parser() -> argparse.ArgumentParser:
     runner_work.add_argument("--memory-safety-factor", type=float, default=2.0)
     runner_work.add_argument("--now-utc")
     runner_work.set_defaults(func=_cmd_runner_work_once)
+
+    runner_drain = subparsers.add_parser(
+        "runner-drain",
+        help="keep draining queued verifier jobs, rechecking memory before each lease",
+    )
+    runner_drain.add_argument("--queue", required=True)
+    runner_drain.add_argument("--transcripts", required=True)
+    runner_drain.add_argument("--lease-seconds", type=int, default=3600)
+    runner_drain.add_argument("--poll-seconds", type=float, default=30.0)
+    runner_drain.add_argument("--max-iterations", type=int)
+    runner_drain.add_argument("--max-jobs", type=int)
+    runner_drain.add_argument("--total-memory-mb", type=int)
+    runner_drain.add_argument("--available-memory-mb", type=int)
+    runner_drain.add_argument("--swap-used-mb", type=int)
+    runner_drain.add_argument("--max-running", type=int, default=1)
+    runner_drain.add_argument("--reserve-memory-mb", type=int, default=8192)
+    runner_drain.add_argument("--max-swap-used-mb", type=int, default=1024)
+    runner_drain.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_drain.set_defaults(func=_cmd_runner_drain)
 
     return parser
 

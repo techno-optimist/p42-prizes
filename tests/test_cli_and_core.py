@@ -520,11 +520,58 @@ def _runner_work_once(path: Path, transcript_dir: Path, *, available_mb: int) ->
     )
 
 
+def _runner_drain(
+    path: Path,
+    transcript_dir: Path,
+    *,
+    available_mb: int,
+    max_iterations: int | None = None,
+    max_jobs: int | None = None,
+) -> subprocess.CompletedProcess[str]:
+    args = [
+        "runner-drain",
+        "--queue",
+        str(path),
+        "--transcripts",
+        str(transcript_dir),
+        "--total-memory-mb",
+        "131072",
+        "--available-memory-mb",
+        str(available_mb),
+        "--swap-used-mb",
+        "0",
+        "--max-running",
+        "1",
+        "--reserve-memory-mb",
+        "4096",
+        "--max-swap-used-mb",
+        "1024",
+        "--memory-safety-factor",
+        "2",
+        "--lease-seconds",
+        "3600",
+        "--poll-seconds",
+        "0",
+    ]
+    if max_iterations is not None:
+        args.extend(["--max-iterations", str(max_iterations)])
+    if max_jobs is not None:
+        args.extend(["--max-jobs", str(max_jobs)])
+    return run_cli(*args)
+
+
 def _read_transcript(path: str) -> dict:
     transcript = json.loads(Path(path).read_text(encoding="utf-8"))
     schema = json.loads((ROOT / "schemas" / "runner-transcript.schema.json").read_text())
     jsonschema.validate(transcript, schema)
     return transcript
+
+
+def _read_runner_loop(stdout: str) -> dict:
+    loop = json.loads(stdout)
+    schema = json.loads((ROOT / "schemas" / "runner-loop.schema.json").read_text())
+    jsonschema.validate(loop, schema)
+    return loop
 
 
 def test_runner_work_once_persists_successful_transcript_and_queue_state(tmp_path: Path) -> None:
@@ -615,6 +662,77 @@ def test_runner_work_once_marks_invalid_solution_failed_with_transcript(tmp_path
     updated = json.loads(queue.read_text(encoding="utf-8"))
     assert updated["jobs"][0]["status"] == "failed"
     assert updated["jobs"][0]["transcript_hash"] == transcript["transcript_hash"]
+
+
+def test_runner_drain_processes_submission_burst_one_job_at_a_time(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "burst-1",
+                "status": "queued",
+                "required_memory_mb": 512,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/valid-4.json",
+                "chain_block_number": 10,
+                "chain_log_index": 0,
+            },
+            {
+                "job_id": "burst-2",
+                "status": "queued",
+                "required_memory_mb": 512,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/valid-4.json",
+                "chain_block_number": 10,
+                "chain_log_index": 1,
+            },
+        ],
+    )
+
+    completed = _runner_drain(queue, transcripts, available_mb=8192, max_jobs=2)
+
+    assert completed.returncode == 0, completed.stderr
+    loop = _read_runner_loop(completed.stdout)
+    assert loop["stop_reason"] == "max_jobs_reached"
+    assert loop["completed_jobs"] == 2
+    assert [event["job_id"] for event in loop["events"]] == ["burst-1", "burst-2"]
+    assert all(event["status"] == "succeeded" for event in loop["events"])
+    updated = json.loads(queue.read_text(encoding="utf-8"))
+    assert [job["status"] for job in updated["jobs"]] == ["succeeded", "succeeded"]
+    assert len(list(transcripts.glob("*.json"))) == 2
+
+
+def test_runner_drain_waits_under_memory_pressure_without_mutating_queue(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    transcripts = tmp_path / "transcripts"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "big-job",
+                "status": "queued",
+                "required_memory_mb": 4096,
+                "problem": "problems/hadamard-mini",
+                "solution": "problems/hadamard-mini/examples/valid-4.json",
+            }
+        ],
+    )
+
+    completed = _runner_drain(queue, transcripts, available_mb=8192, max_iterations=2)
+
+    assert completed.returncode == 0, completed.stderr
+    loop = _read_runner_loop(completed.stdout)
+    assert loop["stop_reason"] == "max_iterations_reached"
+    assert loop["completed_jobs"] == 0
+    assert [event["reason"] for event in loop["events"]] == [
+        "memory_guard_tripped",
+        "memory_guard_tripped",
+    ]
+    updated = json.loads(queue.read_text(encoding="utf-8"))
+    assert updated["jobs"][0]["status"] == "queued"
+    assert not transcripts.exists()
 
 
 def test_verifier_wall_clock_timeout_is_enforced(tmp_path: Path) -> None:

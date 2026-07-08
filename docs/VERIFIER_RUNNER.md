@@ -52,8 +52,9 @@ are:
 
 Verifier execution must be queued. A submission burst should increase latency,
 not memory pressure. Queue, plan, and transcript schemas live at
-`schemas/runner-queue.schema.json`, `schemas/runner-plan.schema.json`, and
-`schemas/runner-transcript.schema.json`. The default runner policy is:
+`schemas/runner-queue.schema.json`, `schemas/runner-plan.schema.json`,
+`schemas/runner-transcript.schema.json`, and `schemas/runner-loop.schema.json`.
+The default runner policy is:
 
 - `max_running = 1` until every launch problem has measured peak RSS.
 - FIFO by chain event order, not API arrival order.
@@ -142,6 +143,28 @@ On completion it writes `status: "succeeded"` or `status: "failed"` plus
 transcript still records the reproduced `VerdictReport` and report hash whenever
 the verifier emitted canonical JSON. Low-memory or full-runner decisions return a
 `p42-runner-plan/v1` `wait` response and leave the queue untouched.
+
+For production operation, run the drain loop instead of hand-calling
+`runner-work-once`:
+
+```bash
+PYTHONPATH=src python3 -m p42_prizes.cli runner-drain \
+  --queue runner-queue.json \
+  --transcripts runs/verifier-transcripts \
+  --poll-seconds 15 \
+  --max-running 1 \
+  --reserve-memory-mb 8192 \
+  --max-swap-used-mb 1024 \
+  --memory-safety-factor 2
+```
+
+`runner-drain` re-reads memory before every lease. If the queue is empty it exits
+with a `p42-runner-loop/v1` summary. If the oldest queued job does not fit, swap
+is above threshold, a runner slot is already occupied, or a stale lease needs
+operator action, it records a `wait` event and sleeps before trying again. This
+is the burst behavior we want: many submissions create queue depth and latency,
+not simultaneous verifier processes or box-level OOM pressure. Use
+`--max-jobs` for a bounded batch and `--max-iterations` for rehearsals.
 
 ## Gate 1 Runner Dry Run
 

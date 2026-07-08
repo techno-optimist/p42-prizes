@@ -9,7 +9,7 @@ from pathlib import Path
 import shlex
 import subprocess
 import time
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 from p42_prizes.admission import AdmissionError, load_evidence_file
 from p42_prizes.da import DaEvidenceError, validate_da_evidence
@@ -23,6 +23,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 RUNNER_TRANSCRIPT_SCHEMA_VERSION = "p42-runner-transcript/v1"
+RUNNER_LOOP_SCHEMA_VERSION = "p42-runner-loop/v1"
 
 
 class RunnerWorkerError(ValueError):
@@ -68,6 +69,71 @@ def run_next_job_once(
     return transcript
 
 
+def drain_runner_queue(
+    queue_path: str | Path,
+    transcript_dir: str | Path,
+    *,
+    memory_provider: Callable[[], MemorySnapshot],
+    policy: RunnerPolicy | None = None,
+    lease_seconds: int = 3600,
+    poll_seconds: float = 30.0,
+    max_iterations: int | None = None,
+    max_jobs: int | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    if poll_seconds < 0:
+        raise RunnerWorkerError("poll_seconds must be >= 0")
+    if max_iterations is not None and max_iterations < 1:
+        raise RunnerWorkerError("max_iterations must be >= 1 when provided")
+    if max_jobs is not None and max_jobs < 1:
+        raise RunnerWorkerError("max_jobs must be >= 1 when provided")
+
+    events: list[dict[str, Any]] = []
+    completed_jobs = 0
+    iterations = 0
+    stop_reason = "unknown"
+
+    while True:
+        if max_iterations is not None and iterations >= max_iterations:
+            stop_reason = "max_iterations_reached"
+            break
+
+        result = run_next_job_once(
+            queue_path,
+            transcript_dir,
+            memory=memory_provider(),
+            policy=policy,
+            lease_seconds=lease_seconds,
+        )
+        iterations += 1
+        event = _loop_event_from_result(result)
+        events.append(event)
+
+        if event["kind"] == "completed":
+            completed_jobs += 1
+            if max_jobs is not None and completed_jobs >= max_jobs:
+                stop_reason = "max_jobs_reached"
+                break
+            continue
+
+        if event.get("reason") == "queue_empty":
+            stop_reason = "queue_empty"
+            break
+        if max_iterations is not None and iterations >= max_iterations:
+            stop_reason = "max_iterations_reached"
+            break
+        sleep(poll_seconds)
+
+    return {
+        "schema_version": RUNNER_LOOP_SCHEMA_VERSION,
+        "generated_at_utc": _format_utc(_parse_or_now(None)),
+        "iterations": iterations,
+        "completed_jobs": completed_jobs,
+        "stop_reason": stop_reason,
+        "events": events,
+    }
+
+
 @contextmanager
 def _locked_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
     queue_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +164,32 @@ def _write_queue(queue_path: Path, queue: Mapping[str, Any]) -> None:
     tmp = queue_path.with_suffix(queue_path.suffix + ".tmp")
     tmp.write_text(canonical_json(dict(queue)) + "\n", encoding="utf-8")
     tmp.replace(queue_path)
+
+
+def _loop_event_from_result(result: Mapping[str, Any]) -> dict[str, Any]:
+    if result.get("schema_version") == RUNNER_TRANSCRIPT_SCHEMA_VERSION:
+        verifier = result.get("verifier") if isinstance(result.get("verifier"), dict) else {}
+        valid = verifier.get("valid") is True
+        event: dict[str, Any] = {
+            "kind": "completed",
+            "job_id": result.get("job_id"),
+            "status": "succeeded" if valid else "failed",
+            "transcript_hash": result.get("transcript_hash"),
+            "transcript_path": result.get("transcript_path"),
+        }
+        if isinstance(verifier.get("error"), str):
+            event["reason"] = verifier["error"]
+        return event
+
+    return {
+        "kind": "wait",
+        "reason": result.get("reason"),
+        "selected_job_id": result.get("selected_job_id"),
+        "queued_count": result.get("queued_count"),
+        "active_running_count": result.get("active_running_count"),
+        "min_available_memory_mb": result.get("min_available_memory_mb"),
+        "memory": result.get("memory"),
+    }
 
 
 def _find_job(queue: Mapping[str, Any], job_id: str | None) -> dict[str, Any]:
