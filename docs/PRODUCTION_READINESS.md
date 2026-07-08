@@ -21,7 +21,7 @@ ledger, exit criteria, and external sign-offs.
 | Resolver | Local transcript-required resolver scaffold with per-decision bond, fraud-window-gated release, and owner-slash proof hash | Verifiable transcript committee on testnet; non-owner-trusted slashing policy; fraud-proof track before scale |
 | Contracts | Local Hardhat 3 scaffold for problem registry/freezing, pool, payout ledger, one-time recorder activation, submission bond checks/top-ups, CID-bound reveal/finalize, DA-bound on-chain commitment, permanence hash gate, close guards and expiry paths, challenge manager, resolver transcript gate, resolver-bond fraud window/slashing scaffold, bond accounting, seeded property checks, deployment manifest scaffold, and read-only reconciliation script | Real DA/Arweave receipt verification, production indexer jobs, Base Sepolia deployment, audit, broader fuzz/formal review, timelock/multisig rehearsals |
 | Legal | Spec risk register only | Written counsel memo covering prize/bounty, KYC/sanctions, tax, ToS |
-| Operations | This register plus gate ledger, human-action register, wallet/session policy draft, incident/governance docs, DGX/Hermes verifier-runner runbook, and deployment runbook | Named owners, monitored deploys, runner transcripts, key custody, incident drills |
+| Operations | This register plus gate ledger, human-action register, wallet/session policy draft, incident/governance docs, incident-drill evidence validator, bug-bounty policy draft, DGX/Hermes verifier-runner runbook, and deployment runbook | Named owners, monitored deploys, runner transcripts, key custody, signed incident drill and live disclosure path |
 
 ## Closed In This Pass
 
@@ -53,6 +53,7 @@ ledger, exit criteria, and external sign-offs.
 - Agent and owner handoff is now explicit: `AGENTS.md` defines shared-branch/deploy discipline, and `docs/HUMAN_ACTIONS.md` lists repo-owner, deployer, audit, legal, governance, and incident-drill actions that agents cannot close alone.
 - `docs/WALLET_SESSION_POLICY.md` now drafts the Gate 2 wallet/session, API-key, payload-quarantine, session-key, KYC/sanctions, and Coinbase Onramp posture; the portal has an opt-in hashed mutation API-key gate for mutable routes.
 - `docs/VERIFIER_RUNNER.md` defines DGX CHRONOS/Hermes as the immediate reveal verifier, transcript publisher, and alert/auto-challenge candidate while keeping runner output outside the settlement trust root; `p42-prizes runner-plan`, `runner-work-once`, `runner-drain`, and `runner-alerts` add local queue/OOM admission, queue leases, FIFO draining, verifier transcripts, and tamper-evident alert/challenge-candidate bundles.
+- Gate 2 incident/bounty evidence now has an executable artifact path: `docs/INCIDENT_DRILL.md`, `docs/BUG_BOUNTY.md`, `schemas/incident-drill.schema.json`, and `p42-prizes incident-drill-validate` define the required tabletop report, invariants, regression evidence, disclosure policy reference, human signoff, and canonical `drill_hash`.
 
 ## Known Production Blockers
 
@@ -70,6 +71,7 @@ ledger, exit criteria, and external sign-offs.
 - No deployed/fraud-proof resolver implementation; local transcript-required resolver and fraud-window bond scaffold exists but is not a testnet committee, non-owner-trusted slashing system, or real-ETH trust root.
 - No external security audit or legal sign-off.
 - No published GitHub Actions workflow yet; the current OAuth token cannot push `.github/workflows/*` without `workflow` scope, and GitHub rejected an isolated-branch attempt with that exact policy.
+- No completed Gate 2 incident drill or live bug bounty yet; the schema, validator, and draft policy exist, but a named security owner and counsel must sign a real report before this blocker closes.
 
 ## Verification Commands
 

@@ -15,6 +15,7 @@ from p42_prizes.admission import (
     load_evidence_file,
 )
 from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_evidence
+from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
@@ -279,6 +280,16 @@ def _cmd_runner_alerts(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_incident_drill_validate(args: argparse.Namespace) -> int:
+    try:
+        report = normalize_incident_drill_report(load_evidence_file(args.report))
+    except (AdmissionError, IncidentDrillError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -439,6 +450,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="return exit code 2 when any alert is emitted",
     )
     runner_alerts.set_defaults(func=_cmd_runner_alerts)
+
+    incident_drill = subparsers.add_parser(
+        "incident-drill-validate",
+        help="validate and hash a completed incident drill / bug bounty evidence report",
+    )
+    incident_drill.add_argument("--report", required=True)
+    incident_drill.add_argument("--output")
+    incident_drill.set_defaults(func=_cmd_incident_drill_validate)
 
     return parser
 

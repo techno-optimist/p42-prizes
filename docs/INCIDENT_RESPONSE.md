@@ -3,6 +3,12 @@
 This runbook applies once any public pilot exists. Until then, incidents are
 handled as development defects and must still be recorded in `docs/PRODUCTION_READINESS.md`.
 
+Completed Gate 2 tabletop evidence must validate with
+`p42-prizes incident-drill-validate` using the schema documented in
+`docs/INCIDENT_DRILL.md`. The live disclosure/bounty posture is drafted in
+`docs/BUG_BOUNTY.md`, but remains inactive until counsel and the named security
+owner sign a validated drill report.
+
 ## Severity
 
 | Severity | Examples | First action |

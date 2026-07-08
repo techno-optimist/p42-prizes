@@ -1,0 +1,173 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/incident-drill-v1.json",
+  "title": "P42 Incident Drill v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "drill_id",
+    "completed_at_utc",
+    "environment",
+    "severity",
+    "scenario",
+    "facilitator",
+    "incident_lead",
+    "comms_owner",
+    "security_owner",
+    "affected_scope",
+    "evidence_preserved",
+    "timeline",
+    "decisions",
+    "invariants_checked",
+    "regressions",
+    "communications",
+    "bug_bounty",
+    "open_followups",
+    "human_signoff",
+    "drill_hash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-incident-drill/v1" },
+    "drill_id": { "type": "string", "minLength": 1 },
+    "completed_at_utc": { "type": "string", "minLength": 1 },
+    "environment": { "enum": ["tabletop", "base-sepolia", "production"] },
+    "severity": { "enum": ["critical", "high", "medium", "low"] },
+    "scenario": {
+      "enum": [
+        "api_abuse",
+        "chain_reorg",
+        "contract_loss",
+        "da_outage",
+        "key_compromise",
+        "resolver_misbehavior",
+        "verifier_bug"
+      ]
+    },
+    "facilitator": { "type": "string", "minLength": 1 },
+    "incident_lead": { "type": "string", "minLength": 1 },
+    "comms_owner": { "type": "string", "minLength": 1 },
+    "security_owner": { "type": "string", "minLength": 1 },
+    "affected_scope": { "type": "string", "minLength": 1 },
+    "evidence_preserved": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "timeline": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["time_utc", "event", "owner"],
+        "additionalProperties": false,
+        "properties": {
+          "time_utc": { "type": "string", "minLength": 1 },
+          "event": { "type": "string", "minLength": 1 },
+          "owner": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "decisions": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["decision", "rationale", "owner"],
+        "additionalProperties": false,
+        "properties": {
+          "decision": { "type": "string", "minLength": 1 },
+          "rationale": { "type": "string", "minLength": 1 },
+          "owner": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "invariants_checked": {
+      "type": "object",
+      "required": [
+        "claim_not_paused",
+        "resolver_transcript_required",
+        "problem_scope_isolated",
+        "public_copy_testnet_vs_eth_checked",
+        "evidence_preservation_complete"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_not_paused": { "const": true },
+        "resolver_transcript_required": { "const": true },
+        "problem_scope_isolated": { "const": true },
+        "public_copy_testnet_vs_eth_checked": { "const": true },
+        "evidence_preservation_complete": { "const": true }
+      }
+    },
+    "regressions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["artifact", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "artifact": { "type": "string", "minLength": 1 },
+          "status": { "const": "passed" },
+          "command": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "communications": {
+      "type": "object",
+      "required": ["initial_status_draft", "status_channel", "postmortem_owner"],
+      "additionalProperties": false,
+      "properties": {
+        "initial_status_draft": { "type": "string", "minLength": 1 },
+        "status_channel": { "type": "string", "minLength": 1 },
+        "postmortem_owner": { "type": "string", "minLength": 1 }
+      }
+    },
+    "bug_bounty": {
+      "type": "object",
+      "required": [
+        "policy_path",
+        "disclosure_contact",
+        "triage_sla_hours",
+        "bounty_owner",
+        "scope_summary",
+        "safe_harbor_reviewed_by"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "policy_path": { "type": "string", "minLength": 1 },
+        "disclosure_contact": { "type": "string", "minLength": 1 },
+        "triage_sla_hours": { "type": "integer", "minimum": 1, "maximum": 72 },
+        "bounty_owner": { "type": "string", "minLength": 1 },
+        "scope_summary": { "type": "string", "minLength": 1 },
+        "safe_harbor_reviewed_by": { "type": "string", "minLength": 1 }
+      }
+    },
+    "open_followups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item", "owner", "due_utc", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "item": { "type": "string", "minLength": 1 },
+          "owner": { "type": "string", "minLength": 1 },
+          "due_utc": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["critical", "high", "medium", "low"] }
+        }
+      }
+    },
+    "human_signoff": {
+      "type": "object",
+      "required": ["security_owner", "signed_at_utc", "statement"],
+      "additionalProperties": false,
+      "properties": {
+        "security_owner": { "type": "string", "minLength": 1 },
+        "signed_at_utc": { "type": "string", "minLength": 1 },
+        "statement": { "type": "string", "minLength": 1 }
+      }
+    },
+    "drill_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}
