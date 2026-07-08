@@ -12,7 +12,7 @@ negative fixtures, and N-host determinism evidence pass admission.
 | 1 | `hadamard-mini` | runnable pilot | 4x4 sign matrix | integer row-pair dot products | keep as fixture and regression target |
 | 2 | `erdos-min-overlap` | packaged, locked | step-function dyadic numerators | exact normalization and all-lag rational overlap | collect immutable image, N-host matrix, and external H6 reduction review |
 | 3 | `edges-vs-triangles` | locked | rational distribution or reduced knot certificate | exact row normalization, moment curve, area/max-gap model | rationalize incumbent and harden against the trapezoid/scoring trap |
-| 4 | `arithmetic-kakeya` | locked marquee | proof/certificate object | self-certifying proof interface, not a heuristic judge | refresh official problem status, write dossier, define verifier before funding |
+| 4 | `arithmetic-kakeya` | packaged, locked | 2x2 forcing certificate | exact Fraction closure verifier for warm-up certificate | external scope review before any marquee funding claim |
 | 5 | `autoconvolution-c1-upper` | locked | nonnegative integer step heights | exact integer convolution and rational upper-bound score | canonical encoding, runtime cap, claimed-score negative fixture |
 | 6 | `autoconvolution-c2-lower` | packaged, locked | nonnegative integer vector | exact `L1`, `L2`, `Linf` and lower-bound score | collect immutable image, memory profile, and N-host timing |
 | 7 | `signed-autoconvolution-c3-upper` | packaged, locked | signed dyadic step heights | exact signed Kronecker convolution and max check | collect immutable image, N-host timing, and external H6 reduction review |
