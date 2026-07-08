@@ -9,9 +9,13 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@fontsource-variable/newsreader": "^5.2.10",
+    "@fontsource-variable/source-serif-4": "^5.2.9",
+    "@fontsource/ibm-plex-mono": "^5.2.7",
+    "@fontsource/stix-two-text": "^5.2.8",
     "@noble/hashes": "^1.8.0",
     "ethers": "^6.17.0",
-    "lucide-react": "^0.468.0",
+    "katex": "^0.17.0",
     "next": "16.2.10",
     "react": "19.2.3",
     "react-dom": "19.2.3",

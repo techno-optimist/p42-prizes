@@ -18,7 +18,14 @@ export function stateLabel(state: SubmissionState): string {
 
 export function compactRational(value: string): string {
   if (value.endsWith("/1")) return value.slice(0, -2);
-  return `${value} (${decimalRational(value, 3)})`;
+  return value;
+}
+
+/** Decimal hint for a non-integer rational, always marked ≈ so it can never
+ * be mistaken for a computed quantity. Integers get no hint. */
+export function approxRational(value: string): string | null {
+  if (value.endsWith("/1")) return null;
+  return `≈ ${decimalRational(value, 3)}`;
 }
 
 export function isoDate(value: string): string {

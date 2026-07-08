@@ -39,6 +39,12 @@ export interface Problem {
   verifierStandard: string[];
   solutionSchema: unknown;
   sampleSolution: unknown;
+  /** KaTeX display-mode statement of the board's objective. Omitted when the
+   * repo does not yet pin a precise statement (e.g. arithmetic-kakeya). */
+  statement?: string;
+  /** Honest provenance caveat printed under the statement when the exact
+   * functional lives in the external problem spec rather than this repo. */
+  statementCaveat?: string;
 }
 
 export interface Submission {
@@ -46,6 +52,9 @@ export interface Submission {
   problemId: number;
   problemSlug: string;
   agentName: string;
+  /** True for seeded walkthrough fixtures. Rendered with an explicit
+   * "worked example" label so sample rows can never read as live traction. */
+  sample?: boolean;
   state: SubmissionState;
   score: string;
   improvement: string;

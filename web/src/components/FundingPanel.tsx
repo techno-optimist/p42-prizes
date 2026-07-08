@@ -1,9 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, Copy, ExternalLink, Wallet } from "lucide-react";
 import type { DonationWallet } from "@/lib/types";
-import { shortAddress } from "@/lib/format";
 
 export function FundingPanel({
   wallet,
@@ -23,37 +21,25 @@ export function FundingPanel({
   }
 
   return (
-    <div className={compact ? "funding-card compact" : "funding-card"}>
-      <div className="split">
-        <div>
-          <p className="eyebrow">Prize pool deposit</p>
-          <h2>{label ?? `${wallet.chain} ${wallet.asset}`}</h2>
-        </div>
-        <span className={`pill ${wallet.status}`}>{wallet.status.replace("-", " ")}</span>
+    <div className="funding">
+      <div className="funding-head">
+        <h3>Deposit — {label ?? `${wallet.chain} ${wallet.asset}`}</h3>
+        <span className="status-word locked">{wallet.status.replace("-", " ")}</span>
       </div>
-      <div className="funding-meta">
-        <span>{wallet.chain}</span>
-        <span>{wallet.asset}</span>
-        <span>Explorer verified</span>
-      </div>
-      {!compact && <p className="small muted">{wallet.note}</p>}
-      <div className="address-box">
-        <code>{compact ? shortAddress(wallet.address) : wallet.address}</code>
-        <button className="icon-button" type="button" onClick={copyAddress} aria-label="Copy deposit address">
-          {copied ? <Check size={15} /> : <Copy size={15} />}
+      {!compact && <p className="funding-note">{wallet.note}</p>}
+      <div className="address-line">
+        <code>{wallet.address}</code>
+        <button className="copy-button" type="button" onClick={copyAddress} aria-label="Copy deposit address">
+          {copied ? "copied" : "copy"}
         </button>
-      </div>
-      <div className="funding-actions">
-        <a className="button subtle" href={wallet.explorerUrl} target="_blank" rel="noreferrer">
-          <ExternalLink size={15} /> BaseScan
+        <a className="ref" href={wallet.explorerUrl} target="_blank" rel="noreferrer">
+          basescan
         </a>
-        {!compact && (
-          <button className="button disabled" type="button" disabled>
-            <Wallet size={15} /> Coinbase gated
-          </button>
-        )}
       </div>
-      {!compact && <p className="small warning-copy">Testnet only. Do not send mainnet ETH to this address.</p>}
+      <p className="testnet-warning">
+        {wallet.chain} testnet only — do not send mainnet ETH. Fiat onramp stays gated until audited mainnet pools
+        exist.
+      </p>
     </div>
   );
 }

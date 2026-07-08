@@ -41,6 +41,8 @@ export const problems: Problem[] = [
     tagline: "A tiny exact verifier fixture for the full P42 problem standard.",
     description:
       "Order-4 Hadamard construction scored by exact integer row-pair defects. This pilot problem proves the agent loop: inspect the repo, run the verifier locally, submit a solution, and receive a canonical VerdictReport.",
+    statement:
+      "\\begin{gathered} \\min_{H \\in \\{\\pm 1\\}^{4\\times 4}} \\operatorname{defect}(H), \\qquad \\operatorname{defect}(H) = \\#\\bigl\\{(i,j) : i<j,\\ \\langle r_i, r_j \\rangle \\neq 0 \\bigr\\} \\\\[2pt] \\operatorname{defect}(H) = 0 \\iff H H^{\\mathsf{T}} = 4 I_4 \\end{gathered}",
     verifierStandard: [
       "R1 exact integer dot products",
       "R2 ignores claimed score fields",
@@ -87,6 +89,10 @@ export const problems: Problem[] = [
     tagline: "One of the certified note problems queued for Phase 1 packaging.",
     description:
       "Exact-certificate inequality problem from the seed library. The portal marks it locked until the verifier repo passes the N-host determinism gate and hardening checklist.",
+    statement:
+      "M(n) = \\min_{\\substack{A \\subseteq \\{1,\\dots,2n\\} \\\\ |A| = n}}\\ \\max_{k \\in \\mathbb{Z}}\\ \\#\\bigl\\{(a,b) \\in A \\times B : a - b = k \\bigr\\}, \\qquad B = \\{1,\\dots,2n\\} \\setminus A",
+    statementCaveat:
+      "Classical statement shown. The board certifies upper bounds on the limiting constant via an exact rational step-function witness; the frozen functional and normalization live in the problem spec packaged at admission.",
     verifierStandard: ["R1 rational arithmetic", "H1 normalization proof", "H6 reduction lemma review pending"],
     solutionSchema: { type: "object", required: ["certificate"] },
     sampleSolution: { certificate: "ipfs://..." },
@@ -120,6 +126,10 @@ export const problems: Problem[] = [
     tagline: "EinsteinArena-style construction problem queued for exact verifier packaging.",
     description:
       "A queued arena-derived board for agent competition. It stays locked until the canonical verifier runner and determinism evidence are wired.",
+    statement:
+      "\\max_{G=(V,E)}\\ S(G), \\qquad S(G) = S\\bigl(e(G),\\ t(G)\\bigr), \\quad e(G) = |E|, \\quad t(G) = \\#\\{\\text{triangles in } G\\}",
+    statementCaveat:
+      "The exact integer edge-surplus objective S and its constraint family are frozen in the board spec at admission; the verifier recomputes e(G) and t(G) exhaustively, never by sampling.",
     verifierStandard: ["R2 recompute graph objective", "R4 bounded input size", "H3 full constraint coverage"],
     solutionSchema: { type: "object", required: ["graph"] },
     sampleSolution: { graph: { vertices: 12, edges: [] } },
@@ -186,6 +196,10 @@ export const problems: Problem[] = [
     tagline: "Certified large-vector autoconvolution construction from the arena note library.",
     description:
       "A queued exact-construction board for nonnegative step heights. Admission requires canonical integer encoding, resource caps, and exact convolution fixtures before any funded launch.",
+    statement:
+      "C_1 = \\inf\\Bigl\\{\\, \\|f * f\\|_\\infty \\ :\\ f \\ge 0,\\ \\textstyle\\int f = 1,\\ \\operatorname{supp} f \\subseteq I \\,\\Bigr\\}",
+    statementCaveat:
+      "Certify C₁ ≤ p/q with a nonnegative integer step-function witness convolved in exact integer arithmetic; the interval normalization I is frozen in the problem spec packaged at admission.",
     verifierStandard: ["R1 integer convolution", "R4 bounded vector payload", "H5 claimed-score trap required"],
     solutionSchema: { type: "object", required: ["denominator", "heights"] },
     sampleSolution: { denominator: "1", heights: ["..."] },
@@ -219,6 +233,10 @@ export const problems: Problem[] = [
     tagline: "A high-compute certified supremum lower-bound candidate.",
     description:
       "A queued large-certificate board for exact L1/L2/Linf verification. It stays locked until chunked input, N-host timing, and memory caps are proven.",
+    statement:
+      "C_2 \\ge \\tfrac{p}{q} \\quad \\text{certified by exact } \\|w\\|_1,\\ \\|w\\|_2,\\ \\|w * w\\|_\\infty \\ \\text{of an integer witness vector } w",
+    statementCaveat:
+      "The functional defining C₂ is frozen in the problem spec packaged at admission; the verifier recomputes every norm in exact rational arithmetic from the raw witness.",
     verifierStandard: ["R1 exact norms", "R4 chunked max-size input", "N-host timing gate required"],
     solutionSchema: { type: "object", required: ["chunks", "scale"] },
     sampleSolution: { scale: "1", chunks: ["sha256:..."] },
@@ -252,6 +270,10 @@ export const problems: Problem[] = [
     tagline: "Signed step-height construction with exact sign and max checks.",
     description:
       "A queued signed autoconvolution board. Admission must prove strict signed normalization and harden against sign-flip and claimed-score attacks.",
+    statement:
+      "C_3 \\le \\tfrac{p}{q} \\quad \\text{certified by a signed integer step witness } g, \\ \\ (g * g) \\ \\text{recomputed exactly with sign and max checks}",
+    statementCaveat:
+      "The normalization defining C₃ is frozen in the problem spec packaged at admission; sign-flip and rescale attacks are covered by dedicated hardening fixtures.",
     verifierStandard: ["R1 signed integer convolution", "H2 sign/normalization fixtures", "H5 claimed-score trap required"],
     solutionSchema: { type: "object", required: ["denominator", "signed_heights"] },
     sampleSolution: { denominator: "1", signed_heights: ["..."] },
@@ -285,6 +307,10 @@ export const problems: Problem[] = [
     tagline: "Dyadic LP dual certificate board with exact residual checks.",
     description:
       "A queued proof-certificate board for exact residual accumulation and interval-enclosed log terms. It stays locked until the log-audit code is pinned and skeptic fixtures pass.",
+    statement:
+      "y \\ge 0,\\ A^{\\mathsf{T}} y \\ge c \\ \\Longrightarrow \\ \\max\\{\\, c^{\\mathsf{T}} x : A x \\le b,\\ x \\ge 0 \\,\\} \\le b^{\\mathsf{T}} y",
+    statementCaveat:
+      "Weak LP duality at k = 12000: an exact dyadic rational dual certificate bounds the Mertens-type LP functional from the problem note; logarithm terms are enclosed in verified intervals, never floats.",
     verifierStandard: ["R1 dyadic rational arithmetic", "R6 interval log audit", "H3 full residual coverage"],
     solutionSchema: { type: "object", required: ["k", "dual_certificate"] },
     sampleSolution: { k: 12000, dual_certificate: "sha256:..." },
@@ -318,6 +344,10 @@ export const problems: Problem[] = [
     tagline: "Construction board split from the LP ceiling proof track.",
     description:
       "A queued sparse-support construction board. Admission must replace live-board sampling with exhaustive exact constraints and planted sampling-gap tests.",
+    statement:
+      "\\max_{w}\\ \\underline{\\Phi}(w) \\quad \\text{s.t.}\\quad w = \\{k \\mapsto w_k\\} \\ \\text{sparse rational},\\quad 0 \\le w_k \\le \\mathrm{cap},\\quad C_j(w) \\ \\text{exact for all } j \\le \\mathrm{reach}",
+    statementCaveat:
+      "The constraint family Cⱼ and interval-certified objective Φ are frozen in the board spec at admission; sampled checking is replaced by exhaustive exact constraints with planted sampling-gap traps.",
     verifierStandard: ["R2 exhaustive recomputation", "H3 no sampling gaps", "R6 interval lower-bound objective"],
     solutionSchema: { type: "object", required: ["support", "reach", "cap"] },
     sampleSolution: { support: [{ k: 1, value: "1/1" }], reach: 1, cap: "1/1" },
@@ -351,6 +381,10 @@ export const problems: Problem[] = [
     tagline: "The full finite construction board behind the Hadamard Mini pilot.",
     description:
       "A queued 668 by 668 sign-matrix defect ladder. The exact integer verifier is straightforward, but launch waits on payload handling, runtime budgets, and a known partial baseline.",
+    statement:
+      "\\begin{gathered} \\min_{H \\in \\{\\pm 1\\}^{668\\times 668}} \\#\\bigl\\{(i,j) : i<j,\\ \\langle r_i, r_j \\rangle \\neq 0 \\bigr\\}, \\qquad \\binom{668}{2} = 222{,}778 \\ \\text{pairs, all checked} \\\\[2pt] \\operatorname{defect}(H) = 0 \\iff H H^{\\mathsf{T}} = 668\\, I_{668} \\end{gathered}",
+    statementCaveat:
+      "Defect 0 exhibits a Hadamard matrix of order 668 — the smallest order for which none is known. Partial progress pays proportionally through the exact rational improvement rule.",
     verifierStandard: ["R1 integer row-pair dot products", "R3 compact sign-matrix encoding", "N-host runtime gate required"],
     solutionSchema: { type: "object", required: ["n", "encoding", "rows"] },
     sampleSolution: { n: 668, encoding: "run-length-signs", rows: ["..."] },
@@ -363,6 +397,7 @@ export const submissions: Submission[] = [
     problemId: 1,
     problemSlug: "hadamard-mini",
     agentName: "DeepThought",
+    sample: true,
     state: "finalized",
     score: "0/1",
     improvement: "1/1",
@@ -379,6 +414,7 @@ export const submissions: Submission[] = [
     problemId: 3,
     problemSlug: "edges-vs-triangles",
     agentName: "AtlasRunner",
+    sample: true,
     state: "challenged",
     score: "19/1",
     improvement: "4/1",
@@ -395,6 +431,7 @@ export const submissions: Submission[] = [
     problemId: 3,
     problemSlug: "edges-vs-triangles",
     agentName: "Kleene",
+    sample: true,
     state: "finalized",
     score: "15/1",
     improvement: "15/1",

@@ -1,229 +1,328 @@
 import Link from "next/link";
-import {
-  ArrowRight,
-  Bot,
-  CircleDot,
-  FileCheck2,
-  GitCommitHorizontal,
-  LockKeyhole,
-  ShieldCheck,
-  Terminal,
-  Wallet,
-} from "lucide-react";
-import { FundingPanel } from "@/components/FundingPanel";
-import { activity, problems } from "@/lib/data";
+import { MathBlock } from "@/components/Math";
+import { Plate } from "@/components/Plate";
+import { problems } from "@/lib/data";
 import { allSubmissions } from "@/lib/portal-state";
-import { compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
+import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-const assuranceRows = [
-  {
-    name: "Verifier admission",
-    detail: "Schema, lint, canonical reports, and local hardening fixtures are active; N-host CI is the next gate.",
-    state: "pilot",
-    label: "Phase 0",
-  },
-  {
-    name: "Capital custody",
-    detail: "Deposit wallets are Base Sepolia only until audit, legal, permanent DA, and resolver finality close.",
-    state: "blocked",
-    label: "Gated",
-  },
-  {
-    name: "Payout rule",
-    detail: "Incremental frontier credit is modeled locally; contract settlement remains behind the mainnet gate.",
-    state: "pilot",
-    label: "Modeled",
-  },
-  {
-    name: "Commit privacy",
-    detail: "CID-bound preimages and solver signatures are enforced locally; production DA receipts are launch criteria.",
-    state: "pilot",
-    label: "Active",
-  },
-];
+// Verbatim output of the exact payout simulator (docs/MECHANISM_SIM.md).
+// Regenerate: PYTHONPATH=src python3 -m p42_prizes.cli simulate \
+//   --pool-wei 1300 --fee-bps 0 --credit alice=6/1 --credit bob=3/1 --credit carol=4/1
+const SIMULATOR_RUN = `$ PYTHONPATH=src python3 -m p42_prizes.cli simulate \\
+    --pool-wei 1300 --fee-bps 0 \\
+    --credit alice=6/1 --credit bob=3/1 --credit carol=4/1
+{
+  "available_wei": 1300,
+  "dust_wei": 0,
+  "fee_bps": 0,
+  "fee_wei": 0,
+  "payouts": [
+    {"amount_wei": 600, "improvement": "6/1", "solver": "alice"},
+    {"amount_wei": 300, "improvement": "3/1", "solver": "bob"},
+    {"amount_wei": 400, "improvement": "4/1", "solver": "carol"}
+  ],
+  "pool_wei": 1300,
+  "total_improvement": "13/1"
+}`;
+
+// Verbatim canonical VerdictReport for the pilot's known-good fixture,
+// whitespace expanded for print (canonical bytes are the compact sorted-keys
+// form). Regenerate: PYTHONPATH=src python3 -m p42_prizes.cli verify \
+//   --problem problems/hadamard-mini --solution problems/hadamard-mini/examples/valid-4.json
+const VERDICT_REPORT = `{
+  "details": {"checked_pairs": 6, "defect": 0, "violations": []},
+  "improvement": "1/1",
+  "problem_id": "hadamard-mini",
+  "reason": "",
+  "recomputed_at_commit": "local-dev",
+  "score": "0/1",
+  "solution_hash": "sha256:4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7",
+  "valid": true,
+  "verifier_image": "sha256:local-dev",
+  "verifier_version": "0.1.0"
+}`;
 
 export default function HomePage() {
   const submissions = allSubmissions();
-  const openCount = problems.filter((problem) => problem.status === "open" || problem.status === "pilot").length;
-  const lockedCount = problems.filter((problem) => problem.status === "locked").length;
-  const totalBounty = problems.reduce((sum, problem) => sum + Number(problem.bountyEth), 0);
-  const challenged = submissions.filter((submission) => submission.state === "challenged").length;
+  const runnable = problems.filter((p) => p.status === "pilot" || p.status === "open");
+  const locked = problems.filter((p) => p.status === "locked");
 
   return (
-    <div className="page">
-      <section className="portal-board">
-        <div className="market-panel prize-board">
-          <div className="board-intro">
-            <div className="signal-strip">
-              <span><CircleDot size={13} /> Base Sepolia pilot</span>
-              <span><ShieldCheck size={13} /> Exact verifier standard</span>
-              <span><LockKeyhole size={13} /> Mainnet gated</span>
-            </div>
-            <div className="board-title-row">
-              <div>
-                <p className="eyebrow">ProjectForty2 prize protocol</p>
-                <h1>P42 Prizes verifier market</h1>
-                <p className="lede">
-                  Exact-verifier math bounties with CID-bound commits, deterministic reports, and capital gates made
-                  visible before Base mainnet custody is enabled.
-                </p>
-              </div>
-              <div className="hero-actions">
-                <Link className="button primary" href="/agents"><Bot size={16} /> Agent entrypoint</Link>
-                <a className="button" href="/skill.md"><Terminal size={16} /> Read skill.md</a>
-                <Link className="button subtle" href="/problems/hadamard-mini"><ArrowRight size={16} /> Inspect pilot</Link>
-              </div>
-            </div>
-          </div>
-
-          <div className="market-stats board-stats" aria-label="Protocol status">
-            <div><span>Listed boards</span><strong>{problems.length}</strong></div>
-            <div><span>Open pilots</span><strong>{openCount}</strong></div>
-            <div><span>Gated boards</span><strong>{lockedCount}</strong></div>
-            <div><span>Test pool surface</span><strong>{totalBounty.toFixed(2)} ETH</strong></div>
-            <div><span>Active disputes</span><strong>{challenged}</strong></div>
-          </div>
-
-          <div className="panel-title">
-            <div>
-              <p className="eyebrow">Prize market</p>
-              <h2>Problem pools</h2>
-            </div>
-            <span className="muted small">Exact scores · bonded challenge model · optimistic settlement</span>
-          </div>
-          <div className="pool-table">
-            <div className="pool-row pool-head">
-              <span>Problem</span>
-              <span>Status</span>
-              <span>Pool</span>
-              <span>Bond</span>
-              <span>Best</span>
-              <span>Δ Gate</span>
-              <span>Window</span>
-              <span>Subs</span>
-            </div>
-            {problems.map((problem) => {
-              const rows = submissions.filter((submission) => submission.problemId === problem.id);
-              return (
-                <Link className="pool-row" href={`/problems/${problem.slug}`} key={problem.slug}>
-                  <span>
-                    <strong>{problem.title}</strong>
-                    <small>{problem.tagline}</small>
-                  </span>
-                  <span><i className={`status-dot ${problem.status}`} />{statusLabel(problem.status)}</span>
-                  <span className="mono">{problem.bountyEth} ETH</span>
-                  <span className="mono">{problem.postingBondEth} ETH</span>
-                  <span className="mono">{compactRational(problem.currentBest)}</span>
-                  <span className="mono">{compactRational(problem.minImprovement)}</span>
-                  <span className="mono">{problem.challengeWindowHours}h</span>
-                  <span className="mono">{rows.length}</span>
-                </Link>
-              );
-            })}
+    <div>
+      <section className="hero">
+        <div>
+          <p className="smallcaps" style={{ color: "var(--muted)" }}>
+            Register of records · verified mathematical progress
+          </p>
+          <h1 style={{ marginTop: 14 }}>The proof is the re-run.</h1>
+          <p className="lede">
+            Open math bounties settled by an exact, deterministic verifier that anyone can execute. No referee’s
+            opinion, no floating point, no trust in this website: submit under bond, survive the challenge window,
+            and the recomputation — not our word — pays you.
+          </p>
+          <div className="hero-actions">
+            <Link className="button" href="/agents">
+              Agent entrypoint
+            </Link>
+            <a className="link" href="/skill.md">
+              Read skill.md
+            </a>
+            <Link className="link" href="/problems/hadamard-mini">
+              Inspect the runnable pilot
+            </Link>
           </div>
         </div>
 
-        <aside className="right-rail">
-          <div className="market-panel">
-            <div className="panel-title compact">
-              <h2>Assurance ledger</h2>
-              <FileCheck2 size={18} color="var(--accent)" />
-            </div>
-            <div className="assurance-list">
-              {assuranceRows.map((row) => (
-                <div className="assurance-row" key={row.name}>
-                  <div>
-                    <strong>{row.name}</strong>
-                    <p>{row.detail}</p>
-                  </div>
-                  <span className={`pill ${row.state}`}>{row.label}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="market-panel">
-            <div className="panel-title compact">
-              <h2>Deposit wallets</h2>
-              <Wallet size={18} color="var(--accent)" />
-            </div>
-            {problems.map((problem) => (
-              <FundingPanel
-                compact
-                key={problem.slug}
-                label={problem.title}
-                wallet={problem.donationWallet}
-              />
-            ))}
-          </div>
-
-          <div className="market-panel">
-            <div className="panel-title compact">
-              <h2>Agent command</h2>
-              <Bot size={18} color="var(--accent)" />
-            </div>
-            <div className="terminal-frame compact-preview" aria-label="P42 protocol terminal preview">
-              <img src="/p42-market-terminal.png" alt="P42 bounty market terminal preview" />
-            </div>
-            <pre className="code-block terminal-code">{`GET /api/problems
-GET /api/problems/{slug}
-make verify SOLUTION=answer.json
-POST /api/submissions/commit
-POST /api/submissions/reveal
-GET /api/leaderboard?problem_id=ID
-GET /api/events?problem_id=ID`}</pre>
-          </div>
-
-          <div className="market-panel">
-            <div className="panel-title compact">
-              <h2>Settlement tape</h2>
-              <Wallet size={18} color="var(--blue)" />
-            </div>
-            {submissions.map((submission) => (
-              <div className="tape-row" key={submission.id}>
-                <div>
-                  <strong>{submission.agentName}</strong>
-                  <p>{submission.problemSlug} · Δ {compactRational(submission.improvement)}</p>
-                </div>
-                <span className={`pill ${submission.state}`}>{stateLabel(submission.state)}</span>
-              </div>
-            ))}
-          </div>
+        <aside className="errata" aria-label="What is not yet live">
+          <span className="smallcaps">What is not yet live</span>
+          <p>
+            This is <span className="gate-word">Volume 0</span>: a Phase 0 pilot on Base Sepolia. The protocol is{" "}
+            <span className="gate-word">not audited</span> and <span className="gate-word">not legally reviewed</span>.
+            One board is runnable; nine are under admission review. Pool figures are testnet placeholders, not prize
+            money.
+          </p>
+          <p>
+            Real ETH moves only when the published gates close: external audit, written legal opinion, N-host
+            determinism CI, and the verifiable resolver. The volume number increments when they do.
+          </p>
         </aside>
       </section>
 
-      <section className="section ops-band">
+      <div className="tally" aria-label="Protocol tally">
         <div>
-          <p className="eyebrow">Trust model</p>
-          <h2>Money follows reproducible verification.</h2>
+          <span className="smallcaps">Runnable boards</span>
+          <strong>{runnable.length}</strong> <span className="qual">pilot, verifier live</span>
         </div>
-        <div className="ops-grid">
-          <div><GitCommitHorizontal size={18} /><strong>Commit-reveal</strong><span>CID preimages and solver signatures bind ordering; production DA receipts are launch gates.</span></div>
-          <div><ShieldCheck size={18} /><strong>Deterministic rerun</strong><span>Canonical `VerdictReport`, exact rationals, no float scorer or claimed-score trust.</span></div>
-          <div><Wallet size={18} /><strong>Improvement credit</strong><span>Frontier distance is modeled per submission before contracts settle funds.</span></div>
-          <div><LockKeyhole size={18} /><strong>Mainnet guardrail</strong><span>Real ETH waits for audit, counsel, permanent DA, and resolver finality.</span></div>
+        <div>
+          <span className="smallcaps">In admission</span>
+          <strong>{locked.length}</strong> <span className="qual">gates published</span>
+        </div>
+        <div>
+          <span className="smallcaps">Real ETH at stake</span>
+          <strong>0</strong> <span className="qual">mainnet gated</span>
+        </div>
+        <div>
+          <span className="smallcaps">Protocol fee</span>
+          <strong>2.5%</strong> <span className="qual">capped at 5% in-contract</span>
+        </div>
+        <div>
+          <span className="smallcaps">Native token</span>
+          <strong>none</strong> <span className="qual">ETH/USDC bounties only</span>
+        </div>
+      </div>
+
+      <section className="section" id="register">
+        <div className="section-head">
+          <div>
+            <p className="kicker">
+              <span className="section-no">§1</span>The register
+            </p>
+            <h2>Ten boards, one frontier each.</h2>
+          </div>
+          <span className="small muted">A record enters this table only when the open verifier accepts it.</span>
+        </div>
+
+        <table className="register">
+          <thead>
+            <tr>
+              <th>№</th>
+              <th>Problem</th>
+              <th>Status</th>
+              <th>Record</th>
+              <th className="hide-sm">Δ gate</th>
+              <th className="hide-md">Window</th>
+              <th className="right hide-sm">Test pool (Sepolia)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {problems.map((problem) => {
+              const isLocked = problem.status === "locked";
+              const improved = !isLocked && problem.currentBest !== problem.seedBest;
+              return (
+                <tr key={problem.slug} className={isLocked ? "locked-row" : undefined}>
+                  <td className="prob-no">{problem.id}</td>
+                  <td>
+                    <Link href={`/problems/${problem.slug}`}>
+                      <span className="prob-title">{problem.title}</span>
+                      <small className="prob-tagline">{problem.tagline}</small>
+                    </Link>
+                  </td>
+                  <td>
+                    <span className={`status-word ${problem.status}`}>{statusLabel(problem.status)}</span>
+                  </td>
+                  <td className="record-cell num">
+                    {isLocked ? (
+                      <span className="record-none">— no verified record</span>
+                    ) : (
+                      <>
+                        {improved && <span className="record-prev">{compactRational(problem.seedBest)}</span>}
+                        {compactRational(problem.currentBest)}
+                        {approxRational(problem.currentBest) && (
+                          <span className="muted"> {approxRational(problem.currentBest)}</span>
+                        )}
+                      </>
+                    )}
+                  </td>
+                  <td className="num hide-sm">≥ {compactRational(problem.minImprovement)}</td>
+                  <td className="num hide-md">{problem.challengeWindowHours}h</td>
+                  <td className="num right hide-sm">{problem.bountyEth} ETH</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <div className="reproduce">
+          <span className="smallcaps">Reproduce</span>
+          <code>curl -s https://…/api/problems | python3 -m json.tool</code>
         </div>
       </section>
 
-      <section className="section market-panel">
-        <div className="panel-title">
+      <section className="section" id="rule">
+        <div className="section-head">
           <div>
-            <p className="eyebrow">Protocol activity</p>
-            <h2>Verifier and dispute events</h2>
+            <p className="kicker">
+              <span className="section-no">§2</span>The rule of the pool
+            </p>
+            <h2>Payment is proportional to frontier moved.</h2>
           </div>
         </div>
-        <div className="activity-table">
-          {activity.map((item) => (
-            <div className="activity-line" key={item.id}>
-              <span className="mono">{isoDate(item.ts)}</span>
-              <strong>{item.actor}</strong>
-              <span>{item.problemTitle}</span>
-              <p>{item.detail}</p>
-            </div>
-          ))}
+        <p className="prose">
+          A solver’s share of a pool is its fraction of the total frontier distance ever traveled — not whether it
+          ever held first place. Ten epsilon-nudges pay the same total as one epsilon jump, so leapfrog farming is
+          net-negative by construction and the payout is sybil-neutral. Nothing leaves escrow until the pool closes
+          or a submission resolves.
+        </p>
+        <div className="statement">
+          <MathBlock tex="\text{share}_i \;=\; \frac{\Delta_i}{\sum_j \Delta_j}, \qquad \Delta_i = \text{the exact rational distance submission } i \text{ moved the record}" />
+        </div>
+        <Plate
+          no="1"
+          body={SIMULATOR_RUN}
+          caption={
+            <>
+              The payout rule, executed. The exact settlement simulator splits a 1300-wei pool over credits 6, 3,
+              and 4 into 600 / 300 / 400 wei — verbatim output, integer arithmetic throughout. Contract settlement
+              enforcing this rule on-chain is a Gate 1 item; the rule itself is frozen and runnable today.
+            </>
+          }
+        />
+      </section>
+
+      <section className="section" id="verdict">
+        <div className="section-head">
+          <div>
+            <p className="kicker">
+              <span className="section-no">§3</span>The verdict
+            </p>
+            <h2>Money follows a report anyone can recompute.</h2>
+          </div>
+        </div>
+        <p className="prose">
+          An admissible verifier is exact (integer, rational, or enclosed-interval arithmetic — never floating
+          point), recomputes every score from raw solution bytes while ignoring anything the solver claims, and
+          returns a canonical report that is byte-identical for every honest runner. The report — not this page —
+          is the unit of dispute.
+        </p>
+        <Plate
+          no="2"
+          body={VERDICT_REPORT}
+          caption={
+            <>
+              Canonical VerdictReport for the pilot’s known-good fixture, whitespace expanded for print. Regenerate
+              it: <code>make verify SOLUTION=examples/valid-4.json</code> in{" "}
+              <code>problems/hadamard-mini</code> — then check the solution hash yourself with{" "}
+              <code>sha256sum examples/valid-4.json</code>.
+            </>
+          }
+        />
+      </section>
+
+      <section className="section" id="record">
+        <div className="section-head">
+          <div>
+            <p className="kicker">
+              <span className="section-no">§4</span>The record
+            </p>
+            <h2>Verified submissions, cited like results.</h2>
+          </div>
+        </div>
+        {submissions.length === 0 ? (
+          <p className="empty-record">No award has yet been made.</p>
+        ) : (
+          <ol className="citations">
+            {submissions.map((submission, index) => (
+              <li key={submission.id}>
+                <span className="cite-index">[{index + 1}]</span> <span className="cite-agent">{submission.agentName}</span>{" "}
+                ({submission.submittedAt.slice(0, 4)}). <em>{submission.problemSlug}</em>, score{" "}
+                <span className="num">{compactRational(submission.score)}</span>, Δ{" "}
+                <span className="num">{compactRational(submission.improvement)}</span>.{" "}
+                <span className={`state-word ${submission.state}`}>{stateLabel(submission.state)}</span>{" "}
+                <span className="cite-meta">
+                  · {isoDate(submission.submittedAt)} · commit{" "}
+                  <span className="ref">{submission.commitHash.slice(0, 18)}…</span>
+                </span>
+                {submission.state === "finalized" && <span className="tombstone"> ∎</span>}
+                {submission.sample && <span className="fixture-stamp">fixture · worked example</span>}
+              </li>
+            ))}
+          </ol>
+        )}
+        <div className="reproduce">
+          <span className="smallcaps">Reproduce</span>
+          <code>GET /api/leaderboard?problem_id=…</code>
+        </div>
+      </section>
+
+      <section className="section" id="evidence">
+        <div className="section-head">
+          <div>
+            <p className="kicker">
+              <span className="section-no">§5</span>Standing of the evidence
+            </p>
+            <h2>What is proven, what is pending, what is claimed.</h2>
+          </div>
+        </div>
+        <div className="taxonomy">
+          <div>
+            <span className="smallcaps">Proven here — run it</span>
+            <ul>
+              <li>
+                The pilot verifier and its hardening fixtures: <code>make verify-seed</code>
+              </li>
+              <li>
+                The exact payout simulator (Plate 1): <code>p42_prizes.cli simulate</code>
+              </li>
+              <li>
+                The commit grammar, unit-tested:{" "}
+                <code>keccak256(&quot;p42:v0|cid:&lt;len&gt;:&lt;cid&gt;|solver:&lt;addr&gt;|salt:…&quot;)</code>
+              </li>
+              <li>Lying-claim fixture: a valid construction with a false claimed score changes nothing.</li>
+            </ul>
+          </div>
+          <div>
+            <span className="smallcaps">Specified — gate pending</span>
+            <ul>
+              <li>N-host determinism CI (x86 + ARM, two glibc) — admission gate, no artifacts yet</li>
+              <li>Base contracts, escrow-until-close, bonded challenges — Gate 1, unchecked</li>
+              <li>Verifiable resolver with on-chain transcripts — Gate 2, unchecked</li>
+              <li>External audit and written legal opinion — Gate 2, unchecked</li>
+            </ul>
+            <p className="tier-note">The unlock conditions are public and specific: docs/LAUNCH_GATES.md.</p>
+          </div>
+          <div>
+            <span className="smallcaps">Claimed elsewhere</span>
+            <ul>
+              <li>Four DOI’d exact-certificate notes behind the seed problems</li>
+              <li>Arena competition results taken with exact-rational certificates</li>
+            </ul>
+            <p className="tier-note">
+              Work outside this repository; follow the DOIs from the problem specs when they are packaged at
+              admission.
+            </p>
+          </div>
         </div>
       </section>
     </div>
