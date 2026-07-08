@@ -55,3 +55,11 @@ curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
 - Do not enable mainnet Coinbase Onramp, real deposits, or settlement until audit, legal review, N-host determinism CI, and the verifiable resolver gates are closed.
 - Every problem page must preserve the machine route, exact verifier command, challenge-window terms, and deposit donation wallet.
 - Treat `docs/GATE_LEDGER.md` as the current production-readiness source of truth. A gate is not closed because code exists; it closes only when the evidence link and human/external sign-off fields are filled.
+
+## Contract Gate
+
+The Base Sepolia deploy scaffold lives in `contracts/scripts/deploy-base-sepolia.js`.
+It writes `deployments/base-sepolia/p42-prizes.json` and requires real RPC,
+deployer, treasury, resolver, and frozen problem hash inputs. Do not mark Gate 1
+as deployed until that manifest contains real tx hashes, verified source links,
+and an indexer start block.

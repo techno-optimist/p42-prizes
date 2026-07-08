@@ -1,0 +1,132 @@
+{
+  "schema": "p42-prizes/deployment-manifest/v1",
+  "status": "example-not-deployed",
+  "deployedAt": "2026-07-08T00:00:00.000Z",
+  "deploymentCommit": "replace-with-git-commit",
+  "network": {
+    "name": "baseSepolia",
+    "chainId": 84532,
+    "explorerBaseUrl": "https://sepolia.basescan.org"
+  },
+  "roles": {
+    "deployer": "0x0000000000000000000000000000000000000000",
+    "owner": "0x0000000000000000000000000000000000000000",
+    "treasury": "0x0000000000000000000000000000000000000000",
+    "resolver": "0x0000000000000000000000000000000000000000"
+  },
+  "parameters": {
+    "alphaBps": "200",
+    "betaBps": "500",
+    "challengeWindowSeconds": "259200",
+    "feeBps": "0",
+    "minCounterBondWei": "20000000000000000",
+    "minPostingBondWei": "10000000000000000",
+    "rerunCostMultiplierBps": "30000",
+    "rerunCostWei": "10000000000000000",
+    "resolverDecisionBondWei": "5000000000000000"
+  },
+  "contracts": {
+    "pool": {
+      "name": "P42BountyPool",
+      "address": "0x0000000000000000000000000000000000000000",
+      "txHash": "0x0",
+      "blockNumber": 0,
+      "constructorArgs": ["0x0000000000000000000000000000000000000000"]
+    },
+    "ledger": {
+      "name": "P42PayoutLedger",
+      "address": "0x0000000000000000000000000000000000000000",
+      "txHash": "0x0",
+      "blockNumber": 0,
+      "constructorArgs": [
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000",
+        "0"
+      ]
+    },
+    "submissions": {
+      "name": "P42SubmissionManager",
+      "address": "0x0000000000000000000000000000000000000000",
+      "txHash": "0x0",
+      "blockNumber": 0,
+      "constructorArgs": [
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000",
+        "200",
+        "10000000000000000",
+        "259200"
+      ]
+    },
+    "challenges": {
+      "name": "P42ChallengeManager",
+      "address": "0x0000000000000000000000000000000000000000",
+      "txHash": "0x0",
+      "blockNumber": 0,
+      "constructorArgs": [
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000",
+        "0x0000000000000000000000000000000000000000",
+        "259200",
+        "500",
+        "20000000000000000",
+        "10000000000000000",
+        "30000",
+        "5000000000000000"
+      ]
+    },
+    "registry": {
+      "name": "P42ProblemRegistry",
+      "address": "0x0000000000000000000000000000000000000000",
+      "txHash": "0x0",
+      "blockNumber": 0,
+      "constructorArgs": ["0x0000000000000000000000000000000000000000"]
+    }
+  },
+  "setupTransactions": [
+    {
+      "label": "pool.setLedger",
+      "txHash": "0x0",
+      "blockNumber": 0
+    },
+    {
+      "label": "ledger.setCreditRecorder",
+      "txHash": "0x0",
+      "blockNumber": 0
+    },
+    {
+      "label": "submissions.setChallengeManager",
+      "txHash": "0x0",
+      "blockNumber": 0
+    }
+  ],
+  "problems": [
+    {
+      "problemId": "1",
+      "metadataURI": "ipfs://replace-me",
+      "specHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "verifierSourceHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "verifierImageHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "admissionMatrixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "minImprovementAtoms": "1",
+      "registerTxHash": "0x0",
+      "registerBlockNumber": 0,
+      "pool": "0x0000000000000000000000000000000000000000",
+      "ledger": "0x0000000000000000000000000000000000000000",
+      "submissionManager": "0x0000000000000000000000000000000000000000",
+      "challengeManager": "0x0000000000000000000000000000000000000000"
+    }
+  ],
+  "sourceVerification": {
+    "status": "pending",
+    "requiredExplorer": "https://sepolia.basescan.org"
+  },
+  "indexer": {
+    "startBlock": 0,
+    "indexedThroughBlock": null,
+    "reconciliationReport": null
+  }
+}

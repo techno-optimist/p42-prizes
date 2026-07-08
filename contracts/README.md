@@ -36,12 +36,21 @@ npm audit --audit-level=moderate
 The package uses Hardhat 3 with the Node test runner and an override for the
 current `@actions/http-client` so the dev toolchain has zero npm audit findings.
 
+## Base Sepolia Deployment Scaffold
+
+`npm run deploy:base-sepolia` deploys the current per-problem contract set,
+wires the pool/ledger/submission/challenge roles, registers one problem, and
+writes `deployments/base-sepolia/p42-prizes.json`. It requires
+`BASE_SEPOLIA_RPC_URL`, `BASE_SEPOLIA_PRIVATE_KEY`, treasury/resolver addresses,
+and frozen problem/verifier/admission hashes. See
+`deployments/base-sepolia/README.md`.
+
 ## Still Missing For Gate 1
 
 - real DA/permanence receipt verification, not just nonzero hash gates
 - close/finalize phase control so revealed or challenged submissions cannot be
   excluded by premature ledger close
 - resolver-bond fraud window/slashing beyond immediate scaffold release
-- deployment scripts and Base Sepolia verified source/address artifacts
+- actual Base Sepolia deployment, committed manifest, and verified source/address artifacts
 - indexer reconciliation
 - fuzz/property testing and external audit

@@ -87,6 +87,29 @@ https://p42-prizes.onrender.com
 
 If the Render service URL changes, set `P42_PRIZES_ORIGIN` on `observatory-backend` and keep the proxy default in sync.
 
+## Contract Deployment Scaffold
+
+From `contracts/`, Base Sepolia deployment is scaffolded by:
+
+```bash
+BASE_SEPOLIA_RPC_URL=... \
+BASE_SEPOLIA_PRIVATE_KEY=... \
+P42_TREASURY_ADDRESS=0x... \
+P42_RESOLVER_ADDRESS=0x... \
+P42_PROBLEM_SPEC_HASH=0x... \
+P42_VERIFIER_SOURCE_HASH=0x... \
+P42_VERIFIER_IMAGE_HASH=0x... \
+P42_ADMISSION_MATRIX_HASH=0x... \
+P42_METADATA_URI=ipfs://... \
+npm run deploy:base-sepolia
+```
+
+The script writes `deployments/base-sepolia/p42-prizes.json`. That file is not
+Gate 1 evidence until it contains real tx hashes, verified-source links, role
+assignments, and an indexer start block. The current scaffold uses the deployer
+as immutable owner; real ETH remains blocked until governance/multisig design is
+reviewed.
+
 ## Agent Checklist
 
 Before pushing a prize-site change:
