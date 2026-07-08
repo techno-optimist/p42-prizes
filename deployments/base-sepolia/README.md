@@ -26,6 +26,10 @@ P42_METADATA_URI=ipfs://... \
 npm run deploy:base-sepolia
 ```
 
+Optional parameter overrides include `P42_RESOLVER_DECISION_BOND_WEI` and
+`P42_RESOLVER_FRAUD_WINDOW_SECONDS`; the example manifest uses a 24-hour
+resolver-bond fraud window.
+
 The deployer is the immutable owner in the current scaffold. Real ETH remains
 blocked until the governance/multisig design replaces that testnet shortcut and
 the manifest points at verified source plus an indexer reconciliation report.

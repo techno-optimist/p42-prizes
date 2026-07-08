@@ -5,6 +5,7 @@ import { network } from "hardhat";
 
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
+const RESOLVER_FRAUD_WINDOW_SECONDS = 24n * 60n * 60n;
 const DA_HASH = ethers.keccak256(ethers.toUtf8Bytes("commit block DA receipt"));
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("arweave permanence receipt"));
 
@@ -89,7 +90,8 @@ describe("P42 Gate 1 contract scaffold", function () {
       ethers.parseEther("0.02"),
       ethers.parseEther("0.01"),
       30000,
-      ethers.parseEther("0.005")
+      ethers.parseEther("0.005"),
+      RESOLVER_FRAUD_WINDOW_SECONDS
     );
     await challenges.waitForDeployment();
     await submissions.connect(owner).setChallengeManager(await challenges.getAddress());
@@ -591,7 +593,7 @@ describe("P42 Gate 1 contract scaffold", function () {
 
   it("requires resolver transcripts and a bonded resolver decision", async function () {
     const fixture = await deployFixture();
-    const { alice, treasury, resolver, challenger, submissions, challenges } = fixture;
+    const { owner, alice, treasury, resolver, challenger, submissions, challenges } = fixture;
     const { submissionId, bond } = await commitAndReveal(fixture);
     const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("verifier mismatch"));
     const transcriptHash = ethers.keccak256(ethers.toUtf8Bytes("rerun transcript bytes"));
@@ -651,10 +653,35 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(resolved.transcriptHash, transcriptHash);
     assert.equal(resolved.transcriptURI, transcriptURI);
     assert.equal(resolved.verdictHash, verdictHash);
-    assert.equal(resolved.resolverBondWei, resolverBond);
+    const resolverBondState = await challenges.resolverBonds(submissionId);
+    assert.equal(resolverBondState.amountWei, resolverBond);
+    assert.equal(resolverBondState.releaseAt > resolved.disputeEndsAt, true);
+    assert.equal(resolverBondState.slashProofHash, ethers.ZeroHash);
     assert.equal(await challenges.claimableBondWei(challenger.address), required);
-    assert.equal(await challenges.claimableBondWei(resolver.address), resolverBond);
+    assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
     assert.equal(await submissions.claimableBondWei(treasury.address), bond);
+
+    await expectCustomError(
+      challenges.releaseResolverBond(submissionId),
+      challenges,
+      "P42_RESOLVER_BOND_LOCKED"
+    );
+    await expectCustomError(
+      challenges.connect(owner).slashResolverBond(submissionId, ethers.ZeroHash),
+      challenges,
+      "P42_EMPTY_FRAUD_PROOF_HASH"
+    );
+    const slashProof = ethers.keccak256(ethers.toUtf8Bytes("resolver transcript fraud proof"));
+    await challenges.connect(owner).slashResolverBond(submissionId, slashProof);
+    const slashed = await challenges.resolverBonds(submissionId);
+    assert.equal(slashed.amountWei, 0n);
+    assert.equal(slashed.slashProofHash, slashProof);
+    assert.equal(await challenges.claimableBondWei(treasury.address), resolverBond);
+    await expectCustomError(
+      challenges.releaseResolverBond(submissionId),
+      challenges,
+      "P42_NO_RESOLVER_BOND"
+    );
 
     await expectCustomError(
       submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH),
@@ -689,13 +716,23 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
 
     assert.equal(await challenges.claimableBondWei(treasury.address), required);
+    assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
     assert.equal((await submissions.submissions(submissionId)).status, 2n);
+    await expectCustomError(
+      challenges.releaseResolverBond(submissionId),
+      challenges,
+      "P42_RESOLVER_BOND_LOCKED"
+    );
     const before = await ethers.provider.getBalance(await challenges.getAddress());
     await challenges.connect(treasury).claimBond();
     assert.equal(before - (await ethers.provider.getBalance(await challenges.getAddress())), required);
     assert.equal(await challenges.claimableBondWei(treasury.address), 0n);
 
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await challenges.releaseResolverBond(submissionId);
+    assert.equal(await challenges.claimableBondWei(resolver.address), await challenges.resolverDecisionBondWei());
+    await challenges.connect(resolver).claimBond();
+    assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n);
     assert.equal(await ledger.creditAtomsOf(alice.address), 5n);

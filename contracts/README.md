@@ -23,7 +23,8 @@ red-team invariants that must hold before Base Sepolia.
   `p42:v0` CID-bound commitment preimage.
 - `P42ChallengeManager`: one active challenge per submission, counter-bond
   sizing from delayed value and rerun cost, mandatory resolver transcript
-  hash/URI/verdict hash, per-decision resolver bond release, and submission
+  hash/URI/verdict hash, per-decision resolver bond held through a configurable
+  fraud window, owner-slash proof hashing, release accounting, and submission
   outcome hooks.
 
 ## Run
@@ -53,7 +54,7 @@ event/state consistency report under `deployments/base-sepolia/reconciliation/`.
 ## Still Missing For Gate 1
 
 - real DA/permanence receipt verification, not just hash gates
-- resolver-bond fraud window/slashing beyond immediate scaffold release
+- fraud-proof/equivalent resolver and slashing adjudication beyond the owner-slash scaffold
 - actual Base Sepolia deployment, committed manifest, and verified source/address artifacts
 - real committed Base Sepolia reconciliation report and production indexer
 - fuzz/property testing and external audit

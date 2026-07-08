@@ -15,7 +15,8 @@ const DEFAULTS = {
   minPostingBondWei: 10_000_000_000_000_000n,
   rerunCostMultiplierBps: 30_000n,
   rerunCostWei: 10_000_000_000_000_000n,
-  resolverDecisionBondWei: 5_000_000_000_000_000n
+  resolverDecisionBondWei: 5_000_000_000_000_000n,
+  resolverFraudWindowSeconds: 24n * 60n * 60n
 };
 
 const REQUIRED_ENV = [
@@ -157,7 +158,11 @@ try {
     minPostingBondWei: uintEnv("P42_MIN_POSTING_BOND_WEI", DEFAULTS.minPostingBondWei),
     rerunCostMultiplierBps: bpsEnv("P42_RERUN_COST_MULTIPLIER_BPS", DEFAULTS.rerunCostMultiplierBps),
     rerunCostWei: uintEnv("P42_RERUN_COST_WEI", DEFAULTS.rerunCostWei),
-    resolverDecisionBondWei: uintEnv("P42_RESOLVER_DECISION_BOND_WEI", DEFAULTS.resolverDecisionBondWei)
+    resolverDecisionBondWei: uintEnv("P42_RESOLVER_DECISION_BOND_WEI", DEFAULTS.resolverDecisionBondWei),
+    resolverFraudWindowSeconds: uintEnv(
+      "P42_RESOLVER_FRAUD_WINDOW_SECONDS",
+      DEFAULTS.resolverFraudWindowSeconds
+    )
   };
   const problem = {
     specHash: assertBytes32(ethers, "P42_PROBLEM_SPEC_HASH", requiredEnv("P42_PROBLEM_SPEC_HASH")),
@@ -215,7 +220,8 @@ try {
     params.minCounterBondWei,
     params.rerunCostWei,
     params.rerunCostMultiplierBps,
-    params.resolverDecisionBondWei
+    params.resolverDecisionBondWei,
+    params.resolverFraudWindowSeconds
   ]);
   setupTransactions.push(
     await sendSetupTx(

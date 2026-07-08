@@ -23,7 +23,8 @@
     "minPostingBondWei": "10000000000000000",
     "rerunCostMultiplierBps": "30000",
     "rerunCostWei": "10000000000000000",
-    "resolverDecisionBondWei": "5000000000000000"
+    "resolverDecisionBondWei": "5000000000000000",
+    "resolverFraudWindowSeconds": "86400"
   },
   "contracts": {
     "pool": {
@@ -75,7 +76,8 @@
         "20000000000000000",
         "10000000000000000",
         "30000",
-        "5000000000000000"
+        "5000000000000000",
+        "86400"
       ]
     },
     "registry": {

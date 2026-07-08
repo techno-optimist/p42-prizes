@@ -25,6 +25,9 @@ contract P42ChallengeManager {
     error P42_EMPTY_TRANSCRIPT_URI();
     error P42_EMPTY_VERDICT_HASH();
     error P42_NO_BOND_TO_CLAIM();
+    error P42_NO_RESOLVER_BOND();
+    error P42_RESOLVER_BOND_LOCKED(uint64 releaseAt, uint64 nowAt);
+    error P42_EMPTY_FRAUD_PROOF_HASH();
     error P42_TRANSFER_FAILED();
 
     uint16 public constant MAX_BETA_BPS = 10_000;
@@ -41,7 +44,12 @@ contract P42ChallengeManager {
         bytes32 transcriptHash;
         string transcriptURI;
         bytes32 verdictHash;
-        uint256 resolverBondWei;
+    }
+
+    struct ResolverBond {
+        uint256 amountWei;
+        uint64 releaseAt;
+        bytes32 slashProofHash;
     }
 
     address public immutable owner;
@@ -54,11 +62,13 @@ contract P42ChallengeManager {
     uint256 public immutable minCounterBondWei;
     uint256 public immutable rerunCostWei;
     uint256 public immutable resolverDecisionBondWei;
+    uint64 public immutable resolverFraudWindowSeconds;
 
     bool public pausedNewActions;
     bool private _claiming;
 
     mapping(uint256 => Challenge) public challenges;
+    mapping(uint256 => ResolverBond) public resolverBonds;
     mapping(address => uint256) public claimableBondWei;
 
     event NewActionsPaused(bool paused);
@@ -75,9 +85,12 @@ contract P42ChallengeManager {
         bytes32 transcriptHash,
         string transcriptURI,
         bytes32 verdictHash,
-        uint256 resolverBondWei
+        uint256 resolverBondWei,
+        uint64 resolverBondReleaseAt
     );
     event Resolved(uint256 indexed submissionId, bool challengerWins);
+    event ResolverBondReleased(uint256 indexed submissionId, address indexed resolver, uint256 amount);
+    event ResolverBondSlashed(uint256 indexed submissionId, address indexed treasury, uint256 amount, bytes32 proofHash);
     event BondClaimed(address indexed claimant, uint256 amount);
 
     modifier onlyOwner() {
@@ -107,13 +120,15 @@ contract P42ChallengeManager {
         uint256 minCounterBondWei_,
         uint256 rerunCostWei_,
         uint16 rerunCostMultiplierBps_,
-        uint256 resolverDecisionBondWei_
+        uint256 resolverDecisionBondWei_,
+        uint64 resolverFraudWindowSeconds_
     ) {
         require(owner_ != address(0), "P42_OWNER_ZERO");
         require(resolver_ != address(0), "P42_RESOLVER_ZERO");
         require(treasury_ != address(0), "P42_TREASURY_ZERO");
         require(submissionManager_ != address(0), "P42_SUBMISSION_MANAGER_ZERO");
         require(challengeWindowSeconds_ > 0, "P42_WINDOW_ZERO");
+        require(resolverFraudWindowSeconds_ > 0, "P42_FRAUD_WINDOW_ZERO");
         if (betaBps_ > MAX_BETA_BPS) revert P42_BAD_BETA();
         owner = owner_;
         resolver = resolver_;
@@ -125,6 +140,7 @@ contract P42ChallengeManager {
         rerunCostWei = rerunCostWei_;
         rerunCostMultiplierBps = rerunCostMultiplierBps_;
         resolverDecisionBondWei = resolverDecisionBondWei_;
+        resolverFraudWindowSeconds = resolverFraudWindowSeconds_;
     }
 
     function setPausedNewActions(bool paused) external onlyOwner {
@@ -170,8 +186,7 @@ contract P42ChallengeManager {
             challengerWins: false,
             transcriptHash: bytes32(0),
             transcriptURI: "",
-            verdictHash: bytes32(0),
-            resolverBondWei: 0
+            verdictHash: bytes32(0)
         });
         emit Challenged(submissionId, msg.sender, reasonHash, msg.value, disputeEndsAt);
     }
@@ -198,14 +213,18 @@ contract P42ChallengeManager {
         current.transcriptHash = transcriptHash;
         current.transcriptURI = transcriptURI;
         current.verdictHash = verdictHash;
-        current.resolverBondWei = msg.value;
+        uint64 resolverBondReleaseAt = uint64(block.timestamp) + resolverFraudWindowSeconds;
+        resolverBonds[submissionId] = ResolverBond({
+            amountWei: msg.value,
+            releaseAt: resolverBondReleaseAt,
+            slashProofHash: bytes32(0)
+        });
 
         if (challengerWins) {
             claimableBondWei[current.challenger] += current.challengeBondWei;
         } else {
             claimableBondWei[treasury] += current.challengeBondWei;
         }
-        claimableBondWei[msg.sender] += msg.value;
         submissionManager.resolveChallenge(submissionId, challengerWins);
 
         emit ResolverTranscriptPosted(
@@ -214,9 +233,39 @@ contract P42ChallengeManager {
             transcriptHash,
             transcriptURI,
             verdictHash,
-            msg.value
+            msg.value,
+            resolverBondReleaseAt
         );
         emit Resolved(submissionId, challengerWins);
+    }
+
+    function releaseResolverBond(uint256 submissionId) external {
+        Challenge storage current = challenges[submissionId];
+        if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        ResolverBond storage decisionBond = resolverBonds[submissionId];
+        uint256 amount = decisionBond.amountWei;
+        if (amount == 0) revert P42_NO_RESOLVER_BOND();
+        if (block.timestamp < decisionBond.releaseAt) {
+            revert P42_RESOLVER_BOND_LOCKED(decisionBond.releaseAt, uint64(block.timestamp));
+        }
+
+        decisionBond.amountWei = 0;
+        claimableBondWei[resolver] += amount;
+        emit ResolverBondReleased(submissionId, resolver, amount);
+    }
+
+    function slashResolverBond(uint256 submissionId, bytes32 proofHash) external onlyOwner {
+        Challenge storage current = challenges[submissionId];
+        if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        if (proofHash == bytes32(0)) revert P42_EMPTY_FRAUD_PROOF_HASH();
+        ResolverBond storage decisionBond = resolverBonds[submissionId];
+        uint256 amount = decisionBond.amountWei;
+        if (amount == 0) revert P42_NO_RESOLVER_BOND();
+
+        decisionBond.amountWei = 0;
+        decisionBond.slashProofHash = proofHash;
+        claimableBondWei[treasury] += amount;
+        emit ResolverBondSlashed(submissionId, treasury, amount, proofHash);
     }
 
     function claimBond() external nonReentrant {
