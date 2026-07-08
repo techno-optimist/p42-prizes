@@ -12,6 +12,7 @@ A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 - **[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)** and **[`docs/LAUNCH_GATES.md`](docs/LAUNCH_GATES.md)** — the current evidence register and go/no-go gates. These are authoritative for what is live versus specified.
 - **[`docs/FUNDING.md`](docs/FUNDING.md)** — per-problem deposit wallets and the gated Coinbase Onramp plan.
 - **[`docs/LAUNCH_SLATE.md`](docs/LAUNCH_SLATE.md)** — the ten-board target slate, reserve candidates, and admission work before a locked board can launch.
+- **[`docs/DESIGN.md`](docs/DESIGN.md)** — the design specification for the portal and identity: design as a costly signal. The mark is the solved order-4 Hadamard matrix; the register leads with what is *not* live; every plate carries the command that regenerates it.
 
 ## The one-paragraph pitch
 

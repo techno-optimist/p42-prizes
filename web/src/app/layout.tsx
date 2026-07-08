@@ -14,6 +14,11 @@ export const metadata: Metadata = {
   title: "P42 Prizes — Register of Records",
   description:
     "Open math bounties settled by an exact, deterministic verifier anyone can re-run. The proof is the re-run.",
+  openGraph: {
+    title: "P42 Prizes — The proof is the re-run.",
+    description: "Open math bounties settled by an exact, deterministic verifier anyone can execute.",
+    images: [{ url: "/og.png", width: 1200, height: 630 }],
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
