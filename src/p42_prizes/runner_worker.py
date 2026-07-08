@@ -15,6 +15,12 @@ import time
 from typing import Any, Callable, Iterator, Mapping
 
 from p42_prizes.admission import AdmissionError, build_verifier_env, load_evidence_file
+from p42_prizes.runner_sandbox import (
+    RunnerSandboxError,
+    build_sandbox_command,
+    docker_available,
+    force_remove_container,
+)
 from p42_prizes.da import DaEvidenceError, validate_da_evidence
 from p42_prizes.problem import load_manifest
 from p42_prizes.runner_queue import (
@@ -239,6 +245,11 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
         problem,
         solution,
         child_address_space_limit_mb=resource_limits["child_address_space_limit_mb"],
+        sandbox=policy.sandbox,
+        sandbox_memory_mb=resource_limits["child_address_space_limit_mb"],
+        sandbox_pids_limit=policy.sandbox_pids_limit,
+        sandbox_cpus=policy.sandbox_cpus,
+        job_id=job_id,
     )
 
     if da_result is not None and da_result["ok"] is False:
@@ -308,34 +319,75 @@ def _run_verifier_for_transcript(
     solution: Path,
     *,
     child_address_space_limit_mb: int,
+    sandbox: str = "none",
+    sandbox_memory_mb: int = 0,
+    sandbox_pids_limit: int = 256,
+    sandbox_cpus: float = 1.0,
+    job_id: str = "job",
 ) -> dict[str, Any]:
     started = time.monotonic()
+    wall_seconds = 30
+    container_name: str | None = None
     try:
         manifest = load_manifest(problem)
         command_template = manifest["verifier"]["command"]
-        command = [part.format(solution=str(solution)) for part in shlex.split(command_template)]
         wall_seconds = int(manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
-        env = build_verifier_env(problem)
+        if sandbox == "docker":
+            # Untrusted payload MUST run in a container; refuse to run it on the
+            # host if no runtime is available (fail closed).
+            if not docker_available():
+                return {
+                    "ok": False,
+                    "valid": False,
+                    "error": "sandbox=docker requested but no container runtime is available; refusing to run an untrusted payload on the host",
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "sandbox": sandbox,
+                }
+            container_name = f"p42-verify-{_safe_job_id(job_id)}"
+            command = build_sandbox_command(
+                image=manifest["verifier"]["image"],
+                host_solution=solution,
+                verifier_command_template=command_template,
+                memory_mb=max(1, int(sandbox_memory_mb)),
+                pids_limit=sandbox_pids_limit,
+                cpus=sandbox_cpus,
+                container_name=container_name,
+            )
+            # The container is --network=none and self-contained; the host process
+            # here is only the `docker run` client. Memory is enforced by the
+            # container cgroup, so no host RLIMIT_AS preexec.
+            env = {"PATH": os.environ.get("PATH", os.defpath)}
+            preexec = None
+        else:
+            command = [part.format(solution=str(solution)) for part in shlex.split(command_template)]
+            env = build_verifier_env(problem)
+            preexec = _memory_limit_preexec(child_address_space_limit_mb)
         completed = _run_isolated_verifier(
             command,
             cwd=problem,
             env=env,
             wall_seconds=wall_seconds,
-            preexec_fn=_memory_limit_preexec(child_address_space_limit_mb),
+            preexec_fn=preexec,
         )
     except subprocess.TimeoutExpired:
+        if container_name is not None:
+            force_remove_container(container_name)
         return {
             "ok": False,
             "valid": False,
             "error": f"verifier timed out after {wall_seconds}s",
             "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "sandbox": sandbox,
         }
-    except (OSError, ValueError, KeyError) as exc:
+    except (OSError, ValueError, KeyError, RunnerSandboxError) as exc:
+        if container_name is not None:
+            force_remove_container(container_name)
         return {
             "ok": False,
             "valid": False,
             "error": str(exc),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "sandbox": sandbox,
         }
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -344,6 +396,7 @@ def _run_verifier_for_transcript(
         "valid": False,
         "returncode": completed.returncode,
         "elapsed_ms": elapsed_ms,
+        "sandbox": sandbox,
     }
     stderr_tail = completed.stderr[-2000:] if completed.stderr else ""
     if stderr_tail:

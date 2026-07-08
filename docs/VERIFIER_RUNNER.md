@@ -35,10 +35,18 @@ problem that needs more than one pass.
   parent PID), and it runs with a **minimal allowlisted environment** — host
   secrets, RPC keys, API keys, and tokens present in the worker's environment are
   scrubbed and not inherited by the verifier subprocess.
-- This is process-level hardening, not a sandbox. **Full container/cgroup
-  isolation is still pending and is a launch blocker:** the current guard does
-  not namespace the filesystem, network, or PIDs, and cannot bound the aggregate
-  resource use of a forking verifier (see OOM guard below).
+- A **container sandbox** closes the residual gaps: with `RunnerPolicy.sandbox =
+  "docker"` (`src/p42_prizes/runner_sandbox.py`), each verifier runs inside a
+  locked-down container — `--network=none`, a cgroup `--memory` cap with no swap
+  (aggregate, not per-process), `--pids-limit` (fork-bomb / fork-to-multiply-
+  `RLIMIT_AS` defence), `--cpus`, read-only rootfs, `--cap-drop=ALL`,
+  `no-new-privileges`, a non-root user, and the untrusted solution mounted
+  **read-only**. If a container runtime is unavailable the runner **fails closed**
+  — it refuses the job rather than executing an untrusted payload on the host.
+  The process-group + env-scrub hardening above is the fallback when
+  `sandbox = "none"`. Remaining before real value: build + pin real image digests
+  (no `sha256:local-dev`) so the sandbox wraps the attested image, and run the
+  sandbox on the production Linux runner.
 - Runner transcripts must never include secrets, RPC keys, API keys, Telegram
   tokens, or private solver material.
 - Auto-challenge requires an explicit funded agent key, counter-bond policy,

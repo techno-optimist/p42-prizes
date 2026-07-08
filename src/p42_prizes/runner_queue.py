@@ -29,6 +29,12 @@ class RunnerPolicy:
     reserve_memory_mb: int = 8192
     max_swap_used_mb: int = 1024
     memory_safety_factor: float = 2.0
+    # Untrusted-payload isolation for the verifier: "none" (host process group +
+    # env allowlist + RLIMIT_AS) or "docker" (locked-down container; fails closed
+    # if no runtime is available — never runs an untrusted payload on the host).
+    sandbox: str = "none"
+    sandbox_pids_limit: int = 256
+    sandbox_cpus: float = 1.0
 
 
 def plan_runner_queue(
@@ -151,6 +157,17 @@ def _validate_policy(policy: RunnerPolicy) -> None:
         or policy.memory_safety_factor < 1
     ):
         raise RunnerQueueError("policy.memory_safety_factor must be a finite number >= 1")
+    if policy.sandbox not in ("none", "docker"):
+        raise RunnerQueueError("policy.sandbox must be 'none' or 'docker'")
+    if not isinstance(policy.sandbox_pids_limit, int) or isinstance(policy.sandbox_pids_limit, bool) or policy.sandbox_pids_limit < 1:
+        raise RunnerQueueError("policy.sandbox_pids_limit must be >= 1")
+    if (
+        not isinstance(policy.sandbox_cpus, (int, float))
+        or isinstance(policy.sandbox_cpus, bool)
+        or not math.isfinite(policy.sandbox_cpus)
+        or policy.sandbox_cpus <= 0
+    ):
+        raise RunnerQueueError("policy.sandbox_cpus must be a finite number > 0")
 
 
 def _validate_memory(memory: MemorySnapshot) -> None:

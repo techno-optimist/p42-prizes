@@ -48,7 +48,10 @@
         "max_running": { "const": 1 },
         "reserve_memory_mb": { "type": "integer", "minimum": 0 },
         "max_swap_used_mb": { "type": "integer", "minimum": 0 },
-        "memory_safety_factor": { "type": "number", "minimum": 1 }
+        "memory_safety_factor": { "type": "number", "minimum": 1 },
+        "sandbox": { "type": "string", "enum": ["none", "docker"] },
+        "sandbox_pids_limit": { "type": "integer", "minimum": 1 },
+        "sandbox_cpus": { "type": "number", "exclusiveMinimum": 0 }
       }
     },
     "burst_metrics": {
