@@ -14,6 +14,7 @@ from p42_prizes.admission import (
     generate_host_evidence,
     load_evidence_file,
 )
+from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversarial_campaign_report
 from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_evidence
 from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
 from p42_prizes.lint import lint_verifier
@@ -290,6 +291,16 @@ def _cmd_incident_drill_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_adversarial_campaign_validate(args: argparse.Namespace) -> int:
+    try:
+        report = normalize_adversarial_campaign_report(load_evidence_file(args.report))
+    except (AdmissionError, AdversarialCampaignError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -458,6 +469,14 @@ def build_parser() -> argparse.ArgumentParser:
     incident_drill.add_argument("--report", required=True)
     incident_drill.add_argument("--output")
     incident_drill.set_defaults(func=_cmd_incident_drill_validate)
+
+    adversarial_campaign = subparsers.add_parser(
+        "adversarial-campaign-validate",
+        help="validate and hash a Gate 1 adversarial testnet campaign report",
+    )
+    adversarial_campaign.add_argument("--report", required=True)
+    adversarial_campaign.add_argument("--output")
+    adversarial_campaign.set_defaults(func=_cmd_adversarial_campaign_validate)
 
     return parser
 

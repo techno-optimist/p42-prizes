@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/adversarial-campaign-v1.json",
+  "title": "P42 Adversarial Testnet Campaign v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "completed_at_utc",
+    "environment",
+    "deployment_manifest",
+    "reconciliation_report",
+    "runner_alert_bundle",
+    "transcript_archive",
+    "reviewers",
+    "invariants_checked",
+    "attacks",
+    "regressions",
+    "open_followups",
+    "campaign_hash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-adversarial-testnet/v1" },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "completed_at_utc": { "type": "string", "minLength": 1 },
+    "environment": { "enum": ["base-sepolia", "local-rehearsal"] },
+    "deployment_manifest": { "type": "string", "minLength": 1 },
+    "reconciliation_report": { "type": "string", "minLength": 1 },
+    "runner_alert_bundle": { "type": "string", "minLength": 1 },
+    "transcript_archive": { "type": "string", "minLength": 1 },
+    "reviewers": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["role", "name", "signed_at_utc"],
+        "additionalProperties": false,
+        "properties": {
+          "role": { "enum": ["red-team", "engineering", "ops", "resolver"] },
+          "name": { "type": "string", "minLength": 1 },
+          "signed_at_utc": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "invariants_checked": {
+      "type": "object",
+      "required": [
+        "claim_capped_by_final_entitlement",
+        "bond_uses_pool_at_submission",
+        "da_bound_at_commit_and_finalize",
+        "resolver_transcript_required",
+        "invalid_verifier_alerted",
+        "sybil_split_not_profitable",
+        "reconciliation_ok"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_capped_by_final_entitlement": { "const": true },
+        "bond_uses_pool_at_submission": { "const": true },
+        "da_bound_at_commit_and_finalize": { "const": true },
+        "resolver_transcript_required": { "const": true },
+        "invalid_verifier_alerted": { "const": true },
+        "sybil_split_not_profitable": { "const": true },
+        "reconciliation_ok": { "const": true }
+      }
+    },
+    "attacks": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "attack_id",
+          "status",
+          "planted_artifact",
+          "expected_failure_mode",
+          "observed_defense",
+          "evidence"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "attack_id": {
+            "enum": [
+              "vesting_dilution_overpay",
+              "empty_pool_bond_leverage",
+              "leapfrog_sybil_split",
+              "da_expiry_or_missing_payload",
+              "resolver_false_transcript",
+              "verifier_planted_exploit"
+            ]
+          },
+          "status": { "const": "passed" },
+          "planted_artifact": { "type": "string", "minLength": 1 },
+          "expected_failure_mode": { "type": "string", "minLength": 1 },
+          "observed_defense": { "type": "string", "minLength": 1 },
+          "evidence": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "regressions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["command", "status"],
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "status": { "const": "passed" }
+        }
+      }
+    },
+    "open_followups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item", "owner", "due_utc", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "item": { "type": "string", "minLength": 1 },
+          "owner": { "type": "string", "minLength": 1 },
+          "due_utc": { "type": "string", "minLength": 1 },
+          "severity": { "enum": ["critical", "high", "medium", "low"] }
+        }
+      }
+    },
+    "campaign_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

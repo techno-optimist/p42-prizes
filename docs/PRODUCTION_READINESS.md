@@ -54,6 +54,7 @@ ledger, exit criteria, and external sign-offs.
 - `docs/WALLET_SESSION_POLICY.md` now drafts the Gate 2 wallet/session, API-key, payload-quarantine, session-key, KYC/sanctions, and Coinbase Onramp posture; the portal has an opt-in hashed mutation API-key gate for mutable routes.
 - `docs/VERIFIER_RUNNER.md` defines DGX CHRONOS/Hermes as the immediate reveal verifier, transcript publisher, and alert/auto-challenge candidate while keeping runner output outside the settlement trust root; `p42-prizes runner-plan`, `runner-work-once`, `runner-drain`, and `runner-alerts` add local queue/OOM admission, queue leases, FIFO draining, verifier transcripts, and tamper-evident alert/challenge-candidate bundles.
 - Gate 2 incident/bounty evidence now has an executable artifact path: `docs/INCIDENT_DRILL.md`, `docs/BUG_BOUNTY.md`, `schemas/incident-drill.schema.json`, and `p42-prizes incident-drill-validate` define the required tabletop report, invariants, regression evidence, disclosure policy reference, human signoff, and canonical `drill_hash`.
+- Gate 1 adversarial-campaign evidence now has an executable artifact path: `docs/ADVERSARIAL_TESTNET_CAMPAIGN.md`, `schemas/adversarial-campaign.schema.json`, and `p42-prizes adversarial-campaign-validate` require the six red-team scenarios, deployment/reconciliation/transcript references, required invariants, reviewer signoff, passed regressions, and canonical `campaign_hash`.
 
 ## Known Production Blockers
 
@@ -63,6 +64,7 @@ ledger, exit criteria, and external sign-offs.
 - No distributed idempotency store with atomic reserve/commit semantics.
 - No reviewed production wallet/session policy, distributed rate limiting, API audit logs, abuse controls, or payload quarantine; a draft policy and opt-in hashed mutation API-key gate exist locally.
 - No complete/deployed on-chain system: the local scaffold still lacks real DA/permanence receipt verification, production indexer service, verified Base Sepolia addresses, broader fuzzing/formal review, audit, and a non-owner-trusted resolver slashing path.
+- No completed Base Sepolia adversarial campaign yet; the schema and validator exist, but Gate 1 still needs the real deployed campaign report covering vesting/dilution, bond leverage, sybil/leapfrog, DA expiry, false resolver transcript, and planted verifier exploit attacks.
 - No live DGX/Hermes reveal watcher yet; the runbook and local queue/transcript/alert workers exist, but event subscriptions, pinned-image sandbox execution, durable transcript publication, and auto-challenge key/spend policy are not wired.
 - No reviewed Base mainnet pool addresses or enabled Coinbase Onramp funding sessions.
 - No live permanent DA or CID retrieval for `bafy...` / Arweave payloads; local `da-verify` evidence exists, but provider receipt fetching and unavailable-payload slashing are not wired.
