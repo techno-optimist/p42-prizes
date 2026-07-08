@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/autoconvolution-c2-lower/solution.schema.json",
+  "type": "object",
+  "required": ["n", "values"],
+  "additionalProperties": true,
+  "properties": {
+    "n": { "const": 524288 },
+    "values": {
+      "type": "array",
+      "minItems": 524288,
+      "maxItems": 524288,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1099511627776
+      }
+    }
+  }
+}

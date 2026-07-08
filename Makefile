@@ -1,8 +1,8 @@
 PYTHON ?= python3
 PYTHONPATH := $(CURDIR)/src
-PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/signed-autoconvolution-c3-upper
+PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/autoconvolution-c2-lower problems/signed-autoconvolution-c3-upper
 
-.PHONY: test validate lint verify-seed verify-hadamard-seed verify-erdos-seed verify-signed-c3-seed admit-host-seed admit-host-erdos admit-host-signed-c3 contracts-test all
+.PHONY: test validate lint verify-seed verify-hadamard-seed verify-erdos-seed verify-autoconvolution-c2-seed verify-signed-c3-seed admit-host-seed admit-host-erdos admit-host-autoconvolution-c2 admit-host-signed-c3 contracts-test all
 
 all: validate lint test verify-seed
 
@@ -19,13 +19,16 @@ lint:
 test:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q
 
-verify-seed: verify-hadamard-seed verify-erdos-seed verify-signed-c3-seed
+verify-seed: verify-hadamard-seed verify-erdos-seed verify-autoconvolution-c2-seed verify-signed-c3-seed
 
 verify-hadamard-seed:
 	@$(MAKE) -C problems/hadamard-mini verify
 
 verify-erdos-seed:
 	@$(MAKE) -C problems/erdos-min-overlap verify
+
+verify-autoconvolution-c2-seed:
+	@$(MAKE) -C problems/autoconvolution-c2-lower verify
 
 verify-signed-c3-seed:
 	@$(MAKE) -C problems/signed-autoconvolution-c3-upper verify
@@ -40,6 +43,12 @@ admit-host-erdos:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
 		--problem problems/erdos-min-overlap \
 		--solution problems/erdos-min-overlap/examples/hyra-upper.json \
+		--runs 2
+
+admit-host-autoconvolution-c2:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
+		--problem problems/autoconvolution-c2-lower \
+		--solution problems/autoconvolution-c2-lower/examples/hyra-lower.json \
 		--runs 2
 
 admit-host-signed-c3:

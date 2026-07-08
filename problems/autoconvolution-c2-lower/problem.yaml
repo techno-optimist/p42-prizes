@@ -1,0 +1,27 @@
+schema_version: p42-problem/v1
+problem_id: autoconvolution-c2-lower
+title: Autoconvolution C2 exact lower-bound verifier
+status: phase-0-packaging
+objective:
+  direction: maximize
+  score_name: c2_lower_bound
+  seed_best: "47/50"
+  optimum: "1/1"
+  min_improvement: "1/1000000000000"
+  gauge: "max(0, exact_c2_lower_bound - seed_best)"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "make verify SOLUTION={solution}"
+  max_compute:
+    wall_seconds: 60
+    memory_mb: 768
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: arweave-required-before-real-bounty
