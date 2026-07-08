@@ -3,6 +3,11 @@
 P42 governance exists to admit problems, maintain infrastructure, and respond to
 incidents. It must not become an oracle for mathematical truth.
 
+Gate 2 custody/governance evidence must validate with
+`p42-prizes governance-signoff-validate` using the artifact documented in
+`docs/CUSTODY_GOVERNANCE.md`. A valid artifact still requires real named humans,
+addresses, rehearsal evidence, and external review before the gate closes.
+
 ## Roles
 
 | Role | Authority | Limits |

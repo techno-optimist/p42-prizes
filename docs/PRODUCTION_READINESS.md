@@ -21,7 +21,7 @@ ledger, exit criteria, and external sign-offs.
 | Resolver | Local transcript-required resolver scaffold with per-decision bond, fraud-window-gated release, and owner-slash proof hash | Verifiable transcript committee on testnet; non-owner-trusted slashing policy; fraud-proof track before scale |
 | Contracts | Local Hardhat 3 scaffold for problem registry/freezing, pool, payout ledger, one-time recorder activation, submission bond checks/top-ups, CID-bound reveal/finalize, DA-bound on-chain commitment, permanence hash gate, close guards and expiry paths, challenge manager, resolver transcript gate, resolver-bond fraud window/slashing scaffold, bond accounting, seeded property checks, deployment manifest scaffold, and read-only reconciliation script | Real DA/Arweave receipt verification, production indexer jobs, Base Sepolia deployment, audit, broader fuzz/formal review, timelock/multisig rehearsals |
 | Legal | Spec risk register only | Written counsel memo covering prize/bounty, KYC/sanctions, tax, ToS |
-| Operations | This register plus gate ledger, human-action register, wallet/session policy draft, incident/governance docs, incident-drill evidence validator, bug-bounty policy draft, DGX/Hermes verifier-runner runbook, and deployment runbook | Named owners, monitored deploys, runner transcripts, key custody, signed incident drill and live disclosure path |
+| Operations | This register plus gate ledger, human-action register, wallet/session policy draft, incident/governance docs, incident-drill evidence validator, custody/governance signoff validator, bug-bounty policy draft, DGX/Hermes verifier-runner runbook, and deployment runbook | Named owners, monitored deploys, runner transcripts, signed custody/governance artifact, signed incident drill, and live disclosure path |
 
 ## Closed In This Pass
 
@@ -55,6 +55,7 @@ ledger, exit criteria, and external sign-offs.
 - `docs/VERIFIER_RUNNER.md` defines DGX CHRONOS/Hermes as the immediate reveal verifier, transcript publisher, and alert/auto-challenge candidate while keeping runner output outside the settlement trust root; `p42-prizes runner-plan`, `runner-work-once`, `runner-drain`, and `runner-alerts` add local queue/OOM admission, queue leases, FIFO draining, verifier transcripts, and tamper-evident alert/challenge-candidate bundles.
 - Gate 2 incident/bounty evidence now has an executable artifact path: `docs/INCIDENT_DRILL.md`, `docs/BUG_BOUNTY.md`, `schemas/incident-drill.schema.json`, and `p42-prizes incident-drill-validate` define the required tabletop report, invariants, regression evidence, disclosure policy reference, human signoff, and canonical `drill_hash`.
 - Gate 1 adversarial-campaign evidence now has an executable artifact path: `docs/ADVERSARIAL_TESTNET_CAMPAIGN.md`, `schemas/adversarial-campaign.schema.json`, and `p42-prizes adversarial-campaign-validate` require the six red-team scenarios, deployment/reconciliation/transcript references, required invariants, reviewer signoff, passed regressions, and canonical `campaign_hash`.
+- Gate 2 custody/governance evidence now has an executable artifact path: `docs/CUSTODY_GOVERNANCE.md`, `schemas/governance-signoff.schema.json`, and `p42-prizes governance-signoff-validate` require named multisig signers, strict-majority threshold, timelock, guardian limits, custody constraints, key-rotation rehearsal, recusal policy, human signoff, and canonical `governance_hash`.
 
 ## Known Production Blockers
 
@@ -70,6 +71,7 @@ ledger, exit criteria, and external sign-offs.
 - No live permanent DA or CID retrieval for `bafy...` / Arweave payloads; local `da-verify` evidence exists, but provider receipt fetching and unavailable-payload slashing are not wired.
 - No containerized canonical sandbox runner or reviewed immutable verifier image digests for arbitrary problem repos; local `admit-ready` tooling rejects placeholders but does not produce real images.
 - No collected four-host N-host determinism artifacts yet; local tooling exists, but the x86/ARM/two-glibc evidence has not been produced for any funded problem.
+- No completed Gate 2 custody/governance signoff yet; the schema and validator exist, but real multisig signers, timelock, guardian, key-rotation rehearsal, recusal policy, and external review must be committed before this blocker closes.
 - No deployed/fraud-proof resolver implementation; local transcript-required resolver and fraud-window bond scaffold exists but is not a testnet committee, non-owner-trusted slashing system, or real-ETH trust root.
 - No external security audit or legal sign-off.
 - No published GitHub Actions workflow yet; the current OAuth token cannot push `.github/workflows/*` without `workflow` scope, and GitHub rejected an isolated-branch attempt with that exact policy.
