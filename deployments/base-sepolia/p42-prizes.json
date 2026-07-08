@@ -1,0 +1,138 @@
+{
+  "schema": "p42-prizes/deployment-manifest/v1",
+  "status": "base-sepolia-testnet",
+  "deployedAt": "2026-07-08T06:33:28.162Z",
+  "deploymentCommit": "3121a1a2036d2d19742183d409de1c108d3ae1b2",
+  "network": {
+    "name": "baseSepolia",
+    "chainId": 84532,
+    "explorerBaseUrl": "https://sepolia.basescan.org"
+  },
+  "roles": {
+    "deployer": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+    "owner": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+    "treasury": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+    "resolver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61"
+  },
+  "parameters": {
+    "alphaBps": "200",
+    "betaBps": "500",
+    "challengeWindowSeconds": "259200",
+    "feeBps": "0",
+    "minCounterBondWei": "20000000000000000",
+    "minPostingBondWei": "10000000000000000",
+    "rerunCostMultiplierBps": "30000",
+    "rerunCostWei": "10000000000000000",
+    "resolverDecisionBondWei": "5000000000000000",
+    "resolverFraudWindowSeconds": "86400"
+  },
+  "contracts": {
+    "pool": {
+      "name": "P42BountyPool",
+      "address": "0xCd9B3832ccd0fEeFa331f8544034808d3Fc16c6d",
+      "txHash": "0x8d009a5762c55b4aa0d918d5ef11a0bb05960005d6c2b1af4055b221cdb11ee2",
+      "blockNumber": 43862041,
+      "constructorArgs": [
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61"
+      ]
+    },
+    "ledger": {
+      "name": "P42PayoutLedger",
+      "address": "0x113bBAf1eFB1a079518B8dF2aCd2590Ba4B41DeF",
+      "txHash": "0x592f7c7402cd5a412c75b5813e20e03bbdc624c79229014de640771b135b21d8",
+      "blockNumber": 43862044,
+      "constructorArgs": [
+        "0xCd9B3832ccd0fEeFa331f8544034808d3Fc16c6d",
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+        "0"
+      ]
+    },
+    "submissions": {
+      "name": "P42SubmissionManager",
+      "address": "0xafB07523668cb80fDc923eEde2c4697e8e334836",
+      "txHash": "0x26c2e5be1e00bd4005d79c434f9bfc2a56364b7ad7e98de1c82f102101a9b983",
+      "blockNumber": 43862048,
+      "constructorArgs": [
+        "0xCd9B3832ccd0fEeFa331f8544034808d3Fc16c6d",
+        "0x113bBAf1eFB1a079518B8dF2aCd2590Ba4B41DeF",
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+        "200",
+        "10000000000000000",
+        "259200"
+      ]
+    },
+    "challenges": {
+      "name": "P42ChallengeManager",
+      "address": "0xfe988CC29B851057F8f5364bE76A9CaC5001589a",
+      "txHash": "0x766be65e3d77b3c7c3f8beea6d029007b1c7ab8ca163205841316e9ca8e507b2",
+      "blockNumber": 43862053,
+      "constructorArgs": [
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+        "0xafB07523668cb80fDc923eEde2c4697e8e334836",
+        "259200",
+        "500",
+        "20000000000000000",
+        "10000000000000000",
+        "30000",
+        "5000000000000000",
+        "86400"
+      ]
+    },
+    "registry": {
+      "name": "P42ProblemRegistry",
+      "address": "0x779E154759Bc2F9a5E92532D687Be8d2D287278b",
+      "txHash": "0xa8ce06237d8b6d4c49cef991f4e14d84c1055669f64e150218fa98159191da1d",
+      "blockNumber": 43862059,
+      "constructorArgs": [
+        "0xF007fC214139CEA514c712289dfDd9d3a5739F61"
+      ]
+    }
+  },
+  "setupTransactions": [
+    {
+      "label": "pool.setLedger",
+      "txHash": "0x767141cc6234acb15bff7fd46b799a88bac66169c3c26765a958bbbfba78bebe",
+      "blockNumber": 43862047
+    },
+    {
+      "label": "ledger.setCreditRecorder",
+      "txHash": "0x8e670abd57453de26dcce0eef0528db343950498e9614e54d47d19b77250d803",
+      "blockNumber": 43862050
+    },
+    {
+      "label": "submissions.setChallengeManager",
+      "txHash": "0x1131b23acf0583313e1677d3e8952482e362d44668f105ff8f0734a0ee9fca47",
+      "blockNumber": 43862056
+    }
+  ],
+  "problems": [
+    {
+      "problemId": "1",
+      "metadataURI": "https://projectforty2.ai/prizes/problems/hadamard-mini",
+      "specHash": "0xa3daa4cedbcdb30bef0e20573e62902a0b1b1d8628a85139fe0059669da0d294",
+      "verifierSourceHash": "0x5cf698be11d1b19fd8e145245e82b69b01a947a78186b077d80b7bd46e20dfa4",
+      "verifierImageHash": "0x716c0bae786d07e8ce4c449ad1dfbc08692296fce3324ec3adc86150d7ac5381",
+      "admissionMatrixHash": "0xb2e3455aa3fac5d523b59b8cf33df547fce9cdb53a41d808a0834619640f177b",
+      "minImprovementAtoms": "1",
+      "registerTxHash": "0x28cb0983646b62f516725ce0b6d2e8d88cc23dd567376c600c9b430bc3ad732b",
+      "registerBlockNumber": 43862060,
+      "pool": "0xCd9B3832ccd0fEeFa331f8544034808d3Fc16c6d",
+      "ledger": "0x113bBAf1eFB1a079518B8dF2aCd2590Ba4B41DeF",
+      "submissionManager": "0xafB07523668cb80fDc923eEde2c4697e8e334836",
+      "challengeManager": "0xfe988CC29B851057F8f5364bE76A9CaC5001589a"
+    }
+  ],
+  "sourceVerification": {
+    "status": "pending",
+    "requiredExplorer": "https://sepolia.basescan.org"
+  },
+  "indexer": {
+    "startBlock": 43862041,
+    "indexedThroughBlock": null,
+    "reconciliationReport": null
+  }
+}

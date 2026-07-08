@@ -23,8 +23,8 @@ repo-owner authority cannot be replaced by agent execution.
 
 ## Gate 1: Base Sepolia Testnet
 
-- [ ] `ProblemRegistry`, pool, submission, challenge, and payout contracts deployed.
-- [ ] Contract addresses and source verification recorded.
+- [x] `ProblemRegistry`, pool, submission, challenge, and payout contracts deployed. (Base Sepolia; `deployments/base-sepolia/p42-prizes.json`.)
+- [ ] Contract addresses and source verification recorded. (Addresses + tx hashes recorded in the manifest; BaseScan source verification still pending an explorer API key.)
 - [ ] Posting bond scales to `alpha * pool_at_submission`.
 - [ ] `claim()` pays `min(vested, final_entitlement)` and cannot be paused.
 - [ ] Commit requires DA evidence at commit time.
