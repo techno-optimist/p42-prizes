@@ -1,8 +1,8 @@
 PYTHON ?= python3
 PYTHONPATH := $(CURDIR)/src
-PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/arithmetic-kakeya problems/autoconvolution-c1-upper problems/autoconvolution-c2-lower problems/signed-autoconvolution-c3-upper problems/mertens-lp-ceiling-k12000
+PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/arithmetic-kakeya problems/autoconvolution-c1-upper problems/autoconvolution-c2-lower problems/signed-autoconvolution-c3-upper problems/mertens-lp-ceiling-k12000 problems/pnt-sparse-mertens-construction
 
-.PHONY: test validate lint verify-seed verify-hadamard-seed verify-erdos-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed admit-host-seed admit-host-erdos admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 contracts-test all
+.PHONY: test validate lint verify-seed verify-hadamard-seed verify-erdos-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed admit-host-seed admit-host-erdos admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse contracts-test all
 
 all: validate lint test verify-seed
 
@@ -19,7 +19,7 @@ lint:
 test:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q
 
-verify-seed: verify-hadamard-seed verify-erdos-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed
+verify-seed: verify-hadamard-seed verify-erdos-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed
 
 verify-hadamard-seed:
 	@$(MAKE) -C problems/hadamard-mini verify
@@ -41,6 +41,9 @@ verify-signed-c3-seed:
 
 verify-mertens-k12000-seed:
 	@$(MAKE) -C problems/mertens-lp-ceiling-k12000 verify
+
+verify-pnt-sparse-seed:
+	@$(MAKE) -C problems/pnt-sparse-mertens-construction verify
 
 admit-host-seed:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
@@ -82,6 +85,12 @@ admit-host-mertens-k12000:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
 		--problem problems/mertens-lp-ceiling-k12000 \
 		--solution problems/mertens-lp-ceiling-k12000/examples/certificate-k12000.json \
+		--runs 2
+
+admit-host-pnt-sparse:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
+		--problem problems/pnt-sparse-mertens-construction \
+		--solution problems/pnt-sparse-mertens-construction/examples/chronos-96000.json \
 		--runs 2
 
 contracts-test:

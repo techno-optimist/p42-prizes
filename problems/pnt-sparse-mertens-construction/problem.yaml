@@ -1,0 +1,27 @@
+schema_version: p42-problem/v1
+problem_id: pnt-sparse-mertens-construction
+title: PNT sparse Mertens exact construction verifier
+status: phase-0-packaging
+objective:
+  direction: maximize
+  score_name: certified_log_objective_lower_bound
+  seed_best: "0/1"
+  optimum: "10001/10000"
+  min_improvement: "1/1000000000000"
+  gauge: "max(0, certified_lower_bound - seed_best)"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "make verify SOLUTION={solution}"
+  max_compute:
+    wall_seconds: 20
+    memory_mb: 512
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 345600
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: arweave-required-before-real-bounty

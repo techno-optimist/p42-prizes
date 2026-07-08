@@ -17,7 +17,7 @@ negative fixtures, and N-host determinism evidence pass admission.
 | 6 | `autoconvolution-c2-lower` | packaged, locked | nonnegative integer vector | exact `L1`, `L2`, `Linf` and lower-bound score | collect immutable image, memory profile, and N-host timing |
 | 7 | `signed-autoconvolution-c3-upper` | packaged, locked | signed dyadic step heights | exact signed Kronecker convolution and max check | collect immutable image, N-host timing, and external H6 reduction review |
 | 8 | `mertens-lp-ceiling-k12000` | packaged, locked | dyadic LP dual certificate | exact residual accumulation and interval log audit | collect immutable image, N-host timing, and proof-side copy review |
-| 9 | `pnt-sparse-mertens-construction` | locked | rational sparse support `{k: v}` | exhaustive integer constraints and interval objective | replace sampling with exact constraints and planted sampling-gap tests |
+| 9 | `pnt-sparse-mertens-construction` | packaged, locked | rational sparse support `{k: v}` | exhaustive integer constraints and interval objective | collect immutable image, N-host timing, and interval-log review |
 | 10 | `hadamard-668-defect` | locked | 668x668 sign matrix | integer row-pair dot products over all pairs | compact encoding, baseline partial, runtime evidence |
 
 ## Reserve Candidate
