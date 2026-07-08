@@ -406,15 +406,15 @@ export const problems: Problem[] = [
     direction: "minimize",
     scoreName: "defect",
     seedBest: "222778/1",
-    currentBest: "222778/1",
+    currentBest: "55444/1",
     optimum: "0/1",
     minImprovement: "1/222778",
     bountyEth: "0.75",
     challengeWindowHours: 72,
     postingBondEth: "0.03",
     challengeBondEth: "0.03",
-    verifierVersion: "admission-pending",
-    verifierImage: "sha256:pending",
+    verifierVersion: "0.1.0",
+    verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/hadamard-668-defect",
     poolAddress: "base-sepolia:0x4242000000000000000000000000000000000010",
@@ -424,14 +424,20 @@ export const problems: Problem[] = [
     ),
     tagline: "The full finite construction board behind the Hadamard Mini pilot.",
     description:
-      "A queued 668 by 668 sign-matrix defect ladder. The exact integer verifier is straightforward, but launch waits on payload handling, runtime budgets, and a known partial baseline.",
+      "A queued 668 by 668 sign-matrix defect ladder. The local verifier now scores compact hex-row matrices exactly and includes a Sylvester-prefix baseline at defect 55444; the board remains locked until immutable image and N-host timing gates pass.",
     statement:
       "\\begin{gathered} \\min_{H \\in \\{\\pm 1\\}^{668\\times 668}} \\operatorname{defect}(H), \\qquad \\operatorname{defect}(H) = \\#\\bigl\\{(i,j) : i<j,\\ \\langle r_i, r_j \\rangle \\neq 0 \\bigr\\}, \\ \\ \\tbinom{668}{2} = 222{,}778 \\text{ pairs} \\\\[2pt] r_i = \\text{row } i \\text{ of } H, \\qquad \\operatorname{defect}(H) = 0 \\iff H H^{\\mathsf{T}} = 668\\, I_{668} \\end{gathered}",
     statementCaveat:
       "Defect 0 exhibits a Hadamard matrix of order 668 — the smallest order for which none is known. Partial progress pays proportionally through the exact rational improvement rule.",
-    verifierStandard: ["R1 integer row-pair dot products", "R3 compact sign-matrix encoding", "N-host runtime gate required"],
+    verifierStandard: [
+      "R1 integer row-pair dot products",
+      "R3 compact sign-matrix encoding",
+      "H3 all 222778 row pairs checked",
+      "H5 claimed-score trap",
+      "N-host runtime gate required",
+    ],
     solutionSchema: { type: "object", required: ["n", "encoding", "rows"] },
-    sampleSolution: { n: 668, encoding: "run-length-signs", rows: ["..."] },
+    sampleSolution: { n: 668, encoding: "hex-row-bits-v1", rows: ["668 lowercase hex rows"] },
   },
 ];
 

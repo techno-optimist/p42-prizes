@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/hadamard-668-defect/solution.schema.json",
+  "type": "object",
+  "required": ["n", "encoding", "rows"],
+  "additionalProperties": true,
+  "properties": {
+    "n": { "const": 668 },
+    "encoding": { "const": "hex-row-bits-v1" },
+    "rows": {
+      "type": "array",
+      "minItems": 668,
+      "maxItems": 668,
+      "items": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{167}$"
+      }
+    }
+  }
+}

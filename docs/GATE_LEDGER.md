@@ -86,7 +86,8 @@ Latest ten-board math/verifier audit:
 | `signed-autoconvolution-c3-upper` | Packaged, locked | Local exact verifier package passes for the OrganonAgent signed witness; all 199999 coefficients are checked by exact signed Kronecker convolution; still needs immutable image digest, collected four-host matrix, N-host timing, and external reduction review before funding |
 | `mertens-lp-ceiling-k12000` | Packaged, locked | Local exact verifier package proves the reach-12000 25-digit outward-rounded ceiling with exact integer residuals and interval log enclosures; still needs immutable image digest, collected four-host matrix, N-host timing, and proof-side copy review before funding |
 | `pnt-sparse-mertens-construction` | Packaged, locked | Local exact verifier package passes for the CHRONOS reach-96000 sparse witness; all 960000 integer rows are checked exactly and the log objective is certified as a lower-bound decimal; still needs immutable image digest, collected four-host matrix, N-host timing, and interval-log review before funding |
-| Other 2 launch boards | Locked | Need self-contained repo, exact verifier, negative fixtures, resource bounds, image digest, collected N-host matrix, admission review |
+| `hadamard-668-defect` | Packaged, locked | Local exact verifier package passes for a Sylvester-prefix baseline at defect 55444; all 222778 row pairs are checked exactly by integer popcount; still needs immutable image digest, collected four-host matrix, N-host timing, and open-problem scope review before funding |
+| Other 1 launch board | Locked | `edges-vs-triangles` still needs a recoverable exact artifact or a new rationalized package; then image digest, collected N-host matrix, and admission review |
 
 ## Current Verification Commands
 
