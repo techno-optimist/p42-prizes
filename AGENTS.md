@@ -95,6 +95,10 @@ render deploys list srv-d96pokeq1p3s73foqk60 --output json
 - Treat `docs/HUMAN_ACTIONS.md` as the list of known owner/external actions. If
   this agent token hits `workflow` scope, deployer-key, audit, legal, or repo
   settings limits, document the blocker instead of bypassing the gate.
+- Do not retry publishing `.github/workflows/ci.yml` with the current OAuth app:
+  GitHub rejects workflow writes from this token with
+  `refusing to allow an OAuth App to create or update workflow ... without workflow scope`.
+  A repo owner must use the GitHub web UI or a PAT with `workflow` scope.
 
 ## Contract Gate
 

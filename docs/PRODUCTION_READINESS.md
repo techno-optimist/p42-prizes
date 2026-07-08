@@ -44,7 +44,7 @@ ledger, exit criteria, and external sign-offs.
 - Problem APIs expose `chainProvenance` with `settlementState: local-only` until a real deployment manifest and reconciliation report are attached.
 - Non-runnable arena-derived problems are locked in portal data.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
-- Local/Render verification covers problem validation, certified-path exactness lint, Python tests, seed verification, web typecheck, web tests, production build, and `npm audit`. Publishing the GitHub Actions workflow is pending a repo token or human owner with `workflow` scope.
+- Local/Render verification covers problem validation, certified-path exactness lint, Python tests, seed verification, web typecheck, web tests, production build, and `npm audit`. Publishing the GitHub Actions workflow is pending a repo token or human owner with `workflow` scope; GitHub has already rejected this OAuth app with `refusing to allow an OAuth App to create or update workflow ... without workflow scope`, so a dedicated branch is not a workaround.
 - N-host verifier admission now has typed host and matrix artifacts: `p42-prizes admit-host` emits repeated-run host evidence, and `p42-prizes admit-matrix` rejects duplicate hosts, missing x86/ARM coverage, insufficient glibc diversity, or mismatched canonical `VerdictReport` hashes.
 - Immutable verifier-image admission is now executable: `docs/VERIFIER_IMAGE_REGISTRY.md` defines the registry fields, and `p42-prizes admit-ready` rejects `sha256:local-dev` / pending placeholders or N-host matrices whose problem id, verifier version, or verifier image does not match `problem.yaml`.
 - Contract scaffold now compiles and tests under Hardhat 3 with zero npm audit findings: problem registry/freezing, escrow pool, final-denominator payout ledger, one-time credit-recorder activation, submission bond pricing/top-ups, CID-bound reveal, commit-time DA hash bound into the on-chain `p42:v1` commitment, challenge-window finalization, finalize-time permanence hash gate, close guards for unresolved submissions, abandoned commit/reveal expiry, challenge/resolver outcome hooks, ledger credit recording, solver-bond return/slash, challenge-bond routing, resolver-bond fraud-window release/slash proof hashing, seeded final-denominator/bond/sybil property checks, and 22 red-team invariant/property tests.
@@ -66,7 +66,7 @@ ledger, exit criteria, and external sign-offs.
 - No collected four-host N-host determinism artifacts yet; local tooling exists, but the x86/ARM/two-glibc evidence has not been produced for any funded problem.
 - No deployed/fraud-proof resolver implementation; local transcript-required resolver and fraud-window bond scaffold exists but is not a testnet committee, non-owner-trusted slashing system, or real-ETH trust root.
 - No external security audit or legal sign-off.
-- No published GitHub Actions workflow yet; the current OAuth token cannot push `.github/workflows/*` without `workflow` scope.
+- No published GitHub Actions workflow yet; the current OAuth token cannot push `.github/workflows/*` without `workflow` scope, and GitHub rejected an isolated-branch attempt with that exact policy.
 
 ## Verification Commands
 

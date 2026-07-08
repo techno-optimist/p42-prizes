@@ -42,7 +42,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Per-problem donation wallets | Pass | API/UI expose `donationWallet` for all 10 boards | None |
 | Local rate limits/idempotency/events | Pass for local pilot | Process-local limiter, local idempotency, hash-chained local events, problem APIs expose local-only chain provenance until a manifest/indexer is attached | Still not production settlement state |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
-| GitHub Actions workflow | Blocked on credential scope | Workflow draft was prepared locally but cannot be pushed by this OAuth token | Repo owner or token with `workflow` scope must publish `.github/workflows/ci.yml` |
+| GitHub Actions workflow | Blocked on credential scope | Workflow draft was prepared locally but GitHub rejected this OAuth app with `refusing to allow an OAuth App to create or update workflow ... without workflow scope`; isolated branches do not bypass the policy | Repo owner must publish `.github/workflows/ci.yml` through the GitHub web UI or push it with a PAT that has `workflow` scope |
 | Human/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
 
 ## Gate 1 Blockers
