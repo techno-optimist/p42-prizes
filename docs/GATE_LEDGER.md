@@ -40,7 +40,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Solver signature for non-local commits | Pass | EIP-191 authorization tests | None |
 | Challenge/onramp fail closed | Pass | `501` challenge route; Base Sepolia wallet onramp `409` | None |
 | Per-problem donation wallets | Pass | API/UI expose `donationWallet` for all 10 boards | None |
-| Local rate limits/idempotency/events | Pass for local pilot | Process-local limiter, local idempotency, hash-chained local events | Still not production settlement state |
+| Local rate limits/idempotency/events | Pass for local pilot | Process-local limiter, local idempotency, hash-chained local events, problem APIs expose local-only chain provenance until a manifest/indexer is attached | Still not production settlement state |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
 | GitHub Actions workflow | Blocked on credential scope | Workflow draft was prepared locally but cannot be pushed by this OAuth token | Repo owner or token with `workflow` scope must publish `.github/workflows/ci.yml` |
 

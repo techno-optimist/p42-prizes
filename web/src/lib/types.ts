@@ -11,6 +11,23 @@ export interface DonationWallet {
   note: string;
 }
 
+export interface ChainProvenance {
+  settlementState: "local-only" | "manifest-pending" | "testnet-indexed" | "mainnet-indexed";
+  chain: "Base Sepolia" | "Base";
+  chainId: number;
+  donationWalletAddress: string;
+  poolAddress: string | null;
+  registryAddress: string | null;
+  problemRegistryId: string | null;
+  verifierImageHash: string | null;
+  admissionMatrixHash: string | null;
+  deploymentCommit: string | null;
+  indexedThroughBlock: number | null;
+  reconciliationOk: boolean;
+  source: "static-portal-data" | "deployment-manifest" | "indexer";
+  note: string;
+}
+
 export interface Problem {
   id: number;
   slug: string;

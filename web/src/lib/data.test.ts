@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { chainProvenanceForProblem } from "@/lib/chain-provenance";
 import { problems } from "@/lib/data";
 import { parseRational } from "@/lib/exact";
 
@@ -15,6 +16,19 @@ describe("problem funding wallets", () => {
       expect(problem.donationWallet.asset, problem.slug).toBe("ETH");
       expect(problem.donationWallet.address, problem.slug).toMatch(/^0x[a-fA-F0-9]{40}$/);
       expect(problem.donationWallet.explorerUrl, problem.slug).toContain(problem.donationWallet.address);
+    }
+  });
+
+  it("reports local-only chain provenance until a deployment manifest is attached", () => {
+    for (const problem of problems) {
+      const provenance = chainProvenanceForProblem(problem);
+      expect(provenance.settlementState, problem.slug).toBe("local-only");
+      expect(provenance.source, problem.slug).toBe("static-portal-data");
+      expect(provenance.registryAddress, problem.slug).toBeNull();
+      expect(provenance.problemRegistryId, problem.slug).toBeNull();
+      expect(provenance.indexedThroughBlock, problem.slug).toBeNull();
+      expect(provenance.reconciliationOk, problem.slug).toBe(false);
+      expect(provenance.donationWalletAddress, problem.slug).toBe(problem.donationWallet.address);
     }
   });
 
