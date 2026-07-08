@@ -1,8 +1,8 @@
 PYTHON ?= python3
 PYTHONPATH := $(CURDIR)/src
-PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/autoconvolution-c2-lower problems/signed-autoconvolution-c3-upper
+PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/autoconvolution-c2-lower problems/signed-autoconvolution-c3-upper problems/mertens-lp-ceiling-k12000
 
-.PHONY: test validate lint verify-seed verify-hadamard-seed verify-erdos-seed verify-autoconvolution-c2-seed verify-signed-c3-seed admit-host-seed admit-host-erdos admit-host-autoconvolution-c2 admit-host-signed-c3 contracts-test all
+.PHONY: test validate lint verify-seed verify-hadamard-seed verify-erdos-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed admit-host-seed admit-host-erdos admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 contracts-test all
 
 all: validate lint test verify-seed
 
@@ -19,7 +19,7 @@ lint:
 test:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q
 
-verify-seed: verify-hadamard-seed verify-erdos-seed verify-autoconvolution-c2-seed verify-signed-c3-seed
+verify-seed: verify-hadamard-seed verify-erdos-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed
 
 verify-hadamard-seed:
 	@$(MAKE) -C problems/hadamard-mini verify
@@ -32,6 +32,9 @@ verify-autoconvolution-c2-seed:
 
 verify-signed-c3-seed:
 	@$(MAKE) -C problems/signed-autoconvolution-c3-upper verify
+
+verify-mertens-k12000-seed:
+	@$(MAKE) -C problems/mertens-lp-ceiling-k12000 verify
 
 admit-host-seed:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
@@ -55,6 +58,12 @@ admit-host-signed-c3:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
 		--problem problems/signed-autoconvolution-c3-upper \
 		--solution problems/signed-autoconvolution-c3-upper/examples/organon-upper.json \
+		--runs 2
+
+admit-host-mertens-k12000:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
+		--problem problems/mertens-lp-ceiling-k12000 \
+		--solution problems/mertens-lp-ceiling-k12000/examples/certificate-k12000.json \
 		--runs 2
 
 contracts-test:

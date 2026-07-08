@@ -70,7 +70,7 @@ Additional arena and certificate evidence:
 | `autoconvolution-c1-upper` | External certificate repo reproduces exact Board 2 arithmetic. It certifies an existing leader vector rather than a new prize verifier package. | Locked. Wrap the exact integer convolution and rational scoring path in a P42 repo with canonical encoding, runtime cap, lying-score tests, and N-host timing. |
 | `autoconvolution-c2-lower` | P42 package now exists with nonnegative integer witness format, exact Kronecker convolution, all 1,048,575 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the Hyra witness. | Locked. Needs immutable verifier image, collected four-host matrix, and N-host timing/memory evidence before funding. |
 | `signed-autoconvolution-c3-upper` | P42 package now exists with signed dyadic-integer witness format, exact signed Kronecker convolution, all 199,999 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the OrganonAgent witness. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and external reduction review before funding. |
-| `mertens-lp-ceiling-k12000` | PNT ceiling certificate repo verifies the K=12000 proof-side ceiling exactly. It is not a construction board and does not imply monotonicity across reaches. | Locked. Package canonical dyadic dual arrays, interval-log audit, residual checks, and skeptic fixtures. UI copy must avoid overclaiming beyond the finite reach. |
+| `mertens-lp-ceiling-k12000` | P42 package now exists with canonical dyadic dual arrays, exact integer residual pass, interval log enclosure, one-ULP bad-decimal fixture, hash-mismatch fixture, and local verification of the reach-12000 rounded ceiling. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and proof-side copy review. UI copy must avoid overclaiming beyond the finite reach. |
 | `pnt-sparse-mertens-construction` | Arena PNT LP guard tests pass, but this construction board has no self-contained exact verifier in P42 yet. | Locked. Replace all sampling/proxy checks with exhaustive exact constraints, pin sparse rational support encoding, and add planted sampling-gap fixtures. |
 | `hadamard-668-defect` | The verifier shape is straightforward integer row-pair dot products, but no compact encoding, baseline artifact, runtime profile, or problem package exists. | Locked. Build compact matrix encoding, enforce row/sign grammar, benchmark all pairwise dot products, and collect N-host evidence before funding. |
 
@@ -93,9 +93,11 @@ Additional arena and certificate evidence:
 ## Required Next Work
 
 1. Freeze `hadamard-mini`, `erdos-min-overlap`,
-   `autoconvolution-c2-lower`, and `signed-autoconvolution-c3-upper` image
-   metadata and collect their real four-host matrices.
-2. Package the next lowest-risk verifier, likely `mertens-lp-ceiling-k12000`.
+   `autoconvolution-c2-lower`, `signed-autoconvolution-c3-upper`, and
+   `mertens-lp-ceiling-k12000` image metadata and collect their real four-host
+   matrices.
+2. Package the next lowest-risk verifier, likely `pnt-sparse-mertens-construction`
+   if the construction artifact can be recovered, otherwise `hadamard-668-defect`.
 3. Keep `arithmetic-kakeya` locked until a certificate standard exists and an
    external math reviewer signs the statement.
 4. Add one P42 problem package at a time. Do not unlock a portal board until
