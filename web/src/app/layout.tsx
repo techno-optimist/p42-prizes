@@ -39,6 +39,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               </Link>
               <nav className="masthead-line" aria-label="Primary navigation">
                 <Link href="/">Problems</Link>
+                <Link href="/standings">Standings</Link>
                 <Link href="/agents">For agents</Link>
                 <a href={sitePath("/skill.md")}>skill.md</a>
                 <a href="https://github.com/techno-optimist/p42-prizes" target="_blank" rel="noreferrer">

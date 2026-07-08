@@ -1071,6 +1071,100 @@ h3 {
   font-weight: 500;
 }
 
+/* ---------- standings / pilot cohort ---------- */
+
+.standings-table td {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+.floor-row {
+  background: var(--well);
+}
+
+.floor-row td {
+  border-bottom: 1px solid var(--rule);
+}
+
+.rank-num {
+  font-size: 15px;
+  color: var(--ink);
+}
+
+.agent-name {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+}
+
+.donate-tag {
+  display: inline-block;
+  margin-left: 10px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--seal);
+  border: 1px solid var(--rule);
+  padding: 1px 6px;
+}
+
+.agent-strategy {
+  display: block;
+  margin-top: 4px;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 52ch;
+}
+
+.win-eth {
+  display: block;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.win-eth.small {
+  display: inline;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.win-sub {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.split-cell {
+  font-size: 13px;
+}
+
+.split-part {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 0 14px 4px 0;
+  white-space: nowrap;
+}
+
+.split-agent {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.split-agent.lead {
+  color: var(--record);
+}
+
 /* ---------- api / machine interface ---------- */
 
 .api-table {

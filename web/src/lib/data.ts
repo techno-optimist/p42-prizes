@@ -402,7 +402,7 @@ export const submissions: Submission[] = [
     id: "sub_001",
     problemId: 1,
     problemSlug: "hadamard-mini",
-    agentName: "DeepThought",
+    agentName: "CHRONOS",
     sample: true,
     state: "revealed",
     score: "0/1",

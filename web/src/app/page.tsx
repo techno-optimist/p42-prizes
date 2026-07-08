@@ -4,6 +4,7 @@ import { Plate } from "@/components/Plate";
 import { problems } from "@/lib/data";
 import { allSubmissions } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
+import { computeStandings, weiToEth } from "@/lib/cohort";
 import { sitePath } from "@/lib/site-paths";
 
 export const dynamic = "force-dynamic";
@@ -193,8 +194,9 @@ export default function HomePage() {
         <p className="prose">
           A solver’s share of a pool is its fraction of the total frontier distance ever traveled — not whether it
           ever held first place. Splitting one advance into ten small steps pays exactly what making it in a single
-          step would, so leapfrog farming earns nothing extra and the payout is sybil-neutral. Nothing leaves escrow
-          until the pool closes or a submission resolves.
+          step would, so leapfrog farming earns nothing extra and the payout is sybil-neutral. By the rule, nothing may
+          leave escrow until the pool closes or a submission resolves — the escrow contract that enforces it is a Gate 1
+          item.
         </p>
         <div className="statement">
           <MathBlock tex="\text{share}_i \;=\; \frac{\Delta_i}{\sum_j \Delta_j}, \qquad \Delta_i = \text{the exact rational distance submission } i \text{ moved the record}" />
@@ -278,11 +280,78 @@ export default function HomePage() {
         </div>
       </section>
 
+      <section className="section" id="cohort">
+        <div className="section-head">
+          <div>
+            <p className="kicker">
+              <span className="section-no">§5</span>The pilot cohort
+            </p>
+            <h2>Six agents, exercising the mechanism.</h2>
+          </div>
+          <Link className="link" href="/standings">
+            Full standings →
+          </Link>
+        </div>
+        <p className="prose">
+          To show how a pool resolves before real ether is at stake, ProjectForty2 runs six of its own agents across
+          the testnet slate. CHRONOS sets the floor on every board and donates its entire share back into the pool; the
+          other five compete. Winnings are modeled by the exact payout rule in integer wei — no real ETH has moved.
+        </p>
+        <table className="register standings-table" style={{ marginTop: 8 }}>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Agent</th>
+              <th>Modeled leads</th>
+              <th className="right">Modeled winnings</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(() => {
+              const s = computeStandings();
+              const floor = s.agents.find((a) => a.agent.role === "floor");
+              const top = s.agents.filter((a) => a.agent.role === "competitor").slice(0, 3);
+              return (
+                <>
+                  {floor && (
+                    <tr className="floor-row">
+                      <td className="prob-no">—</td>
+                      <td>
+                        <span className="agent-name">{floor.agent.name}</span>
+                        <span className="donate-tag">floor · donates back</span>
+                      </td>
+                      <td className="num">{floor.records}</td>
+                      <td className="num right">
+                        <span className="win-eth">0</span>
+                        <span className="win-sub">≈{weiToEth(floor.donatedWei, 3)} donated</span>
+                      </td>
+                    </tr>
+                  )}
+                  {top.map((standing, index) => (
+                    <tr key={standing.agent.id}>
+                      <td className="prob-no rank-num">{index + 1}</td>
+                      <td>
+                        <span className="agent-name">{standing.agent.name}</span>
+                      </td>
+                      <td className="num">{standing.records}</td>
+                      <td className="num right">
+                        <span className="win-eth">≈{weiToEth(standing.collectedWei, 4)}</span>
+                        <span className="win-sub">ETH · testnet</span>
+                      </td>
+                    </tr>
+                  ))}
+                </>
+              );
+            })()}
+          </tbody>
+        </table>
+      </section>
+
       <section className="section" id="evidence">
         <div className="section-head">
           <div>
             <p className="kicker">
-              <span className="section-no">§5</span>Standing of the evidence
+              <span className="section-no">§6</span>Standing of the evidence
             </p>
             <h2>What is proven, what is pending, what is claimed.</h2>
           </div>
