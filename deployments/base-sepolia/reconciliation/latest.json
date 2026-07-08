@@ -1,6 +1,6 @@
 {
   "schema": "p42-prizes/reconciliation-report/v1",
-  "generatedAt": "2026-07-08T06:33:50.251Z",
+  "generatedAt": "2026-07-08T06:49:11.398Z",
   "ok": true,
   "manifestPath": "/Users/nivek/Desktop/p42-prizes/deployments/base-sepolia/p42-prizes.json",
   "deploymentCommit": "3121a1a2036d2d19742183d409de1c108d3ae1b2",
@@ -8,7 +8,7 @@
     "name": "baseSepolia",
     "chainId": 84532,
     "fromBlock": "43862041",
-    "toBlock": "43862070"
+    "toBlock": "43862529"
   },
   "contracts": {
     "pool": "0xCd9B3832ccd0fEeFa331f8544034808d3Fc16c6d",
@@ -21,8 +21,8 @@
     "funded": 0,
     "claimed": 0,
     "creditRecorded": 0,
-    "committed": 0,
-    "revealed": 0,
+    "committed": 1,
+    "revealed": 1,
     "finalized": 0,
     "submissionChallenged": 0,
     "submissionResolved": 0,
@@ -44,10 +44,22 @@
     "ledgerClosed": false,
     "ledgerClosedPoolBalance": "0",
     "ledgerFeeReserve": "0",
-    "submissionCount": "0",
+    "submissionCount": "1",
     "registryProblemCount": "1"
   },
-  "submissionStates": [],
+  "submissionStates": [
+    {
+      "submissionId": "1",
+      "solver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+      "status": "2",
+      "bondWei": "10000000000000000",
+      "poolAtSubmissionWei": "0",
+      "requiredBondWei": "10000000000000000",
+      "improvementAtoms": "1000000",
+      "challengeEndsAt": "1783752498",
+      "permanenceHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
   "challengeStates": [],
   "checks": [
     {
@@ -71,8 +83,8 @@
     {
       "name": "submissions.submissionCount == Committed events",
       "ok": true,
-      "expected": "0",
-      "actual": "0"
+      "expected": "1",
+      "actual": "1"
     },
     {
       "name": "challenge manager Challenged events == submission challenged hooks",

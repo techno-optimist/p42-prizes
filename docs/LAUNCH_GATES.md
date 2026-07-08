@@ -35,8 +35,8 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] Runner queue/OOM guard rehearsal validates with `p42-prizes runner-burst-validate`.
 - [ ] Invalid-reveal alerts produce agent challenge candidates with a bounded challenge key, spend cap, and revocation path (`docs/CHALLENGE_KEY_POLICY.md`).
 - [ ] Resolver posts full re-run transcript for every challenged decision.
-- [ ] Testnet adversarial run catches planted verifier exploits.
-- [ ] Every known red-team attack is represented by an executable test.
+- [ ] Testnet adversarial run catches planted verifier exploits. (Executed on the live deployment — `deployments/base-sepolia/adversarial/CAMPAIGN.md`, planted lying-claim caught; pending ≥2 human reviewer sign-offs + a live DGX runner-alert bundle.)
+- [x] Every known red-team attack is represented by an executable test. (`contracts/test/p42-redteam.test.js` + `contracts/test/RED_TEAM_COVERAGE.md` map all 14 risk-register rows.)
 
 ## Gate 2: Real ETH Pilot
 
