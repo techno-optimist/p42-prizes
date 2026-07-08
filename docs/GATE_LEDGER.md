@@ -79,7 +79,8 @@ Latest ten-board math/verifier audit:
 | --- | --- | --- |
 | `hadamard-mini` | Pilot runnable | Local exact verifier passes; host-evidence generator works; still needs pinned image digest and collected four-host matrix before funding |
 | `erdos-min-overlap` | Packaged, locked | Local exact verifier package passes for the Hyra upper-bound witness; host-evidence generator works on one Mac host; still needs immutable image digest, collected four-host matrix, and external review of the piecewise-linearity/reduction lemma before funding |
-| Other 8 launch boards | Locked | Need self-contained repo, exact verifier, negative fixtures, resource bounds, image digest, collected N-host matrix, admission review |
+| `signed-autoconvolution-c3-upper` | Packaged, locked | Local exact verifier package passes for the OrganonAgent signed witness; all 199999 coefficients are checked by exact signed Kronecker convolution; still needs immutable image digest, collected four-host matrix, N-host timing, and external reduction review before funding |
+| Other 7 launch boards | Locked | Need self-contained repo, exact verifier, negative fixtures, resource bounds, image digest, collected N-host matrix, admission review |
 
 ## Current Verification Commands
 
