@@ -87,7 +87,7 @@ Latest ten-board math/verifier audit:
 | `mertens-lp-ceiling-k12000` | Packaged, locked | Local exact verifier package proves the reach-12000 25-digit outward-rounded ceiling with exact integer residuals and interval log enclosures; still needs immutable image digest, collected four-host matrix, N-host timing, and proof-side copy review before funding |
 | `pnt-sparse-mertens-construction` | Packaged, locked | Local exact verifier package passes for the CHRONOS reach-96000 sparse witness; all 960000 integer rows are checked exactly and the log objective is certified as a lower-bound decimal; still needs immutable image digest, collected four-host matrix, N-host timing, and interval-log review before funding |
 | `hadamard-668-defect` | Packaged, locked | Local exact verifier package passes for a Sylvester-prefix baseline at defect 55444; all 222778 row pairs are checked exactly by integer popcount; still needs immutable image digest, collected four-host matrix, N-host timing, and open-problem scope review before funding |
-| Other 1 launch board | Locked | `edges-vs-triangles` still needs a recoverable exact artifact or a new rationalized package; then image digest, collected N-host matrix, and admission review |
+| `edges-vs-triangles` | Packaged, locked | Local exact verifier package passes for a rationalized fixed-row-sum slope-3 witness at score `-16684282317138839/23437500000000000`; it is not a recovered historical Arena incumbent artifact and still needs immutable image digest, collected four-host matrix, N-host timing, and external review of the slope-3 scope before funding |
 
 ## Current Verification Commands
 
@@ -97,6 +97,7 @@ make lint
 make test
 make verify-seed
 make admit-host-seed
+make admit-host-edges
 make contracts-test
 cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
 ```

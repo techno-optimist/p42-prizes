@@ -13,9 +13,10 @@ N-host matrix.
 
 The portal is correctly fail-closed and honest for Phase 0: all ten boards are
 listed, every board has a reserved testnet donation wallet, and only
-`hadamard-mini` accepts local pilot submissions. The math source material for
-several locked boards reproduces locally, but the nine locked boards are not
-production-admitted prize problems yet.
+`hadamard-mini` accepts local pilot submissions. All ten boards now have local
+P42 exact-verifier packages, but the nine locked boards are not
+production-admitted prize problems yet because immutable images, collected
+N-host matrices, and external review gates are still missing.
 
 No real ETH funding gate closes from this audit. Gate 1 and Gate 2 remain
 blocked.
@@ -36,10 +37,13 @@ cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit 
 
 Results:
 
-- Problem validation and exact-path lint passed for `hadamard-mini`.
-- Python test suite passed: 38 tests.
-- Seed verifier emitted a canonical valid `VerdictReport`.
-- Local host evidence emitted two identical report hashes on the Mac host.
+- Problem validation and exact-path lint passed for all ten local packages.
+- Python test suite passed: 111 tests.
+- Seed verifier sweep emitted canonical valid `VerdictReport` output for all
+  ten packages.
+- Local host evidence emitted two identical report hashes on the Mac host for
+  `hadamard-mini` and `edges-vs-triangles`; the edges report hash was
+  `sha256:c6186318e07be65a054e0c55fce4a5e0d5842b5e4e5f7aca46c485b4f9ca9789`.
 - Contract scaffold tests passed: 22 Hardhat tests, zero moderate-or-higher npm
   audit findings.
 - Web test/build/audit passed: 59 Vitest tests, TypeScript clean, production
@@ -65,7 +69,7 @@ Additional arena and certificate evidence:
 | --- | --- | --- |
 | `hadamard-mini` | Runnable local pilot. Exact integer verifier, hardening tests, schema validation, deterministic canonical report, and portal/API wiring all pass. | Not yet fundable. Needs pinned immutable image digest and collected four-host matrix covering x86, ARM, and at least two glibc versions. |
 | `erdos-min-overlap` | P42 package now exists with dyadic-integer witness format, exact normalization, all 4,799 lags checked, lying-claim fixture, shape fixture, rescale-range fixture, and local host evidence on one Mac host. | Locked. Needs immutable verifier image, collected four-host matrix, and external review of the piecewise-linearity/reduction lemma before funding. |
-| `edges-vs-triangles` | Arena findings indicate exact live-verifier evidence and a sealed global-model result below the gate. The P42 repo has no self-contained verifier package yet. | Locked. Build a rationalized problem package around the exact row-normalization, moment-curve, area, and max-gap model. Include fixtures for the trapezoid/scoring trap. |
+| `edges-vs-triangles` | P42 package now exists for the rationalized fixed-row-sum slope-3 model: exact Fraction edge/triangle moments, canonical lowest-y point selection, all slope-3 area segments, max-gap penalty, lying-claim fixture, bad-normalization fixture, and local exact verification of the rational curve-sampling witness. This is not a recovered historical Arena incumbent artifact. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and external review of the rationalized slope-3 scope before funding. |
 | `arithmetic-kakeya` | P42 package now exists for the scoped 2x2 warm-up forcing certificate: exact Fraction linear algebra, closure over all four vertices, score `7/4`, tampered-seed fixture, and local exact verification. This is not a record claim. | Locked. Needs immutable verifier image, collected four-host matrix, and external scope review before any marquee funding claim. |
 | `autoconvolution-c1-upper` | P42 package now exists with nonnegative integer witness format, exact Kronecker convolution, all 179,999 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the Hyra witness. | Locked. Needs immutable verifier image, collected four-host matrix, and N-host timing/memory evidence before funding. |
 | `autoconvolution-c2-lower` | P42 package now exists with nonnegative integer witness format, exact Kronecker convolution, all 1,048,575 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the Hyra witness. | Locked. Needs immutable verifier image, collected four-host matrix, and N-host timing/memory evidence before funding. |
@@ -92,18 +96,14 @@ Additional arena and certificate evidence:
 
 ## Required Next Work
 
-1. Freeze `hadamard-mini`, `erdos-min-overlap`,
-   `arithmetic-kakeya`, `autoconvolution-c1-upper`,
-   `autoconvolution-c2-lower`, `signed-autoconvolution-c3-upper`,
-   `mertens-lp-ceiling-k12000`, `pnt-sparse-mertens-construction`, and
-   `hadamard-668-defect` image metadata and collect their real four-host
-   matrices.
-2. Package `edges-vs-triangles` only if the exact accepted artifact is
-   recovered or the board is re-scoped into a rationalized package from the
-   slope-3 verifier model.
+1. Freeze all ten verifier image metadata entries and collect their real
+   four-host matrices.
+2. Keep `edges-vs-triangles` locked until an external reviewer signs the
+   rationalized slope-3 scope or the missing historical Arena artifact is
+   recovered and packaged separately.
 3. Keep `arithmetic-kakeya` locked until a certificate standard exists and an
    external math reviewer signs the statement.
-4. Add one P42 problem package at a time. Do not unlock a portal board until
+4. Do not unlock a portal board until
    `make validate`, `make lint`, exact verifier tests, `admit-host`,
    `admit-matrix`, and `admit-ready` all pass.
 5. Run the full Gate Ledger command set after every admitted verifier package.

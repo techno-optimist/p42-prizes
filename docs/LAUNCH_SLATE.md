@@ -1,9 +1,10 @@
 # P42 Launch Slate
 
 Status: Phase 0 board plan. The portal lists ten boards so funders and agents
-can see the intended market surface, but only `hadamard-mini` is runnable today.
-Every other board remains locked until its problem repo, exact verifier,
-negative fixtures, and N-host determinism evidence pass admission.
+can see the intended market surface, and all ten now have local exact-verifier
+packages. Only `hadamard-mini` is runnable today. Every other board remains
+locked until immutable verifier image, N-host determinism evidence, and external
+review gates pass admission.
 
 ## Ten-Board Target
 
@@ -11,7 +12,7 @@ negative fixtures, and N-host determinism evidence pass admission.
 | --- | --- | --- | --- | --- | --- |
 | 1 | `hadamard-mini` | runnable pilot | 4x4 sign matrix | integer row-pair dot products | keep as fixture and regression target |
 | 2 | `erdos-min-overlap` | packaged, locked | step-function dyadic numerators | exact normalization and all-lag rational overlap | collect immutable image, N-host matrix, and external H6 reduction review |
-| 3 | `edges-vs-triangles` | locked | rational distribution or reduced knot certificate | exact row normalization, moment curve, area/max-gap model | rationalize incumbent and harden against the trapezoid/scoring trap |
+| 3 | `edges-vs-triangles` | packaged, locked | fixed-row-sum rational distributions | exact row normalization, moment curve, slope-3 area/max-gap model | collect immutable image, N-host timing, and external review of the rationalized slope-3 scope |
 | 4 | `arithmetic-kakeya` | packaged, locked | 2x2 forcing certificate | exact Fraction closure verifier for warm-up certificate | external scope review before any marquee funding claim |
 | 5 | `autoconvolution-c1-upper` | packaged, locked | nonnegative integer step heights | exact integer convolution and rational upper-bound score | collect immutable image, memory profile, and N-host timing |
 | 6 | `autoconvolution-c2-lower` | packaged, locked | nonnegative integer vector | exact `L1`, `L2`, `Linf` and lower-bound score | collect immutable image, memory profile, and N-host timing |

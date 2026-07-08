@@ -46,7 +46,7 @@ letting a placeholder digest become funding evidence.
 
 - `hadamard-mini` uses `sha256:local-dev` and is runnable only as a pilot
   fixture.
-- The nine locked launch boards use pending or pilot placeholders and cannot be
-  funded.
+- The nine locked launch boards use `sha256:local-dev` placeholders in their
+  local verifier packages and cannot be funded.
 - No Gate 2 verifier item is closed until a reviewed immutable digest and
   collected four-host matrix exist for every funded problem.

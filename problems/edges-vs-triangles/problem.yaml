@@ -1,0 +1,27 @@
+schema_version: p42-problem/v1
+problem_id: edges-vs-triangles
+title: Edges vs Triangles exact slope-3 verifier
+status: phase-0-packaging
+objective:
+  direction: maximize
+  score_name: negative_slope3_area_plus_gap_penalty
+  seed_best: "-1/1"
+  optimum: "0/1"
+  min_improvement: "1/1000000000000"
+  gauge: "max(0, exact_score - seed_best)"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "make verify SOLUTION={solution}"
+  max_compute:
+    wall_seconds: 10
+    memory_mb: 256
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: arweave-required-before-real-bounty
