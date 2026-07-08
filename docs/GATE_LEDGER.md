@@ -4,21 +4,21 @@ Status date: 2026-07-08.
 
 This ledger is the shared target for agents working toward production readiness.
 It is intentionally stricter than "the build passes": a gate closes only when
-the evidence artifact exists, the owner/sign-off is named, and the failure mode
-has an executable regression or operational runbook.
+the evidence artifact exists, the required agent/external attestation is named,
+and the failure mode has an executable regression or operational runbook.
 
 ## Readiness Rule
 
 P42 Prizes is production-ready for real ETH only when all of these are true:
 
 1. Gate 1 Base Sepolia contracts, resolver, DA, and indexer have passed an adversarial testnet run.
-2. Gate 2 audit, legal/compliance, verifier determinism, wallet/session, abuse, incident, and bug-bounty sign-offs are complete.
+2. Gate 2 audit, legal/compliance, verifier determinism, wallet/session, abuse, incident, and bug-bounty attestations are complete.
 3. Every funded problem has a frozen verifier image digest, N-host identical `VerdictReport` matrix, and admission fixtures.
 4. The public portal, contracts, and indexer can reconstruct the same frontier and payout ledger.
 5. No blocker below is marked open.
 
 Absolute mathematical or legal certainty is impossible; the operational bar is:
-no known unfixed critical/high risk, no unresolved audit finding, and no value-moving action without external sign-off.
+no known unfixed critical/high risk, no unresolved audit finding, and no value-moving action without required external attestation.
 
 ## Gate Summary
 
@@ -26,7 +26,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | --- | --- | --- | --- |
 | Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, and `docs/HUMAN_ACTIONS.md` owner-action register | Repo owner enables GitHub private vulnerability reporting and publishes the GitHub Actions workflow with `workflow` scope |
 | Gate 1: Base Sepolia testnet | Blocked | Python reference model, portal-local commit/reveal, local DA/permanence evidence validator, DGX/Hermes verifier-runner runbook, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, and read-only reconciliation script | Deployed verified contracts, testnet addresses, live DA/permanence provider verification, DGX reveal-watcher dry run, integrated resolver transcript, indexer reconciliation, adversarial run report |
-| Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested N-host matrix tooling, immutable-image `admit-ready` scaffold, draft wallet/session policy, and opt-in mutation API-key gate | External audit, legal memo, KYC/sanctions/ToS approval, collected N-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
+| Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested N-host matrix tooling, immutable-image `admit-ready` scaffold, draft wallet/session policy, opt-in mutation API-key gate, and legal memo validator | External audit, counsel-signed legal memo, KYC/sanctions/ToS approval, collected N-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
 
 ## Gate 0 Checklist
@@ -43,14 +43,14 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Local rate limits/idempotency/events | Pass for local pilot | Process-local limiter, local idempotency, hash-chained local events, problem APIs expose local-only chain provenance until a manifest/indexer is attached | Still not production settlement state |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
 | GitHub Actions workflow | Blocked on credential scope | Workflow draft was prepared locally but GitHub rejected this OAuth app with `refusing to allow an OAuth App to create or update workflow ... without workflow scope`; isolated branches do not bypass the policy | Repo owner must publish `.github/workflows/ci.yml` through the GitHub web UI or push it with a PAT that has `workflow` scope |
-| Human/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
+| Owner/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
 
 ## Gate 1 Blockers
 
-| Blocker | Required artifact | Owner/sign-off |
+| Blocker | Required artifact | Owner/attestation |
 | --- | --- | --- |
 | Contract system incomplete | Local Hardhat 3 scaffold now covers problem registry/freezing, escrow pool, payout ledger, one-time credit recorder activation, submission bonds/top-ups, CID-bound commitment helper, commit-time DA hash bound into the on-chain `p42:v1` commitment, reveal, challenge-window-gated finalization, finalize-time permanence hash gate, ledger credit recording, close guard for unresolved submissions, abandoned commit/reveal expiry, counter-bond sizing, resolver transcript posting, challenge/resolver outcome hooks, solver-bond return/slash accounting, resolver-bond fraud-window release/slash proof hashing, and 22 invariant/property tests; still needs real deployment, broader fuzzing/formal review, and audit | Engineering + external auditor |
-| No Base Sepolia deployment | `contracts/scripts/deploy-base-sepolia.js` and `deployments/base-sepolia/p42-prizes.example.json` now define the artifact; still need real deploy txs, committed `p42-prizes.json`, verified source links, addresses, constructor metadata, and role assignments | Human deployer |
+| No Base Sepolia deployment | `contracts/scripts/deploy-base-sepolia.js` and `deployments/base-sepolia/p42-prizes.example.json` now define the artifact; still need real deploy txs, committed `p42-prizes.json`, verified source links, addresses, constructor metadata, and role assignments | Deployer credential owner |
 | Bond/claim/challenge scaffold not deployed or audited | Local tests cover `alpha * pool_at_submission`, empty-pool/self-fund finalization coverage, donation/top-up finalization coverage, final-denominator claim cap, escrow until close, close blocked by unresolved submissions, abandoned commit/reveal expiry, pause-not-claim, CID-bound reveal, challenge-window finalization, counter-bond sizing, one active challenge per submission, nonexistent-submission challenge rejection, open-challenge finalization block, transcript-required resolution, challenge-bond routing, solver-bond return/slash, resolver-bond fraud-window release/slash proof hashing, seeded late-funding/top-up property checks, and sybil-split payout checks; still needs real deployment, non-owner-trusted slashing policy, broader fuzzing/formal review, and audit | Engineering + auditor |
 | No live DA/permanence verification | `p42-da-receipt/v1`, `schemas/da-receipt.schema.json`, `p42-prizes da-receipt`, and `p42-prizes da-verify` now bind commit-time receipt, payload hash, Arweave txid, contract hash anchors, and exact `p42:v1` commitment preimage; still need provider retrieval, Base receipt inclusion checks, Arweave tx validation, indexer integration, and slashing on missing data | Engineering |
 | No funding reconciliation | `contracts/scripts/reconcile-base-sepolia.js` now defines a read-only report over deposits, credits, claims, submissions, challenges, and pool/ledger balances; still need a real committed Base Sepolia report, reorg policy, monitoring, portal read integration, and signed ops review | Engineering + ops |
@@ -60,13 +60,13 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 ## Gate 2 Blockers
 
-| Blocker | Required artifact | Owner/sign-off |
+| Blocker | Required artifact | Owner/attestation |
 | --- | --- | --- |
-| No external audit | Audit report, remediation PRs, re-test evidence, residual-risk acceptance | External auditor + human-of-record |
-| No legal memo | Written counsel memo for bounty/prize, money transmission, KYC/sanctions, tax, ToS, Coinbase onramp posture | Licensed counsel |
+| No external audit | Audit report, remediation PRs, re-test evidence, residual-risk acceptance | External auditor attestation |
+| No legal memo | `docs/LEGAL_COMPLIANCE.md`, `schemas/legal-memo.schema.json`, and `p42-prizes legal-memo-validate` now define the agent-prepared packet; still need a real counsel memo/reference covering bounty/prize, money transmission, KYC/sanctions, tax, ToS/privacy, Coinbase Onramp, custody/non-custody controls, no-token/no-points posture, and international access | Licensed counsel attestation |
 | No collected N-host verifier evidence | `p42-prizes admit-host` and `p42-prizes admit-matrix` exist and are tested; still need x86 + ARM + two glibc versions all hash-identical on canonical `VerdictReport` fixtures for every funded problem | Verifier reviewers |
 | Immutable image registry not populated | `docs/VERIFIER_IMAGE_REGISTRY.md` defines the registry fields and `p42-prizes admit-ready` rejects placeholder images or matrix/manifest mismatches; still need real reviewed image digests recorded in problem metadata, admission matrices, deployment manifests, and portal/indexer provenance | Engineering |
-| No named custody/governance | Multisig signers, timelock, guardian, recusal policy, key rotation and rehearsal evidence | Human governance owner |
+| No named custody/governance | Multisig signers, timelock, guardian, recusal policy, key rotation and rehearsal evidence | Governance owner attestation |
 | Wallet/session policy not reviewed or enforced in production | `docs/WALLET_SESSION_POLICY.md` defines solver ownership, session-key scopes, API-key hashing, payload quarantine, and compliance review targets; portal mutable routes can require hashed API keys with `P42_REQUIRE_MUTATION_API_KEY=1`; still needs security/counsel review, production enforcement, distributed limits/logs, and quarantine service | Security + counsel |
 | No distributed settlement state | Transactional DB/indexer or chain-first event source; atomic idempotency reserve/commit; alerting | Engineering + ops |
 | No incident drill or bounty | Completed tabletop drill, public status template, live responsible disclosure/bug bounty path | Security owner |

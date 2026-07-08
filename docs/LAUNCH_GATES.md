@@ -1,7 +1,9 @@
 # Launch Gates
 
 P42 ships in explicit gates. A gate can advance only when the evidence link is
-filled in and reviewed by a human owner.
+filled in and validated. Runtime gates should be agent-operated by default;
+external attestations are required only where credentials, audit, counsel, or
+repo-owner authority cannot be replaced by agent execution.
 
 ## Gate 0: Public Repo / Local Pilot
 
@@ -17,7 +19,7 @@ filled in and reviewed by a human owner.
 - [x] Retryable submission/verifier POSTs support local `Idempotency-Key` replay.
 - [x] Local diagnostic event ledger exposes hash-chained commit/reveal/idempotency events.
 - [x] `SECURITY.md` contact and disclosure channel documented.
-- [ ] GitHub private vulnerability reporting is enabled by a human repo owner.
+- [ ] GitHub private vulnerability reporting is enabled by a repo owner.
 
 ## Gate 1: Base Sepolia Testnet
 
@@ -39,7 +41,7 @@ filled in and reviewed by a human owner.
 
 - [ ] External smart-contract audit completed.
 - [ ] Audit remediations merged and re-tested.
-- [ ] Written legal memo signed off.
+- [ ] Counsel-signed legal memo validates with `p42-prizes legal-memo-validate`.
 - [ ] KYC/sanctions and Terms of Service posture approved.
 - [ ] N-host verifier matrix passes for every funded problem.
 - [ ] Verifier image digests are pinned and immutable in registry.

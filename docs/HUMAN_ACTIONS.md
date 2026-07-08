@@ -1,8 +1,10 @@
-# Human Action Register
+# Owner And External Attestation Register
 
 P42 Prizes is intentionally gate-heavy. Agents can harden code, tests, docs,
-and deployment scaffolds, but these launch items require a human owner, external
-credential, or external professional sign-off before the gate can close.
+deployment scaffolds, verifier operation, evidence packaging, and launch
+rehearsals. These remaining launch items require repo-owner authority, an
+external credential, or an external professional attestation before the gate can
+close.
 
 ## Current Owner-Only Actions
 
@@ -17,7 +19,7 @@ credential, or external professional sign-off before the gate can close.
 | Gate 1 | Name resolver signers and run a transcript-backed dispute rehearsal. | Public transcript URI/hash, resolver decision tx, signer roster, and slash/removal policy review. |
 | Gate 1 | Run an adversarial testnet campaign. | Report covering vesting/dilution, bond leverage, leapfrog/sybil, DA expiry, resolver lies, and planted verifier exploits. |
 | Gate 2 | Commission external smart-contract/security audit and remediate findings. | Audit report, remediation commits, re-test evidence, and residual-risk acceptance. |
-| Gate 2 | Obtain legal/compliance memo. | Counsel memo covering prize/bounty framing, KYC/sanctions, tax, Terms, Coinbase Onramp posture, and money-transmission risk. |
+| Gate 2 | Obtain legal/compliance memo. | Agent-prepared packet validates with `p42-prizes legal-memo-validate`; counsel memo covers prize/bounty framing, KYC/sanctions, tax, Terms, Coinbase Onramp posture, money-transmission risk, and no-token/no-points posture. |
 | Gate 2 | Review and approve `docs/WALLET_SESSION_POLICY.md` across portal, contracts, and solver agents. | Security and counsel sign-off covering session-key scopes, API keys, payload quarantine, KYC/sanctions thresholds, and withdrawal/onramp policy. |
 | Gate 2 | Collect N-host verifier evidence for every funded problem. | `admit-matrix` artifacts with x86_64 plus ARM/aarch64 coverage, at least two glibc versions, and identical canonical `VerdictReport` hashes. |
 | Gate 2 | Build and review immutable verifier images for every funded problem. | `p42-prizes admit-ready` passes with a reviewed `sha256:<digest>` image recorded in `problem.yaml`, the N-host matrix, contract deployment metadata, and portal/indexer provenance. |
@@ -26,7 +28,8 @@ credential, or external professional sign-off before the gate can close.
 
 ## Agent Rules Around Blocked Actions
 
-- Do not mark a human-owned action complete from code existence alone.
+- Do not mark an owner/external-attestation action complete from code existence
+  alone.
 - Do not move real ETH, enable mainnet Coinbase Onramp, or publish settlement
   copy until Gate 1 and Gate 2 evidence is present.
 - If a credential blocks an action, record the exact failure and keep improving

@@ -18,6 +18,7 @@ from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversari
 from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_evidence
 from p42_prizes.governance import GovernanceSignoffError, normalize_governance_signoff
 from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
+from p42_prizes.legal import LegalMemoError, normalize_legal_memo
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
@@ -312,6 +313,16 @@ def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
+    try:
+        report = normalize_legal_memo(load_evidence_file(args.report))
+    except (AdmissionError, LegalMemoError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -496,6 +507,14 @@ def build_parser() -> argparse.ArgumentParser:
     governance_signoff.add_argument("--report", required=True)
     governance_signoff.add_argument("--output")
     governance_signoff.set_defaults(func=_cmd_governance_signoff_validate)
+
+    legal_memo = subparsers.add_parser(
+        "legal-memo-validate",
+        help="validate and hash Gate 2 legal/compliance memo evidence",
+    )
+    legal_memo.add_argument("--report", required=True)
+    legal_memo.add_argument("--output")
+    legal_memo.set_defaults(func=_cmd_legal_memo_validate)
 
     return parser
 
