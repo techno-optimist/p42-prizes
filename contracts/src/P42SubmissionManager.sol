@@ -29,6 +29,8 @@ contract P42SubmissionManager {
     error P42_ZERO_IMPROVEMENT();
     error P42_CHALLENGE_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_CHALLENGE_WINDOW_CLOSED(uint64 endsAt, uint64 nowAt);
+    error P42_REVEAL_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
+    error P42_PERMANENCE_GRACE_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_EMPTY_PERMANENCE_HASH();
     error P42_INSUFFICIENT_POSTING_BOND(uint256 required, uint256 received);
     error P42_UNKNOWN_SUBMISSION();
@@ -75,6 +77,7 @@ contract P42SubmissionManager {
     bool public pausedNewActions;
     bool private _claiming;
     uint256 public submissionCount;
+    uint256 public openSubmissionCount;
 
     mapping(uint256 => Submission) public submissions;
     mapping(address => uint256) public claimableBondWei;
@@ -107,6 +110,7 @@ contract P42SubmissionManager {
     );
     event SubmissionChallenged(uint256 indexed submissionId, address indexed challengeManager);
     event SubmissionChallengeResolved(uint256 indexed submissionId, bool challengerWins);
+    event SubmissionExpired(uint256 indexed submissionId, SubmissionStatus previousStatus);
     event BondToppedUp(uint256 indexed submissionId, address indexed solver, uint256 amount, uint256 newBondWei);
     event SubmissionBondClaimable(uint256 indexed submissionId, address indexed claimant, uint256 amount);
     event BondClaimed(address indexed claimant, uint256 amount);
@@ -199,6 +203,7 @@ contract P42SubmissionManager {
             challengeEndsAt: 0,
             status: SubmissionStatus.Committed
         });
+        openSubmissionCount += 1;
         emit Committed(submissionId, msg.sender, commitment, commitDaHash, msg.value, poolAtSubmission, required);
     }
 
@@ -264,6 +269,7 @@ contract P42SubmissionManager {
         submission.permanenceHash = permanenceHash;
         submission.status = SubmissionStatus.Finalized;
         _makeBondClaimable(submissionId, solver);
+        _decrementOpenSubmission();
         ledger.recordCredit(solver, improvementAtoms);
 
         emit Finalized(
@@ -291,10 +297,37 @@ contract P42SubmissionManager {
         if (challengerWins) {
             submission.status = SubmissionStatus.Rejected;
             _makeBondClaimable(submissionId, treasury);
+            _decrementOpenSubmission();
         } else {
             submission.status = SubmissionStatus.Revealed;
         }
         emit SubmissionChallengeResolved(submissionId, challengerWins);
+    }
+
+    function expireCommitted(uint256 submissionId) external {
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Committed);
+        uint64 expiresAt = submission.committedAt + challengeWindowSeconds;
+        if (block.timestamp < expiresAt) {
+            revert P42_REVEAL_WINDOW_OPEN(expiresAt, uint64(block.timestamp));
+        }
+        submission.status = SubmissionStatus.Rejected;
+        _makeBondClaimable(submissionId, treasury);
+        _decrementOpenSubmission();
+        emit SubmissionExpired(submissionId, SubmissionStatus.Committed);
+    }
+
+    function expireRevealed(uint256 submissionId) external {
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Revealed);
+        uint64 expiresAt = submission.challengeEndsAt + challengeWindowSeconds;
+        if (block.timestamp < expiresAt) {
+            revert P42_PERMANENCE_GRACE_OPEN(expiresAt, uint64(block.timestamp));
+        }
+        submission.status = SubmissionStatus.Rejected;
+        _makeBondClaimable(submissionId, treasury);
+        _decrementOpenSubmission();
+        emit SubmissionExpired(submissionId, SubmissionStatus.Revealed);
     }
 
     function claimBond() external nonReentrant {
@@ -396,5 +429,9 @@ contract P42SubmissionManager {
         submission.bondWei = 0;
         claimableBondWei[claimant] += bondWei;
         emit SubmissionBondClaimable(submissionId, claimant, bondWei);
+    }
+
+    function _decrementOpenSubmission() private {
+        if (openSubmissionCount > 0) openSubmissionCount -= 1;
     }
 }

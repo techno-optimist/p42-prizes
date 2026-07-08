@@ -5,6 +5,10 @@ interface IP42EscrowPool {
     function funded() external view returns (uint256);
 }
 
+interface IP42CreditCloseGuard {
+    function openSubmissionCount() external view returns (uint256);
+}
+
 /// @notice Final-denominator improvement accounting for one problem pool.
 /// Credits accrue while the pool is open, but no solver can claim until close.
 contract P42PayoutLedger {
@@ -17,6 +21,7 @@ contract P42PayoutLedger {
     error P42_PAUSED_NEW_ACTIONS();
     error P42_ZERO_CREDIT();
     error P42_FEE_TOO_HIGH();
+    error P42_OPEN_SUBMISSIONS(uint256 openSubmissionCount);
 
     uint16 public constant MAX_FEE_BPS = 500;
 
@@ -100,6 +105,10 @@ contract P42PayoutLedger {
 
     function close() external onlyOwner {
         if (closed) revert P42_CLOSED();
+        if (creditRecorder != address(0)) {
+            uint256 openCount = IP42CreditCloseGuard(creditRecorder).openSubmissionCount();
+            if (openCount != 0) revert P42_OPEN_SUBMISSIONS(openCount);
+        }
         closed = true;
         closedPoolBalance = IP42EscrowPool(pool).funded();
         feeReserve = closedPoolBalance * feeBps / 10_000;

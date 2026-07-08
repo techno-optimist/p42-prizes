@@ -17,6 +17,7 @@ red-team invariants that must hold before Base Sepolia.
   pool-at-submission bond pricing, CID-bound reveal, challenge-window-gated
   finalization with a permanence hash, finalization bond coverage check against
   projected entitlement, bond top-ups, solver bond return/slash accounting,
+  close guards for unresolved submissions, abandoned commit/reveal expiry,
   ledger credit recording, and Solidity helper for the portal's length-framed
   `p42:v0` CID-bound commitment preimage.
 - `P42ChallengeManager`: one active challenge per submission, counter-bond
@@ -51,8 +52,6 @@ event/state consistency report under `deployments/base-sepolia/reconciliation/`.
 ## Still Missing For Gate 1
 
 - real DA/permanence receipt verification, not just nonzero hash gates
-- close/finalize phase control so revealed or challenged submissions cannot be
-  excluded by premature ledger close
 - resolver-bond fraud window/slashing beyond immediate scaffold release
 - actual Base Sepolia deployment, committed manifest, and verified source/address artifacts
 - real committed Base Sepolia reconciliation report and production indexer

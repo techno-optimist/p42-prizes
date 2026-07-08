@@ -349,6 +349,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(finalized.status, 4n);
     assert.equal(finalized.permanenceHash, PERMANENCE_HASH);
     assert.equal(finalized.bondWei, 0n);
+    assert.equal(await submissions.openSubmissionCount(), 0n);
     assert.equal(await ledger.creditAtomsOf(alice.address), 25n);
     assert.equal(await submissions.claimableBondWei(alice.address), required * 2n);
 
@@ -364,6 +365,56 @@ describe("P42 Gate 1 contract scaffold", function () {
     await ledger.close();
     await pool.connect(alice).claim();
     assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("2"));
+  });
+
+  it("blocks ledger close while committed submissions can still reveal", async function () {
+    const { alice, treasury, ledger, submissions, minBond } = await deployFixture();
+    const commitment = await submissions.computeCommitment("bafy-abandoned-commit", alice.address, "abandoned");
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
+    assert.equal(await submissions.openSubmissionCount(), 1n);
+
+    await expectCustomError(ledger.close(), ledger, "P42_OPEN_SUBMISSIONS");
+    await expectCustomError(
+      submissions.expireCommitted(1),
+      submissions,
+      "P42_REVEAL_WINDOW_OPEN"
+    );
+
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await submissions.expireCommitted(1);
+    const expired = await submissions.submissions(1);
+    assert.equal(expired.status, 5n);
+    assert.equal(await submissions.openSubmissionCount(), 0n);
+    assert.equal(await submissions.claimableBondWei(treasury.address), minBond);
+    await ledger.close();
+    assert.equal(await ledger.closed(), true);
+  });
+
+  it("blocks ledger close while revealed submissions can still finalize permanence", async function () {
+    const fixture = await deployFixture();
+    const { treasury, ledger, submissions } = fixture;
+    const { submissionId, bond } = await commitAndReveal(fixture, {
+      solutionCid: "bafy-abandoned-reveal",
+      salt: "abandoned-reveal",
+    });
+    assert.equal(await submissions.openSubmissionCount(), 1n);
+
+    await expectCustomError(ledger.close(), ledger, "P42_OPEN_SUBMISSIONS");
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await expectCustomError(
+      submissions.expireRevealed(submissionId),
+      submissions,
+      "P42_PERMANENCE_GRACE_OPEN"
+    );
+
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await submissions.expireRevealed(submissionId);
+    const expired = await submissions.submissions(submissionId);
+    assert.equal(expired.status, 5n);
+    assert.equal(await submissions.openSubmissionCount(), 0n);
+    assert.equal(await submissions.claimableBondWei(treasury.address), bond);
+    await ledger.close();
+    assert.equal(await ledger.closed(), true);
   });
 
   it("scopes ledger credit recording to the owner before activation and recorder after activation", async function () {
