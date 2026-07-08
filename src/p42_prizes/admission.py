@@ -324,6 +324,83 @@ def build_admission_matrix(evidence_items: Iterable[Mapping[str, Any]]) -> dict[
     return matrix
 
 
+def validate_admission_matrix(matrix: Mapping[str, Any]) -> dict[str, Any]:
+    if matrix.get("schema_version") != MATRIX_SCHEMA_VERSION:
+        raise AdmissionError(f"matrix.schema_version must be {MATRIX_SCHEMA_VERSION}")
+
+    for key in ("problem_id", "verifier_version", "verifier_image", "solution_hash", "report_hash", "matrix_hash"):
+        _require_string(matrix, key, "matrix")
+
+    without_hash = dict(matrix)
+    provided_hash = without_hash.pop("matrix_hash")
+    expected_hash = sha256_bytes(canonical_json(without_hash).encode("utf-8"))
+    if provided_hash != expected_hash:
+        raise AdmissionError("matrix.matrix_hash does not match canonical matrix bytes")
+
+    requirements = matrix.get("requirements")
+    if not isinstance(requirements, dict):
+        raise AdmissionError("matrix.requirements must be an object")
+    if requirements.get("min_hosts") != MIN_MATRIX_HOSTS:
+        raise AdmissionError(f"matrix.requirements.min_hosts must be {MIN_MATRIX_HOSTS}")
+    if requirements.get("min_distinct_glibc_versions") != MIN_GLIBC_VERSIONS:
+        raise AdmissionError(
+            f"matrix.requirements.min_distinct_glibc_versions must be {MIN_GLIBC_VERSIONS}"
+        )
+    if requirements.get("identical_report_hash") is not True:
+        raise AdmissionError("matrix.requirements.identical_report_hash must be true")
+    required_architectures = requirements.get("required_architectures")
+    if not isinstance(required_architectures, list):
+        raise AdmissionError("matrix.requirements.required_architectures must be an array")
+    missing_required = [arch for arch in REQUIRED_ARCHITECTURES if arch not in required_architectures]
+    if missing_required:
+        raise AdmissionError(
+            f"matrix.requirements.required_architectures missing: {', '.join(missing_required)}"
+        )
+
+    coverage = matrix.get("coverage")
+    if not isinstance(coverage, dict):
+        raise AdmissionError("matrix.coverage must be an object")
+    host_count = coverage.get("host_count")
+    if not isinstance(host_count, int) or host_count < MIN_MATRIX_HOSTS:
+        raise AdmissionError(f"matrix.coverage.host_count must be >= {MIN_MATRIX_HOSTS}")
+    architectures = coverage.get("architectures")
+    if not isinstance(architectures, list):
+        raise AdmissionError("matrix.coverage.architectures must be an array")
+    missing_architectures = [arch for arch in REQUIRED_ARCHITECTURES if arch not in architectures]
+    if missing_architectures:
+        raise AdmissionError(f"matrix.coverage.architectures missing: {', '.join(missing_architectures)}")
+    glibc_versions = coverage.get("glibc_versions")
+    if not isinstance(glibc_versions, list) or len(set(glibc_versions)) < MIN_GLIBC_VERSIONS:
+        raise AdmissionError(
+            f"matrix.coverage.glibc_versions must contain at least {MIN_GLIBC_VERSIONS} versions"
+        )
+
+    hosts = matrix.get("hosts")
+    if not isinstance(hosts, list) or len(hosts) != host_count:
+        raise AdmissionError("matrix.hosts length must equal matrix.coverage.host_count")
+    labels: list[str] = []
+    for index, host in enumerate(hosts):
+        if not isinstance(host, dict):
+            raise AdmissionError(f"matrix.hosts[{index}] must be an object")
+        label = _require_string(host, "label", f"matrix.hosts[{index}]")
+        labels.append(label)
+        architecture = _normalize_architecture(_require_string(host, "architecture", f"matrix.hosts[{index}]"))
+        if architecture not in architectures:
+            raise AdmissionError(f"matrix.hosts[{index}].architecture missing from coverage.architectures")
+        if not isinstance(host.get("run_count"), int) or host["run_count"] < 2:
+            raise AdmissionError(f"matrix.hosts[{index}].run_count must be >= 2")
+        _require_string(host, "os", f"matrix.hosts[{index}]")
+        _require_string(host, "libc_name", f"matrix.hosts[{index}]")
+        _require_string(host, "libc_version", f"matrix.hosts[{index}]")
+        _require_string(host, "python_version", f"matrix.hosts[{index}]")
+
+    duplicate_labels = sorted({label for label in labels if labels.count(label) > 1})
+    if duplicate_labels:
+        raise AdmissionError(f"matrix.hosts duplicate labels: {', '.join(duplicate_labels)}")
+
+    return dict(matrix)
+
+
 def load_evidence_file(path: str | Path) -> dict[str, Any]:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))

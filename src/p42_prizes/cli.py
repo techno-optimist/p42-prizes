@@ -17,6 +17,7 @@ from p42_prizes.admission import (
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
+from p42_prizes.readiness import validate_fundable_admission
 from p42_prizes.verdict import canonical_json
 
 
@@ -112,6 +113,16 @@ def _cmd_admit_matrix(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_admit_ready(args: argparse.Namespace) -> int:
+    errors = validate_fundable_admission(args.problem, args.matrix)
+    if errors:
+        for error in errors:
+            print(error, file=sys.stderr)
+        return 1
+    print(f"OK: {Path(args.problem)} is fundable-admission ready")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -168,6 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     admit_matrix.add_argument("--output")
     admit_matrix.set_defaults(func=_cmd_admit_matrix)
+
+    admit_ready = subparsers.add_parser(
+        "admit-ready",
+        help="check a problem manifest plus N-host matrix before funding/admission",
+    )
+    admit_ready.add_argument("--problem", required=True)
+    admit_ready.add_argument("--matrix", required=True)
+    admit_ready.set_defaults(func=_cmd_admit_ready)
 
     return parser
 

@@ -57,6 +57,19 @@ The matrix gate requires at least four distinct host labels, both `x86_64` and
 `VerdictReport` hashes. The artifact schemas live at
 `schemas/admission-host.schema.json` and `schemas/admission-matrix.schema.json`.
 
+Before a problem can be funded, the verifier image must also pass the immutable
+digest gate:
+
+```bash
+PYTHONPATH=src python3 -m p42_prizes.cli admit-ready \
+  --problem problems/<slug> \
+  --matrix admission-matrix.json
+```
+
+This rejects placeholder images such as `sha256:local-dev`, `sha256:pending`,
+or `sha256:pilot`. See `docs/VERIFIER_IMAGE_REGISTRY.md` for the registry
+fields and evidence requirements.
+
 ## Local developer loop
 
 ```bash

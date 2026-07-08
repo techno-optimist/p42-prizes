@@ -49,4 +49,6 @@ A board moves from locked to pilot only when:
 - hardening fixtures cover invalid, near-miss, and lying-score cases,
 - the runner records exact version/image/output evidence,
 - the N-host determinism matrix passes,
+- `p42-prizes admit-ready` passes against the immutable verifier image digest
+  and collected N-host matrix,
 - the board has a reviewed testnet pool and no real-ETH gate is bypassed.
