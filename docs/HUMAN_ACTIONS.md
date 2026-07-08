@@ -15,7 +15,7 @@ close.
 | Gate 1 | Deploy the contract scaffold to Base Sepolia with real RPC, deployer, treasury, resolver, and frozen problem hash inputs. | Committed `deployments/base-sepolia/p42-prizes.json` with real tx hashes, constructor args, role assignments, verified-source links, and indexer start block. |
 | Gate 1 | Run Base Sepolia reconciliation after deployment. | Committed `deployments/base-sepolia/reconciliation/latest.json` reviewed against the manifest. |
 | Gate 1 | Verify live DA/permanence provider receipts for testnet submissions. | `p42-prizes da-verify` evidence for each finalized testnet submission, plus provider retrieval logs showing the Base commit receipt and Arweave payload are live. |
-| Gate 1 | Approve DGX/Hermes verifier-runner operating policy. | Runner key custody, transcript publication location, queue/OOM guard thresholds, alert routing, auto-challenge spend caps, and no-Atlas-write boundary are documented and rehearsed. |
+| Gate 1 | Provision the bounded DGX/Hermes agent challenge-key envelope if auto-challenge transactions are enabled. | Agent key address, funding transaction, per-problem/per-day spend caps, revocation path, transcript publication location, queue/OOM guard thresholds, alert routing, no-Atlas-write boundary, and `p42-prizes runner-burst-validate` rehearsal are documented and rehearsed. |
 | Gate 1 | Name resolver signers and run a transcript-backed dispute rehearsal. | Public transcript URI/hash, resolver decision tx, signer roster, and slash/removal policy review. |
 | Gate 1 | Run an adversarial testnet campaign. | Report covering vesting/dilution, bond leverage, leapfrog/sybil, DA expiry, resolver lies, and planted verifier exploits. |
 | Gate 2 | Commission external smart-contract/security audit and remediate findings. | Audit report, remediation commits, re-test evidence, and residual-risk acceptance. |
@@ -31,7 +31,8 @@ close.
 - Do not mark an owner/external-attestation action complete from code existence
   alone.
 - Do not move real ETH, enable mainnet Coinbase Onramp, or publish settlement
-  copy until Gate 1 and Gate 2 evidence is present.
+  copy until Gate 1 and Gate 2 evidence is present. Testnet challenge keys may
+  be agent-operated only inside the committed spend-cap and revocation envelope.
 - If a credential blocks an action, record the exact failure and keep improving
   adjacent local evidence.
 - After any code or docs change on the shared branch, run the relevant gates,

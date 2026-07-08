@@ -832,7 +832,9 @@ def test_runner_alerts_mark_invalid_transcript_as_challenge_candidate(tmp_path: 
     assert alert["category"] == "verifier_rejected"
     assert alert["severity"] == "high"
     assert alert["recommended_action"] == "challenge_submission"
-    assert alert["requires_human_key"] is True
+    assert alert["agent_action_mode"] == "auto_challenge_candidate"
+    assert alert["requires_agent_challenge_key"] is True
+    assert alert["requires_spend_cap"] is True
     assert alert["job_id"] == "local-invalid"
     assert alert["report_hash"].startswith("sha256:")
     assert alert["reason"] == "NOT_STRICT_IMPROVEMENT"
@@ -868,7 +870,9 @@ def test_runner_alerts_quarantine_transcript_when_self_hash_mismatches(tmp_path:
     assert alert["category"] == "transcript_hash_mismatch"
     assert alert["severity"] == "critical"
     assert alert["recommended_action"] == "quarantine_transcript"
-    assert alert["requires_human_key"] is True
+    assert alert["agent_action_mode"] == "auto_quarantine"
+    assert alert["requires_agent_challenge_key"] is False
+    assert alert["requires_spend_cap"] is False
     assert "expected sha256:" in alert["reason"]
 
 

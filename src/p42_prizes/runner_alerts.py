@@ -9,7 +9,7 @@ from p42_prizes.runner_worker import RUNNER_TRANSCRIPT_SCHEMA_VERSION
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-RUNNER_ALERTS_SCHEMA_VERSION = "p42-runner-alerts/v1"
+RUNNER_ALERTS_SCHEMA_VERSION = "p42-runner-alerts/v2"
 
 
 class RunnerAlertError(ValueError):
@@ -182,11 +182,12 @@ def _make_alert(
     transcript_hash: str | None = None,
     report_hash: str | None = None,
 ) -> dict[str, Any]:
+    automation = _automation_fields(recommended_action)
     alert = {
         "category": category,
         "severity": severity,
         "recommended_action": recommended_action,
-        "requires_human_key": True,
+        **automation,
         "transcript_path": transcript_path,
         "job_id": job_id,
         "problem": problem,
@@ -197,6 +198,20 @@ def _make_alert(
     }
     alert["alert_id"] = sha256_bytes(canonical_json(alert).encode("utf-8"))
     return alert
+
+
+def _automation_fields(recommended_action: str) -> dict[str, Any]:
+    if recommended_action == "quarantine_transcript":
+        return {
+            "agent_action_mode": "auto_quarantine",
+            "requires_agent_challenge_key": False,
+            "requires_spend_cap": False,
+        }
+    return {
+        "agent_action_mode": "auto_challenge_candidate",
+        "requires_agent_challenge_key": True,
+        "requires_spend_cap": True,
+    }
 
 
 def _expected_transcript_hash(transcript: Mapping[str, Any]) -> str:

@@ -24,6 +24,7 @@ from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
 from p42_prizes.readiness import validate_fundable_admission
 from p42_prizes.runner_alerts import RunnerAlertError, build_runner_alerts
+from p42_prizes.runner_burst import RunnerBurstError, normalize_runner_burst_report
 from p42_prizes.runner_queue import (
     MemorySnapshot,
     RunnerPolicy,
@@ -283,6 +284,16 @@ def _cmd_runner_alerts(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_runner_burst_validate(args: argparse.Namespace) -> int:
+    try:
+        report = normalize_runner_burst_report(load_evidence_file(args.report))
+    except (AdmissionError, RunnerBurstError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
 def _cmd_incident_drill_validate(args: argparse.Namespace) -> int:
     try:
         report = normalize_incident_drill_report(load_evidence_file(args.report))
@@ -483,6 +494,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="return exit code 2 when any alert is emitted",
     )
     runner_alerts.set_defaults(func=_cmd_runner_alerts)
+
+    runner_burst = subparsers.add_parser(
+        "runner-burst-validate",
+        help="validate and hash a Gate 1 verifier runner burst/OOM rehearsal report",
+    )
+    runner_burst.add_argument("--report", required=True)
+    runner_burst.add_argument("--output")
+    runner_burst.set_defaults(func=_cmd_runner_burst_validate)
 
     incident_drill = subparsers.add_parser(
         "incident-drill-validate",

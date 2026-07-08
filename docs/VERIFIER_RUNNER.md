@@ -32,8 +32,8 @@ problem that needs more than one pass.
 - Public submissions are untrusted payloads and must run in isolated workspaces.
 - Runner transcripts must never include secrets, RPC keys, API keys, Telegram
   tokens, or private solver material.
-- Auto-challenge requires an explicit funded key, counter-bond policy, spend
-  cap, and human-approved runbook before it can touch money.
+- Auto-challenge requires an explicit funded agent key, counter-bond policy,
+  spend cap, and revocation path before it can touch money.
 
 ## Bottlenecks
 
@@ -65,7 +65,7 @@ not memory pressure. Queue, plan, and transcript schemas live at
 - The worker starts a queued job only when
   `available_memory_mb >= reserve_memory_mb + ceil(required_memory_mb * safety_factor)`.
 - If that minimum exceeds total host memory, the runner returns
-  `job_exceeds_host_capacity` and leaves the queue untouched for operator
+  `job_exceeds_host_capacity` and leaves the queue untouched for supervisor
   action; it does not skip FIFO to run later jobs.
 - On Linux runner hosts, every verifier subprocess is launched with an
   address-space limit of `ceil(required_memory_mb * safety_factor)` via
@@ -168,7 +168,7 @@ PYTHONPATH=src python3 -m p42_prizes.cli runner-drain \
 `runner-drain` re-reads memory before every lease. If the queue is empty it exits
 with a `p42-runner-loop/v1` summary. If the oldest queued job does not fit, can
 never fit the host, swap is above threshold, a runner slot is already occupied,
-or a stale lease needs operator action, it records a `wait` event and sleeps
+or a stale lease needs supervisor action, it records a `wait` event and sleeps
 before trying again. This is the burst behavior we want: many submissions create
 queue depth and latency, not simultaneous verifier processes or box-level OOM
 pressure. Use `--max-jobs` for a bounded batch and `--max-iterations` for
@@ -204,7 +204,7 @@ Production defaults should stay conservative:
 ## Alerts And Challenge Candidates
 
 Transcripts are not enough by themselves; the runner also needs a deterministic
-way to say which failures need human/challenge action. Build an alert bundle
+way to say which failures need quarantine or challenge action. Build an alert bundle
 from the transcript directory:
 
 ```bash
@@ -214,17 +214,19 @@ PYTHONPATH=src python3 -m p42_prizes.cli runner-alerts \
   --output runs/verifier-alerts.json
 ```
 
-The command emits `p42-runner-alerts/v1` with a tamper-evident `alerts_hash`.
+The command emits `p42-runner-alerts/v2` with a tamper-evident `alerts_hash`.
 Clean valid transcripts produce `alert_count: 0`. Failed DA evidence produces
 `recommended_action: "challenge_or_block_finalize"`. Verifier rejection produces
 `recommended_action: "challenge_submission"`. Malformed or self-hash-mismatched
 transcripts produce `recommended_action: "quarantine_transcript"`, because a
 corrupt transcript is not safe challenge evidence.
 
-Every alert has `requires_human_key: true`. This is intentional: alert
-generation is allowed in Phase 1 automation, but spending counter-bonds or
-submitting challenges requires the separate funded-key policy, spend caps, and
-human-approved runbook.
+Every alert includes agent automation fields. `agent_action_mode:
+"auto_challenge_candidate"` means DGX/Hermes may submit the challenge when the
+funded agent challenge key, counter-bond policy, spend cap, and revocation path
+are live. `agent_action_mode: "auto_quarantine"` means the agent quarantines the
+transcript and does not spend a challenge bond. No alert requires a manual
+approval step in the verifier path.
 
 ## Gate 1 Runner Dry Run
 
@@ -238,6 +240,8 @@ Before Base Sepolia can be considered green, run a testnet rehearsal:
 6. Flood the queue with enough synthetic jobs to prove backpressure: only one
    verifier starts, later jobs wait, and the runner does not exceed memory/swap
    thresholds.
+   Validate the drill with `p42-prizes runner-burst-validate` using the schema
+   described in `docs/RUNNER_BURST_DRILL.md`.
 7. Confirm the invalid submission triggers an alert or challenge transaction.
 8. Reconcile the portal leaderboard against chain events and runner transcripts.
 
