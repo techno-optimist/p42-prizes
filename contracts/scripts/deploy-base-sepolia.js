@@ -204,7 +204,12 @@ try {
     treasury,
     params.alphaBps,
     params.minPostingBondWei,
-    params.challengeWindowSeconds
+    params.challengeWindowSeconds,
+    // On-chain DA: solution bytes ride the reveal tx and are bound to the
+    // commit anchor. Default on with a 512 KiB cap; large-certificate problems
+    // (autoconvolution) deploy with onchainDa=false + off-chain store.
+    params.onchainDa ?? true,
+    params.maxSolutionBytes ?? 512 * 1024
   ]);
   setupTransactions.push(
     await sendSetupTx("ledger.setCreditRecorder", ledger.contract.setCreditRecorder(submissions.manifest.address))

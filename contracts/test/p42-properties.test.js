@@ -93,7 +93,9 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
     treasury.address,
     alphaBps,
     minBond,
-    CHALLENGE_WINDOW_SECONDS
+    CHALLENGE_WINDOW_SECONDS,
+    false, // off-chain DA mode: property tests exercise economics, not DA binding
+    0
   );
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
@@ -116,7 +118,7 @@ async function submitAndFinalize(fixture, solver, scenarioSeed, index, improveme
 
   await submissions.connect(solver).commit(commitment, commitDaHash, { value: postingBond });
   const submissionId = await submissions.submissionCount();
-  await submissions.connect(solver).reveal(submissionId, solutionCid, 0, improvementAtoms, salt);
+  await submissions.connect(solver).reveal(submissionId, solutionCid, 0, improvementAtoms, salt, "0x");
 
   if (donationBeforeFinalizeWei > 0n) {
     await pool.fund({ value: donationBeforeFinalizeWei });

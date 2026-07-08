@@ -1,12 +1,13 @@
-// LIVE data-availability provider — Arweave via Irys (devnet by default).
+// OPTIONAL off-chain data-availability provider — Arweave via Irys (devnet by default).
 //
-// Solution bytes are uploaded to Arweave, TAGGED with their P42 content id (the
-// sha256 CID), and retrievable from a public gateway. Retrieval is
-// content-addressed: given the on-chain solutionCid, anyone (the operator, a
-// challenger) queries Arweave/Irys for the data item tagged with that CID, gets
-// its txid, and fetches the bytes — then confirms sha256(bytes) == CID. The
-// on-chain `commitDaHash` binds keccak(txid), anchoring which Arweave upload the
-// commit points at.
+// Since the on-chain-at-reveal redesign, the on-chain `commitDaHash` anchor is
+// sha256(raw solution bytes) (== the CID digest), NOT keccak(txid). This module
+// is now used in two OPTIONAL roles: (1) the off-chain content store for the
+// large-certificate (onchainDa=false) problems whose bytes exceed calldata
+// limits, and (2) a belt-and-suspenders mirror for on-chain problems. In both
+// cases retrieval is content-addressed by the sha256 CID and any fetcher
+// re-verifies sha256(bytes) == the on-chain anchor. `daHashForTxid` (keccak of
+// the txid) is now only an OPTIONAL finalize mirror-receipt, never the anchor.
 //
 // Devnet = Phase-1 plumbing: real network, real txids, real gateway + GraphQL,
 // free for small blobs, retained ~60 days. Switch `network` to "mainnet" and
@@ -22,7 +23,10 @@ export function cidOf(bytes) {
   return "sha256:" + ethers.sha256(bytes).slice(2);
 }
 
-// On-chain commitDaHash = keccak of the Arweave txid string (any length -> bytes32).
+// OPTIONAL finalize mirror-receipt = keccak of the Arweave txid string (any
+// length -> bytes32). This is NO LONGER the on-chain commitDaHash anchor (that
+// is sha256(solution bytes)); it only records which Arweave mirror a finalize
+// points at, when a mirror is used.
 export function daHashForTxid(txid) {
   return ethers.keccak256(ethers.toUtf8Bytes(txid));
 }

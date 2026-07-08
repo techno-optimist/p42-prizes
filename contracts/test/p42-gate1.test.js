@@ -72,7 +72,9 @@ describe("P42 Gate 1 contract scaffold", function () {
       treasury.address,
       alphaBps,
       minBond,
-      CHALLENGE_WINDOW_SECONDS
+      CHALLENGE_WINDOW_SECONDS,
+      false, // off-chain DA mode: these fixtures test economics, not DA binding
+      0
     );
     await submissions.waitForDeployment();
     if (activateRecorder) {
@@ -139,7 +141,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const submissionId = await fixture.submissions.submissionCount();
     await fixture.submissions
       .connect(solver)
-      .reveal(submissionId, solutionCid, claimedScoreAtoms, improvementAtoms, salt);
+      .reveal(submissionId, solutionCid, claimedScoreAtoms, improvementAtoms, salt, "0x");
 
     return { submissionId, solutionCid, salt, solver, bond };
   }
@@ -293,7 +295,7 @@ describe("P42 Gate 1 contract scaffold", function () {
       submissions,
       "P42_BOND_UNDERCOVERS_ENTITLEMENT"
     );
-    await submissions.connect(alice).reveal(1, solutionCid, 100, 1, salt);
+    await submissions.connect(alice).reveal(1, solutionCid, 100, 1, salt, "0x");
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await expectCustomError(
       submissions.connect(alice).finalize(1, PERMANENCE_HASH),
@@ -322,22 +324,22 @@ describe("P42 Gate 1 contract scaffold", function () {
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
 
     await expectCustomError(
-      submissions.connect(bob).reveal(1, solutionCid, 123, 7, salt),
+      submissions.connect(bob).reveal(1, solutionCid, 123, 7, salt, "0x"),
       submissions,
       "P42_NOT_SOLVER"
     );
     await expectCustomError(
-      submissions.connect(alice).reveal(1, solutionCid, 123, 7, "wrong-salt"),
+      submissions.connect(alice).reveal(1, solutionCid, 123, 7, "wrong-salt", "0x"),
       submissions,
       "P42_BAD_COMMITMENT_REVEAL"
     );
     await expectCustomError(
-      submissions.connect(alice).reveal(1, solutionCid, 123, 0, salt),
+      submissions.connect(alice).reveal(1, solutionCid, 123, 0, salt, "0x"),
       submissions,
       "P42_ZERO_IMPROVEMENT"
     );
 
-    await submissions.connect(alice).reveal(1, solutionCid, 123, 7, salt);
+    await submissions.connect(alice).reveal(1, solutionCid, 123, 7, salt, "0x");
     const revealed = await submissions.submissions(1);
     assert.equal(revealed.solutionCid, solutionCid);
     assert.equal(revealed.claimedScoreAtoms, 123n);
@@ -360,7 +362,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
     const required = await submissions.requiredPostingBondNow();
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: required });
-    await submissions.connect(alice).reveal(1, solutionCid, 1000, 25, salt);
+    await submissions.connect(alice).reveal(1, solutionCid, 1000, 25, salt, "0x");
     await pool.fund({ value: ethers.parseEther("1") });
 
     await expectCustomError(
@@ -380,12 +382,10 @@ describe("P42 Gate 1 contract scaffold", function () {
       "P42_BOND_UNDERCOVERS_ENTITLEMENT"
     );
     await submissions.connect(alice).topUpBond(1, { value: required });
-    await expectCustomError(
-      submissions.connect(alice).finalize(1, ethers.ZeroHash),
-      submissions,
-      "P42_EMPTY_PERMANENCE_HASH"
-    );
 
+    // The finalize permanence receipt is now OPTIONAL (on-chain-at-reveal DA
+    // provides availability; the receipt is only an off-chain mirror). Recording
+    // one is still supported and stored on the submission.
     await submissions.connect(alice).finalize(1, PERMANENCE_HASH);
     const finalized = await submissions.submissions(1);
     assert.equal(finalized.status, 4n);

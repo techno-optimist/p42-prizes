@@ -9,10 +9,20 @@
 //
 // Usage:
 //   node indexer.mjs --manifest ../deployments/base-sepolia/<manifest>.json \
-//     [--rpc https://sepolia.base.org] [--out state.json]
+//     [--rpc https://sepolia.base.org] [--out state.json] [--archive <dir>]
+//
+// --archive <dir>  Durable content-addressed CALLDATA ARCHIVE. For every
+//   Revealed event that posted on-chain solution bytes (solutionBytesLength>0),
+//   fetch the reveal tx, parse its calldata back to `solution`, VERIFY
+//   sha256(solution) == the submission's on-chain commitDaHash anchor, and
+//   persist the raw bytes to <dir>/<cid>.bin plus a manifest entry. This
+//   rehydrates the >18-day later-Δ tail from tx calldata so the record survives
+//   L1 blob pruning. Off-chain-DA reveals (solutionBytesLength==0) are annotated
+//   in the manifest as living in an off-chain store, not fetched. Idempotent:
+//   already-archived CIDs are skipped on re-run.
 
 import { ethers } from "ethers";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,6 +34,7 @@ const abi = (n) => JSON.parse(readFileSync(`${REPO_ROOT}/contracts/artifacts/src
 const MANIFEST = arg("manifest");
 const RPC = arg("rpc", "https://sepolia.base.org");
 const OUT = arg("out", null);
+const ARCHIVE = arg("archive", null);
 if (!MANIFEST) { console.error("required: --manifest <path>"); process.exit(2); }
 
 const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
@@ -52,6 +63,108 @@ async function queryChunked(contract, filter, from, to, step = 2000) {
     if (lastErr) throw lastErr;
   }
   return out;
+}
+
+// Map a CID ("sha256:<hex>") to a safe, collision-free filename. The CID is the
+// content address, so the filename is deterministic and self-describing.
+function cidToFilename(cid) {
+  return cid.replace(/[^a-zA-Z0-9._-]/g, "_") + ".bin";
+}
+
+// Durable content-addressed CALLDATA ARCHIVE.
+//
+// For each Revealed event we recover the solution bytes from the reveal tx
+// calldata and pin them under <dir>, keyed by their CID, with a manifest entry.
+// The bytes are only persisted after sha256(solution) is checked against the
+// submission's on-chain `commitDaHash` anchor — so the archive is exactly as
+// trustworthy as the chain, and any mismatch is surfaced loudly. Off-chain-DA
+// reveals carry no bytes and are annotated (not fetched). Idempotent: a CID that
+// is already on disk is not re-fetched.
+async function archiveCalldata(dir, reveals) {
+  const outDir = resolve(dir);
+  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+  const manifestPath = `${outDir}/manifest.json`;
+
+  // Load any prior manifest so idempotent re-runs preserve/reuse existing entries.
+  const prior = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : { entries: [] };
+  const priorByCid = {};
+  for (const e of prior.entries ?? []) priorByCid[e.cid] = e;
+
+  const entries = [];
+  const mismatches = [];
+  let archived = 0, skipped = 0, offChain = 0;
+
+  // stable on-chain order
+  const ordered = [...reveals].sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index);
+  for (const ev of ordered) {
+    const submissionId = ev.args.submissionId.toString();
+    const cid = ev.args.solutionCid;
+    const byteLen = BigInt(ev.args.solutionBytesLength);
+
+    // Off-chain-DA submission: no calldata bytes to pin; annotate and move on.
+    if (byteLen === 0n) {
+      offChain++;
+      entries.push({ submissionId, cid, anchor: null, byteLength: 0, revealTxHash: ev.transactionHash, store: "off-chain" });
+      continue;
+    }
+
+    const filePath = `${outDir}/${cidToFilename(cid)}`;
+
+    // Idempotent: already pinned -> reuse the prior entry (or reconstruct one) and skip the fetch.
+    if (existsSync(filePath)) {
+      skipped++;
+      entries.push(priorByCid[cid] ?? { submissionId, cid, anchor: null, byteLength: Number(byteLen), revealTxHash: ev.transactionHash, store: "on-chain-calldata" });
+      continue;
+    }
+
+    // The independent, chain-derived truth we validate the calldata against.
+    const anchor = (await subs.submissions(ev.args.submissionId)).commitDaHash;
+
+    const tx = await provider.getTransaction(ev.transactionHash);
+    if (!tx) { mismatches.push({ submissionId, cid, reason: "reveal tx not found" }); continue; }
+    let parsed;
+    try { parsed = subs.interface.parseTransaction({ data: tx.data, value: tx.value }); }
+    catch (e) { mismatches.push({ submissionId, cid, reason: `unparseable calldata: ${e.shortMessage || e.message}` }); continue; }
+    if (parsed?.name !== "reveal") { mismatches.push({ submissionId, cid, reason: `tx is not a reveal (${parsed?.name})` }); continue; }
+
+    const solution = parsed.args.solution; // "0x..." hex from the reveal calldata
+    const got = ethers.sha256(solution);
+    const derivedCid = "sha256:" + got.slice(2);
+
+    // sha256(solution) MUST equal the on-chain anchor; the CID must be consistent too.
+    if (got !== anchor || derivedCid !== cid) {
+      mismatches.push({ submissionId, cid, anchor, computed: got, derivedCid, reason: "ANCHOR MISMATCH: sha256(solution) != on-chain commitDaHash" });
+      continue;
+    }
+
+    const bytes = ethers.getBytes(solution);
+    if (BigInt(bytes.length) !== byteLen) {
+      mismatches.push({ submissionId, cid, reason: `byte-length mismatch: calldata=${bytes.length} event=${byteLen}` });
+      continue;
+    }
+
+    writeFileSync(filePath, bytes);
+    archived++;
+    entries.push({ submissionId, cid, anchor, byteLength: bytes.length, revealTxHash: ev.transactionHash, store: "on-chain-calldata" });
+  }
+
+  const manifest = {
+    schema: "p42-calldata-archive/v1",
+    dir: outDir,
+    updatedAt: new Date().toISOString(),
+    summary: { archived, skipped, offChain, mismatches: mismatches.length, total: entries.length },
+    entries,
+    mismatches,
+  };
+  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n");
+
+  console.log(`  calldata archive -> ${outDir}`);
+  console.log(`    ${archived} archived, ${skipped} already-pinned, ${offChain} off-chain-store, ${entries.length} manifest entries`);
+  if (mismatches.length) {
+    console.error(`  !!! ${mismatches.length} ANCHOR-MISMATCH / archive error(s) — ARCHIVE NOT TRUSTWORTHY:`);
+    for (const m of mismatches) console.error(`      submission ${m.submissionId} cid=${m.cid}: ${m.reason}`);
+  }
+  return { ok: mismatches.length === 0, archived, skipped, offChain, mismatches };
 }
 
 async function main() {
@@ -144,7 +257,15 @@ async function main() {
   console.log(`  reconstruction vs chain: ${ok ? "OK" : "MISMATCH"} (${checks.filter((c) => c.ok).length}/${checks.length} checks)`);
   if (!ok) for (const c of checks.filter((c) => !c.ok)) console.log(`    MISMATCH ${c.name}: indexer=${c.indexer} chain=${c.chain}`);
 
+  // Optional: durable content-addressed calldata archive of the on-chain solution bytes.
+  let archiveOk = true;
+  if (ARCHIVE) {
+    const res = await archiveCalldata(ARCHIVE, reveals);
+    archiveOk = res.ok;
+    state.calldata_archive = { dir: resolve(ARCHIVE), ...res, mismatches: res.mismatches.length };
+  }
+
   if (OUT) { writeFileSync(resolve(OUT), JSON.stringify(state, null, 2) + "\n"); console.log(`  wrote ${OUT}`); }
-  process.exit(ok ? 0 : 1);
+  process.exit(ok && archiveOk ? 0 : 1);
 }
 main().catch((e) => { console.error("FAILED:", e.shortMessage || e.message); process.exit(1); });

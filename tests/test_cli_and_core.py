@@ -350,6 +350,67 @@ def test_da_receipt_rejects_sha256_cid_that_does_not_match_solution() -> None:
     assert "solution_cid sha256 does not match solution bytes" in completed.stderr
 
 
+def test_da_receipt_onchain_mode_needs_no_arweave(tmp_path: Path) -> None:
+    # On-chain-at-reveal DA: a valid receipt can be produced with NO Arweave txid
+    # (Arweave is now an optional mirror, not a launch dependency).
+    solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
+    evidence_path = tmp_path / "da-onchain.json"
+    completed = run_cli(
+        "da-receipt",
+        "--problem", "problems/hadamard-mini",
+        "--solution", str(solution),
+        "--solution-cid", sha256_file(solution),
+        "--solver-address", "0x1111111111111111111111111111111111111111",
+        "--salt", "right-salt",
+        "--commit-provider", "base-sepolia-calldata",
+        "--commit-receipt-uri", "https://sepolia.basescan.org/tx/0x" + "2" * 64,
+        "--commit-block-reference", "base-sepolia:12345",
+        "--da-mode", "onchain",
+        "--reveal-tx", "0x" + "3" * 64,
+        "--output", str(evidence_path),
+    )
+    assert completed.returncode == 0, completed.stderr
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "schemas" / "da-receipt.schema.json").read_text())
+    jsonschema.validate(evidence, schema)
+    assert evidence["da_mode"] == "onchain"
+    assert evidence["contract"]["commit_da_hash"] == evidence["solution_hash"].replace("sha256:", "0x")
+    assert "permanence" not in evidence  # no mandatory Arweave mirror
+    assert evidence["commit_time"]["reveal_tx"] == "0x" + "3" * 64
+
+    verified = run_cli("da-verify", "--evidence", str(evidence_path),
+                       "--problem", "problems/hadamard-mini", "--solution", str(solution))
+    assert verified.returncode == 0, verified.stderr
+
+
+def test_da_receipt_offchain_mode_uses_store_locator(tmp_path: Path) -> None:
+    # Off-chain-DA (large-certificate) problems: bytes live in a content-addressed
+    # store gated by the same on-chain anchor; the receipt records the locator.
+    solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
+    evidence_path = tmp_path / "da-offchain.json"
+    completed = run_cli(
+        "da-receipt",
+        "--problem", "problems/hadamard-mini",
+        "--solution", str(solution),
+        "--solution-cid", sha256_file(solution),
+        "--solver-address", "0x1111111111111111111111111111111111111111",
+        "--salt", "right-salt",
+        "--commit-provider", "off-chain-store",
+        "--commit-receipt-uri", "https://sepolia.basescan.org/tx/0x" + "2" * 64,
+        "--commit-block-reference", "base-sepolia:12345",
+        "--da-mode", "offchain",
+        "--store-locator", "ipfs://bafyexamplecontentaddressedlocator",
+        "--output", str(evidence_path),
+    )
+    assert completed.returncode == 0, completed.stderr
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "schemas" / "da-receipt.schema.json").read_text())
+    jsonschema.validate(evidence, schema)
+    assert evidence["da_mode"] == "offchain"
+    assert evidence["commit_time"]["store_locator"] == "ipfs://bafyexamplecontentaddressedlocator"
+    assert "permanence" not in evidence
+
+
 def _write_runner_queue(path: Path, jobs: list[dict]) -> None:
     queue = {
         "schema_version": "p42-runner-queue/v1",

@@ -173,6 +173,10 @@ def _cmd_da_receipt(args: argparse.Namespace) -> int:
             commit_provider=args.commit_provider,
             commit_receipt_uri=args.commit_receipt_uri,
             commit_block_reference=args.commit_block_reference,
+            da_mode=args.da_mode,
+            reveal_tx=args.reveal_tx,
+            store_locator=args.store_locator,
+            solution_bytes_length=args.solution_bytes_length,
             arweave_txid=args.arweave_txid,
             arweave_receipt_uri=args.arweave_receipt_uri,
         )
@@ -439,7 +443,15 @@ def build_parser() -> argparse.ArgumentParser:
     da_receipt.add_argument("--commit-provider", required=True)
     da_receipt.add_argument("--commit-receipt-uri", required=True)
     da_receipt.add_argument("--commit-block-reference", required=True)
-    da_receipt.add_argument("--arweave-txid", required=True)
+    # DA mode: on-chain problems carry bytes in the reveal calldata (optionally
+    # record --reveal-tx); off-chain (large-certificate) problems keep bytes in a
+    # content-addressed store gated by the same sha256 anchor (--store-locator).
+    da_receipt.add_argument("--da-mode", choices=["onchain", "offchain"], default="onchain")
+    da_receipt.add_argument("--reveal-tx")
+    da_receipt.add_argument("--store-locator")
+    da_receipt.add_argument("--solution-bytes-length", type=int)
+    # Arweave is now an OPTIONAL off-chain mirror, no longer required.
+    da_receipt.add_argument("--arweave-txid")
     da_receipt.add_argument("--arweave-receipt-uri")
     da_receipt.add_argument("--output")
     da_receipt.set_defaults(func=_cmd_da_receipt)

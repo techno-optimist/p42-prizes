@@ -5,16 +5,24 @@
 // this client runs the FULL on-chain lifecycle UNATTENDED, signing every
 // transaction itself:
 //
-//   self-verify (local exact verifier) -> [fund pool] -> commit (CID+DA bound,
-//   posting bond) -> reveal -> wait out the challenge window -> finalize
-//   (permanence receipt) -> [owner close] -> claim payout -> reclaim bond.
+//   self-verify (local exact verifier) -> [fund pool] -> commit (CID+DA anchor
+//   bound, posting bond) -> reveal (on-chain-DA problems carry the raw solution
+//   bytes in the tx) -> wait out the challenge window -> finalize -> [owner
+//   close] -> claim payout -> reclaim bond.
 //
-// It is deliberately honest about what is still PLUMBING vs. real: the DA and
-// permanence hashes are computed locally (keccak of the solution bytes) rather
-// than posted to a live Arweave/DA provider — that provider wiring is the next
-// Phase-1 sub-task. The "improvement" it submits comes from the problem's own
-// exact verifier, so on a genuinely-solved problem (e.g. hadamard-mini's
-// optimal defect-0 matrix) the Δ and payout are real.
+// Data availability now rides the CHAIN. The on-chain commitDaHash is the
+// sha256 of the raw solution bytes (== the CID digest) — a content ANCHOR, not
+// a provider txid. For on-chain-DA problems (contract.onchainDa()==true, the 7
+// small <=512KB problems) the raw bytes go directly in the reveal-tx calldata,
+// provably bound to the commit; no external DA provider is required. For
+// off-chain-DA problems (onchainDa()==false, the large autoconvolution
+// certificates) the bytes are too big for calldata, so the solver puts them in
+// a content-addressed off-chain store (--da-dir local dir and/or --arweave) and
+// reveals empty bytes ("0x"); any fetcher re-verifies sha256(bytes)==anchor.
+// Arweave is therefore OPTIONAL — a mirror/store, no longer a launch dependency.
+// The "improvement" it submits comes from the problem's own exact verifier, so
+// on a genuinely-solved problem (e.g. hadamard-mini's optimal defect-0 matrix)
+// the Δ and payout are real.
 //
 // Usage:
 //   AGENT_PRIVATE_KEY=0x... node solver.mjs \
@@ -49,8 +57,8 @@ const PROBLEM = arg("problem");
 const SOLUTION = arg("solution");
 const FUND = arg("fund", null);        // ETH string, e.g. "0.003"
 const CLOSE = arg("close", false);
-const DA_DIR = arg("da-dir", null);    // post the solution blob to a local DA store
-const ARWEAVE = arg("arweave", false); // post the solution blob to live Arweave (Irys devnet); bind the txid on-chain
+const DA_DIR = arg("da-dir", null);    // off-chain content-addressed store dir (REQUIRED for off-chain-DA problems; optional mirror otherwise)
+const ARWEAVE = arg("arweave", false); // OPTIONAL: mirror/store the solution on live Arweave (Irys devnet). Only needed as an off-chain store for off-chain-DA problems; a mirror otherwise. The on-chain anchor is always sha256(bytes), never the txid.
 const FORCE = arg("force", false);     // adversarial test: submit even if the local verifier says invalid
 const IMPROVEMENT_OVERRIDE = arg("improvement", null); // adversarial test: claim an inflated improvement
 const SUBMIT_ONLY = arg("submit-only", false);         // stop after reveal (leave it for the operator to challenge)
@@ -100,24 +108,57 @@ async function main() {
   if (IMPROVEMENT_OVERRIDE) log(`  [--improvement] claiming ${IMPROVEMENT_OVERRIDE} vs true ${verdict.improvement}.`);
   const claimedScoreAtoms = 0n; // informational; score is carried in the DA'd solution
 
-  // solution bytes -> CID; DA + permanence hashes are LOCAL PLACEHOLDERS (live provider = next sub-task)
+  // Read the SAME file bytes that will be revealed — never re-serialize; their
+  // sha256 IS the on-chain content anchor and must match the revealed bytes exactly.
   const solutionBytes = readFileSync(resolve(SOLUTION));
   const cid = "sha256:" + ethers.sha256(solutionBytes).slice(2);
-  // DA: bind the solution's availability into the on-chain commitDaHash.
-  let daHash, arweave = null;
-  if (ARWEAVE) {
-    log("  DA: uploading solution to Arweave (Irys devnet)…");
-    const up = await uploadToArweave(solutionBytes, {});
-    daHash = up.txidBytes32;            // the Arweave txid IS the on-chain commitDaHash (32 bytes)
-    arweave = { txid: up.txid, url: up.url, network: up.network };
-    log(`  DA: on Arweave — txid ${up.txid}`);
-    log(`      ${up.url}`);
+  // The on-chain commitDaHash is the content ANCHOR: sha256 of the raw bytes as
+  // a bytes32. It equals the CID digest (commitDaHash === ethers.sha256(bytes)).
+  const daHash = ethers.sha256(solutionBytes);
+
+  // DA mode is a property of the deployed problem contract.
+  const onchainDa = await subs.onchainDa();
+
+  let arweave = null;
+  let mirrorReceiptHash = ethers.ZeroHash; // optional off-chain-mirror receipt, recorded at finalize if a mirror is written
+  if (onchainDa) {
+    // On-chain-at-reveal DA: the raw bytes ride the reveal-tx calldata, provably
+    // bound to commitDaHash by the contract's sha256 check. No external DA needed.
+    const maxBytes = await subs.maxSolutionBytes();
+    if (BigInt(solutionBytes.length) > maxBytes) {
+      log(`solution is ${solutionBytes.length} bytes > on-chain max ${maxBytes} — this problem cannot carry its bytes on-chain. Aborting.`);
+      process.exit(1);
+    }
+    log(`  DA: on-chain-at-reveal — ${solutionBytes.length} bytes ride the tx (max ${maxBytes}); anchor sha256=${daHash.slice(0, 18)}…`);
+    // --arweave / --da-dir are OPTIONAL mirrors here (belt-and-suspenders), never required.
+    if (ARWEAVE) {
+      log("  DA(mirror): uploading OPTIONAL Arweave mirror (Irys devnet)…");
+      const up = await uploadToArweave(solutionBytes, {});
+      arweave = { txid: up.txid, url: up.url, network: up.network };
+      mirrorReceiptHash = up.txidBytes32; // record the mirror receipt at finalize
+      log(`  DA(mirror): on Arweave — ${up.url}`);
+    }
+    if (DA_DIR) { putBlob(DA_DIR, solutionBytes); log(`  DA(mirror): wrote OPTIONAL local mirror to ${DA_DIR}`); }
   } else {
-    daHash = ethers.keccak256(solutionBytes);   // local placeholder DA hash
+    // Off-chain-DA problem (large certificate): bytes exceed calldata limits, so
+    // the solver MUST make them retrievable off-chain, content-addressed by the
+    // same on-chain sha256 anchor. reveal then carries empty bytes ("0x").
+    if (!ARWEAVE && !DA_DIR) {
+      log("this problem uses off-chain DA (onchainDa=false) — you MUST provide an off-chain store: pass --da-dir <dir> and/or --arweave. Aborting.");
+      process.exit(1);
+    }
+    if (ARWEAVE) {
+      log("  DA: uploading solution to Arweave (Irys devnet)…");
+      const up = await uploadToArweave(solutionBytes, {});
+      arweave = { txid: up.txid, url: up.url, network: up.network };
+      mirrorReceiptHash = up.txidBytes32; // record the Arweave receipt at finalize
+      log(`  DA: on Arweave — txid ${up.txid}`);
+      log(`      ${up.url}`);
+    }
     if (DA_DIR) { putBlob(DA_DIR, solutionBytes); log(`  DA: posted solution blob to local store ${DA_DIR}`); }
+    log(`  DA: off-chain store gated by on-chain sha256 anchor ${daHash.slice(0, 18)}… (fetchers verify sha256(bytes)==anchor)`);
   }
   const salt = "p42-agent-" + Date.now().toString();
-  const permanenceHash = ethers.keccak256(ethers.toUtf8Bytes("permanence:" + cid)); // placeholder Arweave receipt
 
   // 1. optional: sponsor-fund the pool so there is a payout to collect
   if (FUND) {
@@ -133,9 +174,12 @@ async function main() {
   const submissionId = await subs.submissionCount();
   log(`  submissionId=${submissionId}`);
 
-  // 3. reveal (open the salt; publish CID + claimed improvement)
-  log(`\n[3] reveal  improvementAtoms=${improvementAtoms}`);
-  await send("reveal", subs.reveal(submissionId, cid, claimedScoreAtoms, improvementAtoms, salt));
+  // 3. reveal (open the salt; publish CID + claimed improvement).
+  //    on-chain-DA: pass the RAW solution bytes (contract enforces sha256==anchor
+  //    & length<=max). off-chain-DA: pass empty "0x" (bytes live in the store).
+  const revealBytes = onchainDa ? solutionBytes : "0x";
+  log(`\n[3] reveal  improvementAtoms=${improvementAtoms}  bytes=${onchainDa ? solutionBytes.length + " on-chain" : "0x (off-chain DA)"}`);
+  await send("reveal", subs.reveal(submissionId, cid, claimedScoreAtoms, improvementAtoms, salt, revealBytes));
 
   if (SUBMIT_ONLY) {
     log(`\n[submit-only] committed + revealed (submission #${submissionId}); exiting before finalize.`);
@@ -155,9 +199,10 @@ async function main() {
     await sleep(Math.min(15000, (endsAt - now) * 1000 + 3000));
   }
 
-  // 5. finalize (permanence receipt; records credit)
-  log(`\n[5] finalize`);
-  await send("finalize", subs.finalize(submissionId, permanenceHash));
+  // 5. finalize (records credit). permanenceHash is OPTIONAL: pass ZeroHash
+  //    normally; pass the off-chain-mirror receipt only if a mirror was written.
+  log(`\n[5] finalize${mirrorReceiptHash !== ethers.ZeroHash ? "  (recording off-chain-mirror receipt)" : ""}`);
+  await send("finalize", subs.finalize(submissionId, mirrorReceiptHash));
 
   // 6. optional: owner closes the pool (demo: owner == agent). In production this is a governance action.
   if (CLOSE) {

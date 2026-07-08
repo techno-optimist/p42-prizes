@@ -5,8 +5,10 @@
 // submission that is invalid or whose claimed improvement is inflated — filing a
 // bonded challenge on-chain, with a hard bond cap as the safety backstop.
 //
-// It never needs the solver to tell it the answer: it fetches the solution bytes
-// by CID from the DA store and re-derives the verdict itself.
+// It never needs the solver to tell it the answer: it fetches the solution
+// bytes — from the reveal-tx calldata for on-chain-DA problems, or from the
+// off-chain content-addressed store for the large ones — verifies they hash to
+// the on-chain sha256 anchor (commitDaHash), and re-derives the verdict itself.
 //
 // Usage:
 //   OPERATOR_PRIVATE_KEY=0x... node operator.mjs \
@@ -25,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { atomsFromImprovement, runVerifier } from "./lib.mjs";
 import { getBlob } from "./da-local.mjs";
-import { fetchFromArweave, findTxidByCid, cidOf } from "./da-arweave.mjs";
+import { fetchFromArweave, findTxidByCid } from "./da-arweave.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -44,7 +46,11 @@ const TRANSCRIPTS = resolve(arg("transcripts", `${HERE}/transcripts`));
 const MAX_BOND = ethers.parseEther(String(arg("max-challenge-bond", "0.01")));
 const ONCE = arg("once", false);
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
-if (!MANIFEST || !PROBLEM || (!DA_DIR && !ARWEAVE)) { console.error("required: --manifest --problem and one of --da-dir / --arweave"); process.exit(2); }
+// An off-chain store (--da-dir/--arweave) is only needed for off-chain-DA
+// problems; on-chain-DA reveals are read straight from the reveal-tx calldata.
+// So it is NOT required at startup — it is enforced only when an off-chain
+// reveal is actually encountered (see the off-chain fetch branch below).
+if (!MANIFEST || !PROBLEM) { console.error("required: --manifest --problem"); process.exit(2); }
 const KEY = process.env.OPERATOR_PRIVATE_KEY;
 if (!KEY) { console.error("set OPERATOR_PRIVATE_KEY"); process.exit(2); }
 
@@ -75,19 +81,58 @@ async function scanOnce() {
     const sub = await subs.submissions(id);
     if (Number(sub.status) !== 2) { seen.add(key); continue; } // not Revealed anymore (finalized/challenged/rejected)
 
-    log(`\n[reveal] submission #${id}  claimedAtoms=${claimedAtoms}  cid=${cid.slice(0, 20)}…`);
+    // Where do the solution bytes live? The Revealed event carries
+    // solutionBytesLength: >0 iff the reveal posted the raw bytes on-chain (data
+    // availability rides the reveal-tx calldata, equivalent to subs.onchainDa()
+    // ==true). ==0 means the bytes live in the off-chain content-addressed store.
+    const solLen = ev.args.solutionBytesLength ?? 0n;
+    const onchainDa = solLen > 0n;
+    log(`\n[reveal] submission #${id}  claimedAtoms=${claimedAtoms}  cid=${cid.slice(0, 20)}…  da=${onchainDa ? `on-chain(${solLen}B)` : "off-chain"}`);
+
     let blob;
-    if (ARWEAVE) {
+    if (onchainDa) {
+      // On-chain DA: the bytes are provably bound to the commit inside the very
+      // tx that emitted this Revealed log. Pull them straight from calldata — no
+      // external DA store is consulted for these problems.
+      log(`  reading solution bytes from reveal-tx calldata ${ev.transactionHash.slice(0, 12)}…`);
+      let tx;
+      try { tx = await provider.getTransaction(ev.transactionHash); }
+      catch (e) { log(`  reveal-tx fetch failed: ${e.message} — leaving for now`); continue; }
+      if (!tx) { log(`  DA MISS: reveal tx ${ev.transactionHash} not retrievable yet — leaving for now`); continue; }
+      let parsed;
+      try { parsed = subs.interface.parseTransaction({ data: tx.data, value: tx.value }); }
+      catch (e) { log(`  could not decode reveal tx: ${e.message} — leaving for now`); continue; }
+      if (!parsed || parsed.name !== "reveal") { log(`  DA FAULT: log's tx is not a reveal() call — skipping`); seen.add(key); continue; }
+      blob = ethers.getBytes(parsed.args.solution);
+    } else if (!DA_DIR && !ARWEAVE) {
+      // Off-chain reveal but this operator was started without a store. Don't
+      // mark seen — leave it for retry once an operator with --da-dir/--arweave
+      // (or this one, restarted with a store) can fetch and police it.
+      log(`  DA FAULT: off-chain reveal (0 on-chain bytes) but no --da-dir/--arweave configured — cannot fetch to re-verify. Leaving for retry.`);
+      continue;
+    } else if (ARWEAVE) {
       log(`  locating solution on Arweave by CID…`);
       const txid = await findTxidByCid(cid, {});
       if (!txid) { log(`  DA MISS: ${cid} not found on Arweave yet — leaving for now`); continue; }
       log(`  fetching from Arweave txid ${txid}…`);
       try { blob = await fetchFromArweave(txid); }
       catch (e) { log(`  Arweave fetch failed: ${e.message} — leaving for now`); continue; }
-      if (cidOf(blob) !== cid) { log(`  DA FAULT: Arweave bytes do not match the on-chain CID (itself challengeable)`); }
     } else {
       blob = getBlob(DA_DIR, cid);
       if (!blob) { log(`  DA MISS: no blob for ${cid} — cannot re-verify, leaving for now`); continue; }
+    }
+
+    // Integrity gate — identical for both DA paths: the fetched bytes MUST hash
+    // to the on-chain sha256 anchor bound at commit (commitDaHash). This is the
+    // same digest the CID encodes (cid="sha256:"+hex, commitDaHash="0x"+hex).
+    // On-chain DA cannot actually mismatch (consensus enforces sha256==anchor at
+    // reveal); off-chain DA can, which is exactly the tamper/unavailability we
+    // must refuse to act on. Don't mark seen — leave for retry.
+    const anchor = sub.commitDaHash;
+    const got = ethers.sha256(blob);
+    if (got !== anchor) {
+      log(`  DA FAULT: sha256(fetched bytes)=${got} != on-chain anchor ${anchor} — bytes unavailable/tampered, NOT trusting them; leaving for now`);
+      continue;
     }
 
     // Independent re-run of the exact verifier on the fetched bytes.

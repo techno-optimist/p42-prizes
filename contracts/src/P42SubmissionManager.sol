@@ -32,6 +32,11 @@ contract P42SubmissionManager {
     error P42_REVEAL_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_PERMANENCE_GRACE_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_EMPTY_PERMANENCE_HASH();
+    error P42_EMPTY_SOLUTION_BYTES();
+    error P42_SOLUTION_TOO_LARGE(uint256 cap, uint256 got);
+    error P42_SOLUTION_HASH_MISMATCH(bytes32 expected, bytes32 got);
+    error P42_UNEXPECTED_ONCHAIN_BYTES();
+    error P42_BAD_ONCHAIN_DA_CONFIG();
     error P42_INSUFFICIENT_POSTING_BOND(uint256 required, uint256 received);
     error P42_UNKNOWN_SUBMISSION();
     error P42_BOND_UNDERCOVERS_ENTITLEMENT(uint256 required, uint256 posted);
@@ -39,6 +44,13 @@ contract P42SubmissionManager {
     error P42_TRANSFER_FAILED();
 
     uint16 public constant MAX_ALPHA_BPS = 10_000;
+
+    /// @notice Hard ceiling on on-chain solution bytes, bounding reveal-tx
+    /// calldata gas. Problems whose certificates exceed this (e.g. the
+    /// autoconvolution class at multi-MB) deploy with `onchainDa=false` and
+    /// keep the bytes in a content-addressed off-chain store gated by the same
+    /// on-chain sha256 anchor (`commitDaHash`).
+    uint256 public constant MAX_ONCHAIN_SOLUTION_BYTES = 1_048_576; // 1 MiB
 
     enum SubmissionStatus {
         None,
@@ -73,6 +85,15 @@ contract P42SubmissionManager {
     uint16 public immutable alphaBps;
     uint256 public immutable minPostingBondWei;
     uint64 public immutable challengeWindowSeconds;
+    /// @notice When true, the reveal tx must carry the raw solution bytes and
+    /// the contract enforces sha256(bytes)==commitDaHash on-chain (data
+    /// availability rides the chain itself). When false, this problem's
+    /// certificates are too large for calldata; bytes live off-chain and are
+    /// verified against the same on-chain `commitDaHash` anchor by any fetcher.
+    bool public immutable onchainDa;
+    /// @notice Max solution bytes accepted in a reveal tx (only meaningful when
+    /// `onchainDa`). Bounds calldata gas and blocks calldata-bomb griefing.
+    uint256 public immutable maxSolutionBytes;
     address public challengeManager;
     bool public pausedNewActions;
     bool private _claiming;
@@ -99,7 +120,8 @@ contract P42SubmissionManager {
         string solutionCid,
         uint256 improvementAtoms,
         int256 claimedScoreAtoms,
-        uint64 challengeEndsAt
+        uint64 challengeEndsAt,
+        uint256 solutionBytesLength
     );
     event Finalized(
         uint256 indexed submissionId,
@@ -139,7 +161,9 @@ contract P42SubmissionManager {
         address treasury_,
         uint16 alphaBps_,
         uint256 minPostingBondWei_,
-        uint64 challengeWindowSeconds_
+        uint64 challengeWindowSeconds_,
+        bool onchainDa_,
+        uint256 maxSolutionBytes_
     ) {
         require(pool_ != address(0), "P42_POOL_ZERO");
         require(ledger_ != address(0), "P42_LEDGER_ZERO");
@@ -147,6 +171,13 @@ contract P42SubmissionManager {
         require(treasury_ != address(0), "P42_TREASURY_ZERO");
         if (alphaBps_ > MAX_ALPHA_BPS) revert P42_BAD_ALPHA();
         if (challengeWindowSeconds_ == 0) revert P42_BAD_WINDOW();
+        // On-chain DA needs a positive cap within the calldata-gas ceiling;
+        // off-chain problems leave it 0 (unused).
+        if (onchainDa_) {
+            if (maxSolutionBytes_ == 0 || maxSolutionBytes_ > MAX_ONCHAIN_SOLUTION_BYTES) {
+                revert P42_BAD_ONCHAIN_DA_CONFIG();
+            }
+        }
         pool = IP42PoolBalance(pool_);
         ledger = IP42CreditLedger(ledger_);
         owner = owner_;
@@ -154,6 +185,8 @@ contract P42SubmissionManager {
         alphaBps = alphaBps_;
         minPostingBondWei = minPostingBondWei_;
         challengeWindowSeconds = challengeWindowSeconds_;
+        onchainDa = onchainDa_;
+        maxSolutionBytes = maxSolutionBytes_;
     }
 
     function setPausedNewActions(bool paused) external onlyOwner {
@@ -222,12 +255,20 @@ contract P42SubmissionManager {
         emit BondToppedUp(submissionId, msg.sender, msg.value, submission.bondWei);
     }
 
+    /// @param solution The raw solution bytes. For on-chain-DA problems these
+    /// ride this tx's calldata and the contract enforces sha256(solution) equals
+    /// the `commitDaHash` anchor bound at commit — a consensus-enforced proof
+    /// that the exact committed bytes are available on-chain for the challenge
+    /// window (and, via archive nodes/indexer, for later-Δ recomputation). For
+    /// off-chain-DA problems this MUST be empty; the anchor still binds the
+    /// off-chain bytes, which any fetcher re-checks against `commitDaHash`.
     function reveal(
         uint256 submissionId,
         string calldata solutionCid,
         int256 claimedScoreAtoms,
         uint256 improvementAtoms,
-        string calldata salt
+        string calldata salt,
+        bytes calldata solution
     ) external {
         Submission storage submission = _requireSubmission(submissionId);
         if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
@@ -240,6 +281,22 @@ contract P42SubmissionManager {
         );
         if (revealedCommitment != submission.commitment) revert P42_BAD_COMMITMENT_REVEAL();
 
+        // Data availability: on-chain problems post the bytes here and prove
+        // they hash to the committed anchor; off-chain problems must not bloat
+        // calldata (the anchor alone gates their off-chain store).
+        if (onchainDa) {
+            if (solution.length == 0) revert P42_EMPTY_SOLUTION_BYTES();
+            if (solution.length > maxSolutionBytes) {
+                revert P42_SOLUTION_TOO_LARGE(maxSolutionBytes, solution.length);
+            }
+            bytes32 got = sha256(solution);
+            if (got != submission.commitDaHash) {
+                revert P42_SOLUTION_HASH_MISMATCH(submission.commitDaHash, got);
+            }
+        } else if (solution.length != 0) {
+            revert P42_UNEXPECTED_ONCHAIN_BYTES();
+        }
+
         uint64 challengeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
         submission.solutionCid = solutionCid;
         submission.claimedScoreAtoms = claimedScoreAtoms;
@@ -248,14 +305,19 @@ contract P42SubmissionManager {
         submission.challengeEndsAt = challengeEndsAt;
         submission.status = SubmissionStatus.Revealed;
 
-        emit Revealed(submissionId, msg.sender, solutionCid, improvementAtoms, claimedScoreAtoms, challengeEndsAt);
+        emit Revealed(
+            submissionId, msg.sender, solutionCid, improvementAtoms, claimedScoreAtoms, challengeEndsAt, solution.length
+        );
     }
 
+    /// @param permanenceHash OPTIONAL off-chain-mirror receipt (e.g. an Arweave
+    /// txid hash). No longer required: on-chain-DA problems already have the
+    /// bytes on-chain (verified at reveal), and off-chain-DA problems are gated
+    /// by the `commitDaHash` anchor. Pass 0 unless recording a mirror.
     function finalize(uint256 submissionId, bytes32 permanenceHash) external {
         Submission storage submission = _requireSubmission(submissionId);
         if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
         _requireStatus(submission, SubmissionStatus.Revealed);
-        if (permanenceHash == bytes32(0)) revert P42_EMPTY_PERMANENCE_HASH();
         if (block.timestamp < submission.challengeEndsAt) {
             revert P42_CHALLENGE_WINDOW_OPEN(submission.challengeEndsAt, uint64(block.timestamp));
         }

@@ -71,7 +71,9 @@ async function deployFixture({
     treasury.address,
     alphaBps,
     minBond,
-    CHALLENGE_WINDOW_SECONDS
+    CHALLENGE_WINDOW_SECONDS,
+    false, // off-chain DA mode: red-team fixtures exercise economics, not DA binding
+    0
   );
   await submissions.waitForDeployment();
   if (activateRecorder) {
@@ -173,7 +175,7 @@ describe("P42 red-team attack coverage", function () {
         await attacker.exec(subAddr, bond, data, { value: bond });
       },
       sendReveal: async (id, cid, improvement, salt) => {
-        const data = submissions.interface.encodeFunctionData("reveal", [id, cid, 0, improvement, salt]);
+        const data = submissions.interface.encodeFunctionData("reveal", [id, cid, 0, improvement, salt, "0x"]);
         await attacker.exec(subAddr, 0, data);
       },
     });
@@ -211,7 +213,7 @@ describe("P42 red-team attack coverage", function () {
         await submissions.connect(alice).commit(commitment, DA_HASH, { value: bond });
       },
       sendReveal: async (id, cid, improvement, salt) => {
-        await submissions.connect(alice).reveal(id, cid, 0, improvement, salt);
+        await submissions.connect(alice).reveal(id, cid, 0, improvement, salt, "0x");
       },
     });
 
@@ -264,7 +266,7 @@ describe("P42 red-team attack coverage", function () {
     const cheapBond = await submissions.requiredPostingBondNow();
     assert.equal(cheapBond, ethers.parseEther("0.01")); // just the floor
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: cheapBond });
-    await submissions.connect(alice).reveal(1, cid, 0, 1, salt);
+    await submissions.connect(alice).reveal(1, cid, 0, 1, salt, "0x");
 
     // 2) Pool is now funded large. Naive payout would be 100 ETH on a 0.01 ETH
     //    bond — a 10,000x self-deal.
@@ -317,7 +319,7 @@ describe("P42 red-team attack coverage", function () {
 
     // (a) Bob cannot reveal Alice's submission — reveal is solver-gated.
     await expectCustomError(
-      submissions.connect(bob).reveal(aliceId, cid, 123, 7, salt),
+      submissions.connect(bob).reveal(aliceId, cid, 123, 7, salt, "0x"),
       submissions,
       "P42_NOT_SOLVER"
     );
@@ -328,13 +330,13 @@ describe("P42 red-team attack coverage", function () {
     await submissions.connect(bob).commit(commitment, DA_HASH, { value: minBond });
     const bobId = await submissions.submissionCount();
     await expectCustomError(
-      submissions.connect(bob).reveal(bobId, cid, 123, 7, salt),
+      submissions.connect(bob).reveal(bobId, cid, 123, 7, salt, "0x"),
       submissions,
       "P42_BAD_COMMITMENT_REVEAL"
     );
 
     // The rightful solver still reveals normally.
-    await submissions.connect(alice).reveal(aliceId, cid, 123, 7, salt);
+    await submissions.connect(alice).reveal(aliceId, cid, 123, 7, salt, "0x");
     assert.equal((await submissions.submissions(aliceId)).status, 2n);
     assert.equal((await submissions.submissions(aliceId)).solver, alice.address);
   });
