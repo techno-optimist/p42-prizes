@@ -67,7 +67,7 @@ Additional arena and certificate evidence:
 | `erdos-min-overlap` | P42 package now exists with dyadic-integer witness format, exact normalization, all 4,799 lags checked, lying-claim fixture, shape fixture, rescale-range fixture, and local host evidence on one Mac host. | Locked. Needs immutable verifier image, collected four-host matrix, and external review of the piecewise-linearity/reduction lemma before funding. |
 | `edges-vs-triangles` | Arena findings indicate exact live-verifier evidence and a sealed global-model result below the gate. The P42 repo has no self-contained verifier package yet. | Locked. Build a rationalized problem package around the exact row-normalization, moment-curve, area, and max-gap model. Include fixtures for the trapezoid/scoring trap. |
 | `arithmetic-kakeya` | P42 package now exists for the scoped 2x2 warm-up forcing certificate: exact Fraction linear algebra, closure over all four vertices, score `7/4`, tampered-seed fixture, and local exact verification. This is not a record claim. | Locked. Needs immutable verifier image, collected four-host matrix, and external scope review before any marquee funding claim. |
-| `autoconvolution-c1-upper` | External certificate repo reproduces exact Board 2 arithmetic. It certifies an existing leader vector rather than a new prize verifier package. | Locked. Wrap the exact integer convolution and rational scoring path in a P42 repo with canonical encoding, runtime cap, lying-score tests, and N-host timing. |
+| `autoconvolution-c1-upper` | P42 package now exists with nonnegative integer witness format, exact Kronecker convolution, all 179,999 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the Hyra witness. | Locked. Needs immutable verifier image, collected four-host matrix, and N-host timing/memory evidence before funding. |
 | `autoconvolution-c2-lower` | P42 package now exists with nonnegative integer witness format, exact Kronecker convolution, all 1,048,575 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the Hyra witness. | Locked. Needs immutable verifier image, collected four-host matrix, and N-host timing/memory evidence before funding. |
 | `signed-autoconvolution-c3-upper` | P42 package now exists with signed dyadic-integer witness format, exact signed Kronecker convolution, all 199,999 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the OrganonAgent witness. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and external reduction review before funding. |
 | `mertens-lp-ceiling-k12000` | P42 package now exists with canonical dyadic dual arrays, exact integer residual pass, interval log enclosure, one-ULP bad-decimal fixture, hash-mismatch fixture, and local verification of the reach-12000 rounded ceiling. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and proof-side copy review. UI copy must avoid overclaiming beyond the finite reach. |
@@ -93,12 +93,13 @@ Additional arena and certificate evidence:
 ## Required Next Work
 
 1. Freeze `hadamard-mini`, `erdos-min-overlap`,
-   `arithmetic-kakeya`, `autoconvolution-c2-lower`,
-   `signed-autoconvolution-c3-upper`, and `mertens-lp-ceiling-k12000` image
-   metadata and collect their real four-host matrices.
-2. Package the next lowest-risk verifier, likely `hadamard-668-defect` if a
-   witness can be recovered, otherwise quarantine `autoconvolution-c1-upper` as
-   a heavyweight verifier.
+   `arithmetic-kakeya`, `autoconvolution-c1-upper`,
+   `autoconvolution-c2-lower`, `signed-autoconvolution-c3-upper`, and
+   `mertens-lp-ceiling-k12000` image metadata and collect their real four-host
+   matrices.
+2. Package the remaining launch boards only from recoverable exact artifacts:
+   `pnt-sparse-mertens-construction`, `edges-vs-triangles`, and
+   `hadamard-668-defect`.
 3. Keep `arithmetic-kakeya` locked until a certificate standard exists and an
    external math reviewer signs the statement.
 4. Add one P42 problem package at a time. Do not unlock a portal board until

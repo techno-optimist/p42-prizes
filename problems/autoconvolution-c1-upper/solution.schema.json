@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/autoconvolution-c1-upper/solution.schema.json",
+  "type": "object",
+  "required": ["n", "values"],
+  "additionalProperties": true,
+  "properties": {
+    "n": { "const": 90000 },
+    "values": {
+      "type": "array",
+      "minItems": 90000,
+      "maxItems": 90000,
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  }
+}
