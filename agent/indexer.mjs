@@ -45,7 +45,10 @@ const pool = new ethers.Contract(c.pool.address, abi("P42BountyPool"), provider)
 const ledger = new ethers.Contract(c.ledger.address, abi("P42PayoutLedger"), provider);
 const subs = new ethers.Contract(c.submissions.address, abi("P42SubmissionManager"), provider);
 const chal = new ethers.Contract(c.challenges.address, abi("P42ChallengeManager"), provider);
-const registry = new ethers.Contract(c.registry.address, abi("P42ProblemRegistry"), provider);
+// The registry only supplies problem metadata for the state output; the
+// settlement reconstruction and the calldata archive run off the core
+// contracts' events, so a manifest without a registry is still fully indexable.
+const registry = c.registry ? new ethers.Contract(c.registry.address, abi("P42ProblemRegistry"), provider) : null;
 
 const STATUS = ["None", "Committed", "Revealed", "Challenged", "Finalized", "Rejected"];
 
@@ -180,7 +183,7 @@ async function main() {
   const finals = await queryChunked(subs, subs.filters.Finalized(), fromBlock, toBlock);
   const challenged = await queryChunked(subs, subs.filters.SubmissionChallenged(), fromBlock, toBlock);
   const resolved = await queryChunked(subs, subs.filters.SubmissionChallengeResolved(), fromBlock, toBlock);
-  const registered = await queryChunked(registry, registry.filters.ProblemRegistered(), fromBlock, toBlock);
+  const registered = registry ? await queryChunked(registry, registry.filters.ProblemRegistered(), fromBlock, toBlock) : [];
 
   // --- reconstruct from events alone ---
   const idxFunded = funded.reduce((t, e) => t + e.args.amount, 0n);
