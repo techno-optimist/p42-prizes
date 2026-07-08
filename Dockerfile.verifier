@@ -1,0 +1,38 @@
+# Canonical, self-contained P42 verifier image.
+#
+# Builds a runnable, pinnable image for one problem's exact verifier. Unlike the
+# per-problem Dockerfiles (which assumed the repo layout and lacked `make`), this
+# bundles the p42_prizes package AND the problem, preserving the `../../src`
+# layout the problem Makefile expects, and installs `make` + the problem's pinned
+# deps. Build from the REPO ROOT:
+#
+#   docker build -f Dockerfile.verifier --build-arg PROBLEM=hadamard-mini \
+#     -t p42-verifier/hadamard-mini .
+#
+# The runner sandbox (src/p42_prizes/runner_sandbox.py) then executes it with
+# `--network=none`, cgroup memory/PID/CPU caps, a read-only rootfs, dropped caps,
+# a non-root user, and the untrusted solution mounted read-only.
+FROM python:3.14.2-slim
+ARG PROBLEM
+
+# Determinism knobs the verifier standard requires.
+ENV PYTHONHASHSEED=0 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
+
+# `make` is the verifier entrypoint; slim images omit it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Preserve the repo-relative layout: the problem Makefile uses PYTHONPATH=../../src,
+# so the problem must sit two levels under /repo with src as a sibling.
+COPY src /repo/src
+COPY problems/${PROBLEM} /repo/problems/${PROBLEM}
+WORKDIR /repo/problems/${PROBLEM}
+
+# Pinned per-problem deps (mpmath for Mertens, etc.); comments-only locks are a no-op.
+RUN pip install --no-cache-dir -r requirements.lock
+
+CMD ["make", "verify"]

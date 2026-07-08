@@ -23,7 +23,8 @@ is P42, and what's left?" It complements the granular gate docs
 | **Autonomous operator** — watch → re-run → auto-challenge (M2 reward proven) | `agent/operator.mjs`; `op-demo-run.json` |
 | **Live Arweave DA** — upload, bind `keccak(txid)` on-chain, fetch-by-CID + re-verify | `agent/da-arweave.mjs`; `arweave-demo-run.json` |
 | **Session-key wallet** — bounded blast radius (allowlist + caps + revoke) | `contracts/src/P42AgentWallet.sol`; `agent-wallet-demo-run.json` |
-| **Container sandbox** — no-net, cgroup mem/PID/CPU, read-only, non-root, fail-closed | `src/p42_prizes/runner_sandbox.py` |
+| **Container sandbox** — no-net, cgroup mem/PID/CPU, read-only, non-root, fail-closed | `src/p42_prizes/runner_sandbox.py`; **live-validated: all 10 verifiers built + ran correctly in the hardened container** (`verifier-images.json`) |
+| **Self-contained verifier images** — all 10 problems build + run in the sandbox | `Dockerfile.verifier` (fixes the broken per-problem Dockerfiles: bundles `p42_prizes` + `make`, preserves layout); digests in `deployments/base-sepolia/verifier-images.json` |
 | **Governance** — multisig + timelock + guardian (replaces single-EOA owner) | `contracts/src/P42MultisigTimelock.sol`; `governance-demo-run.json` |
 | **On-chain indexer** — reconstruct frontier + payout ledger from events (9/9 vs chain) | `agent/indexer.mjs`; `indexer-state-demo.json` |
 
@@ -31,7 +32,7 @@ is P42, and what's left?" It complements the granular gate docs
 
 | Item | Blocked on |
 | --- | --- |
-| Pinned verifier image digests (kill `sha256:local-dev`) for all 10 problems | A **Docker build host** (build each image, record its digest, run `admit-ready`) |
+| Pinned verifier image **registry digests** (kill `sha256:local-dev`) | Images now build + run in the sandbox (digests recorded); a **registry** (GHCR/Docker Hub creds) to push + get a pullable RepoDigest, then update `problem.yaml` + `admit-ready` |
 | N-host determinism CI (x86 + ARM + 2 glibc identical-hash) | **`workflow`-scope** to publish `.github/workflows/ci.yml` + multi-arch CI runners |
 | Continuous operator + indexer as a running service | A **host** to run them (the code is ready; `operator.mjs` has a loop mode) |
 | Mainnet Arweave permanence (finalize receipt) | An **Arweave-funded wallet** (devnet is used today; ~60-day retention) |
