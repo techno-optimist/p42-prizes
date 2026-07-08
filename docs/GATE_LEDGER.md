@@ -72,6 +72,9 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 ## Verifier Admission Ledger
 
+Latest ten-board math/verifier audit:
+`docs/MATH_VERIFIER_AUDIT_2026_07_08.md`.
+
 | Problem | Current portal status | Verifier readiness |
 | --- | --- | --- |
 | `hadamard-mini` | Pilot runnable | Local exact verifier passes; host-evidence generator works; still needs pinned image digest and collected four-host matrix before funding |
