@@ -26,6 +26,9 @@ red-team invariants that must hold before Base Sepolia.
   hash/URI/verdict hash, per-decision resolver bond held through a configurable
   fraud window, owner-slash proof hashing, release accounting, and submission
   outcome hooks.
+- `test/p42-properties.test.js`: seeded property checks for final-denominator
+  payout conservation, late-funding bond top-ups, and sybil-split payout
+  monotonicity.
 
 ## Run
 
@@ -57,4 +60,4 @@ event/state consistency report under `deployments/base-sepolia/reconciliation/`.
 - fraud-proof/equivalent resolver and slashing adjudication beyond the owner-slash scaffold
 - actual Base Sepolia deployment, committed manifest, and verified source/address artifacts
 - real committed Base Sepolia reconciliation report and production indexer
-- fuzz/property testing and external audit
+- broader fuzz/formal testing and external audit
