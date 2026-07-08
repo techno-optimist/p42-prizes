@@ -13,6 +13,12 @@ const PAIRS = [
   [2, 3],
 ] as const;
 
+const MAX_STEP = 23;
+const TICK_MS = 135;
+const SOLVED_HOLD_TICKS = 14;
+const UNSOLVED_HOLD_TICKS = 6;
+const THEME_STORAGE_KEY = "p42-prizes-theme";
+
 const ENTRY_VECTORS = [
   [-148, -128, -16],
   [-42, -158, 11],
@@ -32,6 +38,23 @@ const ENTRY_VECTORS = [
   [176, 126, -17],
 ] as const;
 
+type Direction = 1 | -1;
+type Theme = "light" | "dark";
+
+function isTheme(value: string | null): value is Theme {
+  return value === "light" || value === "dark";
+}
+
+function applySiteTheme(nextTheme: Theme) {
+  document.documentElement.dataset.theme = nextTheme;
+  document.documentElement.style.colorScheme = nextTheme;
+  try {
+    window.localStorage.setItem(THEME_STORAGE_KEY, nextTheme);
+  } catch {
+    // Theme persistence is a convenience; the toggle should still work without storage.
+  }
+}
+
 function rowLabel(index: number) {
   return `r${index + 1}`;
 }
@@ -44,17 +67,31 @@ function dotTerms(a: number, b: number) {
   return H4[a].map((value, index) => value * H4[b][index]);
 }
 
-function phaseLabel(step: number) {
+function phaseLabel(step: number, direction: Direction, hold: number) {
+  if (step >= MAX_STEP && hold > 0) return "record sealed";
+  if (direction === -1) {
+    if (step >= MAX_STEP) return "release witness";
+    if (step > 16) return "unseal proof";
+    if (step > 8) return "unsolve H4";
+    if (step > 0) return "candidate drift";
+    return "seed cloud";
+  }
   if (step < 3) return "seed H1";
   if (step < 9) return "sylvester lift";
   if (step < 16) return "grow H4";
-  if (step < 23) return "orthogonality sweep";
+  if (step < MAX_STEP) return "orthogonality sweep";
   return "record sealed";
 }
 
 export function HadamardEasterEgg() {
   const [open, setOpen] = useState(false);
-  const [step, setStep] = useState(0);
+  const [theme, setTheme] = useState<Theme>("light");
+  const [loop, setLoop] = useState<{ direction: Direction; hold: number; step: number }>({
+    direction: 1,
+    hold: 0,
+    step: 0,
+  });
+  const { direction, hold, step } = loop;
   const proofRows = useMemo(
     () =>
       PAIRS.map(([a, b]) => {
@@ -71,6 +108,22 @@ export function HadamardEasterEgg() {
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
+    const requestedTheme = params.get("theme") ?? params.get("eggTheme");
+    let storedTheme: string | null = null;
+    try {
+      storedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
+    } catch {
+      storedTheme = null;
+    }
+    const preferredTheme =
+      window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    const nextTheme = isTheme(requestedTheme)
+      ? requestedTheme
+      : isTheme(storedTheme)
+        ? storedTheme
+        : preferredTheme;
+    setTheme(nextTheme);
+    applySiteTheme(nextTheme);
     if (params.get("mark") === "1" || window.location.hash === "#mark") {
       setOpen(true);
     }
@@ -78,10 +131,20 @@ export function HadamardEasterEgg() {
 
   useEffect(() => {
     if (!open) return;
-    setStep(0);
+    setLoop({ direction: 1, hold: 0, step: 0 });
     const interval = window.setInterval(() => {
-      setStep((current) => Math.min(current + 1, 26));
-    }, 120);
+      setLoop((current) => {
+        if (current.hold > 0) return { ...current, hold: current.hold - 1 };
+        if (current.direction === 1) {
+          if (current.step >= MAX_STEP) {
+            return { direction: -1, hold: SOLVED_HOLD_TICKS, step: MAX_STEP };
+          }
+          return { ...current, step: current.step + 1 };
+        }
+        if (current.step <= 0) return { direction: 1, hold: UNSOLVED_HOLD_TICKS, step: 0 };
+        return { ...current, step: current.step - 1 };
+      });
+    }, TICK_MS);
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
@@ -115,19 +178,39 @@ export function HadamardEasterEgg() {
         <div className="hadamard-modal" role="presentation" onMouseDown={() => setOpen(false)}>
           <section
             className="hadamard-dialog"
+            data-egg-theme={theme}
             role="dialog"
             aria-modal="true"
             aria-labelledby="hadamard-dialog-title"
             onMouseDown={(event) => event.stopPropagation()}
           >
-            <button className="hadamard-close" type="button" aria-label="Close" onClick={() => setOpen(false)}>
-              ×
-            </button>
+            <div className="hadamard-controls">
+              <button
+                className="hadamard-theme-toggle"
+                type="button"
+                aria-label={`Switch site to ${theme === "light" ? "dark" : "light"} mode`}
+                aria-pressed={theme === "dark"}
+                onClick={() => {
+                  const nextTheme = theme === "light" ? "dark" : "light";
+                  setTheme(nextTheme);
+                  applySiteTheme(nextTheme);
+                }}
+              >
+                <span className={theme === "light" ? "is-active" : ""}>Light</span>
+                <span className={theme === "dark" ? "is-active" : ""}>Dark</span>
+              </button>
+              <button className="hadamard-close" type="button" aria-label="Close" onClick={() => setOpen(false)}>
+                ×
+              </button>
+            </div>
             <div className="hadamard-stage" aria-hidden="true">
               <div className="hadamard-orbit">
                 <Mark size={112} animated className="hadamard-stage-mark" />
               </div>
-              <div className="hadamard-matrix" style={{ "--egg-step": step } as CSSProperties}>
+              <div
+                className={`hadamard-matrix ${direction === -1 ? "is-releasing" : "is-solving"}`}
+                style={{ "--egg-step": step } as CSSProperties}
+              >
                 {H4.flatMap((row, i) =>
                   row.map((value, j) => {
                     const index = i * 4 + j;
@@ -141,6 +224,7 @@ export function HadamardEasterEgg() {
                         style={
                           {
                             "--cell-index": index,
+                            "--exit-index": 15 - index,
                             "--from-x": `${fromX}px`,
                             "--from-y": `${fromY}px`,
                             "--from-rotate": `${fromRotate}deg`,
@@ -155,10 +239,10 @@ export function HadamardEasterEgg() {
               </div>
               <div className="hadamard-readout">
                 <div>
-                  <span>{phaseLabel(step)}</span>
-                  <code>{String(Math.min(step, 23)).padStart(2, "0")}/23</code>
+                  <span>{phaseLabel(step, direction, hold)}</span>
+                  <code>{String(Math.min(step, MAX_STEP)).padStart(2, "0")}/{MAX_STEP}</code>
                 </div>
-                <i style={{ "--readout-progress": Math.min(step, 23) / 23 } as CSSProperties} />
+                <i style={{ "--readout-progress": Math.min(step, MAX_STEP) / MAX_STEP } as CSSProperties} />
               </div>
             </div>
             <div className="hadamard-proof">

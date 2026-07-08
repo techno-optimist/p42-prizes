@@ -27,10 +27,25 @@ export const metadata: Metadata = {
   },
 };
 
+const themeBootScript = `
+try {
+  var storedTheme = localStorage.getItem("p42-prizes-theme");
+  var resolvedTheme =
+    storedTheme === "light" || storedTheme === "dark"
+      ? storedTheme
+      : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+  document.documentElement.dataset.theme = resolvedTheme;
+  document.documentElement.style.colorScheme = resolvedTheme;
+} catch (_) {}
+`;
+
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
+        <script dangerouslySetInnerHTML={{ __html: themeBootScript }} />
         <div className="shell">
           <div className="mark-accent mark-accent-top" aria-hidden="true">
             <Mark size={360} animated />

@@ -53,6 +53,42 @@
   }
 }
 
+html[data-theme="light"] {
+  color-scheme: light;
+  --paper: #faf8f2;
+  --well: #f2efe5;
+  --ink: #181511;
+  --ink-soft: #4f4a3f;
+  --muted: #6f6a5d;
+  --rule: rgba(24, 21, 17, 0.18);
+  --rule-faint: rgba(24, 21, 17, 0.1);
+  --record: #a6341f;
+  --seal: #1f4e79;
+  --gate: #7a6a45;
+  --good: #1a6b2f;
+  --warn: #8a5a00;
+  --crit: #a02c2c;
+  --plate-border: #14120f;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --paper: #161512;
+  --well: #1d1b17;
+  --ink: #ece9e0;
+  --ink-soft: #c9c4b6;
+  --muted: #a19c8d;
+  --rule: rgba(236, 233, 224, 0.2);
+  --rule-faint: rgba(236, 233, 224, 0.11);
+  --record: #de7566;
+  --seal: #8ab0d9;
+  --gate: #b3a577;
+  --good: #66b877;
+  --warn: #d9a441;
+  --crit: #de7566;
+  --plate-border: rgba(236, 233, 224, 0.22);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -295,6 +331,15 @@ pre,
 }
 
 .hadamard-dialog {
+  --egg-paper: var(--paper);
+  --egg-well: var(--well);
+  --egg-ink: var(--ink);
+  --egg-soft: var(--ink-soft);
+  --egg-muted: var(--muted);
+  --egg-rule: var(--rule);
+  --egg-rule-faint: var(--rule-faint);
+  --egg-record: var(--record);
+  --egg-good: var(--good);
   width: min(920px, calc(100vw - 32px));
   max-height: min(720px, calc(100vh - 32px));
   overflow: auto;
@@ -302,24 +347,63 @@ pre,
   display: grid;
   grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1fr);
   gap: 0;
-  color: var(--ink);
-  background: var(--paper);
-  border: 1px solid var(--ink);
+  color: var(--egg-ink);
+  background: var(--egg-paper);
+  border: 1px solid var(--egg-ink);
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.32);
 }
 
-.hadamard-close {
+.hadamard-controls {
   position: absolute;
   top: 14px;
   right: 14px;
   z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hadamard-theme-toggle {
+  min-height: 34px;
+  border: 1px solid var(--egg-rule);
+  padding: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--egg-muted);
+  background: color-mix(in srgb, var(--egg-paper) 86%, transparent);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.hadamard-theme-toggle span {
+  min-width: 44px;
+  padding: 5px 7px;
+  text-align: center;
+}
+
+.hadamard-theme-toggle span.is-active {
+  color: var(--egg-paper);
+  background: var(--egg-ink);
+}
+
+.hadamard-theme-toggle:hover,
+.hadamard-theme-toggle:focus-visible {
+  border-color: var(--egg-record);
+  outline: none;
+}
+
+.hadamard-close {
   width: 34px;
   height: 34px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--egg-rule);
   display: grid;
   place-items: center;
-  color: var(--ink);
-  background: var(--paper);
+  color: var(--egg-ink);
+  background: var(--egg-paper);
   cursor: pointer;
   font-size: 22px;
   line-height: 1;
@@ -327,8 +411,8 @@ pre,
 
 .hadamard-close:hover,
 .hadamard-close:focus-visible {
-  border-color: var(--record);
-  color: var(--record);
+  border-color: var(--egg-record);
+  color: var(--egg-record);
   outline: none;
 }
 
@@ -338,13 +422,13 @@ pre,
   display: grid;
   place-items: center;
   overflow: hidden;
-  color: var(--ink);
+  color: var(--egg-ink);
   background:
-    linear-gradient(90deg, rgba(24, 21, 17, 0.05) 1px, transparent 1px),
-    linear-gradient(rgba(24, 21, 17, 0.05) 1px, transparent 1px),
-    var(--well);
+    linear-gradient(90deg, color-mix(in srgb, var(--egg-ink) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(color-mix(in srgb, var(--egg-ink) 7%, transparent) 1px, transparent 1px),
+    var(--egg-well);
   background-size: 24px 24px;
-  border-right: 1px solid var(--rule);
+  border-right: 1px solid var(--egg-rule);
 }
 
 .hadamard-orbit {
@@ -354,7 +438,7 @@ pre,
   height: 280px;
   display: grid;
   place-items: center;
-  color: var(--ink);
+  color: var(--egg-ink);
   opacity: 0.065;
   animation: theorem-orbit 18s linear infinite;
 }
@@ -371,9 +455,9 @@ pre,
   grid-template-rows: repeat(4, 58px);
   gap: 8px;
   padding: 18px;
-  color: var(--ink);
-  background: color-mix(in srgb, var(--paper) 84%, transparent);
-  border: 1px solid var(--ink);
+  color: var(--egg-ink);
+  background: color-mix(in srgb, var(--egg-paper) 84%, transparent);
+  border: 1px solid var(--egg-ink);
   box-shadow: 0 16px 40px rgba(24, 21, 17, 0.16);
   overflow: visible;
   transform: scale(0.92);
@@ -391,7 +475,7 @@ pre,
   font-size: 10px;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--egg-muted);
 }
 
 .hadamard-readout div {
@@ -401,13 +485,13 @@ pre,
 }
 
 .hadamard-readout code {
-  color: var(--ink-soft);
+  color: var(--egg-soft);
 }
 
 .hadamard-readout i {
   height: 1px;
   overflow: hidden;
-  background: var(--rule-faint);
+  background: var(--egg-rule-faint);
 }
 
 .hadamard-readout i::after {
@@ -415,7 +499,7 @@ pre,
   display: block;
   width: 100%;
   height: 100%;
-  background: var(--record);
+  background: var(--egg-record);
   transform: scaleX(var(--readout-progress));
   transform-origin: left center;
   transition: transform 160ms linear;
@@ -427,33 +511,38 @@ pre,
   font-family: var(--mono);
   font-size: 24px;
   line-height: 1;
-  border: 1px solid var(--rule);
-  background: var(--paper);
+  border: 1px solid var(--egg-rule);
+  background: var(--egg-paper);
   opacity: 0;
   filter: blur(1px);
   transform: translate(var(--from-x), var(--from-y)) scale(0.56) rotate(var(--from-rotate));
+  transition:
+    opacity 520ms ease,
+    filter 640ms ease,
+    transform 720ms cubic-bezier(0.2, 0.7, 0.1, 1);
+  transition-delay: calc(var(--cell-index) * 28ms);
   will-change: transform, opacity, filter;
 }
 
+.hadamard-matrix.is-releasing .hadamard-cell {
+  transition-delay: calc(var(--exit-index) * 24ms);
+}
+
 .hadamard-cell.is-plus {
-  color: var(--paper);
-  background: var(--ink);
-  border-color: var(--ink);
+  color: var(--egg-paper);
+  background: var(--egg-ink);
+  border-color: var(--egg-ink);
 }
 
 .hadamard-cell.is-minus {
-  color: var(--ink);
-  background: color-mix(in srgb, var(--paper) 68%, var(--well));
+  color: var(--egg-ink);
+  background: color-mix(in srgb, var(--egg-paper) 68%, var(--egg-well));
 }
 
 .hadamard-cell.is-live {
   opacity: 1;
   filter: blur(0);
   transform: translate(0, 0) scale(1) rotate(0deg);
-  transition:
-    opacity 420ms ease,
-    filter 520ms ease,
-    transform 520ms cubic-bezier(0.2, 0.7, 0.1, 1);
 }
 
 .hadamard-proof {
@@ -467,9 +556,13 @@ pre,
   font-size: 32px;
 }
 
+.hadamard-proof .smallcaps {
+  color: var(--egg-muted);
+}
+
 .hadamard-proof p:not(.smallcaps) {
   max-width: 46ch;
-  color: var(--ink-soft);
+  color: var(--egg-soft);
 }
 
 .proof-trace {
@@ -485,8 +578,8 @@ pre,
   align-items: center;
   gap: 12px;
   padding: 6px 0;
-  border-bottom: 1px solid var(--rule-faint);
-  color: var(--muted);
+  border-bottom: 1px solid var(--egg-rule-faint);
+  color: var(--egg-muted);
 }
 
 .proof-line span {
@@ -496,18 +589,18 @@ pre,
 
 .proof-line code {
   min-width: 0;
-  color: var(--muted);
+  color: var(--egg-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .proof-line.is-live {
-  color: var(--ink);
+  color: var(--egg-ink);
 }
 
 .proof-line.is-live code {
-  color: var(--good);
+  color: var(--egg-good);
 }
 
 .verdict-seal {
@@ -515,7 +608,7 @@ pre,
   padding: 12px 14px;
   display: grid;
   gap: 2px;
-  border: 1px solid var(--rule);
+  border: 1px solid var(--egg-rule);
   opacity: 0;
   transform: translateY(8px);
 }
@@ -525,11 +618,11 @@ pre,
   font-size: 11px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: var(--muted);
+  color: var(--egg-muted);
 }
 
 .verdict-seal strong {
-  color: var(--good);
+  color: var(--egg-good);
   font-weight: 600;
 }
 
@@ -1780,7 +1873,7 @@ h3 {
   .hadamard-stage {
     min-height: 360px;
     border-right: 0;
-    border-bottom: 1px solid var(--rule);
+    border-bottom: 1px solid var(--egg-rule);
   }
 
   .margin-rail {
@@ -1866,6 +1959,11 @@ h3 {
 
   .brand-name {
     font-size: 22px;
+  }
+
+  .hadamard-theme-toggle span {
+    min-width: 38px;
+    padding-inline: 6px;
   }
 
   .proof-line {
