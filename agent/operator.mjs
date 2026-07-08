@@ -21,8 +21,8 @@
 //     [--from-block N] [--once]
 
 import { ethers } from "ethers";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, existsSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { atomsFromImprovement, runVerifier } from "./lib.mjs";
@@ -65,12 +65,41 @@ const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P4
 const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
 
 if (!existsSync(TRANSCRIPTS)) mkdirSync(TRANSCRIPTS, { recursive: true });
+// Loud, persisted alert trail for conditions this operator cannot act on
+// (e.g. a fraud whose challenge bond exceeds --max-challenge-bond) so a
+// human / second operator can escalate even if stdout is lost.
+const ALERTS = `${TRANSCRIPTS}/ALERTS.log`;
+// Per-run private temp dir (mode 0700, unpredictable suffix) for verifier
+// inputs — never a predictable name in the shared os.tmpdir() root, which is
+// symlink-followable by other local users.
+const RUN_TMP = mkdtempSync(join(tmpdir(), "p42-op-"));
 const seen = new Set();
 let fromBlock = Number(arg("from-block", manifest.indexer?.startBlock ?? 0));
 
+// Public RPCs cap getLogs block ranges and rate-limit; page through small
+// windows SEQUENTIALLY with retries and aggregate (same pattern as indexer.mjs).
+async function queryChunked(contract, filter, from, to, step = 2000) {
+  const out = [];
+  for (let start = from; start <= to; start += step) {
+    const end = Math.min(start + step - 1, to);
+    let lastErr;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { out.push(...(await contract.queryFilter(filter, start, end))); lastErr = null; break; }
+      catch (e) { lastErr = e; await sleep(1200 * (attempt + 1)); }
+    }
+    if (lastErr) throw lastErr;
+  }
+  return out;
+}
+
 async function scanOnce() {
   const latest = await provider.getBlockNumber();
-  const events = await subs.queryFilter(subs.filters.Revealed(), fromBlock, latest);
+  const events = await queryChunked(subs, subs.filters.Revealed(), fromBlock, latest);
+  // Reveals we leave for retry this pass (DA not yet available, bond over cap,
+  // …) must be RE-SCANNED next pass: track the lowest block among them and
+  // rewind fromBlock to it below, instead of unconditionally jumping past them.
+  let lowestPendingBlock = Infinity;
+  const retryLater = (ev) => { lowestPendingBlock = Math.min(lowestPendingBlock, ev.blockNumber); };
   for (const ev of events) {
     const id = ev.args.submissionId;
     const key = id.toString();
@@ -97,11 +126,11 @@ async function scanOnce() {
       log(`  reading solution bytes from reveal-tx calldata ${ev.transactionHash.slice(0, 12)}…`);
       let tx;
       try { tx = await provider.getTransaction(ev.transactionHash); }
-      catch (e) { log(`  reveal-tx fetch failed: ${e.message} — leaving for now`); continue; }
-      if (!tx) { log(`  DA MISS: reveal tx ${ev.transactionHash} not retrievable yet — leaving for now`); continue; }
+      catch (e) { log(`  reveal-tx fetch failed: ${e.message} — leaving for now`); retryLater(ev); continue; }
+      if (!tx) { log(`  DA MISS: reveal tx ${ev.transactionHash} not retrievable yet — leaving for now`); retryLater(ev); continue; }
       let parsed;
       try { parsed = subs.interface.parseTransaction({ data: tx.data, value: tx.value }); }
-      catch (e) { log(`  could not decode reveal tx: ${e.message} — leaving for now`); continue; }
+      catch (e) { log(`  could not decode reveal tx: ${e.message} — leaving for now`); retryLater(ev); continue; }
       if (!parsed || parsed.name !== "reveal") { log(`  DA FAULT: log's tx is not a reveal() call — skipping`); seen.add(key); continue; }
       blob = ethers.getBytes(parsed.args.solution);
     } else if (!DA_DIR && !ARWEAVE) {
@@ -109,17 +138,17 @@ async function scanOnce() {
       // mark seen — leave it for retry once an operator with --da-dir/--arweave
       // (or this one, restarted with a store) can fetch and police it.
       log(`  DA FAULT: off-chain reveal (0 on-chain bytes) but no --da-dir/--arweave configured — cannot fetch to re-verify. Leaving for retry.`);
-      continue;
+      retryLater(ev); continue;
     } else if (ARWEAVE) {
       log(`  locating solution on Arweave by CID…`);
       const txid = await findTxidByCid(cid, {});
-      if (!txid) { log(`  DA MISS: ${cid} not found on Arweave yet — leaving for now`); continue; }
+      if (!txid) { log(`  DA MISS: ${cid} not found on Arweave yet — leaving for now`); retryLater(ev); continue; }
       log(`  fetching from Arweave txid ${txid}…`);
       try { blob = await fetchFromArweave(txid); }
-      catch (e) { log(`  Arweave fetch failed: ${e.message} — leaving for now`); continue; }
+      catch (e) { log(`  Arweave fetch failed: ${e.message} — leaving for now`); retryLater(ev); continue; }
     } else {
       blob = getBlob(DA_DIR, cid);
-      if (!blob) { log(`  DA MISS: no blob for ${cid} — cannot re-verify, leaving for now`); continue; }
+      if (!blob) { log(`  DA MISS: no blob for ${cid} — cannot re-verify, leaving for now`); retryLater(ev); continue; }
     }
 
     // Integrity gate — identical for both DA paths: the fetched bytes MUST hash
@@ -132,21 +161,33 @@ async function scanOnce() {
     const got = ethers.sha256(blob);
     if (got !== anchor) {
       log(`  DA FAULT: sha256(fetched bytes)=${got} != on-chain anchor ${anchor} — bytes unavailable/tampered, NOT trusting them; leaving for now`);
-      continue;
+      retryLater(ev); continue;
     }
 
-    // Independent re-run of the exact verifier on the fetched bytes.
-    const tmp = `${tmpdir()}/p42-op-${key}.json`;
+    // Independent re-run of the exact verifier on the fetched bytes (written
+    // into the per-run private temp dir, not a predictable shared-tmp name).
+    const tmp = join(RUN_TMP, `${key}.json`);
     writeFileSync(tmp, blob);
     const verdict = runVerifier(PROBLEM, tmp, REPO_ROOT);
     const trueAtoms = verdict.valid ? atomsFromImprovement(verdict.improvement) : 0n;
     const fraudulent = !verdict.valid || claimedAtoms > trueAtoms;
 
+    // Decide the TRUE outcome before publishing: a fraud whose challenge bond
+    // exceeds our cap is NOT challenged, and the transcript must say so.
+    let bond = 0n;
+    let decision = fraudulent ? "CHALLENGE" : "OK";
+    if (fraudulent) {
+      const disputed = await subs.disputedEntitlementWei(id);
+      bond = await chal.requiredChallengeBond(disputed);
+      if (bond > MAX_BOND) decision = "UNPOLICED_FRAUD_BOND_OVER_CAP";
+    }
+
     // Publish transcript (durable-store stand-in: a local file + hash).
     const transcript = {
       submissionId: key, solutionCid: cid, verifier_verdict: verdict,
       claimed_atoms: claimedAtoms.toString(), true_atoms: trueAtoms.toString(),
-      decision: fraudulent ? "CHALLENGE" : "OK",
+      required_bond_wei: bond.toString(),
+      decision,
     };
     const tHash = "sha256:" + ethers.sha256(ethers.toUtf8Bytes(JSON.stringify(transcript))).slice(2);
     writeFileSync(`${TRANSCRIPTS}/${key}.json`, JSON.stringify({ ...transcript, transcript_hash: tHash }, null, 2) + "\n");
@@ -154,10 +195,17 @@ async function scanOnce() {
 
     if (!fraudulent) { seen.add(key); continue; }
 
+    // Bond-cap backstop: we can't afford this challenge, but the fraud is real.
+    // Do NOT mark it seen — keep re-scanning it — and persist a loud alert so a
+    // human / better-capitalized second operator can escalate.
+    if (bond > MAX_BOND) {
+      const alert = `${new Date().toISOString()} UNPOLICED FRAUD (bond over cap): submission #${key} requires bond ${ethers.formatEther(bond)} ETH > cap ${ethers.formatEther(MAX_BOND)} ETH — NOT challenged, needs escalation (transcript ${tHash})`;
+      console.error(`  !!! ${alert}`);
+      appendFileSync(ALERTS, alert + "\n");
+      retryLater(ev); continue;
+    }
+
     // Auto-challenge, with the bond cap as the safety backstop.
-    const disputed = await subs.disputedEntitlementWei(id);
-    const bond = await chal.requiredChallengeBond(disputed);
-    if (bond > MAX_BOND) { log(`  bond ${ethers.formatEther(bond)} > cap ${ethers.formatEther(MAX_BOND)} — SKIP (safety)`); seen.add(key); continue; }
     const reasonHash = ethers.keccak256(ethers.toUtf8Bytes(`p42-operator: verifier re-run says ${cid} is invalid/inflated (${tHash})`));
     log(`  CHALLENGING #${id}  bond=${ethers.formatEther(bond)} ETH`);
     const tx = await chal.challenge(id, reasonHash, { value: bond });
@@ -165,13 +213,22 @@ async function scanOnce() {
     log(`  challenged: ${tx.hash} (status ${rec.status})`);
     seen.add(key);
   }
-  fromBlock = latest + 1;
+  // Advance past fully-handled blocks only; rewind to the oldest reveal we left
+  // for retry so it is re-scanned next pass (seen[] holds the resolved ones).
+  fromBlock = Math.min(latest + 1, lowestPendingBlock);
 }
 
 async function main() {
   log(`P42 operator — ${wallet.address}  net=${RPC}`);
   log(`watching SubmissionManager ${manifest.contracts.submissions.address} from block ${fromBlock}`);
   if (ONCE) { await scanOnce(); log("\n[once] done."); return; }
-  for (;;) { await scanOnce(); await sleep(12000); }
+  // A transient RPC/network error must not kill the daemon: log and retry next
+  // poll (fromBlock is only advanced at the END of a successful scanOnce, so a
+  // failed pass simply re-scans the same window).
+  for (;;) {
+    try { await scanOnce(); }
+    catch (e) { console.error(`[scan error] ${e.shortMessage || e.message} — retrying next poll`); }
+    await sleep(12000);
+  }
 }
 main().catch((e) => { console.error("FAILED:", e.shortMessage || e.message); process.exit(1); });

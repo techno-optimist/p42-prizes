@@ -113,15 +113,28 @@ async function archiveCalldata(dir, reveals) {
 
     const filePath = `${outDir}/${cidToFilename(cid)}`;
 
-    // Idempotent: already pinned -> reuse the prior entry (or reconstruct one) and skip the fetch.
-    if (existsSync(filePath)) {
-      skipped++;
-      entries.push(priorByCid[cid] ?? { submissionId, cid, anchor: null, byteLength: Number(byteLen), revealTxHash: ev.transactionHash, store: "on-chain-calldata" });
-      continue;
-    }
-
     // The independent, chain-derived truth we validate the calldata against.
+    // Fetched BEFORE the idempotency check: an already-pinned file must be
+    // re-verified against this anchor too, or tampered/bit-rotted bytes would
+    // pass a re-run with mismatches=0.
     const anchor = (await subs.submissions(ev.args.submissionId)).commitDaHash;
+
+    // Idempotent: already pinned -> re-hash the on-disk bytes against the
+    // on-chain anchor (and byte length). Only verified bytes skip the fetch;
+    // a mismatch is surfaced AND the bytes are re-fetched from calldata below.
+    // Entries are rebuilt with the verified anchor — never anchor:null — so
+    // every on-chain-calldata manifest entry carries its integrity commitment.
+    if (existsSync(filePath)) {
+      const onDisk = readFileSync(filePath);
+      const diskHash = ethers.sha256(onDisk);
+      if (diskHash === anchor && BigInt(onDisk.length) === byteLen) {
+        skipped++;
+        entries.push({ submissionId, cid, anchor, byteLength: onDisk.length, revealTxHash: ev.transactionHash, store: "on-chain-calldata" });
+        continue;
+      }
+      mismatches.push({ submissionId, cid, anchor, computed: diskHash, reason: `ARCHIVE TAMPER/ROT: on-disk bytes (sha256=${diskHash}, len=${onDisk.length}) do not match anchor/event (len=${byteLen}) — re-fetching from calldata` });
+      // fall through: re-fetch from the reveal tx and overwrite the bad file
+    }
 
     const tx = await provider.getTransaction(ev.transactionHash);
     if (!tx) { mismatches.push({ submissionId, cid, reason: "reveal tx not found" }); continue; }
