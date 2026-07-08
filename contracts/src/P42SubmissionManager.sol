@@ -7,6 +7,7 @@ interface IP42PoolBalance {
 
 interface IP42CreditLedger {
     function recordCredit(address solver, uint256 atoms) external;
+    function provisionalEntitlement(address solver, uint256 additionalAtoms) external view returns (uint256);
 }
 
 /// @notice Commit/reveal/finalize scaffold for the Phase 1 testnet path.
@@ -22,13 +23,18 @@ contract P42SubmissionManager {
     error P42_EMPTY_SOLUTION_CID();
     error P42_BAD_COMMITMENT_REVEAL();
     error P42_NOT_SOLVER();
+    error P42_NOT_CHALLENGE_MANAGER();
+    error P42_CHALLENGE_MANAGER_ALREADY_SET();
     error P42_BAD_SUBMISSION_STATUS(SubmissionStatus expected, SubmissionStatus actual);
     error P42_ZERO_IMPROVEMENT();
     error P42_CHALLENGE_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
+    error P42_CHALLENGE_WINDOW_CLOSED(uint64 endsAt, uint64 nowAt);
     error P42_EMPTY_PERMANENCE_HASH();
     error P42_INSUFFICIENT_POSTING_BOND(uint256 required, uint256 received);
     error P42_UNKNOWN_SUBMISSION();
     error P42_BOND_UNDERCOVERS_ENTITLEMENT(uint256 required, uint256 posted);
+    error P42_NO_BOND_TO_CLAIM();
+    error P42_TRANSFER_FAILED();
 
     uint16 public constant MAX_ALPHA_BPS = 10_000;
 
@@ -36,7 +42,9 @@ contract P42SubmissionManager {
         None,
         Committed,
         Revealed,
-        Finalized
+        Challenged,
+        Finalized,
+        Rejected
     }
 
     struct Submission {
@@ -57,17 +65,22 @@ contract P42SubmissionManager {
     }
 
     address public immutable owner;
+    address public immutable treasury;
     IP42PoolBalance public immutable pool;
     IP42CreditLedger public immutable ledger;
     uint16 public immutable alphaBps;
     uint256 public immutable minPostingBondWei;
     uint64 public immutable challengeWindowSeconds;
+    address public challengeManager;
     bool public pausedNewActions;
+    bool private _claiming;
     uint256 public submissionCount;
 
     mapping(uint256 => Submission) public submissions;
+    mapping(address => uint256) public claimableBondWei;
 
     event NewActionsPaused(bool paused);
+    event ChallengeManagerSet(address indexed challengeManager);
     event Committed(
         uint256 indexed submissionId,
         address indexed solver,
@@ -92,16 +105,34 @@ contract P42SubmissionManager {
         bytes32 permanenceHash,
         uint256 poolAtFinalizationWei
     );
+    event SubmissionChallenged(uint256 indexed submissionId, address indexed challengeManager);
+    event SubmissionChallengeResolved(uint256 indexed submissionId, bool challengerWins);
+    event BondToppedUp(uint256 indexed submissionId, address indexed solver, uint256 amount, uint256 newBondWei);
+    event SubmissionBondClaimable(uint256 indexed submissionId, address indexed claimant, uint256 amount);
+    event BondClaimed(address indexed claimant, uint256 amount);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert P42_NOT_OWNER();
         _;
     }
 
+    modifier onlyChallengeManager() {
+        if (msg.sender != challengeManager) revert P42_NOT_CHALLENGE_MANAGER();
+        _;
+    }
+
+    modifier nonReentrant() {
+        require(!_claiming, "P42_REENTRANT_BOND_CLAIM");
+        _claiming = true;
+        _;
+        _claiming = false;
+    }
+
     constructor(
         address pool_,
         address ledger_,
         address owner_,
+        address treasury_,
         uint16 alphaBps_,
         uint256 minPostingBondWei_,
         uint64 challengeWindowSeconds_
@@ -109,11 +140,13 @@ contract P42SubmissionManager {
         require(pool_ != address(0), "P42_POOL_ZERO");
         require(ledger_ != address(0), "P42_LEDGER_ZERO");
         require(owner_ != address(0), "P42_OWNER_ZERO");
+        require(treasury_ != address(0), "P42_TREASURY_ZERO");
         if (alphaBps_ > MAX_ALPHA_BPS) revert P42_BAD_ALPHA();
         if (challengeWindowSeconds_ == 0) revert P42_BAD_WINDOW();
         pool = IP42PoolBalance(pool_);
         ledger = IP42CreditLedger(ledger_);
         owner = owner_;
+        treasury = treasury_;
         alphaBps = alphaBps_;
         minPostingBondWei = minPostingBondWei_;
         challengeWindowSeconds = challengeWindowSeconds_;
@@ -122,6 +155,13 @@ contract P42SubmissionManager {
     function setPausedNewActions(bool paused) external onlyOwner {
         pausedNewActions = paused;
         emit NewActionsPaused(paused);
+    }
+
+    function setChallengeManager(address challengeManager_) external onlyOwner {
+        require(challengeManager_ != address(0), "P42_CHALLENGE_MANAGER_ZERO");
+        if (challengeManager != address(0)) revert P42_CHALLENGE_MANAGER_ALREADY_SET();
+        challengeManager = challengeManager_;
+        emit ChallengeManagerSet(challengeManager_);
     }
 
     function requiredPostingBondForPool(uint256 poolWei) public view returns (uint256) {
@@ -162,6 +202,21 @@ contract P42SubmissionManager {
         emit Committed(submissionId, msg.sender, commitment, commitDaHash, msg.value, poolAtSubmission, required);
     }
 
+    function topUpBond(uint256 submissionId) external payable {
+        Submission storage submission = _requireSubmission(submissionId);
+        if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
+        if (
+            submission.status != SubmissionStatus.Committed
+                && submission.status != SubmissionStatus.Revealed
+                && submission.status != SubmissionStatus.Challenged
+        ) {
+            revert P42_BAD_SUBMISSION_STATUS(SubmissionStatus.Revealed, submission.status);
+        }
+        require(msg.value > 0, "P42_ZERO_BOND_TOP_UP");
+        submission.bondWei += msg.value;
+        emit BondToppedUp(submissionId, msg.sender, msg.value, submission.bondWei);
+    }
+
     function reveal(
         uint256 submissionId,
         string calldata solutionCid,
@@ -198,23 +253,57 @@ contract P42SubmissionManager {
             revert P42_CHALLENGE_WINDOW_OPEN(submission.challengeEndsAt, uint64(block.timestamp));
         }
 
-        uint256 poolAtFinalization = pool.funded();
-        uint256 required = requiredPostingBondForPool(poolAtFinalization);
+        address solver = submission.solver;
+        uint256 improvementAtoms = submission.improvementAtoms;
+        uint256 finalizingEntitlementWei = ledger.provisionalEntitlement(solver, improvementAtoms);
+        uint256 required = requiredPostingBondForPool(finalizingEntitlementWei);
         if (submission.bondWei < required) {
             revert P42_BOND_UNDERCOVERS_ENTITLEMENT(required, submission.bondWei);
         }
 
         submission.permanenceHash = permanenceHash;
         submission.status = SubmissionStatus.Finalized;
-        ledger.recordCredit(submission.solver, submission.improvementAtoms);
+        _makeBondClaimable(submissionId, solver);
+        ledger.recordCredit(solver, improvementAtoms);
 
         emit Finalized(
             submissionId,
-            submission.solver,
-            submission.improvementAtoms,
+            solver,
+            improvementAtoms,
             permanenceHash,
-            poolAtFinalization
+            pool.funded()
         );
+    }
+
+    function markChallenged(uint256 submissionId) external onlyChallengeManager {
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Revealed);
+        if (block.timestamp > submission.challengeEndsAt) {
+            revert P42_CHALLENGE_WINDOW_CLOSED(submission.challengeEndsAt, uint64(block.timestamp));
+        }
+        submission.status = SubmissionStatus.Challenged;
+        emit SubmissionChallenged(submissionId, msg.sender);
+    }
+
+    function resolveChallenge(uint256 submissionId, bool challengerWins) external onlyChallengeManager {
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Challenged);
+        if (challengerWins) {
+            submission.status = SubmissionStatus.Rejected;
+            _makeBondClaimable(submissionId, treasury);
+        } else {
+            submission.status = SubmissionStatus.Revealed;
+        }
+        emit SubmissionChallengeResolved(submissionId, challengerWins);
+    }
+
+    function claimBond() external nonReentrant {
+        uint256 amount = claimableBondWei[msg.sender];
+        if (amount == 0) revert P42_NO_BOND_TO_CLAIM();
+        claimableBondWei[msg.sender] = 0;
+        (bool ok,) = payable(msg.sender).call{value: amount}("");
+        if (!ok) revert P42_TRANSFER_FAILED();
+        emit BondClaimed(msg.sender, amount);
     }
 
     function bondCoversEntitlement(uint256 submissionId, uint256 entitlementWei) public view returns (bool) {
@@ -298,5 +387,14 @@ contract P42SubmissionManager {
         if (submission.status != expected) {
             revert P42_BAD_SUBMISSION_STATUS(expected, submission.status);
         }
+    }
+
+    function _makeBondClaimable(uint256 submissionId, address claimant) private {
+        Submission storage submission = submissions[submissionId];
+        uint256 bondWei = submission.bondWei;
+        if (bondWei == 0) return;
+        submission.bondWei = 0;
+        claimableBondWei[claimant] += bondWei;
+        emit SubmissionBondClaimable(submissionId, claimant, bondWei);
     }
 }

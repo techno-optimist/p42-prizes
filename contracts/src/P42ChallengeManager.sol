@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+interface IP42SubmissionChallengeHook {
+    function markChallenged(uint256 submissionId) external;
+    function resolveChallenge(uint256 submissionId, bool challengerWins) external;
+}
+
 /// @notice Optimistic challenge scaffold for Phase 1.
 /// It enforces the economic and transcript gates while the verifier execution
 /// proof path remains off-chain/testnet-only.
@@ -42,6 +47,7 @@ contract P42ChallengeManager {
     address public immutable owner;
     address public immutable resolver;
     address public immutable treasury;
+    IP42SubmissionChallengeHook public immutable submissionManager;
     uint64 public immutable challengeWindowSeconds;
     uint16 public immutable betaBps;
     uint16 public immutable rerunCostMultiplierBps;
@@ -95,6 +101,7 @@ contract P42ChallengeManager {
         address owner_,
         address resolver_,
         address treasury_,
+        address submissionManager_,
         uint64 challengeWindowSeconds_,
         uint16 betaBps_,
         uint256 minCounterBondWei_,
@@ -105,11 +112,13 @@ contract P42ChallengeManager {
         require(owner_ != address(0), "P42_OWNER_ZERO");
         require(resolver_ != address(0), "P42_RESOLVER_ZERO");
         require(treasury_ != address(0), "P42_TREASURY_ZERO");
+        require(submissionManager_ != address(0), "P42_SUBMISSION_MANAGER_ZERO");
         require(challengeWindowSeconds_ > 0, "P42_WINDOW_ZERO");
         if (betaBps_ > MAX_BETA_BPS) revert P42_BAD_BETA();
         owner = owner_;
         resolver = resolver_;
         treasury = treasury_;
+        submissionManager = IP42SubmissionChallengeHook(submissionManager_);
         challengeWindowSeconds = challengeWindowSeconds_;
         betaBps = betaBps_;
         minCounterBondWei = minCounterBondWei_;
@@ -146,6 +155,8 @@ contract P42ChallengeManager {
 
         uint256 required = requiredChallengeBond(finalizingEntitlementWei);
         if (msg.value < required) revert P42_INSUFFICIENT_CHALLENGE_BOND(required, msg.value);
+
+        submissionManager.markChallenged(submissionId);
 
         uint64 disputeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
         challenges[submissionId] = Challenge({
@@ -194,6 +205,8 @@ contract P42ChallengeManager {
         } else {
             claimableBondWei[treasury] += current.challengeBondWei;
         }
+        claimableBondWei[msg.sender] += msg.value;
+        submissionManager.resolveChallenge(submissionId, challengerWins);
 
         emit ResolverTranscriptPosted(
             submissionId,

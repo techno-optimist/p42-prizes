@@ -11,6 +11,7 @@ contract P42PayoutLedger {
     error P42_NOT_OWNER();
     error P42_NOT_POOL();
     error P42_NOT_CREDIT_RECORDER();
+    error P42_CREDIT_RECORDER_ALREADY_SET();
     error P42_CLOSED();
     error P42_NOT_CLOSED();
     error P42_PAUSED_NEW_ACTIONS();
@@ -68,12 +69,17 @@ contract P42PayoutLedger {
 
     function setCreditRecorder(address recorder) external onlyOwner {
         require(recorder != address(0), "P42_RECORDER_ZERO");
+        if (creditRecorder != address(0)) revert P42_CREDIT_RECORDER_ALREADY_SET();
         creditRecorder = recorder;
         emit CreditRecorderSet(recorder);
     }
 
     function recordCredit(address solver, uint256 atoms) external {
-        if (msg.sender != owner && msg.sender != creditRecorder) revert P42_NOT_CREDIT_RECORDER();
+        if (creditRecorder == address(0)) {
+            if (msg.sender != owner) revert P42_NOT_CREDIT_RECORDER();
+        } else if (msg.sender != creditRecorder) {
+            revert P42_NOT_CREDIT_RECORDER();
+        }
         if (closed) revert P42_CLOSED();
         if (pausedNewActions) revert P42_PAUSED_NEW_ACTIONS();
         if (atoms == 0) revert P42_ZERO_CREDIT();
@@ -81,6 +87,15 @@ contract P42PayoutLedger {
         creditAtomsOf[solver] += atoms;
         totalCreditAtoms += atoms;
         emit CreditRecorded(solver, atoms, totalCreditAtoms);
+    }
+
+    function provisionalEntitlement(address solver, uint256 additionalAtoms) external view returns (uint256) {
+        uint256 denominator = totalCreditAtoms + additionalAtoms;
+        if (denominator == 0) return 0;
+        uint256 poolBalance = IP42EscrowPool(pool).funded();
+        uint256 reserve = poolBalance * feeBps / 10_000;
+        uint256 distributable = poolBalance - reserve;
+        return distributable * (creditAtomsOf[solver] + additionalAtoms) / denominator;
     }
 
     function close() external onlyOwner {

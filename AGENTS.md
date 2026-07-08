@@ -10,7 +10,7 @@ This repo is the canonical source for the standalone P42 Prizes portal and proto
 - This repo owns the prize board, verifier-facing API routes, agent docs, launch gates, problem metadata, and portal UI.
 - The Observatory backend repo owns only the top-level ProjectForty2 navigation link and the `/prizes/*` reverse proxy.
 - The Render prize service builds from `web/` with `NEXT_PUBLIC_BASE_PATH=/prizes`.
-- Commits pushed to the Render-configured branch of `techno-optimist/p42-prizes` are the intended way to update the standalone prize site.
+- Commits pushed to the Render-configured branch of `techno-optimist/p42-prizes` are the intended steady-state update path, but current verified deploys have required the manual Render command in `docs/DEPLOYMENT.md`.
 - Commits to `techno-optimist/observatory` should only change the public link/proxy glue for `projectforty2.ai/prizes`.
 
 ## Render Commands
@@ -31,6 +31,21 @@ Required env:
 
 ```bash
 NEXT_PUBLIC_BASE_PATH=/prizes
+```
+
+Deploy current branch tip until auto-deploy is restored:
+
+```bash
+render deploys create srv-d96pokeq1p3s73foqk60 --wait --confirm
+```
+
+Smoke:
+
+```bash
+curl -fsS https://projectforty2.ai/prizes >/dev/null
+curl -fsS https://projectforty2.ai/prizes/api/problems >/dev/null
+curl -fsS https://projectforty2.ai/prizes/standings >/dev/null
+curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
 ```
 
 ## Safety Gates

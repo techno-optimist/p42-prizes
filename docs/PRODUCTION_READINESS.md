@@ -16,10 +16,10 @@ ledger, exit criteria, and external sign-offs.
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, EIP-191 solver ownership signature for non-local commits, and local contract commitment helper | Deployed on-chain commit, verified DA receipt at commit block, verified Arweave permanence at finalize |
 | Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; `admit-host`/`admit-matrix` enforce typed N-host evidence locally | Canonical sandbox runner, pinned image digest, collected N-host identical verdict matrix artifacts |
-| Settlement math | Final-denominator pool simulator, incremental portal credit model, and Hardhat scaffold tests for escrow-until-close, final-denominator claims, unchallenged reveal/finalize, and ledger credit | Complete deployed contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
-| Challenges | Endpoint returns `501`; local Hardhat challenge scaffold covers counter-bond sizing and one active challenge per submission | Integrated bond escrow, resolver transcript outcome wired into finalization, slashing path |
-| Resolver | Local transcript-required resolver scaffold with per-decision bond | Verifiable transcript committee on testnet; fraud-proof track before scale |
-| Contracts | Local Hardhat 3 scaffold for problem registry/freezing, pool, payout ledger, submission bond checks, CID-bound reveal/finalize, DA/permanence hash gates, challenge manager, and resolver transcript gate | Real DA/Arweave receipt verification, indexer contracts/jobs, challenge/resolver-to-finalization wiring, Base Sepolia deployment, audit, fuzzing, timelock/multisig rehearsals |
+| Settlement math | Final-denominator pool simulator, incremental portal credit model, and Hardhat scaffold tests for escrow-until-close, final-denominator claims, reveal/finalize, challenge outcomes, bond return/slash, and ledger credit | Complete deployed contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
+| Challenges | Endpoint returns `501`; local Hardhat challenge scaffold covers counter-bond sizing, one active challenge per submission, open-challenge finalization block, resolver outcome hooks, and challenge-bond routing | Integrated testnet bond escrow, resolver transcript flow, fraud-window/slashing path |
+| Resolver | Local transcript-required resolver scaffold with per-decision bond and immediate bond release | Verifiable transcript committee on testnet; resolver-bond fraud window/slashing; fraud-proof track before scale |
+| Contracts | Local Hardhat 3 scaffold for problem registry/freezing, pool, payout ledger, one-time recorder activation, submission bond checks/top-ups, CID-bound reveal/finalize, DA/permanence hash gates, challenge manager, resolver transcript gate, and bond accounting | Real DA/Arweave receipt verification, indexer contracts/jobs, close/finalize phase control, Base Sepolia deployment, audit, fuzzing, timelock/multisig rehearsals |
 | Legal | Spec risk register only | Written counsel memo covering prize/bounty, KYC/sanctions, tax, ToS |
 | Operations | This register plus incident/governance docs | Named owners, monitored deploys, key custody, incident drills |
 
@@ -45,7 +45,7 @@ ledger, exit criteria, and external sign-offs.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
 - Local/Render verification covers problem validation, certified-path exactness lint, Python tests, seed verification, web typecheck, web tests, production build, and `npm audit`. Publishing the GitHub Actions workflow is pending a repo token or human owner with `workflow` scope.
 - N-host verifier admission now has typed host and matrix artifacts: `p42-prizes admit-host` emits repeated-run host evidence, and `p42-prizes admit-matrix` rejects duplicate hosts, missing x86/ARM coverage, insufficient glibc diversity, or mismatched canonical `VerdictReport` hashes.
-- Contract scaffold now compiles and tests under Hardhat 3 with zero npm audit findings: problem registry/freezing, escrow pool, final-denominator payout ledger, submission bond pricing, CID-bound reveal, commit-time DA hash requirement, challenge-window finalization, finalize-time permanence hash requirement, ledger credit recording, challenge manager, resolver transcript gate, and 17 red-team invariant tests.
+- Contract scaffold now compiles and tests under Hardhat 3 with zero npm audit findings: problem registry/freezing, escrow pool, final-denominator payout ledger, one-time credit-recorder activation, submission bond pricing/top-ups, CID-bound reveal, commit-time DA hash gate, challenge-window finalization, finalize-time permanence hash gate, challenge/resolver outcome hooks, ledger credit recording, solver-bond return/slash, challenge-bond routing, resolver-bond release, and 17 red-team invariant tests.
 
 ## Known Production Blockers
 
@@ -54,7 +54,7 @@ ledger, exit criteria, and external sign-offs.
 - Render can be configured with `P42_PORTAL_STATE_PATH=/app/data/portal-state.json` on a persistent disk for demo continuity, but that disk is not settlement truth.
 - No distributed idempotency store with atomic reserve/commit semantics.
 - No production wallet session policy, distributed rate limiting, API keys, abuse controls, or payload quarantine.
-- No complete/deployed on-chain system: the local scaffold still lacks real DA/permanence receipt verification, challenge/resolver-to-finalization wiring, bond return/slashing, indexer, deployment scripts, verified Base Sepolia addresses, and audit.
+- No complete/deployed on-chain system: the local scaffold still lacks real DA/permanence receipt verification, close/finalize phase control, resolver-bond fraud window/slashing, indexer, deployment scripts, verified Base Sepolia addresses, fuzzing, and audit.
 - No reviewed Base mainnet pool addresses or enabled Coinbase Onramp funding sessions.
 - No permanent DA or CID retrieval for `bafy...` / Arweave payloads.
 - No containerized canonical sandbox runner for arbitrary problem repos.
