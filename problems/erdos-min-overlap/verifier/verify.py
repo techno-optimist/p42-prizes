@@ -18,7 +18,18 @@ N = 2400
 HALF_N = 1200
 MAX_DENOMINATOR_POWER = 128
 MAX_SOLUTION_BYTES = 256 * 1024
-SEED_BEST = Fraction(380926853433087, 1000000000000000)
+# Audit F1: the previous seed pinned the published Haugland upper bound
+# (0.380926853433087) — a real record — but the bundled hyra-upper witness
+# verifies BELOW it (~0.3808669), so leaving the Haugland seed would let
+# anyone resubmit the bundled witness for a false prize. The seed is therefore
+# the bundled witness's exact score.
+# TODO(seed): confirm whether the bundled witness is a genuine published
+# improvement over Haugland or the witness should be withdrawn; owner must
+# confirm the true record before funding.
+SEED_BEST = Fraction(
+    1424992289798782609633201801352767458976314440679252577,
+    3741444197802851304404516484910431627947663875649308401,
+)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 
 

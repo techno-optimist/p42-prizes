@@ -26,7 +26,8 @@ contract P42SubmissionManager {
     error P42_NOT_CHALLENGE_MANAGER();
     error P42_CHALLENGE_MANAGER_ALREADY_SET();
     error P42_BAD_SUBMISSION_STATUS(SubmissionStatus expected, SubmissionStatus actual);
-    error P42_ZERO_IMPROVEMENT();
+    error P42_NOT_STRICT_IMPROVEMENT(int256 bestScoreAtoms, int256 claimedScoreAtoms);
+    error P42_SCORE_ATOMS_OUT_OF_RANGE(int256 scoreAtoms);
     error P42_CHALLENGE_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_CHALLENGE_WINDOW_CLOSED(uint64 endsAt, uint64 nowAt);
     error P42_REVEAL_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
@@ -52,6 +53,26 @@ contract P42SubmissionManager {
     /// on-chain sha256 anchor (`commitDaHash`).
     uint256 public constant MAX_ONCHAIN_SOLUTION_BYTES = 1_048_576; // 1 MiB
 
+    /// @notice Shared fixed-point convention for absolute scores. Verifiers
+    /// report an exact rational minimization score (lower is better: a defect
+    /// count, a bound value, ...) and every off-chain component encodes it as
+    /// score_atoms = ceil(score * SCORE_ATOM_SCALE). CEIL means a score is
+    /// never under-reported, so the on-chain marginal credit is never
+    /// over-stated (conservative on the payout side); for integer scores the
+    /// encoding is exact. The contract itself only compares and subtracts
+    /// atoms — the scale is anchored here so all components agree on one
+    /// quantization (fine enough for every problem's MIN_IMPROVEMENT).
+    uint256 public constant SCORE_ATOM_SCALE = 1e18;
+
+    /// @dev Seeds and claims are confined to (-2^254, 2^254) so any frontier
+    /// marginal (bestScoreAtoms - claimedScoreAtoms) always fits in
+    /// int256/uint256. Without this bound, a griefing claim near
+    /// type(int256).min would make finalize / pendingCreditAtoms /
+    /// disputedEntitlementWei panic on checked subtraction, poisoning the
+    /// submission into an unfinalizable, unchallengeable state.
+    int256 internal constant MIN_SCORE_ATOMS_BOUND = -(2 ** 254);
+    int256 internal constant MAX_SCORE_ATOMS_BOUND = 2 ** 254;
+
     enum SubmissionStatus {
         None,
         Committed,
@@ -68,7 +89,11 @@ contract P42SubmissionManager {
         uint256 bondWei;
         uint256 poolAtSubmissionWei;
         uint256 requiredBondWei;
+        /// Advisory display-only figure supplied at reveal. NEVER drives
+        /// payout: credit is derived from claimedScoreAtoms vs the live
+        /// frontier at finalization (F1).
         uint256 improvementAtoms;
+        /// The submission's ABSOLUTE score in atoms (lower is better).
         int256 claimedScoreAtoms;
         string solutionCid;
         bytes32 permanenceHash;
@@ -94,11 +119,25 @@ contract P42SubmissionManager {
     /// @notice Max solution bytes accepted in a reveal tx (only meaningful when
     /// `onchainDa`). Bounds calldata gas and blocks calldata-bomb griefing.
     uint256 public immutable maxSolutionBytes;
+    /// @notice Frontier seed: ceil(true_best_known_score * SCORE_ATOM_SCALE)
+    /// at deployment. The payable frontier starts here — only strictly better
+    /// (lower) absolute scores can reveal, and credit is the marginal
+    /// reduction from the live frontier, never the seed-relative distance.
+    int256 public immutable seedScoreAtoms;
+    /// @notice Minimum marginal reduction (in score atoms) that earns credit
+    /// at finalization. A finalizing submission whose live marginal is below
+    /// this floor is treated as superseded: credit 0, frontier untouched,
+    /// bond returned.
+    uint256 public immutable minImprovementAtoms;
     address public challengeManager;
     bool public pausedNewActions;
     bool private _claiming;
     uint256 public submissionCount;
     uint256 public openSubmissionCount;
+    /// @notice Live per-problem frontier best (absolute score atoms; lower is
+    /// better). Initialized to `seedScoreAtoms`; advances ONLY at
+    /// finalization, so the challenge window fully guards every advance.
+    int256 public bestScoreAtoms;
 
     mapping(uint256 => Submission) public submissions;
     mapping(address => uint256) public claimableBondWei;
@@ -123,10 +162,17 @@ contract P42SubmissionManager {
         uint64 challengeEndsAt,
         uint256 solutionBytesLength
     );
+    /// @param creditAtoms The MARGINAL frontier reduction credited to the
+    /// solver (previous best - claimed score), 0 when the submission was
+    /// superseded by a better finalized score. This — never a seed-relative
+    /// improvement — is what the payout ledger sums.
+    /// @param bestScoreAtoms The live frontier after this finalization.
     event Finalized(
         uint256 indexed submissionId,
         address indexed solver,
-        uint256 improvementAtoms,
+        uint256 creditAtoms,
+        int256 claimedScoreAtoms,
+        int256 bestScoreAtoms,
         bytes32 permanenceHash,
         uint256 poolAtFinalizationWei
     );
@@ -163,7 +209,9 @@ contract P42SubmissionManager {
         uint256 minPostingBondWei_,
         uint64 challengeWindowSeconds_,
         bool onchainDa_,
-        uint256 maxSolutionBytes_
+        uint256 maxSolutionBytes_,
+        int256 seedScoreAtoms_,
+        uint256 minImprovementAtoms_
     ) {
         require(pool_ != address(0), "P42_POOL_ZERO");
         require(ledger_ != address(0), "P42_LEDGER_ZERO");
@@ -187,6 +235,12 @@ contract P42SubmissionManager {
         challengeWindowSeconds = challengeWindowSeconds_;
         onchainDa = onchainDa_;
         maxSolutionBytes = maxSolutionBytes_;
+        if (seedScoreAtoms_ <= MIN_SCORE_ATOMS_BOUND || seedScoreAtoms_ >= MAX_SCORE_ATOMS_BOUND) {
+            revert P42_SCORE_ATOMS_OUT_OF_RANGE(seedScoreAtoms_);
+        }
+        seedScoreAtoms = seedScoreAtoms_;
+        minImprovementAtoms = minImprovementAtoms_;
+        bestScoreAtoms = seedScoreAtoms_;
     }
 
     function setPausedNewActions(bool paused) external onlyOwner {
@@ -255,6 +309,14 @@ contract P42SubmissionManager {
         emit BondToppedUp(submissionId, msg.sender, msg.value, submission.bondWei);
     }
 
+    /// @param claimedScoreAtoms The submission's ABSOLUTE score in atoms
+    /// (score_atoms = ceil(score * SCORE_ATOM_SCALE); lower is better). It
+    /// must strictly beat the CURRENT frontier (`bestScoreAtoms`) at reveal
+    /// time. Credit at finalization is the marginal reduction against the
+    /// live frontier, which may have advanced further by then.
+    /// @param improvementAtoms Advisory display value only. It does NOT drive
+    /// payout — credit is derived on-chain from `claimedScoreAtoms` vs the
+    /// live frontier.
     /// @param solution The raw solution bytes. For on-chain-DA problems these
     /// ride this tx's calldata and the contract enforces sha256(solution) equals
     /// the `commitDaHash` anchor bound at commit — a consensus-enforced proof
@@ -274,7 +336,27 @@ contract P42SubmissionManager {
         if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
         _requireStatus(submission, SubmissionStatus.Committed);
         if (bytes(solutionCid).length == 0) revert P42_EMPTY_SOLUTION_CID();
-        if (improvementAtoms == 0) revert P42_ZERO_IMPROVEMENT();
+        // Seed gate (F1): the claimed ABSOLUTE score must strictly beat the
+        // IMMUTABLE seed (the starting frontier). We gate on `seedScoreAtoms`,
+        // NOT the live `bestScoreAtoms`: the seed is fixed at commit time, so an
+        // honest solver whose commit is later superseded (a rival advances
+        // `bestScoreAtoms` between this solver's commit and reveal) can still
+        // reveal and then finalize with 0 credit and a FULLY reclaimable bond —
+        // gating on the moving best would instead brick their submission in
+        // Committed and route the bond to the treasury (a front-runnable
+        // bond-seizure grief). Worse-than-frontier-but-better-than-seed claims
+        // are still harmless: finalize() recomputes against the live best and
+        // credits 0.
+        if (claimedScoreAtoms >= seedScoreAtoms) {
+            revert P42_NOT_STRICT_IMPROVEMENT(seedScoreAtoms, claimedScoreAtoms);
+        }
+        // Range guard: with the seed bounded above by MAX_SCORE_ATOMS_BOUND
+        // and every accepted claim bounded below here, bestScoreAtoms -
+        // claimedScoreAtoms can never overflow int256 — finalize and the
+        // challenge views stay panic-free for adversarial claims.
+        if (claimedScoreAtoms <= MIN_SCORE_ATOMS_BOUND) {
+            revert P42_SCORE_ATOMS_OUT_OF_RANGE(claimedScoreAtoms);
+        }
 
         bytes32 revealedCommitment = keccak256(
             bytes(commitPreimageWithDa(solutionCid, msg.sender, submission.commitDaHash, salt))
@@ -314,6 +396,16 @@ contract P42SubmissionManager {
     /// txid hash). No longer required: on-chain-DA problems already have the
     /// bytes on-chain (verified at reveal), and off-chain-DA problems are gated
     /// by the `commitDaHash` anchor. Pass 0 unless recording a mirror.
+    ///
+    /// Credit is recomputed here against the LIVE frontier (it may have
+    /// advanced since reveal): creditAtoms = bestScoreAtoms - claimedScoreAtoms
+    /// when that marginal is still >= minImprovementAtoms, else 0 (the
+    /// submission was superseded by a better finalized score). The ledger sums
+    /// these marginals, so each solver's pool share is exactly their marginal
+    /// frontier reduction over the total reduction — a free-rider on someone
+    /// else's frontier is paid only their own small delta (F1). Either way the
+    /// submission finalizes and the solver's bond becomes claimable: an honest
+    /// solver who was merely beaten is never bond-slashed.
     function finalize(uint256 submissionId, bytes32 permanenceHash) external {
         Submission storage submission = _requireSubmission(submissionId);
         if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
@@ -323,23 +415,42 @@ contract P42SubmissionManager {
         }
 
         address solver = submission.solver;
-        uint256 improvementAtoms = submission.improvementAtoms;
-        uint256 finalizingEntitlementWei = ledger.provisionalEntitlement(solver, improvementAtoms);
-        uint256 required = requiredPostingBondForPool(finalizingEntitlementWei);
-        if (submission.bondWei < required) {
-            revert P42_BOND_UNDERCOVERS_ENTITLEMENT(required, submission.bondWei);
+        int256 claimed = submission.claimedScoreAtoms;
+        uint256 creditAtoms = 0;
+        if (claimed < bestScoreAtoms) {
+            uint256 marginal = uint256(bestScoreAtoms - claimed);
+            if (marginal >= minImprovementAtoms) {
+                creditAtoms = marginal;
+            }
+        }
+
+        // The bond must cover alpha * the entitlement this finalization is
+        // claiming, sized against the MARGINAL credit. A superseded
+        // submission claims nothing (creditAtoms == 0), so its bond is
+        // trivially sufficient and is simply returned.
+        if (creditAtoms != 0) {
+            uint256 finalizingEntitlementWei = ledger.provisionalEntitlement(solver, creditAtoms);
+            uint256 required = requiredPostingBondForPool(finalizingEntitlementWei);
+            if (submission.bondWei < required) {
+                revert P42_BOND_UNDERCOVERS_ENTITLEMENT(required, submission.bondWei);
+            }
         }
 
         submission.permanenceHash = permanenceHash;
         submission.status = SubmissionStatus.Finalized;
         _makeBondClaimable(submissionId, solver);
         _decrementOpenSubmission();
-        ledger.recordCredit(solver, improvementAtoms);
+        if (creditAtoms != 0) {
+            bestScoreAtoms = claimed;
+            ledger.recordCredit(solver, creditAtoms);
+        }
 
         emit Finalized(
             submissionId,
             solver,
-            improvementAtoms,
+            creditAtoms,
+            claimed,
+            bestScoreAtoms,
             permanenceHash,
             pool.funded()
         );
@@ -380,14 +491,29 @@ contract P42SubmissionManager {
         emit SubmissionChallengeResolved(submissionId, challengerWins);
     }
 
+    /// @notice The marginal credit (in score atoms) a submission would earn if
+    /// it finalized against the CURRENT frontier: bestScoreAtoms -
+    /// claimedScoreAtoms when that is >= minImprovementAtoms, else 0. Advisory
+    /// for pending submissions — the frontier may still advance before their
+    /// finalization.
+    function pendingCreditAtoms(uint256 submissionId) public view returns (uint256) {
+        Submission storage submission = _requireSubmission(submissionId);
+        int256 claimed = submission.claimedScoreAtoms;
+        if (claimed >= bestScoreAtoms) return 0;
+        uint256 marginal = uint256(bestScoreAtoms - claimed);
+        return marginal >= minImprovementAtoms ? marginal : 0;
+    }
+
     /// @notice Ledger-derived entitlement that a Revealed submission is claiming.
     /// The challenge manager sizes its value-proportional counter-bond from this
     /// trusted on-chain figure instead of a caller-supplied argument (H2). It
-    /// mirrors the entitlement computation performed at finalization.
+    /// mirrors the entitlement computation performed at finalization: the
+    /// disputed value is the MARGINAL frontier reduction, not the advisory
+    /// improvement figure (F1).
     function disputedEntitlementWei(uint256 submissionId) external view returns (uint256) {
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Revealed);
-        return ledger.provisionalEntitlement(submission.solver, submission.improvementAtoms);
+        return ledger.provisionalEntitlement(submission.solver, pendingCreditAtoms(submissionId));
     }
 
     /// @notice Minimal solver lookup used by the challenge manager to reject

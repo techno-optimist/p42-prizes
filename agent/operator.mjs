@@ -25,7 +25,7 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, ex
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { atomsFromImprovement, runVerifier } from "./lib.mjs";
+import { atomsFromImprovement, chainScoreAtoms, problemObjective, runVerifier } from "./lib.mjs";
 import { getBlob } from "./da-local.mjs";
 import { fetchFromArweave, findTxidByCid } from "./da-arweave.mjs";
 
@@ -73,6 +73,10 @@ const ALERTS = `${TRANSCRIPTS}/ALERTS.log`;
 // inputs — never a predictable name in the shared os.tmpdir() root, which is
 // symlink-followable by other local users.
 const RUN_TMP = mkdtempSync(join(tmpdir(), "p42-op-"));
+// Objective direction (problem.yaml): maximize problems ride the on-chain
+// minimization frontier negated — the operator must re-encode its re-run score
+// with the exact same mapping the honest solver uses (see lib.mjs).
+const objective = problemObjective(resolve(PROBLEM));
 const seen = new Set();
 let fromBlock = Number(arg("from-block", manifest.indexer?.startBlock ?? 0));
 
@@ -170,7 +174,24 @@ async function scanOnce() {
     writeFileSync(tmp, blob);
     const verdict = runVerifier(PROBLEM, tmp, REPO_ROOT);
     const trueAtoms = verdict.valid ? atomsFromImprovement(verdict.improvement) : 0n;
-    const fraudulent = !verdict.valid || claimedAtoms > trueAtoms;
+    // ABSOLUTE score fraud check (audit F1): claimedScoreAtoms is the payout
+    // driver (marginal credit = previous best - claimed score), so a solver who
+    // UNDER-claims its score (claimed lower/better than the re-derived truth)
+    // inflates its marginal. Re-encode the re-run's exact score with the shared
+    // ceil(score * 1e18) convention and compare to the on-chain claim.
+    const claimedScoreAtoms = sub.claimedScoreAtoms;
+    const trueScoreAtoms = verdict.valid ? chainScoreAtoms(verdict.score, objective.direction) : null;
+    const scoreUnderClaimed = verdict.valid && claimedScoreAtoms < trueScoreAtoms;
+    // Challenge ONLY on the two conditions that actually drive payout: an invalid
+    // solution, or an under-claimed absolute score (which inflates the marginal
+    // credit). The old 1e6 advisory-improvement comparison (claimedAtoms >
+    // trueAtoms) is NOT a challenge trigger: it drives no payout and, since a
+    // genuine improvement in [1e-12, 1e-6) floors to trueAtoms=0, an honest
+    // client reporting any nonzero display figure would be baited into a
+    // wrongful (bond-losing) challenge (audit F1 review). Keep it as a logged
+    // discrepancy only.
+    const improvementDiscrepancy = claimedAtoms > trueAtoms;
+    const fraudulent = !verdict.valid || scoreUnderClaimed;
 
     // Decide the TRUE outcome before publishing: a fraud whose challenge bond
     // exceeds our cap is NOT challenged, and the transcript must say so.
@@ -186,12 +207,16 @@ async function scanOnce() {
     const transcript = {
       submissionId: key, solutionCid: cid, verifier_verdict: verdict,
       claimed_atoms: claimedAtoms.toString(), true_atoms: trueAtoms.toString(),
+      improvement_discrepancy: improvementDiscrepancy, // advisory only; NOT a challenge trigger
+      claimed_score_atoms: claimedScoreAtoms.toString(),
+      true_score_atoms: trueScoreAtoms === null ? null : trueScoreAtoms.toString(),
+      objective_direction: objective.direction,
       required_bond_wei: bond.toString(),
       decision,
     };
     const tHash = "sha256:" + ethers.sha256(ethers.toUtf8Bytes(JSON.stringify(transcript))).slice(2);
     writeFileSync(`${TRANSCRIPTS}/${key}.json`, JSON.stringify({ ...transcript, transcript_hash: tHash }, null, 2) + "\n");
-    log(`  re-run: valid=${verdict.valid} true_improvement=${verdict.improvement ?? "0/1"} -> ${fraudulent ? "FRAUDULENT" : "honest"}`);
+    log(`  re-run: valid=${verdict.valid} true_improvement=${verdict.improvement ?? "0/1"} true_score_atoms=${trueScoreAtoms ?? "n/a"} claimed_score_atoms=${claimedScoreAtoms}${scoreUnderClaimed ? " (UNDER-CLAIMED SCORE)" : ""} -> ${fraudulent ? "FRAUDULENT" : "honest"}`);
 
     if (!fraudulent) { seen.add(key); continue; }
 

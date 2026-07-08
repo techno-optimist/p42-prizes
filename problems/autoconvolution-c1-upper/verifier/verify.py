@@ -16,7 +16,15 @@ VERIFIER_IMAGE = "sha256:local-dev"
 N = 90000
 MAX_VALUE = 10**36
 MAX_SOLUTION_BYTES = 5 * 1024 * 1024
-SEED_BEST = Fraction(2, 1)
+# Audit F1: the old seed 2/1 was the trivial upper bound, but the bundled Hyra
+# witness verifies to ~1.50275 — a known achievable result the seed must be at
+# least as good as, or resubmitting it mints a false prize.
+# TODO(seed): confirm this is the true published best-known c1 upper bound for
+# this pinned functional, not merely the bundled witness.
+SEED_BEST = Fraction(
+    15041971118343665197137380984232095998912388144895190342004000000000000,
+    10008961702715850455872036862958802052289156042841554837278437518918769,
+)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 
 

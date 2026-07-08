@@ -46,15 +46,20 @@ ignored.
 
 ## Score And Improvement
 
-The score is serialized as an exact rational string. The local packaging seed
-is `-1/1`. Improvement is:
+The score is serialized as an exact rational string. The seed is the bundled
+rational curve-sampling witness's exact score
+`-16684282317138839/23437500000000000` — NOT the trivial floor `-1/1` (audit
+F1: a seed looser than a known construction lets anyone resubmit it for a
+false prize). Improvement is:
 
 ```text
-improvement = max(0, score - (-1))
+improvement = max(0, score - (-16684282317138839/23437500000000000))
 ```
 
-The bundled rational curve-sampling witness verifies to:
+The bundled rational curve-sampling witness verifies to score
+`-16684282317138839/23437500000000000` and improvement `0/1` — it is the
+frontier, not an improvement over it.
 
-```text
--16684282317138839/23437500000000000
-```
+TODO(seed): confirm the true best-known score for this slope-3 area
+functional (the historical Arena incumbent artifact is missing), not merely
+the bundled witness.

@@ -38,7 +38,7 @@ import { ethers } from "ethers";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { atomsFromImprovement, runVerifier } from "./lib.mjs";
+import { atomsFromImprovement, chainScoreAtoms, problemObjective, runVerifier } from "./lib.mjs";
 import { putBlob } from "./da-local.mjs";
 import { uploadToArweave } from "./da-arweave.mjs";
 
@@ -59,8 +59,9 @@ const FUND = arg("fund", null);        // ETH string, e.g. "0.003"
 const CLOSE = arg("close", false);
 const DA_DIR = arg("da-dir", null);    // off-chain content-addressed store dir (REQUIRED for off-chain-DA problems; optional mirror otherwise)
 const ARWEAVE = arg("arweave", false); // OPTIONAL: mirror/store the solution on live Arweave (Irys devnet). Only needed as an off-chain store for off-chain-DA problems; a mirror otherwise. The on-chain anchor is always sha256(bytes), never the txid.
-const FORCE = arg("force", false);     // adversarial test: submit even if the local verifier says invalid
+const FORCE = arg("force", false);     // adversarial test: submit even if the local verifier says invalid / the score is not a frontier improvement
 const IMPROVEMENT_OVERRIDE = arg("improvement", null); // adversarial test: claim an inflated improvement
+const SCORE_ATOMS_OVERRIDE = arg("claim-score-atoms", null); // adversarial test: under-claim the absolute score to inflate the marginal
 const SUBMIT_ONLY = arg("submit-only", false);         // stop after reveal (leave it for the operator to challenge)
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 if (!MANIFEST || !PROBLEM || !SOLUTION) {
@@ -78,10 +79,14 @@ const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
 const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
 const solver = wallet.address;
+// NonceManager tracks the nonce locally across the back-to-back lifecycle txs;
+// bare Wallet re-queries getTransactionCount each send, which races the RPC's
+// (or a local automining node's) view and throws "nonce has already been used".
+const signer = new ethers.NonceManager(wallet);
 
-const pool = new ethers.Contract(manifest.contracts.pool.address, abi("P42BountyPool"), wallet);
-const ledger = new ethers.Contract(manifest.contracts.ledger.address, abi("P42PayoutLedger"), wallet);
-const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
+const pool = new ethers.Contract(manifest.contracts.pool.address, abi("P42BountyPool"), signer);
+const ledger = new ethers.Contract(manifest.contracts.ledger.address, abi("P42PayoutLedger"), signer);
+const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), signer);
 
 const receipts = [];
 async function send(label, txPromise) {
@@ -102,11 +107,37 @@ async function main() {
   log(`[0] self-verify: valid=${verdict.valid} improvement=${verdict.improvement} score=${verdict.score}`);
   if (!verdict.valid && !FORCE) { log("solution is not valid per the local verifier — aborting (use --force to submit anyway)."); process.exit(1); }
   const claimedImprovement = IMPROVEMENT_OVERRIDE || verdict.improvement;
+  // improvementAtoms is ADVISORY only (display); it no longer drives payout or
+  // the submit gate. The real gate is the frontier pre-check below
+  // (claimedScoreAtoms vs bestScoreAtoms), so a genuine frontier-beating
+  // improvement smaller than the old 1e6 grid is no longer refused (audit F1/F6).
   const improvementAtoms = atomsFromImprovement(claimedImprovement);
-  if (improvementAtoms <= 0n) { log("claimed improvement is zero — nothing to submit."); process.exit(1); }
   if (!verdict.valid) log("  [--force] submitting an INVALID solution (adversarial test — expect the operator to challenge).");
   if (IMPROVEMENT_OVERRIDE) log(`  [--improvement] claiming ${IMPROVEMENT_OVERRIDE} vs true ${verdict.improvement}.`);
-  const claimedScoreAtoms = 0n; // informational; score is carried in the DA'd solution
+
+  // ABSOLUTE score claim (audit F1): claimedScoreAtoms is the load-bearing
+  // payout driver — the on-chain marginal credit at finalize is
+  // (previous bestScoreAtoms - claimedScoreAtoms). Encode the verifier's exact
+  // rational score with the shared ceil(score * 1e18) convention; maximize
+  // problems are negated onto the minimization frontier by chainScoreAtoms.
+  const objective = problemObjective(resolve(PROBLEM));
+  const trueScoreAtoms = chainScoreAtoms(verdict.score, objective.direction);
+  const claimedScoreAtoms = SCORE_ATOMS_OVERRIDE !== null ? BigInt(SCORE_ATOMS_OVERRIDE) : trueScoreAtoms;
+  if (SCORE_ATOMS_OVERRIDE !== null) log(`  [--claim-score-atoms] claiming ${claimedScoreAtoms} vs true ${trueScoreAtoms} (adversarial test).`);
+
+  // Frontier pre-check: an honest solver does not waste a posting bond on a
+  // score that no longer beats the live on-chain frontier (a rival submission
+  // may have advanced it since this solution was produced).
+  const bestScoreAtoms = await subs.bestScoreAtoms();
+  log(`  frontier: on-chain bestScoreAtoms=${bestScoreAtoms}  ours=${claimedScoreAtoms} (${objective.direction})`);
+  if (claimedScoreAtoms >= bestScoreAtoms) {
+    if (FORCE) {
+      log("  [--force] not an improvement over the current frontier — submitting anyway (adversarial test).");
+    } else {
+      log("not an improvement over the current frontier — aborting (use --force to submit anyway).");
+      process.exit(1);
+    }
+  }
 
   // Read the SAME file bytes that will be revealed — never re-serialize; their
   // sha256 IS the on-chain content anchor and must match the revealed bytes exactly.
@@ -178,7 +209,7 @@ async function main() {
   //    on-chain-DA: pass the RAW solution bytes (contract enforces sha256==anchor
   //    & length<=max). off-chain-DA: pass empty "0x" (bytes live in the store).
   const revealBytes = onchainDa ? solutionBytes : "0x";
-  log(`\n[3] reveal  improvementAtoms=${improvementAtoms}  bytes=${onchainDa ? solutionBytes.length + " on-chain" : "0x (off-chain DA)"}`);
+  log(`\n[3] reveal  claimedScoreAtoms=${claimedScoreAtoms}  improvementAtoms=${improvementAtoms}  bytes=${onchainDa ? solutionBytes.length + " on-chain" : "0x (off-chain DA)"}`);
   await send("reveal", subs.reveal(submissionId, cid, claimedScoreAtoms, improvementAtoms, salt, revealBytes));
 
   if (SUBMIT_ONLY) {

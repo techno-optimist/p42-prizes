@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -53,6 +54,81 @@ function bpsEnv(name, fallback) {
     throw new Error(`${name} must be <= 10000`);
   }
   return parsed;
+}
+
+// SHARED FIXED-POINT CONVENTION — keep in sync with agent/lib.mjs and
+// P42SubmissionManager.SCORE_ATOM_SCALE: score_atoms = ceil(score * 1e18),
+// exact rational ceiling (CEIL: the seed/score is never under-reported, so the
+// on-chain marginal credit is never over-stated).
+const SCORE_SCALE = 1_000_000_000_000_000_000n;
+
+function parseRational(text, label) {
+  const match = /^(-?\d+)(?:\/(\d+))?$/.exec(String(text).trim());
+  if (!match) throw new Error(`${label} must be an exact rational "num/den", got: ${text}`);
+  const num = BigInt(match[1]);
+  const den = BigInt(match[2] ?? "1");
+  if (den === 0n) throw new Error(`${label} has a zero denominator`);
+  return { num, den };
+}
+
+function ceilAtoms({ num, den }) {
+  const scaled = num * SCORE_SCALE;
+  let q = scaled / den; // BigInt division truncates toward zero == ceil for negatives
+  if (scaled % den !== 0n && scaled > 0n) q += 1n;
+  return q;
+}
+
+// Frontier seed (audit F1): seedScoreAtoms initializes the on-chain
+// bestScoreAtoms and MUST encode the TRUE best-known absolute score for the
+// problem — never a trivial bound, or resubmitting a known construction mints
+// a false prize. Sources, in precedence order:
+//   1. P42_SEED_SCORE_ATOMS   — int256 atoms, used verbatim
+//   2. P42_SEED_SCORE         — exact rational MINIMIZATION score, ceil'd to atoms
+//   3. P42_PROBLEM_DIR        — read from the problem package itself:
+//        a. problem.yaml `seed_score:` (native objective direction)
+//        b. verifier/verify.py literal `SEED_BEST = Fraction(num, den)`
+//        c. problem.yaml `objective.seed_best:` (fallback; may be stale)
+//      For (3), problem.yaml `objective.direction: maximize` maps the seed onto
+//      the minimization frontier by negation.
+function resolveSeedScoreAtoms() {
+  const direct = process.env.P42_SEED_SCORE_ATOMS;
+  if (direct !== undefined && direct.trim() !== "") return BigInt(direct.trim());
+  const rational = process.env.P42_SEED_SCORE;
+  if (rational !== undefined && rational.trim() !== "") {
+    return ceilAtoms(parseRational(rational, "P42_SEED_SCORE"));
+  }
+  const problemDir = process.env.P42_PROBLEM_DIR;
+  if (problemDir === undefined || problemDir.trim() === "") {
+    throw new Error(
+      "Missing frontier seed: set P42_SEED_SCORE_ATOMS, P42_SEED_SCORE, or P42_PROBLEM_DIR (problem package to read the seed from)"
+    );
+  }
+  const dir = resolve(problemDir.trim());
+  const yaml = readFileSync(resolve(dir, "problem.yaml"), "utf8");
+  const direction = /^\s*direction:\s*(minimize|maximize)\s*$/m.exec(yaml)?.[1] ?? "minimize";
+  let seed =
+    /^\s*seed_score:\s*"?(-?\d+(?:\/\d+)?)"?\s*$/m.exec(yaml)?.[1] ?? null;
+  if (seed === null) {
+    // The verifier source is the seed's source of truth; problem.yaml
+    // seed_best is only a fallback (it can go stale relative to verify.py).
+    try {
+      const verifier = readFileSync(resolve(dir, "verifier", "verify.py"), "utf8");
+      // \s matches newlines: tolerates multi-line Fraction( num, den, ) literals.
+      const literal = /^SEED_BEST\s*=\s*Fraction\(\s*(-?\d+)\s*,\s*(\d+)\s*,?\s*\)/m.exec(verifier);
+      if (literal) seed = `${literal[1]}/${literal[2]}`;
+    } catch {
+      // fall through to problem.yaml seed_best
+    }
+  }
+  if (seed === null) {
+    seed = /^\s*seed_best:\s*"?(-?\d+(?:\/\d+)?)"?\s*$/m.exec(yaml)?.[1] ?? null;
+  }
+  if (seed === null) {
+    throw new Error(`could not resolve a frontier seed from ${dir} (no seed_score, verify.py SEED_BEST literal, or seed_best)`);
+  }
+  const parsed = parseRational(seed, `${dir} seed`);
+  if (direction === "maximize") parsed.num = -parsed.num;
+  return ceilAtoms(parsed);
 }
 
 function manifestPath() {
@@ -182,7 +258,8 @@ try {
       requiredEnv("P42_ADMISSION_MATRIX_HASH")
     ),
     metadataURI: requiredEnv("P42_METADATA_URI"),
-    minImprovementAtoms: uintEnv("P42_MIN_IMPROVEMENT_ATOMS", DEFAULTS.minImprovementAtoms)
+    minImprovementAtoms: uintEnv("P42_MIN_IMPROVEMENT_ATOMS", DEFAULTS.minImprovementAtoms),
+    seedScoreAtoms: resolveSeedScoreAtoms()
   };
 
   const setupTransactions = [];
@@ -209,7 +286,11 @@ try {
     // commit anchor. Default on with a 512 KiB cap; large-certificate problems
     // (autoconvolution) deploy with onchainDa=false + off-chain store.
     params.onchainDa ?? true,
-    params.maxSolutionBytes ?? 512 * 1024
+    params.maxSolutionBytes ?? 512 * 1024,
+    // Frontier seed (audit F1): bestScoreAtoms starts at the TRUE best-known
+    // score; credit is the marginal reduction below it.
+    problem.seedScoreAtoms,
+    problem.minImprovementAtoms
   ]);
   setupTransactions.push(
     await sendSetupTx("ledger.setCreditRecorder", ledger.contract.setCreditRecorder(submissions.manifest.address))
@@ -286,6 +367,10 @@ try {
         verifierImageHash: problem.verifierImageHash,
         admissionMatrixHash: problem.admissionMatrixHash,
         minImprovementAtoms: problem.minImprovementAtoms,
+        // Frontier seed this SubmissionManager was constructed with (audit F1):
+        // score atoms at the shared ceil(score * 1e18) convention.
+        seedScoreAtoms: problem.seedScoreAtoms.toString(),
+        scoreAtomScale: SCORE_SCALE.toString(),
         registerTxHash: registerTx.hash,
         registerBlockNumber: registerReceipt.blockNumber,
         pool: pool.manifest.address,

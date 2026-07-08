@@ -17,7 +17,16 @@ VERIFIER_IMAGE = "sha256:local-dev"
 N = 524288
 MAX_VALUE = 1 << 40
 MAX_SOLUTION_BYTES = 4 * 1024 * 1024
-SEED_BEST = Fraction(47, 50)
+# Audit F1: the old seed 47/50 was a loose packaging bound, but the bundled
+# Hyra witness verifies to ~0.96290 (higher is better here) — a known
+# achievable result the seed must be at least as good as, or resubmitting it
+# mints a false prize.
+# TODO(seed): confirm this is the true published best-known c2 lower bound for
+# this pinned functional, not merely the bundled witness.
+SEED_BEST = Fraction(
+    140651861665566489683881393353250795846281833,
+    146070932420211259869783468438333325818535926,
+)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 
 

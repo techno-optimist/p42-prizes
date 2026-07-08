@@ -20,6 +20,11 @@ N = 100000
 MAX_DENOMINATOR_POWER = 128
 MAX_ABS_MULTIPLIER = 1024
 MAX_SOLUTION_BYTES = 4 * 1024 * 1024
+# Audit F1 note: 3/2 is a "local packaging seed", not a confirmed published
+# record — but the bundled organon-upper witness scores ~4.99 (worse), so no
+# bundled artifact beats this seed and it is left unchanged.
+# TODO(seed): confirm published record — verify 3/2 against the true published
+# best-known signed c3 upper bound before funding.
 SEED_BEST = Fraction(3, 2)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 

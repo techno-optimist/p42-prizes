@@ -15,6 +15,12 @@ interface IP42FeeSink {
 
 /// @notice Final-denominator improvement accounting for one problem pool.
 /// Credits accrue while the pool is open, but no solver can claim until close.
+/// Credited `atoms` are MARGINAL frontier reductions (previous on-chain best
+/// score minus the newly finalized score, in score atoms) recorded by the
+/// submission manager — never seed-relative distances. Summing marginals
+/// telescopes to (seed - final best), so each solver's proportional share
+/// credit_i / totalCreditAtoms equals their advertised Delta_i / SigmaDelta_j
+/// of the total frontier movement (F1).
 contract P42PayoutLedger {
     error P42_NOT_OWNER();
     error P42_NOT_POOL();

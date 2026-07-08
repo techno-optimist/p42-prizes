@@ -19,6 +19,10 @@ const CHALLENGE_WINDOW = 90n;
 const ALPHA_BPS = 200n;
 const MIN_BOND = ethers.parseEther("0.0001");
 const ONE_MIB = 1024 * 1024;
+// Absolute-score frontier seed (F1): fixtures reveal claimed score 0, which
+// strictly beats this.
+const SEED_SCORE_ATOMS = 1_000_000n;
+const MIN_IMPROVEMENT_ATOMS = 1n;
 
 async function expectCustomError(action, contract, errorName) {
   try {
@@ -80,7 +84,9 @@ async function deploy(onchainDa, maxSolutionBytes) {
     MIN_BOND,
     CHALLENGE_WINDOW,
     onchainDa,
-    maxSolutionBytes
+    maxSolutionBytes,
+    SEED_SCORE_ATOMS,
+    MIN_IMPROVEMENT_ATOMS
   );
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
@@ -126,7 +132,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       await expectCustomError(
         Submissions.deploy(
           await pool.getAddress(), await ledger.getAddress(), owner.address, treasury.address,
-          ALPHA_BPS, MIN_BOND, CHALLENGE_WINDOW, true, 0
+          ALPHA_BPS, MIN_BOND, CHALLENGE_WINDOW, true, 0, SEED_SCORE_ATOMS, MIN_IMPROVEMENT_ATOMS
         ),
         submissions,
         "P42_BAD_ONCHAIN_DA_CONFIG"
@@ -144,7 +150,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       await expectCustomError(
         Submissions.deploy(
           await pool.getAddress(), await ledger.getAddress(), owner.address, treasury.address,
-          ALPHA_BPS, MIN_BOND, CHALLENGE_WINDOW, true, ONE_MIB + 1
+          ALPHA_BPS, MIN_BOND, CHALLENGE_WINDOW, true, ONE_MIB + 1, SEED_SCORE_ATOMS, MIN_IMPROVEMENT_ATOMS
         ),
         submissions,
         "P42_BAD_ONCHAIN_DA_CONFIG"

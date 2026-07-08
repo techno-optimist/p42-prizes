@@ -6,6 +6,10 @@ import { network } from "hardhat";
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
 const RESOLVER_FRAUD_WINDOW_SECONDS = 24n * 60n * 60n;
+// Absolute-score frontier seed for these economic fixtures. Reveals claim
+// ABSOLUTE scores strictly below this; finalize credits the marginal
+// reduction against the live frontier (F1).
+const SEED_SCORE_ATOMS = 1_000_000n;
 const DA_HASH = ethers.keccak256(ethers.toUtf8Bytes("commit block DA receipt"));
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("arweave permanence receipt"));
 
@@ -74,7 +78,9 @@ describe("P42 Gate 1 contract scaffold", function () {
       minBond,
       CHALLENGE_WINDOW_SECONDS,
       false, // off-chain DA mode: these fixtures test economics, not DA binding
-      0
+      0,
+      SEED_SCORE_ATOMS,
+      1n // minImprovementAtoms
     );
     await submissions.waitForDeployment();
     if (activateRecorder) {
@@ -333,10 +339,17 @@ describe("P42 Gate 1 contract scaffold", function () {
       submissions,
       "P42_BAD_COMMITMENT_REVEAL"
     );
+    // F1 frontier gate: an ABSOLUTE claimed score that does not strictly beat
+    // the current on-chain best is rejected at reveal.
     await expectCustomError(
-      submissions.connect(alice).reveal(1, solutionCid, 123, 0, salt, "0x"),
+      submissions.connect(alice).reveal(1, solutionCid, SEED_SCORE_ATOMS, 7, salt, "0x"),
       submissions,
-      "P42_ZERO_IMPROVEMENT"
+      "P42_NOT_STRICT_IMPROVEMENT"
+    );
+    await expectCustomError(
+      submissions.connect(alice).reveal(1, solutionCid, SEED_SCORE_ATOMS + 1n, 7, salt, "0x"),
+      submissions,
+      "P42_NOT_STRICT_IMPROVEMENT"
     );
 
     await submissions.connect(alice).reveal(1, solutionCid, 123, 7, salt, "0x");
@@ -392,7 +405,9 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(finalized.permanenceHash, PERMANENCE_HASH);
     assert.equal(finalized.bondWei, 0n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
-    assert.equal(await ledger.creditAtomsOf(alice.address), 25n);
+    // Credit is the MARGINAL frontier reduction: seed - claimed absolute score.
+    assert.equal(await ledger.creditAtomsOf(alice.address), SEED_SCORE_ATOMS - 1000n);
+    assert.equal(await submissions.bestScoreAtoms(), 1000n);
     assert.equal(await submissions.claimableBondWei(alice.address), required * 2n);
 
     await expectCustomError(
@@ -745,7 +760,8 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n);
-    assert.equal(await ledger.creditAtomsOf(alice.address), 5n);
+    // Marginal credit: seed frontier minus the claimed absolute score (1000).
+    assert.equal(await ledger.creditAtomsOf(alice.address), SEED_SCORE_ATOMS - 1000n);
   });
 
   it("expires a stalled challenge so the solver can finalize and close can proceed (M1)", async function () {

@@ -26,7 +26,13 @@ DECIMAL_UNIT = Fraction(1, 10**16)
 MAX_SOLUTION_BYTES = 512 * 1024
 LOW_PRECISION_BITS = 400
 HIGH_PRECISION_BITS = 700
-SEED_BEST = Fraction(0, 1)
+# Audit F1: the old seed 0/1 was a trivial floor, but the bundled
+# chronos-96000 witness certifies 0.9974252022196793 (higher is better here) —
+# a known achievable result the seed must be at least as good as, or
+# resubmitting it mints a false prize.
+# TODO(seed): confirm this is the true best-known reach-96000 construction
+# score, not merely the bundled witness.
+SEED_BEST = Fraction(9974252022196793, 10000000000000000)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 
 

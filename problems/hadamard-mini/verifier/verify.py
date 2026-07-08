@@ -15,6 +15,12 @@ PROBLEM_ID = "hadamard-mini"
 VERIFIER_VERSION = "0.1.0"
 VERIFIER_IMAGE = "sha256:local-dev"
 ORDER = 4
+# Audit F1 note: this seed is the trivial all-pairs count ON PURPOSE —
+# hadamard-mini is the Phase 0 demo fixture whose optimal defect-0 solution is
+# bundled (examples/valid-4.json), so the lifecycle/battle tests can exercise a
+# real payout on testnet. A real bounty must NEVER be funded on this problem:
+# with an honest seed (0) it is already solved.
+# TODO(seed): demo fixture — intentionally trivial; never fund.
 SEED_DEFECT = Fraction(6, 1)
 MIN_IMPROVEMENT = Fraction(1, 6)
 # An order-4 solution is a few dozen bytes; reject anything wildly oversized

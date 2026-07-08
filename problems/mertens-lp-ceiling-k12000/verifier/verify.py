@@ -28,7 +28,13 @@ MAX_ROWS = 20000
 MAX_SOLUTION_BYTES = 512 * 1024
 LOW_PRECISION_BITS = 500
 HIGH_PRECISION_BITS = 800
-SEED_BEST = Fraction(1, 1)
+# Audit F1: the old seed 1/1 was the trivial ceiling, but the bundled
+# certificate-k12000 artifact certifies 0.9974876103072528157057480 — a known
+# achievable result the seed must be at least as good as, or resubmitting it
+# mints a false prize.
+# TODO(seed): confirm this is the true best-known reach-12000 ceiling, not
+# merely the bundled certificate.
+SEED_BEST = Fraction(249371902576813203926437, 250000000000000000000000)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 
 

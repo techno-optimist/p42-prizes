@@ -17,7 +17,14 @@ ATOMS = 20
 ROW_SUM = 1000
 MAX_ROWS = 500
 MAX_SOLUTION_BYTES = 512 * 1024
-SEED_BEST = Fraction(-1, 1)
+# Audit F1: the old seed -1/1 was a trivial floor, but the bundled rational
+# curve-sampling witness verifies to ~-0.71186 (higher is better here) — a
+# known achievable result the seed must be at least as good as, or
+# resubmitting it mints a false prize.
+# TODO(seed): confirm the true best-known score for this slope-3 area
+# functional (the historical Arena incumbent artifact is missing), not merely
+# the bundled witness.
+SEED_BEST = Fraction(-16684282317138839, 23437500000000000)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 
 

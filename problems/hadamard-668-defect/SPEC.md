@@ -39,15 +39,18 @@ are ignored.
 
 ## Score And Improvement
 
-The score is serialized as an exact integer rational. The local packaging seed
-is the all-pairs defect `222778/1`. Improvement is:
+The score is serialized as an exact integer rational. The seed is the
+best-known achieved defect `55444/1` — the bundled Sylvester-prefix baseline's
+score — NOT the trivial all-pairs count `222778/1` (audit F1: a seed looser
+than a known construction lets anyone resubmit it for a false prize).
+Improvement is:
 
 ```text
-improvement = max(0, 222778 - defect)
+improvement = max(0, 55444 - defect)
 ```
 
-The bundled Sylvester-prefix baseline verifies to:
+The bundled Sylvester-prefix baseline verifies to score `55444/1` and
+improvement `0/1` — it is the frontier, not an improvement over it.
 
-```text
-55444/1
-```
+TODO(seed): confirm 55444 is the true published best-known record for the
+order-668 defect, not merely the bundled baseline.

@@ -5,6 +5,11 @@ import { network } from "hardhat";
 
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
+// Absolute-score frontier seed (F1). Each scenario submission claims
+// claimed = previousBest - improvementAtoms, so the on-chain marginal credit
+// equals the scenario's improvementAtoms and the seeded credit bookkeeping
+// below stays exact.
+const SEED_SCORE_ATOMS = 1_000_000n;
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("property permanence receipt"));
 
 async function expectCustomError(action, contract, errorName) {
@@ -95,7 +100,9 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
     minBond,
     CHALLENGE_WINDOW_SECONDS,
     false, // off-chain DA mode: property tests exercise economics, not DA binding
-    0
+    0,
+    SEED_SCORE_ATOMS,
+    1n // minImprovementAtoms
   );
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
@@ -103,7 +110,7 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   return { owner, treasury, resolver, participants, pool, ledger, submissions };
 }
 
-async function submitAndFinalize(fixture, solver, scenarioSeed, index, improvementAtoms, donationBeforeFinalizeWei) {
+async function submitAndFinalize(fixture, solver, scenarioSeed, index, claimedScoreAtoms, improvementAtoms, donationBeforeFinalizeWei) {
   const { pool, ledger, submissions } = fixture;
   const solutionCid = `sha256:property-${scenarioSeed}-${index}`;
   const salt = `salt-${scenarioSeed}-${index}`;
@@ -118,7 +125,7 @@ async function submitAndFinalize(fixture, solver, scenarioSeed, index, improveme
 
   await submissions.connect(solver).commit(commitment, commitDaHash, { value: postingBond });
   const submissionId = await submissions.submissionCount();
-  await submissions.connect(solver).reveal(submissionId, solutionCid, 0, improvementAtoms, salt, "0x");
+  await submissions.connect(solver).reveal(submissionId, solutionCid, claimedScoreAtoms, improvementAtoms, salt, "0x");
 
   if (donationBeforeFinalizeWei > 0n) {
     await pool.fund({ value: donationBeforeFinalizeWei });
@@ -161,16 +168,23 @@ describe("P42 contract property checks", function () {
       }
 
       const expectedCredits = new Map();
+      // Track the descending absolute-score frontier: each submission claims
+      // exactly improvementAtoms below the current best, so its finalized
+      // marginal credit equals improvementAtoms (F1).
+      let frontierScoreAtoms = SEED_SCORE_ATOMS;
       for (const [index, submission] of scenario.submissions.entries()) {
         const solver = participants[submission.solverIndex];
+        const claimedScoreAtoms = frontierScoreAtoms - submission.improvementAtoms;
         const undercovered = await submitAndFinalize(
           fixture,
           solver,
           seed,
           index,
+          claimedScoreAtoms,
           submission.improvementAtoms,
           submission.donationBeforeFinalizeWei
         );
+        frontierScoreAtoms = claimedScoreAtoms;
         if (undercovered) undercoveredCases += 1;
         expectedCredits.set(
           solver.address,

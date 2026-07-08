@@ -210,12 +210,23 @@ async function main() {
   const idxFeeReserve = closeEvt ? closeEvt.args.feeReserve : 0n;
   const distributable = idxClosed ? idxClosedPool - idxFeeReserve : 0n;
 
-  // frontier = finalized improvements, in on-chain order
+  // frontier = finalized submissions in on-chain order. Since the F1 redesign,
+  // Finalized carries the MARGINAL creditAtoms (0 for a superseded submission
+  // that finalized behind the live frontier), the absolute claimedScoreAtoms,
+  // and the resulting bestScoreAtoms. Cumulative credit sums the marginals
+  // (== seed - final best), so a share is creditAtoms_i / SigmaCreditAtoms.
   const frontier = [];
   let cumulative = 0n;
   for (const e of finals.sort((a, b) => a.blockNumber - b.blockNumber || a.index - b.index)) {
-    cumulative += e.args.improvementAtoms;
-    frontier.push({ submissionId: e.args.submissionId.toString(), solver: e.args.solver, improvementAtoms: e.args.improvementAtoms.toString(), cumulativeAtoms: cumulative.toString() });
+    cumulative += e.args.creditAtoms;
+    frontier.push({
+      submissionId: e.args.submissionId.toString(),
+      solver: e.args.solver,
+      creditAtoms: e.args.creditAtoms.toString(),
+      claimedScoreAtoms: e.args.claimedScoreAtoms.toString(),
+      bestScoreAtoms: e.args.bestScoreAtoms.toString(),
+      cumulativeCreditAtoms: cumulative.toString(),
+    });
   }
 
   // payout ledger (reconstructed): finalEntitlement = distributable * credit / total

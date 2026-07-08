@@ -16,7 +16,12 @@ VERIFIER_VERSION = "0.1.0"
 VERIFIER_IMAGE = "sha256:local-dev"
 GRID = (2, 2)
 TARGET = (1, -1)
-SEED_BEST = Fraction(2, 1)
+# Audit F1: the old seed 2/1 was a loose packaging bound, but the bundled
+# kt-2x2-forcing certificate achieves score 7/4 — a known achievable result the
+# seed must be at least as good as, or resubmitting it mints a false prize.
+# TODO(seed): confirm 7/4 is the true best-known 2x2 forcing score, not merely
+# the bundled warm-up certificate.
+SEED_BEST = Fraction(7, 4)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 MAX_SOLUTION_BYTES = 32768
 

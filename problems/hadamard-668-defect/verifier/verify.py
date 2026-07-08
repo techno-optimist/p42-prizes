@@ -17,7 +17,14 @@ N = 668
 ROW_HEX_DIGITS = 167
 TOTAL_PAIRS = N * (N - 1) // 2
 MAX_SOLUTION_BYTES = 256 * 1024
-SEED_BEST = Fraction(TOTAL_PAIRS, 1)
+# Audit F1: the seed is the frontier the prize pays against, so it MUST be the
+# best-known ACHIEVED defect — not the trivial all-pairs count (222778), which
+# let anyone resubmit a known construction and mint a false prize. The bundled
+# Sylvester-prefix baseline achieves defect 55444, so the seed is at least that
+# good.
+# TODO(seed): confirm 55444 is the true published best-known record, not merely
+# the bundled baseline.
+SEED_BEST = Fraction(55444, 1)
 MIN_IMPROVEMENT = Fraction(1, TOTAL_PAIRS)
 ENCODING = "hex-row-bits-v1"
 

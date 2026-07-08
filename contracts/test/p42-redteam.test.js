@@ -6,6 +6,9 @@ import { network } from "hardhat";
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
 const RESOLVER_FRAUD_WINDOW_SECONDS = 24n * 60n * 60n;
+// Absolute-score frontier seed (F1): fixtures reveal claimed score 0, which
+// strictly beats this and earns the full seed-relative marginal.
+const SEED_SCORE_ATOMS = 1_000_000n;
 const DA_HASH = ethers.keccak256(ethers.toUtf8Bytes("redteam DA receipt"));
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("redteam permanence receipt"));
 
@@ -73,7 +76,9 @@ async function deployFixture({
     minBond,
     CHALLENGE_WINDOW_SECONDS,
     false, // off-chain DA mode: red-team fixtures exercise economics, not DA binding
-    0
+    0,
+    SEED_SCORE_ATOMS,
+    1n // minImprovementAtoms
   );
   await submissions.waitForDeployment();
   if (activateRecorder) {
