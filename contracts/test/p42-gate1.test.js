@@ -40,7 +40,7 @@ function findErrorData(value) {
 
 describe("P42 Gate 1 contract scaffold", function () {
   async function deployFixture({ alphaBps = 200n, minBond = ethers.parseEther("0.01"), feeBps = 0 } = {}) {
-    const [owner, treasury, alice, bob, challenger] = await ethers.getSigners();
+    const [owner, treasury, resolver, alice, bob, challenger] = await ethers.getSigners();
     const Pool = await ethers.getContractFactory("P42BountyPool");
     const pool = await Pool.deploy(owner.address);
     await pool.waitForDeployment();
@@ -54,7 +54,21 @@ describe("P42 Gate 1 contract scaffold", function () {
     const submissions = await Submissions.deploy(await pool.getAddress(), owner.address, alphaBps, minBond);
     await submissions.waitForDeployment();
 
-    return { owner, treasury, alice, bob, challenger, pool, ledger, submissions, minBond };
+    const Challenges = await ethers.getContractFactory("P42ChallengeManager");
+    const challenges = await Challenges.deploy(
+      owner.address,
+      resolver.address,
+      treasury.address,
+      72n * 60n * 60n,
+      500,
+      ethers.parseEther("0.02"),
+      ethers.parseEther("0.01"),
+      30000,
+      ethers.parseEther("0.005")
+    );
+    await challenges.waitForDeployment();
+
+    return { owner, treasury, resolver, alice, bob, challenger, pool, ledger, submissions, challenges, minBond };
   }
 
   it("matches the portal's length-framed CID-bound commit preimage", async function () {
@@ -155,5 +169,134 @@ describe("P42 Gate 1 contract scaffold", function () {
       submissions,
       "P42_PAUSED_NEW_ACTIONS"
     );
+  });
+
+  it("requires counter-bonds to cover delay value and rerun cost", async function () {
+    const { challenger, challenges } = await deployFixture();
+    const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("claimed score disagrees with local verifier"));
+    const finalizingEntitlement = ethers.parseEther("10");
+    const required = ethers.parseEther("0.5");
+
+    assert.equal(await challenges.requiredChallengeBond(finalizingEntitlement), required);
+    await expectCustomError(
+      challenges.connect(challenger).challenge(1, reasonHash, finalizingEntitlement, { value: required - 1n }),
+      challenges,
+      "P42_INSUFFICIENT_CHALLENGE_BOND"
+    );
+
+    await challenges.connect(challenger).challenge(1, reasonHash, finalizingEntitlement, { value: required });
+    const challenge = await challenges.challenges(1);
+    assert.equal(challenge.submissionId, 1n);
+    assert.equal(challenge.challenger, challenger.address);
+    assert.equal(challenge.reasonHash, reasonHash);
+    assert.equal(challenge.challengeBondWei, required);
+    assert.equal(challenge.disputeEndsAt - challenge.challengedAt, 72n * 60n * 60n);
+  });
+
+  it("caps one active challenge per submission so disputes do not serially extend the window", async function () {
+    const { alice, challenger, challenges } = await deployFixture();
+    const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("first challenge"));
+    const required = await challenges.requiredChallengeBond(0);
+
+    await challenges.connect(challenger).challenge(42, reasonHash, 0, { value: required });
+    const original = await challenges.challenges(42);
+
+    await expectCustomError(
+      challenges.connect(alice).challenge(42, ethers.keccak256(ethers.toUtf8Bytes("second challenge")), 0, {
+        value: required,
+      }),
+      challenges,
+      "P42_ALREADY_CHALLENGED"
+    );
+    const after = await challenges.challenges(42);
+    assert.equal(after.disputeEndsAt, original.disputeEndsAt);
+    assert.equal(after.challenger, challenger.address);
+  });
+
+  it("requires resolver transcripts and a bonded resolver decision", async function () {
+    const { alice, resolver, challenger, challenges } = await deployFixture();
+    const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("verifier mismatch"));
+    const transcriptHash = ethers.keccak256(ethers.toUtf8Bytes("rerun transcript bytes"));
+    const verdictHash = ethers.keccak256(ethers.toUtf8Bytes("canonical VerdictReport"));
+    const transcriptURI = "ar://transcript-test";
+    const required = await challenges.requiredChallengeBond(0);
+    const resolverBond = await challenges.resolverDecisionBondWei();
+
+    await challenges.connect(challenger).challenge(7, reasonHash, 0, { value: required });
+
+    await expectCustomError(
+      challenges.connect(alice).resolve(7, true, transcriptHash, transcriptURI, verdictHash, { value: resolverBond }),
+      challenges,
+      "P42_NOT_RESOLVER"
+    );
+    await expectCustomError(
+      challenges.connect(resolver).resolve(7, true, transcriptHash, transcriptURI, verdictHash, {
+        value: resolverBond - 1n,
+      }),
+      challenges,
+      "P42_INSUFFICIENT_RESOLVER_BOND"
+    );
+    await expectCustomError(
+      challenges.connect(resolver).resolve(7, true, ethers.ZeroHash, transcriptURI, verdictHash, {
+        value: resolverBond,
+      }),
+      challenges,
+      "P42_EMPTY_TRANSCRIPT_HASH"
+    );
+    await expectCustomError(
+      challenges.connect(resolver).resolve(7, true, transcriptHash, "", verdictHash, { value: resolverBond }),
+      challenges,
+      "P42_EMPTY_TRANSCRIPT_URI"
+    );
+    await expectCustomError(
+      challenges.connect(resolver).resolve(7, true, transcriptHash, transcriptURI, ethers.ZeroHash, {
+        value: resolverBond,
+      }),
+      challenges,
+      "P42_EMPTY_VERDICT_HASH"
+    );
+
+    await challenges.connect(resolver).resolve(7, true, transcriptHash, transcriptURI, verdictHash, {
+      value: resolverBond,
+    });
+    const resolved = await challenges.challenges(7);
+    assert.equal(resolved.resolved, true);
+    assert.equal(resolved.challengerWins, true);
+    assert.equal(resolved.transcriptHash, transcriptHash);
+    assert.equal(resolved.transcriptURI, transcriptURI);
+    assert.equal(resolved.verdictHash, verdictHash);
+    assert.equal(resolved.resolverBondWei, resolverBond);
+    assert.equal(await challenges.claimableBondWei(challenger.address), required);
+
+    await expectCustomError(
+      challenges.connect(resolver).resolve(7, true, transcriptHash, transcriptURI, verdictHash, {
+        value: resolverBond,
+      }),
+      challenges,
+      "P42_ALREADY_RESOLVED"
+    );
+  });
+
+  it("routes the losing challenge bond to treasury when the solver wins", async function () {
+    const { treasury, resolver, challenger, challenges } = await deployFixture();
+    const required = await challenges.requiredChallengeBond(0);
+    await challenges
+      .connect(challenger)
+      .challenge(99, ethers.keccak256(ethers.toUtf8Bytes("bad challenge")), 0, { value: required });
+
+    await challenges.connect(resolver).resolve(
+      99,
+      false,
+      ethers.keccak256(ethers.toUtf8Bytes("solver wins transcript")),
+      "ar://solver-wins",
+      ethers.keccak256(ethers.toUtf8Bytes("solver wins verdict")),
+      { value: await challenges.resolverDecisionBondWei() }
+    );
+
+    assert.equal(await challenges.claimableBondWei(treasury.address), required);
+    const before = await ethers.provider.getBalance(await challenges.getAddress());
+    await challenges.connect(treasury).claimBond();
+    assert.equal(before - (await ethers.provider.getBalance(await challenges.getAddress())), required);
+    assert.equal(await challenges.claimableBondWei(treasury.address), 0n);
   });
 });

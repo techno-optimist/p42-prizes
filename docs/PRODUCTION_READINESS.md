@@ -17,9 +17,9 @@ ledger, exit criteria, and external sign-offs.
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
 | Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; `admit-host`/`admit-matrix` enforce typed N-host evidence locally | Canonical sandbox runner, pinned image digest, collected N-host identical verdict matrix artifacts |
 | Settlement math | Final-denominator pool simulator, incremental portal credit model, and Hardhat scaffold tests for escrow-until-close / final-denominator claims | Complete contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
-| Challenges | Endpoint returns `501` until implemented | Bond escrow, challenge window checks, resolver transcript, slashing path |
-| Resolver | Spec only | Verifiable transcript committee on testnet; fraud-proof track before scale |
-| Contracts | Local Hardhat 3 scaffold for pool, payout ledger, submission bond checks, and CID-bound commitment helper | Full registry/challenge/resolver/DA/indexer contracts, Base Sepolia deployment, audit, fuzzing, timelock/multisig rehearsals |
+| Challenges | Endpoint returns `501`; local Hardhat challenge scaffold covers counter-bond sizing and one active challenge per submission | Integrated bond escrow, challenge window checks, resolver transcript, slashing path |
+| Resolver | Local transcript-required resolver scaffold with per-decision bond | Verifiable transcript committee on testnet; fraud-proof track before scale |
+| Contracts | Local Hardhat 3 scaffold for pool, payout ledger, submission bond checks, CID-bound commitment helper, challenge manager, and resolver transcript gate | Full registry/DA/indexer contracts, integrated finalization, Base Sepolia deployment, audit, fuzzing, timelock/multisig rehearsals |
 | Legal | Spec risk register only | Written counsel memo covering prize/bounty, KYC/sanctions, tax, ToS |
 | Operations | This register plus incident/governance docs | Named owners, monitored deploys, key custody, incident drills |
 
@@ -45,7 +45,7 @@ ledger, exit criteria, and external sign-offs.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
 - Local/Render verification covers problem validation, certified-path exactness lint, Python tests, seed verification, web typecheck, web tests, production build, and `npm audit`. Publishing the GitHub Actions workflow is pending a repo token or human owner with `workflow` scope.
 - N-host verifier admission now has typed host and matrix artifacts: `p42-prizes admit-host` emits repeated-run host evidence, and `p42-prizes admit-matrix` rejects duplicate hosts, missing x86/ARM coverage, insufficient glibc diversity, or mismatched canonical `VerdictReport` hashes.
-- Contract scaffold now compiles and tests under Hardhat 3 with zero npm audit findings: escrow pool, final-denominator payout ledger, submission bond pricing, CID-bound commitment helper, and six red-team invariant tests.
+- Contract scaffold now compiles and tests under Hardhat 3 with zero npm audit findings: escrow pool, final-denominator payout ledger, submission bond pricing, CID-bound commitment helper, challenge manager, resolver transcript gate, and 10 red-team invariant tests.
 
 ## Known Production Blockers
 
@@ -54,12 +54,12 @@ ledger, exit criteria, and external sign-offs.
 - Render can be configured with `P42_PORTAL_STATE_PATH=/app/data/portal-state.json` on a persistent disk for demo continuity, but that disk is not settlement truth.
 - No distributed idempotency store with atomic reserve/commit semantics.
 - No production wallet session policy, distributed rate limiting, API keys, abuse controls, or payload quarantine.
-- No complete/deployed on-chain system: the local scaffold still lacks registry, challenge manager, resolver transcript path, DA/permanence enforcement, indexer, deployment scripts, verified Base Sepolia addresses, and audit.
+- No complete/deployed on-chain system: the local scaffold still lacks registry, integrated reveal/finalize/credit state machine, DA/permanence enforcement, indexer, deployment scripts, verified Base Sepolia addresses, and audit.
 - No reviewed Base mainnet pool addresses or enabled Coinbase Onramp funding sessions.
 - No permanent DA or CID retrieval for `bafy...` / Arweave payloads.
 - No containerized canonical sandbox runner for arbitrary problem repos.
 - No collected four-host N-host determinism artifacts yet; local tooling exists, but the x86/ARM/two-glibc evidence has not been produced for any funded problem.
-- No bonded resolver implementation.
+- No deployed/fraud-proof resolver implementation; local transcript-required resolver scaffold exists but is not a testnet committee, slashing system, or real-ETH trust root.
 - No external security audit or legal sign-off.
 - No published GitHub Actions workflow yet; the current OAuth token cannot push `.github/workflows/*` without `workflow` scope.
 

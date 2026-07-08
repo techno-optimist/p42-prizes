@@ -12,6 +12,9 @@ red-team invariants that must hold before Base Sepolia.
 - `P42SubmissionManager`: commit storage, pool-at-submission bond pricing,
   finalization bond coverage check, and Solidity helper for the portal's
   length-framed `p42:v0` CID-bound commitment preimage.
+- `P42ChallengeManager`: one active challenge per submission, counter-bond
+  sizing from delayed value and rerun cost, mandatory resolver transcript
+  hash/URI/verdict hash, and a per-decision resolver bond.
 
 ## Run
 
@@ -28,7 +31,7 @@ current `@actions/http-client` so the dev toolchain has zero npm audit findings.
 ## Still Missing For Gate 1
 
 - `ProblemRegistry`
-- challenge manager and resolver transcript posting
+- integration between submissions, challenges, finalization, and payout credit
 - DA/permanence receipt enforcement
 - deployment scripts and Base Sepolia verified source/address artifacts
 - indexer reconciliation
