@@ -46,8 +46,8 @@ root-of-trust / circuit-breaker.
 | **Operator client** — reveal-watcher, re-run, publish transcript, auto-challenge invalid rivals | ✅ `agent/operator.mjs` — an independent operator caught a malicious solver and challenged on-chain; submission Rejected, operator net-positive (M2 live). Evidence: `deployments/base-sepolia/op-demo-run.json` |
 | **Live DA/Arweave provider** — store + fetch solution bytes; content-addressed retrieval | ✅ `agent/da-arweave.mjs` (Irys/Arweave) — solver uploads the solution to real Arweave and binds `keccak(txid)` on-chain; the operator locates it by CID and fetches from the public gateway to re-verify. Evidence: `deployments/base-sepolia/arweave-demo-run.json`. Devnet retention ~60 days; the finalize permanence receipt + mainnet permanence remain |
 | **Container/cgroup sandbox** for untrusted verifier payloads | ☐ |
-| **ERC-4337 session keys** + spend caps (so a leaked key is bounded) | ☐ (every key is a full-authority EOA today) |
-| **Role separation** — split owner/treasury/resolver (one EOA today) | ☐ |
+| Session keys + spend caps (so a leaked key is bounded) | ✅ `contracts/src/P42AgentWallet.sol` — a scoped session-key wallet: funds live behind per-call + cumulative caps, the hot key can only call allowlisted P42 selectors, and a governance owner can revoke + withdraw. 7 safety tests + a live demo (allowed call works; claim/arbitrary-target/over-cap blocked; revoke + recover). Evidence: `deployments/base-sepolia/agent-wallet-demo-run.json`. NOT full ERC-4337 (no EntryPoint/bundler/gas abstraction) — that standardization is Phase 2 |
+| **Role separation** — split owner/treasury/resolver | ◑ Agent-side done: the wallet separates governance owner (cold) from the agent session key (hot), and operator vs. solver were distinct keys in the demos. Protocol-side: distinct treasury/resolver is a deploy-config choice; a **multisig owner** (vs. the single deployer EOA) is Phase 2 |
 
 ## Key debates to resolve (owner decisions)
 
