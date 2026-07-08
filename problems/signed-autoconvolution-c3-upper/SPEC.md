@@ -18,11 +18,13 @@ for every `0 <= p <= 2n - 2`. The pinned functional is scale invariant, so the
 dyadic denominator cancels and the score is
 
 ```text
-score = 2n * max_p c_p / (sum_i a_i)^2.
+score = 2n * max_p |c_p| / (sum_i a_i)^2.
 ```
 
-The bundled witness has positive maximum coefficient, so the source verifier's
-outer absolute value is inert for the certified path.
+The outer absolute value is NOT inert: for a negative-dominant witness the
+largest-magnitude coefficient is negative, and scoring with the signed maximum
+would under-report the score. The verifier therefore computes the exact
+L-infinity norm `max_p |c_p|` with no positive-dominance assumption.
 
 ## Solution Format
 
@@ -49,10 +51,15 @@ is `3/2`. Improvement is:
 improvement = max(0, 3/2 - score)
 ```
 
-The bundled OrganonAgent witness verifies to:
+The bundled OrganonAgent witness is negative-dominant: its largest-magnitude
+autoconvolution coefficient is negative, so the earlier signed-max scorer
+under-reported it as `11753.../8092...` (~1.4523) and wrongly certified an
+improvement. The corrected L-infinity verifier scores it as:
 
 ```text
-11753128449293701953238517385067272445617294540800000
+40362551506526560656553725091979410551071047680000000
 /
 8092744874989952471246071559466128309374865340943729
 ```
+
+which is ~4.9875, above the `3/2` seed, so it certifies no improvement.

@@ -12,7 +12,9 @@ from p42_prizes.verdict import VerdictReport, rational_to_string, sha256_bytes
 
 
 PROBLEM_ID = "signed-autoconvolution-c3-upper"
-VERIFIER_VERSION = "0.1.0"
+# 0.1.1: corrected scoring to the L-infinity norm max|c_p| (audit F2); the
+# 0.1.0 signed-max scoring under-reported the score and over-reported improvement.
+VERIFIER_VERSION = "0.1.1"
 VERIFIER_IMAGE = "sha256:local-dev"
 N = 100000
 MAX_DENOMINATOR_POWER = 128
@@ -126,11 +128,16 @@ def compute_score(values: list[int]) -> tuple[Fraction, dict[str, Any]]:
     if sum(coefficients) != total * total:
         raise VerifierFailure("PACKING_CHECKSUM", "autoconvolution checksum failed")
 
-    max_coefficient = max(coefficients)
-    if max_coefficient <= 0:
-        raise VerifierFailure("NONPOSITIVE_MAX", "maximum autoconvolution coefficient is not positive")
-    argmax = coefficients.index(max_coefficient)
-    score = Fraction(2 * N * max_coefficient, total * total)
+    # The reference functional uses the L-infinity norm max_p |c_p|, not the
+    # signed maximum: a negative-dominant witness (e.g. max=+5, min=-8) must be
+    # scored with 8, otherwise the verifier under-reports the minimized score
+    # and over-reports improvement. No positive-dominance precondition applies.
+    linf = max(max(coefficients), -min(coefficients))
+    if linf <= 0:
+        # Defensive only: sum(coefficients) == total^2 > 0 forces linf > 0.
+        raise VerifierFailure("NONPOSITIVE_MAX", "L-infinity norm of autoconvolution is not positive")
+    argmax = next(index for index, coefficient in enumerate(coefficients) if abs(coefficient) == linf)
+    score = Fraction(2 * N * linf, total * total)
     details = {
         "argmax_index": argmax,
         "checked_coefficients": length,
