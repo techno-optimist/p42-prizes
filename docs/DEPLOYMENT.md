@@ -114,12 +114,20 @@ reviewed.
 
 Before pushing a prize-site change:
 
-1. Run `cd web && npm test`.
-2. Run `cd web && npx tsc --noEmit`.
-3. Run `cd web && npm run build:prizes`.
-4. Confirm machine links render under `/prizes`, especially `/prizes/skill.md`, `/prizes/api/problems`, and `/prizes/api/leaderboard?...`.
-5. Keep real ETH, onramp, and settlement language gated until audit, legal review, deterministic CI, and resolver work are complete.
-6. If changing contracts or protocol docs, also run `make contracts-test` and update `docs/GATE_LEDGER.md`.
+1. Start clean or identify unrelated dirty files with `git status --short --branch`.
+2. Pull with `git pull --ff-only`; if this refuses, resolve by reading the changed files, not by overwriting another agent.
+3. Run `cd web && npm test`.
+4. Run `cd web && npx tsc --noEmit`.
+5. Run `cd web && npm run build:prizes`.
+6. Confirm machine links render under `/prizes`, especially `/prizes/skill.md`, `/prizes/api/problems`, and `/prizes/api/leaderboard?...`.
+7. Keep real ETH, onramp, and settlement language gated until audit, legal review, deterministic CI, and resolver work are complete.
+8. If changing contracts or protocol docs, also run `make contracts-test` and update `docs/GATE_LEDGER.md`.
+9. Stage only files changed for the current task.
+10. Push, trigger the Render deploy command above until auto-deploy is evidenced, confirm the live commit, and smoke both the Render origin and `projectforty2.ai/prizes`.
+
+Known owner/external actions that agents cannot complete alone are tracked in
+`docs/HUMAN_ACTIONS.md`. Do not mark those gates closed without the named
+evidence artifact.
 
 Before pushing an Observatory change:
 

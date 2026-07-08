@@ -24,7 +24,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Gate | Current status | Evidence today | Exit criteria |
 | --- | --- | --- | --- |
-| Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text | Repo owner enables GitHub private vulnerability reporting and publishes the GitHub Actions workflow with `workflow` scope |
+| Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, and `docs/HUMAN_ACTIONS.md` owner-action register | Repo owner enables GitHub private vulnerability reporting and publishes the GitHub Actions workflow with `workflow` scope |
 | Gate 1: Base Sepolia testnet | Blocked | Python reference model, portal-local commit/reveal, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, and read-only reconciliation script | Deployed verified contracts, testnet addresses, real DA/permanence verification, integrated resolver transcript, indexer reconciliation, adversarial run report |
 | Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, and tested N-host matrix tooling | External audit, legal memo, KYC/sanctions/ToS approval, collected N-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
@@ -43,6 +43,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Local rate limits/idempotency/events | Pass for local pilot | Process-local limiter, local idempotency, hash-chained local events, problem APIs expose local-only chain provenance until a manifest/indexer is attached | Still not production settlement state |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
 | GitHub Actions workflow | Blocked on credential scope | Workflow draft was prepared locally but cannot be pushed by this OAuth token | Repo owner or token with `workflow` scope must publish `.github/workflows/ci.yml` |
+| Human/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
 
 ## Gate 1 Blockers
 
