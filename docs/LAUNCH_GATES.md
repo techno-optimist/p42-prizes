@@ -45,8 +45,15 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] Counsel-signed legal memo validates with `p42-prizes legal-memo-validate`.
 - [ ] KYC/sanctions and Terms of Service posture approved.
 - [ ] N-host verifier matrix passes for every funded problem.
+- [ ] N-host matrix host metadata (arch/libc/label) is attested, not self-attested and spoofable.
+- [ ] Verifier totality/score fuzzing has run across all 10 launch verifiers, not fixtures only.
+- [ ] Cross-language determinism conformance is proven beyond the reference Python rational-grammar path.
+- [ ] Off-chain-verdict → on-chain-key bridge (trusted resolver/`creditRecorder`) is replaced or bounded; native-ETH-only until then.
+- [ ] Dynamic/on-chain differential testing runs against a live testnet deployment, not local unit tests only.
 - [ ] Verifier image digests are pinned and immutable in registry.
-- [ ] Multisig signers, timelock, and emergency guardian are named.
+- [ ] Contracts still native-ETH only: do NOT advertise/accept USDC/ERC-20 bounties until an ERC-20 pool/fee/payout path is implemented and audited.
+- [ ] Protocol fee is capped in-contract at `MAX_FEE_BPS = 250` (2.5%).
+- [ ] Multisig signers, timelock, and emergency guardian are named (current scaffold is a single immutable EOA owner — no proxy/timelock/multisig).
 - [ ] Production wallet/session policy is reviewed across portal, contracts, and solver agents.
 - [ ] Distributed rate limits, idempotency store, API keys, abuse monitoring, and payload quarantine are live.
 - [ ] Transactional event ledger/indexer can reconstruct portal and on-chain state.

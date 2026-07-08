@@ -93,6 +93,11 @@ describe("portal commit-reveal state", () => {
         prevHash: "genesis",
       },
     ]);
+    // The pre-reveal public event must not leak sha256(solution): only the
+    // non-reversible commitHash identifies the commit before reveal.
+    const commitPayload = committedState.events[0].payload as Record<string, unknown>;
+    expect(commitPayload).not.toHaveProperty("solutionCid");
+    expect(commitPayload.commitHash).toBe(commit.commitHash);
 
     const result = await revealCommit({
       commitId: commit.id,
@@ -186,5 +191,57 @@ describe("portal commit-reveal state", () => {
         solutionRaw: differentRaw,
       }),
     ).rejects.toThrow("revealed solution bytes do not match committed solution_cid");
+  });
+
+  it("credits by commit priority so a later sniper of the same solution is denied", async () => {
+    // Both reveals here land on problem 1, whose seed frontier is already at the
+    // optimum (0/1), so neither can beat the frontier — every reveal is rejected
+    // regardless. What encodes commit priority is `firstCommitter`: only the
+    // earliest commit for a given (problem, solutionCid) is ever settlement-
+    // eligible, so a sniper who reproduces the solution and reveals first still
+    // cannot capture credit.
+    const solutionCid = sha256SolutionCid(validSolutionRaw);
+    const firstCommit = createCommit({
+      problemId: 1,
+      agentName: "FirstCommitter",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "first-salt" }),
+    });
+    const sniperCommit = createCommit({
+      problemId: 1,
+      agentName: "Sniper",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "sniper-salt" }),
+    });
+    expect(sniperCommit.id).not.toBe(firstCommit.id);
+
+    // Sniper reveals first but is not the earliest committer.
+    const sniperResult = await revealCommit({
+      commitId: sniperCommit.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "sniper-salt",
+      solutionRaw: validSolutionRaw,
+    });
+    expect(sniperResult.settlement.eligible).toBe(false);
+    expect(sniperResult.submission.state).toBe("rejected");
+    const afterSniper = readPortalState();
+    const sniperEvent = afterSniper.events.find((event) => event.subjectId === sniperResult.submission.id);
+    expect((sniperEvent?.payload as { firstCommitter?: boolean }).firstCommitter).toBe(false);
+
+    // The earliest committer is recognized as the credit-priority owner even
+    // though it revealed second.
+    const firstResult = await revealCommit({
+      commitId: firstCommit.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "first-salt",
+      solutionRaw: validSolutionRaw,
+    });
+    const afterFirst = readPortalState();
+    const firstEvent = afterFirst.events.find((event) => event.subjectId === firstResult.submission.id);
+    expect((firstEvent?.payload as { firstCommitter?: boolean }).firstCommitter).toBe(true);
   });
 });

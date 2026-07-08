@@ -104,6 +104,14 @@ def report_for_solution(path: Path) -> VerdictReport:
         valid = False
         reason = exc.reason
         details = {"error": exc.detail}
+    except Exception as exc:  # noqa: BLE001 - verifier must stay total
+        # Any unexpected error becomes a typed INTERNAL failure so the process
+        # always emits a canonical VerdictReport instead of a traceback.
+        score = SEED_DEFECT
+        improvement = Fraction(0, 1)
+        valid = False
+        reason = "INTERNAL"
+        details = {"error": f"{type(exc).__name__}: {exc}"}
 
     return VerdictReport(
         problem_id=PROBLEM_ID,

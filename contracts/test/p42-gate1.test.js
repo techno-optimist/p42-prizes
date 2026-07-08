@@ -538,27 +538,34 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
   });
 
-  it("requires counter-bonds to cover delay value and rerun cost", async function () {
+  it("sizes counter-bonds from the ledger-derived disputed entitlement, not a caller arg", async function () {
     const fixture = await deployFixture();
-    const { challenger, challenges, submissions } = fixture;
+    const { challenger, pool, challenges, submissions } = fixture;
+    // Fund the pool so the revealed submission has a real on-chain entitlement.
+    await pool.fund({ value: ethers.parseEther("10") });
     const { submissionId } = await commitAndReveal(fixture);
     const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("claimed score disagrees with local verifier"));
-    const finalizingEntitlement = ethers.parseEther("10");
-    const required = ethers.parseEther("0.5");
 
-    assert.equal(await challenges.requiredChallengeBond(finalizingEntitlement), required);
+    // With no prior credits the sole revealed submission is disputing the whole
+    // (fee-free) pool, so beta * 10 ETH dominates the floor and rerun terms.
+    const disputedEntitlement = ethers.parseEther("10");
+    const required = ethers.parseEther("0.5");
+    assert.equal(await submissions.disputedEntitlementWei(submissionId), disputedEntitlement);
+    assert.equal(await challenges.requiredChallengeBond(disputedEntitlement), required);
+
     await expectCustomError(
-      challenges.connect(challenger).challenge(999, reasonHash, finalizingEntitlement, { value: required }),
+      challenges.connect(challenger).challenge(999, reasonHash, { value: required }),
       submissions,
       "P42_UNKNOWN_SUBMISSION"
     );
+    // A caller can no longer pass 0 to collapse the bond: it is derived on-chain.
     await expectCustomError(
-      challenges.connect(challenger).challenge(submissionId, reasonHash, finalizingEntitlement, { value: required - 1n }),
+      challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required - 1n }),
       challenges,
       "P42_INSUFFICIENT_CHALLENGE_BOND"
     );
 
-    await challenges.connect(challenger).challenge(submissionId, reasonHash, finalizingEntitlement, { value: required });
+    await challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required });
     const challenge = await challenges.challenges(submissionId);
     const challenged = await submissions.submissions(submissionId);
     assert.equal(challenged.status, 3n);
@@ -576,11 +583,11 @@ describe("P42 Gate 1 contract scaffold", function () {
     const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("first challenge"));
     const required = await challenges.requiredChallengeBond(0);
 
-    await challenges.connect(challenger).challenge(submissionId, reasonHash, 0, { value: required });
+    await challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required });
     const original = await challenges.challenges(submissionId);
 
     await expectCustomError(
-      challenges.connect(alice).challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("second challenge")), 0, {
+      challenges.connect(alice).challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("second challenge")), {
         value: required,
       }),
       challenges,
@@ -602,7 +609,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const required = await challenges.requiredChallengeBond(0);
     const resolverBond = await challenges.resolverDecisionBondWei();
 
-    await challenges.connect(challenger).challenge(submissionId, reasonHash, 0, { value: required });
+    await challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required });
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await expectCustomError(
       submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH),
@@ -659,7 +666,10 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(resolverBondState.slashProofHash, ethers.ZeroHash);
     assert.equal(await challenges.claimableBondWei(challenger.address), required);
     assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
-    assert.equal(await submissions.claimableBondWei(treasury.address), bond);
+    // The rejected solver's forfeited posting bond now accrues to the winning
+    // challenger (M2), not the treasury, so policing fraud is net-positive.
+    assert.equal(await submissions.claimableBondWei(challenger.address), bond);
+    assert.equal(await submissions.claimableBondWei(treasury.address), 0n);
 
     await expectCustomError(
       challenges.releaseResolverBond(submissionId),
@@ -704,7 +714,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const required = await challenges.requiredChallengeBond(0);
     await challenges
       .connect(challenger)
-      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("bad challenge")), 0, { value: required });
+      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("bad challenge")), { value: required });
 
     await challenges.connect(resolver).resolve(
       submissionId,
@@ -736,5 +746,154 @@ describe("P42 Gate 1 contract scaffold", function () {
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n);
     assert.equal(await ledger.creditAtomsOf(alice.address), 5n);
+  });
+
+  it("expires a stalled challenge so the solver can finalize and close can proceed (M1)", async function () {
+    const fixture = await deployFixture({ feeBps: 0 });
+    const { alice, challenger, pool, ledger, submissions, challenges } = fixture;
+    await pool.fund({ value: ethers.parseEther("1") });
+    const { submissionId } = await commitAndReveal(fixture, { improvementAtoms: 5 });
+    const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
+    await challenges
+      .connect(challenger)
+      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("stalled dispute")), { value: required });
+    assert.equal((await submissions.submissions(submissionId)).status, 3n);
+
+    // Before the dispute deadline the permissionless timeout is closed.
+    await expectCustomError(
+      challenges.expireChallenge(submissionId),
+      challenges,
+      "P42_DISPUTE_WINDOW_OPEN"
+    );
+
+    // The resolver never posts a decision; anyone can time the challenge out.
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await challenges.connect(alice).expireChallenge(submissionId);
+    const expired = await challenges.challenges(submissionId);
+    assert.equal(expired.resolved, true);
+    assert.equal(expired.challengerWins, false);
+    // No adjudication occurred, so the challenger's posted bond is returned.
+    assert.equal(await challenges.claimableBondWei(challenger.address), required);
+
+    // The submission is back to Revealed; the solver can finalize and unblock close.
+    assert.equal((await submissions.submissions(submissionId)).status, 2n);
+    await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
+    assert.equal((await submissions.submissions(submissionId)).status, 4n);
+    assert.equal(await submissions.openSubmissionCount(), 0n);
+    await ledger.close();
+    assert.equal(await ledger.closed(), true);
+
+    // A timed-out challenge cannot be re-expired or resolved afterwards.
+    await expectCustomError(
+      challenges.expireChallenge(submissionId),
+      challenges,
+      "P42_ALREADY_RESOLVED"
+    );
+  });
+
+  it("pays a winning challenger more than their posted counter-bond (M2)", async function () {
+    const fixture = await deployFixture();
+    const { treasury, resolver, challenger, submissions, challenges } = fixture;
+    const { submissionId, bond } = await commitAndReveal(fixture, { improvementAtoms: 3 });
+    const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
+    await challenges
+      .connect(challenger)
+      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("provable fraud")), { value: required });
+
+    await challenges.connect(resolver).resolve(
+      submissionId,
+      true,
+      ethers.keccak256(ethers.toUtf8Bytes("challenger wins transcript")),
+      "ar://challenger-wins",
+      ethers.keccak256(ethers.toUtf8Bytes("challenger wins verdict")),
+      { value: await challenges.resolverDecisionBondWei() }
+    );
+
+    // Own counter-bond refunded on the challenge manager...
+    const ownRefund = await challenges.claimableBondWei(challenger.address);
+    // ...plus the rejected solver's forfeited posting bond on the submission manager.
+    const forfeited = await submissions.claimableBondWei(challenger.address);
+    assert.equal(ownRefund, required);
+    assert.equal(forfeited, bond);
+    assert.equal(await submissions.claimableBondWei(treasury.address), 0n);
+
+    const netClaimable = ownRefund + forfeited;
+    assert.equal(netClaimable, required + bond);
+    assert.equal(netClaimable > required, true);
+  });
+
+  it("sweeps the withheld fee to the treasury exactly once after close (L1)", async function () {
+    const { alice, treasury, pool, ledger } = await deployFixture({ feeBps: 250, activateRecorder: false });
+    await pool.fund({ value: ethers.parseEther("10") });
+    await ledger.recordCredit(alice.address, 1);
+
+    // Nothing to sweep before close.
+    await expectCustomError(ledger.sweepFee(), ledger, "P42_NOT_CLOSED");
+
+    await ledger.close();
+    const feeReserve = await ledger.feeReserve();
+    assert.equal(feeReserve, (ethers.parseEther("10") * 250n) / 10_000n);
+
+    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+    const poolBefore = await ethers.provider.getBalance(await pool.getAddress());
+    await ledger.sweepFee();
+    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, feeReserve);
+    assert.equal(poolBefore - (await ethers.provider.getBalance(await pool.getAddress())), feeReserve);
+    assert.equal(await ledger.feeSwept(), true);
+    assert.equal(await pool.totalFeePaid(), feeReserve);
+
+    // The fee cannot be swept twice.
+    await expectCustomError(ledger.sweepFee(), ledger, "P42_FEE_ALREADY_SWEPT");
+
+    // The solver still claims the full distributable pool with no underflow.
+    const distributable = await ledger.distributablePool();
+    const before = await ethers.provider.getBalance(await pool.getAddress());
+    await pool.connect(alice).claim();
+    assert.equal(await ledger.claimedWeiOf(alice.address), distributable);
+    assert.equal(before - (await ethers.provider.getBalance(await pool.getAddress())), distributable);
+    assert.equal(await pool.funded(), 0n);
+  });
+
+  it("rejects deposits once the ledger has closed (L2)", async function () {
+    const { alice, pool, ledger } = await deployFixture({ feeBps: 0, activateRecorder: false });
+    await pool.fund({ value: ethers.parseEther("1") });
+    await ledger.close();
+
+    await expectCustomError(pool.fund({ value: 1n }), pool, "P42_POOL_CLOSED");
+    await expectCustomError(
+      alice.sendTransaction({ to: await pool.getAddress(), value: 1n }),
+      pool,
+      "P42_POOL_CLOSED"
+    );
+  });
+
+  it("latches a funded problem frozen so it stays frozen after the pool drains (L5)", async function () {
+    const fixture = await deployFixture({ feeBps: 0, activateRecorder: false });
+    const { alice, pool, ledger, registry } = fixture;
+    await registry.register(await registryConfig(fixture));
+
+    // Cannot latch before the pool is funded.
+    await expectCustomError(registry.latchFrozen(1), registry, "P42_NOT_FUNDED");
+
+    // Fund the pool, then permanently latch the freeze (one-way, monotonic).
+    await pool.fund({ value: ethers.parseEther("1") });
+    await registry.latchFrozen(1);
+    assert.equal((await registry.problems(1)).frozen, true);
+    assert.equal(await registry.isFrozen(1), true);
+    await expectCustomError(registry.latchFrozen(1), registry, "P42_ALREADY_FROZEN");
+
+    // Drain the pool back to zero through a full credit/close/claim cycle.
+    await ledger.recordCredit(alice.address, 1);
+    await ledger.close();
+    await pool.connect(alice).claim();
+    assert.equal(await pool.funded(), 0n);
+
+    // The balance-derived fallback would now read unfrozen, but the latch holds,
+    // so the anchored spec/verifier hashes remain immutable.
+    await expectCustomError(
+      registry.updateBeforeFunding(1, await registryConfig(fixture)),
+      registry,
+      "P42_ALREADY_FROZEN"
+    );
   });
 });

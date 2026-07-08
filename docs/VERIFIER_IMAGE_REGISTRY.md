@@ -42,6 +42,28 @@ letting a placeholder digest become funding evidence.
 | `ProblemRegistry.verifierImageHash` | Base deployment manifest | Must equal the digest committed in problem metadata |
 | Portal `chainProvenance.verifierImageHash` | manifest/indexer | Shows `local-only` until a real deployment/reconciliation exists |
 
+## Known Limitation: Host Metadata Is Self-Attested (Spoofable)
+
+The N-host admission matrix proves that a set of evidence files carry identical
+canonical `VerdictReport` hashes, but the **host metadata in each evidence JSON —
+architecture (x86_64/aarch64), libc name/version, and host label — is currently
+SELF-ATTESTED and not cryptographically verified.** `admit-matrix` enforces its
+coverage rules (distinct labels, x86 + ARM present, at least two glibc versions)
+purely from those declared fields.
+
+Consequence: the multi-arch / multi-glibc determinism gate is **spoofable from a
+single machine.** One operator can hand-write four evidence files that claim
+different arch/libc values, run the verifier once, and satisfy the matrix even
+though nothing ran on genuinely diverse hosts. Nothing today binds the evidence
+to attested hardware (remote attestation, a signed CI-runner identity, or an
+independently operated host set).
+
+This is a **gate that must be hardened before any real bounty:** replace
+self-attested metadata with attested or independently-operated host evidence.
+Until then a passing admission matrix is an integrity aid, not proof of
+cross-host determinism, and no Gate 2 verifier item may be treated as closed on
+the strength of it alone.
+
 ## Current State
 
 - `hadamard-mini` uses `sha256:local-dev` and is runnable only as a pilot

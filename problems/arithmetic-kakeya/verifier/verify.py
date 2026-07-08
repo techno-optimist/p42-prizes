@@ -71,6 +71,7 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
     vertex_set = set(vertices)
 
     free = []
+    seen_free: set[tuple[int, int]] = set()
     free_raw = data.get("free")
     if not isinstance(free_raw, list):
         raise VerifierFailure("MALFORMED", "free must be an array")
@@ -78,6 +79,12 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
         vertex = parse_pair(raw_vertex, f"free[{index}]")
         if vertex not in vertex_set:
             raise VerifierFailure("BAD_VERTEX", "free vertex is outside the grid")
+        # Reject duplicates so the closure set (which dedupes) and the score
+        # denominator (which counts non-free vertices) stay consistent; a padded
+        # `free` list must not be able to shrink the denominator.
+        if vertex in seen_free:
+            raise VerifierFailure("DUPLICATE_FREE", "free contains a duplicate vertex")
+        seen_free.add(vertex)
         free.append(vertex)
 
     edge_labels = parse_edge_labels(data.get("edge_labels"), slopes)
@@ -259,7 +266,17 @@ def evaluate(parsed: dict[str, Any]) -> tuple[Fraction, dict[str, Any]]:
         rounds.append([[vertex[0], vertex[1]] for vertex in newly_forced])
 
     cost = edge_cost(parsed["edge_labels"])
-    denominator = len(vertices) - len(parsed["free"])
+    # Derive the denominator from the DE-DUPLICATED free set (the same set the
+    # closure uses); using the raw list length would let a padded `free` list
+    # drive the denominator to zero or negative. Guard > 0 before building any
+    # Fraction so a fully-free grid is a typed failure, not a ZeroDivisionError.
+    distinct_free = set(parsed["free"])
+    denominator = len(vertices) - len(distinct_free)
+    if denominator <= 0:
+        raise VerifierFailure(
+            "DEGENERATE_FREE_SET",
+            "free set must leave at least one non-free vertex",
+        )
     score = Fraction(cost + len(parsed["relations"]), denominator)
     details = {
         "edge_cost": cost,
@@ -289,6 +306,14 @@ def report_for_solution(path: Path) -> VerdictReport:
         valid = False
         reason = exc.reason
         details = {"error": exc.detail}
+    except Exception as exc:  # noqa: BLE001 - verifier must stay total
+        # Any unexpected error becomes a typed INTERNAL failure so the process
+        # always emits a canonical VerdictReport instead of a traceback.
+        score = SEED_BEST
+        improvement = Fraction(0, 1)
+        valid = False
+        reason = "INTERNAL"
+        details = {"error": f"{type(exc).__name__}: {exc}"}
 
     return VerdictReport(
         problem_id=PROBLEM_ID,

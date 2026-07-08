@@ -9,6 +9,10 @@ interface IP42CreditCloseGuard {
     function openSubmissionCount() external view returns (uint256);
 }
 
+interface IP42FeeSink {
+    function payFee(address to, uint256 amount) external;
+}
+
 /// @notice Final-denominator improvement accounting for one problem pool.
 /// Credits accrue while the pool is open, but no solver can claim until close.
 contract P42PayoutLedger {
@@ -22,8 +26,10 @@ contract P42PayoutLedger {
     error P42_ZERO_CREDIT();
     error P42_FEE_TOO_HIGH();
     error P42_OPEN_SUBMISSIONS(uint256 openSubmissionCount);
+    error P42_FEE_ALREADY_SWEPT();
+    error P42_NO_FEE_TO_SWEEP();
 
-    uint16 public constant MAX_FEE_BPS = 500;
+    uint16 public constant MAX_FEE_BPS = 250;
 
     address public immutable owner;
     address public immutable pool;
@@ -32,6 +38,7 @@ contract P42PayoutLedger {
 
     bool public closed;
     bool public pausedNewActions;
+    bool public feeSwept;
     address public creditRecorder;
     uint256 public closedPoolBalance;
     uint256 public feeReserve;
@@ -45,6 +52,7 @@ contract P42PayoutLedger {
     event CreditRecorded(address indexed solver, uint256 atoms, uint256 totalCreditAtoms);
     event Closed(uint256 poolBalance, uint256 feeReserve);
     event ClaimConsumed(address indexed solver, uint256 amount);
+    event FeeSwept(address indexed treasury, uint256 amount);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert P42_NOT_OWNER();
@@ -138,5 +146,20 @@ contract P42PayoutLedger {
         claimedWeiOf[solver] += amount;
         emit ClaimConsumed(solver, amount);
         return amount;
+    }
+
+    /// @notice Pays the withheld protocol fee to the treasury after close (L1).
+    /// The destination (treasury) and amount (feeReserve) are fixed at close, so
+    /// this is permissionless and single-use. Solver claims are always covered
+    /// because Sigma(finalEntitlement) <= distributablePool() = closedPoolBalance
+    /// - feeReserve, so the pool retains at least feeReserve for this transfer.
+    function sweepFee() external {
+        if (!closed) revert P42_NOT_CLOSED();
+        if (feeSwept) revert P42_FEE_ALREADY_SWEPT();
+        uint256 amount = feeReserve;
+        if (amount == 0) revert P42_NO_FEE_TO_SWEEP();
+        feeSwept = true;
+        IP42FeeSink(pool).payFee(treasury, amount);
+        emit FeeSwept(treasury, amount);
     }
 }

@@ -8,14 +8,15 @@ import math
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
 import time
 from typing import Any, Callable, Iterator, Mapping
 
-from p42_prizes.admission import AdmissionError, load_evidence_file
+from p42_prizes.admission import AdmissionError, build_verifier_env, load_evidence_file
 from p42_prizes.da import DaEvidenceError, validate_da_evidence
-from p42_prizes.problem import load_manifest, repo_root_from_problem
+from p42_prizes.problem import load_manifest
 from p42_prizes.runner_queue import (
     MemorySnapshot,
     RunnerPolicy,
@@ -314,17 +315,12 @@ def _run_verifier_for_transcript(
         command_template = manifest["verifier"]["command"]
         command = [part.format(solution=str(solution)) for part in shlex.split(command_template)]
         wall_seconds = int(manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
-        env = dict(os.environ)
-        src = str(repo_root_from_problem(problem) / "src")
-        env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
-        completed = subprocess.run(
+        env = build_verifier_env(problem)
+        completed = _run_isolated_verifier(
             command,
             cwd=problem,
             env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-            timeout=wall_seconds,
+            wall_seconds=wall_seconds,
             preexec_fn=_memory_limit_preexec(child_address_space_limit_mb),
         )
     except subprocess.TimeoutExpired:
@@ -380,6 +376,49 @@ def _run_verifier_for_transcript(
     else:
         result["error"] = f"verifier returned non-zero exit code {completed.returncode}"
     return result
+
+
+def _run_isolated_verifier(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    wall_seconds: int,
+    preexec_fn: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Run an untrusted verifier in its own session/process group.
+
+    start_new_session makes the child a group leader, so on timeout we can kill
+    the whole group (os.killpg) and reap grandchildren that a bare child kill
+    would orphan. Raises subprocess.TimeoutExpired on wall-clock overrun, which
+    the caller surfaces as the existing typed timeout error.
+    """
+    process = subprocess.Popen(
+        command,
+        cwd=str(cwd),
+        env=dict(env),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+        preexec_fn=preexec_fn,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=wall_seconds)
+    except subprocess.TimeoutExpired:
+        _kill_process_group(process)
+        # Reap the killed group so no pipe or zombie survives the timeout.
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _kill_process_group(process: subprocess.Popen) -> None:
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        # Fall back to killing the direct child if the group is already gone.
+        process.kill()
 
 
 def _no_stdout_error(returncode: int, stderr_tail: str) -> str:

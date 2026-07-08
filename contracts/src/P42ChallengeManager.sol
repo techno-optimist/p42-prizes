@@ -3,7 +3,8 @@ pragma solidity ^0.8.24;
 
 interface IP42SubmissionChallengeHook {
     function markChallenged(uint256 submissionId) external;
-    function resolveChallenge(uint256 submissionId, bool challengerWins) external;
+    function resolveChallenge(uint256 submissionId, bool challengerWins, address beneficiary) external;
+    function disputedEntitlementWei(uint256 submissionId) external view returns (uint256);
 }
 
 /// @notice Optimistic challenge scaffold for Phase 1.
@@ -21,6 +22,7 @@ contract P42ChallengeManager {
     error P42_ALREADY_RESOLVED();
     error P42_INSUFFICIENT_CHALLENGE_BOND(uint256 required, uint256 received);
     error P42_INSUFFICIENT_RESOLVER_BOND(uint256 required, uint256 received);
+    error P42_DISPUTE_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_EMPTY_TRANSCRIPT_HASH();
     error P42_EMPTY_TRANSCRIPT_URI();
     error P42_EMPTY_VERDICT_HASH();
@@ -89,6 +91,7 @@ contract P42ChallengeManager {
         uint64 resolverBondReleaseAt
     );
     event Resolved(uint256 indexed submissionId, bool challengerWins);
+    event ChallengeExpired(uint256 indexed submissionId, address indexed challenger, uint256 refundedBondWei);
     event ResolverBondReleased(uint256 indexed submissionId, address indexed resolver, uint256 amount);
     event ResolverBondSlashed(uint256 indexed submissionId, address indexed treasury, uint256 amount, bytes32 proofHash);
     event BondClaimed(address indexed claimant, uint256 amount);
@@ -148,8 +151,8 @@ contract P42ChallengeManager {
         emit NewActionsPaused(paused);
     }
 
-    function requiredChallengeBond(uint256 finalizingEntitlementWei) public view returns (uint256) {
-        uint256 scaledDelayValue = finalizingEntitlementWei * betaBps / 10_000;
+    function requiredChallengeBond(uint256 disputedEntitlementWei) public view returns (uint256) {
+        uint256 scaledDelayValue = disputedEntitlementWei * betaBps / 10_000;
         uint256 scaledRerunCost = rerunCostWei * rerunCostMultiplierBps / 10_000;
         uint256 required = minCounterBondWei;
         if (scaledDelayValue > required) required = scaledDelayValue;
@@ -159,8 +162,7 @@ contract P42ChallengeManager {
 
     function challenge(
         uint256 submissionId,
-        bytes32 reasonHash,
-        uint256 finalizingEntitlementWei
+        bytes32 reasonHash
     ) external payable {
         if (pausedNewActions) revert P42_PAUSED_NEW_ACTIONS();
         if (submissionId == 0) revert P42_BAD_SUBMISSION();
@@ -169,7 +171,11 @@ contract P42ChallengeManager {
         Challenge storage existing = challenges[submissionId];
         if (existing.challenger != address(0)) revert P42_ALREADY_CHALLENGED();
 
-        uint256 required = requiredChallengeBond(finalizingEntitlementWei);
+        // Size the counter-bond from the ledger-derived disputed entitlement so
+        // a caller cannot collapse the value-proportional bond to the floor by
+        // under-reporting it (H2). The submission manager is the trusted oracle.
+        uint256 disputedEntitlementWei = submissionManager.disputedEntitlementWei(submissionId);
+        uint256 required = requiredChallengeBond(disputedEntitlementWei);
         if (msg.value < required) revert P42_INSUFFICIENT_CHALLENGE_BOND(required, msg.value);
 
         submissionManager.markChallenged(submissionId);
@@ -225,7 +231,10 @@ contract P42ChallengeManager {
         } else {
             claimableBondWei[treasury] += current.challengeBondWei;
         }
-        submissionManager.resolveChallenge(submissionId, challengerWins);
+        // On a challenger win the rejected solver's forfeited posting bond is
+        // routed to the challenger (not treasury) so a successful challenge is
+        // net-positive; the beneficiary is ignored when the solver prevails (M2).
+        submissionManager.resolveChallenge(submissionId, challengerWins, current.challenger);
 
         emit ResolverTranscriptPosted(
             submissionId,
@@ -237,6 +246,32 @@ contract P42ChallengeManager {
             resolverBondReleaseAt
         );
         emit Resolved(submissionId, challengerWins);
+    }
+
+    /// @notice Permissionless timeout resolving a stalled challenge in the
+    /// solver's favor once the dispute window closes without a resolver decision.
+    /// Without this an offline or colluding resolver could freeze a Challenged
+    /// submission forever, which also blocks the payout ledger's close() and
+    /// therefore locks the whole pool (M1). Because no adjudication took place,
+    /// the challenger's posted bond is returned to them.
+    function expireChallenge(uint256 submissionId) external {
+        Challenge storage current = challenges[submissionId];
+        if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        if (current.resolved) revert P42_ALREADY_RESOLVED();
+        if (block.timestamp < current.disputeEndsAt) {
+            revert P42_DISPUTE_WINDOW_OPEN(current.disputeEndsAt, uint64(block.timestamp));
+        }
+
+        current.resolved = true;
+        current.challengerWins = false;
+        uint256 refund = current.challengeBondWei;
+        claimableBondWei[current.challenger] += refund;
+        // Return the submission to Revealed so the solver can finalize; the
+        // beneficiary argument is unused because the solver prevails by default.
+        submissionManager.resolveChallenge(submissionId, false, address(0));
+
+        emit ChallengeExpired(submissionId, current.challenger, refund);
+        emit Resolved(submissionId, false);
     }
 
     function releaseResolverBond(uint256 submissionId) external {

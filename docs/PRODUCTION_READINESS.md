@@ -78,6 +78,13 @@ ledger, exit criteria, and external attestations.
 - No completed external security audit or counsel-signed legal memo yet; the legal schema and validator exist, but a real counsel memo/reference and legal/compliance packet must validate before this blocker closes.
 - No published GitHub Actions workflow yet; the current OAuth token cannot push `.github/workflows/*` without `workflow` scope, and GitHub rejected an isolated-branch attempt with that exact policy.
 - No completed Gate 2 incident drill or live bug bounty yet; the schema, validator, and draft policy exist, but a named security owner and counsel must sign a real report before this blocker closes.
+- No verifier totality/score fuzzing across all 10 launch verifiers; R4 totality and score correctness are exercised on fixtures only, with no adversarial/boundary fuzz campaign per problem.
+- No cross-language determinism conformance beyond the reference Python path; the `p42:v1` rational grammar is finalized, but no suite proves a non-Python verifier re-implementation produces byte-identical canonical `VerdictReport`s.
+- N-host matrix host metadata (architecture, libc name/version, label) is self-attested in the evidence JSON and not cryptographically verified, so the multi-arch/multi-glibc determinism gate is spoofable from a single machine; attested or independently-operated host evidence is required before real bounties.
+- The off-chain-verdict → on-chain-key trust bridge is unresolved: the resolver and `creditRecorder` roles are trusted privileged keys, with no fraud-proof or verifiable-execution bridge from an off-chain verdict to the on-chain frontier/credit write.
+- Contracts are native-ETH only; the README/BUILD spec advertise "ETH/USDC" but no ERC-20/USDC pool, deposit, fee-skim, or payout path is implemented or audited. USDC is a target, not a shipped capability.
+- No dynamic/on-chain differential testing; contract evidence is local Hardhat unit/property tests only, with no deployed-vs-reference differential, fork/replay, or live-testnet invariant fuzzing.
+- The runner's untrusted-verifier isolation is process-level only: verifiers run in their own process group with a process-tree kill on timeout and a scrubbed/allowlisted environment, but there is no container/cgroup sandbox and `RLIMIT_AS` is per-process, so a forking verifier can still exceed the aggregate memory bound.
 
 ## Verification Commands
 

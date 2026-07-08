@@ -11,9 +11,74 @@
       "minItems": 2,
       "maxItems": 2
     },
-    "slopes": { "type": "array" },
-    "edge_labels": { "type": "array" },
-    "free": { "type": "array" },
-    "relations": { "type": "array" }
+    "slopes": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "integer" }
+      }
+    },
+    "edge_labels": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "array",
+        "maxItems": 256,
+        "items": {
+          "type": "object",
+          "required": ["key", "slope"],
+          "properties": {
+            "key": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "items": { "type": "integer" }
+            },
+            "slope": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+    "free": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "integer" }
+      }
+    },
+    "relations": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "required": ["vertex", "slope"],
+        "properties": {
+          "vertex": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer" }
+          },
+          "slope": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer" }
+          }
+        }
+      }
+    }
   }
 }

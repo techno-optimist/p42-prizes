@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
+
+import jsonschema
 
 from p42_prizes.admission import (
     AdmissionError,
     build_admission_matrix,
+    build_verifier_env,
     detect_host,
     generate_host_evidence,
     load_evidence_file,
@@ -34,6 +39,16 @@ from p42_prizes.runner_queue import (
 )
 from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
 from p42_prizes.verdict import canonical_json
+
+
+# Gate validators enforce the published schemas' additionalProperties:false, so a
+# gate report with unknown top-level keys is rejected at the CLI boundary.
+_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
+
+
+def _enforce_gate_schema(report: dict, schema_name: str) -> None:
+    schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
+    jsonschema.validate(report, schema)
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -69,16 +84,25 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     ]
     wall_seconds = int(manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
 
-    env = dict(os.environ)
-    repo_root = repo_root_from_problem(problem)
-    src = str(repo_root / "src")
-    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    # Scrub the environment so the untrusted verifier cannot read host secrets,
+    # and run it in its own session/process group so a timeout kills the whole
+    # tree (no surviving orphans) — matching the runner and admission paths
+    # (audit L7 / secret-env).
+    env = build_verifier_env(problem)
+    process = subprocess.Popen(command, cwd=problem, env=env, start_new_session=True)
     try:
-        completed = subprocess.run(command, cwd=problem, env=env, check=False, timeout=wall_seconds)
+        return process.wait(timeout=wall_seconds)
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            process.kill()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
         print(f"verifier timed out after {wall_seconds}s", file=sys.stderr)
         return 124
-    return completed.returncode
 
 
 def _cmd_simulate(args: argparse.Namespace) -> int:
@@ -297,7 +321,8 @@ def _cmd_runner_burst_validate(args: argparse.Namespace) -> int:
 def _cmd_incident_drill_validate(args: argparse.Namespace) -> int:
     try:
         report = normalize_incident_drill_report(load_evidence_file(args.report))
-    except (AdmissionError, IncidentDrillError) as exc:
+        _enforce_gate_schema(report, "incident-drill.schema.json")
+    except (AdmissionError, IncidentDrillError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(report, args.output)
@@ -307,7 +332,8 @@ def _cmd_incident_drill_validate(args: argparse.Namespace) -> int:
 def _cmd_adversarial_campaign_validate(args: argparse.Namespace) -> int:
     try:
         report = normalize_adversarial_campaign_report(load_evidence_file(args.report))
-    except (AdmissionError, AdversarialCampaignError) as exc:
+        _enforce_gate_schema(report, "adversarial-campaign.schema.json")
+    except (AdmissionError, AdversarialCampaignError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(report, args.output)
@@ -317,7 +343,8 @@ def _cmd_adversarial_campaign_validate(args: argparse.Namespace) -> int:
 def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
     try:
         report = normalize_governance_signoff(load_evidence_file(args.report))
-    except (AdmissionError, GovernanceSignoffError) as exc:
+        _enforce_gate_schema(report, "governance-signoff.schema.json")
+    except (AdmissionError, GovernanceSignoffError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(report, args.output)
@@ -327,7 +354,8 @@ def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
 def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
     try:
         report = normalize_legal_memo(load_evidence_file(args.report))
-    except (AdmissionError, LegalMemoError) as exc:
+        _enforce_gate_schema(report, "legal-memo.schema.json")
+    except (AdmissionError, LegalMemoError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(report, args.output)

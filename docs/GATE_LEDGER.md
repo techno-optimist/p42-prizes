@@ -153,6 +153,39 @@ This rejects `sha256:local-dev`, `sha256:pending`, and any N-host matrix whose
 problem id, verifier version, or verifier image digest does not match
 `problem.yaml`.
 
+## Residual Audit Coverage Gaps (Known-Open)
+
+The independent security audit surfaced coverage gaps that are not yet closed by
+any evidence artifact. None of these may be marked closed; each is an open Gate 1
+or Gate 2 item.
+
+- **Verifier totality / score fuzzing across all 10 problems.** R4 totality and
+  score correctness have been exercised on fixtures only. There is no
+  fuzzing/property campaign over malformed, adversarial, and boundary inputs for
+  every one of the ten launch verifiers. Open.
+- **Cross-language determinism conformance beyond the rational grammar.** The
+  `p42:v1` rational grammar is finalized, but there is no conformance suite
+  proving that a non-Python re-implementation of a verifier produces byte-
+  identical canonical `VerdictReport`s. Determinism is asserted only for the
+  reference Python path. Open.
+- **Host-metadata attestation for the N-host matrix.** Architecture/libc/label
+  fields are self-attested and spoofable from one machine (see
+  `docs/VERIFIER_IMAGE_REGISTRY.md`). The multi-arch/multi-glibc gate is not
+  cryptographically bound to real diverse hardware. Open.
+- **Off-chain-verdict → on-chain-key trust bridge.** The resolver and
+  `creditRecorder` roles are **trusted**: an off-chain verdict becomes an
+  on-chain frontier/credit write through a privileged key, with no fraud-proof
+  or verifiable-execution bridge yet. This is the core trust concession and a
+  hard real-ETH blocker (mirrors risk-register rows 4 and 13). Open.
+- **ERC-20 / USDC handling.** The README and BUILD spec advertise "ETH/USDC
+  bounties," but the contracts are **native-ETH only** — there is no ERC-20 pool,
+  deposit, fee-skim, or payout path implemented or audited. USDC support is a
+  target, not a shipped capability. Open.
+- **Dynamic / on-chain differential testing.** Contract evidence is local
+  Hardhat unit/property tests only. There is no dynamic on-chain differential
+  test (deployed-vs-reference state machine, fork/replay, or invariant fuzzing
+  against a live testnet deployment). Open.
+
 ## Non-Negotiable Stop Conditions
 
 - Do not enable real ETH deposits or Coinbase Onramp while any Gate 1 or Gate 2 blocker is open.
@@ -160,3 +193,6 @@ problem id, verifier version, or verifier image digest does not match
 - Do not treat Render JSON state as canonical settlement truth.
 - Do not allow a pause/guardian path that can block finalized `claim()`.
 - Do not accept resolver decisions without public re-run transcript evidence.
+- Do not treat a passing N-host matrix as cross-host determinism proof while host metadata is self-attested.
+- Do not advertise or accept USDC/ERC-20 bounties: the contracts are native-ETH only.
+- Do not raise the protocol fee above the in-contract cap `MAX_FEE_BPS = 250` (2.5%).

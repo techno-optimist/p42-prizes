@@ -15,13 +15,31 @@ describe("exact rational helpers", () => {
   });
 
   // These strings parse in JS's lenient BigInt but must be rejected so the
-  // portal and the Python verifier agree on which literals are valid.
-  it.each(["", "/2", "1/2/3", "0x10", "0b101", "1_0/2", "١/٢", "5/0", " 1/2"])(
-    "rejects malformed rational %j",
-    (bad) => {
-      expect(() => parseRational(bad)).toThrow();
-    },
-  );
+  // portal and the Python verifier agree on which literals are valid. The
+  // trailing/leading-whitespace cases are the cross-language conformance corpus
+  // shared with tests/test_grammar_conformance.py: Python's re.match used to
+  // accept a trailing "\n", so both sides must now reject the whole set.
+  it.each([
+    "",
+    "/2",
+    "1/2/3",
+    "0x10",
+    "0b101",
+    "1_0/2",
+    "١/٢",
+    "5/0",
+    " 1/2",
+    "1/2 ",
+    "1/2\n",
+    "12\n",
+    "-3\n",
+    "\n1/2",
+    "1 ",
+    " 1",
+    "\t1/2",
+  ])("rejects malformed rational %j", (bad) => {
+    expect(() => parseRational(bad)).toThrow();
+  });
 
   it("does not invert comparison for negative-denominator rationals", () => {
     // {num:1, den:-2} == -1/2, which is less than 1/2.

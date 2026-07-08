@@ -66,7 +66,7 @@ function scenarioFromSeed(seed) {
   }
   return {
     seed,
-    feeBps: [0, 50, 250, 500][seed % 4],
+    feeBps: [0, 50, 125, 250][seed % 4],
     alphaBps: [100, 500, 2_000][seed % 3],
     initialPoolWei: seed === 1 ? 0n : 100n + (next() % 10_000n),
     finalDonationWei: next() % 3000n,
@@ -255,5 +255,26 @@ describe("P42 contract property checks", function () {
       const splitTotal = split.get(splitA.address) + split.get(splitB.address);
       assert.equal(splitTotal <= oneIdentity.get(combined.address), true);
     }
+  });
+
+  it("caps the protocol fee at the advertised 2.5% (250 bps)", async function () {
+    const Pool = await ethers.getContractFactory("P42BountyPool");
+    const Ledger = await ethers.getContractFactory("P42PayoutLedger");
+    const [owner, treasury] = await ethers.getSigners();
+    const pool = await Pool.deploy(owner.address);
+    await pool.waitForDeployment();
+
+    // 250 bps (2.5%) is the maximum accepted fee.
+    const capped = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 250);
+    await capped.waitForDeployment();
+    assert.equal(await capped.feeBps(), 250n);
+    assert.equal(await capped.MAX_FEE_BPS(), 250n);
+
+    // Anything above the cap is rejected at construction.
+    await expectCustomError(
+      Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 251),
+      Ledger,
+      "P42_FEE_TOO_HIGH"
+    );
   });
 });

@@ -130,10 +130,14 @@ export function createCommit(input: {
       subjectId: record.id,
       problemId: record.problemId,
       actor: record.solverAddress,
+      // The solution CID is sha256(solution). Exposing it before reveal lets an
+      // observer brute-force/verify the solution and snipe the commit-reveal, so
+      // it stays in the server-side commit record only. The public identifier is
+      // the commitHash, which is keccak over a preimage that includes the secret
+      // salt and is therefore not reversible to the solution.
       payload: {
         agentName: record.agentName,
         solverAddress: record.solverAddress,
-        solutionCid: record.solutionCid,
         commitHash: record.commitHash,
         commitAlgorithm: record.commitAlgorithm,
       },
@@ -189,10 +193,21 @@ export async function revealCommit(input: {
       if (!storedCommit) throw new ClientError("commit not found");
       if (storedCommit.revealed) throw new ClientError("commit already revealed");
 
+      // Credit follows COMMIT priority, not reveal order. Only the earliest
+      // commit for a given (problem, solutionCid) is ever eligible for credit,
+      // so a sniper who reproduces an earlier commit's solution (e.g. by
+      // brute-forcing a leaked content hash) cannot front-run the reveal and
+      // capture the delta the first committer is owed. Insertion order in the
+      // commit log is the tiebreak, which is robust to same-millisecond commits.
+      const firstMatchingCommit = nextState.commits.find(
+        (commit) => commit.problemId === record.problemId && commit.solutionCid === record.solutionCid,
+      );
+      const isFirstCommitter = firstMatchingCommit?.id === storedCommit.id;
+
       // Compute the credit against the frontier under the same lock that
       // persists it, using the committed submissions, so a concurrent reveal
       // can't be credited for the same delta.
-      settlement = verdict.valid
+      settlement = verdict.valid && isFirstCommitter
         ? incrementalFrontierCredit(problem, verdict.score, [...submissions, ...nextState.submissions])
         : { credit: "0/1", priorBest: frontierFallback(problem), eligible: false };
 
@@ -232,6 +247,7 @@ export async function revealCommit(input: {
           score: verdict.score,
           credit: submission.credit,
           eligible: settlement.eligible,
+          firstCommitter: isFirstCommitter,
         },
       });
     });

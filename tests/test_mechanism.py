@@ -84,6 +84,15 @@ def test_zero_payout_pool_charges_no_fee() -> None:
     assert result["dust_wei"] == 1_000_000
 
 
+def test_fee_bps_is_capped_at_the_contract_maximum() -> None:
+    # MAX_FEE_BPS matches the contract cap (2.5%). The boundary is accepted and
+    # anything above it is refused before any pool is settled.
+    result = settle_pool(1000, [Credit("alice", Fraction(1, 1))], fee_bps=250)
+    assert result["fee_wei"] == 25
+    with pytest.raises(ValueError, match="fee_bps must be between 0 and 250"):
+        settle_pool(1000, [Credit("alice", Fraction(1, 1))], fee_bps=251)
+
+
 def test_settlement_rejects_unrepresentable_denominator() -> None:
     with pytest.raises(ValueError):
         settle_pool(

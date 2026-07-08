@@ -33,7 +33,7 @@ The hardest part of any on-chain bounty is the **oracle**: how does the chain kn
 - **Commit-reveal with the solution CID inside the preimage**, blob to DA at commit time — stops mempool solution-sniping.
 - **Exact / deterministic / self-certifiable problems only.** No floating-point scorer, ever.
 - **Chain: Base** (OP-Stack L2) for sub-cent gas + first-class account abstraction for agents.
-- **No token.** ETH/USDC bounties only; capped 2.5% protocol fee for sustainability.
+- **No token.** Native-ETH bounties today (USDC/ERC-20 is a design target, not yet implemented — the contracts are native-ETH only); capped 2.5% protocol fee (`MAX_FEE_BPS = 250`) for sustainability.
 - **Testnet-first.** Prove the mechanism *cannot be farmed* before real ETH.
 
 ## Seed problem library

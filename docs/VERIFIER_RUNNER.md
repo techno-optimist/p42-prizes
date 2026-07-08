@@ -30,6 +30,15 @@ problem that needs more than one pass.
 - DGX/CHRONOS/Hermes output is evidence, not authority.
 - No Atlas writes are part of the prize verification path.
 - Public submissions are untrusted payloads and must run in isolated workspaces.
+- The untrusted verifier is launched in its **own process group** so a timeout
+  triggers a **process-tree kill** (the whole group is signalled, not just the
+  parent PID), and it runs with a **minimal allowlisted environment** — host
+  secrets, RPC keys, API keys, and tokens present in the worker's environment are
+  scrubbed and not inherited by the verifier subprocess.
+- This is process-level hardening, not a sandbox. **Full container/cgroup
+  isolation is still pending and is a launch blocker:** the current guard does
+  not namespace the filesystem, network, or PIDs, and cannot bound the aggregate
+  resource use of a forking verifier (see OOM guard below).
 - Runner transcripts must never include secrets, RPC keys, API keys, Telegram
   tokens, or private solver material.
 - Auto-challenge requires an explicit funded agent key, counter-bond policy,
@@ -69,8 +78,13 @@ not memory pressure. Queue, plan, and transcript schemas live at
   action; it does not skip FIFO to run later jobs.
 - On Linux runner hosts, every verifier subprocess is launched with an
   address-space limit of `ceil(required_memory_mb * safety_factor)` via
-  `RLIMIT_AS`, so an adversarial or buggy verifier fails its own transcript
-  instead of putting the worker host into OOM pressure.
+  `RLIMIT_AS`, so a single-process verifier that overruns its budget fails its
+  own transcript rather than the worker host. **Limitation:** `RLIMIT_AS` is
+  **per-process only** — a verifier that `fork`s or spawns children can exceed
+  the aggregate memory bound because each child gets its own limit. This guard
+  therefore reduces, but does not eliminate, host OOM risk from an adversarial or
+  buggy verifier. A real **container/cgroup sandbox** (which can bound aggregate
+  memory for the whole process tree) is still pending and is a launch blocker.
 - `required_memory_mb` comes from the problem manifest/runtime admission evidence,
   then gets raised to observed peak RSS after dry runs.
 - Queue depth, oldest queued age, active lease, memory headroom, and swap usage
@@ -170,8 +184,11 @@ with a `p42-runner-loop/v1` summary. If the oldest queued job does not fit, can
 never fit the host, swap is above threshold, a runner slot is already occupied,
 or a stale lease needs supervisor action, it records a `wait` event and sleeps
 before trying again. This is the burst behavior we want: many submissions create
-queue depth and latency, not simultaneous verifier processes or box-level OOM
-pressure. Use `--max-jobs` for a bounded batch and `--max-iterations` for
+queue depth and latency, not simultaneous verifier processes. Serialization plus
+the per-process `RLIMIT_AS` guard sharply reduces box-level OOM pressure but does
+not fully eliminate it (a single forking verifier can still exceed the aggregate
+bound — see the OOM guard limitation above); a container/cgroup sandbox is the
+pending fix. Use `--max-jobs` for a bounded batch and `--max-iterations` for
 rehearsals.
 
 Transcripts include `resource_limits.required_memory_mb`,

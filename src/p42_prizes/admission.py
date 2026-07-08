@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import subprocess
 from typing import Any, Iterable, Mapping
@@ -30,6 +31,19 @@ REPORT_KEYS = (
     "reason",
     "recomputed_at_commit",
     "details",
+)
+# Authoritative solution_hash pattern from schemas/verdict.schema.json:23; admission
+# and the published schema must agree byte-for-byte.
+SOLUTION_HASH_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
+
+# An untrusted verifier must not inherit the host's secrets (RPC/API/Telegram
+# tokens live in os.environ). Only PATH, the repo src/ PYTHONPATH, and these
+# determinism knobs are forwarded (docs/VERIFIER_RUNNER.md).
+VERIFIER_ENV_ALLOWLIST = (
+    "PYTHONHASHSEED",
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
 )
 
 
@@ -117,8 +131,27 @@ def _validate_report_shape(report: Mapping[str, Any]) -> None:
     for key in ("improvement", "score"):
         if not isinstance(report[key], str) or rational_to_string(report[key]) != report[key]:
             raise AdmissionError(f"verifier report {key} must be a normalized rational string")
-    if not report["solution_hash"].startswith("sha256:") or len(report["solution_hash"]) != 71:
+    if not SOLUTION_HASH_RE.fullmatch(report["solution_hash"]):
         raise AdmissionError("verifier report solution_hash must be sha256:<64 lowercase hex chars>")
+
+
+def build_verifier_env(problem: Path) -> dict[str, str]:
+    """Build a minimal, allowlisted environment for an untrusted verifier.
+
+    Copying the full host os.environ would leak any RPC/API/Telegram secrets
+    into the untrusted payload. Only PATH, the repo src/ PYTHONPATH (the
+    behavior tests rely on), and determinism knobs are inherited.
+    """
+    src = str(repo_root_from_problem(problem) / "src")
+    env = {
+        "PATH": os.environ.get("PATH", os.defpath),
+        "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", ""),
+    }
+    for name in VERIFIER_ENV_ALLOWLIST:
+        value = os.environ.get(name)
+        if value is not None:
+            env[name] = value
+    return env
 
 
 def run_verifier_once(problem: Path, solution: Path) -> VerifierRun:
@@ -129,10 +162,7 @@ def run_verifier_once(problem: Path, solution: Path) -> VerifierRun:
     command = [part.format(solution=str(solution)) for part in shlex.split(command_template)]
     wall_seconds = int(manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
 
-    env = dict(os.environ)
-    repo_root = repo_root_from_problem(problem)
-    src = str(repo_root / "src")
-    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    env = build_verifier_env(problem)
     try:
         completed = subprocess.run(
             command,

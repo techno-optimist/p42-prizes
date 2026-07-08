@@ -7,7 +7,7 @@ from typing import Any, Iterable
 from p42_prizes.verdict import parse_rational, rational_to_string
 
 
-MAX_FEE_BPS = 500
+MAX_FEE_BPS = 250
 MAX_BOND_BPS = 10_000
 # The on-chain settlement target is Solidity uint256. Improvements whose reduced
 # common denominator exceeds this cannot be represented exactly on-chain, so the

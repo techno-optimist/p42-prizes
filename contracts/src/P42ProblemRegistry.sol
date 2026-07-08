@@ -15,6 +15,7 @@ contract P42ProblemRegistry {
     error P42_ZERO_ADDRESS();
     error P42_BAD_WINDOW();
     error P42_ALREADY_FROZEN();
+    error P42_NOT_FUNDED();
     error P42_UNKNOWN_PROBLEM();
 
     struct ProblemConfig {
@@ -89,6 +90,19 @@ contract P42ProblemRegistry {
     function freeze(uint256 problemId) external onlyOwner {
         Problem storage problem = _requireExisting(problemId);
         if (problem.frozen) revert P42_ALREADY_FROZEN();
+        problem.frozen = true;
+        emit ProblemFrozen(problemId);
+    }
+
+    /// @notice Permissionless one-way latch that persists the freeze once the
+    /// pool has been funded (L5). isFrozen() alone derives from the *live* pool
+    /// balance, so a pool that drains back to zero would let the owner re-edit
+    /// the anchored spec/verifier hashes. Latching frozen=true on funding makes
+    /// the freeze monotonic while keeping the balance-derived fallback intact.
+    function latchFrozen(uint256 problemId) external {
+        Problem storage problem = _requireExisting(problemId);
+        if (problem.frozen) revert P42_ALREADY_FROZEN();
+        if (IP42RegisteredPool(problem.pool).funded() == 0) revert P42_NOT_FUNDED();
         problem.frozen = true;
         emit ProblemFrozen(problemId);
     }

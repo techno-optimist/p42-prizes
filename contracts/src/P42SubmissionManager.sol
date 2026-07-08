@@ -293,17 +293,34 @@ contract P42SubmissionManager {
         emit SubmissionChallenged(submissionId, msg.sender);
     }
 
-    function resolveChallenge(uint256 submissionId, bool challengerWins) external onlyChallengeManager {
+    function resolveChallenge(uint256 submissionId, bool challengerWins, address beneficiary)
+        external
+        onlyChallengeManager
+    {
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Challenged);
         if (challengerWins) {
             submission.status = SubmissionStatus.Rejected;
-            _makeBondClaimable(submissionId, treasury);
+            // The rejected solver's forfeited posting bond is routed to the
+            // beneficiary chosen by the challenge manager (the winning
+            // challenger) so that policing fraud is net-positive (M2).
+            require(beneficiary != address(0), "P42_BENEFICIARY_ZERO");
+            _makeBondClaimable(submissionId, beneficiary);
             _decrementOpenSubmission();
         } else {
             submission.status = SubmissionStatus.Revealed;
         }
         emit SubmissionChallengeResolved(submissionId, challengerWins);
+    }
+
+    /// @notice Ledger-derived entitlement that a Revealed submission is claiming.
+    /// The challenge manager sizes its value-proportional counter-bond from this
+    /// trusted on-chain figure instead of a caller-supplied argument (H2). It
+    /// mirrors the entitlement computation performed at finalization.
+    function disputedEntitlementWei(uint256 submissionId) external view returns (uint256) {
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Revealed);
+        return ledger.provisionalEntitlement(submission.solver, submission.improvementAtoms);
     }
 
     function expireCommitted(uint256 submissionId) external {

@@ -12,7 +12,11 @@ from typing import Any, Mapping
 # Canonical rational grammar shared with the TypeScript parser
 # (web/src/lib/exact.ts): an optional ASCII sign, ASCII digits, and an optional
 # `/denominator`. Kept strict so the verifier and the portal accept exactly the
-# same strings — any divergence is a consensus-split hazard.
+# same strings — any divergence is a consensus-split hazard. Matched with
+# re.fullmatch (not re.match): Python's `$` otherwise also matches immediately
+# before a single trailing newline, so re.match would accept "1/2\n" while the
+# JS `$` (no multiline flag) rejects it. fullmatch requires the whole string to
+# be consumed, restoring byte-for-byte agreement with exact.ts.
 _RATIONAL_RE = re.compile(r"^[+-]?[0-9]+(?:/[+-]?[0-9]+)?$")
 
 
@@ -38,7 +42,7 @@ def parse_rational(value: str | int | Fraction) -> Fraction:
         return value
     if isinstance(value, int):
         return Fraction(value, 1)
-    if not isinstance(value, str) or not _RATIONAL_RE.match(value):
+    if not isinstance(value, str) or not _RATIONAL_RE.fullmatch(value):
         raise ValueError(f"invalid rational literal: {value!r}")
     if "/" in value:
         num, den = value.split("/", 1)
