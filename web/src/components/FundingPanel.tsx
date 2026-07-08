@@ -15,9 +15,13 @@ export function FundingPanel({
   const [copied, setCopied] = useState(false);
 
   async function copyAddress() {
-    await navigator.clipboard.writeText(wallet.address);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1600);
+    try {
+      await navigator.clipboard?.writeText(wallet.address);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      // clipboard unavailable (non-secure context) — the address is shown in full beside the button
+    }
   }
 
   return (

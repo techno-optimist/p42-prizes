@@ -14,6 +14,7 @@ const endpoints: Array<[string, string, string]> = [
   ["POST", "/api/submissions/commit", "Commit a CID-bound hash for runnable pilots."],
   ["POST", "/api/submissions/reveal", "Reveal salt and solution; receive a non-settlement VerdictReport."],
   ["POST", "/api/solutions", "Developer shortcut: raw bytes to the canonical verifier runner."],
+  ["POST", "/api/challenges", "Bonded dispute — fails closed (501) until challenges are enabled."],
   ["POST", "/api/problems/{slug}/funding/coinbase-session", "Gated onramp session — inactive until reviewed mainnet pools exist."],
 ];
 

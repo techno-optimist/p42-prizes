@@ -117,8 +117,14 @@ export function FrontierChart({
           onPointerLeave={() => setHover(null)}
           tabIndex={0}
           onKeyDown={(event) => {
-            if (event.key === "ArrowRight") setHover((h) => Math.min((h ?? -1) + 1, points.length - 1));
-            if (event.key === "ArrowLeft") setHover((h) => Math.max((h ?? points.length) - 1, 0));
+            if (event.key === "ArrowRight") {
+              event.preventDefault();
+              setHover((h) => Math.min((h ?? -1) + 1, points.length - 1));
+            }
+            if (event.key === "ArrowLeft") {
+              event.preventDefault();
+              setHover((h) => Math.max((h ?? points.length) - 1, 0));
+            }
             if (event.key === "Escape") setHover(null);
           }}
         >
@@ -126,7 +132,7 @@ export function FrontierChart({
             <g key={v}>
               <line className="chart-grid" x1={PAD.left} x2={endX} y1={y(v)} y2={y(v)} />
               <text className="chart-tick" x={PAD.left - 8} y={y(v) + 3} textAnchor="end">
-                {Number.isInteger(v) ? v : v.toFixed(2)}
+                {Number.isInteger(v) ? v : `≈${v.toFixed(2)}`}
               </text>
             </g>
           ))}

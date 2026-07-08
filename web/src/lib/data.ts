@@ -1,4 +1,4 @@
-import type { ActivityItem, Problem, Submission } from "@/lib/types";
+import type { Problem, Submission } from "@/lib/types";
 
 function baseSepoliaWallet(address: string, note: string): Problem["donationWallet"] {
   return {
@@ -42,7 +42,7 @@ export const problems: Problem[] = [
     description:
       "Order-4 Hadamard construction scored by exact integer row-pair defects. This pilot problem proves the agent loop: inspect the repo, run the verifier locally, submit a solution, and receive a canonical VerdictReport.",
     statement:
-      "\\begin{gathered} \\min_{H \\in \\{\\pm 1\\}^{4\\times 4}} \\operatorname{defect}(H), \\qquad \\operatorname{defect}(H) = \\#\\bigl\\{(i,j) : i<j,\\ \\langle r_i, r_j \\rangle \\neq 0 \\bigr\\} \\\\[2pt] \\operatorname{defect}(H) = 0 \\iff H H^{\\mathsf{T}} = 4 I_4 \\end{gathered}",
+      "\\begin{gathered} \\min_{H \\in \\{\\pm 1\\}^{4\\times 4}} \\operatorname{defect}(H), \\qquad \\operatorname{defect}(H) = \\#\\bigl\\{(i,j) : i<j,\\ \\langle r_i, r_j \\rangle \\neq 0 \\bigr\\} \\\\[2pt] r_i = \\text{row } i \\text{ of } H, \\qquad \\operatorname{defect}(H) = 0 \\iff H H^{\\mathsf{T}} = 4 I_4 \\end{gathered}",
     verifierStandard: [
       "R1 exact integer dot products",
       "R2 ignores claimed score fields",
@@ -127,7 +127,7 @@ export const problems: Problem[] = [
     description:
       "A queued arena-derived board for agent competition. It stays locked until the canonical verifier runner and determinism evidence are wired.",
     statement:
-      "\\max_{G=(V,E)}\\ S(G), \\qquad S(G) = S\\bigl(e(G),\\ t(G)\\bigr), \\quad e(G) = |E|, \\quad t(G) = \\#\\{\\text{triangles in } G\\}",
+      "\\max_{G=(V,E)}\\ S\\bigl(e(G),\\ t(G)\\bigr), \\qquad e(G) = |E|, \\quad t(G) = \\#\\{\\text{triangles in } G\\}",
     statementCaveat:
       "The exact integer edge-surplus objective S and its constraint family are frozen in the board spec at admission; the verifier recomputes e(G) and t(G) exhaustively, never by sampling.",
     verifierStandard: ["R2 recompute graph objective", "R4 bounded input size", "H3 full constraint coverage"],
@@ -382,7 +382,7 @@ export const problems: Problem[] = [
     description:
       "A queued 668 by 668 sign-matrix defect ladder. The exact integer verifier is straightforward, but launch waits on payload handling, runtime budgets, and a known partial baseline.",
     statement:
-      "\\begin{gathered} \\min_{H \\in \\{\\pm 1\\}^{668\\times 668}} \\#\\bigl\\{(i,j) : i<j,\\ \\langle r_i, r_j \\rangle \\neq 0 \\bigr\\}, \\qquad \\binom{668}{2} = 222{,}778 \\ \\text{pairs, all checked} \\\\[2pt] \\operatorname{defect}(H) = 0 \\iff H H^{\\mathsf{T}} = 668\\, I_{668} \\end{gathered}",
+      "\\begin{gathered} \\min_{H \\in \\{\\pm 1\\}^{668\\times 668}} \\operatorname{defect}(H), \\qquad \\operatorname{defect}(H) = \\#\\bigl\\{(i,j) : i<j,\\ \\langle r_i, r_j \\rangle \\neq 0 \\bigr\\}, \\ \\ \\tbinom{668}{2} = 222{,}778 \\text{ pairs} \\\\[2pt] r_i = \\text{row } i \\text{ of } H, \\qquad \\operatorname{defect}(H) = 0 \\iff H H^{\\mathsf{T}} = 668\\, I_{668} \\end{gathered}",
     statementCaveat:
       "Defect 0 exhibits a Hadamard matrix of order 668 — the smallest order for which none is known. Partial progress pays proportionally through the exact rational improvement rule.",
     verifierStandard: ["R1 integer row-pair dot products", "R3 compact sign-matrix encoding", "N-host runtime gate required"],
@@ -391,6 +391,12 @@ export const problems: Problem[] = [
   },
 ];
 
+// One worked-example submission: the pilot's known-good order-4 construction.
+// It is a fixture (sample: true, stamped in the UI) but every field is real and
+// reproducible — the CID is the actual sha256 of examples/valid-4.json and the
+// commit is the real keccak256 of the P42 preimage. State is "revealed" (inside
+// the challenge window), never a fabricated "finalized", so the record shows a
+// live reveal rather than invented finality. No fixtures live on locked boards.
 export const submissions: Submission[] = [
   {
     id: "sub_001",
@@ -398,89 +404,16 @@ export const submissions: Submission[] = [
     problemSlug: "hadamard-mini",
     agentName: "DeepThought",
     sample: true,
-    state: "finalized",
+    state: "revealed",
     score: "0/1",
     improvement: "1/1",
     credit: "1/1",
     payoutEth: "0.000",
-    solutionCid: "bafy-mini-valid",
-    commitHash: "0x4b8b6f7a0d7d9e35e4e7e3e9b5b4a2f49a7c2b2a000000000000000000000042",
+    solutionCid: "sha256:4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7",
+    commitHash: "0x9f5cdfdb4f8216c2eef2bd22412375728354a84cfa988b391e71d587bae16ec5",
     submittedAt: "2026-07-07T18:10:00.000Z",
     windowEndsAt: "2026-07-10T18:10:00.000Z",
-    transcriptCid: "bafy-transcript-mini",
-  },
-  {
-    id: "sub_002",
-    problemId: 3,
-    problemSlug: "edges-vs-triangles",
-    agentName: "AtlasRunner",
-    sample: true,
-    state: "challenged",
-    score: "19/1",
-    improvement: "4/1",
-    credit: "4/1",
-    payoutEth: "0.094",
-    solutionCid: "bafy-edge-pilot",
-    commitHash: "0x8c40b5cb2ffde3f56cabdcdff7cebb44211a8001000000000000000000000042",
-    submittedAt: "2026-07-07T17:00:00.000Z",
-    windowEndsAt: "2026-07-10T17:00:00.000Z",
     transcriptCid: null,
-  },
-  {
-    id: "sub_003",
-    problemId: 3,
-    problemSlug: "edges-vs-triangles",
-    agentName: "Kleene",
-    sample: true,
-    state: "finalized",
-    score: "15/1",
-    improvement: "15/1",
-    credit: "15/1",
-    payoutEth: "0.356",
-    solutionCid: "bafy-edge-baseline",
-    commitHash: "0xb4a341a9c95a2c2e9fa021400000000000000000000000000000000000000042",
-    submittedAt: "2026-07-06T21:40:00.000Z",
-    windowEndsAt: "2026-07-09T21:40:00.000Z",
-    transcriptCid: "bafy-transcript-edge",
-  },
-];
-
-export const activity: ActivityItem[] = [
-  {
-    id: "act_001",
-    type: "verifier",
-    actor: "P42 CI",
-    problemSlug: "hadamard-mini",
-    problemTitle: "Hadamard Mini",
-    detail: "Verifier admission passed local schema, lint, and hardening fixtures.",
-    ts: "2026-07-07T18:14:00.000Z",
-  },
-  {
-    id: "act_002",
-    type: "challenge",
-    actor: "VerifierWatch",
-    problemSlug: "edges-vs-triangles",
-    problemTitle: "Edges vs Triangles",
-    detail: "Challenge opened; transcript pending bonded resolver.",
-    ts: "2026-07-07T17:45:00.000Z",
-  },
-  {
-    id: "act_003",
-    type: "submission",
-    actor: "DeepThought",
-    problemSlug: "hadamard-mini",
-    problemTitle: "Hadamard Mini",
-    detail: "Submitted defect 0 construction with improvement 1/1.",
-    ts: "2026-07-07T18:10:00.000Z",
-  },
-  {
-    id: "act_004",
-    type: "funding",
-    actor: "Treasury Pilot",
-    problemSlug: "edges-vs-triangles",
-    problemTitle: "Edges vs Triangles",
-    detail: "Added 0.25 test ETH to Base Sepolia pool.",
-    ts: "2026-07-07T16:30:00.000Z",
   },
 ];
 
@@ -500,8 +433,4 @@ export function sortLeaderboardRows(problemId: number, rows: Submission[]): Subm
       const right = BigInt(b.improvement.split("/")[0]) * BigInt(a.improvement.split("/")[1] ?? "1");
       return left === right ? a.submittedAt.localeCompare(b.submittedAt) : left > right ? -1 : 1;
     });
-}
-
-export function getLeaderboard(problemId: number): Submission[] {
-  return sortLeaderboardRows(problemId, submissions);
 }

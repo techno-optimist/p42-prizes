@@ -107,7 +107,7 @@ export default function HomePage() {
         </div>
         <div>
           <span className="smallcaps">Protocol fee</span>
-          <strong>2.5%</strong> <span className="qual">capped at 5% in-contract</span>
+          <strong>2.5%</strong> <span className="qual">5% cap in the spec (MAX_FEE_BPS)</span>
         </div>
         <div>
           <span className="smallcaps">Native token</span>
@@ -192,9 +192,9 @@ export default function HomePage() {
         </div>
         <p className="prose">
           A solver’s share of a pool is its fraction of the total frontier distance ever traveled — not whether it
-          ever held first place. Ten epsilon-nudges pay the same total as one epsilon jump, so leapfrog farming is
-          net-negative by construction and the payout is sybil-neutral. Nothing leaves escrow until the pool closes
-          or a submission resolves.
+          ever held first place. Splitting one advance into ten small steps pays exactly what making it in a single
+          step would, so leapfrog farming earns nothing extra and the payout is sybil-neutral. Nothing leaves escrow
+          until the pool closes or a submission resolves.
         </p>
         <div className="statement">
           <MathBlock tex="\text{share}_i \;=\; \frac{\Delta_i}{\sum_j \Delta_j}, \qquad \Delta_i = \text{the exact rational distance submission } i \text{ moved the record}" />
@@ -205,8 +205,9 @@ export default function HomePage() {
           caption={
             <>
               The payout rule, executed. The exact settlement simulator splits a 1300-wei pool over credits 6, 3,
-              and 4 into 600 / 300 / 400 wei — verbatim output, integer arithmetic throughout. Contract settlement
-              enforcing this rule on-chain is a Gate 1 item; the rule itself is frozen and runnable today.
+              and 4 into 600 / 300 / 400 wei — integer arithmetic throughout, pretty-printed here from the CLI’s
+              one-line JSON. Contract settlement enforcing this rule on-chain is a Gate 1 item; the rule itself is
+              frozen and runnable today.
             </>
           }
         />
@@ -306,9 +307,9 @@ export default function HomePage() {
           <div>
             <span className="smallcaps">Specified — gate pending</span>
             <ul>
-              <li>N-host determinism CI (x86 + ARM, two glibc) — admission gate, no artifacts yet</li>
               <li>Base contracts, escrow-until-close, bonded challenges — Gate 1, unchecked</li>
-              <li>Verifiable resolver with on-chain transcripts — Gate 2, unchecked</li>
+              <li>Resolver posts on-chain re-run transcripts — Gate 1; fraud-proof resolver — Gate 3</li>
+              <li>N-host determinism matrix (x86 + ARM, two glibc) — Gate 2 / admission, no artifacts yet</li>
               <li>External audit and written legal opinion — Gate 2, unchecked</li>
             </ul>
             <p className="tier-note">The unlock conditions are public and specific: docs/LAUNCH_GATES.md.</p>

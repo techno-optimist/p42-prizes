@@ -20,7 +20,11 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
 
   const rows = sortLeaderboardRows(problem.id, allSubmissions());
   const isLocked = problem.status === "locked";
-  const digestPending = problem.verifierImage.includes("pending") || problem.verifierVersion.includes("pending");
+  // A digest is only real when it is a full sha256; anything else (pending,
+  // pilot, local-dev placeholders) and every locked board is shown as pending.
+  const realDigest = /^sha256:[0-9a-f]{64}$/.test(problem.verifierImage);
+  const digestPending = isLocked || !realDigest || problem.verifierVersion.includes("pending");
+  const anySampleRecord = rows.some((row) => row.sample);
 
   // The record ladder: declared seed, then each verified submission that
   // strictly improved on the record at its time, in submission order.
@@ -63,8 +67,8 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
             verifier {problem.verifierVersion}
             {digestPending && !problem.verifierVersion.includes("pending") && " · pending admission"}
           </span>
-          <span className={problem.verifierImage.includes("pending") ? "pending" : undefined}>
-            image {problem.verifierImage}
+          <span className={realDigest ? undefined : "pending"}>
+            image {realDigest ? problem.verifierImage : "digest pending admission"}
           </span>
           <span>repo {problem.repoPath}</span>
         </div>
@@ -190,7 +194,15 @@ $ make verify SOLUTION=examples/valid-4.json`}
               </span>
             </div>
             {hasVerifiedRecord && (
-              <FrontierChart points={ladder} direction={problem.direction} scoreName={problem.scoreName} />
+              <>
+                <FrontierChart points={ladder} direction={problem.direction} scoreName={problem.scoreName} />
+                {anySampleRecord && (
+                  <p className="fact-note" style={{ marginTop: 8 }}>
+                    † The ladder includes a worked-example submission (fixture), stamped below. The order-4 record
+                    0/1 is genuinely reproducible: <code>make verify SOLUTION=examples/valid-4.json</code>.
+                  </p>
+                )}
+              </>
             )}
             {rows.length === 0 ? (
               <p className="empty-record">
@@ -253,17 +265,21 @@ $ make verify SOLUTION=examples/valid-4.json`}
             <div className="fact-row">
               <span className="smallcaps">Record</span>
               <span className="num">
-                {isLocked ? "—" : compactRational(problem.currentBest)}
+                {isLocked ? "— pending admission" : compactRational(problem.currentBest)}
                 {!isLocked && approxRational(problem.currentBest) ? ` ${approxRational(problem.currentBest)}` : ""}
               </span>
             </div>
-            <div className="fact-row">
-              <span className="smallcaps">Declared seed</span>
-              <span className="num">{compactRational(problem.seedBest)}</span>
-            </div>
+            {!isLocked && (
+              <div className="fact-row">
+                <span className="smallcaps">Declared seed</span>
+                <span className="num">{compactRational(problem.seedBest)}</span>
+              </div>
+            )}
           </div>
           <p className="fact-note">
-            Testnet figures. Settlement is modeled locally until the custody, audit, and resolver gates close.
+            {isLocked
+              ? "Locked board: score fields are placeholders until the repo and verifier are packaged at admission. No bound is asserted here."
+              : "Testnet figures. Settlement is modeled locally until the custody, audit, and resolver gates close."}
           </p>
 
           <FundingPanel label={problem.title} wallet={problem.donationWallet} />

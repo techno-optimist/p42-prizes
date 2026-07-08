@@ -69,7 +69,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 <ul>
                   <li>
                     <a className="link" href="https://github.com/techno-optimist/p42-prizes/blob/main/docs/BUILD.md">
-                      Design spec (BUILD.md)
+                      Build spec (BUILD.md)
                     </a>
                   </li>
                   <li>
