@@ -13,6 +13,8 @@ A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 - **[`docs/GATE_LEDGER.md`](docs/GATE_LEDGER.md)** — the production gate ledger: what has evidence, what is blocked, and which external sign-offs are required before real ETH.
 - **[`docs/HUMAN_ACTIONS.md`](docs/HUMAN_ACTIONS.md)** — the repo-owner, deployer, audit, legal, governance, and other external actions agents cannot complete alone.
 - **[`docs/FUNDING.md`](docs/FUNDING.md)** — per-problem deposit wallets and the gated Coinbase Onramp plan.
+- **[`docs/DATA_AVAILABILITY.md`](docs/DATA_AVAILABILITY.md)** — commit-time DA and Arweave permanence evidence format, CLI gate, and current provider-proof limits.
+- **[`docs/VERIFIER_RUNNER.md`](docs/VERIFIER_RUNNER.md)** — DGX CHRONOS/Hermes immediate-verification runner boundary, bottlenecks, and Gate 1 dry run.
 - **[`docs/WALLET_SESSION_POLICY.md`](docs/WALLET_SESSION_POLICY.md)** — draft solver wallet, API key, payload quarantine, and session-key policy for Gate 2 review.
 - **[`docs/VERIFIER_IMAGE_REGISTRY.md`](docs/VERIFIER_IMAGE_REGISTRY.md)** — immutable verifier image digest rules and the `admit-ready` gate for fundable problems.
 - **[`docs/LAUNCH_SLATE.md`](docs/LAUNCH_SLATE.md)** — the ten-board target slate, reserve candidates, and admission work before a locked board can launch.

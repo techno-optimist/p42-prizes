@@ -51,4 +51,6 @@ A board moves from locked to pilot only when:
 - the N-host determinism matrix passes,
 - `p42-prizes admit-ready` passes against the immutable verifier image digest
   and collected N-host matrix,
+- finalized testnet submissions have `p42-prizes da-verify` evidence for
+  commit-time availability and Arweave permanence,
 - the board has a reviewed testnet pool and no real-ETH gate is bypassed.

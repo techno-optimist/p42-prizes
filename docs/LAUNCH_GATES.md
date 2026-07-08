@@ -26,8 +26,11 @@ filled in and reviewed by a human owner.
 - [ ] Posting bond scales to `alpha * pool_at_submission`.
 - [ ] `claim()` pays `min(vested, final_entitlement)` and cannot be paused.
 - [ ] Commit requires DA evidence at commit time.
+- [ ] `p42-prizes da-verify` passes for finalized testnet submissions and matches contract `commit_da_hash` / `permanence_hash` fields.
 - [ ] Funding deposits are indexed and reconciled against problem pool balances.
 - [ ] Finalize requires permanence receipt.
+- [ ] DGX CHRONOS/Hermes verifier runner watches testnet reveals and publishes transcripts.
+- [ ] Runner queue/OOM guard is rehearsed under a synthetic submission burst.
 - [ ] Resolver posts full re-run transcript for every challenged decision.
 - [ ] Testnet adversarial run catches planted verifier exploits.
 - [ ] Every known red-team attack is represented by an executable test.

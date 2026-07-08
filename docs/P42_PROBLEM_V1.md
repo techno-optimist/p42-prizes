@@ -70,6 +70,51 @@ This rejects placeholder images such as `sha256:local-dev`, `sha256:pending`,
 or `sha256:pilot`. See `docs/VERIFIER_IMAGE_REGISTRY.md` for the registry
 fields and evidence requirements.
 
+## Data availability evidence
+
+For a funded submission, the solution bytes must be available at commit time and
+permanent before finalize. The local evidence gate is:
+
+```bash
+PYTHONPATH=src python3 -m p42_prizes.cli da-receipt \
+  --problem problems/<slug> \
+  --solution solution.json \
+  --solution-cid sha256:<raw-solution-hash-or-external-cid> \
+  --solver-address 0x... \
+  --salt <commit-salt> \
+  --commit-provider base-sepolia-calldata \
+  --commit-receipt-uri https://sepolia.basescan.org/tx/0x... \
+  --commit-block-reference base-sepolia:<block> \
+  --arweave-txid <43-char-base64url-txid> \
+  --output da-evidence.json
+
+PYTHONPATH=src python3 -m p42_prizes.cli da-verify \
+  --evidence da-evidence.json \
+  --problem problems/<slug> \
+  --solution solution.json
+```
+
+`da-verify` checks canonical receipt hashes, the raw solution hash, Arweave txid
+shape, and the exact `p42:v1` commitment preimage. It does not yet fetch live
+provider receipts; see `docs/DATA_AVAILABILITY.md`.
+
+## Challenge window rationale
+
+The v1 challenge window defaults to 72 hours because the verifier is the trust
+root. After reveal, watchers need enough time to fetch the payload, re-run the
+exact verifier, compare the canonical report, prepare a challenge transaction,
+and survive normal ops delays such as time zones, weekends, RPC lag, and a heavy
+verifier. Shorter windows make theft viable by submitting near monitoring blind
+spots. Longer windows lock solver bonds and payouts, so the parameter should be
+tuned per problem and pool size after testnet evidence.
+
+P42 should still verify immediately. The runner/indexer path watches each
+commit/reveal, fetches the payload, re-runs the verifier, publishes a transcript,
+and alerts or auto-challenges on mismatch. That early pass is operational
+evidence, not the final oracle: the challenge window keeps the arena open to
+independent re-runs and protects against watcher outages, provider hiccups,
+stale images, corrupted caches, and slow high-value verifiers.
+
 ## Local developer loop
 
 ```bash

@@ -13,7 +13,7 @@ import pytest
 
 from p42_prizes.lint import lint_python_file
 from p42_prizes.problem import validate_problem
-from p42_prizes.verdict import canonical_json, parse_rational, rational_to_string, sha256_bytes
+from p42_prizes.verdict import canonical_json, parse_rational, rational_to_string, sha256_bytes, sha256_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -227,6 +227,269 @@ def test_admit_ready_accepts_immutable_image_and_matching_matrix(tmp_path: Path)
 
     assert completed.returncode == 0, completed.stderr
     assert "fundable-admission ready" in completed.stdout
+
+
+def test_da_receipt_builds_and_verifies_canonical_evidence(tmp_path: Path) -> None:
+    solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
+    solution_cid = sha256_file(solution)
+    evidence_path = tmp_path / "da-evidence.json"
+    arweave_txid = "a" * 43
+
+    completed = run_cli(
+        "da-receipt",
+        "--problem",
+        "problems/hadamard-mini",
+        "--solution",
+        str(solution),
+        "--solution-cid",
+        solution_cid,
+        "--solver-address",
+        "0x1111111111111111111111111111111111111111",
+        "--salt",
+        "right-salt",
+        "--commit-provider",
+        "base-sepolia-calldata",
+        "--commit-receipt-uri",
+        "https://sepolia.basescan.org/tx/0x" + "2" * 64,
+        "--commit-block-reference",
+        "base-sepolia:12345",
+        "--arweave-txid",
+        arweave_txid,
+        "--output",
+        str(evidence_path),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    schema = json.loads((ROOT / "schemas" / "da-receipt.schema.json").read_text())
+    jsonschema.validate(evidence, schema)
+    assert evidence["schema_version"] == "p42-da-receipt/v1"
+    assert evidence["solution_hash"] == solution_cid
+    assert evidence["contract"]["commit_da_hash"].startswith("0x")
+    assert evidence["contract"]["permanence_hash"].startswith("0x")
+    assert "|da:" + evidence["contract"]["commit_da_hash"] in evidence["contract"]["commitment_preimage"]
+
+    verified = run_cli(
+        "da-verify",
+        "--evidence",
+        str(evidence_path),
+        "--problem",
+        "problems/hadamard-mini",
+        "--solution",
+        str(solution),
+    )
+
+    assert verified.returncode == 0, verified.stderr
+    assert evidence["evidence_hash"] in verified.stdout
+
+
+def test_da_verify_rejects_tampered_permanence_receipt(tmp_path: Path) -> None:
+    solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
+    evidence_path = tmp_path / "da-evidence.json"
+    completed = run_cli(
+        "da-receipt",
+        "--problem",
+        "problems/hadamard-mini",
+        "--solution",
+        str(solution),
+        "--solution-cid",
+        sha256_file(solution),
+        "--solver-address",
+        "0x1111111111111111111111111111111111111111",
+        "--salt",
+        "right-salt",
+        "--commit-provider",
+        "base-sepolia-calldata",
+        "--commit-receipt-uri",
+        "https://sepolia.basescan.org/tx/0x" + "2" * 64,
+        "--commit-block-reference",
+        "base-sepolia:12345",
+        "--arweave-txid",
+        "a" * 43,
+        "--output",
+        str(evidence_path),
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["permanence"]["arweave_txid"] = "b" * 43
+    evidence["permanence"]["receipt_uri"] = "ar://" + "b" * 43
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    verified = run_cli("da-verify", "--evidence", str(evidence_path))
+
+    assert verified.returncode == 1
+    assert "contract.permanence_hash does not match canonical permanence receipt" in verified.stderr
+
+
+def test_da_receipt_rejects_sha256_cid_that_does_not_match_solution() -> None:
+    completed = run_cli(
+        "da-receipt",
+        "--problem",
+        "problems/hadamard-mini",
+        "--solution",
+        "problems/hadamard-mini/examples/valid-4.json",
+        "--solution-cid",
+        "sha256:" + "0" * 64,
+        "--solver-address",
+        "0x1111111111111111111111111111111111111111",
+        "--salt",
+        "right-salt",
+        "--commit-provider",
+        "base-sepolia-calldata",
+        "--commit-receipt-uri",
+        "https://sepolia.basescan.org/tx/0x" + "2" * 64,
+        "--commit-block-reference",
+        "base-sepolia:12345",
+        "--arweave-txid",
+        "a" * 43,
+    )
+
+    assert completed.returncode == 1
+    assert "solution_cid sha256 does not match solution bytes" in completed.stderr
+
+
+def _write_runner_queue(path: Path, jobs: list[dict]) -> None:
+    queue = {
+        "schema_version": "p42-runner-queue/v1",
+        "jobs": jobs,
+    }
+    schema = json.loads((ROOT / "schemas" / "runner-queue.schema.json").read_text())
+    jsonschema.validate(queue, schema)
+    path.write_text(json.dumps(queue), encoding="utf-8")
+
+
+def _runner_plan(path: Path, *, available_mb: int, swap_used_mb: int = 0) -> dict:
+    completed = run_cli(
+        "runner-plan",
+        "--queue",
+        str(path),
+        "--total-memory-mb",
+        "131072",
+        "--available-memory-mb",
+        str(available_mb),
+        "--swap-used-mb",
+        str(swap_used_mb),
+        "--max-running",
+        "1",
+        "--reserve-memory-mb",
+        "4096",
+        "--max-swap-used-mb",
+        "1024",
+        "--memory-safety-factor",
+        "2",
+        "--now-utc",
+        "2026-07-08T12:00:00Z",
+    )
+    assert completed.returncode == 0, completed.stderr
+    plan = json.loads(completed.stdout)
+    schema = json.loads((ROOT / "schemas" / "runner-plan.schema.json").read_text())
+    jsonschema.validate(plan, schema)
+    return plan
+
+
+def test_runner_plan_starts_oldest_queued_job_when_memory_is_safe(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "sub-2",
+                "status": "queued",
+                "required_memory_mb": 1024,
+                "created_at_utc": "2026-07-08T12:00:02Z",
+                "chain_block_number": 20,
+                "chain_log_index": 1,
+            },
+            {
+                "job_id": "sub-1",
+                "status": "queued",
+                "required_memory_mb": 1024,
+                "created_at_utc": "2026-07-08T12:00:01Z",
+                "chain_block_number": 19,
+                "chain_log_index": 4,
+            },
+        ],
+    )
+
+    plan = _runner_plan(queue, available_mb=8192)
+
+    assert plan["decision"] == "start"
+    assert plan["reason"] == "ready"
+    assert plan["selected_job_id"] == "sub-1"
+    assert plan["min_available_memory_mb"] == 6144
+
+
+def test_runner_plan_waits_when_memory_guard_would_risk_oom(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    _write_runner_queue(
+        queue,
+        [{"job_id": "sub-1", "status": "queued", "required_memory_mb": 4096}],
+    )
+
+    plan = _runner_plan(queue, available_mb=8192)
+
+    assert plan["decision"] == "wait"
+    assert plan["reason"] == "memory_guard_tripped"
+    assert plan["selected_job_id"] == "sub-1"
+    assert plan["min_available_memory_mb"] == 12288
+
+
+def test_runner_plan_waits_when_swap_guard_is_tripped(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    _write_runner_queue(
+        queue,
+        [{"job_id": "sub-1", "status": "queued", "required_memory_mb": 512}],
+    )
+
+    plan = _runner_plan(queue, available_mb=64000, swap_used_mb=2048)
+
+    assert plan["decision"] == "wait"
+    assert plan["reason"] == "swap_guard_tripped"
+
+
+def test_runner_plan_waits_when_runner_slot_is_full(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "running-1",
+                "status": "running",
+                "required_memory_mb": 1024,
+                "lease_expires_at_utc": "2026-07-08T12:10:00Z",
+            },
+            {"job_id": "sub-1", "status": "queued", "required_memory_mb": 512},
+        ],
+    )
+
+    plan = _runner_plan(queue, available_mb=64000)
+
+    assert plan["decision"] == "wait"
+    assert plan["reason"] == "runner_concurrency_full"
+    assert plan["active_running_count"] == 1
+
+
+def test_runner_plan_waits_for_stale_lease_reap_before_starting_next_job(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    _write_runner_queue(
+        queue,
+        [
+            {
+                "job_id": "running-1",
+                "status": "running",
+                "required_memory_mb": 1024,
+                "lease_expires_at_utc": "2026-07-08T11:59:00Z",
+            },
+            {"job_id": "sub-1", "status": "queued", "required_memory_mb": 512},
+        ],
+    )
+
+    plan = _runner_plan(queue, available_mb=64000)
+
+    assert plan["decision"] == "wait"
+    assert plan["reason"] == "stale_lease_reap_required"
+    assert plan["stale_running_job_ids"] == ["running-1"]
 
 
 def test_verifier_wall_clock_timeout_is_enforced(tmp_path: Path) -> None:

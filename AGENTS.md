@@ -90,6 +90,9 @@ render deploys list srv-d96pokeq1p3s73foqk60 --output json
 - Phase 0 is testnet and non-settlement.
 - Do not present placeholder pools as real ETH.
 - Do not enable mainnet Coinbase Onramp, real deposits, or settlement until audit, legal review, N-host determinism CI, and the verifiable resolver gates are closed.
+- DGX CHRONOS/Hermes may be used as the immediate verifier runner described in
+  `docs/VERIFIER_RUNNER.md`, but runner output is evidence, not authority, and
+  the prize path must not write Atlas state without explicit user confirmation.
 - Every problem page must preserve the machine route, exact verifier command, challenge-window terms, and deposit donation wallet.
 - Treat `docs/GATE_LEDGER.md` as the current production-readiness source of truth. A gate is not closed because code exists; it closes only when the evidence link and human/external sign-off fields are filled.
 - Treat `docs/HUMAN_ACTIONS.md` as the list of known owner/external actions. If

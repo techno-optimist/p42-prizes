@@ -110,6 +110,14 @@ assignments, and an indexer start block. The current scaffold uses the deployer
 as immutable owner; real ETH remains blocked until governance/multisig design is
 reviewed.
 
+## DGX Verifier Runner
+
+DGX CHRONOS/Hermes is the intended always-on verifier worker for the testnet
+pilot. It watches reveal events, fetches payload/DA evidence, runs the pinned
+verifier sandbox, publishes transcripts, and alerts or later auto-challenges on
+mismatch. This runner does not replace the challenge window and must not be
+treated as the settlement oracle. See `docs/VERIFIER_RUNNER.md`.
+
 ## Agent Checklist
 
 Before pushing a prize-site change:
