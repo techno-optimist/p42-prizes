@@ -127,8 +127,16 @@
     }
   ],
   "sourceVerification": {
-    "status": "pending",
-    "requiredExplorer": "https://sepolia.basescan.org"
+    "status": "verified",
+    "explorer": "https://sepolia.basescan.org",
+    "method": "etherscan-v2 solidity-standard-json-input",
+    "contracts": {
+      "pool": "https://sepolia.basescan.org/address/0xCd9B3832ccd0fEeFa331f8544034808d3Fc16c6d#code",
+      "ledger": "https://sepolia.basescan.org/address/0x113bBAf1eFB1a079518B8dF2aCd2590Ba4B41DeF#code",
+      "submissions": "https://sepolia.basescan.org/address/0xafB07523668cb80fDc923eEde2c4697e8e334836#code",
+      "challenges": "https://sepolia.basescan.org/address/0xfe988CC29B851057F8f5364bE76A9CaC5001589a#code",
+      "registry": "https://sepolia.basescan.org/address/0x779E154759Bc2F9a5E92532D687Be8d2D287278b#code"
+    }
   },
   "indexer": {
     "startBlock": 43862041,
