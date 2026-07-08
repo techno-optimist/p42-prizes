@@ -26,7 +26,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | --- | --- | --- | --- |
 | Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text | Repo owner enables GitHub private vulnerability reporting and publishes the GitHub Actions workflow with `workflow` scope |
 | Gate 1: Base Sepolia testnet | Blocked | Python reference model and portal-local commit/reveal only | Deployed verified contracts, testnet addresses, DA/permanence flow, resolver transcript, indexer reconciliation, adversarial run report |
-| Gate 2: Real ETH pilot | Blocked | Conservative copy and gate docs only | External audit, legal memo, KYC/sanctions/ToS approval, N-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
+| Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, and tested N-host matrix tooling | External audit, legal memo, KYC/sanctions/ToS approval, collected N-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
 
 ## Gate 0 Checklist
@@ -62,7 +62,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | --- | --- | --- |
 | No external audit | Audit report, remediation PRs, re-test evidence, residual-risk acceptance | External auditor + human-of-record |
 | No legal memo | Written counsel memo for bounty/prize, money transmission, KYC/sanctions, tax, ToS, Coinbase onramp posture | Licensed counsel |
-| No N-host verifier evidence | x86 + ARM + two glibc versions all hash-identical on canonical `VerdictReport` fixtures for every funded problem | Verifier reviewers |
+| No collected N-host verifier evidence | `p42-prizes admit-host` and `p42-prizes admit-matrix` exist and are tested; still need x86 + ARM + two glibc versions all hash-identical on canonical `VerdictReport` fixtures for every funded problem | Verifier reviewers |
 | No immutable image registry | Pinned verifier image digests recorded in contract registry and portal metadata | Engineering |
 | No named custody/governance | Multisig signers, timelock, guardian, recusal policy, key rotation and rehearsal evidence | Human governance owner |
 | No production wallet/session policy | Solver wallet/session-key rules, API keys, abuse controls, payload quarantine, KYC-to-withdraw thresholds | Security + counsel |
@@ -73,8 +73,8 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Problem | Current portal status | Verifier readiness |
 | --- | --- | --- |
-| `hadamard-mini` | Pilot runnable | Local exact verifier passes; still needs pinned image digest and N-host artifact before funding |
-| Other 9 launch boards | Locked | Need self-contained repo, exact verifier, negative fixtures, resource bounds, image digest, N-host matrix, admission review |
+| `hadamard-mini` | Pilot runnable | Local exact verifier passes; host-evidence generator works; still needs pinned image digest and collected four-host matrix before funding |
+| Other 9 launch boards | Locked | Need self-contained repo, exact verifier, negative fixtures, resource bounds, image digest, collected N-host matrix, admission review |
 
 ## Current Verification Commands
 
@@ -83,8 +83,32 @@ make validate
 make lint
 make test
 make verify-seed
+make admit-host-seed
 cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
 ```
+
+N-host verifier admission now has a typed artifact flow:
+
+```bash
+PYTHONPATH=src python3 -m p42_prizes.cli admit-host \
+  --problem problems/hadamard-mini \
+  --solution problems/hadamard-mini/examples/valid-4.json \
+  --runs 3 \
+  --host-label <unique-host-label> \
+  --output host-evidence.json
+
+PYTHONPATH=src python3 -m p42_prizes.cli admit-matrix \
+  --evidence x86-glibc-a.json \
+  --evidence x86-glibc-b.json \
+  --evidence arm-glibc-a.json \
+  --evidence arm-glibc-b.json \
+  --output admission-matrix.json
+```
+
+The matrix command refuses duplicate host labels, missing x86/ARM coverage,
+fewer than two distinct glibc versions, and any non-identical canonical
+`VerdictReport` hash. No Gate 2 verifier item is closed until those artifacts
+exist for each funded problem.
 
 ## Non-Negotiable Stop Conditions
 

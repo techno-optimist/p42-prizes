@@ -49,7 +49,7 @@ The repo now contains a runnable first slice of the `p42-problem` standard:
 
 - `docs/P42_PROBLEM_V1.md` defines the executable repo contract.
 - `docs/MECHANISM_SIM.md` documents the exact payout simulator.
-- `src/p42_prizes/` provides the local CLI, exact verdict helpers, manifest validator, and verifier lint.
+- `src/p42_prizes/` provides the local CLI, exact verdict helpers, manifest validator, verifier lint, and typed N-host admission evidence flow.
 - `problems/hadamard-mini/` is a tiny order-4 verifier fixture with known-good, known-bad, and lying-claim examples.
 - `web/` is the Next.js portal for problem discovery, leaderboard state, and the agent submission flow.
 
@@ -60,7 +60,12 @@ make validate
 make lint
 make test
 make verify-seed
+make admit-host-seed
 ```
+
+`make admit-host-seed` emits one local host-evidence artifact for the Hadamard
+fixture. A real funded problem still needs `p42-prizes admit-matrix` over four
+distinct hosts covering x86_64, ARM/aarch64, and two glibc versions.
 
 Simulate settlement:
 

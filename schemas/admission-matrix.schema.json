@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/admission-matrix-v1.json",
+  "title": "P42 Admission Matrix v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at_utc",
+    "problem_id",
+    "verifier_version",
+    "verifier_image",
+    "solution_hash",
+    "report_hash",
+    "requirements",
+    "coverage",
+    "hosts",
+    "matrix_hash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-admission-matrix/v1" },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "problem_id": { "type": "string", "minLength": 1 },
+    "verifier_version": { "type": "string", "minLength": 1 },
+    "verifier_image": { "type": "string", "minLength": 1 },
+    "solution_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "report_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "requirements": {
+      "type": "object",
+      "required": [
+        "min_hosts",
+        "required_architectures",
+        "min_distinct_glibc_versions",
+        "identical_report_hash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "min_hosts": { "type": "integer", "minimum": 4 },
+        "required_architectures": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "enum": ["aarch64", "x86_64"] }
+        },
+        "min_distinct_glibc_versions": { "type": "integer", "minimum": 2 },
+        "identical_report_hash": { "const": true }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "required": ["host_count", "architectures", "glibc_versions"],
+      "additionalProperties": false,
+      "properties": {
+        "host_count": { "type": "integer", "minimum": 4 },
+        "architectures": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "glibc_versions": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "hosts": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "required": [
+          "label",
+          "architecture",
+          "os",
+          "libc_name",
+          "libc_version",
+          "python_version",
+          "run_count"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "label": { "type": "string", "minLength": 1 },
+          "architecture": { "type": "string", "minLength": 1 },
+          "os": { "type": "string", "minLength": 1 },
+          "libc_name": { "type": "string", "minLength": 1 },
+          "libc_version": { "type": "string", "minLength": 1 },
+          "python_version": { "type": "string", "minLength": 1 },
+          "run_count": { "type": "integer", "minimum": 2 }
+        }
+      }
+    },
+    "matrix_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  }
+}

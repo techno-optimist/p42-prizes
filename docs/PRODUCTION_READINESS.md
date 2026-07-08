@@ -15,7 +15,7 @@ ledger, exit criteria, and external sign-offs.
 | Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence, local diagnostic event ledger, process-local rate limits, local idempotency for retryable verifier/submission POSTs, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
-| Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout | Canonical sandbox runner, pinned image digest, N-host identical verdict matrix |
+| Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; `admit-host`/`admit-matrix` enforce typed N-host evidence locally | Canonical sandbox runner, pinned image digest, collected N-host identical verdict matrix artifacts |
 | Settlement math | Final-denominator pool simulator and incremental portal credit model | Contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
 | Challenges | Endpoint returns `501` until implemented | Bond escrow, challenge window checks, resolver transcript, slashing path |
 | Resolver | Spec only | Verifiable transcript committee on testnet; fraud-proof track before scale |
@@ -44,6 +44,7 @@ ledger, exit criteria, and external sign-offs.
 - Non-runnable arena-derived problems are locked in portal data.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
 - Local/Render verification covers problem validation, certified-path exactness lint, Python tests, seed verification, web typecheck, web tests, production build, and `npm audit`. Publishing the GitHub Actions workflow is pending a repo token or human owner with `workflow` scope.
+- N-host verifier admission now has typed host and matrix artifacts: `p42-prizes admit-host` emits repeated-run host evidence, and `p42-prizes admit-matrix` rejects duplicate hosts, missing x86/ARM coverage, insufficient glibc diversity, or mismatched canonical `VerdictReport` hashes.
 
 ## Known Production Blockers
 
@@ -56,7 +57,7 @@ ledger, exit criteria, and external sign-offs.
 - No reviewed Base mainnet pool addresses or enabled Coinbase Onramp funding sessions.
 - No permanent DA or CID retrieval for `bafy...` / Arweave payloads.
 - No containerized canonical sandbox runner for arbitrary problem repos.
-- No N-host determinism CI artifacts.
+- No collected four-host N-host determinism artifacts yet; local tooling exists, but the x86/ARM/two-glibc evidence has not been produced for any funded problem.
 - No bonded resolver implementation.
 - No external security audit or legal sign-off.
 - No published GitHub Actions workflow yet; the current OAuth token cannot push `.github/workflows/*` without `workflow` scope.
@@ -65,5 +66,6 @@ ledger, exit criteria, and external sign-offs.
 
 ```bash
 make test
+make admit-host-seed
 cd web && npm run test && npm run build && npm audit --audit-level=moderate
 ```

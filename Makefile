@@ -1,7 +1,7 @@
 PYTHON ?= python3
 PYTHONPATH := $(CURDIR)/src
 
-.PHONY: test validate lint verify-seed all
+.PHONY: test validate lint verify-seed admit-host-seed all
 
 all: validate lint test verify-seed
 
@@ -16,3 +16,9 @@ test:
 
 verify-seed:
 	@$(MAKE) -C problems/hadamard-mini verify
+
+admit-host-seed:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
+		--problem problems/hadamard-mini \
+		--solution problems/hadamard-mini/examples/valid-4.json \
+		--runs 2
