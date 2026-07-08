@@ -10,6 +10,7 @@ interface IP42EscrowPool {
 contract P42PayoutLedger {
     error P42_NOT_OWNER();
     error P42_NOT_POOL();
+    error P42_NOT_CREDIT_RECORDER();
     error P42_CLOSED();
     error P42_NOT_CLOSED();
     error P42_PAUSED_NEW_ACTIONS();
@@ -25,6 +26,7 @@ contract P42PayoutLedger {
 
     bool public closed;
     bool public pausedNewActions;
+    address public creditRecorder;
     uint256 public closedPoolBalance;
     uint256 public feeReserve;
     uint256 public totalCreditAtoms;
@@ -33,6 +35,7 @@ contract P42PayoutLedger {
     mapping(address => uint256) public claimedWeiOf;
 
     event NewActionsPaused(bool paused);
+    event CreditRecorderSet(address indexed recorder);
     event CreditRecorded(address indexed solver, uint256 atoms, uint256 totalCreditAtoms);
     event Closed(uint256 poolBalance, uint256 feeReserve);
     event ClaimConsumed(address indexed solver, uint256 amount);
@@ -63,7 +66,14 @@ contract P42PayoutLedger {
         emit NewActionsPaused(paused);
     }
 
-    function recordCredit(address solver, uint256 atoms) external onlyOwner {
+    function setCreditRecorder(address recorder) external onlyOwner {
+        require(recorder != address(0), "P42_RECORDER_ZERO");
+        creditRecorder = recorder;
+        emit CreditRecorderSet(recorder);
+    }
+
+    function recordCredit(address solver, uint256 atoms) external {
+        if (msg.sender != owner && msg.sender != creditRecorder) revert P42_NOT_CREDIT_RECORDER();
         if (closed) revert P42_CLOSED();
         if (pausedNewActions) revert P42_PAUSED_NEW_ACTIONS();
         if (atoms == 0) revert P42_ZERO_CREDIT();

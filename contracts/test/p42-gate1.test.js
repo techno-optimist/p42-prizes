@@ -4,6 +4,9 @@ import { describe, it } from "node:test";
 import { network } from "hardhat";
 
 const { ethers } = await network.create();
+const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
+const DA_HASH = ethers.keccak256(ethers.toUtf8Bytes("commit block DA receipt"));
+const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("arweave permanence receipt"));
 
 async function expectCustomError(action, contract, errorName) {
   try {
@@ -38,6 +41,11 @@ function findErrorData(value) {
   return undefined;
 }
 
+async function increaseTime(seconds) {
+  await ethers.provider.send("evm_increaseTime", [Number(seconds)]);
+  await ethers.provider.send("evm_mine", []);
+}
+
 describe("P42 Gate 1 contract scaffold", function () {
   async function deployFixture({ alphaBps = 200n, minBond = ethers.parseEther("0.01"), feeBps = 0 } = {}) {
     const [owner, treasury, resolver, alice, bob, challenger] = await ethers.getSigners();
@@ -51,15 +59,23 @@ describe("P42 Gate 1 contract scaffold", function () {
     await pool.connect(owner).setLedger(await ledger.getAddress());
 
     const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-    const submissions = await Submissions.deploy(await pool.getAddress(), owner.address, alphaBps, minBond);
+    const submissions = await Submissions.deploy(
+      await pool.getAddress(),
+      await ledger.getAddress(),
+      owner.address,
+      alphaBps,
+      minBond,
+      CHALLENGE_WINDOW_SECONDS
+    );
     await submissions.waitForDeployment();
+    await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
     const Challenges = await ethers.getContractFactory("P42ChallengeManager");
     const challenges = await Challenges.deploy(
       owner.address,
       resolver.address,
       treasury.address,
-      72n * 60n * 60n,
+      CHALLENGE_WINDOW_SECONDS,
       500,
       ethers.parseEther("0.02"),
       ethers.parseEther("0.01"),
@@ -86,7 +102,7 @@ describe("P42 Gate 1 contract scaffold", function () {
       ledger: await fixture.ledger.getAddress(),
       submissionManager: await fixture.submissions.getAddress(),
       challengeManager: await fixture.challenges.getAddress(),
-      challengeWindowSeconds: 72n * 60n * 60n,
+      challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
       minImprovementAtoms: 1n,
       ...overrides,
     };
@@ -186,15 +202,16 @@ describe("P42 Gate 1 contract scaffold", function () {
     const commitment = ethers.keccak256(ethers.toUtf8Bytes("cid-bound-commitment"));
 
     await expectCustomError(
-      submissions.connect(alice).commit(commitment, { value: required - 1n }),
+      submissions.connect(alice).commit(commitment, DA_HASH, { value: required - 1n }),
       submissions,
       "P42_INSUFFICIENT_POSTING_BOND"
     );
 
-    await submissions.connect(alice).commit(commitment, { value: required });
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: required });
     const submission = await submissions.submissions(1);
     assert.equal(submission.solver, alice.address);
     assert.equal(submission.commitment, commitment);
+    assert.equal(submission.commitDaHash, DA_HASH);
     assert.equal(submission.bondWei, required);
     assert.equal(submission.poolAtSubmissionWei, ethers.parseEther("100"));
     assert.equal(submission.requiredBondWei, required);
@@ -202,9 +219,11 @@ describe("P42 Gate 1 contract scaffold", function () {
 
   it("detects empty-pool bond leverage before finalization", async function () {
     const { alice, pool, submissions, minBond } = await deployFixture({ alphaBps: 200n });
-    const commitment = ethers.keccak256(ethers.toUtf8Bytes("empty-pool-commitment"));
+    const solutionCid = "bafy-empty-pool";
+    const salt = "empty-pool-salt";
+    const commitment = await submissions.computeCommitment(solutionCid, alice.address, salt);
 
-    await submissions.connect(alice).commit(commitment, { value: minBond });
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
     await pool.fund({ value: ethers.parseEther("100") });
 
     assert.equal(await submissions.bondCoversEntitlement(1, ethers.parseEther("100")), false);
@@ -212,6 +231,106 @@ describe("P42 Gate 1 contract scaffold", function () {
       submissions.requireFinalizeBond(1, ethers.parseEther("100")),
       submissions,
       "P42_BOND_UNDERCOVERS_ENTITLEMENT"
+    );
+    await submissions.connect(alice).reveal(1, solutionCid, 100, 1, salt);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await expectCustomError(
+      submissions.connect(alice).finalize(1, PERMANENCE_HASH),
+      submissions,
+      "P42_BOND_UNDERCOVERS_ENTITLEMENT"
+    );
+  });
+
+  it("requires commit-time DA evidence and a valid CID-bound reveal", async function () {
+    const { alice, bob, submissions, minBond } = await deployFixture();
+    const solutionCid = "bafy-solution-a";
+    const salt = "s3cret";
+    const commitment = await submissions.computeCommitment(solutionCid, alice.address, salt);
+
+    await expectCustomError(
+      submissions.connect(alice).commit(commitment, ethers.ZeroHash, { value: minBond }),
+      submissions,
+      "P42_EMPTY_DA_HASH"
+    );
+
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
+
+    await expectCustomError(
+      submissions.connect(bob).reveal(1, solutionCid, 123, 7, salt),
+      submissions,
+      "P42_NOT_SOLVER"
+    );
+    await expectCustomError(
+      submissions.connect(alice).reveal(1, solutionCid, 123, 7, "wrong-salt"),
+      submissions,
+      "P42_BAD_COMMITMENT_REVEAL"
+    );
+    await expectCustomError(
+      submissions.connect(alice).reveal(1, solutionCid, 123, 0, salt),
+      submissions,
+      "P42_ZERO_IMPROVEMENT"
+    );
+
+    await submissions.connect(alice).reveal(1, solutionCid, 123, 7, salt);
+    const revealed = await submissions.submissions(1);
+    assert.equal(revealed.solutionCid, solutionCid);
+    assert.equal(revealed.claimedScoreAtoms, 123n);
+    assert.equal(revealed.improvementAtoms, 7n);
+    assert.equal(revealed.status, 2n);
+    assert.equal(revealed.challengeEndsAt - revealed.revealedAt, CHALLENGE_WINDOW_SECONDS);
+  });
+
+  it("finalizes after the challenge window, records credit, then claims after close", async function () {
+    const { alice, bob, pool, ledger, submissions } = await deployFixture({ alphaBps: 200n, feeBps: 0 });
+    await pool.fund({ value: ethers.parseEther("1") });
+
+    const solutionCid = "bafy-winning-solution";
+    const salt = "finalize-salt";
+    const commitment = await submissions.computeCommitment(solutionCid, alice.address, salt);
+    const required = await submissions.requiredPostingBondNow();
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: required });
+    await submissions.connect(alice).reveal(1, solutionCid, 1000, 25, salt);
+
+    await expectCustomError(
+      submissions.connect(alice).finalize(1, PERMANENCE_HASH),
+      submissions,
+      "P42_CHALLENGE_WINDOW_OPEN"
+    );
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await expectCustomError(
+      submissions.connect(bob).finalize(1, PERMANENCE_HASH),
+      submissions,
+      "P42_NOT_SOLVER"
+    );
+    await expectCustomError(
+      submissions.connect(alice).finalize(1, ethers.ZeroHash),
+      submissions,
+      "P42_EMPTY_PERMANENCE_HASH"
+    );
+
+    await submissions.connect(alice).finalize(1, PERMANENCE_HASH);
+    const finalized = await submissions.submissions(1);
+    assert.equal(finalized.status, 3n);
+    assert.equal(finalized.permanenceHash, PERMANENCE_HASH);
+    assert.equal(await ledger.creditAtomsOf(alice.address), 25n);
+
+    await expectCustomError(
+      submissions.connect(alice).finalize(1, PERMANENCE_HASH),
+      submissions,
+      "P42_BAD_SUBMISSION_STATUS"
+    );
+    await ledger.close();
+    await pool.connect(alice).claim();
+    assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("1"));
+  });
+
+  it("scopes ledger credit recording to the owner or submission manager", async function () {
+    const { alice, ledger } = await deployFixture();
+
+    await expectCustomError(
+      ledger.connect(alice).recordCredit(alice.address, 1),
+      ledger,
+      "P42_NOT_CREDIT_RECORDER"
     );
   });
 
@@ -259,7 +378,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const commitment = ethers.keccak256(ethers.toUtf8Bytes("paused-commitment"));
 
     await expectCustomError(
-      submissions.connect(alice).commit(commitment, { value: minBond }),
+      submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond }),
       submissions,
       "P42_PAUSED_NEW_ACTIONS"
     );
