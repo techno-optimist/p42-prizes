@@ -26,7 +26,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | --- | --- | --- | --- |
 | Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, and `docs/HUMAN_ACTIONS.md` owner-action register | Repo owner enables GitHub private vulnerability reporting and publishes the GitHub Actions workflow with `workflow` scope |
 | Gate 1: Base Sepolia testnet | Blocked | Python reference model, portal-local commit/reveal, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, and read-only reconciliation script | Deployed verified contracts, testnet addresses, real DA/permanence verification, integrated resolver transcript, indexer reconciliation, adversarial run report |
-| Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, and tested N-host matrix tooling | External audit, legal memo, KYC/sanctions/ToS approval, collected N-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
+| Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested N-host matrix tooling, draft wallet/session policy, and opt-in mutation API-key gate | External audit, legal memo, KYC/sanctions/ToS approval, collected N-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
 
 ## Gate 0 Checklist
@@ -66,7 +66,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | No collected N-host verifier evidence | `p42-prizes admit-host` and `p42-prizes admit-matrix` exist and are tested; still need x86 + ARM + two glibc versions all hash-identical on canonical `VerdictReport` fixtures for every funded problem | Verifier reviewers |
 | No immutable image registry | Pinned verifier image digests recorded in contract registry and portal metadata | Engineering |
 | No named custody/governance | Multisig signers, timelock, guardian, recusal policy, key rotation and rehearsal evidence | Human governance owner |
-| No production wallet/session policy | Solver wallet/session-key rules, API keys, abuse controls, payload quarantine, KYC-to-withdraw thresholds | Security + counsel |
+| Wallet/session policy not reviewed or enforced in production | `docs/WALLET_SESSION_POLICY.md` defines solver ownership, session-key scopes, API-key hashing, payload quarantine, and compliance review targets; portal mutable routes can require hashed API keys with `P42_REQUIRE_MUTATION_API_KEY=1`; still needs security/counsel review, production enforcement, distributed limits/logs, and quarantine service | Security + counsel |
 | No distributed settlement state | Transactional DB/indexer or chain-first event source; atomic idempotency reserve/commit; alerting | Engineering + ops |
 | No incident drill or bounty | Completed tabletop drill, public status template, live responsible disclosure/bug bounty path | Security owner |
 

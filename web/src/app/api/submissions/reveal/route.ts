@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
+import { enforceMutationApiKey } from "@/lib/api-auth";
 import { getProblemById } from "@/lib/data";
 import { rememberIdempotentResponse, replayIdempotentResponse } from "@/lib/idempotency";
 import { revealCommit } from "@/lib/portal-state";
@@ -16,6 +17,7 @@ const revealSchema = z.object({
 export async function POST(req: Request) {
   try {
     enforceRateLimit(req, rateLimitPolicy("reveal", { limit: 20, windowMs: 60_000 }));
+    enforceMutationApiKey(req, "submissions.reveal");
     const body = await readJson(req, revealSchema);
     const replay = replayIdempotentResponse(req, "submissions.reveal", body);
     if (replay) return replay;

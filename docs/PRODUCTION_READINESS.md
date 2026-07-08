@@ -12,7 +12,7 @@ ledger, exit criteria, and external sign-offs.
 | Area | Current state | Required before real ETH |
 | --- | --- | --- |
 | Problem standard | `p42-problem/v1` fixture, schema validation, exact Python verifier | External verifier admission review for every funded problem |
-| Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence, local diagnostic event ledger, process-local rate limits, local idempotency for retryable verifier/submission POSTs, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
+| Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence, local diagnostic event ledger, process-local rate limits, local idempotency for retryable verifier/submission POSTs, opt-in hash-based mutation API key gate, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, EIP-191 solver ownership signature for non-local commits, and local contract commitment helper | Deployed on-chain commit, verified DA receipt at commit block, verified Arweave permanence at finalize |
 | Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; `admit-host`/`admit-matrix` enforce typed N-host evidence locally | Canonical sandbox runner, pinned image digest, collected N-host identical verdict matrix artifacts |
@@ -21,7 +21,7 @@ ledger, exit criteria, and external sign-offs.
 | Resolver | Local transcript-required resolver scaffold with per-decision bond, fraud-window-gated release, and owner-slash proof hash | Verifiable transcript committee on testnet; non-owner-trusted slashing policy; fraud-proof track before scale |
 | Contracts | Local Hardhat 3 scaffold for problem registry/freezing, pool, payout ledger, one-time recorder activation, submission bond checks/top-ups, CID-bound reveal/finalize, DA-bound on-chain commitment, permanence hash gate, close guards and expiry paths, challenge manager, resolver transcript gate, resolver-bond fraud window/slashing scaffold, bond accounting, seeded property checks, deployment manifest scaffold, and read-only reconciliation script | Real DA/Arweave receipt verification, production indexer jobs, Base Sepolia deployment, audit, broader fuzz/formal review, timelock/multisig rehearsals |
 | Legal | Spec risk register only | Written counsel memo covering prize/bounty, KYC/sanctions, tax, ToS |
-| Operations | This register plus gate ledger, human-action register, incident/governance docs, and deployment runbook | Named owners, monitored deploys, key custody, incident drills |
+| Operations | This register plus gate ledger, human-action register, wallet/session policy draft, incident/governance docs, and deployment runbook | Named owners, monitored deploys, key custody, incident drills |
 
 ## Closed In This Pass
 
@@ -49,6 +49,7 @@ ledger, exit criteria, and external sign-offs.
 - Contract scaffold now compiles and tests under Hardhat 3 with zero npm audit findings: problem registry/freezing, escrow pool, final-denominator payout ledger, one-time credit-recorder activation, submission bond pricing/top-ups, CID-bound reveal, commit-time DA hash bound into the on-chain `p42:v1` commitment, challenge-window finalization, finalize-time permanence hash gate, close guards for unresolved submissions, abandoned commit/reveal expiry, challenge/resolver outcome hooks, ledger credit recording, solver-bond return/slash, challenge-bond routing, resolver-bond fraud-window release/slash proof hashing, seeded final-denominator/bond/sybil property checks, and 22 red-team invariant/property tests.
 - Base Sepolia deployment and reconciliation scaffolds now exist: `npm run deploy:base-sepolia` writes the manifest shape, and `npm run reconcile:base-sepolia` writes a read-only event/state consistency report once real testnet addresses exist.
 - Agent and owner handoff is now explicit: `AGENTS.md` defines shared-branch/deploy discipline, and `docs/HUMAN_ACTIONS.md` lists repo-owner, deployer, audit, legal, governance, and incident-drill actions that agents cannot close alone.
+- `docs/WALLET_SESSION_POLICY.md` now drafts the Gate 2 wallet/session, API-key, payload-quarantine, session-key, KYC/sanctions, and Coinbase Onramp posture; the portal has an opt-in hashed mutation API-key gate for mutable routes.
 
 ## Known Production Blockers
 
@@ -56,7 +57,7 @@ ledger, exit criteria, and external sign-offs.
 - The current event ledger is local diagnostic evidence only; state mutations now take a local advisory file lock and fsync on write, but there is still no shared storage or chain/indexer source of truth for multi-instance production.
 - Render can be configured with `P42_PORTAL_STATE_PATH=/app/data/portal-state.json` on a persistent disk for demo continuity, but that disk is not settlement truth.
 - No distributed idempotency store with atomic reserve/commit semantics.
-- No production wallet session policy, distributed rate limiting, API keys, abuse controls, or payload quarantine.
+- No reviewed production wallet/session policy, distributed rate limiting, API audit logs, abuse controls, or payload quarantine; a draft policy and opt-in hashed mutation API-key gate exist locally.
 - No complete/deployed on-chain system: the local scaffold still lacks real DA/permanence receipt verification, production indexer service, verified Base Sepolia addresses, broader fuzzing/formal review, audit, and a non-owner-trusted resolver slashing path.
 - No reviewed Base mainnet pool addresses or enabled Coinbase Onramp funding sessions.
 - No permanent DA or CID retrieval for `bafy...` / Arweave payloads.

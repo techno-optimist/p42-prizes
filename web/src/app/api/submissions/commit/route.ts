@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
+import { enforceMutationApiKey } from "@/lib/api-auth";
 import { getProblemById } from "@/lib/data";
 import { rememberIdempotentResponse, replayIdempotentResponse } from "@/lib/idempotency";
 import { commitHash, createCommit, verifySolverSignature } from "@/lib/portal-state";
@@ -18,6 +19,7 @@ const commitSchema = z.object({
 export async function POST(req: Request) {
   try {
     enforceRateLimit(req, rateLimitPolicy("commit", { limit: 30, windowMs: 60_000 }));
+    enforceMutationApiKey(req, "submissions.commit");
     const body = await readJson(req, commitSchema);
     const replay = replayIdempotentResponse(req, "submissions.commit", body);
     if (replay) return replay;

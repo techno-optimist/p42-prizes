@@ -16,6 +16,7 @@ credential, or external professional sign-off before the gate can close.
 | Gate 1 | Run an adversarial testnet campaign. | Report covering vesting/dilution, bond leverage, leapfrog/sybil, DA expiry, resolver lies, and planted verifier exploits. |
 | Gate 2 | Commission external smart-contract/security audit and remediate findings. | Audit report, remediation commits, re-test evidence, and residual-risk acceptance. |
 | Gate 2 | Obtain legal/compliance memo. | Counsel memo covering prize/bounty framing, KYC/sanctions, tax, Terms, Coinbase Onramp posture, and money-transmission risk. |
+| Gate 2 | Review and approve `docs/WALLET_SESSION_POLICY.md` across portal, contracts, and solver agents. | Security and counsel sign-off covering session-key scopes, API keys, payload quarantine, KYC/sanctions thresholds, and withdrawal/onramp policy. |
 | Gate 2 | Collect N-host verifier evidence for every funded problem. | `admit-matrix` artifacts with x86_64 plus ARM/aarch64 coverage, at least two glibc versions, and identical canonical `VerdictReport` hashes. |
 | Gate 2 | Name custody/governance owners. | Multisig signers, timelock, guardian, key-rotation plan, recusal policy, and rehearsal record. |
 | Gate 2 | Complete incident drill and bug-bounty launch. | Tabletop notes, status template, response roles, and public bounty/responsible-disclosure terms. |

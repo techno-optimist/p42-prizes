@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
+import { enforceMutationApiKey } from "@/lib/api-auth";
 import { getProblemBySlug } from "@/lib/data";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
@@ -30,6 +31,7 @@ function trustedClientIp(req: Request): string | undefined {
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
     enforceRateLimit(req, rateLimitPolicy("coinbase_onramp", { limit: 10, windowMs: 60_000 }));
+    enforceMutationApiKey(req, "funding.coinbase_session");
     const body = await readJson(req, onrampSchema);
     const { slug } = await params;
     const problem = getProblemBySlug(slug);

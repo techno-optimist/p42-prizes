@@ -13,6 +13,7 @@ A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 - **[`docs/GATE_LEDGER.md`](docs/GATE_LEDGER.md)** — the production gate ledger: what has evidence, what is blocked, and which external sign-offs are required before real ETH.
 - **[`docs/HUMAN_ACTIONS.md`](docs/HUMAN_ACTIONS.md)** — the repo-owner, deployer, audit, legal, governance, and other external actions agents cannot complete alone.
 - **[`docs/FUNDING.md`](docs/FUNDING.md)** — per-problem deposit wallets and the gated Coinbase Onramp plan.
+- **[`docs/WALLET_SESSION_POLICY.md`](docs/WALLET_SESSION_POLICY.md)** — draft solver wallet, API key, payload quarantine, and session-key policy for Gate 2 review.
 - **[`docs/LAUNCH_SLATE.md`](docs/LAUNCH_SLATE.md)** — the ten-board target slate, reserve candidates, and admission work before a locked board can launch.
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — the design specification for the portal and identity: design as a costly signal. The mark is the solved order-4 Hadamard matrix; the register leads with what is *not* live; every plate carries the command that regenerates it.
 - **[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md)** — the production routing contract: this repo owns the standalone prize app, Render serves it, and `projectforty2.ai/prizes` is only a proxy/link from Observatory.

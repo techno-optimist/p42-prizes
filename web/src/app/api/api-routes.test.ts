@@ -10,6 +10,7 @@ import { POST as coinbaseSessionPost } from "@/app/api/problems/[slug]/funding/c
 import { POST as solutionsPost } from "@/app/api/solutions/route";
 import { POST as commitPost } from "@/app/api/submissions/commit/route";
 import { POST as revealPost } from "@/app/api/submissions/reveal/route";
+import { mutationApiKeyHashForTests } from "@/lib/api-auth";
 import { commitAuthorizationMessage, commitHash, sha256SolutionCid } from "@/lib/portal-state";
 import { readPortalState, resetPortalStateForTests } from "@/lib/portal-store";
 import { resetRateLimitsForTests } from "@/lib/rate-limit";
@@ -53,6 +54,8 @@ describe("mutable API routes", () => {
     resetPortalStateForTests();
     resetRateLimitsForTests();
     delete process.env.P42_PORTAL_STATE_PATH;
+    delete process.env.P42_REQUIRE_MUTATION_API_KEY;
+    delete process.env.P42_MUTATION_API_KEY_SHA256S;
     delete process.env.P42_RATE_LIMIT_COMMIT_LIMIT;
     delete process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS;
     rmSync(stateDir, { recursive: true, force: true });
@@ -97,6 +100,53 @@ describe("mutable API routes", () => {
     expect(second.headers.get("Retry-After")).toBeTruthy();
     expect(second.headers.get("X-RateLimit-Limit")).toBe("1");
     await expect(second.json()).resolves.toMatchObject({ error: "rate limit exceeded" });
+  });
+
+  it("can require a hashed mutation API key for production mutation routes", async () => {
+    process.env.P42_REQUIRE_MUTATION_API_KEY = "1";
+    process.env.P42_MUTATION_API_KEY_SHA256S = mutationApiKeyHashForTests("agent-session-key");
+    const signed = await signedCommitFields();
+    const body = {
+      problem_id: 1,
+      agent_name: "RouteAgent",
+      solver_address: solverAddress,
+      solution_cid: signed.solutionCid,
+      commit_hash: signed.commitHash,
+      solver_signature: signed.solverSignature,
+    };
+
+    const missing = await commitPost(jsonRequest("/api/submissions/commit", body));
+    expect(missing.status).toBe(401);
+    expect(missing.headers.get("WWW-Authenticate")).toContain("missing_api_key");
+
+    const wrong = await commitPost(
+      jsonRequest("/api/submissions/commit", body, { "x-p42-api-key": "wrong-session-key" }),
+    );
+    expect(wrong.status).toBe(403);
+    await expect(wrong.json()).resolves.toMatchObject({ error: "invalid P42 mutation API key" });
+
+    const accepted = await commitPost(
+      jsonRequest("/api/submissions/commit", body, { authorization: "Bearer agent-session-key" }),
+    );
+    expect(accepted.status).toBe(201);
+  });
+
+  it("fails closed when mutation API key enforcement is enabled without valid key hashes", async () => {
+    process.env.P42_REQUIRE_MUTATION_API_KEY = "1";
+    process.env.P42_MUTATION_API_KEY_SHA256S = "agent-session-key";
+
+    const response = await solutionsPost(
+      jsonRequest("/api/solutions", {
+        problem_id: 1,
+        agent_name: "RouteAgent",
+        solution_raw: solutionRaw,
+      }, { "x-p42-api-key": "agent-session-key" }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "mutation API key gate is enabled but no valid key hashes are configured",
+    });
   });
 
   it("rejects commits for locked or non-runnable boards", async () => {

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
+import { enforceMutationApiKey } from "@/lib/api-auth";
 import { getProblemById } from "@/lib/data";
 import { rememberIdempotentResponse, replayIdempotentResponse } from "@/lib/idempotency";
 import { appendPortalEvent, updatePortalState } from "@/lib/portal-store";
@@ -15,6 +16,7 @@ const solutionSchema = z.object({
 export async function POST(req: Request) {
   try {
     enforceRateLimit(req, rateLimitPolicy("solutions", { limit: 15, windowMs: 60_000 }));
+    enforceMutationApiKey(req, "solutions.verify");
     const body = await readJson(req, solutionSchema);
     const replay = replayIdempotentResponse(req, "solutions.verify", body);
     if (replay) return replay;

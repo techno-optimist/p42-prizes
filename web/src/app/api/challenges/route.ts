@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
+import { enforceMutationApiKey } from "@/lib/api-auth";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
   try {
     enforceRateLimit(req, rateLimitPolicy("challenges", { limit: 30, windowMs: 60_000 }));
+    enforceMutationApiKey(req, "challenges.open");
     await readJson(
       req,
       z.object({
