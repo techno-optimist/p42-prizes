@@ -91,6 +91,23 @@ the two hard walls from the autonomy debate, and it takes deliberate shortcuts:
 - **Trustless resolution** is untouched — the happy path here never gets
   challenged; adjudication is still a trusted key (Phase 3 research).
 
+## On-chain indexer (Gate-2)
+
+`indexer.mjs` reconstructs the full protocol state — problems, pool funding, the
+submission lifecycle, the improvement **frontier**, and the **payout ledger** (who
+is owed / paid what) — purely from on-chain events, then cross-checks the
+reconstruction against each contract's own view. If the checks pass, an
+independent party can rebuild the exact settlement state from the chain alone.
+
+```bash
+node indexer.mjs --manifest ../deployments/base-sepolia/demo-p42-prizes.json --out state.json
+```
+
+Proven on the completed-lifecycle demo instance
+(`../deployments/base-sepolia/indexer-state-demo.json`): reconstructed funded
+0.003 ETH, closed, one finalized submission on the frontier, and one solver owed +
+paid 0.003 at a 100% share — **9/9 reconstruction checks matched the chain**.
+
 ## Next in Phase 1
 
 The finalize **permanence receipt** on mainnet Arweave (funded); a container/cgroup
