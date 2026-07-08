@@ -23,7 +23,7 @@ A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 
 ## The one-paragraph pitch
 
-The hardest part of any on-chain bounty is the **oracle**: how does the chain know who advanced the frontier? P42 solves it because our verifier is open, exact, and deterministic — so a public re-run *is* a proof. Submit under a bond → a challenge window opens → anyone re-runs the open verifier and disputes with a counter-bond → a deterministic re-run resolves, loser forfeits. No central referee. **Without a bulletproof exact verifier, arena + money = theft; with one, it's trustless.** That verifier is the moat.
+The hardest part of any on-chain bounty is the **oracle**: how does the chain know who advanced the frontier? P42 solves it because our verifier is open, exact, and deterministic — so a public re-run *is* a proof. Submit under a bond → a challenge window opens → anyone re-runs the open verifier and disputes with a counter-bond → a deterministic re-run resolves, loser forfeits. **No central referee is the target state, not the current one:** in Phases 1–2 disputes settle through a bonded, transcript-gated but **trusted** resolver key — the core trust concession tracked in [`docs/GATE_LEDGER.md`](docs/GATE_LEDGER.md); the planned fraud-proof path (v2) removes it. **Without a bulletproof exact verifier, arena + money = theft; with one — and once the fraud-proof resolver exists — it can become trustless.** That verifier is the moat.
 
 ## Load-bearing decisions (see BUILD.md for rationale)
 

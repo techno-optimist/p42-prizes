@@ -15,13 +15,13 @@ is P42, and what's left?" It complements the granular gate docs
 
 | Capability | Evidence |
 | --- | --- |
-| Contracts audited + 15 findings fixed | git history; `contracts/` (45 tests) |
+| Contracts passed an internal agent audit (self-review by the same author identity — **not** an independent/external audit; that is a Gate 2 blocker) + 15 findings fixed | git history; `contracts/` (45 tests) |
 | Red-team attack tests (reentrancy, bond-leverage, front-run) + coverage matrix | `contracts/test/p42-redteam.test.js`, `RED_TEAM_COVERAGE.md` |
 | Deployed to Base Sepolia + reconciled + **BaseScan-verified** | `deployments/base-sepolia/p42-prizes.json` (`sourceVerification: verified`) |
 | Adversarial campaign — 6/6 attacks defended on live bytecode | `deployments/base-sepolia/adversarial/CAMPAIGN.md` |
 | **Autonomous solver** — point → self-verify → commit → reveal → finalize → claim | `agent/solver.mjs`; `deployments/base-sepolia/demo-run.json` |
 | **Autonomous operator** — watch → re-run → auto-challenge (M2 reward proven) | `agent/operator.mjs`; `op-demo-run.json` |
-| **On-chain-at-reveal DA** — raw solution bytes ride the reveal calldata; contract enforces `sha256(bytes)==commitDaHash` (7 problems ≤ 512 KB); 3 multi-MB certs use an off-chain content-addressed store gated by the same anchor. Arweave demoted to an **optional** mirror | `contracts/src/P42SubmissionManager.sol` (57 tests); **live battle-tested 7/7 on Base Sepolia** — happy path, integrity-gate reverts, adversarial operator via calldata, off-chain mode + tamper-refusal, calldata archive (9/9 reconstruction), 114 KB on-chain reveal: `deployments/base-sepolia/da-battletest.json` |
+| **On-chain-at-reveal DA** — raw solution bytes ride the reveal calldata; contract enforces `sha256(bytes)==commitDaHash` (7 problems ≤ 512 KB); 3 multi-MB certs use an off-chain content-addressed store gated by the same anchor. Arweave demoted to an **optional** mirror | `contracts/src/P42SubmissionManager.sol` (57 tests); **live battle-tested 7/7 on Base Sepolia** — happy path, integrity-gate reverts, adversarial operator via calldata, off-chain mode + tamper-refusal, calldata archive (9/9 reconstruction), 114 KB on-chain reveal: `deployments/base-sepolia/da-battletest.json`. **Caveat:** the 7/7 battle-test ran on **separate demo `SubmissionManager` instances** deployed for the test — **not** the canonical BaseScan-verified deployment above. The verified deployment (commit `3121a1a`) **predates the DA refactor**: its 7-arg constructor has no `onchainDa`/`maxSolutionBytes` and no `sha256(bytes)==commitDaHash` reveal gate. A redeploy + re-verify of the canonical contracts with the DA refactor is pending |
 | **Session-key wallet** — bounded blast radius (allowlist + caps + revoke) | `contracts/src/P42AgentWallet.sol`; `agent-wallet-demo-run.json` |
 | **Container sandbox** — no-net, cgroup mem/PID/CPU, read-only, non-root, fail-closed | `src/p42_prizes/runner_sandbox.py`; **live-validated: all 10 verifiers built + ran correctly in the hardened container** (`verifier-images.json`) |
 | **Self-contained verifier images** — all 10 problems build + run in the sandbox | `Dockerfile.verifier` (fixes the broken per-problem Dockerfiles: bundles `p42_prizes` + `make`, preserves layout); digests in `deployments/base-sepolia/verifier-images.json` |
@@ -80,7 +80,8 @@ funded.
 
 ## Bottom line
 
-The plumbing is done: a live, audited, adversarially-tested, publicly-verified,
+The plumbing is done: a live, internally agent-audited (no independent/external
+audit yet — Gate 2), adversarially-tested, publicly-verified,
 **both-sides-autonomous** protocol with real DA, bounded-blast-radius key safety,
 multisig+timelock governance, and a chain-reconstructing indexer. The path to a
 real-ETH pilot is no longer engineering — it is the human/attestation column above
