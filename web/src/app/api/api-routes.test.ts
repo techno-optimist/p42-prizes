@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Wallet } from "ethers";
@@ -56,6 +56,7 @@ describe("mutable API routes", () => {
     delete process.env.P42_RATE_LIMIT_COMMIT_LIMIT;
     delete process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS;
     delete process.env.P42_PYTHON;
+    delete process.env.P42_VERIFIER_COUNT_PATH;
     rmSync(stateDir, { recursive: true, force: true });
   });
 
@@ -401,6 +402,121 @@ describe("mutable API routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: "revealed solution bytes do not match committed solution_cid",
     });
+  });
+
+  it("rejects concurrent duplicate reveals before running the verifier twice", async () => {
+    const fakePython = path.join(stateDir, "slow-fake-python");
+    const countPath = path.join(stateDir, "verifier-count.txt");
+    writeFileSync(
+      fakePython,
+      [
+        "#!/usr/bin/env node",
+        "const fs = require('node:fs');",
+        "const crypto = require('node:crypto');",
+        "const solution = process.argv[process.argv.indexOf('--solution') + 1];",
+        "fs.appendFileSync(process.env.P42_VERIFIER_COUNT_PATH, 'run\\n');",
+        "setTimeout(() => {",
+        "  const raw = fs.readFileSync(solution);",
+        "  const report = {",
+        "    details: { checked_pairs: 6, defect: 0, violations: [] },",
+        "    improvement: '1/1',",
+        "    problem_id: 'hadamard-mini',",
+        "    reason: '',",
+        "    recomputed_at_commit: 'local-dev',",
+        "    score: '0/1',",
+        "    solution_hash: 'sha256:' + crypto.createHash('sha256').update(raw).digest('hex'),",
+        "    valid: true,",
+        "    verifier_image: 'sha256:local-dev',",
+        "    verifier_version: '0.1.0',",
+        "  };",
+        "  process.stdout.write(JSON.stringify(report) + '\\n');",
+        "}, 250);",
+      ].join("\n"),
+    );
+    chmodSync(fakePython, 0o755);
+    process.env.P42_PYTHON = fakePython;
+    process.env.P42_VERIFIER_COUNT_PATH = countPath;
+
+    const signed = await signedCommitFields();
+    const commitResponse = await commitPost(
+      jsonRequest("/api/submissions/commit", {
+        problem_id: 1,
+        agent_name: "CHRONOS",
+        solver_address: solverAddress,
+        solution_cid: signed.solutionCid,
+        commit_hash: signed.commitHash,
+        solver_signature: signed.solverSignature,
+      }),
+    );
+    const commit = await commitResponse.json();
+    expect(commitResponse.status).toBe(201);
+
+    const body = {
+      problem_id: 1,
+      commit_id: commit.commit.id,
+      solver_address: solverAddress,
+      salt: "right-salt",
+      solution_raw: solutionRaw,
+    };
+    const [first, second] = await Promise.all([
+      revealPost(jsonRequest("/api/submissions/reveal", body)),
+      revealPost(jsonRequest("/api/submissions/reveal", body)),
+    ]);
+    const statuses = [first.status, second.status].sort((left, right) => left - right);
+    const bodies = await Promise.all([first.json(), second.json()]);
+
+    expect(statuses).toEqual([409, 422]);
+    expect(bodies).toContainEqual({ error: "commit reveal already in progress" });
+    expect(readPortalState().submissions).toHaveLength(1);
+    expect(readPortalState().commits[0]).toMatchObject({ revealed: true });
+    expect(readFileSync(countPath, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+
+  it("releases a reveal reservation after verifier infrastructure failure", async () => {
+    const signed = await signedCommitFields();
+    const commitResponse = await commitPost(
+      jsonRequest("/api/submissions/commit", {
+        problem_id: 1,
+        agent_name: "CHRONOS",
+        solver_address: solverAddress,
+        solution_cid: signed.solutionCid,
+        commit_hash: signed.commitHash,
+        solver_signature: signed.solverSignature,
+      }),
+    );
+    const commit = await commitResponse.json();
+    expect(commitResponse.status).toBe(201);
+
+    const fakePython = path.join(stateDir, "failing-fake-python");
+    writeFileSync(
+      fakePython,
+      [
+        "#!/usr/bin/env node",
+        "process.stderr.write('runner failed\\n');",
+        "process.exit(125);",
+      ].join("\n"),
+    );
+    chmodSync(fakePython, 0o755);
+    process.env.P42_PYTHON = fakePython;
+
+    const body = {
+      problem_id: 1,
+      commit_id: commit.commit.id,
+      solver_address: solverAddress,
+      salt: "right-salt",
+      solution_raw: solutionRaw,
+    };
+    const failure = await revealPost(jsonRequest("/api/submissions/reveal", body));
+    expect(failure.status).toBe(502);
+    expect(readPortalState().commits[0]).toMatchObject({ revealed: false });
+    expect(readPortalState().commits[0].revealState).toBeUndefined();
+
+    delete process.env.P42_PYTHON;
+    const retry = await revealPost(jsonRequest("/api/submissions/reveal", body));
+    expect(retry.status).toBe(422);
+    expect(readPortalState().commits[0]).toMatchObject({ revealed: true });
+    expect(readPortalState().commits[0].revealState).toBeUndefined();
+    expect(readPortalState().submissions).toHaveLength(1);
   });
 
   it("replays idempotent reveals instead of mutating an already opened commit twice", async () => {

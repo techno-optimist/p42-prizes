@@ -9,7 +9,7 @@ green.
 | Area | Current state | Required before real ETH |
 | --- | --- | --- |
 | Problem standard | `p42-problem/v1` fixture, schema validation, AST exact-path lint, and local repeated-run admission evidence for the seed verifier | External verifier admission review and N-host admission evidence for every funded problem |
-| Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence with advisory lock + fsync/rename writes, local diagnostic event ledger, process-local rate limits, local idempotency reservations for retryable verifier/submission POSTs, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
+| Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence with advisory lock + fsync/rename writes, local diagnostic event ledger, process-local rate limits, local idempotency reservations for retryable verifier/submission POSTs, local reveal reservations, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
 | Pool funding | Per-problem Base Sepolia deposit wallets exposed in API/UI | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, external CID fail-closed commit gate, and EIP-191 solver ownership signature for non-local commits | On-chain commit, DA receipt at commit block, Arweave permanence at finalize |
 | Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout and rejects any `VerdictReport` not bound to the manifest verifier identity and exact solution bytes; `p42_prizes.cli admit` emits local repeated-run evidence | Canonical sandbox runner, pinned immutable image digest, N-host identical verdict matrix |
@@ -39,9 +39,10 @@ green.
 - Coinbase Onramp `clientIp` binding is required and can only come from a configured trusted deployment header, not request JSON.
 - Commits and dynamic submissions persist to a local JSON store at `web/data/portal-state.json` instead of module memory.
 - Local JSON state writes use an advisory lock directory, fsynced temp-file writes, atomic rename, stale-lock recovery, and lock-timeout fail-closed behavior.
-- Mutable API routes use controlled JSON parsing and `no-store` responses.
+- Mutable API routes use actual-byte-capped JSON parsing and `no-store` responses.
 - Mutable and verifier-expensive API routes have process-local fixed-window rate limits with `Retry-After` / `X-RateLimit-*` headers.
 - Commit, reveal, and verifier shortcut POSTs reserve `Idempotency-Key` values before side effects, cancel pre-effect failures for same-body retry, replay completed responses, reject in-flight duplicates, and record body-hash conflicts.
+- Concurrent reveal attempts for the same commit are locally serialized before verifier execution; pre-effect verifier failures release the reveal reservation for retry.
 - Commit/reveal, verifier shortcut, and idempotency decisions append hash-chained diagnostic events exposed through `GET /api/events`.
 - Non-runnable arena-derived problems are locked in portal data.
 - Next.js powered-by header is disabled and baseline browser security headers are set.

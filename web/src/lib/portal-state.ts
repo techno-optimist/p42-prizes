@@ -110,6 +110,50 @@ function assertSolutionMatchesCid(solutionCid: string, rawSolution: string) {
   }
 }
 
+function reserveCommitReveal(input: {
+  commitId: string;
+  salt: string;
+  solutionRaw: string;
+  problemSlug: string;
+  solverAddress: string;
+}): { record: CommitRecord; solverAddress: string } {
+  let reserved: { record: CommitRecord; solverAddress: string } | undefined;
+  updatePortalState((state) => {
+    const record = state.commits.find((commit) => commit.id === input.commitId);
+    if (!record) throw new ApiError("commit not found", 404);
+    if (record.revealed) throw new ApiError("commit already revealed", 409);
+    if (record.revealState === "pending") throw new ApiError("commit reveal already in progress", 409);
+
+    const problem = getProblemById(record.problemId);
+    if (!problem) throw new ApiError("problem not found", 404);
+    if (problem.slug !== input.problemSlug) throw new ApiError("problem does not match commit", 400);
+
+    const solverAddress = normalizeSolverAddress(input.solverAddress);
+    if (solverAddress !== record.solverAddress) throw new ApiError("solver_address does not match commit owner", 400);
+
+    const openedHash = commitHash({ solutionCid: record.solutionCid, solverAddress, salt: input.salt });
+    if (openedHash !== record.commitHash) throw new ApiError("commit preimage does not match recorded hash", 400);
+
+    if (input.problemSlug !== "hadamard-mini") {
+      throw new ApiError("external verifier runner is not wired in the Phase 0 portal", 409);
+    }
+    assertSolutionMatchesCid(record.solutionCid, input.solutionRaw);
+
+    record.revealState = "pending";
+    reserved = { record: { ...record }, solverAddress };
+  });
+  if (!reserved) throw new Error("commit reveal reservation failed");
+  return reserved;
+}
+
+function cancelCommitRevealReservation(commitId: string): void {
+  updatePortalState((state) => {
+    const record = state.commits.find((commit) => commit.id === commitId);
+    if (!record || record.revealed || record.revealState !== "pending") return;
+    delete record.revealState;
+  });
+}
+
 export function createCommit(input: {
   problemId: number;
   agentName: string;
@@ -172,72 +216,65 @@ export async function revealCommit(input: {
   problemSlug: string;
   solverAddress: string;
 }) {
-  const state = readPortalState();
-  const record = state.commits.find((commit) => commit.id === input.commitId);
-  if (!record) throw new ApiError("commit not found", 404);
-  if (record.revealed) throw new ApiError("commit already revealed", 409);
-  const problem = getProblemById(record.problemId);
-  if (!problem) throw new ApiError("problem not found", 404);
-  if (problem.slug !== input.problemSlug) throw new ApiError("problem does not match commit", 400);
+  const { record, solverAddress } = reserveCommitReveal(input);
+  try {
+    const problem = getProblemById(record.problemId);
+    if (!problem) throw new ApiError("problem not found", 404);
+    const verdict = await runCanonicalVerifier({ problemSlug: input.problemSlug, solutionRaw: input.solutionRaw });
+    const settlement = verdict.valid
+      ? incrementalFrontierCredit(problem, verdict.score, allSubmissions())
+      : { credit: "0/1", priorBest: frontierFallback(problem), eligible: false };
 
-  const solverAddress = normalizeSolverAddress(input.solverAddress);
-  if (solverAddress !== record.solverAddress) throw new ApiError("solver_address does not match commit owner", 400);
-
-  const openedHash = commitHash({ solutionCid: record.solutionCid, solverAddress, salt: input.salt });
-  if (openedHash !== record.commitHash) throw new ApiError("commit preimage does not match recorded hash", 400);
-
-  if (input.problemSlug !== "hadamard-mini") {
-    throw new ApiError("external verifier runner is not wired in the Phase 0 portal", 409);
-  }
-  assertSolutionMatchesCid(record.solutionCid, input.solutionRaw);
-
-  const verdict = await runCanonicalVerifier({ problemSlug: input.problemSlug, solutionRaw: input.solutionRaw });
-  const settlement = verdict.valid
-    ? incrementalFrontierCredit(problem, verdict.score, allSubmissions())
-    : { credit: "0/1", priorBest: frontierFallback(problem), eligible: false };
-
-  const now = new Date();
-  const windowEnd = new Date(now.getTime() + 72 * 60 * 60 * 1000);
-  const submission: Submission = {
-    id: `sub_${randomUUID().slice(0, 8)}`,
-    problemId: record.problemId,
-    problemSlug: input.problemSlug,
-    agentName: record.agentName,
-    state: verdict.valid && settlement.eligible ? "revealed" : "rejected",
-    score: verdict.score,
-    improvement: settlement.credit,
-    credit: settlement.credit,
-    payoutEth: "0.000",
-    solutionCid: record.solutionCid,
-    commitHash: record.commitHash,
-    submittedAt: now.toISOString(),
-    windowEndsAt: windowEnd.toISOString(),
-    transcriptCid: null,
-  };
-  updatePortalState((nextState) => {
-    const storedCommit = nextState.commits.find((commit) => commit.id === input.commitId);
-    if (!storedCommit) throw new ApiError("commit not found", 404);
-    if (storedCommit.revealed) throw new ApiError("commit already revealed", 409);
-    storedCommit.revealed = true;
-    nextState.submissions.push(submission);
-    appendPortalEvent(nextState, {
-      type: submission.state === "revealed" ? "submission.revealed" : "submission.rejected",
-      subjectId: submission.id,
-      problemId: submission.problemId,
-      actor: solverAddress,
-      payload: {
-        commitId: input.commitId,
-        commitHash: record.commitHash,
-        solutionCid: record.solutionCid,
-        solutionHash: verdict.solution_hash,
-        valid: verdict.valid,
-        score: verdict.score,
-        credit: submission.credit,
-        eligible: settlement.eligible,
-      },
+    const now = new Date();
+    const windowEnd = new Date(now.getTime() + 72 * 60 * 60 * 1000);
+    const submission: Submission = {
+      id: `sub_${randomUUID().slice(0, 8)}`,
+      problemId: record.problemId,
+      problemSlug: input.problemSlug,
+      agentName: record.agentName,
+      state: verdict.valid && settlement.eligible ? "revealed" : "rejected",
+      score: verdict.score,
+      improvement: settlement.credit,
+      credit: settlement.credit,
+      payoutEth: "0.000",
+      solutionCid: record.solutionCid,
+      commitHash: record.commitHash,
+      submittedAt: now.toISOString(),
+      windowEndsAt: windowEnd.toISOString(),
+      transcriptCid: null,
+    };
+    updatePortalState((nextState) => {
+      const storedCommit = nextState.commits.find((commit) => commit.id === input.commitId);
+      if (!storedCommit) throw new ApiError("commit not found", 404);
+      if (storedCommit.revealed) throw new ApiError("commit already revealed", 409);
+      if (storedCommit.revealState !== "pending") {
+        throw new ApiError("commit reveal reservation missing", 409);
+      }
+      storedCommit.revealed = true;
+      delete storedCommit.revealState;
+      nextState.submissions.push(submission);
+      appendPortalEvent(nextState, {
+        type: submission.state === "revealed" ? "submission.revealed" : "submission.rejected",
+        subjectId: submission.id,
+        problemId: submission.problemId,
+        actor: solverAddress,
+        payload: {
+          commitId: input.commitId,
+          commitHash: record.commitHash,
+          solutionCid: record.solutionCid,
+          solutionHash: verdict.solution_hash,
+          valid: verdict.valid,
+          score: verdict.score,
+          credit: submission.credit,
+          eligible: settlement.eligible,
+        },
+      });
     });
-  });
-  return { submission, verdict, settlement };
+    return { submission, verdict, settlement };
+  } catch (error) {
+    cancelCommitRevealReservation(record.id);
+    throw error;
+  }
 }
 
 function frontierFallback(problem: NonNullable<ReturnType<typeof getProblemById>>): string {

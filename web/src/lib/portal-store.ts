@@ -23,6 +23,7 @@ export interface CommitRecord {
   commitAlgorithm: "keccak256-p42-v0";
   createdAt: string;
   revealed: boolean;
+  revealState?: "pending";
 }
 
 export interface IdempotencyRecord {

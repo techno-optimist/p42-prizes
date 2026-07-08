@@ -6,6 +6,7 @@ const MUTABLE_HEADERS = {
   "Cache-Control": "no-store, max-age=0",
   "X-Content-Type-Options": "nosniff",
 };
+const DECODER = new TextDecoder();
 
 export class ApiError extends Error {
   constructor(
@@ -19,15 +20,18 @@ export class ApiError extends Error {
 }
 
 export async function readJson<T>(req: Request, schema: ZodType<T>): Promise<T> {
-  const contentLength = Number(req.headers.get("content-length") ?? "0");
-  if (Number.isFinite(contentLength) && contentLength > MAX_JSON_BYTES) {
+  const contentLengthHeader = req.headers.get("content-length");
+  const contentLength = contentLengthHeader === null ? undefined : Number(contentLengthHeader);
+  if (contentLength !== undefined && Number.isFinite(contentLength) && contentLength > MAX_JSON_BYTES) {
     throw new ApiError("request body is too large", 413);
   }
 
   let body: unknown;
   try {
-    body = await req.json();
-  } catch {
+    const raw = await readBoundedBody(req);
+    body = JSON.parse(raw);
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
     throw new ApiError("malformed JSON body", 400);
   }
 
@@ -41,6 +45,31 @@ export async function readJson<T>(req: Request, schema: ZodType<T>): Promise<T> 
     }
     throw error;
   }
+}
+
+async function readBoundedBody(req: Request): Promise<string> {
+  if (!req.body) return "";
+
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_JSON_BYTES) {
+      throw new ApiError("request body is too large", 413);
+    }
+    chunks.push(value);
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return DECODER.decode(bytes);
 }
 
 export function json(data: unknown, init: ResponseInit = {}) {
