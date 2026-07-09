@@ -44,10 +44,10 @@ behavior-neutral changes (dead code, stale comments/docs, lint); all suites held
 
 ## Doc consolidation (owner decision)
 
-- **`PRODUCTION_READINESS.md` + `GATE_LEDGER.md` + `LAUNCH_GATES.md`** are three
-  overlapping gate registers that drift independently (this sweep fixed the same
-  stale claim in all three). Designate ONE canonical gate register and make the
-  others thin pointers.
+- **`PRODUCTION_READINESS.md` + `GATE_LEDGER.md` + `LAUNCH_GATES.md`** were three
+  overlapping gate registers that drifted independently (one sweep fixed the same
+  stale claim in all three). **Done (2026-07-09):** `GATE_LEDGER.md` is now the
+  single canonical gate register; the other two are thin redirect stubs.
 
 ## Problem metadata (value fields, not load-bearing)
 

@@ -2,7 +2,7 @@
 
 **Snapshot date: 2026-07-08.** This is the one-page answer to "how production-ready
 is P42, and what's left?" It complements the granular gate docs
-([`GATE_LEDGER.md`](GATE_LEDGER.md), [`LAUNCH_GATES.md`](LAUNCH_GATES.md),
+([`GATE_LEDGER.md`](GATE_LEDGER.md) — the canonical gate register,
 [`AUTONOMY.md`](AUTONOMY.md), [`HUMAN_ACTIONS.md`](HUMAN_ACTIONS.md)).
 
 > **Engineering-complete ≠ safe for real ETH.** Everything an agent can *build*

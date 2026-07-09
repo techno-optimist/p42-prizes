@@ -29,13 +29,10 @@
     "solver_address": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
     "commit_time": {
       "type": "object",
-      "description": "On-chain DA reference. For onchain mode the raw solution bytes ride the reveal calldata (solution_bytes_length, optional reveal_tx); for offchain mode the bytes live in an external content-addressed store (store_locator).",
+      "description": "DA reference block. The load-bearing proof is the sha256 anchor (payload_sha256 == on-chain commitDaHash). For onchain mode the raw solution bytes ride the reveal-tx calldata (reveal_tx required); for offchain mode the bytes live in an external content-addressed store gated by the same anchor (store_locator required). provider/receipt_uri/block_reference are legacy commit-receipt metadata, optional.",
       "required": [
-        "provider",
         "solution_cid",
         "payload_sha256",
-        "receipt_uri",
-        "block_reference",
         "solution_bytes_length"
       ],
       "additionalProperties": false,
@@ -78,5 +75,35 @@
       }
     },
     "evidence_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "da_mode": { "const": "onchain" } },
+        "required": ["da_mode"]
+      },
+      "then": {
+        "properties": {
+          "commit_time": {
+            "required": ["reveal_tx"],
+            "not": { "required": ["store_locator"] }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "da_mode": { "const": "offchain" } },
+        "required": ["da_mode"]
+      },
+      "then": {
+        "properties": {
+          "commit_time": {
+            "required": ["store_locator"],
+            "not": { "required": ["reveal_tx"] }
+          }
+        }
+      }
+    }
+  ]
 }

@@ -52,7 +52,7 @@ Derived from the evidence audit; these bind copy and layout, not just intent.
 
 1. **Lead with the gates.** "Phase 0. Testnet only. Not audited. Real ETH is gated." appears in the
    masthead area of the homepage — front matter, not footnote. Strength comes from the unlock
-   conditions being public and specific (`docs/LAUNCH_GATES.md`).
+   conditions being public and specific (`docs/GATE_LEDGER.md`, "Gate Exit Checklists").
 2. **Never render test figures as money.** Pool figures are always labeled *test pool
    (Base Sepolia)*. No summed "TVL"-shaped headline. Never sum pools in floating point; the previous
    `Number(...).toFixed(2)` headline is banned (a protocol preaching exact rationals may not compute

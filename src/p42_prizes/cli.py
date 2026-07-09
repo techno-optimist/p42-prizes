@@ -197,6 +197,14 @@ def _cmd_da_verify(args: argparse.Namespace) -> int:
     except (AdmissionError, DaEvidenceError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    # Also enforce the published JSON schema (like the sibling gate validators),
+    # so a structurally-malformed receipt is rejected at the CLI boundary and not
+    # only by the pure-Python semantic checks.
+    try:
+        _enforce_gate_schema(evidence, "da-receipt.schema.json")
+    except jsonschema.ValidationError as exc:
+        print(f"da-receipt schema validation failed: {exc.message}", file=sys.stderr)
+        return 1
     if args.solution is None:
         # Without --solution the sha256 content binding to the actual solution
         # bytes is skipped, so this pass proves structure only. Say so loudly and
@@ -427,22 +435,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     da_receipt = subparsers.add_parser(
         "da-receipt",
-        help="build canonical commit-time DA evidence (optional Arweave mirror receipt)",
+        help="build canonical DA-reference evidence: sha256(solution)==commitDaHash anchor "
+        "plus reveal-tx (onchain) or store locator (offchain); optional Arweave mirror",
     )
     da_receipt.add_argument("--problem", required=True)
     da_receipt.add_argument("--solution", required=True)
     da_receipt.add_argument("--solution-cid", required=True)
     da_receipt.add_argument("--solver-address", required=True)
     da_receipt.add_argument("--salt", required=True)
-    da_receipt.add_argument("--commit-provider", required=True)
-    da_receipt.add_argument("--commit-receipt-uri", required=True)
-    da_receipt.add_argument("--commit-block-reference", required=True)
-    # DA mode: on-chain problems carry bytes in the reveal calldata (optionally
-    # record --reveal-tx); off-chain (large-certificate) problems keep bytes in a
+    # Legacy commit-time off-chain-blob receipt metadata: optional. The DA proof
+    # is the sha256 anchor + reveal-tx/store-locator, not these fields.
+    da_receipt.add_argument("--commit-provider", help="optional legacy commit-receipt provider")
+    da_receipt.add_argument("--commit-receipt-uri", help="optional legacy commit-receipt URI")
+    da_receipt.add_argument("--commit-block-reference", help="optional legacy commit-receipt block reference")
+    # DA mode: on-chain problems carry bytes in the reveal calldata (--reveal-tx
+    # required); off-chain (large-certificate) problems keep bytes in a
     # content-addressed store gated by the same sha256 anchor (--store-locator).
     da_receipt.add_argument("--da-mode", choices=["onchain", "offchain"], default="onchain")
-    da_receipt.add_argument("--reveal-tx")
-    da_receipt.add_argument("--store-locator")
+    da_receipt.add_argument("--reveal-tx", help="reveal tx hash carrying the solution calldata (required for onchain da-mode)")
+    da_receipt.add_argument("--store-locator", help="content-addressed store locator (required for offchain da-mode)")
     da_receipt.add_argument("--solution-bytes-length", type=int)
     # Arweave is now an OPTIONAL off-chain mirror, no longer required.
     da_receipt.add_argument("--arweave-txid")

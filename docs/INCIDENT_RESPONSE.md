@@ -1,7 +1,7 @@
 # Incident Response
 
 This runbook applies once any public pilot exists. Until then, incidents are
-handled as development defects and must still be recorded in `docs/PRODUCTION_READINESS.md`.
+handled as development defects and must still be recorded in `docs/GATE_LEDGER.md`.
 
 Completed Gate 2 tabletop evidence must validate with
 `p42-prizes incident-drill-validate` using the schema documented in

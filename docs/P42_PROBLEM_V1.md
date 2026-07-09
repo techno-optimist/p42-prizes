@@ -88,9 +88,7 @@ PYTHONPATH=src python3 -m p42_prizes.cli da-receipt \
   --solution-cid sha256:<raw-solution-hash-or-external-cid> \
   --solver-address 0x... \
   --salt <commit-salt> \
-  --commit-provider base-sepolia-calldata \
-  --commit-receipt-uri https://sepolia.basescan.org/tx/0x... \
-  --commit-block-reference base-sepolia:<block> \
+  --reveal-tx 0x<reveal-tx-hash> \  # onchain mode: bytes ride the reveal calldata
   --arweave-txid <43-char-base64url-txid> \  # optional mirror receipt
   --output da-evidence.json
 

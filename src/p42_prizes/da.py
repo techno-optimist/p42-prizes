@@ -23,16 +23,23 @@ MAX_ONCHAIN_SOLUTION_BYTES = 1_048_576
 
 DA_MODES = ("onchain", "offchain")
 
-# The on-chain DA reference block ("commit_time") carries these keys.
+# The DA reference block ("commit_time") carries these keys. The load-bearing
+# proof is the sha256 anchor (payload_sha256 == on-chain commitDaHash); the
+# mode-specific reference is reveal_tx (onchain) or store_locator (offchain),
+# enforced per da_mode in _validate_commit_time. provider/receipt_uri/
+# block_reference are legacy commit-receipt metadata, now optional.
 COMMIT_TIME_REQUIRED = (
-    "provider",
     "solution_cid",
     "payload_sha256",
-    "receipt_uri",
-    "block_reference",
     "solution_bytes_length",
 )
-COMMIT_TIME_OPTIONAL = ("reveal_tx", "store_locator")
+COMMIT_TIME_OPTIONAL = (
+    "provider",
+    "receipt_uri",
+    "block_reference",
+    "reveal_tx",
+    "store_locator",
+)
 
 EVIDENCE_REQUIRED = (
     "schema_version",
@@ -51,7 +58,7 @@ EVIDENCE_OPTIONAL = ("permanence",)
 
 
 class DaEvidenceError(ValueError):
-    """Raised when commit-time DA or permanence evidence is malformed."""
+    """Raised when DA-reference or permanence evidence is malformed."""
 
 
 def _utc_now() -> str:
@@ -161,9 +168,9 @@ def build_da_evidence(
     solution_cid: str,
     solver_address: str,
     salt: str,
-    commit_provider: str,
-    commit_receipt_uri: str,
-    commit_block_reference: str,
+    commit_provider: str | None = None,
+    commit_receipt_uri: str | None = None,
+    commit_block_reference: str | None = None,
     da_mode: str = "onchain",
     reveal_tx: str | None = None,
     store_locator: str | None = None,
@@ -171,6 +178,21 @@ def build_da_evidence(
     arweave_txid: str | None = None,
     arweave_receipt_uri: str | None = None,
 ) -> dict[str, Any]:
+    """Build canonical DA evidence for the on-chain-at-reveal design.
+
+    The load-bearing DA proof is sha256(solution bytes) == commitDaHash (the
+    on-chain anchor, recorded as contract.commit_da_hash). The ``commit_time``
+    block is the DA REFERENCE: it always carries the sha256 anchor fields
+    (solution_cid, payload_sha256, solution_bytes_length) plus the mode-specific
+    reference -- ``reveal_tx`` for onchain mode (the bytes ride the reveal-tx
+    calldata; REQUIRED) or ``store_locator`` for offchain mode (the bytes live
+    in an off-chain content-addressed store gated by the same anchor; REQUIRED).
+    It is NOT a commit-time off-chain-blob receipt anymore: the legacy
+    commit_provider / commit_receipt_uri / commit_block_reference fields are
+    optional metadata, included only when supplied. Arweave remains an OPTIONAL
+    mirror recorded in the ``permanence`` block.
+    """
+
     problem = Path(problem_dir)
     solution = Path(solution_path)
     manifest = load_manifest(problem)
@@ -185,23 +207,30 @@ def build_da_evidence(
     if solution_bytes_length is None:
         solution_bytes_length = len(solution_bytes)
 
-    # The on-chain DA reference. For onchain mode the raw bytes ride the reveal
-    # calldata (record their length + optional reveal_tx); for offchain mode the
-    # bytes live in an external content-addressed store (record its locator).
+    # The DA reference. For onchain mode the raw bytes ride the reveal calldata
+    # (record their length + the reveal_tx that carried them); for offchain mode
+    # the bytes live in an external content-addressed store (record its locator).
+    # Legacy commit-receipt metadata is optional and recorded only if supplied.
     commit_time: dict[str, Any] = {
-        "provider": commit_provider,
         "solution_cid": solution_cid,
         "payload_sha256": solution_hash,
-        "receipt_uri": commit_receipt_uri,
-        "block_reference": commit_block_reference,
         "solution_bytes_length": solution_bytes_length,
     }
+    if commit_provider is not None:
+        commit_time["provider"] = commit_provider
+    if commit_receipt_uri is not None:
+        commit_time["receipt_uri"] = commit_receipt_uri
+    if commit_block_reference is not None:
+        commit_time["block_reference"] = commit_block_reference
     if da_mode == "onchain":
         if store_locator is not None:
             raise DaEvidenceError("onchain da_mode must not carry a store_locator")
-        if reveal_tx is not None:
-            commit_time["reveal_tx"] = reveal_tx
+        if reveal_tx is None:
+            raise DaEvidenceError("onchain da_mode requires a reveal_tx")
+        commit_time["reveal_tx"] = reveal_tx
     else:
+        if reveal_tx is not None:
+            raise DaEvidenceError("offchain da_mode must not carry a reveal_tx")
         if store_locator is None:
             raise DaEvidenceError("offchain da_mode requires a store_locator")
         commit_time["store_locator"] = store_locator
@@ -340,8 +369,10 @@ def _validate_commit_time(
     solution_path: str | Path | None,
 ) -> None:
     _require_key_set(commit_time, COMMIT_TIME_REQUIRED, COMMIT_TIME_OPTIONAL, "commit_time")
+    # Legacy commit-receipt metadata: optional, but non-empty strings if present.
     for key in ("provider", "receipt_uri", "block_reference"):
-        _require_string(commit_time, key, "commit_time")
+        if key in commit_time:
+            _require_string(commit_time, key, "commit_time")
     if commit_time["solution_cid"] != solution_cid:
         raise DaEvidenceError("commit_time.solution_cid must match evidence.solution_cid")
     if commit_time["payload_sha256"] != solution_hash:
@@ -360,10 +391,12 @@ def _validate_commit_time(
             raise DaEvidenceError(
                 f"onchain commit_time.solution_bytes_length exceeds {MAX_ONCHAIN_SOLUTION_BYTES} bytes"
             )
-        if "reveal_tx" in commit_time:
-            reveal_tx = _require_string(commit_time, "reveal_tx", "commit_time")
-            if not TX_HASH_RE.fullmatch(reveal_tx):
-                raise DaEvidenceError("commit_time.reveal_tx must be a 32-byte 0x-prefixed tx hash")
+        # The reveal tx IS the DA reference for onchain mode -- required.
+        if "reveal_tx" not in commit_time:
+            raise DaEvidenceError("onchain commit_time requires a reveal_tx")
+        reveal_tx = _require_string(commit_time, "reveal_tx", "commit_time")
+        if not TX_HASH_RE.fullmatch(reveal_tx):
+            raise DaEvidenceError("commit_time.reveal_tx must be a 32-byte 0x-prefixed tx hash")
     else:
         _require_string(commit_time, "store_locator", "commit_time")
         if "reveal_tx" in commit_time:

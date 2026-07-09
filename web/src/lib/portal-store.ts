@@ -162,7 +162,7 @@ function sleepSync(ms: number): void {
 // updatePortalState is serialized: without it, two settlements can both read the
 // same frontier, credit the same delta, and race their writes. This is a local
 // stopgap — multi-instance production still needs a transactional datastore
-// (see docs/PRODUCTION_READINESS.md Known Production Blockers).
+// (see docs/GATE_LEDGER.md, "Additional Known-Open Operational Blockers").
 function withPortalStateLock<T>(operation: () => T): T {
   const filePath = portalStatePath();
   const lockPath = `${filePath}.lock`;

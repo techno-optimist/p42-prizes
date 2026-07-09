@@ -231,6 +231,9 @@ def test_admit_ready_accepts_immutable_image_and_matching_matrix(tmp_path: Path)
 
 
 def test_da_receipt_builds_and_verifies_canonical_evidence(tmp_path: Path) -> None:
+    # On-chain-at-reveal model: the receipt needs NO legacy commit-time blob
+    # fields -- just the sha256 anchor + the reveal tx, plus an OPTIONAL
+    # Arweave mirror recorded as the permanence block.
     solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
     solution_cid = sha256_file(solution)
     evidence_path = tmp_path / "da-evidence.json"
@@ -248,12 +251,8 @@ def test_da_receipt_builds_and_verifies_canonical_evidence(tmp_path: Path) -> No
         "0x1111111111111111111111111111111111111111",
         "--salt",
         "right-salt",
-        "--commit-provider",
-        "base-sepolia-calldata",
-        "--commit-receipt-uri",
-        "https://sepolia.basescan.org/tx/0x" + "2" * 64,
-        "--commit-block-reference",
-        "base-sepolia:12345",
+        "--reveal-tx",
+        "0x" + "2" * 64,
         "--arweave-txid",
         arweave_txid,
         "--output",
@@ -266,6 +265,10 @@ def test_da_receipt_builds_and_verifies_canonical_evidence(tmp_path: Path) -> No
     jsonschema.validate(evidence, schema)
     assert evidence["schema_version"] == "p42-da-receipt/v1"
     assert evidence["solution_hash"] == solution_cid
+    assert evidence["commit_time"]["reveal_tx"] == "0x" + "2" * 64
+    # No legacy commit-time off-chain-blob receipt fields.
+    for legacy_key in ("provider", "receipt_uri", "block_reference"):
+        assert legacy_key not in evidence["commit_time"]
     assert evidence["contract"]["commit_da_hash"].startswith("0x")
     assert evidence["contract"]["permanence_hash"].startswith("0x")
     assert "|da:" + evidence["contract"]["commit_da_hash"] in evidence["contract"]["commitment_preimage"]
@@ -285,6 +288,8 @@ def test_da_receipt_builds_and_verifies_canonical_evidence(tmp_path: Path) -> No
 
 
 def test_da_verify_rejects_tampered_permanence_receipt(tmp_path: Path) -> None:
+    # The legacy commit-receipt fields are still ACCEPTED as optional metadata;
+    # this receipt carries them alongside the required reveal_tx reference.
     solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
     evidence_path = tmp_path / "da-evidence.json"
     completed = run_cli(
@@ -305,6 +310,8 @@ def test_da_verify_rejects_tampered_permanence_receipt(tmp_path: Path) -> None:
         "https://sepolia.basescan.org/tx/0x" + "2" * 64,
         "--commit-block-reference",
         "base-sepolia:12345",
+        "--reveal-tx",
+        "0x" + "2" * 64,
         "--arweave-txid",
         "a" * 43,
         "--output",
@@ -336,9 +343,7 @@ def test_da_verify_without_solution_is_flagged_structure_only(tmp_path: Path) ->
         "--solution-cid", sha256_file(solution),
         "--solver-address", "0x1111111111111111111111111111111111111111",
         "--salt", "right-salt",
-        "--commit-provider", "base-sepolia-calldata",
-        "--commit-receipt-uri", "https://sepolia.basescan.org/tx/0x" + "2" * 64,
-        "--commit-block-reference", "base-sepolia:12345",
+        "--reveal-tx", "0x" + "2" * 64,
         "--arweave-txid", "a" * 43,
         "--output", str(evidence_path),
     )
@@ -369,14 +374,8 @@ def test_da_receipt_rejects_sha256_cid_that_does_not_match_solution() -> None:
         "0x1111111111111111111111111111111111111111",
         "--salt",
         "right-salt",
-        "--commit-provider",
-        "base-sepolia-calldata",
-        "--commit-receipt-uri",
-        "https://sepolia.basescan.org/tx/0x" + "2" * 64,
-        "--commit-block-reference",
-        "base-sepolia:12345",
-        "--arweave-txid",
-        "a" * 43,
+        "--reveal-tx",
+        "0x" + "3" * 64,
     )
 
     assert completed.returncode == 1
@@ -395,9 +394,6 @@ def test_da_receipt_onchain_mode_needs_no_arweave(tmp_path: Path) -> None:
         "--solution-cid", sha256_file(solution),
         "--solver-address", "0x1111111111111111111111111111111111111111",
         "--salt", "right-salt",
-        "--commit-provider", "base-sepolia-calldata",
-        "--commit-receipt-uri", "https://sepolia.basescan.org/tx/0x" + "2" * 64,
-        "--commit-block-reference", "base-sepolia:12345",
         "--da-mode", "onchain",
         "--reveal-tx", "0x" + "3" * 64,
         "--output", str(evidence_path),
@@ -410,6 +406,9 @@ def test_da_receipt_onchain_mode_needs_no_arweave(tmp_path: Path) -> None:
     assert evidence["contract"]["commit_da_hash"] == evidence["solution_hash"].replace("sha256:", "0x")
     assert "permanence" not in evidence  # no mandatory Arweave mirror
     assert evidence["commit_time"]["reveal_tx"] == "0x" + "3" * 64
+    # No legacy commit-time off-chain-blob receipt fields required or emitted.
+    for legacy_key in ("provider", "receipt_uri", "block_reference"):
+        assert legacy_key not in evidence["commit_time"]
 
     verified = run_cli("da-verify", "--evidence", str(evidence_path),
                        "--problem", "problems/hadamard-mini", "--solution", str(solution))
@@ -428,9 +427,6 @@ def test_da_receipt_offchain_mode_uses_store_locator(tmp_path: Path) -> None:
         "--solution-cid", sha256_file(solution),
         "--solver-address", "0x1111111111111111111111111111111111111111",
         "--salt", "right-salt",
-        "--commit-provider", "off-chain-store",
-        "--commit-receipt-uri", "https://sepolia.basescan.org/tx/0x" + "2" * 64,
-        "--commit-block-reference", "base-sepolia:12345",
         "--da-mode", "offchain",
         "--store-locator", "ipfs://bafyexamplecontentaddressedlocator",
         "--output", str(evidence_path),
@@ -441,7 +437,76 @@ def test_da_receipt_offchain_mode_uses_store_locator(tmp_path: Path) -> None:
     jsonschema.validate(evidence, schema)
     assert evidence["da_mode"] == "offchain"
     assert evidence["commit_time"]["store_locator"] == "ipfs://bafyexamplecontentaddressedlocator"
+    assert "reveal_tx" not in evidence["commit_time"]
     assert "permanence" not in evidence
+
+    verified = run_cli("da-verify", "--evidence", str(evidence_path),
+                       "--problem", "problems/hadamard-mini", "--solution", str(solution))
+    assert verified.returncode == 0, verified.stderr
+
+
+def test_da_receipt_onchain_requires_reveal_tx(tmp_path: Path) -> None:
+    # For onchain DA the reveal tx IS the DA reference -- omitting it must fail.
+    solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
+    completed = run_cli(
+        "da-receipt",
+        "--problem", "problems/hadamard-mini",
+        "--solution", str(solution),
+        "--solution-cid", sha256_file(solution),
+        "--solver-address", "0x1111111111111111111111111111111111111111",
+        "--salt", "right-salt",
+        "--da-mode", "onchain",
+    )
+    assert completed.returncode == 1
+    assert "onchain da_mode requires a reveal_tx" in completed.stderr
+
+
+def test_da_receipt_offchain_forbids_reveal_tx(tmp_path: Path) -> None:
+    # Offchain DA references a store locator; a reveal_tx would misrepresent
+    # where the bytes actually live, so it is rejected.
+    solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
+    completed = run_cli(
+        "da-receipt",
+        "--problem", "problems/hadamard-mini",
+        "--solution", str(solution),
+        "--solution-cid", sha256_file(solution),
+        "--solver-address", "0x1111111111111111111111111111111111111111",
+        "--salt", "right-salt",
+        "--da-mode", "offchain",
+        "--store-locator", "ipfs://bafyexamplecontentaddressedlocator",
+        "--reveal-tx", "0x" + "3" * 64,
+    )
+    assert completed.returncode == 1
+    assert "offchain da_mode must not carry a reveal_tx" in completed.stderr
+
+
+def test_da_verify_rejects_onchain_evidence_missing_reveal_tx(tmp_path: Path) -> None:
+    # Tampering an onchain receipt to drop its reveal_tx removes the DA
+    # reference; da-verify must reject it (evidence_hash rebound to hide the edit).
+    solution = ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json"
+    evidence_path = tmp_path / "da-evidence.json"
+    completed = run_cli(
+        "da-receipt",
+        "--problem", "problems/hadamard-mini",
+        "--solution", str(solution),
+        "--solution-cid", sha256_file(solution),
+        "--solver-address", "0x1111111111111111111111111111111111111111",
+        "--salt", "right-salt",
+        "--reveal-tx", "0x" + "3" * 64,
+        "--output", str(evidence_path),
+    )
+    assert completed.returncode == 0, completed.stderr
+
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    del evidence["commit_time"]["reveal_tx"]
+    evidence.pop("evidence_hash")
+    evidence["evidence_hash"] = sha256_bytes(canonical_json(evidence).encode("utf-8"))
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    verified = run_cli("da-verify", "--evidence", str(evidence_path),
+                       "--problem", "problems/hadamard-mini", "--solution", str(solution))
+    assert verified.returncode == 1
+    assert "onchain commit_time requires a reveal_tx" in verified.stderr
 
 
 def _write_runner_queue(path: Path, jobs: list[dict]) -> None:

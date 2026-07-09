@@ -41,4 +41,4 @@ Out of scope for rewards until a bug bounty is announced:
 - purely cosmetic UI bugs,
 - attacks requiring local machine compromise,
 - spam against a local development server,
-- issues already listed in `docs/PRODUCTION_READINESS.md` as known blockers.
+- issues already listed in `docs/GATE_LEDGER.md` as known blockers.

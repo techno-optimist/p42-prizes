@@ -9,8 +9,7 @@ A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 ## Start here
 
 - **[`docs/BUILD.md`](docs/BUILD.md)** — the full design spec (v1.0). Read the spine (Section 0) first, then Section 3 (the Verifier Standard — nothing is sound without it), then Section 1 (the mechanism). Everything a new agent/team needs to start building is there: contract interfaces, the payout math, the verifier standard, the threat model, the legal register, the phased roadmap, and both adversarial red-team passes.
-- **[`docs/PRODUCTION_READINESS.md`](docs/PRODUCTION_READINESS.md)** and **[`docs/LAUNCH_GATES.md`](docs/LAUNCH_GATES.md)** — the current evidence register and go/no-go gates. These are authoritative for what is live versus specified.
-- **[`docs/GATE_LEDGER.md`](docs/GATE_LEDGER.md)** — the production gate ledger: what has evidence, what is blocked, and which external sign-offs are required before real ETH.
+- **[`docs/GATE_LEDGER.md`](docs/GATE_LEDGER.md)** — the canonical production gate register: the current evidence register, the Gate 0–3 go/no-go checklists, what is blocked, and which external sign-offs are required before real ETH. Authoritative for what is live versus specified. (The former `docs/PRODUCTION_READINESS.md` and `docs/LAUNCH_GATES.md` were consolidated into it and now redirect there.)
 - **[`docs/HUMAN_ACTIONS.md`](docs/HUMAN_ACTIONS.md)** — the repo-owner, deployer, audit, legal, governance, and other external actions agents cannot complete alone.
 - **[`docs/FUNDING.md`](docs/FUNDING.md)** — per-problem deposit wallets and the gated Coinbase Onramp plan.
 - **[`docs/DATA_AVAILABILITY.md`](docs/DATA_AVAILABILITY.md)** — the on-chain-at-reveal DA model: solution bytes ride the reveal calldata bound by `sha256(bytes) == commitDaHash` (anchored off-chain store for the 3 large autoconvolution problems; Arweave is an optional mirror, not a launch dependency), plus the honest long-horizon availability caveats.
