@@ -26,6 +26,8 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { queryChunked } from "./lib.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i === -1 ? d : process.argv[i + 1]; };
 const REPO_ROOT = resolve(HERE, "..");
@@ -39,7 +41,6 @@ if (!MANIFEST) { console.error("required: --manifest <path>"); process.exit(2); 
 
 const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
 const provider = new ethers.JsonRpcProvider(RPC, Number(manifest.network?.chainId ?? 84532), { staticNetwork: true });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const c = manifest.contracts;
 const pool = new ethers.Contract(c.pool.address, abi("P42BountyPool"), provider);
 const ledger = new ethers.Contract(c.ledger.address, abi("P42PayoutLedger"), provider);
@@ -49,21 +50,6 @@ const subs = new ethers.Contract(c.submissions.address, abi("P42SubmissionManage
 // contracts' events, so a manifest without a registry is still fully indexable.
 const registry = c.registry ? new ethers.Contract(c.registry.address, abi("P42ProblemRegistry"), provider) : null;
 
-// Public RPCs cap getLogs block ranges and rate-limit; page through small
-// windows SEQUENTIALLY with retries and aggregate.
-async function queryChunked(contract, filter, from, to, step = 2000) {
-  const out = [];
-  for (let start = from; start <= to; start += step) {
-    const end = Math.min(start + step - 1, to);
-    let lastErr;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try { out.push(...(await contract.queryFilter(filter, start, end))); lastErr = null; break; }
-      catch (e) { lastErr = e; await sleep(1200 * (attempt + 1)); }
-    }
-    if (lastErr) throw lastErr;
-  }
-  return out;
-}
 
 // Map a CID ("sha256:<hex>") to a safe, collision-free filename. The CID is the
 // content address, so the filename is deterministic and self-describing.

@@ -5,7 +5,7 @@ status: phase-0-packaging
 objective:
   direction: maximize
   score_name: certified_log_objective_lower_bound
-  seed_best: "0/1"
+  seed_best: "9974252022196793/10000000000000000"
   optimum: "10001/10000"
   min_improvement: "1/1000000000000"
   gauge: "max(0, certified_lower_bound - seed_best)"

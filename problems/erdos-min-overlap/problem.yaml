@@ -5,7 +5,7 @@ status: phase-0-packaging
 objective:
   direction: minimize
   score_name: overlap_upper_bound
-  seed_best: "380926853433087/1000000000000000"
+  seed_best: "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401"
   optimum: "0/1"
   min_improvement: "1/1000000000000"
   gauge: "max(0, seed_best - exact_overlap_upper_bound)"

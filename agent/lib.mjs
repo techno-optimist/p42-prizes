@@ -1,4 +1,4 @@
-// Shared helpers for the P42 agent clients (solver + operator).
+// Shared helpers for the P42 agent clients (solver, operator, indexer).
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
@@ -99,4 +99,22 @@ export function runVerifier(problemDir, solutionPath, repoRoot) {
   const line = out.trim();
   if (!line) throw new Error("verifier produced no VerdictReport");
   return JSON.parse(line);
+}
+
+// Page a queryFilter over small block windows SEQUENTIALLY with retries, so a
+// public RPC's getLogs range cap / rate-limit does not fail the whole scan.
+// Shared by operator.mjs (fraud policing) and indexer.mjs (reconstruction).
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+export async function queryChunked(contract, filter, from, to, step = 2000) {
+  const out = [];
+  for (let start = from; start <= to; start += step) {
+    const end = Math.min(start + step - 1, to);
+    let lastErr;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try { out.push(...(await contract.queryFilter(filter, start, end))); lastErr = null; break; }
+      catch (e) { lastErr = e; await _sleep(1200 * (attempt + 1)); }
+    }
+    if (lastErr) throw lastErr;
+  }
+  return out;
 }

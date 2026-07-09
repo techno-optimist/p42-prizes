@@ -28,7 +28,7 @@ import { readFileSync, writeFileSync, appendFileSync, mkdirSync, mkdtempSync, ex
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { atomsFromImprovement, chainScoreAtoms, problemObjective, runVerifier } from "./lib.mjs";
+import { atomsFromImprovement, chainScoreAtoms, problemObjective, queryChunked, runVerifier } from "./lib.mjs";
 import { getBlob } from "./da-local.mjs";
 import { fetchFromArweave, findTxidByCid } from "./da-arweave.mjs";
 
@@ -83,21 +83,6 @@ const objective = problemObjective(resolve(PROBLEM));
 const seen = new Set();
 let fromBlock = Number(arg("from-block", manifest.indexer?.startBlock ?? 0));
 
-// Public RPCs cap getLogs block ranges and rate-limit; page through small
-// windows SEQUENTIALLY with retries and aggregate (same pattern as indexer.mjs).
-async function queryChunked(contract, filter, from, to, step = 2000) {
-  const out = [];
-  for (let start = from; start <= to; start += step) {
-    const end = Math.min(start + step - 1, to);
-    let lastErr;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try { out.push(...(await contract.queryFilter(filter, start, end))); lastErr = null; break; }
-      catch (e) { lastErr = e; await sleep(1200 * (attempt + 1)); }
-    }
-    if (lastErr) throw lastErr;
-  }
-  return out;
-}
 
 async function scanOnce() {
   const latest = await provider.getBlockNumber();

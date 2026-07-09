@@ -5,10 +5,10 @@ status: phase-0-packaging
 objective:
   direction: minimize
   score_name: nonorthogonal_row_pair_defect
-  seed_best: "222778/1"
+  seed_best: "55444/1"
   optimum: "0/1"
   min_improvement: "1/222778"
-  gauge: "max(0, 222778 - defect)"
+  gauge: "max(0, seed_best - defect)"
 verifier:
   version: "0.1.0"
   image: "sha256:local-dev"

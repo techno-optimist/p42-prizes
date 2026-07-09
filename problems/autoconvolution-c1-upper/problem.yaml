@@ -5,7 +5,7 @@ status: phase-0-packaging
 objective:
   direction: minimize
   score_name: c1_upper_bound
-  seed_best: "2/1"
+  seed_best: "15041971118343665197137380984232095998912388144895190342004000000000000/10008961702715850455872036862958802052289156042841554837278437518918769"
   optimum: "0/1"
   min_improvement: "1/1000000000000"
   gauge: "max(0, seed_best - exact_c1_upper_bound)"

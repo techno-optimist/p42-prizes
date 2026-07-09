@@ -34,9 +34,11 @@ behavior-neutral changes (dead code, stale comments/docs, lint); all suites held
   Docs now label this the *optional-mirror* path, but the code/schema should be
   retargeted to the on-chain-at-reveal model (the load-bearing proof is
   `sha256(bytes)==commitDaHash`, permanence is optional). Deeper than a comment fix.
-- **`queryChunked` is duplicated** verbatim in `operator.mjs` and `indexer.mjs` —
-  dedup into `lib.mjs` (behavior-neutral, but a cross-file refactor of the
-  event-scan path used by both fraud-policing and settlement reconstruction).
+- ~~**`queryChunked` is duplicated** verbatim in `operator.mjs` and `indexer.mjs`~~
+  **Done (2026-07-09):** deduped into `lib.mjs` (single `export async function
+  queryChunked`); both agents import it. Proven behavior-neutral — the byte-identical
+  copies were confirmed equal first, then a stash-compare of the indexer against a live
+  instance reproduced the identical output pre/post-change.
 - **`solver.mjs`**: a read-only `fundingArmed()` pre-flight would give a clearer
   abort than the on-chain revert (early-exit vs revert on the funding path).
 - **`admission.VerifierRun.canonical_report`** field is written but never read;
@@ -51,10 +53,15 @@ behavior-neutral changes (dead code, stale comments/docs, lint); all suites held
 
 ## Problem metadata (value fields, not load-bearing)
 
-- `problem.yaml` `objective.seed_best` values still carry the pre-F1 loose seeds
-  (e.g. hadamard-668 `222778/1` vs verifier `55444`). No longer load-bearing:
-  open-witness seeding makes `seedScoreAtoms` a loose ceiling, and the canonical
-  deploy script hard-errors on the yaml seed fallback unless `P42_ALLOW_YAML_SEED`.
-  Update them (or drop them) for tidiness at the canonical redeploy.
+- ~~`problem.yaml` `objective.seed_best` values still carry the pre-F1 loose seeds~~
+  **Done (2026-07-09):** all 10 `objective.seed_best` refreshed to exactly match each
+  verifier's `SEED_BEST` constant (hadamard-668 `222778/1`→`55444/1`, kakeya `2/1`→`7/4`,
+  edges `-1/1`→`-16684282317138839/23437500000000000`, c1/c2/erdos/mertens/pnt to their
+  full exact fractions; hadamard-mini `6/1` and signed-c3 `3/2` were already correct).
+  hadamard-668's `gauge` was de-hardcoded (`222778`→symbolic `seed_best`) to match the
+  sibling problems and auto-follow the seed. Metadata only (not load-bearing:
+  open-witness seeding makes `seedScoreAtoms` a loose ceiling and the canonical deploy
+  hard-errors on the yaml seed fallback unless `P42_ALLOW_YAML_SEED`); the schema's
+  `rational` pattern accepts every new value and `problem.py` re-validates parseability.
 - `problem.yaml` `settlement.pool_address: null` / `status: phase-0-packaging` are
   stale vs the live testnet deployments; refresh at the canonical redeploy.
