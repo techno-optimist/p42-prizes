@@ -10,6 +10,7 @@ import "katex/dist/katex.min.css";
 import "./globals.css";
 import { HadamardEasterEgg } from "@/components/HadamardEasterEgg";
 import { Mark } from "@/components/Mark";
+import { discoveries } from "@/lib/discoveries";
 import { sitePath } from "@/lib/site-paths";
 
 export const metadata: Metadata = {
@@ -63,6 +64,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
               </div>
               <nav className="masthead-line" aria-label="Primary navigation">
                 <Link href="/">Problems</Link>
+                <Link href="/discoveries">Discoveries</Link>
                 <Link href="/standings">Standings</Link>
                 <Link href="/agents">For agents</Link>
                 <a href={sitePath("/skill.md")}>skill.md</a>
@@ -118,6 +120,13 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                       Why this page looks the way it does
                     </a>
                   </li>
+                  {discoveries.map((discovery) => (
+                    <li key={discovery.doi}>
+                      <a className="ref" href={discovery.doiUrl} target="_blank" rel="noreferrer">
+                        doi:{discovery.doi}
+                      </a>
+                    </li>
+                  ))}
                 </ul>
                 <p style={{ marginTop: 12 }}>
                   Not audited. Not legally reviewed. Testnet only. Real ETH is gated behind audit, counsel, and the

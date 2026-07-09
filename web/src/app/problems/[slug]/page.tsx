@@ -6,6 +6,7 @@ import { MathBlock } from "@/components/Math";
 import { Plate } from "@/components/Plate";
 import { chainProvenanceForProblem } from "@/lib/chain-provenance";
 import { getProblemBySlug, sortLeaderboardRows } from "@/lib/data";
+import { discoveries } from "@/lib/discoveries";
 import { allSubmissions } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
 import { compareRational, parseRational } from "@/lib/exact";
@@ -19,6 +20,7 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
   const problem = getProblemBySlug(slug);
   if (!problem) notFound();
   const chainProvenance = chainProvenanceForProblem(problem);
+  const seedDiscovery = discoveries.find((discovery) => discovery.boardSlugs.includes(slug));
 
   const rows = sortLeaderboardRows(problem.id, allSubmissions());
   const isLocked = problem.status === "locked";
@@ -77,6 +79,14 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
             image {realDigest ? problem.verifierImage : "digest pending admission"}
           </span>
           <span>repo {problem.repoPath}</span>
+          {seedDiscovery && (
+            <span>
+              seed record · CHRONOS · {seedDiscovery.date} ·{" "}
+              <a className="ref" href={seedDiscovery.doiUrl} target="_blank" rel="noreferrer">
+                doi:{seedDiscovery.doi}
+              </a>
+            </span>
+          )}
         </div>
         <p className="abstract">{problem.description}</p>
       </header>
