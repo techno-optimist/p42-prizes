@@ -38,13 +38,16 @@ SOLUTION_HASH_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 
 # An untrusted verifier must not inherit the host's secrets (RPC/API/Telegram
 # tokens live in os.environ). Only PATH, the repo src/ PYTHONPATH, and these
-# determinism knobs are forwarded (docs/VERIFIER_RUNNER.md).
-VERIFIER_ENV_ALLOWLIST = (
-    "PYTHONHASHSEED",
-    "OMP_NUM_THREADS",
-    "OPENBLAS_NUM_THREADS",
-    "MKL_NUM_THREADS",
-)
+# determinism knobs are forwarded (docs/VERIFIER_RUNNER.md). Each knob has a
+# deterministic default so the advertised determinism holds even on hosts
+# that never exported it.
+VERIFIER_ENV_DEFAULTS = {
+    "PYTHONHASHSEED": "0",
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+}
+VERIFIER_ENV_ALLOWLIST = tuple(VERIFIER_ENV_DEFAULTS)
 
 
 class AdmissionError(ValueError):
@@ -147,10 +150,10 @@ def build_verifier_env(problem: Path) -> dict[str, str]:
         "PATH": os.environ.get("PATH", os.defpath),
         "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", ""),
     }
-    for name in VERIFIER_ENV_ALLOWLIST:
-        value = os.environ.get(name)
-        if value is not None:
-            env[name] = value
+    for name, default in VERIFIER_ENV_DEFAULTS.items():
+        # A host override wins; otherwise force the deterministic default so
+        # the knob is always present rather than advisory.
+        env[name] = os.environ.get(name, default)
     return env
 
 
@@ -409,6 +412,8 @@ def validate_admission_matrix(matrix: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(hosts, list) or len(hosts) != host_count:
         raise AdmissionError("matrix.hosts length must equal matrix.coverage.host_count")
     labels: list[str] = []
+    host_architectures: set[str] = set()
+    host_glibc_versions: set[str] = set()
     for index, host in enumerate(hosts):
         if not isinstance(host, dict):
             raise AdmissionError(f"matrix.hosts[{index}] must be an object")
@@ -417,16 +422,32 @@ def validate_admission_matrix(matrix: Mapping[str, Any]) -> dict[str, Any]:
         architecture = _normalize_architecture(_require_string(host, "architecture", f"matrix.hosts[{index}]"))
         if architecture not in architectures:
             raise AdmissionError(f"matrix.hosts[{index}].architecture missing from coverage.architectures")
+        host_architectures.add(architecture)
         if not isinstance(host.get("run_count"), int) or host["run_count"] < 2:
             raise AdmissionError(f"matrix.hosts[{index}].run_count must be >= 2")
         _require_string(host, "os", f"matrix.hosts[{index}]")
-        _require_string(host, "libc_name", f"matrix.hosts[{index}]")
-        _require_string(host, "libc_version", f"matrix.hosts[{index}]")
+        libc_name = _require_string(host, "libc_name", f"matrix.hosts[{index}]")
+        libc_version = _require_string(host, "libc_version", f"matrix.hosts[{index}]")
+        if libc_name.lower() == "glibc":
+            host_glibc_versions.add(libc_version)
         _require_string(host, "python_version", f"matrix.hosts[{index}]")
 
     duplicate_labels = sorted({label for label in labels if labels.count(label) > 1})
     if duplicate_labels:
         raise AdmissionError(f"matrix.hosts duplicate labels: {', '.join(duplicate_labels)}")
+
+    # The coverage block is self-declared by whoever assembled the matrix, so
+    # recompute it from hosts[] — a forged summary that claims an architecture
+    # or glibc version no listed host actually provides must be rejected.
+    # (host_count is already enforced above via len(hosts) == host_count.)
+    if sorted(set(architectures)) != sorted(host_architectures):
+        raise AdmissionError(
+            "matrix.coverage.architectures does not match architectures recomputed from hosts"
+        )
+    if sorted(set(glibc_versions)) != sorted(host_glibc_versions):
+        raise AdmissionError(
+            "matrix.coverage.glibc_versions does not match glibc versions recomputed from hosts"
+        )
 
     return dict(matrix)
 

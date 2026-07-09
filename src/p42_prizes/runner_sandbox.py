@@ -15,6 +15,7 @@ back to executing an untrusted payload on the host.
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -30,6 +31,21 @@ SANDBOX_SOLUTION_PATH = "/sandbox/solution.json"
 SANDBOX_USER = "65534:65534"
 # Reject placeholder images — a sandbox around an unpinned image is theatre.
 PLACEHOLDER_IMAGES = ("sha256:local-dev", "sha256:pending", "")
+# Only content-addressed image references may execute: a bare digest
+# (sha256:<64hex>) or repo@digest (repo@sha256:<64hex>). A mutable tag like
+# repo:latest would be pulled at execution time, so what runs could differ
+# from what was admitted — the executor fails closed on any non-pinned image
+# independent of the readiness gate.
+PINNED_IMAGE_RE = re.compile(r"^(?:[^\s@]+@)?sha256:[0-9a-f]{64}$")
+# Determinism knobs forced inside the container. Host-side build_verifier_env
+# is irrelevant in sandbox mode (no host environment reaches `docker run`), so
+# each knob must be passed explicitly via -e.
+SANDBOX_DETERMINISM_ENV = (
+    "PYTHONHASHSEED=0",
+    "OMP_NUM_THREADS=1",
+    "OPENBLAS_NUM_THREADS=1",
+    "MKL_NUM_THREADS=1",
+)
 
 
 def docker_available(binary: str = "docker") -> bool:
@@ -70,9 +86,18 @@ def build_sandbox_command(
       * ``--cap-drop=ALL`` + ``--security-opt=no-new-privileges`` + non-root user
       * solution mounted READ-ONLY at a fixed path — the untrusted bytes are never a
         writable/executable host path, and ``{solution}`` resolves to the mount.
+      * ``-e`` determinism knobs (hash seed, thread caps) — the container gets no
+        host environment, so they must be injected explicitly.
+      * image must be a pinned sha256 digest — a mutable tag would be pulled at
+        execution time and could differ from the admitted verifier.
     """
     if image in PLACEHOLDER_IMAGES:
         raise RunnerSandboxError(f"refusing to sandbox a placeholder verifier image: {image!r}")
+    if not PINNED_IMAGE_RE.fullmatch(image):
+        raise RunnerSandboxError(
+            "refusing to sandbox a non-pinned verifier image "
+            f"(need sha256:<64hex> or repo@sha256:<64hex>): {image!r}"
+        )
     if "{solution}" not in verifier_command_template:
         raise RunnerSandboxError("verifier command must include the {solution} placeholder")
     if not isinstance(memory_mb, int) or memory_mb < 1:
@@ -100,6 +125,8 @@ def build_sandbox_command(
         f"--user={SANDBOX_USER}",
         "-v", f"{host_path}:{SANDBOX_SOLUTION_PATH}:ro",
     ]
+    for knob in SANDBOX_DETERMINISM_ENV:
+        args += ["-e", knob]
     if container_name:
         args += ["--name", container_name]
     args.append(image)

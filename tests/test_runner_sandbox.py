@@ -15,9 +15,13 @@ from p42_prizes.runner_sandbox import (
 from p42_prizes.runner_worker import _run_verifier_for_transcript
 
 
+# A syntactically valid immutable digest for tests (64 hex chars).
+PINNED_IMAGE = "sha256:" + "ab" * 32
+
+
 def test_build_sandbox_command_applies_all_hardening():
     cmd = build_sandbox_command(
-        image="sha256:deadbeef",
+        image=PINNED_IMAGE,
         host_solution="/tmp/sol.json",
         verifier_command_template="make verify SOLUTION={solution}",
         memory_mb=128,
@@ -39,8 +43,13 @@ def test_build_sandbox_command_applies_all_hardening():
         assert flag in cmd, f"missing hardening flag: {flag}"
     # untrusted solution mounted READ-ONLY at the fixed path
     assert any(a.endswith(f"{SANDBOX_SOLUTION_PATH}:ro") for a in cmd)
+    # determinism knobs are forced inside the container: sandbox mode forwards
+    # no host environment, so each must arrive as an explicit -e flag
+    for knob in ("PYTHONHASHSEED=0", "OMP_NUM_THREADS=1", "OPENBLAS_NUM_THREADS=1", "MKL_NUM_THREADS=1"):
+        assert knob in cmd, f"missing determinism knob: {knob}"
+        assert cmd[cmd.index(knob) - 1] == "-e"
     # image, then the verifier command with {solution} resolved to the mount
-    assert "sha256:deadbeef" in cmd
+    assert PINNED_IMAGE in cmd
     assert f"SOLUTION={SANDBOX_SOLUTION_PATH}" in cmd
 
 
@@ -55,11 +64,42 @@ def test_rejects_placeholder_image():
             )
 
 
+def test_rejects_mutable_or_malformed_image_reference():
+    # Anything but an immutable digest (mutable tags especially) would be
+    # pulled at execution time — the executor must fail closed on its own.
+    for bad in (
+        "repo:latest",
+        "ubuntu",
+        "registry.example.com/p42/verifier:1.2.3",
+        "sha256:deadbeef",              # too short
+        "sha256:" + "g" * 64,           # not hex
+        "repo@sha256:deadbeef",
+        "repo@md5:" + "ab" * 32,
+    ):
+        with pytest.raises(RunnerSandboxError, match="non-pinned"):
+            build_sandbox_command(
+                image=bad,
+                host_solution="/tmp/s",
+                verifier_command_template="v {solution}",
+                memory_mb=128,
+            )
+
+
+def test_accepts_repo_at_digest_image_reference():
+    cmd = build_sandbox_command(
+        image=f"registry.example.com/p42/verifier@{PINNED_IMAGE}",
+        host_solution="/tmp/s",
+        verifier_command_template="v {solution}",
+        memory_mb=128,
+    )
+    assert f"registry.example.com/p42/verifier@{PINNED_IMAGE}" in cmd
+
+
 def test_requires_solution_placeholder_and_valid_limits():
     with pytest.raises(RunnerSandboxError):
-        build_sandbox_command(image="sha256:x", host_solution="/tmp/s", verifier_command_template="make verify", memory_mb=128)
+        build_sandbox_command(image=PINNED_IMAGE, host_solution="/tmp/s", verifier_command_template="make verify", memory_mb=128)
     with pytest.raises(RunnerSandboxError):
-        build_sandbox_command(image="sha256:x", host_solution="/tmp/s", verifier_command_template="v {solution}", memory_mb=0)
+        build_sandbox_command(image=PINNED_IMAGE, host_solution="/tmp/s", verifier_command_template="v {solution}", memory_mb=0)
 
 
 def test_docker_available_returns_bool_without_raising():

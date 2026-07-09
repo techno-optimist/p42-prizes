@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -27,6 +28,7 @@ from p42_prizes.runner_queue import (
     MemorySnapshot,
     RunnerPolicy,
     plan_runner_queue,
+    reap_stale_leases,
 )
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
@@ -61,6 +63,12 @@ def run_next_job_once(
     transcript_root = Path(transcript_dir)
 
     with _locked_queue(queue_file) as queue:
+        # A worker that died mid-job leaves an expired lease behind. Reap it
+        # here, inside the same critical section as planning/claiming, so the
+        # requeue is atomic and the queue never wedges on
+        # stale_lease_reap_required. _locked_queue persists the reap even when
+        # the plan below decides to wait.
+        reap_stale_leases(queue, now_utc=_format_utc(now))
         plan = plan_runner_queue(queue, memory=memory, policy=effective_policy, now_utc=_format_utc(now))
         if plan["decision"] != "start":
             return plan
@@ -71,11 +79,42 @@ def run_next_job_once(
         job["lease_expires_at_utc"] = _format_utc(now + timedelta(seconds=lease_seconds))
 
     transcript_root.mkdir(parents=True, exist_ok=True)
-    transcript = _run_job(job, transcript_root, policy=effective_policy)
+    # The exact lease we wrote at claim time is our fencing token (audit F7): if
+    # our lease expires mid-run and another worker reaps + reclaims this job, its
+    # lease_expires_at_utc changes, so we can detect that our result is stale and
+    # must be dropped rather than clobbering the other worker's outcome.
+    claim_lease = job["lease_expires_at_utc"]
+    try:
+        transcript = _run_job(job, transcript_root, policy=effective_policy)
+        run_error = None
+    except RunnerWorkerError as exc:
+        # A malformed / un-runnable job (bad problem path, invalid da_evidence,
+        # etc.) must fail CLOSED here — not propagate out, crash the drain loop,
+        # and leave a live lease wedging the queue for a full lease period
+        # (audit F7 minor).
+        transcript = None
+        run_error = str(exc)
 
     finished_at = _parse_or_now(None)
     with _locked_queue(queue_file) as queue:
-        fresh = _find_job(queue, job["job_id"])
+        fresh = _find_job_or_none(queue, job["job_id"])
+        # Fencing: only record our outcome if this is still OUR claim (status
+        # running under the exact lease we wrote). Otherwise our lease was
+        # reaped and the job reclaimed/failed by another worker — drop our
+        # result so we can't clobber theirs or flip a max-attempts failure back
+        # to success.
+        if (
+            fresh is None
+            or fresh.get("status") != "running"
+            or fresh.get("lease_expires_at_utc") != claim_lease
+        ):
+            return {"reason": "lease_lost_result_dropped", "selected_job_id": job["job_id"]}
+        if run_error is not None:
+            fresh["status"] = "failed"
+            fresh["failure_reason"] = f"job_run_error: {run_error}"
+            fresh["finished_at_utc"] = _format_utc(finished_at)
+            fresh.pop("lease_expires_at_utc", None)
+            return {"reason": f"job_run_error: {run_error}", "selected_job_id": job["job_id"]}
         fresh["status"] = "succeeded" if transcript["verifier"]["valid"] is True else "failed"
         fresh["finished_at_utc"] = _format_utc(finished_at)
         fresh["transcript_path"] = transcript["transcript_path"]
@@ -218,6 +257,17 @@ def _find_job(queue: Mapping[str, Any], job_id: str | None) -> dict[str, Any]:
     raise RunnerWorkerError(f"runner job not found: {job_id}")
 
 
+def _find_job_or_none(queue: Mapping[str, Any], job_id: str | None) -> dict[str, Any] | None:
+    """Fencing lookup that never raises (the job may have been reaped away)."""
+    jobs = queue.get("jobs")
+    if not isinstance(jobs, list):
+        return None
+    for job in jobs:
+        if isinstance(job, dict) and job.get("job_id") == job_id:
+            return job
+    return None
+
+
 def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPolicy) -> dict[str, Any]:
     job_id = _require_string(job, "job_id")
     problem = Path(_require_string(job, "problem")).resolve()
@@ -241,20 +291,26 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
         else:
             da_result = {"ok": True, "evidence_hash": evidence["evidence_hash"]}
 
-    verifier = _run_verifier_for_transcript(
-        problem,
-        solution,
-        child_address_space_limit_mb=resource_limits["child_address_space_limit_mb"],
-        sandbox=policy.sandbox,
-        sandbox_memory_mb=resource_limits["child_address_space_limit_mb"],
-        sandbox_pids_limit=policy.sandbox_pids_limit,
-        sandbox_cpus=policy.sandbox_cpus,
-        job_id=job_id,
-    )
-
     if da_result is not None and da_result["ok"] is False:
-        verifier["ok"] = False
-        verifier["valid"] = False
+        # DA evidence is invalid -> the submission is already inadmissible, so do
+        # NOT burn a full sandbox execution (up to wall_seconds + the memory
+        # budget) on it (audit F7 minor). Synthesize a fail-closed verifier.
+        verifier = {
+            "ok": False,
+            "valid": False,
+            "error": f"da_evidence validation failed; verifier not run: {da_result.get('error', '')}",
+        }
+    else:
+        verifier = _run_verifier_for_transcript(
+            problem,
+            solution,
+            child_address_space_limit_mb=resource_limits["child_address_space_limit_mb"],
+            sandbox=policy.sandbox,
+            sandbox_memory_mb=resource_limits["child_address_space_limit_mb"],
+            sandbox_pids_limit=policy.sandbox_pids_limit,
+            sandbox_cpus=policy.sandbox_cpus,
+            job_id=job_id,
+        )
 
     transcript = {
         "schema_version": RUNNER_TRANSCRIPT_SCHEMA_VERSION,
@@ -268,7 +324,7 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
         "verifier": verifier,
     }
     transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
-    transcript_path = transcript_dir / f"{_safe_job_id(job_id)}.json"
+    transcript_path = transcript_dir / f"{_transcript_basename(job_id)}.json"
     transcript_path.write_text(canonical_json(transcript) + "\n", encoding="utf-8")
     transcript["transcript_path"] = str(transcript_path)
     return transcript
@@ -418,11 +474,18 @@ def _run_verifier_for_transcript(
     canonical = canonical_json(report)
     result["report"] = report
     result["report_hash"] = sha256_bytes(canonical.encode("utf-8"))
-    result["valid"] = report.get("valid") is True
     if completed.stdout not in (canonical, canonical + "\n"):
+        # Leave the initialized valid=False: a rejected report must never mark
+        # the submission accepted, so transcript, job status, and loop event
+        # all agree the job failed.
         result["error"] = "verifier report was not canonical JSON"
         return result
-    if completed.returncode == 0 and report.get("valid") is True:
+    # Only a report that survived the canonical-JSON check may set valid, and
+    # valid REQUIRES a clean exit: a verifier that prints a canonical valid=true
+    # report but then exits non-zero (crash / sys.exit(1) after printing) must
+    # fail CLOSED, since job status + loop events key off `valid` (audit F14).
+    result["valid"] = completed.returncode == 0 and report.get("valid") is True
+    if result["valid"]:
         result["ok"] = True
     elif report.get("valid") is not True:
         result["error"] = report.get("reason") or "verifier reported valid=false"
@@ -493,6 +556,17 @@ def _looks_like_memory_failure(returncode: int, stderr_tail: str) -> bool:
 
 def _safe_job_id(job_id: str) -> str:
     return "".join(char if char.isalnum() or char in ("-", "_", ".") else "_" for char in job_id)
+
+
+def _transcript_basename(job_id: str) -> str:
+    """Collision-free transcript filename for an arbitrary job_id.
+
+    _safe_job_id is LOSSY ('a/b' and 'a b' both collapse to 'a_b'), so using it
+    for the filename lets one job's transcript silently overwrite another's.
+    Hash the raw job_id instead; the human-readable id stays inside the
+    transcript's job_id field.
+    """
+    return hashlib.sha256(job_id.encode("utf-8")).hexdigest()
 
 
 def _parse_or_now(value: str | None) -> datetime:

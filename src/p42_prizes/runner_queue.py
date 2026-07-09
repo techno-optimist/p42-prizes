@@ -10,6 +10,11 @@ from typing import Any, Mapping
 QUEUE_SCHEMA_VERSION = "p42-runner-queue/v1"
 PLAN_SCHEMA_VERSION = "p42-runner-plan/v1"
 JOB_STATUSES = {"queued", "running", "succeeded", "failed", "cancelled"}
+# A job whose worker died mid-run this many times is failed instead of
+# requeued, so a poison job cannot loop through the reaper forever. This is a
+# module constant (not a RunnerPolicy field) because the published
+# runner-plan schema pins policy with additionalProperties=false.
+DEFAULT_MAX_JOB_ATTEMPTS = 3
 
 
 class RunnerQueueError(ValueError):
@@ -113,6 +118,51 @@ def plan_runner_queue(
         "reason": "ready",
         "selected_job_id": selected["job_id"],
     }
+
+
+def reap_stale_leases(
+    queue: dict[str, Any],
+    *,
+    now_utc: str | None = None,
+    max_attempts: int = DEFAULT_MAX_JOB_ATTEMPTS,
+) -> list[str]:
+    """Requeue (or fail) running jobs whose lease is missing or expired.
+
+    A worker that dies mid-job leaves a running entry behind; without a reaper
+    plan_runner_queue reports stale_lease_reap_required forever and the queue
+    wedges. Mutates ``queue`` in place — the caller must hold the queue lock so
+    the reap and the subsequent plan/claim are one atomic step. Each reap
+    increments the job's attempt counter; a job reaped ``max_attempts`` times
+    is failed closed instead of requeued. Returns the reaped job ids.
+    """
+    if not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or max_attempts < 1:
+        raise RunnerQueueError("max_attempts must be >= 1")
+    now = _parse_utc(now_utc) if now_utc else datetime.now(timezone.utc)
+    jobs = queue.get("jobs")
+    if not isinstance(jobs, list):
+        raise RunnerQueueError("queue.jobs must be an array")
+    reaped: list[str] = []
+    for job in jobs:
+        if not isinstance(job, dict) or job.get("status") != "running":
+            continue
+        lease_expires = job.get("lease_expires_at_utc")
+        if isinstance(lease_expires, str) and _parse_utc(lease_expires) > now:
+            continue
+        attempts = job.get("attempts")
+        if not isinstance(attempts, int) or isinstance(attempts, bool) or attempts < 0:
+            attempts = 0
+        attempts += 1
+        job["attempts"] = attempts
+        job.pop("lease_expires_at_utc", None)
+        if attempts >= max_attempts:
+            # Poison-job guard: repeated worker deaths on the same job fail it
+            # closed instead of cycling it through the queue indefinitely.
+            job["status"] = "failed"
+            job["failure_reason"] = "stale_lease_max_attempts_exceeded"
+        else:
+            job["status"] = "queued"
+        reaped.append(str(job.get("job_id")))
+    return reaped
 
 
 def memory_snapshot_from_proc(meminfo_path: str | Path = "/proc/meminfo") -> MemorySnapshot:

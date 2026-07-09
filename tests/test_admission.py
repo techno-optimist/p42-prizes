@@ -9,7 +9,12 @@ import subprocess
 import jsonschema
 import pytest
 
-from p42_prizes.admission import AdmissionError, build_admission_matrix
+from p42_prizes.admission import (
+    AdmissionError,
+    build_admission_matrix,
+    build_verifier_env,
+    validate_admission_matrix,
+)
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -194,3 +199,49 @@ def test_matrix_rejects_host_evidence_with_nonidentical_runs() -> None:
 
     with pytest.raises(AdmissionError, match="not all identical"):
         build_admission_matrix(evidence)
+
+
+def _rehash_matrix(matrix: dict) -> dict:
+    # Re-seal a (possibly tampered) matrix the way an adversary who controls
+    # the file would: recompute matrix_hash over the canonical bytes.
+    resealed = dict(matrix)
+    resealed.pop("matrix_hash", None)
+    resealed["matrix_hash"] = sha256_bytes(canonical_json(resealed).encode("utf-8"))
+    return resealed
+
+
+def test_validate_matrix_recomputes_coverage_from_hosts() -> None:
+    matrix = build_admission_matrix(_complete_matrix_evidence())
+    # Sanity: an honest matrix passes validation.
+    validate_admission_matrix(matrix)
+
+    # Forged coverage claiming a glibc version no host actually has: the
+    # matrix_hash is consistent, so only recomputation from hosts[] catches it.
+    forged_glibc = copy.deepcopy(matrix)
+    forged_glibc["coverage"]["glibc_versions"] = ["2.31", "2.35", "2.39", "9.99"]
+    with pytest.raises(AdmissionError, match="glibc versions recomputed from hosts"):
+        validate_admission_matrix(_rehash_matrix(forged_glibc))
+
+    # Forged coverage claiming an architecture no host actually has.
+    forged_arch = copy.deepcopy(matrix)
+    forged_arch["coverage"]["architectures"] = ["aarch64", "riscv64", "x86_64"]
+    with pytest.raises(AdmissionError, match="architectures recomputed from hosts"):
+        validate_admission_matrix(_rehash_matrix(forged_arch))
+
+
+def test_build_verifier_env_defaults_determinism_knobs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The knobs must be forced even when the host never exported them —
+    # otherwise "deterministic" is advisory, not enforced.
+    knobs = ("PYTHONHASHSEED", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+    for name in knobs:
+        monkeypatch.delenv(name, raising=False)
+
+    env = build_verifier_env(ROOT / "problems" / "hadamard-mini")
+
+    assert env["PYTHONHASHSEED"] == "0"
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        assert env[name] == "1"
+
+    # An explicit host override still wins over the default.
+    monkeypatch.setenv("PYTHONHASHSEED", "7")
+    assert build_verifier_env(ROOT / "problems" / "hadamard-mini")["PYTHONHASHSEED"] == "7"

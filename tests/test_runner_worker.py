@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import json
 import sys
 import time
 from pathlib import Path
 
 import pytest
 
-from p42_prizes.runner_worker import _run_verifier_for_transcript
+from p42_prizes.runner_queue import MemorySnapshot, RunnerPolicy
+from p42_prizes.runner_worker import _run_job, _run_verifier_for_transcript, run_next_job_once
 
 
 def _write_problem(root: Path, *, verifier_name: str, verifier_body: str, wall_seconds: int) -> tuple[Path, Path]:
@@ -55,6 +57,100 @@ def test_verifier_subprocess_does_not_inherit_host_secrets(tmp_path: Path, monke
     assert result["ok"] is True, result
     assert result["report"]["leaked"] == "ABSENT"
     assert "SUPER_SECRET_VALUE" not in repr(result)
+
+
+def test_noncanonical_report_is_never_marked_valid(tmp_path: Path) -> None:
+    # The verifier claims valid=true but emits NON-canonical JSON (indented).
+    # The rejection must leave valid=False so transcript, job status, and loop
+    # event all agree the submission was NOT accepted.
+    verifier_body = (
+        "import json\n"
+        "print(json.dumps({'valid': True}, indent=2))\n"
+    )
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="sloppy.py", verifier_body=verifier_body, wall_seconds=10
+    )
+
+    result = _run_verifier_for_transcript(problem, solution, child_address_space_limit_mb=256)
+
+    assert result["ok"] is False
+    assert result["valid"] is False
+    assert "canonical" in result["error"]
+
+
+def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:
+    # 'a/b' and 'a b' both collapse to 'a_b' under the lossy sanitizer; the
+    # hashed transcript filename must keep the two transcripts separate.
+    verifier_body = (
+        "import json\n"
+        "print(json.dumps({'valid': True}, sort_keys=True, separators=(',', ':')))\n"
+    )
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="ok.py", verifier_body=verifier_body, wall_seconds=10
+    )
+    transcript_dir = tmp_path / "transcripts"
+    transcript_dir.mkdir()
+
+    paths: list[str] = []
+    for job_id in ("a/b", "a b"):
+        job = {
+            "job_id": job_id,
+            "problem": str(problem),
+            "solution": str(solution),
+            "required_memory_mb": 64,
+        }
+        transcript = _run_job(job, transcript_dir, policy=RunnerPolicy())
+        # The human-readable id survives inside the transcript itself.
+        assert transcript["job_id"] == job_id
+        paths.append(transcript["transcript_path"])
+
+    assert len(set(paths)) == 2, "colliding job_ids overwrote each other's transcript"
+    for path, job_id in zip(paths, ("a/b", "a b")):
+        assert json.loads(Path(path).read_text(encoding="utf-8"))["job_id"] == job_id
+
+
+def test_worker_reaps_expired_lease_and_runs_the_job(tmp_path: Path) -> None:
+    # A previous worker died mid-job: the queue holds a running entry with an
+    # expired lease. The next worker must reap it atomically and run it rather
+    # than waiting on stale_lease_reap_required forever.
+    verifier_body = (
+        "import json\n"
+        "print(json.dumps({'valid': True}, sort_keys=True, separators=(',', ':')))\n"
+    )
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="ok.py", verifier_body=verifier_body, wall_seconds=10
+    )
+    queue_path = tmp_path / "queue.json"
+    queue_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "p42-runner-queue/v1",
+                "jobs": [
+                    {
+                        "job_id": "stale-job",
+                        "status": "running",
+                        "required_memory_mb": 64,
+                        "lease_expires_at_utc": "2020-01-01T00:00:00Z",
+                        "problem": str(problem),
+                        "solution": str(solution),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = run_next_job_once(
+        queue_path,
+        tmp_path / "transcripts",
+        memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+    )
+
+    assert result["schema_version"] == "p42-runner-transcript/v1", result
+    updated = json.loads(queue_path.read_text(encoding="utf-8"))["jobs"][0]
+    assert updated["status"] == "succeeded"
+    assert updated["attempts"] == 1
+    assert "lease_expires_at_utc" not in updated
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process-group kill is POSIX-only")
