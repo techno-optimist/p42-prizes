@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 from fractions import Fraction
 import hashlib
-import json
 from pathlib import Path
 import struct
 import sys
@@ -12,12 +11,18 @@ from typing import Any
 
 from mpmath import iv
 
-from p42_prizes.verdict import VerdictReport, rational_to_string, sha256_bytes
+from p42_prizes.verdict import (
+    VerdictReport,
+    rational_to_string,
+    read_bounded_solution,
+    strict_json_loads,
+    verifier_image_identity,
+)
 
 
 PROBLEM_ID = "mertens-lp-ceiling-k12000"
-VERIFIER_VERSION = "0.1.0"
-VERIFIER_IMAGE = "sha256:local-dev"
+VERIFIER_VERSION = "0.1.1"
+VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
 K = 12000
 M = 120000
 DOMAIN_M_MAX = 10 * K - 1
@@ -25,6 +30,7 @@ DENOMINATOR_POWER = 48
 DENOMINATOR = 1 << DENOMINATOR_POWER
 DECIMAL_UNIT = Fraction(1, 10**25)
 MAX_ROWS = 20000
+MAX_Y_VALUE = (1 << 63) - 1
 MAX_SOLUTION_BYTES = 512 * 1024
 LOW_PRECISION_BITS = 500
 HIGH_PRECISION_BITS = 800
@@ -66,7 +72,7 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
             f"solution is {len(raw)} bytes; limit is {MAX_SOLUTION_BYTES}",
         )
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = strict_json_loads(raw)
     except Exception as exc:
         raise VerifierFailure("MALFORMED_JSON", str(exc)) from exc
 
@@ -103,8 +109,8 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
         y_value = require_int(raw_right, f"Y[{index}]")
         if m_value < 1 or m_value > DOMAIN_M_MAX:
             raise VerifierFailure("ROW_DOMAIN", f"m[{index}] is outside 1..119999")
-        if y_value < 0:
-            raise VerifierFailure("NEGATIVE_DUAL", f"Y[{index}] is negative")
+        if y_value < 0 or y_value > MAX_Y_VALUE:
+            raise VerifierFailure("DUAL_RANGE", f"Y[{index}] must be in 0..2^63-1")
         rows.append((m_value, y_value))
 
     actual_hash = dual_hash(rows)
@@ -194,8 +200,16 @@ def compute_score(parsed: dict[str, Any]) -> tuple[Fraction, dict[str, Any]]:
 
 
 def report_for_solution(path: Path) -> VerdictReport:
-    raw = path.read_bytes()
-    solution_hash = sha256_bytes(raw)
+    solution = read_bounded_solution(path, MAX_SOLUTION_BYTES)
+    if solution.data is None:
+        return solution.failure_report(
+            problem_id=PROBLEM_ID,
+            verifier_version=VERIFIER_VERSION,
+            verifier_image=VERIFIER_IMAGE,
+            fallback_score=SEED_BEST,
+        )
+    raw = solution.data
+    solution_hash = solution.solution_hash
 
     try:
         parsed = parse_solution(raw)

@@ -1,12 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/problems/edges-vs-triangles/solution.schema.json",
+  "x-p42-max-bytes": 524288,
   "type": "object",
   "required": ["atoms", "row_sum", "rows"],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "atoms": { "const": 20 },
     "row_sum": { "const": 1000 },
+    "source": { "type": "string" },
+    "claimed_score": { "type": "string" },
     "rows": {
       "type": "array",
       "minItems": 1,

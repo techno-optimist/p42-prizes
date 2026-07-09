@@ -19,6 +19,14 @@ const SCALE = 10n ** 18n; // SCORE_ATOM_SCALE: atoms per score unit
 const SEED = 1000n * SCALE; // seed frontier: true best-known score = 1000
 const DA_HASH = ethers.keccak256(ethers.toUtf8Bytes("frontier DA receipt"));
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("frontier permanence receipt"));
+const FUNDING_CAP = ethers.parseEther("100");
+const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
+const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+
+async function nextEarliestClose() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
 
 async function expectCustomError(action, contract, errorName) {
   try {
@@ -58,6 +66,12 @@ async function increaseTime(seconds) {
   await ethers.provider.send("evm_mine", []);
 }
 
+async function advanceToEffectiveClose(ledger) {
+  const target = await ledger.effectiveEarliestCloseTimestamp();
+  const latest = await ethers.provider.getBlock("latest");
+  if (target > BigInt(latest.timestamp)) await increaseTime(target - BigInt(latest.timestamp));
+}
+
 describe("P42 frontier marginal-credit accounting (F1)", function () {
   async function deployFixture({
     alphaBps = 200n,
@@ -72,11 +86,14 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
   } = {}) {
     const [owner, treasury, resolver, alice, bob, carol] = await ethers.getSigners();
     const Pool = await ethers.getContractFactory("P42BountyPool");
-    const pool = await Pool.deploy(owner.address);
+    const pool = await Pool.deploy(owner.address, FUNDING_CAP);
     await pool.waitForDeployment();
 
     const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-    const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, feeBps);
+    const ledger = await Ledger.deploy(
+      await pool.getAddress(), owner.address, treasury.address, feeBps,
+      await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+    );
     await ledger.waitForDeployment();
     await pool.connect(owner).setLedger(await ledger.getAddress());
 
@@ -100,9 +117,29 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     // Funding gate wiring: the pool refuses deposits until the submission
     // manager is wired AND armFunding() has flipped it to the PAID phase.
     await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
+    const Registry = await ethers.getContractFactory("P42ProblemRegistry");
+    const fundingRegistry = await Registry.deploy(owner.address);
+    await fundingRegistry.waitForDeployment();
+    await fundingRegistry.register({
+      specHash: ethers.id("frontier-spec"),
+      verifierSourceHash: ethers.id("frontier-source"),
+      verifierImageHash: ethers.id("frontier-image"),
+      admissionMatrixHash: ethers.id("frontier-matrix"),
+      metadataURI: "ipfs://frontier-fixture",
+      pool: await pool.getAddress(),
+      ledger: await ledger.getAddress(),
+      submissionManager: await submissions.getAddress(),
+      challengeManager: owner.address,
+      challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
+      minImprovementAtoms,
+    });
+    await fundingRegistry.freeze(1);
+    await pool.connect(owner).setRegistry(await fundingRegistry.getAddress(), 1);
     if (arm) {
       await submissions.connect(owner).armFunding();
+      await pool.connect(owner).setAcceptingFunds(true);
     }
+    await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
     return { owner, treasury, resolver, alice, bob, carol, pool, ledger, submissions, minBond };
   }
@@ -169,7 +206,9 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
         DA_HASH,
         salt
       );
-      await submissions.connect(alice).commit(commitment, DA_HASH, { value: fixture.minBond });
+      await submissions.connect(alice).commit(commitment, DA_HASH, {
+        value: await submissions.requiredPostingBondNow(),
+      });
       const id = await submissions.submissionCount();
       await expectCustomError(
         submissions.connect(alice).reveal(id, cid, claimed, 1n, salt, "0x"),
@@ -219,7 +258,9 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
         DA_HASH,
         salt
       );
-      await submissions.connect(alice).commit(commitment, DA_HASH, { value: fixture.minBond });
+      await submissions.connect(alice).commit(commitment, DA_HASH, {
+        value: await submissions.requiredPostingBondNow(),
+      });
       const id = await submissions.submissionCount();
       await expectCustomError(
         submissions.connect(alice).reveal(id, cid, claimed, 1n, salt, "0x"),
@@ -286,6 +327,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await ledger.totalCreditAtoms(), 600n * SCALE);
 
     // Pool shares are proportional to marginals: B gets 100/600 = 1/6.
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     const distributable = await ledger.distributablePool();
     const bEntitlement = await ledger.finalEntitlement(bob.address);
@@ -385,6 +427,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await submissions.claimableBondWei(bob.address), 0n);
 
     // The ledger can close: only A holds credit.
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.finalEntitlement(alice.address), await ledger.distributablePool());
     assert.equal(await ledger.finalEntitlement(bob.address), 0n);
@@ -461,11 +504,13 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await submissions.bestScoreAtoms(), claimed);
     assert.equal(await ledger.creditAtomsOf(alice.address), SEED - claimed);
 
-    await submissions.connect(alice).claimBond();
-    assert.equal(await submissions.claimableBondWei(alice.address), 0n);
     assert.ok(bond > 0n);
 
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
+    await submissions.releaseFinalizedBond(submissionId);
+    await submissions.connect(alice).claimBond();
+    assert.equal(await submissions.claimableBondWei(alice.address), 0n);
     await pool.connect(alice).claim();
     assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("2"));
   });
@@ -480,7 +525,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
   it("recovers a poisoned frontier: voidFinalize restores the frontier, voids the fraud's credit, and honest work resumes", async function () {
     const fixture = await deployFixture({ feeBps: 0 });
-    const { owner, alice, bob, carol, ledger, submissions } = fixture;
+    const { owner, alice, bob, carol, treasury, ledger, submissions } = fixture;
     await fixture.pool.fund({ value: ethers.parseEther("2") });
 
     // Carol finalizes a fraudulent, unreachably low score (1 atom = 1e-18
@@ -537,9 +582,10 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
       "P42_BAD_SUBMISSION_STATUS"
     );
 
-    // The fraud's bond is deliberately untouched: economic punishment is the
-    // challenge/slash path's concern, voidFinalize only corrects the frontier.
-    assert.equal(await submissions.claimableBondWei(carol.address), fraud.bond);
+    // The paid finalize's still-retained collateral is forfeited with the
+    // governance-confirmed poison; it cannot be returned to the fraud solver.
+    assert.equal(await submissions.claimableBondWei(carol.address), 0n);
+    assert.equal(await submissions.claimableBondWei(treasury.address), fraud.bond);
 
     // Disarm the pause: a fresh honest cycle earns real marginal credit again.
     await submissions.connect(owner).setPausedAll(false);
@@ -650,7 +696,9 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
       DA_HASH,
       salt
     );
-    await submissions.connect(alice).commit(commitment, DA_HASH, { value: fixture.minBond });
+    await submissions.connect(alice).commit(commitment, DA_HASH, {
+      value: await submissions.requiredPostingBondNow(),
+    });
     const committedId = await submissions.submissionCount();
     const revealed = await commitReveal(fixture, bob, 600n * SCALE);
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
@@ -674,9 +722,14 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
       "P42_PAUSED_ALL"
     );
 
-    // Disarm: the identical actions immediately succeed.
+    // Disarm: finalization can resume, but a hard-expired commitment cannot be
+    // resurrected by a governance pause.
     await submissions.connect(owner).setPausedAll(false);
-    await submissions.connect(alice).reveal(committedId, cid, 700n * SCALE, 1n, salt, "0x");
+    await expectCustomError(
+      submissions.connect(alice).reveal(committedId, cid, 700n * SCALE, 1n, salt, "0x"),
+      submissions,
+      "P42_COMMIT_EXPIRED"
+    );
     await submissions.connect(bob).finalize(revealed.submissionId, PERMANENCE_HASH);
     assert.equal(await submissions.bestScoreAtoms(), 600n * SCALE);
   });
@@ -684,10 +737,13 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
   it("voidCredit enforces recorder scope and checked balance math", async function () {
     const [owner, treasury, recorder, alice] = await ethers.getSigners();
     const Pool = await ethers.getContractFactory("P42BountyPool");
-    const pool = await Pool.deploy(owner.address);
+    const pool = await Pool.deploy(owner.address, FUNDING_CAP);
     await pool.waitForDeployment();
     const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-    const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 0);
+    const ledger = await Ledger.deploy(
+      await pool.getAddress(), owner.address, treasury.address, 0,
+      await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+    );
     await ledger.waitForDeployment();
     await ledger.connect(owner).setCreditRecorder(recorder.address);
 
@@ -725,6 +781,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     const a = await commitReveal(fixture, alice, 500n * SCALE);
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await finalizeAndParse(fixture, alice, a.submissionId);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
 
     await submissions.connect(owner).setPausedAll(true);
@@ -792,7 +849,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // A pool with NO submission manager wired refuses deposits too (fail closed).
     const Pool = await ethers.getContractFactory("P42BountyPool");
-    const unwired = await Pool.deploy(owner.address);
+    const unwired = await Pool.deploy(owner.address, FUNDING_CAP);
     await unwired.waitForDeployment();
     await expectCustomError(unwired.fund({ value: 1n }), unwired, "P42_FUNDING_NOT_ARMED");
 
@@ -810,6 +867,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // The single arm call opens the deposit path.
     await submissions.connect(owner).armFunding();
+    await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
     await alice.sendTransaction({ to: await pool.getAddress(), value: ethers.parseEther("0.5") });
     assert.equal(await pool.funded(), ethers.parseEther("1.5"));
@@ -846,6 +904,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // The pool holds nothing and owes nothing: pre-arm work is unpayable.
     assert.equal(await pool.funded(), 0n);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.finalEntitlement(alice.address), 0n);
     assert.equal(await ledger.finalEntitlement(bob.address), 0n);
@@ -867,6 +926,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // The funder arms: pool accepts ETH, finalize starts crediting.
     await submissions.connect(owner).armFunding();
+    await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("5") });
 
     // Carol beats the OPEN-established 500 with 400: paid the marginal 100 —
@@ -884,6 +944,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await ledger.creditAtomsOf(bob.address), 0n);
 
     // Carol holds ALL recorded credit, so she claims the whole pool.
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.finalEntitlement(carol.address), await ledger.distributablePool());
     await pool.connect(carol).claim();
@@ -947,6 +1008,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // ...and after arming, paid work earns the marginal over that frontier.
     await submissions.connect(owner).armFunding();
+    await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
     const paid = await commitReveal(fixture, alice, 400n * SCALE);
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
@@ -969,7 +1031,8 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
       DA_HASH,
       salt
     );
-    await submissions.connect(alice).commit(commitment, DA_HASH, { value: fixture.minBond });
+    const committedBond = await submissions.requiredPostingBondNow();
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: committedBond });
     const committedId = await submissions.submissionCount();
     const revealed = await commitReveal(fixture, bob, 600n * SCALE);
 
@@ -998,7 +1061,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await submissions.expireRevealed(revealed.submissionId);
     assert.equal(
       await submissions.claimableBondWei(treasury.address),
-      fixture.minBond + revealed.bond
+      committedBond + revealed.bond
     );
   });
 
@@ -1017,6 +1080,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // Funder arms; pool is funded.
     await submissions.connect(owner).armFunding();
+    await pool.connect(owner).setAcceptingFunds(true);
     await pool.connect(owner).fund({ value: ethers.parseEther("1") });
 
     // Alice finalizes AFTER the arm. The frontier still advances (free), but she

@@ -10,9 +10,9 @@ objective:
   min_improvement: "1/222778"
   gauge: "max(0, seed_best - defect)"
 verifier:
-  version: "0.1.0"
+  version: "0.1.1"
   image: "sha256:local-dev"
-  command: "make verify SOLUTION={solution}"
+  command: "python3 verifier/verify.py --solution {solution}"
   max_compute:
     wall_seconds: 10
     memory_mb: 256

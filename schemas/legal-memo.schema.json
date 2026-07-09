@@ -9,7 +9,8 @@
     "completed_at_utc",
     "jurisdiction",
     "entity",
-    "memo_reference",
+    "memo_artifact",
+    "release_binding",
     "legal_owner",
     "agent_prepared_by",
     "counsel",
@@ -19,28 +20,50 @@
     "documents_reviewed",
     "residual_risks",
     "agent_attestation",
+    "counsel_signature",
     "legal_hash"
   ],
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "p42-legal-memo/v1" },
     "memo_id": { "type": "string", "minLength": 1 },
-    "completed_at_utc": { "type": "string", "minLength": 1 },
-    "jurisdiction": { "type": "string", "minLength": 1 },
+    "completed_at_utc": { "type": "string", "format": "date-time" },
+    "jurisdiction": { "type": "string", "minLength": 2, "pattern": "^(?![Tt][Bb][Dd]$|[Tt][Ee][Ss][Tt]$|[Dd][Uu][Mm][Mm][Yy]$).+" },
     "entity": { "type": "string", "minLength": 1 },
-    "memo_reference": { "type": "string", "minLength": 1 },
+    "memo_artifact": { "$ref": "#/$defs/artifact" },
+    "release_binding": { "$ref": "#/$defs/releaseBinding" },
     "legal_owner": { "type": "string", "minLength": 1 },
     "agent_prepared_by": { "type": "string", "minLength": 1 },
     "counsel": {
       "type": "object",
-      "required": ["name", "firm", "bar_jurisdiction", "engagement_reference", "signed_at_utc"],
+      "required": [
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "independent_from_p42",
+        "bar_jurisdiction",
+        "license_identifier",
+        "engagement_artifact",
+        "signed_at_utc",
+        "statement"
+      ],
       "additionalProperties": false,
       "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "firm": { "type": "string", "minLength": 1 },
-        "bar_jurisdiction": { "type": "string", "minLength": 1 },
-        "engagement_reference": { "type": "string", "minLength": 1 },
-        "signed_at_utc": { "type": "string", "minLength": 1 }
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "external-counsel" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
+        "independent_from_p42": { "const": true },
+        "bar_jurisdiction": { "type": "string", "minLength": 2 },
+        "license_identifier": { "type": "string", "minLength": 4 },
+        "engagement_artifact": { "$ref": "#/$defs/artifact" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "statement": { "type": "string", "minLength": 1 }
       }
     },
     "scope": {
@@ -100,9 +123,10 @@
     "counsel_findings": {
       "type": "array",
       "minItems": 9,
+      "maxItems": 9,
       "items": {
         "type": "object",
-        "required": ["topic", "status", "conclusion", "evidence_reference", "required_before_mainnet"],
+        "required": ["topic", "status", "conclusion", "evidence_artifact", "required_before_mainnet"],
         "additionalProperties": false,
         "properties": {
           "topic": {
@@ -118,9 +142,9 @@
               "international_access"
             ]
           },
-          "status": { "enum": ["approved", "requires_change", "blocked"] },
+          "status": { "const": "approved" },
           "conclusion": { "type": "string", "minLength": 1 },
-          "evidence_reference": { "type": "string", "minLength": 1 },
+          "evidence_artifact": { "$ref": "#/$defs/artifact" },
           "required_before_mainnet": {
             "type": "array",
             "items": { "type": "string", "minLength": 1 }
@@ -133,12 +157,11 @@
       "minItems": 5,
       "items": {
         "type": "object",
-        "required": ["path", "status", "version_or_hash"],
+        "required": ["artifact", "status"],
         "additionalProperties": false,
         "properties": {
-          "path": { "type": "string", "minLength": 1 },
-          "status": { "const": "reviewed" },
-          "version_or_hash": { "type": "string", "minLength": 1 }
+          "artifact": { "$ref": "#/$defs/artifact" },
+          "status": { "const": "reviewed" }
         }
       }
     },
@@ -153,7 +176,7 @@
           "severity": { "enum": ["critical", "high", "medium", "low"] },
           "disposition": { "enum": ["accepted", "mitigated", "transferred", "open"] },
           "owner": { "type": "string", "minLength": 1 },
-          "due_utc": { "type": "string", "minLength": 1 }
+          "due_utc": { "type": "string", "format": "date-time" }
         }
       }
     },
@@ -164,10 +187,87 @@
       "properties": {
         "legal_owner": { "type": "string", "minLength": 1 },
         "agent_prepared_by": { "type": "string", "minLength": 1 },
-        "signed_at_utc": { "type": "string", "minLength": 1 },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
         "statement": { "type": "string", "minLength": 1 }
       }
     },
-    "legal_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    "counsel_signature": { "$ref": "#/$defs/signature" },
+    "legal_hash": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "artifact": {
+      "type": "object",
+      "required": ["uri", "local_path", "sha256", "created_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "local_path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+" },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "created_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "P42BountyPool",
+            "P42PayoutLedger",
+            "P42SubmissionManager",
+            "P42ChallengeManager",
+            "P42ProblemRegistry"
+          ]
+        },
+        "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "source_artifact": { "$ref": "#/$defs/artifact" },
+        "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
+        "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "releaseBinding": {
+      "type": "object",
+      "required": [
+        "repository_uri",
+        "git_commit",
+        "network",
+        "chain_id",
+        "deployment_manifest",
+        "configuration_artifact",
+        "contracts"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repository_uri": { "type": "string", "pattern": "^https://" },
+        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "network": { "enum": ["local", "base-sepolia", "base-mainnet"] },
+        "chain_id": { "type": "integer", "enum": [31337, 8453, 84532] },
+        "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "configuration_artifact": { "$ref": "#/$defs/artifact" },
+        "contracts": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/contract" }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "const": "external-counsel" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    }
   }
 }

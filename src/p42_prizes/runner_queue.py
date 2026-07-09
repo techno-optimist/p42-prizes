@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import fcntl
+import json
 import math
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterator, Mapping
+
+from p42_prizes.verdict import canonical_json
 
 
 QUEUE_SCHEMA_VERSION = "p42-runner-queue/v1"
@@ -19,6 +24,164 @@ DEFAULT_MAX_JOB_ATTEMPTS = 3
 
 class RunnerQueueError(ValueError):
     """Raised when runner queue state or policy input is malformed."""
+
+
+def enqueue_runner_job(queue_path: str | Path, job: Mapping[str, Any]) -> dict[str, Any]:
+    """Atomically persist one idempotent runner job.
+
+    Chain watchers can replay block ranges after restarts or RPC failures. A
+    stable ``job_id`` plus ``source_event_hash`` makes that replay harmless,
+    while refusing an id collision whose event hash changed (for example after
+    a reorg or a corrupted local handoff).
+    """
+    candidate = dict(job)
+    if candidate.get("status") != "queued":
+        raise RunnerQueueError("new runner job status must be queued")
+    source_event_hash = candidate.get("source_event_hash")
+    if not _is_sha256(source_event_hash):
+        raise RunnerQueueError("new runner job source_event_hash must be a sha256 string")
+
+    queue_file = Path(queue_path)
+    with locked_runner_queue(queue_file) as queue:
+        _validate_jobs(queue)
+        for existing in queue["jobs"]:
+            if existing.get("job_id") != candidate.get("job_id"):
+                continue
+            if existing.get("source_event_hash") != source_event_hash:
+                raise RunnerQueueError(
+                    f"runner job_id collision with different source event: {candidate.get('job_id')}"
+                )
+            return {
+                "created": False,
+                "job_id": existing["job_id"],
+                "status": existing["status"],
+                "source_event_hash": source_event_hash,
+            }
+
+        trial = {**queue, "jobs": [*queue["jobs"], candidate]}
+        _validate_jobs(trial)
+        queue["jobs"].append(candidate)
+        return {
+            "created": True,
+            "job_id": candidate["job_id"],
+            "status": candidate["status"],
+            "source_event_hash": source_event_hash,
+        }
+
+
+def record_runner_action(
+    queue_path: str | Path,
+    *,
+    job_id: str,
+    candidate_hash: str,
+    status: str,
+    transaction_hash: str | None = None,
+    detail: str | None = None,
+) -> dict[str, Any]:
+    """Persist the terminal disposition of a transcript action candidate.
+
+    The candidate hash is a fencing token: an operator may only update the job
+    whose transcript produced that exact action. Repeating the same update is
+    idempotent, which closes the crash-after-receipt/double-submit race.
+    """
+    if not job_id:
+        raise RunnerQueueError("job_id must be non-empty")
+    if not _is_sha256(candidate_hash):
+        raise RunnerQueueError("candidate_hash must be a sha256 string")
+    if not status:
+        raise RunnerQueueError("action status must be non-empty")
+
+    with locked_runner_queue(Path(queue_path)) as queue:
+        job = _job_by_id(queue, job_id)
+        recorded_hash = job.get("challenge_candidate_hash")
+        if recorded_hash != candidate_hash:
+            raise RunnerQueueError(
+                f"challenge candidate fencing mismatch for {job_id}: expected {recorded_hash}, got {candidate_hash}"
+            )
+        current = job.get("action")
+        if isinstance(current, dict):
+            if current.get("candidate_hash") != candidate_hash:
+                raise RunnerQueueError(f"runner action candidate changed for {job_id}")
+            if current.get("status") == status and current.get("transaction_hash") == transaction_hash:
+                return dict(current)
+            if current.get("status") == "submitted":
+                raise RunnerQueueError(f"runner action for {job_id} is already submitted")
+
+        action = {
+            "candidate_hash": candidate_hash,
+            "status": status,
+            "recorded_at_utc": _format_utc(datetime.now(timezone.utc)),
+        }
+        if transaction_hash is None and isinstance(current, dict):
+            existing_tx = current.get("transaction_hash")
+            if isinstance(existing_tx, str):
+                transaction_hash = existing_tx
+        if transaction_hash is not None:
+            action["transaction_hash"] = transaction_hash
+        existing_detail = current.get("detail") if isinstance(current, dict) else None
+        if isinstance(existing_detail, str) and detail is not None and detail != existing_detail:
+            action["detail"] = f"{existing_detail}\n{detail}"
+        elif detail is not None:
+            action["detail"] = detail
+        elif isinstance(existing_detail, str):
+            action["detail"] = existing_detail
+        job["action"] = action
+        return dict(action)
+
+
+def read_runner_queue(queue_path: str | Path) -> dict[str, Any]:
+    """Read and validate queue state under the same lock used by workers."""
+    with locked_runner_queue(Path(queue_path)) as queue:
+        _validate_jobs(queue)
+        return json.loads(json.dumps(queue))
+
+
+@contextmanager
+def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
+    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = queue_path.with_suffix(queue_path.suffix + ".lock")
+    with lock_path.open("w", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        queue = _read_queue_file(queue_path)
+        try:
+            yield queue
+        finally:
+            _write_queue_file(queue_path, queue)
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _read_queue_file(queue_path: Path) -> dict[str, Any]:
+    if not queue_path.exists():
+        return {"schema_version": QUEUE_SCHEMA_VERSION, "jobs": []}
+    try:
+        value = json.loads(queue_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise RunnerQueueError(f"{queue_path}: could not read runner queue JSON: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RunnerQueueError(f"{queue_path}: runner queue must be a JSON object")
+    return value
+
+
+def _write_queue_file(queue_path: Path, queue: Mapping[str, Any]) -> None:
+    tmp = queue_path.with_suffix(queue_path.suffix + ".tmp")
+    tmp.write_text(canonical_json(dict(queue)) + "\n", encoding="utf-8")
+    tmp.replace(queue_path)
+
+
+def _job_by_id(queue: Mapping[str, Any], job_id: str) -> dict[str, Any]:
+    jobs = queue.get("jobs")
+    if not isinstance(jobs, list):
+        raise RunnerQueueError("queue.jobs must be an array")
+    for job in jobs:
+        if isinstance(job, dict) and job.get("job_id") == job_id:
+            return job
+    raise RunnerQueueError(f"runner job not found: {job_id}")
+
+
+def _is_sha256(value: Any) -> bool:
+    if not isinstance(value, str) or not value.startswith("sha256:") or len(value) != 71:
+        return False
+    return all(char in "0123456789abcdef" for char in value[7:])
 
 
 @dataclass(frozen=True)

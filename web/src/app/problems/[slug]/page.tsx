@@ -4,6 +4,7 @@ import { FrontierChart, type FrontierPoint } from "@/components/FrontierChart";
 import { FundingPanel } from "@/components/FundingPanel";
 import { MathBlock } from "@/components/Math";
 import { Plate } from "@/components/Plate";
+import { chainProvenanceForProblem } from "@/lib/chain-provenance";
 import { getProblemBySlug, sortLeaderboardRows } from "@/lib/data";
 import { allSubmissions } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
@@ -17,6 +18,7 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
   const { slug } = await params;
   const problem = getProblemBySlug(slug);
   if (!problem) notFound();
+  const chainProvenance = chainProvenanceForProblem(problem);
 
   const rows = sortLeaderboardRows(problem.id, allSubmissions());
   const isLocked = problem.status === "locked";
@@ -29,7 +31,11 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
   // The record ladder: declared seed, then each verified submission that
   // strictly improved on the record at its time, in submission order.
   const chronological = [...rows]
-    .filter((row) => row.state === "finalized" || row.state === "revealed" || row.state === "challenged")
+    .filter((row) => (
+      row.state === "finalized"
+      && row.source === "chain-p42-v1"
+      && row.settlementState === "finalized"
+    ))
     .sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
   const ladder: FrontierPoint[] = [{ x: 0, score: problem.seedBest, label: "declared seed", dateLabel: "" }];
   for (const row of chronological) {
@@ -215,8 +221,15 @@ $ make verify SOLUTION=examples/valid-4.json`}
                   <li key={row.id}>
                     <span className="cite-index">[{index + 1}]</span>{" "}
                     <span className="cite-agent">{row.agentName}</span> ({row.submittedAt.slice(0, 4)}). Score{" "}
-                    <span className="num">{compactRational(row.score)}</span>, Δ{" "}
-                    <span className="num">{compactRational(row.improvement)}</span>.{" "}
+                    <span className="num">{compactRational(row.score)}</span>,{" "}
+                    {row.settlementState === "finalized" ? "credited" : "provisional"} Δ{" "}
+                    <span className="num">
+                      {compactRational(
+                        row.settlementState === "finalized"
+                          ? row.improvement
+                          : row.provisionalImprovement ?? "0/1",
+                      )}
+                    </span>.{" "}
                     <span className={`state-word ${row.state}`}>{stateLabel(row.state)}</span>{" "}
                     <span className="cite-meta">
                       · {isoDate(row.submittedAt)} · window closes {isoDate(row.windowEndsAt)} · cid{" "}
@@ -243,8 +256,8 @@ $ make verify SOLUTION=examples/valid-4.json`}
               <span className={`status-word ${problem.status}`}>{statusLabel(problem.status)}</span>
             </div>
             <div className="fact-row">
-              <span className="smallcaps">Test pool</span>
-              <span className="num">{problem.bountyEth} ETH · Sepolia</span>
+              <span className="smallcaps">Modeled prize</span>
+              <span className="num">{problem.bountyEth} ETH · not deployed</span>
             </div>
             <div className="fact-row">
               <span className="smallcaps">Posting bond</span>
@@ -282,7 +295,7 @@ $ make verify SOLUTION=examples/valid-4.json`}
               : "Testnet figures. Settlement is modeled locally until the custody, audit, and resolver gates close."}
           </p>
 
-          <FundingPanel label={problem.title} wallet={problem.donationWallet} />
+          <FundingPanel label={problem.title} wallet={problem.donationWallet} provenance={chainProvenance} />
 
           <div style={{ marginTop: 18 }}>
             <div className="fact-row">

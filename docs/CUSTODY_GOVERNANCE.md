@@ -1,10 +1,10 @@
 # Custody And Governance Signoff
 
-Gate 2 requires named custody/governance owners, not just a governance design.
-This document defines the evidence artifact that must exist before any real ETH
-pilot.
+**Status: OPEN.** Governance source code exists, but the production identities,
+deployment, rehearsal, external review, and signatures do not. Code presence is
+not custody/governance signoff.
 
-## Command
+## Validation Contract
 
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli governance-signoff-validate \
@@ -12,136 +12,106 @@ PYTHONPATH=src python3 -m p42_prizes.cli governance-signoff-validate \
   --output governance/base-mainnet-governance-signoff.normalized.json
 ```
 
-The command emits `p42-governance-signoff/v1` with a canonical
-`governance_hash`. If the input already has `governance_hash`, the command
-refuses mismatches.
+The `p42-governance-signoff/v1` packet must bind to the exact chain, frozen
+commit, deployment/configuration hashes, five contract addresses, contract
+source hashes, and runtime-bytecode hashes. It also requires:
 
-## Required Controls
+- distinct, evidenced identities and Ed25519 keys for the governance owner,
+  security owner, pause guardian, and at least five multisig signers;
+- a strict-majority threshold of at least three and one independent signer;
+- distinct governance-control addresses and distinct signer names, emails, and
+  keys;
+- a timelock of at least 48 hours and a guardian that cannot pause claims or
+  redirect funds;
+- hashed key-rotation, recusal, rehearsal, and regression artifacts;
+- rehearsal completion before every signer and owner signoff, with future
+  rotation due dates; and
+- valid signatures over the canonical `governance_hash` from both owners, the
+  pause guardian, and every listed multisig signer.
 
-A valid report must include:
+Validation proves integrity and key control, not that a declared person,
+organization, address, or rehearsal is genuine. The owner must verify identity
+evidence, retrieve artifacts, recompute hashes, inspect on-chain owners and
+thresholds, and match runtime bytecode before closing Gate 2.
 
-- a named governance owner and security owner,
-- a treasury multisig with at least five unique signers, threshold at least
-  three, and a strict-majority threshold,
-- every signer acknowledging the recusal policy,
-- a timelock address with at least 48 hours of delay for upgrades and fee
-  changes,
-- a pause guardian that can pause new risk but cannot pause finalized claims or
-  redirect funds,
-- custody limits proving pool funds are not redirectable, funded verifiers are
-  immutable, finalized claims are not pauseable, and no single EOA can upgrade,
-- a key-rotation procedure with rehearsal evidence and emergency rotation time
-  no greater than 24 hours,
-- a recusal/private-information firewall policy,
-- a rehearsal record with at least one passed regression,
-- governance-owner and security-owner signoff explicitly mentioning Gate 2
-  custody/governance readiness.
+## Signature Payload
 
-The validator rejects placeholders such as `TBD`, `pending`, and angle-bracket
-fill-ins. A code-valid report still does not close Gate 2 unless the named
-humans and addresses are real and externally reviewed.
+Remove `governance_hash` and `attestations`, canonicalize the remaining JSON,
+and sign:
 
-## Minimal Shape
+```text
+P42-ATTESTATION-V1
+p42-governance-signoff/v1
+sha256:<canonical-payload-digest>
+```
+
+Required signature roles are `governance-owner`, `security-owner`,
+`pause-guardian`, and one `multisig-signer:<lowercase-address>` for every
+signer. Agents may prepare the payload but may not generate human signatures.
+
+## Governance Rehearsal Checklist
+
+- Freeze the target release and verify all five deployed runtime-bytecode
+  hashes against the packet.
+- Confirm on-chain signer roster, threshold, timelock, guardian, pauser,
+  treasury, resolver, and target permissions from an independent RPC.
+- Schedule an ordinary operation; prove threshold and delay enforcement.
+- Exercise an ordinary override; prove its longer delay, higher signer
+  threshold, and lack of guardian veto. Separately lose the configured number
+  of signer keys and prove the surviving base threshold can execute delayed,
+  non-vetoable signer/threshold/guardian recovery without a lost-key signature.
+- Exercise guardian cancellation twice against the same target/calldata family;
+  prove only the allowed cancellation succeeds.
+- Exercise operation expiry and signer-majority self-cancel.
+- Exercise override-only signer, guardian, pauser, and target rotation.
+- Exercise direct emergency pause and prove direct unpause is unavailable.
+- Exercise a scoped `P42AgentWallet` session: wrong chain, expired session,
+  missing scope evidence, wrong calldata hash, and excess call count must fail.
+- Prove finalized claims remain available and funds cannot be redirected.
+- Preserve RPC identity, block/transaction hashes, calldata, receipts, logs,
+  screenshots/notes where needed, and regression output as hashed artifacts.
+- Complete the rehearsal before owners and signers sign the final canonical
+  packet.
+
+## Deliberately Invalid Template
+
+This handoff skeleton is intentionally incomplete and cannot validate.
 
 ```json
 {
   "schema_version": "p42-governance-signoff/v1",
-  "signoff_id": "base-mainnet-gate2-governance-2026-07",
-  "completed_at_utc": "2026-07-08T21:00:00Z",
+  "signoff_id": "<REQUIRED_SIGNOFF_ID>",
+  "completed_at_utc": "<REQUIRED_UTC_AFTER_REHEARSAL_AND_SIGNATURES>",
   "network": "base-mainnet",
-  "governance_owner": "Governance Owner",
-  "security_owner": "Security Owner",
+  "release_binding": "<REQUIRED_CHAIN_CONTRACT_CONFIG_BINDING>",
+  "governance_owner": {
+    "name": "<REQUIRED_REAL_FULL_NAME>",
+    "professional_email": "<REQUIRED_PROFESSIONAL_EMAIL>",
+    "role": "governance-owner",
+    "public_key": "<REQUIRED_ED25519_PUBLIC_KEY>",
+    "identity_evidence": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"}
+  },
+  "security_owner": "<REQUIRED_DISTINCT_IDENTITY_OBJECT>",
   "treasury_multisig": {
-    "address": "0x1111111111111111111111111111111111111111",
-    "threshold": 3,
-    "signers": [
-      {
-        "name": "Signer One",
-        "address": "0x2222222222222222222222222222222222222222",
-        "role": "treasury",
-        "recusal_acknowledged": true,
-        "signed_at_utc": "2026-07-08T21:00:00Z"
-      },
-      {
-        "name": "Signer Two",
-        "address": "0x3333333333333333333333333333333333333333",
-        "role": "security",
-        "recusal_acknowledged": true,
-        "signed_at_utc": "2026-07-08T21:00:00Z"
-      },
-      {
-        "name": "Signer Three",
-        "address": "0x4444444444444444444444444444444444444444",
-        "role": "engineering",
-        "recusal_acknowledged": true,
-        "signed_at_utc": "2026-07-08T21:00:00Z"
-      },
-      {
-        "name": "Signer Four",
-        "address": "0x5555555555555555555555555555555555555555",
-        "role": "operations",
-        "recusal_acknowledged": true,
-        "signed_at_utc": "2026-07-08T21:00:00Z"
-      },
-      {
-        "name": "Signer Five",
-        "address": "0x6666666666666666666666666666666666666666",
-        "role": "independent",
-        "recusal_acknowledged": true,
-        "signed_at_utc": "2026-07-08T21:00:00Z"
-      }
-    ]
+    "address": "<REQUIRED_REAL_ADDRESS>",
+    "threshold": "<REQUIRED_STRICT_MAJORITY>",
+    "signers": ["<AT_LEAST_FIVE_REAL_DISTINCT_SIGNERS>"]
   },
-  "timelock": {
-    "address": "0x7777777777777777777777777777777777777777",
-    "min_delay_hours": 48,
-    "applies_to_upgrades": true,
-    "applies_to_fee_changes": true
-  },
-  "pause_guardian": {
-    "name": "Guardian Owner",
-    "address": "0x8888888888888888888888888888888888888888",
-    "can_pause_new_submissions": true,
-    "can_pause_claims": false,
-    "can_redirect_funds": false
-  },
-  "custody_limits": {
-    "pool_funds_redirectable": false,
-    "finalized_claim_pauseable": false,
-    "funded_verifier_mutable": false,
-    "single_eoa_can_upgrade": false
-  },
-  "key_rotation": {
-    "procedure": "docs/GOVERNANCE.md#emergency-actions",
-    "evidence": "governance/rehearsals/key-rotation-2026-07.json",
-    "last_rehearsed_utc": "2026-07-08T21:00:00Z",
-    "next_due_utc": "2026-10-08T21:00:00Z",
-    "emergency_rotation_hours": 24
-  },
-  "recusal_policy": {
-    "policy_path": "docs/GOVERNANCE.md#conflicts",
-    "resolver_self_dispute_recusal": true,
-    "p42_agent_affiliation_disclosure": true,
-    "private_information_firewall": true
-  },
-  "rehearsal": {
-    "completed_at_utc": "2026-07-08T21:00:00Z",
-    "scenario": "lost signer plus guardian pause dry run",
-    "evidence": "governance/rehearsals/lost-signer-guardian-pause-2026-07.json",
-    "regressions": [
-      {
-        "command": "make contracts-test",
-        "status": "passed"
-      }
-    ]
-  },
-  "human_signoff": {
-    "governance_owner": "Governance Owner",
-    "security_owner": "Security Owner",
-    "signed_at_utc": "2026-07-08T21:00:00Z",
-    "statement": "We approve this Gate 2 custody/governance readiness signoff for P42 Prizes."
-  }
+  "rehearsal": "<REQUIRED_HASHED_REHEARSAL_AND_REGRESSIONS>",
+  "attestations": ["<ABSENT_UNTIL_EACH_REQUIRED_PERSON_SIGNS>"]
 }
 ```
 
-Run the validator to add `governance_hash` before committing a completed report.
+## Remaining Owner/External Blockers
+
+- Name and independently verify the governance owner, security owner, guardian,
+  and multisig signers; provision distinct production keys and addresses.
+- Obtain external security review of the governance and wallet-session source.
+- Deploy the frozen audited bytecode under the intended production roles and
+  verify it on-chain. The current source implementation is not this evidence.
+- Run the rehearsal checklist against that exact deployment and preserve hashed
+  results.
+- Collect owner and signer signatures over the final canonical hash.
+
+Until all of these exist, the governance/custody gate remains open and no real
+ETH launch claim is supportable.

@@ -6,14 +6,17 @@
   "required": [
     "schema_version",
     "drill_id",
+    "started_at_utc",
     "completed_at_utc",
     "environment",
     "severity",
     "scenario",
+    "release_binding",
     "facilitator",
     "incident_lead",
     "comms_owner",
     "security_owner",
+    "external_counsel",
     "affected_scope",
     "evidence_preserved",
     "timeline",
@@ -24,13 +27,15 @@
     "bug_bounty",
     "open_followups",
     "human_signoff",
+    "attestations",
     "drill_hash"
   ],
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "p42-incident-drill/v1" },
     "drill_id": { "type": "string", "minLength": 1 },
-    "completed_at_utc": { "type": "string", "minLength": 1 },
+    "started_at_utc": { "type": "string", "format": "date-time" },
+    "completed_at_utc": { "type": "string", "format": "date-time" },
     "environment": { "enum": ["tabletop", "base-sepolia", "production"] },
     "severity": { "enum": ["critical", "high", "medium", "low"] },
     "scenario": {
@@ -44,27 +49,29 @@
         "verifier_bug"
       ]
     },
-    "facilitator": { "type": "string", "minLength": 1 },
-    "incident_lead": { "type": "string", "minLength": 1 },
-    "comms_owner": { "type": "string", "minLength": 1 },
-    "security_owner": { "type": "string", "minLength": 1 },
+    "release_binding": { "$ref": "#/$defs/releaseBinding" },
+    "facilitator": { "$ref": "#/$defs/facilitator" },
+    "incident_lead": { "$ref": "#/$defs/incidentLead" },
+    "comms_owner": { "$ref": "#/$defs/commsOwner" },
+    "security_owner": { "$ref": "#/$defs/securityOwner" },
+    "external_counsel": { "$ref": "#/$defs/externalCounsel" },
     "affected_scope": { "type": "string", "minLength": 1 },
     "evidence_preserved": {
       "type": "array",
       "minItems": 2,
-      "items": { "type": "string", "minLength": 1 }
+      "items": { "$ref": "#/$defs/artifact" }
     },
     "timeline": {
       "type": "array",
       "minItems": 3,
       "items": {
         "type": "object",
-        "required": ["time_utc", "event", "owner"],
+        "required": ["time_utc", "event", "owner_role"],
         "additionalProperties": false,
         "properties": {
-          "time_utc": { "type": "string", "minLength": 1 },
+          "time_utc": { "type": "string", "format": "date-time" },
           "event": { "type": "string", "minLength": 1 },
-          "owner": { "type": "string", "minLength": 1 }
+          "owner_role": { "$ref": "#/$defs/incidentRole" }
         }
       }
     },
@@ -73,12 +80,13 @@
       "minItems": 2,
       "items": {
         "type": "object",
-        "required": ["decision", "rationale", "owner"],
+        "required": ["decided_at_utc", "decision", "rationale", "owner_role"],
         "additionalProperties": false,
         "properties": {
+          "decided_at_utc": { "type": "string", "format": "date-time" },
           "decision": { "type": "string", "minLength": 1 },
           "rationale": { "type": "string", "minLength": 1 },
-          "owner": { "type": "string", "minLength": 1 }
+          "owner_role": { "$ref": "#/$defs/incidentRole" }
         }
       }
     },
@@ -105,69 +113,258 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["artifact", "status"],
+        "required": ["test_artifact", "output_artifact", "status", "command", "executed_at_utc"],
         "additionalProperties": false,
         "properties": {
-          "artifact": { "type": "string", "minLength": 1 },
+          "test_artifact": { "$ref": "#/$defs/artifact" },
+          "output_artifact": { "$ref": "#/$defs/artifact" },
           "status": { "const": "passed" },
-          "command": { "type": "string", "minLength": 1 }
+          "command": { "type": "string", "minLength": 1 },
+          "executed_at_utc": { "type": "string", "format": "date-time" }
         }
       }
     },
     "communications": {
       "type": "object",
-      "required": ["initial_status_draft", "status_channel", "postmortem_owner"],
+      "required": ["initial_status_draft", "status_channel", "postmortem_owner_role"],
       "additionalProperties": false,
       "properties": {
         "initial_status_draft": { "type": "string", "minLength": 1 },
-        "status_channel": { "type": "string", "minLength": 1 },
-        "postmortem_owner": { "type": "string", "minLength": 1 }
+        "status_channel": { "type": "string", "pattern": "^https://" },
+        "postmortem_owner_role": { "$ref": "#/$defs/incidentRole" }
       }
     },
     "bug_bounty": {
       "type": "object",
       "required": [
-        "policy_path",
+        "status",
+        "policy_artifact",
+        "public_policy_uri",
+        "private_reporting_uri",
         "disclosure_contact",
         "triage_sla_hours",
-        "bounty_owner",
+        "bounty_owner_role",
         "scope_summary",
-        "safe_harbor_reviewed_by"
+        "counsel_approved_at_utc",
+        "activated_at_utc",
+        "activation_evidence"
       ],
       "additionalProperties": false,
       "properties": {
-        "policy_path": { "type": "string", "minLength": 1 },
-        "disclosure_contact": { "type": "string", "minLength": 1 },
+        "status": { "const": "active" },
+        "policy_artifact": { "$ref": "#/$defs/artifact" },
+        "public_policy_uri": { "type": "string", "pattern": "^https://" },
+        "private_reporting_uri": { "type": "string", "pattern": "^https://" },
+        "disclosure_contact": { "type": "string", "format": "email" },
         "triage_sla_hours": { "type": "integer", "minimum": 1, "maximum": 72 },
-        "bounty_owner": { "type": "string", "minLength": 1 },
+        "bounty_owner_role": { "const": "security-owner" },
         "scope_summary": { "type": "string", "minLength": 1 },
-        "safe_harbor_reviewed_by": { "type": "string", "minLength": 1 }
+        "counsel_approved_at_utc": { "type": "string", "format": "date-time" },
+        "activated_at_utc": { "type": "string", "format": "date-time" },
+        "activation_evidence": { "$ref": "#/$defs/artifact" }
       }
     },
     "open_followups": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["item", "owner", "due_utc", "severity"],
+        "required": ["item", "owner_role", "due_utc", "severity"],
         "additionalProperties": false,
         "properties": {
           "item": { "type": "string", "minLength": 1 },
-          "owner": { "type": "string", "minLength": 1 },
-          "due_utc": { "type": "string", "minLength": 1 },
-          "severity": { "enum": ["critical", "high", "medium", "low"] }
+          "owner_role": { "$ref": "#/$defs/incidentRole" },
+          "due_utc": { "type": "string", "format": "date-time" },
+          "severity": { "enum": ["medium", "low"] }
         }
       }
     },
     "human_signoff": {
       "type": "object",
-      "required": ["security_owner", "signed_at_utc", "statement"],
+      "required": [
+        "security_owner_name",
+        "facilitator_name",
+        "external_counsel_name",
+        "security_owner_signed_at_utc",
+        "facilitator_signed_at_utc",
+        "external_counsel_signed_at_utc",
+        "statement"
+      ],
       "additionalProperties": false,
       "properties": {
-        "security_owner": { "type": "string", "minLength": 1 },
-        "signed_at_utc": { "type": "string", "minLength": 1 },
+        "security_owner_name": { "type": "string", "minLength": 3 },
+        "facilitator_name": { "type": "string", "minLength": 3 },
+        "external_counsel_name": { "type": "string", "minLength": 3 },
+        "security_owner_signed_at_utc": { "type": "string", "format": "date-time" },
+        "facilitator_signed_at_utc": { "type": "string", "format": "date-time" },
+        "external_counsel_signed_at_utc": { "type": "string", "format": "date-time" },
         "statement": { "type": "string", "minLength": 1 }
       }
     },
-    "drill_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    "attestations": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/signature" }
+    },
+    "drill_hash": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "incidentRole": {
+      "enum": ["facilitator", "incident-lead", "communications-owner", "security-owner"]
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["uri", "local_path", "sha256", "created_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "local_path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+" },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "created_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "facilitator": { "$ref": "#/$defs/facilitatorIdentity" },
+    "facilitatorIdentity": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "facilitator" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "incidentLead": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "incident-lead" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "commsOwner": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "communications-owner" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "securityOwner": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "security-owner" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "externalCounsel": {
+      "type": "object",
+      "required": [
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "independent_from_p42",
+        "bar_jurisdiction",
+        "license_identifier"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "external-counsel" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
+        "independent_from_p42": { "const": true },
+        "bar_jurisdiction": { "type": "string", "minLength": 2 },
+        "license_identifier": { "type": "string", "minLength": 4 }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "P42BountyPool",
+            "P42PayoutLedger",
+            "P42SubmissionManager",
+            "P42ChallengeManager",
+            "P42ProblemRegistry"
+          ]
+        },
+        "address": { "$ref": "#/$defs/address" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "source_artifact": { "$ref": "#/$defs/artifact" },
+        "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
+        "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "releaseBinding": {
+      "type": "object",
+      "required": [
+        "repository_uri",
+        "git_commit",
+        "network",
+        "chain_id",
+        "deployment_manifest",
+        "configuration_artifact",
+        "contracts"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repository_uri": { "type": "string", "pattern": "^https://" },
+        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "network": { "enum": ["local", "base-sepolia", "base-mainnet"] },
+        "chain_id": { "type": "integer", "enum": [31337, 8453, 84532] },
+        "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "configuration_artifact": { "$ref": "#/$defs/artifact" },
+        "contracts": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/contract" }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "enum": ["security-owner", "facilitator", "external-counsel"] },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    }
   }
 }

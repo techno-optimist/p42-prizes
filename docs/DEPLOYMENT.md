@@ -87,28 +87,130 @@ https://p42-prizes.onrender.com
 
 If the Render service URL changes, set `P42_PRIZES_ORIGIN` on `observatory-backend` and keep the proxy default in sync.
 
-## Contract Deployment Scaffold
+## Contract Deployment Ceremony
 
-From `contracts/`, Base Sepolia deployment is scaffolded by:
+Run the Base Sepolia ceremony from `contracts/`. This is a two-stage flow:
+deployment creates governance-owned contracts and pending operation bundles;
+independent governance signers schedule, confirm, and execute those bundles;
+then a keyless continuation verifies finalized on-chain completion.
+
+### 1. Freeze Inputs And Roles
+
+The deploy command requires all constructor policy to be explicit. No economic
+or DA default is accepted.
 
 ```bash
 BASE_SEPOLIA_RPC_URL=... \
 BASE_SEPOLIA_PRIVATE_KEY=... \
-P42_TREASURY_ADDRESS=0x... \
-P42_RESOLVER_ADDRESS=0x... \
+P42_GOVERNANCE_SIGNERS=0xSigner1,0xSigner2,0xSigner3 \
+P42_GOVERNANCE_THRESHOLD=2 \
+P42_GOVERNANCE_DELAY_SECONDS=172800 \
+P42_GUARDIAN_ADDRESS=0xGuardian \
+P42_TREASURY_ADDRESS=0xTreasury \
+P42_RESOLVER_ADDRESS=0xResolver \
+P42_ALPHA_BPS=200 \
+P42_BETA_BPS=500 \
+P42_CHALLENGE_WINDOW_SECONDS=259200 \
+P42_EARLIEST_CLOSE_TIMESTAMP=... \
+P42_CLOSE_BY_TIMESTAMP=... \
+P42_FEE_BPS=0 \
+P42_FUNDING_CAP_WEI=... \
+P42_MIN_COUNTER_BOND_WEI=20000000000000000 \
+P42_MIN_POSTING_BOND_WEI=10000000000000000 \
+P42_RERUN_COST_WEI=10000000000000000 \
+P42_RERUN_COST_MULTIPLIER_BPS=30000 \
+P42_RESOLVER_DECISION_BOND_WEI=5000000000000000 \
+P42_RESOLVER_FRAUD_WINDOW_SECONDS=86400 \
+P42_ONCHAIN_DA=true \
+P42_MAX_SOLUTION_BYTES=524288 \
 P42_PROBLEM_SPEC_HASH=0x... \
 P42_VERIFIER_SOURCE_HASH=0x... \
 P42_VERIFIER_IMAGE_HASH=0x... \
 P42_ADMISSION_MATRIX_HASH=0x... \
 P42_METADATA_URI=ipfs://... \
+P42_SEED_SCORE_ATOMS=... \
+P42_MIN_IMPROVEMENT_ATOMS=... \
+P42_DEPLOY_MODE=deploy \
 npm run deploy:base-sepolia
 ```
 
-The script writes `deployments/base-sepolia/p42-prizes.json`. That file is not
-Gate 1 evidence until it contains real tx hashes, verified-source links, role
-assignments, and an indexer start block. The current scaffold uses the deployer
-as immutable owner; real ETH remains blocked until governance/multisig design is
-reviewed.
+`P42_GOVERNANCE_SIGNERS` contains public addresses, not private keys. The only
+plaintext key accepted by the command is the single deployer key already used
+by Hardhat. Signers must be unique; guardian, treasury, and resolver must be
+distinct from every signer and one another. The deployer must also differ from
+guardian, treasury, and resolver. `P42_OWNER_ADDRESS` is rejected because every
+immutable child owner must be the newly deployed timelock.
+
+For off-chain DA, set `P42_ONCHAIN_DA=false` and
+`P42_MAX_SOLUTION_BYTES=0`. Image and admission hashes must be nonzero immutable
+pins. `earliestClose` must be at least 30 days after deployment; `closeBy` must
+be at least 180 days after deployment and no earlier than `earliestClose`.
+
+The script writes `deployments/base-sepolia/p42-prizes.json` with:
+
+- deployed timelock and child addresses plus deployment transactions
+- current ABI, runtime bytecode, and constructor-argument hashes
+- timelock signer, threshold, delay, override, grace-period, and guardian config
+- explicit economic, close, DA, seed, image, and admission pins
+- deterministic standard/override setup operation IDs and dependencies
+- schedule, confirm, and execute calldata for each operation
+- the indexer's confirmation and reorg finality policy
+
+Its status is `pending-governance-setup`. Every setup operation has
+`status=pending`, `txHash=null`, and `blockNumber=null`; these entries do not
+claim that a governance transaction executed.
+
+### 2. Execute Governance Setup
+
+The named signers review the manifest, then submit its `transactionBuilder`
+requests from their own wallets or multisig interface. Do not collect multiple
+private keys in one shell or environment file.
+
+Execute operations in ascending `sequence` order and honor every `dependsOn`
+operation ID. Child wiring, registration, and freeze use standard operations.
+The timelock self-calls that register ledger, submission, and challenge pause
+targets use override operations because `setPauseTarget` is override-only.
+Scheduling provides the first confirmation; additional distinct signers submit
+the shared `confirm` calldata until `requiredConfirmations` is reached. Execute
+only after the recorded delay and before the seven-day grace period expires.
+
+Every standard logical operation includes a deterministic `overrideFallback`
+bundle with a distinct salt and operation ID. Use it only if the guardian
+cancels the primary standard operation. Continuation accepts exactly one
+finalized execution path and rejects missing or ambiguous evidence.
+
+### 3. Verify And Continue
+
+Run continuation without a private key:
+
+```bash
+env -u BASE_SEPOLIA_PRIVATE_KEY \
+  BASE_SEPOLIA_RPC_URL=... \
+  P42_DEPLOY_MODE=continue \
+  npm run deploy:base-sepolia
+```
+
+Continuation is read-only on chain. It checks the deployment at the manifest's
+finalized confirmation block, including runtime hashes, immutable owners and
+constructor config, governance roles, all wiring, exact registry pins,
+explicit freeze, pause targets, and one `Executed` event for every deterministic
+operation ID. If anything is incomplete it prints the remaining transaction
+builders, exits nonzero, and leaves the manifest pending. Only a complete check
+updates transaction evidence and marks `governance-setup-complete`.
+
+Source verification and reconciliation follow this completion step. A manifest
+is not Gate 1 evidence until explorer links and a green reconciliation report
+for the exact pinned deployment are recorded.
+
+### Funding Is A Later Ceremony
+
+Deployment and setup leave both `fundingArmed=false` and
+`acceptingFunds=false`. Do not add either call to the setup bundle. After the
+seed/admission review, source verification, adversarial campaign,
+reconciliation, and required human gates are complete, owners separately
+review and timelock `submissions.armFunding()`, then
+`pool.setAcceptingFunds(true)`. Funding occurs only after those later operations
+execute and are independently checked.
 
 ## DGX Verifier Runner
 

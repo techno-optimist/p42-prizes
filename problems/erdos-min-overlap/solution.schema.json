@@ -1,11 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/problems/erdos-min-overlap/solution.schema.json",
+  "x-p42-max-bytes": 262144,
   "type": "object",
   "required": ["n", "denominator_power", "values"],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "n": { "const": 2400 },
+    "source": { "type": "string" },
+    "claimed_improvement": { "type": "string" },
+    "claimed_lag": { "type": "integer" },
+    "claimed_score": { "type": "string" },
     "denominator_power": {
       "type": "integer",
       "minimum": 0,
@@ -17,7 +22,8 @@
       "maxItems": 2400,
       "items": {
         "type": "integer",
-        "minimum": 0
+        "minimum": 0,
+        "maximum": 340282366920938463463374607431768211456
       }
     }
   }

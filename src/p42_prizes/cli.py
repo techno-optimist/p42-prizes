@@ -8,6 +8,7 @@ import shlex
 import signal
 import subprocess
 import sys
+from urllib import request as urllib_request
 
 import jsonschema
 
@@ -18,12 +19,13 @@ from p42_prizes.admission import (
     detect_host,
     generate_host_evidence,
     load_evidence_file,
+    run_verifier_once,
 )
 from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversarial_campaign_report
 from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_evidence
 from p42_prizes.governance import GovernanceSignoffError, normalize_governance_signoff
 from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
-from p42_prizes.legal import LegalMemoError, normalize_legal_memo
+from p42_prizes.legal import ChainReader, LegalMemoError, normalize_legal_memo
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
@@ -38,7 +40,7 @@ from p42_prizes.runner_queue import (
     plan_runner_queue,
 )
 from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
-from p42_prizes.verdict import canonical_json
+from p42_prizes.verdict import canonical_json, parse_rational
 
 
 # Gate validators enforce the published schemas' additionalProperties:false, so a
@@ -48,7 +50,88 @@ _SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
 
 def _enforce_gate_schema(report: dict, schema_name: str) -> None:
     schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
-    jsonschema.validate(report, schema)
+    jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
+
+
+def _load_attestation_inputs(args: argparse.Namespace) -> tuple[dict, Path, ChainReader]:
+    trust_registry = load_evidence_file(args.trust_registry)
+    _enforce_gate_schema(trust_registry, "attestation-trust-registry.schema.json")
+    if trust_registry.get("environment") != "production" and not args.allow_test_trust_registry:
+        raise AdmissionError(
+            "test trust registries are rejected by default; use a production root registry or explicitly allow test trust"
+        )
+    artifact_root = Path(args.artifact_root).resolve()
+    if not artifact_root.is_dir():
+        raise AdmissionError("--artifact-root must be an existing directory")
+    return trust_registry, artifact_root, _build_http_chain_reader(args.chain_rpc_url)
+
+
+def _build_http_chain_reader(rpc_url: str) -> ChainReader:
+    request_id = 0
+    cached_chain_id: int | None = None
+
+    def rpc_call(method: str, params: list[object]) -> object:
+        nonlocal request_id
+        request_id += 1
+        payload = json.dumps(
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        rpc_request = urllib_request.Request(
+            rpc_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib_request.urlopen(rpc_request, timeout=10) as response:
+            parsed = json.loads(response.read())
+        if not isinstance(parsed, dict) or "error" in parsed or "result" not in parsed:
+            raise ValueError(f"JSON-RPC {method} returned an error or malformed response")
+        return parsed["result"]
+
+    def read_chain(network: str, chain_id: int, address: str, block_number: int) -> dict[str, str]:
+        nonlocal cached_chain_id
+        del network
+        if cached_chain_id is None:
+            chain_result = rpc_call("eth_chainId", [])
+            if not isinstance(chain_result, str):
+                raise ValueError("eth_chainId returned a non-string result")
+            cached_chain_id = int(chain_result, 16)
+        if cached_chain_id != chain_id:
+            raise ValueError(f"RPC chain ID {cached_chain_id} does not match release chain ID {chain_id}")
+        block_tag = hex(block_number)
+        block = rpc_call("eth_getBlockByNumber", [block_tag, False])
+        runtime_bytecode = rpc_call("eth_getCode", [address, block_tag])
+        if not isinstance(block, dict) or not isinstance(block.get("hash"), str):
+            raise ValueError("eth_getBlockByNumber did not return a block hash")
+        if not isinstance(runtime_bytecode, str):
+            raise ValueError("eth_getCode returned a non-string result")
+        return {"block_hash": block["hash"], "runtime_bytecode": runtime_bytecode}
+
+    return read_chain
+
+
+def _add_attestation_validation_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--trust-registry",
+        required=True,
+        help="owner-controlled signer registry supplied out of band from the report",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        required=True,
+        help="local bound Git repository containing every referenced evidence file",
+    )
+    parser.add_argument(
+        "--chain-rpc-url",
+        required=True,
+        help="JSON-RPC endpoint queried at each recorded bytecode evidence block",
+    )
+    parser.add_argument(
+        "--allow-test-trust-registry",
+        action="store_true",
+        help="allow an explicitly marked test registry for local validation only",
+    )
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -122,19 +205,18 @@ def _write_or_print_json(value: dict, output: str | None) -> None:
 
 def _cmd_admit_host(args: argparse.Namespace) -> int:
     host = detect_host(args.host_label)
-    if args.host_arch:
-        host["architecture"] = args.host_arch
-    if args.host_os:
-        host["os"] = args.host_os
-    if args.libc_name:
-        host["libc_name"] = args.libc_name
-    if args.libc_version:
-        host["libc_version"] = args.libc_version
-    if args.python_version:
-        host["python_version"] = args.python_version
     try:
-        evidence = generate_host_evidence(args.problem, args.solution, host=host, runs=args.runs)
-    except AdmissionError as exc:
+        evidence = generate_host_evidence(
+            args.problem,
+            args.solution,
+            host=host,
+            runs=args.runs,
+            image_ref=args.image_ref,
+            runtime=args.runtime,
+            signing_key=args.signing_key,
+        )
+        _enforce_gate_schema(evidence, "admission-host.schema.json")
+    except (AdmissionError, OSError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(evidence, args.output)
@@ -145,7 +227,8 @@ def _cmd_admit_matrix(args: argparse.Namespace) -> int:
     try:
         evidence = [load_evidence_file(path) for path in args.evidence]
         matrix = build_admission_matrix(evidence)
-    except AdmissionError as exc:
+        _enforce_gate_schema(matrix, "admission-matrix.schema.json")
+    except (AdmissionError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(matrix, args.output)
@@ -159,6 +242,48 @@ def _cmd_admit_ready(args: argparse.Namespace) -> int:
             print(error, file=sys.stderr)
         return 1
     print(f"OK: {Path(args.problem)} is fundable-admission ready")
+    return 0
+
+
+def _cmd_seed_check(args: argparse.Namespace) -> int:
+    problem = Path(args.problem).resolve()
+    solution = Path(args.solution).resolve()
+    try:
+        manifest = load_manifest(problem)
+        run = run_verifier_once(problem, solution)
+        seed_best = parse_rational(manifest["objective"]["seed_best"])
+        score = parse_rational(run.report["score"])
+        improvement = parse_rational(run.report["improvement"])
+    except (AdmissionError, OSError, KeyError, TypeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+
+    if run.report["valid"] and improvement > 0:
+        status = "STRICT_WITNESS"
+        release_ready = True
+    elif not run.report["valid"] and run.report["reason"] == "NOT_STRICT_IMPROVEMENT" and improvement == 0:
+        status = "FRONTIER_MATCH_ONLY" if score == seed_best else "NONFRONTIER_FIXTURE"
+        release_ready = False
+    else:
+        print(
+            f"{manifest['problem_id']}: designated seed fixture is neither a strict witness nor an exact frontier match",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        canonical_json(
+            {
+                "problem_id": manifest["problem_id"],
+                "release_ready": release_ready,
+                "report_hash": run.report_hash,
+                "score": run.report["score"],
+                "status": status,
+            }
+        )
+    )
+    if args.require_strict and not release_ready:
+        return 1
     return 0
 
 
@@ -326,7 +451,13 @@ def _cmd_runner_burst_validate(args: argparse.Namespace) -> int:
 
 def _cmd_incident_drill_validate(args: argparse.Namespace) -> int:
     try:
-        report = normalize_incident_drill_report(load_evidence_file(args.report))
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_incident_drill_report(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
         _enforce_gate_schema(report, "incident-drill.schema.json")
     except (AdmissionError, IncidentDrillError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
@@ -337,7 +468,13 @@ def _cmd_incident_drill_validate(args: argparse.Namespace) -> int:
 
 def _cmd_adversarial_campaign_validate(args: argparse.Namespace) -> int:
     try:
-        report = normalize_adversarial_campaign_report(load_evidence_file(args.report))
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_adversarial_campaign_report(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
         _enforce_gate_schema(report, "adversarial-campaign.schema.json")
     except (AdmissionError, AdversarialCampaignError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
@@ -348,7 +485,13 @@ def _cmd_adversarial_campaign_validate(args: argparse.Namespace) -> int:
 
 def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
     try:
-        report = normalize_governance_signoff(load_evidence_file(args.report))
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_governance_signoff(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
         _enforce_gate_schema(report, "governance-signoff.schema.json")
     except (AdmissionError, GovernanceSignoffError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
@@ -359,7 +502,13 @@ def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
 
 def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
     try:
-        report = normalize_legal_memo(load_evidence_file(args.report))
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_legal_memo(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
         _enforce_gate_schema(report, "legal-memo.schema.json")
     except (AdmissionError, LegalMemoError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
@@ -404,11 +553,15 @@ def build_parser() -> argparse.ArgumentParser:
     admit_host.add_argument("--solution", required=True)
     admit_host.add_argument("--runs", type=int, default=3)
     admit_host.add_argument("--host-label")
-    admit_host.add_argument("--host-arch")
-    admit_host.add_argument("--host-os")
-    admit_host.add_argument("--libc-name")
-    admit_host.add_argument("--libc-version")
-    admit_host.add_argument("--python-version")
+    admit_host.add_argument(
+        "--image-ref",
+        help="registry repository@sha256:digest; required when problem.yaml pins an immutable image",
+    )
+    admit_host.add_argument("--runtime", default="docker", help="OCI runtime used for immutable admission")
+    admit_host.add_argument(
+        "--signing-key",
+        help="Ed25519 SSH private key whose public key is trusted by problem.yaml",
+    )
     admit_host.add_argument("--output")
     admit_host.set_defaults(func=_cmd_admit_host)
 
@@ -432,6 +585,15 @@ def build_parser() -> argparse.ArgumentParser:
     admit_ready.add_argument("--problem", required=True)
     admit_ready.add_argument("--matrix", required=True)
     admit_ready.set_defaults(func=_cmd_admit_ready)
+
+    seed_check = subparsers.add_parser(
+        "seed-check",
+        help="classify a designated fixture as a strict open witness or exact frontier match",
+    )
+    seed_check.add_argument("--problem", required=True)
+    seed_check.add_argument("--solution", required=True)
+    seed_check.add_argument("--require-strict", action="store_true")
+    seed_check.set_defaults(func=_cmd_seed_check)
 
     da_receipt = subparsers.add_parser(
         "da-receipt",
@@ -556,6 +718,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash a completed incident drill / bug bounty evidence report",
     )
     incident_drill.add_argument("--report", required=True)
+    _add_attestation_validation_args(incident_drill)
     incident_drill.add_argument("--output")
     incident_drill.set_defaults(func=_cmd_incident_drill_validate)
 
@@ -564,6 +727,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash a Gate 1 adversarial testnet campaign report",
     )
     adversarial_campaign.add_argument("--report", required=True)
+    _add_attestation_validation_args(adversarial_campaign)
     adversarial_campaign.add_argument("--output")
     adversarial_campaign.set_defaults(func=_cmd_adversarial_campaign_validate)
 
@@ -572,6 +736,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash Gate 2 custody/governance signoff evidence",
     )
     governance_signoff.add_argument("--report", required=True)
+    _add_attestation_validation_args(governance_signoff)
     governance_signoff.add_argument("--output")
     governance_signoff.set_defaults(func=_cmd_governance_signoff_validate)
 
@@ -580,6 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash Gate 2 legal/compliance memo evidence",
     )
     legal_memo.add_argument("--report", required=True)
+    _add_attestation_validation_args(legal_memo)
     legal_memo.add_argument("--output")
     legal_memo.set_defaults(func=_cmd_legal_memo_validate)
 

@@ -37,6 +37,17 @@ def test_canonical_json_sorts_keys_without_spaces() -> None:
     assert canonical_json({"b": 1, "a": 2}) == '{"a":2,"b":1}'
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_canonical_json_rejects_non_json_numbers(value: float) -> None:
+    with pytest.raises(ValueError):
+        canonical_json({"value": value})
+
+
+def test_canonical_json_rejects_python_only_container_types() -> None:
+    with pytest.raises(TypeError):
+        canonical_json({"value": (1, 2)})
+
+
 def test_rational_strings_are_normalized() -> None:
     assert rational_to_string(Fraction(2, 4)) == "1/2"
     assert rational_to_string("6") == "6/1"
@@ -98,6 +109,22 @@ def test_lint_flags_operator_truediv_import(tmp_path: Path) -> None:
     verifier.write_text("from operator import truediv\n\ndef decide(x):\n    return truediv(1, x)\n")
     codes = {finding.code for finding in lint_python_file(verifier)}
     assert "R3_IMPORT" in codes
+
+
+@pytest.mark.parametrize(
+    "source, expected_code",
+    [
+        ("from builtins import float as f\nresult = f(1)\n", "R3_IMPORT_ALIAS"),
+        ("from builtins import eval as harmless\nresult = harmless('1')\n", "R2_DYNAMIC_DISPATCH"),
+        ("import builtins as b\nresult = b.float(1)\n", "R1_FLOAT_ATTR"),
+        ("from os import urandom as entropy\nresult = entropy(4)\n", "R3_IMPORT_ALIAS"),
+    ],
+)
+def test_lint_closes_import_alias_bypasses(tmp_path: Path, source: str, expected_code: str) -> None:
+    verifier = tmp_path / "verify.py"
+    verifier.write_text(source, encoding="utf-8")
+    codes = {finding.code for finding in lint_python_file(verifier)}
+    assert expected_code in codes
 
 
 def test_lint_allows_exact_integer_power(tmp_path: Path) -> None:
@@ -209,7 +236,7 @@ def test_admit_ready_rejects_local_dev_verifier_image(tmp_path: Path) -> None:
     assert "verifier.image must be an immutable lowercase sha256:<64 hex> digest" in completed.stderr
 
 
-def test_admit_ready_accepts_immutable_image_and_matching_matrix(tmp_path: Path) -> None:
+def test_admit_ready_rejects_fabricated_legacy_matrix_even_with_matching_digest(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     (root / "schemas").mkdir(parents=True)
     shutil.copy(ROOT / "schemas" / "problem.schema.json", root / "schemas" / "problem.schema.json")
@@ -226,8 +253,8 @@ def test_admit_ready_accepts_immutable_image_and_matching_matrix(tmp_path: Path)
 
     completed = run_cli("admit-ready", "--problem", str(problem), "--matrix", str(matrix))
 
-    assert completed.returncode == 0, completed.stderr
-    assert "fundable-admission ready" in completed.stdout
+    assert completed.returncode == 1
+    assert "matrix.schema_version must be p42-admission-matrix/v2" in completed.stderr
 
 
 def test_da_receipt_builds_and_verifies_canonical_evidence(tmp_path: Path) -> None:

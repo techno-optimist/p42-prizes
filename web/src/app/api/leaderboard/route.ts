@@ -9,5 +9,6 @@ export async function GET(req: NextRequest) {
     return json({ error: "problem_id is required" }, { status: 400 });
   }
 
-  return json(sortLeaderboardRows(problemId, allSubmissions()));
+  const rows = sortLeaderboardRows(problemId, allSubmissions());
+  return json(rows.slice(0, 200));
 }

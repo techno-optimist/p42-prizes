@@ -1,59 +1,70 @@
 # Responsible Disclosure And Bug Bounty Draft
 
-Status: draft policy. Do not publish as a live bounty until counsel and the
-named security owner approve it.
+**Status: DRAFT AND INACTIVE.** This repository does not claim an active bounty,
+safe harbor, monitored disclosure mailbox, or enabled private vulnerability
+reporting. Do not publish or promise rewards until the activation checklist is
+complete.
 
-## Scope
+## Proposed Scope
 
-In scope for the Gate 2 pilot:
+In scope after activation:
 
-- deployed P42 Prizes contracts and deployment metadata,
-- verifier runner queue, transcript, alert, and admission tooling,
-- problem verifier packages and immutable-image admission artifacts,
-- portal mutation APIs for commit, reveal, verifier shortcut, funding display,
-  and challenge/onramp fail-closed behavior,
-- Base Sepolia deployment and reconciliation artifacts.
+- the exact deployed P42 contracts and deployment metadata named in the public
+  policy;
+- verifier images, runner queue, transcripts, alerts, and admission tooling;
+- exact problem-verifier packages and immutable-image evidence;
+- portal mutation, authentication, challenge, funding, and Onramp fail-closed
+  behavior; and
+- reconciliation/indexer behavior for the named deployment.
 
-Out of scope until explicitly approved:
+Out of scope unless the final reviewed policy says otherwise:
 
-- social engineering, phishing, or physical attacks,
-- denial-of-service that only consumes public infrastructure without proving a
-  value-moving protocol failure,
-- attacks against unrelated ProjectForty2 systems,
-- findings that require access to private keys, secrets, or non-public solver
-  material obtained outside the disclosure process.
+- social engineering, phishing, physical attacks, or secret theft;
+- destructive denial of service without a minimal safe proof;
+- unrelated Project Forty Two systems; and
+- use of non-public solver material obtained outside the disclosure process.
 
-## Severity Guide
+## Draft Severity Targets
 
-| Severity | Examples | Target initial response |
+| Severity | Examples | Proposed initial response |
 | --- | --- | --- |
-| Critical | fund theft, invalid payout, admin-key drain, resolver decision forgery | 24 hours |
-| High | verifier bypass, DA/permanence disappearance, challenge-blocking bug | 48 hours |
-| Medium | auth/rate-limit bypass, leaderboard integrity bug, replay weakness | 72 hours |
-| Low | copy issue, harmless information leak, non-security dependency drift | 5 business days |
+| Critical | fund theft, invalid payout, privileged-key drain, forged resolution | 24 hours |
+| High | verifier bypass, DA loss, challenge blocking | 48 hours |
+| Medium | auth/rate-limit bypass, replay or leaderboard integrity | 72 hours |
+| Low | harmless information leak or non-security drift | 5 business days |
 
-## Reporter Rules
+These are proposed service targets, not current commitments.
 
-- Do not move, claim, or redirect funds beyond the minimum needed to prove a
-  testnet issue.
-- Do not exfiltrate secrets, private solver payloads, or user data.
-- Give P42 reasonable time to triage before public disclosure.
-- Include reproduction steps, affected commit/deployment, tx hashes or request
-  ids, and expected versus observed impact.
+## Proposed Researcher Rules
 
-## P42 Commitments
+- Minimize testnet impact and never move or claim real funds to demonstrate an
+  issue.
+- Do not access secrets, private solver payloads, or personal data.
+- Provide the affected commit/deployment, reproduction, expected/observed
+  behavior, and hashed transaction/request/transcript evidence.
+- Use the activated private channel and allow the reviewed disclosure window.
 
-- Acknowledge valid reports within the severity target.
-- Preserve `claim()` availability for already finalized entitlements during
-  mitigation.
-- Credit reporters in postmortems when requested and legally permissible.
-- Maintain safe harbor for good-faith testing that follows this policy after
-  counsel approves the final version.
+## Disclosure Activation Checklist
 
-## Gate 2 Requirement
+- Freeze the exact policy bytes and compute their SHA-256 digest.
+- Obtain licensed counsel review of scope, safe harbor, sanctions/export,
+  eligibility, tax, reward, and disclosure-window terms.
+- Name and verify a security owner and bounty owner; establish escalation and
+  on-call coverage.
+- Repo owner enables GitHub private vulnerability reporting and tests it from a
+  non-owner account. The repository currently has no evidence that this is
+  enabled.
+- Provision and externally test the disclosure mailbox. The intended
+  `security@projectforty2.ai` address is not treated as verified merely because
+  it appears in docs.
+- Publish the reviewed policy at a stable HTTPS URI and verify the private
+  reporting URI.
+- If rewards are offered, document funding source, caps, eligibility,
+  duplicate-report handling, payment screening, and tax handling.
+- Capture activation time and a hashed artifact proving the public policy,
+  private route, mailbox, and owner coverage were live.
+- Run the incident drill and collect valid security-owner, facilitator, and
+  external-counsel signatures over the canonical packet.
 
-The live policy must be referenced from a validated
-`p42-incident-drill/v1` report. The report must name the disclosure contact,
-triage SLA, bounty owner, scope summary, and counsel/safe-harbor reviewer. Until
-that signed report exists, the Gate 2 "incident drill and bounty" item remains
-open.
+Until every item is complete, `bug_bounty.status` must not be set to `active`,
+and the incident validator will correctly refuse Gate 2 signoff.

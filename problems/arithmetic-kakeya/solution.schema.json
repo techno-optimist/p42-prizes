@@ -1,9 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/problems/arithmetic-kakeya/solution.schema.json",
+  "x-p42-max-bytes": 32768,
   "type": "object",
   "required": ["grid", "slopes", "edge_labels", "free", "relations"],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "grid": {
       "type": "array",
@@ -31,6 +32,7 @@
         "items": {
           "type": "object",
           "required": ["key", "slope"],
+          "additionalProperties": false,
           "properties": {
             "key": {
               "type": "array",
@@ -64,6 +66,7 @@
       "items": {
         "type": "object",
         "required": ["vertex", "slope"],
+        "additionalProperties": false,
         "properties": {
           "vertex": {
             "type": "array",
@@ -79,6 +82,8 @@
           }
         }
       }
-    }
+    },
+    "source": { "type": "string" },
+    "claimed_score": { "type": "string" }
   }
 }

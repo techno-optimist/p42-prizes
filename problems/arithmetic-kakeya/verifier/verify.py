@@ -3,17 +3,22 @@ from __future__ import annotations
 
 import argparse
 from fractions import Fraction
-import json
 from pathlib import Path
 import sys
 from typing import Any
 
-from p42_prizes.verdict import VerdictReport, rational_to_string, sha256_bytes
+from p42_prizes.verdict import (
+    VerdictReport,
+    rational_to_string,
+    read_bounded_solution,
+    strict_json_loads,
+    verifier_image_identity,
+)
 
 
 PROBLEM_ID = "arithmetic-kakeya"
-VERIFIER_VERSION = "0.1.0"
-VERIFIER_IMAGE = "sha256:local-dev"
+VERIFIER_VERSION = "0.1.1"
+VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
 GRID = (2, 2)
 TARGET = (1, -1)
 # Audit F1: the old seed 2/1 was a loose packaging bound, but the bundled
@@ -54,7 +59,7 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
             f"solution is {len(raw)} bytes; limit is {MAX_SOLUTION_BYTES}",
         )
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = strict_json_loads(raw)
     except Exception as exc:
         raise VerifierFailure("MALFORMED_JSON", str(exc)) from exc
 
@@ -298,8 +303,16 @@ def evaluate(parsed: dict[str, Any]) -> tuple[Fraction, dict[str, Any]]:
 
 
 def report_for_solution(path: Path) -> VerdictReport:
-    raw = path.read_bytes()
-    solution_hash = sha256_bytes(raw)
+    solution = read_bounded_solution(path, MAX_SOLUTION_BYTES)
+    if solution.data is None:
+        return solution.failure_report(
+            problem_id=PROBLEM_ID,
+            verifier_version=VERIFIER_VERSION,
+            verifier_image=VERIFIER_IMAGE,
+            fallback_score=SEED_BEST,
+        )
+    raw = solution.data
+    solution_hash = solution.solution_hash
 
     try:
         parsed = parse_solution(raw)

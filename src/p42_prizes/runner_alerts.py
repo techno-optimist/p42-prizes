@@ -111,15 +111,51 @@ def _alerts_for_transcript(transcript: Mapping[str, Any], path: str) -> list[dic
     da = transcript.get("da")
     alerts: list[dict[str, Any]] = []
     if isinstance(da, dict) and da.get("ok") is False:
+        candidate = verifier.get("challenge_candidate")
+        candidate_action = candidate.get("action") if isinstance(candidate, dict) else None
         alerts.append(
             _make_alert(
                 **base,
                 category="da_failed",
                 severity="high",
-                recommended_action="challenge_or_block_finalize",
+                recommended_action=(
+                    "challenge_or_block_finalize"
+                    if candidate_action != "quarantine"
+                    else "quarantine_transcript"
+                ),
                 reason=_string_or_default(da.get("error"), "DA/permanence evidence failed"),
             )
         )
+
+    candidate = verifier.get("challenge_candidate")
+    if isinstance(candidate, dict):
+        action = candidate.get("action")
+        if action == "challenge" and not alerts:
+            alerts.append(
+                _make_alert(
+                    **base,
+                    category="verifier_rejected",
+                    severity="high",
+                    recommended_action="challenge_submission",
+                    reason=_string_or_default(
+                        candidate.get("reason_code"),
+                        "chain claim differs from exact verifier result",
+                    ),
+                )
+            )
+        elif action == "quarantine" and not alerts:
+            alerts.append(
+                _make_alert(
+                    **base,
+                    category="verifier_execution_inconsistent",
+                    severity="critical",
+                    recommended_action="quarantine_transcript",
+                    reason=_string_or_default(
+                        candidate.get("reason_code"),
+                        "runner could not produce safe challenge evidence",
+                    ),
+                )
+            )
 
     valid = verifier.get("valid")
     ok = verifier.get("ok")

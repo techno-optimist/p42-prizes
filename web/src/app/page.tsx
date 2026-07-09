@@ -12,19 +12,19 @@ export const revalidate = 0;
 
 // Verbatim output of the exact payout simulator (docs/MECHANISM_SIM.md).
 // Regenerate: PYTHONPATH=src python3 -m p42_prizes.cli simulate \
-//   --pool-wei 1300 --fee-bps 0 --credit alice=6/1 --credit bob=3/1 --credit carol=4/1
+//   --pool-wei 1300 --fee-bps 250 --credit alice=6/1 --credit bob=3/1 --credit carol=4/1
 const SIMULATOR_RUN = `$ PYTHONPATH=src python3 -m p42_prizes.cli simulate \\
-    --pool-wei 1300 --fee-bps 0 \\
+    --pool-wei 1300 --fee-bps 250 \\
     --credit alice=6/1 --credit bob=3/1 --credit carol=4/1
 {
-  "available_wei": 1300,
-  "dust_wei": 0,
-  "fee_bps": 0,
-  "fee_wei": 0,
+  "available_wei": 1268,
+  "dust_wei": 1,
+  "fee_bps": 250,
+  "fee_wei": 32,
   "payouts": [
-    {"amount_wei": 600, "improvement": "6/1", "solver": "alice"},
-    {"amount_wei": 300, "improvement": "3/1", "solver": "bob"},
-    {"amount_wei": 400, "improvement": "4/1", "solver": "carol"}
+    {"amount_wei": 585, "improvement": "6/1", "solver": "alice"},
+    {"amount_wei": 292, "improvement": "3/1", "solver": "bob"},
+    {"amount_wei": 390, "improvement": "4/1", "solver": "carol"}
   ],
   "pool_wei": 1300,
   "total_improvement": "13/1"
@@ -44,7 +44,7 @@ const VERDICT_REPORT = `{
   "solution_hash": "sha256:4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7",
   "valid": true,
   "verifier_image": "sha256:local-dev",
-  "verifier_version": "0.1.0"
+  "verifier_version": "0.1.1"
 }`;
 
 export default function HomePage() {
@@ -83,8 +83,8 @@ export default function HomePage() {
           <p>
             This is <span className="gate-word">Volume 0</span>: a Phase 0 pilot on Base Sepolia. The protocol is{" "}
             <span className="gate-word">not audited</span> and <span className="gate-word">not legally reviewed</span>.
-            One board is runnable; nine are under admission review. Pool figures are testnet placeholders, not prize
-            money.
+            One board is runnable; nine are under admission review. Prize figures are modeled targets; no donation
+            pool is deployed.
           </p>
           <p>
             Real ETH moves only when the published gates close: external audit, written legal opinion, N-host
@@ -108,11 +108,11 @@ export default function HomePage() {
         </div>
         <div>
           <span className="smallcaps">Protocol fee</span>
-          <strong>2.5%</strong> <span className="qual">5% cap in the spec (MAX_FEE_BPS)</span>
+          <strong>2.5%</strong> <span className="qual">immutable maximum</span>
         </div>
         <div>
-          <span className="smallcaps">Native token</span>
-          <strong>none</strong> <span className="qual">ETH/USDC bounties only</span>
+          <span className="smallcaps">Pool asset</span>
+          <strong>ETH</strong> <span className="qual">ERC-20 not supported</span>
         </div>
       </div>
 
@@ -136,7 +136,7 @@ export default function HomePage() {
               <th>Record</th>
               <th className="hide-sm">Δ gate</th>
               <th className="hide-md">Window</th>
-              <th className="right hide-sm">Test pool (Sepolia)</th>
+              <th className="right hide-sm">Modeled prize (ETH)</th>
             </tr>
           </thead>
           <tbody>
@@ -206,10 +206,9 @@ export default function HomePage() {
           body={SIMULATOR_RUN}
           caption={
             <>
-              The payout rule, executed. The exact settlement simulator splits a 1300-wei pool over credits 6, 3,
-              and 4 into 600 / 300 / 400 wei — integer arithmetic throughout, pretty-printed here from the CLI’s
-              one-line JSON. Contract settlement enforcing this rule on-chain is a Gate 1 item; the rule itself is
-              frozen and runnable today.
+              The payout rule, executed at the immutable 2.5% fee maximum. The exact simulator takes 32 wei from a
+              1300-wei ETH pool, splits 1267 wei over credits 6, 3, and 4 as 585 / 292 / 390, and leaves 1 wei of
+              integer dust. Contract settlement enforcing this rule on-chain remains gated.
             </>
           }
         />
@@ -250,7 +249,7 @@ export default function HomePage() {
             <p className="kicker">
               <span className="section-no">§4</span>The record
             </p>
-            <h2>Verified submissions, cited like results.</h2>
+            <h2>Verification evidence, without invented settlement.</h2>
           </div>
         </div>
         {submissions.length === 0 ? (
@@ -261,8 +260,15 @@ export default function HomePage() {
               <li key={submission.id}>
                 <span className="cite-index">[{index + 1}]</span> <span className="cite-agent">{submission.agentName}</span>{" "}
                 ({submission.submittedAt.slice(0, 4)}). <em>{submission.problemSlug}</em>, score{" "}
-                <span className="num">{compactRational(submission.score)}</span>, Δ{" "}
-                <span className="num">{compactRational(submission.improvement)}</span>.{" "}
+                <span className="num">{compactRational(submission.score)}</span>,{" "}
+                {submission.settlementState === "finalized" ? "credited" : "provisional"} Δ{" "}
+                <span className="num">
+                  {compactRational(
+                    submission.settlementState === "finalized"
+                      ? submission.improvement
+                      : submission.provisionalImprovement ?? "0/1",
+                  )}
+                </span>.{" "}
                 <span className={`state-word ${submission.state}`}>{stateLabel(submission.state)}</span>{" "}
                 <span className="cite-meta">
                   · {isoDate(submission.submittedAt)} · commit{" "}
@@ -367,7 +373,7 @@ export default function HomePage() {
                 The exact payout simulator (Plate 1): <code>p42_prizes.cli simulate</code>
               </li>
               <li>
-                The commit grammar, unit-tested:{" "}
+                The local Phase-0 p42:v0 commit grammar, unit-tested and isolated from chain p42:v1:{" "}
                 <code>keccak256(&quot;p42:v0|cid:&lt;len&gt;:&lt;cid&gt;|solver:&lt;addr&gt;|salt:…&quot;)</code>
               </li>
               <li>Lying-claim fixture: a valid construction with a false claimed score changes nothing.</li>

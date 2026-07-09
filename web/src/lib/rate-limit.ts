@@ -31,6 +31,10 @@ function envNumber(name: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function maxBuckets(): number {
+  return Math.min(20_000, Math.max(100, Math.floor(envNumber("P42_RATE_LIMIT_MAX_BUCKETS", 5_000))));
+}
+
 export function rateLimitPolicy(id: string, defaults: { limit: number; windowMs: number }): RateLimitPolicy {
   const envPrefix = `P42_RATE_LIMIT_${id.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
   return {
@@ -53,6 +57,14 @@ export function enforceRateLimit(req: Request, policy: RateLimitPolicy, subject 
   const now = Date.now();
   const key = `${policy.id}:${subject}`;
   const state = store();
+  if (!state.buckets.has(key) && state.buckets.size >= maxBuckets()) {
+    for (const [bucketKey, bucket] of state.buckets) {
+      if (bucket.resetAt <= now) state.buckets.delete(bucketKey);
+    }
+    if (state.buckets.size >= maxBuckets()) {
+      throw new ApiError("rate limiter capacity exceeded", 503);
+    }
+  }
   const existing = state.buckets.get(key);
   const bucket = existing && existing.resetAt > now
     ? existing

@@ -59,6 +59,11 @@ DYNAMIC_DISPATCH_NAMES = {
     "setattr",
 }
 
+DISALLOWED_IMPORTED_SYMBOLS = {
+    "builtins": FLOAT_DTYPE_NAMES | DYNAMIC_DISPATCH_NAMES,
+    "os": {attribute for module, attribute in DISALLOWED_ATTRIBUTES if module == "os"},
+}
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -79,6 +84,8 @@ class ExactPathVisitor(ast.NodeVisitor):
     def __init__(self, path: Path):
         self.path = path
         self.findings: list[Finding] = []
+        self.module_aliases: dict[str, str] = {}
+        self.symbol_aliases: dict[str, tuple[str, str]] = {}
 
     def add(self, node: ast.AST, code: str, message: str) -> None:
         self.findings.append(
@@ -119,6 +126,8 @@ class ExactPathVisitor(ast.NodeVisitor):
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
             root = alias.name.split(".", 1)[0]
+            local_name = alias.asname or root
+            self.module_aliases[local_name] = root
             if root in DISALLOWED_IMPORT_ROOTS:
                 self.add(node, "R3_IMPORT", f"import of nondeterministic or float-prone module '{alias.name}'")
         self.generic_visit(node)
@@ -128,6 +137,15 @@ class ExactPathVisitor(ast.NodeVisitor):
             root = node.module.split(".", 1)[0]
             if root in DISALLOWED_IMPORT_ROOTS:
                 self.add(node, "R3_IMPORT", f"import from nondeterministic or float-prone module '{node.module}'")
+            for alias in node.names:
+                local_name = alias.asname or alias.name
+                self.symbol_aliases[local_name] = (root, alias.name)
+                if alias.name in DISALLOWED_IMPORTED_SYMBOLS.get(root, set()):
+                    self.add(
+                        node,
+                        "R3_IMPORT_ALIAS",
+                        f"imported alias '{local_name}' exposes banned symbol '{root}.{alias.name}'",
+                    )
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
@@ -138,6 +156,20 @@ class ExactPathVisitor(ast.NodeVisitor):
                 "R2_DYNAMIC_DISPATCH",
                 f"'{func.id}' dispatches to runtime-chosen code and defeats exact-path analysis",
             )
+        if isinstance(func, ast.Name) and func.id in self.symbol_aliases:
+            module, symbol = self.symbol_aliases[func.id]
+            if module == "builtins" and symbol in FLOAT_DTYPE_NAMES:
+                self.add(
+                    node,
+                    "R1_FLOAT_ALIAS",
+                    f"'{func.id}' aliases float-like callable '{module}.{symbol}'",
+                )
+            if module == "builtins" and symbol in DYNAMIC_DISPATCH_NAMES:
+                self.add(
+                    node,
+                    "R2_DYNAMIC_DISPATCH",
+                    f"'{func.id}' aliases runtime dispatch callable '{module}.{symbol}'",
+                )
         if isinstance(func, ast.Name) and func.id == "pow" and len(node.args) >= 2:
             exponent = node.args[1]
             safe = isinstance(exponent, ast.Constant) and isinstance(exponent.value, int) and exponent.value >= 0
@@ -156,9 +188,16 @@ class ExactPathVisitor(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if isinstance(node.value, ast.Name):
-            if node.value.id == "math":
+            module = self.module_aliases.get(node.value.id, node.value.id)
+            if module == "math":
                 self.add(node, "R1_MATH_ATTR", "math.* is banned on the certified path")
-            if (node.value.id, node.attr) in DISALLOWED_ATTRIBUTES:
+            if module == "builtins" and node.attr in DYNAMIC_DISPATCH_NAMES:
+                self.add(
+                    node,
+                    "R2_DYNAMIC_DISPATCH",
+                    f"runtime dispatch entry point '{node.value.id}.{node.attr}' is banned",
+                )
+            if (module, node.attr) in DISALLOWED_ATTRIBUTES:
                 self.add(
                     node,
                     "R3_NONDETERMINISTIC_ATTR",

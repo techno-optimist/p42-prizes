@@ -4,6 +4,11 @@ import { ApiError } from "@/lib/api";
 const HASH_PREFIX = "sha256:";
 const HASH_RE = /^sha256:[a-f0-9]{64}$/;
 
+export interface MutationPrincipal {
+  rateLimitSubject?: string;
+  authenticated: boolean;
+}
+
 function configuredKeyHashes(): string[] {
   const raw = process.env.P42_MUTATION_API_KEY_SHA256S ?? "";
   return raw
@@ -31,12 +36,17 @@ function safeEqual(left: string, right: string): boolean {
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);
 }
 
-export function enforceMutationApiKey(req: Request, scope: string): void {
-  if (process.env.P42_REQUIRE_MUTATION_API_KEY !== "1") return;
-
+export function enforceMutationApiKey(req: Request, scope: string): MutationPrincipal {
   const allowedHashes = configuredKeyHashes();
-  if (allowedHashes.length === 0 || allowedHashes.some((hash) => !HASH_RE.test(hash))) {
-    throw new ApiError("mutation API key gate is enabled but no valid key hashes are configured", 503);
+  if (allowedHashes.some((hash) => !HASH_RE.test(hash))) {
+    throw new ApiError("mutation API key configuration contains an invalid key hash", 503);
+  }
+
+  const localOptOut = process.env.NODE_ENV !== "production"
+    && process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS === "1";
+  if (allowedHashes.length === 0) {
+    if (localOptOut) return { authenticated: false };
+    throw new ApiError("mutation API authentication is not configured", 503);
   }
 
   const key = presentedKey(req);
@@ -50,6 +60,11 @@ export function enforceMutationApiKey(req: Request, scope: string): void {
   if (!allowedHashes.some((allowed) => safeEqual(allowed, keyHash))) {
     throw new ApiError("invalid P42 mutation API key", 403);
   }
+
+  return {
+    authenticated: true,
+    rateLimitSubject: `api-key:${keyHash}`,
+  };
 }
 
 export function mutationApiKeyHashForTests(key: string): string {

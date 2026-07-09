@@ -3,16 +3,21 @@ from __future__ import annotations
 
 import argparse
 from fractions import Fraction
-import json
 from pathlib import Path
 from typing import Any
 
-from p42_prizes.verdict import VerdictReport, rational_to_string, sha256_bytes
+from p42_prizes.verdict import (
+    VerdictReport,
+    rational_to_string,
+    read_bounded_solution,
+    strict_json_loads,
+    verifier_image_identity,
+)
 
 
 PROBLEM_ID = "autoconvolution-c1-upper"
-VERIFIER_VERSION = "0.1.0"
-VERIFIER_IMAGE = "sha256:local-dev"
+VERIFIER_VERSION = "0.1.1"
+VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
 N = 90000
 MAX_VALUE = 10**36
 MAX_SOLUTION_BYTES = 5 * 1024 * 1024
@@ -50,7 +55,7 @@ def parse_solution(raw: bytes) -> list[int]:
             f"solution is {len(raw)} bytes; limit is {MAX_SOLUTION_BYTES}",
         )
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = strict_json_loads(raw)
     except Exception as exc:
         raise VerifierFailure("MALFORMED_JSON", str(exc)) from exc
 
@@ -132,8 +137,16 @@ def compute_score(values: list[int]) -> tuple[Fraction, dict[str, Any]]:
 
 
 def report_for_solution(path: Path) -> VerdictReport:
-    raw = path.read_bytes()
-    solution_hash = sha256_bytes(raw)
+    solution = read_bounded_solution(path, MAX_SOLUTION_BYTES)
+    if solution.data is None:
+        return solution.failure_report(
+            problem_id=PROBLEM_ID,
+            verifier_version=VERIFIER_VERSION,
+            verifier_image=VERIFIER_IMAGE,
+            fallback_score=SEED_BEST,
+        )
+    raw = solution.data
+    solution_hash = solution.solution_hash
 
     try:
         values = parse_solution(raw)

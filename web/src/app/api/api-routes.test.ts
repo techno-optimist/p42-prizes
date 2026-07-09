@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Wallet } from "ethers";
 import { NextRequest } from "next/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as challengePost } from "@/app/api/challenges/route";
 import { GET as eventsGet } from "@/app/api/events/route";
 import { POST as coinbaseSessionPost } from "@/app/api/problems/[slug]/funding/coinbase-session/route";
@@ -48,14 +48,15 @@ describe("mutable API routes", () => {
     process.env.P42_PORTAL_STATE_PATH = path.join(stateDir, "state.json");
     resetPortalStateForTests();
     resetRateLimitsForTests();
+    process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS = "1";
   });
 
   afterEach(() => {
     resetPortalStateForTests();
     resetRateLimitsForTests();
     delete process.env.P42_PORTAL_STATE_PATH;
-    delete process.env.P42_REQUIRE_MUTATION_API_KEY;
     delete process.env.P42_MUTATION_API_KEY_SHA256S;
+    delete process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS;
     delete process.env.P42_RATE_LIMIT_COMMIT_LIMIT;
     delete process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS;
     rmSync(stateDir, { recursive: true, force: true });
@@ -103,7 +104,6 @@ describe("mutable API routes", () => {
   });
 
   it("can require a hashed mutation API key for production mutation routes", async () => {
-    process.env.P42_REQUIRE_MUTATION_API_KEY = "1";
     process.env.P42_MUTATION_API_KEY_SHA256S = mutationApiKeyHashForTests("agent-session-key");
     const signed = await signedCommitFields();
     const body = {
@@ -131,8 +131,49 @@ describe("mutable API routes", () => {
     expect(accepted.status).toBe(201);
   });
 
+  it("fails closed in production before parsing and ignores the local opt-out", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const unconfigured = await commitPost(
+        new Request("http://localhost/api/submissions/commit", { method: "POST", body: "{" }),
+      );
+      expect(unconfigured.status).toBe(503);
+      await expect(unconfigured.json()).resolves.toMatchObject({
+        error: "mutation API authentication is not configured",
+      });
+
+      process.env.P42_MUTATION_API_KEY_SHA256S = mutationApiKeyHashForTests("production-agent-key");
+      const unauthenticated = await commitPost(
+        new Request("http://localhost/api/submissions/commit", { method: "POST", body: "{" }),
+      );
+      expect(unauthenticated.status).toBe(401);
+      expect(unauthenticated.headers.get("WWW-Authenticate")).toContain("missing_api_key");
+    } finally {
+      vi.unstubAllEnvs();
+      delete process.env.P42_MUTATION_API_KEY_SHA256S;
+    }
+  });
+
+  it("rate-limits authenticated API keys in separate principal buckets", async () => {
+    process.env.P42_MUTATION_API_KEY_SHA256S = [
+      mutationApiKeyHashForTests("first-agent-key"),
+      mutationApiKeyHashForTests("second-agent-key"),
+    ].join(",");
+    process.env.P42_RATE_LIMIT_COMMIT_LIMIT = "1";
+    process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS = "60000";
+    resetRateLimitsForTests();
+
+    const malformed = (key: string) => commitPost(new Request("http://localhost/api/submissions/commit", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}` },
+      body: "{",
+    }));
+    expect((await malformed("first-agent-key")).status).toBe(400);
+    expect((await malformed("second-agent-key")).status).toBe(400);
+    expect((await malformed("first-agent-key")).status).toBe(429);
+  });
+
   it("fails closed when mutation API key enforcement is enabled without valid key hashes", async () => {
-    process.env.P42_REQUIRE_MUTATION_API_KEY = "1";
     process.env.P42_MUTATION_API_KEY_SHA256S = "agent-session-key";
 
     const response = await solutionsPost(
@@ -145,7 +186,7 @@ describe("mutable API routes", () => {
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
-      error: "mutation API key gate is enabled but no valid key hashes are configured",
+      error: "mutation API key configuration contains an invalid key hash",
     });
   });
 
@@ -256,6 +297,14 @@ describe("mutable API routes", () => {
       problemId: 1,
       actor: solverAddress.toLowerCase(),
     });
+
+    const firstPage = await eventsGet(new NextRequest("http://localhost/api/events?limit=2"));
+    const firstPageBody = await firstPage.json();
+    expect(firstPageBody).toMatchObject({ count: 2, total: 4, hasMore: true, chainComplete: false });
+    const secondPage = await eventsGet(
+      new NextRequest(`http://localhost/api/events?limit=2&after=${firstPageBody.nextAfter}`),
+    );
+    await expect(secondPage.json()).resolves.toMatchObject({ count: 2, total: 4, hasMore: false });
   });
 
   it("does not fake-open bonded challenges", async () => {
@@ -272,7 +321,7 @@ describe("mutable API routes", () => {
     });
   });
 
-  it("gates Coinbase Onramp sessions for testnet-only donation wallets", async () => {
+  it("gates Coinbase Onramp sessions while the per-problem pool is not deployed", async () => {
     const response = await coinbaseSessionPost(
       jsonRequest("/api/problems/hadamard-mini/funding/coinbase-session", {
         preset_fiat_amount: "25.00",
@@ -283,7 +332,7 @@ describe("mutable API routes", () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       error: "Coinbase Onramp is gated until a reviewed Base mainnet pool is configured",
-      donationWallet: { chain: "Base Sepolia", asset: "ETH" },
+      donationWallet: { chain: "Base Sepolia", asset: "ETH", address: null, status: "not-deployed" },
     });
   });
 
@@ -301,7 +350,7 @@ describe("mutable API routes", () => {
     expect(body.verdict).toMatchObject({
       valid: true,
       solution_hash: sha256SolutionCid(solutionRaw),
-      verifier_version: "0.1.0",
+      verifier_version: "0.1.1",
     });
     expect(readPortalState().events).toMatchObject([
       {
@@ -311,7 +360,7 @@ describe("mutable API routes", () => {
         payload: {
           agentName: "RouteAgent",
           solutionHash: sha256SolutionCid(solutionRaw),
-          verifierVersion: "0.1.0",
+          verifierVersion: "0.1.1",
         },
       },
     ]);

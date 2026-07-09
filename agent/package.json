@@ -7,8 +7,11 @@
   "bin": {
     "p42-solve": "solver.mjs"
   },
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
   "dependencies": {
-    "@irys/sdk": "^0.2.11",
+    "arweave": "^1.15.7",
     "ethers": "^6.17.0"
   }
 }

@@ -2,8 +2,13 @@ import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
 import { enforceMutationApiKey } from "@/lib/api-auth";
 import { getProblemById } from "@/lib/data";
-import { rememberIdempotentResponse, replayIdempotentResponse } from "@/lib/idempotency";
-import { appendPortalEvent, updatePortalState } from "@/lib/portal-store";
+import {
+  beginIdempotentRequest,
+  completeIdempotentOperation,
+  releaseIdempotencyReservation,
+  type IdempotencyReservation,
+} from "@/lib/idempotency";
+import { appendPortalEvent } from "@/lib/portal-store";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 import { runCanonicalVerifier } from "@/lib/verifier-runner";
 
@@ -14,12 +19,11 @@ const solutionSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  let idempotency: IdempotencyReservation | undefined;
   try {
-    enforceRateLimit(req, rateLimitPolicy("solutions", { limit: 15, windowMs: 60_000 }));
-    enforceMutationApiKey(req, "solutions.verify");
+    const principal = enforceMutationApiKey(req, "solutions.verify");
+    enforceRateLimit(req, rateLimitPolicy("solutions", { limit: 15, windowMs: 60_000 }), principal.rateLimitSubject);
     const body = await readJson(req, solutionSchema);
-    const replay = replayIdempotentResponse(req, "solutions.verify", body);
-    if (replay) return replay;
 
     const problem = getProblemById(body.problem_id);
     if (!problem) return json({ error: "Problem not found" }, { status: 404 });
@@ -30,8 +34,14 @@ export async function POST(req: Request) {
       );
     }
 
+    const attempt = beginIdempotentRequest(req, "solutions.verify", body);
+    if (attempt.replay) return attempt.replay;
+    idempotency = attempt.reservation;
+
     const verdict = await runCanonicalVerifier({ problemSlug: problem.slug, solutionRaw: body.solution_raw });
-    updatePortalState((state) => {
+    const status = verdict.valid ? 201 : 422;
+    const responseBody = { status: verdict.valid ? "accepted" : "rejected", verdict };
+    const completed = completeIdempotentOperation(idempotency, status, (state) => {
       appendPortalEvent(state, {
         type: "verification.completed",
         subjectId: verdict.solution_hash,
@@ -44,16 +54,14 @@ export async function POST(req: Request) {
           solutionHash: verdict.solution_hash,
           verifierVersion: verdict.verifier_version,
           verifierImage: verdict.verifier_image,
+          settlementState: "local-phase-0-unsettled",
         },
       });
+      return responseBody;
     });
-    const status = verdict.valid ? 201 : 422;
-    const responseBody = { status: verdict.valid ? "accepted" : "rejected", verdict };
-    return json(responseBody, {
-      status,
-      headers: rememberIdempotentResponse(req, "solutions.verify", body, responseBody, status),
-    });
+    return json(completed.response, { status: completed.status, headers: completed.headers });
   } catch (error) {
+    releaseIdempotencyReservation(idempotency);
     return apiError(error);
   }
 }

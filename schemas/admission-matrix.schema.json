@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://p42.xyz/schemas/admission-matrix-v1.json",
-  "title": "P42 Admission Matrix v1",
+  "$id": "https://p42.xyz/schemas/admission-matrix-v2.json",
+  "title": "P42 Admission Matrix v2",
   "type": "object",
   "required": [
     "schema_version",
@@ -11,55 +11,66 @@
     "verifier_image",
     "solution_hash",
     "report_hash",
+    "report_valid",
+    "report_improvement",
+    "report_reason",
+    "source",
     "requirements",
     "coverage",
     "hosts",
+    "evidence",
     "matrix_hash"
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "p42-admission-matrix/v1" },
+    "schema_version": { "const": "p42-admission-matrix/v2" },
     "generated_at_utc": { "type": "string", "minLength": 1 },
     "problem_id": { "type": "string", "minLength": 1 },
     "verifier_version": { "type": "string", "minLength": 1 },
     "verifier_image": { "type": "string", "minLength": 1 },
-    "solution_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-    "report_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "solution_hash": { "$ref": "#/$defs/hash" },
+    "report_hash": { "$ref": "#/$defs/hash" },
+    "report_valid": { "type": "boolean" },
+    "report_improvement": { "$ref": "#/$defs/rational" },
+    "report_reason": { "type": "string" },
+    "source": { "$ref": "#/$defs/source" },
     "requirements": {
       "type": "object",
       "required": [
         "min_hosts",
         "required_architectures",
         "min_distinct_glibc_versions",
-        "identical_report_hash"
+        "identical_report_hash",
+        "distinct_signed_host_keys",
+        "exact_immutable_image"
       ],
       "additionalProperties": false,
       "properties": {
-        "min_hosts": { "type": "integer", "minimum": 4 },
+        "min_hosts": { "const": 4 },
         "required_architectures": {
           "type": "array",
+          "prefixItems": [{ "const": "aarch64" }, { "const": "x86_64" }],
           "minItems": 2,
-          "items": { "enum": ["aarch64", "x86_64"] }
+          "maxItems": 2
         },
-        "min_distinct_glibc_versions": { "type": "integer", "minimum": 2 },
-        "identical_report_hash": { "const": true }
+        "min_distinct_glibc_versions": { "const": 2 },
+        "identical_report_hash": { "const": true },
+        "distinct_signed_host_keys": { "const": true },
+        "exact_immutable_image": { "const": true }
       }
     },
     "coverage": {
       "type": "object",
-      "required": ["host_count", "architectures", "glibc_versions"],
+      "required": ["host_count", "signed_host_count", "architectures", "glibc_versions", "execution_modes"],
       "additionalProperties": false,
       "properties": {
         "host_count": { "type": "integer", "minimum": 4 },
-        "architectures": {
+        "signed_host_count": { "type": "integer", "minimum": 0 },
+        "architectures": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "glibc_versions": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "execution_modes": {
           "type": "array",
-          "minItems": 2,
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "glibc_versions": {
-          "type": "array",
-          "minItems": 2,
-          "items": { "type": "string", "minLength": 1 }
+          "items": { "enum": ["checkout-local", "immutable-container"] }
         }
       }
     },
@@ -75,7 +86,9 @@
           "libc_name",
           "libc_version",
           "python_version",
-          "run_count"
+          "run_count",
+          "evidence_hash",
+          "key_fingerprint"
         ],
         "additionalProperties": false,
         "properties": {
@@ -85,10 +98,30 @@
           "libc_name": { "type": "string", "minLength": 1 },
           "libc_version": { "type": "string", "minLength": 1 },
           "python_version": { "type": "string", "minLength": 1 },
-          "run_count": { "type": "integer", "minimum": 2 }
+          "run_count": { "type": "integer", "minimum": 2 },
+          "evidence_hash": { "$ref": "#/$defs/hash" },
+          "key_fingerprint": { "type": ["string", "null"] }
         }
       }
     },
-    "matrix_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+    "evidence": {
+      "type": "array",
+      "minItems": 4,
+      "items": { "type": "object" }
+    },
+    "matrix_hash": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "rational": { "type": "string", "pattern": "^-?[0-9]+/[1-9][0-9]*$" },
+    "source": {
+      "type": "object",
+      "required": ["commit", "tree_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": { "type": "string", "minLength": 1 },
+        "tree_hash": { "$ref": "#/$defs/hash" }
+      }
+    }
   }
 }

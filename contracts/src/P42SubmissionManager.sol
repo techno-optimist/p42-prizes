@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {P42Math} from "./P42Math.sol";
+
 interface IP42PoolBalance {
     function funded() external view returns (uint256);
+    function fundingCap() external view returns (uint256);
 }
 
 interface IP42CreditLedger {
     function recordCredit(address solver, uint256 atoms) external;
     function voidCredit(address solver, uint256 atoms) external;
     function provisionalEntitlement(address solver, uint256 additionalAtoms) external view returns (uint256);
+    function closed() external view returns (bool);
 }
 
 /// @notice Commit/reveal/finalize scaffold for the Phase 1 testnet path.
@@ -26,6 +30,10 @@ contract P42SubmissionManager {
     error P42_BAD_WINDOW();
     error P42_EMPTY_COMMITMENT();
     error P42_EMPTY_DA_HASH();
+    error P42_LEDGER_CLOSED();
+    error P42_LEDGER_NOT_CLOSED();
+    error P42_COMMIT_NOT_MATURE(uint256 eligibleBlock, uint256 currentBlock);
+    error P42_COMMIT_EXPIRED(uint64 expiresAt, uint64 nowAt);
     error P42_EMPTY_SOLUTION_CID();
     error P42_BAD_COMMITMENT_REVEAL();
     error P42_NOT_SOLVER();
@@ -47,9 +55,14 @@ contract P42SubmissionManager {
     error P42_UNKNOWN_SUBMISSION();
     error P42_BOND_UNDERCOVERS_ENTITLEMENT(uint256 required, uint256 posted);
     error P42_NO_BOND_TO_CLAIM();
+    error P42_NO_FINALIZED_BOND();
+    error P42_ACTIVE_REVEALS_OR_CHALLENGES(uint256 revealed, uint256 challenged);
     error P42_TRANSFER_FAILED();
 
     uint16 public constant MAX_ALPHA_BPS = 10_000;
+    uint64 public constant MIN_COMMIT_AGE_BLOCKS = 1;
+    uint64 public constant MAX_CUMULATIVE_DISPUTE_WINDOWS = 3;
+    uint64 public constant MAX_CHALLENGE_WINDOW_SECONDS = 30 days;
 
     /// @notice Hard ceiling on on-chain solution bytes, bounding reveal-tx
     /// calldata gas. Problems whose certificates exceed this (e.g. the
@@ -170,11 +183,9 @@ contract P42SubmissionManager {
     /// finalized improvements earn the marginal over whatever frontier the
     /// open phase established.
     bool public fundingArmed;
-    /// @notice Timestamp funding was armed. Credit is bound to the phase a
-    /// submission was COMMITTED in (committedAt >= armedAt), NOT the phase it
-    /// finalizes in — otherwise a solver could commit+reveal a witness for free
-    /// during the open phase, withhold finalize across the arm, and collect the
-    /// full marginal for pre-arm (free) work.
+    /// @notice Timestamp funding was armed, retained for public chronology.
+    /// Economic phase identity is stored directly in paidAtCommit and never
+    /// inferred from timestamp ordering.
     uint64 public armedAt;
     /// @notice After a `pausedAll` recovery ends, no submission may be expired
     /// (bond forfeited) until a full fresh challenge window has passed, so an
@@ -190,7 +201,14 @@ contract P42SubmissionManager {
     int256 public bestScoreAtoms;
 
     mapping(uint256 => Submission) public submissions;
+    mapping(uint256 => uint64) public committedBlockOf;
+    mapping(uint256 => uint64) public maxDisputeEndsAtOf;
+    mapping(uint256 => bool) public paidAtCommit;
+    mapping(uint256 => bytes32) public solutionCidHashOf;
+    mapping(bytes32 => uint256) public prioritySubmissionOf;
     mapping(address => uint256) public claimableBondWei;
+    uint256 public revealedSubmissionCount;
+    uint256 public challengedSubmissionCount;
     /// @notice Per-submission finalization snapshot (see FinalizeInfo). Only
     /// meaningful once the submission reached Finalized/Voided.
     mapping(uint256 => FinalizeInfo) public finalizeInfo;
@@ -212,7 +230,9 @@ contract P42SubmissionManager {
         bytes32 commitDaHash,
         uint256 bondWei,
         uint256 poolAtSubmissionWei,
-        uint256 requiredBondWei
+        uint256 requiredBondWei,
+        bool paidAtCommit,
+        uint64 committedBlock
     );
     event Revealed(
         uint256 indexed submissionId,
@@ -240,10 +260,17 @@ contract P42SubmissionManager {
     );
     event SubmissionChallenged(uint256 indexed submissionId, address indexed challengeManager);
     event SubmissionChallengeResolved(uint256 indexed submissionId, bool challengerWins);
+    event SubmissionChallengeCancelled(uint256 indexed submissionId, uint64 challengeEndsAt);
     event SubmissionExpired(uint256 indexed submissionId, SubmissionStatus previousStatus);
     event BondToppedUp(uint256 indexed submissionId, address indexed solver, uint256 amount, uint256 newBondWei);
     event SubmissionBondClaimable(uint256 indexed submissionId, address indexed claimant, uint256 amount);
     event BondClaimed(address indexed claimant, uint256 amount);
+    event DuplicatePriorityAssigned(bytes32 indexed solutionCidHash, uint256 indexed submissionId);
+    event DuplicateSubmissionRejected(
+        bytes32 indexed solutionCidHash,
+        uint256 indexed rejectedSubmissionId,
+        uint256 indexed prioritySubmissionId
+    );
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert P42_NOT_OWNER();
@@ -280,7 +307,9 @@ contract P42SubmissionManager {
         require(owner_ != address(0), "P42_OWNER_ZERO");
         require(treasury_ != address(0), "P42_TREASURY_ZERO");
         if (alphaBps_ > MAX_ALPHA_BPS) revert P42_BAD_ALPHA();
-        if (challengeWindowSeconds_ == 0) revert P42_BAD_WINDOW();
+        if (challengeWindowSeconds_ == 0 || challengeWindowSeconds_ > MAX_CHALLENGE_WINDOW_SECONDS) {
+            revert P42_BAD_WINDOW();
+        }
         // On-chain DA needs a positive cap within the calldata-gas ceiling;
         // off-chain problems leave it 0 (unused).
         if (onchainDa_) {
@@ -353,43 +382,50 @@ contract P42SubmissionManager {
     }
 
     function requiredPostingBondForPool(uint256 poolWei) public view returns (uint256) {
-        uint256 scaled = poolWei * alphaBps / 10_000;
+        uint256 scaled = P42Math.mulDiv(poolWei, alphaBps, 10_000);
         return scaled > minPostingBondWei ? scaled : minPostingBondWei;
     }
 
     function requiredPostingBondNow() external view returns (uint256) {
-        return requiredPostingBondForPool(pool.funded());
+        return requiredPostingBondForPool(fundingArmed ? pool.fundingCap() : pool.funded());
     }
 
     function commit(bytes32 commitment, bytes32 commitDaHash) external payable returns (uint256 submissionId) {
         if (pausedAll) revert P42_PAUSED_ALL();
         if (pausedNewActions) revert P42_PAUSED_NEW_ACTIONS();
+        if (ledger.closed()) revert P42_LEDGER_CLOSED();
         if (commitment == bytes32(0)) revert P42_EMPTY_COMMITMENT();
         if (commitDaHash == bytes32(0)) revert P42_EMPTY_DA_HASH();
 
         uint256 poolAtSubmission = pool.funded();
-        uint256 required = requiredPostingBondForPool(poolAtSubmission);
+        bool isPaidCommit = fundingArmed;
+        uint256 required = requiredPostingBondForPool(isPaidCommit ? pool.fundingCap() : poolAtSubmission);
         if (msg.value < required) revert P42_INSUFFICIENT_POSTING_BOND(required, msg.value);
 
         submissionId = ++submissionCount;
-        submissions[submissionId] = Submission({
-            solver: msg.sender,
-            commitment: commitment,
-            commitDaHash: commitDaHash,
-            bondWei: msg.value,
-            poolAtSubmissionWei: poolAtSubmission,
-            requiredBondWei: required,
-            improvementAtoms: 0,
-            claimedScoreAtoms: 0,
-            solutionCid: "",
-            permanenceHash: bytes32(0),
-            committedAt: uint64(block.timestamp),
-            revealedAt: 0,
-            challengeEndsAt: 0,
-            status: SubmissionStatus.Committed
-        });
+        Submission storage submission = submissions[submissionId];
+        submission.solver = msg.sender;
+        submission.commitment = commitment;
+        submission.commitDaHash = commitDaHash;
+        submission.bondWei = msg.value;
+        submission.poolAtSubmissionWei = poolAtSubmission;
+        submission.requiredBondWei = required;
+        submission.committedAt = uint64(block.timestamp);
+        committedBlockOf[submissionId] = uint64(block.number);
+        paidAtCommit[submissionId] = isPaidCommit;
+        submission.status = SubmissionStatus.Committed;
         openSubmissionCount += 1;
-        emit Committed(submissionId, msg.sender, commitment, commitDaHash, msg.value, poolAtSubmission, required);
+        emit Committed(
+            submissionId,
+            msg.sender,
+            commitment,
+            commitDaHash,
+            msg.value,
+            poolAtSubmission,
+            required,
+            isPaidCommit,
+            uint64(block.number)
+        );
     }
 
     function topUpBond(uint256 submissionId) external payable {
@@ -434,6 +470,11 @@ contract P42SubmissionManager {
         Submission storage submission = _requireSubmission(submissionId);
         if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
         _requireStatus(submission, SubmissionStatus.Committed);
+        _requireCommitMature(submissionId);
+        uint64 commitExpiresAt = submission.committedAt + challengeWindowSeconds;
+        if (block.timestamp >= commitExpiresAt) {
+            revert P42_COMMIT_EXPIRED(commitExpiresAt, uint64(block.timestamp));
+        }
         if (bytes(solutionCid).length == 0) revert P42_EMPTY_SOLUTION_CID();
         // Seed gate (F1): the claimed ABSOLUTE score must strictly beat the
         // IMMUTABLE seed (the starting frontier). We gate on `seedScoreAtoms`,
@@ -457,26 +498,15 @@ contract P42SubmissionManager {
             revert P42_SCORE_ATOMS_OUT_OF_RANGE(claimedScoreAtoms);
         }
 
-        bytes32 revealedCommitment = keccak256(
-            bytes(commitPreimageWithDa(solutionCid, msg.sender, submission.commitDaHash, salt))
-        );
-        if (revealedCommitment != submission.commitment) revert P42_BAD_COMMITMENT_REVEAL();
+        if (
+            keccak256(bytes(commitPreimageWithDa(solutionCid, msg.sender, submission.commitDaHash, salt)))
+                != submission.commitment
+        ) revert P42_BAD_COMMITMENT_REVEAL();
 
         // Data availability: on-chain problems post the bytes here and prove
         // they hash to the committed anchor; off-chain problems must not bloat
         // calldata (the anchor alone gates their off-chain store).
-        if (onchainDa) {
-            if (solution.length == 0) revert P42_EMPTY_SOLUTION_BYTES();
-            if (solution.length > maxSolutionBytes) {
-                revert P42_SOLUTION_TOO_LARGE(maxSolutionBytes, solution.length);
-            }
-            bytes32 got = sha256(solution);
-            if (got != submission.commitDaHash) {
-                revert P42_SOLUTION_HASH_MISMATCH(submission.commitDaHash, got);
-            }
-        } else if (solution.length != 0) {
-            revert P42_UNEXPECTED_ONCHAIN_BYTES();
-        }
+        _validateSolutionDa(submission.commitDaHash, solution);
 
         uint64 challengeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
         submission.solutionCid = solutionCid;
@@ -484,7 +514,9 @@ contract P42SubmissionManager {
         submission.improvementAtoms = improvementAtoms;
         submission.revealedAt = uint64(block.timestamp);
         submission.challengeEndsAt = challengeEndsAt;
-        submission.status = SubmissionStatus.Revealed;
+        maxDisputeEndsAtOf[submissionId] =
+            uint64(block.timestamp) + challengeWindowSeconds * MAX_CUMULATIVE_DISPUTE_WINDOWS;
+        _assignDuplicatePriority(submissionId, solutionCid);
 
         emit Revealed(
             submissionId, msg.sender, solutionCid, improvementAtoms, claimedScoreAtoms, challengeEndsAt, solution.length
@@ -502,7 +534,7 @@ contract P42SubmissionManager {
     /// superseded by a better finalized score). The frontier advances on every
     /// non-zero marginal in BOTH phases; ledger credit is recorded ONLY for
     /// submissions COMMITTED after funding was armed (creditAtoms =
-    /// fundingArmed && committedAt >= armedAt ? marginal : 0) — an
+    /// paidAtCommit[submissionId] ? marginal : 0) — an
     /// open-phase witness posting establishes the public frontier for free.
     /// The ledger sums the paid marginals, so each solver's pool share is
     /// exactly their marginal frontier reduction over the total reduction — a
@@ -517,6 +549,17 @@ contract P42SubmissionManager {
         _requireStatus(submission, SubmissionStatus.Revealed);
         if (block.timestamp < submission.challengeEndsAt) {
             revert P42_CHALLENGE_WINDOW_OPEN(submission.challengeEndsAt, uint64(block.timestamp));
+        }
+
+        bytes32 solutionCidHash = solutionCidHashOf[submissionId];
+        uint256 priorityId = prioritySubmissionOf[solutionCidHash];
+        if (priorityId != submissionId) {
+            submission.status = SubmissionStatus.Rejected;
+            revealedSubmissionCount -= 1;
+            _makeBondClaimable(submissionId, submission.solver);
+            _decrementOpenSubmission();
+            emit DuplicateSubmissionRejected(solutionCidHash, submissionId, priorityId);
+            return;
         }
 
         address solver = submission.solver;
@@ -535,15 +578,14 @@ contract P42SubmissionManager {
         // if it finalizes post-arm), which is what closes the withhold-across-
         // the-arm leak. The frontier still advances for free (see below, gated
         // on `marginal`), it just never earns.
-        uint256 creditAtoms = (fundingArmed && submission.committedAt >= armedAt) ? marginal : 0;
+        uint256 creditAtoms = paidAtCommit[submissionId] ? marginal : 0;
 
-        // The bond must cover alpha * the entitlement this finalization is
-        // claiming, sized against the MARGINAL credit. A superseded or
-        // open-phase submission claims nothing (creditAtoms == 0), so its
-        // bond is trivially sufficient and is simply returned.
+        // A paid finalization is collateralized against the entire immutable
+        // funding cap, not the balance that happens to exist today. Future
+        // public donations therefore cannot increase the solver's payout above
+        // the amount whose fraud risk was bonded.
         if (creditAtoms != 0) {
-            uint256 finalizingEntitlementWei = ledger.provisionalEntitlement(solver, creditAtoms);
-            uint256 required = requiredPostingBondForPool(finalizingEntitlementWei);
+            uint256 required = requiredPostingBondForPool(pool.fundingCap());
             if (submission.bondWei < required) {
                 revert P42_BOND_UNDERCOVERS_ENTITLEMENT(required, submission.bondWei);
             }
@@ -551,12 +593,18 @@ contract P42SubmissionManager {
 
         submission.permanenceHash = permanenceHash;
         submission.status = SubmissionStatus.Finalized;
+        revealedSubmissionCount -= 1;
         // Recovery snapshot: persist the frontier this finalize advanced from
         // and the marginal it was credited (0 for superseded AND open-phase
         // finalizes), so a fraudulent finalize can later be reversed exactly
         // by voidFinalize.
         finalizeInfo[submissionId] = FinalizeInfo({prevBestScoreAtoms: bestScoreAtoms, creditAtoms: creditAtoms});
-        _makeBondClaimable(submissionId, solver);
+        // Credit-bearing collateral remains live until close fixes the final
+        // pool and denominator. Superseded and unpaid witness submissions have
+        // no economic claim, so their bonds can be returned immediately.
+        if (creditAtoms == 0) {
+            _makeBondClaimable(submissionId, solver);
+        }
         _decrementOpenSubmission();
         if (marginal != 0) {
             bestScoreAtoms = claimed;
@@ -574,6 +622,18 @@ contract P42SubmissionManager {
             permanenceHash,
             pool.funded()
         );
+    }
+
+    /// @notice Makes retained paid-finalize collateral claimable once the
+    /// ledger is closed and no further legitimate funding can enter the pool.
+    /// Permissionless execution avoids turning bond return into a solver
+    /// liveness dependency; proceeds always accrue to the recorded solver.
+    function releaseFinalizedBond(uint256 submissionId) external {
+        if (!ledger.closed()) revert P42_LEDGER_NOT_CLOSED();
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Finalized);
+        if (submission.bondWei == 0) revert P42_NO_FINALIZED_BOND();
+        _makeBondClaimable(submissionId, submission.solver);
     }
 
     /// @notice Governance recovery for a POISONED frontier: a fraudulent
@@ -605,11 +665,18 @@ contract P42SubmissionManager {
     /// Together these make the void an exact inverse with no double-accounting:
     /// totalCreditAtoms keeps telescoping over the PAID frontier segment.
     ///
-    /// Deliberately NOT touched: the solver's posting bond (already
-    /// claimable/claimed — the economic penalty for the fraud is a separate
-    /// challenge/slash concern; this only corrects the frontier + credit).
+    /// Collateral policy: a paid finalize keeps its bond live until close. If
+    /// governance voids that credit-bearing poison before close, the still-live
+    /// bond is forfeited to treasury. Zero-credit/open-phase finalizes already
+    /// made their bond claimable, so their zero stored bond is left idempotently
+    /// untouched by the same transition.
     function voidFinalize(uint256 submissionId) external onlyOwner {
         if (!pausedAll) revert P42_NOT_PAUSED_ALL();
+        uint256 revealed = revealedSubmissionCount;
+        uint256 challenged = challengedSubmissionCount;
+        if (revealed != 0 || challenged != 0) {
+            revert P42_ACTIVE_REVEALS_OR_CHALLENGES(revealed, challenged);
+        }
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Finalized);
         FinalizeInfo storage info = finalizeInfo[submissionId];
@@ -627,6 +694,9 @@ contract P42SubmissionManager {
         bestScoreAtoms = restored;
         if (creditAtoms > 0) {
             ledger.voidCredit(submission.solver, creditAtoms);
+            _makeBondClaimable(submissionId, treasury);
+        } else {
+            _makeBondClaimable(submissionId, submission.solver);
         }
         emit FinalizeVoided(submissionId, submission.solver, creditAtoms, restored);
     }
@@ -634,10 +704,12 @@ contract P42SubmissionManager {
     function markChallenged(uint256 submissionId) external onlyChallengeManager {
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Revealed);
-        if (block.timestamp > submission.challengeEndsAt) {
+        if (block.timestamp >= submission.challengeEndsAt) {
             revert P42_CHALLENGE_WINDOW_CLOSED(submission.challengeEndsAt, uint64(block.timestamp));
         }
         submission.status = SubmissionStatus.Challenged;
+        revealedSubmissionCount -= 1;
+        challengedSubmissionCount += 1;
         emit SubmissionChallenged(submissionId, msg.sender);
     }
 
@@ -647,6 +719,7 @@ contract P42SubmissionManager {
     {
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Challenged);
+        challengedSubmissionCount -= 1;
         if (challengerWins) {
             submission.status = SubmissionStatus.Rejected;
             // The rejected solver's forfeited posting bond is routed to the
@@ -656,14 +729,53 @@ contract P42SubmissionManager {
             _makeBondClaimable(submissionId, beneficiary);
             _decrementOpenSubmission();
         } else {
+            bytes32 solutionCidHash = solutionCidHashOf[submissionId];
+            uint256 priorityId = prioritySubmissionOf[solutionCidHash];
+            if (priorityId != submissionId) {
+                submission.status = SubmissionStatus.Rejected;
+                _makeBondClaimable(submissionId, submission.solver);
+                _decrementOpenSubmission();
+                emit DuplicateSubmissionRejected(solutionCidHash, submissionId, priorityId);
+                emit SubmissionChallengeResolved(submissionId, challengerWins);
+                return;
+            }
             submission.status = SubmissionStatus.Revealed;
+            revealedSubmissionCount += 1;
             // Re-arm a fresh full challenge window. Without this the submission
             // returns to Revealed with the STALE pre-challenge challengeEndsAt,
             // so expireRevealed could immediately strip the prevailing solver's
             // bond before they have any chance to finalize (F5).
-            submission.challengeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
+            submission.challengeEndsAt = _boundedRearmDeadline(submissionId);
         }
         emit SubmissionChallengeResolved(submissionId, challengerWins);
+    }
+
+    /// @notice Cancels a still-pending resolver decision after its bond is
+    /// slashed. No verdict is applied; the submission returns to Revealed and
+    /// remains challengeable only within its original cumulative horizon.
+    function cancelChallenge(uint256 submissionId) external onlyChallengeManager {
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Challenged);
+        challengedSubmissionCount -= 1;
+        bytes32 solutionCidHash = solutionCidHashOf[submissionId];
+        uint256 priorityId = prioritySubmissionOf[solutionCidHash];
+        if (priorityId != submissionId) {
+            submission.status = SubmissionStatus.Rejected;
+            _makeBondClaimable(submissionId, submission.solver);
+            _decrementOpenSubmission();
+            emit DuplicateSubmissionRejected(solutionCidHash, submissionId, priorityId);
+            emit SubmissionChallengeCancelled(submissionId, 0);
+            return;
+        }
+        submission.status = SubmissionStatus.Revealed;
+        revealedSubmissionCount += 1;
+        submission.challengeEndsAt = _boundedRearmDeadline(submissionId);
+        emit SubmissionChallengeCancelled(submissionId, submission.challengeEndsAt);
+    }
+
+    function maxDisputeDeadline(uint256 submissionId) external view returns (uint64) {
+        _requireSubmission(submissionId);
+        return maxDisputeEndsAtOf[submissionId];
     }
 
     /// @notice The marginal credit (in score atoms) a submission would earn if
@@ -698,11 +810,9 @@ contract P42SubmissionManager {
     }
 
     function expireCommitted(uint256 submissionId) external {
-        // Recovery-freeze fairness: while pausedAll is set, reveal() is
-        // blocked, so an honest in-flight commit CANNOT act. Expiring it during
-        // the freeze would forfeit its bond to the treasury through no fault of
-        // the solver — the clock may run, but the toll gate stays shut until
-        // the recovery ends.
+        // A commit has an immutable reveal deadline. pausedAll prevents a
+        // third party from forfeiting its bond during recovery, but never turns
+        // an expired commitment back into a revealable priority claim.
         if (pausedAll) revert P42_PAUSED_ALL();
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Committed);
@@ -737,6 +847,7 @@ contract P42SubmissionManager {
             revert P42_PERMANENCE_GRACE_OPEN(expiryGraceUntil, uint64(block.timestamp));
         }
         submission.status = SubmissionStatus.Rejected;
+        revealedSubmissionCount -= 1;
         _makeBondClaimable(submissionId, treasury);
         _decrementOpenSubmission();
         emit SubmissionExpired(submissionId, SubmissionStatus.Revealed);
@@ -878,6 +989,24 @@ contract P42SubmissionManager {
         }
     }
 
+    function _requireCommitMature(uint256 submissionId) private view {
+        uint256 eligibleBlock = uint256(committedBlockOf[submissionId]) + MIN_COMMIT_AGE_BLOCKS;
+        if (block.number < eligibleBlock) revert P42_COMMIT_NOT_MATURE(eligibleBlock, block.number);
+    }
+
+    function _validateSolutionDa(bytes32 expectedHash, bytes calldata solution) private view {
+        if (onchainDa) {
+            if (solution.length == 0) revert P42_EMPTY_SOLUTION_BYTES();
+            if (solution.length > maxSolutionBytes) {
+                revert P42_SOLUTION_TOO_LARGE(maxSolutionBytes, solution.length);
+            }
+            bytes32 got = sha256(solution);
+            if (got != expectedHash) revert P42_SOLUTION_HASH_MISMATCH(expectedHash, got);
+        } else if (solution.length != 0) {
+            revert P42_UNEXPECTED_ONCHAIN_BYTES();
+        }
+    }
+
     function _makeBondClaimable(uint256 submissionId, address claimant) private {
         Submission storage submission = submissions[submissionId];
         uint256 bondWei = submission.bondWei;
@@ -889,5 +1018,40 @@ contract P42SubmissionManager {
 
     function _decrementOpenSubmission() private {
         if (openSubmissionCount > 0) openSubmissionCount -= 1;
+    }
+
+    function _boundedRearmDeadline(uint256 submissionId) private view returns (uint64) {
+        uint64 deadline = maxDisputeEndsAtOf[submissionId];
+        uint64 proposed = uint64(block.timestamp) + challengeWindowSeconds;
+        return proposed < deadline ? proposed : deadline;
+    }
+
+    function _rejectSupersededIfRevealed(uint256 submissionId, bytes32 solutionCidHash, uint256 priorityId) private {
+        Submission storage superseded = submissions[submissionId];
+        if (superseded.status != SubmissionStatus.Revealed) return;
+        superseded.status = SubmissionStatus.Rejected;
+        revealedSubmissionCount -= 1;
+        _makeBondClaimable(submissionId, superseded.solver);
+        _decrementOpenSubmission();
+        emit DuplicateSubmissionRejected(solutionCidHash, submissionId, priorityId);
+    }
+
+    function _assignDuplicatePriority(uint256 submissionId, string calldata solutionCid) private {
+        bytes32 solutionCidHash = keccak256(bytes(solutionCid));
+        solutionCidHashOf[submissionId] = solutionCidHash;
+        uint256 priorityId = prioritySubmissionOf[solutionCidHash];
+        Submission storage submission = submissions[submissionId];
+        if (priorityId == 0 || submissionId < priorityId) {
+            prioritySubmissionOf[solutionCidHash] = submissionId;
+            submission.status = SubmissionStatus.Revealed;
+            revealedSubmissionCount += 1;
+            emit DuplicatePriorityAssigned(solutionCidHash, submissionId);
+            if (priorityId != 0) _rejectSupersededIfRevealed(priorityId, solutionCidHash, submissionId);
+            return;
+        }
+        submission.status = SubmissionStatus.Rejected;
+        _makeBondClaimable(submissionId, submission.solver);
+        _decrementOpenSubmission();
+        emit DuplicateSubmissionRejected(solutionCidHash, submissionId, priorityId);
     }
 }

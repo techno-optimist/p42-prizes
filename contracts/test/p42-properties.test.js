@@ -11,6 +11,14 @@ const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
 // below stays exact.
 const SEED_SCORE_ATOMS = 1_000_000n;
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("property permanence receipt"));
+const FUNDING_CAP = ethers.parseEther("100");
+const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
+const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+
+async function nextEarliestClose() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
 
 async function expectCustomError(action, contract, errorName) {
   try {
@@ -50,6 +58,12 @@ async function increaseTime(seconds) {
   await ethers.provider.send("evm_mine", []);
 }
 
+async function advanceToEffectiveClose(ledger) {
+  const target = await ledger.effectiveEarliestCloseTimestamp();
+  const latest = await ethers.provider.getBlock("latest");
+  if (target > BigInt(latest.timestamp)) await increaseTime(target - BigInt(latest.timestamp));
+}
+
 function rng(seed) {
   let state = BigInt(seed);
   return () => {
@@ -82,11 +96,14 @@ function scenarioFromSeed(seed) {
 async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {}) {
   const [owner, treasury, resolver, ...participants] = await ethers.getSigners();
   const Pool = await ethers.getContractFactory("P42BountyPool");
-  const pool = await Pool.deploy(owner.address);
+  const pool = await Pool.deploy(owner.address, FUNDING_CAP);
   await pool.waitForDeployment();
 
   const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-  const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, feeBps);
+  const ledger = await Ledger.deploy(
+    await pool.getAddress(), owner.address, treasury.address, feeBps,
+    await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+  );
   await ledger.waitForDeployment();
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
@@ -110,7 +127,27 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   // OPEN-WITNESS-PHASE wiring: arm funding up front so the property scenarios
   // run in the PAID phase (credit bookkeeping unchanged) and can fund the pool.
   await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
+  const Registry = await ethers.getContractFactory("P42ProblemRegistry");
+  const registry = await Registry.deploy(owner.address);
+  await registry.waitForDeployment();
+  await registry.register({
+    specHash: ethers.id("properties-spec"),
+    verifierSourceHash: ethers.id("properties-source"),
+    verifierImageHash: ethers.id("properties-image"),
+    admissionMatrixHash: ethers.id("properties-matrix"),
+    metadataURI: "ipfs://properties-fixture",
+    pool: await pool.getAddress(),
+    ledger: await ledger.getAddress(),
+    submissionManager: await submissions.getAddress(),
+    challengeManager: owner.address,
+    challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
+    minImprovementAtoms: 1n,
+  });
+  await registry.freeze(1);
+  await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
   await submissions.connect(owner).armFunding();
+  await pool.connect(owner).setAcceptingFunds(true);
+  await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
   return { owner, treasury, resolver, participants, pool, ledger, submissions };
 }
@@ -201,6 +238,7 @@ describe("P42 contract property checks", function () {
         await pool.fund({ value: scenario.finalDonationWei });
       }
       assert.equal(await submissions.openSubmissionCount(), 0n);
+      await advanceToEffectiveClose(ledger);
       await ledger.connect(fixture.owner).close();
 
       const closedPoolBalance = await ledger.closedPoolBalance();
@@ -228,7 +266,7 @@ describe("P42 contract property checks", function () {
       assert.equal(dust >= 0n, true);
       assert.equal(dust < BigInt(expectedCredits.size), true);
     }
-    assert.equal(undercoveredCases > 0, true);
+    assert.equal(undercoveredCases, 0);
   });
 
   it("keeps sybil-split payout less than or equal to equivalent combined credit", async function () {
@@ -237,9 +275,12 @@ describe("P42 contract property checks", function () {
     const [owner, treasury, combined, splitA, splitB, honestA, honestB] = await ethers.getSigners();
 
     async function entitlements(credits) {
-      const pool = await Pool.deploy(owner.address);
+      const pool = await Pool.deploy(owner.address, FUNDING_CAP);
       await pool.waitForDeployment();
-      const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 0);
+      const ledger = await Ledger.deploy(
+        await pool.getAddress(), owner.address, treasury.address, 0,
+        await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+      );
       await ledger.waitForDeployment();
       await pool.connect(owner).setLedger(await ledger.getAddress());
       // This helper exercises ledger arithmetic only (credits are recorded
@@ -249,10 +290,31 @@ describe("P42 contract property checks", function () {
       const mock = await Mock.deploy(true);
       await mock.waitForDeployment();
       await pool.connect(owner).setSubmissionManager(await mock.getAddress());
+      const Registry = await ethers.getContractFactory("P42ProblemRegistry");
+      const registry = await Registry.deploy(owner.address);
+      await registry.waitForDeployment();
+      await registry.register({
+        specHash: ethers.id("ledger-spec"),
+        verifierSourceHash: ethers.id("ledger-source"),
+        verifierImageHash: ethers.id("ledger-image"),
+        admissionMatrixHash: ethers.id("ledger-matrix"),
+        metadataURI: "ipfs://ledger-fixture",
+        pool: await pool.getAddress(),
+        ledger: await ledger.getAddress(),
+        submissionManager: await mock.getAddress(),
+        challengeManager: owner.address,
+        challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
+        minImprovementAtoms: 1n,
+      });
+      await registry.freeze(1);
+      await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+      await pool.connect(owner).setAcceptingFunds(true);
       await pool.fund({ value: 10_003n });
       for (const [solver, atoms] of credits) {
         await ledger.connect(owner).recordCredit(solver.address, atoms);
       }
+      await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
+      await advanceToEffectiveClose(ledger);
       await ledger.connect(owner).close();
       const result = new Map();
       for (const [solver] of credits) {
@@ -289,18 +351,24 @@ describe("P42 contract property checks", function () {
     const Pool = await ethers.getContractFactory("P42BountyPool");
     const Ledger = await ethers.getContractFactory("P42PayoutLedger");
     const [owner, treasury] = await ethers.getSigners();
-    const pool = await Pool.deploy(owner.address);
+    const pool = await Pool.deploy(owner.address, FUNDING_CAP);
     await pool.waitForDeployment();
 
     // 250 bps (2.5%) is the maximum accepted fee.
-    const capped = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 250);
+    const capped = await Ledger.deploy(
+      await pool.getAddress(), owner.address, treasury.address, 250,
+      await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+    );
     await capped.waitForDeployment();
     assert.equal(await capped.feeBps(), 250n);
     assert.equal(await capped.MAX_FEE_BPS(), 250n);
 
     // Anything above the cap is rejected at construction.
     await expectCustomError(
-      Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 251),
+      Ledger.deploy(
+        await pool.getAddress(), owner.address, treasury.address, 251,
+        await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+      ),
       Ledger,
       "P42_FEE_TOO_HIGH"
     );

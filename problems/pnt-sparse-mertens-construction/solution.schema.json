@@ -1,14 +1,17 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/problems/pnt-sparse-mertens-construction/solution.schema.json",
+  "x-p42-max-bytes": 524288,
   "type": "object",
   "required": ["reach", "denominator", "printed_decimal", "support"],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "reach": { "const": 96000 },
+    "source": { "type": "string" },
     "denominator": {
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "maximum": 1000000000000000000000000000000000000
     },
     "printed_decimal": {
       "type": "string",
@@ -29,7 +32,9 @@
             "maximum": 96000
           },
           "value": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": -10000000000000000000000000000000000000,
+            "maximum": 10000000000000000000000000000000000000
           }
         }
       }

@@ -2,8 +2,13 @@ import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
 import { enforceMutationApiKey } from "@/lib/api-auth";
 import { getProblemById } from "@/lib/data";
-import { rememberIdempotentResponse, replayIdempotentResponse } from "@/lib/idempotency";
-import { commitHash, createCommit, verifySolverSignature } from "@/lib/portal-state";
+import {
+  beginIdempotentRequest,
+  completeIdempotentOperation,
+  releaseIdempotencyReservation,
+  type IdempotencyReservation,
+} from "@/lib/idempotency";
+import { commitHash, persistCommit, prepareCommit, verifySolverSignature } from "@/lib/portal-state";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
 const commitSchema = z.object({
@@ -17,12 +22,11 @@ const commitSchema = z.object({
 });
 
 export async function POST(req: Request) {
+  let idempotency: IdempotencyReservation | undefined;
   try {
-    enforceRateLimit(req, rateLimitPolicy("commit", { limit: 30, windowMs: 60_000 }));
-    enforceMutationApiKey(req, "submissions.commit");
+    const principal = enforceMutationApiKey(req, "submissions.commit");
+    enforceRateLimit(req, rateLimitPolicy("commit", { limit: 30, windowMs: 60_000 }), principal.rateLimitSubject);
     const body = await readJson(req, commitSchema);
-    const replay = replayIdempotentResponse(req, "submissions.commit", body);
-    if (replay) return replay;
 
     const problemId = body.problem_id;
     const problem = getProblemById(problemId);
@@ -61,7 +65,11 @@ export async function POST(req: Request) {
       });
     }
 
-    const commit = createCommit({
+    const attempt = beginIdempotentRequest(req, "submissions.commit", body);
+    if (attempt.replay) return attempt.replay;
+    idempotency = attempt.reservation;
+
+    const commit = prepareCommit({
       problemId,
       agentName: body.agent_name,
       solutionCid: body.solution_cid,
@@ -73,16 +81,22 @@ export async function POST(req: Request) {
     const responseBody = {
       commit,
       reveal_after: commit.createdAt,
+      expires_at: commit.expiresAt,
+      commit_domain: "local-phase-0",
+      chain_commit_version: "p42:v1",
+      chain_compatible: false,
       note: body.dev_salt
-        ? "Phase 0 portal computed the commit from dev_salt; production clients must precompute commit_hash and sign the authorization message off-server."
-        : "Commit accepted with solver signature over the P42 authorization message.",
+        ? "Local Phase 0 computed p42:v0 from dev_salt. This non-settlement commitment is not a chain p42:v1 commitment."
+        : "Local Phase 0 p42:v0 commit accepted with solver authorization. It is not a chain p42:v1 commitment.",
     };
-
-    return json(responseBody, {
-      status: 201,
-      headers: rememberIdempotentResponse(req, "submissions.commit", body, responseBody, 201),
+    const completed = completeIdempotentOperation(idempotency, 201, (state) => {
+      persistCommit(state, commit);
+      return responseBody;
     });
+
+    return json(completed.response, { status: completed.status, headers: completed.headers });
   } catch (error) {
+    releaseIdempotencyReservation(idempotency);
     return apiError(error);
   }
 }

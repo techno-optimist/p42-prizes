@@ -1,47 +1,90 @@
 # Adversarial Testnet Campaign Evidence
 
-Gate 1 is not green until the deployed Base Sepolia system survives a red-team
-campaign. This document defines the evidence artifact and validator. It does
-not replace the actual deployment, runner, resolver, DA retrieval, or indexer
-work.
+Gate 1 is not green until the exact deployed Base Sepolia release survives an
+independently reviewed red-team campaign. A schema-valid declaration is not
+enough: the validator resolves every artifact, verifies its SHA-256 digest,
+checks release files against the bound Git commit, and cross-checks captured
+`eth_getCode` results against contract addresses and runtime-bytecode hashes.
 
-## Command
+No production signer is registered in this repository. The gate remains open
+until the owner provisions a production trust registry and genuine evidence.
+
+## Validation Command
 
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli adversarial-campaign-validate \
   --report deployments/base-sepolia/adversarial-campaign.json \
+  --trust-registry /owner-controlled/p42-attestation-trust-registry.json \
+  --artifact-root /frozen/p42-prizes \
+  --chain-rpc-url "$BASE_SEPOLIA_RPC_URL" \
   --output deployments/base-sepolia/adversarial-campaign.normalized.json
 ```
 
-The command emits `p42-adversarial-testnet/v1` with a canonical
-`campaign_hash`. If the input already has `campaign_hash`, the command refuses
-mismatches.
+`--artifact-root` must be the local checkout whose `remote.origin.url` and Git
+object match `release_binding.repository_uri` and `git_commit`. Test registries
+are rejected unless `--allow-test-trust-registry` is explicitly passed; that
+flag is for local tests and cannot close Gate 1.
+
+`--chain-rpc-url` is queried for `eth_chainId`, `eth_getBlockByNumber`, and
+`eth_getCode` at each recorded evidence block. Captured chain evidence fails if
+it differs from the queried block hash or bytecode.
+
+The trust registry is supplied out of band from the campaign report. Each
+registration binds `p42-adversarial-testnet/v1`, a reviewer role, the reviewer's
+name/organization/professional email, Ed25519 public key, and validity window.
+A signature by a key invented inside the campaign packet is rejected.
+
+## Resolved Artifact Shape
+
+Every artifact field uses this object:
+
+```json
+{
+  "uri": "repo://deployments/base-sepolia/reconciliation/latest.json",
+  "local_path": "deployments/base-sepolia/reconciliation/latest.json",
+  "sha256": "sha256:<REAL-64-LOWERCASE-HEX>",
+  "created_at_utc": "<STRICT-RFC3339-DATE-TIME-WITH-TIMEZONE>"
+}
+```
+
+`local_path` must stay inside `--artifact-root`, exist as a regular file, and
+hash to `sha256`. URI/digest declarations without locally resolved bytes fail.
+All evidence `created_at_utc` values and attack/regression execution times must
+precede the final reviewer signatures.
+
+## Exact Release Binding
+
+`release_binding` contains the HTTPS repository URI, exact 40-character Git
+commit, network/chain ID, resolved deployment manifest, resolved configuration
+artifact, and exactly five required contracts. The deployment manifest,
+configuration artifact, and each source artifact must equal the bytes stored at
+the bound commit.
+
+Each contract contains:
+
+- `name`, deployed `address`, and `runtime_bytecode_hash`.
+- `source_artifact`, resolved from the bound Git commit.
+- `runtime_bytecode_artifact`, containing non-empty `0x` EVM bytecode whose
+  decoded bytes hash to `runtime_bytecode_hash`.
+- `chain_bytecode_artifact`, a resolved captured `eth_getCode` JSON-RPC result
+  with network, chain ID, address, block number/hash, and returned bytecode.
+
+The captured chain result must exactly match the resolved runtime bytecode.
 
 ## Required Attacks
 
-The campaign must include all six red-team attacks:
+The campaign must contain each attack exactly once with `status: "passed"`, a
+strict `executed_at_utc`, resolved `planted_artifact`, expected failure mode,
+observed defense, and resolved `evidence_artifact`:
 
-- `vesting_dilution_overpay`: early solver cannot withdraw against a stale
-  denominator; `claim()` is capped by final entitlement.
-- `empty_pool_bond_leverage`: posting bond scales with `pool_at_submission`;
-  self-funding after a low-bond commit does not make the submission finalize.
-- `leapfrog_sybil_split`: split improvements do not beat the equivalent
-  combined credit and late frontier moves dilute correctly.
-- `da_expiry_or_missing_payload`: an on-chain-DA reveal whose bytes do not hash
-  to `commitDaHash` reverts on-chain; a missing off-chain payload (the 3 large
-  problems) produces an operator challenge candidate. (`finalize` itself does
-  not gate on a permanence receipt — see `docs/DATA_AVAILABILITY.md`.)
-- `resolver_false_transcript`: false resolver decision cannot pass without a
-  public transcript hash / URI and bonded decision path.
-- `verifier_planted_exploit`: planted invalid solution is caught by the exact
-  verifier runner and alert bundle.
+- `vesting_dilution_overpay`
+- `empty_pool_bond_leverage`
+- `leapfrog_sybil_split`
+- `da_expiry_or_missing_payload`
+- `resolver_false_transcript`
+- `verifier_planted_exploit`
 
-Every attack must have `status: "passed"` plus the planted artifact, expected
-failure mode, observed defense, and evidence reference.
-
-## Required Invariants
-
-The report must explicitly prove:
+The report must also set all current invariants to true:
 
 - `claim_capped_by_final_entitlement`
 - `bond_uses_pool_at_submission`
@@ -51,102 +94,67 @@ The report must explicitly prove:
 - `sybil_split_not_profitable`
 - `reconciliation_ok`
 
-Open critical or high followups are rejected. A campaign with unresolved
-critical/high issues is useful evidence, but it is not Gate 1 signoff.
+Every regression requires `command`, `status: "passed"`, `executed_at_utc`, and
+a resolved `output_artifact`. Open critical/high followups are rejected.
 
-## Minimal Shape
+## Review And Signature Rules
+
+Reviewers use the roles `external-auditor`, `engineering-owner`, optional
+`ops-reviewer`, or optional `resolver-reviewer`. External auditor and
+engineering owner are mandatory, must be distinct people with distinct keys,
+and must belong to different organizations. The external auditor also supplies
+an engagement identifier and resolved engagement artifact.
+
+Each listed reviewer signs the canonical unsigned `campaign_hash` with its
+pre-registered Ed25519 key. An attestation contains `algorithm`, `signer_role`,
+`public_key`, `signed_hash`, `signed_at_utc`, and `signature`. The signature
+time must match the reviewer's recorded signoff time, occur after all campaign
+execution/evidence creation, and occur no later than campaign completion.
+
+## Deliberately Invalid Template
+
+The following is a field guide, not acceptable evidence. It deliberately uses
+placeholders and omits five required attacks, contract entries, and signatures
+so it cannot accidentally green-light Gate 1.
 
 ```json
 {
   "schema_version": "p42-adversarial-testnet/v1",
-  "campaign_id": "base-sepolia-gate1-2026-07",
-  "completed_at_utc": "2026-07-08T20:00:00Z",
+  "campaign_id": "<REAL-CAMPAIGN-ID>",
+  "started_at_utc": "<RFC3339>",
+  "completed_at_utc": "<RFC3339>",
   "environment": "base-sepolia",
-  "deployment_manifest": "deployments/base-sepolia/p42-prizes.json",
-  "reconciliation_report": "deployments/base-sepolia/reconciliation/latest.json",
-  "runner_alert_bundle": "runs/base-sepolia/verifier-alerts.json",
-  "transcript_archive": "arweave://example-transcript-bundle",
-  "reviewers": [
-    {
-      "role": "red-team",
-      "name": "Red Team Lead",
-      "signed_at_utc": "2026-07-08T20:00:00Z"
-    },
-    {
-      "role": "engineering",
-      "name": "Engineering Lead",
-      "signed_at_utc": "2026-07-08T20:00:00Z"
-    }
-  ],
-  "invariants_checked": {
-    "claim_capped_by_final_entitlement": true,
-    "bond_uses_pool_at_submission": true,
-    "da_bound_at_commit_and_finalize": true,
-    "resolver_transcript_required": true,
-    "invalid_verifier_alerted": true,
-    "sybil_split_not_profitable": true,
-    "reconciliation_ok": true
+  "release_binding": {
+    "repository_uri": "https://github.com/techno-optimist/p42-prizes",
+    "git_commit": "<EXACT-COMMIT>",
+    "network": "base-sepolia",
+    "chain_id": 84532,
+    "deployment_manifest": "<RESOLVED-ARTIFACT-OBJECT>",
+    "configuration_artifact": "<RESOLVED-ARTIFACT-OBJECT>",
+    "contracts": []
   },
+  "deployment_manifest": "<SAME-RESOLVED-ARTIFACT-OBJECT>",
+  "reconciliation_report": "<RESOLVED-ARTIFACT-OBJECT>",
+  "runner_alert_bundle": "<RESOLVED-ARTIFACT-OBJECT>",
+  "transcript_archive": "<RESOLVED-ARTIFACT-OBJECT>",
+  "reviewers": [],
+  "invariants_checked": {},
   "attacks": [
     {
       "attack_id": "vesting_dilution_overpay",
       "status": "passed",
-      "planted_artifact": "tx:0x1111",
-      "expected_failure_mode": "early claim remains capped after later larger delta",
-      "observed_defense": "claimable amount equals final denominator entitlement",
-      "evidence": "contracts test plus reconciliation row 1"
-    },
-    {
-      "attack_id": "empty_pool_bond_leverage",
-      "status": "passed",
-      "planted_artifact": "tx:0x2222",
-      "expected_failure_mode": "low-bond empty-pool submission cannot finalize after self-funding",
-      "observed_defense": "finalization rejected until required top-up",
-      "evidence": "submission manager trace row 2"
-    },
-    {
-      "attack_id": "leapfrog_sybil_split",
-      "status": "passed",
-      "planted_artifact": "tx:0x3333",
-      "expected_failure_mode": "split submissions do not improve payout over combined credit",
-      "observed_defense": "sybil payout bounded by combined credit",
-      "evidence": "property test seed 42"
-    },
-    {
-      "attack_id": "da_expiry_or_missing_payload",
-      "status": "passed",
-      "planted_artifact": "da-receipt:missing-arweave",
-      "expected_failure_mode": "finalize or alert blocks missing payload",
-      "observed_defense": "runner alert challenge_or_block_finalize",
-      "evidence": "runner alerts sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    },
-    {
-      "attack_id": "resolver_false_transcript",
-      "status": "passed",
-      "planted_artifact": "resolver-decision:bad-verdict",
-      "expected_failure_mode": "resolver cannot resolve without transcript evidence",
-      "observed_defense": "challenge manager rejected missing transcript hash",
-      "evidence": "challenge tx 0x4444"
-    },
-    {
-      "attack_id": "verifier_planted_exploit",
-      "status": "passed",
-      "planted_artifact": "submissions/planted-invalid/solution.json",
-      "expected_failure_mode": "invalid solution is not finalized",
-      "observed_defense": "runner emitted verifier_rejected alert",
-      "evidence": "runner transcript sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "executed_at_utc": "<RFC3339>",
+      "planted_artifact": "<RESOLVED-ARTIFACT-OBJECT>",
+      "expected_failure_mode": "<OBSERVABLE-EXPECTATION>",
+      "observed_defense": "<OBSERVED-RESULT>",
+      "evidence_artifact": "<RESOLVED-ARTIFACT-OBJECT>"
     }
   ],
-  "regressions": [
-    {
-      "command": "make contracts-test",
-      "status": "passed"
-    }
-  ],
-  "open_followups": []
+  "regressions": [],
+  "open_followups": [],
+  "attestations": []
 }
 ```
 
-Run the validator to add `campaign_hash`. A `local-rehearsal` report can test
-the process before deployment, but Gate 1 requires `environment: "base-sepolia"`
-and real deployment/reconciliation/transcript artifacts.
+A `local-rehearsal` report can test the process. Gate 1 still requires a real
+Base Sepolia deployment, all required evidence, and trusted independent review.

@@ -1,126 +1,109 @@
-# Incident Drill Evidence
+# Incident Drill And Disclosure Evidence
 
-Gate 2 requires a completed incident-response tabletop and a live responsible
-disclosure / bug-bounty path. This document defines the artifact agents can
-validate. It does not close the gate by itself; a real security owner must sign
-the report.
+**Status: OPEN.** No completed drill, live disclosure activation, or required
+human signature is supplied here. This is a fail-closed handoff template.
 
-## Command
+## Validation Contract
 
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli incident-drill-validate \
-  --report runs/incident-drills/2026-07-gate2-tabletop.json \
-  --output runs/incident-drills/2026-07-gate2-tabletop.normalized.json
+  --report runs/incident-drills/gate2-tabletop.json \
+  --output runs/incident-drills/gate2-tabletop.normalized.json
 ```
 
-The command emits `p42-incident-drill/v1` with a canonical `drill_hash`. If the
-input already has `drill_hash`, the command refuses mismatches.
+The `p42-incident-drill/v1` validator requires:
 
-## Required Proof
+- distinct evidenced identities and keys for facilitator, incident lead,
+  communications owner, security owner, and independent external counsel;
+- binding to the exact chain, release commit, deployment/configuration hashes,
+  five contract addresses, source artifacts, and runtime bytecode;
+- at least two distinct preserved artifacts, an ordered in-window timeline,
+  timestamped decisions, invariant checks, and hashed regression input/output;
+- an actually active public disclosure path with a hashed policy, live public
+  and private-reporting URIs, verified mailbox, counsel approval before
+  activation, and hashed activation evidence;
+- no open critical/high followup and future due dates for remaining items;
+- exercise and activation completion before signoff; and
+- valid Ed25519 signatures over the canonical `drill_hash` from the security
+  owner, facilitator, and external counsel.
 
-A valid report must include:
+A valid signature proves key control, not the signer's identity or that a URI is
+live. The owner must verify identities, retrieve artifacts, recompute hashes,
+test both reporting paths, and inspect the bound deployment.
 
-- named facilitator, incident lead, comms owner, and security owner,
-- one concrete scenario such as `verifier_bug`, `da_outage`, or
-  `key_compromise`,
-- preserved evidence references such as tx hashes, transcript hashes, request
-  ids, logs, or signed notes,
-- at least three timeline entries,
-- at least two decisions with rationale and owner,
-- explicit checks that `claim()` is not paused, resolver transcript evidence is
-  required, scope is problem-local when possible, public copy distinguishes
-  testnet from real ETH, and evidence preservation is complete,
-- at least one passed regression artifact,
-- a status-channel draft and postmortem owner,
-- a bug-bounty / disclosure section linked to `docs/BUG_BOUNTY.md`,
-- security-owner signoff that explicitly mentions Gate 2 incident readiness.
+## Signature Payload
 
-The validator rejects placeholders such as `TBD`, `TODO`, `pending`, and
-angle-bracket fill-ins.
+Remove `drill_hash` and `attestations`, canonicalize the remaining JSON, and
+sign:
 
-## Minimal Shape
+```text
+P42-ATTESTATION-V1
+p42-incident-drill/v1
+sha256:<canonical-payload-digest>
+```
+
+Agents may run the drill and prepare evidence. They must not sign as the named
+security owner, facilitator, or counsel.
+
+## Drill Checklist
+
+- Freeze a target release and verify chain ID, contract addresses, runtime
+  bytecode, deployment manifest, and configuration hashes.
+- Name distinct participants and independently verify identity evidence.
+- Choose one concrete scenario: verifier bug, DA outage, key compromise,
+  resolver misbehavior, contract loss, chain reorg, or API abuse.
+- Record UTC start/completion, strictly ordered events, timestamped decisions,
+  owners by role, request/transaction IDs, logs, transcript/input hashes, and
+  public-copy checks.
+- Prove `claim()` remains available, mitigation is problem-local where
+  possible, resolver action requires transcript evidence, and testnet/real-ETH
+  language remains accurate.
+- Run and hash at least one relevant regression input and output.
+- Exercise the real status channel and draft the initial notice without
+  claiming facts not known during the scenario.
+- Test the public policy URI, private advisory/reporting URI, and disclosure
+  mailbox from outside the owner session.
+- Verify counsel approved the exact hashed policy before activation; capture
+  activation evidence and timestamp.
+- Resolve every critical/high followup before signoff.
+- Have the security owner, facilitator, and counsel inspect and sign the final
+  canonical hash.
+
+## Deliberately Invalid Template
 
 ```json
 {
   "schema_version": "p42-incident-drill/v1",
-  "drill_id": "gate2-verifier-bug-tabletop-2026-07",
-  "completed_at_utc": "2026-07-08T18:00:00Z",
+  "drill_id": "<REQUIRED_DRILL_ID>",
+  "started_at_utc": "<REQUIRED_START_UTC>",
+  "completed_at_utc": "<REQUIRED_LATER_COMPLETION_UTC>",
   "environment": "tabletop",
-  "severity": "high",
-  "scenario": "verifier_bug",
-  "facilitator": "Security Lead",
-  "incident_lead": "Ops Lead",
-  "comms_owner": "Comms Lead",
-  "security_owner": "Security Lead",
-  "affected_scope": "one locked Base Sepolia problem",
-  "evidence_preserved": [
-    "runner transcript sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "incident notes sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-  ],
-  "timeline": [
-    {
-      "time_utc": "2026-07-08T17:00:00Z",
-      "event": "Verifier rejection mismatch detected",
-      "owner": "Ops Lead"
-    },
-    {
-      "time_utc": "2026-07-08T17:15:00Z",
-      "event": "Affected problem admissions frozen",
-      "owner": "Security Lead"
-    },
-    {
-      "time_utc": "2026-07-08T17:30:00Z",
-      "event": "Initial status draft approved",
-      "owner": "Comms Lead"
-    }
-  ],
-  "decisions": [
-    {
-      "decision": "Freeze only affected problem admissions",
-      "rationale": "Unrelated finalized claims must remain available",
-      "owner": "Security Lead"
-    },
-    {
-      "decision": "Require N-host rerun before unfreeze",
-      "rationale": "Verifier determinism evidence is the release gate",
-      "owner": "Verifier Lead"
-    }
-  ],
-  "invariants_checked": {
-    "claim_not_paused": true,
-    "resolver_transcript_required": true,
-    "problem_scope_isolated": true,
-    "public_copy_testnet_vs_eth_checked": true,
-    "evidence_preservation_complete": true
-  },
-  "regressions": [
-    {
-      "artifact": "tests/test_cli_and_core.py::test_runner_alerts_mark_invalid_transcript_as_challenge_candidate",
-      "status": "passed",
-      "command": "python3 -m pytest tests/test_cli_and_core.py -k runner_alerts"
-    }
-  ],
-  "communications": {
-    "initial_status_draft": "A verifier issue is being investigated on testnet. No real ETH is at risk.",
-    "status_channel": "https://projectforty2.ai/status",
-    "postmortem_owner": "Security Lead"
-  },
+  "scenario": "<REQUIRED_SCENARIO>",
+  "release_binding": "<REQUIRED_CHAIN_CONTRACT_CONFIG_BINDING>",
+  "facilitator": "<REQUIRED_IDENTITY_OBJECT>",
+  "incident_lead": "<REQUIRED_DISTINCT_IDENTITY_OBJECT>",
+  "comms_owner": "<REQUIRED_DISTINCT_IDENTITY_OBJECT>",
+  "security_owner": "<REQUIRED_DISTINCT_IDENTITY_OBJECT>",
+  "external_counsel": "<REQUIRED_INDEPENDENT_COUNSEL_IDENTITY>",
+  "evidence_preserved": ["<AT_LEAST_TWO_REAL_HASHED_ARTIFACTS>"],
+  "timeline": ["<STRICTLY_ORDERED_REAL_EVENTS>"],
+  "decisions": ["<AT_LEAST_TWO_TIMESTAMPED_DECISIONS>"],
   "bug_bounty": {
-    "policy_path": "docs/BUG_BOUNTY.md",
-    "disclosure_contact": "security@projectforty2.ai",
-    "triage_sla_hours": 48,
-    "bounty_owner": "Security Lead",
-    "scope_summary": "P42 Prizes contracts, verifier runner, portal mutation APIs, and disclosure-safe testnet flows",
-    "safe_harbor_reviewed_by": "Counsel Name"
+    "status": "<MUST_BE_ACTIVE_NOT_DRAFT>",
+    "activation_evidence": "<REQUIRED_HASHED_ARTIFACT>"
   },
-  "open_followups": [],
-  "human_signoff": {
-    "security_owner": "Security Lead",
-    "signed_at_utc": "2026-07-08T18:00:00Z",
-    "statement": "I approve this Gate 2 incident readiness drill evidence for the P42 Prizes incident-response gate."
-  }
+  "attestations": ["<ABSENT_UNTIL_THREE_REAL_SIGNERS_SIGN>"]
 }
 ```
 
-Run the command above to add the `drill_hash` before committing a completed
-report.
+## Remaining External/Owner Blockers
+
+- Name and verify the facilitator, security owner, incident lead, communications
+  owner, and external counsel.
+- Obtain counsel approval of final disclosure/safe-harbor terms.
+- Enable and externally test a private reporting path and monitored mailbox.
+- Publish the reviewed policy and record real activation evidence.
+- Run the drill against the exact audited deployment and collect the three
+  required signatures.
+
+Until then, incident/disclosure Gate 2 evidence is absent.

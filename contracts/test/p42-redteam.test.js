@@ -6,6 +6,14 @@ import { network } from "hardhat";
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
 const RESOLVER_FRAUD_WINDOW_SECONDS = 24n * 60n * 60n;
+const FUNDING_CAP = ethers.parseEther("100");
+const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
+const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+
+async function nextEarliestClose() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
 // Absolute-score frontier seed (F1): fixtures reveal claimed score 0, which
 // strictly beats this and earns the full seed-relative marginal.
 const SEED_SCORE_ATOMS = 1_000_000n;
@@ -50,6 +58,12 @@ async function increaseTime(seconds) {
   await ethers.provider.send("evm_mine", []);
 }
 
+async function advanceToEffectiveClose(ledger) {
+  const target = await ledger.effectiveEarliestCloseTimestamp();
+  const latest = await ethers.provider.getBlock("latest");
+  if (target > BigInt(latest.timestamp)) await increaseTime(target - BigInt(latest.timestamp));
+}
+
 async function deployFixture({
   alphaBps = 200n,
   minBond = ethers.parseEther("0.01"),
@@ -58,11 +72,14 @@ async function deployFixture({
 } = {}) {
   const [owner, treasury, resolver, alice, bob] = await ethers.getSigners();
   const Pool = await ethers.getContractFactory("P42BountyPool");
-  const pool = await Pool.deploy(owner.address);
+  const pool = await Pool.deploy(owner.address, FUNDING_CAP);
   await pool.waitForDeployment();
 
   const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-  const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, feeBps);
+  const ledger = await Ledger.deploy(
+    await pool.getAddress(), owner.address, treasury.address, feeBps,
+    await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+  );
   await ledger.waitForDeployment();
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
@@ -88,7 +105,6 @@ async function deployFixture({
   // OPEN-WITNESS-PHASE wiring: arm funding up front so the red-team scenarios
   // run in the PAID phase (their credit/payout assertions are unchanged).
   await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
-  await submissions.connect(owner).armFunding();
 
   const Challenges = await ethers.getContractFactory("P42ChallengeManager");
   const challenges = await Challenges.deploy(
@@ -106,6 +122,28 @@ async function deployFixture({
   );
   await challenges.waitForDeployment();
   await submissions.connect(owner).setChallengeManager(await challenges.getAddress());
+
+  const Registry = await ethers.getContractFactory("P42ProblemRegistry");
+  const registry = await Registry.deploy(owner.address);
+  await registry.waitForDeployment();
+  await registry.register({
+    specHash: ethers.id("redteam-spec"),
+    verifierSourceHash: ethers.id("redteam-source"),
+    verifierImageHash: ethers.id("redteam-image"),
+    admissionMatrixHash: ethers.id("redteam-matrix"),
+    metadataURI: "ipfs://redteam-fixture",
+    pool: await pool.getAddress(),
+    ledger: await ledger.getAddress(),
+    submissionManager: await submissions.getAddress(),
+    challengeManager: await challenges.getAddress(),
+    challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
+    minImprovementAtoms: 1n,
+  });
+  await registry.freeze(1);
+  await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+  await submissions.connect(owner).armFunding();
+  await pool.connect(owner).setAcceptingFunds(true);
+  await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
   const Attacker = await ethers.getContractFactory("ReentrantClaimer");
 
@@ -148,6 +186,7 @@ describe("P42 red-team attack coverage", function () {
     // Attacker is the sole credited solver, so its honest entitlement is the
     // whole distributable pool. A working reentrancy would drain twice.
     await ledger.connect(owner).recordCredit(attackerAddr, 1);
+    await advanceToEffectiveClose(ledger);
     await ledger.connect(owner).close();
     const entitlement = await ledger.finalEntitlement(attackerAddr);
     assert.equal(entitlement, ethers.parseEther("5"));
@@ -170,7 +209,7 @@ describe("P42 red-team attack coverage", function () {
 
   it("risk12: reentrant receiver cannot double-withdraw from P42SubmissionManager.claimBond()", async function () {
     const fixture = await deployFixture({ feeBps: 0 });
-    const { submissions, Attacker, minBond } = fixture;
+    const { ledger, submissions, Attacker } = fixture;
     const attacker = await Attacker.deploy();
     await attacker.waitForDeployment();
     const attackerAddr = await attacker.getAddress();
@@ -178,7 +217,7 @@ describe("P42 red-team attack coverage", function () {
 
     // The attacker contract is the solver: commit/reveal/finalize as itself so
     // its posting bond becomes claimable, then re-enter the bond payout.
-    const { submissionId } = await commitReveal(fixture, {
+    const { submissionId, bond } = await commitReveal(fixture, {
       solverAddr: attackerAddr,
       sendCommit: async (commitment, bond) => {
         const data = submissions.interface.encodeFunctionData("commit", [commitment, DA_HASH]);
@@ -193,7 +232,10 @@ describe("P42 red-team attack coverage", function () {
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     const finalizeData = submissions.interface.encodeFunctionData("finalize", [submissionId, PERMANENCE_HASH]);
     await attacker.exec(subAddr, 0, finalizeData);
-    assert.equal(await submissions.claimableBondWei(attackerAddr), minBond);
+    await advanceToEffectiveClose(ledger);
+    await ledger.close();
+    await submissions.releaseFinalizedBond(submissionId);
+    assert.equal(await submissions.claimableBondWei(attackerAddr), bond);
 
     const claimData = submissions.interface.encodeFunctionData("claimBond");
     await attacker.arm(subAddr, claimData);
@@ -202,8 +244,8 @@ describe("P42 red-team attack coverage", function () {
 
     assert.equal(await attacker.reentryCallCount(), 1n);
     assert.equal(await attacker.reentrySucceeded(), false);
-    assert.equal(await attacker.totalReceivedWei(), minBond);
-    assert.equal(subBefore - (await ethers.provider.getBalance(subAddr)), minBond);
+    assert.equal(await attacker.totalReceivedWei(), bond);
+    assert.equal(subBefore - (await ethers.provider.getBalance(subAddr)), bond);
     assert.equal(await submissions.claimableBondWei(attackerAddr), 0n);
     await expectCustomError(attacker.exec(subAddr, 0, claimData), submissions, "P42_NO_BOND_TO_CLAIM");
   });
@@ -242,6 +284,8 @@ describe("P42 red-team attack coverage", function () {
       ethers.keccak256(ethers.toUtf8Bytes("challenger wins verdict")),
       { value: await challenges.resolverDecisionBondWei() }
     );
+    await increaseTime(RESOLVER_FRAUD_WINDOW_SECONDS + 1n);
+    await challenges.finalizeResolution(submissionId);
     assert.equal(await challenges.claimableBondWei(attackerAddr), required);
 
     const claimData = challenges.interface.encodeFunctionData("claimBond");
@@ -269,13 +313,14 @@ describe("P42 red-team attack coverage", function () {
     const fixture = await deployFixture({ alphaBps: 200n, feeBps: 0, minBond: ethers.parseEther("0.01") });
     const { alice, pool, ledger, submissions } = fixture;
 
-    // 1) Commit cheaply against a nearly empty pool.
+    // 1) The paid-phase bond is sized against the immutable cap even while the
+    // current pool is empty.
     const cid = "bafy-leverage";
     const salt = "leverage-salt";
     const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](cid, alice.address, DA_HASH, salt);
-    const cheapBond = await submissions.requiredPostingBondNow();
-    assert.equal(cheapBond, ethers.parseEther("0.01")); // just the floor
-    await submissions.connect(alice).commit(commitment, DA_HASH, { value: cheapBond });
+    const capBond = await submissions.requiredPostingBondNow();
+    assert.equal(capBond, ethers.parseEther("2"));
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: capBond });
     await submissions.connect(alice).reveal(1, cid, 0, 1, salt, "0x");
 
     // 2) Pool is now funded large. Naive payout would be 100 ETH on a 0.01 ETH
@@ -285,26 +330,19 @@ describe("P42 red-team attack coverage", function () {
 
     const requiredAtFinalize = await submissions.requiredPostingBondForPool(ethers.parseEther("100"));
     assert.equal(requiredAtFinalize, ethers.parseEther("2")); // alpha (2%) * 100 ETH
-    assert.equal(cheapBond < requiredAtFinalize, true);
+    assert.equal(capBond, requiredAtFinalize);
 
-    // 3) Finalize is gated: the cheap bond cannot claim the large pool.
-    await expectCustomError(
-      submissions.connect(alice).finalize(1, PERMANENCE_HASH),
-      submissions,
-      "P42_BOND_UNDERCOVERS_ENTITLEMENT"
-    );
-
-    // 4) The only way through is to risk real capital (top up to >= alpha*entitlement).
-    await submissions.connect(alice).topUpBond(1, { value: requiredAtFinalize - cheapBond });
+    // 3) Finalize succeeds only because cap-sized collateral was posted up front.
     await submissions.connect(alice).finalize(1, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(1)).status, 4n);
 
     // The payout is honest, not leveraged: capture (100 ETH) required a 2 ETH
     // bond at risk, i.e. leverage is capped at 1/alpha = 50x, not 10,000x.
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     await pool.connect(alice).claim();
     assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("100"));
-    const bondPosted = requiredAtFinalize; // 2 ETH
+    const bondPosted = capBond;
     assert.equal(ethers.parseEther("100") / bondPosted, 50n);
   });
 
@@ -318,13 +356,14 @@ describe("P42 red-team attack coverage", function () {
 
   it("risk6: a mempool watcher cannot reveal or rebind another solver's copied commitment", async function () {
     const fixture = await deployFixture();
-    const { alice, bob, submissions, minBond } = fixture;
+    const { alice, bob, submissions } = fixture;
     const cid = "bafy-front-run-target";
     const salt = "front-run-salt";
 
     // Alice commits. The commitment hash and DA hash are now public on-chain.
     const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](cid, alice.address, DA_HASH, salt);
-    await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
+    const bond = await submissions.requiredPostingBondNow();
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: bond });
     const aliceId = await submissions.submissionCount();
 
     // (a) Bob cannot reveal Alice's submission — reveal is solver-gated.
@@ -337,7 +376,7 @@ describe("P42 red-team attack coverage", function () {
     // (b) Bob copies the identical opaque hash into his own commitment. Even
     //     after the CID and salt leak, his reveal fails: the preimage binds the
     //     solver address, so keccak(preimage(cid, bob, da, salt)) != commitment.
-    await submissions.connect(bob).commit(commitment, DA_HASH, { value: minBond });
+    await submissions.connect(bob).commit(commitment, DA_HASH, { value: bond });
     const bobId = await submissions.submissionCount();
     await expectCustomError(
       submissions.connect(bob).reveal(bobId, cid, 123, 7, salt, "0x"),
@@ -432,17 +471,17 @@ describe("P42 red-team attack coverage", function () {
 
   it("f5: a solver-favorable resolution re-arms the window so expireRevealed cannot instantly strip the bond", async function () {
     const fixture = await deployFixture();
-    const { alice, bob, resolver, submissions, challenges, minBond } = fixture;
+    const { alice, bob, resolver, ledger, submissions, challenges } = fixture;
     const { submissionId } = await revealAsAlice(fixture);
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
     await challenges
       .connect(bob)
       .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("meritless dispute")), { value: required });
 
-    // Let far more than the original reveal-time window elapse before the
-    // resolver rules for the solver — the pre-challenge challengeEndsAt (and
-    // even its permanence grace) are now deep in the past.
-    await increaseTime(2n * CHALLENGE_WINDOW_SECONDS + 2n);
+    // Resolve near the active dispute deadline. The full fraud window carries
+    // finality beyond the original reveal deadline, while remaining inside the
+    // submission's immutable cumulative settlement horizon.
+    await increaseTime(CHALLENGE_WINDOW_SECONDS - RESOLVER_FRAUD_WINDOW_SECONDS / 2n);
     await challenges.connect(resolver).resolve(
       submissionId,
       false,
@@ -451,6 +490,9 @@ describe("P42 red-team attack coverage", function () {
       ethers.keccak256(ethers.toUtf8Bytes("solver prevails verdict")),
       { value: await challenges.resolverDecisionBondWei() }
     );
+    assert.equal((await submissions.submissions(submissionId)).status, 3n); // decision pending
+    await increaseTime(RESOLVER_FRAUD_WINDOW_SECONDS + 1n);
+    await challenges.finalizeResolution(submissionId);
     assert.equal((await submissions.submissions(submissionId)).status, 2n); // Revealed again
 
     // With the stale deadline, expireRevealed would strip the honest winner's
@@ -466,6 +508,9 @@ describe("P42 red-team attack coverage", function () {
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n); // Finalized
-    assert.equal(await submissions.claimableBondWei(alice.address), minBond);
+    await advanceToEffectiveClose(ledger);
+    await ledger.close();
+    await submissions.releaseFinalizedBond(submissionId);
+    assert.equal(await submissions.claimableBondWei(alice.address), await submissions.requiredPostingBondNow());
   });
 });

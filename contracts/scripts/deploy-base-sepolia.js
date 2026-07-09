@@ -1,200 +1,40 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { network } from "hardhat";
 
-const BASE_SEPOLIA_CHAIN_ID = 84532n;
-const DEFAULTS = {
-  alphaBps: 200n,
-  betaBps: 500n,
-  challengeWindowSeconds: 72n * 60n * 60n,
-  feeBps: 0n,
-  minCounterBondWei: 20_000_000_000_000_000n,
-  minPostingBondWei: 10_000_000_000_000_000n,
-  rerunCostMultiplierBps: 30_000n,
-  rerunCostWei: 10_000_000_000_000_000n,
-  resolverDecisionBondWei: 5_000_000_000_000_000n,
-  resolverFraudWindowSeconds: 24n * 60n * 60n
-};
+import {
+  assertDeploymentConfigHash,
+  assertTimelockOwnedConstructorArgs,
+  bindDeploymentConfigHash,
+  buildSetupOperations,
+  completeSetupManifest,
+  constructorArgsFor,
+  constructorArgsHash,
+  jsonStringify,
+  MANIFEST_SCHEMA,
+  PENDING_SETUP_STATUS,
+  readCeremonyConfig,
+  SCORE_ATOM_SCALE,
+  validateDeploymentTimestamps
+} from "./deployment-ceremony-helper.js";
 
-const REQUIRED_ENV = [
-  "BASE_SEPOLIA_RPC_URL",
-  "BASE_SEPOLIA_PRIVATE_KEY",
-  "P42_TREASURY_ADDRESS",
-  "P42_RESOLVER_ADDRESS",
-  "P42_PROBLEM_SPEC_HASH",
-  "P42_VERIFIER_SOURCE_HASH",
-  "P42_VERIFIER_IMAGE_HASH",
-  "P42_ADMISSION_MATRIX_HASH",
-  "P42_METADATA_URI"
-];
+const BASE_SEPOLIA_CHAIN_ID = 84532n;
+const CONTRACT_NAMES = Object.freeze({
+  timelock: "P42MultisigTimelock",
+  pool: "P42BountyPool",
+  ledger: "P42PayoutLedger",
+  submissions: "P42SubmissionManager",
+  challenges: "P42ChallengeManager",
+  registry: "P42ProblemRegistry"
+});
 
 function requiredEnv(name) {
   const value = process.env[name];
-  if (value === undefined || value.trim() === "") {
-    throw new Error(`Missing required env var: ${name}`);
-  }
+  if (value === undefined || value.trim() === "") throw new Error(`Missing required env var: ${name}`);
   return value.trim();
-}
-
-function uintEnv(name, fallback) {
-  const value = process.env[name];
-  if (value === undefined || value.trim() === "") return fallback;
-  const parsed = BigInt(value.trim());
-  if (parsed < 0n) throw new Error(`${name} must be non-negative`);
-  return parsed;
-}
-
-function bpsEnv(name, fallback) {
-  const parsed = uintEnv(name, fallback);
-  if (parsed > 10_000n && name !== "P42_RERUN_COST_MULTIPLIER_BPS") {
-    throw new Error(`${name} must be <= 10000`);
-  }
-  return parsed;
-}
-
-// SHARED FIXED-POINT CONVENTION — keep in sync with agent/lib.mjs and
-// P42SubmissionManager.SCORE_ATOM_SCALE: score_atoms = ceil(score * 1e18),
-// exact rational ceiling (CEIL: the seed/score is never under-reported, so the
-// on-chain marginal credit is never over-stated).
-const SCORE_SCALE = 1_000_000_000_000_000_000n;
-
-function parseRational(text, label) {
-  const match = /^(-?\d+)(?:\/(\d+))?$/.exec(String(text).trim());
-  if (!match) throw new Error(`${label} must be an exact rational "num/den", got: ${text}`);
-  const num = BigInt(match[1]);
-  const den = BigInt(match[2] ?? "1");
-  if (den === 0n) throw new Error(`${label} has a zero denominator`);
-  return { num, den };
-}
-
-function ceilAtoms({ num, den }) {
-  const scaled = num * SCORE_SCALE;
-  let q = scaled / den; // BigInt division truncates toward zero == ceil for negatives
-  if (scaled % den !== 0n && scaled > 0n) q += 1n;
-  return q;
-}
-
-// Extracts a top-level `NAME = Fraction(num, den)` literal from verifier
-// source. \s matches newlines: tolerates multi-line Fraction( num, den, )
-// literals. Returns null when the constant is absent or not a plain literal
-// (e.g. Fraction(1, TOTAL_PAIRS)) — callers must then fail loudly, never
-// guess.
-function fractionLiteral(source, name) {
-  const pattern = new RegExp(`^${name}\\s*=\\s*Fraction\\(\\s*(-?\\d+)\\s*,\\s*(\\d+)\\s*,?\\s*\\)`, "m");
-  const match = pattern.exec(source);
-  if (!match) return null;
-  return { num: BigInt(match[1]), den: BigInt(match[2]) };
-}
-
-// Frontier seed (audit F1): seedScoreAtoms initializes the on-chain
-// bestScoreAtoms and MUST encode the TRUE best-known absolute score for the
-// problem — never a trivial bound, or resubmitting a known construction mints
-// a false prize. Sources, in precedence order:
-//   1. P42_SEED_SCORE_ATOMS   — int256 atoms, used verbatim
-//   2. P42_SEED_SCORE         — exact rational MINIMIZATION score, ceil'd to atoms
-//   3. P42_PROBLEM_DIR        — read from the problem package itself:
-//        a. problem.yaml `seed_score:` (native objective direction)
-//        b. verifier/verify.py literal `SEED_BEST = Fraction(num, den)`
-//        c. problem.yaml `objective.seed_best:` — may be stale, so this
-//           fallback is a HARD ERROR unless P42_ALLOW_YAML_SEED=1 (audit F1)
-//      For (3), problem.yaml `objective.direction: maximize` maps the seed onto
-//      the minimization frontier by negation.
-function resolveSeedScoreAtoms() {
-  const direct = process.env.P42_SEED_SCORE_ATOMS;
-  if (direct !== undefined && direct.trim() !== "") return BigInt(direct.trim());
-  const rational = process.env.P42_SEED_SCORE;
-  if (rational !== undefined && rational.trim() !== "") {
-    return ceilAtoms(parseRational(rational, "P42_SEED_SCORE"));
-  }
-  const problemDir = process.env.P42_PROBLEM_DIR;
-  if (problemDir === undefined || problemDir.trim() === "") {
-    throw new Error(
-      "Missing frontier seed: set P42_SEED_SCORE_ATOMS, P42_SEED_SCORE, or P42_PROBLEM_DIR (problem package to read the seed from)"
-    );
-  }
-  const dir = resolve(problemDir.trim());
-  const yaml = readFileSync(resolve(dir, "problem.yaml"), "utf8");
-  const direction = /^\s*direction:\s*(minimize|maximize)\s*$/m.exec(yaml)?.[1] ?? "minimize";
-  let seed =
-    /^\s*seed_score:\s*"?(-?\d+(?:\/\d+)?)"?\s*$/m.exec(yaml)?.[1] ?? null;
-  if (seed === null) {
-    // The verifier source is the seed's source of truth; problem.yaml
-    // seed_best is only a fallback (it can go stale relative to verify.py).
-    try {
-      const verifier = readFileSync(resolve(dir, "verifier", "verify.py"), "utf8");
-      const literal = fractionLiteral(verifier, "SEED_BEST");
-      if (literal) seed = `${literal.num}/${literal.den}`;
-    } catch {
-      // fall through to problem.yaml seed_best (explicitly gated below)
-    }
-  }
-  if (seed === null) {
-    // AUDIT F1 hardening: a stale problem.yaml seed_best must never deploy
-    // silently — a renamed/refactored SEED_BEST would otherwise re-open the
-    // false-prize hole by seeding the old loose frontier. Require an explicit
-    // operator acknowledgement to use the yaml value.
-    const yamlSeed = /^\s*seed_best:\s*"?(-?\d+(?:\/\d+)?)"?\s*$/m.exec(yaml)?.[1] ?? null;
-    if (yamlSeed !== null && process.env.P42_ALLOW_YAML_SEED !== "1") {
-      throw new Error(
-        `refusing problem.yaml seed_best fallback in ${dir}: verify.py SEED_BEST literal was not found ` +
-          "(renamed/refactored/missing?) and yaml seed_best may be stale (audit F1). Fix the verifier, set " +
-          "P42_SEED_SCORE / P42_SEED_SCORE_ATOMS explicitly, or set P42_ALLOW_YAML_SEED=1 to accept the yaml value."
-      );
-    }
-    if (yamlSeed !== null) {
-      console.warn(`WARNING: seeding from problem.yaml seed_best in ${dir} (P42_ALLOW_YAML_SEED=1); verify it matches verify.py`);
-      seed = yamlSeed;
-    }
-  }
-  if (seed === null) {
-    throw new Error(`could not resolve a frontier seed from ${dir} (no seed_score, verify.py SEED_BEST literal, or seed_best)`);
-  }
-  const parsed = parseRational(seed, `${dir} seed`);
-  if (direction === "maximize") parsed.num = -parsed.num;
-  return ceilAtoms(parsed);
-}
-
-// On-chain marginal floor (deploy hardening): minImprovementAtoms must mirror
-// the verifier's MIN_IMPROVEMENT policy floor for the problem, never a flat
-// default (a floor looser than the verifier's would let on-chain credit
-// finalize improvements the verifier itself rejects). Sources, in precedence
-// order:
-//   1. P42_MIN_IMPROVEMENT_ATOMS — uint atoms, used verbatim
-//   2. P42_PROBLEM_DIR verifier/verify.py `MIN_IMPROVEMENT = Fraction(num, den)`
-//      literal, ceil'd to atoms (CEIL: the on-chain floor is never looser than
-//      the verifier's policy floor)
-// A non-literal MIN_IMPROVEMENT (e.g. Fraction(1, TOTAL_PAIRS)) is a hard
-// error: compute the atoms and pass them explicitly.
-function resolveMinImprovementAtoms() {
-  const direct = process.env.P42_MIN_IMPROVEMENT_ATOMS;
-  if (direct !== undefined && direct.trim() !== "") {
-    const parsed = BigInt(direct.trim());
-    if (parsed < 0n) throw new Error("P42_MIN_IMPROVEMENT_ATOMS must be non-negative");
-    return parsed;
-  }
-  const problemDir = process.env.P42_PROBLEM_DIR;
-  if (problemDir === undefined || problemDir.trim() === "") {
-    throw new Error(
-      "Missing marginal floor: set P42_MIN_IMPROVEMENT_ATOMS, or P42_PROBLEM_DIR (verifier to read MIN_IMPROVEMENT from)"
-    );
-  }
-  const dir = resolve(problemDir.trim());
-  const verifier = readFileSync(resolve(dir, "verifier", "verify.py"), "utf8");
-  const literal = fractionLiteral(verifier, "MIN_IMPROVEMENT");
-  if (literal === null) {
-    throw new Error(
-      `could not resolve a MIN_IMPROVEMENT Fraction literal from ${dir}/verifier/verify.py ` +
-        "(renamed, refactored, or not a plain literal?); set P42_MIN_IMPROVEMENT_ATOMS explicitly"
-    );
-  }
-  const atoms = ceilAtoms(literal);
-  if (atoms <= 0n) {
-    throw new Error(`MIN_IMPROVEMENT from ${dir} must be a positive floor, got ${atoms} atoms`);
-  }
-  return atoms;
 }
 
 function manifestPath() {
@@ -204,301 +44,511 @@ function manifestPath() {
 }
 
 function gitCommit(repoRoot) {
-  try {
-    return execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    }).trim();
-  } catch {
-    return "unknown";
-  }
+  return execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"]
+  }).trim();
 }
 
-function assertAddress(ethers, label, value) {
-  if (!ethers.isAddress(value)) throw new Error(`${label} must be an EVM address`);
-  return ethers.getAddress(value);
+function lower(value) {
+  return String(value).toLowerCase();
 }
 
-function assertBytes32(ethers, label, value) {
-  if (!ethers.isHexString(value, 32)) throw new Error(`${label} must be bytes32 hex`);
-  return value;
+function sameAddress(left, right) {
+  return lower(left) === lower(right);
 }
 
-function stringifyJson(value) {
-  return JSON.stringify(
-    value,
-    (_key, item) => (typeof item === "bigint" ? item.toString() : item),
-    2
-  );
+function sameValue(left, right) {
+  return String(left) === String(right);
+}
+
+function check(name, actual, expected, comparator = sameValue) {
+  return {
+    name,
+    ok: comparator(actual, expected),
+    actual: typeof actual === "bigint" ? actual.toString() : actual,
+    expected: typeof expected === "bigint" ? expected.toString() : expected
+  };
 }
 
 async function waitForDeployment(contract) {
   await contract.waitForDeployment();
   const tx = contract.deploymentTransaction();
-  const receipt = tx === null ? null : await tx.wait();
+  if (tx === null) throw new Error("Deployment transaction was not available");
+  const receipt = await tx.wait();
+  if (receipt === null) throw new Error(`Deployment receipt was not available for ${tx.hash}`);
   return {
     address: await contract.getAddress(),
-    txHash: tx?.hash ?? null,
-    blockNumber: receipt?.blockNumber ?? null
-  };
-}
-
-async function sendSetupTx(label, txPromise) {
-  const tx = await txPromise;
-  const receipt = await tx.wait();
-  return {
-    label,
     txHash: tx.hash,
     blockNumber: receipt.blockNumber
   };
 }
 
-async function deployContract(ethers, name, args) {
+async function deployPinnedContract(ethers, name, args) {
   const factory = await ethers.getContractFactory(name);
   const contract = await factory.deploy(...args);
   const deployment = await waitForDeployment(contract);
-  // ABI/code pins (audit F10): reconciliation decodes events with an ABI, and
-  // a later HEAD refactor can silently change event shapes so queryFilter
-  // matches nothing while still reporting ok. Record (a) the hash of the code
-  // actually deployed on-chain and (b) the hash of the exact ABI used here, so
-  // reconcile can assert it is decoding the deployed contracts with the
-  // deployed ABI.
-  const deployedCodeHash = ethers.keccak256(await ethers.provider.getCode(deployment.address));
-  const abiHash = ethers.keccak256(ethers.toUtf8Bytes(factory.interface.formatJson()));
+  const runtimeCodeHash = ethers.keccak256(await ethers.provider.getCode(deployment.address));
   return {
     contract,
+    factory,
     manifest: {
       name,
       ...deployment,
-      deployedCodeHash,
-      abiHash,
+      abiHash: ethers.keccak256(ethers.toUtf8Bytes(factory.interface.formatJson())),
+      runtimeCodeHash,
+      // Retained for the stable indexer/reconciliation binding.
+      deployedCodeHash: runtimeCodeHash,
+      constructorArgsHash: constructorArgsHash(ethers, factory, args),
       constructorArgs: args
     }
   };
 }
 
-for (const name of REQUIRED_ENV) requiredEnv(name);
+function contractInterfaces(deployments) {
+  return Object.fromEntries(
+    Object.entries(deployments).map(([key, deployment]) => [key, deployment.factory.interface])
+  );
+}
 
-const connection = await network.create("baseSepolia");
-
-try {
-  const { ethers } = connection;
+async function deployCeremony(ethers) {
+  requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
   const [deployer] = await ethers.getSigners();
   if (deployer === undefined) throw new Error("No deployer signer available");
 
-  const chain = await ethers.provider.getNetwork();
-  if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
-    throw new Error(`Expected Base Sepolia chainId 84532, got ${chain.chainId}`);
+  const config = readCeremonyConfig(ethers, process.env, { deployerAddress: deployer.address });
+  const latest = await ethers.provider.getBlock("latest");
+  if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
+  validateDeploymentTimestamps(config, latest.timestamp);
+
+  const deployments = {};
+  const addresses = {};
+  const timelockArgs = constructorArgsFor("P42MultisigTimelock", config);
+  deployments.timelock = await deployPinnedContract(ethers, "P42MultisigTimelock", timelockArgs);
+  addresses.timelock = deployments.timelock.manifest.address;
+
+  for (const key of ["pool", "ledger", "submissions", "challenges", "registry"]) {
+    const name = CONTRACT_NAMES[key];
+    const args = constructorArgsFor(name, config, addresses);
+    deployments[key] = await deployPinnedContract(ethers, name, args);
+    addresses[key] = deployments[key].manifest.address;
   }
-
-  const owner = process.env.P42_OWNER_ADDRESS
-    ? assertAddress(ethers, "P42_OWNER_ADDRESS", process.env.P42_OWNER_ADDRESS)
-    : deployer.address;
-  if (owner !== deployer.address) {
-    throw new Error("P42_OWNER_ADDRESS must equal the deployer for this immutable-owner scaffold");
-  }
-
-  const treasury = assertAddress(ethers, "P42_TREASURY_ADDRESS", requiredEnv("P42_TREASURY_ADDRESS"));
-  const resolver = assertAddress(ethers, "P42_RESOLVER_ADDRESS", requiredEnv("P42_RESOLVER_ADDRESS"));
-  const params = {
-    alphaBps: bpsEnv("P42_ALPHA_BPS", DEFAULTS.alphaBps),
-    betaBps: bpsEnv("P42_BETA_BPS", DEFAULTS.betaBps),
-    challengeWindowSeconds: uintEnv("P42_CHALLENGE_WINDOW_SECONDS", DEFAULTS.challengeWindowSeconds),
-    feeBps: bpsEnv("P42_FEE_BPS", DEFAULTS.feeBps),
-    minCounterBondWei: uintEnv("P42_MIN_COUNTER_BOND_WEI", DEFAULTS.minCounterBondWei),
-    minPostingBondWei: uintEnv("P42_MIN_POSTING_BOND_WEI", DEFAULTS.minPostingBondWei),
-    rerunCostMultiplierBps: bpsEnv("P42_RERUN_COST_MULTIPLIER_BPS", DEFAULTS.rerunCostMultiplierBps),
-    rerunCostWei: uintEnv("P42_RERUN_COST_WEI", DEFAULTS.rerunCostWei),
-    resolverDecisionBondWei: uintEnv("P42_RESOLVER_DECISION_BOND_WEI", DEFAULTS.resolverDecisionBondWei),
-    resolverFraudWindowSeconds: uintEnv(
-      "P42_RESOLVER_FRAUD_WINDOW_SECONDS",
-      DEFAULTS.resolverFraudWindowSeconds
-    )
-  };
-  const problem = {
-    specHash: assertBytes32(ethers, "P42_PROBLEM_SPEC_HASH", requiredEnv("P42_PROBLEM_SPEC_HASH")),
-    verifierSourceHash: assertBytes32(
-      ethers,
-      "P42_VERIFIER_SOURCE_HASH",
-      requiredEnv("P42_VERIFIER_SOURCE_HASH")
-    ),
-    verifierImageHash: assertBytes32(
-      ethers,
-      "P42_VERIFIER_IMAGE_HASH",
-      requiredEnv("P42_VERIFIER_IMAGE_HASH")
-    ),
-    admissionMatrixHash: assertBytes32(
-      ethers,
-      "P42_ADMISSION_MATRIX_HASH",
-      requiredEnv("P42_ADMISSION_MATRIX_HASH")
-    ),
-    metadataURI: requiredEnv("P42_METADATA_URI"),
-    minImprovementAtoms: resolveMinImprovementAtoms(),
-    seedScoreAtoms: resolveSeedScoreAtoms()
-  };
-
-  const setupTransactions = [];
-  const pool = await deployContract(ethers, "P42BountyPool", [owner]);
-  const ledger = await deployContract(ethers, "P42PayoutLedger", [
-    pool.manifest.address,
-    owner,
-    treasury,
-    params.feeBps
-  ]);
-  setupTransactions.push(
-    await sendSetupTx("pool.setLedger", pool.contract.setLedger(ledger.manifest.address))
+  assertTimelockOwnedConstructorArgs(
+    addresses.timelock,
+    Object.fromEntries(Object.entries(deployments).map(([key, value]) => [key, value.manifest.constructorArgs]))
   );
 
-  const submissions = await deployContract(ethers, "P42SubmissionManager", [
-    pool.manifest.address,
-    ledger.manifest.address,
-    owner,
-    treasury,
-    params.alphaBps,
-    params.minPostingBondWei,
-    params.challengeWindowSeconds,
-    // On-chain DA: solution bytes ride the reveal tx and are bound to the
-    // commit anchor. Default on with a 512 KiB cap; large-certificate problems
-    // (autoconvolution) deploy with onchainDa=false + off-chain store.
-    params.onchainDa ?? true,
-    params.maxSolutionBytes ?? 512 * 1024,
-    // Frontier seed (audit F1): bestScoreAtoms starts at the TRUE best-known
-    // score; credit is the marginal reduction below it.
-    problem.seedScoreAtoms,
-    problem.minImprovementAtoms
-  ]);
-  setupTransactions.push(
-    await sendSetupTx("ledger.setCreditRecorder", ledger.contract.setCreditRecorder(submissions.manifest.address))
-  );
-  // Open-witness-phase wiring: the pool refuses deposits until the submission
-  // manager is wired AND funding is armed. We wire it here; arming (armFunding)
-  // is a deliberate LATER runbook step the funder takes only after the open
-  // witness phase has established the frontier — NOT at deploy.
-  setupTransactions.push(
-    await sendSetupTx("pool.setSubmissionManager", pool.contract.setSubmissionManager(submissions.manifest.address))
-  );
-
-  const challenges = await deployContract(ethers, "P42ChallengeManager", [
-    owner,
-    resolver,
-    treasury,
-    submissions.manifest.address,
-    params.challengeWindowSeconds,
-    params.betaBps,
-    params.minCounterBondWei,
-    params.rerunCostWei,
-    params.rerunCostMultiplierBps,
-    params.resolverDecisionBondWei,
-    params.resolverFraudWindowSeconds
-  ]);
-  setupTransactions.push(
-    await sendSetupTx(
-      "submissions.setChallengeManager",
-      submissions.contract.setChallengeManager(challenges.manifest.address)
-    )
-  );
-
-  const registry = await deployContract(ethers, "P42ProblemRegistry", [owner]);
-  const registerTx = await registry.contract.register({
-    specHash: problem.specHash,
-    verifierSourceHash: problem.verifierSourceHash,
-    verifierImageHash: problem.verifierImageHash,
-    admissionMatrixHash: problem.admissionMatrixHash,
-    metadataURI: problem.metadataURI,
-    pool: pool.manifest.address,
-    ledger: ledger.manifest.address,
-    submissionManager: submissions.manifest.address,
-    challengeManager: challenges.manifest.address,
-    challengeWindowSeconds: params.challengeWindowSeconds,
-    minImprovementAtoms: problem.minImprovementAtoms
+  const setupTransactions = buildSetupOperations({
+    ethers,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    timelockAddress: addresses.timelock,
+    addresses,
+    config,
+    interfaces: contractInterfaces(deployments)
   });
-  const registerReceipt = await registerTx.wait();
-
-  const repoRoot = resolve(process.cwd(), "..");
-  const manifest = {
-    schema: "p42-prizes/deployment-manifest/v1",
-    status: "base-sepolia-testnet",
+  const firstBlock = Math.min(...Object.values(deployments).map((entry) => entry.manifest.blockNumber));
+  const manifest = bindDeploymentConfigHash(JSON.parse(jsonStringify({
+    schema: MANIFEST_SCHEMA,
+    status: PENDING_SETUP_STATUS,
     deployedAt: new Date().toISOString(),
-    deploymentCommit: gitCommit(repoRoot),
+    deploymentCommit: gitCommit(resolve(process.cwd(), "..")),
     network: {
       name: "baseSepolia",
-      chainId: Number(chain.chainId),
+      chainId: Number(BASE_SEPOLIA_CHAIN_ID),
       explorerBaseUrl: "https://sepolia.basescan.org"
+    },
+    governance: {
+      ownershipModel: "P42MultisigTimelock",
+      timelock: addresses.timelock,
+      signers: config.governance.signers,
+      threshold: config.governance.threshold.toString(),
+      overrideThreshold: config.governance.overrideThreshold.toString(),
+      delaySeconds: config.governance.delaySeconds.toString(),
+      overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
+      operationGracePeriodSeconds: config.governance.operationGracePeriodSeconds.toString(),
+      guardian: config.governance.guardian
     },
     roles: {
       deployer: deployer.address,
-      owner,
-      treasury,
-      resolver
+      owner: addresses.timelock,
+      treasury: config.roles.treasury,
+      resolver: config.roles.resolver,
+      guardian: config.governance.guardian
     },
-    parameters: params,
-    contracts: {
-      pool: pool.manifest,
-      ledger: ledger.manifest,
-      submissions: submissions.manifest,
-      challenges: challenges.manifest,
-      registry: registry.manifest
+    parameters: config.parameters,
+    contracts: Object.fromEntries(
+      Object.entries(deployments).map(([key, deployment]) => [key, deployment.manifest])
+    ),
+    governanceSetup: {
+      status: "pending",
+      completedAt: null,
+      completionBlock: null,
+      checks: []
     },
     setupTransactions,
     problems: [
       {
         problemId: "1",
-        metadataURI: problem.metadataURI,
-        specHash: problem.specHash,
-        verifierSourceHash: problem.verifierSourceHash,
-        verifierImageHash: problem.verifierImageHash,
-        admissionMatrixHash: problem.admissionMatrixHash,
-        minImprovementAtoms: problem.minImprovementAtoms,
-        // Frontier seed this SubmissionManager was constructed with (audit F1):
-        // score atoms at the shared ceil(score * 1e18) convention.
-        seedScoreAtoms: problem.seedScoreAtoms.toString(),
-        scoreAtomScale: SCORE_SCALE.toString(),
-        // Funding is DISARMED at deploy (open-witness-phase seeding): the pool
-        // refuses deposits until the owner calls submissions.armFunding() to end
-        // the open phase. seedScoreAtoms above is the LOOSE open-phase ceiling,
-        // NOT an attested record — the frontier self-establishes from free
-        // open-phase witness postings before arming.
+        registrationStatus: "pending",
+        metadataURI: config.problem.metadataURI,
+        specHash: config.problem.specHash,
+        verifierSourceHash: config.problem.verifierSourceHash,
+        verifierImageHash: config.problem.verifierImageHash,
+        admissionMatrixHash: config.problem.admissionMatrixHash,
+        immutablePins: true,
+        minImprovementAtoms: config.problem.minImprovementAtoms.toString(),
+        seedScoreAtoms: config.problem.seedScoreAtoms.toString(),
+        scoreAtomScale: SCORE_ATOM_SCALE.toString(),
+        explicitlyFrozen: false,
         fundingArmed: false,
-        registerTxHash: registerTx.hash,
-        registerBlockNumber: registerReceipt.blockNumber,
-        pool: pool.manifest.address,
-        ledger: ledger.manifest.address,
-        submissionManager: submissions.manifest.address,
-        challengeManager: challenges.manifest.address
+        acceptingFunds: false,
+        registerTxHash: null,
+        registerBlockNumber: null,
+        pool: addresses.pool,
+        ledger: addresses.ledger,
+        submissionManager: addresses.submissions,
+        challengeManager: addresses.challenges
       }
     ],
     sourceVerification: {
       status: "pending",
-      requiredExplorer: "https://sepolia.basescan.org"
+      requiredExplorer: "https://sepolia.basescan.org",
+      contracts: Object.fromEntries(Object.keys(CONTRACT_NAMES).map((key) => [key, null]))
+    },
+    indexer: {
+      startBlock: firstBlock,
+      finalityPolicy: config.finalityPolicy,
+      indexedThroughBlock: null,
+      reconciliationReport: null
     }
-  };
-
-  const firstBlock = [
-    ...Object.values(manifest.contracts).map((entry) => entry.blockNumber),
-    ...manifest.setupTransactions.map((entry) => entry.blockNumber),
-    registerReceipt.blockNumber
-  ].filter((block) => block !== null);
-  manifest.indexer = {
-    startBlock: Math.min(...firstBlock),
-    indexedThroughBlock: null,
-    reconciliationReport: null
-  };
+  })));
 
   const output = manifestPath();
   await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, `${stringifyJson(manifest)}\n`);
-  console.log(`Wrote deployment manifest: ${output}`);
-  console.log(`Registry: ${registry.manifest.address}`);
-  console.log(`Problem 1 pool: ${pool.manifest.address}`);
-  console.log("");
-  console.log("  NOTE — FUNDING IS DISARMED. This pool REVERTS deposits (P42_FUNDING_NOT_ARMED)");
-  console.log("  until the OPEN WITNESS PHASE is ended by the owner calling:");
-  console.log(`      P42SubmissionManager(${submissions.manifest.address}).armFunding()`);
-  console.log("  Run the open phase first (post public witnesses for free to establish the");
-  console.log("  frontier on-chain), THEN arm (one-shot; opens ledger credit AND pool deposits),");
-  console.log("  THEN fund. Arming is deliberately NOT done at deploy — it is the funder's");
-  console.log("  explicit end-of-open-phase decision.");
+  await writeFile(output, `${jsonStringify(manifest)}\n`);
+  console.log(`Wrote pending governance ceremony manifest: ${output}`);
+  console.log(`Timelock owner: ${addresses.timelock}`);
+  console.log(`${setupTransactions.length} setup operations require independent signer action.`);
+  console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
+  console.log("Use P42_DEPLOY_MODE=continue without a private key to inspect operation calldata and verify completion.");
+}
+
+async function readContractSet(ethers, manifest) {
+  return Object.fromEntries(
+    await Promise.all(
+      Object.entries(CONTRACT_NAMES).map(async ([key, name]) => [
+        key,
+        await ethers.getContractAt(name, manifest.contracts[key].address, ethers.provider)
+      ])
+    )
+  );
+}
+
+async function collectContinuationSnapshot(ethers, manifest, contracts, checkedBlock) {
+  const atBlock = { blockTag: checkedBlock };
+  const checks = [];
+  for (const key of Object.keys(CONTRACT_NAMES)) {
+    const runtimeHash = ethers.keccak256(
+      await ethers.provider.getCode(manifest.contracts[key].address, checkedBlock)
+    );
+    checks.push(check(`runtime.${key}`, runtimeHash, manifest.contracts[key].runtimeCodeHash));
+  }
+
+  for (const key of ["pool", "ledger", "submissions", "challenges", "registry"]) {
+    checks.push(check(`owner.${key}`, await contracts[key].owner(atBlock), manifest.roles.owner, sameAddress));
+  }
+
+  const signerCount = Number(await contracts.timelock.signerCount(atBlock));
+  const actualSigners = await Promise.all(
+    Array.from({ length: signerCount }, (_value, index) => contracts.timelock.signers(index, atBlock))
+  );
+  checks.push({
+    name: "governance.signers",
+    ok:
+      actualSigners.length === manifest.governance.signers.length &&
+      actualSigners.every((signer, index) => sameAddress(signer, manifest.governance.signers[index])),
+    actual: actualSigners,
+    expected: manifest.governance.signers
+  });
+  checks.push(check("governance.threshold", await contracts.timelock.threshold(atBlock), manifest.governance.threshold));
+  checks.push(check("governance.delay", await contracts.timelock.delay(atBlock), manifest.governance.delaySeconds));
+  checks.push(
+    check(
+      "governance.overrideDelay",
+      await contracts.timelock.overrideDelay(atBlock),
+      manifest.governance.overrideDelaySeconds
+    )
+  );
+  checks.push(
+    check(
+      "governance.operationGracePeriod",
+      await contracts.timelock.operationGracePeriod(atBlock),
+      manifest.governance.operationGracePeriodSeconds
+    )
+  );
+  checks.push(
+    check("governance.guardian", await contracts.timelock.guardian(atBlock), manifest.governance.guardian, sameAddress)
+  );
+
+  checks.push(
+    check("config.pool", await contracts.pool.fundingCap(atBlock), manifest.parameters.fundingCapWei)
+  );
+  const ledgerConfig = [
+    await contracts.ledger.pool(atBlock),
+    await contracts.ledger.treasury(atBlock),
+    await contracts.ledger.feeBps(atBlock),
+    await contracts.ledger.earliestCloseTimestamp(atBlock),
+    await contracts.ledger.closeByTimestamp(atBlock)
+  ];
+  checks.push({
+    name: "config.ledger",
+    ok:
+      sameAddress(ledgerConfig[0], manifest.contracts.pool.address) &&
+      sameAddress(ledgerConfig[1], manifest.roles.treasury) &&
+      sameValue(ledgerConfig[2], manifest.parameters.feeBps) &&
+      sameValue(ledgerConfig[3], manifest.parameters.earliestCloseTimestamp) &&
+      sameValue(ledgerConfig[4], manifest.parameters.closeByTimestamp),
+    actual: ledgerConfig.map(String)
+  });
+  const submissionConfig = [
+    await contracts.submissions.pool(atBlock),
+    await contracts.submissions.ledger(atBlock),
+    await contracts.submissions.treasury(atBlock),
+    await contracts.submissions.alphaBps(atBlock),
+    await contracts.submissions.minPostingBondWei(atBlock),
+    await contracts.submissions.challengeWindowSeconds(atBlock),
+    await contracts.submissions.onchainDa(atBlock),
+    await contracts.submissions.maxSolutionBytes(atBlock),
+    await contracts.submissions.seedScoreAtoms(atBlock),
+    await contracts.submissions.minImprovementAtoms(atBlock)
+  ];
+  checks.push({
+    name: "config.submissions",
+    ok:
+      sameAddress(submissionConfig[0], manifest.contracts.pool.address) &&
+      sameAddress(submissionConfig[1], manifest.contracts.ledger.address) &&
+      sameAddress(submissionConfig[2], manifest.roles.treasury) &&
+      sameValue(submissionConfig[3], manifest.parameters.alphaBps) &&
+      sameValue(submissionConfig[4], manifest.parameters.minPostingBondWei) &&
+      sameValue(submissionConfig[5], manifest.parameters.challengeWindowSeconds) &&
+      submissionConfig[6] === manifest.parameters.onchainDa &&
+      sameValue(submissionConfig[7], manifest.parameters.maxSolutionBytes) &&
+      sameValue(submissionConfig[8], manifest.problems[0].seedScoreAtoms) &&
+      sameValue(submissionConfig[9], manifest.problems[0].minImprovementAtoms),
+    actual: submissionConfig.map(String)
+  });
+  const challengeConfig = [
+    await contracts.challenges.resolver(atBlock),
+    await contracts.challenges.treasury(atBlock),
+    await contracts.challenges.submissionManager(atBlock),
+    await contracts.challenges.challengeWindowSeconds(atBlock),
+    await contracts.challenges.betaBps(atBlock),
+    await contracts.challenges.minCounterBondWei(atBlock),
+    await contracts.challenges.rerunCostWei(atBlock),
+    await contracts.challenges.rerunCostMultiplierBps(atBlock),
+    await contracts.challenges.resolverDecisionBondWei(atBlock),
+    await contracts.challenges.resolverFraudWindowSeconds(atBlock)
+  ];
+  checks.push({
+    name: "config.challenges",
+    ok:
+      sameAddress(challengeConfig[0], manifest.roles.resolver) &&
+      sameAddress(challengeConfig[1], manifest.roles.treasury) &&
+      sameAddress(challengeConfig[2], manifest.contracts.submissions.address) &&
+      sameValue(challengeConfig[3], manifest.parameters.challengeWindowSeconds) &&
+      sameValue(challengeConfig[4], manifest.parameters.betaBps) &&
+      sameValue(challengeConfig[5], manifest.parameters.minCounterBondWei) &&
+      sameValue(challengeConfig[6], manifest.parameters.rerunCostWei) &&
+      sameValue(challengeConfig[7], manifest.parameters.rerunCostMultiplierBps) &&
+      sameValue(challengeConfig[8], manifest.parameters.resolverDecisionBondWei) &&
+      sameValue(challengeConfig[9], manifest.parameters.resolverFraudWindowSeconds),
+    actual: challengeConfig.map(String)
+  });
+
+  checks.push(
+    check("wiring.poolLedger", await contracts.pool.ledger(atBlock), manifest.contracts.ledger.address, sameAddress),
+    check(
+      "wiring.ledgerCreditRecorder",
+      await contracts.ledger.creditRecorder(atBlock),
+      manifest.contracts.submissions.address,
+      sameAddress
+    ),
+    check(
+      "wiring.poolSubmissionManager",
+      await contracts.pool.submissionManager(atBlock),
+      manifest.contracts.submissions.address,
+      sameAddress
+    ),
+    check(
+      "wiring.submissionChallengeManager",
+      await contracts.submissions.challengeManager(atBlock),
+      manifest.contracts.challenges.address,
+      sameAddress
+    )
+  );
+  const poolRegistry = [await contracts.pool.registry(atBlock), await contracts.pool.problemId(atBlock)];
+  checks.push({
+    name: "wiring.poolRegistry",
+    ok: sameAddress(poolRegistry[0], manifest.contracts.registry.address) && sameValue(poolRegistry[1], "1"),
+    actual: poolRegistry.map(String)
+  });
+
+  const problem = await contracts.registry.problems(1n, atBlock);
+  const expectedProblem = manifest.problems[0];
+  checks.push({
+    name: "problem.registeredPinsAndConfig",
+    ok:
+      sameValue(await contracts.registry.problemCount(atBlock), "1") &&
+      lower(problem.specHash) === lower(expectedProblem.specHash) &&
+      lower(problem.verifierSourceHash) === lower(expectedProblem.verifierSourceHash) &&
+      lower(problem.verifierImageHash) === lower(expectedProblem.verifierImageHash) &&
+      lower(problem.admissionMatrixHash) === lower(expectedProblem.admissionMatrixHash) &&
+      problem.metadataURI === expectedProblem.metadataURI &&
+      sameAddress(problem.pool, expectedProblem.pool) &&
+      sameAddress(problem.ledger, expectedProblem.ledger) &&
+      sameAddress(problem.submissionManager, expectedProblem.submissionManager) &&
+      sameAddress(problem.challengeManager, expectedProblem.challengeManager) &&
+      sameValue(problem.challengeWindowSeconds, manifest.parameters.challengeWindowSeconds) &&
+      sameValue(problem.minImprovementAtoms, expectedProblem.minImprovementAtoms),
+    actual: {
+      specHash: problem.specHash,
+      verifierImageHash: problem.verifierImageHash,
+      admissionMatrixHash: problem.admissionMatrixHash
+    }
+  });
+  checks.push({
+    name: "problem.frozen",
+    ok: await contracts.registry.explicitlyFrozen(1n, atBlock),
+    actual: await contracts.registry.explicitlyFrozen(1n, atBlock),
+    expected: true
+  });
+  for (const key of ["ledger", "submissions", "challenges"]) {
+    checks.push({
+      name: `pauseTarget.${key}`,
+      ok: await contracts.timelock.pauseTargetAllowed(manifest.contracts[key].address, atBlock),
+      actual: await contracts.timelock.pauseTargetAllowed(manifest.contracts[key].address, atBlock),
+      expected: true
+    });
+  }
+  checks.push({
+    name: "funding.fundingArmedFalse",
+    ok: !(await contracts.submissions.fundingArmed(atBlock)),
+    actual: await contracts.submissions.fundingArmed(atBlock),
+    expected: false
+  });
+  checks.push({
+    name: "funding.acceptingFundsFalse",
+    ok: !(await contracts.pool.acceptingFunds(atBlock)),
+    actual: await contracts.pool.acceptingFunds(atBlock),
+    expected: false
+  });
+
+  const operations = [];
+  for (const operation of manifest.setupTransactions) {
+    const candidates = [
+      { operationId: operation.operationId, operationClass: operation.operationClass },
+      operation.overrideFallback === null
+        ? null
+        : { operationId: operation.overrideFallback.operationId, operationClass: "override" }
+    ].filter(Boolean);
+    const candidateEvidence = await Promise.all(candidates.map(async (candidate) => {
+      const state = await contracts.timelock.stateOf(candidate.operationId, atBlock);
+      const events = await contracts.timelock.queryFilter(
+        contracts.timelock.filters.Executed(candidate.operationId),
+        manifest.indexer.startBlock,
+        checkedBlock
+      );
+      return { ...candidate, state, events };
+    }));
+    const executedCandidates = candidateEvidence.filter(
+      (candidate) => candidate.state === 2n && candidate.events.length === 1
+    );
+    const execution = executedCandidates.length === 1 ? executedCandidates[0] : null;
+    const event = execution?.events[0] ?? null;
+    const executed = execution !== null;
+    checks.push({
+      name: `operation.${operation.operationId}`,
+      ok: executed,
+      actual: candidateEvidence.map((candidate) => ({
+        operationId: candidate.operationId,
+        state: candidate.state.toString(),
+        eventCount: candidate.events.length
+      })),
+      expected: "exactly one primary or deterministic override-fallback execution"
+    });
+    operations.push({
+      operationId: operation.operationId,
+      executedOperationId: execution?.operationId ?? null,
+      executedOperationClass: execution?.operationClass ?? null,
+      state: executed ? "executed" : "incomplete",
+      txHash: event?.transactionHash ?? null,
+      blockNumber: event?.blockNumber ?? null
+    });
+  }
+  const checked = await ethers.provider.getBlock(checkedBlock);
+  if (checked === null) throw new Error(`Unable to read finalized block ${checkedBlock}`);
+  return {
+    checkedAt: new Date(Number(checked.timestamp) * 1000).toISOString(),
+    checkedBlock,
+    checks,
+    operations
+  };
+}
+
+async function continueCeremony(ethers) {
+  const path = manifestPath();
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  if (manifest.schema !== MANIFEST_SCHEMA) throw new Error(`Unsupported manifest schema: ${manifest.schema}`);
+  assertDeploymentConfigHash(manifest);
+  const head = await ethers.provider.getBlockNumber();
+  const checkedBlock = head - manifest.indexer.finalityPolicy.confirmations;
+  if (checkedBlock < manifest.indexer.startBlock) {
+    throw new Error(`Finalized block ${checkedBlock} is before deployment block ${manifest.indexer.startBlock}`);
+  }
+  const contracts = await readContractSet(ethers, manifest);
+  const snapshot = await collectContinuationSnapshot(ethers, manifest, contracts, checkedBlock);
+  try {
+    const completed = completeSetupManifest(manifest, snapshot);
+    await writeFile(path, `${jsonStringify(completed)}\n`);
+    console.log(`Governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
+  } catch (error) {
+    const pending = manifest.setupTransactions
+      .filter((operation) => {
+        const evidence = snapshot.operations.find(
+          (entry) => lower(entry.operationId) === lower(operation.operationId)
+        );
+        return evidence?.state !== "executed";
+      })
+      .map((operation) => ({
+        sequence: operation.sequence,
+        label: operation.label,
+        operationClass: operation.operationClass,
+        operationId: operation.operationId,
+        dependsOn: operation.dependsOn,
+        transactionBuilder: operation.transactionBuilder,
+        overrideFallback: operation.overrideFallback
+      }));
+    console.log(jsonStringify({ checkedBlock, pendingOperations: pending }));
+    throw error;
+  }
+}
+
+requiredEnv("BASE_SEPOLIA_RPC_URL");
+const mode = (process.env.P42_DEPLOY_MODE ?? "deploy").trim().toLowerCase();
+if (mode !== "deploy" && mode !== "continue") {
+  throw new Error("P42_DEPLOY_MODE must be deploy or continue");
+}
+
+const connection = await network.create("baseSepolia");
+try {
+  const { ethers } = connection;
+  const chain = await ethers.provider.getNetwork();
+  if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+    throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+  }
+  if (mode === "deploy") await deployCeremony(ethers);
+  else await continueCeremony(ethers);
 } finally {
   await connection.close();
 }

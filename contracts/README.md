@@ -42,14 +42,39 @@ npm audit --audit-level=moderate
 The package uses Hardhat 3 with the Node test runner and an override for the
 current `@actions/http-client` so the dev toolchain has zero npm audit findings.
 
-## Base Sepolia Deployment Scaffold
+## Base Sepolia Governance Ceremony
 
-`npm run deploy:base-sepolia` deploys the current per-problem contract set,
-wires the pool/ledger/submission/challenge roles, registers one problem, and
-writes `deployments/base-sepolia/p42-prizes.json`. It requires
-`BASE_SEPOLIA_RPC_URL`, `BASE_SEPOLIA_PRIVATE_KEY`, treasury/resolver addresses,
-and frozen problem/verifier/admission hashes. See
-`deployments/base-sepolia/README.md`.
+`npm run deploy:base-sepolia` has two modes. The default `deploy` mode uses one
+deployer key to deploy `P42MultisigTimelock` and the current per-problem
+contracts. Every child receives the timelock as its immutable owner. The
+deployer never wires or registers a child directly.
+
+The script requires distinct public governance signer addresses, a threshold,
+delay, and guardian; separate treasury and resolver roles; every economic and
+DA constructor parameter; and nonzero frozen problem/verifier/image/admission
+hashes. It never requests the governance signers' private keys. The output
+manifest starts in `pending-governance-setup` and contains ordered standard and
+override operation calldata for:
+
+- pool, ledger, submission, and challenge wiring
+- registry registration, pool binding, and immutable freeze
+- override-governed emergency-pause target registration
+
+Pending operation entries have null transaction hashes and block numbers. They
+are transaction-building instructions, not claims that setup ran. Each standard
+operation also binds a distinct override-fallback ID and calldata for the F17
+case where the guardian cancels its primary operation.
+
+Run the same command with `P42_DEPLOY_MODE=continue` and no deployer key for the
+read-only continuation. It checks runtime code, ABI/constructor/config pins,
+governance, child ownership, wiring, registry hashes/freeze, pause targets, and
+each finalized timelock execution event. It refuses to mark the manifest
+`governance-setup-complete` if any check or transaction evidence is missing.
+
+Neither mode calls `armFunding()` or `setAcceptingFunds(true)`. Those remain
+separate reviewed governance operations after source verification,
+reconciliation, and the applicable launch gates. See `docs/DEPLOYMENT.md` for
+the full environment and owner ceremony.
 
 `npm run reconcile:base-sepolia` reads that manifest and writes a read-only
 event/state consistency report under `deployments/base-sepolia/reconciliation/`.

@@ -19,11 +19,31 @@ y = 1 - 3 sum_i p_i^2 + 2 sum_i p_i^3
 The canonical point set keeps the lowest `y` submitted for each `x`, sorts by
 `x`, and adds endpoints `(0, 0)` and `(1, 1)`.
 
-The area functional is the arena's slope-3 model:
+The area functional is the arena's slope-3 model: the area under the
+slope-limited lower interpolant of the canonical points. Between each
+consecutive pair `(xL, yL) -> (xR, yR)` (points sorted by `x`, with width
+`w = xR - xL`) the segment contributes exactly:
+
+```text
+if w <= 0:            0
+elif yL > yR:         yL * w                      # descending: hold the left height
+else:
+    tip = yL + 3*w
+    if tip <= yR:     (yL + tip) / 2 * w          # slope-3 ray spans the whole width
+    else:
+        r = min(w, (yR - yL) / 3)                 # width needed to climb yL->yR at slope 3
+        (yL + yR) / 2 * r + yR * (w - r)          # climb at slope 3, then hold yR flat
+```
+
+`area` is the sum of these contributions over all consecutive pairs, and
+`max_gap` is the largest `x`-gap between consecutive points. The score is then:
 
 ```text
 score = -(area + 10 * max_gap).
 ```
+
+This is `segment_area` in `verifier/verify.py`; a challenger can reproduce
+`area` term-for-term from the definition above.
 
 All arithmetic is exact rational arithmetic. This package does not claim the
 missing historical Arena incumbent artifact; it packages the verifier model

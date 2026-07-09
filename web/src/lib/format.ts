@@ -10,8 +10,8 @@ export function statusLabel(status: ProblemStatus): string {
 
 export function stateLabel(state: SubmissionState): string {
   if (state === "committed") return "Committed";
-  if (state === "revealed") return "Reveal window";
-  if (state === "challenged") return "Challenged";
+  if (state === "revealed") return "Reveal window · unsettled";
+  if (state === "challenged") return "Challenged · unsettled";
   if (state === "finalized") return "Finalized";
   return "Rejected";
 }

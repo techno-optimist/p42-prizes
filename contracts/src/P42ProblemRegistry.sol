@@ -2,7 +2,7 @@
 pragma solidity ^0.8.24;
 
 interface IP42RegisteredPool {
-    function funded() external view returns (uint256);
+    function everFunded() external view returns (bool);
 }
 
 /// @notice Catalog and metadata anchor for Phase 1 problems.
@@ -94,15 +94,13 @@ contract P42ProblemRegistry {
         emit ProblemFrozen(problemId);
     }
 
-    /// @notice Permissionless one-way latch that persists the freeze once the
-    /// pool has been funded (L5). isFrozen() alone derives from the *live* pool
-    /// balance, so a pool that drains back to zero would let the owner re-edit
-    /// the anchored spec/verifier hashes. Latching frozen=true on funding makes
-    /// the freeze monotonic while keeping the balance-derived fallback intact.
+    /// @notice Permissionless one-way latch that persists the explicit freeze
+    /// after the pool has accepted legitimate funding. Forced ETH does not set
+    /// everFunded and therefore cannot freeze a draft registry entry.
     function latchFrozen(uint256 problemId) external {
         Problem storage problem = _requireExisting(problemId);
         if (problem.frozen) revert P42_ALREADY_FROZEN();
-        if (IP42RegisteredPool(problem.pool).funded() == 0) revert P42_NOT_FUNDED();
+        if (!IP42RegisteredPool(problem.pool).everFunded()) revert P42_NOT_FUNDED();
         problem.frozen = true;
         emit ProblemFrozen(problemId);
     }
@@ -110,7 +108,15 @@ contract P42ProblemRegistry {
     function isFrozen(uint256 problemId) public view returns (bool) {
         Problem storage problem = _requireExistingView(problemId);
         if (problem.frozen) return true;
-        return IP42RegisteredPool(problem.pool).funded() > 0;
+        return IP42RegisteredPool(problem.pool).everFunded();
+    }
+
+    function explicitlyFrozen(uint256 problemId) external view returns (bool) {
+        return _requireExistingView(problemId).frozen;
+    }
+
+    function problemPool(uint256 problemId) external view returns (address) {
+        return _requireExistingView(problemId).pool;
     }
 
     function problemHashes(uint256 problemId) external view returns (

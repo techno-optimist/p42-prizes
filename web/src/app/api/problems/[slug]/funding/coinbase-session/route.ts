@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
 import { enforceMutationApiKey } from "@/lib/api-auth";
+import { chainProvenanceForProblem, validatedDonationTarget } from "@/lib/chain-provenance";
 import { getProblemBySlug } from "@/lib/data";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
@@ -30,15 +31,20 @@ function trustedClientIp(req: Request): string | undefined {
 
 export async function POST(req: Request, { params }: { params: Promise<{ slug: string }> }) {
   try {
-    enforceRateLimit(req, rateLimitPolicy("coinbase_onramp", { limit: 10, windowMs: 60_000 }));
-    enforceMutationApiKey(req, "funding.coinbase_session");
+    const principal = enforceMutationApiKey(req, "funding.coinbase_session");
+    enforceRateLimit(
+      req,
+      rateLimitPolicy("coinbase_onramp", { limit: 10, windowMs: 60_000 }),
+      principal.rateLimitSubject,
+    );
     const body = await readJson(req, onrampSchema);
     const { slug } = await params;
     const problem = getProblemBySlug(slug);
     if (!problem) return json({ error: "Problem not found" }, { status: 404 });
 
     const wallet = problem.donationWallet;
-    if (wallet.chain !== "Base" || wallet.status !== "enabled") {
+    const donationTarget = validatedDonationTarget(chainProvenanceForProblem(problem));
+    if (!donationTarget || donationTarget.chain !== "Base" || wallet.status !== "enabled") {
       return json(
         {
           error: "Coinbase Onramp is gated until a reviewed Base mainnet pool is configured",
@@ -68,8 +74,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        addresses: [{ address: wallet.address, blockchains: ["base"] }],
-        assets: [wallet.asset],
+        addresses: [{ address: donationTarget.address, blockchains: ["base"] }],
+        assets: [donationTarget.asset],
         ...(clientIp ? { clientIp } : {}),
       }),
     });
@@ -83,7 +89,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
       channel_id: payload.channel_id,
       token: payload.token,
       onramp_url: coinbaseOnrampUrl(payload.token, body),
-      destination: wallet,
+      destination: donationTarget,
       note: "Coinbase creates a single-use funding session; on-chain settlement remains governed by the P42 pool.",
     });
   } catch (error) {

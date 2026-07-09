@@ -23,6 +23,14 @@ const ONE_MIB = 1024 * 1024;
 // strictly beats this.
 const SEED_SCORE_ATOMS = 1_000_000n;
 const MIN_IMPROVEMENT_ATOMS = 1n;
+const FUNDING_CAP = ethers.parseEther("1");
+const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
+const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+
+async function nextEarliestClose() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
 
 async function expectCustomError(action, contract, errorName) {
   try {
@@ -66,11 +74,14 @@ async function deploy(onchainDa, maxSolutionBytes) {
   const [owner, treasury, solver, other] = await ethers.getSigners();
 
   const Pool = await ethers.getContractFactory("P42BountyPool");
-  const pool = await Pool.deploy(owner.address);
+  const pool = await Pool.deploy(owner.address, FUNDING_CAP);
   await pool.waitForDeployment();
 
   const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-  const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 0);
+  const ledger = await Ledger.deploy(
+    await pool.getAddress(), owner.address, treasury.address, 0,
+    await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+  );
   await ledger.waitForDeployment();
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
@@ -94,7 +105,26 @@ async function deploy(onchainDa, maxSolutionBytes) {
   // OPEN-WITNESS-PHASE wiring: arm funding up front so these DA fixtures run
   // in the PAID phase and the pool accepts deposits.
   await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
+  const Registry = await ethers.getContractFactory("P42ProblemRegistry");
+  const registry = await Registry.deploy(owner.address);
+  await registry.waitForDeployment();
+  await registry.register({
+    specHash: ethers.id("da-spec"),
+    verifierSourceHash: ethers.id("da-source"),
+    verifierImageHash: ethers.id("da-image"),
+    admissionMatrixHash: ethers.id("da-matrix"),
+    metadataURI: "ipfs://da-fixture",
+    pool: await pool.getAddress(),
+    ledger: await ledger.getAddress(),
+    submissionManager: await submissions.getAddress(),
+    challengeManager: owner.address,
+    challengeWindowSeconds: CHALLENGE_WINDOW,
+    minImprovementAtoms: MIN_IMPROVEMENT_ATOMS,
+  });
+  await registry.freeze(1);
+  await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
   await submissions.connect(owner).armFunding();
+  await pool.connect(owner).setAcceptingFunds(true);
 
   return { owner, treasury, solver, other, pool, ledger, submissions };
 }
@@ -131,9 +161,12 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const Submissions = await ethers.getContractFactory("P42SubmissionManager");
       const [owner, treasury] = await ethers.getSigners();
       const Pool = await ethers.getContractFactory("P42BountyPool");
-      const pool = await Pool.deploy(owner.address);
+      const pool = await Pool.deploy(owner.address, FUNDING_CAP);
       const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-      const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 0);
+      const ledger = await Ledger.deploy(
+        await pool.getAddress(), owner.address, treasury.address, 0,
+        await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+      );
       await expectCustomError(
         Submissions.deploy(
           await pool.getAddress(), await ledger.getAddress(), owner.address, treasury.address,
@@ -149,9 +182,12 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const Submissions = await ethers.getContractFactory("P42SubmissionManager");
       const [owner, treasury] = await ethers.getSigners();
       const Pool = await ethers.getContractFactory("P42BountyPool");
-      const pool = await Pool.deploy(owner.address);
+      const pool = await Pool.deploy(owner.address, FUNDING_CAP);
       const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-      const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 0);
+      const ledger = await Ledger.deploy(
+        await pool.getAddress(), owner.address, treasury.address, 0,
+        await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+      );
       await expectCustomError(
         Submissions.deploy(
           await pool.getAddress(), await ledger.getAddress(), owner.address, treasury.address,

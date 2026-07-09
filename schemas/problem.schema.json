@@ -30,7 +30,24 @@
       "properties": {
         "version": { "type": "string", "minLength": 1 },
         "image": { "type": "string", "minLength": 1 },
+        "image_repository": { "type": "string", "pattern": "^[^\\s@]+$" },
         "command": { "type": "string", "minLength": 1 },
+        "admission": {
+          "type": "object",
+          "required": ["trusted_host_keys"],
+          "additionalProperties": false,
+          "properties": {
+            "trusted_host_keys": {
+              "type": "array",
+              "minItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$"
+              }
+            }
+          }
+        },
         "max_compute": {
           "type": "object",
           "required": ["wall_seconds", "memory_mb"],
@@ -71,4 +88,3 @@
     }
   }
 }
-

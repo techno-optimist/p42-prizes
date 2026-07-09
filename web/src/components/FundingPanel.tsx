@@ -1,22 +1,27 @@
 "use client";
 
 import { useState } from "react";
-import type { DonationWallet } from "@/lib/types";
+import { validatedDonationTarget } from "@/lib/chain-provenance";
+import type { ChainProvenance, DonationWallet } from "@/lib/types";
 
 export function FundingPanel({
   wallet,
+  provenance,
   label,
   compact = false,
 }: {
   wallet: DonationWallet;
+  provenance: ChainProvenance;
   label?: string;
   compact?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const target = validatedDonationTarget(provenance);
 
   async function copyAddress() {
+    if (!target) return;
     try {
-      await navigator.clipboard?.writeText(wallet.address);
+      await navigator.clipboard?.writeText(target.address);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -27,23 +32,38 @@ export function FundingPanel({
   return (
     <div className="funding">
       <div className="funding-head">
-        <h3>Deposit — {label ?? `${wallet.chain} ${wallet.asset}`}</h3>
-        <span className="status-word locked">{wallet.status.replace("-", " ")}</span>
+        <h3>Donation pool — {label ?? `${wallet.chain} ${wallet.asset}`}</h3>
+        <span className={`status-word ${target ? "pilot" : "locked"}`}>
+          {target ? "deployed" : "not deployed"}
+        </span>
       </div>
       {!compact && <p className="funding-note">{wallet.note}</p>}
-      <div className="address-line">
-        <code>{wallet.address}</code>
-        <button className="copy-button" type="button" onClick={copyAddress} aria-label="Copy deposit address">
-          {copied ? "copied" : "copy"}
-        </button>
-        <a className="ref" href={wallet.explorerUrl} target="_blank" rel="noreferrer">
-          basescan
-        </a>
-      </div>
-      <p className="testnet-warning">
-        {wallet.chain} testnet only — do not send mainnet ETH. Fiat onramp stays gated until audited mainnet pools
-        exist.
-      </p>
+      {target ? (
+        <>
+          <div className="address-line">
+            <code>{target.address}</code>
+            <a className="copy-button" href={target.walletUri} aria-label={`Donate ${target.asset} to ${label ?? "pool"}`}>
+              donate {target.asset}
+            </a>
+            <button className="copy-button" type="button" onClick={copyAddress} aria-label="Copy donation pool address">
+              {copied ? "copied" : "copy"}
+            </button>
+            <a className="ref" href={target.explorerUrl} target="_blank" rel="noreferrer">
+              basescan
+            </a>
+          </div>
+          <p className="testnet-warning">
+            {target.chain === "Base Sepolia"
+              ? "Base Sepolia testnet only — do not send mainnet ETH."
+              : "ETH only. Pool provenance is reconciled to deployed runtime bytecode."}
+          </p>
+        </>
+      ) : (
+        <p className="testnet-warning">
+          Pool not deployed. No address or donation action is published until per-problem chain provenance is
+          reconciled to deployed runtime bytecode.
+        </p>
+      )}
     </div>
   );
 }

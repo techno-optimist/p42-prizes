@@ -1,12 +1,12 @@
 import type { Problem, Submission } from "@/lib/types";
 
-function baseSepoliaWallet(address: string, note: string): Problem["donationWallet"] {
+function undeployedBaseSepoliaPool(note: string): Problem["donationWallet"] {
   return {
     chain: "Base Sepolia",
     asset: "ETH",
-    address,
-    status: "testnet-only",
-    explorerUrl: `https://sepolia.basescan.org/address/${address}`,
+    address: null,
+    status: "not-deployed",
+    explorerUrl: null,
     note,
   };
 }
@@ -29,14 +29,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.00",
     challengeBondEth: "0.00",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/hadamard-mini",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000001",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000001",
-      "Phase 0 testnet deposit wallet for topping up the Hadamard Mini prize surface.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No Hadamard Mini pool is deployed. Donations stay unavailable until a reconciled bytecode-backed pool is published.",
     ),
     tagline: "A tiny exact verifier fixture for the full P42 problem standard.",
     description:
@@ -78,14 +77,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.02",
     challengeBondEth: "0.02",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/erdos-min-overlap",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000002",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000002",
-      "Testnet deposit wallet reserved for the Erdos Min-Overlap verifier packaging gate.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No Erdos Min-Overlap pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Exact upper-bound witness packaged from the certified Erdos note.",
     description:
@@ -120,14 +118,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.02",
     challengeBondEth: "0.02",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/edges-vs-triangles",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000003",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000003",
-      "Testnet deposit wallet for increasing the queued arena-board prize pool.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No Edges vs Triangles pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Rationalized slope-3 arena board with exact row normalization.",
     description:
@@ -167,14 +164,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 168,
     postingBondEth: "0.05",
     challengeBondEth: "0.05",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/arithmetic-kakeya",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000004",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000004",
-      "Testnet deposit wallet for the gated Arithmetic Kakeya marquee bounty.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No Arithmetic Kakeya pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Scoped 2x2 forcing certificate with exact rational closure.",
     description:
@@ -206,14 +202,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.02",
     challengeBondEth: "0.02",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/autoconvolution-c1-upper",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000005",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000005",
-      "Testnet deposit wallet reserved for the Autoconvolution C1 verifier packaging gate.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No Autoconvolution C1 pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Certified large-vector autoconvolution construction from the arena note library.",
     description:
@@ -249,14 +244,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.02",
     challengeBondEth: "0.02",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/autoconvolution-c2-lower",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000006",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000006",
-      "Testnet deposit wallet reserved for the Autoconvolution C2 lower-bound gate.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No Autoconvolution C2 pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Large integer witness with exact L1/L2/Linf recomputation.",
     description:
@@ -292,14 +286,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.02",
     challengeBondEth: "0.02",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.2",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/signed-autoconvolution-c3-upper",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000007",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000007",
-      "Testnet deposit wallet reserved for the signed autoconvolution verifier gate.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No signed Autoconvolution C3 pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Signed dyadic witness with exact full autoconvolution checks.",
     description:
@@ -334,14 +327,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 96,
     postingBondEth: "0.03",
     challengeBondEth: "0.03",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/mertens-lp-ceiling-k12000",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000008",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000008",
-      "Testnet deposit wallet reserved for the Mertens LP ceiling certificate gate.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No Mertens LP pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Dyadic LP dual certificate with interval-enclosed log residuals.",
     description:
@@ -376,14 +368,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 96,
     postingBondEth: "0.03",
     challengeBondEth: "0.03",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/pnt-sparse-mertens-construction",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000009",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000009",
-      "Testnet deposit wallet reserved for the sparse Mertens construction gate.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No sparse Mertens pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Construction board split from the LP ceiling proof track.",
     description:
@@ -423,14 +414,13 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.03",
     challengeBondEth: "0.03",
-    verifierVersion: "0.1.0",
+    verifierVersion: "0.1.1",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/hadamard-668-defect",
-    poolAddress: "base-sepolia:0x4242000000000000000000000000000000000010",
-    donationWallet: baseSepoliaWallet(
-      "0x4242000000000000000000000000000000000010",
-      "Testnet deposit wallet reserved for the full-size Hadamard defect gate.",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No Hadamard 668 pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "The full finite construction board behind the Hadamard Mini pilot.",
     description:
@@ -464,10 +454,13 @@ export const submissions: Submission[] = [
     problemSlug: "hadamard-mini",
     agentName: "CHRONOS",
     sample: true,
+    source: "local-phase-0",
+    settlementState: "unsettled",
     state: "revealed",
     score: "0/1",
-    improvement: "1/1",
-    credit: "1/1",
+    improvement: "0/1",
+    provisionalImprovement: "1/1",
+    credit: "0/1",
     payoutEth: "0.000",
     solutionCid: "sha256:4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7",
     commitHash: "0x9f5cdfdb4f8216c2eef2bd22412375728354a84cfa988b391e71d587bae16ec5",

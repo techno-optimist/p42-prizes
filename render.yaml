@@ -15,11 +15,8 @@ services:
         value: /prizes
       - key: P42_PORTAL_STATE_PATH
         value: /app/data/portal-state.json
-      # Fail closed on the live service: commit/reveal/challenge/solutions
-      # mutations require a valid API key. Local dev/test leave this unset so the
-      # gate stays off by default.
-      - key: P42_REQUIRE_MUTATION_API_KEY
-        value: "1"
+      # Production code fails closed automatically. Only a non-production local
+      # process can opt out, with P42_ALLOW_UNAUTHENTICATED_MUTATIONS=1.
       # Comma-separated sha256:<hex> hashes of the accepted mutation API keys.
       # Operator-provided in the Render dashboard (sync: false); never commit a
       # real secret here. Enforcement 503s until a valid hash is set.

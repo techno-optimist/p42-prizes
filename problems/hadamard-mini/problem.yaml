@@ -10,9 +10,9 @@ objective:
   min_improvement: "1/6"
   gauge: "(seed_defect - defect) / seed_defect"
 verifier:
-  version: "0.1.0"
+  version: "0.1.1"
   image: "sha256:local-dev"
-  command: "make verify SOLUTION={solution}"
+  command: "python3 verifier/verify.py --solution {solution}"
   max_compute:
     wall_seconds: 5
     memory_mb: 128
@@ -25,4 +25,3 @@ settlement:
 data_availability:
   commit_time_blob: local-file-for-phase-0
   finalize_receipt: optional-mirror  # DA rides reveal calldata (sha256==commitDaHash); Arweave permanence is an optional mirror, not required (see docs/DATA_AVAILABILITY.md)
-

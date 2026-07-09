@@ -5,8 +5,8 @@ import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
 export async function POST(req: Request) {
   try {
-    enforceRateLimit(req, rateLimitPolicy("challenges", { limit: 30, windowMs: 60_000 }));
-    enforceMutationApiKey(req, "challenges.open");
+    const principal = enforceMutationApiKey(req, "challenges.open");
+    enforceRateLimit(req, rateLimitPolicy("challenges", { limit: 30, windowMs: 60_000 }), principal.rateLimitSubject);
     await readJson(
       req,
       z.object({

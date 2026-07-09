@@ -61,7 +61,7 @@ describe("runCanonicalVerifier", () => {
 
     expect(verdict).toMatchObject({
       problem_id: "hadamard-mini",
-      verifier_version: "0.1.0",
+      verifier_version: "0.1.1",
       solution_hash: "sha256:4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7",
       valid: true,
       score: "0/1",

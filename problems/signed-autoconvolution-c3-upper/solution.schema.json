@@ -1,11 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/problems/signed-autoconvolution-c3-upper/solution.schema.json",
+  "x-p42-max-bytes": 4194304,
   "type": "object",
   "required": ["n", "denominator_power", "values"],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "n": { "const": 100000 },
+    "source": { "type": "string" },
+    "claimed_argmax": { "type": "integer" },
+    "claimed_improvement": { "type": "string" },
+    "claimed_score": { "type": "string" },
     "denominator_power": {
       "type": "integer",
       "minimum": 0,
@@ -16,7 +21,9 @@
       "minItems": 100000,
       "maxItems": 100000,
       "items": {
-        "type": "integer"
+        "type": "integer",
+        "minimum": -348449143727040986586495598010130648530944,
+        "maximum": 348449143727040986586495598010130648530944
       }
     }
   }

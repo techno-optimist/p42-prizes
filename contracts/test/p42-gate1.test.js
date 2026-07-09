@@ -6,6 +6,14 @@ import { network } from "hardhat";
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
 const RESOLVER_FRAUD_WINDOW_SECONDS = 24n * 60n * 60n;
+const FUNDING_CAP = ethers.parseEther("100");
+const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
+const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+
+async function nextEarliestClose() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
 // Absolute-score frontier seed for these economic fixtures. Reveals claim
 // ABSOLUTE scores strictly below this; finalize credits the marginal
 // reduction against the live frontier (F1).
@@ -51,6 +59,12 @@ async function increaseTime(seconds) {
   await ethers.provider.send("evm_mine", []);
 }
 
+async function advanceToEffectiveClose(ledger) {
+  const target = await ledger.effectiveEarliestCloseTimestamp();
+  const latest = await ethers.provider.getBlock("latest");
+  if (target > BigInt(latest.timestamp)) await increaseTime(target - BigInt(latest.timestamp));
+}
+
 describe("P42 Gate 1 contract scaffold", function () {
   async function deployFixture({
     alphaBps = 200n,
@@ -60,11 +74,14 @@ describe("P42 Gate 1 contract scaffold", function () {
   } = {}) {
     const [owner, treasury, resolver, alice, bob, challenger] = await ethers.getSigners();
     const Pool = await ethers.getContractFactory("P42BountyPool");
-    const pool = await Pool.deploy(owner.address);
+    const pool = await Pool.deploy(owner.address, FUNDING_CAP);
     await pool.waitForDeployment();
 
     const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-    const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, feeBps);
+    const ledger = await Ledger.deploy(
+      await pool.getAddress(), owner.address, treasury.address, feeBps,
+      await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+    );
     await ledger.waitForDeployment();
     await pool.connect(owner).setLedger(await ledger.getAddress());
 
@@ -87,11 +104,9 @@ describe("P42 Gate 1 contract scaffold", function () {
       await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
     }
 
-    // OPEN-WITNESS-PHASE wiring: arm funding up front so these economic
-    // fixtures run in the PAID phase (credit assertions unchanged) and the
-    // pool accepts deposits.
+    // OPEN-WITNESS-PHASE wiring is completed after the required frozen
+    // registry binding below.
     await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
-    await submissions.connect(owner).armFunding();
 
     const Challenges = await ethers.getContractFactory("P42ChallengeManager");
     const challenges = await Challenges.deploy(
@@ -113,6 +128,27 @@ describe("P42 Gate 1 contract scaffold", function () {
     const Registry = await ethers.getContractFactory("P42ProblemRegistry");
     const registry = await Registry.deploy(owner.address);
     await registry.waitForDeployment();
+
+    const fundingRegistry = await Registry.deploy(owner.address);
+    await fundingRegistry.waitForDeployment();
+    await fundingRegistry.register({
+      specHash: ethers.id("fixture-spec"),
+      verifierSourceHash: ethers.id("fixture-source"),
+      verifierImageHash: ethers.id("fixture-image"),
+      admissionMatrixHash: ethers.id("fixture-matrix"),
+      metadataURI: "ipfs://fixture",
+      pool: await pool.getAddress(),
+      ledger: await ledger.getAddress(),
+      submissionManager: await submissions.getAddress(),
+      challengeManager: await challenges.getAddress(),
+      challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
+      minImprovementAtoms: 1n,
+    });
+    await fundingRegistry.freeze(1);
+    await pool.connect(owner).setRegistry(await fundingRegistry.getAddress(), 1);
+    await submissions.connect(owner).armFunding();
+    await pool.connect(owner).setAcceptingFunds(true);
+    await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
     return { owner, treasury, resolver, alice, bob, challenger, pool, ledger, submissions, challenges, registry, minBond };
   }
@@ -288,7 +324,7 @@ describe("P42 Gate 1 contract scaffold", function () {
   });
 
   it("detects empty-pool bond leverage before finalization", async function () {
-    const { alice, pool, submissions, minBond } = await deployFixture({ alphaBps: 200n });
+    const { alice, pool, submissions } = await deployFixture({ alphaBps: 200n });
     const solutionCid = "bafy-empty-pool";
     const salt = "empty-pool-salt";
     const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
@@ -298,22 +334,15 @@ describe("P42 Gate 1 contract scaffold", function () {
       salt
     );
 
-    await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
+    const required = await submissions.requiredPostingBondNow();
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: required });
     await pool.fund({ value: ethers.parseEther("100") });
 
-    assert.equal(await submissions.bondCoversEntitlement(1, ethers.parseEther("100")), false);
-    await expectCustomError(
-      submissions.requireFinalizeBond(1, ethers.parseEther("100")),
-      submissions,
-      "P42_BOND_UNDERCOVERS_ENTITLEMENT"
-    );
+    assert.equal(await submissions.bondCoversEntitlement(1, ethers.parseEther("100")), true);
+    await submissions.requireFinalizeBond(1, ethers.parseEther("100"));
     await submissions.connect(alice).reveal(1, solutionCid, 100, 1, salt, "0x");
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await expectCustomError(
-      submissions.connect(alice).finalize(1, PERMANENCE_HASH),
-      submissions,
-      "P42_BOND_UNDERCOVERS_ENTITLEMENT"
-    );
+    await submissions.connect(alice).finalize(1, PERMANENCE_HASH);
   });
 
   it("requires a commit-time DA hash gate and a valid CID-bound reveal", async function () {
@@ -333,7 +362,9 @@ describe("P42 Gate 1 contract scaffold", function () {
       "P42_EMPTY_DA_HASH"
     );
 
-    await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
+    await submissions.connect(alice).commit(commitment, DA_HASH, {
+      value: await submissions.requiredPostingBondNow(),
+    });
 
     await expectCustomError(
       submissions.connect(bob).reveal(1, solutionCid, 123, 7, salt, "0x"),
@@ -395,13 +426,6 @@ describe("P42 Gate 1 contract scaffold", function () {
       submissions,
       "P42_NOT_SOLVER"
     );
-    await expectCustomError(
-      submissions.connect(alice).finalize(1, PERMANENCE_HASH),
-      submissions,
-      "P42_BOND_UNDERCOVERS_ENTITLEMENT"
-    );
-    await submissions.connect(alice).topUpBond(1, { value: required });
-
     // The finalize permanence receipt is now OPTIONAL (on-chain-at-reveal DA
     // provides availability; the receipt is only an off-chain mirror). Recording
     // one is still supported and stored on the submission.
@@ -409,36 +433,39 @@ describe("P42 Gate 1 contract scaffold", function () {
     const finalized = await submissions.submissions(1);
     assert.equal(finalized.status, 4n);
     assert.equal(finalized.permanenceHash, PERMANENCE_HASH);
-    assert.equal(finalized.bondWei, 0n);
+    assert.equal(finalized.bondWei, required);
     assert.equal(await submissions.openSubmissionCount(), 0n);
     // Credit is the MARGINAL frontier reduction: seed - claimed absolute score.
     assert.equal(await ledger.creditAtomsOf(alice.address), SEED_SCORE_ATOMS - 1000n);
     assert.equal(await submissions.bestScoreAtoms(), 1000n);
-    assert.equal(await submissions.claimableBondWei(alice.address), required * 2n);
+    assert.equal(await submissions.claimableBondWei(alice.address), 0n);
 
     await expectCustomError(
       submissions.connect(alice).finalize(1, PERMANENCE_HASH),
       submissions,
       "P42_BAD_SUBMISSION_STATUS"
     );
+    await advanceToEffectiveClose(ledger);
+    await ledger.close();
+    await submissions.releaseFinalizedBond(1);
     const bondContractBefore = await ethers.provider.getBalance(await submissions.getAddress());
     await submissions.connect(alice).claimBond();
-    assert.equal(bondContractBefore - (await ethers.provider.getBalance(await submissions.getAddress())), required * 2n);
+    assert.equal(bondContractBefore - (await ethers.provider.getBalance(await submissions.getAddress())), required);
     assert.equal(await submissions.claimableBondWei(alice.address), 0n);
-    await ledger.close();
     await pool.connect(alice).claim();
     assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("2"));
   });
 
   it("blocks ledger close while committed submissions can still reveal", async function () {
-    const { alice, treasury, ledger, submissions, minBond } = await deployFixture();
+    const { alice, treasury, ledger, submissions } = await deployFixture();
     const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
       "bafy-abandoned-commit",
       alice.address,
       DA_HASH,
       "abandoned"
     );
-    await submissions.connect(alice).commit(commitment, DA_HASH, { value: minBond });
+    const bond = await submissions.requiredPostingBondNow();
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: bond });
     assert.equal(await submissions.openSubmissionCount(), 1n);
 
     await expectCustomError(ledger.close(), ledger, "P42_OPEN_SUBMISSIONS");
@@ -453,7 +480,8 @@ describe("P42 Gate 1 contract scaffold", function () {
     const expired = await submissions.submissions(1);
     assert.equal(expired.status, 5n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
-    assert.equal(await submissions.claimableBondWei(treasury.address), minBond);
+    assert.equal(await submissions.claimableBondWei(treasury.address), bond);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
   });
@@ -481,6 +509,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(expired.status, 5n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
     assert.equal(await submissions.claimableBondWei(treasury.address), bond);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
   });
@@ -518,6 +547,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     await expectCustomError(pool.connect(alice).claim(), ledger, "P42_NOT_CLOSED");
 
     await ledger.recordCredit(bob.address, 10000);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     await ledger.setPausedNewActions(true);
 
@@ -535,6 +565,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const { alice, bob, pool, ledger } = await deployFixture({ feeBps: 0, activateRecorder: false });
     await pool.fund({ value: ethers.parseEther("1") });
     await ledger.recordCredit(alice.address, 1);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     await ledger.setPausedNewActions(true);
 
@@ -631,7 +662,6 @@ describe("P42 Gate 1 contract scaffold", function () {
     const resolverBond = await challenges.resolverDecisionBondWei();
 
     await challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required });
-    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await expectCustomError(
       submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH),
       submissions,
@@ -674,22 +704,22 @@ describe("P42 Gate 1 contract scaffold", function () {
       value: resolverBond,
     });
     const resolved = await challenges.challenges(submissionId);
-    const rejected = await submissions.submissions(submissionId);
-    assert.equal(rejected.status, 5n);
-    assert.equal(resolved.resolved, true);
+    const pending = await submissions.submissions(submissionId);
+    assert.equal(pending.status, 3n);
+    assert.equal(resolved.resolved, false);
+    assert.equal(resolved.decisionPending, true);
     assert.equal(resolved.challengerWins, true);
     assert.equal(resolved.transcriptHash, transcriptHash);
     assert.equal(resolved.transcriptURI, transcriptURI);
     assert.equal(resolved.verdictHash, verdictHash);
     const resolverBondState = await challenges.resolverBonds(submissionId);
     assert.equal(resolverBondState.amountWei, resolverBond);
-    assert.equal(resolverBondState.releaseAt > resolved.disputeEndsAt, true);
+    assert.equal(resolverBondState.releaseAt < resolved.disputeEndsAt, true);
+    assert.equal(resolverBondState.releaseAt <= await submissions.maxDisputeEndsAtOf(submissionId), true);
     assert.equal(resolverBondState.slashProofHash, ethers.ZeroHash);
-    assert.equal(await challenges.claimableBondWei(challenger.address), required);
+    assert.equal(await challenges.claimableBondWei(challenger.address), 0n);
     assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
-    // The rejected solver's forfeited posting bond now accrues to the winning
-    // challenger (M2), not the treasury, so policing fraud is net-positive.
-    assert.equal(await submissions.claimableBondWei(challenger.address), bond);
+    assert.equal(await submissions.claimableBondWei(challenger.address), 0n);
     assert.equal(await submissions.claimableBondWei(treasury.address), 0n);
 
     await expectCustomError(
@@ -708,23 +738,25 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(slashed.amountWei, 0n);
     assert.equal(slashed.slashProofHash, slashProof);
     assert.equal(await challenges.claimableBondWei(treasury.address), resolverBond);
+    assert.equal(await challenges.claimableBondWei(challenger.address), required);
+    assert.equal((await submissions.submissions(submissionId)).status, 2n);
     await expectCustomError(
       challenges.releaseResolverBond(submissionId),
       challenges,
-      "P42_NO_RESOLVER_BOND"
+      "P42_UNKNOWN_CHALLENGE"
     );
 
     await expectCustomError(
       submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH),
       submissions,
-      "P42_BAD_SUBMISSION_STATUS"
+      "P42_CHALLENGE_WINDOW_OPEN"
     );
     await expectCustomError(
       challenges.connect(resolver).resolve(submissionId, true, transcriptHash, transcriptURI, verdictHash, {
         value: resolverBond,
       }),
       challenges,
-      "P42_ALREADY_RESOLVED"
+      "P42_UNKNOWN_CHALLENGE"
     );
   });
 
@@ -746,24 +778,25 @@ describe("P42 Gate 1 contract scaffold", function () {
       { value: await challenges.resolverDecisionBondWei() }
     );
 
-    assert.equal(await challenges.claimableBondWei(treasury.address), required);
+    assert.equal(await challenges.claimableBondWei(treasury.address), 0n);
     assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
-    assert.equal((await submissions.submissions(submissionId)).status, 2n);
+    assert.equal((await submissions.submissions(submissionId)).status, 3n);
     await expectCustomError(
       challenges.releaseResolverBond(submissionId),
       challenges,
       "P42_RESOLVER_BOND_LOCKED"
     );
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await challenges.releaseResolverBond(submissionId);
+    assert.equal(await challenges.claimableBondWei(treasury.address), required);
+    assert.equal(await challenges.claimableBondWei(resolver.address), await challenges.resolverDecisionBondWei());
     const before = await ethers.provider.getBalance(await challenges.getAddress());
     await challenges.connect(treasury).claimBond();
     assert.equal(before - (await ethers.provider.getBalance(await challenges.getAddress())), required);
     assert.equal(await challenges.claimableBondWei(treasury.address), 0n);
-
-    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await challenges.releaseResolverBond(submissionId);
-    assert.equal(await challenges.claimableBondWei(resolver.address), await challenges.resolverDecisionBondWei());
     await challenges.connect(resolver).claimBond();
     assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n);
     // Marginal credit: seed frontier minus the claimed absolute score (1000).
@@ -805,6 +838,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
 
@@ -833,6 +867,8 @@ describe("P42 Gate 1 contract scaffold", function () {
       ethers.keccak256(ethers.toUtf8Bytes("challenger wins verdict")),
       { value: await challenges.resolverDecisionBondWei() }
     );
+    await increaseTime(RESOLVER_FRAUD_WINDOW_SECONDS + 1n);
+    await challenges.finalizeResolution(submissionId);
 
     // Own counter-bond refunded on the challenge manager...
     const ownRefund = await challenges.claimableBondWei(challenger.address);
@@ -855,6 +891,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     // Nothing to sweep before close.
     await expectCustomError(ledger.sweepFee(), ledger, "P42_NOT_CLOSED");
 
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     const feeReserve = await ledger.feeReserve();
     assert.equal(feeReserve, (ethers.parseEther("10") * 250n) / 10_000n);
@@ -882,6 +919,7 @@ describe("P42 Gate 1 contract scaffold", function () {
   it("rejects deposits once the ledger has closed (L2)", async function () {
     const { alice, pool, ledger } = await deployFixture({ feeBps: 0, activateRecorder: false });
     await pool.fund({ value: ethers.parseEther("1") });
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
 
     await expectCustomError(pool.fund({ value: 1n }), pool, "P42_POOL_CLOSED");
@@ -909,6 +947,7 @@ describe("P42 Gate 1 contract scaffold", function () {
 
     // Drain the pool back to zero through a full credit/close/claim cycle.
     await ledger.recordCredit(alice.address, 1);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     await pool.connect(alice).claim();
     assert.equal(await pool.funded(), 0n);
@@ -940,6 +979,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await ledger.claimDeadline(), 0n); // knowable only after close
 
     // close() anchors the deadline and publishes it in the Closed event.
+    await advanceToEffectiveClose(ledger);
     const tx = await ledger.close();
     const receipt = await tx.wait();
     const closedEvent = receipt.logs
@@ -976,6 +1016,7 @@ describe("P42 Gate 1 contract scaffold", function () {
 
     // No sweep before close, and none while solvers still own their window.
     await expectCustomError(ledger.sweepResidual(), ledger, "P42_NOT_CLOSED");
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     await expectCustomError(ledger.sweepResidual(), ledger, "P42_CLAIMS_NOT_EXPIRED");
 
@@ -1005,6 +1046,7 @@ describe("P42 Gate 1 contract scaffold", function () {
   it("sweeps the whole balance of a pool that closed with zero credited solvers (F15 canary edge)", async function () {
     const { treasury, pool, ledger } = await deployFixture({ feeBps: 0, activateRecorder: false });
     await pool.fund({ value: ethers.parseEther("1") });
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.totalCreditAtoms(), 0n);
 
@@ -1021,6 +1063,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const { alice, treasury, pool, ledger } = await deployFixture({ feeBps: 250, activateRecorder: false });
     await pool.fund({ value: ethers.parseEther("10") });
     await ledger.recordCredit(alice.address, 1);
+    await advanceToEffectiveClose(ledger);
     await ledger.close();
 
     // Direct calls to the escrow's residual path are ledger-only.

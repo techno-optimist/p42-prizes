@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {P42Math} from "./P42Math.sol";
+
 interface IP42SubmissionChallengeHook {
     function markChallenged(uint256 submissionId) external;
     function resolveChallenge(uint256 submissionId, bool challengerWins, address beneficiary) external;
+    function cancelChallenge(uint256 submissionId) external;
     function disputedEntitlementWei(uint256 submissionId) external view returns (uint256);
     function solverOf(uint256 submissionId) external view returns (address);
+    function maxDisputeDeadline(uint256 submissionId) external view returns (uint64);
 }
 
 /// @notice Optimistic challenge scaffold for Phase 1.
@@ -22,19 +26,25 @@ contract P42ChallengeManager {
     error P42_SELF_CHALLENGE();
     error P42_UNKNOWN_CHALLENGE();
     error P42_ALREADY_RESOLVED();
+    error P42_DECISION_PENDING();
+    error P42_NO_PENDING_DECISION();
     error P42_INSUFFICIENT_CHALLENGE_BOND(uint256 required, uint256 received);
     error P42_INSUFFICIENT_RESOLVER_BOND(uint256 required, uint256 received);
     error P42_DISPUTE_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
+    error P42_DISPUTE_WINDOW_CLOSED(uint64 endsAt, uint64 nowAt);
+    error P42_SETTLEMENT_HORIZON_EXCEEDED(uint64 deadline, uint64 proposedFinality);
     error P42_EMPTY_TRANSCRIPT_HASH();
     error P42_EMPTY_TRANSCRIPT_URI();
     error P42_EMPTY_VERDICT_HASH();
     error P42_NO_BOND_TO_CLAIM();
     error P42_NO_RESOLVER_BOND();
     error P42_RESOLVER_BOND_LOCKED(uint64 releaseAt, uint64 nowAt);
+    error P42_RESOLVER_FRAUD_WINDOW_CLOSED(uint64 releaseAt, uint64 nowAt);
     error P42_EMPTY_FRAUD_PROOF_HASH();
     error P42_TRANSFER_FAILED();
 
     uint16 public constant MAX_BETA_BPS = 10_000;
+    uint64 public constant MAX_CHALLENGE_WINDOW_SECONDS = 30 days;
 
     struct Challenge {
         uint256 submissionId;
@@ -44,6 +54,7 @@ contract P42ChallengeManager {
         uint64 challengedAt;
         uint64 disputeEndsAt;
         bool resolved;
+        bool decisionPending;
         bool challengerWins;
         bytes32 transcriptHash;
         string transcriptURI;
@@ -90,9 +101,11 @@ contract P42ChallengeManager {
         string transcriptURI,
         bytes32 verdictHash,
         uint256 resolverBondWei,
-        uint64 resolverBondReleaseAt
+        uint64 resolverBondReleaseAt,
+        bool challengerWins
     );
     event Resolved(uint256 indexed submissionId, bool challengerWins);
+    event ResolverDecisionCancelled(uint256 indexed submissionId, address indexed challenger, bytes32 proofHash);
     event ChallengeExpired(uint256 indexed submissionId, address indexed challenger, uint256 refundedBondWei);
     event ResolverBondReleased(uint256 indexed submissionId, address indexed resolver, uint256 amount);
     event ResolverBondSlashed(uint256 indexed submissionId, address indexed treasury, uint256 amount, bytes32 proofHash);
@@ -132,8 +145,13 @@ contract P42ChallengeManager {
         require(resolver_ != address(0), "P42_RESOLVER_ZERO");
         require(treasury_ != address(0), "P42_TREASURY_ZERO");
         require(submissionManager_ != address(0), "P42_SUBMISSION_MANAGER_ZERO");
-        require(challengeWindowSeconds_ > 0, "P42_WINDOW_ZERO");
+        require(
+            challengeWindowSeconds_ > 0 && challengeWindowSeconds_ <= MAX_CHALLENGE_WINDOW_SECONDS,
+            "P42_BAD_CHALLENGE_WINDOW"
+        );
         require(resolverFraudWindowSeconds_ > 0, "P42_FRAUD_WINDOW_ZERO");
+        require(resolverFraudWindowSeconds_ <= challengeWindowSeconds_, "P42_FRAUD_WINDOW_TOO_LONG");
+        require(resolverDecisionBondWei_ > 0, "P42_RESOLVER_BOND_ZERO");
         if (betaBps_ > MAX_BETA_BPS) revert P42_BAD_BETA();
         owner = owner_;
         resolver = resolver_;
@@ -154,8 +172,8 @@ contract P42ChallengeManager {
     }
 
     function requiredChallengeBond(uint256 disputedEntitlementWei) public view returns (uint256) {
-        uint256 scaledDelayValue = disputedEntitlementWei * betaBps / 10_000;
-        uint256 scaledRerunCost = rerunCostWei * rerunCostMultiplierBps / 10_000;
+        uint256 scaledDelayValue = P42Math.mulDiv(disputedEntitlementWei, betaBps, 10_000);
+        uint256 scaledRerunCost = P42Math.mulDiv(rerunCostWei, rerunCostMultiplierBps, 10_000);
         uint256 required = minCounterBondWei;
         if (scaledDelayValue > required) required = scaledDelayValue;
         if (scaledRerunCost > required) required = scaledRerunCost;
@@ -189,7 +207,11 @@ contract P42ChallengeManager {
 
         submissionManager.markChallenged(submissionId);
 
-        uint64 disputeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
+        uint64 proposedDisputeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
+        uint64 maxDisputeEndsAt = submissionManager.maxDisputeDeadline(submissionId);
+        uint64 disputeEndsAt = proposedDisputeEndsAt < maxDisputeEndsAt
+            ? proposedDisputeEndsAt
+            : maxDisputeEndsAt;
         challenges[submissionId] = Challenge({
             submissionId: submissionId,
             challenger: msg.sender,
@@ -198,6 +220,7 @@ contract P42ChallengeManager {
             challengedAt: uint64(block.timestamp),
             disputeEndsAt: disputeEndsAt,
             resolved: false,
+            decisionPending: false,
             challengerWins: false,
             transcriptHash: bytes32(0),
             transcriptURI: "",
@@ -215,7 +238,10 @@ contract P42ChallengeManager {
     ) external payable onlyResolver {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
-        if (current.resolved) revert P42_ALREADY_RESOLVED();
+        if (current.resolved || current.decisionPending) revert P42_ALREADY_RESOLVED();
+        if (block.timestamp >= current.disputeEndsAt) {
+            revert P42_DISPUTE_WINDOW_CLOSED(current.disputeEndsAt, uint64(block.timestamp));
+        }
         if (msg.value < resolverDecisionBondWei) {
             revert P42_INSUFFICIENT_RESOLVER_BOND(resolverDecisionBondWei, msg.value);
         }
@@ -223,37 +249,66 @@ contract P42ChallengeManager {
         if (bytes(transcriptURI).length == 0) revert P42_EMPTY_TRANSCRIPT_URI();
         if (verdictHash == bytes32(0)) revert P42_EMPTY_VERDICT_HASH();
 
-        current.resolved = true;
+        current.decisionPending = true;
         current.challengerWins = challengerWins;
         current.transcriptHash = transcriptHash;
         current.transcriptURI = transcriptURI;
         current.verdictHash = verdictHash;
-        uint64 resolverBondReleaseAt = uint64(block.timestamp) + resolverFraudWindowSeconds;
+        uint64 resolverBondReleaseAt = _resolverBondReleaseAt(submissionId);
         resolverBonds[submissionId] = ResolverBond({
             amountWei: msg.value,
             releaseAt: resolverBondReleaseAt,
             slashProofHash: bytes32(0)
         });
 
-        if (challengerWins) {
-            claimableBondWei[current.challenger] += current.challengeBondWei;
-        } else {
-            claimableBondWei[treasury] += current.challengeBondWei;
-        }
-        // On a challenger win the rejected solver's forfeited posting bond is
-        // routed to the challenger (not treasury) so a successful challenge is
-        // net-positive; the beneficiary is ignored when the solver prevails (M2).
-        submissionManager.resolveChallenge(submissionId, challengerWins, current.challenger);
+        _emitResolverTranscriptPosted(submissionId, resolverBondReleaseAt);
+    }
 
-        emit ResolverTranscriptPosted(
-            submissionId,
-            msg.sender,
-            transcriptHash,
-            transcriptURI,
-            verdictHash,
-            msg.value,
-            resolverBondReleaseAt
-        );
+    /// @notice Applies a resolver decision only after its fraud window has
+    /// elapsed unslashed. The resolver bond is released in the same transition,
+    /// so a solver-favorable decision cannot occupy the sole challenge slot
+    /// after it has returned the submission to Revealed.
+    function finalizeResolution(uint256 submissionId) public {
+        Challenge storage current = challenges[submissionId];
+        if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        if (!current.decisionPending) {
+            if (current.resolved) revert P42_ALREADY_RESOLVED();
+            revert P42_NO_PENDING_DECISION();
+        }
+        ResolverBond storage decisionBond = resolverBonds[submissionId];
+        uint256 resolverBond = decisionBond.amountWei;
+        if (resolverBond == 0) revert P42_NO_RESOLVER_BOND();
+        if (block.timestamp < decisionBond.releaseAt) {
+            revert P42_RESOLVER_BOND_LOCKED(decisionBond.releaseAt, uint64(block.timestamp));
+        }
+
+        address challenger = current.challenger;
+        uint256 challengeBond = current.challengeBondWei;
+        bool challengerWins = current.challengerWins;
+        current.decisionPending = false;
+        current.resolved = true;
+        decisionBond.amountWei = 0;
+
+        if (challengerWins) {
+            claimableBondWei[challenger] += challengeBond;
+        } else {
+            claimableBondWei[treasury] += challengeBond;
+        }
+        claimableBondWei[resolver] += resolverBond;
+
+        // On a challenger win the rejected solver's forfeited posting bond is
+        // routed to the challenger. On a solver win, rearming is bounded by the
+        // submission's immutable cumulative dispute deadline.
+        submissionManager.resolveChallenge(submissionId, challengerWins, challenger);
+
+        // A final solver-favorable verdict must not permanently consume the
+        // challenge slot. The evidence remains in events; storage is cleared so
+        // a fresh challenge can open only if the bounded window remains.
+        if (!challengerWins) {
+            delete challenges[submissionId];
+        }
+
+        emit ResolverBondReleased(submissionId, resolver, resolverBond);
         emit Resolved(submissionId, challengerWins);
     }
 
@@ -267,6 +322,7 @@ contract P42ChallengeManager {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
         if (current.resolved) revert P42_ALREADY_RESOLVED();
+        if (current.decisionPending) revert P42_DECISION_PENDING();
         if (block.timestamp < current.disputeEndsAt) {
             revert P42_DISPUTE_WINDOW_OPEN(current.disputeEndsAt, uint64(block.timestamp));
         }
@@ -292,32 +348,31 @@ contract P42ChallengeManager {
     }
 
     function releaseResolverBond(uint256 submissionId) external {
-        Challenge storage current = challenges[submissionId];
-        if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
-        ResolverBond storage decisionBond = resolverBonds[submissionId];
-        uint256 amount = decisionBond.amountWei;
-        if (amount == 0) revert P42_NO_RESOLVER_BOND();
-        if (block.timestamp < decisionBond.releaseAt) {
-            revert P42_RESOLVER_BOND_LOCKED(decisionBond.releaseAt, uint64(block.timestamp));
-        }
-
-        decisionBond.amountWei = 0;
-        claimableBondWei[resolver] += amount;
-        emit ResolverBondReleased(submissionId, resolver, amount);
+        finalizeResolution(submissionId);
     }
 
     function slashResolverBond(uint256 submissionId, bytes32 proofHash) external onlyOwner {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        if (!current.decisionPending) revert P42_NO_PENDING_DECISION();
         if (proofHash == bytes32(0)) revert P42_EMPTY_FRAUD_PROOF_HASH();
         ResolverBond storage decisionBond = resolverBonds[submissionId];
         uint256 amount = decisionBond.amountWei;
         if (amount == 0) revert P42_NO_RESOLVER_BOND();
+        if (block.timestamp >= decisionBond.releaseAt) {
+            revert P42_RESOLVER_FRAUD_WINDOW_CLOSED(decisionBond.releaseAt, uint64(block.timestamp));
+        }
 
         decisionBond.amountWei = 0;
         decisionBond.slashProofHash = proofHash;
         claimableBondWei[treasury] += amount;
+        address challenger = current.challenger;
+        uint256 challengeBond = current.challengeBondWei;
+        claimableBondWei[challenger] += challengeBond;
+        delete challenges[submissionId];
+        submissionManager.cancelChallenge(submissionId);
         emit ResolverBondSlashed(submissionId, treasury, amount, proofHash);
+        emit ResolverDecisionCancelled(submissionId, challenger, proofHash);
     }
 
     function claimBond() external nonReentrant {
@@ -327,5 +382,28 @@ contract P42ChallengeManager {
         (bool ok,) = payable(msg.sender).call{value: amount}("");
         if (!ok) revert P42_TRANSFER_FAILED();
         emit BondClaimed(msg.sender, amount);
+    }
+
+    function _resolverBondReleaseAt(uint256 submissionId) private view returns (uint64) {
+        uint256 proposedReleaseAt = block.timestamp + resolverFraudWindowSeconds;
+        uint64 settlementDeadline = submissionManager.maxDisputeDeadline(submissionId);
+        if (proposedReleaseAt > settlementDeadline) {
+            revert P42_SETTLEMENT_HORIZON_EXCEEDED(settlementDeadline, uint64(proposedReleaseAt));
+        }
+        return uint64(proposedReleaseAt);
+    }
+
+    function _emitResolverTranscriptPosted(uint256 submissionId, uint64 releaseAt) private {
+        Challenge storage current = challenges[submissionId];
+        emit ResolverTranscriptPosted(
+            submissionId,
+            msg.sender,
+            current.transcriptHash,
+            current.transcriptURI,
+            current.verdictHash,
+            resolverBonds[submissionId].amountWei,
+            releaseAt,
+            current.challengerWins
+        );
     }
 }

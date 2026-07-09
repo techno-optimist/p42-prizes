@@ -1,44 +1,74 @@
 # Security Policy
 
-P42 Prizes is currently a Phase 0 local/testnet-shaped prototype. Do not send
-real ETH to any address unless it is listed in a reviewed launch-gate artifact.
+P42 Prizes is a Phase 0/testnet prototype. Do not send real ETH to any address
+or treat any packet as production evidence unless the external and owner gates
+in `docs/HUMAN_ACTIONS.md` are closed for the exact release.
 
-## Reporting
+## Reporting Status
 
-Report vulnerabilities **privately** through GitHub's private advisory channel:
+The responsible-disclosure and bounty policy is **draft and inactive**. GitHub
+private vulnerability reporting is an owner action and has not been evidenced
+as enabled. If GitHub shows an active private-report form, the intended URL is:
 
-- Open a private report at
-  <https://github.com/techno-optimist/p42-prizes/security/advisories/new>
-  — the same as clicking **"Report a vulnerability"** on the repository's
-  **Security** tab. This routes directly to the maintainers without public
-  disclosure. (Requires "Private vulnerability reporting" to be enabled in the
-  repository's security settings.)
+<https://github.com/techno-optimist/p42-prizes/security/advisories/new>
 
-Include in your report:
+The intended mailbox is `security@projectforty2.ai`, but this repository does
+not contain evidence that it is monitored. The owner must enable and externally
+test both channels before publishing them as active. See
+`docs/BUG_BOUNTY.md`.
 
-- affected commit or deployment URL,
-- reproduction steps,
-- expected and observed behavior,
-- whether funds, verifier correctness, identity, or data availability are at risk.
+Do not post an unpatched value-moving exploit publicly. Preserve the affected
+commit/deployment, reproduction, expected/observed behavior, transaction or
+request IDs, raw inputs, and artifact hashes.
 
-We aim to acknowledge a report within 3 business days. Do not publicly disclose
-an exploit against live funds before the incident lead has acknowledged receipt
-and had a reasonable mitigation window.
+## Draft Scope
 
-## Scope
+- verifier unsoundness or nondeterminism;
+- commit/reveal, DA, challenge, resolver, payout, or bond failures;
+- API or agent-wallet/session failures affecting settlement state;
+- key, governance, pause, custody, reconciliation, or evidence forgery; and
+- source/deployment mismatch that could support a false launch claim.
 
-In scope:
+No reward or safe-harbor promise is active until counsel and the security owner
+approve and activate the exact policy.
 
-- verifier unsoundness or nondeterminism,
-- commit/reveal binding failures,
-- payout or bond accounting bugs,
-- resolver or challenge bypasses,
-- API vulnerabilities that affect submissions or settlement state,
-- key, governance, or pause-control failures.
+## External Smart-Contract Audit Handoff
 
-Out of scope for rewards until a bug bounty is announced:
+**Status: NOT COMMISSIONED OR ATTESTED IN THIS REPOSITORY.** Internal tests and
+agent review are not an independent audit.
 
-- purely cosmetic UI bugs,
-- attacks requiring local machine compromise,
-- spam against a local development server,
-- issues already listed in `docs/GATE_LEDGER.md` as known blockers.
+The owner/auditor handoff must include:
+
+- external auditor full name, organization, professional email, independence
+  and conflict disclosure, engagement identifier, identity evidence hash, and
+  engagement-letter hash;
+- one frozen 40-hex commit and a clean source archive hash;
+- Base chain ID, deployment/configuration hashes, all contract addresses,
+  constructor/wiring parameters, compiler/build settings, source hashes, and
+  runtime-bytecode hashes;
+- explicit scope covering economic state transitions, DA, challenge/resolver
+  finality, payout/claim, governance recovery and cancellation, pause
+  invariants, `P42AgentWallet` session scoping, reconciliation, and upgrade or
+  immutability assumptions;
+- report and findings-register `{uri, sha256}` artifacts, with severity,
+  affected code, recommendation, disposition, and residual risk;
+- remediation commit hashes and an independent retest artifact for every fixed
+  finding;
+- no unresolved critical/high finding and written owner acceptance of remaining
+  risks; and
+- an external-auditor signature over a canonical hash that includes the full
+  release binding, report hash, findings hash, remediation commits, and retest
+  hash. Owner acceptance uses a distinct identity and key.
+
+Before gate closure, an owner independently verifies the auditor identity and
+engagement, retrieves every artifact, recomputes hashes, confirms the audit
+covered the deployed bytecode, and checks the signer is not the engineering
+owner. No dummy name, self-authored review, internal agent report, or unsigned
+PDF satisfies this requirement.
+
+## Current Blocker
+
+The new governance recovery controls and agent-wallet session controls are code
+implemented locally, but they are not externally audited, deployed as the
+canonical governed release, or covered by signed rehearsal evidence. They must
+be included in the frozen external-audit scope.

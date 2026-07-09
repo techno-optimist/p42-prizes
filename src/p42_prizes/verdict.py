@@ -4,9 +4,10 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, NoReturn
 
 
 # Canonical rational grammar shared with the TypeScript parser
@@ -20,10 +21,47 @@ from typing import Any, Mapping
 _RATIONAL_RE = re.compile(r"^[+-]?[0-9]+(?:/[+-]?[0-9]+)?$")
 
 
+def _reject_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-JSON numeric constant: {value}")
+
+
+def strict_json_loads(value: str | bytes | bytearray) -> Any:
+    """Parse JSON without Python's non-standard NaN/Infinity extensions."""
+
+    return json.loads(value, parse_constant=_reject_json_constant)
+
+
+def _validate_json_value(value: Any, path: str = "$") -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path}: non-finite numbers are not valid JSON")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path}: JSON object keys must be strings")
+            _validate_json_value(item, f"{path}.{key}")
+        return
+    raise TypeError(f"{path}: {type(value).__name__} is not a JSON value")
+
+
 def canonical_json(value: Mapping[str, Any]) -> str:
     """Return the stable JSON representation used for verifier reports."""
 
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    _validate_json_value(value)
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -31,7 +69,11 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def sha256_file(path: str | Path) -> str:
-    return sha256_bytes(Path(path).read_bytes())
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while chunk := handle.read(64 * 1024):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def parse_rational(value: str | int | Fraction) -> Fraction:
@@ -88,3 +130,83 @@ class VerdictReport:
     def to_canonical_json(self) -> str:
         return canonical_json(self.to_dict())
 
+
+@dataclass(frozen=True)
+class SolutionInput:
+    data: bytes | None
+    solution_hash: str
+    reason: str = ""
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+    def failure_report(
+        self,
+        *,
+        problem_id: str,
+        verifier_version: str,
+        verifier_image: str,
+        fallback_score: str | int | Fraction,
+    ) -> VerdictReport:
+        if self.data is not None or not self.reason:
+            raise ValueError("failure_report requires a failed solution input")
+        return VerdictReport(
+            problem_id=problem_id,
+            verifier_version=verifier_version,
+            verifier_image=verifier_image,
+            solution_hash=self.solution_hash,
+            valid=False,
+            improvement="0/1",
+            score=rational_to_string(fallback_score),
+            reason=self.reason,
+            details=self.details,
+        )
+
+
+def read_bounded_solution(path: str | Path, max_bytes: int) -> SolutionInput:
+    """Read at most ``max_bytes + 1`` into memory and stay report-total."""
+
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+
+    digest = hashlib.sha256()
+    try:
+        with Path(path).open("rb") as handle:
+            first = handle.read(max_bytes + 1)
+            digest.update(first)
+            if len(first) <= max_bytes:
+                return SolutionInput(
+                    data=first,
+                    solution_hash="sha256:" + digest.hexdigest(),
+                )
+
+            observed_bytes = len(first)
+            while chunk := handle.read(64 * 1024):
+                digest.update(chunk)
+                observed_bytes += len(chunk)
+    except OSError as exc:
+        return SolutionInput(
+            data=None,
+            solution_hash=sha256_bytes(b""),
+            reason="INPUT_UNREADABLE",
+            details={
+                "error_type": type(exc).__name__,
+                "hash_status": "unavailable",
+            },
+        )
+
+    return SolutionInput(
+        data=None,
+        solution_hash="sha256:" + digest.hexdigest(),
+        reason="OVERSIZED",
+        details={
+            "limit_bytes": max_bytes,
+            "observed_bytes": observed_bytes,
+        },
+    )
+
+
+def verifier_image_identity(default: str) -> str:
+    """Return the executor-bound image digest, or the local package default."""
+
+    import os
+
+    return os.environ.get("P42_VERIFIER_IMAGE", default)

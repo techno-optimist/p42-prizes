@@ -47,6 +47,8 @@ function submission(score: string, state: Submission["state"] = "finalized"): Su
     problemId: problem.id,
     problemSlug: problem.slug,
     agentName: "agent",
+    source: "chain-p42-v1",
+    settlementState: state === "finalized" ? "finalized" : "unsettled",
     state,
     score,
     improvement: "0/1",
@@ -79,6 +81,23 @@ describe("incrementalFrontierCredit", () => {
     expect(incrementalFrontierCredit(problem, "3/1", [submission("5/1")])).toEqual({
       credit: "1/3",
       priorBest: "5/1",
+      eligible: true,
+    });
+  });
+
+  it("ignores every unsettled or local Phase-0 row", () => {
+    const revealed = submission("5/1", "revealed");
+    const challenged = submission("4/1", "challenged");
+    const localFinalized = {
+      ...submission("3/1"),
+      source: "local-phase-0" as const,
+      settlementState: "unsettled" as const,
+    };
+
+    expect(frontierBest(problem, [revealed, challenged, localFinalized])).toBe("6/1");
+    expect(incrementalFrontierCredit(problem, "5/1", [revealed, challenged, localFinalized])).toMatchObject({
+      priorBest: "6/1",
+      credit: "1/6",
       eligible: true,
     });
   });

@@ -38,19 +38,53 @@ function findErrorData(value) {
 const PER_CALL = ethers.parseEther("0.001");
 const TOTAL = ethers.parseEther("0.003");
 const FUNDING = ethers.parseEther("0.005");
+const FUNDING_CAP = ethers.parseEther("1");
+const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
+const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+
+async function nextEarliestClose() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
 
 async function fixture() {
   const [deployer, owner, session, outsider] = await ethers.getSigners();
   // A real P42 contract to act as an allowlist target (fund() is payable).
   const Pool = await ethers.getContractFactory("P42BountyPool");
-  const pool = await Pool.deploy(deployer.address);
+  const pool = await Pool.deploy(deployer.address, FUNDING_CAP);
   await pool.waitForDeployment();
+  const Ledger = await ethers.getContractFactory("P42PayoutLedger");
+  const ledger = await Ledger.deploy(
+    await pool.getAddress(), deployer.address, deployer.address, 0,
+    await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+  );
+  await ledger.waitForDeployment();
+  await pool.connect(deployer).setLedger(await ledger.getAddress());
   // fund() is gated on an armed submission manager (open-witness-phase rail);
   // these tests exercise the wallet, so wire the pre-armed mock.
   const Mock = await ethers.getContractFactory("MockFundingArmed");
   const mock = await Mock.deploy(true);
   await mock.waitForDeployment();
   await pool.connect(deployer).setSubmissionManager(await mock.getAddress());
+  const Registry = await ethers.getContractFactory("P42ProblemRegistry");
+  const registry = await Registry.deploy(deployer.address);
+  await registry.waitForDeployment();
+  await registry.register({
+    specHash: ethers.id("wallet-spec"),
+    verifierSourceHash: ethers.id("wallet-source"),
+    verifierImageHash: ethers.id("wallet-image"),
+    admissionMatrixHash: ethers.id("wallet-matrix"),
+    metadataURI: "ipfs://wallet-fixture",
+    pool: await pool.getAddress(),
+    ledger: await ledger.getAddress(),
+    submissionManager: await mock.getAddress(),
+    challengeManager: deployer.address,
+    challengeWindowSeconds: 90n,
+    minImprovementAtoms: 1n,
+  });
+  await registry.freeze(1);
+  await pool.connect(deployer).setRegistry(await registry.getAddress(), 1);
+  await pool.connect(deployer).setAcceptingFunds(true);
   const Wallet = await ethers.getContractFactory("P42AgentWallet");
   const wallet = await Wallet.connect(owner).deploy(owner.address, session.address, PER_CALL, TOTAL, { value: FUNDING });
   await wallet.waitForDeployment();

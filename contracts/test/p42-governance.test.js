@@ -5,6 +5,13 @@ import { network } from "hardhat";
 
 const { ethers } = await network.create();
 const DELAY = 100n;
+const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
+const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+
+async function nextEarliestClose() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
 
 async function expectCustomError(action, contract, errorName) {
   try {
@@ -42,7 +49,9 @@ async function fixture() {
   await tl.waitForDeployment();
   // A P42 contract owned BY the timelock — its onlyOwner setter is the demo target.
   const Ledger = await ethers.getContractFactory("P42PayoutLedger");
-  const ledger = await Ledger.deploy(a.address, await tl.getAddress(), b.address, 0);
+  const ledger = await Ledger.deploy(
+    a.address, await tl.getAddress(), b.address, 0, await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+  );
   await ledger.waitForDeployment();
   const salt = ethers.id("op-1");
   const pauseData = ledger.interface.encodeFunctionData("setPausedNewActions", [true]);

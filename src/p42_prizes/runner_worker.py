@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-import fcntl
 import hashlib
 import json
 import math
@@ -13,7 +11,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any, Callable, Iterator, Mapping
+from typing import Any, Callable, Mapping
 
 from p42_prizes.admission import AdmissionError, build_verifier_env, load_evidence_file
 from p42_prizes.runner_sandbox import (
@@ -27,10 +25,11 @@ from p42_prizes.problem import load_manifest
 from p42_prizes.runner_queue import (
     MemorySnapshot,
     RunnerPolicy,
+    locked_runner_queue,
     plan_runner_queue,
     reap_stale_leases,
 )
-from p42_prizes.verdict import canonical_json, sha256_bytes
+from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes, sha256_file
 
 try:
     import resource
@@ -62,7 +61,7 @@ def run_next_job_once(
     queue_file = Path(queue_path)
     transcript_root = Path(transcript_dir)
 
-    with _locked_queue(queue_file) as queue:
+    with locked_runner_queue(queue_file) as queue:
         # A worker that died mid-job leaves an expired lease behind. Reap it
         # here, inside the same critical section as planning/claiming, so the
         # requeue is atomic and the queue never wedges on
@@ -96,7 +95,7 @@ def run_next_job_once(
         run_error = str(exc)
 
     finished_at = _parse_or_now(None)
-    with _locked_queue(queue_file) as queue:
+    with locked_runner_queue(queue_file) as queue:
         fresh = _find_job_or_none(queue, job["job_id"])
         # Fencing: only record our outcome if this is still OUR claim (status
         # running under the exact lease we wrote). Otherwise our lease was
@@ -115,10 +114,13 @@ def run_next_job_once(
             fresh["finished_at_utc"] = _format_utc(finished_at)
             fresh.pop("lease_expires_at_utc", None)
             return {"reason": f"job_run_error: {run_error}", "selected_job_id": job["job_id"]}
-        fresh["status"] = "succeeded" if transcript["verifier"]["valid"] is True else "failed"
+        fresh["status"] = "succeeded" if _transcript_succeeded(transcript) else "failed"
         fresh["finished_at_utc"] = _format_utc(finished_at)
         fresh["transcript_path"] = transcript["transcript_path"]
         fresh["transcript_hash"] = transcript["transcript_hash"]
+        candidate = transcript["verifier"].get("challenge_candidate")
+        if isinstance(candidate, dict) and isinstance(candidate.get("candidate_hash"), str):
+            fresh["challenge_candidate_hash"] = candidate["candidate_hash"]
         fresh.pop("lease_expires_at_utc", None)
     return transcript
 
@@ -188,42 +190,10 @@ def drain_runner_queue(
     }
 
 
-@contextmanager
-def _locked_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = queue_path.with_suffix(queue_path.suffix + ".lock")
-    with lock_path.open("w", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        queue = _read_queue(queue_path)
-        try:
-            yield queue
-        finally:
-            _write_queue(queue_path, queue)
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
-def _read_queue(queue_path: Path) -> dict[str, Any]:
-    if not queue_path.exists():
-        return {"schema_version": "p42-runner-queue/v1", "jobs": []}
-    try:
-        data = json.loads(queue_path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        raise RunnerWorkerError(f"{queue_path}: could not read runner queue JSON: {exc}") from exc
-    if not isinstance(data, dict):
-        raise RunnerWorkerError(f"{queue_path}: runner queue must be a JSON object")
-    return data
-
-
-def _write_queue(queue_path: Path, queue: Mapping[str, Any]) -> None:
-    tmp = queue_path.with_suffix(queue_path.suffix + ".tmp")
-    tmp.write_text(canonical_json(dict(queue)) + "\n", encoding="utf-8")
-    tmp.replace(queue_path)
-
-
 def _loop_event_from_result(result: Mapping[str, Any]) -> dict[str, Any]:
     if result.get("schema_version") == RUNNER_TRANSCRIPT_SCHEMA_VERSION:
         verifier = result.get("verifier") if isinstance(result.get("verifier"), dict) else {}
-        valid = verifier.get("valid") is True
+        valid = _transcript_succeeded(result)
         event: dict[str, Any] = {
             "kind": "completed",
             "job_id": result.get("job_id"),
@@ -245,6 +215,14 @@ def _loop_event_from_result(result: Mapping[str, Any]) -> dict[str, Any]:
         "min_available_memory_mb": result.get("min_available_memory_mb"),
         "memory": result.get("memory"),
     }
+
+
+def _transcript_succeeded(transcript: Mapping[str, Any]) -> bool:
+    verifier = transcript.get("verifier")
+    if not isinstance(verifier, Mapping) or verifier.get("valid") is not True:
+        return False
+    candidate = verifier.get("challenge_candidate")
+    return not isinstance(candidate, Mapping) or candidate.get("action") == "none"
 
 
 def _find_job(queue: Mapping[str, Any], job_id: str | None) -> dict[str, Any]:
@@ -271,15 +249,33 @@ def _find_job_or_none(queue: Mapping[str, Any], job_id: str | None) -> dict[str,
 def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPolicy) -> dict[str, Any]:
     job_id = _require_string(job, "job_id")
     problem = Path(_require_string(job, "problem")).resolve()
-    solution = Path(_require_string(job, "solution")).resolve()
+    chain_claim = job.get("chain_claim")
+    if chain_claim is not None and not isinstance(chain_claim, Mapping):
+        raise RunnerWorkerError("job.chain_claim must be an object when provided")
+    solution_value = job.get("solution")
+    solution = (
+        Path(solution_value).resolve()
+        if isinstance(solution_value, str) and solution_value
+        else None
+    )
+    if chain_claim is None and solution is None:
+        raise RunnerWorkerError("job.solution must be a non-empty string")
+    if chain_claim is not None and policy.sandbox != "docker" and job.get("da_failure") is None:
+        raise RunnerWorkerError(
+            "chain verifier jobs require policy.sandbox=docker; refusing host execution"
+        )
     da_evidence = job.get("da_evidence")
     resource_limits = _resource_limits_for_job(job, policy)
 
     started = _parse_or_now(None)
     da_result: dict[str, Any] | None = None
-    if da_evidence is not None:
+    if chain_claim is not None:
+        da_result = _chain_da_result(job, chain_claim, solution)
+    elif da_evidence is not None:
         if not isinstance(da_evidence, str) or not da_evidence:
             raise RunnerWorkerError("job.da_evidence must be a non-empty string when provided")
+        if solution is None:  # Kept explicit for type narrowing and fail-closed behavior.
+            raise RunnerWorkerError("job.solution is required with job.da_evidence")
         try:
             evidence = validate_da_evidence(
                 load_evidence_file(da_evidence),
@@ -299,8 +295,12 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
             "ok": False,
             "valid": False,
             "error": f"da_evidence validation failed; verifier not run: {da_result.get('error', '')}",
+            "elapsed_ms": 0,
+            "sandbox": policy.sandbox,
         }
     else:
+        if solution is None:
+            raise RunnerWorkerError("job.solution is required when DA validation succeeds")
         verifier = _run_verifier_for_transcript(
             problem,
             solution,
@@ -312,13 +312,25 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
             job_id=job_id,
         )
 
+    if chain_claim is not None:
+        comparison, candidate = _adjudicate_chain_claim(
+            job,
+            chain_claim,
+            problem=problem,
+            verifier=verifier,
+            da_result=da_result,
+        )
+        verifier["chain_claim"] = dict(chain_claim)
+        verifier["claim_comparison"] = comparison
+        verifier["challenge_candidate"] = candidate
+
     transcript = {
         "schema_version": RUNNER_TRANSCRIPT_SCHEMA_VERSION,
         "job_id": job_id,
         "generated_at_utc": _format_utc(_parse_or_now(None)),
         "started_at_utc": _format_utc(started),
         "problem": str(problem),
-        "solution": str(solution),
+        "solution": str(solution) if solution is not None else _unavailable_solution_label(chain_claim),
         "da": da_result,
         "resource_limits": resource_limits,
         "verifier": verifier,
@@ -328,6 +340,226 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
     transcript_path.write_text(canonical_json(transcript) + "\n", encoding="utf-8")
     transcript["transcript_path"] = str(transcript_path)
     return transcript
+
+
+def _chain_da_result(
+    job: Mapping[str, Any],
+    chain_claim: Mapping[str, Any],
+    solution: Path | None,
+) -> dict[str, Any]:
+    mode = "onchain-calldata" if chain_claim.get("onchain_da") is True else "offchain-store"
+    expected = _require_sha256_anchor(chain_claim.get("commit_da_hash"), "chain_claim.commit_da_hash")
+    source = chain_claim.get("payload_source")
+    if not isinstance(source, str) or not source:
+        source = mode
+
+    failure = job.get("da_failure")
+    if failure is not None:
+        if not isinstance(failure, Mapping):
+            raise RunnerWorkerError("job.da_failure must be an object")
+        kind = failure.get("kind")
+        error = failure.get("error")
+        if not isinstance(kind, str) or not kind or not isinstance(error, str) or not error:
+            raise RunnerWorkerError("job.da_failure.kind and error must be non-empty strings")
+        challengeable = chain_claim.get("onchain_da") is False and kind in {
+            "missing",
+            "hash_mismatch",
+            "tampered",
+        }
+        result = {
+            "ok": False,
+            "mode": mode,
+            "source": source,
+            "expected_hash": expected,
+            "failure_kind": kind,
+            "challengeable": challengeable,
+            "error": error,
+        }
+        observed = failure.get("observed_hash")
+        if isinstance(observed, str):
+            result["observed_hash"] = observed
+        return result
+
+    if solution is None or not solution.is_file():
+        return {
+            "ok": False,
+            "mode": mode,
+            "source": source,
+            "expected_hash": expected,
+            "failure_kind": "runner_input_missing",
+            "challengeable": False,
+            "error": "persisted solution payload is unavailable to the worker",
+        }
+
+    observed = sha256_file(solution)
+    cid = chain_claim.get("solution_cid")
+    cid_matches = not isinstance(cid, str) or not cid.startswith("sha256:") or cid == expected
+    if observed != expected or not cid_matches:
+        return {
+            "ok": False,
+            "mode": mode,
+            "source": source,
+            "expected_hash": expected,
+            "observed_hash": observed,
+            "failure_kind": "hash_mismatch",
+            "challengeable": chain_claim.get("onchain_da") is False,
+            "error": "solution payload hash does not match the reveal commitment/CID",
+        }
+    return {
+        "ok": True,
+        "mode": mode,
+        "source": source,
+        "expected_hash": expected,
+        "observed_hash": observed,
+        "challengeable": False,
+    }
+
+
+def _adjudicate_chain_claim(
+    job: Mapping[str, Any],
+    chain_claim: Mapping[str, Any],
+    *,
+    problem: Path,
+    verifier: Mapping[str, Any],
+    da_result: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    claim = _normalized_chain_claim(chain_claim)
+    claimed_atoms = int(claim["claimed_score_atoms"])
+    comparison: dict[str, Any] = {
+        "objective_direction": None,
+        "claimed_score_atoms": str(claimed_atoms),
+        "verifier_score": None,
+        "verifier_score_atoms": None,
+        "relation": "unavailable",
+        "exact_match": False,
+    }
+
+    action = "none"
+    reason_code = "verified_claim"
+    evidence_hash = job.get("source_event_hash")
+
+    if isinstance(da_result, Mapping) and da_result.get("ok") is False:
+        action = "challenge" if da_result.get("challengeable") is True else "quarantine"
+        reason_code = f"da_{da_result.get('failure_kind', 'failed')}"
+    elif isinstance(verifier.get("report"), Mapping) and verifier["report"].get("valid") is False:
+        action = "challenge"
+        reason_code = "verifier_rejected"
+        evidence_hash = verifier.get("report_hash") or evidence_hash
+    elif verifier.get("valid") is True and isinstance(verifier.get("report"), Mapping):
+        report = verifier["report"]
+        try:
+            direction = _problem_direction(problem)
+            score = report.get("score")
+            computed_atoms = _chain_score_atoms(score, direction)
+        except (KeyError, TypeError, ValueError) as exc:
+            action = "quarantine"
+            reason_code = "verifier_score_unusable"
+            comparison["error"] = str(exc)
+        else:
+            comparison.update(
+                {
+                    "objective_direction": direction,
+                    "verifier_score": str(score),
+                    "verifier_score_atoms": str(computed_atoms),
+                    "exact_match": claimed_atoms == computed_atoms,
+                }
+            )
+            if claimed_atoms < computed_atoms:
+                comparison["relation"] = "claimed_better_than_verified"
+                action = "challenge"
+                reason_code = "score_underclaimed"
+            elif claimed_atoms > computed_atoms:
+                comparison["relation"] = "claimed_worse_than_verified"
+                reason_code = "conservative_score_overclaim"
+            else:
+                comparison["relation"] = "exact"
+            evidence_hash = verifier.get("report_hash") or evidence_hash
+    else:
+        action = "quarantine"
+        reason_code = "verifier_execution_failed"
+
+    policy = job.get("challenge_policy")
+    max_bond_wei = None
+    if isinstance(policy, Mapping):
+        value = policy.get("max_bond_wei")
+        if isinstance(value, str) and value.isdigit():
+            max_bond_wei = value
+    candidate = {
+        "schema_version": "p42-challenge-candidate/v1",
+        "action": action,
+        "reason_code": reason_code,
+        "chain_id": claim["chain_id"],
+        "problem_id": claim["problem_id"],
+        "submission_contract": claim["submission_contract"],
+        "challenge_contract": claim["challenge_contract"],
+        "submission_id": claim["submission_id"],
+        "source_event_hash": job["source_event_hash"],
+        "evidence_hash": evidence_hash,
+        "challenge_ends_at": claim["challenge_ends_at"],
+        "max_bond_wei": max_bond_wei,
+    }
+    candidate["candidate_hash"] = sha256_bytes(canonical_json(candidate).encode("utf-8"))
+    return comparison, candidate
+
+
+def _normalized_chain_claim(value: Mapping[str, Any]) -> dict[str, Any]:
+    required_strings = (
+        "problem_id",
+        "submission_contract",
+        "challenge_contract",
+        "submission_id",
+        "claimed_score_atoms",
+        "challenge_ends_at",
+    )
+    normalized = dict(value)
+    if value.get("schema_version") != "p42-chain-claim/v1":
+        raise RunnerWorkerError("job.chain_claim.schema_version must be p42-chain-claim/v1")
+    chain_id = value.get("chain_id")
+    if not isinstance(chain_id, int) or isinstance(chain_id, bool) or chain_id < 1:
+        raise RunnerWorkerError("job.chain_claim.chain_id must be a positive integer")
+    for key in required_strings:
+        if not isinstance(value.get(key), str) or not value[key]:
+            raise RunnerWorkerError(f"job.chain_claim.{key} must be a non-empty string")
+    for key in ("submission_id", "claimed_score_atoms", "challenge_ends_at"):
+        try:
+            int(value[key])
+        except ValueError as exc:
+            raise RunnerWorkerError(f"job.chain_claim.{key} must be an integer string") from exc
+    return normalized
+
+
+def _problem_direction(problem: Path) -> str:
+    manifest = load_manifest(problem)
+    direction = manifest.get("objective", {}).get("direction")
+    if direction not in {"minimize", "maximize"}:
+        raise RunnerWorkerError("problem objective.direction must be minimize or maximize")
+    return direction
+
+
+def _chain_score_atoms(score: Any, direction: str) -> int:
+    rational = parse_rational(score)
+    if direction == "maximize":
+        rational = -rational
+    scaled_num = rational.numerator * 10**18
+    return -((-scaled_num) // rational.denominator)
+
+
+def _require_sha256_anchor(value: Any, field: str) -> str:
+    if not isinstance(value, str):
+        raise RunnerWorkerError(f"{field} must be a string")
+    if value.startswith("0x") and len(value) == 66:
+        value = "sha256:" + value[2:].lower()
+    if not value.startswith("sha256:") or len(value) != 71:
+        raise RunnerWorkerError(f"{field} must be bytes32 hex or sha256:<64hex>")
+    suffix = value[7:]
+    if any(char not in "0123456789abcdef" for char in suffix):
+        raise RunnerWorkerError(f"{field} must use lowercase hex")
+    return value
+
+
+def _unavailable_solution_label(chain_claim: Mapping[str, Any] | None) -> str:
+    submission_id = chain_claim.get("submission_id") if isinstance(chain_claim, Mapping) else "unknown"
+    return f"unavailable:submission:{submission_id}"
 
 
 def _require_string(mapping: Mapping[str, Any], key: str) -> str:
@@ -384,9 +616,13 @@ def _run_verifier_for_transcript(
     started = time.monotonic()
     wall_seconds = 30
     container_name: str | None = None
+    verifier_image: str | None = None
+    verifier_command: str | None = None
     try:
         manifest = load_manifest(problem)
         command_template = manifest["verifier"]["command"]
+        verifier_command = command_template
+        verifier_image = manifest["verifier"].get("image")
         wall_seconds = int(manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
         if sandbox == "docker":
             # Untrusted payload MUST run in a container; refuse to run it on the
@@ -398,6 +634,8 @@ def _run_verifier_for_transcript(
                     "error": "sandbox=docker requested but no container runtime is available; refusing to run an untrusted payload on the host",
                     "elapsed_ms": int((time.monotonic() - started) * 1000),
                     "sandbox": sandbox,
+                    "verifier_image": verifier_image,
+                    "verifier_command": verifier_command,
                 }
             container_name = f"p42-verify-{_safe_job_id(job_id)}"
             command = build_sandbox_command(
@@ -434,6 +672,8 @@ def _run_verifier_for_transcript(
             "error": f"verifier timed out after {wall_seconds}s",
             "elapsed_ms": int((time.monotonic() - started) * 1000),
             "sandbox": sandbox,
+            "verifier_image": verifier_image,
+            "verifier_command": verifier_command,
         }
     except (OSError, ValueError, KeyError, RunnerSandboxError) as exc:
         if container_name is not None:
@@ -444,6 +684,8 @@ def _run_verifier_for_transcript(
             "error": str(exc),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
             "sandbox": sandbox,
+            "verifier_image": verifier_image,
+            "verifier_command": verifier_command,
         }
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
@@ -453,6 +695,8 @@ def _run_verifier_for_transcript(
         "returncode": completed.returncode,
         "elapsed_ms": elapsed_ms,
         "sandbox": sandbox,
+        "verifier_image": verifier_image,
+        "verifier_command": verifier_command,
     }
     stderr_tail = completed.stderr[-2000:] if completed.stderr else ""
     if stderr_tail:
@@ -551,7 +795,7 @@ def _looks_like_memory_failure(returncode: int, stderr_tail: str) -> bool:
         return True
     # Linux frequently reports SIGKILL for cgroup/OOM termination. Under an
     # rlimit this still means the submission was contained and failed closed.
-    return returncode == -9
+    return returncode in (-9, 137)
 
 
 def _safe_job_id(job_id: str) -> str:

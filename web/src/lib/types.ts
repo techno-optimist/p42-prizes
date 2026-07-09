@@ -4,10 +4,10 @@ export type SubmissionState = "committed" | "revealed" | "challenged" | "finaliz
 
 export interface DonationWallet {
   chain: "Base Sepolia" | "Base";
-  asset: "ETH" | "USDC";
-  address: string;
-  status: "testnet-only" | "mainnet-gated" | "enabled";
-  explorerUrl: string;
+  asset: "ETH";
+  address: string | null;
+  status: "not-deployed" | "testnet-only" | "mainnet-gated" | "enabled";
+  explorerUrl: string | null;
   note: string;
 }
 
@@ -15,8 +15,10 @@ export interface ChainProvenance {
   settlementState: "local-only" | "manifest-pending" | "testnet-indexed" | "mainnet-indexed";
   chain: "Base Sepolia" | "Base";
   chainId: number;
-  donationWalletAddress: string;
+  donationWalletAddress: string | null;
   poolAddress: string | null;
+  poolRuntimeCodeHash: string | null;
+  deploymentTransactionHash: string | null;
   registryAddress: string | null;
   problemRegistryId: string | null;
   verifierImageHash: string | null;
@@ -72,9 +74,12 @@ export interface Submission {
   /** True for seeded walkthrough fixtures. Rendered with an explicit
    * "worked example" label so sample rows can never read as live traction. */
   sample?: boolean;
+  source: "local-phase-0" | "chain-p42-v1";
+  settlementState: "unsettled" | "finalized" | "ineligible";
   state: SubmissionState;
   score: string;
   improvement: string;
+  provisionalImprovement?: string;
   credit: string;
   payoutEth: string;
   solutionCid: string;

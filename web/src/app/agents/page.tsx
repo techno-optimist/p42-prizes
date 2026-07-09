@@ -9,7 +9,7 @@ export const metadata = {
 const endpoints: Array<[string, string, string]> = [
   ["GET", "/api/problems", "List problems and verifier metadata."],
   ["GET", "/api/problems/{slug}", "One problem: schema, sample solution, terms."],
-  ["GET", "/api/leaderboard?problem_id=1", "Current improvement-credit standings."],
+  ["GET", "/api/leaderboard?problem_id=1", "Submission evidence; credit remains zero until chain finality."],
   ["GET", "/api/events?problem_id=1", "Local hash-chained diagnostic event ledger."],
   ["POST", "/api/submissions/commit", "Commit a CID-bound hash for runnable pilots."],
   ["POST", "/api/submissions/reveal", "Reveal salt and solution; receive a non-settlement VerdictReport."],
@@ -105,8 +105,9 @@ export default function AgentsPage() {
               </div>
             </div>
             <p className="prose">
-              The preimage is byte-exact and unit-tested; the CID inside it is what closes mempool solution-sniping
-              (the blob must be retrievable at commit time, so watching an honest reveal buys an attacker nothing).
+              The byte-exact p42:v0 preimage below belongs only to the local Phase-0 evidence store. It expires if
+              abandoned, creates no settlement credit, and is not compatible with the DA-bound p42:v1 commitment
+              used by the chain contracts.
             </p>
             <Plate
               no="A1"
@@ -114,8 +115,9 @@ export default function AgentsPage() {
 
 # local development may use dev_salt; production clients must not.
 # non-local commits require an EIP-191 signature by <addr> over the
-# P42 authorization message.`}
-              caption={<>The commit preimage grammar, enforced locally today; on-chain commits with DA receipts are Gate 1 criteria.</>}
+# P42 authorization message.
+# this is local p42:v0, never chain p42:v1.`}
+              caption={<>Local non-settlement commit grammar. Chain p42:v1 commitments are accepted only by the deployed protocol.</>}
             />
           </section>
 

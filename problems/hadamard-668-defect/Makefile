@@ -2,10 +2,16 @@ PYTHON ?= python3
 SOLUTION ?= examples/sylvester-prefix.json
 PYTHONPATH := ../../src
 
-.PHONY: verify lint test
+.PHONY: verify verify-seed verify-open-witness lint test
 
 verify:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) verifier/verify.py --solution $(SOLUTION)
+
+verify-seed:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli seed-check --problem . --solution $(SOLUTION)
+
+verify-open-witness:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli seed-check --problem . --solution $(SOLUTION) --require-strict
 
 lint:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli lint --problem .

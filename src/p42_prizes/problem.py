@@ -7,7 +7,7 @@ from typing import Any
 import jsonschema
 import yaml
 
-from p42_prizes.verdict import parse_rational
+from p42_prizes.verdict import parse_rational, strict_json_loads
 
 
 REQUIRED_PROBLEM_FILES = [
@@ -80,9 +80,15 @@ def validate_problem(problem_dir: str | Path) -> list[str]:
                 errors.append(f"problem.yaml:objective.{key}: invalid rational: {exc}")
 
     try:
-        json.loads((problem_path / "solution.schema.json").read_text(encoding="utf-8"))
+        solution_schema = strict_json_loads(
+            (problem_path / "solution.schema.json").read_bytes()
+        )
+        jsonschema.Draft202012Validator.check_schema(solution_schema)
     except Exception as exc:
         errors.append(f"solution.schema.json: invalid JSON schema file: {exc}")
+    else:
+        max_bytes = solution_schema.get("x-p42-max-bytes") if isinstance(solution_schema, dict) else None
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+            errors.append("solution.schema.json:x-p42-max-bytes must be a positive integer")
 
     return errors
-

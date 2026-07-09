@@ -1,11 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/problems/hadamard-mini/solution.schema.json",
+  "x-p42-max-bytes": 4096,
   "type": "object",
   "required": ["n", "rows"],
-  "additionalProperties": true,
+  "additionalProperties": false,
   "properties": {
     "n": { "const": 4 },
+    "claimed_defect": { "type": "integer" },
+    "claimed_score": { "type": "string" },
+    "improvement": { "type": "string" },
     "rows": {
       "type": "array",
       "minItems": 4,
@@ -17,4 +21,3 @@
     }
   }
 }
-

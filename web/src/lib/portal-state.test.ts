@@ -12,7 +12,7 @@ import {
   sha256SolutionCid,
   verifySolverSignature,
 } from "@/lib/portal-state";
-import { portalStatePath, readPortalState, resetPortalStateForTests } from "@/lib/portal-store";
+import { portalStatePath, readPortalState, resetPortalStateForTests, updatePortalState } from "@/lib/portal-store";
 
 const solverAddress = "0x1111111111111111111111111111111111111111";
 const solverWallet = new Wallet("0x59c6995e998f97a5a0044966f0945387f6d6616d07a16c6fbfcaeab4f7fca6e5");
@@ -83,6 +83,8 @@ describe("portal commit-reveal state", () => {
     });
     const committedState = readPortalState();
     expect(committedState.commits).toContainEqual(commit);
+    expect(commit.commitAlgorithm).toBe("keccak256-p42-local-v0");
+    expect(Date.parse(commit.expiresAt)).toBeGreaterThan(Date.parse(commit.createdAt));
     expect(committedState.events).toMatchObject([
       {
         sequence: 1,
@@ -98,6 +100,7 @@ describe("portal commit-reveal state", () => {
     const commitPayload = committedState.events[0].payload as Record<string, unknown>;
     expect(commitPayload).not.toHaveProperty("solutionCid");
     expect(commitPayload.commitHash).toBe(commit.commitHash);
+    expect(commitPayload).toMatchObject({ commitDomain: "local-phase-0", chainCompatible: false });
 
     const result = await revealCommit({
       commitId: commit.id,
@@ -243,5 +246,80 @@ describe("portal commit-reveal state", () => {
     const afterFirst = readPortalState();
     const firstEvent = afterFirst.events.find((event) => event.subjectId === firstResult.submission.id);
     expect((firstEvent?.payload as { firstCommitter?: boolean }).firstCommitter).toBe(true);
+  });
+
+  it("expires abandoned commits so they cannot hold solution priority forever", async () => {
+    const solutionCid = sha256SolutionCid(validSolutionRaw);
+    const abandoned = createCommit({
+      problemId: 1,
+      agentName: "Abandoned",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "abandoned-salt" }),
+    });
+    updatePortalState((state) => {
+      const stored = state.commits.find((commit) => commit.id === abandoned.id)!;
+      stored.expiresAt = new Date(Date.now() - 1_000).toISOString();
+    });
+    expect(readPortalState().commits.find((commit) => commit.id === abandoned.id)?.abandonedAt).toBeDefined();
+    await expect(revealCommit({
+      commitId: abandoned.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "abandoned-salt",
+      solutionRaw: validSolutionRaw,
+    })).rejects.toThrow("commit expired before reveal");
+
+    const replacement = createCommit({
+      problemId: 1,
+      agentName: "Replacement",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "replacement-salt" }),
+    });
+    const result = await revealCommit({
+      commitId: replacement.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "replacement-salt",
+      solutionRaw: validSolutionRaw,
+    });
+    const event = readPortalState().events.find((row) => row.subjectId === result.submission.id);
+    expect((event?.payload as { firstCommitter?: boolean }).firstCommitter).toBe(true);
+  });
+
+  it("blocks an active reveal lease and recovers it after expiry", async () => {
+    const solutionCid = sha256SolutionCid(validSolutionRaw);
+    const commit = createCommit({
+      problemId: 1,
+      agentName: "LeaseAgent",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "lease-salt" }),
+    });
+    updatePortalState((state) => {
+      state.commits.find((row) => row.id === commit.id)!.revealLease = {
+        id: "old-worker",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      };
+    });
+    await expect(revealCommit({
+      commitId: commit.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "lease-salt",
+      solutionRaw: validSolutionRaw,
+    })).rejects.toThrow("commit reveal already in progress");
+
+    updatePortalState((state) => {
+      state.commits.find((row) => row.id === commit.id)!.revealLease!.expiresAt = new Date(Date.now() - 1_000).toISOString();
+    });
+    await expect(revealCommit({
+      commitId: commit.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "lease-salt",
+      solutionRaw: validSolutionRaw,
+    })).resolves.toMatchObject({ submission: { source: "local-phase-0", credit: "0/1" } });
   });
 });

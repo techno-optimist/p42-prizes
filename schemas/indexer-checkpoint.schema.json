@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/indexer-checkpoint.schema.json",
+  "title": "P42 Prizes deterministic indexer checkpoint",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifestBinding",
+    "finalityPolicy",
+    "range",
+    "events",
+    "onchain",
+    "state",
+    "reconstruction"
+  ],
+  "properties": {
+    "schema": { "const": "p42-prizes/indexer-checkpoint/v1" },
+    "manifestBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deploymentCommit",
+        "deploymentConfigHash",
+        "chainId",
+        "startBlock",
+        "contracts"
+      ],
+      "properties": {
+        "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "deploymentConfigHash": { "$ref": "#/$defs/bytes32" },
+        "chainId": { "type": "integer", "minimum": 1 },
+        "startBlock": { "type": "integer", "minimum": 0 },
+        "contracts": {
+          "type": "object",
+          "minProperties": 6,
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["address", "deployedCodeHash", "abiHash"],
+            "properties": {
+              "address": { "$ref": "#/$defs/address" },
+              "deployedCodeHash": { "$ref": "#/$defs/bytes32" },
+              "abiHash": { "$ref": "#/$defs/bytes32" }
+            }
+          }
+        }
+      }
+    },
+    "finalityPolicy": { "$ref": "deployment-manifest.schema.json#/$defs/finalityPolicy" },
+    "range": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fromBlock", "toBlock", "toBlockHash"],
+      "properties": {
+        "fromBlock": { "type": "integer", "minimum": 0 },
+        "toBlock": { "type": "integer", "minimum": 0 },
+        "toBlockHash": { "$ref": "#/$defs/bytes32" }
+      }
+    },
+    "events": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "total", "counts", "lifecycleCountsComplete"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/bytes32" },
+        "total": { "type": "integer", "minimum": 0 },
+        "counts": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "lifecycleCountsComplete": { "type": "boolean" }
+      }
+    },
+    "onchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "submissionCount",
+        "openSubmissionCount",
+        "bestScoreAtoms",
+        "poolFirstFundedAt",
+        "ledgerPausedNewActions",
+        "submissionsPausedNewActions",
+        "submissionsPausedAll",
+        "submissionExpiryGraceUntil",
+        "challengePausedNewActions",
+        "registryProblemCount",
+        "registryFrozen"
+      ],
+      "properties": {
+        "submissionCount": { "$ref": "#/$defs/integerString" },
+        "openSubmissionCount": { "$ref": "#/$defs/integerString" },
+        "bestScoreAtoms": { "$ref": "#/$defs/integerString" },
+        "poolFirstFundedAt": { "$ref": "#/$defs/integerString" },
+        "ledgerPausedNewActions": { "type": "boolean" },
+        "submissionsPausedNewActions": { "type": "boolean" },
+        "submissionsPausedAll": { "type": "boolean" },
+        "submissionExpiryGraceUntil": { "$ref": "#/$defs/integerString" },
+        "challengePausedNewActions": { "type": "boolean" },
+        "registryProblemCount": { "$ref": "#/$defs/integerString" },
+        "registryFrozen": {
+          "type": "object",
+          "additionalProperties": { "type": "boolean" }
+        }
+      }
+    },
+    "state": { "type": "object" },
+    "reconstruction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ok", "complete", "lifecycleSnapshotComplete", "checks"],
+      "properties": {
+        "ok": { "type": "boolean" },
+        "complete": { "type": "boolean" },
+        "lifecycleSnapshotComplete": { "type": "boolean" },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "ok", "expected", "actual"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "ok": { "type": "boolean" },
+              "expected": {},
+              "actual": {}
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+    "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+    "integerString": { "type": "string", "pattern": "^-?[0-9]+$" }
+  }
+}
