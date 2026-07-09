@@ -915,4 +915,125 @@ describe("P42 Gate 1 contract scaffold", function () {
       "P42_ALREADY_FROZEN"
     );
   });
+
+  // ===========================================================================
+  // F15 — post-close claim deadline + full residual sweep. finalEntitlement
+  // floors each share (dust strands) and never-claimed entitlements would
+  // strand forever; policy: 365 days to claim after close(), then anyone can
+  // sweep the pool's FULL remaining balance to the treasury.
+  // ===========================================================================
+  const CLAIM_DEADLINE_SECONDS = 365n * 24n * 60n * 60n;
+
+  it("enforces the 365-day claim deadline after close (F15)", async function () {
+    const { alice, bob, pool, ledger } = await deployFixture({ feeBps: 0, activateRecorder: false });
+    await pool.fund({ value: ethers.parseEther("10") });
+    await ledger.recordCredit(alice.address, 60);
+    await ledger.recordCredit(bob.address, 40);
+
+    assert.equal(await ledger.CLAIM_DEADLINE_SECONDS(), CLAIM_DEADLINE_SECONDS);
+    assert.equal(await ledger.claimDeadline(), 0n); // knowable only after close
+
+    // close() anchors the deadline and publishes it in the Closed event.
+    const tx = await ledger.close();
+    const receipt = await tx.wait();
+    const closedEvent = receipt.logs
+      .map((log) => {
+        try {
+          return ledger.interface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((parsed) => parsed && parsed.name === "Closed");
+    assert.ok(closedEvent, "Closed event present");
+    const closedAt = await ledger.closedAt();
+    assert.ok(closedAt > 0n);
+    assert.equal(closedEvent.args.closedAt, closedAt);
+    assert.equal(closedEvent.args.claimDeadline, closedAt + CLAIM_DEADLINE_SECONDS);
+    assert.equal(await ledger.claimDeadline(), closedAt + CLAIM_DEADLINE_SECONDS);
+
+    // Before the deadline claims flow normally.
+    await pool.connect(alice).claim();
+    assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("6"));
+
+    // After the deadline the claim path is shut with a named error.
+    await increaseTime(CLAIM_DEADLINE_SECONDS + 1n);
+    await expectCustomError(pool.connect(bob).claim(), ledger, "P42_CLAIMS_EXPIRED");
+    assert.equal(await ledger.claimedWeiOf(bob.address), 0n);
+  });
+
+  it("sweeps the full residual to the treasury only after the claim deadline (F15)", async function () {
+    const { alice, bob, treasury, pool, ledger } = await deployFixture({ feeBps: 0, activateRecorder: false });
+    await pool.fund({ value: ethers.parseEther("10") });
+    await ledger.recordCredit(alice.address, 3);
+    await ledger.recordCredit(bob.address, 7);
+
+    // No sweep before close, and none while solvers still own their window.
+    await expectCustomError(ledger.sweepResidual(), ledger, "P42_NOT_CLOSED");
+    await ledger.close();
+    await expectCustomError(ledger.sweepResidual(), ledger, "P42_CLAIMS_NOT_EXPIRED");
+
+    // alice claims in time; bob never does.
+    await pool.connect(alice).claim();
+    const aliceShare = (ethers.parseEther("10") * 3n) / 10n;
+    assert.equal(await ledger.claimedWeiOf(alice.address), aliceShare);
+
+    await increaseTime(CLAIM_DEADLINE_SECONDS + 1n);
+    const residual = await pool.funded();
+    assert.equal(residual, ethers.parseEther("10") - aliceShare); // bob's stranded share
+    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+    // Permissionless: any caller may trigger the sweep.
+    await ledger.connect(bob).sweepResidual();
+    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, residual);
+    assert.equal(await pool.funded(), 0n);
+    assert.equal(await ledger.residualSwept(), true);
+    // Dedicated accounting: the residual never pollutes the fee counter.
+    assert.equal(await pool.totalResidualPaid(), residual);
+    assert.equal(await pool.totalFeePaid(), 0n);
+
+    // Late claims stay blocked and the sweep is one-shot.
+    await expectCustomError(pool.connect(bob).claim(), ledger, "P42_CLAIMS_EXPIRED");
+    await expectCustomError(ledger.sweepResidual(), ledger, "P42_RESIDUAL_ALREADY_SWEPT");
+  });
+
+  it("sweeps the whole balance of a pool that closed with zero credited solvers (F15 canary edge)", async function () {
+    const { treasury, pool, ledger } = await deployFixture({ feeBps: 0, activateRecorder: false });
+    await pool.fund({ value: ethers.parseEther("1") });
+    await ledger.close();
+    assert.equal(await ledger.totalCreditAtoms(), 0n);
+
+    await increaseTime(CLAIM_DEADLINE_SECONDS + 1n);
+    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+    await ledger.sweepResidual();
+    // finalEntitlement is 0 for everyone, yet the FULL balance is recovered.
+    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, ethers.parseEther("1"));
+    assert.equal(await pool.funded(), 0n);
+    assert.equal(await pool.totalResidualPaid(), ethers.parseEther("1"));
+  });
+
+  it("keeps payResidual ledger-only and the fee sweep independently available (F15)", async function () {
+    const { alice, treasury, pool, ledger } = await deployFixture({ feeBps: 250, activateRecorder: false });
+    await pool.fund({ value: ethers.parseEther("10") });
+    await ledger.recordCredit(alice.address, 1);
+    await ledger.close();
+
+    // Direct calls to the escrow's residual path are ledger-only.
+    await expectCustomError(pool.connect(alice).payResidual(alice.address, 1n), pool, "P42_NOT_LEDGER");
+
+    // sweepFee remains independently available before the residual sweep.
+    await ledger.sweepFee();
+    const feeReserve = await ledger.feeReserve();
+    assert.equal(await pool.totalFeePaid(), feeReserve);
+
+    await increaseTime(CLAIM_DEADLINE_SECONDS + 1n);
+    const residual = await pool.funded();
+    assert.equal(residual, ethers.parseEther("10") - feeReserve); // alice never claimed
+    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+    await ledger.sweepResidual();
+    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, residual);
+    // Fee and residual counters stay segregated.
+    assert.equal(await pool.totalFeePaid(), feeReserve);
+    assert.equal(await pool.totalResidualPaid(), residual);
+    assert.equal(await pool.funded(), 0n);
+  });
 });

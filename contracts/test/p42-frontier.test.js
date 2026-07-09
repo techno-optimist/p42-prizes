@@ -458,4 +458,258 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await pool.connect(alice).claim();
     assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("2"));
   });
+
+  // ===========================================================================
+  // POISONED-FRONTIER RECOVERY (policy decision 6): a fraudulent unchallenged
+  // finalize can set bestScoreAtoms unreachably low so every honest score
+  // thereafter finalizes with 0 credit — bricking the problem. voidFinalize
+  // (owner/timelock, under the full pause) reverses exactly that finalize:
+  // restores the stored prevBestScoreAtoms and voids the stored creditAtoms.
+  // ===========================================================================
+
+  it("recovers a poisoned frontier: voidFinalize restores the frontier, voids the fraud's credit, and honest work resumes", async function () {
+    const fixture = await deployFixture({ feeBps: 0 });
+    const { owner, alice, bob, carol, ledger, submissions } = fixture;
+    await fixture.pool.fund({ value: ethers.parseEther("2") });
+
+    // Carol finalizes a fraudulent, unreachably low score (1 atom = 1e-18
+    // score units) unchallenged: the frontier is poisoned.
+    const fraud = await commitReveal(fixture, carol, 1n);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    const fraudArgs = await finalizeAndParse(fixture, carol, fraud.submissionId);
+    assert.equal(fraudArgs.creditAtoms, SEED - 1n);
+    assert.equal(await submissions.bestScoreAtoms(), 1n);
+    assert.equal(await ledger.creditAtomsOf(carol.address), SEED - 1n);
+
+    // The problem is bricked for honest work: a genuinely strong score (500)
+    // still reveals (the reveal gate is the immutable seed) but finalizes with
+    // ZERO credit — no achievable score beats the poisoned frontier.
+    const honest = await commitReveal(fixture, alice, 500n * SCALE);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    const honestArgs = await finalizeAndParse(fixture, alice, honest.submissionId);
+    assert.equal(honestArgs.creditAtoms, 0n);
+    assert.equal(await ledger.creditAtomsOf(alice.address), 0n);
+    assert.equal(await submissions.bestScoreAtoms(), 1n);
+
+    // Recovery: arm the full pause, then void the fraudulent finalize. The
+    // stored snapshot pins exactly what is reversed — no governance numbers.
+    await submissions.connect(owner).setPausedAll(true);
+    const info = await submissions.finalizeInfo(fraud.submissionId);
+    assert.equal(info.prevBestScoreAtoms, SEED);
+    assert.equal(info.creditAtoms, SEED - 1n);
+
+    const tx = await submissions.connect(owner).voidFinalize(fraud.submissionId);
+    const receipt = await tx.wait();
+    const voided = receipt.logs
+      .map((log) => {
+        try {
+          return submissions.interface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((parsed) => parsed && parsed.name === "FinalizeVoided");
+    assert.ok(voided, "FinalizeVoided event present");
+    assert.equal(voided.args.submissionId, fraud.submissionId);
+    assert.equal(voided.args.solver, carol.address);
+    assert.equal(voided.args.creditAtoms, SEED - 1n);
+    assert.equal(voided.args.restoredBestScoreAtoms, SEED);
+
+    // Frontier restored, fraud credit zeroed, and no double-void is possible.
+    assert.equal(await submissions.bestScoreAtoms(), SEED);
+    assert.equal(await ledger.creditAtomsOf(carol.address), 0n);
+    assert.equal(await ledger.totalCreditAtoms(), 0n);
+    assert.equal((await submissions.submissions(fraud.submissionId)).status, 6n); // Voided
+    await expectCustomError(
+      submissions.connect(owner).voidFinalize(fraud.submissionId),
+      submissions,
+      "P42_BAD_SUBMISSION_STATUS"
+    );
+
+    // The fraud's bond is deliberately untouched: economic punishment is the
+    // challenge/slash path's concern, voidFinalize only corrects the frontier.
+    assert.equal(await submissions.claimableBondWei(carol.address), fraud.bond);
+
+    // Disarm the pause: a fresh honest cycle earns real marginal credit again.
+    await submissions.connect(owner).setPausedAll(false);
+    const fresh = await commitReveal(fixture, bob, 400n * SCALE);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    const freshArgs = await finalizeAndParse(fixture, bob, fresh.submissionId);
+    assert.equal(freshArgs.creditAtoms, SEED - 400n * SCALE);
+    assert.equal(await submissions.bestScoreAtoms(), 400n * SCALE);
+    assert.equal(await ledger.creditAtomsOf(bob.address), SEED - 400n * SCALE);
+    // The telescoping invariant holds again: totalCredit == seed - best.
+    assert.equal(await ledger.totalCreditAtoms(), SEED - 400n * SCALE);
+  });
+
+  it("refuses voidFinalize unless the full pause is armed, and stays owner-only", async function () {
+    const fixture = await deployFixture({ feeBps: 0 });
+    const { owner, carol, submissions } = fixture;
+    const fraud = await commitReveal(fixture, carol, 1n);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await finalizeAndParse(fixture, carol, fraud.submissionId);
+
+    // Without pausedAll a void could race an in-flight finalize: refused.
+    await expectCustomError(
+      submissions.connect(owner).voidFinalize(fraud.submissionId),
+      submissions,
+      "P42_NOT_PAUSED_ALL"
+    );
+    assert.equal(await submissions.bestScoreAtoms(), 1n);
+
+    // Owner-only, even when the pause is armed.
+    await expectCustomError(submissions.connect(carol).setPausedAll(true), submissions, "P42_NOT_OWNER");
+    await submissions.connect(owner).setPausedAll(true);
+    await expectCustomError(
+      submissions.connect(carol).voidFinalize(fraud.submissionId),
+      submissions,
+      "P42_NOT_OWNER"
+    );
+  });
+
+  it("refuses to void a superseded finalize but unwinds stacked frontier-holders newest-first", async function () {
+    const fixture = await deployFixture({ feeBps: 0 });
+    const { owner, alice, bob, carol, ledger, submissions } = fixture;
+
+    // alice: seed -> 500 (credited), then bob advances 500 -> 400 (credited).
+    const a = await commitReveal(fixture, alice, 500n * SCALE);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await finalizeAndParse(fixture, alice, a.submissionId);
+    const b = await commitReveal(fixture, bob, 400n * SCALE);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await finalizeAndParse(fixture, bob, b.submissionId);
+    // carol beats the seed but not the live frontier: finalizes with 0 credit.
+    const c = await commitReveal(fixture, carol, 450n * SCALE);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    const cArgs = await finalizeAndParse(fixture, carol, c.submissionId);
+    assert.equal(cArgs.creditAtoms, 0n);
+
+    await submissions.connect(owner).setPausedAll(true);
+    // alice's credited finalize is no longer the live frontier: refused —
+    // restoring ITS prevBest over bob's better score would corrupt the frontier.
+    await expectCustomError(
+      submissions.connect(owner).voidFinalize(a.submissionId),
+      submissions,
+      "P42_VOID_NOT_FRONTIER"
+    );
+    // carol's superseded finalize earned nothing: nothing to void.
+    await expectCustomError(
+      submissions.connect(owner).voidFinalize(c.submissionId),
+      submissions,
+      "P42_VOID_NO_CREDIT"
+    );
+
+    // The live frontier holder (bob) IS voidable; after that unwind, alice's
+    // finalize becomes the live frontier again and unwinds too — stacked
+    // frauds unwind newest-first by repeated calls, exactly reversing each.
+    await submissions.connect(owner).voidFinalize(b.submissionId);
+    assert.equal(await submissions.bestScoreAtoms(), 500n * SCALE);
+    assert.equal(await ledger.creditAtomsOf(bob.address), 0n);
+    await submissions.connect(owner).voidFinalize(a.submissionId);
+    assert.equal(await submissions.bestScoreAtoms(), SEED);
+    assert.equal(await ledger.creditAtomsOf(alice.address), 0n);
+    assert.equal(await ledger.totalCreditAtoms(), 0n);
+  });
+
+  it("pausedAll blocks commit, reveal, and finalize so no finalize can race a recovery", async function () {
+    const fixture = await deployFixture({ feeBps: 0 });
+    const { owner, alice, bob, submissions } = fixture;
+
+    // Stage a committed-but-unrevealed submission and a revealed one whose
+    // challenge window has elapsed (finalize-ready).
+    const cid = "bafy-pause-committed";
+    const salt = "pause-committed";
+    const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
+      cid,
+      alice.address,
+      DA_HASH,
+      salt
+    );
+    await submissions.connect(alice).commit(commitment, DA_HASH, { value: fixture.minBond });
+    const committedId = await submissions.submissionCount();
+    const revealed = await commitReveal(fixture, bob, 600n * SCALE);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+
+    await submissions.connect(owner).setPausedAll(true);
+    await expectCustomError(
+      submissions
+        .connect(alice)
+        .commit(ethers.keccak256(ethers.toUtf8Bytes("paused-all-commit")), DA_HASH, { value: fixture.minBond }),
+      submissions,
+      "P42_PAUSED_ALL"
+    );
+    await expectCustomError(
+      submissions.connect(alice).reveal(committedId, cid, 700n * SCALE, 1n, salt, "0x"),
+      submissions,
+      "P42_PAUSED_ALL"
+    );
+    await expectCustomError(
+      submissions.connect(bob).finalize(revealed.submissionId, PERMANENCE_HASH),
+      submissions,
+      "P42_PAUSED_ALL"
+    );
+
+    // Disarm: the identical actions immediately succeed.
+    await submissions.connect(owner).setPausedAll(false);
+    await submissions.connect(alice).reveal(committedId, cid, 700n * SCALE, 1n, salt, "0x");
+    await submissions.connect(bob).finalize(revealed.submissionId, PERMANENCE_HASH);
+    assert.equal(await submissions.bestScoreAtoms(), 600n * SCALE);
+  });
+
+  it("voidCredit enforces recorder scope and checked balance math", async function () {
+    const [owner, treasury, recorder, alice] = await ethers.getSigners();
+    const Pool = await ethers.getContractFactory("P42BountyPool");
+    const pool = await Pool.deploy(owner.address);
+    await pool.waitForDeployment();
+    const Ledger = await ethers.getContractFactory("P42PayoutLedger");
+    const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 0);
+    await ledger.waitForDeployment();
+    await ledger.connect(owner).setCreditRecorder(recorder.address);
+
+    await ledger.connect(recorder).recordCredit(alice.address, 100n);
+    // Only the creditRecorder may void — not even the owner.
+    await expectCustomError(
+      ledger.connect(owner).voidCredit(alice.address, 10n),
+      ledger,
+      "P42_NOT_CREDIT_RECORDER"
+    );
+    // Zero voids and over-voids are refused: a balance can never go negative.
+    await expectCustomError(ledger.connect(recorder).voidCredit(alice.address, 0n), ledger, "P42_ZERO_CREDIT");
+    await expectCustomError(
+      ledger.connect(recorder).voidCredit(alice.address, 101n),
+      ledger,
+      "P42_VOID_EXCEEDS_CREDIT"
+    );
+
+    await ledger.connect(recorder).voidCredit(alice.address, 40n);
+    assert.equal(await ledger.creditAtomsOf(alice.address), 60n);
+    assert.equal(await ledger.totalCreditAtoms(), 60n);
+    await ledger.connect(recorder).voidCredit(alice.address, 60n);
+    assert.equal(await ledger.creditAtomsOf(alice.address), 0n);
+    assert.equal(await ledger.totalCreditAtoms(), 0n);
+    await expectCustomError(
+      ledger.connect(recorder).voidCredit(alice.address, 1n),
+      ledger,
+      "P42_VOID_EXCEEDS_CREDIT"
+    );
+  });
+
+  it("refuses to void a finalize once the ledger has closed (entitlements are snapshotted)", async function () {
+    const fixture = await deployFixture({ feeBps: 0 });
+    const { owner, alice, ledger, submissions } = fixture;
+    const a = await commitReveal(fixture, alice, 500n * SCALE);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await finalizeAndParse(fixture, alice, a.submissionId);
+    await ledger.close();
+
+    await submissions.connect(owner).setPausedAll(true);
+    await expectCustomError(
+      submissions.connect(owner).voidFinalize(a.submissionId),
+      ledger,
+      "P42_CLOSED"
+    );
+    // Nothing moved: the frontier and credit are untouched by the refused void.
+    assert.equal(await submissions.bestScoreAtoms(), 500n * SCALE);
+    assert.equal(await ledger.creditAtomsOf(alice.address), SEED - 500n * SCALE);
+  });
 });

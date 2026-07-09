@@ -22,6 +22,7 @@ contract P42BountyPool {
     uint256 public totalFunded;
     uint256 public totalClaimed;
     uint256 public totalFeePaid;
+    uint256 public totalResidualPaid;
 
     bool private _claiming;
 
@@ -29,6 +30,7 @@ contract P42BountyPool {
     event Funded(address indexed from, uint256 amount, uint256 newBalance);
     event Claimed(address indexed solver, uint256 amount);
     event FeePaid(address indexed to, uint256 amount);
+    event ResidualPaid(address indexed to, uint256 amount);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert P42_NOT_OWNER();
@@ -91,6 +93,20 @@ contract P42BountyPool {
         (bool ok,) = payable(to).call{value: amount}("");
         if (!ok) revert P42_TRANSFER_FAILED();
         emit FeePaid(to, amount);
+    }
+
+    /// @notice Pays the post-deadline residual sweep out of escrow (F15).
+    /// Callable only by the ledger, which enforces closed + deadline-elapsed +
+    /// single-use semantics. Deliberately a DEDICATED path — reusing payFee
+    /// here would pollute the totalFeePaid counter with non-fee outflows.
+    /// CEI + nonReentrant: accounting is updated before the external transfer.
+    function payResidual(address to, uint256 amount) external nonReentrant {
+        if (msg.sender != ledger) revert P42_NOT_LEDGER();
+        require(to != address(0), "P42_RESIDUAL_SINK_ZERO");
+        totalResidualPaid += amount;
+        (bool ok,) = payable(to).call{value: amount}("");
+        if (!ok) revert P42_TRANSFER_FAILED();
+        emit ResidualPaid(to, amount);
     }
 
     function _fund() private {

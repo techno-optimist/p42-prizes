@@ -7,6 +7,7 @@ interface IP42PoolBalance {
 
 interface IP42CreditLedger {
     function recordCredit(address solver, uint256 atoms) external;
+    function voidCredit(address solver, uint256 atoms) external;
     function provisionalEntitlement(address solver, uint256 additionalAtoms) external view returns (uint256);
 }
 
@@ -16,6 +17,10 @@ interface IP42CreditLedger {
 contract P42SubmissionManager {
     error P42_NOT_OWNER();
     error P42_PAUSED_NEW_ACTIONS();
+    error P42_PAUSED_ALL();
+    error P42_NOT_PAUSED_ALL();
+    error P42_VOID_NO_CREDIT();
+    error P42_VOID_NOT_FRONTIER(int256 bestScoreAtoms, int256 claimedScoreAtoms);
     error P42_BAD_ALPHA();
     error P42_BAD_WINDOW();
     error P42_EMPTY_COMMITMENT();
@@ -79,7 +84,22 @@ contract P42SubmissionManager {
         Revealed,
         Challenged,
         Finalized,
-        Rejected
+        Rejected,
+        /// A Finalized submission whose frontier advance + ledger credit were
+        /// reversed by governance recovery (`voidFinalize`). Appended LAST so
+        /// every pre-existing status keeps its numeric value.
+        Voided
+    }
+
+    /// @notice Frontier snapshot stored at finalization (poisoned-frontier
+    /// recovery). `prevBestScoreAtoms` is the live frontier the submission
+    /// finalized against; `creditAtoms` is the marginal credit it earned
+    /// (0 when superseded). Together they let `voidFinalize` reverse exactly
+    /// this finalization — restore the frontier and void the credit — with no
+    /// governance-chosen numbers.
+    struct FinalizeInfo {
+        int256 prevBestScoreAtoms;
+        uint256 creditAtoms;
     }
 
     struct Submission {
@@ -131,6 +151,11 @@ contract P42SubmissionManager {
     uint256 public immutable minImprovementAtoms;
     address public challengeManager;
     bool public pausedNewActions;
+    /// @notice STRONGER pause than `pausedNewActions` (which only gates
+    /// commit): while set, commit(), reveal(), AND finalize() all revert, so a
+    /// governance recovery (`voidFinalize`) can never race a finalize that
+    /// would move `bestScoreAtoms` and stale its frontier-equality check.
+    bool public pausedAll;
     bool private _claiming;
     uint256 public submissionCount;
     uint256 public openSubmissionCount;
@@ -141,8 +166,18 @@ contract P42SubmissionManager {
 
     mapping(uint256 => Submission) public submissions;
     mapping(address => uint256) public claimableBondWei;
+    /// @notice Per-submission finalization snapshot (see FinalizeInfo). Only
+    /// meaningful once the submission reached Finalized/Voided.
+    mapping(uint256 => FinalizeInfo) public finalizeInfo;
 
     event NewActionsPaused(bool paused);
+    event AllActionsPaused(bool paused);
+    event FinalizeVoided(
+        uint256 indexed submissionId,
+        address indexed solver,
+        uint256 creditAtoms,
+        int256 restoredBestScoreAtoms
+    );
     event ChallengeManagerSet(address indexed challengeManager);
     event Committed(
         uint256 indexed submissionId,
@@ -248,6 +283,14 @@ contract P42SubmissionManager {
         emit NewActionsPaused(paused);
     }
 
+    /// @notice Arms/disarms the recovery-grade full pause. Unlike
+    /// `pausedNewActions`, this also gates reveal() and finalize(), freezing
+    /// the frontier so `voidFinalize` operates on a stable `bestScoreAtoms`.
+    function setPausedAll(bool paused) external onlyOwner {
+        pausedAll = paused;
+        emit AllActionsPaused(paused);
+    }
+
     function setChallengeManager(address challengeManager_) external onlyOwner {
         require(challengeManager_ != address(0), "P42_CHALLENGE_MANAGER_ZERO");
         if (challengeManager != address(0)) revert P42_CHALLENGE_MANAGER_ALREADY_SET();
@@ -265,6 +308,7 @@ contract P42SubmissionManager {
     }
 
     function commit(bytes32 commitment, bytes32 commitDaHash) external payable returns (uint256 submissionId) {
+        if (pausedAll) revert P42_PAUSED_ALL();
         if (pausedNewActions) revert P42_PAUSED_NEW_ACTIONS();
         if (commitment == bytes32(0)) revert P42_EMPTY_COMMITMENT();
         if (commitDaHash == bytes32(0)) revert P42_EMPTY_DA_HASH();
@@ -332,6 +376,7 @@ contract P42SubmissionManager {
         string calldata salt,
         bytes calldata solution
     ) external {
+        if (pausedAll) revert P42_PAUSED_ALL();
         Submission storage submission = _requireSubmission(submissionId);
         if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
         _requireStatus(submission, SubmissionStatus.Committed);
@@ -407,6 +452,7 @@ contract P42SubmissionManager {
     /// submission finalizes and the solver's bond becomes claimable: an honest
     /// solver who was merely beaten is never bond-slashed.
     function finalize(uint256 submissionId, bytes32 permanenceHash) external {
+        if (pausedAll) revert P42_PAUSED_ALL();
         Submission storage submission = _requireSubmission(submissionId);
         if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
         _requireStatus(submission, SubmissionStatus.Revealed);
@@ -438,6 +484,10 @@ contract P42SubmissionManager {
 
         submission.permanenceHash = permanenceHash;
         submission.status = SubmissionStatus.Finalized;
+        // Recovery snapshot: persist the frontier this finalize advanced from
+        // and the marginal it was credited (previously only emitted), so a
+        // fraudulent finalize can later be reversed exactly by voidFinalize.
+        finalizeInfo[submissionId] = FinalizeInfo({prevBestScoreAtoms: bestScoreAtoms, creditAtoms: creditAtoms});
         _makeBondClaimable(submissionId, solver);
         _decrementOpenSubmission();
         if (creditAtoms != 0) {
@@ -454,6 +504,45 @@ contract P42SubmissionManager {
             permanenceHash,
             pool.funded()
         );
+    }
+
+    /// @notice Governance recovery for a POISONED frontier: a fraudulent
+    /// unchallenged finalize can set `bestScoreAtoms` unreachably low, so every
+    /// honest score thereafter finalizes with 0 credit — bricking the problem.
+    /// This reverses EXACTLY one finalize with no governance-chosen numbers:
+    /// it restores the stored `prevBestScoreAtoms` and voids the stored
+    /// `creditAtoms` on the ledger.
+    ///
+    /// Safety preconditions:
+    /// - `pausedAll` must be set, so no finalize can race the void and move the
+    ///   frontier between the checks and the restore.
+    /// - The submission must still BE the live frontier
+    ///   (`bestScoreAtoms == claimedScoreAtoms`). A poisoned frontier always
+    ///   is — nothing can beat it. A superseded finalize is refused: it earned
+    ///   0 credit anyway and restoring its prevBest would corrupt the frontier.
+    /// Together these make the void an exact inverse with no double-accounting:
+    /// totalCreditAtoms == seedScoreAtoms - bestScoreAtoms keeps telescoping.
+    ///
+    /// Deliberately NOT touched: the solver's posting bond (already
+    /// claimable/claimed — the economic penalty for the fraud is a separate
+    /// challenge/slash concern; this only corrects the frontier + credit).
+    function voidFinalize(uint256 submissionId) external onlyOwner {
+        if (!pausedAll) revert P42_NOT_PAUSED_ALL();
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Finalized);
+        FinalizeInfo storage info = finalizeInfo[submissionId];
+        uint256 creditAtoms = info.creditAtoms;
+        if (creditAtoms == 0) revert P42_VOID_NO_CREDIT();
+        if (bestScoreAtoms != submission.claimedScoreAtoms) {
+            revert P42_VOID_NOT_FRONTIER(bestScoreAtoms, submission.claimedScoreAtoms);
+        }
+
+        int256 restored = info.prevBestScoreAtoms;
+        // Voided (not Finalized) so the same finalize can never be voided twice.
+        submission.status = SubmissionStatus.Voided;
+        bestScoreAtoms = restored;
+        ledger.voidCredit(submission.solver, creditAtoms);
+        emit FinalizeVoided(submissionId, submission.solver, creditAtoms, restored);
     }
 
     function markChallenged(uint256 submissionId) external onlyChallengeManager {
