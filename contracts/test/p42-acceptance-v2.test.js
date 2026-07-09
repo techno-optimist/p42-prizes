@@ -253,7 +253,8 @@ describe("P42 second-pass contract acceptance", () => {
     assert.equal(await submissions.prioritySubmissionOf(ethers.keccak256(ethers.toUtf8Bytes(cid))), bobId);
 
     const aliceCommit = await submissions.submissions(aliceId);
-    await advanceTo(aliceCommit.committedAt + WINDOW - 2n);
+    // Leave enough room for the reveal block to mine before commit expiry.
+    await advanceTo(aliceCommit.committedAt + WINDOW - 30n);
     await submissions.connect(alice).reveal(aliceId, cid, 800_000, 1, "alice-priority", "0x");
     assert.equal(await submissions.prioritySubmissionOf(ethers.keccak256(ethers.toUtf8Bytes(cid))), aliceId);
     assert.equal((await submissions.submissions(bobId)).status, 5n);
