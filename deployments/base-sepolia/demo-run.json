@@ -1,0 +1,64 @@
+{
+  "schema": "p42-phase1-demo-run/v1",
+  "what": "Fully autonomous solver client drove the complete on-chain lifecycle (self-verify -> fund -> commit -> reveal -> wait challenge window -> finalize -> close -> claim -> reclaim bond) with no human intervention.",
+  "environment": "base-sepolia (chainId 84532)",
+  "demo_manifest": "deployments/base-sepolia/demo-p42-prizes.json",
+  "challenge_window_seconds": 90,
+  "problem": "hadamard-mini (solved: optimal defect-0 matrix, improvement 1/1)",
+  "agent": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+  "contracts": {
+    "pool": "0x385234ee9730c0c644EA78631d74923d405415d7",
+    "ledger": "0xcFdE8e8B9f6C8b8B8A04AA7A176051090cF3ef0a",
+    "submissions": "0x64009063d0AA27B3362c6b4F6cCE9B9852a6C710",
+    "challenges": "0x0fb931703e61fB92DEcAEA6b675A9871b393b6d6",
+    "registry": "0x9C86B92FA64b74acbc0b77d9A351576223cc7D0C"
+  },
+  "outcome": {
+    "pool_funded_eth": "0.003",
+    "payout_claimed_eth": "0.003",
+    "posting_bond_reclaimed_eth": "0.01"
+  },
+  "transactions": [
+    {
+      "step": "fund",
+      "tx": "0x02b8b5fa1647a918679faae3bae99f460658496eef0018b7db07acac782f42e4",
+      "explorer": "https://sepolia.basescan.org/tx/0x02b8b5fa1647a918679faae3bae99f460658496eef0018b7db07acac782f42e4"
+    },
+    {
+      "step": "commit",
+      "tx": "0x4696995a247b6eb7faad27676509964453956ed1ce0a6b4e474ef57527267746",
+      "explorer": "https://sepolia.basescan.org/tx/0x4696995a247b6eb7faad27676509964453956ed1ce0a6b4e474ef57527267746"
+    },
+    {
+      "step": "reveal",
+      "tx": "0xee809998877a92249f5613ab0b59ccea55f61b0c4577cc1339cc5d974f51c789",
+      "explorer": "https://sepolia.basescan.org/tx/0xee809998877a92249f5613ab0b59ccea55f61b0c4577cc1339cc5d974f51c789"
+    },
+    {
+      "step": "finalize",
+      "tx": "0x7e219e8370df29bb45b02806a01bb23ac32428b8aa018b0a894e1caa50f156d4",
+      "explorer": "https://sepolia.basescan.org/tx/0x7e219e8370df29bb45b02806a01bb23ac32428b8aa018b0a894e1caa50f156d4"
+    },
+    {
+      "step": "close",
+      "tx": "0x540206b54e0957af311162ecd6637f1adbb6d3461415d1b71eb3c2cbfc37ba4f",
+      "explorer": "https://sepolia.basescan.org/tx/0x540206b54e0957af311162ecd6637f1adbb6d3461415d1b71eb3c2cbfc37ba4f"
+    },
+    {
+      "step": "claim",
+      "tx": "0xde84208e71c38f1c34d4b29384dcede1ffbb7ac7d83c13afbcfdf4a96ebf4989",
+      "explorer": "https://sepolia.basescan.org/tx/0xde84208e71c38f1c34d4b29384dcede1ffbb7ac7d83c13afbcfdf4a96ebf4989"
+    },
+    {
+      "step": "claimBond",
+      "tx": "0x77e2ebdb6fcdc05ec97ecd6d98e871aba78bff1ecc89e3d01e1ddd1403541771",
+      "explorer": "https://sepolia.basescan.org/tx/0x77e2ebdb6fcdc05ec97ecd6d98e871aba78bff1ecc89e3d01e1ddd1403541771"
+    }
+  ],
+  "honest_caveats": [
+    "DA + permanence hashes are computed locally (keccak of the solution bytes), NOT posted to a live Arweave/DA provider — that wiring is the next Phase-1 sub-task.",
+    "owner/treasury/resolver/solver are one EOA (no role separation, no session keys) — Phase 2.",
+    "hadamard-mini is a solved warm-up (real Δ, but not an open-frontier result) — the SOLVE wall stands.",
+    "90s challenge window is a demo shortcut; the canonical deployment uses 72h."
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/pnt-sparse-mertens-construction/solution.schema.json",
+  "x-p42-max-bytes": 524288,
+  "type": "object",
+  "required": ["reach", "denominator", "printed_decimal", "support"],
+  "additionalProperties": false,
+  "properties": {
+    "reach": { "const": 96000 },
+    "source": { "type": "string" },
+    "denominator": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000000000000000000000000000000000
+    },
+    "printed_decimal": {
+      "type": "string",
+      "pattern": "^0\\.[0-9]{16}$"
+    },
+    "support": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2000,
+      "items": {
+        "type": "object",
+        "required": ["k", "value"],
+        "additionalProperties": false,
+        "properties": {
+          "k": {
+            "type": "integer",
+            "minimum": 2,
+            "maximum": 96000
+          },
+          "value": {
+            "type": "integer",
+            "minimum": -10000000000000000000000000000000000000,
+            "maximum": 10000000000000000000000000000000000000
+          }
+        }
+      }
+    }
+  }
+}

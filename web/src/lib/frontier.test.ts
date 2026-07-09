@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { incrementalFrontierCredit } from "@/lib/frontier";
+import { problems } from "@/lib/data";
+import { compareRational, parseRational } from "@/lib/exact";
+import { frontierBest, incrementalFrontierCredit } from "@/lib/frontier";
 import type { Problem, Submission } from "@/lib/types";
 
 const problem: Problem = {
@@ -45,6 +47,8 @@ function submission(score: string, state: Submission["state"] = "finalized"): Su
     problemId: problem.id,
     problemSlug: problem.slug,
     agentName: "agent",
+    source: "chain-p42-v1",
+    settlementState: state === "finalized" ? "finalized" : "unsettled",
     state,
     score,
     improvement: "0/1",
@@ -79,5 +83,40 @@ describe("incrementalFrontierCredit", () => {
       priorBest: "5/1",
       eligible: true,
     });
+  });
+
+  it("ignores every unsettled or local Phase-0 row", () => {
+    const revealed = submission("5/1", "revealed");
+    const challenged = submission("4/1", "challenged");
+    const localFinalized = {
+      ...submission("3/1"),
+      source: "local-phase-0" as const,
+      settlementState: "unsettled" as const,
+    };
+
+    expect(frontierBest(problem, [revealed, challenged, localFinalized])).toBe("6/1");
+    expect(incrementalFrontierCredit(problem, "5/1", [revealed, challenged, localFinalized])).toMatchObject({
+      priorBest: "6/1",
+      credit: "1/6",
+      eligible: true,
+    });
+  });
+});
+
+describe("problem anchor invariants", () => {
+  // A seed that is strictly better than the published record makes the launch
+  // frontier start at (or past) the record, so no submission can ever be
+  // credited. Every board's seedBest must be no better than its currentBest.
+  it.each(problems.map((p) => [p.slug, p] as const))("%s: seed is not better than currentBest", (_slug, p) => {
+    const seed = parseRational(p.seedBest);
+    const current = parseRational(p.currentBest);
+    const cmp = compareRational(seed, current);
+    if (p.direction === "minimize") {
+      expect(cmp).toBeGreaterThanOrEqual(0); // seed >= current (higher is worse)
+    } else {
+      expect(cmp).toBeLessThanOrEqual(0); // seed <= current (lower is worse)
+    }
+    // The launch frontier must equal the published record, not something better.
+    expect(frontierBest(p, [])).toBe(p.currentBest);
   });
 });

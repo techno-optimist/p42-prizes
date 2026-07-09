@@ -47,6 +47,9 @@ export async function readJson<T>(req: Request, schema: ZodType<T>): Promise<T> 
   }
 }
 
+// The content-length header is advisory and attacker-controlled (omit it or lie
+// low): stream the body and enforce the cap on bytes actually read so an
+// unbounded payload can't be buffered before Zod's field-level limit applies.
 async function readBoundedBody(req: Request): Promise<string> {
   if (!req.body) return "";
 
@@ -86,6 +89,9 @@ export function apiError(error: unknown) {
   if (error instanceof ApiError) {
     return json({ error: error.message, ...error.body }, { status: error.status, headers: error.headers });
   }
+  // Errors carrying an explicit public contract (e.g. VerifierInfraError) map to
+  // their declared status; everything else is an unexpected server fault and
+  // must not leak its raw message or masquerade as a client (4xx) error.
   const publicError = error as {
     publicStatus?: unknown;
     publicMessage?: unknown;

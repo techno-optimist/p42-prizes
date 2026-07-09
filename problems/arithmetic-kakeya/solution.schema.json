@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/arithmetic-kakeya/solution.schema.json",
+  "x-p42-max-bytes": 32768,
+  "type": "object",
+  "required": ["grid", "slopes", "edge_labels", "free", "relations"],
+  "additionalProperties": false,
+  "properties": {
+    "grid": {
+      "type": "array",
+      "prefixItems": [{ "const": 2 }, { "const": 2 }],
+      "minItems": 2,
+      "maxItems": 2
+    },
+    "slopes": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "integer" }
+      }
+    },
+    "edge_labels": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "array",
+        "maxItems": 256,
+        "items": {
+          "type": "object",
+          "required": ["key", "slope"],
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "items": { "type": "integer" }
+            },
+            "slope": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "type": "integer" }
+            }
+          }
+        }
+      }
+    },
+    "free": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": { "type": "integer" }
+      }
+    },
+    "relations": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "required": ["vertex", "slope"],
+        "additionalProperties": false,
+        "properties": {
+          "vertex": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer" }
+          },
+          "slope": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "source": { "type": "string" },
+    "claimed_score": { "type": "string" }
+  }
+}

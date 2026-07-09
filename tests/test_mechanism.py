@@ -2,16 +2,9 @@ from __future__ import annotations
 
 from fractions import Fraction
 
-from p42_prizes.mechanism import (
-    Credit,
-    bond_satisfies_finalization,
-    claimable_amount,
-    required_counter_bond,
-    required_finalization_bond,
-    required_min_improvement,
-    required_posting_bond,
-    settle_pool,
-)
+import pytest
+
+from p42_prizes.mechanism import Credit, claimable_amount, required_posting_bond, settle_pool
 
 
 def test_final_denominator_settlement_matches_worked_example() -> None:
@@ -67,50 +60,42 @@ def test_posting_bond_is_fixed_from_pool_at_submission() -> None:
     assert required_posting_bond(pool_at_submission_wei=0, alpha_bps=200, min_bond_wei=1_000) == 1_000
 
 
-def test_finalization_bond_closes_after_funding_leverage() -> None:
-    posted = required_posting_bond(pool_at_submission_wei=0, alpha_bps=2_500, min_bond_wei=1_000)
-    assert posted == 1_000
-    assert required_finalization_bond(current_entitlement_wei=100_000, alpha_bps=2_500) == 25_000
-    assert not bond_satisfies_finalization(
-        posted_bond_wei=posted,
-        current_entitlement_wei=100_000,
-        alpha_bps=2_500,
-    )
-    assert bond_satisfies_finalization(
-        posted_bond_wei=25_000,
-        current_entitlement_wei=100_000,
-        alpha_bps=2_500,
-    )
+def test_credit_rejects_non_positive_improvement() -> None:
+    # Positivity must hold for every construction path, not only Credit.parse,
+    # so a negative credit can never let another payout exceed the pool.
+    with pytest.raises(ValueError):
+        Credit("mallory", Fraction(-1, 1))
+    with pytest.raises(ValueError):
+        Credit("mallory", Fraction(0, 1))
 
 
-def test_counter_bond_covers_delay_value_and_rerun_cost() -> None:
-    assert required_counter_bond(
-        finalizing_entitlement_wei=100_000,
-        beta_bps=500,
-        rerun_cost_wei=1_000,
-        cost_multiplier=3,
-        min_bond_wei=500,
-    ) == 5_000
-    assert required_counter_bond(
-        finalizing_entitlement_wei=10_000,
-        beta_bps=100,
-        rerun_cost_wei=2_000,
-        cost_multiplier=4,
-        min_bond_wei=500,
-    ) == 8_000
+def test_settlement_never_exceeds_pool() -> None:
+    # A negative credit used to make honest's payout exceed the pool; it is now
+    # unconstructible, so conservation holds for every settleable input.
+    result = settle_pool(1000, [Credit("honest", Fraction(3, 1))], fee_bps=0)
+    assert sum(payout["amount_wei"] for payout in result["payouts"]) + result["dust_wei"] == 1000
 
 
-def test_min_improvement_uses_current_remaining_gap() -> None:
-    assert required_min_improvement(
-        current_best=Fraction(99, 1),
-        optimum=Fraction(100, 1),
-        tau_bps=100,
-        min_quantum=Fraction(0, 1),
-    ) == Fraction(1, 100)
-    assert required_min_improvement(
-        current_best="101/100",
-        optimum="1/1",
-        tau_bps=100,
-        min_quantum="1/1000",
-        direction="minimize",
-    ) == Fraction(1, 1000)
+def test_zero_payout_pool_charges_no_fee() -> None:
+    # Fee is a skim on payouts, not on funding: a pool that closes with no
+    # accepted improvement refunds 100% to funders.
+    result = settle_pool(1_000_000, [], fee_bps=250)
+    assert result["fee_wei"] == 0
+    assert result["dust_wei"] == 1_000_000
+
+
+def test_fee_bps_is_capped_at_the_contract_maximum() -> None:
+    # MAX_FEE_BPS matches the contract cap (2.5%). The boundary is accepted and
+    # anything above it is refused before any pool is settled.
+    result = settle_pool(1000, [Credit("alice", Fraction(1, 1))], fee_bps=250)
+    assert result["fee_wei"] == 25
+    with pytest.raises(ValueError, match="fee_bps must be between 0 and 250"):
+        settle_pool(1000, [Credit("alice", Fraction(1, 1))], fee_bps=251)
+
+
+def test_settlement_rejects_unrepresentable_denominator() -> None:
+    with pytest.raises(ValueError):
+        settle_pool(
+            1000,
+            [Credit("a", Fraction(1, 2**300)), Credit("b", Fraction(1, 3))],
+        )

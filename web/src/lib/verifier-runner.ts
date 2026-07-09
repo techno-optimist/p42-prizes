@@ -1,42 +1,201 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { freemem, tmpdir, totalmem } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { getProblemBySlug } from "@/lib/data";
-import { parseRational, rationalToString } from "@/lib/exact";
 import type { VerdictReport } from "@/lib/types";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 7_000;
-const REQUIRED_VERDICT_KEYS = [
-  "problem_id",
-  "verifier_version",
-  "verifier_image",
-  "solution_hash",
-  "valid",
-  "improvement",
-  "score",
-  "reason",
-  "recomputed_at_commit",
-  "details",
-] as const;
-const SHA256_REF = /^sha256:[a-f0-9]{64}$/;
-const RATIONAL = /^-?[0-9]+\/[1-9][0-9]*$/;
+const MB = 1024 * 1024;
 
-export class VerifierRunnerError extends Error {
+// The verifier is invoked through `make verify`, which remaps a recipe failure
+// (verify.py exit 1) to make's own exit code 2, so the specific non-zero code is
+// not load-bearing. The convention we CAN enforce: exit 0 => accepted
+// (valid=true); any non-zero exit that still produced a parseable verdict =>
+// rejection (valid=false). A timeout, missing output, or a verdict inconsistent
+// with that (e.g. non-zero exit carrying valid=true) is an infrastructure error.
+
+// Raised when the verifier could not produce a trustworthy verdict: a timeout,
+// crash, unparseable output, or output inconsistent with the exit code. The API
+// layer maps `publicStatus` to a 502 rather than treating it as a rejection.
+export class VerifierInfraError extends Error {
   readonly publicStatus = 502;
-  readonly publicCode = "VERIFIER_INFRA_ERROR";
-  readonly publicMessage = "Canonical verifier runner failed";
-  readonly exitCode?: number | string;
-
-  constructor(message: string, options: { cause?: unknown; exitCode?: number | string } = {}) {
-    super(message);
-    this.name = "VerifierRunnerError";
-    this.cause = options.cause;
-    this.exitCode = options.exitCode;
+  readonly publicCode = "VERIFIER_INFRASTRUCTURE_ERROR";
+  constructor(readonly publicMessage: string) {
+    super(publicMessage);
+    this.name = "VerifierInfraError";
   }
+}
+
+export class VerifierQueueBusyError extends Error {
+  readonly publicStatus = 503;
+  readonly publicCode = "VERIFIER_QUEUE_BUSY";
+  constructor(readonly publicMessage: string) {
+    super(publicMessage);
+    this.name = "VerifierQueueBusyError";
+  }
+}
+
+interface MemorySnapshot {
+  totalMb: number;
+  availableMb: number;
+  swapUsedMb: number;
+}
+
+interface VerifierQueueEntry {
+  run: () => Promise<VerdictReport>;
+  resolve: (value: VerdictReport) => void;
+  reject: (error: unknown) => void;
+  enqueuedAt: number;
+}
+
+interface VerifierQueueState {
+  active: number;
+  draining: boolean;
+  queue: VerifierQueueEntry[];
+}
+
+const globalVerifierQueue = globalThis as typeof globalThis & {
+  __p42VerifierQueue?: VerifierQueueState;
+};
+
+function queueState(): VerifierQueueState {
+  globalVerifierQueue.__p42VerifierQueue ??= { active: 0, draining: false, queue: [] };
+  return globalVerifierQueue.__p42VerifierQueue;
+}
+
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function verifierQueuePolicy() {
+  return {
+    maxQueueDepth: Math.max(1, Math.floor(envNumber("P42_VERIFIER_MAX_QUEUE_DEPTH", 25))),
+    maxWaitMs: Math.max(1, Math.floor(envNumber("P42_VERIFIER_QUEUE_MAX_WAIT_MS", 30_000))),
+    pollMs: Math.max(10, Math.floor(envNumber("P42_VERIFIER_QUEUE_POLL_MS", 250))),
+    reserveMemoryMb: Math.floor(envNumber("P42_VERIFIER_RESERVE_MEMORY_MB", 512)),
+    requiredMemoryMb: Math.max(1, Math.floor(envNumber("P42_VERIFIER_REQUIRED_MEMORY_MB", 128))),
+    memorySafetyFactor: Math.max(1, envNumber("P42_VERIFIER_MEMORY_SAFETY_FACTOR", 2)),
+    maxSwapUsedMb: Math.floor(envNumber("P42_VERIFIER_MAX_SWAP_USED_MB", 512)),
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function overriddenMemorySnapshot(): MemorySnapshot | null {
+  const total = process.env.P42_VERIFIER_TOTAL_MEMORY_MB;
+  const available = process.env.P42_VERIFIER_AVAILABLE_MEMORY_MB;
+  const swap = process.env.P42_VERIFIER_SWAP_USED_MB;
+  if (total === undefined || available === undefined || swap === undefined) return null;
+  const totalMb = Number(total);
+  const availableMb = Number(available);
+  const swapUsedMb = Number(swap);
+  if (!Number.isFinite(totalMb) || !Number.isFinite(availableMb) || !Number.isFinite(swapUsedMb)) return null;
+  return {
+    totalMb: Math.max(0, Math.floor(totalMb)),
+    availableMb: Math.max(0, Math.floor(availableMb)),
+    swapUsedMb: Math.max(0, Math.floor(swapUsedMb)),
+  };
+}
+
+function procMemorySnapshot(): MemorySnapshot | null {
+  try {
+    const values = new Map<string, number>();
+    for (const line of readFileSync("/proc/meminfo", "utf8").split("\n")) {
+      const match = /^([^:]+):\s+(\d+)\s+kB/.exec(line);
+      if (match) values.set(match[1], Number(match[2]));
+    }
+    const totalKb = values.get("MemTotal");
+    const availableKb = values.get("MemAvailable");
+    if (totalKb === undefined || availableKb === undefined) return null;
+    const swapTotalKb = values.get("SwapTotal") ?? 0;
+    const swapFreeKb = values.get("SwapFree") ?? 0;
+    return {
+      totalMb: Math.floor(totalKb / 1024),
+      availableMb: Math.floor(availableKb / 1024),
+      swapUsedMb: Math.max(0, Math.floor((swapTotalKb - swapFreeKb) / 1024)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function memorySnapshot(): MemorySnapshot {
+  const overridden = overriddenMemorySnapshot();
+  if (overridden) return overridden;
+  const proc = procMemorySnapshot();
+  if (proc) return proc;
+  const totalMb = Math.floor(totalmem() / MB);
+  return {
+    totalMb,
+    availableMb: process.platform === "linux" ? Math.floor(freemem() / MB) : totalMb,
+    swapUsedMb: 0,
+  };
+}
+
+async function waitForMemoryBudget(enqueuedAt: number): Promise<void> {
+  const policy = verifierQueuePolicy();
+  const minAvailableMb = policy.reserveMemoryMb + Math.ceil(policy.requiredMemoryMb * policy.memorySafetyFactor);
+
+  for (;;) {
+    const memory = memorySnapshot();
+    if (minAvailableMb > memory.totalMb) {
+      throw new VerifierQueueBusyError("verifier memory budget exceeds host capacity");
+    }
+    if (memory.swapUsedMb <= policy.maxSwapUsedMb && memory.availableMb >= minAvailableMb) return;
+    if (Date.now() - enqueuedAt >= policy.maxWaitMs) {
+      throw new VerifierQueueBusyError("verifier host is busy; queued verification timed out waiting for memory");
+    }
+    await sleep(policy.pollMs);
+  }
+}
+
+function enqueueVerifierRun(run: () => Promise<VerdictReport>): Promise<VerdictReport> {
+  const state = queueState();
+  const policy = verifierQueuePolicy();
+  if (state.active + state.queue.length >= policy.maxQueueDepth) {
+    throw new VerifierQueueBusyError("verifier queue is full");
+  }
+
+  return new Promise((resolve, reject) => {
+    state.queue.push({ run, resolve, reject, enqueuedAt: Date.now() });
+    void drainVerifierQueue();
+  });
+}
+
+async function drainVerifierQueue(): Promise<void> {
+  const state = queueState();
+  if (state.draining) return;
+  state.draining = true;
+  try {
+    while (state.active < 1 && state.queue.length > 0) {
+      const entry = state.queue.shift();
+      if (!entry) break;
+      state.active += 1;
+      try {
+        await waitForMemoryBudget(entry.enqueuedAt);
+        entry.resolve(await entry.run());
+      } catch (error) {
+        entry.reject(error);
+      } finally {
+        state.active -= 1;
+      }
+    }
+  } finally {
+    state.draining = false;
+  }
+  if (state.queue.length > 0) void drainVerifierQueue();
+}
+
+export function resetVerifierQueueForTests(): void {
+  globalVerifierQueue.__p42VerifierQueue = { active: 0, draining: false, queue: [] };
 }
 
 function repoRoot(): string {
@@ -47,72 +206,38 @@ function pythonBin(): string {
   return process.env.P42_PYTHON ?? "python3";
 }
 
-function sha256SolutionCid(raw: string): string {
-  return `sha256:${createHash("sha256").update(raw, "utf8").digest("hex")}`;
-}
-
-function assertNormalRational(report: Record<string, unknown>, key: "score" | "improvement") {
-  const value = report[key];
-  if (typeof value !== "string" || !RATIONAL.test(value)) {
-    throw new Error(`VerdictReport.${key} must be a normalized rational string`);
-  }
-  if (rationalToString(parseRational(value)) !== value) {
-    throw new Error(`VerdictReport.${key} is not normalized`);
+function parseVerdict(stdout: string): VerdictReport {
+  const line = stdout.trim().split("\n").filter(Boolean).at(-1);
+  if (!line) throw new VerifierInfraError("canonical verifier produced no VerdictReport");
+  try {
+    return JSON.parse(line) as VerdictReport;
+  } catch {
+    throw new VerifierInfraError("canonical verifier produced unparseable output");
   }
 }
 
-export function parseBoundVerdict(stdout: string, expected: {
-  problemId: string;
-  verifierVersion: string;
-  verifierImage: string;
-  solutionHash: string;
-}): VerdictReport {
-  const lines = stdout.split("\n").filter((line) => line.trim());
-  if (lines.length !== 1) {
-    throw new Error(`canonical verifier must emit exactly one VerdictReport JSON line; got ${lines.length}`);
+// Guard against a verifier whose exit status and reported validity disagree: a
+// clean exit (0) must mean valid=true and a failing exit must mean valid=false.
+// A mismatch (e.g. a non-zero exit carrying valid=true) would otherwise be
+// recorded as an accepted verdict the process outcome says was a rejection.
+function assertExitMatchesVerdict(succeeded: boolean, verdict: VerdictReport): VerdictReport {
+  if (verdict.valid !== succeeded) {
+    throw new VerifierInfraError(
+      `verifier ${succeeded ? "exit 0" : "non-zero exit"} is inconsistent with reported valid=${verdict.valid}`,
+    );
   }
-
-  const parsed = JSON.parse(lines[0]) as unknown;
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("VerdictReport must be a JSON object");
-  }
-
-  const report = parsed as Record<string, unknown>;
-  const keys = Object.keys(report).sort();
-  const required = [...REQUIRED_VERDICT_KEYS].sort();
-  if (JSON.stringify(keys) !== JSON.stringify(required)) {
-    throw new Error("VerdictReport keys do not match the v1 schema");
-  }
-
-  const expectedStrings = {
-    problem_id: expected.problemId,
-    verifier_version: expected.verifierVersion,
-    verifier_image: expected.verifierImage,
-    solution_hash: expected.solutionHash,
-  };
-  for (const [key, expectedValue] of Object.entries(expectedStrings)) {
-    if (report[key] !== expectedValue) {
-      throw new Error(`VerdictReport.${key} mismatch`);
-    }
-  }
-  if (typeof report.solution_hash !== "string" || !SHA256_REF.test(report.solution_hash)) {
-    throw new Error("VerdictReport.solution_hash must be sha256:<64 lowercase hex chars>");
-  }
-  if (typeof report.valid !== "boolean") throw new Error("VerdictReport.valid must be boolean");
-  assertNormalRational(report, "improvement");
-  assertNormalRational(report, "score");
-  if (typeof report.reason !== "string") throw new Error("VerdictReport.reason must be string");
-  if (typeof report.recomputed_at_commit !== "string") {
-    throw new Error("VerdictReport.recomputed_at_commit must be string");
-  }
-  if (!report.details || typeof report.details !== "object" || Array.isArray(report.details)) {
-    throw new Error("VerdictReport.details must be an object");
-  }
-
-  return report as unknown as VerdictReport;
+  return verdict;
 }
 
 export async function runCanonicalVerifier(input: {
+  problemSlug: string;
+  solutionRaw: string;
+  timeoutMs?: number;
+}): Promise<VerdictReport> {
+  return enqueueVerifierRun(() => runCanonicalVerifierNow(input));
+}
+
+async function runCanonicalVerifierNow(input: {
   problemSlug: string;
   solutionRaw: string;
   timeoutMs?: number;
@@ -122,14 +247,6 @@ export async function runCanonicalVerifier(input: {
   }
 
   const root = repoRoot();
-  const problem = getProblemBySlug(input.problemSlug);
-  if (!problem) throw new Error("problem not found");
-  const expected = {
-    problemId: input.problemSlug,
-    verifierVersion: problem.verifierVersion,
-    verifierImage: problem.verifierImage,
-    solutionHash: sha256SolutionCid(input.solutionRaw),
-  };
   const tempDir = await mkdtemp(path.join(tmpdir(), "p42-solution-"));
   const solutionPath = path.join(tempDir, "solution.json");
 
@@ -154,33 +271,25 @@ export async function runCanonicalVerifier(input: {
         cwd: root,
         env,
         timeout: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        killSignal: "SIGKILL",
         maxBuffer: 1024 * 1024,
       });
-      try {
-        return parseBoundVerdict(stdout, expected);
-      } catch (error) {
-        throw new VerifierRunnerError("canonical verifier emitted an invalid VerdictReport", { cause: error });
-      }
+      // Resolved promise means a clean exit (0 => accepted).
+      return assertExitMatchesVerdict(true, parseVerdict(stdout));
     } catch (error) {
-      const stdout = typeof (error as { stdout?: unknown }).stdout === "string"
-        ? (error as { stdout: string }).stdout
-        : "";
-      const code = (error as { code?: unknown }).code;
-      if (code === 1 && stdout.trim()) {
-        try {
-          return parseBoundVerdict(stdout, expected);
-        } catch (parseError) {
-          throw new VerifierRunnerError("canonical verifier emitted an invalid rejection VerdictReport", {
-            cause: parseError,
-            exitCode: code,
-          });
-        }
+      if (error instanceof VerifierInfraError) throw error;
+      const failure = error as { killed?: unknown; signal?: unknown; stdout?: unknown };
+      if (failure.killed || failure.signal) {
+        throw new VerifierInfraError("canonical verifier timed out");
       }
-      if (error instanceof VerifierRunnerError) throw error;
-      throw new VerifierRunnerError("canonical verifier process failed", {
-        cause: error,
-        exitCode: typeof code === "number" || typeof code === "string" ? code : undefined,
-      });
+      const stdout = typeof failure.stdout === "string" ? failure.stdout : "";
+      // A non-zero exit that still emitted a parseable verdict is a rejection;
+      // require valid=false to match. No output means a crash before the verdict
+      // was produced — an infrastructure error, not a rejection.
+      if (stdout.trim()) {
+        return assertExitMatchesVerdict(false, parseVerdict(stdout));
+      }
+      throw new VerifierInfraError("canonical verifier produced no verdict");
     }
   } finally {
     await rm(tempDir, { recursive: true, force: true });

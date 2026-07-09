@@ -1,0 +1,108 @@
+{
+  "schema": "p42-prizes/reconciliation-report/v1",
+  "generatedAt": "2026-07-08T06:49:11.398Z",
+  "ok": true,
+  "manifestPath": "/Users/nivek/Desktop/p42-prizes/deployments/base-sepolia/p42-prizes.json",
+  "deploymentCommit": "3121a1a2036d2d19742183d409de1c108d3ae1b2",
+  "network": {
+    "name": "baseSepolia",
+    "chainId": 84532,
+    "fromBlock": "43862041",
+    "toBlock": "43862529"
+  },
+  "contracts": {
+    "pool": "0xCd9B3832ccd0fEeFa331f8544034808d3Fc16c6d",
+    "ledger": "0x113bBAf1eFB1a079518B8dF2aCd2590Ba4B41DeF",
+    "submissions": "0xafB07523668cb80fDc923eEde2c4697e8e334836",
+    "challenges": "0xfe988CC29B851057F8f5364bE76A9CaC5001589a",
+    "registry": "0x779E154759Bc2F9a5E92532D687Be8d2D287278b"
+  },
+  "eventCounts": {
+    "funded": 0,
+    "claimed": 0,
+    "creditRecorded": 0,
+    "committed": 1,
+    "revealed": 1,
+    "finalized": 0,
+    "submissionChallenged": 0,
+    "submissionResolved": 0,
+    "challenged": 0,
+    "resolverTranscriptPosted": 0,
+    "challengeResolved": 0
+  },
+  "eventSums": {
+    "fundedWei": "0",
+    "claimedWei": "0",
+    "creditAtoms": "0",
+    "finalizedImprovementAtoms": "0"
+  },
+  "onchain": {
+    "poolBalance": "0",
+    "poolTotalFunded": "0",
+    "poolTotalClaimed": "0",
+    "ledgerTotalCreditAtoms": "0",
+    "ledgerClosed": false,
+    "ledgerClosedPoolBalance": "0",
+    "ledgerFeeReserve": "0",
+    "submissionCount": "1",
+    "registryProblemCount": "1"
+  },
+  "submissionStates": [
+    {
+      "submissionId": "1",
+      "solver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+      "status": "2",
+      "bondWei": "10000000000000000",
+      "poolAtSubmissionWei": "0",
+      "requiredBondWei": "10000000000000000",
+      "improvementAtoms": "1000000",
+      "challengeEndsAt": "1783752498",
+      "permanenceHash": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ],
+  "challengeStates": [],
+  "checks": [
+    {
+      "name": "pool.totalFunded == Funded events",
+      "ok": true,
+      "expected": "0",
+      "actual": "0"
+    },
+    {
+      "name": "pool.totalClaimed == Claimed events",
+      "ok": true,
+      "expected": "0",
+      "actual": "0"
+    },
+    {
+      "name": "ledger.totalCreditAtoms == CreditRecorded events",
+      "ok": true,
+      "expected": "0",
+      "actual": "0"
+    },
+    {
+      "name": "submissions.submissionCount == Committed events",
+      "ok": true,
+      "expected": "1",
+      "actual": "1"
+    },
+    {
+      "name": "challenge manager Challenged events == submission challenged hooks",
+      "ok": true,
+      "expected": "0",
+      "actual": "0"
+    },
+    {
+      "name": "challenge manager Resolved events == submission resolved hooks",
+      "ok": true,
+      "expected": "0",
+      "actual": "0"
+    },
+    {
+      "name": "registry.problemCount >= manifest problems",
+      "ok": true,
+      "expected": true,
+      "actual": true
+    }
+  ]
+}

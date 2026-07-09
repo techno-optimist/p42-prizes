@@ -1,0 +1,50 @@
+{
+  "schema": "p42-f1-frontier-battletest/v1",
+  "what": "Live end-to-end proof of the F1 frontier redesign (marginal Delta_i/SigmaDelta_j crediting) on Base Sepolia (chainId 84532). Two solvers on one pool: A lands a big improvement (seed 6e18 -> score 1e18); B free-rides a tiny marginal step (1e18 -> 0.9e18). Proves B is credited ONLY its marginal (0.1e18), not the seed-relative distance the old design paid -- closing the free-rider exploit that was audit finding F1.",
+  "network": { "name": "baseSepolia", "chainId": 84532, "explorer": "https://sepolia.basescan.org" },
+  "instance": {
+    "manifest": "da-f1-demo-p42-prizes.json",
+    "submissionManager": "0xD91030dF0D12d084B50BDD40140ee69A9589e9C2",
+    "pool": "0x551676f93eC44Bb6b0A53D86110e45275791D9F6",
+    "ledger": "0x8B3a7759d8e74982c4ED4060E51B4311f84FEf0F",
+    "seedScoreAtoms": "6000000000000000000",
+    "scoreAtomScale": "1000000000000000000"
+  },
+  "actors": {
+    "A_big_improvement": { "addr": "0xF007fC214139CEA514c712289dfDd9d3a5739F61", "claimedScoreAtoms": "1000000000000000000" },
+    "B_free_rider": { "addr": "0x730a3fC557f2c0805C57105348cb2024062E7b2e", "claimedScoreAtoms": "900000000000000000" }
+  },
+  "onchain_result": {
+    "frontier_advance_bestScoreAtoms": ["6000000000000000000 (seed)", "1000000000000000000 (after A)", "900000000000000000 (after B)"],
+    "A_credit_marginal_atoms": "5000000000000000000",
+    "B_credit_marginal_atoms": "100000000000000000",
+    "total_credit_atoms": "5100000000000000000",
+    "A_pool_share": "98.03%",
+    "B_pool_share": "1.96%",
+    "A_entitlement_eth": "0.000294117647058823",
+    "B_entitlement_eth": "0.000005882352941176",
+    "marginal_crediting_correct": true
+  },
+  "free_rider_contrast": {
+    "B_share_old_seed_relative_design": "50.49%",
+    "B_share_F1_marginal": "1.96%",
+    "note": "Under the audited (broken) design B would have captured ~half the pool for a marginal step because credit = seed - score, summed with no live frontier. Under F1 (credit = previous_best - score), B earns only its true marginal Delta."
+  },
+  "indexer": {
+    "reconstruction_vs_chain": "OK (12/12 checks)",
+    "note": "The indexer decoded the NEW Finalized event ABI (creditAtoms/claimedScoreAtoms/bestScoreAtoms) and rebuilt the frontier (2 finalized) + payout ledger (A 98.03% / B 1.96%, totalCreditAtoms 5.1e18) purely from chain events, matching the contract views 12/12."
+  },
+  "txs": {
+    "fund": "0xb8d3d5123e3e6897a6a455d3d545ec0ab787931509a7a7ba9aab1c0988f5d1d6",
+    "A_commit": "0xc95205ea8fdeba07859748daf5bcc7e8061c17bb9c6059985c7add17ddccbdf7",
+    "A_reveal": "0x7776b3f7ca44d2f0b39996870fbdfb918ca2ae482bfb46c65dc3a54f47164f0a",
+    "B_commit": "0xcf2cd4770a2c41df979478f107a13529b3c989acf8dbc7d7ae53fcc3d3ef12c3",
+    "B_reveal": "0xfa3bb9a6564ade8d55e57147c8574b5e8df8ae96db02774348687af654c189ad",
+    "A_finalize": "0xf3086659cd635ea258c6d540b283092c131ee258c209eca4dbd015328a1a6d37",
+    "B_finalize": "0x5236c5c3e5e1819517113a6f3a45b940c21bcf61f2854592c109ac244a0e70a2",
+    "ledger_close": "0x27f13109e42e40d095ef010a2145dc5eda698c421937b33b75f3d1ee0439d1d9",
+    "A_claim": "0xee15c8c7ecfcdb67bb431d7455fcbca2abcccdc9485ccda3f425462373897f55",
+    "B_claim": "0x13789d599096871cd7f4d7666e0a15cd4a22096ceb660150af0ef23166343d3e"
+  },
+  "summary": "F1 marginal crediting is correct on live Base Sepolia: the on-chain frontier advances monotonically, credit is the marginal reduction, the pool split equals Delta_i/SigmaDelta_j, and the free-rider's capture drops from ~50% (old) to ~2% (its true marginal). The full new-ABI stack (solver score-encoding -> contract -> ledger -> indexer reconstruction) verified end-to-end."
+}

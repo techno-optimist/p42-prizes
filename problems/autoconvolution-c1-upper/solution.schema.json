@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/autoconvolution-c1-upper/solution.schema.json",
+  "x-p42-max-bytes": 5242880,
+  "type": "object",
+  "required": ["n", "values"],
+  "additionalProperties": false,
+  "properties": {
+    "n": { "const": 90000 },
+    "decimal_places": { "const": 35 },
+    "source": { "type": "string" },
+    "claimed_score": { "type": "string" },
+    "values": {
+      "type": "array",
+      "minItems": 90000,
+      "maxItems": 90000,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1000000000000000000000000000000000000
+      }
+    }
+  }
+}

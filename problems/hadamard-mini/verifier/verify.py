@@ -3,20 +3,34 @@ from __future__ import annotations
 
 import argparse
 from fractions import Fraction
-import json
 from pathlib import Path
 import sys
 from typing import Any
 
-from p42_prizes.verdict import VerdictReport, rational_to_string, sha256_bytes
+from p42_prizes.verdict import (
+    VerdictReport,
+    rational_to_string,
+    read_bounded_solution,
+    strict_json_loads,
+    verifier_image_identity,
+)
 
 
 PROBLEM_ID = "hadamard-mini"
-VERIFIER_VERSION = "0.1.0"
-VERIFIER_IMAGE = "sha256:local-dev"
+VERIFIER_VERSION = "0.1.1"
+VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
 ORDER = 4
+# Audit F1 note: this seed is the trivial all-pairs count ON PURPOSE —
+# hadamard-mini is the Phase 0 demo fixture whose optimal defect-0 solution is
+# bundled (examples/valid-4.json), so the lifecycle/battle tests can exercise a
+# real payout on testnet. A real bounty must NEVER be funded on this problem:
+# with an honest seed (0) it is already solved.
+# TODO(seed): demo fixture — intentionally trivial; never fund.
 SEED_DEFECT = Fraction(6, 1)
 MIN_IMPROVEMENT = Fraction(1, 6)
+# An order-4 solution is a few dozen bytes; reject anything wildly oversized
+# before doing any parsing work (HARDENING.md R4: bounded before scoring).
+MAX_SOLUTION_BYTES = 4096
 
 
 class VerifierFailure(Exception):
@@ -27,8 +41,13 @@ class VerifierFailure(Exception):
 
 
 def parse_solution(raw: bytes) -> list[list[int]]:
+    if len(raw) > MAX_SOLUTION_BYTES:
+        raise VerifierFailure(
+            "OVERSIZED",
+            f"solution is {len(raw)} bytes; limit is {MAX_SOLUTION_BYTES}",
+        )
     try:
-        data = json.loads(raw.decode("utf-8"))
+        data = strict_json_loads(raw)
     except Exception as exc:
         raise VerifierFailure("MALFORMED_JSON", str(exc)) from exc
 
@@ -73,14 +92,24 @@ def compute_defect(rows: list[list[int]]) -> tuple[int, list[dict[str, Any]]]:
 
 
 def report_for_solution(path: Path) -> VerdictReport:
-    raw = path.read_bytes()
-    solution_hash = sha256_bytes(raw)
+    solution = read_bounded_solution(path, MAX_SOLUTION_BYTES)
+    if solution.data is None:
+        return solution.failure_report(
+            problem_id=PROBLEM_ID,
+            verifier_version=VERIFIER_VERSION,
+            verifier_image=VERIFIER_IMAGE,
+            fallback_score=SEED_DEFECT,
+        )
+    raw = solution.data
+    solution_hash = solution.solution_hash
 
     try:
         rows = parse_solution(raw)
         defect, violations = compute_defect(rows)
         score = Fraction(defect, 1)
-        improvement = max(Fraction(0, 1), (SEED_DEFECT - score) / SEED_DEFECT)
+        # Exact rational ratio: Fraction(numerator, denominator) with Fraction
+        # operands stays exact and avoids the float that `/` would introduce.
+        improvement = max(Fraction(0, 1), Fraction(SEED_DEFECT - score, SEED_DEFECT))
         valid = improvement >= MIN_IMPROVEMENT
         reason = "" if valid else "NOT_STRICT_IMPROVEMENT"
         details: dict[str, Any] = {
@@ -94,6 +123,14 @@ def report_for_solution(path: Path) -> VerdictReport:
         valid = False
         reason = exc.reason
         details = {"error": exc.detail}
+    except Exception as exc:  # noqa: BLE001 - verifier must stay total
+        # Any unexpected error becomes a typed INTERNAL failure so the process
+        # always emits a canonical VerdictReport instead of a traceback.
+        score = SEED_DEFECT
+        improvement = Fraction(0, 1)
+        valid = False
+        reason = "INTERNAL"
+        details = {"error": f"{type(exc).__name__}: {exc}"}
 
     return VerdictReport(
         problem_id=PROBLEM_ID,
@@ -120,4 +157,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

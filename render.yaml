@@ -1,0 +1,28 @@
+# P42 Prizes standalone portal.
+# Canonical public route: https://projectforty2.ai/prizes
+services:
+  - type: web
+    name: p42-prizes
+    runtime: node
+    rootDir: ./web
+    buildCommand: npm ci && npm run build:prizes
+    startCommand: npm run start:prizes
+    plan: starter
+    region: oregon
+    healthCheckPath: /prizes
+    envVars:
+      - key: NEXT_PUBLIC_BASE_PATH
+        value: /prizes
+      - key: P42_PORTAL_STATE_PATH
+        value: /app/data/portal-state.json
+      # Production code fails closed automatically. Only a non-production local
+      # process can opt out, with P42_ALLOW_UNAUTHENTICATED_MUTATIONS=1.
+      # Comma-separated sha256:<hex> hashes of the accepted mutation API keys.
+      # Operator-provided in the Render dashboard (sync: false); never commit a
+      # real secret here. Enforcement 503s until a valid hash is set.
+      - key: P42_MUTATION_API_KEY_SHA256S
+        sync: false
+    disk:
+      name: p42-prizes-state
+      mountPath: /app/data
+      sizeGB: 1

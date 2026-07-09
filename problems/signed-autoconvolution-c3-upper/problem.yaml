@@ -1,0 +1,27 @@
+schema_version: p42-problem/v1
+problem_id: signed-autoconvolution-c3-upper
+title: Signed autoconvolution C3 exact upper-bound verifier
+status: blocked-stale-image-evidence
+objective:
+  direction: minimize
+  score_name: c3_upper_bound
+  seed_best: "3/2"
+  optimum: "0/1"
+  min_improvement: "1/1000000000000"
+  gauge: "max(0, seed_best - exact_c3_upper_bound)"
+verifier:
+  version: "0.1.2"
+  image: "sha256:local-dev"
+  command: "python3 verifier/verify.py --solution {solution}"
+  max_compute:
+    wall_seconds: 45
+    memory_mb: 512
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: optional-mirror  # DA rides reveal calldata (sha256==commitDaHash); Arweave permanence is an optional mirror, not required (see docs/DATA_AVAILABILITY.md)

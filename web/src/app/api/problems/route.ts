@@ -1,4 +1,5 @@
 import { json } from "@/lib/api";
+import { chainProvenanceForProblem } from "@/lib/chain-provenance";
 import { problems } from "@/lib/data";
 
 export async function GET() {
@@ -15,9 +16,7 @@ export async function GET() {
       minImprovement: problem.minImprovement,
       bountyEth: problem.bountyEth,
       donationWallet: problem.donationWallet,
-      baselineAgent: problem.baselineAgent,
-      baselineSource: problem.baselineSource,
-      baselineArtifact: problem.baselineArtifact,
+      chainProvenance: chainProvenanceForProblem(problem),
       challengeWindowHours: problem.challengeWindowHours,
       verifierVersion: problem.verifierVersion,
     })),

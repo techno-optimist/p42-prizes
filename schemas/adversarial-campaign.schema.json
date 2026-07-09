@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/adversarial-campaign-v1.json",
+  "title": "P42 Adversarial Testnet Campaign v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "started_at_utc",
+    "completed_at_utc",
+    "environment",
+    "release_binding",
+    "deployment_manifest",
+    "reconciliation_report",
+    "runner_alert_bundle",
+    "transcript_archive",
+    "reviewers",
+    "invariants_checked",
+    "attacks",
+    "regressions",
+    "open_followups",
+    "attestations",
+    "campaign_hash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-adversarial-testnet/v1" },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "started_at_utc": { "type": "string", "format": "date-time" },
+    "completed_at_utc": { "type": "string", "format": "date-time" },
+    "environment": { "enum": ["base-sepolia", "local-rehearsal"] },
+    "release_binding": { "$ref": "#/$defs/releaseBinding" },
+    "deployment_manifest": { "$ref": "#/$defs/artifact" },
+    "reconciliation_report": { "$ref": "#/$defs/artifact" },
+    "runner_alert_bundle": { "$ref": "#/$defs/artifact" },
+    "transcript_archive": { "$ref": "#/$defs/artifact" },
+    "reviewers": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/reviewer" }
+    },
+    "invariants_checked": {
+      "type": "object",
+      "required": [
+        "claim_capped_by_final_entitlement",
+        "bond_uses_pool_at_submission",
+        "da_bound_at_commit_and_finalize",
+        "resolver_transcript_required",
+        "invalid_verifier_alerted",
+        "sybil_split_not_profitable",
+        "reconciliation_ok"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "claim_capped_by_final_entitlement": { "const": true },
+        "bond_uses_pool_at_submission": { "const": true },
+        "da_bound_at_commit_and_finalize": { "const": true },
+        "resolver_transcript_required": { "const": true },
+        "invalid_verifier_alerted": { "const": true },
+        "sybil_split_not_profitable": { "const": true },
+        "reconciliation_ok": { "const": true }
+      }
+    },
+    "attacks": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "attack_id",
+          "status",
+          "executed_at_utc",
+          "planted_artifact",
+          "expected_failure_mode",
+          "observed_defense",
+          "evidence_artifact"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "attack_id": {
+            "enum": [
+              "vesting_dilution_overpay",
+              "empty_pool_bond_leverage",
+              "leapfrog_sybil_split",
+              "da_expiry_or_missing_payload",
+              "resolver_false_transcript",
+              "verifier_planted_exploit"
+            ]
+          },
+          "status": { "const": "passed" },
+          "executed_at_utc": { "type": "string", "format": "date-time" },
+          "planted_artifact": { "$ref": "#/$defs/artifact" },
+          "expected_failure_mode": { "type": "string", "minLength": 1 },
+          "observed_defense": { "type": "string", "minLength": 1 },
+          "evidence_artifact": { "$ref": "#/$defs/artifact" }
+        }
+      }
+    },
+    "regressions": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["command", "status", "executed_at_utc", "output_artifact"],
+        "additionalProperties": false,
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "status": { "const": "passed" },
+          "executed_at_utc": { "type": "string", "format": "date-time" },
+          "output_artifact": { "$ref": "#/$defs/artifact" }
+        }
+      }
+    },
+    "open_followups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item", "owner_role", "due_utc", "severity"],
+        "additionalProperties": false,
+        "properties": {
+          "item": { "type": "string", "minLength": 1 },
+          "owner_role": {
+            "enum": ["external-auditor", "engineering-owner", "ops-reviewer", "resolver-reviewer"]
+          },
+          "due_utc": { "type": "string", "format": "date-time" },
+          "severity": { "enum": ["medium", "low"] }
+        }
+      }
+    },
+    "attestations": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/signature" }
+    },
+    "campaign_hash": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "artifact": {
+      "type": "object",
+      "required": ["uri", "local_path", "sha256", "created_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "local_path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+" },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "created_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "reviewer": {
+      "type": "object",
+      "required": [
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "signed_at_utc"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "enum": ["external-auditor", "engineering-owner", "ops-reviewer", "resolver-reviewer"] },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "independent_from_p42": { "const": true },
+        "engagement_identifier": { "type": "string", "minLength": 2 },
+        "engagement_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "P42BountyPool",
+            "P42PayoutLedger",
+            "P42SubmissionManager",
+            "P42ChallengeManager",
+            "P42ProblemRegistry"
+          ]
+        },
+        "address": { "$ref": "#/$defs/address" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "source_artifact": { "$ref": "#/$defs/artifact" },
+        "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
+        "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "releaseBinding": {
+      "type": "object",
+      "required": [
+        "repository_uri",
+        "git_commit",
+        "network",
+        "chain_id",
+        "deployment_manifest",
+        "configuration_artifact",
+        "contracts"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repository_uri": { "type": "string", "pattern": "^https://" },
+        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "network": { "enum": ["local", "base-sepolia", "base-mainnet"] },
+        "chain_id": { "type": "integer", "enum": [31337, 8453, 84532] },
+        "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "configuration_artifact": { "$ref": "#/$defs/artifact" },
+        "contracts": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/contract" }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": {
+          "enum": ["external-auditor", "engineering-owner", "ops-reviewer", "resolver-reviewer"]
+        },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    }
+  }
+}

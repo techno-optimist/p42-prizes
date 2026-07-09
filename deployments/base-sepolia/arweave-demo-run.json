@@ -1,0 +1,41 @@
+{
+  "schema": "p42-phase1-arweave-da/v1",
+  "what": "Live Arweave data-availability: the solver uploaded the solution to real Arweave (Irys devnet), bound keccak(txid) as the on-chain commitDaHash, and the INDEPENDENT operator located it on Arweave by CID, fetched it from the public gateway, and re-verified — replacing the local placeholder with a real provider.",
+  "environment": "base-sepolia (chainId 84532) + Arweave/Irys devnet",
+  "demo_manifest": "deployments/base-sepolia/arweave-demo-p42-prizes.json",
+  "problem": "hadamard-mini (honest valid-4 solution, improvement 1/1)",
+  "arweave": {
+    "txid": "CoN2PC7hGtXfDopMWtSDffHZdRKBRHr1zLGP8yQ96ugU",
+    "gateway_url": "https://gateway.irys.xyz/CoN2PC7hGtXfDopMWtSDffHZdRKBRHr1zLGP8yQ96ugU",
+    "network": "irys-devnet (retained ~60 days; mainnet for permanence)",
+    "retrieval": "content-addressed via P42-CID tag (GraphQL)"
+  },
+  "onchain_da_binding": {
+    "commitDaHash": "0x40255f266332cff7f6b97101b12a660fc580b9a81cfde0d5680c05a35076454c",
+    "equals_keccak_txid": true,
+    "solutionCid": "sha256:4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7"
+  },
+  "operator_check": "located by CID on Arweave, fetched from gateway, re-ran verifier -> valid=true (honest, no challenge)",
+  "transactions": [
+    {
+      "step": "solver.fund",
+      "tx": "0xe607a2a37ddddaa72e865ede6d66a37c58f8f2e79396902b861b990b204170f0",
+      "explorer": "https://sepolia.basescan.org/tx/0xe607a2a37ddddaa72e865ede6d66a37c58f8f2e79396902b861b990b204170f0"
+    },
+    {
+      "step": "solver.commit (commitDaHash = keccak(arweave txid))",
+      "tx": "0xa446cf8edaf17416265bb98835ccef4aca37370de9deb556e5475b452b93346a",
+      "explorer": "https://sepolia.basescan.org/tx/0xa446cf8edaf17416265bb98835ccef4aca37370de9deb556e5475b452b93346a"
+    },
+    {
+      "step": "solver.reveal",
+      "tx": "0x88fa4798d948497f341afe7d69140de437a4117729f48dc32655b9d706ace01a",
+      "explorer": "https://sepolia.basescan.org/tx/0x88fa4798d948497f341afe7d69140de437a4117729f48dc32655b9d706ace01a"
+    }
+  ],
+  "honest_caveats": [
+    "Irys DEVNET: real network + gateway + GraphQL, free for small blobs, but data retained ~60 days — mainnet Arweave (funded) is required for true permanence (Phase 2+).",
+    "The permanence receipt at finalize is still a placeholder; only the commit-time DA is on live Arweave here.",
+    "Availability is proven by fetching now; a real 'remains-available-forever' guarantee needs Arweave mainnet + an availability-sampling/slashing market."
+  ]
+}

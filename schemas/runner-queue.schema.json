@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/runner-queue-v1.json",
+  "title": "P42 Runner Queue v1",
+  "type": "object",
+  "required": ["schema_version", "jobs"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-runner-queue/v1" },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["job_id", "status", "required_memory_mb"],
+        "additionalProperties": true,
+        "properties": {
+          "job_id": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": ["queued", "running", "succeeded", "failed", "cancelled"]
+          },
+          "required_memory_mb": { "type": "integer", "minimum": 1 },
+          "lease_expires_at_utc": { "type": "string", "minLength": 1 },
+          "chain_block_number": { "type": "integer", "minimum": 0 },
+          "chain_log_index": { "type": "integer", "minimum": 0 },
+          "created_at_utc": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

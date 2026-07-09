@@ -7,7 +7,7 @@ from typing import Any
 import jsonschema
 import yaml
 
-from p42_prizes.verdict import parse_rational
+from p42_prizes.verdict import parse_rational, strict_json_loads
 
 
 REQUIRED_PROBLEM_FILES = [
@@ -20,6 +20,15 @@ REQUIRED_PROBLEM_FILES = [
     "Dockerfile",
     "requirements.lock",
     "solution.schema.json",
+]
+
+# P42_PROBLEM_V1.md lists both directories as MUST-provide: `verifier/` holds the
+# certified-path code and `tests/` holds the known-good/known-bad/hardening
+# fixtures. Without these checks a manifest-complete repo shipping no verifier
+# code validates and lints clean (lint has nothing to walk).
+REQUIRED_PROBLEM_DIRS = [
+    "verifier",
+    "tests",
 ]
 
 
@@ -48,6 +57,13 @@ def validate_problem(problem_dir: str | Path) -> list[str]:
         if not (problem_path / relative).exists():
             errors.append(f"missing required file: {relative}")
 
+    for relative in REQUIRED_PROBLEM_DIRS:
+        directory = problem_path / relative
+        if not directory.is_dir():
+            errors.append(f"missing required directory: {relative}/")
+        elif not any(directory.iterdir()):
+            errors.append(f"required directory is empty: {relative}/")
+
     manifest = load_manifest(problem_path)
     schema = json.loads((repo_root / "schemas" / "problem.schema.json").read_text(encoding="utf-8"))
     validator = jsonschema.Draft202012Validator(schema)
@@ -56,7 +72,7 @@ def validate_problem(problem_dir: str | Path) -> list[str]:
         errors.append(f"problem.yaml:{at}: {err.message}")
 
     objective = manifest.get("objective", {})
-    for key in ("seed_best", "current_best", "optimum", "min_improvement"):
+    for key in ("seed_best", "optimum", "min_improvement"):
         if key in objective:
             try:
                 parse_rational(objective[key])
@@ -64,8 +80,15 @@ def validate_problem(problem_dir: str | Path) -> list[str]:
                 errors.append(f"problem.yaml:objective.{key}: invalid rational: {exc}")
 
     try:
-        json.loads((problem_path / "solution.schema.json").read_text(encoding="utf-8"))
+        solution_schema = strict_json_loads(
+            (problem_path / "solution.schema.json").read_bytes()
+        )
+        jsonschema.Draft202012Validator.check_schema(solution_schema)
     except Exception as exc:
         errors.append(f"solution.schema.json: invalid JSON schema file: {exc}")
+    else:
+        max_bytes = solution_schema.get("x-p42-max-bytes") if isinstance(solution_schema, dict) else None
+        if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+            errors.append("solution.schema.json:x-p42-max-bytes must be a positive integer")
 
     return errors

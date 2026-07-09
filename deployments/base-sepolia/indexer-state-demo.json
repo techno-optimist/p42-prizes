@@ -1,0 +1,113 @@
+{
+  "schema": "p42-indexer-state/v1",
+  "manifest": "../deployments/base-sepolia/demo-p42-prizes.json",
+  "network": {
+    "chainId": 84532,
+    "fromBlock": 43863904,
+    "toBlock": 43875380
+  },
+  "problems": [
+    {
+      "problemId": "1",
+      "pool": "0x385234ee9730c0c644EA78631d74923d405415d7"
+    }
+  ],
+  "pool": {
+    "funded": "3000000000000000",
+    "claimed": "3000000000000000",
+    "balance": "0"
+  },
+  "ledger": {
+    "closed": true,
+    "closedPoolBalance": "3000000000000000",
+    "feeReserve": "0",
+    "totalCreditAtoms": "1000000",
+    "distributableWei": "3000000000000000"
+  },
+  "counts": {
+    "funded": 1,
+    "revealed": 1,
+    "finalized": 1,
+    "challenged": 0,
+    "resolved": 0,
+    "credits": 1,
+    "claimed": 1
+  },
+  "frontier": [
+    {
+      "submissionId": "1",
+      "solver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+      "improvementAtoms": "1000000",
+      "cumulativeAtoms": "1000000"
+    }
+  ],
+  "payout_ledger": [
+    {
+      "solver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+      "creditAtoms": "1000000",
+      "sharePct": 100,
+      "finalEntitlementWei": "3000000000000000",
+      "claimedWei": "3000000000000000",
+      "claimableWei": "0"
+    }
+  ],
+  "reconstruction": {
+    "ok": true,
+    "checks": [
+      {
+        "name": "pool.totalFunded",
+        "ok": true,
+        "indexer": "3000000000000000",
+        "chain": "3000000000000000"
+      },
+      {
+        "name": "pool.totalClaimed",
+        "ok": true,
+        "indexer": "3000000000000000",
+        "chain": "3000000000000000"
+      },
+      {
+        "name": "ledger.totalCreditAtoms",
+        "ok": true,
+        "indexer": "1000000",
+        "chain": "1000000"
+      },
+      {
+        "name": "ledger.closed",
+        "ok": true,
+        "indexer": "true",
+        "chain": "true"
+      },
+      {
+        "name": "ledger.closedPoolBalance",
+        "ok": true,
+        "indexer": "3000000000000000",
+        "chain": "3000000000000000"
+      },
+      {
+        "name": "ledger.feeReserve",
+        "ok": true,
+        "indexer": "0",
+        "chain": "0"
+      },
+      {
+        "name": "ledger.creditAtomsOf(0xF007fC)",
+        "ok": true,
+        "indexer": "1000000",
+        "chain": "1000000"
+      },
+      {
+        "name": "ledger.finalEntitlement(0xF007fC)",
+        "ok": true,
+        "indexer": "3000000000000000",
+        "chain": "3000000000000000"
+      },
+      {
+        "name": "ledger.claimedWeiOf(0xF007fC)",
+        "ok": true,
+        "indexer": "3000000000000000",
+        "chain": "3000000000000000"
+      }
+    ]
+  }
+}

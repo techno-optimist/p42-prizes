@@ -1,0 +1,61 @@
+{
+  "schema": "p42-phase1-agent-wallet/v1",
+  "what": "Scoped session-key agent wallet: the hot session key can only forward allowlisted P42 calls within per-call + cumulative spend caps; a governance owner can revoke and withdraw. Proven live: allowed call works; claim/arbitrary-target/over-cap are blocked; revoke kills the key; owner recovers funds.",
+  "contract": "contracts/src/P42AgentWallet.sol",
+  "wallet": "0x5BBaf97eF268d7bBA67298B833D1170C5029d8ac",
+  "owner": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+  "session_key": "0xe9417534A258e736D47dd4F9E9EA4B06809B1386",
+  "caps": {
+    "per_call_eth": "0.001",
+    "total_eth": "0.003",
+    "funded_eth": "0.004"
+  },
+  "allowlist_target": {
+    "pool": "0x6AbA3329E2372acCdE7c331F0e5A53C4267Cb8e9",
+    "selector": "fund()"
+  },
+  "events": [
+    {
+      "step": "fund session key",
+      "tx": "0x95e1981642ff1a6e59f6533280130bd4854f9957098e9f28a6e7e505b5b66c17",
+      "explorer": "https://sepolia.basescan.org/tx/0x95e1981642ff1a6e59f6533280130bd4854f9957098e9f28a6e7e505b5b66c17"
+    },
+    {
+      "step": "owner allowlist pool.fund",
+      "tx": "0x5d4572d2f8bf3408e022214315837f943d0fcffcba27d06210679655e321a51f",
+      "explorer": "https://sepolia.basescan.org/tx/0x5d4572d2f8bf3408e022214315837f943d0fcffcba27d06210679655e321a51f"
+    },
+    {
+      "step": "session ALLOWED pool.fund(0.001)",
+      "tx": "0x68cb812bd3bf958e00577abe3fb9930980674450af2e76fec8c166a76423e4c4",
+      "explorer": "https://sepolia.basescan.org/tx/0x68cb812bd3bf958e00577abe3fb9930980674450af2e76fec8c166a76423e4c4"
+    },
+    {
+      "step": "session claim() [not allowlisted]",
+      "reverted": "CallNotAllowed"
+    },
+    {
+      "step": "session send to random address",
+      "reverted": "CallNotAllowed"
+    },
+    {
+      "step": "session over per-call cap (0.002)",
+      "reverted": "ValueCapExceeded"
+    },
+    {
+      "step": "owner revoke()",
+      "tx": "0xa9281cb290902da078be2c73f9966e8950900301a927f619297d8425adda707d",
+      "explorer": "https://sepolia.basescan.org/tx/0xa9281cb290902da078be2c73f9966e8950900301a927f619297d8425adda707d"
+    },
+    {
+      "step": "session fund after revoke",
+      "reverted": "KeyRevoked"
+    },
+    {
+      "step": "owner withdraw remaining",
+      "tx": "0x77310ce241148a9bfe2c162e8305109d099041e6599d38321a4ec5324575c8f9",
+      "explorer": "https://sepolia.basescan.org/tx/0x77310ce241148a9bfe2c162e8305109d099041e6599d38321a4ec5324575c8f9"
+    }
+  ],
+  "honest_note": "This is a minimal session-key wallet delivering bounded blast radius, NOT ERC-4337 (no EntryPoint/bundler/gas abstraction). The owner here is still a single EOA (== deployer); a multisig owner is Phase 2."
+}

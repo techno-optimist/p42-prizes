@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
+import { enforceMutationApiKey } from "@/lib/api-auth";
 import { getProblemById } from "@/lib/data";
 import {
-  cancelIdempotentReservation,
-  rememberIdempotentResponse,
-  replayIdempotentResponse,
-  reserveIdempotentRequest,
+  beginIdempotentRequest,
+  releaseIdempotencyReservation,
+  type IdempotencyReservation,
 } from "@/lib/idempotency";
 import { revealCommit } from "@/lib/portal-state";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
@@ -19,13 +19,11 @@ const revealSchema = z.object({
 });
 
 export async function POST(req: Request) {
-  let idempotencyReservation: { route: string; body: unknown } | undefined;
-  let sideEffectCommitted = false;
+  let idempotency: IdempotencyReservation | undefined;
   try {
-    enforceRateLimit(req, rateLimitPolicy("reveal", { limit: 20, windowMs: 60_000 }));
+    const principal = enforceMutationApiKey(req, "submissions.reveal");
+    enforceRateLimit(req, rateLimitPolicy("reveal", { limit: 20, windowMs: 60_000 }), principal.rateLimitSubject);
     const body = await readJson(req, revealSchema);
-    const replay = replayIdempotentResponse(req, "submissions.reveal", body);
-    if (replay) return replay;
 
     const problem = getProblemById(body.problem_id);
     if (!problem) return json({ error: "Problem not found" }, { status: 404 });
@@ -33,11 +31,9 @@ export async function POST(req: Request) {
       return json({ error: "External verifier runner is not wired in this Phase 0 portal" }, { status: 409 });
     }
 
-    const reservedReplay = reserveIdempotentRequest(req, "submissions.reveal", body);
-    if (reservedReplay) return reservedReplay;
-    if (req.headers.get("Idempotency-Key")) {
-      idempotencyReservation = { route: "submissions.reveal", body };
-    }
+    const attempt = beginIdempotentRequest(req, "submissions.reveal", body);
+    if (attempt.replay) return attempt.replay;
+    idempotency = attempt.reservation;
 
     const result = await revealCommit({
       commitId: body.commit_id,
@@ -45,23 +41,11 @@ export async function POST(req: Request) {
       solutionRaw: body.solution_raw,
       problemSlug: problem.slug,
       solverAddress: body.solver_address,
-    });
-    sideEffectCommitted = true;
-    const status = result.submission.state === "revealed" ? 201 : 422;
-    const headers = rememberIdempotentResponse(req, "submissions.reveal", body, result, status);
-    idempotencyReservation = undefined;
-    return json(result, {
-      status,
-      headers,
-    });
+    }, idempotency);
+    const { idempotencyHeaders, status, ...responseBody } = result;
+    return json(responseBody, { status, headers: idempotencyHeaders });
   } catch (error) {
-    if (idempotencyReservation && !sideEffectCommitted) {
-      try {
-        cancelIdempotentReservation(req, idempotencyReservation.route, idempotencyReservation.body, "side-effect-not-committed");
-      } catch {
-        // Preserve the original route error; a failed cancellation leaves the key pending fail-closed.
-      }
-    }
+    releaseIdempotencyReservation(idempotency);
     return apiError(error);
   }
 }

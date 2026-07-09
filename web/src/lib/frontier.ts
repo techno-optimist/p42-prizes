@@ -8,8 +8,6 @@ import {
 } from "@/lib/exact";
 import type { Problem, Submission } from "@/lib/types";
 
-const CREDITED_STATES = new Set(["revealed", "challenged", "finalized"]);
-
 function betterForDirection(problem: Problem, left: string, right: string): string {
   const leftScore = parseRational(left);
   const rightScore = parseRational(right);
@@ -31,7 +29,12 @@ function normalizationScale(problem: Problem) {
 
 export function frontierBest(problem: Problem, submissions: Submission[]): string {
   return submissions
-    .filter((submission) => submission.problemId === problem.id && CREDITED_STATES.has(submission.state))
+    .filter((submission) => (
+      submission.problemId === problem.id
+      && submission.state === "finalized"
+      && submission.source === "chain-p42-v1"
+      && submission.settlementState === "finalized"
+    ))
     .reduce(
       (best, submission) => betterForDirection(problem, submission.score, best),
       betterForDirection(problem, problem.currentBest, problem.seedBest),

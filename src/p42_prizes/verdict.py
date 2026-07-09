@@ -4,15 +4,64 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, NoReturn
+
+
+# Canonical rational grammar shared with the TypeScript parser
+# (web/src/lib/exact.ts): an optional ASCII sign, ASCII digits, and an optional
+# `/denominator`. Kept strict so the verifier and the portal accept exactly the
+# same strings — any divergence is a consensus-split hazard. Matched with
+# re.fullmatch (not re.match): Python's `$` otherwise also matches immediately
+# before a single trailing newline, so re.match would accept "1/2\n" while the
+# JS `$` (no multiline flag) rejects it. fullmatch requires the whole string to
+# be consumed, restoring byte-for-byte agreement with exact.ts.
+_RATIONAL_RE = re.compile(r"^[+-]?[0-9]+(?:/[+-]?[0-9]+)?$")
+
+
+def _reject_json_constant(value: str) -> NoReturn:
+    raise ValueError(f"non-JSON numeric constant: {value}")
+
+
+def strict_json_loads(value: str | bytes | bytearray) -> Any:
+    """Parse JSON without Python's non-standard NaN/Infinity extensions."""
+
+    return json.loads(value, parse_constant=_reject_json_constant)
+
+
+def _validate_json_value(value: Any, path: str = "$") -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path}: non-finite numbers are not valid JSON")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path}: JSON object keys must be strings")
+            _validate_json_value(item, f"{path}.{key}")
+        return
+    raise TypeError(f"{path}: {type(value).__name__} is not a JSON value")
 
 
 def canonical_json(value: Mapping[str, Any]) -> str:
     """Return the stable JSON representation used for verifier reports."""
 
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    _validate_json_value(value)
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -20,98 +69,35 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def sha256_file(path: str | Path) -> str:
-    return sha256_bytes(Path(path).read_bytes())
-
-
-REQUIRED_VERDICT_KEYS = {
-    "problem_id",
-    "verifier_version",
-    "verifier_image",
-    "solution_hash",
-    "valid",
-    "improvement",
-    "score",
-    "reason",
-    "recomputed_at_commit",
-    "details",
-}
-SHA256_REF = re.compile(r"^sha256:[a-f0-9]{64}$")
-RATIONAL = re.compile(r"^-?[0-9]+/[1-9][0-9]*$")
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while chunk := handle.read(64 * 1024):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
 
 
 def parse_rational(value: str | int | Fraction) -> Fraction:
+    if isinstance(value, bool):
+        # bool is an int subclass; reject it so True/False can't stand in for 1/0.
+        raise ValueError("rational value must not be a bool")
     if isinstance(value, Fraction):
         return value
     if isinstance(value, int):
         return Fraction(value, 1)
+    if not isinstance(value, str) or not _RATIONAL_RE.fullmatch(value):
+        raise ValueError(f"invalid rational literal: {value!r}")
     if "/" in value:
         num, den = value.split("/", 1)
-        return Fraction(int(num), int(den))
+        denominator = int(den)
+        if denominator == 0:
+            raise ValueError("rational denominator must be non-zero")
+        return Fraction(int(num), denominator)
     return Fraction(int(value), 1)
 
 
 def rational_to_string(value: str | int | Fraction) -> str:
     rational = parse_rational(value)
     return f"{rational.numerator}/{rational.denominator}"
-
-
-def _require_exact_keys(report: Mapping[str, Any]) -> None:
-    keys = set(report)
-    missing = sorted(REQUIRED_VERDICT_KEYS - keys)
-    extra = sorted(keys - REQUIRED_VERDICT_KEYS)
-    if missing or extra:
-        raise ValueError(f"VerdictReport keys mismatch; missing={missing}, extra={extra}")
-
-
-def _require_normal_rational(report: Mapping[str, Any], field: str) -> None:
-    value = report[field]
-    if not isinstance(value, str) or not RATIONAL.match(value):
-        raise ValueError(f"VerdictReport.{field} must be a normalized rational string")
-    if rational_to_string(value) != value:
-        raise ValueError(f"VerdictReport.{field} is not normalized")
-
-
-def validate_verdict_report(
-    report: Mapping[str, Any],
-    *,
-    problem_id: str,
-    verifier_version: str,
-    verifier_image: str,
-    solution_hash: str,
-) -> dict[str, Any]:
-    """Validate and bind a verifier report to the admitted problem and raw bytes."""
-
-    if not isinstance(report, Mapping):
-        raise ValueError("VerdictReport must be a JSON object")
-    _require_exact_keys(report)
-
-    expected_strings = {
-        "problem_id": problem_id,
-        "verifier_version": verifier_version,
-        "verifier_image": verifier_image,
-        "solution_hash": solution_hash,
-    }
-    for field, expected in expected_strings.items():
-        actual = report[field]
-        if not isinstance(actual, str):
-            raise ValueError(f"VerdictReport.{field} must be a string")
-        if actual != expected:
-            raise ValueError(f"VerdictReport.{field} mismatch: expected {expected}, got {actual}")
-
-    if not SHA256_REF.match(report["solution_hash"]):
-        raise ValueError("VerdictReport.solution_hash must be sha256:<64 lowercase hex chars>")
-    if not isinstance(report["valid"], bool):
-        raise ValueError("VerdictReport.valid must be boolean")
-    _require_normal_rational(report, "improvement")
-    _require_normal_rational(report, "score")
-    if not isinstance(report["reason"], str):
-        raise ValueError("VerdictReport.reason must be a string")
-    if not isinstance(report["recomputed_at_commit"], str):
-        raise ValueError("VerdictReport.recomputed_at_commit must be a string")
-    if not isinstance(report["details"], Mapping):
-        raise ValueError("VerdictReport.details must be an object")
-
-    return dict(report)
 
 
 @dataclass(frozen=True)
@@ -143,3 +129,84 @@ class VerdictReport:
 
     def to_canonical_json(self) -> str:
         return canonical_json(self.to_dict())
+
+
+@dataclass(frozen=True)
+class SolutionInput:
+    data: bytes | None
+    solution_hash: str
+    reason: str = ""
+    details: Mapping[str, Any] = field(default_factory=dict)
+
+    def failure_report(
+        self,
+        *,
+        problem_id: str,
+        verifier_version: str,
+        verifier_image: str,
+        fallback_score: str | int | Fraction,
+    ) -> VerdictReport:
+        if self.data is not None or not self.reason:
+            raise ValueError("failure_report requires a failed solution input")
+        return VerdictReport(
+            problem_id=problem_id,
+            verifier_version=verifier_version,
+            verifier_image=verifier_image,
+            solution_hash=self.solution_hash,
+            valid=False,
+            improvement="0/1",
+            score=rational_to_string(fallback_score),
+            reason=self.reason,
+            details=self.details,
+        )
+
+
+def read_bounded_solution(path: str | Path, max_bytes: int) -> SolutionInput:
+    """Read at most ``max_bytes + 1`` into memory and stay report-total."""
+
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
+
+    digest = hashlib.sha256()
+    try:
+        with Path(path).open("rb") as handle:
+            first = handle.read(max_bytes + 1)
+            digest.update(first)
+            if len(first) <= max_bytes:
+                return SolutionInput(
+                    data=first,
+                    solution_hash="sha256:" + digest.hexdigest(),
+                )
+
+            observed_bytes = len(first)
+            while chunk := handle.read(64 * 1024):
+                digest.update(chunk)
+                observed_bytes += len(chunk)
+    except OSError as exc:
+        return SolutionInput(
+            data=None,
+            solution_hash=sha256_bytes(b""),
+            reason="INPUT_UNREADABLE",
+            details={
+                "error_type": type(exc).__name__,
+                "hash_status": "unavailable",
+            },
+        )
+
+    return SolutionInput(
+        data=None,
+        solution_hash="sha256:" + digest.hexdigest(),
+        reason="OVERSIZED",
+        details={
+            "limit_bytes": max_bytes,
+            "observed_bytes": observed_bytes,
+        },
+    )
+
+
+def verifier_image_identity(default: str) -> str:
+    """Return the executor-bound image digest, or the local package default."""
+
+    import os
+
+    return os.environ.get("P42_VERIFIER_IMAGE", default)

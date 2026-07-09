@@ -1,0 +1,54 @@
+# Canonical, self-contained P42 verifier image.
+#
+# Builds a runnable, pinnable image for one problem's exact verifier. Unlike the
+# per-problem Dockerfiles (which assumed the repo layout and lacked `make`), this
+# bundles the p42_prizes package AND the problem, preserving the `../../src`
+# layout the problem Makefile expects, and installs `make` + the problem's pinned
+# deps. Build from the REPO ROOT:
+#
+#   docker build -f Dockerfile.verifier --build-arg PROBLEM=hadamard-mini \
+#     -t p42-verifier/hadamard-mini .
+#
+# The runner sandbox (src/p42_prizes/runner_sandbox.py) then executes it with
+# `--network=none`, cgroup memory/PID/CPU caps, a read-only rootfs, dropped caps,
+# a non-root user, and the untrusted solution mounted read-only.
+# Base pinned by digest (audit F23): the tag alone is mutable, so a re-push of
+# python:3.14.2-slim could silently change the verifier environment. The digest
+# is the MULTI-ARCH OCI index digest (verified via `docker manifest inspect`),
+# so this pin builds on any platform. To refresh after a deliberate base bump:
+#   docker pull python:<tag> && docker inspect --format='{{index .RepoDigests 0}}' python:<tag>
+FROM python:3.14.2-slim@sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925
+ARG PROBLEM
+
+# Determinism knobs the verifier standard requires.
+ENV PYTHONHASHSEED=0 \
+    OMP_NUM_THREADS=1 \
+    OPENBLAS_NUM_THREADS=1 \
+    MKL_NUM_THREADS=1
+
+# `make` is the verifier entrypoint; slim images omit it.
+# TODO(F23, needs human): `make` is installed unpinned — `apt-get update` fetches
+# the live Debian archive, so its version can drift between builds even with the
+# digest-pinned base. Full determinism needs snapshot.debian.org sources (e.g.
+# `deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/<TS>/ trixie main`)
+# plus `make=<exact version>`; exact pins go stale as the archive rolls, so this
+# needs an owner to pick and maintain a snapshot timestamp.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends make \
+    && rm -rf /var/lib/apt/lists/*
+
+# Preserve the repo-relative layout: the problem Makefile uses PYTHONPATH=../../src,
+# so the problem must sit two levels under /repo with src as a sibling.
+COPY src /repo/src
+COPY problems/${PROBLEM} /repo/problems/${PROBLEM}
+WORKDIR /repo/problems/${PROBLEM}
+
+# Pinned per-problem deps (mpmath for Mertens, etc.); comments-only locks are a no-op.
+# TODO(F23, needs human): the requirements.lock files pin versions but carry no
+# hashes, so `--require-hashes` would fail today (checked: every problems/*/
+# requirements.lock lacks `--hash=`). Regenerate each lock with
+# `pip-compile --generate-hashes` (or `pip hash`), then add `--require-hashes`
+# here so a hijacked PyPI release of a pinned version cannot slip in.
+RUN pip install --no-cache-dir -r requirements.lock
+
+CMD ["make", "verify"]

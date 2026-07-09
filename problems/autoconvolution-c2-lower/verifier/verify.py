@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from fractions import Fraction
+from pathlib import Path
+import sys
+from typing import Any
+
+from p42_prizes.verdict import (
+    VerdictReport,
+    rational_to_string,
+    read_bounded_solution,
+    strict_json_loads,
+    verifier_image_identity,
+)
+
+
+PROBLEM_ID = "autoconvolution-c2-lower"
+VERIFIER_VERSION = "0.1.1"
+VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
+N = 524288
+MAX_VALUE = 1 << 40
+MAX_SOLUTION_BYTES = 4 * 1024 * 1024
+# Audit F1: the old seed 47/50 was a loose packaging bound, but the bundled
+# Hyra witness verifies to ~0.96290 (higher is better here) — a known
+# achievable result the seed must be at least as good as, or resubmitting it
+# mints a false prize.
+# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
+# ceiling for the free open phase, NOT an attested published record. The
+# on-chain frontier self-establishes from free open-phase postings before
+# armFunding() opens the paid phase, so no human record confirmation is needed.
+SEED_BEST = Fraction(
+    140651861665566489683881393353250795846281833,
+    146070932420211259869783468438333325818535926,
+)
+MIN_IMPROVEMENT = Fraction(1, 1000000000000)
+
+
+class VerifierFailure(Exception):
+    def __init__(self, reason: str, detail: str):
+        super().__init__(detail)
+        self.reason = reason
+        self.detail = detail
+
+
+def require_int(value: Any, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise VerifierFailure("MALFORMED", f"{label} must be an integer")
+    return value
+
+
+def parse_solution(raw: bytes) -> list[int]:
+    if len(raw) > MAX_SOLUTION_BYTES:
+        raise VerifierFailure(
+            "OVERSIZED",
+            f"solution is {len(raw)} bytes; limit is {MAX_SOLUTION_BYTES}",
+        )
+    try:
+        data = strict_json_loads(raw)
+    except Exception as exc:
+        raise VerifierFailure("MALFORMED_JSON", str(exc)) from exc
+
+    if not isinstance(data, dict):
+        raise VerifierFailure("MALFORMED", "solution root must be an object")
+    if data.get("n") != N:
+        raise VerifierFailure("WRONG_N", "n must equal 524288")
+
+    raw_values = data.get("values")
+    if not isinstance(raw_values, list) or len(raw_values) != N:
+        raise VerifierFailure("WRONG_SHAPE", "values must contain exactly 524288 entries")
+
+    values: list[int] = []
+    for index, raw_value in enumerate(raw_values):
+        value = require_int(raw_value, f"values[{index}]")
+        if value < 0 or value > MAX_VALUE:
+            raise VerifierFailure(
+                "RAW_RANGE",
+                f"values[{index}] must satisfy 0 <= value <= {MAX_VALUE}",
+            )
+        values.append(value)
+
+    if sum(values) == 0:
+        raise VerifierFailure("ZERO_MASS", "sum(values) must be nonzero")
+
+    return values
+
+
+def pack_nonnegative(values: list[int], slot_bytes: int) -> int:
+    buffer = bytearray(slot_bytes * len(values))
+    for index, value in enumerate(values):
+        if value:
+            buffer[index * slot_bytes:(index + 1) * slot_bytes] = value.to_bytes(
+                slot_bytes,
+                "little",
+            )
+    return int.from_bytes(buffer, "little")
+
+
+def unpack_nonnegative(value: int, slot_bytes: int, length: int) -> list[int]:
+    used_bytes = (value.bit_length() + 7) // 8
+    raw = value.to_bytes(used_bytes, "little").ljust(slot_bytes * length, b"\x00")
+    return [
+        int.from_bytes(raw[index * slot_bytes:(index + 1) * slot_bytes], "little")
+        for index in range(length)
+    ]
+
+
+def compute_score(values: list[int]) -> tuple[Fraction, dict[str, Any]]:
+    total = sum(values)
+    max_value = max(values)
+    if max_value == 0:
+        raise VerifierFailure("ZERO_MASS", "all values are zero")
+
+    max_bits = max_value.bit_length()
+    slot_bits_needed = 2 * max_bits + N.bit_length() + 2
+    slot_bits = max(96, ((slot_bits_needed + 7) // 8) * 8)
+    slot_bytes = slot_bits // 8
+    length = 2 * N - 1
+
+    packed = pack_nonnegative(values, slot_bytes)
+    coefficients = unpack_nonnegative(packed * packed, slot_bytes, length)
+
+    sum_coefficients = sum(coefficients)
+    if sum_coefficients != total * total:
+        raise VerifierFailure("PACKING_CHECKSUM", "autoconvolution checksum failed")
+
+    linf = max(coefficients)
+    sum_squares = sum(value * value for value in coefficients)
+    sum_adjacent = sum(
+        coefficients[index] * coefficients[index + 1]
+        for index in range(len(coefficients) - 1)
+    )
+    s2 = 2 * sum_squares + sum_adjacent
+
+    score = Fraction(s2, 3 * sum_coefficients * linf)
+    details = {
+        "checked_coefficients": length,
+        "linf": str(linf),
+        "s1": str(sum_coefficients),
+        "s2": str(s2),
+        "slot_bits": slot_bits,
+    }
+    return score, details
+
+
+def report_for_solution(path: Path) -> VerdictReport:
+    solution = read_bounded_solution(path, MAX_SOLUTION_BYTES)
+    if solution.data is None:
+        return solution.failure_report(
+            problem_id=PROBLEM_ID,
+            verifier_version=VERIFIER_VERSION,
+            verifier_image=VERIFIER_IMAGE,
+            fallback_score=SEED_BEST,
+        )
+    raw = solution.data
+    solution_hash = solution.solution_hash
+
+    try:
+        values = parse_solution(raw)
+        score, details = compute_score(values)
+        improvement = max(Fraction(0, 1), score - SEED_BEST)
+        valid = improvement >= MIN_IMPROVEMENT
+        reason = "" if valid else "NOT_STRICT_IMPROVEMENT"
+        details = {
+            **details,
+            "n": N,
+        }
+    except VerifierFailure as exc:
+        score = SEED_BEST
+        improvement = Fraction(0, 1)
+        valid = False
+        reason = exc.reason
+        details = {"error": exc.detail}
+    except Exception as exc:  # noqa: BLE001 - verifier must stay total
+        # Any unexpected error becomes a typed INTERNAL failure so the process
+        # always emits a canonical VerdictReport instead of a traceback.
+        score = SEED_BEST
+        improvement = Fraction(0, 1)
+        valid = False
+        reason = "INTERNAL"
+        details = {"error": f"{type(exc).__name__}: {exc}"}
+
+    return VerdictReport(
+        problem_id=PROBLEM_ID,
+        verifier_version=VERIFIER_VERSION,
+        verifier_image=VERIFIER_IMAGE,
+        solution_hash=solution_hash,
+        valid=valid,
+        improvement=rational_to_string(improvement),
+        score=rational_to_string(score),
+        reason=reason,
+        details=details,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--solution", required=True)
+    args = parser.parse_args(argv)
+
+    report = report_for_solution(Path(args.solution))
+    print(report.to_canonical_json())
+    return 0 if report.valid else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

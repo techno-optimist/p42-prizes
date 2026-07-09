@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/runner-plan-v1.json",
+  "title": "P42 Runner Plan v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "now_utc",
+    "decision",
+    "reason",
+    "selected_job_id",
+    "queued_count",
+    "oldest_queued_age_seconds",
+    "active_running_count",
+    "stale_running_job_ids",
+    "memory",
+    "policy",
+    "min_available_memory_mb"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-runner-plan/v1" },
+    "now_utc": { "type": "string", "minLength": 1 },
+    "decision": { "enum": ["start", "wait"] },
+    "reason": { "type": "string", "minLength": 1 },
+    "selected_job_id": { "type": ["string", "null"] },
+    "queued_count": { "type": "integer", "minimum": 0 },
+    "oldest_queued_age_seconds": { "type": ["integer", "null"], "minimum": 0 },
+    "active_running_count": { "type": "integer", "minimum": 0 },
+    "stale_running_job_ids": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "memory": {
+      "type": "object",
+      "required": ["total_mb", "available_mb", "swap_used_mb"],
+      "additionalProperties": false,
+      "properties": {
+        "total_mb": { "type": "integer", "minimum": 0 },
+        "available_mb": { "type": "integer", "minimum": 0 },
+        "swap_used_mb": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "required": ["max_running", "reserve_memory_mb", "max_swap_used_mb", "memory_safety_factor"],
+      "additionalProperties": false,
+      "properties": {
+        "max_running": { "type": "integer", "minimum": 1 },
+        "reserve_memory_mb": { "type": "integer", "minimum": 0 },
+        "max_swap_used_mb": { "type": "integer", "minimum": 0 },
+        "memory_safety_factor": { "type": "number", "minimum": 1 },
+        "sandbox": { "type": "string", "enum": ["none", "docker"] },
+        "sandbox_pids_limit": { "type": "integer", "minimum": 1 },
+        "sandbox_cpus": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "min_available_memory_mb": { "type": ["integer", "null"], "minimum": 0 }
+  }
+}

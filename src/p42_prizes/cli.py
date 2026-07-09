@@ -3,17 +3,135 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
-from tempfile import TemporaryDirectory
+from urllib import request as urllib_request
 
+import jsonschema
+
+from p42_prizes.admission import (
+    AdmissionError,
+    build_admission_matrix,
+    build_verifier_env,
+    detect_host,
+    generate_host_evidence,
+    load_evidence_file,
+    run_verifier_once,
+)
+from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversarial_campaign_report
+from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_evidence
+from p42_prizes.governance import GovernanceSignoffError, normalize_governance_signoff
+from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
+from p42_prizes.legal import ChainReader, LegalMemoError, normalize_legal_memo
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
-from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file, validate_verdict_report
+from p42_prizes.readiness import validate_fundable_admission
+from p42_prizes.runner_alerts import RunnerAlertError, build_runner_alerts
+from p42_prizes.runner_burst import RunnerBurstError, normalize_runner_burst_report
+from p42_prizes.runner_queue import (
+    MemorySnapshot,
+    RunnerPolicy,
+    RunnerQueueError,
+    memory_snapshot_from_proc,
+    plan_runner_queue,
+)
+from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
+from p42_prizes.verdict import canonical_json, parse_rational
+
+
+# Gate validators enforce the published schemas' additionalProperties:false, so a
+# gate report with unknown top-level keys is rejected at the CLI boundary.
+_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
+
+
+def _enforce_gate_schema(report: dict, schema_name: str) -> None:
+    schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
+    jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
+
+
+def _load_attestation_inputs(args: argparse.Namespace) -> tuple[dict, Path, ChainReader]:
+    trust_registry = load_evidence_file(args.trust_registry)
+    _enforce_gate_schema(trust_registry, "attestation-trust-registry.schema.json")
+    if trust_registry.get("environment") != "production" and not args.allow_test_trust_registry:
+        raise AdmissionError(
+            "test trust registries are rejected by default; use a production root registry or explicitly allow test trust"
+        )
+    artifact_root = Path(args.artifact_root).resolve()
+    if not artifact_root.is_dir():
+        raise AdmissionError("--artifact-root must be an existing directory")
+    return trust_registry, artifact_root, _build_http_chain_reader(args.chain_rpc_url)
+
+
+def _build_http_chain_reader(rpc_url: str) -> ChainReader:
+    request_id = 0
+    cached_chain_id: int | None = None
+
+    def rpc_call(method: str, params: list[object]) -> object:
+        nonlocal request_id
+        request_id += 1
+        payload = json.dumps(
+            {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params},
+            separators=(",", ":"),
+        ).encode("utf-8")
+        rpc_request = urllib_request.Request(
+            rpc_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib_request.urlopen(rpc_request, timeout=10) as response:
+            parsed = json.loads(response.read())
+        if not isinstance(parsed, dict) or "error" in parsed or "result" not in parsed:
+            raise ValueError(f"JSON-RPC {method} returned an error or malformed response")
+        return parsed["result"]
+
+    def read_chain(network: str, chain_id: int, address: str, block_number: int) -> dict[str, str]:
+        nonlocal cached_chain_id
+        del network
+        if cached_chain_id is None:
+            chain_result = rpc_call("eth_chainId", [])
+            if not isinstance(chain_result, str):
+                raise ValueError("eth_chainId returned a non-string result")
+            cached_chain_id = int(chain_result, 16)
+        if cached_chain_id != chain_id:
+            raise ValueError(f"RPC chain ID {cached_chain_id} does not match release chain ID {chain_id}")
+        block_tag = hex(block_number)
+        block = rpc_call("eth_getBlockByNumber", [block_tag, False])
+        runtime_bytecode = rpc_call("eth_getCode", [address, block_tag])
+        if not isinstance(block, dict) or not isinstance(block.get("hash"), str):
+            raise ValueError("eth_getBlockByNumber did not return a block hash")
+        if not isinstance(runtime_bytecode, str):
+            raise ValueError("eth_getCode returned a non-string result")
+        return {"block_hash": block["hash"], "runtime_bytecode": runtime_bytecode}
+
+    return read_chain
+
+
+def _add_attestation_validation_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--trust-registry",
+        required=True,
+        help="owner-controlled signer registry supplied out of band from the report",
+    )
+    parser.add_argument(
+        "--artifact-root",
+        required=True,
+        help="local bound Git repository containing every referenced evidence file",
+    )
+    parser.add_argument(
+        "--chain-rpc-url",
+        required=True,
+        help="JSON-RPC endpoint queried at each recorded bytecode evidence block",
+    )
+    parser.add_argument(
+        "--allow-test-trust-registry",
+        action="store_true",
+        help="allow an explicitly marked test registry for local validation only",
+    )
 
 
 def _cmd_validate(args: argparse.Namespace) -> int:
@@ -38,95 +156,36 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     return 0
 
 
-def _parse_verifier_stdout(stdout: str, manifest: dict, solution_hash: str) -> dict:
-    lines = [line for line in stdout.splitlines() if line.strip()]
-    if len(lines) != 1:
-        raise ValueError(f"expected exactly one VerdictReport JSON line on stdout, got {len(lines)}")
-    try:
-        raw_report = json.loads(lines[0])
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"stdout is not valid VerdictReport JSON: {exc}") from exc
-
-    verifier = manifest["verifier"]
-    return validate_verdict_report(
-        raw_report,
-        problem_id=manifest["problem_id"],
-        verifier_version=verifier["version"],
-        verifier_image=verifier["image"],
-        solution_hash=solution_hash,
-    )
-
-
 def _cmd_verify(args: argparse.Namespace) -> int:
     problem = Path(args.problem).resolve()
     solution = Path(args.solution).resolve()
-    solution_bytes = solution.read_bytes()
-    solution_hash = sha256_bytes(solution_bytes)
     manifest = load_manifest(problem)
     command_template = manifest["verifier"]["command"]
+    command = [
+        part.format(solution=str(solution))
+        for part in shlex.split(command_template)
+    ]
     wall_seconds = int(manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
 
-    env = dict(os.environ)
-    repo_root = repo_root_from_problem(problem)
-    src = str(repo_root / "src")
-    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
-
-    with TemporaryDirectory(prefix="p42-verify-") as temp_dir:
-        runner_solution = Path(temp_dir) / solution.name
-        runner_solution.write_bytes(solution_bytes)
-        command = [
-            part.format(solution=str(runner_solution))
-            for part in shlex.split(command_template)
-        ]
-
+    # Scrub the environment so the untrusted verifier cannot read host secrets,
+    # and run it in its own session/process group so a timeout kills the whole
+    # tree (no surviving orphans) — matching the runner and admission paths
+    # (audit L7 / secret-env).
+    env = build_verifier_env(problem)
+    process = subprocess.Popen(command, cwd=problem, env=env, start_new_session=True)
+    try:
+        return process.wait(timeout=wall_seconds)
+    except subprocess.TimeoutExpired:
         try:
-            completed = subprocess.run(
-                command,
-                cwd=problem,
-                env=env,
-                check=False,
-                timeout=wall_seconds,
-                text=True,
-                capture_output=True,
-            )
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            process.kill()
+        try:
+            process.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            print(f"verifier timed out after {wall_seconds}s", file=sys.stderr)
-            return 124
-
-        if completed.stderr:
-            print(completed.stderr, end="", file=sys.stderr)
-
-        try:
-            runner_solution_hash = sha256_file(runner_solution)
-        except Exception:
-            print("verifier report rejected: verifier removed the solution bytes", file=sys.stderr)
-            return 125
-        if runner_solution_hash != solution_hash:
-            print("verifier report rejected: verifier mutated the solution bytes", file=sys.stderr)
-            return 125
-
-        try:
-            report = _parse_verifier_stdout(completed.stdout, manifest, solution_hash)
-        except Exception as exc:
-            print(f"verifier report rejected: {exc}", file=sys.stderr)
-            return 125
-
-        if report["valid"] and completed.returncode != 0:
-            print(
-                f"verifier report rejected: exit code {completed.returncode} "
-                "does not match valid=True",
-                file=sys.stderr,
-            )
-            return 125
-        if not report["valid"] and completed.returncode == 0:
-            print(
-                "verifier report rejected: exit code 0 does not match valid=False",
-                file=sys.stderr,
-            )
-            return 125
-
-        print(canonical_json(report))
-        return 0 if report["valid"] else 1
+            pass
+        print(f"verifier timed out after {wall_seconds}s", file=sys.stderr)
+        return 124
 
 
 def _cmd_simulate(args: argparse.Namespace) -> int:
@@ -136,134 +195,325 @@ def _cmd_simulate(args: argparse.Namespace) -> int:
     return 0
 
 
-def _single_thread_env(repo_root: Path) -> dict[str, str]:
-    env = dict(os.environ)
-    src = str(repo_root / "src")
-    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
-    env["PYTHONHASHSEED"] = "0"
-    env["OMP_NUM_THREADS"] = "1"
-    env["OPENBLAS_NUM_THREADS"] = "1"
-    env["MKL_NUM_THREADS"] = "1"
-    env["NUMEXPR_NUM_THREADS"] = "1"
-    return env
+def _write_or_print_json(value: dict, output: str | None) -> None:
+    encoded = canonical_json(value) + "\n"
+    if output:
+        Path(output).write_text(encoded, encoding="utf-8")
+    else:
+        print(encoded, end="")
 
 
-def _cmd_admit(args: argparse.Namespace) -> int:
-    problem = Path(args.problem).resolve()
-    solution = Path(args.solution).resolve()
-    if args.runs < 2:
-        print("--runs must be at least 2 for local determinism admission", file=sys.stderr)
+def _cmd_admit_host(args: argparse.Namespace) -> int:
+    host = detect_host(args.host_label)
+    try:
+        evidence = generate_host_evidence(
+            args.problem,
+            args.solution,
+            host=host,
+            runs=args.runs,
+            image_ref=args.image_ref,
+            runtime=args.runtime,
+            signing_key=args.signing_key,
+        )
+        _enforce_gate_schema(evidence, "admission-host.schema.json")
+    except (AdmissionError, OSError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
         return 1
+    _write_or_print_json(evidence, args.output)
+    return 0
 
-    errors = validate_problem(problem)
+
+def _cmd_admit_matrix(args: argparse.Namespace) -> int:
+    try:
+        evidence = [load_evidence_file(path) for path in args.evidence]
+        matrix = build_admission_matrix(evidence)
+        _enforce_gate_schema(matrix, "admission-matrix.schema.json")
+    except (AdmissionError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(matrix, args.output)
+    return 0
+
+
+def _cmd_admit_ready(args: argparse.Namespace) -> int:
+    errors = validate_fundable_admission(args.problem, args.matrix)
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
         return 1
+    print(f"OK: {Path(args.problem)} is fundable-admission ready")
+    return 0
 
-    findings = lint_verifier(problem)
-    if findings:
-        root = repo_root_from_problem(problem)
-        for finding in findings:
-            print(finding.format(root), file=sys.stderr)
+
+def _cmd_seed_check(args: argparse.Namespace) -> int:
+    problem = Path(args.problem).resolve()
+    solution = Path(args.solution).resolve()
+    try:
+        manifest = load_manifest(problem)
+        run = run_verifier_once(problem, solution)
+        seed_best = parse_rational(manifest["objective"]["seed_best"])
+        score = parse_rational(run.report["score"])
+        improvement = parse_rational(run.report["improvement"])
+    except (AdmissionError, OSError, KeyError, TypeError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
         return 1
 
-    manifest = load_manifest(problem)
-    repo_root = repo_root_from_problem(problem)
-    env = _single_thread_env(repo_root)
-    command = [
-        sys.executable,
-        "-m",
-        "p42_prizes.cli",
-        "verify",
-        "--problem",
-        str(problem),
-        "--solution",
-        str(solution),
-    ]
-
-    report: dict | None = None
-    verdict_hash: str | None = None
-    runs = []
-    for index in range(args.runs):
-        completed = subprocess.run(
-            command,
-            cwd=repo_root,
-            env=env,
-            check=False,
-            text=True,
-            capture_output=True,
+    if run.report["valid"] and improvement > 0:
+        status = "STRICT_WITNESS"
+        release_ready = True
+    elif not run.report["valid"] and run.report["reason"] == "NOT_STRICT_IMPROVEMENT" and improvement == 0:
+        status = "FRONTIER_MATCH_ONLY" if score == seed_best else "NONFRONTIER_FIXTURE"
+        release_ready = False
+    else:
+        print(
+            f"{manifest['problem_id']}: designated seed fixture is neither a strict witness nor an exact frontier match",
+            file=sys.stderr,
         )
-        if completed.returncode != 0:
-            print(f"admission run {index + 1} failed with exit code {completed.returncode}", file=sys.stderr)
-            if completed.stderr:
-                print(completed.stderr, end="", file=sys.stderr)
-            return 1
+        return 1
 
-        try:
-            run_report = json.loads(completed.stdout)
-        except json.JSONDecodeError as exc:
-            print(f"admission run {index + 1} did not emit canonical JSON: {exc}", file=sys.stderr)
-            return 1
-
-        run_canonical = canonical_json(run_report)
-        run_hash = sha256_bytes(run_canonical.encode("utf-8"))
-        runs.append(
+    print(
+        canonical_json(
             {
-                "run": index + 1,
-                "exit_code": completed.returncode,
-                "verdict_hash": run_hash,
-                "stdout_hash": sha256_bytes(completed.stdout.encode("utf-8")),
-                "stderr_hash": sha256_bytes(completed.stderr.encode("utf-8")),
+                "problem_id": manifest["problem_id"],
+                "release_ready": release_ready,
+                "report_hash": run.report_hash,
+                "score": run.report["score"],
+                "status": status,
             }
         )
-        if verdict_hash is None:
-            verdict_hash = run_hash
-            report = run_report
-        elif run_hash != verdict_hash:
-            print("verifier is not deterministic across local admission runs", file=sys.stderr)
-            for run in runs:
-                print(f"run {run['run']}: {run['verdict_hash']}", file=sys.stderr)
-            return 1
+    )
+    if args.require_strict and not release_ready:
+        return 1
+    return 0
 
-    verifier = manifest["verifier"]
-    evidence = {
-        "schema_version": "p42-admission/v1",
-        "problem_id": manifest["problem_id"],
-        "solution_hash": sha256_file(solution),
-        "verifier": {
-            "version": verifier["version"],
-            "image": verifier["image"],
-            "command": verifier["command"],
-        },
-        "host": {
-            "label": args.host_label,
-            "machine": platform.machine(),
-            "platform": platform.platform(),
-            "python_version": platform.python_version(),
-        },
-        "environment": {
-            "PYTHONHASHSEED": env["PYTHONHASHSEED"],
-            "OMP_NUM_THREADS": env["OMP_NUM_THREADS"],
-            "OPENBLAS_NUM_THREADS": env["OPENBLAS_NUM_THREADS"],
-            "MKL_NUM_THREADS": env["MKL_NUM_THREADS"],
-            "NUMEXPR_NUM_THREADS": env["NUMEXPR_NUM_THREADS"],
-        },
-        "checks": {
-            "manifest_valid": True,
-            "lint_clean": True,
-            "local_runs": args.runs,
-            "identical_verdict_hash": verdict_hash,
-        },
-        "runs": runs,
-        "report": report,
-    }
-    output = canonical_json(evidence) + "\n"
-    if args.out:
-        Path(args.out).write_text(output, encoding="utf-8")
-        print(f"OK: wrote admission evidence to {args.out}")
-    else:
-        print(output, end="")
+
+def _cmd_da_receipt(args: argparse.Namespace) -> int:
+    try:
+        evidence = build_da_evidence(
+            args.problem,
+            args.solution,
+            solution_cid=args.solution_cid,
+            solver_address=args.solver_address,
+            salt=args.salt,
+            commit_provider=args.commit_provider,
+            commit_receipt_uri=args.commit_receipt_uri,
+            commit_block_reference=args.commit_block_reference,
+            da_mode=args.da_mode,
+            reveal_tx=args.reveal_tx,
+            store_locator=args.store_locator,
+            solution_bytes_length=args.solution_bytes_length,
+            arweave_txid=args.arweave_txid,
+            arweave_receipt_uri=args.arweave_receipt_uri,
+        )
+    except DaEvidenceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(evidence, args.output)
+    return 0
+
+
+def _cmd_da_verify(args: argparse.Namespace) -> int:
+    try:
+        evidence = validate_da_evidence(
+            load_evidence_file(args.evidence),
+            problem_dir=args.problem,
+            solution_path=args.solution,
+        )
+    except (AdmissionError, DaEvidenceError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    # Also enforce the published JSON schema (like the sibling gate validators),
+    # so a structurally-malformed receipt is rejected at the CLI boundary and not
+    # only by the pure-Python semantic checks.
+    try:
+        _enforce_gate_schema(evidence, "da-receipt.schema.json")
+    except jsonschema.ValidationError as exc:
+        print(f"da-receipt schema validation failed: {exc.message}", file=sys.stderr)
+        return 1
+    if args.solution is None:
+        # Without --solution the sha256 content binding to the actual solution
+        # bytes is skipped, so this pass proves structure only. Say so loudly and
+        # exit 3 (distinct from 0/1) so a structure-only pass can never be
+        # mistaken for a content/availability proof (audit F30).
+        print(
+            "OK (structure only; solution bytes NOT verified): "
+            f"DA evidence {evidence['evidence_hash']}"
+        )
+        return 3
+    print(f"OK: DA evidence {evidence['evidence_hash']}")
+    return 0
+
+
+def _cmd_runner_plan(args: argparse.Namespace) -> int:
+    try:
+        queue = load_evidence_file(args.queue)
+        decision = plan_runner_queue(
+            queue,
+            memory=_runner_memory_from_args(args),
+            policy=_runner_policy_from_args(args),
+            now_utc=args.now_utc,
+        )
+    except (AdmissionError, RunnerQueueError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(canonical_json(decision))
+    return 0
+
+
+def _runner_memory_from_args(args: argparse.Namespace) -> MemorySnapshot:
+    if (
+        args.total_memory_mb is None
+        or args.available_memory_mb is None
+        or args.swap_used_mb is None
+    ):
+        return memory_snapshot_from_proc()
+    return MemorySnapshot(
+        total_mb=args.total_memory_mb,
+        available_mb=args.available_memory_mb,
+        swap_used_mb=args.swap_used_mb,
+    )
+
+
+def _runner_policy_from_args(args: argparse.Namespace) -> RunnerPolicy:
+    return RunnerPolicy(
+        max_running=args.max_running,
+        reserve_memory_mb=args.reserve_memory_mb,
+        max_swap_used_mb=args.max_swap_used_mb,
+        memory_safety_factor=args.memory_safety_factor,
+    )
+
+
+def _cmd_runner_work_once(args: argparse.Namespace) -> int:
+    try:
+        result = run_next_job_once(
+            args.queue,
+            args.transcripts,
+            memory=_runner_memory_from_args(args),
+            policy=_runner_policy_from_args(args),
+            now_utc=args.now_utc,
+            lease_seconds=args.lease_seconds,
+        )
+    except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(canonical_json(result))
+    return 0
+
+
+def _cmd_runner_drain(args: argparse.Namespace) -> int:
+    try:
+        result = drain_runner_queue(
+            args.queue,
+            args.transcripts,
+            memory_provider=lambda: _runner_memory_from_args(args),
+            policy=_runner_policy_from_args(args),
+            lease_seconds=args.lease_seconds,
+            poll_seconds=args.poll_seconds,
+            max_iterations=args.max_iterations,
+            max_jobs=args.max_jobs,
+        )
+    except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(canonical_json(result))
+    return 0
+
+
+def _cmd_runner_alerts(args: argparse.Namespace) -> int:
+    transcript_paths: list[str] = []
+    if args.transcripts:
+        transcript_paths.extend(str(path) for path in sorted(Path(args.transcripts).glob("*.json")))
+    transcript_paths.extend(args.transcript or [])
+    if not transcript_paths:
+        print("no runner transcripts provided", file=sys.stderr)
+        return 1
+    try:
+        result = build_runner_alerts(transcript_paths, now_utc=args.now_utc)
+    except RunnerAlertError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(result, args.output)
+    if args.fail_on_alert and result["alert_count"] > 0:
+        return 2
+    return 0
+
+
+def _cmd_runner_burst_validate(args: argparse.Namespace) -> int:
+    try:
+        report = normalize_runner_burst_report(load_evidence_file(args.report))
+        _enforce_gate_schema(report, "runner-burst.schema.json")
+    except (AdmissionError, RunnerBurstError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
+def _cmd_incident_drill_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_incident_drill_report(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
+        _enforce_gate_schema(report, "incident-drill.schema.json")
+    except (AdmissionError, IncidentDrillError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
+def _cmd_adversarial_campaign_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_adversarial_campaign_report(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
+        _enforce_gate_schema(report, "adversarial-campaign.schema.json")
+    except (AdmissionError, AdversarialCampaignError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
+def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_governance_signoff(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
+        _enforce_gate_schema(report, "governance-signoff.schema.json")
+    except (AdmissionError, GovernanceSignoffError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
+def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_legal_memo(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
+        _enforce_gate_schema(report, "legal-memo.schema.json")
+    except (AdmissionError, LegalMemoError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
     return 0
 
 
@@ -295,13 +545,209 @@ def build_parser() -> argparse.ArgumentParser:
     )
     simulate.set_defaults(func=_cmd_simulate)
 
-    admit = subparsers.add_parser("admit", help="emit local verifier admission evidence")
-    admit.add_argument("--problem", required=True)
-    admit.add_argument("--solution", required=True)
-    admit.add_argument("--runs", type=int, default=3)
-    admit.add_argument("--host-label", default="local")
-    admit.add_argument("--out")
-    admit.set_defaults(func=_cmd_admit)
+    admit_host = subparsers.add_parser(
+        "admit-host",
+        help="run a verifier repeatedly on one host and emit host admission evidence",
+    )
+    admit_host.add_argument("--problem", required=True)
+    admit_host.add_argument("--solution", required=True)
+    admit_host.add_argument("--runs", type=int, default=3)
+    admit_host.add_argument("--host-label")
+    admit_host.add_argument(
+        "--image-ref",
+        help="registry repository@sha256:digest; required when problem.yaml pins an immutable image",
+    )
+    admit_host.add_argument("--runtime", default="docker", help="OCI runtime used for immutable admission")
+    admit_host.add_argument(
+        "--signing-key",
+        help="Ed25519 SSH private key whose public key is trusted by problem.yaml",
+    )
+    admit_host.add_argument("--output")
+    admit_host.set_defaults(func=_cmd_admit_host)
+
+    admit_matrix = subparsers.add_parser(
+        "admit-matrix",
+        help="combine host evidence and enforce the N-host verifier matrix gate",
+    )
+    admit_matrix.add_argument(
+        "--evidence",
+        action="append",
+        required=True,
+        help="host evidence JSON file; repeat for every matrix host",
+    )
+    admit_matrix.add_argument("--output")
+    admit_matrix.set_defaults(func=_cmd_admit_matrix)
+
+    admit_ready = subparsers.add_parser(
+        "admit-ready",
+        help="check a problem manifest plus N-host matrix before funding/admission",
+    )
+    admit_ready.add_argument("--problem", required=True)
+    admit_ready.add_argument("--matrix", required=True)
+    admit_ready.set_defaults(func=_cmd_admit_ready)
+
+    seed_check = subparsers.add_parser(
+        "seed-check",
+        help="classify a designated fixture as a strict open witness or exact frontier match",
+    )
+    seed_check.add_argument("--problem", required=True)
+    seed_check.add_argument("--solution", required=True)
+    seed_check.add_argument("--require-strict", action="store_true")
+    seed_check.set_defaults(func=_cmd_seed_check)
+
+    da_receipt = subparsers.add_parser(
+        "da-receipt",
+        help="build canonical DA-reference evidence: sha256(solution)==commitDaHash anchor "
+        "plus reveal-tx (onchain) or store locator (offchain); optional Arweave mirror",
+    )
+    da_receipt.add_argument("--problem", required=True)
+    da_receipt.add_argument("--solution", required=True)
+    da_receipt.add_argument("--solution-cid", required=True)
+    da_receipt.add_argument("--solver-address", required=True)
+    da_receipt.add_argument("--salt", required=True)
+    # Legacy commit-time off-chain-blob receipt metadata: optional. The DA proof
+    # is the sha256 anchor + reveal-tx/store-locator, not these fields.
+    da_receipt.add_argument("--commit-provider", help="optional legacy commit-receipt provider")
+    da_receipt.add_argument("--commit-receipt-uri", help="optional legacy commit-receipt URI")
+    da_receipt.add_argument("--commit-block-reference", help="optional legacy commit-receipt block reference")
+    # DA mode: on-chain problems carry bytes in the reveal calldata (--reveal-tx
+    # required); off-chain (large-certificate) problems keep bytes in a
+    # content-addressed store gated by the same sha256 anchor (--store-locator).
+    da_receipt.add_argument("--da-mode", choices=["onchain", "offchain"], default="onchain")
+    da_receipt.add_argument("--reveal-tx", help="reveal tx hash carrying the solution calldata (required for onchain da-mode)")
+    da_receipt.add_argument("--store-locator", help="content-addressed store locator (required for offchain da-mode)")
+    da_receipt.add_argument("--solution-bytes-length", type=int)
+    # Arweave is now an OPTIONAL off-chain mirror, no longer required.
+    da_receipt.add_argument("--arweave-txid")
+    da_receipt.add_argument("--arweave-receipt-uri")
+    da_receipt.add_argument("--output")
+    da_receipt.set_defaults(func=_cmd_da_receipt)
+
+    da_verify = subparsers.add_parser(
+        "da-verify",
+        help="verify canonical DA/permanence evidence before finalize",
+    )
+    da_verify.add_argument("--evidence", required=True)
+    da_verify.add_argument("--problem")
+    da_verify.add_argument(
+        "--solution",
+        help="solution file to bind by sha256; omitting it downgrades the pass to structure-only (exit 3)",
+    )
+    da_verify.set_defaults(func=_cmd_da_verify)
+
+    runner_plan = subparsers.add_parser(
+        "runner-plan",
+        help="decide whether the verifier runner may start the next queued job",
+    )
+    runner_plan.add_argument("--queue", required=True)
+    runner_plan.add_argument("--total-memory-mb", type=int)
+    runner_plan.add_argument("--available-memory-mb", type=int)
+    runner_plan.add_argument("--swap-used-mb", type=int)
+    runner_plan.add_argument("--max-running", type=int, default=1)
+    runner_plan.add_argument("--reserve-memory-mb", type=int, default=8192)
+    runner_plan.add_argument("--max-swap-used-mb", type=int, default=1024)
+    runner_plan.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_plan.add_argument("--now-utc")
+    runner_plan.set_defaults(func=_cmd_runner_plan)
+
+    runner_work = subparsers.add_parser(
+        "runner-work-once",
+        help="lease one queued verifier job, run it, write transcript, update queue",
+    )
+    runner_work.add_argument("--queue", required=True)
+    runner_work.add_argument("--transcripts", required=True)
+    runner_work.add_argument("--lease-seconds", type=int, default=3600)
+    runner_work.add_argument("--total-memory-mb", type=int)
+    runner_work.add_argument("--available-memory-mb", type=int)
+    runner_work.add_argument("--swap-used-mb", type=int)
+    runner_work.add_argument("--max-running", type=int, default=1)
+    runner_work.add_argument("--reserve-memory-mb", type=int, default=8192)
+    runner_work.add_argument("--max-swap-used-mb", type=int, default=1024)
+    runner_work.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_work.add_argument("--now-utc")
+    runner_work.set_defaults(func=_cmd_runner_work_once)
+
+    runner_drain = subparsers.add_parser(
+        "runner-drain",
+        help="keep draining queued verifier jobs, rechecking memory before each lease",
+    )
+    runner_drain.add_argument("--queue", required=True)
+    runner_drain.add_argument("--transcripts", required=True)
+    runner_drain.add_argument("--lease-seconds", type=int, default=3600)
+    runner_drain.add_argument("--poll-seconds", type=float, default=30.0)
+    runner_drain.add_argument("--max-iterations", type=int)
+    runner_drain.add_argument("--max-jobs", type=int)
+    runner_drain.add_argument("--total-memory-mb", type=int)
+    runner_drain.add_argument("--available-memory-mb", type=int)
+    runner_drain.add_argument("--swap-used-mb", type=int)
+    runner_drain.add_argument("--max-running", type=int, default=1)
+    runner_drain.add_argument("--reserve-memory-mb", type=int, default=8192)
+    runner_drain.add_argument("--max-swap-used-mb", type=int, default=1024)
+    runner_drain.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_drain.set_defaults(func=_cmd_runner_drain)
+
+    runner_alerts = subparsers.add_parser(
+        "runner-alerts",
+        help="build challenge/ops alerts from runner transcripts",
+    )
+    runner_alerts.add_argument("--transcripts", help="directory containing runner transcript JSON files")
+    runner_alerts.add_argument(
+        "--transcript",
+        action="append",
+        help="single runner transcript JSON file; repeat as needed",
+    )
+    runner_alerts.add_argument("--now-utc")
+    runner_alerts.add_argument("--output")
+    runner_alerts.add_argument(
+        "--fail-on-alert",
+        action="store_true",
+        help="return exit code 2 when any alert is emitted",
+    )
+    runner_alerts.set_defaults(func=_cmd_runner_alerts)
+
+    runner_burst = subparsers.add_parser(
+        "runner-burst-validate",
+        help="validate and hash a Gate 1 verifier runner burst/OOM rehearsal report",
+    )
+    runner_burst.add_argument("--report", required=True)
+    runner_burst.add_argument("--output")
+    runner_burst.set_defaults(func=_cmd_runner_burst_validate)
+
+    incident_drill = subparsers.add_parser(
+        "incident-drill-validate",
+        help="validate and hash a completed incident drill / bug bounty evidence report",
+    )
+    incident_drill.add_argument("--report", required=True)
+    _add_attestation_validation_args(incident_drill)
+    incident_drill.add_argument("--output")
+    incident_drill.set_defaults(func=_cmd_incident_drill_validate)
+
+    adversarial_campaign = subparsers.add_parser(
+        "adversarial-campaign-validate",
+        help="validate and hash a Gate 1 adversarial testnet campaign report",
+    )
+    adversarial_campaign.add_argument("--report", required=True)
+    _add_attestation_validation_args(adversarial_campaign)
+    adversarial_campaign.add_argument("--output")
+    adversarial_campaign.set_defaults(func=_cmd_adversarial_campaign_validate)
+
+    governance_signoff = subparsers.add_parser(
+        "governance-signoff-validate",
+        help="validate and hash Gate 2 custody/governance signoff evidence",
+    )
+    governance_signoff.add_argument("--report", required=True)
+    _add_attestation_validation_args(governance_signoff)
+    governance_signoff.add_argument("--output")
+    governance_signoff.set_defaults(func=_cmd_governance_signoff_validate)
+
+    legal_memo = subparsers.add_parser(
+        "legal-memo-validate",
+        help="validate and hash Gate 2 legal/compliance memo evidence",
+    )
+    legal_memo.add_argument("--report", required=True)
+    _add_attestation_validation_args(legal_memo)
+    legal_memo.add_argument("--output")
+    legal_memo.set_defaults(func=_cmd_legal_memo_validate)
 
     return parser
 

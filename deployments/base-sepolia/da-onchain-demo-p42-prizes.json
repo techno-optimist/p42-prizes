@@ -1,0 +1,47 @@
+{
+  "schema": "p42-prizes/deployment-manifest/v1",
+  "status": "base-sepolia-testnet-demo",
+  "deployedAt": "2026-07-08T15:33:00.489Z",
+  "network": {
+    "name": "baseSepolia",
+    "chainId": 84532,
+    "explorerBaseUrl": "https://sepolia.basescan.org"
+  },
+  "roles": {
+    "deployer": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+    "owner": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+    "treasury": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+    "resolver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61"
+  },
+  "da": {
+    "onchainDa": true,
+    "maxSolutionBytes": 524288
+  },
+  "parameters": {
+    "alphaBps": 200,
+    "betaBps": 500,
+    "feeBps": 0,
+    "challengeWindowSeconds": 90,
+    "minPostingBondWei": "100000000000000",
+    "minCounterBondWei": "100000000000000",
+    "resolverDecisionBondWei": "10000000000000",
+    "resolverFraudWindowSeconds": 30
+  },
+  "contracts": {
+    "pool": {
+      "address": "0xEc3fFa068B28E48c6F9C840dFeBE992853224077"
+    },
+    "ledger": {
+      "address": "0xD0E0FFC2Bf0c298fD01C36E7cec70534476d7C44"
+    },
+    "submissions": {
+      "address": "0x20bA4a9F1D7F4Df963a71c414E0b9b99a26891D6"
+    },
+    "challenges": {
+      "address": "0xbc673EfB8F92091F8fe9100bBfE94A5c04ef71D1"
+    }
+  },
+  "indexer": {
+    "startBlock": 43878254
+  }
+}

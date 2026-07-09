@@ -12,13 +12,12 @@
     "status": { "type": "string" },
     "objective": {
       "type": "object",
-      "required": ["direction", "score_name", "seed_best", "current_best", "optimum", "min_improvement"],
+      "required": ["direction", "score_name", "seed_best", "optimum", "min_improvement"],
       "additionalProperties": false,
       "properties": {
         "direction": { "enum": ["minimize", "maximize"] },
         "score_name": { "type": "string", "minLength": 1 },
         "seed_best": { "$ref": "#/$defs/rational" },
-        "current_best": { "$ref": "#/$defs/rational" },
         "optimum": { "$ref": "#/$defs/rational" },
         "min_improvement": { "$ref": "#/$defs/rational" },
         "gauge": { "type": "string" }
@@ -31,7 +30,24 @@
       "properties": {
         "version": { "type": "string", "minLength": 1 },
         "image": { "type": "string", "minLength": 1 },
+        "image_repository": { "type": "string", "pattern": "^[^\\s@]+$" },
         "command": { "type": "string", "minLength": 1 },
+        "admission": {
+          "type": "object",
+          "required": ["trusted_host_keys"],
+          "additionalProperties": false,
+          "properties": {
+            "trusted_host_keys": {
+              "type": "array",
+              "minItems": 4,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$"
+              }
+            }
+          }
+        },
         "max_compute": {
           "type": "object",
           "required": ["wall_seconds", "memory_mb"],

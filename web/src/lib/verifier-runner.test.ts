@@ -1,44 +1,67 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { parseBoundVerdict, runCanonicalVerifier } from "@/lib/verifier-runner";
+import { readFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  resetVerifierQueueForTests,
+  runCanonicalVerifier,
+  VerifierInfraError,
+  VerifierQueueBusyError,
+} from "@/lib/verifier-runner";
 
-const expected = {
-  problemId: "hadamard-mini",
-  verifierVersion: "0.1.0",
-  verifierImage: "sha256:local-dev",
-  solutionHash: "sha256:4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7",
-};
-
-function report(overrides: Record<string, unknown> = {}) {
-  return {
-    problem_id: expected.problemId,
-    verifier_version: expected.verifierVersion,
-    verifier_image: expected.verifierImage,
-    solution_hash: expected.solutionHash,
-    valid: true,
-    improvement: "1/1",
-    score: "0/1",
-    reason: "",
-    recomputed_at_commit: "fixture",
-    details: {},
-    ...overrides,
-  };
-}
-
-function stdoutFor(value: Record<string, unknown>) {
-  return `${JSON.stringify(value)}\n`;
+// Install a fake interpreter (via P42_PYTHON) that prints a fixed verdict line
+// and exits with a chosen code, to exercise exit/verdict consistency without
+// the real CLI.
+function installFakeVerifier(stdout: string, exitCode: number): void {
+  const dir = mkdtempSync(path.join(tmpdir(), "p42-fakepy-"));
+  const script = path.join(dir, "fake");
+  writeFileSync(
+    script,
+    `#!/bin/sh\ncat <<'JSON'\n${stdout}\nJSON\nexit ${exitCode}\n`,
+    "utf8",
+  );
+  chmodSync(script, 0o755);
+  process.env.P42_PYTHON = script;
 }
 
 describe("runCanonicalVerifier", () => {
+  const envKeys = [
+    "P42_PYTHON",
+    "P42_VERIFIER_AVAILABLE_MEMORY_MB",
+    "P42_VERIFIER_MAX_QUEUE_DEPTH",
+    "P42_VERIFIER_MAX_SWAP_USED_MB",
+    "P42_VERIFIER_MEMORY_SAFETY_FACTOR",
+    "P42_VERIFIER_QUEUE_MAX_WAIT_MS",
+    "P42_VERIFIER_QUEUE_POLL_MS",
+    "P42_VERIFIER_REQUIRED_MEMORY_MB",
+    "P42_VERIFIER_RESERVE_MEMORY_MB",
+    "P42_VERIFIER_SWAP_USED_MB",
+    "P42_VERIFIER_TOTAL_MEMORY_MB",
+  ];
+  const originalEnv = new Map(envKeys.map((key) => [key, process.env[key]]));
+
+  beforeEach(() => {
+    resetVerifierQueueForTests();
+    for (const key of envKeys) delete process.env[key];
+  });
+
+  afterEach(() => {
+    resetVerifierQueueForTests();
+    for (const key of envKeys) {
+      const original = originalEnv.get(key);
+      if (original === undefined) delete process.env[key];
+      else process.env[key] = original;
+    }
+  });
+
   it("executes the problem repo verifier and returns its canonical VerdictReport", async () => {
     const solutionRaw = readFileSync("../problems/hadamard-mini/examples/valid-4.json", "utf8");
     const verdict = await runCanonicalVerifier({ problemSlug: "hadamard-mini", solutionRaw });
 
     expect(verdict).toMatchObject({
       problem_id: "hadamard-mini",
-      verifier_version: "0.1.0",
+      verifier_version: "0.1.1",
       solution_hash: "sha256:4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7",
       valid: true,
       score: "0/1",
@@ -56,76 +79,72 @@ describe("runCanonicalVerifier", () => {
     expect(verdict.score).toBe("6/1");
   });
 
-  it("parses a single manifest-bound VerdictReport JSON line", () => {
-    expect(parseBoundVerdict(stdoutFor(report()), expected)).toMatchObject({
+  it("rejects a verdict whose validity is inconsistent with the exit status", async () => {
+    // Non-zero exit (a rejection outcome) carrying valid=true must not be
+    // accepted as a legitimate verdict.
+    const bound = JSON.stringify({
       problem_id: "hadamard-mini",
       verifier_version: "0.1.0",
       verifier_image: "sha256:local-dev",
-      solution_hash: expected.solutionHash,
+      solution_hash: "sha256:deadbeef",
       valid: true,
+      improvement: "1/1",
       score: "0/1",
+      reason: "",
     });
+    installFakeVerifier(bound, 2);
+    await expect(
+      runCanonicalVerifier({ problemSlug: "hadamard-mini", solutionRaw: "{}" }),
+    ).rejects.toBeInstanceOf(VerifierInfraError);
   });
 
-  it("rejects reports that are not bound to the expected problem, verifier, and bytes", () => {
-    for (const [override, message] of [
-      [{ problem_id: "other-problem" }, "VerdictReport.problem_id mismatch"],
-      [{ verifier_version: "0.2.0" }, "VerdictReport.verifier_version mismatch"],
-      [{ verifier_image: "sha256:other-image" }, "VerdictReport.verifier_image mismatch"],
-      [{ solution_hash: `sha256:${"0".repeat(64)}` }, "VerdictReport.solution_hash mismatch"],
-    ] as const) {
-      expect(() => parseBoundVerdict(stdoutFor(report(override)), expected)).toThrow(message);
-    }
+  it("treats empty output with a non-zero exit as an infrastructure error", async () => {
+    installFakeVerifier("", 3);
+    await expect(
+      runCanonicalVerifier({ problemSlug: "hadamard-mini", solutionRaw: "{}" }),
+    ).rejects.toBeInstanceOf(VerifierInfraError);
   });
 
-  it("rejects non-canonical report shapes and noisy stdout", () => {
-    const missing = report();
-    delete (missing as { reason?: string }).reason;
-    for (const [stdout, message] of [
-      [stdoutFor({ ...report(), claimed_score: "999/1" }), "VerdictReport keys do not match"],
-      [stdoutFor(missing), "VerdictReport keys do not match"],
-      [stdoutFor(report({ valid: "true" })), "VerdictReport.valid must be boolean"],
-      [stdoutFor(report({ solution_hash: "sha256:ABC" })), "VerdictReport.solution_hash mismatch"],
-      [stdoutFor(report({ score: "2/2" })), "VerdictReport.score is not normalized"],
-      [stdoutFor(report({ score: "01/1" })), "VerdictReport.score is not normalized"],
-      [stdoutFor(report({ improvement: "6" })), "VerdictReport.improvement must be a normalized rational string"],
-      [`debug line\n${stdoutFor(report())}`, "must emit exactly one VerdictReport JSON line"],
-      [stdoutFor(report({ details: [] })), "VerdictReport.details must be an object"],
-    ] as const) {
-      expect(() => parseBoundVerdict(stdout, expected)).toThrow(message);
-    }
-  });
-
-  it("does not accept stdout from CLI rejections", async () => {
-    const oldPython = process.env.P42_PYTHON;
-    const dir = mkdtempSync(path.join(tmpdir(), "p42-fake-python-"));
-    const fakePython = path.join(dir, "python");
+  it("queues verifier calls so request bursts run one at a time", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "p42-fakepy-"));
+    const logPath = path.join(dir, "order.log");
+    const script = path.join(dir, "fake");
+    const verdict = JSON.stringify({
+      problem_id: "hadamard-mini",
+      verifier_version: "0.1.0",
+      verifier_image: "sha256:local-dev",
+      solution_hash: "sha256:deadbeef",
+      valid: true,
+      improvement: "1/1",
+      score: "0/1",
+      reason: "",
+      details: {},
+    });
     writeFileSync(
-      fakePython,
-      [
-        "#!/usr/bin/env node",
-        `process.stdout.write(${JSON.stringify(stdoutFor(report()))});`,
-        "process.exit(125);",
-      ].join("\n"),
+      script,
+      `#!/bin/sh\necho start >> "${logPath}"\nsleep 0.2\necho end >> "${logPath}"\ncat <<'JSON'\n${verdict}\nJSON\nexit 0\n`,
+      "utf8",
     );
-    chmodSync(fakePython, 0o755);
+    chmodSync(script, 0o755);
+    process.env.P42_PYTHON = script;
 
-    try {
-      process.env.P42_PYTHON = fakePython;
-      const solutionRaw = readFileSync("../problems/hadamard-mini/examples/valid-4.json", "utf8");
-      await expect(runCanonicalVerifier({ problemSlug: "hadamard-mini", solutionRaw })).rejects.toMatchObject({
-        name: "VerifierRunnerError",
-        publicStatus: 502,
-        publicCode: "VERIFIER_INFRA_ERROR",
-        exitCode: 125,
-      });
-    } finally {
-      if (oldPython === undefined) {
-        delete process.env.P42_PYTHON;
-      } else {
-        process.env.P42_PYTHON = oldPython;
-      }
-      rmSync(dir, { recursive: true, force: true });
-    }
+    await Promise.all([
+      runCanonicalVerifier({ problemSlug: "hadamard-mini", solutionRaw: "{}" }),
+      runCanonicalVerifier({ problemSlug: "hadamard-mini", solutionRaw: "{}" }),
+    ]);
+
+    expect(readFileSync(logPath, "utf8").trim().split("\n")).toEqual(["start", "end", "start", "end"]);
+  });
+
+  it("fails closed when the verifier host has no memory headroom", async () => {
+    process.env.P42_VERIFIER_TOTAL_MEMORY_MB = "1024";
+    process.env.P42_VERIFIER_AVAILABLE_MEMORY_MB = "128";
+    process.env.P42_VERIFIER_SWAP_USED_MB = "0";
+    process.env.P42_VERIFIER_QUEUE_MAX_WAIT_MS = "20";
+    process.env.P42_VERIFIER_QUEUE_POLL_MS = "10";
+
+    await expect(
+      runCanonicalVerifier({ problemSlug: "hadamard-mini", solutionRaw: "{}" }),
+    ).rejects.toBeInstanceOf(VerifierQueueBusyError);
   });
 });

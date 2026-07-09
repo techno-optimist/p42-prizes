@@ -1,13 +1,14 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
+import { enforceMutationApiKey } from "@/lib/api-auth";
 import { getProblemById } from "@/lib/data";
 import {
-  cancelIdempotentReservation,
-  rememberIdempotentResponse,
-  replayIdempotentResponse,
-  reserveIdempotentRequest,
+  beginIdempotentRequest,
+  completeIdempotentOperation,
+  releaseIdempotencyReservation,
+  type IdempotencyReservation,
 } from "@/lib/idempotency";
-import { commitHash, createCommit, verifySolverSignature } from "@/lib/portal-state";
+import { commitHash, persistCommit, prepareCommit, verifySolverSignature } from "@/lib/portal-state";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
 const commitSchema = z.object({
@@ -21,13 +22,11 @@ const commitSchema = z.object({
 });
 
 export async function POST(req: Request) {
-  let idempotencyReservation: { route: string; body: unknown } | undefined;
-  let sideEffectCommitted = false;
+  let idempotency: IdempotencyReservation | undefined;
   try {
-    enforceRateLimit(req, rateLimitPolicy("commit", { limit: 30, windowMs: 60_000 }));
+    const principal = enforceMutationApiKey(req, "submissions.commit");
+    enforceRateLimit(req, rateLimitPolicy("commit", { limit: 30, windowMs: 60_000 }), principal.rateLimitSubject);
     const body = await readJson(req, commitSchema);
-    const replay = replayIdempotentResponse(req, "submissions.commit", body);
-    if (replay) return replay;
 
     const problemId = body.problem_id;
     const problem = getProblemById(problemId);
@@ -35,12 +34,8 @@ export async function POST(req: Request) {
     if (problem.status === "locked" || problem.status === "resolved" || problem.slug !== "hadamard-mini") {
       return json({ error: "Submissions are enabled only for runnable Phase 0 pilot problems" }, { status: 409 });
     }
-    // dev_salt lets the server compute the commit hash and skips the solver signature, so it is a
-    // signature bypass. Gate it on an explicit opt-in flag in EVERY environment (not just when
-    // NODE_ENV === "production") — otherwise any preview/staging/testnet deploy where NODE_ENV is
-    // not exactly "production" lets anyone commit under an arbitrary solver_address.
-    if (body.dev_salt && process.env.P42_ALLOW_DEV_SALT !== "1") {
-      return json({ error: "dev_salt is disabled unless P42_ALLOW_DEV_SALT=1 (local development only)" }, { status: 400 });
+    if (body.dev_salt && process.env.NODE_ENV === "production" && process.env.P42_ALLOW_DEV_SALT !== "1") {
+      return json({ error: "dev_salt is disabled outside local development" }, { status: 400 });
     }
     if (!body.commit_hash && !body.dev_salt) {
       return json({ error: "commit_hash is required unless dev_salt is supplied for local simulation" }, { status: 400 });
@@ -70,13 +65,11 @@ export async function POST(req: Request) {
       });
     }
 
-    const reservedReplay = reserveIdempotentRequest(req, "submissions.commit", body);
-    if (reservedReplay) return reservedReplay;
-    if (req.headers.get("Idempotency-Key")) {
-      idempotencyReservation = { route: "submissions.commit", body };
-    }
+    const attempt = beginIdempotentRequest(req, "submissions.commit", body);
+    if (attempt.replay) return attempt.replay;
+    idempotency = attempt.reservation;
 
-    const commit = createCommit({
+    const commit = prepareCommit({
       problemId,
       agentName: body.agent_name,
       solutionCid: body.solution_cid,
@@ -84,30 +77,26 @@ export async function POST(req: Request) {
       commitHash: commitHashValue,
       devSalt: body.dev_salt,
     });
-    sideEffectCommitted = true;
 
     const responseBody = {
       commit,
       reveal_after: commit.createdAt,
+      expires_at: commit.expiresAt,
+      commit_domain: "local-phase-0",
+      chain_commit_version: "p42:v1",
+      chain_compatible: false,
       note: body.dev_salt
-        ? "Phase 0 portal computed the commit from dev_salt; production clients must precompute commit_hash and sign the authorization message off-server."
-        : "Commit accepted with solver signature over the P42 authorization message.",
+        ? "Local Phase 0 computed p42:v0 from dev_salt. This non-settlement commitment is not a chain p42:v1 commitment."
+        : "Local Phase 0 p42:v0 commit accepted with solver authorization. It is not a chain p42:v1 commitment.",
     };
-
-    const headers = rememberIdempotentResponse(req, "submissions.commit", body, responseBody, 201);
-    idempotencyReservation = undefined;
-    return json(responseBody, {
-      status: 201,
-      headers,
+    const completed = completeIdempotentOperation(idempotency, 201, (state) => {
+      persistCommit(state, commit);
+      return responseBody;
     });
+
+    return json(completed.response, { status: completed.status, headers: completed.headers });
   } catch (error) {
-    if (idempotencyReservation && !sideEffectCommitted) {
-      try {
-        cancelIdempotentReservation(req, idempotencyReservation.route, idempotencyReservation.body, "side-effect-not-committed");
-      } catch {
-        // Preserve the original route error; a failed cancellation leaves the key pending fail-closed.
-      }
-    }
+    releaseIdempotencyReservation(idempotency);
     return apiError(error);
   }
 }

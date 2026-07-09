@@ -1,0 +1,28 @@
+# Deny-by-default Docker build context (audit F22).
+#
+# Dockerfile.verifier is built from the repo root, so without this file the
+# ENTIRE repo — including gitignored key material such as
+# deployer-testnet.key.json (plaintext testnet owner/treasury/resolver key) —
+# is shipped to the Docker daemon as build context. Exclude everything, then
+# re-include exactly what Dockerfile.verifier COPYs.
+*
+
+# Dockerfile.verifier COPY sources: `COPY src ...` and `COPY problems/${PROBLEM} ...`.
+!src
+!problems
+
+# The Dockerfile itself (the classic builder reads it from the context;
+# BuildKit sends it out-of-band, so this is harmless there).
+!Dockerfile.verifier
+
+# Belt-and-braces: never ship key material or env files even if one ever
+# lands inside a re-included tree above.
+**/*.key.json
+**/.env
+**/.env.*
+**/*.pem
+
+# Python build junk: nondeterministic bytes that would bloat the image and
+# perturb the verifier-image hash.
+**/__pycache__
+**/*.pyc

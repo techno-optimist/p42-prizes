@@ -1,0 +1,118 @@
+{
+  "schema": "p42-verifier-images/v1",
+  "what": "Self-contained verifier images built via Dockerfile.verifier (bundles p42_prizes + make, preserves ../../src layout). Each built cleanly; each valid example was re-run through the REAL hardened runner sandbox (runner_sandbox.build_sandbox_command).",
+  "runtime": "colima (linux/aarch64) on the dev host",
+  "note": "image_id is the local content digest; a registry-pullable digest requires pushing to GHCR/Docker Hub (needs registry creds) before updating problem.yaml + admit-ready.",
+  "images": [
+    {
+      "problem": "hadamard-mini",
+      "image_id": "sha256:5067a6fd7b053c261ee991d7a6a85bdcf07388636ce4f904dc4ebd5ee61fec66",
+      "example": "valid-4.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "1/1",
+        "elapsed_ms": 445
+      }
+    },
+    {
+      "problem": "hadamard-668-defect",
+      "image_id": "sha256:6535624e5f56c3c99c6b2c68f939d352c55d539c310dfd8e89dcd0cbdc911d1f",
+      "example": "sylvester-prefix.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "167334/1",
+        "elapsed_ms": 209
+      }
+    },
+    {
+      "problem": "erdos-min-overlap",
+      "image_id": "sha256:df83fe0e41b1793facfaee80516ee2faa565d428f4bee6f70a4cb9a8ab197a7b",
+      "example": "hyra-upper.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "224275765737895474399165101424078829860110626591708732724080463887/3741444197802851304404516484910431627947663875649308401000000000000000",
+        "elapsed_ms": 594
+      }
+    },
+    {
+      "problem": "edges-vs-triangles",
+      "image_id": "sha256:e624ce579424a359adb193d421d4228983be416b42bc279b9ac43da8dcd91a38",
+      "example": "rational-curve-sample.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "6753217682861161/23437500000000000",
+        "elapsed_ms": 156
+      }
+    },
+    {
+      "problem": "arithmetic-kakeya",
+      "image_id": "sha256:f540b9b2931cdad58dc1429337f9681f743bbd9b62f79c72bd9677c01b2c98e2",
+      "example": "kt-2x2-forcing.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "1/4",
+        "elapsed_ms": 136
+      }
+    },
+    {
+      "problem": "autoconvolution-c1-upper",
+      "image_id": "sha256:82974a483d147d48ab5e644c0db6a779aaa9d1104dcb30a9de42effac668633b",
+      "example": "hyra-upper.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "4975952287088035714606692741685508105665923940787919332552875037837538/10008961702715850455872036862958802052289156042841554837278437518918769",
+        "elapsed_ms": 4942
+      }
+    },
+    {
+      "problem": "autoconvolution-c2-lower",
+      "image_id": "sha256:4debd8e7814a41a5c74d364562ae2e33441631468f0456d696dcd9052107ced7",
+      "example": "hyra-lower.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "41814814882098817578561662765218369710725782/1825886655252640748372293355479166572731699075",
+        "elapsed_ms": 12415
+      }
+    },
+    {
+      "problem": "signed-autoconvolution-c3-upper",
+      "image_id": "sha256:5d09374ece0cf7ac9f5e3db7292c64a2b246a222696bde551ba9af3683f945a3",
+      "example": "organon-upper.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "771977726382453507261179908263840036890006941231187/16185489749979904942492143118932256618749730681887458",
+        "elapsed_ms": 9698
+      }
+    },
+    {
+      "problem": "mertens-lp-ceiling-k12000",
+      "image_id": "sha256:e3d10fcc10a55df3642bb99a67ca6a608bd204147aedcf16fac18b6c96ee6e06",
+      "example": "certificate-k12000.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "628097423186796073563/250000000000000000000000",
+        "elapsed_ms": 13881
+      }
+    },
+    {
+      "problem": "pnt-sparse-mertens-construction",
+      "image_id": "sha256:0b96bd654288b9df6bab08281f635d87bb7535cc55f1bce0f841cb2cd972f3ad",
+      "example": "chronos-96000.json",
+      "sandbox": {
+        "ran": true,
+        "valid": true,
+        "improvement": "9974252022196793/10000000000000000",
+        "elapsed_ms": 2174
+      }
+    }
+  ]
+}

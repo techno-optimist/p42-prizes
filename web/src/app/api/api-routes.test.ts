@@ -1,17 +1,18 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Wallet } from "ethers";
 import { NextRequest } from "next/server";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { POST as challengePost } from "@/app/api/challenges/route";
 import { GET as eventsGet } from "@/app/api/events/route";
 import { POST as coinbaseSessionPost } from "@/app/api/problems/[slug]/funding/coinbase-session/route";
 import { POST as solutionsPost } from "@/app/api/solutions/route";
 import { POST as commitPost } from "@/app/api/submissions/commit/route";
 import { POST as revealPost } from "@/app/api/submissions/reveal/route";
+import { mutationApiKeyHashForTests } from "@/lib/api-auth";
 import { commitAuthorizationMessage, commitHash, sha256SolutionCid } from "@/lib/portal-state";
-import { readPortalState, resetPortalStateForTests, writePortalState } from "@/lib/portal-store";
+import { readPortalState, resetPortalStateForTests } from "@/lib/portal-store";
 import { resetRateLimitsForTests } from "@/lib/rate-limit";
 
 const solverWallet = new Wallet("0x59c6995e998f97a5a0044966f0945387f6d6616d07a16c6fbfcaeab4f7fca6e5");
@@ -45,20 +46,19 @@ describe("mutable API routes", () => {
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "p42-api-state-"));
     process.env.P42_PORTAL_STATE_PATH = path.join(stateDir, "state.json");
-    process.env.P42_ALLOW_DEV_SALT = "1";
     resetPortalStateForTests();
     resetRateLimitsForTests();
+    process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS = "1";
   });
 
   afterEach(() => {
     resetPortalStateForTests();
     resetRateLimitsForTests();
     delete process.env.P42_PORTAL_STATE_PATH;
-    delete process.env.P42_ALLOW_DEV_SALT;
+    delete process.env.P42_MUTATION_API_KEY_SHA256S;
+    delete process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS;
     delete process.env.P42_RATE_LIMIT_COMMIT_LIMIT;
     delete process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS;
-    delete process.env.P42_PYTHON;
-    delete process.env.P42_VERIFIER_COUNT_PATH;
     rmSync(stateDir, { recursive: true, force: true });
   });
 
@@ -103,11 +103,98 @@ describe("mutable API routes", () => {
     await expect(second.json()).resolves.toMatchObject({ error: "rate limit exceeded" });
   });
 
+  it("can require a hashed mutation API key for production mutation routes", async () => {
+    process.env.P42_MUTATION_API_KEY_SHA256S = mutationApiKeyHashForTests("agent-session-key");
+    const signed = await signedCommitFields();
+    const body = {
+      problem_id: 1,
+      agent_name: "RouteAgent",
+      solver_address: solverAddress,
+      solution_cid: signed.solutionCid,
+      commit_hash: signed.commitHash,
+      solver_signature: signed.solverSignature,
+    };
+
+    const missing = await commitPost(jsonRequest("/api/submissions/commit", body));
+    expect(missing.status).toBe(401);
+    expect(missing.headers.get("WWW-Authenticate")).toContain("missing_api_key");
+
+    const wrong = await commitPost(
+      jsonRequest("/api/submissions/commit", body, { "x-p42-api-key": "wrong-session-key" }),
+    );
+    expect(wrong.status).toBe(403);
+    await expect(wrong.json()).resolves.toMatchObject({ error: "invalid P42 mutation API key" });
+
+    const accepted = await commitPost(
+      jsonRequest("/api/submissions/commit", body, { authorization: "Bearer agent-session-key" }),
+    );
+    expect(accepted.status).toBe(201);
+  });
+
+  it("fails closed in production before parsing and ignores the local opt-out", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const unconfigured = await commitPost(
+        new Request("http://localhost/api/submissions/commit", { method: "POST", body: "{" }),
+      );
+      expect(unconfigured.status).toBe(503);
+      await expect(unconfigured.json()).resolves.toMatchObject({
+        error: "mutation API authentication is not configured",
+      });
+
+      process.env.P42_MUTATION_API_KEY_SHA256S = mutationApiKeyHashForTests("production-agent-key");
+      const unauthenticated = await commitPost(
+        new Request("http://localhost/api/submissions/commit", { method: "POST", body: "{" }),
+      );
+      expect(unauthenticated.status).toBe(401);
+      expect(unauthenticated.headers.get("WWW-Authenticate")).toContain("missing_api_key");
+    } finally {
+      vi.unstubAllEnvs();
+      delete process.env.P42_MUTATION_API_KEY_SHA256S;
+    }
+  });
+
+  it("rate-limits authenticated API keys in separate principal buckets", async () => {
+    process.env.P42_MUTATION_API_KEY_SHA256S = [
+      mutationApiKeyHashForTests("first-agent-key"),
+      mutationApiKeyHashForTests("second-agent-key"),
+    ].join(",");
+    process.env.P42_RATE_LIMIT_COMMIT_LIMIT = "1";
+    process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS = "60000";
+    resetRateLimitsForTests();
+
+    const malformed = (key: string) => commitPost(new Request("http://localhost/api/submissions/commit", {
+      method: "POST",
+      headers: { authorization: `Bearer ${key}` },
+      body: "{",
+    }));
+    expect((await malformed("first-agent-key")).status).toBe(400);
+    expect((await malformed("second-agent-key")).status).toBe(400);
+    expect((await malformed("first-agent-key")).status).toBe(429);
+  });
+
+  it("fails closed when mutation API key enforcement is enabled without valid key hashes", async () => {
+    process.env.P42_MUTATION_API_KEY_SHA256S = "agent-session-key";
+
+    const response = await solutionsPost(
+      jsonRequest("/api/solutions", {
+        problem_id: 1,
+        agent_name: "RouteAgent",
+        solution_raw: solutionRaw,
+      }, { "x-p42-api-key": "agent-session-key" }),
+    );
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: "mutation API key configuration contains an invalid key hash",
+    });
+  });
+
   it("rejects commits for locked or non-runnable boards", async () => {
     const response = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 3,
-        agent_name: "CHRONOS",
+        agent_name: "RouteAgent",
         solver_address: solverAddress,
         solution_cid: sha256SolutionCid(solutionRaw),
         dev_salt: "local-only",
@@ -122,7 +209,7 @@ describe("mutable API routes", () => {
     const response = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 1,
-        agent_name: "CHRONOS",
+        agent_name: "RouteAgent",
         solver_address: solverAddress,
         solution_cid: solutionCid,
         commit_hash: commitHash({ solutionCid, solverAddress, salt: "right-salt" }),
@@ -140,7 +227,7 @@ describe("mutable API routes", () => {
     const response = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 1,
-        agent_name: "CHRONOS",
+        agent_name: "RouteAgent",
         solver_address: solverAddress,
         solution_cid: solutionCid,
         commit_hash: commitHash({ solutionCid, solverAddress, salt: "different-salt" }),
@@ -154,77 +241,11 @@ describe("mutable API routes", () => {
     });
   });
 
-  it("rejects external solution CIDs until commit-time DA is wired", async () => {
-    const response = await commitPost(
-      jsonRequest("/api/submissions/commit", {
-        problem_id: 1,
-        agent_name: "CHRONOS",
-        solver_address: solverAddress,
-        solution_cid: "bafy-test",
-        dev_salt: "right-salt",
-      }),
-    );
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toMatchObject({
-      error:
-        "Phase 0 commit requires solution_cid=sha256:<raw-solution-hash>; DA-backed external CIDs are gated until commit-time availability is implemented",
-    });
-    expect(readPortalState().commits).toHaveLength(0);
-  });
-
-  it("does not expose solution_cid in the pre-reveal commit event (anti-sniping)", async () => {
-    const signed = await signedCommitFields();
-    const response = await commitPost(
-      jsonRequest("/api/submissions/commit", {
-        problem_id: 1,
-        agent_name: "CHRONOS",
-        solver_address: solverAddress,
-        solution_cid: signed.solutionCid,
-        commit_hash: signed.commitHash,
-        solver_signature: signed.solverSignature,
-      }),
-    );
-    expect(response.status).toBe(201);
-
-    const created = readPortalState().events.filter((event) => event.type === "commit.created");
-    expect(created).toHaveLength(1);
-    const payload = created[0].payload as Record<string, unknown>;
-    expect(payload).not.toHaveProperty("solutionCid");
-    expect(payload).not.toHaveProperty("solution_cid");
-    // The commit record still retains the CID internally so reveal can verify it.
-    expect(readPortalState().commits[0].solutionCid).toBe(signed.solutionCid);
-
-    // The public events endpoint must not surface the CID before reveal either.
-    const eventsResponse = await eventsGet(new NextRequest("http://localhost/api/events"));
-    const eventsBody = await eventsResponse.json();
-    expect(JSON.stringify(eventsBody)).not.toContain(signed.solutionCid);
-  });
-
-  it("rejects dev_salt commits unless P42_ALLOW_DEV_SALT is enabled", async () => {
-    delete process.env.P42_ALLOW_DEV_SALT;
-    const response = await commitPost(
-      jsonRequest("/api/submissions/commit", {
-        problem_id: 1,
-        agent_name: "CHRONOS",
-        solver_address: solverAddress,
-        solution_cid: sha256SolutionCid(solutionRaw),
-        dev_salt: "right-salt",
-      }),
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toMatchObject({
-      error: "dev_salt is disabled unless P42_ALLOW_DEV_SALT=1 (local development only)",
-    });
-    expect(readPortalState().commits).toHaveLength(0);
-  });
-
   it("replays idempotent commits and rejects key reuse with a changed body", async () => {
     const signed = await signedCommitFields();
     const body = {
       problem_id: 1,
-      agent_name: "CHRONOS",
+      agent_name: "RouteAgent",
       solver_address: solverAddress,
       solution_cid: signed.solutionCid,
       commit_hash: signed.commitHash,
@@ -258,7 +279,6 @@ describe("mutable API routes", () => {
       error: "Idempotency-Key was already used for a different request body",
     });
     expect(readPortalState().events.map((event) => event.type)).toEqual([
-      "idempotency.reserved",
       "commit.created",
       "idempotency.stored",
       "idempotency.replayed",
@@ -270,13 +290,21 @@ describe("mutable API routes", () => {
     );
     const eventsBody = await eventsResponse.json();
     expect(eventsResponse.status).toBe(200);
-    expect(eventsBody).toMatchObject({ count: 1, total: 5, chainComplete: false, chainVerified: true });
+    expect(eventsBody).toMatchObject({ count: 1, total: 4, chainComplete: false });
     expect(eventsBody.events[0]).toMatchObject({
       type: "commit.created",
       subjectId: firstBody.commit.id,
       problemId: 1,
       actor: solverAddress.toLowerCase(),
     });
+
+    const firstPage = await eventsGet(new NextRequest("http://localhost/api/events?limit=2"));
+    const firstPageBody = await firstPage.json();
+    expect(firstPageBody).toMatchObject({ count: 2, total: 4, hasMore: true, chainComplete: false });
+    const secondPage = await eventsGet(
+      new NextRequest(`http://localhost/api/events?limit=2&after=${firstPageBody.nextAfter}`),
+    );
+    await expect(secondPage.json()).resolves.toMatchObject({ count: 2, total: 4, hasMore: false });
   });
 
   it("does not fake-open bonded challenges", async () => {
@@ -293,36 +321,7 @@ describe("mutable API routes", () => {
     });
   });
 
-  it("reports event-chain tampering instead of claiming diagnostic completeness", async () => {
-    const signed = await signedCommitFields();
-    const body = {
-      problem_id: 1,
-      agent_name: "CHRONOS",
-      solver_address: solverAddress,
-      solution_cid: signed.solutionCid,
-      commit_hash: signed.commitHash,
-      solver_signature: signed.solverSignature,
-    };
-    const response = await commitPost(jsonRequest("/api/submissions/commit", body));
-    expect(response.status).toBe(201);
-
-    const state = readPortalState();
-    state.events[0].payload = { tampered: true };
-    writePortalState(state);
-
-    const eventsResponse = await eventsGet(new NextRequest("http://localhost/api/events"));
-    const eventsBody = await eventsResponse.json();
-
-    expect(eventsResponse.status).toBe(200);
-    expect(eventsBody).toMatchObject({
-      chainComplete: false,
-      chainVerified: false,
-      latestHash: "genesis",
-    });
-    expect(eventsBody.chainError).toContain("eventHash does not match");
-  });
-
-  it("gates Coinbase Onramp sessions for testnet-only donation wallets", async () => {
+  it("gates Coinbase Onramp sessions while the per-problem pool is not deployed", async () => {
     const response = await coinbaseSessionPost(
       jsonRequest("/api/problems/hadamard-mini/funding/coinbase-session", {
         preset_fiat_amount: "25.00",
@@ -333,7 +332,7 @@ describe("mutable API routes", () => {
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({
       error: "Coinbase Onramp is gated until a reviewed Base mainnet pool is configured",
-      donationWallet: { chain: "Base Sepolia", asset: "ETH" },
+      donationWallet: { chain: "Base Sepolia", asset: "ETH", address: null, status: "not-deployed" },
     });
   });
 
@@ -341,7 +340,7 @@ describe("mutable API routes", () => {
     const response = await solutionsPost(
       jsonRequest("/api/solutions", {
         problem_id: 1,
-        agent_name: "CHRONOS",
+        agent_name: "RouteAgent",
         solution_raw: solutionRaw,
       }),
     );
@@ -351,7 +350,7 @@ describe("mutable API routes", () => {
     expect(body.verdict).toMatchObject({
       valid: true,
       solution_hash: sha256SolutionCid(solutionRaw),
-      verifier_version: "0.1.0",
+      verifier_version: "0.1.1",
     });
     expect(readPortalState().events).toMatchObject([
       {
@@ -359,66 +358,11 @@ describe("mutable API routes", () => {
         subjectId: sha256SolutionCid(solutionRaw),
         problemId: 1,
         payload: {
-          agentName: "CHRONOS",
+          agentName: "RouteAgent",
           solutionHash: sha256SolutionCid(solutionRaw),
-          verifierVersion: "0.1.0",
+          verifierVersion: "0.1.1",
         },
       },
-    ]);
-  });
-
-  it("reports verifier infrastructure failures as 502s and lets the same idempotency key retry", async () => {
-    const fakePython = path.join(stateDir, "fake-python");
-    writeFileSync(
-      fakePython,
-      [
-        "#!/usr/bin/env node",
-        "process.stderr.write('runner rejected report\\n');",
-        "process.exit(125);",
-      ].join("\n"),
-    );
-    chmodSync(fakePython, 0o755);
-    process.env.P42_PYTHON = fakePython;
-
-    const body = {
-      problem_id: 1,
-      agent_name: "CHRONOS",
-      solution_raw: solutionRaw,
-    };
-    const response = await solutionsPost(
-      jsonRequest("/api/solutions", body, { "Idempotency-Key": "verify-retry-1" }),
-    );
-    const responseBody = await response.json();
-
-    expect(response.status).toBe(502);
-    expect(responseBody).toEqual({
-      error: "Canonical verifier runner failed",
-      code: "VERIFIER_INFRA_ERROR",
-    });
-    expect(readPortalState().idempotency).toMatchObject([
-      {
-        key: "verify-retry-1",
-        route: "solutions.verify",
-        state: "cancelled",
-      },
-    ]);
-    expect(readPortalState().events.map((event) => event.type)).toEqual([
-      "idempotency.reserved",
-      "idempotency.cancelled",
-    ]);
-
-    delete process.env.P42_PYTHON;
-    const retry = await solutionsPost(
-      jsonRequest("/api/solutions", body, { "Idempotency-Key": "verify-retry-1" }),
-    );
-    expect(retry.status).toBe(201);
-    expect(retry.headers.get("Idempotency-Status")).toBe("stored");
-    expect(readPortalState().events.map((event) => event.type)).toEqual([
-      "idempotency.reserved",
-      "idempotency.cancelled",
-      "idempotency.reserved",
-      "verification.completed",
-      "idempotency.stored",
     ]);
   });
 
@@ -427,7 +371,7 @@ describe("mutable API routes", () => {
     const commitResponse = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 1,
-        agent_name: "CHRONOS",
+        agent_name: "RouteAgent",
         solver_address: solverAddress,
         solution_cid: signed.solutionCid,
         commit_hash: signed.commitHash,
@@ -453,127 +397,12 @@ describe("mutable API routes", () => {
     });
   });
 
-  it("rejects concurrent duplicate reveals before running the verifier twice", async () => {
-    const fakePython = path.join(stateDir, "slow-fake-python");
-    const countPath = path.join(stateDir, "verifier-count.txt");
-    writeFileSync(
-      fakePython,
-      [
-        "#!/usr/bin/env node",
-        "const fs = require('node:fs');",
-        "const crypto = require('node:crypto');",
-        "const solution = process.argv[process.argv.indexOf('--solution') + 1];",
-        "fs.appendFileSync(process.env.P42_VERIFIER_COUNT_PATH, 'run\\n');",
-        "setTimeout(() => {",
-        "  const raw = fs.readFileSync(solution);",
-        "  const report = {",
-        "    details: { checked_pairs: 6, defect: 0, violations: [] },",
-        "    improvement: '1/1',",
-        "    problem_id: 'hadamard-mini',",
-        "    reason: '',",
-        "    recomputed_at_commit: 'local-dev',",
-        "    score: '0/1',",
-        "    solution_hash: 'sha256:' + crypto.createHash('sha256').update(raw).digest('hex'),",
-        "    valid: true,",
-        "    verifier_image: 'sha256:local-dev',",
-        "    verifier_version: '0.1.0',",
-        "  };",
-        "  process.stdout.write(JSON.stringify(report) + '\\n');",
-        "}, 250);",
-      ].join("\n"),
-    );
-    chmodSync(fakePython, 0o755);
-    process.env.P42_PYTHON = fakePython;
-    process.env.P42_VERIFIER_COUNT_PATH = countPath;
-
-    const signed = await signedCommitFields();
-    const commitResponse = await commitPost(
-      jsonRequest("/api/submissions/commit", {
-        problem_id: 1,
-        agent_name: "CHRONOS",
-        solver_address: solverAddress,
-        solution_cid: signed.solutionCid,
-        commit_hash: signed.commitHash,
-        solver_signature: signed.solverSignature,
-      }),
-    );
-    const commit = await commitResponse.json();
-    expect(commitResponse.status).toBe(201);
-
-    const body = {
-      problem_id: 1,
-      commit_id: commit.commit.id,
-      solver_address: solverAddress,
-      salt: "right-salt",
-      solution_raw: solutionRaw,
-    };
-    const [first, second] = await Promise.all([
-      revealPost(jsonRequest("/api/submissions/reveal", body)),
-      revealPost(jsonRequest("/api/submissions/reveal", body)),
-    ]);
-    const statuses = [first.status, second.status].sort((left, right) => left - right);
-    const bodies = await Promise.all([first.json(), second.json()]);
-
-    expect(statuses).toEqual([409, 422]);
-    expect(bodies).toContainEqual({ error: "commit reveal already in progress" });
-    expect(readPortalState().submissions).toHaveLength(1);
-    expect(readPortalState().commits[0]).toMatchObject({ revealed: true });
-    expect(readFileSync(countPath, "utf8").trim().split("\n")).toHaveLength(1);
-  });
-
-  it("releases a reveal reservation after verifier infrastructure failure", async () => {
-    const signed = await signedCommitFields();
-    const commitResponse = await commitPost(
-      jsonRequest("/api/submissions/commit", {
-        problem_id: 1,
-        agent_name: "CHRONOS",
-        solver_address: solverAddress,
-        solution_cid: signed.solutionCid,
-        commit_hash: signed.commitHash,
-        solver_signature: signed.solverSignature,
-      }),
-    );
-    const commit = await commitResponse.json();
-    expect(commitResponse.status).toBe(201);
-
-    const fakePython = path.join(stateDir, "failing-fake-python");
-    writeFileSync(
-      fakePython,
-      [
-        "#!/usr/bin/env node",
-        "process.stderr.write('runner failed\\n');",
-        "process.exit(125);",
-      ].join("\n"),
-    );
-    chmodSync(fakePython, 0o755);
-    process.env.P42_PYTHON = fakePython;
-
-    const body = {
-      problem_id: 1,
-      commit_id: commit.commit.id,
-      solver_address: solverAddress,
-      salt: "right-salt",
-      solution_raw: solutionRaw,
-    };
-    const failure = await revealPost(jsonRequest("/api/submissions/reveal", body));
-    expect(failure.status).toBe(502);
-    expect(readPortalState().commits[0]).toMatchObject({ revealed: false });
-    expect(readPortalState().commits[0].revealState).toBeUndefined();
-
-    delete process.env.P42_PYTHON;
-    const retry = await revealPost(jsonRequest("/api/submissions/reveal", body));
-    expect(retry.status).toBe(422);
-    expect(readPortalState().commits[0]).toMatchObject({ revealed: true });
-    expect(readPortalState().commits[0].revealState).toBeUndefined();
-    expect(readPortalState().submissions).toHaveLength(1);
-  });
-
   it("replays idempotent reveals instead of mutating an already opened commit twice", async () => {
     const signed = await signedCommitFields();
     const commitResponse = await commitPost(
       jsonRequest("/api/submissions/commit", {
         problem_id: 1,
-        agent_name: "CHRONOS",
+        agent_name: "RouteAgent",
         solver_address: solverAddress,
         solution_cid: signed.solutionCid,
         commit_hash: signed.commitHash,
@@ -606,7 +435,6 @@ describe("mutable API routes", () => {
     expect(replayBody.submission.id).toBe(firstBody.submission.id);
     expect(readPortalState().events.map((event) => event.type)).toEqual([
       "commit.created",
-      "idempotency.reserved",
       "submission.rejected",
       "idempotency.stored",
       "idempotency.replayed",

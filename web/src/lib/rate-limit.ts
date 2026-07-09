@@ -19,25 +19,9 @@ const globalRateLimit = globalThis as typeof globalThis & {
   __p42RateLimitStore?: RateLimitStore;
 };
 
-// NOTE: This limiter is in-memory and per-process. It resets on restart and is NOT shared across
-// serverless instances or replicas — a deployment must move this to a shared store (e.g. Redis)
-// before it can be trusted at scale. It also keys unidentified traffic under a single "anonymous"
-// bucket (see rateLimitSubject), so without a platform-injected client-IP header all anonymous
-// callers share one global limit. Documented as a Phase-0 limitation.
-const MAX_TRACKED_BUCKETS = 10_000;
-
 function store(): RateLimitStore {
   globalRateLimit.__p42RateLimitStore ??= { buckets: new Map() };
   return globalRateLimit.__p42RateLimitStore;
-}
-
-// Bound memory: expired buckets are otherwise never removed, so a stream of distinct subjects
-// (e.g. spoofed client IPs) would grow the Map without limit. Sweep lazily once it gets large.
-function sweepExpiredBuckets(state: RateLimitStore, now: number): void {
-  if (state.buckets.size <= MAX_TRACKED_BUCKETS) return;
-  for (const [key, bucket] of state.buckets) {
-    if (bucket.resetAt <= now) state.buckets.delete(key);
-  }
 }
 
 function envNumber(name: string, fallback: number): number {
@@ -45,6 +29,10 @@ function envNumber(name: string, fallback: number): number {
   if (!raw) return fallback;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function maxBuckets(): number {
+  return Math.min(20_000, Math.max(100, Math.floor(envNumber("P42_RATE_LIMIT_MAX_BUCKETS", 5_000))));
 }
 
 export function rateLimitPolicy(id: string, defaults: { limit: number; windowMs: number }): RateLimitPolicy {
@@ -69,7 +57,14 @@ export function enforceRateLimit(req: Request, policy: RateLimitPolicy, subject 
   const now = Date.now();
   const key = `${policy.id}:${subject}`;
   const state = store();
-  sweepExpiredBuckets(state, now);
+  if (!state.buckets.has(key) && state.buckets.size >= maxBuckets()) {
+    for (const [bucketKey, bucket] of state.buckets) {
+      if (bucket.resetAt <= now) state.buckets.delete(bucketKey);
+    }
+    if (state.buckets.size >= maxBuckets()) {
+      throw new ApiError("rate limiter capacity exceeded", 503);
+    }
+  }
   const existing = state.buckets.get(key);
   const bucket = existing && existing.resetAt > now
     ? existing

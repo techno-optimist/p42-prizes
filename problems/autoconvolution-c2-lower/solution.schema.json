@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/autoconvolution-c2-lower/solution.schema.json",
+  "x-p42-max-bytes": 4194304,
+  "type": "object",
+  "required": ["n", "values"],
+  "additionalProperties": false,
+  "properties": {
+    "n": { "const": 524288 },
+    "source": { "type": "string" },
+    "claimed_improvement": { "type": "string" },
+    "claimed_linf": { "type": "string" },
+    "claimed_score": { "type": "string" },
+    "values": {
+      "type": "array",
+      "minItems": 524288,
+      "maxItems": 524288,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1099511627776
+      }
+    }
+  }
+}

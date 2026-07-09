@@ -1,8 +1,32 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { ApiError, json } from "@/lib/api";
-import { appendPortalEvent, readPortalState, updatePortalState } from "@/lib/portal-store";
+import {
+  appendPortalEvent,
+  assertPortalCapacity,
+  portalLifecyclePolicy,
+  updatePortalState,
+  type PortalStateSnapshot,
+} from "@/lib/portal-store";
 
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9._:-]{8,128}$/;
+
+export interface IdempotencyReservation {
+  key: string;
+  route: string;
+  requestHash: string;
+  reservationId: string;
+}
+
+export interface IdempotencyAttempt {
+  reservation?: IdempotencyReservation;
+  replay?: Response;
+}
+
+type ReservationOutcome =
+  | { kind: "reserved" }
+  | { kind: "replay"; response: unknown; status: number }
+  | { kind: "conflict"; originalRequestHash: string }
+  | { kind: "pending"; retryAfterSeconds: number };
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -28,241 +52,148 @@ export function requestHash(payload: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(payload), "utf8").digest("hex")}`;
 }
 
-export function replayIdempotentResponse(req: Request, route: string, payload: unknown): Response | undefined {
-  const key = idempotencyKey(req);
-  if (!key) return undefined;
-
-  const hash = requestHash(payload);
-  const record = readPortalState().idempotency.find((entry) => entry.route === route && entry.key === key);
-  if (!record) return undefined;
-  if (record.requestHash !== hash) {
-    updatePortalState((state) => {
-      appendPortalEvent(state, {
-        type: "idempotency.conflict",
-        subjectId: key,
-        payload: {
-          route,
-          key,
-          requestHash: hash,
-          originalRequestHash: record.requestHash,
-        },
-      });
-    });
-    throw new ApiError("Idempotency-Key was already used for a different request body", 409);
-  }
-  if (record.state === "cancelled") return undefined;
-  if ((record.state ?? "completed") === "pending") {
-    throw new ApiError("Idempotency-Key request is already in progress", 409);
-  }
-
-  updatePortalState((state) => {
-    appendPortalEvent(state, {
-      type: "idempotency.replayed",
-      subjectId: key,
-      payload: {
-        route,
-        key,
-        requestHash: hash,
-        status: record.status,
-      },
-    });
-  });
-
-  return json(record.response, {
-    status: record.status,
-    headers: {
-      "Idempotency-Status": "replayed",
-      "Idempotency-Key": key,
-    },
-  });
-}
-
-export function reserveIdempotentRequest(req: Request, route: string, payload: unknown): Response | undefined {
-  const key = idempotencyKey(req);
-  if (!key) return undefined;
-
-  const hash = requestHash(payload);
-  let replayRecord: { response: unknown; status: number } | undefined;
-  let error: ApiError | undefined;
-  updatePortalState((state) => {
-    const existing = state.idempotency.find((entry) => entry.route === route && entry.key === key);
-    if (existing) {
-      if (existing.requestHash !== hash) {
-        appendPortalEvent(state, {
-          type: "idempotency.conflict",
-          subjectId: key,
-          payload: {
-            route,
-            key,
-            requestHash: hash,
-            originalRequestHash: existing.requestHash,
-          },
-        });
-        error = new ApiError("Idempotency-Key was already used for a different request body", 409);
-        return;
-      }
-      if ((existing.state ?? "completed") === "pending") {
-        error = new ApiError("Idempotency-Key request is already in progress", 409);
-        return;
-      }
-      if (existing.state === "cancelled") {
-        existing.state = "pending";
-        existing.response = null;
-        existing.status = 0;
-        delete existing.completedAt;
-        delete existing.cancelledAt;
-        appendPortalEvent(state, {
-          type: "idempotency.reserved",
-          subjectId: key,
-          payload: {
-            route,
-            key,
-            requestHash: hash,
-          },
-        });
-        return;
-      }
-      replayRecord = { response: existing.response, status: existing.status };
-      appendPortalEvent(state, {
-        type: "idempotency.replayed",
-        subjectId: key,
-        payload: {
-          route,
-          key,
-          requestHash: hash,
-          status: existing.status,
-        },
-      });
-      return;
-    }
-
-    state.idempotency.push({
-      key,
-      route,
-      requestHash: hash,
-      state: "pending",
-      response: null,
-      status: 0,
-      createdAt: new Date().toISOString(),
-    });
-    appendPortalEvent(state, {
-      type: "idempotency.reserved",
-      subjectId: key,
-      payload: {
-        route,
-        key,
-        requestHash: hash,
-      },
-    });
-  });
-
-  if (error) throw error;
-  if (!replayRecord) return undefined;
-  return json(replayRecord.response, {
-    status: replayRecord.status,
-    headers: {
-      "Idempotency-Status": "replayed",
-      "Idempotency-Key": key,
-    },
-  });
-}
-
-export function cancelIdempotentReservation(req: Request, route: string, payload: unknown, reason: string): void {
-  const key = idempotencyKey(req);
-  if (!key) return;
-
-  const hash = requestHash(payload);
-  updatePortalState((state) => {
-    const existing = state.idempotency.find((entry) => entry.route === route && entry.key === key);
-    if (!existing || existing.requestHash !== hash || existing.state !== "pending") return;
-
-    existing.state = "cancelled";
-    existing.status = 0;
-    existing.response = null;
-    existing.cancelledAt = new Date().toISOString();
-    appendPortalEvent(state, {
-      type: "idempotency.cancelled",
-      subjectId: key,
-      payload: {
-        route,
-        key,
-        requestHash: hash,
-        reason,
-      },
-    });
-  });
-}
-
-export function rememberIdempotentResponse(
-  req: Request,
-  route: string,
-  payload: unknown,
-  response: unknown,
-  status: number,
-): HeadersInit {
+export function beginIdempotentRequest(req: Request, route: string, payload: unknown): IdempotencyAttempt {
   const key = idempotencyKey(req);
   if (!key) return {};
 
   const hash = requestHash(payload);
-  let error: ApiError | undefined;
+  const reservationId = randomUUID();
+  const now = Date.now();
+  const leaseExpiresAt = new Date(now + portalLifecyclePolicy().idempotencyLeaseMs).toISOString();
+  const outcome: { current: ReservationOutcome } = { current: { kind: "reserved" } };
+
   updatePortalState((state) => {
     const existing = state.idempotency.find((entry) => entry.route === route && entry.key === key);
-    if (existing) {
-      if (existing.requestHash !== hash) {
-        appendPortalEvent(state, {
-          type: "idempotency.conflict",
-          subjectId: key,
-          payload: {
-            route,
-            key,
-            requestHash: hash,
-            originalRequestHash: existing.requestHash,
-          },
-        });
-        error = new ApiError("Idempotency-Key was already used for a different request body", 409);
-        return;
-      }
-      existing.response = response;
-      existing.status = status;
-      existing.state = "completed";
-      existing.completedAt = new Date().toISOString();
-      appendPortalEvent(state, {
-        type: "idempotency.stored",
-        subjectId: key,
-        payload: {
-          route,
-          key,
-          requestHash: hash,
-          status,
-        },
+    if (!existing) {
+      assertPortalCapacity(state, "idempotency");
+      state.idempotency.push({
+        key,
+        route,
+        requestHash: hash,
+        state: "pending",
+        createdAt: new Date(now).toISOString(),
+        reservationId,
+        leaseExpiresAt,
       });
       return;
     }
-    state.idempotency.push({
-      key,
-      route,
-      requestHash: hash,
-      state: "completed",
-      response,
-      status,
-      createdAt: new Date().toISOString(),
-      completedAt: new Date().toISOString(),
+
+    if (existing.requestHash !== hash) {
+      outcome.current = { kind: "conflict", originalRequestHash: existing.requestHash };
+      appendPortalEvent(state, {
+        type: "idempotency.conflict",
+        subjectId: key,
+        payload: { route, key, requestHash: hash, originalRequestHash: existing.requestHash },
+      });
+      return;
+    }
+
+    if (existing.state === "completed") {
+      if (existing.status === undefined) throw new Error("completed idempotency record is missing its status");
+      outcome.current = { kind: "replay", response: existing.response, status: existing.status };
+      appendPortalEvent(state, {
+        type: "idempotency.replayed",
+        subjectId: key,
+        payload: { route, key, requestHash: hash, status: existing.status },
+      });
+      return;
+    }
+
+    const currentLease = existing.leaseExpiresAt ? Date.parse(existing.leaseExpiresAt) : Number.NaN;
+    if (Number.isFinite(currentLease) && currentLease > now) {
+      outcome.current = { kind: "pending", retryAfterSeconds: Math.max(1, Math.ceil((currentLease - now) / 1000)) };
+      return;
+    }
+
+    existing.reservationId = reservationId;
+    existing.leaseExpiresAt = leaseExpiresAt;
+    existing.createdAt = new Date(now).toISOString();
+  });
+
+  const resolved = outcome.current;
+  if (resolved.kind === "conflict") {
+    throw new ApiError("Idempotency-Key was already used for a different request body", 409);
+  }
+  if (resolved.kind === "pending") {
+    throw new ApiError("an idempotent request with this key is already in progress", 409, {
+      "Retry-After": String(resolved.retryAfterSeconds),
+      "Idempotency-Status": "pending",
     });
+  }
+  if (resolved.kind === "replay") {
+    return {
+      replay: json(resolved.response, {
+        status: resolved.status,
+        headers: { "Idempotency-Status": "replayed", "Idempotency-Key": key },
+      }),
+    };
+  }
+  return { reservation: { key, route, requestHash: hash, reservationId } };
+}
+
+export function completeIdempotentOperation<T>(
+  reservation: IdempotencyReservation | undefined,
+  status: number | ((response: T) => number),
+  operation: (state: PortalStateSnapshot) => T,
+): { response: T; status: number; headers: HeadersInit } {
+  let response!: T;
+  let responseStatus!: number;
+  updatePortalState((state) => {
+    if (!reservation) {
+      response = operation(state);
+      responseStatus = typeof status === "function" ? status(response) : status;
+      return;
+    }
+
+    const existing = state.idempotency.find(
+      (entry) => entry.route === reservation.route && entry.key === reservation.key,
+    );
+    if (
+      !existing
+      || existing.state !== "pending"
+      || existing.requestHash !== reservation.requestHash
+      || existing.reservationId !== reservation.reservationId
+    ) {
+      throw new ApiError("idempotency reservation was lost; retry the request", 409);
+    }
+
+    response = operation(state);
+    responseStatus = typeof status === "function" ? status(response) : status;
+    existing.state = "completed";
+    existing.status = responseStatus;
+    existing.response = response;
+    delete existing.reservationId;
+    delete existing.leaseExpiresAt;
     appendPortalEvent(state, {
       type: "idempotency.stored",
-      subjectId: key,
+      subjectId: reservation.key,
       payload: {
-        route,
-        key,
-        requestHash: hash,
-        status,
+        route: reservation.route,
+        key: reservation.key,
+        requestHash: reservation.requestHash,
+        status: responseStatus,
       },
     });
   });
 
-  if (error) throw error;
   return {
-    "Idempotency-Status": "stored",
-    "Idempotency-Key": key,
+    response,
+    status: responseStatus,
+    headers: reservation
+      ? { "Idempotency-Status": "stored", "Idempotency-Key": reservation.key }
+      : {},
   };
+}
+
+export function releaseIdempotencyReservation(reservation: IdempotencyReservation | undefined): void {
+  if (!reservation) return;
+  updatePortalState((state) => {
+    const index = state.idempotency.findIndex(
+      (entry) => entry.route === reservation.route
+        && entry.key === reservation.key
+        && entry.state === "pending"
+        && entry.reservationId === reservation.reservationId,
+    );
+    if (index >= 0) state.idempotency.splice(index, 1);
+  });
 }

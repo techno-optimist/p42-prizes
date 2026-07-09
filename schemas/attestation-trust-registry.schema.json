@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/attestation-trust-registry-v1.json",
+  "title": "P42 external attestation trust registry",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "environment",
+    "registry_id",
+    "created_at_utc",
+    "registrations"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-attestation-trust-registry/v1" },
+    "environment": { "enum": ["production", "test"] },
+    "registry_id": { "type": "string", "minLength": 3 },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+    "registrations": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/registration" }
+    }
+  },
+  "$defs": {
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "identity": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" },
+        "bar_jurisdiction": { "type": "string", "minLength": 2 },
+        "license_identifier": { "type": "string", "minLength": 4 },
+        "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" }
+      }
+    },
+    "registration": {
+      "type": "object",
+      "required": [
+        "attestation_class",
+        "signer_role",
+        "identity",
+        "public_key",
+        "valid_from_utc"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "attestation_class": {
+          "enum": [
+            "p42-legal-memo/v1",
+            "p42-governance-signoff/v1",
+            "p42-incident-drill/v1",
+            "p42-adversarial-testnet/v1"
+          ]
+        },
+        "signer_role": { "type": "string", "minLength": 2 },
+        "identity": { "$ref": "#/$defs/identity" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "valid_from_utc": { "type": "string", "format": "date-time" },
+        "valid_until_utc": { "type": "string", "format": "date-time" }
+      }
+    }
+  }
+}

@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/da-receipt-v1.json",
+  "title": "P42 DA Receipt Evidence v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at_utc",
+    "problem_id",
+    "da_mode",
+    "solution_cid",
+    "solution_hash",
+    "solver_address",
+    "commit_time",
+    "contract",
+    "evidence_hash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-da-receipt/v1" },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "problem_id": { "type": "string", "minLength": 1 },
+    "da_mode": { "enum": ["onchain", "offchain"] },
+    "solution_cid": {
+      "type": "string",
+      "pattern": "^(sha256:[a-f0-9]{64}|ipfs://\\S+|bafy\\S+|bafk\\S+|Qm\\S+)$"
+    },
+    "solution_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "solver_address": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+    "commit_time": {
+      "type": "object",
+      "description": "DA reference block. The load-bearing proof is the sha256 anchor (payload_sha256 == on-chain commitDaHash). For onchain mode the raw solution bytes ride the reveal-tx calldata (reveal_tx required); for offchain mode the bytes live in an external content-addressed store gated by the same anchor (store_locator required). provider/receipt_uri/block_reference are legacy commit-receipt metadata, optional.",
+      "required": [
+        "solution_cid",
+        "payload_sha256",
+        "solution_bytes_length"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "type": "string", "minLength": 1 },
+        "solution_cid": { "type": "string", "minLength": 1 },
+        "payload_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "receipt_uri": { "type": "string", "minLength": 1 },
+        "block_reference": { "type": "string", "minLength": 1 },
+        "solution_bytes_length": { "type": "integer", "minimum": 0 },
+        "reveal_tx": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+        "store_locator": { "type": "string", "minLength": 1 }
+      }
+    },
+    "permanence": {
+      "type": "object",
+      "description": "Optional off-chain mirror receipt (Arweave). No longer a launch dependency.",
+      "required": ["provider", "solution_cid", "payload_sha256", "arweave_txid", "receipt_uri"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": { "const": "arweave" },
+        "solution_cid": { "type": "string", "minLength": 1 },
+        "payload_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+        "arweave_txid": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "receipt_uri": { "type": "string", "minLength": 1 }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "required": ["commit_da_hash", "commitment_preimage"],
+      "additionalProperties": false,
+      "properties": {
+        "commit_da_hash": {
+          "type": "string",
+          "pattern": "^0x[a-f0-9]{64}$",
+          "description": "The on-chain commitDaHash anchor: sha256(solution bytes) encoded as bytes32 (the CID digest re-encoded)."
+        },
+        "permanence_hash": { "type": "string", "pattern": "^0x[a-f0-9]{64}$" },
+        "commitment_preimage": { "type": "string", "minLength": 1 }
+      }
+    },
+    "evidence_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "da_mode": { "const": "onchain" } },
+        "required": ["da_mode"]
+      },
+      "then": {
+        "properties": {
+          "commit_time": {
+            "required": ["reveal_tx"],
+            "not": { "required": ["store_locator"] }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "da_mode": { "const": "offchain" } },
+        "required": ["da_mode"]
+      },
+      "then": {
+        "properties": {
+          "commit_time": {
+            "required": ["store_locator"],
+            "not": { "required": ["reveal_tx"] }
+          }
+        }
+      }
+    }
+  ]
+}

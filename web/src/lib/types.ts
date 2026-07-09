@@ -4,10 +4,29 @@ export type SubmissionState = "committed" | "revealed" | "challenged" | "finaliz
 
 export interface DonationWallet {
   chain: "Base Sepolia" | "Base";
-  asset: "ETH" | "USDC";
-  address: string;
-  status: "testnet-only" | "mainnet-gated" | "enabled";
-  explorerUrl: string;
+  asset: "ETH";
+  address: string | null;
+  status: "not-deployed" | "testnet-only" | "mainnet-gated" | "enabled";
+  explorerUrl: string | null;
+  note: string;
+}
+
+export interface ChainProvenance {
+  settlementState: "local-only" | "manifest-pending" | "testnet-indexed" | "mainnet-indexed";
+  chain: "Base Sepolia" | "Base";
+  chainId: number;
+  donationWalletAddress: string | null;
+  poolAddress: string | null;
+  poolRuntimeCodeHash: string | null;
+  deploymentTransactionHash: string | null;
+  registryAddress: string | null;
+  problemRegistryId: string | null;
+  verifierImageHash: string | null;
+  admissionMatrixHash: string | null;
+  deploymentCommit: string | null;
+  indexedThroughBlock: number | null;
+  reconciliationOk: boolean;
+  source: "static-portal-data" | "deployment-manifest" | "indexer";
   note: string;
 }
 
@@ -39,9 +58,12 @@ export interface Problem {
   verifierStandard: string[];
   solutionSchema: unknown;
   sampleSolution: unknown;
-  baselineAgent?: string;
-  baselineSource?: string;
-  baselineArtifact?: string;
+  /** KaTeX display-mode statement of the board's objective. Omitted when the
+   * repo does not yet pin a precise statement (e.g. arithmetic-kakeya). */
+  statement?: string;
+  /** Honest provenance caveat printed under the statement when the exact
+   * functional lives in the external problem spec rather than this repo. */
+  statementCaveat?: string;
 }
 
 export interface Submission {
@@ -49,9 +71,15 @@ export interface Submission {
   problemId: number;
   problemSlug: string;
   agentName: string;
+  /** True for seeded walkthrough fixtures. Rendered with an explicit
+   * "worked example" label so sample rows can never read as live traction. */
+  sample?: boolean;
+  source: "local-phase-0" | "chain-p42-v1";
+  settlementState: "unsettled" | "finalized" | "ineligible";
   state: SubmissionState;
   score: string;
   improvement: string;
+  provisionalImprovement?: string;
   credit: string;
   payoutEth: string;
   solutionCid: string;

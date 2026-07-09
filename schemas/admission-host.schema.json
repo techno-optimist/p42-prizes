@@ -1,0 +1,156 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/admission-host-v2.json",
+  "title": "P42 Admission Host Evidence v2",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "generated_at_utc",
+    "problem_id",
+    "verifier_version",
+    "verifier_image",
+    "solution_hash",
+    "report_hash",
+    "run_hashes",
+    "run_count",
+    "host",
+    "execution",
+    "source",
+    "report",
+    "evidence_hash",
+    "attestation"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-admission-host/v2" },
+    "generated_at_utc": { "type": "string", "minLength": 1 },
+    "problem_id": { "type": "string", "minLength": 1 },
+    "verifier_version": { "type": "string", "minLength": 1 },
+    "verifier_image": { "type": "string", "minLength": 1 },
+    "solution_hash": { "$ref": "#/$defs/hash" },
+    "report_hash": { "$ref": "#/$defs/hash" },
+    "run_hashes": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/$defs/hash" }
+    },
+    "run_count": { "type": "integer", "minimum": 2 },
+    "host": { "$ref": "#/$defs/host" },
+    "execution": { "$ref": "#/$defs/execution" },
+    "source": { "$ref": "#/$defs/source" },
+    "report": { "$ref": "#/$defs/report" },
+    "evidence_hash": { "$ref": "#/$defs/hash" },
+    "attestation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["type", "reason"],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "local-untrusted" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "type",
+            "namespace",
+            "public_key",
+            "key_fingerprint",
+            "signed_hash",
+            "signature"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": { "const": "ssh-ed25519" },
+            "namespace": { "const": "p42-verifier-admission-v2" },
+            "public_key": {
+              "type": "string",
+              "pattern": "^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$"
+            },
+            "key_fingerprint": { "type": "string", "pattern": "^SHA256:[A-Za-z0-9+/]+$" },
+            "signed_hash": { "$ref": "#/$defs/hash" },
+            "signature": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "rational": { "type": "string", "pattern": "^-?[0-9]+/[1-9][0-9]*$" },
+    "host": {
+      "type": "object",
+      "required": ["label", "architecture", "os", "libc_name", "libc_version", "python_version"],
+      "additionalProperties": false,
+      "properties": {
+        "label": { "type": "string", "minLength": 1 },
+        "architecture": { "type": "string", "minLength": 1 },
+        "os": { "type": "string", "minLength": 1 },
+        "libc_name": { "type": "string", "minLength": 1 },
+        "libc_version": { "type": "string", "minLength": 1 },
+        "python_version": { "type": "string", "minLength": 1 }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "mode",
+        "runtime",
+        "image_ref",
+        "image_digest",
+        "image_id",
+        "image_architecture",
+        "image_os"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["checkout-local", "immutable-container"] },
+        "runtime": { "type": "string", "minLength": 1 },
+        "image_ref": { "type": ["string", "null"] },
+        "image_digest": { "type": "string", "minLength": 1 },
+        "image_id": { "type": ["string", "null"] },
+        "image_architecture": { "type": "string", "minLength": 1 },
+        "image_os": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["commit", "tree_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "commit": { "type": "string", "minLength": 1 },
+        "tree_hash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "report": {
+      "type": "object",
+      "required": [
+        "problem_id",
+        "verifier_version",
+        "verifier_image",
+        "solution_hash",
+        "valid",
+        "improvement",
+        "score",
+        "reason",
+        "recomputed_at_commit",
+        "details"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "problem_id": { "type": "string" },
+        "verifier_version": { "type": "string" },
+        "verifier_image": { "type": "string" },
+        "solution_hash": { "$ref": "#/$defs/hash" },
+        "valid": { "type": "boolean" },
+        "improvement": { "$ref": "#/$defs/rational" },
+        "score": { "$ref": "#/$defs/rational" },
+        "reason": { "type": "string" },
+        "recomputed_at_commit": { "type": "string" },
+        "details": { "type": "object" }
+      }
+    }
+  }
+}

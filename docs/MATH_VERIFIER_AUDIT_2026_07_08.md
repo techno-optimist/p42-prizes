@@ -1,0 +1,117 @@
+# Math And Verifier Audit
+
+Status date: 2026-07-08.
+
+This audit checks the ten launch-slate boards against the production admission
+bar in `docs/P42_PROBLEM_V1.md` and `docs/GATE_LEDGER.md`. It is deliberately
+conservative: a board is not fundable merely because a certificate repo or arena
+note reproduces locally. It must be a self-contained P42 problem with exact
+fixtures, resource bounds, immutable verifier image evidence, and a passing
+N-host matrix.
+
+## Bottom Line
+
+The portal is correctly fail-closed and honest for Phase 0: all ten boards are
+listed, every board has a reserved testnet donation wallet, and only
+`hadamard-mini` accepts local pilot submissions. All ten boards now have local
+P42 exact-verifier packages, but the nine locked boards are not
+production-admitted prize problems yet because immutable images, collected
+N-host matrices, and external review gates are still missing.
+
+No real ETH funding gate closes from this audit. Gate 1 and Gate 2 remain
+blocked.
+
+## Evidence Replayed
+
+From `/Users/nivek/Desktop/p42-prizes`:
+
+```bash
+make validate
+make lint
+make test
+make verify-seed
+make admit-host-seed
+make contracts-test
+cd web && npm run test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
+```
+
+Results:
+
+- Problem validation and exact-path lint passed for all ten local packages.
+- Python test suite passed: 111 tests.
+- Seed verifier sweep emitted canonical valid `VerdictReport` output for all
+  ten packages.
+- Local host evidence emitted two identical report hashes on the Mac host for
+  `hadamard-mini` and `edges-vs-triangles`; the edges report hash was
+  `sha256:c6186318e07be65a054e0c55fce4a5e0d5842b5e4e5f7aca46c485b4f9ca9789`.
+- Contract scaffold tests passed: 22 Hardhat tests, zero moderate-or-higher npm
+  audit findings.
+- Web test/build/audit passed: 59 Vitest tests, TypeScript clean, production
+  build clean except the known Turbopack dynamic-import warning from the local
+  portal store path, zero moderate-or-higher npm audit findings.
+
+Additional arena and certificate evidence:
+
+- `PYTHONPATH=.. pytest -q tests/test_build_pnt_lp.py` passed in the arena
+  worktree: 15 tests. This covers PNT LP domain and midpoint-row pitfalls.
+- `/Users/nivek/Desktop/pnt-ceiling-certificates`: `make verify` reproduced
+  the exact K=4800 and K=12000 ceiling certificates.
+- `/Users/nivek/Desktop/autoconvolution-inequality-certificates`: exact Board
+  2, Board 3, Board 4 fraction checks reproduced, and `scripts/certify.py`
+  confirmed the expected published-fraction match plus expected non-match
+  against the stronger internal C2 target.
+- `/Users/nivek/Desktop/cultural-soliton-observatory/arena/erdos_note`:
+  `scripts/erdos_upper_exact.py` matched `certs/lane_u_exact_output.txt`.
+
+## Ten-Board Readiness
+
+| Board | Audit status | Production-readiness judgment |
+| --- | --- | --- |
+| `hadamard-mini` | Runnable local pilot. Exact integer verifier, hardening tests, schema validation, deterministic canonical report, and portal/API wiring all pass. | Not yet fundable. Needs pinned immutable image digest and collected four-host matrix covering x86, ARM, and at least two glibc versions. |
+| `erdos-min-overlap` | P42 package now exists with dyadic-integer witness format, exact normalization, all 4,799 lags checked, lying-claim fixture, shape fixture, rescale-range fixture, and local host evidence on one Mac host. | Locked. Needs immutable verifier image, collected four-host matrix, and external review of the piecewise-linearity/reduction lemma before funding. |
+| `edges-vs-triangles` | P42 package now exists for the rationalized fixed-row-sum slope-3 model: exact Fraction edge/triangle moments, canonical lowest-y point selection, all slope-3 area segments, max-gap penalty, lying-claim fixture, bad-normalization fixture, and local exact verification of the rational curve-sampling witness. This is not a recovered historical Arena incumbent artifact. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and external review of the rationalized slope-3 scope before funding. |
+| `arithmetic-kakeya` | P42 package now exists for the scoped 2x2 warm-up forcing certificate: exact Fraction linear algebra, closure over all four vertices, score `7/4`, tampered-seed fixture, and local exact verification. This is not a record claim. | Locked. Needs immutable verifier image, collected four-host matrix, and external scope review before any marquee funding claim. |
+| `autoconvolution-c1-upper` | P42 package now exists with nonnegative integer witness format, exact Kronecker convolution, all 179,999 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the Hyra witness. | Locked. Needs immutable verifier image, collected four-host matrix, and N-host timing/memory evidence before funding. |
+| `autoconvolution-c2-lower` | P42 package now exists with nonnegative integer witness format, exact Kronecker convolution, all 1,048,575 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the Hyra witness. | Locked. Needs immutable verifier image, collected four-host matrix, and N-host timing/memory evidence before funding. |
+| `signed-autoconvolution-c3-upper` | P42 package now exists with signed dyadic-integer witness format, exact signed Kronecker convolution, all 199,999 coefficients checked, lying-claim fixture, shape fixture, zero-mass fixture, and local exact verification of the OrganonAgent witness. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and external reduction review before funding. |
+| `mertens-lp-ceiling-k12000` | P42 package now exists with canonical dyadic dual arrays, exact integer residual pass, interval log enclosure, one-ULP bad-decimal fixture, hash-mismatch fixture, and local verification of the reach-12000 rounded ceiling. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and proof-side copy review. UI copy must avoid overclaiming beyond the finite reach. |
+| `pnt-sparse-mertens-construction` | P42 package now exists with rational sparse support encoding, exact synthesized `k = 1` balancing term, all 960,000 integer rows checked against the reach-96000 upper constraint, one-ULP bad-decimal fixture, explicit constraint-violation fixture, and interval-log lower-bound scoring of the CHRONOS witness. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and external interval-log/objective review before funding. |
+| `hadamard-668-defect` | P42 package now exists with compact lowercase hex row encoding, exact integer popcount scoring of all 222,778 row pairs, lying-claim fixture, row-length/hex fixtures, and a Sylvester-prefix baseline at defect `55444`. This is a defect ladder, not a solved order-668 Hadamard claim. | Locked. Needs immutable verifier image, collected four-host matrix, N-host timing, and open-problem scope review before funding. |
+
+## Cross-Cutting Findings
+
+1. The verifier moat is working as a policy: the portal refuses submissions for
+   every board that lacks an admitted exact verifier.
+2. The current donation-wallet surface is safe only because the wallets are
+   marked testnet/local-chain provenance and the locked boards cannot settle.
+3. The local admission tooling is correctly stricter than "two runs on one
+   machine": it requires at least four distinct host labels, x86 and ARM
+   coverage, two glibc versions, and identical canonical report hashes.
+4. The external certificate repos are useful seeds, but none of them should be
+   treated as drop-in verifiers until they are wrapped in the P42 `VerdictReport`
+   contract with hostile fixtures and resource ceilings.
+5. The two proof-side boards, especially `mertens-lp-ceiling-k12000`, need copy
+   and scoring language that cannot be confused with constructive frontier
+   submissions.
+
+## Required Next Work
+
+1. Freeze all ten verifier image metadata entries and collect their real
+   four-host matrices.
+2. Keep `edges-vs-triangles` locked until an external reviewer signs the
+   rationalized slope-3 scope or the missing historical Arena artifact is
+   recovered and packaged separately.
+3. Keep `arithmetic-kakeya` locked until a certificate standard exists and an
+   external math reviewer signs the statement.
+4. Do not unlock a portal board until
+   `make validate`, `make lint`, exact verifier tests, `admit-host`,
+   `admit-matrix`, and `admit-ready` all pass.
+5. Run the full Gate Ledger command set after every admitted verifier package.
+
+## Go/No-Go
+
+- Phase 0 public portal and local pilot: go.
+- Testnet prize settlement: no-go until Gate 1 blockers close.
+- Real ETH or Coinbase Onramp: no-go until Gate 2 blockers close.
+- Any of the nine locked boards accepting submissions: no-go until admission
+  artifacts exist and the gate ledger is updated with links to evidence.

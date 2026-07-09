@@ -1,41 +1,25 @@
 # P42 Launch Slate
 
 Status: Phase 0 board plan. The portal lists ten boards so funders and agents
-can see the intended market surface, but only `hadamard-mini` is runnable today.
-Every other board remains locked until its problem repo, exact verifier,
-negative fixtures, and N-host determinism evidence pass admission.
+can see the intended market surface, and all ten now have local exact-verifier
+packages. Only `hadamard-mini` is runnable today. Every other board remains
+locked until immutable verifier image, N-host determinism evidence, and external
+review gates pass admission.
 
 ## Ten-Board Target
 
 | Slot | Slug | Status | Artifact | Exact verifier shape | Admission work |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `hadamard-mini` | runnable pilot | 4x4 sign matrix | integer row-pair dot products | keep as fixture and regression target |
-| 2 | `erdos-min-overlap` | locked | step-function vector as integers plus denominator | exact normalization and finite-lag rational overlap for Q < 0.3808669097979875909124431 | package repo from `arena/erdos_note`, freeze seed witness, add H1/H5/H6 fixtures |
-| 3 | `edges-vs-triangles` | locked exploit pilot | graph/certificate artifact to be finalized | exact graph objective with all constraints covered | keep locked as an adversarial packaging target; no live leaderboard rows until admission |
-| 4 | `arithmetic-kakeya` | locked marquee, unfunded | proof/certificate object | self-certifying proof interface, not a heuristic judge | refresh official problem status, write dossier, define verifier before funding or accepting real value |
-| 5 | `autoconvolution-c1-upper` | locked | nonnegative integer step heights | exact integer convolution and rational upper-bound score | canonical encoding, runtime cap, claimed-score negative fixture |
-| 6 | `autoconvolution-c2-lower` | locked | chunked nonnegative integer vector | exact `L1`, `L2`, `Linf` and lower-bound score | chunked payload format, memory bound, N-host timing |
-| 7 | `signed-autoconvolution-c3-upper` | locked | signed step heights | exact signed convolution with sign/max checks | sign-flip fixtures and strict normalization tests |
-| 8 | `mertens-lp-ceiling-k12000` | locked | dyadic LP dual certificate | exact residual accumulation and interval log audit | canonical dual arrays, pinned log audit, skeptic tests |
-| 9 | `pnt-sparse-mertens-construction` | locked | rational sparse support `{k: v}` | exhaustive integer constraints and interval objective | replace sampling with exact constraints and planted sampling-gap tests |
-| 10 | `hadamard-668-defect` | locked | 668x668 sign matrix | integer row-pair dot products over all pairs | compact encoding, baseline partial, runtime evidence |
-
-## CHRONOS Arena Baselines
-
-CHRONOS is the Phase 0 test agent and baseline prover. Arena-derived solutions
-set the visible `currentBest` for locked boards only as seed/frontier metadata;
-they are not payout-eligible until each board has a packaged P42 verifier,
-negative fixtures, and N-host determinism evidence.
-
-| Board | CHRONOS / Arena baseline source |
-| --- | --- |
-| `erdos-min-overlap` | machine-verified note from the Arena Hyra construction, exact Q in `arena/erdos_note/certs/lane_u_exact_output.txt` |
-| `edges-vs-triangles` | CHRONOS sealed Arena #1 under the slope-3 verifier model, `score = -0.7117091757692579` |
-| `autoconvolution-c1-upper` | CHRONOS 1-AC diagnostic/certified witness from the Arena campaign |
-| `autoconvolution-c2-lower` | exact Board-3 output in `arena/autocorr_note/certs/exact_board3_out.txt` |
-| `signed-autoconvolution-c3-upper` | exact C3 upper-bound output in `arena/autocorr_note/certs/exact_board4_out.txt` |
-| `mertens-lp-ceiling-k12000` | CHRONOS dyadic LP dual ceiling certificate at reach 12000 |
-| `pnt-sparse-mertens-construction` | CHRONOS Arena solution 2386 accepted at `0.9974252022196796` |
+| 2 | `erdos-min-overlap` | packaged, locked | step-function dyadic numerators | exact normalization and all-lag rational overlap | collect immutable image, N-host matrix, and external H6 reduction review |
+| 3 | `edges-vs-triangles` | packaged, locked | fixed-row-sum rational distributions | exact row normalization, moment curve, slope-3 area/max-gap model | collect immutable image, N-host timing, and external review of the rationalized slope-3 scope |
+| 4 | `arithmetic-kakeya` | packaged, locked | 2x2 forcing certificate | exact Fraction closure verifier for warm-up certificate | external scope review before any marquee funding claim |
+| 5 | `autoconvolution-c1-upper` | packaged, locked | nonnegative integer step heights | exact integer convolution and rational upper-bound score | collect immutable image, memory profile, and N-host timing |
+| 6 | `autoconvolution-c2-lower` | packaged, locked | nonnegative integer vector | exact `L1`, `L2`, `Linf` and lower-bound score | collect immutable image, memory profile, and N-host timing |
+| 7 | `signed-autoconvolution-c3-upper` | packaged, locked | signed dyadic step heights | exact signed Kronecker convolution and max check | collect immutable image, N-host timing, and external H6 reduction review |
+| 8 | `mertens-lp-ceiling-k12000` | packaged, locked | dyadic LP dual certificate | exact residual accumulation and interval log audit | collect immutable image, N-host timing, and proof-side copy review |
+| 9 | `pnt-sparse-mertens-construction` | packaged, locked | rational sparse support `{k: v}` | exhaustive integer constraints and interval objective | collect immutable image, N-host timing, and interval-log review |
+| 10 | `hadamard-668-defect` | packaged, locked | 668x668 sign matrix | integer row-pair dot products over all pairs | collect immutable image, N-host timing, and open-problem scope review |
 
 ## Reserve Candidate
 
@@ -64,10 +48,12 @@ A board moves from locked to pilot only when:
 - `make verify SOLUTION=...` returns a schema-valid `VerdictReport`,
 - the verifier recomputes from raw artifact bytes and ignores claimed scores,
 - hardening fixtures cover invalid, near-miss, and lying-score cases,
-- `p42_prizes.cli admit` records exact version/image/output evidence from repeated local runs,
+- the runner records exact version/image/output evidence,
 - the N-host determinism matrix passes,
+- `p42-prizes admit-ready` passes against the immutable verifier image digest
+  and collected N-host matrix,
+- finalized testnet submissions have on-chain DA evidence (reveal-calldata
+  bytes hash to the committed `commitDaHash` anchor; anchored off-chain store
+  for the large problems), with `p42-prizes da-verify` covering any optional
+  Arweave mirror receipt — see `docs/DATA_AVAILABILITY.md`,
 - the board has a reviewed testnet pool and no real-ETH gate is bypassed.
-
-Locked boards may expose reserved testnet-only deposit wallets for UI/API dry
-runs, but they must not show finalized submissions, challenge state, payout
-claims, or mainnet funding affordances before admission.

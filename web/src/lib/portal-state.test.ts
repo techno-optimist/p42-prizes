@@ -12,7 +12,7 @@ import {
   sha256SolutionCid,
   verifySolverSignature,
 } from "@/lib/portal-state";
-import { readPortalState, resetPortalStateForTests } from "@/lib/portal-store";
+import { portalStatePath, readPortalState, resetPortalStateForTests, updatePortalState } from "@/lib/portal-store";
 
 const solverAddress = "0x1111111111111111111111111111111111111111";
 const solverWallet = new Wallet("0x59c6995e998f97a5a0044966f0945387f6d6616d07a16c6fbfcaeab4f7fca6e5");
@@ -36,6 +36,10 @@ describe("portal commit-reveal state", () => {
     const preimage = commitPreimage({ solutionCid: "bafy-test", solverAddress, salt: "s3cret" });
     expect(preimage).toBe("p42:v0|cid:9:bafy-test|solver:0x1111111111111111111111111111111111111111|salt:6:s3cret");
     expect(commitHash({ solutionCid: "bafy-test", solverAddress, salt: "s3cret" })).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  it("honors the explicit portal state path outside test-only code paths", () => {
+    expect(portalStatePath()).toBe(path.join(stateDir, "state.json"));
   });
 
   it("verifies solver address ownership for commit authorization", async () => {
@@ -72,13 +76,15 @@ describe("portal commit-reveal state", () => {
   it("reveals only when the salt opens the recorded commit and assigns frontier credit separately", async () => {
     const commit = createCommit({
       problemId: 1,
-      agentName: "CHRONOS",
+      agentName: "VerifierAgent",
       solutionCid: sha256SolutionCid(validSolutionRaw),
       solverAddress,
       commitHash: commitHash({ solutionCid: sha256SolutionCid(validSolutionRaw), solverAddress, salt: "right-salt" }),
     });
     const committedState = readPortalState();
     expect(committedState.commits).toContainEqual(commit);
+    expect(commit.commitAlgorithm).toBe("keccak256-p42-local-v0");
+    expect(Date.parse(commit.expiresAt)).toBeGreaterThan(Date.parse(commit.createdAt));
     expect(committedState.events).toMatchObject([
       {
         sequence: 1,
@@ -89,6 +95,12 @@ describe("portal commit-reveal state", () => {
         prevHash: "genesis",
       },
     ]);
+    // The pre-reveal public event must not leak sha256(solution): only the
+    // non-reversible commitHash identifies the commit before reveal.
+    const commitPayload = committedState.events[0].payload as Record<string, unknown>;
+    expect(commitPayload).not.toHaveProperty("solutionCid");
+    expect(commitPayload.commitHash).toBe(commit.commitHash);
+    expect(commitPayload).toMatchObject({ commitDomain: "local-phase-0", chainCompatible: false });
 
     const result = await revealCommit({
       commitId: commit.id,
@@ -121,45 +133,10 @@ describe("portal commit-reveal state", () => {
     expect(persisted.events[1].eventHash).toMatch(/^sha256:[0-9a-f]{64}$/);
   });
 
-  it("rejects duplicate commit hashes for the same problem and solver", () => {
-    const solutionCid = sha256SolutionCid(validSolutionRaw);
-    const hash = commitHash({ solutionCid, solverAddress, salt: "right-salt" });
-    createCommit({
-      problemId: 1,
-      agentName: "CHRONOS",
-      solutionCid,
-      solverAddress,
-      commitHash: hash,
-    });
-
-    expect(() =>
-      createCommit({
-        problemId: 1,
-        agentName: "CHRONOS",
-        solutionCid,
-        solverAddress,
-        commitHash: hash,
-      }),
-    ).toThrow("commit_hash already exists for this problem and solver");
-  });
-
-  it("rejects external CIDs while commit-time data availability is unavailable", () => {
-    expect(() =>
-      createCommit({
-        problemId: 1,
-        agentName: "CHRONOS",
-        solutionCid: "bafy-test",
-        solverAddress,
-        commitHash: commitHash({ solutionCid: "bafy-test", solverAddress, salt: "right-salt" }),
-      }),
-    ).toThrow("Phase 0 commit requires solution_cid=sha256:<raw-solution-hash>");
-    expect(readPortalState().commits).toHaveLength(0);
-  });
-
   it("rejects a reveal with the wrong salt", async () => {
     const commit = createCommit({
       problemId: 1,
-      agentName: "CHRONOS",
+      agentName: "VerifierAgent",
       solutionCid: sha256SolutionCid(validSolutionRaw),
       solverAddress,
       commitHash: commitHash({ solutionCid: sha256SolutionCid(validSolutionRaw), solverAddress, salt: "right-salt" }),
@@ -179,7 +156,7 @@ describe("portal commit-reveal state", () => {
   it("rejects a reveal from a different solver address", async () => {
     const commit = createCommit({
       problemId: 1,
-      agentName: "CHRONOS",
+      agentName: "VerifierAgent",
       solutionCid: sha256SolutionCid(validSolutionRaw),
       solverAddress,
       commitHash: commitHash({ solutionCid: sha256SolutionCid(validSolutionRaw), solverAddress, salt: "right-salt" }),
@@ -202,7 +179,7 @@ describe("portal commit-reveal state", () => {
     const solutionCid = sha256SolutionCid(committedRaw);
     const commit = createCommit({
       problemId: 1,
-      agentName: "CHRONOS",
+      agentName: "VerifierAgent",
       solutionCid,
       solverAddress,
       commitHash: commitHash({ solutionCid, solverAddress, salt: "right-salt" }),
@@ -217,5 +194,132 @@ describe("portal commit-reveal state", () => {
         solutionRaw: differentRaw,
       }),
     ).rejects.toThrow("revealed solution bytes do not match committed solution_cid");
+  });
+
+  it("credits by commit priority so a later sniper of the same solution is denied", async () => {
+    // Both reveals here land on problem 1, whose seed frontier is already at the
+    // optimum (0/1), so neither can beat the frontier — every reveal is rejected
+    // regardless. What encodes commit priority is `firstCommitter`: only the
+    // earliest commit for a given (problem, solutionCid) is ever settlement-
+    // eligible, so a sniper who reproduces the solution and reveals first still
+    // cannot capture credit.
+    const solutionCid = sha256SolutionCid(validSolutionRaw);
+    const firstCommit = createCommit({
+      problemId: 1,
+      agentName: "FirstCommitter",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "first-salt" }),
+    });
+    const sniperCommit = createCommit({
+      problemId: 1,
+      agentName: "Sniper",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "sniper-salt" }),
+    });
+    expect(sniperCommit.id).not.toBe(firstCommit.id);
+
+    // Sniper reveals first but is not the earliest committer.
+    const sniperResult = await revealCommit({
+      commitId: sniperCommit.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "sniper-salt",
+      solutionRaw: validSolutionRaw,
+    });
+    expect(sniperResult.settlement.eligible).toBe(false);
+    expect(sniperResult.submission.state).toBe("rejected");
+    const afterSniper = readPortalState();
+    const sniperEvent = afterSniper.events.find((event) => event.subjectId === sniperResult.submission.id);
+    expect((sniperEvent?.payload as { firstCommitter?: boolean }).firstCommitter).toBe(false);
+
+    // The earliest committer is recognized as the credit-priority owner even
+    // though it revealed second.
+    const firstResult = await revealCommit({
+      commitId: firstCommit.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "first-salt",
+      solutionRaw: validSolutionRaw,
+    });
+    const afterFirst = readPortalState();
+    const firstEvent = afterFirst.events.find((event) => event.subjectId === firstResult.submission.id);
+    expect((firstEvent?.payload as { firstCommitter?: boolean }).firstCommitter).toBe(true);
+  });
+
+  it("expires abandoned commits so they cannot hold solution priority forever", async () => {
+    const solutionCid = sha256SolutionCid(validSolutionRaw);
+    const abandoned = createCommit({
+      problemId: 1,
+      agentName: "Abandoned",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "abandoned-salt" }),
+    });
+    updatePortalState((state) => {
+      const stored = state.commits.find((commit) => commit.id === abandoned.id)!;
+      stored.expiresAt = new Date(Date.now() - 1_000).toISOString();
+    });
+    expect(readPortalState().commits.find((commit) => commit.id === abandoned.id)?.abandonedAt).toBeDefined();
+    await expect(revealCommit({
+      commitId: abandoned.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "abandoned-salt",
+      solutionRaw: validSolutionRaw,
+    })).rejects.toThrow("commit expired before reveal");
+
+    const replacement = createCommit({
+      problemId: 1,
+      agentName: "Replacement",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "replacement-salt" }),
+    });
+    const result = await revealCommit({
+      commitId: replacement.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "replacement-salt",
+      solutionRaw: validSolutionRaw,
+    });
+    const event = readPortalState().events.find((row) => row.subjectId === result.submission.id);
+    expect((event?.payload as { firstCommitter?: boolean }).firstCommitter).toBe(true);
+  });
+
+  it("blocks an active reveal lease and recovers it after expiry", async () => {
+    const solutionCid = sha256SolutionCid(validSolutionRaw);
+    const commit = createCommit({
+      problemId: 1,
+      agentName: "LeaseAgent",
+      solutionCid,
+      solverAddress,
+      commitHash: commitHash({ solutionCid, solverAddress, salt: "lease-salt" }),
+    });
+    updatePortalState((state) => {
+      state.commits.find((row) => row.id === commit.id)!.revealLease = {
+        id: "old-worker",
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      };
+    });
+    await expect(revealCommit({
+      commitId: commit.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "lease-salt",
+      solutionRaw: validSolutionRaw,
+    })).rejects.toThrow("commit reveal already in progress");
+
+    updatePortalState((state) => {
+      state.commits.find((row) => row.id === commit.id)!.revealLease!.expiresAt = new Date(Date.now() - 1_000).toISOString();
+    });
+    await expect(revealCommit({
+      commitId: commit.id,
+      problemSlug: "hadamard-mini",
+      solverAddress,
+      salt: "lease-salt",
+      solutionRaw: validSolutionRaw,
+    })).resolves.toMatchObject({ submission: { source: "local-phase-0", credit: "0/1" } });
   });
 });

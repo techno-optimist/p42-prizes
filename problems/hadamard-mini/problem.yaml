@@ -6,14 +6,13 @@ objective:
   direction: minimize
   score_name: defect
   seed_best: "6/1"
-  current_best: "0/1"
   optimum: "0/1"
   min_improvement: "1/6"
   gauge: "(seed_defect - defect) / seed_defect"
 verifier:
-  version: "0.1.0"
+  version: "0.1.1"
   image: "sha256:local-dev"
-  command: "make verify SOLUTION={solution}"
+  command: "python3 verifier/verify.py --solution {solution}"
   max_compute:
     wall_seconds: 5
     memory_mb: 128
@@ -25,4 +24,4 @@ settlement:
   challenge_bond_wei: "0"
 data_availability:
   commit_time_blob: local-file-for-phase-0
-  finalize_receipt: arweave-required-before-real-bounty
+  finalize_receipt: optional-mirror  # DA rides reveal calldata (sha256==commitDaHash); Arweave permanence is an optional mirror, not required (see docs/DATA_AVAILABILITY.md)

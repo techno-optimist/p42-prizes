@@ -1,0 +1,84 @@
+{
+  "schema": "p42-da-battletest/v1",
+  "what": "Live adversarial battle-test of the on-chain-at-reveal data-availability design on Base Sepolia (chainId 84532). Proves end-to-end that solution bytes ride the reveal-tx calldata, are bound on-chain by sha256==commitDaHash, are re-fetchable by an independent operator, that fraud is caught + rejected + net-positive for the operator, that the off-chain (large-certificate) path works and refuses tampered bytes, that the indexer rebuilds the frontier + archives calldata, and that a realistic 114 KB solution goes fully on-chain.",
+  "network": { "name": "baseSepolia", "chainId": 84532, "explorer": "https://sepolia.basescan.org" },
+  "keys": {
+    "solver_owner_resolver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+    "independent_operator": "0x730a3fC557f2c0805C57105348cb2024062E7b2e"
+  },
+  "tests": [
+    {
+      "id": "1-onchain-happy-path",
+      "result": "PASS",
+      "manifest": "da-onchain-demo-p42-prizes.json",
+      "submissionManager": "0x20bA4a9F1D7F4Df963a71c414E0b9b99a26891D6",
+      "claim": "58-byte solution rode the reveal-tx calldata; full lifecycle fund->commit->reveal->finalize->close->claim->reclaim (7 signed txs); sha256(calldata)==on-chain commitDaHash anchor; permanenceHash=ZeroHash (NO Arweave receipt needed).",
+      "txs": {
+        "reveal": "0x828af0e35081100c26742d49efca8a8ac376bed1163b54412901ebab6d2f3d29",
+        "finalize": "0x4ea572c605a489a12a61672021ba61aabf7fed320027a79edc8d96d2da72472b",
+        "claim": "0xb8df0c10e5560101e6bb2bf6d889b8357b0602718bf29b740d373be3a3336f4e"
+      },
+      "verified": { "bytes_in_calldata": 58, "sha256_eq_anchor": true, "calldata_eq_file": true, "finalized": true, "permanenceHash": "0x0" }
+    },
+    {
+      "id": "2-onchain-integrity-gate",
+      "result": "PASS",
+      "submissionManager": "0x20bA4a9F1D7F4Df963a71c414E0b9b99a26891D6",
+      "claim": "Against live chain state (committed submission #2), the contract accepts the correct bytes and REVERTS tampered/empty reveals — the on-chain sha256 bind cannot be bypassed.",
+      "results": {
+        "correct_bytes": "ACCEPTED",
+        "tampered_bytes": "REVERTED P42_SOLUTION_HASH_MISMATCH",
+        "empty_bytes": "REVERTED P42_EMPTY_SOLUTION_BYTES"
+      }
+    },
+    {
+      "id": "3-adversarial-operator-onchain",
+      "result": "PASS",
+      "manifest": "da-op-demo-p42-prizes.json",
+      "submissionManager": "0x85184D594CdA4857eAc1b08A55969e580E4aD743",
+      "claim": "A malicious solver revealed valid-hashing lying-claim bytes on-chain (131 B) claiming improvement 1 vs true 0. An INDEPENDENT operator fetched the bytes FROM THE REVEAL CALLDATA (no DA store), re-ran the verifier, found it fraudulent, and challenged. The resolver upheld it: submission REJECTED, operator NET-POSITIVE (won the forfeited solver bond).",
+      "txs": {
+        "malicious_reveal": "0x41247872a3a56c36c54a882537cd7b6bb2486a465494c45558f54127b1fcb581",
+        "operator_challenge": "0x7bb21aa6be6d6c777c9b2f4c31cc305ca6b6dd28fd07de96ae8a59600a0868b7",
+        "resolve": "0xeb661fb8da2a10ca3a14c4aa6f23f5f73a2bc6646dab5254ecf0d592f94ac813"
+      },
+      "verified": { "submission_status": "5 (Rejected)", "operator_claimable_won_bond_wei": "100000000000000" }
+    },
+    {
+      "id": "4-offchain-mode",
+      "result": "PASS",
+      "manifest": "da-offchain-demo-p42-prizes.json",
+      "submissionManager": "0xA146b07817FC75117fd0331b649c739efB8b7102",
+      "claim": "On an onchainDa=false instance, the solver posted bytes to an off-chain content-addressed store and revealed EMPTY calldata (0x). An operator located the blob in the store, verified sha256==anchor, re-ran the verifier, and challenged the fraudulent claim.",
+      "txs": {
+        "malicious_reveal_empty_calldata": "0xf27d911cb6fb81e96b9a4ce01da9d281f52e87927605cba27ecab71883c9a09c",
+        "operator_challenge": "0x3407a4b5171e4e36c8957299d6a76a9e7c20817381ec49ccf54dd7f24de61c6a"
+      }
+    },
+    {
+      "id": "5-offchain-tamper-refusal",
+      "result": "PASS",
+      "submissionManager": "0xA146b07817FC75117fd0331b649c739efB8b7102",
+      "claim": "A VALID off-chain submission (#2) had its store blob corrupted (1 byte flipped). The operator detected sha256(fetched)!=on-chain anchor, logged a DA FAULT, and REFUSED to act (did not wrongly challenge a valid submission). The off-chain integrity gate holds.",
+      "reveal": "0xb26c82fc9551772b9348c3caa88219ca4a6b88e684bba8aa5f40eb831d0d324f",
+      "verified": { "operator_action": "DA FAULT — refused tampered bytes, left for retry (no challenge)" }
+    },
+    {
+      "id": "6-calldata-archive",
+      "result": "PASS",
+      "manifest": "da-onchain-demo-p42-prizes.json",
+      "claim": "The indexer reconstructed the full settlement state from events (9/9 cross-checks vs chain) AND archived the on-chain reveal calldata: recovered the bytes from the reveal tx, verified sha256==anchor, pinned by CID. The pinned blob hashes to its CID key. Idempotent (re-run: 1 already-pinned). This is the honest replacement for Arweave permanence for the >18-day later-delta tail.",
+      "verified": { "reconstruction_checks": "9/9", "archived": 1, "blob_sha256_eq_cid_key": true, "idempotent": true }
+    },
+    {
+      "id": "7-scale-114KB-onchain",
+      "result": "PASS",
+      "manifest": "da-scale-demo-p42-prizes.json",
+      "submissionManager": "0x4cF2809c9bc9D864d89Fca028F58BbDDb61Dd897",
+      "claim": "A realistic 113,745-byte (114 KB) hadamard-668 solution went FULLY on-chain in the reveal calldata; sha256==anchor verified; finalized. Reveal used 4,578,570 gas (well under a Base block; validates the 1 MiB on-chain ceiling). On Base Sepolia the reveal cost ~0.0000275 ETH; on mainnet the L1 data-availability cost is the real driver (as the cost analysis flagged).",
+      "reveal": "0xf31c58d84d8605e020d073540308c15bcd4153ffec91ce56b39eb0f7ebda504b",
+      "verified": { "bytes_in_calldata": 113745, "sha256_eq_anchor": true, "calldata_eq_file": true, "finalized": true, "reveal_gas_used": 4578570 }
+    }
+  ],
+  "summary": "7/7 live tests passed. The on-chain-at-reveal DA design is validated end-to-end on Base Sepolia: bytes ride the reveal tx and are consensus-bound to the commit anchor; the integrity gate cannot be bypassed; an independent operator polices fraud (on-chain via calldata AND off-chain via a store, refusing tampered bytes) and is net-positive; the indexer rebuilds the frontier and archives calldata for the long tail; and a 114 KB solution goes fully on-chain. No Arweave dependency anywhere in the path."
+}

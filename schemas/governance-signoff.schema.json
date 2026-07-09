@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/governance-signoff-v1.json",
+  "title": "P42 Governance Signoff v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "signoff_id",
+    "completed_at_utc",
+    "network",
+    "release_binding",
+    "governance_owner",
+    "security_owner",
+    "treasury_multisig",
+    "timelock",
+    "pause_guardian",
+    "custody_limits",
+    "key_rotation",
+    "recusal_policy",
+    "rehearsal",
+    "human_signoff",
+    "attestations",
+    "governance_hash"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-governance-signoff/v1" },
+    "signoff_id": { "type": "string", "minLength": 1 },
+    "completed_at_utc": { "type": "string", "format": "date-time" },
+    "network": { "enum": ["base-sepolia", "base-mainnet"] },
+    "release_binding": { "$ref": "#/$defs/releaseBinding" },
+    "governance_owner": { "$ref": "#/$defs/governanceOwner" },
+    "security_owner": { "$ref": "#/$defs/securityOwner" },
+    "treasury_multisig": {
+      "type": "object",
+      "required": ["address", "threshold", "signers"],
+      "additionalProperties": false,
+      "properties": {
+        "address": { "$ref": "#/$defs/address" },
+        "threshold": { "type": "integer", "minimum": 3 },
+        "signers": {
+          "type": "array",
+          "minItems": 5,
+          "items": { "$ref": "#/$defs/multisigSigner" }
+        }
+      }
+    },
+    "timelock": {
+      "type": "object",
+      "required": ["address", "min_delay_hours", "applies_to_upgrades", "applies_to_fee_changes"],
+      "additionalProperties": false,
+      "properties": {
+        "address": { "$ref": "#/$defs/address" },
+        "min_delay_hours": { "type": "integer", "minimum": 48 },
+        "applies_to_upgrades": { "const": true },
+        "applies_to_fee_changes": { "const": true }
+      }
+    },
+    "pause_guardian": { "$ref": "#/$defs/pauseGuardian" },
+    "custody_limits": {
+      "type": "object",
+      "required": [
+        "pool_funds_redirectable",
+        "finalized_claim_pauseable",
+        "funded_verifier_mutable",
+        "single_eoa_can_upgrade"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "pool_funds_redirectable": { "const": false },
+        "finalized_claim_pauseable": { "const": false },
+        "funded_verifier_mutable": { "const": false },
+        "single_eoa_can_upgrade": { "const": false }
+      }
+    },
+    "key_rotation": {
+      "type": "object",
+      "required": [
+        "procedure_artifact",
+        "evidence_artifact",
+        "last_rehearsed_utc",
+        "next_due_utc",
+        "emergency_rotation_hours"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "procedure_artifact": { "$ref": "#/$defs/artifact" },
+        "evidence_artifact": { "$ref": "#/$defs/artifact" },
+        "last_rehearsed_utc": { "type": "string", "format": "date-time" },
+        "next_due_utc": { "type": "string", "format": "date-time" },
+        "emergency_rotation_hours": { "type": "integer", "minimum": 1, "maximum": 24 }
+      }
+    },
+    "recusal_policy": {
+      "type": "object",
+      "required": [
+        "policy_artifact",
+        "resolver_self_dispute_recusal",
+        "p42_agent_affiliation_disclosure",
+        "private_information_firewall"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "policy_artifact": { "$ref": "#/$defs/artifact" },
+        "resolver_self_dispute_recusal": { "const": true },
+        "p42_agent_affiliation_disclosure": { "const": true },
+        "private_information_firewall": { "const": true }
+      }
+    },
+    "rehearsal": {
+      "type": "object",
+      "required": ["started_at_utc", "completed_at_utc", "scenario", "evidence_artifact", "regressions"],
+      "additionalProperties": false,
+      "properties": {
+        "started_at_utc": { "type": "string", "format": "date-time" },
+        "completed_at_utc": { "type": "string", "format": "date-time" },
+        "scenario": { "type": "string", "minLength": 1 },
+        "evidence_artifact": { "$ref": "#/$defs/artifact" },
+        "regressions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["command", "status", "executed_at_utc", "output_artifact"],
+            "additionalProperties": false,
+            "properties": {
+              "command": { "type": "string", "minLength": 1 },
+              "status": { "const": "passed" },
+              "executed_at_utc": { "type": "string", "format": "date-time" },
+              "output_artifact": { "$ref": "#/$defs/artifact" }
+            }
+          }
+        }
+      }
+    },
+    "human_signoff": {
+      "type": "object",
+      "required": [
+        "governance_owner_name",
+        "security_owner_name",
+        "governance_owner_signed_at_utc",
+        "security_owner_signed_at_utc",
+        "statement"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "governance_owner_name": { "type": "string", "minLength": 3 },
+        "security_owner_name": { "type": "string", "minLength": 3 },
+        "governance_owner_signed_at_utc": { "type": "string", "format": "date-time" },
+        "security_owner_signed_at_utc": { "type": "string", "format": "date-time" },
+        "statement": { "type": "string", "minLength": 1 }
+      }
+    },
+    "attestations": {
+      "type": "array",
+      "minItems": 8,
+      "items": { "$ref": "#/$defs/signature" }
+    },
+    "governance_hash": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "artifact": {
+      "type": "object",
+      "required": ["uri", "local_path", "sha256", "created_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "local_path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+" },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "created_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "governanceOwner": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "governance-owner" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "securityOwner": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "security-owner" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "multisigSigner": {
+      "type": "object",
+      "required": [
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "address",
+        "recusal_acknowledged",
+        "signed_at_utc"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "enum": ["treasury", "security", "engineering", "operations", "independent"] },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
+        "independent_from_p42": { "const": true },
+        "address": { "$ref": "#/$defs/address" },
+        "recusal_acknowledged": { "const": true },
+        "signed_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "pauseGuardian": {
+      "type": "object",
+      "required": [
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "address",
+        "can_pause_new_submissions",
+        "can_pause_claims",
+        "can_redirect_funds",
+        "signed_at_utc"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "pause-guardian" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
+        "address": { "$ref": "#/$defs/address" },
+        "can_pause_new_submissions": { "const": true },
+        "can_pause_claims": { "const": false },
+        "can_redirect_funds": { "const": false },
+        "signed_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "enum": [
+            "P42BountyPool",
+            "P42PayoutLedger",
+            "P42SubmissionManager",
+            "P42ChallengeManager",
+            "P42ProblemRegistry"
+          ]
+        },
+        "address": { "$ref": "#/$defs/address" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "source_artifact": { "$ref": "#/$defs/artifact" },
+        "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
+        "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "releaseBinding": {
+      "type": "object",
+      "required": [
+        "repository_uri",
+        "git_commit",
+        "network",
+        "chain_id",
+        "deployment_manifest",
+        "configuration_artifact",
+        "contracts"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repository_uri": { "type": "string", "pattern": "^https://" },
+        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "network": { "enum": ["local", "base-sepolia", "base-mainnet"] },
+        "chain_id": { "type": "integer", "enum": [31337, 8453, 84532] },
+        "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "configuration_artifact": { "$ref": "#/$defs/artifact" },
+        "contracts": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": { "$ref": "#/$defs/contract" }
+        }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": {
+          "type": "string",
+          "pattern": "^(governance-owner|security-owner|pause-guardian|multisig-signer:0x[a-f0-9]{40})$"
+        },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    }
+  }
+}

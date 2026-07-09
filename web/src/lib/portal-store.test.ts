@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,12 +8,11 @@ import {
   readPortalState,
   resetPortalStateForTests,
   updatePortalState,
-  writePortalState,
 } from "@/lib/portal-store";
 
 let stateDir: string;
 
-describe("portal-store local durability guardrails", () => {
+describe("bounded portal state", () => {
   beforeEach(() => {
     stateDir = mkdtempSync(path.join(tmpdir(), "p42-store-state-"));
     process.env.P42_PORTAL_STATE_PATH = path.join(stateDir, "state.json");
@@ -23,80 +22,77 @@ describe("portal-store local durability guardrails", () => {
   afterEach(() => {
     resetPortalStateForTests();
     delete process.env.P42_PORTAL_STATE_PATH;
-    delete process.env.P42_PORTAL_STATE_LOCK_TIMEOUT_MS;
-    delete process.env.P42_PORTAL_STATE_STALE_LOCK_MS;
+    delete process.env.P42_PORTAL_MAX_EVENTS;
+    delete process.env.P42_PORTAL_STATE_MAX_BYTES;
     rmSync(stateDir, { recursive: true, force: true });
   });
 
-  it("serializes local read-mutate-write updates through the shared store path", () => {
-    updatePortalState((state) => {
-      appendPortalEvent(state, {
-        type: "verification.completed",
-        subjectId: "sha256:first",
-        payload: { index: 1 },
+  it("retains a bounded hash-chain tail with an explicit anchor", () => {
+    process.env.P42_PORTAL_MAX_EVENTS = "10";
+    for (let index = 1; index <= 15; index += 1) {
+      updatePortalState((state) => {
+        appendPortalEvent(state, {
+          type: "verification.completed",
+          subjectId: `event-${index}`,
+          payload: { index },
+        });
       });
-    });
-    updatePortalState((state) => {
-      appendPortalEvent(state, {
-        type: "verification.completed",
-        subjectId: "sha256:second",
-        payload: { index: 2 },
-      });
-    });
+    }
 
-    expect(readPortalState().events).toMatchObject([
-      { sequence: 1, subjectId: "sha256:first", prevHash: "genesis" },
-      { sequence: 2, subjectId: "sha256:second" },
-    ]);
-    expect(readPortalState().events[1].prevHash).toBe(readPortalState().events[0].eventHash);
+    const state = readPortalState();
+    expect(state.events).toHaveLength(10);
+    expect(state.eventOffset).toBe(5);
+    expect(state.events[0]).toMatchObject({ sequence: 6, prevHash: state.eventAnchorHash });
+    expect(state.events.at(-1)?.sequence).toBe(15);
   });
 
-  it("fails closed when another local writer holds the state lock", () => {
-    process.env.P42_PORTAL_STATE_LOCK_TIMEOUT_MS = "50";
-    process.env.P42_PORTAL_STATE_STALE_LOCK_MS = "60000";
-    const lockPath = `${portalStatePath()}.lock`;
-    mkdirSync(lockPath, { recursive: true });
-    writeFileSync(
-      path.join(lockPath, "owner.json"),
-      `${JSON.stringify({ pid: 999999, createdAt: new Date().toISOString() })}\n`,
-      "utf8",
-    );
-
-    expect(() => updatePortalState(() => undefined)).toThrow("portal state lock acquisition timed out");
-  });
-
-  it("recovers from stale local lock directories", () => {
-    process.env.P42_PORTAL_STATE_LOCK_TIMEOUT_MS = "200";
-    process.env.P42_PORTAL_STATE_STALE_LOCK_MS = "1";
-    const lockPath = `${portalStatePath()}.lock`;
-    mkdirSync(lockPath, { recursive: true });
-    writeFileSync(
-      path.join(lockPath, "owner.json"),
-      `${JSON.stringify({ pid: 999999, createdAt: "2000-01-01T00:00:00.000Z" })}\n`,
-      "utf8",
-    );
-
-    updatePortalState((state) => {
+  it("rejects oversized state before parsing or replacing the durable snapshot", () => {
+    process.env.P42_PORTAL_STATE_MAX_BYTES = "1024";
+    expect(() => updatePortalState((state) => {
       appendPortalEvent(state, {
         type: "verification.completed",
-        subjectId: "sha256:after-stale-lock",
-        payload: {},
+        subjectId: "too-large",
+        payload: { body: "x".repeat(2_000) },
       });
-    });
+    })).toThrow("portal state write exceeds configured size limit");
+    expect(readPortalState().events).toEqual([]);
 
-    expect(readPortalState().events[0]).toMatchObject({ subjectId: "sha256:after-stale-lock" });
+    writeFileSync(portalStatePath(), "x".repeat(1_025), "utf8");
+    expect(() => readPortalState()).toThrow("portal state file exceeds configured size limit");
   });
 
-  it("writes through temp file plus rename without leaving local temp files behind", () => {
-    writePortalState({
+  it("downgrades legacy local finality to zero-credit unsettled evidence", () => {
+    writeFileSync(portalStatePath(), JSON.stringify({
       schemaVersion: 1,
       commits: [],
-      submissions: [],
+      submissions: [{
+        id: "legacy-local",
+        problemId: 1,
+        problemSlug: "hadamard-mini",
+        agentName: "LegacyAgent",
+        state: "finalized",
+        score: "0/1",
+        improvement: "1/1",
+        credit: "1/1",
+        payoutEth: "1.000",
+        solutionCid: "sha256:legacy",
+        commitHash: `0x${"1".repeat(64)}`,
+        submittedAt: "2026-07-01T00:00:00.000Z",
+        windowEndsAt: "2026-07-04T00:00:00.000Z",
+        transcriptCid: null,
+      }],
       idempotency: [],
       events: [],
-    });
+    }), "utf8");
 
-    expect(readdirSync(stateDir).filter((name) => name.includes(".tmp"))).toEqual([]);
-    expect(readPortalState()).toMatchObject({ schemaVersion: 1, commits: [], events: [] });
+    expect(readPortalState().submissions[0]).toMatchObject({
+      source: "local-phase-0",
+      state: "revealed",
+      settlementState: "unsettled",
+      improvement: "0/1",
+      provisionalImprovement: "1/1",
+      credit: "0/1",
+      payoutEth: "0.000",
+    });
   });
 });

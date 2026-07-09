@@ -1,0 +1,67 @@
+[
+  {
+    "label": "A.commit_zero_da",
+    "reverted": true,
+    "error": "P42_EMPTY_DA_HASH"
+  },
+  {
+    "label": "A.commit_zero_commitment",
+    "reverted": true,
+    "error": "P42_EMPTY_COMMITMENT"
+  },
+  {
+    "label": "REAL.commit",
+    "tx": "0x53ec7774e0f4d1a3f480be473c9fb0752959cd6ffbcf20b1e78631d79fac5a92",
+    "status": 1,
+    "block": 43862502
+  },
+  {
+    "label": "REAL.reveal",
+    "tx": "0x56a6e8d2ffc1afcef85b5ce50dd352140b9e4533c73e277e38576565ce087765",
+    "status": 1,
+    "block": 43862505
+  },
+  {
+    "label": "submission#1.status",
+    "status": "2",
+    "solver": "0xF007fC214139CEA514c712289dfDd9d3a5739F61",
+    "improvementAtoms": "1000000"
+  },
+  {
+    "label": "B.finalize_zero_permanence",
+    "reverted": true,
+    "error": "P42_EMPTY_PERMANENCE_HASH"
+  },
+  {
+    "label": "B.finalize_in_window",
+    "reverted": true,
+    "error": "P42_CHALLENGE_WINDOW_OPEN"
+  },
+  {
+    "label": "C.claim_before_close",
+    "reverted": true,
+    "error": "execution reverted (unknown custom error)"
+  },
+  {
+    "label": "D.bond_scaling",
+    "pool0": "0.01",
+    "pool1ETH": "0.02",
+    "pool10ETH": "0.2",
+    "scales": true
+  },
+  {
+    "label": "E.challenge_bond_onchain",
+    "disputedEntitlementWei": "0",
+    "requiredChallengeBond": "0.03"
+  },
+  {
+    "label": "E.challenge_empty_reason",
+    "reverted": true,
+    "error": "missing revert data"
+  },
+  {
+    "label": "F.resolve_unknown_challenge",
+    "reverted": true,
+    "error": "P42_UNKNOWN_CHALLENGE"
+  }
+]
