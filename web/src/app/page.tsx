@@ -184,7 +184,7 @@ export default function HomePage() {
             program; the certificate is public; payment is proportional to frontier moved.</em>
           </p>
         </div>
-        <p className="fifth-line">The sixth record will not be ours.</p>
+        <p className="fifth-line">The race is on for the 6th.</p>
         <p className="first-four-close-action">
           <a className="button" href="#register">
             Enter the register

@@ -4,7 +4,6 @@ import { DivergentDigit } from "@/components/DivergentDigit";
 import { FrontierMove, type FrontierMoveProps } from "@/components/FrontierMove";
 import { MathBlock } from "@/components/Math";
 import { getProblemBySlug } from "@/lib/data";
-import { compactRational } from "@/lib/format";
 import type { Discovery, DiscoveryResult } from "@/lib/discoveries";
 
 export const ROMAN = ["I", "II", "III", "IV", "V"] as const;
@@ -161,7 +160,7 @@ function buildMove(discovery: Discovery, result: DiscoveryResult, index: number)
     const board = getProblemBySlug(boardSlug);
     if (board) {
       const runnable = board.status === "open" || board.status === "pilot";
-      openLabel = `${runnable ? "open" : "in admission"} · Δ ≥ ${compactRational(board.minImprovement)}`;
+      openLabel = runnable ? "open frontier" : "in admission";
     }
   }
 
