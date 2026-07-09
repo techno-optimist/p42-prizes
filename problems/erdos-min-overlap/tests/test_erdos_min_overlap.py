@@ -12,10 +12,9 @@ EXPECTED_SCORE = (
     "1424992289798782609633201801352767458976314440679252577/"
     "3741444197802851304404516484910431627947663875649308401"
 )
-EXPECTED_IMPROVEMENT = (
-    "224275765737895474399165101424078829860110626591708732724080463887/"
-    "3741444197802851304404516484910431627947663875649308401000000000000000"
-)
+# Audit F1: SEED_BEST now equals the bundled witness's exact score, so the
+# witness is the frontier itself and yields no strict improvement.
+EXPECTED_IMPROVEMENT = "0/1"
 
 
 def run_verify(solution: str | Path) -> tuple[int, dict]:
@@ -33,13 +32,13 @@ def run_verify(solution: str | Path) -> tuple[int, dict]:
     return completed.returncode, json.loads(completed.stdout)
 
 
-def test_hyra_upper_bound_verifies_exact_score() -> None:
+def test_hyra_upper_bound_is_the_frontier_not_an_improvement() -> None:
     code, report = run_verify("examples/hyra-upper.json")
-    assert code == 0
-    assert report["valid"] is True
+    assert code != 0
+    assert report["valid"] is False
     assert report["score"] == EXPECTED_SCORE
     assert report["improvement"] == EXPECTED_IMPROVEMENT
-    assert report["reason"] == ""
+    assert report["reason"] == "NOT_STRICT_IMPROVEMENT"
     assert report["details"]["argmax_lag"] == -92
     assert report["details"]["checked_lags"] == 4799
 

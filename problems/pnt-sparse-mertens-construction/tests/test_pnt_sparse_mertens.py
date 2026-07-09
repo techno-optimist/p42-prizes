@@ -26,13 +26,15 @@ def run_verify(solution: str | Path) -> tuple[int, dict]:
     return completed.returncode, json.loads(completed.stdout)
 
 
-def test_chronos_reach_96000_verifies() -> None:
+def test_chronos_reach_96000_is_the_frontier_not_an_improvement() -> None:
+    # Audit F1: SEED_BEST now equals this witness's exact score, so the
+    # bundled example is the frontier itself, not a strict improvement.
     code, report = run_verify("examples/chronos-96000.json")
-    assert code == 0
-    assert report["valid"] is True
+    assert code != 0
+    assert report["valid"] is False
     assert report["score"] == EXPECTED_SCORE
-    assert report["improvement"] == EXPECTED_SCORE
-    assert report["reason"] == ""
+    assert report["improvement"] == "0/1"
+    assert report["reason"] == "NOT_STRICT_IMPROVEMENT"
     assert report["details"]["checked_rows"] == 960000
     assert report["details"]["max_constraint_x"] == 1571
     assert report["details"]["support_size"] == 2000

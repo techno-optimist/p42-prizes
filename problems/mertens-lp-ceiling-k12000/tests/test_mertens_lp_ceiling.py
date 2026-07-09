@@ -8,8 +8,10 @@ import subprocess
 
 PROBLEM = Path(__file__).resolve().parents[1]
 ROOT = PROBLEM.parents[1]
+# Audit F1: SEED_BEST now equals the bundled witness's exact score, so the
+# bundled certificate is the frontier rather than an improvement over it.
 EXPECTED_SCORE = "249371902576813203926437/250000000000000000000000"
-EXPECTED_IMPROVEMENT = "628097423186796073563/250000000000000000000000"
+EXPECTED_IMPROVEMENT = "0/1"
 
 
 def run_verify(solution: str | Path) -> tuple[int, dict]:
@@ -27,13 +29,13 @@ def run_verify(solution: str | Path) -> tuple[int, dict]:
     return completed.returncode, json.loads(completed.stdout)
 
 
-def test_k12000_ceiling_verifies_printed_decimal() -> None:
+def test_k12000_ceiling_is_the_frontier_not_an_improvement() -> None:
     code, report = run_verify("examples/certificate-k12000.json")
-    assert code == 0
-    assert report["valid"] is True
+    assert code != 0
+    assert report["valid"] is False
     assert report["score"] == EXPECTED_SCORE
     assert report["improvement"] == EXPECTED_IMPROVEMENT
-    assert report["reason"] == ""
+    assert report["reason"] == "NOT_STRICT_IMPROVEMENT"
     assert report["details"]["rows"] == 12058
     assert report["details"]["printed_decimal"] == "0.9974876103072528157057480"
 

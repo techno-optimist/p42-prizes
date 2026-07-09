@@ -9,7 +9,7 @@ import subprocess
 PROBLEM = Path(__file__).resolve().parents[1]
 ROOT = PROBLEM.parents[1]
 EXPECTED_SCORE = "55444/1"
-EXPECTED_IMPROVEMENT = "167334/1"
+EXPECTED_IMPROVEMENT = "0/1"
 
 
 def run_verify(solution: str | Path) -> tuple[int, dict]:
@@ -27,13 +27,16 @@ def run_verify(solution: str | Path) -> tuple[int, dict]:
     return completed.returncode, json.loads(completed.stdout)
 
 
-def test_sylvester_prefix_baseline_verifies() -> None:
+def test_sylvester_prefix_baseline_is_the_frontier_not_an_improvement() -> None:
+    # Audit F1 set SEED_BEST to the bundled witness's own defect (55444), so
+    # the baseline construction IS the frontier and no longer verifies as a
+    # strict improvement over it.
     code, report = run_verify("examples/sylvester-prefix.json")
-    assert code == 0
-    assert report["valid"] is True
+    assert code != 0
+    assert report["valid"] is False
     assert report["score"] == EXPECTED_SCORE
     assert report["improvement"] == EXPECTED_IMPROVEMENT
-    assert report["reason"] == ""
+    assert report["reason"] == "NOT_STRICT_IMPROVEMENT"
     assert report["details"]["checked_pairs"] == 222778
     assert report["details"]["defect"] == 55444
     assert report["details"]["orthogonal_pairs"] == 167334

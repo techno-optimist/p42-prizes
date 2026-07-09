@@ -25,12 +25,13 @@ def run_verify(solution: str | Path) -> tuple[int, dict]:
     return completed.returncode, json.loads(completed.stdout)
 
 
-def test_kt_2x2_certificate_forces_all_vertices() -> None:
+def test_kt_2x2_certificate_is_the_frontier_not_an_improvement() -> None:
     code, report = run_verify("examples/kt-2x2-forcing.json")
-    assert code == 0
-    assert report["valid"] is True
+    assert code != 0
+    assert report["valid"] is False
+    assert report["reason"] == "NOT_STRICT_IMPROVEMENT"
     assert report["score"] == "7/4"
-    assert report["improvement"] == "1/4"
+    assert report["improvement"] == "0/1"
     assert report["details"]["edge_cost"] == 4
     assert report["details"]["generator_count"] == 7
     assert report["details"]["forced_vertices"] == 4
@@ -42,7 +43,7 @@ def test_tampered_seed_breaks_closure_despite_claim() -> None:
     assert code != 0
     assert report["valid"] is False
     assert report["reason"] == "CLOSURE_INCOMPLETE"
-    assert report["score"] == "2/1"
+    assert report["score"] == "7/4"
 
 
 def test_wrong_grid_fails_with_typed_report() -> None:

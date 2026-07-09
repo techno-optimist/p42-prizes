@@ -12,10 +12,6 @@ EXPECTED_SCORE = (
     "15041971118343665197137380984232095998912388144895190342004000000000000/"
     "10008961702715850455872036862958802052289156042841554837278437518918769"
 )
-EXPECTED_IMPROVEMENT = (
-    "4975952287088035714606692741685508105665923940787919332552875037837538/"
-    "10008961702715850455872036862958802052289156042841554837278437518918769"
-)
 
 
 def run_verify(solution: str | Path) -> tuple[int, dict]:
@@ -33,13 +29,15 @@ def run_verify(solution: str | Path) -> tuple[int, dict]:
     return completed.returncode, json.loads(completed.stdout)
 
 
-def test_hyra_upper_bound_verifies_exact_score() -> None:
+def test_hyra_upper_bound_is_the_frontier_not_an_improvement() -> None:
+    # Audit F1: SEED_BEST now equals the bundled Hyra witness's exact score,
+    # so resubmitting the witness is not a strict improvement.
     code, report = run_verify("examples/hyra-upper.json")
-    assert code == 0
-    assert report["valid"] is True
+    assert code != 0
+    assert report["valid"] is False
     assert report["score"] == EXPECTED_SCORE
-    assert report["improvement"] == EXPECTED_IMPROVEMENT
-    assert report["reason"] == ""
+    assert report["improvement"] == "0/1"
+    assert report["reason"] == "NOT_STRICT_IMPROVEMENT"
     assert report["details"]["argmax_index"] == 116347
     assert report["details"]["checked_coefficients"] == 179999
 
