@@ -51,8 +51,10 @@ problem that needs more than one pass.
   sandbox on the production Linux runner.
 - Runner transcripts must never include secrets, RPC keys, API keys, Telegram
   tokens, or private solver material.
-- Auto-challenge requires an explicit funded agent key, counter-bond policy,
-  spend cap, and revocation path before it can touch money.
+- Auto-challenge requires an explicit funded `P42AgentWallet`, exact-calldata
+  call policy, counter-bond cap, cumulative spend cap, and revocation path
+  before it can touch money. Production operators must not challenge directly
+  from an EOA; direct EOA challenge sends are local-test only.
 
 ## Bottlenecks
 
@@ -137,8 +139,10 @@ Minimal queue shape:
 ```
 
 The launch rule is fail-closed: if queue state is malformed, a stale lease needs
-reaping, memory headroom is too low, swap usage is above threshold, or the active
-runner slot is full, no verifier starts and no auto-challenge key is touched.
+reaping, memory headroom is too low, swap usage is above threshold, the active
+runner slot is full, the operator cursor detects a reorg, or the queued reveal
+artifact is no longer canonical, no verifier starts and no auto-challenge key is
+touched. Reorg-orphaned jobs/actions are marked `canonical_invalidated`.
 
 ## Worker Once
 
@@ -208,6 +212,16 @@ guard was supported on that host. A transcript whose verifier error says it
 exceeded the memory limit before emitting `VerdictReport` is a failed
 submission/run, not a runner outage, as long as the worker stays healthy and
 the queue continues draining.
+
+
+## Base Sepolia Manifest Guard
+
+The checked-in `deployments/base-sepolia/p42-prizes.json` is stale for this
+source tree. It predates the governed manifest schema, runtime cursor/journal
+remediation, and reconciliation archive fixes, so reconciliation and operator
+startup reject it before scanning. A current deployment must produce a new
+manifest and reconciliation report; agents must not rewrite stale addresses or
+tx hashes into a fake current release.
 
 ## Portal Shortcut Guard
 

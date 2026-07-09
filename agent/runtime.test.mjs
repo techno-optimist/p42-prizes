@@ -1,16 +1,31 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
 
 import {
   buildChallengeCallPolicy,
+  buildOperatorCursor,
+  buildSignedTransactionRecord,
   canonicalJson,
+  nextOperatorScanRange,
+  operatorCursorBinding,
   recoverRevealCalldata,
+  resolveOperatorFinality,
   sha256Canonical,
   solverLifecycleDecision,
   submissionIdFromCommittedReceipt,
+  validateOperatorCursor,
+  validateOperatorExecutionMode,
 } from "./lib.mjs";
 
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(HERE, "..");
 
 const submissionInterface = new ethers.Interface([
   "function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)",
@@ -39,6 +54,7 @@ const expected = {
   improvementAtoms: 9n,
   solutionBytesLength: solution.length,
 };
+const anchoredExpected = { ...expected, commitDaHash: ethers.sha256(solution) };
 
 
 test("recoverRevealCalldata decodes a direct reveal", () => {
@@ -60,11 +76,35 @@ test("recoverRevealCalldata finds reveal inside smart-wallet and ERC-4337-style 
     "0x2222222222222222222222222222222222222222",
   ]);
 
-  const recovered = recoverRevealCalldata(topLevel, submissionInterface, expected);
+  const recovered = recoverRevealCalldata(topLevel, submissionInterface, anchoredExpected);
 
   assert.equal(recovered.nested, true);
   assert.ok(recovered.calldataOffsetBytes > 0);
   assert.equal(recovered.callData, reveal.toLowerCase());
+});
+
+
+
+
+test("recoverRevealCalldata rejects decoy and ambiguous reveal candidates", () => {
+  const badSolution = ethers.toUtf8Bytes('{"answer":43}');
+  const decoy = submissionInterface.encodeFunctionData("reveal", [
+    17n,
+    expected.solutionCid,
+    -123n,
+    9n,
+    "salt",
+    badSolution,
+  ]);
+
+  assert.throws(
+    () => recoverRevealCalldata(ethers.concat([decoy, reveal]), submissionInterface, anchoredExpected),
+    /decoy matched/,
+  );
+  assert.throws(
+    () => recoverRevealCalldata(ethers.concat([reveal, reveal]), submissionInterface, anchoredExpected),
+    /ambiguous reveal calldata/,
+  );
 });
 
 
@@ -190,4 +230,121 @@ test("challenge action emits exact chain/expiry/calldata/scope session policy", 
   const unsigned = { ...policy };
   delete unsigned.policy_hash;
   assert.equal(policy.policy_hash, sha256Canonical(unsigned));
+});
+
+
+test("operator finality, execution mode, and cursor helpers fail closed", () => {
+  const manifest = {
+    status: "governance-setup-complete",
+    deploymentCommit: "a".repeat(40),
+    deploymentConfigHash: `0x${"b".repeat(64)}`,
+    indexer: { startBlock: 100, finalityPolicy: { confirmations: 64, reorgOverlapBlocks: 8 } },
+  };
+  assert.deepEqual(
+    resolveOperatorFinality({ manifest, confirmations: null, reorgOverlapBlocks: null }),
+    { confirmations: 64, reorgOverlapBlocks: 8 },
+  );
+  assert.throws(
+    () => resolveOperatorFinality({ manifest, confirmations: 0, reorgOverlapBlocks: 1 }),
+    /production operator requires/,
+  );
+  assert.deepEqual(
+    resolveOperatorFinality({ manifest, confirmations: 0, reorgOverlapBlocks: 1, localTest: true }),
+    { confirmations: 0, reorgOverlapBlocks: 1 },
+  );
+  assert.throws(
+    () => validateOperatorExecutionMode({ manifest, chainId: 84532 }),
+    /requires --agent-wallet/,
+  );
+  assert.throws(
+    () => validateOperatorExecutionMode({ manifest, chainId: 84532, localTest: true }),
+    /only allowed on local chain ids/,
+  );
+  assert.equal(
+    validateOperatorExecutionMode({ manifest, chainId: 31337, localTest: true }).mode,
+    "direct-eoa-local-test",
+  );
+
+  const binding = operatorCursorBinding({
+    manifest,
+    chainId: 84532,
+    submissionContract: "0x1111111111111111111111111111111111111111",
+    challengeContract: "0x2222222222222222222222222222222222222222",
+    problemId: "hadamard-mini",
+  });
+  const cursor = buildOperatorCursor({
+    binding,
+    nextBlock: 110,
+    overlapBlocks: 3,
+    anchors: [
+      { block_number: 104, block_hash: `0x${"1".repeat(64)}` },
+      { block_number: 107, block_hash: `0x${"2".repeat(64)}` },
+      { block_number: 109, block_hash: `0x${"3".repeat(64)}` },
+    ],
+  });
+  assert.deepEqual(cursor.anchors.map((anchor) => anchor.block_number), [107, 109]);
+  assert.deepEqual(
+    nextOperatorScanRange({ cursor, startBlock: 100, safeLatest: 120, overlapBlocks: 3 }),
+    { fromBlock: 107, toBlock: 120 },
+  );
+  assert.equal(nextOperatorScanRange({ cursor, startBlock: 100, safeLatest: 106, overlapBlocks: 3 }), null);
+  validateOperatorCursor(cursor, binding);
+  assert.throws(
+    () => validateOperatorCursor(cursor, { ...binding, problem_id: "other" }),
+    /different deployment binding/,
+  );
+});
+
+test("signed transaction journal records raw bytes before broadcast", async () => {
+  const signingWallet = ethers.Wallet.createRandom();
+  const request = {
+    to: "0x9999999999999999999999999999999999999999",
+    value: 123n,
+    data: "0x",
+    nonce: 0,
+    gasLimit: 21000n,
+    gasPrice: 1n,
+    chainId: 31337,
+    type: 0,
+  };
+  const record = await buildSignedTransactionRecord({ wallet: signingWallet, request, label: "unit" });
+  assert.equal(record.schema_version, "p42-signed-transaction/v1");
+  assert.equal(record.hash, ethers.keccak256(record.raw_tx));
+  assert.equal(record.signer, signingWallet.address.toLowerCase());
+  assert.equal(record.nonce, 0);
+  assert.equal(record.value, "123");
+});
+
+
+test("runtime bridge quarantines orphaned canonical jobs under the queue lock", () => {
+  const dir = mkdtempSync(join(tmpdir(), "p42-bridge-"));
+  const queue = join(dir, "queue.json");
+  const job = {
+    job_id: "84532:submission:block:tx:0",
+    status: "queued",
+    required_memory_mb: 128,
+    source_event_hash: `sha256:${"1".repeat(64)}`,
+    challenge_candidate_hash: `sha256:${"4".repeat(64)}`,
+    action: {
+      candidate_hash: `sha256:${"4".repeat(64)}`,
+      status: "broadcast",
+      transaction_hash: `0x${"5".repeat(64)}`,
+    },
+  };
+  writeFileSync(queue, `${canonicalJson({ schema_version: "p42-runner-queue/v1", jobs: [job] })}\n`, "utf8");
+
+  const out = execFileSync("python3", [
+    join(REPO_ROOT, "agent", "runtime_bridge.py"),
+    "quarantine-canonical",
+    "--queue", queue,
+    "--job-id", job.job_id,
+    "--reason", "reorg orphaned reveal",
+  ], { cwd: REPO_ROOT, encoding: "utf8" });
+  assert.deepEqual(JSON.parse(out).invalidated_job_ids, [job.job_id]);
+  const updated = JSON.parse(readFileSync(queue, "utf8")).jobs[0];
+  assert.equal(updated.status, "cancelled");
+  assert.equal(updated.canonical_status, "orphaned_reorg");
+  assert.equal(updated.action.status, "canonical_invalidated");
+  assert.equal(updated.action.transaction_hash, `0x${"5".repeat(64)}`);
+  assert.equal(updated.previous_action.status, "broadcast");
 });

@@ -68,7 +68,8 @@ export default function HomePage() {
           <p className="standfirst">
             Between 4 and 7 July 2026, the ProjectForty2 / CHRONOS agent stack set four records in the
             mathematical literature — exact certificates, no floating point in any certified inequality, each
-            published under a DOI. The protocol below now pays anyone, human or machine, to push them further.{" "}
+            published under a DOI. This Volume 0 page is a Phase 0 Base Sepolia testnet demonstration of future bounty
+            mechanics; it does not currently settle or pay users, and real ETH remains gated.{" "}
             <em>The proof is the re-run.</em>
           </p>
           <BoundSpecimen

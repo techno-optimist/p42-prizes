@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
+import { ethers } from "ethers";
 
 import {
+  archiveCalldata,
   buildCheckpoint,
   compareReplayToSnapshot,
   EVENT_CATALOG,
@@ -546,6 +551,69 @@ describe("P42 deterministic indexer replay", () => {
       ReorgDetectedError
     );
   });
+
+
+  it("archives nested reveal calldata and rejects commitDaHash decoys", async () => {
+    const archiveInterface = new ethers.Interface([
+      "function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)",
+    ]);
+    const walletInterface = new ethers.Interface([
+      "function execute(address target,uint256 value,bytes data) returns (bytes)",
+    ]);
+    const solution = ethers.toUtf8Bytes('{"answer":42}');
+    const commitDaHash = ethers.sha256(solution);
+    const cid = `sha256:${commitDaHash.slice(2)}`;
+    const reveal = archiveInterface.encodeFunctionData("reveal", [1n, cid, -7n, 3n, "salt", solution]);
+    const nested = walletInterface.encodeFunctionData("execute", [ADDR.submissions, 0n, reveal]);
+    const event = {
+      source: "submissions",
+      eventName: "Revealed",
+      args: {
+        submissionId: 1n,
+        solutionCid: cid,
+        claimedScoreAtoms: -7n,
+        improvementAtoms: 3n,
+        solutionBytesLength: BigInt(solution.length),
+      },
+      blockNumber: 12,
+      blockHash: hash(12),
+      transactionHash: hash(9001),
+      transactionIndex: 0,
+      index: 0,
+    };
+    const submissions = {
+      interface: archiveInterface,
+      async submissions(id) {
+        assert.equal(String(id), "1");
+        return { commitDaHash };
+      },
+    };
+    const provider = { async getTransaction() { return { data: nested, value: 0n }; } };
+    const dir = mkdtempSync(join(tmpdir(), "p42-archive-"));
+
+    const ok = await archiveCalldata(dir, [event], submissions, provider);
+    assert.equal(ok.ok, true);
+    assert.equal(ok.archived, 1);
+    assert.equal(readFileSync(join(dir, `${cid.replace(/[^a-zA-Z0-9._-]/g, "_")}.bin`)).toString(), Buffer.from(solution).toString());
+
+    const decoy = archiveInterface.encodeFunctionData("reveal", [
+      1n,
+      cid,
+      -7n,
+      3n,
+      "salt",
+      ethers.toUtf8Bytes('{"answer":43}'),
+    ]);
+    const bad = await archiveCalldata(
+      mkdtempSync(join(tmpdir(), "p42-archive-decoy-")),
+      [event],
+      submissions,
+      { async getTransaction() { return { data: ethers.concat([decoy, nested]), value: 0n }; } },
+    );
+    assert.equal(bad.ok, false);
+    assert.match(bad.mismatches[0].reason, /decoy matched|ambiguous reveal calldata/);
+  });
+
 
   it("builds byte-stable checkpoints for identical finalized evidence", () => {
     const events = lifecycleFixture();

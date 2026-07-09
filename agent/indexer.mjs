@@ -11,6 +11,8 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { recoverRevealCalldata } from "./lib.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 const DEPLOYMENT_MANIFEST_SCHEMA = JSON.parse(
@@ -100,6 +102,15 @@ const STATUS_NUMBER = Object.freeze(
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_HASH = `0x${"0".repeat(64)}`;
+
+export const STALE_BASE_SEPOLIA_RELEASE_GUARDS = Object.freeze([
+  {
+    chainId: 84532,
+    status: "base-sepolia-testnet",
+    deploymentCommit: "3121a1a2036d2d19742183d409de1c108d3ae1b2",
+    reason: "canonical Base Sepolia manifest predates the current governed manifest schema and runtime/reconciliation fixes",
+  },
+]);
 
 export class ReplayError extends Error {
   constructor(message) {
@@ -346,6 +357,18 @@ function validateDeploymentManifestSchema(manifest) {
   validateSchemaValue(manifest, DEPLOYMENT_MANIFEST_SCHEMA, DEPLOYMENT_MANIFEST_SCHEMA, "manifest");
 }
 
+function rejectKnownStaleRelease(manifest) {
+  for (const guard of STALE_BASE_SEPOLIA_RELEASE_GUARDS) {
+    if (
+      Number(manifest?.network?.chainId) === guard.chainId &&
+      manifest?.status === guard.status &&
+      String(manifest?.deploymentCommit ?? "").toLowerCase() === guard.deploymentCommit
+    ) {
+      throw new Error(`stale Base Sepolia manifest is invalid for this source: ${guard.reason}`);
+    }
+  }
+}
+
 export function validateFinalityPolicy(policy) {
   if (policy?.mode !== "confirmations") {
     throw new Error("indexer.finalityPolicy.mode must be confirmations");
@@ -367,6 +390,7 @@ export function validateFinalityPolicy(policy) {
 }
 
 export function validateManifestEvidence(manifest) {
+  rejectKnownStaleRelease(manifest);
   validateDeploymentManifestSchema(manifest);
   if (manifest?.schema !== "p42-prizes/deployment-manifest/v1") {
     throw new Error(`Unsupported deployment manifest schema: ${String(manifest?.schema)}`);
@@ -2013,7 +2037,7 @@ function cidToFilename(cid) {
   return cid.replace(/[^a-zA-Z0-9._-]/g, "_") + ".bin";
 }
 
-async function archiveCalldata(dir, reveals, submissions, provider) {
+export async function archiveCalldata(dir, reveals, submissions, provider) {
   const outDir = resolve(dir);
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
   const entries = [];
@@ -2046,22 +2070,29 @@ async function archiveCalldata(dir, reveals, submissions, provider) {
       mismatches.push({ submissionId, cid, reason: "reveal transaction not found" });
       continue;
     }
-    let parsed;
+    let reveal;
     try {
-      parsed = submissions.interface.parseTransaction({ data: tx.data, value: tx.value });
+      reveal = recoverRevealCalldata(tx.data, submissions.interface, {
+        submissionId,
+        solutionCid: cid,
+        claimedScoreAtoms: getArg(event, "claimedScoreAtoms"),
+        improvementAtoms: getArg(event, "improvementAtoms"),
+        solutionBytesLength: byteLength,
+        commitDaHash: anchor,
+      });
     } catch (error) {
-      mismatches.push({ submissionId, cid, reason: `unparseable calldata: ${error.shortMessage ?? error.message}` });
+      mismatches.push({
+        submissionId,
+        cid,
+        anchor,
+        reason: `calldata recovery failed closed: ${error.shortMessage ?? error.message}`,
+      });
       continue;
     }
-    if (parsed?.name !== "reveal") {
-      mismatches.push({ submissionId, cid, reason: `transaction is ${parsed?.name ?? "unknown"}, not reveal` });
-      continue;
-    }
-    const solution = parsed.args.solution;
-    const computed = ethers.sha256(solution);
+    const computed = reveal.commitDaHash ?? ethers.sha256(reveal.solution);
     const derivedCid = `sha256:${computed.slice(2)}`;
-    const bytes = ethers.getBytes(solution);
-    if (computed !== anchor || derivedCid !== cid || BigInt(bytes.length) !== byteLength) {
+    const bytes = ethers.getBytes(reveal.solution);
+    if (computed !== anchor || BigInt(bytes.length) !== byteLength) {
       mismatches.push({ submissionId, cid, anchor, computed, derivedCid, reason: "calldata does not match event/anchor" });
       continue;
     }

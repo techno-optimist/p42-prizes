@@ -13,7 +13,7 @@ signature.
 | Gate 0 | Establish CI. GitHub currently reports **zero Actions workflows and zero check runs** for this repository. | Repo owner publishes the reviewed workflow with GitHub UI or a credential permitted to write workflows; the first real run covers the required Python, verifier, contract, agent, and web gates. |
 | Gate 0 | Decide how protected releases will be enforced. Both branch-protection and rulesets APIs returned HTTP 403: `Upgrade to GitHub Pro or make this repository public to enable this feature` because `p42-prizes` is private. | Repo owner makes an explicit subscription/publicity decision: upgrade the applicable GitHub plan or make the repository public, then configure and independently verify required reviews/checks. The source-control gate remains open until enforcement is visible. |
 | Gate 0 | Enable and test private vulnerability reporting. | Security settings show private reporting enabled and a non-owner test reaches maintainers through the advisory route. |
-| Gate 1 | Deploy the remediated frozen release under intended testnet roles. The prior canonical Base Sepolia manifest predates current source and does not attest it. | New manifest and explorer verification bind the frozen commit, chain ID, all addresses, constructor/wiring/config values, source hashes, and runtime-bytecode hashes; reconciliation runs from deployment genesis. |
+| Gate 1 | Deploy the remediated frozen release under intended testnet roles. The prior canonical Base Sepolia manifest predates current source, is machine-rejected as stale, and does not attest it. | New manifest and explorer verification bind the frozen commit, chain ID, all addresses, constructor/wiring/config values, source hashes, and runtime-bytecode hashes; reconciliation runs from deployment genesis. |
 | Gate 1 | Name resolver signers and rehearse a dispute. | Evidenced identities/keys, public transcript URI/hash, decision transactions, role separation, and slash/removal policy review for the exact deployment. |
 | Gate 1 | Run the adversarial campaign with independent review. | `adversarial-campaign-validate` passes for the exact deployment using the production trust registry, a frozen local evidence root, and an independently configured Base Sepolia RPC endpoint: every artifact's bytes resolve and hash, Git/config/source bytes bind to the commit, captured chain bytecode matches live queries at the recorded address/chain/block, execution and creation times predate signatures, and pre-registered external-auditor plus engineering-owner signatures verify. |
 | Gate 2 | Commission an independent smart-contract/security audit. | Requirements in `SECURITY.md`: identity/engagement evidence, frozen scope and release binding, report/findings hashes, remediation commits, independent retest, no open critical/high finding, residual-risk acceptance, and external signature. |
@@ -104,6 +104,8 @@ problem requirement.
   unverified; no activation evidence, completed drill, or required signatures.
 - Release binding: no current canonical resolved evidence root proves the
   audited, remediated Git source/configuration and captured on-chain runtime
-  bytecode for the exact addresses, chain, and block.
+  bytecode for the exact addresses, chain, and block. The checked-in canonical
+  Base Sepolia manifest is stale for this source and must not be treated as a
+  deployment record.
 
 All affected launch gates remain open.

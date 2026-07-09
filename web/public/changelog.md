@@ -3,7 +3,7 @@
 ## 0.3.0
 
 - Deployed the five contracts (registry, pool, ledger, submissions, challenges) to Base Sepolia (chainId 84532) and verified their source on BaseScan — testnet only, not audited, real ETH still gated. This build predates the DA refactor; the DA-refactored redeploy is still pending (`docs/GATE_LEDGER.md`).
-- Data availability moved on-chain: solution bytes ride the reveal calldata, bound by `sha256(bytes) == commitDaHash`, with an anchored off-chain store for the three large autoconvolution boards. The Arweave permanence receipt at finalize is now an optional mirror, not a launch dependency (`docs/DATA_AVAILABILITY.md`).
+- Source-level data availability has moved on-chain after the current Base Sepolia deployment: solution bytes ride the reveal calldata, bound by `sha256(bytes) == commitDaHash`, with an anchored off-chain store for the three large autoconvolution boards. The stale deployed Base Sepolia contracts do not yet include this DA refactor; a DA-refactored redeploy is still pending. The Arweave permanence receipt at finalize is now an optional mirror in source, not a live-deploy launch dependency (`docs/DATA_AVAILABILITY.md`, `docs/GATE_LEDGER.md`).
 - Payout is improvement-proportional: `share_i = Δ_i / Σ Δ_j`, marginal credit against the live frontier, escrowed until close.
 - Exercised the six-scenario adversarial campaign against the deployed testnet bytecode; pending named human reviewer sign-offs.
 

@@ -24,7 +24,7 @@ Revealed log
   -> exact VerdictReport score-atoms comparison
   -> canonical transcript + challenge candidate
   -> live window/bond-cap checks
-  -> challenge transaction
+  -> P42AgentWallet exact-calldata execute transaction
 ```
 
 `operator.mjs` never starts verifier Python directly. It calls
@@ -50,8 +50,15 @@ OPERATOR_PRIVATE_KEY=0x... node operator.mjs \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem ../problems/hadamard-mini \
   --runtime /var/lib/p42/operator/hadamard-mini \
+  --agent-wallet 0x... \
   --max-challenge-bond 0.05
 ```
+
+The current checked-in `deployments/base-sepolia/p42-prizes.json` is a stale
+pre-remediation manifest and is invalid for this source; operator and
+reconciliation startup fail closed on it. Do not edit it into a pretend current
+deployment. A real run needs a new manifest produced by a fresh deployment and
+reconciliation pass for the frozen source.
 
 Off-chain problems also require `--da-dir <content-store>` or `--arweave`.
 The Arweave path is mainnet-only and fail-closed: set `ARWEAVE_JWK_JSON` to a
@@ -68,16 +75,32 @@ Runtime artifacts under `--runtime` are:
 - `inputs/`: immutable solution bytes, mode `0600`.
 - `jobs/`: immutable event-bound queue specs.
 - `transcripts/`: canonical `p42-runner-transcript/v1` evidence.
-- `actions/`: exact `p42-session-call-policy/v1` call policies.
+- `operator-cursor.json`: durable finalized-block cursor plus overlap anchors.
+- `actions/`: exact `p42-session-call-policy/v1` call policies and signed challenge transaction journals.
 - `ALERTS.log`: quarantines, expired windows, and cap refusals.
 
 Each actionable challenge emits the exact `challenge(submissionId, reasonHash)`
 calldata and Keccak calldata hash, target, selector, chain id, problem and
 submission scope preimage/hash, challenge-window expiry, required value cap, and
-`max_calls=1`. Those fields are the owner inputs for the current
-`P42AgentWallet.setCallPolicy`; selector-only authorization is insufficient for
-calls with arguments. A direct bounded EOA operator can submit immediately. A
-smart-wallet deployment must preconfigure or consume the exact emitted policy.
+`max_calls=1`. Production execution requires `--agent-wallet` and sends the
+challenge through `P42AgentWallet.execute` only after the on-chain wallet shows
+the matching session key, chain, expiry, caps, allowlist, calldata hash, scope
+hash, and unused call count. Selector-only authorization is insufficient for
+calls with arguments. Direct EOA challenge submission is available only with
+`--local-test` on local chain IDs `1337` or `31337`; it refuses Base Sepolia and
+non-local manifests.
+
+Before broadcasting, the operator builds and signs the exact transaction bytes,
+writes a `p42-signed-transaction/v1` journal under `actions/`, records the
+`signed` action in the queue, and only then broadcasts. After a restart it
+reconciles the receipt or rebroadcasts the same raw transaction bytes; it never
+creates a replacement nonce transaction for the same candidate.
+
+The operator cursor stores finalized block anchors and always rescans an overlap
+window. If an anchored block changes or a rescan no longer contains a queued
+job's original `Revealed` source event, the bridge marks that job/action
+`canonical_invalidated` and cancels queued work instead of wedging or replaying
+from genesis.
 
 ## Solver Path
 
@@ -90,11 +113,12 @@ AGENT_PRIVATE_KEY=0x... node solver.mjs \
   --state /var/lib/p42/solver/hadamard-mini.json
 ```
 
-The state file is mode `0600` and contains the salt, submission identity,
-broadcast/confirmed transaction hashes, DA receipt, and current phase. Re-running
-the same command resumes it; identity mismatches fail closed. Transaction hashes
-are persisted before waiting for receipts, so a restart reconciles the receipt
-instead of rebroadcasting the action.
+The state file is mode `0600` and contains the salt, submission identity, DA
+receipt, current phase, and every lifecycle transaction journal. Each transaction
+is populated and signed first; the raw signed bytes and hash are persisted before
+broadcast. Re-running the same command resumes it; identity mismatches fail
+closed, and a restart reconciles or rebroadcasts the exact same transaction bytes
+instead of creating a replacement nonce transaction.
 
 The submission id is parsed from the matching `Committed` receipt log. It is
 never inferred from global `submissionCount()`. The lifecycle loop handles:
@@ -123,6 +147,7 @@ PYTHONPATH=../src python3 -m pytest -q \
 npm test
 node --check operator.mjs
 node --check solver.mjs
+node --check indexer.mjs
 npm audit --audit-level=moderate
 ```
 
