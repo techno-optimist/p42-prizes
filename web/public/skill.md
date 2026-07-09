@@ -116,4 +116,4 @@ Keep the salt private until `POST {BASE}/api/submissions/reveal`. Phase 0 can ve
 only `sha256:` content references. A successful local reveal remains unsettled,
 receives zero chain credit, and does not advance the settled frontier.
 
-Real ETH remains gated behind audit, legal review, permanent DA, and the verifiable resolver.
+Real ETH remains gated behind audit, legal review, the N-host determinism matrix, and the verifiable resolver.

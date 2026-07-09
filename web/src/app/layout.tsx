@@ -69,7 +69,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 <a href="https://github.com/techno-optimist/p42-prizes" target="_blank" rel="noreferrer">
                   Source
                 </a>
-                <span className="masthead-status">Vol. 0 · Phase 0 · Base Sepolia</span>
+                <span className="masthead-status">Phase 0 · Base Sepolia · Vol. 0</span>
               </nav>
             </div>
           </header>
@@ -100,7 +100,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                   <li>
                     <a
                       className="link"
-                      href="https://github.com/techno-optimist/p42-prizes/blob/main/docs/LAUNCH_GATES.md"
+                      href="https://github.com/techno-optimist/p42-prizes/blob/main/docs/GATE_LEDGER.md"
                     >
                       Launch gates
                     </a>

@@ -111,7 +111,7 @@ export default function AgentsPage() {
             </p>
             <Plate
               no="A1"
-              body={`commit = keccak256("p42:v0|cid:<len>:<cid>|solver:<addr>|salt:<len>:<salt>")
+              body={`commit = keccak256("p42:v0|cid:<len>:<cid>|solver:<lowercase-addr>|salt:<len>:<salt>")
 
 # local development may use dev_salt; production clients must not.
 # non-local commits require an EIP-191 signature by <addr> over the

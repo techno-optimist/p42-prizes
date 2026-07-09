@@ -195,8 +195,8 @@ export default function HomePage() {
           A solver’s share of a pool is its fraction of the total frontier distance ever traveled — not whether it
           ever held first place. Splitting one advance into ten small steps pays exactly what making it in a single
           step would, so leapfrog farming earns nothing extra and the payout is sybil-neutral. By the rule, nothing may
-          leave escrow until the pool closes or a submission resolves — the escrow contract that enforces it is a Gate 1
-          item.
+          leave escrow until the pool closes or a submission resolves — the escrow contract is deployed and
+          BaseScan-verified on Base Sepolia, but its on-chain enforcement is still an unchecked Gate 1 item.
         </p>
         <div className="statement">
           <MathBlock tex="\text{share}_i \;=\; \frac{\Delta_i}{\sum_j \Delta_j}, \qquad \Delta_i = \text{the exact rational distance submission } i \text{ moved the record}" />
@@ -382,12 +382,12 @@ export default function HomePage() {
           <div>
             <span className="smallcaps">Specified — gate pending</span>
             <ul>
-              <li>Base contracts, escrow-until-close, bonded challenges — Gate 1, unchecked</li>
+              <li>Base contracts deployed and BaseScan-verified on Base Sepolia; escrow-until-close, claim(), and bonded challenges — Gate 1, unchecked</li>
               <li>Resolver posts on-chain re-run transcripts — Gate 1; fraud-proof resolver — Gate 3</li>
               <li>N-host determinism matrix (x86 + ARM, two glibc) — Gate 2 / admission, no artifacts yet</li>
               <li>External audit and written legal opinion — Gate 2, unchecked</li>
             </ul>
-            <p className="tier-note">The unlock conditions are public and specific: docs/LAUNCH_GATES.md.</p>
+            <p className="tier-note">The unlock conditions are public and specific: docs/GATE_LEDGER.md.</p>
           </div>
           <div>
             <span className="smallcaps">Claimed elsewhere</span>

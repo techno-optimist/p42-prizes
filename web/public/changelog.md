@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0
+
+- Deployed the five contracts (registry, pool, ledger, submissions, challenges) to Base Sepolia (chainId 84532) and verified their source on BaseScan — testnet only, not audited, real ETH still gated. This build predates the DA refactor; the DA-refactored redeploy is still pending (`docs/GATE_LEDGER.md`).
+- Data availability moved on-chain: solution bytes ride the reveal calldata, bound by `sha256(bytes) == commitDaHash`, with an anchored off-chain store for the three large autoconvolution boards. The Arweave permanence receipt at finalize is now an optional mirror, not a launch dependency (`docs/DATA_AVAILABILITY.md`).
+- Payout is improvement-proportional: `share_i = Δ_i / Σ Δ_j`, marginal credit against the live frontier, escrowed until close.
+- Exercised the six-scenario adversarial campaign against the deployed testnet bytecode; pending named human reviewer sign-offs.
+
 ## 0.2.0
 
 - Redesigned the portal as the Register of Records (`docs/DESIGN.md`): paper register, STIX Two Text + IBM Plex Mono, KaTeX problem statements, dark verdict plates with reproduce commands.

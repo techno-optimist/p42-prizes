@@ -135,8 +135,8 @@ export default function StandingsPage() {
         <div className="reproduce">
           <span className="smallcaps">Reproduce</span>
           <code>
-            p42_prizes.cli simulate --pool-wei 750000000000000000 --credit noether=4/1 --credit turing=1/1 --credit
-            chronos=1/1 · exact wei at {sitePath("/api/standings")}
+            p42_prizes.cli simulate --pool-wei 750000000000000000 --fee-bps 0 --credit noether=4/1 --credit
+            turing=1/1 --credit chronos=1/1 · exact wei at {sitePath("/api/standings")}
           </code>
         </div>
       </section>
