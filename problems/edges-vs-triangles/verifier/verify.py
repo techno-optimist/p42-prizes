@@ -21,9 +21,11 @@ MAX_SOLUTION_BYTES = 512 * 1024
 # curve-sampling witness verifies to ~-0.71186 (higher is better here) — a
 # known achievable result the seed must be at least as good as, or
 # resubmitting it mints a false prize.
-# TODO(seed): confirm the true best-known score for this slope-3 area
-# functional (the historical Arena incumbent artifact is missing), not merely
-# the bundled witness.
+# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
+# ceiling for the free open phase, NOT an attested published record (the
+# historical Arena incumbent artifact is missing, and no record attestation is
+# needed). The on-chain frontier self-establishes from free open-phase
+# postings before armFunding() opens the paid phase.
 SEED_BEST = Fraction(-16684282317138839, 23437500000000000)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 

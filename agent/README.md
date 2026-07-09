@@ -75,13 +75,14 @@ fraud is profitable* — proven live).
 This proves the **transaction plumbing** runs autonomously. It does NOT yet close
 the two hard walls from the autonomy debate, and it takes deliberate shortcuts:
 
-- **Commit-time DA is LIVE Arweave** (`--arweave`, `da-arweave.mjs`): the solution
-  is uploaded to real Arweave (Irys), `commitDaHash` binds `keccak(txid)` on-chain,
-  and the operator fetches it back from the public gateway by CID to re-verify —
-  see `deployments/base-sepolia/arweave-demo-run.json`. Still placeholder: the
-  **finalize permanence receipt**; and devnet retention is ~60 days (mainnet
-  Arweave, funded, gives true permanence). Local `da-local.mjs` remains for the
-  no-network path.
+- **DA rides the reveal calldata (on-chain-at-reveal).** For `onchainDa=true`
+  problems the solver posts the raw solution bytes in the reveal tx and the
+  contract enforces `sha256(bytes) == commitDaHash` — the anchor is the sha256 of
+  the solution bytes, NOT `keccak(txid)`. The 3 large autoconvolution problems use
+  `onchainDa=false` + an off-chain content-addressed store gated by the same
+  on-chain anchor; `da-arweave.mjs` (`--arweave`) is now an **optional mirror**,
+  not required, and `finalize`'s `permanenceHash` is optional. Local `da-local.mjs`
+  remains for the no-network off-chain path. See `docs/DATA_AVAILABILITY.md`.
 - **One key, all roles.** owner = treasury = resolver = solver here. Real value
   needs ERC-4337 session keys with spend caps + role separation behind
   multisig/timelock (Phase 2).

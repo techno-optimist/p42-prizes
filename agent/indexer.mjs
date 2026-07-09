@@ -44,13 +44,10 @@ const c = manifest.contracts;
 const pool = new ethers.Contract(c.pool.address, abi("P42BountyPool"), provider);
 const ledger = new ethers.Contract(c.ledger.address, abi("P42PayoutLedger"), provider);
 const subs = new ethers.Contract(c.submissions.address, abi("P42SubmissionManager"), provider);
-const chal = new ethers.Contract(c.challenges.address, abi("P42ChallengeManager"), provider);
 // The registry only supplies problem metadata for the state output; the
 // settlement reconstruction and the calldata archive run off the core
 // contracts' events, so a manifest without a registry is still fully indexable.
 const registry = c.registry ? new ethers.Contract(c.registry.address, abi("P42ProblemRegistry"), provider) : null;
-
-const STATUS = ["None", "Committed", "Revealed", "Challenged", "Finalized", "Rejected"];
 
 // Public RPCs cap getLogs block ranges and rate-limit; page through small
 // windows SEQUENTIALLY with retries and aggregate.
@@ -86,12 +83,9 @@ function cidToFilename(cid) {
 async function archiveCalldata(dir, reveals) {
   const outDir = resolve(dir);
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
+  // The manifest is rebuilt from scratch each run; idempotency lives in the
+  // on-disk blobs themselves (already-pinned files are re-verified, not re-fetched).
   const manifestPath = `${outDir}/manifest.json`;
-
-  // Load any prior manifest so idempotent re-runs preserve/reuse existing entries.
-  const prior = existsSync(manifestPath) ? JSON.parse(readFileSync(manifestPath, "utf8")) : { entries: [] };
-  const priorByCid = {};
-  for (const e of prior.entries ?? []) priorByCid[e.cid] = e;
 
   const entries = [];
   const mismatches = [];

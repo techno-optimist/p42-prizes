@@ -62,7 +62,8 @@ handling needs:
 - quarantine storage outside the application working tree,
 - malware/archive-bomb checks before verifier execution,
 - verifier execution in a pinned sandbox image,
-- retention policy linked to DA/Arweave evidence,
+- retention policy linked to DA evidence (the reveal-calldata archive and any
+  optional Arweave mirror),
 - deletion or access controls for rejected non-public payloads.
 
 The Phase 0 portal hashes raw solution bytes, caps JSON body size, and avoids

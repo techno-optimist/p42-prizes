@@ -11,6 +11,15 @@ is P42, and what's left?" It complements the granular gate docs
 > named entity + signers) and the **Phase-3 research** (trustless resolution,
 > genuine SOLVE). Do **not** accept real ETH until those are closed.
 
+> **Post-snapshot updates.** The 2026-07-08 audit
+> ([`AUDIT_2026_07_08.md`](AUDIT_2026_07_08.md)) and its remediation landed
+> after this snapshot — notably the **F1 marginal-frontier payout** (on-chain
+> monotone `bestScoreAtoms`; credit is the marginal `Δ_i`, so shares are
+> `Δ_i/ΣΔ_j`) and **open-witness-phase seeding**
+> ([`OPEN_WITNESS_SEEDING.md`](OPEN_WITNESS_SEEDING.md), no human seed
+> attestation). The canonical BaseScan-verified deployment still predates the
+> DA/F1 refactors; the canonical redeploy remains pending.
+
 ## ✅ Done (built, tested, and demonstrated live on Base Sepolia)
 
 | Capability | Evidence |

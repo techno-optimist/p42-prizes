@@ -57,10 +57,12 @@ are ignored.
 ## Score And Improvement
 
 The score is serialized as the exact rational represented by
-`printed_decimal`. The local packaging seed is `0/1`. Improvement is:
+`printed_decimal`. The local packaging seed is the bundled CHRONOS witness's
+exact score — NOT the trivial floor `0/1` (audit F1: a seed looser than a
+known construction lets anyone resubmit it for a false prize). Improvement is:
 
 ```text
-improvement = max(0, score)
+improvement = max(0, score - seed_best)
 ```
 
 The bundled CHRONOS witness verifies to:
@@ -68,3 +70,11 @@ The bundled CHRONOS witness verifies to:
 ```text
 9974252022196793/10000000000000000
 ```
+
+and improvement `0/1` — it is the frontier, not an improvement over it.
+
+Seeding note: this local seed is a loose starting ceiling for the free open
+witness phase, not an attested published record. Under open-witness-phase
+seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain frontier
+self-establishes from free open-phase postings before `armFunding()` opens the
+paid phase.

@@ -23,9 +23,11 @@ MAX_SOLUTION_BYTES = 256 * 1024
 # verifies BELOW it (~0.3808669), so leaving the Haugland seed would let
 # anyone resubmit the bundled witness for a false prize. The seed is therefore
 # the bundled witness's exact score.
-# TODO(seed): confirm whether the bundled witness is a genuine published
-# improvement over Haugland or the witness should be withdrawn; owner must
-# confirm the true record before funding.
+# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
+# ceiling for the free open phase, NOT an attested published record. Whether
+# the bundled witness "genuinely" beats Haugland never needs ruling on:
+# posting it for free during the open phase establishes the frontier, and the
+# paid phase (after armFunding()) only rewards marginal improvement over that.
 SEED_BEST = Fraction(
     1424992289798782609633201801352767458976314440679252577,
     3741444197802851304404516484910431627947663875649308401,

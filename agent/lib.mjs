@@ -61,8 +61,10 @@ export function chainScoreAtoms(score, direction = "minimize") {
   return atomsFromScore(`${-num}/${den}`);
 }
 
-// Minimal problem.yaml probe for the fields the agents need. The manifest
-// schema is flat enough that a line-oriented parse is exact; no YAML dep.
+// Minimal problem.yaml probe for the one field the agents need: the objective
+// direction. The manifest schema is flat enough that a line-oriented parse is
+// exact; no YAML dep. (Seed scores are a deploy-time concern — the open-witness
+// seeding flow reads them in the deploy scripts, not here.)
 export function problemObjective(problemDir) {
   // Fail CLOSED: the direction decides whether a score is negated onto the
   // minimization frontier, and the solver + operator SHARE this helper. A silent
@@ -78,11 +80,7 @@ export function problemObjective(problemDir) {
   }
   const direction = /^\s*direction:\s*(minimize|maximize)\s*$/m.exec(text)?.[1];
   if (!direction) throw new Error(`problemObjective: no 'direction: minimize|maximize' in ${problemDir}/problem.yaml`);
-  const seedScore =
-    /^\s*seed_score:\s*"?(-?\d+(?:\/\d+)?)"?\s*$/m.exec(text)?.[1] ??
-    /^\s*seed_best:\s*"?(-?\d+(?:\/\d+)?)"?\s*$/m.exec(text)?.[1] ??
-    null;
-  return { direction, seedScore };
+  return { direction };
 }
 
 // Run the problem's exact verifier on a solution file and return the parsed

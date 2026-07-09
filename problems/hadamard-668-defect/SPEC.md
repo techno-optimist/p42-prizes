@@ -52,5 +52,8 @@ improvement = max(0, 55444 - defect)
 The bundled Sylvester-prefix baseline verifies to score `55444/1` and
 improvement `0/1` — it is the frontier, not an improvement over it.
 
-TODO(seed): confirm 55444 is the true published best-known record for the
-order-668 defect, not merely the bundled baseline.
+Seeding note: this local seed is a loose starting ceiling for the free open
+witness phase, not an attested published record. Under open-witness-phase
+seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain frontier
+self-establishes from free open-phase postings before `armFunding()` opens the
+paid phase, so no human record confirmation is needed.

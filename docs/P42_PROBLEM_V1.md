@@ -72,8 +72,14 @@ fields and evidence requirements.
 
 ## Data availability evidence
 
-For a funded submission, the solution bytes must be available at commit time and
-permanent before finalize. The local evidence gate is:
+For a funded submission, DA rides the chain itself: the commit binds
+`commitDaHash = sha256(raw solution bytes)` on-chain, and for on-chain-DA
+problems (≤ 512 KB) the reveal carries the raw bytes in calldata with the
+contract enforcing `sha256(bytes) == commitDaHash`. The 3 large autoconvolution
+problems use an off-chain content-addressed store gated by the same anchor. A
+permanence receipt at finalize is optional (an Arweave mirror is
+defense-in-depth, not a requirement) — see `docs/DATA_AVAILABILITY.md`. The
+local CLI packages optional mirror-receipt evidence:
 
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli da-receipt \
@@ -85,7 +91,7 @@ PYTHONPATH=src python3 -m p42_prizes.cli da-receipt \
   --commit-provider base-sepolia-calldata \
   --commit-receipt-uri https://sepolia.basescan.org/tx/0x... \
   --commit-block-reference base-sepolia:<block> \
-  --arweave-txid <43-char-base64url-txid> \
+  --arweave-txid <43-char-base64url-txid> \  # optional mirror receipt
   --output da-evidence.json
 
 PYTHONPATH=src python3 -m p42_prizes.cli da-verify \
@@ -94,9 +100,11 @@ PYTHONPATH=src python3 -m p42_prizes.cli da-verify \
   --solution solution.json
 ```
 
-`da-verify` checks canonical receipt hashes, the raw solution hash, Arweave txid
-shape, and the exact `p42:v1` commitment preimage. It does not yet fetch live
-provider receipts; see `docs/DATA_AVAILABILITY.md`.
+`da-verify` checks canonical receipt hashes, the raw solution hash, the optional
+Arweave txid shape, and the exact `p42:v1` commitment preimage. It does not
+fetch live provider receipts — the load-bearing availability + integrity proof
+is the on-chain `sha256(bytes) == commitDaHash` check at reveal; see
+`docs/DATA_AVAILABILITY.md`.
 
 ## Challenge window rationale
 

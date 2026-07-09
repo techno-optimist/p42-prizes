@@ -360,7 +360,7 @@ def _memory_limit_preexec(limit_mb: int):
     limit_bytes = int(limit_mb) * 1024 * 1024
 
     def apply_limit() -> None:
-        soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+        _, hard = resource.getrlimit(resource.RLIMIT_AS)
         new_soft = limit_bytes
         new_hard = hard
         if hard != resource.RLIM_INFINITY:

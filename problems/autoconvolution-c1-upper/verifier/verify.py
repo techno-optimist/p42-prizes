@@ -19,8 +19,10 @@ MAX_SOLUTION_BYTES = 5 * 1024 * 1024
 # Audit F1: the old seed 2/1 was the trivial upper bound, but the bundled Hyra
 # witness verifies to ~1.50275 — a known achievable result the seed must be at
 # least as good as, or resubmitting it mints a false prize.
-# TODO(seed): confirm this is the true published best-known c1 upper bound for
-# this pinned functional, not merely the bundled witness.
+# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
+# ceiling for the free open phase, NOT an attested published record. The
+# on-chain frontier self-establishes from free open-phase postings before
+# armFunding() opens the paid phase, so no human record confirmation is needed.
 SEED_BEST = Fraction(
     15041971118343665197137380984232095998912388144895190342004000000000000,
     10008961702715850455872036862958802052289156042841554837278437518918769,

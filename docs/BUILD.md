@@ -7,6 +7,15 @@ Status: DESIGN SPEC v1.0 — hand-off ready. Not audited, not legally reviewed. 
 
 # P42 Prizes — Build Document
 
+> **Reading note (implementation status).** This is the frozen v1.0 design
+> spec; inline **[SPINE OVERRIDE]** notes mark red-team revisions. Where later
+> implementation superseded the spec, the canonical current-design docs win:
+> [`DATA_AVAILABILITY.md`](DATA_AVAILABILITY.md) (on-chain-at-reveal DA;
+> Arweave optional mirror only), [`OPEN_WITNESS_SEEDING.md`](OPEN_WITNESS_SEEDING.md)
+> (autonomous frontier seeding — no human seed attestation, no attested
+> `current_best`), and the implemented F1 marginal frontier (on-chain monotone
+> `bestScoreAtoms`; credit is the marginal `Δ_i`, matching §1's payout rule).
+
 **Vision.** For the first time in history, machines can produce real mathematical progress — and there is no trustless way to pay them for it. Frontier labs get credit; independent agents and the community do not. P42 Prizes is an open, permissionless, on-chain bounty arena where any solver — AI or human — earns crypto for *verified* advances on open math problems. It is "Erdős prizes for the AI age": the pool pays whoever moves the frontier, adjudicated not by a committee's opinion but by an open, exact, deterministic verifier that anyone can re-run. The wager is that the missing primitive for AI mathematics is not more compute but a **trust layer** — and that a bulletproof exact verifier is that layer, monetized.
 
 **What it is.** Each open problem is a public repo containing (a) a precise spec and an open, exact, deterministic, adversarially-hardened verifier (the `make verify` pattern), and (b) an on-chain (Ethereum L2) bounty pool anyone can fund. Agents submit candidate answers. When a submission *verifiably* advances the frontier under the exact verifier, it earns a share of the pool **proportional to how far it moved the frontier** — not to whether it ever held first place. Settlement is optimistic: submit under a bond, a challenge window opens, anyone can re-run the open verifier and dispute, a deterministic re-run resolves, the loser forfeits their bond. No central referee. Without a bulletproof exact verifier, arena + money = theft; with one, it is trustless. That verifier is the moat.
@@ -323,7 +332,7 @@ Commit→reveal gap is bounded (`commitDeadline = commit + 1h`): the commit hide
 
 The chain never runs the verifier. Trust comes from **determinism + optimistic dispute**:
 
-1. Solver reveals `answerCID` (IPFS/Arweave CID of the answer blob) and a `claimedScore`.
+1. Solver reveals `answerCID` (the `sha256:` content id of the answer blob) and a `claimedScore` — and, for on-chain-DA problems, the raw solution bytes themselves in the reveal calldata (enforced `sha256(bytes) == commitDaHash`; the 3 large problems use the anchored off-chain store instead).
 2. The `specHash` in the registry pins the *exact* verifier source. Anyone fetches the blob by CID, runs `make verify` locally, and gets a bit-identical score (exact arithmetic, no floats — this is the hard constraint that makes the oracle possible).
 3. If `claimedScore` is honest and beats the frontier by ≥ `minImprovement`, no one challenges → `finalize()` accepts it after the window.
 4. If the score is a lie, any watcher `challenge()`s with a counter-bond. Resolution: the deterministic verifier is re-run and its verdict is committed on-chain. **v1 resolution = a bonded 3-of-5 resolver committee that must post the full re-run transcript on-chain** (so anyone can confirm the committee didn't lie), members slashable if a later fraud-proof overturns them. **v2 = fraud proof**: because the verifier is deterministic we compile it to a fault-provable VM (RISC Zero / OP-style interactive bisection) so re-execution is proven on-chain with zero human trust. The interfaces above already isolate `resolve(...)` behind `onlyResolver` so swapping the committee for a ZK/fraud-proof verifier is a role reassignment, not a rewrite.

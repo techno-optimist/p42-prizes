@@ -1,7 +1,7 @@
 # Open-Witness-Phase Seeding — autonomous frontier establishment
 
 **Status:** implemented (contracts + tests green). Supersedes the human-attested
-seed policy in [`POLICY_DECISIONS_2026_07_08.md`](POLICY_DECISIONS_2026_07_08.md#seed-policy--rule--enforcement-machinery-decision-1-the-part-we-ca).
+seed policy in [`POLICY_DECISIONS_2026_07_08.md`](POLICY_DECISIONS_2026_07_08.md#seed-policy--rule--enforcement-machinery-decision-1-the-part-we-can-build-now).
 
 ## Why
 

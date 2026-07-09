@@ -11,9 +11,11 @@ On every reveal, the DGX runner should:
 
 1. Read the chain event or portal event.
 2. Fetch the problem manifest, pinned verifier image digest, solution CID, and
-   commit/permanence evidence.
+   the solution bytes (from the reveal calldata for on-chain-DA problems, or the
+   anchored off-chain store for the 3 large problems), re-checking
+   `sha256(bytes) == commitDaHash`.
 3. Quarantine the payload in an untrusted work directory.
-4. Run `p42-prizes da-verify` for the DA/permanence artifact once present.
+4. Run `p42-prizes da-verify` for any optional mirror-receipt artifact present.
 5. Run the exact verifier in the pinned sandbox.
 6. Compare the canonical `VerdictReport` with the claimed score/improvement.
 7. Publish a transcript containing command, image digest, payload hash,
@@ -58,7 +60,8 @@ The bottleneck is not raw DGX compute for small boards. The real launch blockers
 are:
 
 - pinned verifier images and a canonical sandbox runner,
-- live CID/Arweave/Base receipt retrieval,
+- live retrieval of solution bytes from reveal calldata (and the anchored
+  off-chain store for the 3 large problems; Arweave is an optional mirror),
 - chain/indexer event source of truth,
 - transcript publication and retention,
 - challenge transaction policy and key custody,

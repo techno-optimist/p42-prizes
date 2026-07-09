@@ -24,4 +24,4 @@ settlement:
   challenge_bond_wei: "0"
 data_availability:
   commit_time_blob: local-file-for-phase-0
-  finalize_receipt: arweave-required-before-real-bounty
+  finalize_receipt: optional-mirror  # DA rides reveal calldata (sha256==commitDaHash); Arweave permanence is an optional mirror, not required (see docs/DATA_AVAILABILITY.md)

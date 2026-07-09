@@ -47,7 +47,6 @@ VERIFIER_ENV_DEFAULTS = {
     "OPENBLAS_NUM_THREADS": "1",
     "MKL_NUM_THREADS": "1",
 }
-VERIFIER_ENV_ALLOWLIST = tuple(VERIFIER_ENV_DEFAULTS)
 
 
 class AdmissionError(ValueError):

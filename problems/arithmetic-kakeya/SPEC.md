@@ -57,4 +57,13 @@ score = (m + |R|) / (n - |T|)
 ```
 
 For the bundled 2x2 certificate, `m = 4`, `|R| = 3`, `n = 4`, and `|T| = 0`,
-so `score = 7/4`. The seed is `2/1`, so improvement is `1/4`.
+so `score = 7/4`. The seed is `7/4` — the bundled certificate's own score
+(audit F1: a seed looser than a known construction lets anyone resubmit it for
+a false prize) — so the certificate's improvement is `0/1`: it is the
+frontier, not an improvement over it.
+
+Seeding note: this local seed is a loose starting ceiling for the free open
+witness phase, not an attested published record. Under open-witness-phase
+seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain frontier
+self-establishes from free open-phase postings before `armFunding()` opens the
+paid phase.

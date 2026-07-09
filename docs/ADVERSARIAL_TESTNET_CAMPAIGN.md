@@ -27,8 +27,10 @@ The campaign must include all six red-team attacks:
   self-funding after a low-bond commit does not make the submission finalize.
 - `leapfrog_sybil_split`: split improvements do not beat the equivalent
   combined credit and late frontier moves dilute correctly.
-- `da_expiry_or_missing_payload`: missing or non-permanent payload evidence
-  blocks finalize or produces a challenge candidate.
+- `da_expiry_or_missing_payload`: an on-chain-DA reveal whose bytes do not hash
+  to `commitDaHash` reverts on-chain; a missing off-chain payload (the 3 large
+  problems) produces an operator challenge candidate. (`finalize` itself does
+  not gate on a permanence receipt — see `docs/DATA_AVAILABILITY.md`.)
 - `resolver_false_transcript`: false resolver decision cannot pass without a
   public transcript hash / URI and bonded decision path.
 - `verifier_planted_exploit`: planted invalid solution is caught by the exact

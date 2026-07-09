@@ -2,8 +2,11 @@
 // P42 autonomous OPERATOR client (Phase 1 plumbing) — the defensive half of the
 // loop. It watches on-chain reveals, independently re-runs the exact verifier on
 // the fetched solution, publishes a transcript, and AUTO-CHALLENGES any
-// submission that is invalid or whose claimed improvement is inflated — filing a
-// bonded challenge on-chain, with a hard bond cap as the safety backstop.
+// submission that is invalid or whose claimedScoreAtoms is UNDER-claimed
+// (claimed better than the re-derived truth, which would inflate its marginal
+// credit) — filing a bonded challenge on-chain, with a hard bond cap as the
+// safety backstop. The legacy improvementAtoms figure is advisory-only and is
+// logged, never challenged (see the fraud predicate below).
 //
 // It never needs the solver to tell it the answer: it fetches the solution
 // bytes — from the reveal-tx calldata for on-chain-DA problems, or from the
@@ -41,7 +44,7 @@ const RPC = arg("rpc", "https://sepolia.base.org");
 const MANIFEST = arg("manifest");
 const PROBLEM = arg("problem");
 const DA_DIR = arg("da-dir");
-const ARWEAVE = arg("arweave", false); // fetch the solution from live Arweave via the on-chain commitDaHash
+const ARWEAVE = arg("arweave", false); // fetch off-chain solution bytes from live Arweave (located by CID tag, then verified against the on-chain sha256 anchor)
 const TRANSCRIPTS = resolve(arg("transcripts", `${HERE}/transcripts`));
 const MAX_BOND = ethers.parseEther(String(arg("max-challenge-bond", "0.01")));
 const ONCE = arg("once", false);

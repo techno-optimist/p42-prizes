@@ -214,27 +214,10 @@ def _cmd_da_verify(args: argparse.Namespace) -> int:
 def _cmd_runner_plan(args: argparse.Namespace) -> int:
     try:
         queue = load_evidence_file(args.queue)
-        if (
-            args.total_memory_mb is None
-            or args.available_memory_mb is None
-            or args.swap_used_mb is None
-        ):
-            memory = memory_snapshot_from_proc()
-        else:
-            memory = MemorySnapshot(
-                total_mb=args.total_memory_mb,
-                available_mb=args.available_memory_mb,
-                swap_used_mb=args.swap_used_mb,
-            )
         decision = plan_runner_queue(
             queue,
-            memory=memory,
-            policy=RunnerPolicy(
-                max_running=args.max_running,
-                reserve_memory_mb=args.reserve_memory_mb,
-                max_swap_used_mb=args.max_swap_used_mb,
-                memory_safety_factor=args.memory_safety_factor,
-            ),
+            memory=_runner_memory_from_args(args),
+            policy=_runner_policy_from_args(args),
             now_utc=args.now_utc,
         )
     except (AdmissionError, RunnerQueueError, OSError) as exc:
@@ -444,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     da_receipt = subparsers.add_parser(
         "da-receipt",
-        help="build canonical commit-time DA and Arweave permanence evidence",
+        help="build canonical commit-time DA evidence (optional Arweave mirror receipt)",
     )
     da_receipt.add_argument("--problem", required=True)
     da_receipt.add_argument("--solution", required=True)

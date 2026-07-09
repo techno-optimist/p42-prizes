@@ -21,8 +21,10 @@ MAX_SOLUTION_BYTES = 4 * 1024 * 1024
 # Hyra witness verifies to ~0.96290 (higher is better here) — a known
 # achievable result the seed must be at least as good as, or resubmitting it
 # mints a false prize.
-# TODO(seed): confirm this is the true published best-known c2 lower bound for
-# this pinned functional, not merely the bundled witness.
+# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
+# ceiling for the free open phase, NOT an attested published record. The
+# on-chain frontier self-establishes from free open-phase postings before
+# armFunding() opens the paid phase, so no human record confirmation is needed.
 SEED_BEST = Fraction(
     140651861665566489683881393353250795846281833,
     146070932420211259869783468438333325818535926,

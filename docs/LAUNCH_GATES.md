@@ -27,10 +27,10 @@ repo-owner authority cannot be replaced by agent execution.
 - [x] Contract addresses and source verification recorded. (Manifest records addresses + tx hashes; all 5 contracts **verified on BaseScan** — `sepolia.basescan.org/address/<addr>#code`.)
 - [ ] Posting bond scales to `alpha * pool_at_submission`.
 - [ ] `claim()` pays `min(vested, final_entitlement)` and cannot be paused.
-- [ ] Commit requires DA evidence at commit time.
-- [ ] `p42-prizes da-verify` passes for finalized testnet submissions and matches contract `commit_da_hash` / `permanence_hash` fields.
+- [ ] Commit binds the `commitDaHash` content anchor (`sha256` of the raw solution bytes) on-chain at commit time.
+- [ ] `p42-prizes da-verify` passes for finalized testnet submissions and matches the contract `commit_da_hash` anchor (`permanence_hash` is an optional mirror-receipt field, not a gate).
 - [ ] Funding deposits are indexed and reconciled against problem pool balances.
-- [ ] Finalize requires permanence receipt.
+- [ ] Reveal enforces `sha256(bytes) == commitDaHash` on the canonical deployment (on-chain-DA problems carry the bytes in reveal calldata; the 3 large problems use the anchored off-chain store). *Superseded criterion:* "finalize requires permanence receipt" — `finalize`'s `permanenceHash` is now optional; see `docs/DATA_AVAILABILITY.md`.
 - [ ] DGX CHRONOS/Hermes verifier runner watches testnet reveals and publishes transcripts.
 - [ ] Runner queue/OOM guard rehearsal validates with `p42-prizes runner-burst-validate`.
 - [ ] Invalid-reveal alerts produce agent challenge candidates with a bounded challenge key, spend cap, and revocation path (`docs/CHALLENGE_KEY_POLICY.md`).

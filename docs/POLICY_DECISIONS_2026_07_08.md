@@ -8,6 +8,8 @@
 
 > **Update — seed policy superseded.** The debate's seed answer below is a human-signed "seed dossier" attesting the published record. It has since been **superseded by an autonomous design** — **open-witness-phase seeding** ([`OPEN_WITNESS_SEEDING.md`](OPEN_WITNESS_SEEDING.md), now implemented) — which lets the frontier establish itself on-chain from free public postings and **removes the human seed sign-off entirely**. That doc is the current seeding policy; the rest of the decisions below stand.
 
+> **Update — F1 frontier semantics landed.** The code-level claims below were verified against the *pre-F1* contracts. The marginal-frontier redesign has since landed: reveal gates on the live monotone `bestScoreAtoms` (not the immutable seed), credit is the marginal `Δ_i = prev_best − new_score`, and `seedScoreAtoms` is a loose open-phase ceiling. Passages below that describe reveal gating on the immutable seed (including the Δ=0-canary analysis, which that debate already rejected) describe the superseded bytecode; the policy conclusions stand.
+
 ## The decisions
 
 ### SEED POLICY — rule + enforcement machinery (decision 1, the part we can build now)

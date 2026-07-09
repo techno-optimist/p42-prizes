@@ -30,7 +30,7 @@
 //     --manifest ../deployments/base-sepolia/<manifest>.json \
 //     --problem ../problems/hadamard-mini \
 //     --solution ../problems/hadamard-mini/examples/valid-4.json \
-//     [--fund 0.003]   # sponsor-fund the pool first (demo)
+//     [--fund 0.003]   # sponsor-fund the pool first (demo; the pool refuses deposits until the paid phase is armed via armFunding())
 //     [--close]        # owner-close the ledger after finalize (demo: owner==agent)
 //     [--repo-root ..] # where contracts/artifacts + src live (default: parent of this file's dir)
 
@@ -191,7 +191,10 @@ async function main() {
   }
   const salt = "p42-agent-" + Date.now().toString();
 
-  // 1. optional: sponsor-fund the pool so there is a payout to collect
+  // 1. optional: sponsor-fund the pool so there is a payout to collect.
+  //    NOTE: pool.fund() is gated on the paid phase being armed (the owner's
+  //    armFunding() on the submission manager closes the free open-witness
+  //    phase); an un-armed pool reverts this deposit rather than stranding it.
   if (FUND) {
     log(`\n[1] fund pool with ${FUND} ETH (demo sponsor)`);
     await send("pool.fund", pool.fund({ value: ethers.parseEther(String(FUND)) }));

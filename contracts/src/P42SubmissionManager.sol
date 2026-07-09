@@ -38,7 +38,6 @@ contract P42SubmissionManager {
     error P42_CHALLENGE_WINDOW_CLOSED(uint64 endsAt, uint64 nowAt);
     error P42_REVEAL_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_PERMANENCE_GRACE_OPEN(uint64 endsAt, uint64 nowAt);
-    error P42_EMPTY_PERMANENCE_HASH();
     error P42_EMPTY_SOLUTION_BYTES();
     error P42_SOLUTION_TOO_LARGE(uint256 cap, uint256 got);
     error P42_SOLUTION_HASH_MISMATCH(bytes32 expected, bytes32 got);
@@ -501,8 +500,9 @@ contract P42SubmissionManager {
     /// advanced since reveal): marginal = bestScoreAtoms - claimedScoreAtoms
     /// when that is still >= minImprovementAtoms, else 0 (the submission was
     /// superseded by a better finalized score). The frontier advances on every
-    /// non-zero marginal in BOTH phases; ledger credit is recorded ONLY once
-    /// funding is armed (creditAtoms = fundingArmed ? marginal : 0) — an
+    /// non-zero marginal in BOTH phases; ledger credit is recorded ONLY for
+    /// submissions COMMITTED after funding was armed (creditAtoms =
+    /// fundingArmed && committedAt >= armedAt ? marginal : 0) — an
     /// open-phase witness posting establishes the public frontier for free.
     /// The ledger sums the paid marginals, so each solver's pool share is
     /// exactly their marginal frontier reduction over the total reduction — a

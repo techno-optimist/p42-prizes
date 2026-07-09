@@ -23,8 +23,10 @@ MAX_SOLUTION_BYTES = 4 * 1024 * 1024
 # Audit F1 note: 3/2 is a "local packaging seed", not a confirmed published
 # record — but the bundled organon-upper witness scores ~4.99 (worse), so no
 # bundled artifact beats this seed and it is left unchanged.
-# TODO(seed): confirm published record — verify 3/2 against the true published
-# best-known signed c3 upper bound before funding.
+# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
+# ceiling for the free open phase, NOT an attested published record. The
+# on-chain frontier self-establishes from free open-phase postings before
+# armFunding() opens the paid phase, so no human record confirmation is needed.
 SEED_BEST = Fraction(3, 2)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 

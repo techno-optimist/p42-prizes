@@ -40,10 +40,12 @@ such as `claimed_score`, `claimed_linf`, or `improvement` are ignored.
 ## Score And Improvement
 
 The score is serialized as an exact rational string. The local packaging seed
-is `47/50`. Improvement is:
+is the bundled Hyra witness's exact score — NOT the loose packaging bound
+`47/50` (audit F1: a seed looser than a known construction lets anyone
+resubmit it for a false prize). Improvement is:
 
 ```text
-improvement = max(0, score - 47/50)
+improvement = max(0, score - seed_best)
 ```
 
 The bundled Hyra witness verifies to:
@@ -53,3 +55,11 @@ The bundled Hyra witness verifies to:
 /
 146070932420211259869783468438333325818535926
 ```
+
+and improvement `0/1` — it is the frontier, not an improvement over it.
+
+Seeding note: this local seed is a loose starting ceiling for the free open
+witness phase, not an attested published record. Under open-witness-phase
+seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain frontier
+self-establishes from free open-phase postings before `armFunding()` opens the
+paid phase.

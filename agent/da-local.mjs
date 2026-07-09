@@ -1,10 +1,13 @@
-// Minimal LOCAL data-availability store — a Phase-1 PLACEHOLDER for a real
-// provider (Arweave via Irys/Bundlr + a commit-time blob DA). It exists only so
-// the solver can POST a solution blob and the operator can FETCH it back by CID
-// and re-derive the verdict independently, instead of being handed the answer.
-//
-// A real provider replaces put/get with an upload that returns a txid and a
-// gateway fetch that proves the bytes remain retrievable. NOT for production.
+// Minimal LOCAL content-addressed store. In the current design data
+// availability rides the REVEAL-tx calldata for on-chain-DA problems, so this
+// store plays two roles only: (1) a dev/test off-chain store for the large
+// onchainDa=false problems (whose bytes exceed calldata limits and live
+// off-chain, gated by the same on-chain sha256 anchor), and (2) an OPTIONAL
+// local mirror for on-chain-DA problems. The solver can POST a solution blob
+// and the operator can FETCH it back by CID and re-derive the verdict
+// independently, instead of being handed the answer. A local directory is NOT
+// durable DA for production off-chain problems — use a real store (e.g. the
+// optional Arweave mirror in da-arweave.mjs) there.
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { ethers } from "ethers";
 

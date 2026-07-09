@@ -48,11 +48,23 @@ is an exact outward round-up of the recomputed interval upper bound:
 score = 0.9974876103072528157057480
 ```
 
-The local packaging seed is `1/1`. Improvement is:
+The local packaging seed is the bundled certificate's exact score
+`249371902576813203926437/250000000000000000000000` — NOT the trivial ceiling
+`1/1` (audit F1: a seed looser than a known certificate lets anyone resubmit
+it for a false prize). Improvement is:
 
 ```text
-improvement = max(0, 1 - score)
+improvement = max(0, seed_best - score)
 ```
+
+The bundled certificate verifies to exactly the seed score and improvement
+`0/1` — it is the frontier, not an improvement over it.
+
+Seeding note: this local seed is a loose starting ceiling for the free open
+witness phase, not an attested published record. Under open-witness-phase
+seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain frontier
+self-establishes from free open-phase postings before `armFunding()` opens the
+paid phase.
 
 This is a proof-side ceiling, not a construction. It does not imply
 monotonicity across reaches and does not upper-bound larger live-board reaches.

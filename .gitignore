@@ -18,3 +18,7 @@ contracts/cache/
 # Never commit private keys (testnet deployer key etc.)
 *.key.json
 deployer-testnet.key.json
+
+# Agent runtime output (transcripts, local DA blobs, archives) — not source.
+agent/transcripts/
+agent/transcripts-*/

@@ -22,8 +22,10 @@ MAX_SOLUTION_BYTES = 256 * 1024
 # let anyone resubmit a known construction and mint a false prize. The bundled
 # Sylvester-prefix baseline achieves defect 55444, so the seed is at least that
 # good.
-# TODO(seed): confirm 55444 is the true published best-known record, not merely
-# the bundled baseline.
+# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
+# ceiling for the free open phase, NOT an attested published record. The
+# on-chain frontier self-establishes from free open-phase postings before
+# armFunding() opens the paid phase, so no human record confirmation is needed.
 SEED_BEST = Fraction(55444, 1)
 MIN_IMPROVEMENT = Fraction(1, TOTAL_PAIRS)
 ENCODING = "hex-row-bits-v1"

@@ -60,6 +60,9 @@ The bundled rational curve-sampling witness verifies to score
 `-16684282317138839/23437500000000000` and improvement `0/1` — it is the
 frontier, not an improvement over it.
 
-TODO(seed): confirm the true best-known score for this slope-3 area
-functional (the historical Arena incumbent artifact is missing), not merely
-the bundled witness.
+Seeding note: this local seed is a loose starting ceiling for the free open
+witness phase, not an attested published record (the historical Arena
+incumbent artifact is missing, and no record attestation is needed). Under
+open-witness-phase seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain
+frontier self-establishes from free open-phase postings before `armFunding()`
+opens the paid phase.

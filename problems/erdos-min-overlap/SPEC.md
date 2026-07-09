@@ -54,22 +54,28 @@ such as `claimed_score`, `claimed_lag`, or `improvement` are ignored.
 ## Score And Improvement
 
 The score is serialized as an exact rational string. The seed best is the
-published Haugland upper bound encoded as:
-
-```text
-380926853433087 / 1000000000000000
-```
-
-Improvement is:
-
-```text
-improvement = max(0, seed_best - score)
-```
-
-The bundled Hyra witness verifies to:
+bundled Hyra witness's exact score:
 
 ```text
 1424992289798782609633201801352767458976314440679252577
 /
 3741444197802851304404516484910431627947663875649308401
 ```
+
+(audit F1: the previous seed pinned the published Haugland upper bound
+`380926853433087/1000000000000000`, but the bundled witness verifies below it,
+so a looser seed would let anyone resubmit the witness for a false prize).
+Improvement is:
+
+```text
+improvement = max(0, seed_best - score)
+```
+
+The bundled Hyra witness verifies to exactly the seed score and improvement
+`0/1` — it is the frontier, not an improvement over it.
+
+Seeding note: this local seed is a loose starting ceiling for the free open
+witness phase, not an attested published record. Under open-witness-phase
+seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain frontier
+self-establishes from free open-phase postings before `armFunding()` opens the
+paid phase, so no ruling on the witness-vs-Haugland record is needed.

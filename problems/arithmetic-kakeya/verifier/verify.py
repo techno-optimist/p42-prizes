@@ -19,8 +19,10 @@ TARGET = (1, -1)
 # Audit F1: the old seed 2/1 was a loose packaging bound, but the bundled
 # kt-2x2-forcing certificate achieves score 7/4 — a known achievable result the
 # seed must be at least as good as, or resubmitting it mints a false prize.
-# TODO(seed): confirm 7/4 is the true best-known 2x2 forcing score, not merely
-# the bundled warm-up certificate.
+# Seeding (docs/OPEN_WITNESS_SEEDING.md): this local seed is a LOOSE starting
+# ceiling for the free open phase, NOT an attested published record. The
+# on-chain frontier self-establishes from free open-phase postings before
+# armFunding() opens the paid phase, so no human record confirmation is needed.
 SEED_BEST = Fraction(7, 4)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 MAX_SOLUTION_BYTES = 32768
