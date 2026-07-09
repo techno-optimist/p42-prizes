@@ -1591,6 +1591,58 @@ h3 {
   font-weight: 500;
 }
 
+/* open-frontier continuation: blank ruled paper past the last record —
+   "your record here", or an honest "optimum reached" where none is possible */
+
+.chart-open {
+  stroke: var(--gate);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 4;
+  opacity: 0.85;
+}
+
+.chart-open-label {
+  fill: var(--gate);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+/* the staircase draws once on first scroll-into-view: runs left→right, each
+   red drop as it is reached, the endpoint dot settling last — no loop. The
+   --n step count paces the tail. Base state (no JS / reduced-motion) is the
+   fully drawn chart; --i on each path staggers only when `play` is present. */
+
+.chart-line,
+.chart-drop {
+  stroke-dasharray: 1;
+}
+
+.frontier-chart.play .chart-line {
+  animation: fm-draw 560ms ease-out both;
+  animation-delay: calc(var(--i) * 260ms);
+}
+
+.frontier-chart.play .chart-drop {
+  animation: fm-draw 300ms ease-out both;
+  animation-delay: calc(var(--i) * 260ms + 300ms);
+}
+
+.frontier-chart.play .chart-dot.is-step {
+  animation: fm-settle 280ms ease-out both;
+  animation-delay: calc(var(--i) * 260ms + 200ms);
+}
+
+.frontier-chart.play .chart-dot.is-last {
+  animation: fm-settle 440ms cubic-bezier(0.2, 0.7, 0.1, 1) both;
+  animation-delay: calc(var(--n) * 260ms + 120ms);
+}
+
+.frontier-chart.play .chart-open-g {
+  animation: fm-settle 460ms ease-out both;
+  animation-delay: calc(var(--n) * 260ms + 420ms);
+}
+
 /* ---------- standings / pilot cohort ---------- */
 
 .standings-table td {
@@ -2273,59 +2325,294 @@ h3 {
   color: var(--muted);
 }
 
-/* interval strip: number line from the prior record to the certified bound;
-   the 2px record-red span is the Δ the protocol pays for. Static: the
-   discovery entries' motion budget is spent on the divergent digit. */
+/* FrontierMove: an animated record-move chart. A hairline value axis; where a
+   real prior numeral exists, an ink tick and a 2px record-red Δ segment drawn
+   from prior to the certified-bound tick — the same stroke as the staircase's
+   payout drop, because it is the same distance the protocol pays for. The base
+   (no-JS / reduced-motion) state is the finished chart; the `play` class layers
+   the one-shot draw on top, so nothing depends on motion to be legible. */
 
-.interval-strip {
-  margin: 20px 0 4px;
-  max-width: 720px;
+.frontier-move {
+  margin: 20px 0 6px;
+  max-width: 760px;
 }
 
-.interval-strip svg {
+.frontier-move.is-compact {
+  margin: 14px 0 4px;
+  max-width: 620px;
+}
+
+.frontier-move svg {
   display: block;
   width: 100%;
   height: auto;
+  overflow: visible;
 }
 
-.strip-axis {
+.fm-axis {
   stroke: var(--rule);
   stroke-width: 1;
 }
 
-.strip-tick-prior {
+.fm-tick-prior {
   stroke: var(--ink);
   stroke-width: 1.5;
 }
 
-.strip-tick-new {
+.fm-tick-bound {
   stroke: var(--record);
   stroke-width: 2;
 }
 
-.strip-span {
+.fm-delta,
+.fm-sweep {
   stroke: var(--record);
   stroke-width: 2;
+  stroke-linecap: round;
+  stroke-dasharray: 1;
 }
 
-.strip-label {
-  fill: var(--muted);
+.fm-open {
+  stroke: var(--gate);
+  stroke-width: 1.5;
+  stroke-dasharray: 2 4;
+  opacity: 0.85;
+}
+
+.fm-arrow {
+  fill: var(--gate);
+}
+
+.fm-label {
   font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.fm-value {
+  fill: var(--ink);
+  font-size: 13px;
+}
+
+.fm-value.is-bound {
+  fill: var(--record);
+  font-weight: 500;
+}
+
+.fm-attrib {
+  fill: var(--muted);
   font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.fm-since {
+  fill: var(--gate);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.fm-open-label {
+  fill: var(--gate);
+  font-size: 9px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
-.strip-value {
-  fill: var(--ink);
-  font-family: var(--mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+.fm-annot {
+  fill: var(--muted);
+  font-size: 10px;
+  font-style: italic;
 }
 
-.strip-value.is-new {
-  fill: var(--record);
+.frontier-move.is-compact .fm-value {
+  font-size: 11.5px;
+}
+
+.frontier-move.is-compact .fm-attrib,
+.frontier-move.is-compact .fm-since,
+.frontier-move.is-compact .fm-open-label {
+  font-size: 8.5px;
+}
+
+@keyframes fm-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes fm-settle {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.frontier-move.play .fm-delta {
+  animation: fm-draw 700ms ease-out 0.2s both;
+}
+
+.frontier-move.play .fm-sweep {
+  animation: fm-draw 480ms ease-out 0.12s both;
+}
+
+.frontier-move.play .fm-prior-g {
+  animation: fm-settle 340ms ease-out both;
+}
+
+.frontier-move.play .fm-bound-g {
+  animation: fm-settle 420ms ease-out 0.84s both;
+}
+
+.frontier-move.play.is-noprior .fm-bound-g {
+  animation-delay: 0.18s;
+}
+
+.frontier-move.play .fm-open-g {
+  animation: fm-settle 460ms ease-out 1.16s both;
+}
+
+.frontier-move.play.is-noprior .fm-open-g {
+  animation-delay: 0.5s;
+}
+
+/* PayoutSplit: a proportional bar for shareᵢ = Δᵢ / ΣΔⱼ, widths set by
+   flex-grow from the exact Δ numerators — the rationals themselves, never a
+   recomputed decimal. Segments are one subtle ink tint, told apart by hairline
+   dividers and labels; the largest Δ carries a record-red baseline tick. */
+
+.payout-split {
+  margin: 22px 0 8px;
+  max-width: 640px;
+}
+
+.ps-cap {
+  margin-bottom: 12px;
+  font-size: 13.5px;
+  color: var(--muted);
+}
+
+.payout-bar {
+  display: flex;
+  width: 100%;
+  height: 54px;
+  border: 1px solid var(--rule);
+  background: var(--paper);
+}
+
+.payout-seg {
+  position: relative;
+  min-width: 0;
+  border-right: 1px solid var(--rule);
+  overflow: hidden;
+}
+
+.payout-seg:last-child {
+  border-right: 0;
+}
+
+.seg-fill {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  transform-origin: left center;
+}
+
+.payout-seg.is-lead .seg-fill {
+  background: color-mix(in srgb, var(--ink) 13%, transparent);
+}
+
+.payout-seg.is-lead::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--record);
+}
+
+.seg-share {
+  position: relative;
+  display: block;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+@keyframes ps-grow {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.payout-split.play .seg-fill {
+  animation: ps-grow 720ms cubic-bezier(0.2, 0.7, 0.1, 1) both;
+  animation-delay: calc(var(--i) * 180ms);
+}
+
+.payout-legend {
+  display: flex;
+  margin-top: 9px;
+}
+
+.payout-legend > div {
+  min-width: 0;
+  padding-right: 14px;
+}
+
+.pl-solver {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12.5px;
   font-weight: 500;
+  color: var(--ink);
+}
+
+.pl-solver.pl-lead {
+  color: var(--record);
+}
+
+.pl-share {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.pl-wei {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+
+.payout-foot {
+  display: flex;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--rule-faint);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
 }
 
 /* apparatus lines: PRIOR / METHOD / CERTIFICATE */

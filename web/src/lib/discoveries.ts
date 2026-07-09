@@ -52,8 +52,8 @@ export interface Discovery {
 }
 
 export const DISCOVERIES_META = {
-  count: 4,
-  span: "4–7 July 2026",
+  count: 5,
+  span: "4–9 July 2026",
   author: "Kevin Russell",
   lab: "ProjectForty2 · CHRONOS agent",
   // The shared property every result has and no forger can counterfeit.
@@ -108,7 +108,7 @@ export const discoveries: Discovery[] = [
   {
     slug: "mertens-lp-ceiling",
     constant: "Mertens-type extremal LP",
-    paperTitle: "Certified ceilings for a Mertens-type extremal linear program",
+    paperTitle: "Certified ceilings for a finitary Mertens-type extremal problem (EinsteinArena PNT benchmark)",
     doi: "10.5281/zenodo.21221207",
     doiUrl: "https://doi.org/10.5281/zenodo.21221207",
     date: "2026-07-06",
@@ -139,7 +139,8 @@ export const discoveries: Discovery[] = [
   {
     slug: "autoconvolution-inequalities",
     constant: "three autoconvolution inequalities",
-    paperTitle: "Exact-arithmetic certificates for three autoconvolution inequalities",
+    paperTitle:
+      "Exact-arithmetic certificates for three autoconvolution inequalities, with machine-verified re-evaluations of four published constructions",
     doi: "10.5281/zenodo.21194862",
     doiUrl: "https://doi.org/10.5281/zenodo.21194862",
     date: "2026-07-04",
@@ -173,5 +174,55 @@ export const discoveries: Discovery[] = [
       },
     ],
     boardSlugs: ["autoconvolution-c1-upper", "autoconvolution-c2-lower", "signed-autoconvolution-c3-upper"],
+  },
+  {
+    slug: "antipodal-kissing",
+    constant: "60°-line systems & antipodal kissing (dims 11–12)",
+    paperTitle: "Exact certificates for 60-degree line systems and antipodal kissing in R^11 and R^12",
+    doi: "10.5281/zenodo.21285878",
+    doiUrl: "https://doi.org/10.5281/zenodo.21285878",
+    date: "2026-07-09",
+    repoUrl: "https://github.com/techno-optimist/antipodal-kissing-bounds",
+    method:
+      "Delsarte linear-programming bound in exact rational arithmetic — rational Gegenbauer recurrence over ℚ and Sturm root counting to prove negativity on [−1/2, 1/2]; no floating point in the certified inequality.",
+    headline:
+      "Improved exact upper bounds for antipodal kissing configurations in dimensions 11 and 12 — beating the 2024 numerical record with an exact certificate.",
+    results: [
+      {
+        symbol: "60° lines, ℝ¹¹",
+        tex: "N_{11} \\le 410",
+        bound: "≤ 410",
+        direction: "upper",
+        prior: "434 (trivial halving)",
+        significance: "Improved 60°-line-system upper bound in ℝ¹¹, below the trivial-halving 434.",
+      },
+      {
+        symbol: "60° lines, ℝ¹²",
+        tex: "N_{12} \\le 614",
+        bound: "≤ 614",
+        direction: "upper",
+        prior: "677 (trivial halving)",
+        significance: "Improved 60°-line-system upper bound in ℝ¹², below the trivial-halving 677.",
+      },
+      {
+        symbol: "antipodal kissing, ℝ¹¹",
+        tex: "K_{11} \\le 820",
+        bound: "≤ 820",
+        direction: "upper",
+        prior: "868 (Leijenhorst & de Laat, 2024)",
+        significance:
+          "First exact-certificate improvement of the antipodal kissing bound in ℝ¹¹, beating Leijenhorst & de Laat (2024).",
+      },
+      {
+        symbol: "antipodal kissing, ℝ¹²",
+        tex: "K_{12} \\le 1228",
+        bound: "≤ 1228",
+        direction: "upper",
+        prior: "1355 (Leijenhorst & de Laat, 2024)",
+        significance:
+          "First exact-certificate improvement of the antipodal kissing bound in ℝ¹², beating Leijenhorst & de Laat (2024).",
+      },
+    ],
+    boardSlugs: [],
   },
 ];

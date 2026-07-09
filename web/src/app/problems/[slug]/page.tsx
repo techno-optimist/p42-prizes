@@ -55,6 +55,12 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
     }
   }
   const hasVerifiedRecord = ladder.length > 1;
+  // the blank-paper continuation past the last record: where the record already
+  // sits at the board's optimum, say so honestly rather than beckoning "beat it".
+  const atOptimum = problem.currentBest === problem.optimum;
+  const openGate = atOptimum
+    ? "optimum reached · no further Δ"
+    : `open · admissible Δ ≥ ${compactRational(problem.minImprovement)}`;
 
   return (
     <div>
@@ -211,7 +217,12 @@ $ make verify SOLUTION=examples/valid-4.json`}
             </div>
             {hasVerifiedRecord && (
               <>
-                <FrontierChart points={ladder} direction={problem.direction} scoreName={problem.scoreName} />
+                <FrontierChart
+                  points={ladder}
+                  direction={problem.direction}
+                  scoreName={problem.scoreName}
+                  openGate={openGate}
+                />
                 {anySampleRecord && (
                   <p className="fact-note" style={{ marginTop: 8 }}>
                     † The ladder includes a worked-example submission (fixture), stamped below. The order-4 record

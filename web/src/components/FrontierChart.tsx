@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 
 export interface FrontierPoint {
   /** ordinal position on the record ladder: 0 = declared seed, then each verified record */
@@ -18,9 +19,9 @@ function toNumber(rational: string): number {
   return Number(num) / Number(den);
 }
 
-const W = 560;
+const W = 620;
 const H = 190;
-const PAD = { top: 18, right: 84, bottom: 26, left: 44 };
+const PAD = { top: 18, right: 132, bottom: 26, left: 44 };
 
 /**
  * The frontier staircase: the record score by record number. A step holds
@@ -33,13 +34,35 @@ export function FrontierChart({
   points,
   direction,
   scoreName,
+  openGate,
 }: {
   points: FrontierPoint[];
   direction: "minimize" | "maximize";
   scoreName: string;
+  /** the blank-paper continuation past the last record: a board's admissible
+   *  Δ-gate, or "optimum reached" where the record already sits at optimum */
+  openGate?: string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const figureRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const el = figureRef.current;
+    if (!el) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          el.classList.add("play");
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.35 },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const geom = useMemo(() => {
     const values = points.map((p) => toNumber(p.score));
@@ -99,8 +122,10 @@ export function FrontierChart({
 
   const hovered = hover === null ? null : points[hover];
 
+  const stepCount = points.length;
+
   return (
-    <figure className="frontier-chart">
+    <figure className="frontier-chart" ref={figureRef} style={{ "--n": stepCount } as CSSProperties}>
       <figcaption>
         <span>
           Record {scoreName} by record № — {direction === "minimize" ? "lower is better" : "higher is better"}
@@ -112,7 +137,9 @@ export function FrontierChart({
           ref={svgRef}
           viewBox={`0 0 ${W} ${H}`}
           role="img"
-          aria-label={`Record ${scoreName}; current record ${last.score} held by ${last.label}`}
+          aria-label={`Record ${scoreName}; current record ${last.score} held by ${last.label}${
+            openGate ? `; ${openGate}` : ""
+          }`}
           onPointerMove={onMove}
           onPointerLeave={() => setHover(null)}
           tabIndex={0}
@@ -142,24 +169,51 @@ export function FrontierChart({
             <line className="chart-crosshair" x1={x(hovered.x)} x2={x(hovered.x)} y1={PAD.top} y2={H - PAD.bottom} />
           )}
 
-          {runs.map((d) => (
-            <path key={d} className="chart-line" d={d} fill="none" />
+          {runs.map((d, i) => (
+            <path
+              key={d}
+              className="chart-line"
+              d={d}
+              fill="none"
+              pathLength={1}
+              style={{ "--i": i } as CSSProperties}
+            />
           ))}
-          {drops.map((d) => (
-            <path key={d} className="chart-drop" d={d} fill="none" />
+          {drops.map((d, i) => (
+            <path
+              key={d}
+              className="chart-drop"
+              d={d}
+              fill="none"
+              pathLength={1}
+              style={{ "--i": i } as CSSProperties}
+            />
           ))}
+
+          {/* open-frontier continuation: blank ruled paper past the last record */}
+          {openGate && (
+            <g className="chart-open-g">
+              <line className="chart-open" x1={endX} y1={lastY} x2={W - 10} y2={lastY} pathLength={1} />
+              <text className="chart-open-label" x={W - 10} y={lastY - 8} textAnchor="end">
+                {openGate}
+              </text>
+            </g>
+          )}
 
           {points.map((p, i) => (
             <circle
               key={`${p.x}-${p.score}`}
-              className={i === hover ? "chart-dot hovered" : "chart-dot"}
+              className={`chart-dot ${i === points.length - 1 ? "is-last" : "is-step"}${
+                i === hover ? " hovered" : ""
+              }`}
               cx={x(p.x)}
               cy={y(toNumber(p.score))}
               r={i === points.length - 1 ? 4.5 : 3.5}
+              style={{ "--i": i } as CSSProperties}
             />
           ))}
 
-          <text className="chart-end-label" x={endX + 8} y={lastY + 4}>
+          <text className="chart-end-label" x={endX + 8} y={lastY - 8}>
             {last.score}
           </text>
         </svg>

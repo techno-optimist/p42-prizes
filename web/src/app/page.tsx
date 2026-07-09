@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { BoundSpecimen, DiscoveryEntry, ROMAN, finalNumeral } from "@/components/DiscoveryEntry";
 import { MathBlock } from "@/components/Math";
+import { PayoutSplit, type PayoutSlice } from "@/components/PayoutSplit";
 import { Plate } from "@/components/Plate";
 import { problems } from "@/lib/data";
 import { discoveries, DISCOVERIES_META } from "@/lib/discoveries";
@@ -31,6 +32,16 @@ const SIMULATOR_RUN = `$ PYTHONPATH=src python3 -m p42_prizes.cli simulate \\
   "pool_wei": 1300,
   "total_improvement": "13/1"
 }`;
+
+// The exact simulator payouts, transcribed verbatim from SIMULATOR_RUN / Plate 1
+// for the PayoutSplit chart. Δ numerators (6, 3, 4) over the total 13 set the
+// segment widths as the exact rationals 6/13, 3/13, 4/13 — never a recomputed
+// decimal — and the wei are the simulator's integer amounts, not re-derived.
+const PAYOUT_SLICES: PayoutSlice[] = [
+  { solver: "alice", shareNum: 6, shareDen: 13, wei: 585 },
+  { solver: "bob", shareNum: 3, shareDen: 13, wei: 292 },
+  { solver: "carol", shareNum: 4, shareDen: 13, wei: 390 },
+];
 
 // Verbatim canonical VerdictReport for the pilot's known-good fixture,
 // whitespace expanded for print (canonical bytes are the compact sorted-keys
@@ -66,7 +77,7 @@ export default function HomePage() {
         <div>
           <h1 className="display">The machine went first.</h1>
           <p className="standfirst">
-            Between 4 and 7 July 2026, the ProjectForty2 / CHRONOS agent stack set four records in the
+            Between 4 and 9 July 2026, the ProjectForty2 / CHRONOS agent stack set five records in the
             mathematical literature — exact certificates, no floating point in any certified inequality, each
             published under a DOI. The protocol below now pays anyone, human or machine, to push them further.{" "}
             <em>The proof is the re-run.</em>
@@ -95,7 +106,7 @@ export default function HomePage() {
               Inspect the runnable pilot
             </Link>
             <Link className="link" href="/discoveries">
-              The First Four — our discoveries →
+              The First Five — our discoveries →
             </Link>
           </div>
         </div>
@@ -150,7 +161,7 @@ export default function HomePage() {
               <span className="section-no">§0</span>Front matter · the record before the protocol
             </p>
             <h2 className="first-four-title" id="first-four-title">
-              The First Four.
+              The First Five.
             </h2>
           </div>
           <Link className="link" href="/discoveries">
@@ -158,7 +169,7 @@ export default function HomePage() {
           </Link>
         </div>
         <p className="prose first-four-intro">
-          Before opening this register to anyone else, the agent stack put four records of its own into the
+          Before opening this register to anyone else, the agent stack put five records of its own into the
           literature — {DISCOVERIES_META.invariant}. Each is a DOI’d note with a public repository, cited here
           at the claimed-elsewhere tier: follow a DOI, clone the repo, re-run the certificate.
         </p>
@@ -173,7 +184,7 @@ export default function HomePage() {
             program; the certificate is public; payment is proportional to frontier moved.</em>
           </p>
         </div>
-        <p className="fifth-line">The fifth record will not be ours.</p>
+        <p className="fifth-line">The sixth record will not be ours.</p>
         <p className="first-four-close-action">
           <a className="button" href="#register">
             Enter the register
@@ -266,6 +277,13 @@ export default function HomePage() {
         <div className="statement">
           <MathBlock tex="\text{share}_i \;=\; \frac{\Delta_i}{\sum_j \Delta_j}, \qquad \Delta_i = \text{the exact rational distance submission } i \text{ moved the record}" />
         </div>
+        <PayoutSplit
+          slices={PAYOUT_SLICES}
+          poolWei={1300}
+          feeWei={32}
+          availableWei={1268}
+          dustWei={1}
+        />
         <Plate
           no="1"
           body={SIMULATOR_RUN}
@@ -458,7 +476,7 @@ export default function HomePage() {
             <span className="smallcaps">Claimed elsewhere — and checkable now</span>
             <ul>
               <li>
-                Four DOI’d exact-certificate notes behind the seed problems (§0):{" "}
+                Five DOI’d exact-certificate notes — the records set in §0:{" "}
                 {discoveries.map((discovery, index) => (
                   <span key={discovery.doi}>
                     {index > 0 && ", "}
@@ -471,7 +489,7 @@ export default function HomePage() {
               <li>Arena competition results taken with exact-rational certificates</li>
             </ul>
             <p className="tier-note">
-              Work outside this repository. The four DOIs resolve today — follow one, clone the repo, re-run
+              Work outside this repository. The five DOIs resolve today — follow one, clone the repo, re-run
               the certificate. Nothing here promotes them to “proven here.”
             </p>
           </div>
