@@ -454,6 +454,12 @@ try {
         // score atoms at the shared ceil(score * 1e18) convention.
         seedScoreAtoms: problem.seedScoreAtoms.toString(),
         scoreAtomScale: SCORE_SCALE.toString(),
+        // Funding is DISARMED at deploy (open-witness-phase seeding): the pool
+        // refuses deposits until the owner calls submissions.armFunding() to end
+        // the open phase. seedScoreAtoms above is the LOOSE open-phase ceiling,
+        // NOT an attested record — the frontier self-establishes from free
+        // open-phase witness postings before arming.
+        fundingArmed: false,
         registerTxHash: registerTx.hash,
         registerBlockNumber: registerReceipt.blockNumber,
         pool: pool.manifest.address,
@@ -485,6 +491,14 @@ try {
   console.log(`Wrote deployment manifest: ${output}`);
   console.log(`Registry: ${registry.manifest.address}`);
   console.log(`Problem 1 pool: ${pool.manifest.address}`);
+  console.log("");
+  console.log("  NOTE — FUNDING IS DISARMED. This pool REVERTS deposits (P42_FUNDING_NOT_ARMED)");
+  console.log("  until the OPEN WITNESS PHASE is ended by the owner calling:");
+  console.log(`      P42SubmissionManager(${submissions.manifest.address}).armFunding()`);
+  console.log("  Run the open phase first (post public witnesses for free to establish the");
+  console.log("  frontier on-chain), THEN arm (one-shot; opens ledger credit AND pool deposits),");
+  console.log("  THEN fund. Arming is deliberately NOT done at deploy — it is the funder's");
+  console.log("  explicit end-of-open-phase decision.");
 } finally {
   await connection.close();
 }

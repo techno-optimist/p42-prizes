@@ -226,6 +226,19 @@ try {
     });
   }
 
+  // Open-witness-phase seeding arm-state (audit follow-up): the pool must be
+  // wired to its manager, funding must be ARMED before any deposit could land,
+  // and the flag must agree with the FundingArmed event.
+  const [poolSubmissionManager, fundingArmed, armedAt, fundingArmedEvents, submissionManagerSetEvents] =
+    await Promise.all([
+      pool.submissionManager(),
+      submissions.fundingArmed(),
+      submissions.armedAt(),
+      submissions.queryFilter(submissions.filters.FundingArmed(), Number(fromBlock), Number(latestBlock)),
+      pool.queryFilter(pool.filters.SubmissionManagerSet(), Number(fromBlock), Number(latestBlock))
+    ]);
+  const submissionsAddress = await submissions.getAddress();
+
   const eventSums = {
     fundedWei: sumArgs(fundedEvents, "amount"),
     claimedWei: sumArgs(claimedEvents, "amount"),
@@ -270,6 +283,21 @@ try {
       "registry.problemCount >= manifest problems",
       true,
       registryProblemCount >= BigInt(manifest.data.problems?.length ?? 0)
+    ),
+    check(
+      "pool wired to its submission manager",
+      true,
+      poolSubmissionManager.toLowerCase() === submissionsAddress.toLowerCase()
+    ),
+    check(
+      "no pre-arm funding: poolTotalFunded > 0 implies fundingArmed",
+      true,
+      poolTotalFunded === 0n || fundingArmed
+    ),
+    check(
+      "fundingArmed flag agrees with FundingArmed event presence",
+      true,
+      fundingArmed === (fundingArmedEvents.length > 0)
     )
   ];
 
@@ -303,7 +331,9 @@ try {
       submissionResolved: submissionResolvedEvents.length,
       challenged: challengeEvents.length,
       resolverTranscriptPosted: resolverTranscriptEvents.length,
-      challengeResolved: challengeResolvedEvents.length
+      challengeResolved: challengeResolvedEvents.length,
+      fundingArmed: fundingArmedEvents.length,
+      submissionManagerSet: submissionManagerSetEvents.length
     },
     eventSums,
     onchain: {
@@ -315,7 +345,10 @@ try {
       ledgerClosedPoolBalance,
       ledgerFeeReserve,
       submissionCount,
-      registryProblemCount
+      registryProblemCount,
+      fundingArmed,
+      armedAt,
+      poolSubmissionManager
     },
     submissionStates,
     challengeStates,
