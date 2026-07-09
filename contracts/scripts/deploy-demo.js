@@ -97,6 +97,11 @@ const subs = await deploy("P42SubmissionManager", [
   seedScoreAtoms, minImprovementAtoms,
 ]);
 await (await ledger.c.setCreditRecorder(subs.addr)).wait();
+// Open-witness-phase wiring: the pool refuses deposits until the manager is
+// wired AND funding is armed. Demo instances auto-arm so a full lifecycle runs
+// immediately (a real deployment runs an open phase first, then arms).
+await (await pool.c.setSubmissionManager(subs.addr)).wait();
+await (await subs.c.armFunding()).wait();
 const chal = await deploy("P42ChallengeManager", [
   owner, resolver, treasury, subs.addr,
   challengeWindow, DEMO.betaBps, DEMO.minCounterBondWei,

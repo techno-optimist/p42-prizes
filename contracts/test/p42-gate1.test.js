@@ -87,6 +87,12 @@ describe("P42 Gate 1 contract scaffold", function () {
       await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
     }
 
+    // OPEN-WITNESS-PHASE wiring: arm funding up front so these economic
+    // fixtures run in the PAID phase (credit assertions unchanged) and the
+    // pool accepts deposits.
+    await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
+    await submissions.connect(owner).armFunding();
+
     const Challenges = await ethers.getContractFactory("P42ChallengeManager");
     const challenges = await Challenges.deploy(
       owner.address,

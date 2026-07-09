@@ -19,7 +19,8 @@ contract P42SubmissionManager {
     error P42_PAUSED_NEW_ACTIONS();
     error P42_PAUSED_ALL();
     error P42_NOT_PAUSED_ALL();
-    error P42_VOID_NO_CREDIT();
+    error P42_FUNDING_ALREADY_ARMED();
+    error P42_VOID_NOT_ADVANCE(int256 prevBestScoreAtoms, int256 claimedScoreAtoms);
     error P42_VOID_NOT_FRONTIER(int256 bestScoreAtoms, int256 claimedScoreAtoms);
     error P42_BAD_ALPHA();
     error P42_BAD_WINDOW();
@@ -94,9 +95,10 @@ contract P42SubmissionManager {
     /// @notice Frontier snapshot stored at finalization (poisoned-frontier
     /// recovery). `prevBestScoreAtoms` is the live frontier the submission
     /// finalized against; `creditAtoms` is the marginal credit it earned
-    /// (0 when superseded). Together they let `voidFinalize` reverse exactly
-    /// this finalization — restore the frontier and void the credit — with no
-    /// governance-chosen numbers.
+    /// (0 when superseded, and ALWAYS 0 for open-phase finalizes — witness
+    /// postings advance the frontier unpaid). Together they let `voidFinalize`
+    /// reverse exactly this finalization — restore the frontier and void any
+    /// credit — with no governance-chosen numbers.
     struct FinalizeInfo {
         int256 prevBestScoreAtoms;
         uint256 creditAtoms;
@@ -139,10 +141,15 @@ contract P42SubmissionManager {
     /// @notice Max solution bytes accepted in a reveal tx (only meaningful when
     /// `onchainDa`). Bounds calldata gas and blocks calldata-bomb griefing.
     uint256 public immutable maxSolutionBytes;
-    /// @notice Frontier seed: ceil(true_best_known_score * SCORE_ATOM_SCALE)
-    /// at deployment. The payable frontier starts here — only strictly better
-    /// (lower) absolute scores can reveal, and credit is the marginal
-    /// reduction from the live frontier, never the seed-relative distance.
+    /// @notice OPEN-PHASE loose starting ceiling for the frontier (in score
+    /// atoms). This is deliberately NOT a human-attested published record: it
+    /// only needs to be loose enough that any real solution strictly beats it.
+    /// The TRUE public frontier is then established ON-CHAIN BY CONSTRUCTION
+    /// during the unpaid open phase — anyone posts witnesses for free, each
+    /// verified strict improvement advances `bestScoreAtoms`, and no credit is
+    /// recorded until the funder arms funding (`armFunding`). Paid credit is
+    /// always the marginal reduction from the live frontier, never the
+    /// seed-relative distance.
     int256 public immutable seedScoreAtoms;
     /// @notice Minimum marginal reduction (in score atoms) that earns credit
     /// at finalization. A finalizing submission whose live marginal is below
@@ -156,6 +163,25 @@ contract P42SubmissionManager {
     /// governance recovery (`voidFinalize`) can never race a finalize that
     /// would move `bestScoreAtoms` and stale its frontier-equality check.
     bool public pausedAll;
+    /// @notice OPEN-WITNESS-PHASE gate. While false (deployment default) the
+    /// problem is in the unpaid OPEN phase: witness postings advance the
+    /// frontier but record ZERO ledger credit, and the bounty pool refuses
+    /// deposits (see P42BountyPool.setSubmissionManager). Once the funder
+    /// calls `armFunding()` the PAID phase begins: the pool accepts ETH and
+    /// finalized improvements earn the marginal over whatever frontier the
+    /// open phase established.
+    bool public fundingArmed;
+    /// @notice Timestamp funding was armed. Credit is bound to the phase a
+    /// submission was COMMITTED in (committedAt >= armedAt), NOT the phase it
+    /// finalizes in — otherwise a solver could commit+reveal a witness for free
+    /// during the open phase, withhold finalize across the arm, and collect the
+    /// full marginal for pre-arm (free) work.
+    uint64 public armedAt;
+    /// @notice After a `pausedAll` recovery ends, no submission may be expired
+    /// (bond forfeited) until a full fresh challenge window has passed, so an
+    /// honest in-flight commit/reveal frozen by the recovery always gets a real
+    /// chance to act before its clock is treated as expired.
+    uint64 public expiryGraceUntil;
     bool private _claiming;
     uint256 public submissionCount;
     uint256 public openSubmissionCount;
@@ -172,6 +198,7 @@ contract P42SubmissionManager {
 
     event NewActionsPaused(bool paused);
     event AllActionsPaused(bool paused);
+    event FundingArmed(uint64 at);
     event FinalizeVoided(
         uint256 indexed submissionId,
         address indexed solver,
@@ -199,7 +226,8 @@ contract P42SubmissionManager {
     );
     /// @param creditAtoms The MARGINAL frontier reduction credited to the
     /// solver (previous best - claimed score), 0 when the submission was
-    /// superseded by a better finalized score. This — never a seed-relative
+    /// superseded by a better finalized score, and always 0 during the unpaid
+    /// OPEN phase (before armFunding). This — never a seed-relative
     /// improvement — is what the payout ledger sums.
     /// @param bestScoreAtoms The live frontier after this finalization.
     event Finalized(
@@ -288,7 +316,34 @@ contract P42SubmissionManager {
     /// the frontier so `voidFinalize` operates on a stable `bestScoreAtoms`.
     function setPausedAll(bool paused) external onlyOwner {
         pausedAll = paused;
+        // On unpause, grant a full fresh challenge window before any expiry can
+        // fire, so a submission frozen out by the recovery is not immediately
+        // expirable (bond-forfeited) the instant it can finally act.
+        if (!paused) {
+            expiryGraceUntil = uint64(block.timestamp) + challengeWindowSeconds;
+        }
         emit AllActionsPaused(paused);
+    }
+
+    /// @notice One-way switch from the unpaid OPEN phase to the PAID phase.
+    /// Before this call every finalize records ZERO credit (the frontier still
+    /// advances — that is the point: free public witness postings establish
+    /// the true frontier on-chain), and the wired bounty pool refuses ETH.
+    /// After it, finalized improvements earn the marginal over the
+    /// open-established frontier and the pool accepts funding — one call is
+    /// the single arm authority for both.
+    ///
+    /// Timing is the funder's discretion in this pass: the funder is
+    /// economically incentivized to run a real open phase (tightening the
+    /// frontier means not overpaying for already-public results).
+    /// NOTE: an on-chain OPEN_PHASE_MIN_SECONDS gate (require block.timestamp
+    /// >= deployedAt + OPEN_PHASE_MIN_SECONDS) can be added here if arming
+    /// discretion should be constrained protocol-side.
+    function armFunding() external onlyOwner {
+        if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
+        fundingArmed = true;
+        armedAt = uint64(block.timestamp);
+        emit FundingArmed(uint64(block.timestamp));
     }
 
     function setChallengeManager(address challengeManager_) external onlyOwner {
@@ -442,15 +497,19 @@ contract P42SubmissionManager {
     /// bytes on-chain (verified at reveal), and off-chain-DA problems are gated
     /// by the `commitDaHash` anchor. Pass 0 unless recording a mirror.
     ///
-    /// Credit is recomputed here against the LIVE frontier (it may have
-    /// advanced since reveal): creditAtoms = bestScoreAtoms - claimedScoreAtoms
-    /// when that marginal is still >= minImprovementAtoms, else 0 (the
-    /// submission was superseded by a better finalized score). The ledger sums
-    /// these marginals, so each solver's pool share is exactly their marginal
-    /// frontier reduction over the total reduction — a free-rider on someone
-    /// else's frontier is paid only their own small delta (F1). Either way the
-    /// submission finalizes and the solver's bond becomes claimable: an honest
-    /// solver who was merely beaten is never bond-slashed.
+    /// The marginal is recomputed here against the LIVE frontier (it may have
+    /// advanced since reveal): marginal = bestScoreAtoms - claimedScoreAtoms
+    /// when that is still >= minImprovementAtoms, else 0 (the submission was
+    /// superseded by a better finalized score). The frontier advances on every
+    /// non-zero marginal in BOTH phases; ledger credit is recorded ONLY once
+    /// funding is armed (creditAtoms = fundingArmed ? marginal : 0) — an
+    /// open-phase witness posting establishes the public frontier for free.
+    /// The ledger sums the paid marginals, so each solver's pool share is
+    /// exactly their marginal frontier reduction over the total reduction — a
+    /// free-rider on someone else's frontier is paid only their own small
+    /// delta (F1). Either way the submission finalizes and the solver's bond
+    /// becomes claimable: an honest solver who was merely beaten is never
+    /// bond-slashed.
     function finalize(uint256 submissionId, bytes32 permanenceHash) external {
         if (pausedAll) revert P42_PAUSED_ALL();
         Submission storage submission = _requireSubmission(submissionId);
@@ -462,18 +521,26 @@ contract P42SubmissionManager {
 
         address solver = submission.solver;
         int256 claimed = submission.claimedScoreAtoms;
-        uint256 creditAtoms = 0;
+        uint256 marginal = 0;
         if (claimed < bestScoreAtoms) {
-            uint256 marginal = uint256(bestScoreAtoms - claimed);
-            if (marginal >= minImprovementAtoms) {
-                creditAtoms = marginal;
+            uint256 reduction = uint256(bestScoreAtoms - claimed);
+            if (reduction >= minImprovementAtoms) {
+                marginal = reduction;
             }
         }
+        // OPEN phase: the frontier still advances (below) but no credit is
+        // recorded — witness postings are free and unpaid by construction.
+        // Credit is bound to the COMMIT phase, not the finalize phase: a
+        // submission committed before funding was armed earns 0 forever (even
+        // if it finalizes post-arm), which is what closes the withhold-across-
+        // the-arm leak. The frontier still advances for free (see below, gated
+        // on `marginal`), it just never earns.
+        uint256 creditAtoms = (fundingArmed && submission.committedAt >= armedAt) ? marginal : 0;
 
         // The bond must cover alpha * the entitlement this finalization is
-        // claiming, sized against the MARGINAL credit. A superseded
-        // submission claims nothing (creditAtoms == 0), so its bond is
-        // trivially sufficient and is simply returned.
+        // claiming, sized against the MARGINAL credit. A superseded or
+        // open-phase submission claims nothing (creditAtoms == 0), so its
+        // bond is trivially sufficient and is simply returned.
         if (creditAtoms != 0) {
             uint256 finalizingEntitlementWei = ledger.provisionalEntitlement(solver, creditAtoms);
             uint256 required = requiredPostingBondForPool(finalizingEntitlementWei);
@@ -485,13 +552,16 @@ contract P42SubmissionManager {
         submission.permanenceHash = permanenceHash;
         submission.status = SubmissionStatus.Finalized;
         // Recovery snapshot: persist the frontier this finalize advanced from
-        // and the marginal it was credited (previously only emitted), so a
-        // fraudulent finalize can later be reversed exactly by voidFinalize.
+        // and the marginal it was credited (0 for superseded AND open-phase
+        // finalizes), so a fraudulent finalize can later be reversed exactly
+        // by voidFinalize.
         finalizeInfo[submissionId] = FinalizeInfo({prevBestScoreAtoms: bestScoreAtoms, creditAtoms: creditAtoms});
         _makeBondClaimable(submissionId, solver);
         _decrementOpenSubmission();
-        if (creditAtoms != 0) {
+        if (marginal != 0) {
             bestScoreAtoms = claimed;
+        }
+        if (creditAtoms != 0) {
             ledger.recordCredit(solver, creditAtoms);
         }
 
@@ -510,18 +580,30 @@ contract P42SubmissionManager {
     /// unchallenged finalize can set `bestScoreAtoms` unreachably low, so every
     /// honest score thereafter finalizes with 0 credit — bricking the problem.
     /// This reverses EXACTLY one finalize with no governance-chosen numbers:
-    /// it restores the stored `prevBestScoreAtoms` and voids the stored
-    /// `creditAtoms` on the ledger.
+    /// it restores the stored `prevBestScoreAtoms` and (when the finalize was
+    /// paid) voids the stored `creditAtoms` on the ledger.
+    ///
+    /// BOTH poison classes are recoverable:
+    /// - PAID poison (creditAtoms > 0): frontier restored + credit voided.
+    /// - OPEN-PHASE poison (creditAtoms == 0): a fraud that advances the
+    ///   frontier for free earns no credit, but still bricks honest postings.
+    ///   Frontier restored; there is no credit to void. (Gating the void on
+    ///   creditAtoms > 0 — the previous behavior — would make an open-phase
+    ///   poison UNrecoverable.)
     ///
     /// Safety preconditions:
     /// - `pausedAll` must be set, so no finalize can race the void and move the
     ///   frontier between the checks and the restore.
     /// - The submission must still BE the live frontier
     ///   (`bestScoreAtoms == claimedScoreAtoms`). A poisoned frontier always
-    ///   is — nothing can beat it. A superseded finalize is refused: it earned
-    ///   0 credit anyway and restoring its prevBest would corrupt the frontier.
+    ///   is — nothing can beat it.
+    /// - The finalize must have ACTUALLY moved the frontier
+    ///   (`prevBestScoreAtoms != claimedScoreAtoms`). A superseded 0-marginal
+    ///   finalize (e.g. one that merely tied the live frontier) is refused:
+    ///   it advanced nothing and restoring its prevBest would corrupt the
+    ///   frontier.
     /// Together these make the void an exact inverse with no double-accounting:
-    /// totalCreditAtoms == seedScoreAtoms - bestScoreAtoms keeps telescoping.
+    /// totalCreditAtoms keeps telescoping over the PAID frontier segment.
     ///
     /// Deliberately NOT touched: the solver's posting bond (already
     /// claimable/claimed — the economic penalty for the fraud is a separate
@@ -531,17 +613,21 @@ contract P42SubmissionManager {
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Finalized);
         FinalizeInfo storage info = finalizeInfo[submissionId];
-        uint256 creditAtoms = info.creditAtoms;
-        if (creditAtoms == 0) revert P42_VOID_NO_CREDIT();
         if (bestScoreAtoms != submission.claimedScoreAtoms) {
             revert P42_VOID_NOT_FRONTIER(bestScoreAtoms, submission.claimedScoreAtoms);
         }
+        if (info.prevBestScoreAtoms == submission.claimedScoreAtoms) {
+            revert P42_VOID_NOT_ADVANCE(info.prevBestScoreAtoms, submission.claimedScoreAtoms);
+        }
 
+        uint256 creditAtoms = info.creditAtoms;
         int256 restored = info.prevBestScoreAtoms;
         // Voided (not Finalized) so the same finalize can never be voided twice.
         submission.status = SubmissionStatus.Voided;
         bestScoreAtoms = restored;
-        ledger.voidCredit(submission.solver, creditAtoms);
+        if (creditAtoms > 0) {
+            ledger.voidCredit(submission.solver, creditAtoms);
+        }
         emit FinalizeVoided(submissionId, submission.solver, creditAtoms, restored);
     }
 
@@ -612,11 +698,21 @@ contract P42SubmissionManager {
     }
 
     function expireCommitted(uint256 submissionId) external {
+        // Recovery-freeze fairness: while pausedAll is set, reveal() is
+        // blocked, so an honest in-flight commit CANNOT act. Expiring it during
+        // the freeze would forfeit its bond to the treasury through no fault of
+        // the solver — the clock may run, but the toll gate stays shut until
+        // the recovery ends.
+        if (pausedAll) revert P42_PAUSED_ALL();
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Committed);
         uint64 expiresAt = submission.committedAt + challengeWindowSeconds;
         if (block.timestamp < expiresAt) {
             revert P42_REVEAL_WINDOW_OPEN(expiresAt, uint64(block.timestamp));
+        }
+        // Post-recovery grace: a full fresh window after any pausedAll unpause.
+        if (block.timestamp < expiryGraceUntil) {
+            revert P42_REVEAL_WINDOW_OPEN(expiryGraceUntil, uint64(block.timestamp));
         }
         submission.status = SubmissionStatus.Rejected;
         _makeBondClaimable(submissionId, treasury);
@@ -625,11 +721,20 @@ contract P42SubmissionManager {
     }
 
     function expireRevealed(uint256 submissionId) external {
+        // Recovery-freeze fairness: while pausedAll is set, finalize() is
+        // blocked, so an honest revealed submission CANNOT finalize its way to
+        // safety. Same rationale as expireCommitted: no bond forfeiture while
+        // the solver is frozen out.
+        if (pausedAll) revert P42_PAUSED_ALL();
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Revealed);
         uint64 expiresAt = submission.challengeEndsAt + challengeWindowSeconds;
         if (block.timestamp < expiresAt) {
             revert P42_PERMANENCE_GRACE_OPEN(expiresAt, uint64(block.timestamp));
+        }
+        // Post-recovery grace: a full fresh window after any pausedAll unpause.
+        if (block.timestamp < expiryGraceUntil) {
+            revert P42_PERMANENCE_GRACE_OPEN(expiryGraceUntil, uint64(block.timestamp));
         }
         submission.status = SubmissionStatus.Rejected;
         _makeBondClaimable(submissionId, treasury);

@@ -371,6 +371,13 @@ try {
   setupTransactions.push(
     await sendSetupTx("ledger.setCreditRecorder", ledger.contract.setCreditRecorder(submissions.manifest.address))
   );
+  // Open-witness-phase wiring: the pool refuses deposits until the submission
+  // manager is wired AND funding is armed. We wire it here; arming (armFunding)
+  // is a deliberate LATER runbook step the funder takes only after the open
+  // witness phase has established the frontier — NOT at deploy.
+  setupTransactions.push(
+    await sendSetupTx("pool.setSubmissionManager", pool.contract.setSubmissionManager(submissions.manifest.address))
+  );
 
   const challenges = await deployContract(ethers, "P42ChallengeManager", [
     owner,

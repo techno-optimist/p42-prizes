@@ -85,6 +85,11 @@ async function deployFixture({
     await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
   }
 
+  // OPEN-WITNESS-PHASE wiring: arm funding up front so the red-team scenarios
+  // run in the PAID phase (their credit/payout assertions are unchanged).
+  await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
+  await submissions.connect(owner).armFunding();
+
   const Challenges = await ethers.getContractFactory("P42ChallengeManager");
   const challenges = await Challenges.deploy(
     owner.address,

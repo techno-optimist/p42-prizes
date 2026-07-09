@@ -45,6 +45,12 @@ async function fixture() {
   const Pool = await ethers.getContractFactory("P42BountyPool");
   const pool = await Pool.deploy(deployer.address);
   await pool.waitForDeployment();
+  // fund() is gated on an armed submission manager (open-witness-phase rail);
+  // these tests exercise the wallet, so wire the pre-armed mock.
+  const Mock = await ethers.getContractFactory("MockFundingArmed");
+  const mock = await Mock.deploy(true);
+  await mock.waitForDeployment();
+  await pool.connect(deployer).setSubmissionManager(await mock.getAddress());
   const Wallet = await ethers.getContractFactory("P42AgentWallet");
   const wallet = await Wallet.connect(owner).deploy(owner.address, session.address, PER_CALL, TOTAL, { value: FUNDING });
   await wallet.waitForDeployment();

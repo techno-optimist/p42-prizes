@@ -107,6 +107,11 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
+  // OPEN-WITNESS-PHASE wiring: arm funding up front so the property scenarios
+  // run in the PAID phase (credit bookkeeping unchanged) and can fund the pool.
+  await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
+  await submissions.connect(owner).armFunding();
+
   return { owner, treasury, resolver, participants, pool, ledger, submissions };
 }
 
@@ -237,6 +242,13 @@ describe("P42 contract property checks", function () {
       const ledger = await Ledger.deploy(await pool.getAddress(), owner.address, treasury.address, 0);
       await ledger.waitForDeployment();
       await pool.connect(owner).setLedger(await ledger.getAddress());
+      // This helper exercises ledger arithmetic only (credits are recorded
+      // directly by the owner), so satisfy the pool's armed-funding gate with
+      // the pre-armed mock submission manager.
+      const Mock = await ethers.getContractFactory("MockFundingArmed");
+      const mock = await Mock.deploy(true);
+      await mock.waitForDeployment();
+      await pool.connect(owner).setSubmissionManager(await mock.getAddress());
       await pool.fund({ value: 10_003n });
       for (const [solver, atoms] of credits) {
         await ledger.connect(owner).recordCredit(solver.address, atoms);

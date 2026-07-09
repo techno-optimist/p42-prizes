@@ -6,6 +6,13 @@ interface IP42PayoutLedger {
     function closed() external view returns (bool);
 }
 
+/// @dev Minimal view of the submission manager's OPEN-WITNESS-PHASE gate:
+/// deposits are refused until the funder arms funding there (armFunding is the
+/// SINGLE arm authority for both ledger credit and pool deposits).
+interface ISubmissionManagerArmed {
+    function fundingArmed() external view returns (bool);
+}
+
 /// @notice Per-problem ETH escrow. It holds funds under fixed rules and lets the
 /// payout ledger compute claim amounts. `claim()` is deliberately not pausable.
 contract P42BountyPool {
@@ -13,12 +20,19 @@ contract P42BountyPool {
     error P42_NOT_LEDGER();
     error P42_LEDGER_ALREADY_SET();
     error P42_LEDGER_NOT_SET();
+    error P42_SUBMISSION_MANAGER_ALREADY_SET();
+    error P42_FUNDING_NOT_ARMED();
     error P42_NOTHING_TO_CLAIM();
     error P42_POOL_CLOSED();
     error P42_TRANSFER_FAILED();
 
     address public immutable owner;
     address public ledger;
+    /// @notice Submission manager wired for the OPEN-WITNESS-PHASE funding
+    /// gate: fund()/receive() revert P42_FUNDING_NOT_ARMED until this is set
+    /// AND its fundingArmed() is true. Safety rail — a funder cannot strand
+    /// ETH in a pool whose problem is still in the unpaid open phase.
+    address public submissionManager;
     uint256 public totalFunded;
     uint256 public totalClaimed;
     uint256 public totalFeePaid;
@@ -27,6 +41,7 @@ contract P42BountyPool {
     bool private _claiming;
 
     event LedgerSet(address indexed ledger);
+    event SubmissionManagerSet(address indexed submissionManager);
     event Funded(address indexed from, uint256 amount, uint256 newBalance);
     event Claimed(address indexed solver, uint256 amount);
     event FeePaid(address indexed to, uint256 amount);
@@ -44,13 +59,13 @@ contract P42BountyPool {
         _claiming = false;
     }
 
-    constructor(address owner_) payable {
+    /// @dev Deliberately NOT payable: the submission manager cannot be wired
+    /// yet at construction (it needs this pool's address), so any
+    /// construction-time deposit would be un-armed open-phase funding — the
+    /// exact thing the P42_FUNDING_NOT_ARMED rail exists to prevent.
+    constructor(address owner_) {
         require(owner_ != address(0), "P42_OWNER_ZERO");
         owner = owner_;
-        if (msg.value > 0) {
-            totalFunded = msg.value;
-            emit Funded(msg.sender, msg.value, address(this).balance);
-        }
     }
 
     receive() external payable {
@@ -62,6 +77,17 @@ contract P42BountyPool {
         require(ledger_ != address(0), "P42_LEDGER_ZERO");
         ledger = ledger_;
         emit LedgerSet(ledger_);
+    }
+
+    /// @notice One-time wiring of the submission manager whose `fundingArmed`
+    /// flag gates deposits (mirrors setLedger). Until it is set and armed,
+    /// fund()/receive() revert: the problem is in its unpaid OPEN witness
+    /// phase and ETH must not be strandable in escrow.
+    function setSubmissionManager(address submissionManager_) external onlyOwner {
+        if (submissionManager != address(0)) revert P42_SUBMISSION_MANAGER_ALREADY_SET();
+        require(submissionManager_ != address(0), "P42_SUBMISSION_MANAGER_ZERO");
+        submissionManager = submissionManager_;
+        emit SubmissionManagerSet(submissionManager_);
     }
 
     function fund() external payable {
@@ -111,6 +137,15 @@ contract P42BountyPool {
 
     function _fund() private {
         require(msg.value > 0, "P42_ZERO_FUNDING");
+        // OPEN-WITNESS-PHASE rail: deposits are refused until the submission
+        // manager is wired AND its funder has called armFunding(). One call
+        // (armFunding) is the single arm authority opening both ledger credit
+        // and pool deposits — a pool funded before arming is impossible, so a
+        // funder can never strand ETH in an unpaid open phase.
+        address manager = submissionManager;
+        if (manager == address(0) || !ISubmissionManagerArmed(manager).fundingArmed()) {
+            revert P42_FUNDING_NOT_ARMED();
+        }
         // Post-close deposits would be stranded (finalEntitlement is snapshotted
         // at close), so reject them once the ledger has closed the pool (L2).
         address ledger_ = ledger;

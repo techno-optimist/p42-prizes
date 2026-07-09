@@ -6,6 +6,8 @@
 
 > These are **recommendations the team committed to**, not a menu. Where a decision irreducibly needs a real-world human fact (a named signer, a signed seed dossier, a counsel memo, a math ruling), it is called out explicitly — the policy is settled, the fact is not.
 
+> **Update — seed policy superseded.** The debate's seed answer below is a human-signed "seed dossier" attesting the published record. It has since been **superseded by an autonomous design** — **open-witness-phase seeding** ([`OPEN_WITNESS_SEEDING.md`](OPEN_WITNESS_SEEDING.md), now implemented) — which lets the frontier establish itself on-chain from free public postings and **removes the human seed sign-off entirely**. That doc is the current seeding policy; the rest of the decisions below stand.
+
 ## The decisions
 
 ### SEED POLICY — rule + enforcement machinery (decision 1, the part we can build now)

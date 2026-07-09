@@ -91,6 +91,11 @@ async function deploy(onchainDa, maxSolutionBytes) {
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
+  // OPEN-WITNESS-PHASE wiring: arm funding up front so these DA fixtures run
+  // in the PAID phase and the pool accepts deposits.
+  await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
+  await submissions.connect(owner).armFunding();
+
   return { owner, treasury, solver, other, pool, ledger, submissions };
 }
 
