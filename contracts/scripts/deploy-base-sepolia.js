@@ -12,7 +12,6 @@ const DEFAULTS = {
   challengeWindowSeconds: 72n * 60n * 60n,
   feeBps: 0n,
   minCounterBondWei: 20_000_000_000_000_000n,
-  minImprovementAtoms: 1n,
   minPostingBondWei: 10_000_000_000_000_000n,
   rerunCostMultiplierBps: 30_000n,
   rerunCostWei: 10_000_000_000_000_000n,
@@ -78,6 +77,18 @@ function ceilAtoms({ num, den }) {
   return q;
 }
 
+// Extracts a top-level `NAME = Fraction(num, den)` literal from verifier
+// source. \s matches newlines: tolerates multi-line Fraction( num, den, )
+// literals. Returns null when the constant is absent or not a plain literal
+// (e.g. Fraction(1, TOTAL_PAIRS)) — callers must then fail loudly, never
+// guess.
+function fractionLiteral(source, name) {
+  const pattern = new RegExp(`^${name}\\s*=\\s*Fraction\\(\\s*(-?\\d+)\\s*,\\s*(\\d+)\\s*,?\\s*\\)`, "m");
+  const match = pattern.exec(source);
+  if (!match) return null;
+  return { num: BigInt(match[1]), den: BigInt(match[2]) };
+}
+
 // Frontier seed (audit F1): seedScoreAtoms initializes the on-chain
 // bestScoreAtoms and MUST encode the TRUE best-known absolute score for the
 // problem — never a trivial bound, or resubmitting a known construction mints
@@ -87,7 +98,8 @@ function ceilAtoms({ num, den }) {
 //   3. P42_PROBLEM_DIR        — read from the problem package itself:
 //        a. problem.yaml `seed_score:` (native objective direction)
 //        b. verifier/verify.py literal `SEED_BEST = Fraction(num, den)`
-//        c. problem.yaml `objective.seed_best:` (fallback; may be stale)
+//        c. problem.yaml `objective.seed_best:` — may be stale, so this
+//           fallback is a HARD ERROR unless P42_ALLOW_YAML_SEED=1 (audit F1)
 //      For (3), problem.yaml `objective.direction: maximize` maps the seed onto
 //      the minimization frontier by negation.
 function resolveSeedScoreAtoms() {
@@ -113,15 +125,29 @@ function resolveSeedScoreAtoms() {
     // seed_best is only a fallback (it can go stale relative to verify.py).
     try {
       const verifier = readFileSync(resolve(dir, "verifier", "verify.py"), "utf8");
-      // \s matches newlines: tolerates multi-line Fraction( num, den, ) literals.
-      const literal = /^SEED_BEST\s*=\s*Fraction\(\s*(-?\d+)\s*,\s*(\d+)\s*,?\s*\)/m.exec(verifier);
-      if (literal) seed = `${literal[1]}/${literal[2]}`;
+      const literal = fractionLiteral(verifier, "SEED_BEST");
+      if (literal) seed = `${literal.num}/${literal.den}`;
     } catch {
-      // fall through to problem.yaml seed_best
+      // fall through to problem.yaml seed_best (explicitly gated below)
     }
   }
   if (seed === null) {
-    seed = /^\s*seed_best:\s*"?(-?\d+(?:\/\d+)?)"?\s*$/m.exec(yaml)?.[1] ?? null;
+    // AUDIT F1 hardening: a stale problem.yaml seed_best must never deploy
+    // silently — a renamed/refactored SEED_BEST would otherwise re-open the
+    // false-prize hole by seeding the old loose frontier. Require an explicit
+    // operator acknowledgement to use the yaml value.
+    const yamlSeed = /^\s*seed_best:\s*"?(-?\d+(?:\/\d+)?)"?\s*$/m.exec(yaml)?.[1] ?? null;
+    if (yamlSeed !== null && process.env.P42_ALLOW_YAML_SEED !== "1") {
+      throw new Error(
+        `refusing problem.yaml seed_best fallback in ${dir}: verify.py SEED_BEST literal was not found ` +
+          "(renamed/refactored/missing?) and yaml seed_best may be stale (audit F1). Fix the verifier, set " +
+          "P42_SEED_SCORE / P42_SEED_SCORE_ATOMS explicitly, or set P42_ALLOW_YAML_SEED=1 to accept the yaml value."
+      );
+    }
+    if (yamlSeed !== null) {
+      console.warn(`WARNING: seeding from problem.yaml seed_best in ${dir} (P42_ALLOW_YAML_SEED=1); verify it matches verify.py`);
+      seed = yamlSeed;
+    }
   }
   if (seed === null) {
     throw new Error(`could not resolve a frontier seed from ${dir} (no seed_score, verify.py SEED_BEST literal, or seed_best)`);
@@ -129,6 +155,46 @@ function resolveSeedScoreAtoms() {
   const parsed = parseRational(seed, `${dir} seed`);
   if (direction === "maximize") parsed.num = -parsed.num;
   return ceilAtoms(parsed);
+}
+
+// On-chain marginal floor (deploy hardening): minImprovementAtoms must mirror
+// the verifier's MIN_IMPROVEMENT policy floor for the problem, never a flat
+// default (a floor looser than the verifier's would let on-chain credit
+// finalize improvements the verifier itself rejects). Sources, in precedence
+// order:
+//   1. P42_MIN_IMPROVEMENT_ATOMS — uint atoms, used verbatim
+//   2. P42_PROBLEM_DIR verifier/verify.py `MIN_IMPROVEMENT = Fraction(num, den)`
+//      literal, ceil'd to atoms (CEIL: the on-chain floor is never looser than
+//      the verifier's policy floor)
+// A non-literal MIN_IMPROVEMENT (e.g. Fraction(1, TOTAL_PAIRS)) is a hard
+// error: compute the atoms and pass them explicitly.
+function resolveMinImprovementAtoms() {
+  const direct = process.env.P42_MIN_IMPROVEMENT_ATOMS;
+  if (direct !== undefined && direct.trim() !== "") {
+    const parsed = BigInt(direct.trim());
+    if (parsed < 0n) throw new Error("P42_MIN_IMPROVEMENT_ATOMS must be non-negative");
+    return parsed;
+  }
+  const problemDir = process.env.P42_PROBLEM_DIR;
+  if (problemDir === undefined || problemDir.trim() === "") {
+    throw new Error(
+      "Missing marginal floor: set P42_MIN_IMPROVEMENT_ATOMS, or P42_PROBLEM_DIR (verifier to read MIN_IMPROVEMENT from)"
+    );
+  }
+  const dir = resolve(problemDir.trim());
+  const verifier = readFileSync(resolve(dir, "verifier", "verify.py"), "utf8");
+  const literal = fractionLiteral(verifier, "MIN_IMPROVEMENT");
+  if (literal === null) {
+    throw new Error(
+      `could not resolve a MIN_IMPROVEMENT Fraction literal from ${dir}/verifier/verify.py ` +
+        "(renamed, refactored, or not a plain literal?); set P42_MIN_IMPROVEMENT_ATOMS explicitly"
+    );
+  }
+  const atoms = ceilAtoms(literal);
+  if (atoms <= 0n) {
+    throw new Error(`MIN_IMPROVEMENT from ${dir} must be a positive floor, got ${atoms} atoms`);
+  }
+  return atoms;
 }
 
 function manifestPath() {
@@ -192,11 +258,21 @@ async function deployContract(ethers, name, args) {
   const factory = await ethers.getContractFactory(name);
   const contract = await factory.deploy(...args);
   const deployment = await waitForDeployment(contract);
+  // ABI/code pins (audit F10): reconciliation decodes events with an ABI, and
+  // a later HEAD refactor can silently change event shapes so queryFilter
+  // matches nothing while still reporting ok. Record (a) the hash of the code
+  // actually deployed on-chain and (b) the hash of the exact ABI used here, so
+  // reconcile can assert it is decoding the deployed contracts with the
+  // deployed ABI.
+  const deployedCodeHash = ethers.keccak256(await ethers.provider.getCode(deployment.address));
+  const abiHash = ethers.keccak256(ethers.toUtf8Bytes(factory.interface.formatJson()));
   return {
     contract,
     manifest: {
       name,
       ...deployment,
+      deployedCodeHash,
+      abiHash,
       constructorArgs: args
     }
   };
@@ -258,7 +334,7 @@ try {
       requiredEnv("P42_ADMISSION_MATRIX_HASH")
     ),
     metadataURI: requiredEnv("P42_METADATA_URI"),
-    minImprovementAtoms: uintEnv("P42_MIN_IMPROVEMENT_ATOMS", DEFAULTS.minImprovementAtoms),
+    minImprovementAtoms: resolveMinImprovementAtoms(),
     seedScoreAtoms: resolveSeedScoreAtoms()
   };
 

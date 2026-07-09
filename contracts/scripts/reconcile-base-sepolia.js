@@ -99,6 +99,39 @@ try {
   );
   const registry = await ethers.getContractAt("P42ProblemRegistry", requireContract(manifest.data, "registry"));
 
+  // AUDIT F10: pin the reconciliation ABI to the deployment. getContractAt
+  // decodes with the HEAD artifacts, which can drift from the deployed
+  // contracts after a refactor — queryFilter then silently matches ZERO
+  // events (wrong topic hashes) while the report still says ok=true. Assert
+  // that (a) the on-chain code still hashes to what the deploy recorded and
+  // (b) HEAD's ABI hashes to the ABI the deploy used; mismatch is a hard
+  // error (decoding would be garbage), and a manifest without pins becomes a
+  // failed check (it cannot attest the ABI is right).
+  const abiPinChecks = [];
+  for (const [key, instance] of Object.entries({ pool, ledger, submissions, challenges, registry })) {
+    const entry = manifest.data.contracts?.[key] ?? {};
+    const onchainCodeHash = ethers.keccak256(await ethers.provider.getCode(await instance.getAddress()));
+    const headAbiHash = ethers.keccak256(ethers.toUtf8Bytes(instance.interface.formatJson()));
+    if (entry.deployedCodeHash !== undefined && entry.deployedCodeHash !== onchainCodeHash) {
+      throw new Error(
+        `contracts.${key}: on-chain code hash ${onchainCodeHash} != manifest deployedCodeHash ${entry.deployedCodeHash} (contract at this address changed?)`
+      );
+    }
+    if (entry.abiHash !== undefined && entry.abiHash !== headAbiHash) {
+      throw new Error(
+        `contracts.${key}: HEAD artifact ABI hash ${headAbiHash} != manifest abiHash ${entry.abiHash} — ` +
+          `HEAD cannot decode this deployment's events; reconcile from the deployment commit (${manifest.data.deploymentCommit ?? "unknown"})`
+      );
+    }
+    abiPinChecks.push(
+      check(
+        `manifest pins contracts.${key} deployed code + ABI (F10)`,
+        `${entry.deployedCodeHash ?? "unpinned"}|${entry.abiHash ?? "unpinned"}`,
+        `${onchainCodeHash}|${headAbiHash}`
+      )
+    );
+  }
+
   const [
     fundedEvents,
     claimedEvents,
@@ -162,6 +195,7 @@ try {
       poolAtSubmissionWei: submission.poolAtSubmissionWei,
       requiredBondWei: submission.requiredBondWei,
       improvementAtoms: submission.improvementAtoms,
+      revealedAt: submission.revealedAt,
       challengeEndsAt: submission.challengeEndsAt,
       permanenceHash: submission.permanenceHash
     });
@@ -196,9 +230,28 @@ try {
     fundedWei: sumArgs(fundedEvents, "amount"),
     claimedWei: sumArgs(claimedEvents, "amount"),
     creditAtoms: sumArgs(creditEvents, "atoms"),
-    finalizedImprovementAtoms: sumArgs(finalizedEvents, "improvementAtoms")
+    // F1/F10: Finalized now carries the MARGINAL creditAtoms (what the ledger
+    // sums), not the old seed-relative improvementAtoms.
+    finalizedCreditAtoms: sumArgs(finalizedEvents, "creditAtoms")
   };
+  // AUDIT F10: cross-check decoded event counts against on-chain submission
+  // state. Every reveal stamps revealedAt exactly once and Finalized is a
+  // terminal status, so any drift — in particular ZERO decoded events while
+  // submissions show revealed/finalized state (the wrong-ABI signature) — is
+  // a hard FAIL instead of a silent ok=true.
+  const SUBMISSION_STATUS_FINALIZED = 4n; // enum SubmissionStatus { None, Committed, Revealed, Challenged, Finalized, Rejected }
+  const everRevealedCount = submissionStates.filter((entry) => BigInt(entry.revealedAt) !== 0n).length;
+  const finalizedStatusCount = submissionStates.filter(
+    (entry) => BigInt(entry.status) === SUBMISSION_STATUS_FINALIZED
+  ).length;
   const checks = [
+    ...abiPinChecks,
+    check("Revealed events == submissions with revealedAt set", BigInt(revealEvents.length), BigInt(everRevealedCount)),
+    check(
+      "Finalized events == submissions in Finalized status",
+      BigInt(finalizedEvents.length),
+      BigInt(finalizedStatusCount)
+    ),
     check("pool.totalFunded == Funded events", eventSums.fundedWei, poolTotalFunded),
     check("pool.totalClaimed == Claimed events", eventSums.claimedWei, poolTotalClaimed),
     check("ledger.totalCreditAtoms == CreditRecorded events", eventSums.creditAtoms, ledgerTotalCreditAtoms),
