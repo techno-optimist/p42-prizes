@@ -113,6 +113,31 @@ describe("P42AgentWallet — scoped session-key safety", () => {
     assert.equal(await pool.totalFunded(), PER_CALL);
   });
 
+  it("rotating the session key resets the spend meter so the fresh key gets the full cap (F18)", async () => {
+    const { owner, session, outsider, pool, wallet, fundData } = await fixture();
+    const addr = await pool.getAddress();
+    // Old key exhausts the cumulative cap.
+    await wallet.connect(session).execute(addr, PER_CALL, fundData);
+    await wallet.connect(session).execute(addr, PER_CALL, fundData);
+    await wallet.connect(session).execute(addr, PER_CALL, fundData); // spentWei == TOTAL
+    await expectCustomError(
+      wallet.connect(session).execute(addr, PER_CALL, fundData), wallet, "SpendCapExceeded");
+
+    // Owner rotates to a fresh key (no setCaps needed) and tops up the balance.
+    await wallet.connect(owner).setSessionKey(outsider.address);
+    assert.equal(await wallet.spentWei(), 0n);
+    await owner.sendTransaction({ to: await wallet.getAddress(), value: TOTAL });
+
+    // The new key can immediately spend value, all the way up to the cap...
+    await wallet.connect(outsider).execute(addr, PER_CALL, fundData);
+    await wallet.connect(outsider).execute(addr, PER_CALL, fundData);
+    await wallet.connect(outsider).execute(addr, PER_CALL, fundData);
+    assert.equal(await wallet.spentWei(), TOTAL);
+    // ...but no further: the per-session cap still binds.
+    await expectCustomError(
+      wallet.connect(outsider).execute(addr, PER_CALL, fundData), wallet, "SpendCapExceeded");
+  });
+
   it("gates owner-only controls and lets the owner withdraw (bounded max-loss recovery)", async () => {
     const { owner, session, outsider, pool, wallet } = await fixture();
     const sel = pool.interface.getFunction("fund").selector;

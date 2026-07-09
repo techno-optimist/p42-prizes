@@ -82,6 +82,11 @@ contract P42AgentWallet {
     function setSessionKey(address key) external onlyOwner {
         sessionKey = key;
         revoked = false;
+        // totalSpendCapWei is a PER-SESSION budget: rotating to a fresh key
+        // starts a fresh meter, so the new key is immediately usable up to the
+        // cap without a separate setCaps() call (F18). The owner still bounds
+        // total exposure via the wallet balance and can revoke at any time.
+        spentWei = 0;
         emit SessionKeySet(key);
     }
 
