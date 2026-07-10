@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { request as httpsRequest } from "node:https";
 import { join, resolve } from "node:path";
 import { CID } from "multiformats/cid";
 import { canonicalJson, sha256Canonical } from "./lib.mjs";
+import { readStrictJsonFileSync } from "./strict-json.mjs";
 
 export const MAX_TRANSCRIPT_ARTIFACT_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_TRANSCRIPT_TIMEOUT_MS = 10_000;
@@ -249,7 +250,12 @@ export function receiptSpoolPublisher(directory) {
   return {
     async publishTranscript(_bytes, metadata) {
       const filename = `${metadata.transcript_hash.slice(7)}.json`;
-      const receipt = JSON.parse(readFileSync(join(spool, filename), "utf8"));
+      const receipt = readStrictJsonFileSync(join(spool, filename), {
+        maxBytes: 1024 * 1024,
+        maxDepth: 32,
+        canonicalBytes: true,
+        trailingNewline: "require",
+      });
       return receipt;
     },
   };

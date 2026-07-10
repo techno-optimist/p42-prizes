@@ -1,10 +1,14 @@
 import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync,
+  closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync,
   rmSync, statSync, writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { ethers } from "ethers";
 import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
+import { readStrictJsonFileSync } from "./strict-json.mjs";
+
+const ACCOUNTING_JSON_LIMITS = Object.freeze({ maxBytes: 2 * 1024 * 1024, maxDepth: 48 });
+const JOURNAL_JSON_LIMITS = Object.freeze({ ...ACCOUNTING_JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
 
 export const DEFAULT_CHALLENGE_LIMITS = Object.freeze({
   perChallengeWei: ethers.parseEther("0.05"),
@@ -24,12 +28,18 @@ function emptyState(day) {
   return { schema_version: "p42-challenge-envelope-state/v1", utc_day: day, reservations: {}, spends: {}, open: {} };
 }
 
+function canonicalJson(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
 function atomicWrite(path, value) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
   const fd = openSync(temporary, "wx", 0o600);
   try {
-    writeFileSync(fd, `${JSON.stringify(value)}\n`);
+    writeFileSync(fd, `${canonicalJson(value)}\n`);
     fsyncSync(fd);
   } finally { closeSync(fd); }
   renameSync(temporary, path);
@@ -39,7 +49,7 @@ function atomicWrite(path, value) {
 
 function readState(path, day) {
   if (!existsSync(path)) return emptyState(day);
-  const state = JSON.parse(readFileSync(path, "utf8"));
+  const state = readStrictJsonFileSync(path, ACCOUNTING_JSON_LIMITS);
   if (state.schema_version !== "p42-challenge-envelope-state/v1") throw new Error("unsupported challenge envelope state");
   if (state.utc_day !== day) return { ...emptyState(day), open: state.open ?? {} };
   return state;
@@ -177,7 +187,7 @@ export class P42ChallengeManager {
 
   async claimBond() {
     const claimant = (await this.agentWallet.getAddress()).toLowerCase();
-    let journal = existsSync(this.journalPath) ? JSON.parse(readFileSync(this.journalPath, "utf8")) : null;
+    let journal = existsSync(this.journalPath) ? readStrictJsonFileSync(this.journalPath, JOURNAL_JSON_LIMITS) : null;
     if (journal?.status === "confirmed") {
       const nextClaimable = BigInt(await this.challenge.claimableBondWei(claimant));
       if (nextClaimable === 0n) return { status: "nothing_claimable", recovered_wei: "0" };

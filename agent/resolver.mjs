@@ -45,6 +45,10 @@ import {
   assertApprovedJournalPath,
   assertSignedTransactionRecord,
 } from "./signed-transaction.mjs";
+import { readStrictJsonFileSync } from "./strict-json.mjs";
+
+const RUNTIME_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
+const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...RUNTIME_JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
@@ -703,7 +707,7 @@ function loadResolverState(context) {
       updated_at_utc: new Date().toISOString(),
     };
   }
-  const state = JSON.parse(readFileSync(context.statePath, "utf8"));
+  const state = readStrictJsonFileSync(context.statePath, RUNTIME_JSON_LIMITS);
   if (state.schema_version !== "p42-resolver-state/v1") throw new Error("unsupported resolver state schema");
   if (canonicalJson(state.binding) !== canonicalJson(context.binding)) {
     throw new Error("resolver state belongs to a different deployment binding");
@@ -721,7 +725,7 @@ function loadCursor(context) {
   if (!existsSync(context.cursorPath)) {
     return buildResolverCursor(context.binding, context.startBlock, [], context.reorgOverlapBlocks);
   }
-  return validateResolverCursor(JSON.parse(readFileSync(context.cursorPath, "utf8")), context.binding);
+  return validateResolverCursor(readStrictJsonFileSync(context.cursorPath, RUNTIME_JSON_LIMITS), context.binding);
 }
 
 async function persistCursor(context, nextBlock) {
@@ -750,11 +754,12 @@ function appendAlert(context, message) {
 }
 
 function readTranscript(path) {
-  const stats = statSync(path);
-  if (!stats.isFile() || stats.size > MAX_TRANSCRIPT_BYTES) {
-    throw new Error(`transcript ${path} is not a regular file within the ${MAX_TRANSCRIPT_BYTES} byte limit`);
-  }
-  return JSON.parse(readFileSync(path, "utf8"));
+  return readStrictJsonFileSync(path, {
+    maxBytes: MAX_TRANSCRIPT_BYTES,
+    maxDepth: 64,
+    canonicalBytes: true,
+    trailingNewline: "require",
+  });
 }
 
 function rawClaimIdentity(transcript) {
@@ -861,7 +866,7 @@ function assertActionPolicy(action, context) {
   if (policyHash !== sha256Canonical(unsigned) || action.call_policy_hash !== policyHash) {
     throw new Error("resolver action call policy self-hash mismatch");
   }
-  if (canonicalJson(JSON.parse(readFileSync(paths.policyPath, "utf8"))) !== canonicalJson(policy)) {
+  if (canonicalJson(readStrictJsonFileSync(paths.policyPath, IMMUTABLE_JSON_LIMITS)) !== canonicalJson(policy)) {
     throw new Error("resolver action call policy differs from its immutable artifact");
   }
   const decoded = context.chal.interface.decodeFunctionData("resolve", policy.calldata);
@@ -1129,7 +1134,7 @@ async function ensureSignedAction(context, action) {
   assertActionPolicy(action, context);
   if (pathEntryExists(action.signed_tx_path)) {
     const paths = assertResolverActionPaths(action, context, { signedMustExist: true });
-    const record = assertResolverSignedRecord(JSON.parse(readFileSync(paths.signedPath, "utf8")), action, context);
+    const record = assertResolverSignedRecord(readStrictJsonFileSync(paths.signedPath, IMMUTABLE_JSON_LIMITS), action, context);
     if (!action.transaction_hash || action.status === "prepared") {
       action.transaction_hash = record.hash;
       action.transaction_nonce = record.nonce;
@@ -1435,7 +1440,7 @@ export async function buildResolverContext(argv, clients = {}) {
   const publicationClients = configureResolverPublication(argv, process.env, clients);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;
   if (!privateKey) throw new Error("set RESOLVER_PRIVATE_KEY to the resolver session key");
-  const manifest = JSON.parse(readFileSync(resolve(manifestPath), "utf8"));
+  const manifest = readStrictJsonFileSync(resolve(manifestPath), RUNTIME_JSON_LIMITS);
   validateManifestEvidence(manifest);
   const provider = new ethers.JsonRpcProvider(arg(argv, "rpc", "https://sepolia.base.org"));
   const wallet = new ethers.Wallet(privateKey, provider);

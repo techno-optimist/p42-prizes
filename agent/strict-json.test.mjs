@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { parseStrictJsonBytes, parseStrictJsonText, readStrictJsonFile } from "./strict-json.mjs";
+import { parseStrictJsonBytes, parseStrictJsonText, readStrictJsonFile, readStrictJsonFileSync } from "./strict-json.mjs";
 
 const REJECTION_FIXTURES = [
   ['{"a":1,"a":2}', /duplicate object key "a"/],
@@ -106,6 +106,31 @@ describe("strict JSON file reader", () => {
       await assert.rejects(readStrictJsonFile(link));
       await assert.rejects(readStrictJsonFile(directory), /regular file/);
       await assert.rejects(readStrictJsonFile(fifo), /regular file/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("applies the same single-FD limits and canonical policy synchronously", async () => {
+    const root = await mkdtemp(join(tmpdir(), "p42-strict-json-sync-"));
+    try {
+      const file = join(root, "immutable.json");
+      const link = join(root, "link.json");
+      await writeFile(file, '{"family":"journal"}\n');
+      await symlink(file, link);
+      assert.deepEqual(readStrictJsonFileSync(file, {
+        maxBytes: 64, maxDepth: 4, canonicalBytes: true, trailingNewline: "require",
+      }), { family: "journal" });
+      assert.throws(() => readStrictJsonFileSync(link));
+      assert.throws(() => readStrictJsonFileSync(file, { maxBytes: 4 }), /maxBytes/);
+      await writeFile(file, '{"outer":{"constructor":1}}\n');
+      assert.throws(() => readStrictJsonFileSync(file), /forbidden object key/);
+      await writeFile(file, '{"outer":{"x":1,"x":2}}\n');
+      assert.throws(() => readStrictJsonFileSync(file), /duplicate object key/);
+      await writeFile(file, '{ "family": "journal" }\n');
+      assert.throws(() => readStrictJsonFileSync(file, {
+        canonicalBytes: true, trailingNewline: "require",
+      }), /not canonical/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -3,6 +3,7 @@
 // Docker/cgroup verifier -> canonical challenge candidate -> bounded tx.
 
 import { ethers } from "ethers";
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   existsSync,
@@ -29,7 +30,7 @@ import {
   queryChunked,
   recoverRevealCalldata,
   resolveOperatorFinality,
-  runRuntimeBridge,
+  runtimePythonExecutable,
   sha256Canonical,
   validateRegistryBinding,
   validateOperatorCursor,
@@ -53,6 +54,10 @@ import {
   releaseChallengeReservation,
   reserveChallengeSpend,
 } from "./challenge-envelope.mjs";
+import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
+
+const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
+const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -116,7 +121,7 @@ if (!KEY) {
 const abi = (name) => JSON.parse(
   readFileSync(`${REPO_ROOT}/contracts/artifacts/src/${name}.sol/${name}.json`, "utf8"),
 ).abi;
-const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
+const manifest = readStrictJsonFileSync(resolve(MANIFEST), JSON_LIMITS);
 const selectedManifestProblem = Array.isArray(manifest.problems)
   ? manifestProblemForRegistryId(manifest, REGISTRY_PROBLEM_ID)
   : null;
@@ -208,7 +213,22 @@ async function revalidateRecordedRegistryBinding(value) {
 }
 
 function bridge(...args) {
-  return runRuntimeBridge(REPO_ROOT, args);
+  const env = { ...process.env, PYTHONPATH: `${REPO_ROOT}/src` };
+  for (const name of Object.keys(env)) {
+    if (/(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD|RPC_URL)/i.test(name)) delete env[name];
+  }
+  const completed = spawnSync(runtimePythonExecutable(env), [`${REPO_ROOT}/agent/runtime_bridge.py`, ...args], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    env,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (completed.error) throw completed.error;
+  if (completed.status !== 0) {
+    throw new Error((completed.stderr || completed.stdout || `runtime bridge exited ${completed.status}`).trim());
+  }
+  if (!completed.stdout.trim()) throw new Error("runtime bridge produced no JSON");
+  return parseStrictJsonText(completed.stdout, { maxBytes: 16 * 1024 * 1024, maxDepth: 64 });
 }
 
 function readQueue() {
@@ -240,7 +260,7 @@ function writePayloadAtomic(path, bytes) {
 
 function readJsonOrNull(path) {
   if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, "utf8"));
+  return readStrictJsonFileSync(path, JSON_LIMITS);
 }
 
 function runnerHealth() {
@@ -436,7 +456,7 @@ async function quarantineOrphanedJobs(fromBlock, toBlock, canonical, reason) {
 
 function parseDetailJson(detail) {
   if (typeof detail !== "string" || !detail.trim().startsWith("{")) return {};
-  try { return JSON.parse(detail); }
+  try { return parseStrictJsonText(detail, { maxBytes: 64 * 1024, maxDepth: 32 }); }
   catch { return {}; }
 }
 
@@ -750,7 +770,7 @@ function runWorkerOnce(chainTimestamp) {
 }
 
 function verifyTranscript(path) {
-  const transcript = JSON.parse(readFileSync(path, "utf8"));
+  const transcript = readStrictJsonFileSync(path, IMMUTABLE_JSON_LIMITS);
   const expected = transcript.transcript_hash;
   const unhashed = { ...transcript };
   delete unhashed.transcript_hash;
@@ -782,7 +802,7 @@ function signedActionPath(candidate, callPolicy) {
 
 async function signedActionRecord(candidate, callPolicy, request) {
   const path = signedActionPath(candidate, callPolicy);
-  if (existsSync(path)) return { path, record: JSON.parse(readFileSync(assertApprovedJournalPath(path, ACTIONS, path), "utf8")) };
+  if (existsSync(path)) return { path, record: readStrictJsonFileSync(assertApprovedJournalPath(path, ACTIONS, path), IMMUTABLE_JSON_LIMITS) };
   const record = await buildSignedTransactionRecord({
     wallet,
     request,
@@ -846,7 +866,7 @@ function assertPersistedChallengePolicy(candidate, detail) {
     `${candidate.candidate_hash.slice(7)}-${expected.policy_hash.slice(7, 23)}.json`,
   );
   const policyPath = assertApprovedJournalPath(detail.call_policy_path, ACTIONS, expectedPath);
-  const persisted = JSON.parse(readFileSync(policyPath, "utf8"));
+  const persisted = readStrictJsonFileSync(policyPath, IMMUTABLE_JSON_LIMITS);
   if (canonicalJson(persisted) !== canonicalJson(expected)) {
     throw new Error("persisted challenge call policy does not match the candidate binding");
   }
@@ -941,7 +961,7 @@ async function reconcileBroadcast(job) {
   const expectedPath = signedActionPath(transcript.candidate, callPolicy);
   const journalPath = assertApprovedJournalPath(detail.signed_tx_path, ACTIONS, expectedPath);
   const signedRecord = assertOperatorSignedRecord(
-    JSON.parse(readFileSync(journalPath, "utf8")), transcript.candidate, callPolicy, action, detail,
+    readStrictJsonFileSync(journalPath, IMMUTABLE_JSON_LIMITS), transcript.candidate, callPolicy, action, detail,
   );
   let receipt = await provider.getTransactionReceipt(action.transaction_hash);
   if (receipt) {

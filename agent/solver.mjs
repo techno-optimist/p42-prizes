@@ -31,6 +31,9 @@ import { putBlob } from "./da-local.mjs";
 import { uploadToArweave } from "./da-arweave.mjs";
 import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
 import { validateSolverManifest } from "./solver-manifest.mjs";
+import { readStrictJsonFileSync } from "./strict-json.mjs";
+
+const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -77,7 +80,7 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const abi = (name) => JSON.parse(
   readFileSync(`${REPO_ROOT}/contracts/artifacts/src/${name}.sol/${name}.json`, "utf8"),
 ).abi;
-const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
+const manifest = readStrictJsonFileSync(resolve(MANIFEST), JSON_LIMITS);
 validateSolverManifest(manifest, REGISTRY_PROBLEM_ID);
 const manifestProblem = REGISTRY_PROBLEM_ID
   ? manifestProblemForRegistryId(manifest, REGISTRY_PROBLEM_ID)
@@ -123,7 +126,7 @@ function loadState(identity, defaultPath) {
     persistState();
     return;
   }
-  state = JSON.parse(readFileSync(statePath, "utf8"));
+  state = readStrictJsonFileSync(statePath, JSON_LIMITS);
   if (state.schema_version !== "p42-solver-state/v1") throw new Error(`unsupported solver state: ${statePath}`);
   for (const [key, expected] of Object.entries(identity)) {
     if (state[key] !== expected) throw new Error(`solver state identity mismatch for ${key}: ${state[key]} != ${expected}`);

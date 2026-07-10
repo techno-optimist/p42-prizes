@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { open } from "node:fs/promises";
 
 const DEFAULT_MAX_BYTES = 1024 * 1024;
@@ -246,5 +246,31 @@ export async function readStrictJsonFile(path, options = {}) {
     return parseStrictJsonBytes(Buffer.concat(chunks, total), normalized);
   } finally {
     await handle.close();
+  }
+}
+
+export function readStrictJsonFileSync(path, options = {}) {
+  const normalized = optionsWithDefaults(options);
+  if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
+    throw new Error("secure JSON file reads require platform O_NOFOLLOW support");
+  }
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) throw new TypeError("JSON path must refer to a regular file");
+    if (stat.size > normalized.maxBytes) throw new RangeError(`JSON exceeds maxBytes (${normalized.maxBytes})`);
+    const chunks = [];
+    let total = 0;
+    for (;;) {
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, normalized.maxBytes - total + 1));
+      const bytesRead = readSync(fd, chunk, 0, chunk.length, null);
+      if (bytesRead === 0) break;
+      total += bytesRead;
+      if (total > normalized.maxBytes) throw new RangeError(`JSON exceeds maxBytes (${normalized.maxBytes})`);
+      chunks.push(chunk.subarray(0, bytesRead));
+    }
+    return parseStrictJsonBytes(Buffer.concat(chunks, total), normalized);
+  } finally {
+    closeSync(fd);
   }
 }

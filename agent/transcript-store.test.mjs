@@ -6,7 +6,7 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
 
-import { sha256Canonical } from "./lib.mjs";
+import { canonicalJson, sha256Canonical } from "./lib.mjs";
 import {
   boundedFetchBytes,
   canonicalTranscriptArtifact,
@@ -143,7 +143,7 @@ test("receipt spool provides a real prepublished production adapter", async () =
   const artifact = canonicalTranscriptArtifact(value);
   const dir = mkdtempSync(join(tmpdir(), "p42-receipts-"));
   const receipt = { uri: `ar://${"r".repeat(43)}`, artifact_sha256: artifact.artifact_sha256, length: artifact.length };
-  writeFileSync(join(dir, `${value.transcript_hash.slice(7)}.json`), JSON.stringify(receipt));
+  writeFileSync(join(dir, `${value.transcript_hash.slice(7)}.json`), `${canonicalJson(receipt)}\n`);
   assert.deepEqual(await receiptSpoolPublisher(dir).publishTranscript(artifact.bytes, artifact), receipt);
 });
 

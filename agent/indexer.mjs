@@ -26,6 +26,10 @@ import {
   parseTranscriptUri,
   verifyPublicationReceipt,
 } from "./transcript-store.mjs";
+import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
+
+const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
+const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -3253,7 +3257,12 @@ export async function archiveFinalizedResolverTranscripts(dir, events, {
       const firstBytes = await fetchTranscriptClientBytes(fetchClient, {
         endpoint: endpoints[0], uri: parsed.uri,
       });
-      const transcript = JSON.parse(firstBytes.toString("utf8"));
+      const transcript = parseStrictJsonBytes(firstBytes, {
+        maxBytes: 16 * 1024 * 1024,
+        maxDepth: 64,
+        canonicalBytes: true,
+        trailingNewline: "require",
+      });
       const artifact = canonicalTranscriptArtifact(transcript);
       if (!firstBytes.equals(artifact.bytes)) throw new Error("retrieved transcript is not exact canonical JSON with one newline");
       if (`0x${artifact.transcript_hash.slice(7)}` !== onchainHash) {
@@ -3393,7 +3402,7 @@ function parseArg(argv, name, defaultValue = undefined) {
 
 function loadPriorCheckpoint(path, binding, schema) {
   if (!existsSync(path)) return null;
-  const checkpoint = JSON.parse(readFileSync(path, "utf8"));
+  const checkpoint = readStrictJsonFileSync(path, CHECKPOINT_JSON_LIMITS);
   if (checkpoint.schema !== schema) {
     throw new Error(`Refusing to overwrite non-checkpoint file ${path}`);
   }
@@ -3416,7 +3425,7 @@ export async function runIndexer({
   if (!outPath) throw new Error("required: --out <checkpoint.json>");
   const resolvedManifest = resolve(manifestPath);
   const resolvedOut = resolve(outPath);
-  const manifest = JSON.parse(readFileSync(resolvedManifest, "utf8"));
+  const manifest = readStrictJsonFileSync(resolvedManifest, MANIFEST_JSON_LIMITS);
   const binding = validateManifestEvidence(manifest);
   const multiBoard = isMultiBoardManifest(manifest);
   const policy = manifest.indexer.finalityPolicy;
@@ -3499,7 +3508,7 @@ export async function runIndexer({
       }
       refreshMultiBoardCheckpointReconstruction(checkpoint);
 
-      writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
+      writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint)}\n`);
       console.log(`indexed ${boards.length} boards through finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
       for (const board of checkpoint.boards) {
         console.log(
@@ -3573,7 +3582,7 @@ export async function runIndexer({
     }
     if (!archiveOk || !transcriptArchive.ok) checkpoint.reconstruction.ok = false;
 
-    writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
+    writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint)}\n`);
     console.log(`indexed finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
     console.log(
       `lifecycle committed=${checkpoint.events.counts["submissions.Committed"]} ` +
