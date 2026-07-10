@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -13,7 +13,9 @@ import {
   buildCheckpoint,
   buildMultiBoardCheckpoint,
   compareReplayToSnapshot,
+  configureIndexerTranscripts,
   EVENT_CATALOG,
+  failMissingMultiboardTranscriptArchives,
   loadContractArtifacts,
   queryHistoricalLogs,
   ReorgDetectedError,
@@ -38,13 +40,16 @@ it("archives exact finalized resolver transcript bytes and fails hash mismatches
     },
   };
   const fetchClient = { fetchTranscript: async () => bytes };
+  const archiveDir = mkdtempSync(join(tmpdir(), "p42-transcript-archive-"));
+  writeFileSync(join(archiveDir, "stale-after-reorg.json"), "stale");
   const archived = await archiveFinalizedResolverTranscripts(
-    mkdtempSync(join(tmpdir(), "p42-transcript-archive-")), [event],
+    archiveDir, [event],
     { endpoints: ["https://one.example", "https://two.example"], fetchClient },
   );
   assert.equal(archived.ok, true);
   assert.equal(archived.entries[0].length, bytes.length);
   assert.match(archived.entries[0].artifact_sha256, /^sha256:/);
+  assert.equal(existsSync(join(archiveDir, "stale-after-reorg.json")), false);
 
   const failed = await archiveFinalizedResolverTranscripts(
     mkdtempSync(join(tmpdir(), "p42-transcript-archive-bad-")),
@@ -53,6 +58,16 @@ it("archives exact finalized resolver transcript bytes and fails hash mismatches
   );
   assert.equal(failed.ok, false);
   assert.match(failed.failures[0].reason, /on-chain transcript hash/);
+});
+
+it("indexer CLI configures trusted transcript retrieval", () => {
+  const configured = configureIndexerTranscripts(
+    ["node", "indexer.mjs", "--transcript-endpoint", "https://one.example", "--transcript-endpoint", "https://two.test"],
+    {},
+    async () => { throw new Error("not called"); },
+  );
+  assert.deepEqual(configured.endpoints, ["https://one.example", "https://two.test"]);
+  assert.equal(typeof configured.fetchClient.fetchTranscript, "function");
 });
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -917,6 +932,11 @@ describe("P42 deterministic indexer replay", () => {
     assert.deepEqual(checkpoint.boards.map((board) => board.problemId), ["1", "2"]);
     assert.equal(checkpoint.reconstruction.ok, true);
     assert.equal(stableStringify(checkpoint), stableStringify(buildMultiBoardCheckpoint(args)));
+
+    const withoutArchive = structuredClone(checkpoint);
+    failMissingMultiboardTranscriptArchives(withoutArchive, args.boards);
+    assert.equal(withoutArchive.reconstruction.ok, false);
+    assert.ok(withoutArchive.reconstruction.checks.some((check) => check.name.endsWith("archive.resolverTranscripts") && !check.ok));
 
     const reordered = structuredClone(checkpoint);
     reordered.boards.reverse();

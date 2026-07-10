@@ -20,7 +20,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { atomsFromScore, chainScoreAtoms, recoverRevealCalldata } from "./lib.mjs";
 import {
   canonicalTranscriptArtifact,
+  configuredTranscriptEndpoints,
   fetchTranscriptClientBytes,
+  httpTranscriptFetchClient,
   parseTranscriptUri,
   verifyPublicationReceipt,
 } from "./transcript-store.mjs";
@@ -3226,6 +3228,9 @@ export async function archiveFinalizedResolverTranscripts(dir, events, {
   fetchClient,
 } = {}) {
   const outDir = resolve(dir);
+  const stageDir = `${outDir}.stage-${randomUUID()}`;
+  const backupDir = `${outDir}.backup-${randomUUID()}`;
+  mkdirSync(stageDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
   const posted = [...events].filter(
     (event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted",
   ).sort(compareEventOrder);
@@ -3257,8 +3262,8 @@ export async function archiveFinalizedResolverTranscripts(dir, events, {
         fetchClient,
       });
       const stem = `${String(event.transactionHash).replace(/^0x/, "")}-${event.index ?? event.logIndex}`;
-      const artifactPath = join(outDir, `${stem}.json`);
-      const metadataPath = join(outDir, `${stem}.metadata.json`);
+      const artifactPath = join(stageDir, `${stem}.json`);
+      const metadataPath = join(stageDir, `${stem}.metadata.json`);
       writeFileAtomicSync(artifactPath, artifact.bytes);
       const metadata = canonicalize({
         schema_version: "p42-indexed-resolver-transcript/v1",
@@ -3285,8 +3290,41 @@ export async function archiveFinalizedResolverTranscripts(dir, events, {
     entries,
     failures,
   });
-  writeFileAtomicSync(join(outDir, "manifest.json"), `${stableStringify(manifest, 2)}\n`);
+  writeFileAtomicSync(join(stageDir, "manifest.json"), `${stableStringify(manifest, 2)}\n`);
+  let backedUp = false;
+  try {
+    mkdirSync(dirname(outDir), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+    if (existsSync(outDir)) {
+      renameSync(outDir, backupDir);
+      backedUp = true;
+    }
+    renameSync(stageDir, outDir);
+    syncDirectoryAfterRename(dirname(outDir), DEFAULT_ATOMIC_FILE_OPERATIONS);
+    if (backedUp) rmSync(backupDir, { recursive: true, force: true });
+  } catch (error) {
+    rmSync(stageDir, { recursive: true, force: true });
+    if (backedUp && !existsSync(outDir)) renameSync(backupDir, outDir);
+    throw error;
+  }
   return { ok: failures.length === 0, archived: entries.length, failures, entries };
+}
+
+export function failMissingMultiboardTranscriptArchives(checkpoint, boards) {
+  for (const board of boards) {
+    const count = board.scan.events.filter(
+      (event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted",
+    ).length;
+    if (!count) continue;
+    const report = checkpoint.boards.find((entry) => entry.problemId === String(board.problem.problemId));
+    if (!report) throw new Error(`checkpoint omitted board ${board.problem.problemId}`);
+    report.reconstruction.checks.push({
+      name: "archive.resolverTranscripts",
+      ok: false,
+      expected: { missingOrUnverified: 0 },
+      actual: { missingOrUnverified: count },
+    });
+  }
+  return refreshMultiBoardCheckpointReconstruction(checkpoint);
 }
 
 function parseArg(argv, name, defaultValue = undefined) {
@@ -3394,13 +3432,11 @@ export async function runIndexer({
               actual: { mismatches: archived.mismatches.length },
             });
           }
-          const transcriptArchive = archivePath
-            ? await archiveFinalizedResolverTranscripts(
+          const transcriptArchive = await archiveFinalizedResolverTranscripts(
               resolve(archivePath, `board-${board.problem.problemId}`, "resolver-transcripts"),
               board.scan.events,
               { endpoints: transcriptEndpoints, fetchClient: transcriptFetchClient },
-            )
-            : { ok: !board.scan.events.some((event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted"), failures: [] };
+            );
           if (!transcriptArchive.ok) {
             const report = checkpoint.boards.find((entry) => entry.problemId === String(board.problem.problemId));
             report.reconstruction.checks.push({
@@ -3411,6 +3447,9 @@ export async function runIndexer({
             });
           }
         }
+      }
+      if (!archivePath) {
+        failMissingMultiboardTranscriptArchives(checkpoint, boards);
       }
       refreshMultiBoardCheckpointReconstruction(checkpoint);
 
@@ -3513,12 +3552,24 @@ export async function runIndexer({
   }
 }
 
-async function cli() {
-  const manifestPath = parseArg(process.argv, "manifest");
-  const outPath = parseArg(process.argv, "out");
-  const rpcUrl = parseArg(process.argv, "rpc", "https://sepolia.base.org");
-  const archivePath = parseArg(process.argv, "archive", null);
-  const checkpoint = await runIndexer({ manifestPath, rpcUrl, outPath, archivePath });
+export function configureIndexerTranscripts(argv = process.argv, env = process.env, fetchImpl = fetch) {
+  return {
+    endpoints: configuredTranscriptEndpoints(argv, env),
+    fetchClient: httpTranscriptFetchClient(fetchImpl),
+  };
+}
+
+export async function cli(argv = process.argv, env = process.env) {
+  const manifestPath = parseArg(argv, "manifest");
+  const outPath = parseArg(argv, "out");
+  const rpcUrl = parseArg(argv, "rpc", "https://sepolia.base.org");
+  const archivePath = parseArg(argv, "archive", null);
+  const transcriptConfig = configureIndexerTranscripts(argv, env);
+  const checkpoint = await runIndexer({
+    manifestPath, rpcUrl, outPath, archivePath,
+    transcriptEndpoints: transcriptConfig.endpoints,
+    transcriptFetchClient: transcriptConfig.fetchClient,
+  });
   if (!checkpoint.reconstruction.ok) process.exitCode = 1;
 }
 

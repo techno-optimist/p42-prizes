@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { ethers } from "ethers";
 
@@ -12,6 +15,7 @@ import {
   buildResolveCallPolicy,
   buildResolverTransportRequest,
   buildResolverVerdictHash,
+  configureResolverPublication,
   expandTranscriptUri,
   resolverEventHashFor,
   validateTranscriptUriTemplate,
@@ -239,6 +243,29 @@ test("resolver transcript URIs require a durable ar:// or ipfs:// template", () 
   assert.throws(() => validateTranscriptUriTemplate("https://example/{transcript_hash}"), /ar:\/\/ or ipfs:\/\//);
   assert.throws(() => validateTranscriptUriTemplate("ar://missing-placeholder"), /exactly one/);
   assert.throws(() => validateTranscriptUriTemplate("ipfs://x/{transcript_hash}/{transcript_hash}"), /exactly one/);
+});
+
+test("resolver production configuration requires receipts and trusted retrieval endpoints", () => {
+  const endpoints = ["https://one.example", "https://two.test"];
+  const publisher = { publishTranscript: async () => ({}) };
+  const fetchClient = { fetchTranscript: async () => Buffer.alloc(0) };
+  assert.deepEqual(configureResolverPublication([], {}, { endpoints, publisher, fetchClient }), {
+    endpoints, publisher, fetchClient,
+  });
+  assert.throws(
+    () => configureResolverPublication(["--transcript-uri-template", "ar://{transcript_hash}"], {
+      P42_TRANSCRIPT_ENDPOINTS: endpoints.join(","),
+    }),
+    /URI templates cannot publish transcripts/,
+  );
+  const spool = mkdtempSync(join(tmpdir(), "p42-resolver-receipts-"));
+  const configured = configureResolverPublication(
+    ["--publication-receipts", spool],
+    { P42_TRANSCRIPT_ENDPOINTS: endpoints.join(",") },
+    { fetchClient },
+  );
+  assert.equal(typeof configured.publisher.publishTranscript, "function");
+  assert.deepEqual(configured.endpoints, endpoints);
 });
 
 test("resolver exact-call policy binds the full decision, transcript URI, and instance hashes", () => {

@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import { sha256Canonical } from "./lib.mjs";
 import {
   boundedFetchBytes,
   canonicalTranscriptArtifact,
+  configuredTranscriptEndpoints,
   fetchTranscriptClientBytes,
+  httpTranscriptFetchClient,
   parseTranscriptUri,
   publishAndVerifyTranscript,
+  receiptSpoolPublisher,
+  validateRetrievalEndpoints,
 } from "./transcript-store.mjs";
 
 function transcript() {
@@ -27,10 +34,13 @@ test("strict transcript URI parser accepts exact Arweave ids and CID paths only"
   const txid = "a".repeat(43);
   assert.equal(parseTranscriptUri(`ar://${txid}`).identifier, txid);
   assert.equal(parseTranscriptUri("ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3pte3dr2l7w4qv3q2x4x5b5ha/path/file.json").path, "/path/file.json");
+  assert.equal(parseTranscriptUri("ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3pte3dr2l7w4qv3q2x4x5b5ha/a%20b").path, "/a%20b");
   for (const uri of [
     `ar://${txid}/extra`, `ar://${"a".repeat(42)}`, `ar://${txid}?x=1`,
     "ipfs://user@bafybeigdyrzt5sfp7udm7hu76uh7y26nf3pte3dr2l7w4qv3q2x4x5b5ha",
     "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3pte3dr2l7w4qv3q2x4x5b5ha/a/../b",
+    "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3pte3dr2l7w4qv3q2x4x5b5ha/a b",
+    "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3pte3dr2l7w4qv3q2x4x5b5ha/%61",
   ]) assert.throws(() => parseTranscriptUri(uri));
 });
 
@@ -41,23 +51,63 @@ test("publication requires a receipt and exact bytes from two independent endpoi
   const publisher = { publishTranscript: async () => ({ uri, artifact_sha256: artifact.artifact_sha256, length: artifact.length }) };
   const fetchClient = { fetchTranscript: async () => artifact.bytes };
   const result = await publishAndVerifyTranscript({
-    transcript: value, publisher, fetchClient, endpoints: ["https://one.example", "https://two.example"],
+    transcript: value, publisher, fetchClient, endpoints: ["https://one.example", "https://two.test"],
   });
   assert.equal(result.status, "published");
   assert.equal(result.publication.uri, uri);
   assert.equal((await publishAndVerifyTranscript({ transcript: value })).status, "awaiting_publication");
   await assert.rejects(
-    publishAndVerifyTranscript({ transcript: value, publisher, fetchClient, endpoints: ["https://one.example/a", "https://one.example/b"] }),
-    /independent origins/,
+    publishAndVerifyTranscript({ transcript: value, publisher, fetchClient, endpoints: ["https://a.one.example", "https://b.one.example"] }),
+    /independently operated sites/,
   );
   await assert.rejects(
     publishAndVerifyTranscript({
       transcript: value, publisher,
       fetchClient: { fetchTranscript: async ({ endpoint }) => endpoint.includes("two") ? Buffer.from("bad\n") : artifact.bytes },
-      endpoints: ["https://one.example", "https://two.example"],
+      endpoints: ["https://one.example", "https://two.test"],
     }),
     /non-canonical transcript bytes/,
   );
+});
+
+test("trusted endpoints reject SSRF targets and ignore receipt endpoint injection", async () => {
+  for (const endpoints of [
+    ["http://public.example", "https://other.test"],
+    ["https://localhost", "https://other.test"],
+    ["https://127.0.0.1", "https://other.test"],
+    ["https://169.254.1.2", "https://other.test"],
+    ["https://service.local", "https://other.test"],
+  ]) assert.throws(() => validateRetrievalEndpoints(endpoints));
+  assert.deepEqual(
+    configuredTranscriptEndpoints(["--transcript-endpoint", "https://one.example", "--transcript-endpoint", "https://two.test"], {}),
+    ["https://one.example", "https://two.test"],
+  );
+  const artifact = canonicalTranscriptArtifact(transcript());
+  const receipt = {
+    uri: `ar://${"z".repeat(43)}`, artifact_sha256: artifact.artifact_sha256, length: artifact.length,
+    endpoints: ["https://attacker.example", "https://attacker.test"],
+  };
+  await assert.rejects(publishAndVerifyTranscript({
+    transcript: transcript(),
+    publisher: { publishTranscript: async () => receipt },
+    fetchClient: { fetchTranscript: async () => artifact.bytes },
+  }), /trusted retrieval endpoints are required/);
+  const dnsGuarded = httpTranscriptFetchClient(
+    async () => { throw new Error("fetch must not run"); },
+    async () => [{ address: "10.0.0.4", family: 4 }],
+  );
+  await assert.rejects(dnsGuarded.fetchTranscript({
+    endpoint: "https://public.example", uri: `ar://${"a".repeat(43)}`,
+  }), /DNS resolved to private/);
+});
+
+test("receipt spool provides a real prepublished production adapter", async () => {
+  const value = transcript();
+  const artifact = canonicalTranscriptArtifact(value);
+  const dir = mkdtempSync(join(tmpdir(), "p42-receipts-"));
+  const receipt = { uri: `ar://${"r".repeat(43)}`, artifact_sha256: artifact.artifact_sha256, length: artifact.length };
+  writeFileSync(join(dir, `${value.transcript_hash.slice(7)}.json`), JSON.stringify(receipt));
+  assert.deepEqual(await receiptSpoolPublisher(dir).publishTranscript(artifact.bytes, artifact), receipt);
 });
 
 test("HTTP retrieval refuses redirects and oversized declared bodies", async () => {
@@ -79,4 +129,25 @@ test("injected retrieval clients are bounded too", async () => {
   await assert.rejects(fetchTranscriptClientBytes(
     { fetchTranscript: async () => new Promise(() => {}) }, {}, { timeoutMs: 5 },
   ), /timed out/);
+});
+
+test("streaming HTTP retrieval aborts at maxBytes plus one without arrayBuffer allocation", async () => {
+  let cancelled = false;
+  let signal;
+  const body = new ReadableStream({
+    pull(controller) {
+      controller.enqueue(new Uint8Array(6));
+      controller.enqueue(new Uint8Array(5));
+    },
+    cancel() { cancelled = true; },
+  });
+  await assert.rejects(boundedFetchBytes("https://public.example/x", {
+    maxBytes: 10,
+    fetchImpl: async (_url, options) => {
+      signal = options.signal;
+      return { status: 200, ok: true, headers: { get: () => null }, body };
+    },
+  }), /byte limit/);
+  assert.equal(cancelled, true);
+  assert.equal(signal.aborted, true);
 });

@@ -33,8 +33,11 @@ import {
   validateManifestEvidence,
 } from "./indexer.mjs";
 import {
+  configuredTranscriptEndpoints,
+  httpTranscriptFetchClient,
   parseTranscriptUri,
   publishAndVerifyTranscript,
+  receiptSpoolPublisher,
 } from "./transcript-store.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -1403,6 +1406,7 @@ export async function buildResolverContext(argv, clients = {}) {
   }
   const registryProblemId = nonzeroSubmissionId(registryProblemIdArg, "--registry-problem-id");
   if (transcriptUriTemplate) validateTranscriptUriTemplate(transcriptUriTemplate);
+  const publicationClients = configureResolverPublication(argv, process.env, clients);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;
   if (!privateKey) throw new Error("set RESOLVER_PRIVATE_KEY to the resolver session key");
   const manifest = JSON.parse(readFileSync(resolve(manifestPath), "utf8"));
@@ -1460,9 +1464,9 @@ export async function buildResolverContext(argv, clients = {}) {
     executionMode,
     agentWallet: null,
     transcriptUriTemplate,
-    transcriptPublisher: clients.publisher ?? null,
-    transcriptFetchClient: clients.fetchClient ?? null,
-    transcriptEndpoints: clients.endpoints ?? [],
+    transcriptPublisher: publicationClients.publisher,
+    transcriptFetchClient: publicationClients.fetchClient,
+    transcriptEndpoints: publicationClients.endpoints,
     transcriptsPath,
     runtime,
     cursorPath: resolve(arg(argv, "cursor", join(runtime, "resolver-cursor.json"))),
@@ -1481,6 +1485,22 @@ export async function buildResolverContext(argv, clients = {}) {
     context.agentWallet = new ethers.Contract(executionMode.agentWalletAddress, abi("P42AgentWallet"), wallet);
   }
   return context;
+}
+
+export function configureResolverPublication(argv = [], env = process.env, clients = {}) {
+  const endpoints = clients.endpoints
+    ? configuredTranscriptEndpoints([], { P42_TRANSCRIPT_ENDPOINTS: clients.endpoints.join(",") })
+    : configuredTranscriptEndpoints(argv, env);
+  const spool = arg(argv, "publication-receipts", env.P42_TRANSCRIPT_RECEIPT_SPOOL);
+  const publisher = clients.publisher ?? (spool ? receiptSpoolPublisher(spool) : null);
+  if (!publisher?.publishTranscript) {
+    throw new Error("configure a receipt-backed publisher or --publication-receipts/P42_TRANSCRIPT_RECEIPT_SPOOL; URI templates cannot publish transcripts");
+  }
+  return {
+    endpoints,
+    publisher,
+    fetchClient: clients.fetchClient ?? httpTranscriptFetchClient(),
+  };
 }
 
 export async function main(argv = process.argv.slice(2), clients = {}) {

@@ -1,4 +1,8 @@
 import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+import { join, resolve } from "node:path";
 import { CID } from "multiformats/cid";
 import { canonicalJson, sha256Canonical } from "./lib.mjs";
 
@@ -17,7 +21,14 @@ function noUrlDecorations(url, label) {
   }
 }
 
+function canonicalPathSegment(value) {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
 export function parseTranscriptUri(value) {
+  // Compatibility boundary for this clone. Replace with the shared strict
+  // parser module when that integration commit is present; do not duplicate it.
   if (typeof value !== "string" || !value || /\s/.test(value)) {
     throw new Error("transcript URI must be a non-empty URI without whitespace");
   }
@@ -51,6 +62,7 @@ export function parseTranscriptUri(value) {
       if (!decoded || decoded === "." || decoded === ".." || decoded.includes("/") || decoded.includes("\\")) {
         throw new Error("ipfs:// URI path is not canonical");
       }
+      if (segment !== canonicalPathSegment(decoded)) throw new Error("ipfs:// URI path encoding is not canonical");
     }
     const path = segments.length ? `/${segments.join("/")}` : "";
     return { scheme: "ipfs", identifier: cid, path, uri: `ipfs://${cid}${path}` };
@@ -69,11 +81,60 @@ export function canonicalTranscriptArtifact(transcript) {
   return { bytes, length: bytes.length, transcript_hash: transcript.transcript_hash, artifact_sha256: digest(bytes) };
 }
 
-function endpointOrigin(endpoint) {
-  const url = new URL(endpoint);
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new Error("retrieval endpoint must use HTTP(S)");
-  noUrlDecorations(url, "retrieval endpoint");
-  return url.origin.toLowerCase();
+function isForbiddenIpv4(hostname) {
+  const octets = hostname.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+  const [a, b] = octets;
+  return a === 0 || a === 10 || a === 127 || a >= 224 ||
+    (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19));
+}
+
+function isForbiddenAddress(address) {
+  const version = isIP(address);
+  if (version === 4) return isForbiddenIpv4(address);
+  const normalized = address.toLowerCase();
+  if (version === 6 && normalized.startsWith("::ffff:")) return isForbiddenIpv4(normalized.slice(7));
+  return version === 6 && (
+    normalized === "::1" || normalized === "::" || normalized.startsWith("fc") ||
+    normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") ||
+    normalized.startsWith("fea") || normalized.startsWith("feb")
+  );
+}
+
+function endpointSite(hostname) {
+  const labels = hostname.split(".");
+  return labels.length >= 2 ? labels.slice(-2).join(".") : hostname;
+}
+
+export function validateRetrievalEndpoints(endpoints) {
+  if (!Array.isArray(endpoints) || endpoints.length < 2) throw new Error("two trusted retrieval endpoints are required");
+  const checked = endpoints.map((endpoint) => {
+    const url = new URL(endpoint);
+    if (url.protocol !== "https:") throw new Error("retrieval endpoint must use HTTPS");
+    noUrlDecorations(url, "retrieval endpoint");
+    if (url.pathname !== "/" && url.pathname !== "") throw new Error("retrieval endpoint must be an HTTPS origin without a path");
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+    if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
+      throw new Error("retrieval endpoint must not target localhost or .local");
+    }
+    const ipVersion = isIP(hostname);
+    if (ipVersion && isForbiddenAddress(hostname)) throw new Error("retrieval endpoint must not target private or link-local IP space");
+    return { endpoint: url.origin, origin: url.origin.toLowerCase(), site: endpointSite(hostname) };
+  });
+  if (new Set(checked.map((entry) => entry.origin)).size !== checked.length) throw new Error("retrieval endpoints must have independent origins");
+  if (new Set(checked.map((entry) => entry.site)).size !== checked.length) throw new Error("retrieval endpoints must use independently operated sites");
+  return checked.map((entry) => entry.endpoint);
+}
+
+export function configuredTranscriptEndpoints(argv = [], env = process.env) {
+  const values = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--transcript-endpoint" && argv[index + 1]) values.push(argv[index + 1]);
+  }
+  if (env.P42_TRANSCRIPT_ENDPOINTS) values.push(...env.P42_TRANSCRIPT_ENDPOINTS.split(",").map((value) => value.trim()).filter(Boolean));
+  return validateRetrievalEndpoints(values);
 }
 
 export async function fetchTranscriptClientBytes(fetchClient, request, {
@@ -106,9 +167,37 @@ export async function boundedFetchBytes(url, {
     if (!response.ok) throw new Error(`transcript retrieval returned HTTP ${response.status}`);
     const declared = Number(response.headers?.get?.("content-length"));
     if (Number.isFinite(declared) && declared > maxBytes) throw new Error("transcript retrieval exceeds the byte limit");
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > maxBytes) throw new Error("transcript retrieval exceeds the byte limit");
-    return bytes;
+    const chunks = [];
+    let length = 0;
+    const addChunk = (value) => {
+      const chunkLength = value?.byteLength ?? value?.length;
+      if (!Number.isSafeInteger(chunkLength) || chunkLength < 0) throw new Error("transcript retrieval returned an invalid stream chunk");
+      if (length + chunkLength > maxBytes) {
+        controller.abort();
+        throw new Error("transcript retrieval exceeds the byte limit");
+      }
+      const chunk = Buffer.from(value);
+      length += chunkLength;
+      chunks.push(chunk);
+    };
+    if (response.body?.getReader) {
+      const reader = response.body.getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          addChunk(value);
+        }
+      } catch (error) {
+        await reader.cancel(error).catch(() => {});
+        throw error;
+      } finally { reader.releaseLock(); }
+    } else if (response.body?.[Symbol.asyncIterator]) {
+      for await (const chunk of response.body) addChunk(chunk);
+    } else {
+      throw new Error("transcript retrieval response body is not streamable");
+    }
+    return Buffer.concat(chunks, length);
   } catch (error) {
     if (error?.name === "AbortError") throw new Error("transcript retrieval timed out");
     throw error;
@@ -120,10 +209,8 @@ export async function verifyPublicationReceipt({ artifact, receipt, endpoints, f
   const parsed = parseTranscriptUri(receipt.uri);
   if (receipt.artifact_sha256 !== artifact.artifact_sha256) throw new Error("publication receipt artifact_sha256 mismatch");
   if (receipt.length !== artifact.length) throw new Error("publication receipt length mismatch");
-  const configured = endpoints ?? receipt.endpoints;
-  if (!Array.isArray(configured) || configured.length < 2) throw new Error("two independent retrieval endpoints are required");
-  const origins = configured.map(endpointOrigin);
-  if (new Set(origins).size < 2) throw new Error("retrieval endpoints must have independent origins");
+  if (endpoints === undefined) throw new Error("trusted retrieval endpoints are required; receipt endpoints are ignored");
+  const configured = validateRetrievalEndpoints(endpoints);
   const retrieve = fetchClient?.fetchTranscript
     ? (endpoint) => fetchTranscriptClientBytes(fetchClient, { endpoint, uri: parsed.uri })
     : (endpoint) => boundedFetchBytes(`${endpoint.replace(/\/$/, "")}/${parsed.identifier}${parsed.path}`,
@@ -140,6 +227,32 @@ export async function verifyPublicationReceipt({ artifact, receipt, endpoints, f
     artifact_sha256: artifact.artifact_sha256,
     transcript_hash: artifact.transcript_hash,
     receipt,
+  };
+}
+
+export function receiptSpoolPublisher(directory) {
+  const spool = resolve(directory);
+  if (!statSync(spool).isDirectory()) throw new Error("publication receipt spool must be a directory");
+  return {
+    async publishTranscript(_bytes, metadata) {
+      const filename = `${metadata.transcript_hash.slice(7)}.json`;
+      const receipt = JSON.parse(readFileSync(join(spool, filename), "utf8"));
+      return receipt;
+    },
+  };
+}
+
+export function httpTranscriptFetchClient(fetchImpl = fetch, lookupImpl = lookup) {
+  return {
+    async fetchTranscript({ endpoint, uri, timeoutMs, maxBytes }) {
+      const parsed = parseTranscriptUri(uri);
+      const hostname = new URL(endpoint).hostname.replace(/^\[|\]$/g, "");
+      const addresses = await lookupImpl(hostname, { all: true, verbatim: true });
+      if (!addresses.length || addresses.some(({ address }) => isForbiddenAddress(address))) {
+        throw new Error("retrieval endpoint DNS resolved to private or link-local IP space");
+      }
+      return boundedFetchBytes(`${endpoint}/${parsed.identifier}${parsed.path}`, { fetchImpl, timeoutMs, maxBytes });
+    },
   };
 }
 
