@@ -12,7 +12,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   buildChallengeCallPolicy,
   buildOperatorCursor,
@@ -60,6 +60,7 @@ const QUEUE = resolve(arg("queue", join(RUNTIME, "runner-queue.json")));
 const TRANSCRIPTS = resolve(arg("transcripts", join(RUNTIME, "transcripts")));
 const INPUTS = join(RUNTIME, "inputs");
 const JOB_SPECS = join(RUNTIME, "jobs");
+const RETRY_STATE = join(RUNTIME, "retry-state");
 const ACTIONS = join(RUNTIME, "actions");
 const ALERTS = join(RUNTIME, "ALERTS.log");
 const MAX_BOND = ethers.parseEther(String(arg("max-challenge-bond", "0.01")));
@@ -68,6 +69,8 @@ const POLL_MS = Number(arg("poll-ms", "12000"));
 const RESERVE_MEMORY_MB = Number(arg("reserve-memory-mb", "8192"));
 const MAX_SWAP_USED_MB = Number(arg("max-swap-used-mb", "1024"));
 const MEMORY_SAFETY_FACTOR = Number(arg("memory-safety-factor", "2"));
+const RUNNER_CHAIN_TIMESTAMP_ENV = "P42_RUNNER_CHAIN_TIMESTAMP";
+const RETRY_BACKOFF_MS = 15_000;
 
 if (!MANIFEST || !PROBLEM) {
   console.error("required: --manifest <path> --problem <dir>");
@@ -96,7 +99,7 @@ const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const log = (...values) => console.log(...values);
 
-for (const path of [RUNTIME, TRANSCRIPTS, INPUTS, JOB_SPECS, ACTIONS]) mkdirSync(path, { recursive: true });
+for (const path of [RUNTIME, TRANSCRIPTS, INPUTS, JOB_SPECS, RETRY_STATE, ACTIONS]) mkdirSync(path, { recursive: true });
 const START_BLOCK = Number(arg("from-block", manifest.indexer?.startBlock ?? 0));
 let chainId;
 let finalityConfirmations;
@@ -147,6 +150,79 @@ function writeJsonAtomic(path, value, mode = 0o600) {
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${canonicalJson(value)}\n`, { encoding: "utf8", mode, flag: "wx" });
   renameSync(temporary, path);
+}
+
+function replaceJsonAtomic(path, value, mode = 0o600) {
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  writeFileSync(temporary, `${canonicalJson(value)}\n`, { encoding: "utf8", mode, flag: "wx" });
+  renameSync(temporary, path);
+}
+
+const RETRYABLE_DA_FAILURE_KINDS = new Set([
+  "calldata_unavailable",
+  "arweave_lookup_unavailable",
+  "arweave_retrieval_unavailable",
+]);
+
+function retryableDaFailure(kind, error) {
+  return { kind, error, retryable: true };
+}
+
+export function isExplicitRetryableDaFailure(failure) {
+  return Boolean(
+    failure
+    && typeof failure === "object"
+    && failure.retryable === true
+    && RETRYABLE_DA_FAILURE_KINDS.has(failure.kind),
+  );
+}
+
+function retryPaths(jobId) {
+  const name = sha256Canonical({ job_id: jobId }).slice(7);
+  return {
+    solutionPath: join(INPUTS, `${name}.json`),
+    statePath: join(RETRY_STATE, `${name}.json`),
+  };
+}
+
+function retryStateHasTerminalFailure(job) {
+  try {
+    const state = readJsonOrNull(job.retry_state_path);
+    const failure = state?.da_failure;
+    return Boolean(
+      state
+      && state.schema_version === "p42-retry-state/v1"
+      && state.job_id === job.job_id
+      && failure
+      && typeof failure === "object"
+      && !isExplicitRetryableDaFailure(failure),
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function retryableJobIsEligible(job, latestTimestamp, nowMs = Date.now()) {
+  const claim = job?.chain_claim;
+  if (
+    !job
+    || job.status !== "queued"
+    || job.canonical_status === "orphaned_reorg"
+    || job.action
+    || !isExplicitRetryableDaFailure(job.da_failure)
+    || !claim
+    || typeof claim !== "object"
+  ) return false;
+  if (job.retry_not_before_utc !== undefined) {
+    if (typeof job.retry_not_before_utc !== "string") return false;
+    const retryNotBeforeMs = Date.parse(job.retry_not_before_utc);
+    if (!Number.isFinite(retryNotBeforeMs) || retryNotBeforeMs > nowMs) return false;
+  }
+  try {
+    return BigInt(claim.challenge_ends_at) > BigInt(latestTimestamp);
+  } catch {
+    return false;
+  }
 }
 
 function sourceEventHashFor(event, submission) {
@@ -277,13 +353,27 @@ function eventJobId(event) {
   ].join(":");
 }
 
-async function recoverPayload(event, submission) {
+export async function recoverPayload(event, submission) {
   const solutionBytesLength = Number(event.args.solutionBytesLength ?? 0n);
   if (solutionBytesLength > 0) {
-    const tx = await provider.getTransaction(event.transactionHash);
+    let tx;
+    try {
+      tx = await provider.getTransaction(event.transactionHash);
+    } catch (error) {
+      return {
+        daFailure: retryableDaFailure(
+          "calldata_unavailable",
+          `reveal transaction calldata could not be retrieved from the RPC: ${error.message}`,
+        ),
+        payloadSource: "transaction-calldata-rpc-unavailable",
+      };
+    }
     if (!tx) {
       return {
-        daFailure: { kind: "calldata_unavailable", error: "reveal transaction calldata is unavailable from the RPC" },
+        daFailure: retryableDaFailure(
+          "calldata_unavailable",
+          "reveal transaction calldata is unavailable from the RPC",
+        ),
         payloadSource: "transaction-calldata-unavailable",
       };
     }
@@ -316,19 +406,33 @@ async function recoverPayload(event, submission) {
   }
 
   if (ARWEAVE) {
+    let txid;
     try {
-      const txid = await findTxidByCid(event.args.solutionCid, {});
-      if (!txid) {
-        return {
-          daFailure: { kind: "missing", error: `off-chain payload ${event.args.solutionCid} was not found on Arweave` },
-          payloadSource: "arweave-missing",
-        };
-      }
+      txid = await findTxidByCid(event.args.solutionCid, {});
+    } catch (error) {
+      return {
+        daFailure: retryableDaFailure(
+          "arweave_lookup_unavailable",
+          `off-chain Arweave lookup failed: ${error.message}`,
+        ),
+        payloadSource: "arweave-lookup-unavailable",
+      };
+    }
+    if (!txid) {
+      return {
+        daFailure: { kind: "missing", error: `off-chain payload ${event.args.solutionCid} was not found on Arweave` },
+        payloadSource: "arweave-missing",
+      };
+    }
+    try {
       return { blob: await fetchFromArweave(txid), payloadSource: `arweave:${txid}` };
     } catch (error) {
       return {
-        daFailure: { kind: "missing", error: `off-chain Arweave retrieval failed: ${error.message}` },
-        payloadSource: "arweave-retrieval-failed",
+        daFailure: retryableDaFailure(
+          "arweave_retrieval_unavailable",
+          `off-chain Arweave retrieval failed: ${error.message}`,
+        ),
+        payloadSource: "arweave-retrieval-unavailable",
       };
     }
   }
@@ -346,8 +450,71 @@ async function recoverPayload(event, submission) {
   };
 }
 
+function retryEventFromClaim(claim) {
+  return {
+    transactionHash: claim.transaction_hash,
+    args: {
+      submissionId: BigInt(claim.submission_id),
+      solutionCid: claim.solution_cid,
+      claimedScoreAtoms: BigInt(claim.claimed_score_atoms),
+      improvementAtoms: BigInt(claim.claimed_improvement_atoms),
+      solutionBytesLength: BigInt(claim.solution_bytes_length),
+    },
+  };
+}
+
+async function refreshRetryableJobs(latest) {
+  const queue = readQueue();
+  for (const job of queue.jobs) {
+    if (!retryableJobIsEligible(job, latest.timestamp)) continue;
+    if (
+      typeof job.retry_solution_path !== "string"
+      || !job.retry_solution_path
+      || typeof job.retry_state_path !== "string"
+      || !job.retry_state_path
+    ) {
+      appendAlert(`RETRY STATE ${job.job_id}: retryable job has no operator-owned retry paths`);
+      continue;
+    }
+    // A prior refresh may have recovered immutable bytes while the worker was
+    // busy or memory-gated. The worker owns their anchor check; do not refetch
+    // and attempt a second exclusive write on every scan.
+    if (existsSync(job.retry_solution_path)) continue;
+    if (retryStateHasTerminalFailure(job)) continue;
+
+    try {
+      const claim = job.chain_claim;
+      const submissionId = BigInt(claim.submission_id);
+      const submission = await subs.submissions(submissionId);
+      if (Number(submission.status) !== 2) continue;
+      const liveRevealInstanceHash = (await subs.revealInstanceHashOf(submissionId)).toLowerCase();
+      if (liveRevealInstanceHash !== String(claim.reveal_instance_hash).toLowerCase()) continue;
+      if (String(submission.commitDaHash).toLowerCase() !== String(claim.commit_da_hash).toLowerCase()) continue;
+
+      const payload = await recoverPayload(retryEventFromClaim(claim), submission);
+      if (payload.blob) {
+        // The worker validates the anchor before any verifier runs. Persisting a
+        // mismatched retrieval still turns into a terminal fail-closed candidate.
+        writePayloadAtomic(job.retry_solution_path, payload.blob);
+        log(`  recovered retryable payload for ${job.job_id} (${payload.payloadSource})`);
+        continue;
+      }
+      if (!payload.daFailure) throw new Error("payload retry returned neither bytes nor a failure");
+      replaceJsonAtomic(job.retry_state_path, {
+        schema_version: "p42-retry-state/v1",
+        job_id: job.job_id,
+        da_failure: payload.daFailure,
+      });
+      log(`  retryable payload still unavailable for ${job.job_id}: ${payload.daFailure.kind}`);
+    } catch (error) {
+      appendAlert(`RETRY ${job.job_id}: ${error.shortMessage || error.message}`);
+    }
+  }
+}
+
 async function ingestReveal(event) {
   const jobId = eventJobId(event);
+  const paths = retryPaths(jobId);
   const submissionId = event.args.submissionId;
   const submission = await subs.submissions(submissionId);
   const revealInstanceHash = String(event.args.revealInstanceHash).toLowerCase();
@@ -386,7 +553,7 @@ async function ingestReveal(event) {
         observed_hash: observedHash,
       };
     } else {
-      solutionPath = join(INPUTS, `${sha256Canonical({ job_id: jobId }).slice(7)}.json`);
+      solutionPath = paths.solutionPath;
       writePayloadAtomic(solutionPath, payload.blob);
     }
   }
@@ -430,7 +597,17 @@ async function ingestReveal(event) {
     challenge_policy: { max_bond_wei: MAX_BOND.toString() },
   };
   if (solutionPath) job.solution = solutionPath;
-  if (daFailure) job.da_failure = daFailure;
+  if (daFailure) {
+    job.da_failure = daFailure;
+    if (isExplicitRetryableDaFailure(daFailure)) {
+      job.retry_solution_path = paths.solutionPath;
+      job.retry_state_path = paths.statePath;
+      // recoverPayload already made one retrieval attempt for this reveal. A
+      // durable pause prevents a large memory-gated burst from repeatedly
+      // querying the same unavailable endpoint before a worker can run.
+      job.retry_not_before_utc = new Date(Date.now() + RETRY_BACKOFF_MS).toISOString();
+    }
+  }
 
   const specPath = join(JOB_SPECS, `${sourceEventHash.slice(7)}.json`);
   writeCanonicalAtomic(specPath, job);
@@ -439,15 +616,22 @@ async function ingestReveal(event) {
   return result.created;
 }
 
-function runWorkerOnce() {
-  return bridge(
-    "work-once",
-    "--queue", QUEUE,
-    "--transcripts", TRANSCRIPTS,
-    "--reserve-memory-mb", String(RESERVE_MEMORY_MB),
-    "--max-swap-used-mb", String(MAX_SWAP_USED_MB),
-    "--memory-safety-factor", String(MEMORY_SAFETY_FACTOR),
-  );
+function runWorkerOnce(chainTimestamp) {
+  const previous = process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
+  process.env[RUNNER_CHAIN_TIMESTAMP_ENV] = String(chainTimestamp);
+  try {
+    return bridge(
+      "work-once",
+      "--queue", QUEUE,
+      "--transcripts", TRANSCRIPTS,
+      "--reserve-memory-mb", String(RESERVE_MEMORY_MB),
+      "--max-swap-used-mb", String(MAX_SWAP_USED_MB),
+      "--memory-safety-factor", String(MEMORY_SAFETY_FACTOR),
+    );
+  } finally {
+    if (previous === undefined) delete process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
+    else process.env[RUNNER_CHAIN_TIMESTAMP_ENV] = previous;
+  }
 }
 
 function verifyTranscript(path) {
@@ -676,6 +860,10 @@ async function consumeCandidate(job) {
   }
   const candidate = checked.candidate;
   if (!candidate) return;
+  if (candidate.action === "retry") {
+    log(`  retry pending for ${job.job_id}: ${candidate.reason_code}`);
+    return;
+  }
   if (candidate.action === "none") {
     recordAction(job, candidate, "no_action", null, candidate.reason_code);
     return;
@@ -791,6 +979,8 @@ async function consumeCandidates() {
 
 async function scanOnce() {
   const latest = await provider.getBlockNumber();
+  const latestBlock = await provider.getBlock(latest);
+  if (!latestBlock) throw new Error(`latest block ${latest} is unavailable`);
   const safeLatest = Math.max(0, latest - finalityConfirmations);
   const mismatch = await cursorAnchorMismatch(cursorState);
   if (mismatch !== null) {
@@ -823,8 +1013,9 @@ async function scanOnce() {
     await persistCursor(range.toBlock + 1);
   }
 
+  await refreshRetryableJobs(latestBlock);
   for (let index = 0; index < MAX_JOBS_PER_SCAN; index += 1) {
-    const result = runWorkerOnce();
+    const result = runWorkerOnce(latestBlock.timestamp);
     if (result.schema_version === "p42-runner-transcript/v1") {
       log(`  worker completed ${result.job_id}: ${result.verifier.challenge_candidate?.action || "legacy"}`);
       continue;
@@ -884,7 +1075,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error("FAILED:", error.shortMessage || error.message);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  main().catch((error) => {
+    console.error("FAILED:", error.shortMessage || error.message);
+    process.exit(1);
+  });
+}

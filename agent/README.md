@@ -33,17 +33,23 @@ Revealed log
 `runtime_bridge.py`, which hard-pins `RunnerPolicy(max_running=1,
 sandbox="docker")`. A missing runtime, mutable/placeholder image, low memory,
 swap pressure, active lease, timeout, or malformed output fails closed.
+Transient RPC calldata retrieval, Arweave lookup/gateway retrieval, and Docker
+availability failures are different: they produce a durable retry outcome and
+are retried until the canonical challenge deadline rather than becoming a
+challenge or a terminal quarantine. Each retry yields the verifier slot during
+a short durable backoff, so one unavailable submission cannot block later
+eligible jobs.
 
 For on-chain DA, reveal calldata is recovered by scanning the transaction for a
 `reveal(...)` call and matching every decoded argument to the `Revealed` log.
 This handles direct calls, `P42AgentWallet.execute`, and ERC-4337-style nested
 calldata without assuming the top-level selector is `reveal`.
 
-For off-chain DA, missing or hash-mismatched bytes immediately become a terminal
-`da_missing`/`da_hash_mismatch` challenge candidate. They are not retried while
-the challenge window expires. On-chain calldata retrieval failures are
-quarantined instead of wrongfully challenged because the chain already enforced
-the payload hash.
+For off-chain DA, a completed lookup reporting missing bytes or a recovered
+hash mismatch becomes a terminal `da_missing`/`da_hash_mismatch` candidate.
+Transport failures remain retryable while the challenge window is open. The
+same rule applies to on-chain calldata: a recovered malformed payload is
+terminal, while an RPC outage or temporary transaction absence is retried.
 
 ```bash
 cd agent
@@ -77,6 +83,8 @@ Runtime artifacts under `--runtime` are:
 - `inputs/`: immutable solution bytes, mode `0600`.
 - `jobs/`: immutable event-bound queue specs.
 - `transcripts/`: canonical `p42-runner-transcript/v1` evidence.
+- `retry-state/`: latest retryable DA outcome for jobs awaiting payload
+  recovery; it never authorizes an on-chain action by itself.
 - `operator-cursor.json`: durable finalized-block cursor plus overlap anchors.
 - `actions/`: exact `p42-session-call-policy/v1` call policies and signed challenge transaction journals.
 - `ALERTS.log`: quarantines, expired windows, and cap refusals.

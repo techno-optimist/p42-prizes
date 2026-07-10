@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { ethers } from "ethers";
 
 import {
@@ -392,4 +393,179 @@ test("runtime bridge quarantines orphaned canonical jobs under the queue lock", 
   assert.equal(updated.action.status, "canonical_invalidated");
   assert.equal(updated.action.transaction_hash, `0x${"5".repeat(64)}`);
   assert.equal(updated.previous_action.status, "broadcast");
+});
+
+
+test("operator retries transient calldata retrieval until the canonical deadline", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "p42-operator-retry-"));
+  const submissions = "0x1111111111111111111111111111111111111111";
+  const challenges = "0x2222222222222222222222222222222222222222";
+  const transactionHash = `0x${"a".repeat(64)}`;
+  const sender = "0x3333333333333333333333333333333333333333";
+  const bytes = ethers.toUtf8Bytes('{"answer":42}');
+  const cid = `sha256:${ethers.sha256(bytes).slice(2)}`;
+  const calldata = submissionInterface.encodeFunctionData("reveal", [
+    7n,
+    cid,
+    0n,
+    0n,
+    "salt",
+    bytes,
+  ]);
+  let transactionReads = 0;
+  const rpc = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      const calls = JSON.parse(body);
+      const requests = Array.isArray(calls) ? calls : [calls];
+      const replies = requests.map((call) => {
+        if (call.method === "eth_chainId") return { jsonrpc: "2.0", id: call.id, result: "0x7a69" };
+        if (call.method === "eth_getTransactionByHash") {
+          transactionReads += 1;
+          if (transactionReads === 1) return { jsonrpc: "2.0", id: call.id, result: null };
+          return {
+            jsonrpc: "2.0",
+            id: call.id,
+            result: {
+              hash: transactionHash,
+              type: "0x2",
+              accessList: [],
+              blockHash: null,
+              blockNumber: null,
+              chainId: "0x7a69",
+              from: sender,
+              gas: "0x5208",
+              gasPrice: "0x1",
+              input: calldata,
+              maxFeePerGas: "0x1",
+              maxPriorityFeePerGas: "0x1",
+              nonce: "0x0",
+              r: `0x${"1".repeat(64)}`,
+              s: `0x${"2".repeat(64)}`,
+              to: submissions,
+              transactionIndex: null,
+              v: "0x1",
+              value: "0x0",
+            },
+          };
+        }
+        return { jsonrpc: "2.0", id: call.id, result: null };
+      });
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify(Array.isArray(calls) ? replies : replies[0]));
+    });
+  });
+  await new Promise((done) => rpc.listen(0, "127.0.0.1", done));
+  const address = rpc.address();
+  const endpoint = `http://127.0.0.1:${address.port}`;
+  const manifestPath = join(directory, "manifest.json");
+  const submissionsArtifact = join(
+    directory,
+    "contracts",
+    "artifacts",
+    "src",
+    "P42SubmissionManager.sol",
+    "P42SubmissionManager.json",
+  );
+  const challengesArtifact = join(
+    directory,
+    "contracts",
+    "artifacts",
+    "src",
+    "P42ChallengeManager.sol",
+    "P42ChallengeManager.json",
+  );
+  mkdirSync(dirname(submissionsArtifact), { recursive: true });
+  mkdirSync(dirname(challengesArtifact), { recursive: true });
+  writeFileSync(submissionsArtifact, JSON.stringify({
+    abi: ["function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)"],
+  }), "utf8");
+  writeFileSync(challengesArtifact, JSON.stringify({ abi: [] }), "utf8");
+  writeFileSync(manifestPath, JSON.stringify({
+    contracts: {
+      submissions: { address: submissions },
+      challenges: { address: challenges },
+    },
+  }), "utf8");
+
+  const originalArgv = process.argv;
+  const originalKey = process.env.OPERATOR_PRIVATE_KEY;
+  process.argv = [
+    process.execPath,
+    join(HERE, "operator.mjs"),
+    "--manifest", manifestPath,
+    "--problem", join(REPO_ROOT, "problems", "hadamard-mini"),
+    "--runtime", join(directory, "runtime"),
+    "--rpc", endpoint,
+    "--repo-root", directory,
+    "--local-test",
+  ];
+  process.env.OPERATOR_PRIVATE_KEY = `0x${"4".repeat(64)}`;
+
+  try {
+    const operatorUrl = `${pathToFileURL(join(HERE, "operator.mjs")).href}?retry-test=${Date.now()}`;
+    const {
+      isExplicitRetryableDaFailure,
+      recoverPayload,
+      retryableJobIsEligible,
+    } = await import(operatorUrl);
+    const event = {
+      transactionHash,
+      args: {
+        submissionId: 7n,
+        solutionCid: cid,
+        claimedScoreAtoms: 0n,
+        improvementAtoms: 0n,
+        solutionBytesLength: BigInt(bytes.length),
+      },
+    };
+    const submission = { commitDaHash: ethers.sha256(bytes) };
+
+    const first = await recoverPayload(event, submission);
+    assert.equal(first.daFailure.kind, "calldata_unavailable");
+    assert.equal(first.daFailure.retryable, true);
+    assert.equal(isExplicitRetryableDaFailure(first.daFailure), true);
+    assert.equal(isExplicitRetryableDaFailure({
+      kind: "arweave_retrieval_unavailable",
+      error: "gateway timeout",
+      retryable: true,
+    }), true);
+    assert.equal(retryableJobIsEligible({
+      status: "queued",
+      da_failure: first.daFailure,
+      chain_claim: { challenge_ends_at: "200" },
+    }, 199n), true);
+    assert.equal(retryableJobIsEligible({
+      status: "queued",
+      da_failure: first.daFailure,
+      chain_claim: { challenge_ends_at: "200" },
+    }, 200n), false);
+    const deferredRetry = {
+      status: "queued",
+      da_failure: first.daFailure,
+      chain_claim: { challenge_ends_at: "200" },
+      retry_not_before_utc: "2030-01-01T00:00:15Z",
+    };
+    assert.equal(
+      retryableJobIsEligible(deferredRetry, 199n, Date.parse("2030-01-01T00:00:00Z")),
+      false,
+    );
+    assert.equal(
+      retryableJobIsEligible(deferredRetry, 199n, Date.parse("2030-01-01T00:00:15Z")),
+      true,
+    );
+
+    // JsonRpcProvider briefly caches a null transaction lookup; the operator's
+    // poll cadence is far longer than this cache window.
+    await new Promise((done) => setTimeout(done, 300));
+    const second = await recoverPayload(event, submission);
+    assert.equal(second.daFailure, undefined);
+    assert.deepEqual(Buffer.from(second.blob), Buffer.from(bytes));
+  } finally {
+    process.argv = originalArgv;
+    if (originalKey === undefined) delete process.env.OPERATOR_PRIVATE_KEY;
+    else process.env.OPERATOR_PRIVATE_KEY = originalKey;
+    await new Promise((done) => rpc.close(done));
+  }
 });

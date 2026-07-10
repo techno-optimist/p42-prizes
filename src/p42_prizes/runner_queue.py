@@ -246,6 +246,7 @@ def plan_runner_queue(
         [job for job in jobs if job["status"] == "queued"],
         key=_job_sort_key,
     )
+    eligible_queued = [job for job in queued if _retry_not_before(job) is None or _retry_not_before(job) <= now]
     active_running = []
     stale_running = []
     for job in jobs:
@@ -276,12 +277,21 @@ def plan_runner_queue(
         return {**base, "reason": "stale_lease_reap_required"}
     if len(active_running) >= policy.max_running:
         return {**base, "reason": "runner_concurrency_full"}
-    if memory.swap_used_mb > policy.max_swap_used_mb:
-        return {**base, "reason": "swap_guard_tripped"}
     if not queued:
         return {**base, "reason": "queue_empty"}
+    if not eligible_queued:
+        # A temporary dependency outage must not let the oldest job monopolize
+        # the single verifier slot. Keep the backoff durable, but expose the
+        # oldest deferred job so supervisors can see why nothing started.
+        return {
+            **base,
+            "reason": "retry_backoff",
+            "selected_job_id": queued[0]["job_id"],
+        }
+    if memory.swap_used_mb > policy.max_swap_used_mb:
+        return {**base, "reason": "swap_guard_tripped"}
 
-    selected = queued[0]
+    selected = eligible_queued[0]
     required_memory_mb = _required_memory_mb(selected)
     min_available = policy.reserve_memory_mb + math.ceil(required_memory_mb * policy.memory_safety_factor)
     base["min_available_memory_mb"] = min_available
@@ -443,6 +453,13 @@ def _validate_jobs(queue: Mapping[str, Any]) -> list[dict[str, Any]]:
             if not isinstance(created_at, str):
                 raise RunnerQueueError(f"queue.jobs[{index}].created_at_utc must be a UTC timestamp string")
             _parse_utc(created_at)
+        retry_not_before = job.get("retry_not_before_utc")
+        if retry_not_before is not None:
+            if not isinstance(retry_not_before, str):
+                raise RunnerQueueError(
+                    f"queue.jobs[{index}].retry_not_before_utc must be a UTC timestamp string"
+                )
+            _parse_utc(retry_not_before)
         normalized.append(dict(job))
     return normalized
 
@@ -465,6 +482,14 @@ def _job_sort_key(job: Mapping[str, Any]) -> tuple[int, int, str, str]:
     if not isinstance(created_at, str):
         created_at = ""
     return (block_number, log_index, created_at, str(job["job_id"]))
+
+
+def _retry_not_before(job: Mapping[str, Any]) -> datetime | None:
+    raw = job.get("retry_not_before_utc")
+    if raw is None:
+        return None
+    # _validate_jobs() has already validated this field for every queued job.
+    return _parse_utc(raw)
 
 
 def _oldest_queued_age_seconds(queued: list[Mapping[str, Any]], now: datetime) -> int | None:

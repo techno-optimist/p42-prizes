@@ -48,6 +48,18 @@ except ImportError:  # pragma: no cover - resource is POSIX-only.
 RUNNER_TRANSCRIPT_SCHEMA_VERSION = "p42-runner-transcript/v1"
 RUNNER_LOOP_SCHEMA_VERSION = "p42-runner-loop/v1"
 BYTES32_RE = re.compile(r"0x[0-9a-fA-F]{64}")
+RETRYABLE_DA_FAILURE_KINDS = frozenset(
+    {
+        "calldata_unavailable",
+        "arweave_lookup_unavailable",
+        "arweave_retrieval_unavailable",
+        "retry_state_unavailable",
+    }
+)
+# Retry transcripts are not terminal outcomes. Briefly deferring them keeps a
+# transiently unavailable submission from monopolizing the single verifier
+# while preserving FIFO priority as soon as the backoff expires.
+RETRY_BACKOFF_SECONDS = 15
 
 
 class RunnerWorkerError(ValueError):
@@ -123,13 +135,33 @@ def run_next_job_once(
             fresh["finished_at_utc"] = _format_utc(finished_at)
             fresh.pop("lease_expires_at_utc", None)
             return {"reason": f"job_run_error: {run_error}", "selected_job_id": job["job_id"]}
-        fresh["status"] = "succeeded" if _transcript_succeeded(transcript) else "failed"
         fresh["finished_at_utc"] = _format_utc(finished_at)
         fresh["transcript_path"] = transcript["transcript_path"]
         fresh["transcript_hash"] = transcript["transcript_hash"]
-        candidate = transcript["verifier"].get("challenge_candidate")
-        if isinstance(candidate, dict) and isinstance(candidate.get("candidate_hash"), str):
-            fresh["challenge_candidate_hash"] = candidate["candidate_hash"]
+        if _transcript_retryable(transcript):
+            if _retry_window_open(job, finished_at):
+                retries = fresh.get("retry_count")
+                fresh["retry_count"] = retries + 1 if isinstance(retries, int) and retries >= 0 else 1
+                fresh["status"] = "queued"
+                fresh["last_retry_reason"] = _retry_reason(transcript)
+                fresh["retry_not_before_utc"] = _format_utc(
+                    finished_at + timedelta(seconds=RETRY_BACKOFF_SECONDS)
+                )
+                fresh.pop("failure_reason", None)
+            else:
+                fresh["status"] = "failed"
+                fresh["failure_reason"] = "retry_window_expired"
+                fresh.pop("retry_not_before_utc", None)
+            # A retry transcript is evidence of an unavailable dependency, not a
+            # challenge candidate. Leaving the fence unset permits the next run
+            # to publish the eventual verified candidate.
+            fresh.pop("challenge_candidate_hash", None)
+        else:
+            fresh["status"] = "succeeded" if _transcript_succeeded(transcript) else "failed"
+            fresh.pop("retry_not_before_utc", None)
+            candidate = transcript["verifier"].get("challenge_candidate")
+            if isinstance(candidate, dict) and isinstance(candidate.get("candidate_hash"), str):
+                fresh["challenge_candidate_hash"] = candidate["candidate_hash"]
         fresh.pop("lease_expires_at_utc", None)
     return transcript
 
@@ -201,6 +233,12 @@ def drain_runner_queue(
 
 def _loop_event_from_result(result: Mapping[str, Any]) -> dict[str, Any]:
     if result.get("schema_version") == RUNNER_TRANSCRIPT_SCHEMA_VERSION:
+        if _transcript_retryable(result):
+            return {
+                "kind": "wait",
+                "reason": _retry_reason(result),
+                "selected_job_id": result.get("job_id"),
+            }
         verifier = result.get("verifier") if isinstance(result.get("verifier"), dict) else {}
         valid = _transcript_succeeded(result)
         event: dict[str, Any] = {
@@ -232,6 +270,33 @@ def _transcript_succeeded(transcript: Mapping[str, Any]) -> bool:
         return False
     candidate = verifier.get("challenge_candidate")
     return not isinstance(candidate, Mapping) or candidate.get("action") == "none"
+
+
+def _transcript_retryable(transcript: Mapping[str, Any]) -> bool:
+    verifier = transcript.get("verifier")
+    if not isinstance(verifier, Mapping):
+        return False
+    candidate = verifier.get("challenge_candidate")
+    return isinstance(candidate, Mapping) and candidate.get("action") == "retry"
+
+
+def _retry_reason(transcript: Mapping[str, Any]) -> str:
+    verifier = transcript.get("verifier")
+    candidate = verifier.get("challenge_candidate") if isinstance(verifier, Mapping) else None
+    reason = candidate.get("reason_code") if isinstance(candidate, Mapping) else None
+    return reason if isinstance(reason, str) and reason else "retryable_verification_unavailable"
+
+
+def _retry_window_open(job: Mapping[str, Any], now: datetime) -> bool:
+    claim = job.get("chain_claim")
+    if not isinstance(claim, Mapping):
+        return True
+    canonical_now = os.environ.get("P42_RUNNER_CHAIN_TIMESTAMP")
+    try:
+        now_timestamp = int(canonical_now) if canonical_now is not None else int(now.timestamp())
+        return int(str(claim["challenge_ends_at"])) > now_timestamp
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def _find_job(queue: Mapping[str, Any], job_id: str | None) -> dict[str, Any]:
@@ -269,6 +334,9 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
                 "chain job problem path must match the canonical source checkout for its problem_id"
             )
     solution_value = job.get("solution")
+    if not isinstance(solution_value, str) or not solution_value:
+        if _is_explicit_retryable_da_failure(job.get("da_failure")):
+            solution_value = job.get("retry_solution_path")
     solution = (
         Path(solution_value).resolve()
         if isinstance(solution_value, str) and solution_value
@@ -304,16 +372,24 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
             da_result = {"ok": True, "evidence_hash": evidence["evidence_hash"]}
 
     if da_result is not None and da_result["ok"] is False:
-        # DA evidence is invalid -> the submission is already inadmissible, so do
-        # NOT burn a full sandbox execution (up to wall_seconds + the memory
-        # budget) on it (audit F7 minor). Synthesize a fail-closed verifier.
+        retryable = da_result.get("retryable") is True
+        # An unavailable retrieval cannot prove that the claim is false. Do not
+        # burn a sandbox run, but preserve an explicit retry outcome instead of
+        # turning an infrastructure outage into a challenge/quarantine action.
         verifier = {
             "ok": False,
             "valid": False,
-            "error": f"da_evidence validation failed; verifier not run: {da_result.get('error', '')}",
+            "error": (
+                f"DA retrieval is temporarily unavailable; verifier not run: {da_result.get('error', '')}"
+                if retryable
+                else f"da_evidence validation failed; verifier not run: {da_result.get('error', '')}"
+            ),
             "elapsed_ms": 0,
             "sandbox": policy.sandbox,
         }
+        if retryable:
+            verifier["retryable"] = True
+            verifier["failure_kind"] = da_result.get("failure_kind")
     else:
         if solution is None:
             raise RunnerWorkerError("job.solution is required when DA validation succeeds")
@@ -370,7 +446,7 @@ def _chain_da_result(
     if not isinstance(source, str) or not source:
         source = mode
 
-    failure = job.get("da_failure")
+    failure = _effective_da_failure(job)
     if failure is not None:
         if not isinstance(failure, Mapping):
             raise RunnerWorkerError("job.da_failure must be an object")
@@ -378,24 +454,32 @@ def _chain_da_result(
         error = failure.get("error")
         if not isinstance(kind, str) or not kind or not isinstance(error, str) or not error:
             raise RunnerWorkerError("job.da_failure.kind and error must be non-empty strings")
-        challengeable = chain_claim.get("onchain_da") is False and kind in {
-            "missing",
-            "hash_mismatch",
-            "tampered",
-        }
-        result = {
-            "ok": False,
-            "mode": mode,
-            "source": source,
-            "expected_hash": expected,
-            "failure_kind": kind,
-            "challengeable": challengeable,
-            "error": error,
-        }
-        observed = failure.get("observed_hash")
-        if isinstance(observed, str):
-            result["observed_hash"] = observed
-        return result
+        retryable = _is_explicit_retryable_da_failure(failure)
+        # A later retry may have persisted bytes at retry_solution_path. Those
+        # bytes still go through the immutable anchor check below; do not let the
+        # original transient retrieval failure mask a verified recovery.
+        if retryable and solution is not None and solution.is_file():
+            failure = None
+        else:
+            challengeable = chain_claim.get("onchain_da") is False and kind in {
+                "missing",
+                "hash_mismatch",
+                "tampered",
+            }
+            result = {
+                "ok": False,
+                "mode": mode,
+                "source": source,
+                "expected_hash": expected,
+                "failure_kind": kind,
+                "challengeable": challengeable,
+                "retryable": retryable,
+                "error": error,
+            }
+            observed = failure.get("observed_hash")
+            if isinstance(observed, str):
+                result["observed_hash"] = observed
+            return result
 
     if solution is None or not solution.is_file():
         return {
@@ -405,6 +489,7 @@ def _chain_da_result(
             "expected_hash": expected,
             "failure_kind": "runner_input_missing",
             "challengeable": False,
+            "retryable": False,
             "error": "persisted solution payload is unavailable to the worker",
         }
 
@@ -420,6 +505,7 @@ def _chain_da_result(
             "observed_hash": observed,
             "failure_kind": "hash_mismatch",
             "challengeable": chain_claim.get("onchain_da") is False,
+            "retryable": False,
             "error": "solution payload hash does not match the reveal commitment/CID",
         }
     return {
@@ -429,6 +515,48 @@ def _chain_da_result(
         "expected_hash": expected,
         "observed_hash": observed,
         "challengeable": False,
+    }
+
+
+def _is_explicit_retryable_da_failure(value: Any) -> bool:
+    return (
+        isinstance(value, Mapping)
+        and value.get("retryable") is True
+        and value.get("kind") in RETRYABLE_DA_FAILURE_KINDS
+    )
+
+
+def _effective_da_failure(job: Mapping[str, Any]) -> Any:
+    original = job.get("da_failure")
+    if not _is_explicit_retryable_da_failure(original):
+        return original
+    state_path = job.get("retry_state_path")
+    if not isinstance(state_path, str) or not state_path:
+        return original
+    retry_state_path = Path(state_path)
+    if not retry_state_path.exists():
+        return original
+    try:
+        state = json.loads(retry_state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return _retry_state_unavailable(f"could not read retry state: {exc}")
+    if not isinstance(state, Mapping):
+        return _retry_state_unavailable("retry state must be an object")
+    if state.get("schema_version") != "p42-retry-state/v1":
+        return _retry_state_unavailable("retry state schema_version is invalid")
+    if state.get("job_id") != job.get("job_id"):
+        return _retry_state_unavailable("retry state job_id does not match the queue job")
+    failure = state.get("da_failure")
+    if not isinstance(failure, Mapping):
+        return _retry_state_unavailable("retry state da_failure must be an object")
+    return dict(failure)
+
+
+def _retry_state_unavailable(error: str) -> dict[str, Any]:
+    return {
+        "kind": "retry_state_unavailable",
+        "error": error,
+        "retryable": True,
     }
 
 
@@ -473,8 +601,13 @@ def _adjudicate_chain_claim(
         action = "quarantine"
         reason_code = str(verifier["integrity_failure"])
     elif isinstance(da_result, Mapping) and da_result.get("ok") is False:
-        action = "challenge" if da_result.get("challengeable") is True else "quarantine"
+        action = "retry" if da_result.get("retryable") is True else (
+            "challenge" if da_result.get("challengeable") is True else "quarantine"
+        )
         reason_code = f"da_{da_result.get('failure_kind', 'failed')}"
+    elif verifier.get("retryable") is True:
+        action = "retry"
+        reason_code = str(verifier.get("failure_kind") or "verifier_unavailable")
     elif isinstance(verifier.get("report"), Mapping) and verifier["report"].get("valid") is False:
         action = "challenge"
         reason_code = "verifier_rejected"
@@ -699,6 +832,8 @@ def _run_verifier_for_transcript(
                     "ok": False,
                     "valid": False,
                     "error": "sandbox=docker requested but no container runtime is available; refusing to run an untrusted payload on the host",
+                    "retryable": True,
+                    "failure_kind": "sandbox_unavailable",
                     "elapsed_ms": int((time.monotonic() - started) * 1000),
                     "sandbox": sandbox,
                     "verifier_image": verifier_image,
@@ -745,7 +880,7 @@ def _run_verifier_for_transcript(
     except (OSError, ValueError, KeyError, RunnerSandboxError) as exc:
         if container_name is not None:
             force_remove_container(container_name)
-        return {
+        result = {
             "ok": False,
             "valid": False,
             "error": str(exc),
@@ -754,6 +889,10 @@ def _run_verifier_for_transcript(
             "verifier_image": verifier_image,
             "verifier_command": verifier_command,
         }
+        if sandbox == "docker" and isinstance(exc, OSError):
+            result["retryable"] = True
+            result["failure_kind"] = "sandbox_unavailable"
+        return result
 
     elapsed_ms = int((time.monotonic() - started) * 1000)
     result: dict[str, Any] = {
@@ -772,6 +911,9 @@ def _run_verifier_for_transcript(
     stdout = completed.stdout.strip()
     if not stdout:
         result["error"] = _no_stdout_error(completed.returncode, stderr_tail)
+        if sandbox == "docker" and _looks_like_sandbox_unavailable(stderr_tail):
+            result["retryable"] = True
+            result["failure_kind"] = "sandbox_unavailable"
         return result
     try:
         report = json.loads(stdout)
@@ -881,6 +1023,18 @@ def _looks_like_memory_failure(returncode: int, stderr_tail: str) -> bool:
     # Linux frequently reports SIGKILL for cgroup/OOM termination. Under an
     # rlimit this still means the submission was contained and failed closed.
     return returncode in (-9, 137)
+
+
+def _looks_like_sandbox_unavailable(stderr_tail: str) -> bool:
+    lowered = stderr_tail.lower()
+    markers = (
+        "cannot connect to the docker daemon",
+        "is the docker daemon running",
+        "error during connect",
+        "docker daemon is not running",
+        "no such file or directory: '/var/run/docker.sock'",
+    )
+    return any(marker in lowered for marker in markers)
 
 
 def _safe_job_id(job_id: str) -> str:
