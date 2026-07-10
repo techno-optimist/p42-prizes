@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# CI needs repository contents only. Release/deployment credentials never run here.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python verifier gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+      - name: Install package with test extras
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Validate problem packages
+        run: make validate
+      - name: Lint certified-path exactness
+        run: make lint
+      - name: Run Python tests
+        run: make test
+      - name: Verify seed fixtures
+        run: make verify-seed
+
+  agent:
+    name: Autonomous agent gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.11.1"
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Run agent tests
+        run: npm test
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
+
+  web:
+    name: Portal gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.11.1"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Run portal tests
+        run: npm test
+      - name: Production build
+        run: npm run build:prizes
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
+
+  contracts:
+    name: Contract gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "24.11.1"
+          cache: npm
+          cache-dependency-path: contracts/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Compile contracts
+        run: npm run build
+      - name: Run contract tests
+        run: npm test
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
