@@ -141,7 +141,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await fundingRegistry.freeze(1);
     await pool.connect(owner).setRegistry(await fundingRegistry.getAddress(), 1);
     const Vault = await ethers.getContractFactory("P42RolloverVault");
-    const vault = await Vault.deploy(await fundingRegistry.getAddress());
+    const vault = await Vault.deploy(await fundingRegistry.getAddress(), owner.address);
     await vault.waitForDeployment();
     await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     if (arm) {

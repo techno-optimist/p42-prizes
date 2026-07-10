@@ -6,33 +6,59 @@ interface IP42RolloverRegistry {
 }
 
 interface IP42RegisteredPool {
+    function owner() external view returns (address);
     function registry() external view returns (address);
     function problemId() external view returns (uint256);
+    function ledger() external view returns (address);
+    function submissionManager() external view returns (address);
     function fund() external payable;
     function sponsorRefundTo(address payable recipient) external;
 }
 
-/// @notice Ownerless sink for expired positive-credit awards and floor dust.
-/// It has no withdrawal function: ETH can leave only by funding a pool bound to
-/// the immutable canonical registry. Calls are permissionless so no operator
-/// can redirect or indefinitely gate the future-prize use of rollover funds.
+interface IP42RegisteredLedger {
+    function owner() external view returns (address);
+    function pool() external view returns (address);
+    function creditRecorder() external view returns (address);
+}
+
+interface IP42RegisteredSubmissionManager {
+    function owner() external view returns (address);
+    function pool() external view returns (address);
+    function ledger() external view returns (address);
+}
+
+/// @notice Restricted future-prize vault. Only the immutable canonical
+/// timelock may allocate explicit quotas to fully wired canonical pool stacks.
 contract P42RolloverVault {
     error P42_REGISTRY_ZERO();
+    error P42_ALLOCATOR_ZERO();
+    error P42_NOT_ALLOCATOR();
     error P42_INVALID_REGISTERED_POOL();
+    error P42_CODEHASH_MISMATCH(bytes32 expected, bytes32 actual);
     error P42_INVALID_ROLLOVER_AMOUNT();
+    error P42_ALLOCATION_EXCEEDS_BALANCE(uint256 allocated, uint256 balance);
     error P42_ROLLOVER_FUNDING_FAILED();
 
-    /// @dev Never mutated after construction. Storage, rather than an immutable,
-    /// keeps every vault instance on the same runtime bytecode pinned by ledger.
     address public registry;
+    address public allocator;
+    uint256 public totalAllocated;
+    mapping(address => uint256) public allocationOf;
 
     event RolloverReceived(address indexed from, uint256 amount);
-    event FuturePoolFunded(address indexed caller, address indexed pool, uint256 amount);
+    event PoolAllocationSet(address indexed pool, bytes32 indexed codehash, uint256 previousAmount, uint256 amount);
+    event FuturePoolFunded(address indexed allocator, address indexed pool, uint256 amount, uint256 remainingAllocation);
     event ZeroCreditRefundReclaimed(address indexed caller, address indexed pool);
 
-    constructor(address registry_) {
+    modifier onlyAllocator() {
+        if (msg.sender != allocator) revert P42_NOT_ALLOCATOR();
+        _;
+    }
+
+    constructor(address registry_, address allocator_) {
         if (registry_ == address(0)) revert P42_REGISTRY_ZERO();
+        if (allocator_ == address(0)) revert P42_ALLOCATOR_ZERO();
         registry = registry_;
+        allocator = allocator_;
     }
 
     receive() external payable {
@@ -43,21 +69,32 @@ contract P42RolloverVault {
         return true;
     }
 
-    function fundRegisteredPool(address payable pool, uint256 amount) external {
-        if (amount == 0 || amount > address(this).balance) revert P42_INVALID_ROLLOVER_AMOUNT();
-        IP42RegisteredPool target = _registeredPool(pool);
+    function setPoolAllocation(address payable pool, bytes32 expectedCodehash, uint256 amount) external onlyAllocator {
+        _registeredPool(pool, expectedCodehash);
+        uint256 previous = allocationOf[pool];
+        uint256 allocated = totalAllocated - previous + amount;
+        if (allocated > address(this).balance) revert P42_ALLOCATION_EXCEEDS_BALANCE(allocated, address(this).balance);
+        allocationOf[pool] = amount;
+        totalAllocated = allocated;
+        emit PoolAllocationSet(pool, expectedCodehash, previous, amount);
+    }
+
+    function fundRegisteredPool(address payable pool, uint256 amount) external onlyAllocator {
+        if (amount == 0 || amount > allocationOf[pool] || amount > address(this).balance) {
+            revert P42_INVALID_ROLLOVER_AMOUNT();
+        }
+        IP42RegisteredPool target = _registeredPool(pool, pool.codehash);
+        allocationOf[pool] -= amount;
+        totalAllocated -= amount;
         try target.fund{value: amount}() {
-            emit FuturePoolFunded(msg.sender, pool, amount);
+            emit FuturePoolFunded(msg.sender, pool, amount, allocationOf[pool]);
         } catch {
             revert P42_ROLLOVER_FUNDING_FAILED();
         }
     }
 
-    /// @notice Returns this vault's own sponsorship when a future pool closes
-    /// with no credit. The pool sends it straight back here; this is not an
-    /// arbitrary withdrawal and the value remains rollover-only.
     function reclaimZeroCreditSponsorRefund(address payable pool) external {
-        IP42RegisteredPool target = _registeredPool(pool);
+        IP42RegisteredPool target = _registeredPool(pool, pool.codehash);
         try target.sponsorRefundTo(payable(address(this))) {
             emit ZeroCreditRefundReclaimed(msg.sender, pool);
         } catch {
@@ -65,12 +102,29 @@ contract P42RolloverVault {
         }
     }
 
-    function _registeredPool(address payable pool) private view returns (IP42RegisteredPool target) {
-        if (pool.code.length == 0) revert P42_INVALID_REGISTERED_POOL();
+    function _registeredPool(address payable pool, bytes32 expectedCodehash)
+        private
+        view
+        returns (IP42RegisteredPool target)
+    {
+        bytes32 actualCodehash = pool.codehash;
+        if (pool.code.length == 0 || actualCodehash != expectedCodehash) {
+            revert P42_CODEHASH_MISMATCH(expectedCodehash, actualCodehash);
+        }
         target = IP42RegisteredPool(pool);
         uint256 targetProblemId = target.problemId();
-        if (targetProblemId == 0 || target.registry() != registry || IP42RolloverRegistry(registry).problemPool(targetProblemId) != pool) {
-            revert P42_INVALID_REGISTERED_POOL();
-        }
+        address targetLedger = target.ledger();
+        address targetManager = target.submissionManager();
+        if (
+            targetProblemId == 0 || target.owner() != allocator || target.registry() != registry
+                || IP42RolloverRegistry(registry).problemPool(targetProblemId) != pool || targetLedger.code.length == 0
+                || targetManager.code.length == 0
+        ) revert P42_INVALID_REGISTERED_POOL();
+        IP42RegisteredLedger ledger_ = IP42RegisteredLedger(targetLedger);
+        IP42RegisteredSubmissionManager manager_ = IP42RegisteredSubmissionManager(targetManager);
+        if (
+            ledger_.owner() != allocator || ledger_.pool() != pool || ledger_.creditRecorder() != targetManager
+                || manager_.owner() != allocator || manager_.pool() != pool || manager_.ledger() != targetLedger
+        ) revert P42_INVALID_REGISTERED_POOL();
     }
 }

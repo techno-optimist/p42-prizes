@@ -131,7 +131,7 @@ async function deployFixture({
   });
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
   const Vault = await ethers.getContractFactory("P42RolloverVault");
-  const vault = await Vault.deploy(await registry.getAddress());
+  const vault = await Vault.deploy(await registry.getAddress(), owner.address);
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   if (freeze) await registry.connect(owner).freeze(1);

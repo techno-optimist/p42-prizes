@@ -11,6 +11,7 @@ import {
   manifestProblemContracts,
   manifestProblemForRegistryId,
   validateManifestEvidence,
+  validatePreBroadcastManifestPlan,
 } from "./indexer.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -94,10 +95,11 @@ function v2Manifest() {
   second.onchainDa = false;
   second.maxSolutionBytes = "0";
 
+  const baseOperations = manifest.setupTransactions;
   const boardOperations = [first, second].flatMap((board, boardIndex) =>
-    manifest.setupTransactions.map((operation, index) => ({
+    baseOperations.map((operation, index) => ({
       ...deepCopy(operation),
-      sequence: boardIndex * 10 + index + 1,
+      sequence: boardIndex * 11 + index + 1,
       label: `board/${board.problemId}.${operation.label}`,
     })),
   );
@@ -106,6 +108,11 @@ function v2Manifest() {
   manifest.contracts = {
     timelock: manifest.contracts.timelock,
     registry: manifest.contracts.registry,
+    rolloverVault: {
+      ...deepCopy(manifest.contracts.registry),
+      name: "P42RolloverVault",
+      address: address(0x40),
+    },
   };
   manifest.parameters = {
     alphaBps: manifest.parameters.alphaBps,
@@ -127,6 +134,7 @@ function v2Manifest() {
     contracts: {
       timelock: null,
       registry: null,
+      rolloverVault: null,
       boards: [
         { problemId: "1", pool: null, ledger: null, submissions: null, challenges: null },
         { problemId: "2", pool: null, ledger: null, submissions: null, challenges: null },
@@ -155,6 +163,14 @@ test("v2 deployment manifests bind isolated board stacks and per-board DA terms"
   assert.equal(second.maxSolutionBytes, "0");
 });
 
+test("validates the complete contract/source/operation plan before broadcast", () => {
+  assert.deepEqual(validatePreBroadcastManifestPlan(MANIFEST_SCHEMA_V2, 2), {
+    schema: MANIFEST_SCHEMA_V2,
+    problemCount: 2,
+    expectedOperations: 22,
+  });
+});
+
 test("v2 deployment manifests fail closed on board identity, topology, and DA drift", () => {
   const duplicateId = v2Manifest();
   duplicateId.problems[1].problemId = "1";
@@ -174,7 +190,7 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
   const incompletePlan = v2Manifest();
   incompletePlan.setupTransactions.pop();
   rebind(incompletePlan);
-  assert.throws(() => validateManifestEvidence(incompletePlan), /exactly 10 governance setup operations per problem/);
+  assert.throws(() => validateManifestEvidence(incompletePlan), /exactly 11 governance setup operations per problem/);
 
   const incompleteSources = v2Manifest();
   incompleteSources.sourceVerification.contracts.boards.pop();

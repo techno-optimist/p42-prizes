@@ -5,7 +5,7 @@ import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { network } from "hardhat";
-import { validateManifestEvidence } from "../../agent/indexer.mjs";
+import { validateManifestEvidence, validatePreBroadcastManifestPlan } from "../../agent/indexer.mjs";
 
 import {
   assertDeploymentConfigHash,
@@ -192,6 +192,7 @@ async function deployCeremony(ethers) {
   if (deployer === undefined) throw new Error("No deployer signer available");
 
   const config = readCeremonyConfig(ethers, process.env, { deployerAddress: deployer.address });
+  validatePreBroadcastManifestPlan(MANIFEST_SCHEMA, 1);
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
   validateDeploymentTimestamps(config, latest.timestamp);
@@ -390,6 +391,7 @@ async function deployMultiBoardCeremony(ethers) {
 
   const input = await readMultiBoardCeremonyInput();
   const config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
+  validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
   validateMultiBoardDeploymentTimestamps(config, latest.timestamp);

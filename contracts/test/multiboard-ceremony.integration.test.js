@@ -206,5 +206,32 @@ describe("multi-board governance ceremony integration", () => {
       assert.equal(await board.contracts.submissions.owner(), rootAddresses.timelock);
       assert.equal(await board.contracts.challenges.owner(), rootAddresses.timelock);
     }
+
+    await deployer.sendTransaction({ to: rootAddresses.rolloverVault, value: 100n });
+    await ethers.provider.send("hardhat_impersonateAccount", [rootAddresses.timelock]);
+    await ethers.provider.send("hardhat_setBalance", [rootAddresses.timelock, "0x1000000000000000000"]);
+    const allocator = await ethers.getSigner(rootAddresses.timelock);
+    const pool0 = boards[0].addresses.pool;
+    const pool1 = boards[1].addresses.pool;
+    const pool0Hash = ethers.keccak256(await ethers.provider.getCode(pool0));
+    const pool1Hash = ethers.keccak256(await ethers.provider.getCode(pool1));
+    await rolloverVault.connect(allocator).setPoolAllocation(pool0, pool0Hash, 40n);
+    await rolloverVault.connect(allocator).setPoolAllocation(pool1, pool1Hash, 60n);
+    await assert.rejects(
+      rolloverVault.connect(deployer).fundRegisteredPool(pool0, 1n),
+      /P42_NOT_ALLOCATOR/,
+    );
+    await assert.rejects(
+      rolloverVault.connect(allocator).setPoolAllocation(pool0, ethers.ZeroHash, 40n),
+      /P42_CODEHASH_MISMATCH/,
+    );
+    await assert.rejects(
+      rolloverVault.connect(allocator).fundRegisteredPool(pool0, 40n),
+      /P42_ROLLOVER_FUNDING_FAILED/,
+    );
+    assert.equal(await rolloverVault.allocationOf(pool0), 40n);
+    assert.equal(await rolloverVault.allocationOf(pool1), 60n);
+    assert.equal(await rolloverVault.totalAllocated(), 100n);
+    await ethers.provider.send("hardhat_stopImpersonatingAccount", [rootAddresses.timelock]);
   });
 });

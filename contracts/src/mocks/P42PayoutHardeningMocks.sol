@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 interface IP42PayoutPoolClaimer {
     function claim() external;
     function claimTo(address payable recipient) external;
+    function claimFeesTo(address payable recipient) external;
 }
 
 interface IP42PayoutPoolSponsor {
@@ -38,13 +39,17 @@ contract ForceEther {
     }
 }
 
-/// @notice Fee recipient used to prove a failed fee leg reverts the solver
-/// transfer and ledger debit as one transaction.
+/// @notice Rejects direct ETH while retaining the treasury's explicit right to
+/// redirect accrued fees to a payable recipient.
 contract RejectingTreasury {
     error P42_REJECT_ETH();
 
     receive() external payable {
         revert P42_REJECT_ETH();
+    }
+
+    function claimFeesTo(address pool, address payable recipient) external {
+        IP42PayoutPoolClaimer(pool).claimFeesTo(recipient);
     }
 }
 

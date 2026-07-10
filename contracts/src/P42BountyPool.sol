@@ -67,7 +67,9 @@ contract P42BountyPool {
     /// @notice Net ETH delivered to solvers after their individual claim fees.
     uint256 public totalClaimed;
     uint256 public totalGrossClaimed;
+    uint256 public totalFeeAccrued;
     uint256 public totalFeePaid;
+    uint256 public accruedFeeBalance;
     uint256 public totalSponsorRefunded;
     uint256 public totalRolloverPaid;
     uint256 public totalForcedEthRecovered;
@@ -89,6 +91,13 @@ contract P42BountyPool {
         uint64 earliestCloseTimestamp,
         uint64 closeByTimestamp
     );
+    event SponsorshipFunded(
+        address indexed payer,
+        address indexed sponsor,
+        uint256 amount,
+        uint256 sponsorPrincipal,
+        uint256 accountedBalance
+    );
     event SponsorRefunded(address indexed sponsor, address indexed recipient, uint256 principal);
     event Claimed(address indexed solver, uint256 amount);
     event ClaimedTo(address indexed solver, address indexed recipient, uint256 amount);
@@ -100,8 +109,16 @@ contract P42BountyPool {
         uint256 feeAmount
     );
     event FeePaid(address indexed to, uint256 amount);
+    event FeeAccrued(address indexed solver, uint256 amount, uint256 accruedFeeBalance);
+    event FeeClaimed(address indexed treasury, address indexed recipient, uint256 amount);
     event RolloverPaid(address indexed to, uint256 amount);
     event ForcedEthRecovered(address indexed to, uint256 amount, uint256 remainingForcedEth);
+    event ForcedEthSwept(
+        address indexed caller,
+        address indexed destination,
+        uint256 amount,
+        uint256 remainingForcedEth
+    );
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert P42_NOT_OWNER();
@@ -123,7 +140,7 @@ contract P42BountyPool {
     }
 
     receive() external payable {
-        _fund();
+        _fund(msg.sender);
     }
 
     function setLedger(address ledger_) external onlyOwner {
@@ -171,7 +188,7 @@ contract P42BountyPool {
     }
 
     function fund() external payable {
-        _fund();
+        _fund(msg.sender);
     }
 
     function funded() external view returns (uint256) {
@@ -182,6 +199,10 @@ contract P42BountyPool {
         uint256 rawBalance = address(this).balance;
         uint256 accounted = accountedBalance;
         return rawBalance > accounted ? rawBalance - accounted : 0;
+    }
+
+    function rolloverBalance() external view returns (uint256) {
+        return accountedBalance - accruedFeeBalance;
     }
 
     function claim() external nonReentrant {
@@ -204,7 +225,7 @@ contract P42BountyPool {
         _sponsorRefundTo(msg.sender, recipient);
     }
 
-    function recoverForcedEth(uint256 amount) external onlyOwner nonReentrant {
+    function recoverForcedEth(uint256 amount) external nonReentrant {
         uint256 available = forcedEthAvailable();
         if (amount == 0 || amount > available) revert P42_FORCED_ETH_EXCEEDS_AVAILABLE(available, amount);
         address ledger_ = ledger;
@@ -217,6 +238,21 @@ contract P42BountyPool {
         (bool ok,) = payable(destination).call{value: amount}("");
         if (!ok) revert P42_TRANSFER_FAILED();
         emit ForcedEthRecovered(destination, amount, forcedEthAvailable());
+        emit ForcedEthSwept(msg.sender, destination, amount, forcedEthAvailable());
+    }
+
+    function claimFees() external nonReentrant {
+        address ledger_ = ledger;
+        if (ledger_ == address(0)) revert P42_LEDGER_NOT_SET();
+        _claimFeesTo(payable(IP42PayoutLedger(ledger_).treasury()));
+    }
+
+    function claimFeesTo(address payable recipient) external nonReentrant {
+        if (recipient == address(0)) revert P42_RECIPIENT_ZERO();
+        address ledger_ = ledger;
+        if (ledger_ == address(0)) revert P42_LEDGER_NOT_SET();
+        if (msg.sender != IP42PayoutLedger(ledger_).treasury()) revert P42_FEE_CLAIM_ONLY();
+        _claimFeesTo(recipient);
     }
 
     function payRollover(address to, uint256 amount) external nonReentrant {
@@ -248,19 +284,16 @@ contract P42BountyPool {
         (uint256 grossAmount, uint256 feeAmount) = IP42PayoutLedger(ledger_).consumeClaim(solver);
         if (grossAmount == 0) revert P42_NOTHING_TO_CLAIM();
         uint256 solverPayment = grossAmount - feeAmount;
-        _debitAccounted(grossAmount);
+        _debitAccounted(solverPayment);
         totalGrossClaimed += grossAmount;
         totalClaimed += solverPayment;
-        totalFeePaid += feeAmount;
+        totalFeeAccrued += feeAmount;
+        accruedFeeBalance += feeAmount;
         if (solverPayment != 0) {
             (bool paidSolver,) = recipient.call{value: solverPayment}("");
             if (!paidSolver) revert P42_TRANSFER_FAILED();
         }
-        if (feeAmount != 0) {
-            (bool paidFee,) = payable(IP42PayoutLedger(ledger_).treasury()).call{value: feeAmount}("");
-            if (!paidFee) revert P42_TRANSFER_FAILED();
-            emit FeePaid(IP42PayoutLedger(ledger_).treasury(), feeAmount);
-        }
+        if (feeAmount != 0) emit FeeAccrued(solver, feeAmount, accruedFeeBalance);
         emit Claimed(solver, solverPayment);
         emit ClaimedTo(solver, recipient, solverPayment);
         emit SolverClaimSettled(solver, recipient, grossAmount, solverPayment, feeAmount);
@@ -280,7 +313,20 @@ contract P42BountyPool {
         emit SponsorRefunded(sponsor, recipient, principal);
     }
 
-    function _fund() private {
+    function _claimFeesTo(address payable recipient) private {
+        uint256 amount = accruedFeeBalance;
+        if (amount == 0) revert P42_NOTHING_TO_CLAIM();
+        accruedFeeBalance = 0;
+        _debitAccounted(amount);
+        totalFeePaid += amount;
+        (bool ok,) = recipient.call{value: amount}("");
+        if (!ok) revert P42_TRANSFER_FAILED();
+        address treasury_ = IP42PayoutLedger(ledger).treasury();
+        emit FeePaid(recipient, amount);
+        emit FeeClaimed(treasury_, recipient, amount);
+    }
+
+    function _fund(address sponsor) private {
         require(msg.value > 0, "P42_ZERO_FUNDING");
         address manager = submissionManager;
         if (manager == address(0) || !ISubmissionManagerArmed(manager).fundingArmed()) {
@@ -295,16 +341,19 @@ contract P42BountyPool {
         uint64 deadline = IP42PayoutLedger(ledger_).fundingDeadline();
         if (block.timestamp > deadline) revert P42_FUNDING_WINDOW_CLOSED(deadline, uint64(block.timestamp));
         uint256 currentBalance = accountedBalance;
-        if (msg.value > fundingCap - currentBalance) revert P42_FUNDING_CAP_EXCEEDED(fundingCap, msg.value);
+        if (msg.value > fundingCap - currentBalance) {
+            revert P42_FUNDING_CAP_EXCEEDED(fundingCap, currentBalance + msg.value);
+        }
         uint256 newBalance = currentBalance + msg.value;
         accountedBalance = newBalance;
-        sponsorshipOf[msg.sender] += msg.value;
+        sponsorshipOf[sponsor] += msg.value;
         if (!everFunded) firstFundedAt = uint64(block.timestamp);
         everFunded = true;
         totalFunded += msg.value;
         uint64 earliestClose = IP42PayoutLedger(ledger_).effectiveEarliestCloseTimestamp();
         uint64 closeBy = IP42PayoutLedger(ledger_).closeByTimestamp();
         emit Funded(msg.sender, msg.value, newBalance, fundingCap, earliestClose, closeBy);
+        emit SponsorshipFunded(msg.sender, sponsor, msg.value, sponsorshipOf[sponsor], newBalance);
     }
 
     function _debitAccounted(uint256 amount) private {

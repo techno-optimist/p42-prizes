@@ -127,9 +127,10 @@
     "contracts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["timelock", "pool", "ledger", "submissions", "challenges", "registry"],
+      "required": ["timelock", "rolloverVault", "pool", "ledger", "submissions", "challenges", "registry"],
       "properties": {
         "timelock": { "$ref": "#/$defs/contract" },
+        "rolloverVault": { "$ref": "#/$defs/contract" },
         "pool": { "$ref": "#/$defs/contract" },
         "ledger": { "$ref": "#/$defs/contract" },
         "submissions": { "$ref": "#/$defs/contract" },
@@ -171,8 +172,8 @@
     },
     "setupTransactions": {
       "type": "array",
-      "minItems": 10,
-      "maxItems": 10,
+      "minItems": 11,
+      "maxItems": 11,
       "items": { "$ref": "#/$defs/setupOperation" }
     },
     "problems": {
@@ -191,9 +192,10 @@
         "contracts": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["timelock", "pool", "ledger", "submissions", "challenges", "registry"],
+          "required": ["timelock", "rolloverVault", "pool", "ledger", "submissions", "challenges", "registry"],
           "properties": {
             "timelock": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
+            "rolloverVault": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "pool": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "ledger": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "submissions": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
@@ -210,6 +212,7 @@
               "contracts": {
                 "properties": {
                   "timelock": { "type": "string", "format": "uri" },
+                  "rolloverVault": { "type": "string", "format": "uri" },
                   "pool": { "type": "string", "format": "uri" },
                   "ledger": { "type": "string", "format": "uri" },
                   "submissions": { "type": "string", "format": "uri" },

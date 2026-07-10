@@ -8,7 +8,10 @@ import { GET as capabilitiesGet } from "@/app/api/capabilities/route";
 import { POST as challengePost } from "@/app/api/challenges/route";
 import { GET as eventsGet } from "@/app/api/events/route";
 import { GET as problemGet } from "@/app/api/problems/[slug]/route";
-import { POST as coinbaseSessionPost } from "@/app/api/problems/[slug]/funding/coinbase-session/route";
+import {
+  POST as coinbaseSessionPost,
+  assertWalletFirstDestination,
+} from "@/app/api/problems/[slug]/funding/coinbase-session/route";
 import { GET as problemsGet } from "@/app/api/problems/route";
 import { POST as solutionsPost } from "@/app/api/solutions/route";
 import { POST as commitPost } from "@/app/api/submissions/commit/route";
@@ -384,19 +387,27 @@ describe("mutable API routes", () => {
     });
   });
 
-  it("gates Coinbase Onramp sessions while the per-problem pool is not deployed", async () => {
+  it("requires authenticated wallet-first Coinbase intents", async () => {
     const response = await coinbaseSessionPost(
       jsonRequest("/api/problems/hadamard-mini/funding/coinbase-session", {
-        preset_fiat_amount: "25.00",
+        phase: "intent",
+        wallet_address: "0x0000000000000000000000000000000000000020",
       }),
       { params: Promise.resolve({ slug: "hadamard-mini" }) },
     );
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(401);
     await expect(response.json()).resolves.toMatchObject({
-      error: "Coinbase Onramp is gated until a reviewed Base mainnet pool is configured",
-      donationWallet: { chain: "Base Sepolia", asset: "ETH", address: null, status: "not-deployed" },
+      error: "Coinbase Onramp requires authenticated funding access",
     });
+  });
+
+  it("fails closed when a Coinbase destination is the pool itself", () => {
+    const pool = "0x0000000000000000000000000000000000000042";
+    expect(() => assertWalletFirstDestination(pool, pool)).toThrow(/never a P42 pool/);
+    expect(() => assertWalletFirstDestination(
+      "0x0000000000000000000000000000000000000043", pool,
+    )).not.toThrow();
   });
 
   it("publishes only reconciled donation targets from problem APIs", async () => {

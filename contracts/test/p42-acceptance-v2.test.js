@@ -127,7 +127,7 @@ async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10"
   await registry.connect(owner).freeze(1);
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
   const Vault = await ethers.getContractFactory("P42RolloverVault");
-  const vault = await Vault.deploy(await registry.getAddress());
+  const vault = await Vault.deploy(await registry.getAddress(), owner.address);
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(WINDOW + 1n);
@@ -244,7 +244,7 @@ describe("P42 second-pass contract acceptance", () => {
     await registry.setProblem(1, await pool.getAddress(), true);
     await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
     const Vault = await ethers.getContractFactory("P42RolloverVault");
-    const vault = await Vault.deploy(await registry.getAddress());
+    const vault = await Vault.deploy(await registry.getAddress(), owner.address);
     await vault.waitForDeployment();
     await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     await pool.connect(owner).setAcceptingFunds(true);

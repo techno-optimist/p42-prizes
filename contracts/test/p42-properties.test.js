@@ -150,7 +150,7 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   await registry.freeze(1);
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
   const Vault = await ethers.getContractFactory("P42RolloverVault");
-  const vault = await Vault.deploy(await registry.getAddress());
+  const vault = await Vault.deploy(await registry.getAddress(), owner.address);
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
@@ -268,7 +268,7 @@ describe("P42 contract property checks", function () {
         expectedTotalClaimed += expected - fee;
         expectedTotalFee += fee;
         assert.equal(await pool.totalClaimed(), expectedTotalClaimed);
-        assert.equal(await pool.totalFeePaid(), expectedTotalFee);
+        assert.equal(await pool.totalFeeAccrued(), expectedTotalFee);
         assert.equal(await ledger.claimedWeiOf(solverAddress), expected);
         await expectCustomError(pool.connect(solver).claim(), pool, "P42_NOTHING_TO_CLAIM");
       }
@@ -321,7 +321,7 @@ describe("P42 contract property checks", function () {
       await registry.freeze(1);
       await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
       const Vault = await ethers.getContractFactory("P42RolloverVault");
-      const vault = await Vault.deploy(await registry.getAddress());
+      const vault = await Vault.deploy(await registry.getAddress(), owner.address);
       await vault.waitForDeployment();
       await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
       await pool.connect(owner).setAcceptingFunds(true);

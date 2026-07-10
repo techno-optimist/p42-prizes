@@ -511,7 +511,7 @@ export function constructorArgsFor(name, config, addresses = {}) {
         config.parameters.closeByTimestamp
       ];
     case "P42RolloverVault":
-      return [addresses.registry];
+      return [addresses.registry, owner];
     case "P42SubmissionManager":
       return [
         addresses.pool,

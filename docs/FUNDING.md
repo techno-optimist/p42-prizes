@@ -16,9 +16,11 @@ the problem has a reconciled, bytecode-backed pool on the declared chain.
 
 ## Coinbase Onramp
 
-Coinbase Onramp is the right UX layer for later real funding: a backend-created
-single-use session can send purchased ETH/USDC directly to a problem pool
-address on Base.
+Coinbase Onramp is wallet-first only. A backend-created single-use session may
+send purchased ETH to an authenticated user's Base wallet. That wallet must
+then separately sign `pool.fund()`, making the wallet the on-chain sponsor and
+zero-credit refund owner. Coinbase must never be configured with a pool as the
+session destination.
 
 The route exists now:
 
@@ -33,10 +35,14 @@ It fails closed until all of these are true:
 - audit/legal/mainnet gates are green,
 - `P42_ENABLE_COINBASE_ONRAMP=1`,
 - `COINBASE_ONRAMP_BEARER_TOKEN` is configured server-side.
+- mutation API authentication is configured (the development opt-out is rejected),
+- a trusted deployment header supplies client IP,
+- the redirect is either absent or exactly in `P42_ONRAMP_REDIRECT_ALLOWLIST`,
+- the wallet signs the server-generated, single-use, five-minute funding intent.
 
-If the deployment wants Coinbase's optional `clientIp` session binding, set
-`P42_TRUSTED_CLIENT_IP_HEADER` to a platform-controlled header. The route does
-not accept client IPs from request JSON.
+Set `P42_TRUSTED_CLIENT_IP_HEADER` to a platform-controlled header. The route
+does not accept client IPs from request JSON and does not return the standalone
+Coinbase session token.
 
 Coinbase is never the verifier, resolver, or payout oracle. It is only an
 onboarding rail that helps a funder move assets to the on-chain pool.

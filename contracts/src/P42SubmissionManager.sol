@@ -13,6 +13,7 @@ interface IP42CreditLedger {
     function voidCredit(address solver, uint256 atoms) external;
     function provisionalEntitlement(address solver, uint256 additionalAtoms) external view returns (uint256);
     function closed() external view returns (bool);
+    function fundingDeadline() external view returns (uint64);
 }
 
 /// @notice Commit/reveal/finalize scaffold for the Phase 1 testnet path.
@@ -32,6 +33,7 @@ contract P42SubmissionManager {
     error P42_EMPTY_COMMITMENT();
     error P42_EMPTY_DA_HASH();
     error P42_LEDGER_CLOSED();
+    error P42_SUBMISSION_WINDOW_CLOSED(uint64 fundingDeadline, uint64 nowAt);
     error P42_LEDGER_NOT_CLOSED();
     error P42_COMMIT_NOT_MATURE(uint256 eligibleBlock, uint256 currentBlock);
     error P42_COMMIT_EXPIRED(uint64 expiresAt, uint64 nowAt);
@@ -413,6 +415,10 @@ contract P42SubmissionManager {
         if (pausedAll) revert P42_PAUSED_ALL();
         if (pausedNewActions) revert P42_PAUSED_NEW_ACTIONS();
         if (ledger.closed()) revert P42_LEDGER_CLOSED();
+        uint64 deadline = ledger.fundingDeadline();
+        if (block.timestamp > deadline) {
+            revert P42_SUBMISSION_WINDOW_CLOSED(deadline, uint64(block.timestamp));
+        }
         if (commitment == bytes32(0)) revert P42_EMPTY_COMMITMENT();
         if (commitDaHash == bytes32(0)) revert P42_EMPTY_DA_HASH();
 

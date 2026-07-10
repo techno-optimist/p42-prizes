@@ -31,8 +31,8 @@ const MULTIBOARD_CHECKPOINT_SCHEMA = JSON.parse(
 
 export const CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
 export const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
-export const SHARED_CONTRACT_KEYS = ["timelock", "registry"];
-const EVIDENCE_CONTRACT_KEYS = ["timelock", ...CONTRACT_KEYS];
+export const SHARED_CONTRACT_KEYS = ["timelock", "registry", "rolloverVault"];
+const EVIDENCE_CONTRACT_KEYS = ["timelock", "rolloverVault", ...CONTRACT_KEYS];
 const BOARD_SETUP_LABEL_SUFFIXES = Object.freeze([
   "pool.setLedger",
   "ledger.setCreditRecorder",
@@ -40,6 +40,7 @@ const BOARD_SETUP_LABEL_SUFFIXES = Object.freeze([
   "submissions.setChallengeManager",
   "registry.register",
   "pool.setRegistry",
+  "ledger.setRolloverDestination",
   "registry.freeze",
   "timelock.setPauseTarget.ledger",
   "timelock.setPauseTarget.submissions",
@@ -53,9 +54,17 @@ export const EVENT_CATALOG = Object.freeze({
     "RegistrySet",
     "AcceptingFundsSet",
     "Funded",
+    "SponsorshipFunded",
     "Claimed",
+    "ClaimedTo",
+    "SolverClaimSettled",
+    "SponsorRefunded",
+    "FeeAccrued",
+    "FeeClaimed",
     "FeePaid",
-    "ResidualPaid",
+    "RolloverPaid",
+    "ForcedEthRecovered",
+    "ForcedEthSwept",
   ],
   ledger: [
     "NewActionsPaused",
@@ -64,8 +73,8 @@ export const EVENT_CATALOG = Object.freeze({
     "CreditVoided",
     "Closed",
     "ClaimConsumed",
-    "FeeSwept",
-    "ResidualSwept",
+    "RolloverDestinationSet",
+    "RolloverSwept",
   ],
   submissions: [
     "NewActionsPaused",
@@ -479,6 +488,28 @@ function validateDeploymentManifestSchema(manifest) {
   validateSchemaValue(manifest, schema, schema, "manifest");
 }
 
+export function validatePreBroadcastManifestPlan(schemaName, problemCount = 1) {
+  const schema = DEPLOYMENT_MANIFEST_SCHEMAS[schemaName];
+  if (!schema) throw new Error(`Unsupported deployment manifest schema: ${schemaName}`);
+  if (!Number.isInteger(problemCount) || problemCount < 1 || problemCount > 10) {
+    throw new Error("problemCount must be an integer from 1 through 10");
+  }
+  const requiredContracts = new Set(schema.properties?.contracts?.required ?? []);
+  const requiredSources = new Set(
+    schema.properties?.sourceVerification?.properties?.contracts?.required ?? []
+  );
+  for (const key of ["timelock", "registry", "rolloverVault"]) {
+    if (!requiredContracts.has(key)) throw new Error(`${schemaName} contracts schema omits ${key}`);
+    if (!requiredSources.has(key)) throw new Error(`${schemaName} source-verification schema omits ${key}`);
+  }
+  const expectedOperations = 11 * problemCount;
+  const setup = schema.properties?.setupTransactions;
+  if (expectedOperations < setup.minItems || expectedOperations > setup.maxItems) {
+    throw new Error(`${schemaName} rejects the full ${expectedOperations}-operation deployment plan`);
+  }
+  return { schema: schemaName, problemCount, expectedOperations };
+}
+
 function rejectKnownStaleRelease(manifest) {
   for (const guard of STALE_BASE_SEPOLIA_RELEASE_GUARDS) {
     if (
@@ -658,10 +689,10 @@ function validateContractEvidenceEntry({ key, entry, path, manifest }) {
 }
 
 function validateMultiBoardTopology(manifest) {
-  const expectedOperationCount = manifest.problems.length * 10;
+  const expectedOperationCount = manifest.problems.length * BOARD_SETUP_LABEL_SUFFIXES.length;
   if (manifest.setupTransactions.length !== expectedOperationCount) {
     throw new Error(
-      `multi-board manifest requires exactly 10 governance setup operations per problem (${expectedOperationCount} total)`
+      `multi-board manifest requires exactly ${BOARD_SETUP_LABEL_SUFFIXES.length} governance setup operations per problem (${expectedOperationCount} total)`
     );
   }
   const operationLabels = new Set();
@@ -1160,8 +1191,15 @@ function newReplayState(config, coverage) {
       accountedBalance: 0n,
       totalFunded: 0n,
       totalClaimed: 0n,
+      totalGrossClaimed: 0n,
+      totalFeeAccrued: 0n,
       totalFeePaid: 0n,
+      accruedFeeBalance: 0n,
+      totalSponsorRefunded: 0n,
+      totalRolloverPaid: 0n,
+      totalForcedEthRecovered: 0n,
       totalResidualPaid: 0n,
+      sponsorshipOf: {},
     },
     ledger: {
       pausedNewActions: false,
@@ -1173,6 +1211,8 @@ function newReplayState(config, coverage) {
       totalCreditAtoms: 0n,
       creditAtomsOf: {},
       claimedWeiOf: {},
+      totalGrossClaimed: 0n,
+      totalFeeAccrued: 0n,
       feeSwept: false,
       residualSwept: false,
     },
@@ -1296,14 +1336,53 @@ function replayPoolEvent(state, event) {
       }
       break;
     }
+    case "SponsorshipFunded": {
+      const sponsor = getArg(event, "sponsor");
+      const principal = asBigInt(getArg(event, "sponsorPrincipal"));
+      state.pool.sponsorshipOf[addressKey(sponsor)] = principal;
+      invariant(
+        asBigInt(getArg(event, "accountedBalance")) === state.pool.accountedBalance,
+        "SponsorshipFunded accounted balance does not match Funded"
+      );
+      break;
+    }
     case "Claimed": {
       const amount = asBigInt(getArg(event, "amount"));
       state.pool.totalClaimed += amount;
       invariant(state.pool.accountedBalance >= amount, "pool accounted balance underflow on claim");
       state.pool.accountedBalance -= amount;
+      break;
+    }
+    case "ClaimedTo":
+      break;
+    case "SolverClaimSettled": {
       const paired = state.claimConsumptionByTx[txKey(event)] ?? {};
-      paired.pool = { solver: addressKey(getArg(event, "solver")), amount };
+      paired.pool = {
+        solver: addressKey(getArg(event, "solver")),
+        grossAmount: asBigInt(getArg(event, "grossAmount")),
+        feeAmount: asBigInt(getArg(event, "feeAmount")),
+      };
+      state.pool.totalGrossClaimed += paired.pool.grossAmount;
       state.claimConsumptionByTx[txKey(event)] = paired;
+      break;
+    }
+    case "SponsorRefunded": {
+      const sponsor = addressKey(getArg(event, "sponsor"));
+      const amount = asBigInt(getArg(event, "principal"));
+      invariant(state.pool.accountedBalance >= amount, "pool accounted balance underflow on sponsor refund");
+      state.pool.accountedBalance -= amount;
+      state.pool.totalSponsorRefunded += amount;
+      state.pool.sponsorshipOf[sponsor] = 0n;
+      break;
+    }
+    case "FeeAccrued":
+      state.pool.totalFeeAccrued += asBigInt(getArg(event, "amount"));
+      state.pool.accruedFeeBalance = asBigInt(getArg(event, "accruedFeeBalance"));
+      break;
+    case "FeeClaimed": {
+      const amount = asBigInt(getArg(event, "amount"));
+      invariant(state.pool.accruedFeeBalance >= amount, "pool accrued fee balance underflow");
+      state.pool.accruedFeeBalance -= amount;
       break;
     }
     case "FeePaid":
@@ -1314,13 +1393,19 @@ function replayPoolEvent(state, event) {
       state.pool.totalFeePaid += asBigInt(getArg(event, "amount"));
       state.pool.accountedBalance -= asBigInt(getArg(event, "amount"));
       break;
-    case "ResidualPaid":
+    case "RolloverPaid":
       invariant(
         state.pool.accountedBalance >= asBigInt(getArg(event, "amount")),
         "pool accounted balance underflow on residual"
       );
+      state.pool.totalRolloverPaid += asBigInt(getArg(event, "amount"));
       state.pool.totalResidualPaid += asBigInt(getArg(event, "amount"));
       state.pool.accountedBalance -= asBigInt(getArg(event, "amount"));
+      break;
+    case "ForcedEthRecovered":
+      state.pool.totalForcedEthRecovered += asBigInt(getArg(event, "amount"));
+      break;
+    case "ForcedEthSwept":
       break;
   }
 }
@@ -1369,18 +1454,19 @@ function replayLedgerEvent(state, event) {
       break;
     case "ClaimConsumed": {
       const solver = getArg(event, "solver");
-      const amount = asBigInt(getArg(event, "amount"));
-      increment(state.ledger.claimedWeiOf, solver, amount);
+      const grossAmount = asBigInt(getArg(event, "grossAmount"));
+      const feeAmount = asBigInt(getArg(event, "feeAmount"));
+      increment(state.ledger.claimedWeiOf, solver, grossAmount);
+      state.ledger.totalGrossClaimed += grossAmount;
+      state.ledger.totalFeeAccrued += feeAmount;
       const paired = state.claimConsumptionByTx[txKey(event)] ?? {};
-      paired.ledger = { solver: addressKey(solver), amount };
+      paired.ledger = { solver: addressKey(solver), grossAmount, feeAmount };
       state.claimConsumptionByTx[txKey(event)] = paired;
       break;
     }
-    case "FeeSwept":
-      invariant(!state.ledger.feeSwept, "duplicate FeeSwept event");
-      state.ledger.feeSwept = true;
+    case "RolloverDestinationSet":
       break;
-    case "ResidualSwept":
+    case "RolloverSwept":
       invariant(!state.ledger.residualSwept, "duplicate ResidualSwept event");
       state.ledger.residualSwept = true;
       break;
@@ -1780,7 +1866,9 @@ function validatePairedEvents(state) {
   for (const [transactionHash, claim] of Object.entries(state.claimConsumptionByTx)) {
     invariant(claim.pool && claim.ledger, `claim event pair incomplete in ${transactionHash}`);
     invariant(
-      claim.pool.solver === claim.ledger.solver && claim.pool.amount === claim.ledger.amount,
+      claim.pool.solver === claim.ledger.solver &&
+        claim.pool.grossAmount === claim.ledger.grossAmount &&
+        claim.pool.feeAmount === claim.ledger.feeAmount,
       `claim event pair mismatch in ${transactionHash}`
     );
   }
@@ -1861,7 +1949,13 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("pool.problemId", state.pool.problemId, snapshot.pool.problemId),
     check("pool.totalFunded", state.pool.totalFunded, snapshot.pool.totalFunded),
     check("pool.totalClaimed", state.pool.totalClaimed, snapshot.pool.totalClaimed),
+    check("pool.totalGrossClaimed", state.pool.totalGrossClaimed, snapshot.pool.totalGrossClaimed),
+    check("pool.totalFeeAccrued", state.pool.totalFeeAccrued, snapshot.pool.totalFeeAccrued),
     check("pool.totalFeePaid", state.pool.totalFeePaid, snapshot.pool.totalFeePaid),
+    check("pool.accruedFeeBalance", state.pool.accruedFeeBalance, snapshot.pool.accruedFeeBalance),
+    check("pool.totalSponsorRefunded", state.pool.totalSponsorRefunded, snapshot.pool.totalSponsorRefunded),
+    check("pool.totalRolloverPaid", state.pool.totalRolloverPaid, snapshot.pool.totalRolloverPaid),
+    check("pool.totalForcedEthRecovered", state.pool.totalForcedEthRecovered, snapshot.pool.totalForcedEthRecovered),
     check("pool.totalResidualPaid", state.pool.totalResidualPaid, snapshot.pool.totalResidualPaid),
     check("pool.accountedBalance", state.pool.accountedBalance, snapshot.pool.accountedBalance),
     check(
@@ -1875,6 +1969,8 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("ledger.pausedNewActions", state.ledger.pausedNewActions, snapshot.ledger.pausedNewActions),
     check("ledger.creditRecorder", state.ledger.creditRecorder, snapshot.ledger.creditRecorder),
     check("ledger.totalCreditAtoms", state.ledger.totalCreditAtoms, snapshot.ledger.totalCreditAtoms),
+    check("ledger.totalGrossClaimed", state.ledger.totalGrossClaimed, snapshot.ledger.totalGrossClaimed),
+    check("ledger.totalFeeAccrued", state.ledger.totalFeeAccrued, snapshot.ledger.totalFeeAccrued),
     check("ledger.closed", state.ledger.closed, snapshot.ledger.closed),
     check("ledger.closedPoolBalance", state.ledger.closedPoolBalance, snapshot.ledger.closedPoolBalance),
     check("ledger.feeReserve", state.ledger.feeReserve, snapshot.ledger.feeReserve),
@@ -1884,6 +1980,34 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("registry.problemCount", state.registry.problemCount, snapshot.registry.problemCount),
     check("challenge pausedNewActions", state.challengePausedNewActions, snapshot.challengePausedNewActions),
   ];
+  checks.push(
+    check(
+      "pool gross claims equal net claims plus accrued fees",
+      snapshot.pool.totalGrossClaimed,
+      snapshot.pool.totalClaimed + snapshot.pool.totalFeeAccrued,
+    ),
+    check(
+      "pool fee liability conserves accrued fees",
+      snapshot.pool.totalFeeAccrued,
+      snapshot.pool.totalFeePaid + snapshot.pool.accruedFeeBalance,
+    ),
+    check(
+      "pool accounted ETH conserves all categorized outflows",
+      snapshot.pool.totalFunded,
+      snapshot.pool.accountedBalance + snapshot.pool.totalClaimed + snapshot.pool.totalFeePaid
+        + snapshot.pool.totalSponsorRefunded + snapshot.pool.totalRolloverPaid,
+    ),
+    check(
+      "pool and ledger gross claims agree",
+      snapshot.pool.totalGrossClaimed,
+      snapshot.ledger.totalGrossClaimed,
+    ),
+    check(
+      "pool and ledger accrued fees agree",
+      snapshot.pool.totalFeeAccrued,
+      snapshot.ledger.totalFeeAccrued,
+    ),
+  );
 
   const finalizedStatuses = Object.values(state.submissions).filter((entry) => entry.status === "Finalized").length;
   const voidedStatuses = Object.values(state.submissions).filter((entry) => entry.status === "Voided").length;
@@ -2005,6 +2129,7 @@ function artifactAbi(name) {
 
 const CONTRACT_NAMES = Object.freeze({
   timelock: "P42MultisigTimelock",
+  rolloverVault: "P42RolloverVault",
   pool: "P42BountyPool",
   ledger: "P42PayoutLedger",
   submissions: "P42SubmissionManager",
@@ -2161,7 +2286,13 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       problemId: await pool.problemId(...atBlock),
       totalFunded: await pool.totalFunded(...atBlock),
       totalClaimed: await pool.totalClaimed(...atBlock),
+      totalGrossClaimed: await pool.totalGrossClaimed(...atBlock),
+      totalFeeAccrued: await pool.totalFeeAccrued(...atBlock),
       totalFeePaid: await pool.totalFeePaid(...atBlock),
+      accruedFeeBalance: await pool.accruedFeeBalance(...atBlock),
+      totalSponsorRefunded: await pool.totalSponsorRefunded(...atBlock),
+      totalRolloverPaid: await pool.totalRolloverPaid(...atBlock),
+      totalForcedEthRecovered: await pool.totalForcedEthRecovered(...atBlock),
       totalResidualPaid: await pool.totalResidualPaid(...atBlock),
       accountedBalance: await pool.accountedBalance(...atBlock),
       everFunded: await pool.everFunded(...atBlock),
@@ -2175,6 +2306,8 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       pausedNewActions: await ledger.pausedNewActions(...atBlock),
       creditRecorder: await ledger.creditRecorder(...atBlock),
       totalCreditAtoms: await ledger.totalCreditAtoms(...atBlock),
+      totalGrossClaimed: await ledger.totalGrossClaimed(...atBlock),
+      totalFeeAccrued: await ledger.totalFeeAccrued(...atBlock),
       closed: await ledger.closed(...atBlock),
       closedPoolBalance: await ledger.closedPoolBalance(...atBlock),
       feeReserve: await ledger.feeReserve(...atBlock),

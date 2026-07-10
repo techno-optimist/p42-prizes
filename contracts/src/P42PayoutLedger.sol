@@ -6,6 +6,7 @@ import {P42RolloverVault} from "./P42RolloverVault.sol";
 
 interface IP42EscrowPool {
     function funded() external view returns (uint256);
+    function rolloverBalance() external view returns (uint256);
     function firstFundedAt() external view returns (uint64);
     function payRollover(address to, uint256 amount) external;
     function registry() external view returns (address);
@@ -38,6 +39,7 @@ contract P42PayoutLedger {
     error P42_POOL_REGISTRY_NOT_SET();
     error P42_POOL_REGISTRY_BINDING_INVALID();
     error P42_ROLLOVER_REGISTRY_MISMATCH(address expectedRegistry, address actualRegistry);
+    error P42_ROLLOVER_ALLOCATOR_MISMATCH(address expectedAllocator, address actualAllocator);
     error P42_CLOSED();
     error P42_NOT_CLOSED();
     error P42_PAUSED_NEW_ACTIONS();
@@ -172,6 +174,10 @@ contract P42PayoutLedger {
         address vaultRegistry = P42RolloverVault(payable(destination)).registry();
         if (vaultRegistry != canonicalRegistry) {
             revert P42_ROLLOVER_REGISTRY_MISMATCH(canonicalRegistry, vaultRegistry);
+        }
+        address vaultAllocator = P42RolloverVault(payable(destination)).allocator();
+        if (vaultAllocator != owner) {
+            revert P42_ROLLOVER_ALLOCATOR_MISMATCH(owner, vaultAllocator);
         }
         rolloverDestination = destination;
         emit RolloverDestinationSet(destination);
@@ -332,7 +338,7 @@ contract P42PayoutLedger {
         residualSwept = true;
         // `funded()` is accounted principal only; raw balance is deliberately
         // never read here, so forced ETH cannot be swept as prize residual.
-        uint256 amount = IP42EscrowPool(pool).funded();
+        uint256 amount = IP42EscrowPool(pool).rolloverBalance();
         if (amount != 0) IP42EscrowPool(pool).payRollover(rolloverDestination, amount);
         emit RolloverSwept(rolloverDestination, amount);
     }

@@ -161,7 +161,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     await fundingRegistry.freeze(1);
     await pool.connect(owner).setRegistry(await fundingRegistry.getAddress(), 1);
     const Vault = await ethers.getContractFactory("P42RolloverVault");
-    const vault = await Vault.deploy(await fundingRegistry.getAddress());
+    const vault = await Vault.deploy(await fundingRegistry.getAddress(), owner.address);
     await vault.waitForDeployment();
     await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
@@ -596,6 +596,42 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await submissions.claimableBondWei(treasury.address), bond);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
+  });
+
+  it("closes the commit gate at the funding deadline while preserving lifecycle cleanup", async function () {
+    const fixture = await deployFixture();
+    const { alice, bob, ledger, submissions } = fixture;
+    const deadline = await ledger.fundingDeadline();
+    const latest = await ethers.provider.getBlock("latest");
+    await increaseTime(deadline - BigInt(latest.timestamp) - 1n);
+    const bond = await submissions.requiredPostingBondNow();
+    const first = await submissions["computeCommitment(string,address,bytes32,string)"](
+      "bafy-deadline-front-run", alice.address, DA_HASH, "deadline"
+    );
+    await submissions.connect(alice).commit(first, DA_HASH, { value: bond });
+    assert.equal(await submissions.openSubmissionCount(), 1n);
+
+    await increaseTime(1n);
+    const recycled = await submissions["computeCommitment(string,address,bytes32,string)"](
+      "bafy-zero-marginal-recycle", bob.address, DA_HASH, "recycle"
+    );
+    await expectCustomError(
+      submissions.connect(bob).commit(recycled, DA_HASH, { value: bond }),
+      submissions,
+      "P42_SUBMISSION_WINDOW_CLOSED"
+    );
+    assert.equal(await submissions.submissionCount(), 1n);
+
+    await advanceToEffectiveClose(ledger);
+    await expectCustomError(ledger.close(), ledger, "P42_OPEN_SUBMISSIONS");
+    await submissions.expireCommitted(1);
+    await ledger.connect(bob).close();
+    assert.equal(await ledger.closed(), true);
+    await expectCustomError(
+      submissions.connect(bob).commit(recycled, DA_HASH, { value: bond }),
+      submissions,
+      "P42_LEDGER_CLOSED"
+    );
   });
 
   it("scopes ledger credit recording to the owner before activation and recorder after activation", async function () {
@@ -1043,10 +1079,12 @@ describe("P42 Gate 1 contract scaffold", function () {
 
     await advanceToEffectiveClose(ledger);
     await ledger.close();
-    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
     const poolBefore = await ethers.provider.getBalance(await pool.getAddress());
     await pool.connect(alice).claim();
     const fee = ethers.parseEther("10") * 250n / 10_000n;
+    assert.equal(await pool.accruedFeeBalance(), fee);
+    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+    await pool.claimFees();
     assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, fee);
     assert.equal(poolBefore - (await ethers.provider.getBalance(await pool.getAddress())), ethers.parseEther("10"));
     assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("10"));

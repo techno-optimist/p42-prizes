@@ -7,15 +7,17 @@ This document specifies the settlement accounting implemented by
 
 - `closeByTimestamp` is immutable. `close()` is permissionless only at or after
   that timestamp; the owner has no early-close path.
-- The owner sets `rolloverDestination` exactly once after the pool's canonical
+- Governance sets `rolloverDestination` exactly once after the pool's canonical
   registry binding exists. It must be a bytecode-pinned `P42RolloverVault`
-  whose `registry` exactly equals that canonical registry, not an EOA or
-  arbitrary receiver, and it cannot equal the fee treasury.
+  whose `registry` equals that canonical registry and whose immutable
+  `allocator` equals the pool/ledger governance timelock. It cannot equal the
+  fee treasury.
 - The fee recipient and `feeBps <= 250` are immutable constructor values.
 
 ## Open state
 
-Every successful `fund()` records both `sponsorshipOf[msg.sender]` and
+Every successful `fund()` or direct `receive()` records both
+`sponsorshipOf[msg.sender]` and
 `totalFunded`. `accountedBalance` contains only accepted `fund()` value. ETH
 that arrives without executing `fund()` is forced ETH and is excluded from all
 sponsor, prize, fee, and rollover calculations.
@@ -56,13 +58,16 @@ fee_i   = floor(gross_i * feeBps / 10_000)
 net_i   = gross_i - fee_i
 ```
 
-`claim()` and `claimTo()` consume `gross_i` and transfer `net_i` to the solver
-recipient plus `fee_i` to the immutable treasury in the same transaction. A
-failed recipient or fee transfer reverts the solver debit, fee accrual, and all
-transfers. Therefore unclaimed claims create no fee.
+`claim()` and `claimTo()` consume `gross_i`, transfer `net_i` to the solver
+recipient, and accrue `fee_i` in the same transaction. A
+failed solver-recipient transfer reverts the solver debit and fee accrual.
+The fee remains an accounted liability in `accruedFeeBalance`; anyone may try
+`claimFees()` to the immutable treasury, while only that treasury may use
+`claimFeesTo(recipient)` to redirect around a rejecting receiver. Treasury
+failure can never veto solver payment. Unclaimed claims create no fee.
 
 After the 365-day positive-credit claim deadline, anyone may call
-`sweepRollover()`. It transfers only the then-current `accountedBalance` to the
+`sweepRollover()`. It transfers `accountedBalance - accruedFeeBalance` to the
 immutable rollover destination. This includes floor dust and expired gross
 awards, never a fee reserve and never forced ETH.
 
@@ -75,6 +80,9 @@ accountedBalance = totalFunded
                  - totalRolloverPaid
 
 totalGrossClaimed = totalClaimed + totalFeePaid
+                  + accruedFeeBalance
+
+totalFeeAccrued = totalFeePaid + accruedFeeBalance
 ```
 
 `totalClaimed` is net solver ETH; `totalGrossClaimed` is consumed entitlement.
@@ -87,7 +95,7 @@ Events `Funded`, `SponsorRefunded`, `SolverClaimSettled`, `FeePaid`, and
 forcedEthAvailable = max(address(pool).balance - accountedBalance, 0)
 ```
 
-Only the immutable pool owner may call `recoverForcedEth(amount)` after close.
+Anyone may call `recoverForcedEth(amount)` after close.
 The destination is fixed to the ledger's bound rollover vault, never the owner
 or fee treasury. The method is capped at `forcedEthAvailable`, emits
 `ForcedEthRecovered`, and cannot debit sponsor principal, solver awards, fees,
@@ -105,12 +113,18 @@ rawPoolBalance = accountedBalance + forcedEthAvailable
 
 ## Rollover vault restriction
 
-`P42RolloverVault` is ownerless and has no withdrawal function. Its only
-outbound method, `fundRegisteredPool`, can send ETH only to a pool whose public
-`registry` equals the vault's immutable registry and whose `problemId` maps
-back to that exact pool in the registry. The recipient pool's own funding gates
-still execute. Any caller can trigger such a future-pool funding call, so no
-trusted party can redirect or gate rollover use.
+`P42RolloverVault` has no arbitrary withdrawal. Only its immutable allocator,
+the canonical governance timelock, can assign and consume per-pool quotas. A
+target must match the allocation-time runtime code hash, map back through the
+canonical registry, share the allocator as owner, and prove the complete
+pool/ledger/submission-manager topology. The recipient pool's normal funding
+gates still execute, and failed funding restores the quota atomically.
+
+Residual trust remains: timelock governance chooses future pools, their pinned
+runtime code hashes, and quota sizes. The vault prevents unilateral callers,
+EOAs, mismatched governance, obvious topology mismatches, and quota races; it
+cannot prove that governance did not deliberately approve counterfeit code or
+that a future problem is substantively worthwhile.
 
 If a pool funded by the vault closes with zero credit, any caller may invoke
 `reclaimZeroCreditSponsorRefund(pool)`. It calls that pool's sponsor-refund
