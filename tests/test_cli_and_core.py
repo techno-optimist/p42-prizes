@@ -12,6 +12,7 @@ import jsonschema
 
 import pytest
 
+from p42_prizes.admission import compute_source_hash
 from p42_prizes.lint import lint_python_file
 from p42_prizes.problem import validate_problem
 from p42_prizes.verdict import canonical_json, parse_rational, rational_to_string, sha256_bytes, sha256_file
@@ -56,6 +57,12 @@ def test_rational_strings_are_normalized() -> None:
 def test_problem_validates_and_lints() -> None:
     assert run_cli("validate", "--problem", "problems/hadamard-mini").returncode == 0
     assert run_cli("lint", "--problem", "problems/hadamard-mini").returncode == 0
+
+
+def test_source_hash_cli_emits_the_canonical_verifier_tree_digest() -> None:
+    completed = run_cli("source-hash", "--problem", "problems/hadamard-mini")
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == compute_source_hash(ROOT / "problems" / "hadamard-mini")
 
 
 def test_verdict_matches_schema() -> None:

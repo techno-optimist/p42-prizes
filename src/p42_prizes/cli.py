@@ -16,6 +16,7 @@ from p42_prizes.admission import (
     AdmissionError,
     build_admission_matrix,
     build_verifier_env,
+    compute_source_hash,
     detect_host,
     generate_host_evidence,
     load_evidence_file,
@@ -153,6 +154,13 @@ def _cmd_lint(args: argparse.Namespace) -> int:
             print(finding.format(root), file=sys.stderr)
         return 1
     print(f"OK: {problem / 'verifier'}")
+    return 0
+
+
+def _cmd_source_hash(args: argparse.Namespace) -> int:
+    """Emit the versioned verifier source-tree digest used by fresh ceremonies."""
+
+    print(compute_source_hash(Path(args.problem).resolve()))
     return 0
 
 
@@ -528,6 +536,13 @@ def build_parser() -> argparse.ArgumentParser:
     lint = subparsers.add_parser("lint", help="lint verifier code for exact-path hazards")
     lint.add_argument("--problem", required=True)
     lint.set_defaults(func=_cmd_lint)
+
+    source_hash = subparsers.add_parser(
+        "source-hash",
+        help="emit the canonical p42-source-tree-sha256/v1 verifier digest",
+    )
+    source_hash.add_argument("--problem", required=True)
+    source_hash.set_defaults(func=_cmd_source_hash)
 
     verify = subparsers.add_parser("verify", help="run a problem's configured verifier")
     verify.add_argument("--problem", required=True)

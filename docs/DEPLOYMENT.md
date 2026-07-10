@@ -157,7 +157,10 @@ P42_RESOLVER_DECISION_BOND_WEI=5000000000000000 \
 P42_RESOLVER_FRAUD_WINDOW_SECONDS=86400 \
 P42_ONCHAIN_DA=true \
 P42_MAX_SOLUTION_BYTES=524288 \
+P42_PROBLEM_SLUG=hadamard-mini \
+P42_VERIFIER_VERSION=0.1.1 \
 P42_PROBLEM_SPEC_HASH=0x... \
+P42_VERIFIER_SOURCE_DIGEST=sha256:<64-lowercase-hex> \
 P42_VERIFIER_SOURCE_HASH=0x... \
 P42_VERIFIER_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
 P42_VERIFIER_IMAGE_HASH=0x... \
@@ -185,6 +188,20 @@ and local placeholders such as `sha256:local-dev`. The supplied
 `keccak256(utf8(P42_VERIFIER_IMAGE_DIGEST))` before the script reserves a
 manifest or deploys a contract. The manifest records the digest and
 `verifierImageHashAlgorithm: "keccak256-utf8/v1"` alongside the on-chain hash.
+It also requires a `P42_PROBLEM_SLUG`, semantic `P42_VERIFIER_VERSION`, and
+`P42_VERIFIER_SOURCE_DIGEST` using `p42-source-tree-sha256/v1`: a canonical
+source-tree hash over `src/` and `problems/<slug>/` with the image field
+normalized. `P42_VERIFIER_SOURCE_HASH` must equal
+`keccak256(utf8(P42_VERIFIER_SOURCE_DIGEST))`; the manifest records both
+algorithms and values so an autonomous runtime can reject a locally altered
+problem command or verifier source tree.
+
+Generate the source digest from the release checkout, not by hand:
+
+```bash
+PYTHONPATH=src python3 -m p42_prizes.cli source-hash --problem problems/<slug>
+```
+
 This cryptographically binds the stated digest to the bytes32 anchor; it does
 not assert that an image is published, reviewed, or fundable. Image and
 admission hashes must be nonzero immutable pins. `earliestClose` must be at

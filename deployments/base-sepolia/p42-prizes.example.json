@@ -706,9 +706,14 @@
     {
       "problemId": "1",
       "registrationStatus": "pending",
+      "problemSlug": "hadamard-mini",
+      "verifierVersion": "0.1.1",
       "metadataURI": "ipfs://replace-with-frozen-problem-metadata",
       "specHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
-      "verifierSourceHash": "0x2222222222222222222222222222222222222222222222222222222222222222",
+      "verifierSourceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "verifierSourceDigestAlgorithm": "p42-source-tree-sha256/v1",
+      "verifierSourceHash": "0x00f3d3e8d256d5ae294a41d7ea455c4aaf6fc010052692d5568e622aaf54ae5d",
+      "verifierSourceHashAlgorithm": "keccak256-utf8/v1",
       "verifierImageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "verifierImageHashAlgorithm": "keccak256-utf8/v1",
       "verifierImageHash": "0x97073bd2a182e6ce50d876bd362c16b06a7f8982c69af5219273cbe688663f7c",
@@ -754,5 +759,5 @@
     "indexedThroughBlock": null,
     "reconciliationReport": null
   },
-  "deploymentConfigHash": "0x99d01e369ff3f28b5795ec2c97d86eac04e2472372502d698367eb10dc8b673f"
+  "deploymentConfigHash": "0xa4f5a71c06afb8e735fbe71f580b6f7b5b9cb89e69f4f458350fcc64a4ecbbaa"
 }
