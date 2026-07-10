@@ -47,6 +47,8 @@ contract P42BountyPool {
     error P42_SPONSOR_REFUNDS_DISABLED();
     error P42_NOTHING_TO_REFUND();
     error P42_FORCED_ETH_EXCEEDS_AVAILABLE(uint256 available, uint256 requested);
+    error P42_FORCED_ETH_RECOVERY_NOT_CLOSED();
+    error P42_FORCED_ETH_ROLLOVER_NOT_SET();
     error P42_FEE_CLAIM_ONLY();
     error P42_RESIDUAL_DISABLED();
 
@@ -205,10 +207,16 @@ contract P42BountyPool {
     function recoverForcedEth(uint256 amount) external onlyOwner nonReentrant {
         uint256 available = forcedEthAvailable();
         if (amount == 0 || amount > available) revert P42_FORCED_ETH_EXCEEDS_AVAILABLE(available, amount);
+        address ledger_ = ledger;
+        if (ledger_ == address(0) || !IP42PayoutLedger(ledger_).closed()) {
+            revert P42_FORCED_ETH_RECOVERY_NOT_CLOSED();
+        }
+        address destination = IP42PayoutLedger(ledger_).rolloverDestination();
+        if (destination == address(0)) revert P42_FORCED_ETH_ROLLOVER_NOT_SET();
         totalForcedEthRecovered += amount;
-        (bool ok,) = payable(owner).call{value: amount}("");
+        (bool ok,) = payable(destination).call{value: amount}("");
         if (!ok) revert P42_TRANSFER_FAILED();
-        emit ForcedEthRecovered(owner, amount, forcedEthAvailable());
+        emit ForcedEthRecovered(destination, amount, forcedEthAvailable());
     }
 
     function payRollover(address to, uint256 amount) external nonReentrant {

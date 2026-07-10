@@ -537,7 +537,12 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     await fixture.pool.connect(fixture.bob).sponsorRefund();
     assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), forced);
     assert.equal(await fixture.pool.totalResidualPaid(), 0n);
+    const vaultBeforeForcedRecovery = await ethers.provider.getBalance(await fixture.vault.getAddress());
     await fixture.pool.connect(fixture.owner).recoverForcedEth(forced);
+    assert.equal(
+      (await ethers.provider.getBalance(await fixture.vault.getAddress())) - vaultBeforeForcedRecovery,
+      forced
+    );
     assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), 0n);
   });
 

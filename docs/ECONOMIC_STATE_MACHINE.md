@@ -7,9 +7,10 @@ This document specifies the settlement accounting implemented by
 
 - `closeByTimestamp` is immutable. `close()` is permissionless only at or after
   that timestamp; the owner has no early-close path.
-- The owner sets `rolloverDestination` exactly once before close. It must be a
-  bytecode-pinned `P42RolloverVault`, not an EOA or arbitrary receiver, and it
-  cannot equal the fee treasury.
+- The owner sets `rolloverDestination` exactly once after the pool's canonical
+  registry binding exists. It must be a bytecode-pinned `P42RolloverVault`
+  whose `registry` exactly equals that canonical registry, not an EOA or
+  arbitrary receiver, and it cannot equal the fee treasury.
 - The fee recipient and `feeBps <= 250` are immutable constructor values.
 
 ## Open state
@@ -78,7 +79,7 @@ totalGrossClaimed = totalClaimed + totalFeePaid
 
 `totalClaimed` is net solver ETH; `totalGrossClaimed` is consumed entitlement.
 Events `Funded`, `SponsorRefunded`, `SolverClaimSettled`, `FeePaid`, and
-`RolloverPaid` expose every term for indexers.
+`RolloverPaid` expose every accounted term for indexers.
 
 ## Forced ETH
 
@@ -86,10 +87,21 @@ Events `Funded`, `SponsorRefunded`, `SolverClaimSettled`, `FeePaid`, and
 forcedEthAvailable = max(address(pool).balance - accountedBalance, 0)
 ```
 
-Only the immutable pool owner may call `recoverForcedEth(amount)`, and the
-payment destination is that same immutable owner. The method is capped at
-`forcedEthAvailable`, emits `ForcedEthRecovered`, and cannot debit sponsor
-principal, solver awards, fees, or rollover funds.
+Only the immutable pool owner may call `recoverForcedEth(amount)` after close.
+The destination is fixed to the ledger's bound rollover vault, never the owner
+or fee treasury. The method is capped at `forcedEthAvailable`, emits
+`ForcedEthRecovered`, and cannot debit sponsor principal, solver awards, fees,
+or rollover funds.
+
+Forced ETH has its own counter and event and is intentionally absent from the
+accounted identity:
+
+```
+totalForcedEthRecovered = sum(ForcedEthRecovered.amount)
+rawPoolBalance = accountedBalance + forcedEthAvailable
+```
+
+`ForcedEthRecovered.to` is always the bound rollover vault.
 
 ## Rollover vault restriction
 

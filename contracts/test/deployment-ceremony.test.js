@@ -595,11 +595,11 @@ describe("deployment ceremony construction", () => {
       [
         "pool.setLedger",
         "ledger.setCreditRecorder",
-        "ledger.setRolloverDestination",
         "pool.setSubmissionManager",
         "submissions.setChallengeManager",
         "registry.register",
         "pool.setRegistry",
+        "ledger.setRolloverDestination",
         "registry.freeze",
         "timelock.setPauseTarget.ledger",
         "timelock.setPauseTarget.submissions",
@@ -842,7 +842,7 @@ describe("deployment ceremony construction", () => {
     assert.deepEqual(completed.problems.map((problem) => problem.explicitlyFrozen), [true, true]);
     assert.deepEqual(
       completed.problems.map((problem) => problem.registerTxHash),
-      [completed.setupTransactions[5].txHash, completed.setupTransactions[16].txHash],
+      [completed.setupTransactions[4].txHash, completed.setupTransactions[15].txHash],
     );
   });
 });

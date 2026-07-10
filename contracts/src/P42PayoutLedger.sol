@@ -8,6 +8,12 @@ interface IP42EscrowPool {
     function funded() external view returns (uint256);
     function firstFundedAt() external view returns (uint64);
     function payRollover(address to, uint256 amount) external;
+    function registry() external view returns (address);
+    function problemId() external view returns (uint256);
+}
+
+interface IP42CanonicalPoolRegistry {
+    function problemPool(uint256 problemId) external view returns (address);
 }
 
 interface IP42CreditCloseGuard {
@@ -29,6 +35,9 @@ contract P42PayoutLedger {
     error P42_ROLLOVER_DESTINATION_INVALID();
     error P42_ROLLOVER_DESTINATION_NOT_SEPARATE();
     error P42_ROLLOVER_DESTINATION_NOT_SET();
+    error P42_POOL_REGISTRY_NOT_SET();
+    error P42_POOL_REGISTRY_BINDING_INVALID();
+    error P42_ROLLOVER_REGISTRY_MISMATCH(address expectedRegistry, address actualRegistry);
     error P42_CLOSED();
     error P42_NOT_CLOSED();
     error P42_PAUSED_NEW_ACTIONS();
@@ -150,6 +159,19 @@ contract P42PayoutLedger {
         if (destination == treasury) revert P42_ROLLOVER_DESTINATION_NOT_SEPARATE();
         if (destination.codehash != keccak256(type(P42RolloverVault).runtimeCode)) {
             revert P42_ROLLOVER_DESTINATION_INVALID();
+        }
+        address canonicalRegistry = IP42EscrowPool(pool).registry();
+        if (canonicalRegistry == address(0)) revert P42_POOL_REGISTRY_NOT_SET();
+        uint256 canonicalProblemId = IP42EscrowPool(pool).problemId();
+        if (
+            canonicalProblemId == 0 ||
+            IP42CanonicalPoolRegistry(canonicalRegistry).problemPool(canonicalProblemId) != pool
+        ) {
+            revert P42_POOL_REGISTRY_BINDING_INVALID();
+        }
+        address vaultRegistry = P42RolloverVault(payable(destination)).registry();
+        if (vaultRegistry != canonicalRegistry) {
+            revert P42_ROLLOVER_REGISTRY_MISMATCH(canonicalRegistry, vaultRegistry);
         }
         rolloverDestination = destination;
         emit RolloverDestinationSet(destination);

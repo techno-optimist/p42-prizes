@@ -44,7 +44,7 @@ async function advanceTo(timestamp) {
   }
 }
 
-async function deployFixture({ feeBps = 250, rejectingTreasury = false } = {}) {
+async function deployFixture({ feeBps = 250, rejectingTreasury = false, configureRollover = true } = {}) {
   const [owner, treasury, alice, bob, recipient, outsider] = await ethers.getSigners();
   const latest = await ethers.provider.getBlock("latest");
   const earliestClose = BigInt(latest.timestamp) + 31n * DAY;
@@ -78,7 +78,7 @@ async function deployFixture({ feeBps = 250, rejectingTreasury = false } = {}) {
   await ledger.waitForDeployment();
   await pool.setLedger(await ledger.getAddress());
   await pool.setRegistry(await registry.getAddress(), 1);
-  await ledger.setRolloverDestination(await vault.getAddress());
+  if (configureRollover) await ledger.setRolloverDestination(await vault.getAddress());
 
   const Manager = await ethers.getContractFactory("MockFundingArmed");
   const manager = await Manager.deploy(true);
@@ -116,6 +116,23 @@ describe("P42 sponsorship economics", function () {
       ledger,
       "P42_ROLLOVER_DESTINATION_INVALID"
     );
+  });
+
+  it("rejects a genuine vault bound to an attacker-controlled registry", async function () {
+    const fixture = await deployFixture({ configureRollover: false });
+    const Registry = await ethers.getContractFactory("MockProblemRegistry");
+    const attackerRegistry = await Registry.deploy();
+    await attackerRegistry.waitForDeployment();
+    const Vault = await ethers.getContractFactory("P42RolloverVault");
+    const attackerVault = await Vault.deploy(await attackerRegistry.getAddress());
+    await attackerVault.waitForDeployment();
+
+    await expectCustomError(
+      fixture.ledger.setRolloverDestination(await attackerVault.getAddress()),
+      fixture.ledger,
+      "P42_ROLLOVER_REGISTRY_MISMATCH"
+    );
+    await fixture.ledger.setRolloverDestination(await fixture.vault.getAddress());
   });
 
   it("allows one permissionless close only at closeByTimestamp", async function () {
@@ -245,6 +262,15 @@ describe("P42 sponsorship economics", function () {
     await fixture.pool.connect(fixture.alice).fund({ value: 101n });
     await fixture.manager.recordCredit(await fixture.ledger.getAddress(), fixture.alice.address, 1);
     await fixture.manager.recordCredit(await fixture.ledger.getAddress(), fixture.bob.address, 2);
+    const ForceEther = await ethers.getContractFactory("ForceEther");
+    const forceEther = await ForceEther.deploy({ value: 7n });
+    await forceEther.waitForDeployment();
+    await forceEther.force(await fixture.pool.getAddress());
+    await expectCustomError(
+      fixture.pool.connect(fixture.owner).recoverForcedEth(7n),
+      fixture.pool,
+      "P42_FORCED_ETH_RECOVERY_NOT_CLOSED"
+    );
     await advanceTo(fixture.closeBy);
     await fixture.ledger.close();
 
@@ -252,10 +278,6 @@ describe("P42 sponsorship economics", function () {
     assert.equal(await fixture.ledger.finalEntitlement(fixture.alice.address), 33n);
     assert.equal(await fixture.ledger.finalEntitlement(fixture.bob.address), 67n);
 
-    const ForceEther = await ethers.getContractFactory("ForceEther");
-    const forceEther = await ForceEther.deploy({ value: 7n });
-    await forceEther.waitForDeployment();
-    await forceEther.force(await fixture.pool.getAddress());
     assert.equal(await fixture.pool.forcedEthAvailable(), 7n);
 
     await ethers.provider.send("evm_increaseTime", [Number((await fixture.ledger.CLAIM_DEADLINE_SECONDS()) + 1n)]);
@@ -270,8 +292,46 @@ describe("P42 sponsorship economics", function () {
     await expectCustomError(
       fixture.pool.connect(fixture.alice).recoverForcedEth(1n), fixture.pool, "P42_NOT_OWNER"
     );
+    const vaultBeforeForcedRecovery = await ethers.provider.getBalance(await fixture.vault.getAddress());
     await fixture.pool.connect(fixture.owner).recoverForcedEth(7n);
+    assert.equal((await ethers.provider.getBalance(await fixture.vault.getAddress())) - vaultBeforeForcedRecovery, 7n);
     assert.equal(await fixture.pool.forcedEthAvailable(), 0n);
     assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), 0n);
+  });
+
+  it("reconstructs multi-sponsor, multi-solver, fee, rollover, and forced-ETH conservation", async function () {
+    const fixture = await deployFixture();
+    await fixture.pool.connect(fixture.alice).fund({ value: 4_001n });
+    await fixture.pool.connect(fixture.bob).fund({ value: 6_002n });
+    await fixture.manager.recordCredit(await fixture.ledger.getAddress(), fixture.recipient.address, 1);
+    await fixture.manager.recordCredit(await fixture.ledger.getAddress(), fixture.outsider.address, 2);
+    await advanceTo(fixture.closeBy);
+    await fixture.ledger.close();
+    assert.equal(await fixture.ledger.finalEntitlement(fixture.recipient.address), 3_334n);
+    assert.equal(await fixture.ledger.finalEntitlement(fixture.outsider.address), 6_668n);
+    await fixture.pool.connect(fixture.recipient).claim();
+    await fixture.pool.connect(fixture.outsider).claim();
+
+    const ForceEther = await ethers.getContractFactory("ForceEther");
+    const forceEther = await ForceEther.deploy({ value: 7n });
+    await forceEther.waitForDeployment();
+    await forceEther.force(await fixture.pool.getAddress());
+    await ethers.provider.send("evm_increaseTime", [Number((await fixture.ledger.CLAIM_DEADLINE_SECONDS()) + 1n)]);
+    await ethers.provider.send("evm_mine", []);
+    const vaultBefore = await ethers.provider.getBalance(await fixture.vault.getAddress());
+    await fixture.ledger.sweepRollover();
+    await fixture.pool.connect(fixture.owner).recoverForcedEth(7n);
+
+    assert.equal(await fixture.pool.totalFunded(), 10_003n);
+    assert.equal(await fixture.pool.totalGrossClaimed(), 10_002n);
+    assert.equal(await fixture.pool.totalClaimed(), 9_753n);
+    assert.equal(await fixture.pool.totalFeePaid(), 249n);
+    assert.equal(await fixture.pool.totalRolloverPaid(), 1n);
+    assert.equal(await fixture.pool.totalForcedEthRecovered(), 7n);
+    assert.equal(await fixture.pool.funded(), 0n);
+    assert.equal(await fixture.pool.forcedEthAvailable(), 0n);
+    assert.equal((await ethers.provider.getBalance(await fixture.vault.getAddress())) - vaultBefore, 8n);
+    assert.equal(await fixture.pool.sponsorshipOf(fixture.alice.address), 4_001n);
+    assert.equal(await fixture.pool.sponsorshipOf(fixture.bob.address), 6_002n);
   });
 });

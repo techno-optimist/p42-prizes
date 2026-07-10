@@ -224,7 +224,12 @@ describe("P42 payout hardening", function () {
       fixture.ledger,
       "P42_ROLLOVER_ALREADY_SWEPT"
     );
+    const vaultBeforeForcedRecovery = await ethers.provider.getBalance(await fixture.vault.getAddress());
     await fixture.pool.connect(fixture.owner).recoverForcedEth(forcedAmount);
+    assert.equal(
+      (await ethers.provider.getBalance(await fixture.vault.getAddress())) - vaultBeforeForcedRecovery,
+      forcedAmount
+    );
     assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), 0n);
     assert.equal(await fixture.pool.totalResidualPaid(), funding);
     assert.equal(await fixture.ledger.residualSwept(), true);

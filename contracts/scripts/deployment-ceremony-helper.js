@@ -644,13 +644,6 @@ export function buildSetupOperations({
       dependsOnLabels: []
     },
     {
-      label: labels.ledgerSetRolloverDestination,
-      operationClass: "standard",
-      target: addresses.ledger,
-      data: interfaces.ledger.encodeFunctionData("setRolloverDestination", [addresses.rolloverVault]),
-      dependsOnLabels: [labels.poolSetLedger]
-    },
-    {
       label: labels.poolSetSubmissionManager,
       operationClass: "standard",
       target: addresses.pool,
@@ -662,7 +655,7 @@ export function buildSetupOperations({
       operationClass: "standard",
       target: addresses.submissions,
       data: interfaces.submissions.encodeFunctionData("setChallengeManager", [addresses.challenges]),
-      dependsOnLabels: [labels.ledgerSetCreditRecorder, labels.ledgerSetRolloverDestination]
+      dependsOnLabels: [labels.ledgerSetCreditRecorder]
     },
     {
       label: labels.registryRegister,
@@ -684,11 +677,18 @@ export function buildSetupOperations({
       dependsOnLabels: [labels.registryRegister]
     },
     {
+      label: labels.ledgerSetRolloverDestination,
+      operationClass: "standard",
+      target: addresses.ledger,
+      data: interfaces.ledger.encodeFunctionData("setRolloverDestination", [addresses.rolloverVault]),
+      dependsOnLabels: [labels.poolSetRegistry]
+    },
+    {
       label: labels.registryFreeze,
       operationClass: "standard",
       target: addresses.registry,
       data: interfaces.registry.encodeFunctionData("freeze", [normalizedProblemId]),
-      dependsOnLabels: [labels.registryRegister, labels.poolSetRegistry]
+      dependsOnLabels: [labels.registryRegister, labels.poolSetRegistry, labels.ledgerSetRolloverDestination]
     },
     ...PAUSE_TARGET_KEYS.map((key) => ({
       label: labelFor(`timelock.setPauseTarget.${key}`),
