@@ -229,11 +229,11 @@ test("resolver refuses unresolved/quarantined evidence and grants a solver win o
 });
 
 test("resolver transcript URIs require a durable ar:// or ipfs:// template", () => {
-  const template = "ar://p42-transcripts/{transcript_hash}.json";
+  const template = "ar://{transcript_hash}";
   assert.equal(validateTranscriptUriTemplate(template), template);
   assert.equal(
     expandTranscriptUri(template, SHA("1")),
-    `ar://p42-transcripts/${SHA("1")}.json`,
+    `ar://${SHA("1")}`,
   );
   assert.throws(() => validateTranscriptUriTemplate("file:///tmp/{transcript_hash}.json"), /ar:\/\/ or ipfs:\/\//);
   assert.throws(() => validateTranscriptUriTemplate("https://example/{transcript_hash}"), /ar:\/\/ or ipfs:\/\//);
@@ -248,7 +248,7 @@ test("resolver exact-call policy binds the full decision, transcript URI, and in
   const transcriptHash = SHA("7");
   const candidateHash = SHA("8");
   const challengeInstanceHash = HASH("9");
-  const transcriptURI = expandTranscriptUri("ipfs://bafyresolver/{transcript_hash}", transcriptHash);
+  const transcriptURI = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3pte3dr2l7w4qv3q2x4x5b5ha/transcript.json";
   const verdictHash = buildResolverVerdictHash({
     transcriptHash,
     candidateHash,

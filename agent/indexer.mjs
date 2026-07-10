@@ -18,6 +18,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { atomsFromScore, chainScoreAtoms, recoverRevealCalldata } from "./lib.mjs";
+import {
+  canonicalTranscriptArtifact,
+  fetchTranscriptClientBytes,
+  parseTranscriptUri,
+  verifyPublicationReceipt,
+} from "./transcript-store.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -3215,6 +3221,74 @@ export async function archiveCalldata(dir, reveals, submissions, provider) {
   return { ok: mismatches.length === 0, archived, skipped, offChain, mismatches };
 }
 
+export async function archiveFinalizedResolverTranscripts(dir, events, {
+  endpoints,
+  fetchClient,
+} = {}) {
+  const outDir = resolve(dir);
+  const posted = [...events].filter(
+    (event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted",
+  ).sort(compareEventOrder);
+  const entries = [];
+  const failures = [];
+  for (const event of posted) {
+    const submissionId = getArg(event, "submissionId").toString();
+    const uri = getArg(event, "transcriptURI");
+    const onchainHash = String(getArg(event, "transcriptHash")).toLowerCase();
+    const eventId = `${event.transactionHash}:${event.index ?? event.logIndex}`;
+    try {
+      const parsed = parseTranscriptUri(uri);
+      if (!fetchClient || !Array.isArray(endpoints) || endpoints.length < 2) {
+        throw new Error("independent transcript retrieval clients/endpoints are required");
+      }
+      const firstBytes = await fetchTranscriptClientBytes(fetchClient, {
+        endpoint: endpoints[0], uri: parsed.uri,
+      });
+      const transcript = JSON.parse(firstBytes.toString("utf8"));
+      const artifact = canonicalTranscriptArtifact(transcript);
+      if (!firstBytes.equals(artifact.bytes)) throw new Error("retrieved transcript is not exact canonical JSON with one newline");
+      if (`0x${artifact.transcript_hash.slice(7)}` !== onchainHash) {
+        throw new Error("embedded transcript self-hash does not match the on-chain transcript hash");
+      }
+      const publication = await verifyPublicationReceipt({
+        artifact,
+        receipt: { uri: parsed.uri, artifact_sha256: artifact.artifact_sha256, length: artifact.length },
+        endpoints,
+        fetchClient,
+      });
+      const stem = `${String(event.transactionHash).replace(/^0x/, "")}-${event.index ?? event.logIndex}`;
+      const artifactPath = join(outDir, `${stem}.json`);
+      const metadataPath = join(outDir, `${stem}.metadata.json`);
+      writeFileAtomicSync(artifactPath, artifact.bytes);
+      const metadata = canonicalize({
+        schema_version: "p42-indexed-resolver-transcript/v1",
+        event: eventDigestInput(event),
+        event_id: eventId,
+        submission_id: submissionId,
+        uri: parsed.uri,
+        endpoints: publication.endpoints,
+        length: artifact.length,
+        artifact_sha256: artifact.artifact_sha256,
+        transcript_hash: artifact.transcript_hash,
+        onchain_transcript_hash: onchainHash,
+        artifact: basename(artifactPath),
+      });
+      writeFileAtomicSync(metadataPath, `${stableStringify(metadata)}\n`);
+      entries.push(metadata);
+    } catch (error) {
+      failures.push({ eventId, submissionId, uri, onchainHash, reason: error.message });
+    }
+  }
+  const manifest = canonicalize({
+    schema_version: "p42-resolver-transcript-archive/v1",
+    summary: { total: posted.length, archived: entries.length, failures: failures.length },
+    entries,
+    failures,
+  });
+  writeFileAtomicSync(join(outDir, "manifest.json"), `${stableStringify(manifest, 2)}\n`);
+  return { ok: failures.length === 0, archived: entries.length, failures, entries };
+}
+
 function parseArg(argv, name, defaultValue = undefined) {
   const index = argv.indexOf(`--${name}`);
   return index === -1 ? defaultValue : argv[index + 1];
@@ -3233,7 +3307,14 @@ function loadPriorCheckpoint(path, binding, schema) {
   return checkpoint;
 }
 
-export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = null }) {
+export async function runIndexer({
+  manifestPath,
+  rpcUrl,
+  outPath,
+  archivePath = null,
+  transcriptEndpoints = [],
+  transcriptFetchClient = null,
+}) {
   if (!manifestPath) throw new Error("required: --manifest <path>");
   if (!outPath) throw new Error("required: --out <checkpoint.json>");
   const resolvedManifest = resolve(manifestPath);
@@ -3313,6 +3394,22 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
               actual: { mismatches: archived.mismatches.length },
             });
           }
+          const transcriptArchive = archivePath
+            ? await archiveFinalizedResolverTranscripts(
+              resolve(archivePath, `board-${board.problem.problemId}`, "resolver-transcripts"),
+              board.scan.events,
+              { endpoints: transcriptEndpoints, fetchClient: transcriptFetchClient },
+            )
+            : { ok: !board.scan.events.some((event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted"), failures: [] };
+          if (!transcriptArchive.ok) {
+            const report = checkpoint.boards.find((entry) => entry.problemId === String(board.problem.problemId));
+            report.reconstruction.checks.push({
+              name: "archive.resolverTranscripts",
+              ok: false,
+              expected: { missingOrUnverified: 0 },
+              actual: { missingOrUnverified: transcriptArchive.failures.length || 1 },
+            });
+          }
         }
       }
       refreshMultiBoardCheckpointReconstruction(checkpoint);
@@ -3372,7 +3469,24 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
       const archived = await archiveCalldata(archivePath, reveals, contracts.submissions, provider);
       archiveOk = archived.ok;
     }
-    if (!archiveOk) checkpoint.reconstruction.ok = false;
+    const postedTranscriptCount = scan.events.filter(
+      (event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted",
+    ).length;
+    const transcriptArchive = archivePath
+      ? await archiveFinalizedResolverTranscripts(resolve(archivePath, "resolver-transcripts"), scan.events, {
+        endpoints: transcriptEndpoints,
+        fetchClient: transcriptFetchClient,
+      })
+      : { ok: postedTranscriptCount === 0, failures: [] };
+    if (!transcriptArchive.ok) {
+      checkpoint.reconstruction.checks.push({
+        name: "archive.resolverTranscripts",
+        ok: false,
+        expected: { missingOrUnverified: 0 },
+        actual: { missingOrUnverified: transcriptArchive.failures.length || postedTranscriptCount },
+      });
+    }
+    if (!archiveOk || !transcriptArchive.ok) checkpoint.reconstruction.ok = false;
 
     writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
     console.log(`indexed finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);

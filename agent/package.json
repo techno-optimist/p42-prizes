@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "arweave": "^1.15.7",
-    "ethers": "^6.17.0"
+    "ethers": "^6.17.0",
+    "multiformats": "^13.4.2"
   }
 }

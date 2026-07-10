@@ -32,6 +32,10 @@ import {
   manifestProblemForRegistryId,
   validateManifestEvidence,
 } from "./indexer.mjs";
+import {
+  parseTranscriptUri,
+  publishAndVerifyTranscript,
+} from "./transcript-store.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
@@ -136,6 +140,10 @@ export function validateTranscriptUriTemplate(value) {
   if (/^file:/i.test(template) || template.includes("..")) {
     throw new Error("--transcript-uri-template must not name a file or traversal path");
   }
+  const probe = template.startsWith("ar://")
+    ? template.replace("{transcript_hash}", "a".repeat(43))
+    : template.replace("{transcript_hash}", `b${"a".repeat(58)}`);
+  parseTranscriptUri(probe);
   return template;
 }
 
@@ -179,11 +187,7 @@ function validateVerdictReport(value, label) {
 }
 
 function validateDurableTranscriptURI(value) {
-  const uri = requireString(value, "transcriptURI");
-  if (/\s/.test(uri) || !/^(ar|ipfs):\/\//.test(uri) || /^file:/i.test(uri) || uri.includes("..")) {
-    throw new Error("transcriptURI must be a durable ar:// or ipfs:// URI");
-  }
-  return uri;
+  return parseTranscriptUri(requireString(value, "transcriptURI")).uri;
 }
 
 function validateChainClaim(value, expected) {
@@ -1193,6 +1197,7 @@ async function prepareAction(context, event) {
     "invalid_transcript",
     "ambiguous_transcript",
     "awaiting_registry_binding",
+    "awaiting_publication",
   ].includes(existing.status)) {
     return existing;
   }
@@ -1219,7 +1224,36 @@ async function prepareAction(context, event) {
     return context.state.actions[event.event_hash];
   }
   const checked = transcript.checked;
-  const transcriptURI = expandTranscriptUri(context.transcriptUriTemplate, checked.transcript.transcript_hash);
+  let published;
+  try {
+    published = await publishAndVerifyTranscript({
+      transcript: checked.transcript,
+      publisher: context.transcriptPublisher,
+      endpoints: context.transcriptEndpoints,
+      fetchClient: context.transcriptFetchClient,
+    });
+  } catch (error) {
+    published = { status: "awaiting_publication", detail: error.message };
+  }
+  if (published.status !== "published") {
+    const action = {
+      schema_version: "p42-resolver-action/v1",
+      event,
+      event_hash: event.event_hash,
+      status: "awaiting_publication",
+      canonical_status: "canonical",
+      detail: published.detail ?? "a receipt-backed transcript publisher is not configured",
+      transcript_path: transcript.path,
+      transcript_hash: checked.transcript.transcript_hash,
+      artifact_sha256: published.artifact?.artifact_sha256,
+      artifact_length: published.artifact?.length,
+      created_at_utc: existing?.created_at_utc ?? new Date().toISOString(),
+    };
+    context.state.actions[event.event_hash] = action;
+    persistState(context);
+    return action;
+  }
+  const transcriptURI = published.publication.uri;
   const verdictHash = buildResolverVerdictHash({
     transcriptHash: checked.transcript.transcript_hash,
     candidateHash: checked.candidate.candidate_hash,
@@ -1285,6 +1319,9 @@ async function prepareAction(context, event) {
     challenger_wins: checked.challengerWins,
     verdict_hash: verdictHash,
     transcript_uri: transcriptURI,
+    publication: published.publication,
+    artifact_sha256: published.artifact.artifact_sha256,
+    artifact_length: published.artifact.length,
     bond_wei: current.bond.toString(),
     ...event,
     call_policy_path: paths.policyPath,
@@ -1353,7 +1390,7 @@ async function scanOnce(context) {
   }
 }
 
-async function buildContext(argv) {
+export async function buildResolverContext(argv, clients = {}) {
   const manifestPath = arg(argv, "manifest");
   const problemId = arg(argv, "problem-id");
   const registryProblemIdArg = arg(argv, "registry-problem-id");
@@ -1361,11 +1398,11 @@ async function buildContext(argv) {
   const transcriptUriTemplate = arg(argv, "transcript-uri-template");
   const localTest = Boolean(arg(argv, "local-test", false));
   const agentWalletAddress = arg(argv, "agent-wallet", null);
-  if (!manifestPath || !problemId || !registryProblemIdArg || !transcriptsArg || !transcriptUriTemplate) {
-    throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir> --transcript-uri-template <ar://|ipfs://...{transcript_hash}>");
+  if (!manifestPath || !problemId || !registryProblemIdArg || !transcriptsArg) {
+    throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir>");
   }
   const registryProblemId = nonzeroSubmissionId(registryProblemIdArg, "--registry-problem-id");
-  validateTranscriptUriTemplate(transcriptUriTemplate);
+  if (transcriptUriTemplate) validateTranscriptUriTemplate(transcriptUriTemplate);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;
   if (!privateKey) throw new Error("set RESOLVER_PRIVATE_KEY to the resolver session key");
   const manifest = JSON.parse(readFileSync(resolve(manifestPath), "utf8"));
@@ -1423,6 +1460,9 @@ async function buildContext(argv) {
     executionMode,
     agentWallet: null,
     transcriptUriTemplate,
+    transcriptPublisher: clients.publisher ?? null,
+    transcriptFetchClient: clients.fetchClient ?? null,
+    transcriptEndpoints: clients.endpoints ?? [],
     transcriptsPath,
     runtime,
     cursorPath: resolve(arg(argv, "cursor", join(runtime, "resolver-cursor.json"))),
@@ -1443,8 +1483,8 @@ async function buildContext(argv) {
   return context;
 }
 
-async function main(argv = process.argv.slice(2)) {
-  const context = await buildContext(argv);
+export async function main(argv = process.argv.slice(2), clients = {}) {
+  const context = await buildResolverContext(argv, clients);
   const once = Boolean(arg(argv, "once", false));
   const pollMs = Number(arg(argv, "poll-ms", "12000"));
   if (!Number.isSafeInteger(pollMs) || pollMs < 250) throw new Error("--poll-ms must be an integer of at least 250");

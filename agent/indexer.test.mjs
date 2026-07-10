@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { ethers } from "ethers";
 
-import { atomsFromScore } from "./lib.mjs";
+import { atomsFromScore, canonicalJson, sha256Canonical } from "./lib.mjs";
 
 import {
   archiveCalldata,
+  archiveFinalizedResolverTranscripts,
   buildCheckpoint,
   buildMultiBoardCheckpoint,
   compareReplayToSnapshot,
@@ -22,6 +23,37 @@ import {
   stableStringify,
   validateMultiBoardCheckpoint,
 } from "./indexer.mjs";
+
+it("archives exact finalized resolver transcript bytes and fails hash mismatches", async () => {
+  const body = { schema_version: "p42-runner-transcript/v1", evidence: "fixture" };
+  const transcript = { ...body, transcript_hash: sha256Canonical(body) };
+  const bytes = Buffer.from(`${canonicalJson(transcript)}\n`);
+  const event = {
+    source: "challenges", eventName: "ResolverTranscriptPosted", blockNumber: 10,
+    blockHash: hash(801), transactionHash: hash(802), transactionIndex: 0, index: 1,
+    args: {
+      submissionId: 9n,
+      transcriptURI: `ar://${"a".repeat(43)}`,
+      transcriptHash: `0x${transcript.transcript_hash.slice(7)}`,
+    },
+  };
+  const fetchClient = { fetchTranscript: async () => bytes };
+  const archived = await archiveFinalizedResolverTranscripts(
+    mkdtempSync(join(tmpdir(), "p42-transcript-archive-")), [event],
+    { endpoints: ["https://one.example", "https://two.example"], fetchClient },
+  );
+  assert.equal(archived.ok, true);
+  assert.equal(archived.entries[0].length, bytes.length);
+  assert.match(archived.entries[0].artifact_sha256, /^sha256:/);
+
+  const failed = await archiveFinalizedResolverTranscripts(
+    mkdtempSync(join(tmpdir(), "p42-transcript-archive-bad-")),
+    [{ ...event, args: { ...event.args, transcriptHash: hash(999) } }],
+    { endpoints: ["https://one.example", "https://two.example"], fetchClient },
+  );
+  assert.equal(failed.ok, false);
+  assert.match(failed.failures[0].reason, /on-chain transcript hash/);
+});
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_HASH = `0x${"0".repeat(64)}`;
