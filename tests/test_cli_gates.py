@@ -11,7 +11,7 @@ from test_adversarial import valid_campaign_report
 from test_governance import valid_governance_report
 from test_incident import valid_drill_report
 from test_legal import valid_legal_memo
-from test_runner_burst import valid_burst_report
+from test_runner_burst import _fixture as runner_burst_fixture
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,21 +81,34 @@ def test_gate_validator_rejects_unknown_top_level_key(command, builder, tmp_path
 
 
 def test_runner_burst_validator_accepts_valid_report(tmp_path: Path) -> None:
+    report, _ = runner_burst_fixture(tmp_path)
     report_path = tmp_path / "report.json"
-    report_path.write_text(json.dumps(valid_burst_report()), encoding="utf-8")
+    report_path.write_text(json.dumps(report), encoding="utf-8")
 
-    completed = run_cli("runner-burst-validate", "--report", str(report_path))
+    completed = run_cli(
+        "runner-burst-validate",
+        "--report",
+        str(report_path),
+        "--artifact-root",
+        str(tmp_path),
+    )
 
     assert completed.returncode == 0, completed.stderr
 
 
 def test_runner_burst_validator_rejects_unknown_top_level_key(tmp_path: Path) -> None:
-    report = valid_burst_report()
+    report, _ = runner_burst_fixture(tmp_path)
     report["unexpected_field"] = "a genuine non-placeholder value"
     report_path = tmp_path / "report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
 
-    completed = run_cli("runner-burst-validate", "--report", str(report_path))
+    completed = run_cli(
+        "runner-burst-validate",
+        "--report",
+        str(report_path),
+        "--artifact-root",
+        str(tmp_path),
+    )
 
     assert completed.returncode == 1
     assert "Additional properties are not allowed" in completed.stderr
