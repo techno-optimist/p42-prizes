@@ -133,7 +133,8 @@ PYTHONPATH=src python3 -m p42_prizes.cli runner-plan \
   --max-running 1 \
   --reserve-memory-mb 8192 \
   --max-swap-used-mb 1024 \
-  --memory-safety-factor 2
+  --memory-safety-factor 2 \
+  --sandbox docker
 ```
 
 On DGX/Linux, omitted memory flags read `/proc/meminfo`. In tests or dry runs,
@@ -178,6 +179,7 @@ PYTHONPATH=src python3 -m p42_prizes.cli runner-work-once \
   --transcripts runs/verifier-transcripts \
   --max-running 1 \
   --reserve-memory-mb 8192 \
+  --sandbox docker \
   --max-swap-used-mb 1024 \
   --memory-safety-factor 2
 ```
@@ -213,7 +215,8 @@ PYTHONPATH=src python3 -m p42_prizes.cli runner-drain \
   --max-running 1 \
   --reserve-memory-mb 8192 \
   --max-swap-used-mb 1024 \
-  --memory-safety-factor 2
+  --memory-safety-factor 2 \
+  --sandbox docker
 ```
 
 `runner-drain` re-reads memory before every lease. If the queue is empty it exits
@@ -230,6 +233,12 @@ limitation above). Chain-linked verifier jobs instead require
 PID caps. A production Linux/DGX rehearsal against a pullable pinned image is
 still required to demonstrate that policy in the actual worker environment. Use
 `--max-jobs` for a bounded batch and `--max-iterations` for rehearsals.
+
+The standalone CLI defaults to `--sandbox none` only for local fixture work.
+Every chain-linked or production-like invocation must pass `--sandbox docker`
+(and may narrow `--sandbox-pids-limit` or `--sandbox-cpus`); the plan records
+those exact controls so queued-work evidence cannot silently describe a
+different execution policy.
 
 Transcripts include `resource_limits.required_memory_mb`,
 `resource_limits.child_address_space_limit_mb`, and whether the address-space

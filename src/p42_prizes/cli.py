@@ -388,6 +388,9 @@ def _runner_policy_from_args(args: argparse.Namespace) -> RunnerPolicy:
         reserve_memory_mb=args.reserve_memory_mb,
         max_swap_used_mb=args.max_swap_used_mb,
         memory_safety_factor=args.memory_safety_factor,
+        sandbox=args.sandbox,
+        sandbox_pids_limit=args.sandbox_pids_limit,
+        sandbox_cpus=args.sandbox_cpus,
     )
 
 
@@ -662,6 +665,9 @@ def build_parser() -> argparse.ArgumentParser:
     runner_plan.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_plan.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_plan.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_plan.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_plan.add_argument("--sandbox-pids-limit", type=int, default=256)
+    runner_plan.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_plan.add_argument("--now-utc")
     runner_plan.set_defaults(func=_cmd_runner_plan)
 
@@ -679,6 +685,9 @@ def build_parser() -> argparse.ArgumentParser:
     runner_work.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_work.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_work.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_work.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_work.add_argument("--sandbox-pids-limit", type=int, default=256)
+    runner_work.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_work.add_argument("--now-utc")
     runner_work.set_defaults(func=_cmd_runner_work_once)
 
@@ -699,6 +708,9 @@ def build_parser() -> argparse.ArgumentParser:
     runner_drain.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_drain.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_drain.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_drain.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_drain.add_argument("--sandbox-pids-limit", type=int, default=256)
+    runner_drain.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_drain.set_defaults(func=_cmd_runner_drain)
 
     runner_alerts = subparsers.add_parser(
