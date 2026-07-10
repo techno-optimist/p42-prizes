@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
@@ -18,6 +19,63 @@ const DEFAULTS = Object.freeze({
   renderOrigin: "https://p42-prizes.onrender.com",
   serviceId: "srv-d96pokeq1p3s73foqk60",
 });
+
+const EXPECTED_CAPABILITIES = Object.freeze({
+  api_version: "p42-prizes-capabilities-v1",
+  mutations: Object.freeze({
+    status: "unconfigured",
+    available: false,
+    authentication: "unavailable",
+  }),
+});
+
+export const PROBE_ROUTES = Object.freeze([
+  Object.freeze({
+    id: "home",
+    path: "/prizes",
+    kind: "html",
+    origins: Object.freeze(["render", "public"]),
+    markers: Object.freeze([
+      "The machine went first.",
+      "Register of Records",
+      "Phase 0",
+    ]),
+  }),
+  Object.freeze({
+    id: "problems",
+    path: "/prizes/api/problems",
+    kind: "problems-json",
+    origins: Object.freeze(["render", "public"]),
+  }),
+  Object.freeze({
+    id: "capabilities",
+    path: "/prizes/api/capabilities",
+    kind: "capabilities-json",
+    origins: Object.freeze(["render", "public"]),
+  }),
+  Object.freeze({
+    id: "standings",
+    path: "/prizes/standings",
+    kind: "html",
+    origins: Object.freeze(["public"]),
+    markers: Object.freeze([
+      "P42 Prizes",
+      "The pilot cohort.",
+      "Modeled",
+    ]),
+  }),
+  Object.freeze({
+    id: "skill",
+    path: "/prizes/skill.md",
+    kind: "text",
+    origins: Object.freeze(["public"]),
+    markers: Object.freeze([
+      "name: p42-prizes",
+      "# P42 Prizes",
+      "## Mutation Capability Gate",
+    ]),
+  }),
+]);
 
 export function parseArgs(argv) {
   const options = { ...DEFAULTS };
@@ -109,14 +167,145 @@ export function runtimeCommitArgs(remoteRef) {
 }
 
 export function probeUrls(renderOrigin, publicOrigin) {
-  return [
-    new URL("/prizes", renderOrigin).toString(),
-    new URL("/prizes/api/problems", renderOrigin).toString(),
-    new URL("/prizes", publicOrigin).toString(),
-    new URL("/prizes/api/problems", publicOrigin).toString(),
-    new URL("/prizes/standings", publicOrigin).toString(),
-    new URL("/prizes/skill.md", publicOrigin).toString(),
-  ];
+  return configuredProbes(renderOrigin, publicOrigin).map((probe) => probe.url);
+}
+
+function configuredProbes(renderOrigin, publicOrigin) {
+  const origins = { render: renderOrigin, public: publicOrigin };
+  return PROBE_ROUTES.flatMap((route) => route.origins.map((origin) => ({
+    route,
+    origin,
+    url: new URL(route.path, origins[origin]).toString(),
+  })));
+}
+
+function describe(route, message) {
+  throw new Error(`${route.path} ${message}`);
+}
+
+function requireObject(value, route, description) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    describe(route, `must return ${description} as an object.`);
+  }
+}
+
+function requireString(value, route, description) {
+  if (typeof value !== "string" || value.length === 0) {
+    describe(route, `must return a non-empty string for ${description}.`);
+  }
+}
+
+function validateProblems(payload, route) {
+  if (!Array.isArray(payload) || payload.length === 0) {
+    describe(route, "must return a non-empty array of problems.");
+  }
+
+  const ids = new Set();
+  const slugs = new Set();
+  for (const [index, problem] of payload.entries()) {
+    requireObject(problem, route, `problem ${index}`);
+    if (!Number.isInteger(problem.id) || problem.id <= 0) {
+      describe(route, `must return a positive integer id for problem ${index}.`);
+    }
+    for (const field of [
+      "slug",
+      "title",
+      "status",
+      "mode",
+      "direction",
+      "scoreName",
+      "currentBest",
+      "minImprovement",
+      "bountyEth",
+      "verifierVersion",
+    ]) {
+      requireString(problem[field], route, `problem ${index}.${field}`);
+    }
+    if (!Number.isFinite(problem.challengeWindowHours) || problem.challengeWindowHours <= 0) {
+      describe(route, `must return a positive challengeWindowHours for problem ${index}.`);
+    }
+    requireObject(problem.donationWallet, route, `problem ${index}.donationWallet`);
+    if (problem.donationTarget !== null) {
+      requireObject(problem.donationTarget, route, `problem ${index}.donationTarget`);
+    }
+    requireObject(problem.chainProvenance, route, `problem ${index}.chainProvenance`);
+    requireString(
+      problem.chainProvenance.settlementState,
+      route,
+      `problem ${index}.chainProvenance.settlementState`,
+    );
+    if (typeof problem.chainProvenance.reconciliationOk !== "boolean") {
+      describe(route, `must return a boolean reconciliationOk for problem ${index}.chainProvenance.`);
+    }
+    if (ids.has(problem.id) || slugs.has(problem.slug)) {
+      describe(route, `must not return duplicate problem ids or slugs (problem ${index}).`);
+    }
+    ids.add(problem.id);
+    slugs.add(problem.slug);
+  }
+}
+
+function parseJson(body, route) {
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    describe(route, `returned malformed JSON: ${error.message}`);
+  }
+}
+
+export function validateProbeBody(routeId, body, contentType) {
+  const route = PROBE_ROUTES.find((candidate) => candidate.id === routeId);
+  if (!route) {
+    throw new Error(`Unknown probe route: ${routeId}`);
+  }
+  if (typeof body !== "string") {
+    describe(route, "returned a non-text response body.");
+  }
+
+  if (route.kind.endsWith("-json")) {
+    if (!contentType.toLowerCase().includes("application/json")) {
+      describe(route, `returned ${JSON.stringify(contentType)} instead of application/json.`);
+    }
+    const payload = parseJson(body, route);
+    if (route.kind === "problems-json") {
+      validateProblems(payload, route);
+    } else if (!isDeepStrictEqual(payload, EXPECTED_CAPABILITIES)) {
+      describe(
+        route,
+        "must report the fail-closed unconfigured/unavailable mutation capability state.",
+      );
+    }
+    return payload;
+  }
+
+  const expectedType = route.kind === "html" ? "text/html" : "text/";
+  if (!contentType.toLowerCase().includes(expectedType)) {
+    describe(route, `returned ${JSON.stringify(contentType)} instead of ${expectedType}.`);
+  }
+  for (const marker of route.markers) {
+    if (!body.includes(marker)) {
+      describe(route, `is missing stable identity marker ${JSON.stringify(marker)}.`);
+    }
+  }
+  return body;
+}
+
+export function assertProbeEquivalence(results) {
+  for (const route of PROBE_ROUTES.filter((candidate) => candidate.origins.length === 2)) {
+    const render = results.find((result) => result.route.id === route.id && result.origin === "render");
+    const publicResult = results.find(
+      (result) => result.route.id === route.id && result.origin === "public",
+    );
+    if (!render || !publicResult) {
+      describe(route, "is missing a configured Render or public comparison response.");
+    }
+    const equivalent = route.kind.endsWith("-json")
+      ? isDeepStrictEqual(render.semanticBody, publicResult.semanticBody)
+      : render.body === publicResult.body;
+    if (!equivalent) {
+      describe(route, "diverges between the direct Render service and the public proxy.");
+    }
+  }
 }
 
 async function command(file, args) {
@@ -153,17 +342,27 @@ async function commandJson(file, args) {
   }
 }
 
-async function probe(url) {
+async function probe(config) {
   let response;
   try {
-    response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(30_000) });
+    response = await fetch(config.url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(30_000),
+    });
   } catch (error) {
-    throw new Error(`Probe failed for ${url}: ${error.message}`);
+    throw new Error(`Probe failed for ${config.url}: ${error.message}`);
   }
 
   if (!response.ok) {
-    throw new Error(`Probe failed for ${url}: HTTP ${response.status}.`);
+    throw new Error(`Probe failed for ${config.url}: HTTP ${response.status}.`);
   }
+  const body = await response.text();
+  const semanticBody = validateProbeBody(
+    config.route.id,
+    body,
+    response.headers.get("content-type") ?? "",
+  );
+  return { ...config, body, semanticBody };
 }
 
 export function usage() {
@@ -171,7 +370,8 @@ export function usage() {
 
 Read-only release guard. It verifies that Render is configured for the expected
 branch, its single live deployment contains the latest portal/config change,
-and the Render origin plus the ProjectForty2 proxy respond successfully.
+and the Render origin plus the ProjectForty2 proxy return the expected portal,
+API contracts, fail-closed capabilities, and equivalent paired responses.
 
 The service builds from web/, so documentation-only and release-tooling-only
 commits do not require a no-op Render deploy. The guard treats web/ and
@@ -236,8 +436,10 @@ export async function main(argv = process.argv.slice(2)) {
     );
   }
 
-  const urls = probeUrls(options.renderOrigin, options.publicOrigin);
-  await Promise.all(urls.map(probe));
+  const configured = configuredProbes(options.renderOrigin, options.publicOrigin);
+  const probeResults = await Promise.all(configured.map(probe));
+  assertProbeEquivalence(probeResults);
+  const urls = configured.map((probeConfig) => probeConfig.url);
 
   process.stdout.write(
     [
