@@ -1,8 +1,26 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { problems } from "@/lib/data";
 import { compareRational, parseRational } from "@/lib/exact";
 import { frontierBest, incrementalFrontierCredit } from "@/lib/frontier";
 import type { Problem, Submission } from "@/lib/types";
+
+type FrontierManifest = {
+  problem_id: string;
+  objective: {
+    seed_best: string;
+  };
+};
+
+const repoRoot = resolve(process.cwd(), "..");
+
+function readFrontierManifest(problem: Problem): FrontierManifest {
+  return parse(
+    readFileSync(join(repoRoot, problem.repoPath, "problem.yaml"), "utf8"),
+  ) as FrontierManifest;
+}
 
 const problem: Problem = {
   id: 42,
@@ -126,4 +144,35 @@ describe("problem anchor invariants", () => {
       expect(p.seedBest).toBe(p.currentBest);
     },
   );
+});
+
+describe("manifest-backed portal frontier baselines", () => {
+  it.each(problems.map((p) => [p.slug, p] as const))(
+    "%s: portal seed matches its canonical problem manifest",
+    (_slug, p) => {
+      const manifest = readFrontierManifest(p);
+
+      expect(p.repoId).toBe(manifest.problem_id);
+      expect(p.seedBest).toBe(manifest.objective.seed_best);
+      if (p.status === "locked") {
+        expect(p.currentBest).toBe(manifest.objective.seed_best);
+      }
+    },
+  );
+
+  it("PNT begins at the certified manifest frontier and awards the seed witness no credit", () => {
+    const pnt = problems.find((p) => p.slug === "pnt-sparse-mertens-construction");
+    expect(pnt).toBeDefined();
+    if (!pnt) return;
+
+    const manifest = readFrontierManifest(pnt);
+    expect(pnt.seedBest).toBe(manifest.objective.seed_best);
+    expect(pnt.currentBest).toBe(manifest.objective.seed_best);
+    expect(frontierBest(pnt, [])).toBe(manifest.objective.seed_best);
+    expect(incrementalFrontierCredit(pnt, manifest.objective.seed_best, [])).toEqual({
+      credit: "0/1",
+      priorBest: manifest.objective.seed_best,
+      eligible: false,
+    });
+  });
 });
