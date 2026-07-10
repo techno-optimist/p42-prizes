@@ -20,6 +20,7 @@
           },
           "required_memory_mb": { "type": "integer", "minimum": 1 },
           "lease_expires_at_utc": { "type": "string", "minLength": 1 },
+          "retry_not_before_utc": { "type": "string", "minLength": 1 },
           "chain_block_number": { "type": "integer", "minimum": 0 },
           "chain_log_index": { "type": "integer", "minimum": 0 },
           "created_at_utc": { "type": "string", "minLength": 1 }

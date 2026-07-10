@@ -8,6 +8,7 @@ import jsonschema
 import pytest
 
 from p42_prizes.runner_queue import (
+    MemorySnapshot,
     RunnerPolicy,
     RunnerQueueError,
     enqueue_runner_job,
@@ -20,6 +21,7 @@ from p42_prizes.runner_worker import (
     _adjudicate_chain_claim,
     _chain_score_atoms,
     _run_job,
+    run_next_job_once,
 )
 from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 
@@ -68,6 +70,23 @@ def _assert_self_hash(value: dict, field: str) -> None:
     unhashed = dict(value)
     unhashed.pop(field)
     assert expected == sha256_bytes(canonical_json(unhashed).encode("utf-8"))
+
+
+def _runner_memory() -> MemorySnapshot:
+    return MemorySnapshot(total_mb=16384, available_mb=16384, swap_used_mb=0)
+
+
+def _verified_verifier(*args, **kwargs) -> dict:
+    report = {"valid": True, "score": "0/1"}
+    return {
+        "ok": True,
+        "valid": True,
+        "elapsed_ms": 1,
+        "sandbox": "docker",
+        "returncode": 0,
+        "report": report,
+        "report_hash": sha256_bytes(canonical_json(report).encode("utf-8")),
+    }
 
 
 def test_chain_score_atoms_uses_exact_ceiling_for_both_objective_directions() -> None:
@@ -207,6 +226,7 @@ def test_missing_offchain_da_emits_terminal_canonical_challenge_candidate(tmp_pa
 
     assert persisted["da"]["ok"] is False
     assert persisted["da"]["challengeable"] is True
+    assert persisted["da"]["retryable"] is False
     assert persisted["verifier"]["error"].startswith("da_evidence validation failed")
     candidate = persisted["verifier"]["challenge_candidate"]
     assert candidate["action"] == "challenge"
@@ -228,7 +248,187 @@ def test_unrecoverable_onchain_calldata_is_quarantined_not_wrongfully_challenged
     transcript = _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="docker"))
 
     assert transcript["da"]["challengeable"] is False
+    assert transcript["da"]["retryable"] is False
     assert transcript["verifier"]["challenge_candidate"]["action"] == "quarantine"
+
+
+@pytest.mark.parametrize(
+    ("kind", "onchain_da"),
+    [
+        ("calldata_unavailable", True),
+        ("arweave_lookup_unavailable", False),
+        ("arweave_retrieval_unavailable", False),
+    ],
+)
+def test_transient_chain_retrieval_failures_emit_retry_not_terminal_actions(
+    tmp_path: Path, kind: str, onchain_da: bool
+) -> None:
+    transcript = _run_job(
+        _job(
+            solution=None,
+            chain_claim=_claim(onchain_da=onchain_da),
+            da_failure={"kind": kind, "error": "temporary dependency outage", "retryable": True},
+        ),
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker"),
+    )
+
+    assert transcript["da"]["ok"] is False
+    assert transcript["da"]["retryable"] is True
+    candidate = transcript["verifier"]["challenge_candidate"]
+    assert candidate["action"] == "retry"
+    assert candidate["reason_code"] == f"da_{kind}"
+
+
+def test_retry_state_promotes_later_verified_absence_to_terminal_challenge(tmp_path: Path) -> None:
+    retry_state = tmp_path / "retry-state.json"
+    retry_state.write_text(
+        canonical_json(
+            {
+                "schema_version": "p42-retry-state/v1",
+                "job_id": "84532:submission:tx:0",
+                "da_failure": {"kind": "missing", "error": "Arweave lookup completed with no payload"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    transcript = _run_job(
+        _job(
+            solution=None,
+            da_failure={
+                "kind": "arweave_lookup_unavailable",
+                "error": "temporary GraphQL outage",
+                "retryable": True,
+            },
+            retry_state_path=str(retry_state),
+        ),
+        tmp_path,
+        policy=RunnerPolicy(sandbox="docker"),
+    )
+
+    assert transcript["da"]["failure_kind"] == "missing"
+    assert transcript["da"]["retryable"] is False
+    assert transcript["verifier"]["challenge_candidate"]["action"] == "challenge"
+
+
+def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue = tmp_path / "queue.json"
+    retry_solution = tmp_path / "retry-solution.json"
+    job = _job(
+        solution=None,
+        da_failure={
+            "kind": "calldata_unavailable",
+            "error": "RPC transaction lookup returned no calldata",
+            "retryable": True,
+        },
+        retry_solution_path=str(retry_solution),
+    )
+    enqueue_runner_job(queue, job)
+
+    first = run_next_job_once(
+        queue,
+        tmp_path / "transcripts",
+        memory=_runner_memory(),
+        policy=RunnerPolicy(sandbox="docker"),
+    )
+
+    assert first["verifier"]["challenge_candidate"]["action"] == "retry"
+    queued = read_runner_queue(queue)["jobs"][0]
+    assert queued["status"] == "queued"
+    assert queued["retry_count"] == 1
+    assert isinstance(queued["retry_not_before_utc"], str)
+    assert "challenge_candidate_hash" not in queued
+    assert "action" not in queued
+
+    retry_solution.write_bytes(SOLUTION.read_bytes())
+    monkeypatch.setattr("p42_prizes.runner_worker._run_verifier_for_transcript", _verified_verifier)
+    # The scheduler intentionally yields this job's slot during the durable
+    # retry backoff. Simulate the next eligible poll, still before the claim's
+    # canonical challenge deadline.
+    second = run_next_job_once(
+        queue,
+        tmp_path / "transcripts",
+        memory=_runner_memory(),
+        policy=RunnerPolicy(sandbox="docker"),
+        now_utc="2030-01-01T00:00:00Z",
+    )
+
+    assert second["verifier"]["challenge_candidate"]["action"] == "none"
+    completed = read_runner_queue(queue)["jobs"][0]
+    assert completed["status"] == "succeeded"
+    assert "retry_not_before_utc" not in completed
+    assert completed["challenge_candidate_hash"] == second["verifier"]["challenge_candidate"]["candidate_hash"]
+
+
+def test_unavailable_docker_requeues_then_succeeds_when_sandbox_returns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue = tmp_path / "queue.json"
+    enqueue_runner_job(queue, _job())
+    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda: False)
+
+    first = run_next_job_once(
+        queue,
+        tmp_path / "transcripts",
+        memory=_runner_memory(),
+        policy=RunnerPolicy(sandbox="docker"),
+    )
+
+    assert first["verifier"]["retryable"] is True
+    assert first["verifier"]["challenge_candidate"]["action"] == "retry"
+    queued = read_runner_queue(queue)["jobs"][0]
+    assert queued["status"] == "queued"
+    assert isinstance(queued["retry_not_before_utc"], str)
+    assert "challenge_candidate_hash" not in queued
+
+    monkeypatch.setattr("p42_prizes.runner_worker._run_verifier_for_transcript", _verified_verifier)
+    # As above, model the poll after the short retry backoff has elapsed.
+    second = run_next_job_once(
+        queue,
+        tmp_path / "transcripts",
+        memory=_runner_memory(),
+        policy=RunnerPolicy(sandbox="docker"),
+        now_utc="2030-01-01T00:00:00Z",
+    )
+
+    assert second["verifier"]["challenge_candidate"]["action"] == "none"
+    completed = read_runner_queue(queue)["jobs"][0]
+    assert completed["status"] == "succeeded"
+    assert "retry_not_before_utc" not in completed
+
+
+def test_retry_stops_at_the_operator_canonical_challenge_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    queue = tmp_path / "queue.json"
+    enqueue_runner_job(
+        queue,
+        _job(
+            solution=None,
+            chain_claim=_claim(onchain_da=True),
+            da_failure={
+                "kind": "calldata_unavailable",
+                "error": "RPC temporarily has no transaction calldata",
+                "retryable": True,
+            },
+        ),
+    )
+    monkeypatch.setenv("P42_RUNNER_CHAIN_TIMESTAMP", "1999999999")
+
+    result = run_next_job_once(
+        queue,
+        tmp_path / "transcripts",
+        memory=_runner_memory(),
+        policy=RunnerPolicy(sandbox="docker"),
+    )
+
+    assert result["verifier"]["challenge_candidate"]["action"] == "retry"
+    expired = read_runner_queue(queue)["jobs"][0]
+    assert expired["status"] == "failed"
+    assert expired["failure_reason"] == "retry_window_expired"
+    assert "challenge_candidate_hash" not in expired
 
 
 def test_exact_score_underclaim_becomes_challenge_candidate(

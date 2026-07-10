@@ -103,3 +103,51 @@ def test_job_exceeding_max_attempts_is_failed_not_looped() -> None:
     assert plan["decision"] == "wait"
     assert plan["reason"] == "queue_empty"
     assert plan["stale_running_job_ids"] == []
+
+
+def test_retry_backoff_yields_the_fifo_slot_to_the_next_eligible_job() -> None:
+    queue = _queue(
+        [
+            {
+                "job_id": "retrying-first",
+                "status": "queued",
+                "required_memory_mb": 64,
+                "chain_block_number": 1,
+                "chain_log_index": 0,
+                "retry_not_before_utc": "2026-07-08T12:00:15Z",
+            },
+            {
+                "job_id": "ready-second",
+                "status": "queued",
+                "required_memory_mb": 64,
+                "chain_block_number": 2,
+                "chain_log_index": 0,
+            },
+        ]
+    )
+
+    deferred = plan_runner_queue(queue, memory=MEMORY, now_utc=NOW)
+    assert deferred["decision"] == "start"
+    assert deferred["selected_job_id"] == "ready-second"
+
+    eligible = plan_runner_queue(queue, memory=MEMORY, now_utc="2026-07-08T12:00:15Z")
+    assert eligible["decision"] == "start"
+    assert eligible["selected_job_id"] == "retrying-first"
+
+
+def test_only_deferred_retries_wait_without_claiming_a_verifier_slot() -> None:
+    queue = _queue(
+        [
+            {
+                "job_id": "retrying",
+                "status": "queued",
+                "required_memory_mb": 64,
+                "retry_not_before_utc": "2026-07-08T12:00:15Z",
+            }
+        ]
+    )
+
+    plan = plan_runner_queue(queue, memory=MEMORY, now_utc=NOW)
+    assert plan["decision"] == "wait"
+    assert plan["reason"] == "retry_backoff"
+    assert plan["selected_job_id"] == "retrying"
