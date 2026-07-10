@@ -2,11 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  DEPLOY_RELEVANT_PATHS,
   findLiveDeploy,
   findService,
   parseArgs,
+  parseCommitId,
   parseRemoteHead,
   probeUrls,
+  runtimeCommitArgs,
 } from "./verify-render-release.mjs";
 
 test("findService unwraps Render CLI service records", () => {
@@ -39,6 +42,22 @@ test("parseRemoteHead selects the exact expected branch", () => {
     main,
   );
   assert.throws(() => parseRemoteHead(`${main}\trefs/heads/main\n`, "missing"), /Could not resolve/);
+});
+
+test("runtime commit lookup follows the first-parent portal/config history", () => {
+  assert.deepEqual(DEPLOY_RELEVANT_PATHS, ["web", "render.yaml"]);
+  assert.deepEqual(runtimeCommitArgs("origin/main"), [
+    "log",
+    "--first-parent",
+    "-1",
+    "--format=%H",
+    "origin/main",
+    "--",
+    "web",
+    "render.yaml",
+  ]);
+  assert.equal(parseCommitId("A".repeat(40), "fixture"), "a".repeat(40));
+  assert.throws(() => parseCommitId("short", "fixture"), /full Git commit ID/);
 });
 
 test("probeUrls retains the standalone and proxied prize paths", () => {

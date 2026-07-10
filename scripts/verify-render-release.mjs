@@ -6,6 +6,11 @@ import { pathToFileURL } from "node:url";
 
 const execFileAsync = promisify(execFile);
 
+// Render builds from web/. A commit limited to protocol docs or release tooling
+// should not force a no-op portal deployment, but any portal or service-config
+// change must be present in the live deployment's ancestry.
+export const DEPLOY_RELEVANT_PATHS = Object.freeze(["web", "render.yaml"]);
+
 const DEFAULTS = Object.freeze({
   branch: "main",
   gitRemote: "origin",
@@ -77,10 +82,30 @@ export function parseRemoteHead(output, branch) {
     .map((line) => line.split(/\s+/))
     .find((parts) => parts[1] === ref);
 
-  if (!match || !/^[0-9a-f]{40}$/i.test(match[0])) {
+  if (!match) {
     throw new Error(`Could not resolve the remote head for ${ref}.`);
   }
-  return match[0].toLowerCase();
+  return parseCommitId(match[0], `remote head for ${ref}`);
+}
+
+export function parseCommitId(value, description) {
+  const commit = value.trim().toLowerCase();
+  if (!/^[0-9a-f]{40}$/.test(commit)) {
+    throw new Error(`${description} must be a full Git commit ID.`);
+  }
+  return commit;
+}
+
+export function runtimeCommitArgs(remoteRef) {
+  return [
+    "log",
+    "--first-parent",
+    "-1",
+    "--format=%H",
+    remoteRef,
+    "--",
+    ...DEPLOY_RELEVANT_PATHS,
+  ];
 }
 
 export function probeUrls(renderOrigin, publicOrigin) {
@@ -101,6 +126,21 @@ async function command(file, args) {
   } catch (error) {
     const detail = [error.stderr, error.stdout, error.message].filter(Boolean).join("\n").trim();
     throw new Error(`${file} ${args.join(" ")} failed${detail ? `: ${detail}` : "."}`);
+  }
+}
+
+async function isAncestor(ancestor, descendant) {
+  try {
+    await execFileAsync("git", ["merge-base", "--is-ancestor", ancestor, descendant], {
+      maxBuffer: 1024 * 1024,
+    });
+    return true;
+  } catch (error) {
+    if (error?.code === 1) {
+      return false;
+    }
+    const detail = [error.stderr, error.stdout, error.message].filter(Boolean).join("\n").trim();
+    throw new Error(`git merge-base --is-ancestor failed${detail ? `: ${detail}` : "."}`);
   }
 }
 
@@ -130,8 +170,13 @@ export function usage() {
   return `Usage: node scripts/verify-render-release.mjs [options]
 
 Read-only release guard. It verifies that Render is configured for the expected
-branch, its single live deployment matches the GitHub branch head, and the
-Render origin plus the ProjectForty2 proxy respond successfully.
+branch, its single live deployment contains the latest portal/config change,
+and the Render origin plus the ProjectForty2 proxy respond successfully.
+
+The service builds from web/, so documentation-only and release-tooling-only
+commits do not require a no-op Render deploy. The guard treats web/ and
+render.yaml as deploy-relevant paths and verifies the live SHA contains the
+latest first-parent commit touching either one.
 
 Options:
   --branch <name>             Expected GitHub/Render branch (default: main)
@@ -155,7 +200,22 @@ export async function main(argv = process.argv.slice(2)) {
     options.gitRemote,
     `refs/heads/${options.branch}`,
   ]);
-  const expectedCommit = parseRemoteHead(remoteHeadOutput, options.branch);
+  const branchHead = parseRemoteHead(remoteHeadOutput, options.branch);
+  await command("git", ["fetch", "--quiet", options.gitRemote, options.branch]);
+  const remoteRef = `${options.gitRemote}/${options.branch}`;
+  const fetchedHead = parseCommitId(
+    await command("git", ["rev-parse", "--verify", remoteRef]),
+    `fetched ${remoteRef}`,
+  );
+  if (fetchedHead !== branchHead) {
+    throw new Error(
+      `${remoteRef} changed while verifying (${branchHead} -> ${fetchedHead}); retry after the branch stabilizes.`,
+    );
+  }
+  const runtimeCommit = parseCommitId(
+    await command("git", runtimeCommitArgs(remoteRef)),
+    `latest deploy-relevant commit on ${remoteRef}`,
+  );
 
   const [services, deployments] = await Promise.all([
     commandJson("render", ["services", "--output", "json"]),
@@ -170,9 +230,9 @@ export async function main(argv = process.argv.slice(2)) {
 
   const liveDeploy = findLiveDeploy(deployments);
   const liveCommit = liveDeploy.commit.id.toLowerCase();
-  if (liveCommit !== expectedCommit) {
+  if (!(await isAncestor(runtimeCommit, liveCommit))) {
     throw new Error(
-      `Render live commit ${liveCommit} does not match ${options.gitRemote}/${options.branch} (${expectedCommit}).`,
+      `Render live commit ${liveCommit} does not contain the deploy-relevant ${remoteRef} commit ${runtimeCommit} (${DEPLOY_RELEVANT_PATHS.join(", ")}).`,
     );
   }
 
@@ -183,7 +243,9 @@ export async function main(argv = process.argv.slice(2)) {
     [
       "Render release verified.",
       `  branch: ${options.branch}`,
-      `  commit: ${expectedCommit}`,
+      `  branch head: ${branchHead}`,
+      `  runtime commit: ${runtimeCommit}`,
+      `  live commit: ${liveCommit}`,
       `  routes: ${urls.length}/${urls.length} healthy`,
     ].join("\n") + "\n",
   );

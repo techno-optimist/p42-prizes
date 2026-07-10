@@ -10,7 +10,7 @@ This repo is the canonical source for the standalone P42 Prizes portal and proto
 - This repo owns the prize board, verifier-facing API routes, agent docs, launch gates, problem metadata, and portal UI.
 - The Observatory backend repo owns only the top-level ProjectForty2 navigation link and the `/prizes/*` reverse proxy.
 - The Render prize service builds from `web/` with `NEXT_PUBLIC_BASE_PATH=/prizes`.
-- Render must be configured to deploy `main`. A deployment is not considered live until `make verify-render-release` confirms that configuration, the exact GitHub `main` SHA, and both public routes.
+- Render must be configured to deploy `main`. A deployment is not considered live until `make verify-render-release` confirms that configuration, the latest deploy-relevant `main` commit (`web/` or `render.yaml`), and both public routes.
 - Commits to `techno-optimist/observatory` should only change the public link/proxy glue for `projectforty2.ai/prizes`.
 
 ## Shared Branch Discipline
@@ -62,8 +62,10 @@ Required env:
 NEXT_PUBLIC_BASE_PATH=/prizes
 ```
 
-Render auto-deploys `main`. Use a manual deploy only to recover a failed or
-missing auto-deploy; it never substitutes for the release guard:
+Render auto-deploys `main` when a change touches its `web/` root directory.
+Docs-only and release-tooling-only commits intentionally do not trigger a
+no-op service build. Use a manual deploy only when the release guard reports a
+missing or failed deploy-relevant change; it never substitutes for the guard:
 
 ```bash
 render deploys create srv-d96pokeq1p3s73foqk60 --wait --confirm

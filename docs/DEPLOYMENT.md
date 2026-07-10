@@ -63,8 +63,9 @@ make verify-render-release
 It fails closed unless all of the following agree:
 
 1. Render service `srv-d96pokeq1p3s73foqk60` is configured for `main`.
-2. Its one live deployment commit equals the current GitHub `main` head queried
-   through the canonical `origin` remote.
+2. Its one live deployment commit contains the latest first-parent GitHub
+   `main` commit that touches `web/` or `render.yaml`, queried through the
+   canonical `origin` remote.
 3. The Render origin and `projectforty2.ai` proxy return success for all prize
    routes required by the portal.
 
@@ -75,8 +76,9 @@ remote. An isolated checkout can pass its GitHub remote explicitly:
 make verify-render-release P42_GIT_REMOTE=github
 ```
 
-Render auto-deploys `main`. If that deploy is missing or failed, agents may
-request a recovery build, then must run the guard again:
+The service root is `web/`, so Render correctly skips docs-only and
+release-tooling-only commits. If a `web/` or `render.yaml` change is missing or
+failed, agents may request a recovery build, then must run the guard again:
 
 ```bash
 render deploys create srv-d96pokeq1p3s73foqk60 --wait --confirm
@@ -241,7 +243,7 @@ Before pushing a prize-site change:
 7. Keep real ETH, onramp, and settlement language gated until audit, legal review, deterministic CI, and resolver work are complete.
 8. If changing contracts or protocol docs, also run `make contracts-test` and update `docs/GATE_LEDGER.md`.
 9. Stage only files changed for the current task.
-10. Push `main`, wait for its Render auto-deploy, then run `make verify-render-release`. Only trigger the recovery deploy command if the guard reports a missing or failed `main` deploy, and run the guard again afterward.
+10. Push `main`, then run `make verify-render-release`. A `web/` or `render.yaml` change must receive a matching Render deployment; docs-only and release-tooling-only commits do not. Trigger the recovery deploy command only when the guard reports a missing or failed deploy-relevant change, and run the guard again afterward.
 
 Known owner/external actions that agents cannot complete alone are tracked in
 `docs/HUMAN_ACTIONS.md`. Do not mark those gates closed without the named
