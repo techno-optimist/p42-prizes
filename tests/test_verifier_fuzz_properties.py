@@ -12,7 +12,13 @@ from types import ModuleType
 
 import pytest
 
-from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes
+from p42_prizes.verdict import (
+    SCORE_ATOM_SCALE,
+    canonical_json,
+    chain_score_atoms,
+    parse_rational,
+    sha256_bytes,
+)
 from verifier_fuzz_helpers import (
     SEED_EXAMPLES,
     duplicate_first_key,
@@ -598,3 +604,111 @@ def test_pnt_decimal_boundary_uses_exact_objective_lower(
         score, details = module.compute_score(parsed)
         assert score == lower
         assert Fraction(int(details["objective_lo_num"]), int(details["objective_lo_den"])) == lower
+
+
+TRANSITION_CASES = {
+    "arithmetic-kakeya": ("minimize", Fraction(7, 4)),
+    "autoconvolution-c1-upper": (
+        "minimize",
+        Fraction(25, 8),
+    ),
+    "autoconvolution-c2-lower": (
+        "maximize",
+        Fraction(689, 1200),
+    ),
+    "edges-vs-triangles": ("maximize", Fraction(-16684282317138839, 23437500000000000)),
+    "erdos-min-overlap": (
+        "minimize",
+        Fraction(1, 2),
+    ),
+    "hadamard-668-defect": ("minimize", Fraction(0)),
+    "hadamard-mini": ("minimize", Fraction(6)),
+    "mertens-lp-ceiling-k12000": (
+        "minimize",
+        Fraction(249371902576813203926437, 250000000000000000000000),
+    ),
+    "pnt-sparse-mertens-construction": (
+        "maximize",
+        Fraction(0),
+    ),
+    "signed-autoconvolution-c3-upper": (
+        "minimize",
+        Fraction(16),
+    ),
+}
+
+
+def transition_witness(
+    slug: str, tmp_path: Path, module: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    solution = tmp_path / f"{slug}.json"
+    if slug in ("autoconvolution-c1-upper", "autoconvolution-c2-lower"):
+        monkeypatch.setattr(module, "N", 4)
+        fixture = {"n": 4, "values": [2, 0, 5, 1]}
+    elif slug == "signed-autoconvolution-c3-upper":
+        monkeypatch.setattr(module, "N", 2)
+        fixture = {"n": 2, "denominator_power": 0, "values": [2, -1]}
+    elif slug == "erdos-min-overlap":
+        monkeypatch.setattr(module, "N", 4)
+        monkeypatch.setattr(module, "HALF_N", 2)
+        fixture = {"n": 4, "denominator_power": 2, "values": [1, 2, 1, 2]}
+    elif slug == "hadamard-668-defect":
+        monkeypatch.setattr(module, "N", 4)
+        monkeypatch.setattr(module, "ROW_HEX_DIGITS", 1)
+        monkeypatch.setattr(module, "TOTAL_PAIRS", 6)
+        fixture = {"n": 4, "encoding": module.ENCODING, "rows": ["0", "3", "5", "6"]}
+    elif slug == "pnt-sparse-mertens-construction":
+        monkeypatch.setattr(module, "REACH", 10)
+        monkeypatch.setattr(module, "DOMAIN_MAX", 20)
+        fixture = {
+            "reach": 10,
+            "denominator": 1,
+            "printed_decimal": "0.0000000000000000",
+            "support": [{"k": 2, "value": 0}],
+        }
+    elif slug == "hadamard-mini":
+        fixture = {"n": 4, "rows": ["++++"] * 4}
+    else:
+        fixture = seed_fixture(slug)
+    solution.write_text(json.dumps(fixture, separators=(",", ":")), encoding="utf-8")
+    return solution
+
+
+@pytest.mark.parametrize("slug", SLUGS)
+def test_one_atom_frontier_transition_accepts_then_rejects_equal_score(
+    slug: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = VERIFIERS[slug]
+    direction, expected_score = TRANSITION_CASES[slug]
+    score_atom = Fraction(1, SCORE_ATOM_SCALE)
+    solution = transition_witness(slug, tmp_path, module, monkeypatch)
+
+    if slug == "hadamard-mini":
+        frontier = expected_score + score_atom
+        expected_improvement = Fraction(score_atom, frontier)
+        monkeypatch.setattr(module, "SEED_DEFECT", frontier)
+    else:
+        frontier = expected_score + score_atom if direction == "minimize" else expected_score - score_atom
+        expected_improvement = score_atom
+        monkeypatch.setattr(module, "SEED_BEST", frontier)
+    monkeypatch.setattr(module, "MIN_IMPROVEMENT", expected_improvement)
+
+    accepted = module.report_for_solution(solution).to_dict()
+
+    assert accepted["valid"] is True
+    assert accepted["reason"] == ""
+    assert parse_rational(accepted["score"]) == expected_score
+    assert parse_rational(accepted["improvement"]) == expected_improvement
+    assert chain_score_atoms(frontier, direction) - chain_score_atoms(expected_score, direction) == 1
+
+    if slug == "hadamard-mini":
+        monkeypatch.setattr(module, "SEED_DEFECT", expected_score)
+    else:
+        monkeypatch.setattr(module, "SEED_BEST", expected_score)
+
+    equal = module.report_for_solution(solution).to_dict()
+
+    assert equal["valid"] is False
+    assert equal["reason"] == "NOT_STRICT_IMPROVEMENT"
+    assert parse_rational(equal["score"]) == expected_score
+    assert equal["improvement"] == "0/1"
