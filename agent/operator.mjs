@@ -789,7 +789,7 @@ function assertOperatorSignedRecord(record, candidate, callPolicy, action = null
     signer: wallet.address,
     chainId,
     ...expectedRequest,
-    hash: action?.transaction_hash ?? detail?.signed_tx_hash,
+    hashes: [action?.transaction_hash, detail?.signed_tx_hash],
     nonce: detail?.signed_tx_nonce,
     label: expectedLabel,
   });

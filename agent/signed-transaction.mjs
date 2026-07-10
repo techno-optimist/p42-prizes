@@ -39,8 +39,11 @@ export function assertSignedTransactionRecord(record, expected) {
   if (!ethers.isHexString(record.raw_tx)) throw new Error("signed transaction journal raw_tx is invalid");
   const rawHash = ethers.keccak256(record.raw_tx);
   if (!sameHex(rawHash, record.hash)) throw new Error("signed transaction journal raw transaction hash mismatch");
-  if (expected.hash && !sameHex(rawHash, expected.hash)) {
-    throw new Error("signed transaction journal hash does not match persisted transaction hash");
+  const persistedHashes = [expected.hash, ...(expected.hashes ?? [])].filter((hash) => hash !== undefined && hash !== null);
+  for (const hash of persistedHashes) {
+    if (!sameHex(rawHash, hash)) {
+      throw new Error("signed transaction journal hash does not match persisted transaction hash");
+    }
   }
 
   const transaction = ethers.Transaction.from(record.raw_tx);

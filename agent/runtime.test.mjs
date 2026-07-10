@@ -635,6 +635,27 @@ test("a signed transaction journal remains fully validated after restart", async
   }).hash, record.hash);
 });
 
+test("signed transaction validation rejects a conflicting redundant detail hash", async () => {
+  const wallet = ethers.Wallet.createRandom();
+  const request = {
+    to: "0x6666666666666666666666666666666666666666",
+    value: 0n,
+    data: "0x1234",
+    nonce: 4,
+    gasLimit: 50000n,
+    gasPrice: 1n,
+    chainId: 31337,
+    type: 0,
+  };
+  const record = await buildSignedTransactionRecord({ wallet, request, label: "conflicting-detail" });
+  assert.throws(() => assertSignedTransactionRecord(record, {
+    signer: wallet.address,
+    ...request,
+    hashes: [record.hash, ethers.ZeroHash],
+    label: "conflicting-detail",
+  }), /hash does not match persisted transaction hash/);
+});
+
 
 test("runtime bridge quarantines orphaned canonical jobs under the queue lock", () => {
   const dir = mkdtempSync(join(tmpdir(), "p42-bridge-"));
