@@ -31,3 +31,28 @@ contract ForceEther {
         selfdestruct(recipient);
     }
 }
+
+/// @notice Fee recipient used to prove a failed fee leg reverts the solver
+/// transfer and ledger debit as one transaction.
+contract RejectingTreasury {
+    error P42_REJECT_ETH();
+
+    receive() external payable {
+        revert P42_REJECT_ETH();
+    }
+}
+
+/// @notice Deliberately mimics the retired vault marker while retaining an
+/// arbitrary transfer path. Ledger runtime-code pinning must reject it.
+contract MarkerSpoofRolloverDestination {
+    function isP42RolloverDestination() external pure returns (bool) {
+        return true;
+    }
+
+    function withdraw(address payable recipient) external {
+        (bool ok,) = recipient.call{value: address(this).balance}("");
+        require(ok, "P42_WITHDRAW_FAILED");
+    }
+
+    receive() external payable {}
+}

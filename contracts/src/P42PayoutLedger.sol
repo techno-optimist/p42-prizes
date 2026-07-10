@@ -2,34 +2,33 @@
 pragma solidity ^0.8.24;
 
 import {P42Math} from "./P42Math.sol";
+import {P42RolloverVault} from "./P42RolloverVault.sol";
 
 interface IP42EscrowPool {
     function funded() external view returns (uint256);
     function firstFundedAt() external view returns (uint64);
+    function payRollover(address to, uint256 amount) external;
 }
 
 interface IP42CreditCloseGuard {
     function openSubmissionCount() external view returns (uint256);
 }
 
-interface IP42FeeSink {
-    function payFee(address to, uint256 amount) external;
-    function payResidual(address to, uint256 amount) external;
-}
-
 /// @notice Final-denominator improvement accounting for one problem pool.
-/// Credits accrue while the pool is open, but no solver can claim until close.
-/// Credited `atoms` are MARGINAL frontier reductions (previous on-chain best
-/// score minus the newly finalized score, in score atoms) recorded by the
-/// submission manager — never seed-relative distances. Summing marginals
-/// telescopes to (seed - final best), so each solver's proportional share
-/// credit_i / totalCreditAtoms equals their advertised Delta_i / SigmaDelta_j
-/// of the total frontier movement (F1).
+/// @dev A close has exactly two exclusive economic modes. With no final credit,
+/// sponsors retain perpetual pull rights to their recorded principal. With
+/// positive credit, solver entitlements are gross and each successful claim
+/// atomically pays its own fee; only post-deadline positive-credit residuals
+/// can enter the immutable rollover destination.
 contract P42PayoutLedger {
     error P42_NOT_OWNER();
     error P42_NOT_POOL();
     error P42_NOT_CREDIT_RECORDER();
     error P42_CREDIT_RECORDER_ALREADY_SET();
+    error P42_ROLLOVER_ALREADY_SET();
+    error P42_ROLLOVER_DESTINATION_INVALID();
+    error P42_ROLLOVER_DESTINATION_NOT_SEPARATE();
+    error P42_ROLLOVER_DESTINATION_NOT_SET();
     error P42_CLOSED();
     error P42_NOT_CLOSED();
     error P42_PAUSED_NEW_ACTIONS();
@@ -38,29 +37,19 @@ contract P42PayoutLedger {
     error P42_OPEN_SUBMISSIONS(uint256 openSubmissionCount);
     error P42_BAD_EARLIEST_CLOSE();
     error P42_BAD_CLOSE_BY();
-    error P42_COMPETITION_WINDOW_OPEN(uint64 earliestCloseTimestamp, uint64 nowAt);
     error P42_CLOSE_BY_NOT_REACHED(uint64 closeByTimestamp, uint64 nowAt);
-    error P42_FEE_ALREADY_SWEPT();
-    error P42_NO_FEE_TO_SWEEP();
+    error P42_FEE_CLAIM_ONLY();
     error P42_VOID_EXCEEDS_CREDIT(uint256 creditedAtoms, uint256 voidAtoms);
     error P42_CLAIMS_EXPIRED(uint64 deadline, uint64 nowAt);
     error P42_CLAIMS_NOT_EXPIRED(uint64 deadline, uint64 nowAt);
-    error P42_RESIDUAL_ALREADY_SWEPT();
+    error P42_ROLLOVER_ALREADY_SWEPT();
+    error P42_ROLLOVER_NOT_AVAILABLE();
     error P42_CREDIT_BOUND_EXCEEDED(uint256 attempted, uint256 maxAllowed);
 
     uint16 public constant MAX_FEE_BPS = 250;
-
-    /// @notice F15 claim deadline: solvers have this long after close() to
-    /// pull their entitlement; afterwards consumeClaim reverts and the
-    /// permissionless sweepResidual() sends the pool's FULL remaining balance
-    /// (floor dust + never-claimed entitlements) to the treasury. A constant —
-    /// published protocol policy, identical for every pool.
     uint64 public constant CLAIM_DEADLINE_SECONDS = 365 days;
     uint64 public constant MIN_COMPETITION_SECONDS = 30 days;
     uint64 public constant MIN_CLOSE_DELAY_SECONDS = 180 days;
-    /// @notice Matches the submission manager's exclusive +/-2^254 score
-    /// bounds: every accepted marginal and their telescoping cumulative sum is
-    /// strictly below 2^255. Recorder misuse fails explicitly before addition.
     uint256 public constant MAX_TOTAL_CREDIT_ATOMS = type(uint256).max >> 1;
 
     address public immutable owner;
@@ -72,26 +61,39 @@ contract P42PayoutLedger {
 
     bool public closed;
     bool public pausedNewActions;
+    /// @dev Retained for ABI visibility. Fees are no longer swept at close.
     bool public feeSwept;
+    bool public rolloverSwept;
+    /// @dev Legacy alias for rolloverSwept.
     bool public residualSwept;
-    /// @notice Timestamp of close(); anchors the F15 claim deadline.
     uint64 public closedAt;
     address public creditRecorder;
+    /// @notice Set exactly once before close to an ownerless restricted vault.
+    address public rolloverDestination;
     uint256 public closedPoolBalance;
+    /// @dev Retained for ABI compatibility; always zero in the claim-time-fee model.
     uint256 public feeReserve;
     uint256 public totalCreditAtoms;
+    uint256 public totalGrossClaimed;
+    uint256 public totalFeeAccrued;
 
     mapping(address => uint256) public creditAtomsOf;
+    /// @notice Gross entitlement consumed by each solver, before claim-time fee.
     mapping(address => uint256) public claimedWeiOf;
 
     event NewActionsPaused(bool paused);
     event CreditRecorderSet(address indexed recorder);
+    event RolloverDestinationSet(address indexed destination);
     event CreditRecorded(address indexed solver, uint256 atoms, uint256 totalCreditAtoms);
     event CreditVoided(address indexed solver, uint256 atoms, uint256 totalCreditAtoms);
-    event Closed(uint256 poolBalance, uint256 feeReserve, uint64 closedAt, uint64 claimDeadline);
-    event ClaimConsumed(address indexed solver, uint256 amount);
-    event FeeSwept(address indexed treasury, uint256 amount);
-    event ResidualSwept(address indexed treasury, uint256 amount);
+    event Closed(
+        uint256 poolBalance,
+        uint256 feeReserve,
+        uint64 closedAt,
+        uint64 claimDeadline
+    );
+    event ClaimConsumed(address indexed solver, uint256 grossAmount, uint256 feeAmount);
+    event RolloverSwept(address indexed destination, uint256 amount);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert P42_NOT_OWNER();
@@ -140,6 +142,19 @@ contract P42PayoutLedger {
         emit CreditRecorderSet(recorder);
     }
 
+    /// @notice One-time deployment ceremony step. Exact runtime-code pinning
+    /// prevents an EOA or a marker-spoofing arbitrary receiver from becoming a
+    /// future-prize rollover endpoint.
+    function setRolloverDestination(address destination) external onlyOwner {
+        if (rolloverDestination != address(0)) revert P42_ROLLOVER_ALREADY_SET();
+        if (destination == treasury) revert P42_ROLLOVER_DESTINATION_NOT_SEPARATE();
+        if (destination.codehash != keccak256(type(P42RolloverVault).runtimeCode)) {
+            revert P42_ROLLOVER_DESTINATION_INVALID();
+        }
+        rolloverDestination = destination;
+        emit RolloverDestinationSet(destination);
+    }
+
     function recordCredit(address solver, uint256 atoms) external {
         if (creditRecorder == address(0)) {
             if (msg.sender != owner) revert P42_NOT_CREDIT_RECORDER();
@@ -163,12 +178,6 @@ contract P42PayoutLedger {
         emit CreditRecorded(solver, atoms, total + atoms);
     }
 
-    /// @notice Reverses previously recorded credit during a poisoned-frontier
-    /// recovery (the submission manager's voidFinalize). Callable ONLY by the
-    /// creditRecorder — the void must be anchored to a specific on-chain
-    /// finalize, never a free-standing governance number. Checked subtraction:
-    /// a void can never push a balance negative, and it is refused once the
-    /// pool is closed (entitlements are already snapshotted/claimable then).
     function voidCredit(address solver, uint256 atoms) external {
         if (msg.sender != creditRecorder) revert P42_NOT_CREDIT_RECORDER();
         if (closed) revert P42_CLOSED();
@@ -193,41 +202,31 @@ contract P42PayoutLedger {
         }
         uint256 denominator = total + additionalAtoms;
         if (denominator == 0) return 0;
-        uint256 poolBalance = IP42EscrowPool(pool).funded();
-        uint256 reserve = P42Math.mulDiv(poolBalance, feeBps, 10_000);
-        uint256 distributable = poolBalance - reserve;
-        return P42Math.mulDiv(distributable, solverCredit + additionalAtoms, denominator);
+        return P42Math.mulDiv(IP42EscrowPool(pool).funded(), solverCredit + additionalAtoms, denominator);
     }
 
+    /// @notice Permissionless and immutable: close is available only at the
+    /// configured close-by timestamp. The owner has no early-close privilege.
     function close() external {
         if (closed) revert P42_CLOSED();
-        uint64 effectiveEarliest = effectiveEarliestCloseTimestamp();
-        if (block.timestamp < effectiveEarliest) {
-            revert P42_COMPETITION_WINDOW_OPEN(effectiveEarliest, uint64(block.timestamp));
-        }
-        if (msg.sender != owner && block.timestamp < closeByTimestamp) {
+        if (block.timestamp < closeByTimestamp) {
             revert P42_CLOSE_BY_NOT_REACHED(closeByTimestamp, uint64(block.timestamp));
         }
-        if (creditRecorder != address(0)) {
-            uint256 openCount = IP42CreditCloseGuard(creditRecorder).openSubmissionCount();
-            if (openCount != 0) revert P42_OPEN_SUBMISSIONS(openCount);
-        }
+        if (rolloverDestination == address(0)) revert P42_ROLLOVER_DESTINATION_NOT_SET();
         closed = true;
         closedAt = uint64(block.timestamp);
         closedPoolBalance = IP42EscrowPool(pool).funded();
-        feeReserve = P42Math.mulDiv(closedPoolBalance, feeBps, 10_000);
-        emit Closed(closedPoolBalance, feeReserve, closedAt, closedAt + CLAIM_DEADLINE_SECONDS);
+        // Fees exist only as successful solver claims, never as a close-time reserve.
+        feeReserve = 0;
+        emit Closed(closedPoolBalance, 0, closedAt, claimDeadline());
     }
 
-    /// @notice Last timestamp at which legitimate funding may enter. This
-    /// leaves the full immutable competition window before closeBy even if the
-    /// first deposit arrives late in the deployment's life.
     function fundingDeadline() public view returns (uint64) {
         return closeByTimestamp - MIN_COMPETITION_SECONDS;
     }
 
-    /// @notice Competition cannot close until both the configured absolute
-    /// earliest-close and the first-legitimate-funding window have elapsed.
+    /// @dev This retains the public scheduling view for funding UX, but it no
+    /// longer grants any actor authority to close before closeByTimestamp.
     function effectiveEarliestCloseTimestamp() public view returns (uint64) {
         uint64 firstFundedAt = IP42EscrowPool(pool).firstFundedAt();
         if (firstFundedAt == 0) return earliestCloseTimestamp;
@@ -235,77 +234,80 @@ contract P42PayoutLedger {
         return fundedEarliest > earliestCloseTimestamp ? fundedEarliest : earliestCloseTimestamp;
     }
 
-    /// @notice The F15 claim deadline: last timestamp (inclusive) at which
-    /// consumeClaim still pays. 0 while the pool is open.
+    function positiveCreditClose() public view returns (bool) {
+        return closed && totalCreditAtoms != 0;
+    }
+
+    function sponsorRefundsEnabled() external view returns (bool) {
+        return closed && totalCreditAtoms == 0;
+    }
+
     function claimDeadline() public view returns (uint64) {
-        if (!closed) return 0;
+        if (!positiveCreditClose()) return 0;
         return closedAt + CLAIM_DEADLINE_SECONDS;
     }
 
+    /// @notice Solver entitlements are gross. Claim-time fees are subtracted
+    /// only when the individual solver actually settles a successful claim.
     function distributablePool() public view returns (uint256) {
-        if (!closed) return 0;
-        return closedPoolBalance - feeReserve;
+        if (!positiveCreditClose()) return 0;
+        return closedPoolBalance;
     }
 
     function finalEntitlement(address solver) public view returns (uint256) {
-        if (!closed || totalCreditAtoms == 0) return 0;
-        return P42Math.mulDiv(distributablePool(), creditAtomsOf[solver], totalCreditAtoms);
+        if (!positiveCreditClose()) return 0;
+        return P42Math.mulDiv(closedPoolBalance, creditAtomsOf[solver], totalCreditAtoms);
     }
 
     function claimable(address solver) public view returns (uint256) {
-        if (!closed || block.timestamp > closedAt + CLAIM_DEADLINE_SECONDS) return 0;
+        if (!positiveCreditClose() || block.timestamp > claimDeadline()) return 0;
         uint256 entitlement = finalEntitlement(solver);
         uint256 claimed = claimedWeiOf[solver];
         if (entitlement <= claimed) return 0;
         return entitlement - claimed;
     }
 
-    function consumeClaim(address solver) external onlyPool returns (uint256) {
+    function consumeClaim(address solver) external onlyPool returns (uint256 grossAmount, uint256 feeAmount) {
         if (!closed) revert P42_NOT_CLOSED();
-        uint64 deadline = closedAt + CLAIM_DEADLINE_SECONDS;
+        if (!positiveCreditClose()) return (0, 0);
+        uint64 deadline = claimDeadline();
         if (block.timestamp > deadline) revert P42_CLAIMS_EXPIRED(deadline, uint64(block.timestamp));
-        uint256 amount = claimable(solver);
-        claimedWeiOf[solver] += amount;
-        emit ClaimConsumed(solver, amount);
-        return amount;
+        grossAmount = claimable(solver);
+        claimedWeiOf[solver] += grossAmount;
+        feeAmount = P42Math.mulDiv(grossAmount, feeBps, 10_000);
+        totalGrossClaimed += grossAmount;
+        totalFeeAccrued += feeAmount;
+        emit ClaimConsumed(solver, grossAmount, feeAmount);
     }
 
-    /// @notice Pays the withheld protocol fee to the treasury after close (L1).
-    /// The destination (treasury) and amount (feeReserve) are fixed at close, so
-    /// this is permissionless and single-use. Solver claims are always covered
-    /// because Sigma(finalEntitlement) <= distributablePool() = closedPoolBalance
-    /// - feeReserve, so the pool retains at least feeReserve for this transfer.
-    function sweepFee() external {
-        if (!closed) revert P42_NOT_CLOSED();
-        if (feeSwept) revert P42_FEE_ALREADY_SWEPT();
-        uint256 amount = feeReserve;
-        if (amount == 0) revert P42_NO_FEE_TO_SWEEP();
-        feeSwept = true;
-        IP42FeeSink(pool).payFee(treasury, amount);
-        emit FeeSwept(treasury, amount);
+    /// @notice Removed economics: a fee cannot be extracted before a solver has
+    /// actually received a corresponding successful settlement.
+    function sweepFee() external pure {
+        revert P42_FEE_CLAIM_ONLY();
     }
 
-    /// @notice F15 residual sweep: once the claim deadline has passed, anyone
-    /// may send the pool's ENTIRE remaining balance (flooring dust plus every
-    /// never-claimed entitlement, and the whole balance when
-    /// totalCreditAtoms == 0) to the treasury. A later forced ETH transfer can
-    /// be swept in a subsequent call, but an already-empty swept pool still
-    /// rejects repeats. Routed through the dedicated pool.payResidual — NOT
-    /// payFee — so the fee counter stays clean; sweepFee remains independently
-    /// available before this fires (an unswept feeReserve is simply folded into
-    /// the full-balance sweep).
+    function sweepRollover() external {
+        _sweepRollover();
+    }
+
+    /// @notice Legacy entry point now follows the rollover-only policy; it can
+    /// never transfer a positive-credit residual to the fee treasury.
     function sweepResidual() external {
+        _sweepRollover();
+    }
+
+    function _sweepRollover() private {
         if (!closed) revert P42_NOT_CLOSED();
-        uint64 deadline = closedAt + CLAIM_DEADLINE_SECONDS;
-        if (block.timestamp <= deadline) {
-            revert P42_CLAIMS_NOT_EXPIRED(deadline, uint64(block.timestamp));
-        }
-        uint256 amount = pool.balance;
-        if (amount == 0 && residualSwept) revert P42_RESIDUAL_ALREADY_SWEPT();
+        if (!positiveCreditClose()) revert P42_ROLLOVER_NOT_AVAILABLE();
+        uint64 deadline = claimDeadline();
+        if (block.timestamp <= deadline) revert P42_CLAIMS_NOT_EXPIRED(deadline, uint64(block.timestamp));
+        if (rolloverSwept) revert P42_ROLLOVER_ALREADY_SWEPT();
+        rolloverSwept = true;
         residualSwept = true;
-        if (amount != 0) {
-            IP42FeeSink(pool).payResidual(treasury, amount);
-        }
-        emit ResidualSwept(treasury, amount);
+        // `funded()` is accounted principal only; raw balance is deliberately
+        // never read here, so forced ETH cannot be swept as prize residual.
+        uint256 amount = IP42EscrowPool(pool).funded();
+        if (amount != 0) IP42EscrowPool(pool).payRollover(rolloverDestination, amount);
+        emit RolloverSwept(rolloverDestination, amount);
     }
 }
