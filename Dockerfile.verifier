@@ -24,7 +24,8 @@ ARG PROBLEM
 ENV PYTHONHASHSEED=0 \
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
-    MKL_NUM_THREADS=1
+    MKL_NUM_THREADS=1 \
+    PYTHONPATH=/repo/src
 
 # `make` is the verifier entrypoint; slim images omit it.
 # TODO(F23, needs human): `make` is installed unpinned — `apt-get update` fetches
