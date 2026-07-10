@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { ethers } from "ethers";
 
-import { canonicalJson, sha256Canonical } from "./lib.mjs";
+import {
+  canonicalJson,
+  sha256Canonical,
+  verifierImageHashForDigest,
+  verifierSourceHashForDigest,
+} from "./lib.mjs";
 import {
   buildResolveCallPolicy,
   buildResolverTransportRequest,
@@ -17,9 +22,14 @@ const ADDR = {
   submissions: "0x1111111111111111111111111111111111111111",
   challenges: "0x2222222222222222222222222222222222222222",
   challenger: "0x3333333333333333333333333333333333333333",
+  registry: "0x4444444444444444444444444444444444444444",
+  pool: "0x5555555555555555555555555555555555555555",
+  ledger: "0x6666666666666666666666666666666666666666",
 };
 const HASH = (digit) => `0x${digit.repeat(64)}`;
 const SHA = (digit) => `sha256:${digit.repeat(64)}`;
+const VERIFIER_IMAGE = SHA("e");
+const VERIFIER_SOURCE = SHA("f");
 const expected = {
   chain_id: 84532,
   problem_id: "hadamard-mini",
@@ -27,13 +37,47 @@ const expected = {
   challenge_contract: ADDR.challenges,
   submission_id: "17",
   reveal_instance_hash: HASH("a"),
+  registry_address: ADDR.registry,
+  registry_problem_id: "1",
+  registry_problem_slug: "hadamard-mini",
 };
+
+function registryBinding() {
+  return {
+    schema_version: "p42-registry-binding/v1",
+    image_hash_algorithm: "keccak256-utf8/v1",
+    source_digest_algorithm: "p42-source-tree-sha256/v1",
+    source_hash_algorithm: "keccak256-utf8/v1",
+    chain_id: expected.chain_id,
+    registry_address: ADDR.registry,
+    problem_id: "1",
+    problem_slug: "hadamard-mini",
+    verifier_version: "1.0.0",
+    observation_block_number: 100,
+    observation_block_hash: HASH("1"),
+    verifier_image: VERIFIER_IMAGE,
+    verifier_image_hash: verifierImageHashForDigest(VERIFIER_IMAGE),
+    verifier_source_digest: VERIFIER_SOURCE,
+    verifier_source_hash: verifierSourceHashForDigest(VERIFIER_SOURCE),
+    spec_hash: HASH("2"),
+    admission_hash: HASH("3"),
+    metadata_uri: "ipfs://p42-fixture",
+    pool: ADDR.pool,
+    ledger: ADDR.ledger,
+    submission_manager: ADDR.submissions,
+    challenge_manager: ADDR.challenges,
+    challenge_window_seconds: "259200",
+    min_improvement_atoms: "1",
+    frozen: true,
+    explicitly_frozen: true,
+  };
+}
 
 function report({ valid = true } = {}) {
   return {
     problem_id: "hadamard-mini",
     verifier_version: "1.0.0",
-    verifier_image: "sha256:local-dev",
+    verifier_image: VERIFIER_IMAGE,
     solution_hash: SHA("b"),
     valid,
     improvement: "1/1",
@@ -90,6 +134,7 @@ function transcript({ candidateValue = candidate(), reportValue = report() } = {
         ...expected,
         claimed_score_atoms: "2",
         challenge_ends_at: "2000000000",
+        registry_binding: registryBinding(),
       },
       claim_comparison: {
         relation: "claimed_better_than_verified",
@@ -132,6 +177,40 @@ test("resolver rejects tampered transcript, report, candidate, and mismatched cl
     () => verifyResolverTranscript(transcript(), { ...expected, reveal_instance_hash: HASH("f") }),
     /does not match the finalized challenge/,
   );
+
+  const mismatchedBinding = transcript();
+  mismatchedBinding.verifier.chain_claim.registry_binding.verifier_image = SHA("9");
+  delete mismatchedBinding.transcript_hash;
+  mismatchedBinding.transcript_hash = sha256Canonical(mismatchedBinding);
+  assert.throws(
+    () => verifyResolverTranscript(mismatchedBinding, expected),
+    /verifier_image_hash mismatch/,
+  );
+
+  const missingBinding = transcript();
+  delete missingBinding.verifier.chain_claim.registry_binding;
+  delete missingBinding.transcript_hash;
+  missingBinding.transcript_hash = sha256Canonical(missingBinding);
+  assert.throws(
+    () => verifyResolverTranscript(missingBinding, expected),
+    /registry binding must be an object/,
+  );
+});
+
+test("resolver preserves a DA challenge without a verifier report but still requires the registry binding", () => {
+  const daCandidate = candidate({ reasonCode: "da_payload_missing" });
+  const daTranscript = transcript({ candidateValue: daCandidate });
+  daTranscript.da = { ok: false, challengeable: true };
+  daTranscript.verifier.ok = false;
+  daTranscript.verifier.valid = false;
+  delete daTranscript.verifier.report;
+  delete daTranscript.verifier.report_hash;
+  delete daTranscript.transcript_hash;
+  daTranscript.transcript_hash = sha256Canonical(daTranscript);
+
+  const checked = verifyResolverTranscript(daTranscript, expected);
+  assert.equal(checked.challengerWins, true);
+  assert.equal(checked.report, null);
 });
 
 test("resolver refuses unresolved/quarantined evidence and grants a solver win only from accepted evidence", () => {

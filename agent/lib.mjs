@@ -2,6 +2,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { ethers } from "ethers";
 
 // Rational "improvement" -> integer atoms over a fixed 1e6 denominator.
@@ -26,6 +27,16 @@ export function atomsFromImprovement(improvement) {
 // (previous bestScoreAtoms - new score_atoms) is never over-stated —
 // conservative on the money side. For integer scores the encoding is exact.
 export const SCORE_SCALE = 1_000_000_000_000_000_000n; // 1e18
+export const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
+export const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v1";
+export const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
+export const REGISTRY_BINDING_SCHEMA = "p42-registry-binding/v1";
+
+const BARE_SHA256_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+const POSITIVE_DECIMAL_RE = /^[1-9][0-9]*$/;
+const UNSIGNED_DECIMAL_RE = /^(0|[1-9][0-9]*)$/;
+const PROBLEM_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const VERIFIER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 
 // Parse an exact rational string "num/den" (den optional, default 1) into a
 // normalized {num, den} with den > 0.
@@ -102,6 +113,134 @@ export function problemRunnerConfig(problemDir) {
   return { problemId, direction, requiredMemoryMb: Number(memory), wallSeconds: Number(wall) };
 }
 
+function yamlScalar(value) {
+  const trimmed = String(value ?? "").trim().replace(/\s+#.*$/, "").trim();
+  const quoted = /^(['"])(.*)\1$/.exec(trimmed);
+  return quoted ? quoted[2] : trimmed;
+}
+
+function topLevelYamlScalar(text, key) {
+  const match = new RegExp(`^${key}:\\s*(.+?)\\s*$`, "m").exec(text);
+  return match ? yamlScalar(match[1]) : null;
+}
+
+function nestedYamlScalar(text, section, key) {
+  let sectionIndent = null;
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const indent = line.length - line.trimStart().length;
+    if (sectionIndent !== null && indent <= sectionIndent) sectionIndent = null;
+    if (sectionIndent === null) {
+      if (new RegExp(`^\\s*${section}:\\s*$`).test(line)) sectionIndent = indent;
+      continue;
+    }
+    const match = new RegExp(`^\\s*${key}:\\s*(.+?)\\s*$`).exec(line);
+    if (match) return yamlScalar(match[1]);
+  }
+  return null;
+}
+
+function requireCanonicalDigest(value, label) {
+  if (typeof value !== "string" || !BARE_SHA256_DIGEST_RE.test(value)) {
+    throw new Error(`${label} must be a canonical bare sha256:<64 lowercase hex> digest`);
+  }
+  return value;
+}
+
+function requireProblemSlug(value, label) {
+  if (typeof value !== "string" || !PROBLEM_SLUG_RE.test(value)) {
+    throw new Error(`${label} must be a canonical lowercase problem slug`);
+  }
+  return value;
+}
+
+function requireVerifierVersion(value, label) {
+  if (typeof value !== "string" || !VERIFIER_VERSION_RE.test(value)) {
+    throw new Error(`${label} must be a canonical semantic version`);
+  }
+  return value;
+}
+
+function requireDecimal(value, label, { positive = false } = {}) {
+  const text = typeof value === "bigint" ? value.toString() : String(value);
+  if (!(positive ? POSITIVE_DECIMAL_RE : UNSIGNED_DECIMAL_RE).test(text)) {
+    throw new Error(`${label} must be a canonical ${positive ? "positive" : "non-negative"} integer`);
+  }
+  return text;
+}
+
+function requireSafeBlockNumber(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error(`${label} must be a non-negative safe integer`);
+  return value;
+}
+
+function requirePositiveSafeInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${label} must be a positive safe integer`);
+  return value;
+}
+
+function requireAddress(value, label) {
+  if (!ethers.isAddress(value)) throw new Error(`${label} must be an EVM address`);
+  return ethers.getAddress(value).toLowerCase();
+}
+
+export function verifierImageHashForDigest(verifierImageDigest, label = "verifier image digest") {
+  return ethers.keccak256(ethers.toUtf8Bytes(requireCanonicalDigest(verifierImageDigest, label))).toLowerCase();
+}
+
+export function verifierSourceHashForDigest(verifierSourceDigest, label = "verifier source digest") {
+  return ethers.keccak256(ethers.toUtf8Bytes(requireCanonicalDigest(verifierSourceDigest, label))).toLowerCase();
+}
+
+export function canonicalVerifierSourceDigest(repoRoot, problemDir) {
+  const root = resolve(repoRoot);
+  const problem = resolve(problemDir);
+  const expectedParent = resolve(root, "problems");
+  if (dirname(problem) !== expectedParent || !PROBLEM_SLUG_RE.test(basename(problem))) {
+    throw new Error("runtime verifier package must be a canonical problems/<slug> directory in the configured repo root");
+  }
+  let output;
+  try {
+    output = execFileSync(
+      "python3",
+      ["-m", "p42_prizes.cli", "source-hash", "--problem", problem],
+      {
+        cwd: root,
+        encoding: "utf8",
+        timeout: 30_000,
+        maxBuffer: 1024 * 1024,
+        env: {
+          PATH: process.env.PATH || "/usr/bin:/bin",
+          PYTHONPATH: `${root}/src`,
+          PYTHONHASHSEED: "0",
+          OMP_NUM_THREADS: "1",
+          OPENBLAS_NUM_THREADS: "1",
+          MKL_NUM_THREADS: "1",
+        },
+      },
+    );
+  } catch (error) {
+    throw new Error(`could not compute canonical verifier source digest: ${error.message}`);
+  }
+  return requireCanonicalDigest(output.trim(), "canonical verifier source digest");
+}
+
+export function localProblemRuntimeIdentity(problemDir, repoRoot) {
+  const problem = resolve(problemDir);
+  let text;
+  try {
+    text = readFileSync(join(problem, "problem.yaml"), "utf8");
+  } catch (error) {
+    throw new Error(`cannot read ${problem}/problem.yaml for registry binding: ${error.message}`);
+  }
+  return {
+    problem_slug: requireProblemSlug(topLevelYamlScalar(text, "problem_id"), "problem.yaml problem_id"),
+    verifier_version: requireVerifierVersion(nestedYamlScalar(text, "verifier", "version"), "problem.yaml verifier.version"),
+    verifier_image: requireCanonicalDigest(nestedYamlScalar(text, "verifier", "image"), "problem.yaml verifier.image"),
+    verifier_source_digest: canonicalVerifierSourceDigest(repoRoot, problem),
+  };
+}
+
 // Run the problem's exact verifier on a solution file and return the parsed
 // VerdictReport. The verifier exits 1 on an invalid solution but still prints
 // the canonical report to stdout, so capture stdout on a non-zero exit too.
@@ -146,6 +285,251 @@ export function sha256Canonical(value) {
 function normalizedBytes32(value, label) {
   if (!ethers.isHexString(value, 32)) throw new Error(`${label} must be 32-byte hex`);
   return String(value).toLowerCase();
+}
+
+const REGISTRY_BINDING_KEYS = Object.freeze([
+  "schema_version",
+  "image_hash_algorithm",
+  "source_digest_algorithm",
+  "source_hash_algorithm",
+  "chain_id",
+  "registry_address",
+  "problem_id",
+  "problem_slug",
+  "verifier_version",
+  "observation_block_number",
+  "observation_block_hash",
+  "verifier_image",
+  "verifier_image_hash",
+  "verifier_source_digest",
+  "verifier_source_hash",
+  "spec_hash",
+  "admission_hash",
+  "metadata_uri",
+  "pool",
+  "ledger",
+  "submission_manager",
+  "challenge_manager",
+  "challenge_window_seconds",
+  "min_improvement_atoms",
+  "frozen",
+  "explicitly_frozen",
+]);
+
+function requireExactObjectKeys(value, keys, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  const expected = new Set(keys);
+  const missing = keys.filter((key) => !(key in value));
+  const extra = Object.keys(value).filter((key) => !expected.has(key));
+  if (missing.length || extra.length) {
+    throw new Error(`${label} keys mismatch (missing: ${missing.join(",") || "none"}; extra: ${extra.join(",") || "none"})`);
+  }
+  return value;
+}
+
+function sameBindingField(label, expected, actual) {
+  if (String(expected) !== String(actual)) {
+    throw new Error(`${label} mismatch: expected ${String(expected)}, got ${String(actual)}`);
+  }
+}
+
+function sameBindingHex(label, expected, actual) {
+  if (String(expected).toLowerCase() !== String(actual).toLowerCase()) {
+    throw new Error(`${label} mismatch: expected ${String(expected)}, got ${String(actual)}`);
+  }
+}
+
+function manifestProblemForRegistry(manifest, registryProblemId) {
+  const problemId = requireDecimal(registryProblemId, "registry problem id", { positive: true });
+  const matches = (manifest?.problems ?? []).filter((entry) => String(entry?.problemId) === problemId);
+  if (matches.length !== 1) {
+    throw new Error(`deployment manifest must contain exactly one problem with registry id ${problemId}`);
+  }
+  return matches[0];
+}
+
+function registryProblemSnapshot(problem) {
+  if (!problem || typeof problem !== "object") throw new Error("registry problem snapshot is missing");
+  return {
+    spec_hash: normalizedBytes32(problem.specHash, "registry problem specHash"),
+    source_hash: normalizedBytes32(problem.verifierSourceHash, "registry problem verifierSourceHash"),
+    image_hash: normalizedBytes32(problem.verifierImageHash, "registry problem verifierImageHash"),
+    admission_hash: normalizedBytes32(problem.admissionMatrixHash, "registry problem admissionMatrixHash"),
+    metadata_uri: String(problem.metadataURI ?? ""),
+    pool: requireAddress(problem.pool, "registry problem pool"),
+    ledger: requireAddress(problem.ledger, "registry problem ledger"),
+    submission_manager: requireAddress(problem.submissionManager, "registry problem submissionManager"),
+    challenge_manager: requireAddress(problem.challengeManager, "registry problem challengeManager"),
+    challenge_window_seconds: requireDecimal(problem.challengeWindowSeconds, "registry problem challengeWindowSeconds", { positive: true }),
+    min_improvement_atoms: requireDecimal(problem.minImprovementAtoms, "registry problem minImprovementAtoms", { positive: true }),
+  };
+}
+
+export function validateRegistryBinding(value, expected = {}) {
+  const binding = requireExactObjectKeys(value, REGISTRY_BINDING_KEYS, "registry binding");
+  if (binding.schema_version !== REGISTRY_BINDING_SCHEMA) {
+    throw new Error("registry binding has an unsupported schema");
+  }
+  if (binding.image_hash_algorithm !== VERIFIER_IMAGE_HASH_ALGORITHM) {
+    throw new Error(`registry binding image_hash_algorithm must equal ${VERIFIER_IMAGE_HASH_ALGORITHM}`);
+  }
+  if (binding.source_digest_algorithm !== VERIFIER_SOURCE_DIGEST_ALGORITHM) {
+    throw new Error(`registry binding source_digest_algorithm must equal ${VERIFIER_SOURCE_DIGEST_ALGORITHM}`);
+  }
+  if (binding.source_hash_algorithm !== VERIFIER_SOURCE_HASH_ALGORITHM) {
+    throw new Error(`registry binding source_hash_algorithm must equal ${VERIFIER_SOURCE_HASH_ALGORITHM}`);
+  }
+  const normalized = {
+    schema_version: binding.schema_version,
+    image_hash_algorithm: binding.image_hash_algorithm,
+    source_digest_algorithm: binding.source_digest_algorithm,
+    source_hash_algorithm: binding.source_hash_algorithm,
+    chain_id: requirePositiveSafeInteger(binding.chain_id, "registry binding chain_id"),
+    registry_address: requireAddress(binding.registry_address, "registry binding registry_address"),
+    problem_id: requireDecimal(binding.problem_id, "registry binding problem_id", { positive: true }),
+    problem_slug: requireProblemSlug(binding.problem_slug, "registry binding problem_slug"),
+    verifier_version: requireVerifierVersion(binding.verifier_version, "registry binding verifier_version"),
+    observation_block_number: requireSafeBlockNumber(binding.observation_block_number, "registry binding observation_block_number"),
+    observation_block_hash: normalizedBytes32(binding.observation_block_hash, "registry binding observation_block_hash"),
+    verifier_image: requireCanonicalDigest(binding.verifier_image, "registry binding verifier_image"),
+    verifier_image_hash: normalizedBytes32(binding.verifier_image_hash, "registry binding verifier_image_hash"),
+    verifier_source_digest: requireCanonicalDigest(binding.verifier_source_digest, "registry binding verifier_source_digest"),
+    verifier_source_hash: normalizedBytes32(binding.verifier_source_hash, "registry binding verifier_source_hash"),
+    spec_hash: normalizedBytes32(binding.spec_hash, "registry binding spec_hash"),
+    admission_hash: normalizedBytes32(binding.admission_hash, "registry binding admission_hash"),
+    metadata_uri: String(binding.metadata_uri ?? ""),
+    pool: requireAddress(binding.pool, "registry binding pool"),
+    ledger: requireAddress(binding.ledger, "registry binding ledger"),
+    submission_manager: requireAddress(binding.submission_manager, "registry binding submission_manager"),
+    challenge_manager: requireAddress(binding.challenge_manager, "registry binding challenge_manager"),
+    challenge_window_seconds: requireDecimal(binding.challenge_window_seconds, "registry binding challenge_window_seconds", { positive: true }),
+    min_improvement_atoms: requireDecimal(binding.min_improvement_atoms, "registry binding min_improvement_atoms", { positive: true }),
+    frozen: binding.frozen,
+    explicitly_frozen: binding.explicitly_frozen,
+  };
+  if (!normalized.metadata_uri) throw new Error("registry binding metadata_uri must be non-empty");
+  if (normalized.frozen !== true || normalized.explicitly_frozen !== true) {
+    throw new Error("registry binding must attest an explicitly frozen problem");
+  }
+  sameBindingHex(
+    "registry binding verifier_image_hash",
+    verifierImageHashForDigest(normalized.verifier_image, "registry binding verifier_image"),
+    normalized.verifier_image_hash,
+  );
+  sameBindingHex(
+    "registry binding verifier_source_hash",
+    verifierSourceHashForDigest(normalized.verifier_source_digest, "registry binding verifier_source_digest"),
+    normalized.verifier_source_hash,
+  );
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    if (expectedValue === undefined || expectedValue === null) continue;
+    sameBindingField(`registry binding ${key}`, expectedValue, normalized[key]);
+  }
+  return normalized;
+}
+
+function stableRegistryBindingIdentity(binding) {
+  const normalized = validateRegistryBinding(binding);
+  const {
+    observation_block_number: _observationBlockNumber,
+    observation_block_hash: _observationBlockHash,
+    ...identity
+  } = normalized;
+  return identity;
+}
+
+export function assertRegistryBindingStable(recorded, current) {
+  if (canonicalJson(stableRegistryBindingIdentity(recorded)) !== canonicalJson(stableRegistryBindingIdentity(current))) {
+    throw new Error("registry binding changed after transcript creation");
+  }
+  return current;
+}
+
+export function buildRegistryBinding({
+  manifest,
+  localProblem,
+  registryAddress,
+  registryProblemId,
+  chainId,
+  observationBlockNumber,
+  observationBlockHash,
+  registryProblem,
+  registryIsFrozen,
+  registryExplicitlyFrozen,
+}) {
+  const manifestProblem = manifestProblemForRegistry(manifest, registryProblemId);
+  const local = localProblem;
+  if (!local || typeof local !== "object") throw new Error("local verifier identity is required for registry binding");
+  const problemId = requireDecimal(registryProblemId, "registry problem id", { positive: true });
+  const snapshot = registryProblemSnapshot(registryProblem);
+  if (manifest?.network?.chainId !== chainId) throw new Error("registry binding chain id does not match deployment manifest");
+  if (manifestProblem.registrationStatus !== "registered-and-frozen" || manifestProblem.immutablePins !== true) {
+    throw new Error("manifest problem is not registered and frozen with immutable pins");
+  }
+  if (manifestProblem.explicitlyFrozen !== true || registryIsFrozen !== true || registryExplicitlyFrozen !== true) {
+    throw new Error("registry problem is not explicitly frozen");
+  }
+  if (manifestProblem.verifierImageHashAlgorithm !== VERIFIER_IMAGE_HASH_ALGORITHM) {
+    throw new Error(`manifest verifierImageHashAlgorithm must equal ${VERIFIER_IMAGE_HASH_ALGORITHM}`);
+  }
+  if (manifestProblem.verifierSourceDigestAlgorithm !== VERIFIER_SOURCE_DIGEST_ALGORITHM) {
+    throw new Error(`manifest verifierSourceDigestAlgorithm must equal ${VERIFIER_SOURCE_DIGEST_ALGORITHM}`);
+  }
+  if (manifestProblem.verifierSourceHashAlgorithm !== VERIFIER_SOURCE_HASH_ALGORITHM) {
+    throw new Error(`manifest verifierSourceHashAlgorithm must equal ${VERIFIER_SOURCE_HASH_ALGORITHM}`);
+  }
+  sameBindingField("local problem slug", manifestProblem.problemSlug, local.problem_slug);
+  sameBindingField("local verifier version", manifestProblem.verifierVersion, local.verifier_version);
+  sameBindingField("local verifier image", manifestProblem.verifierImageDigest, local.verifier_image);
+  sameBindingField("local verifier source digest", manifestProblem.verifierSourceDigest, local.verifier_source_digest);
+  sameBindingHex("manifest verifierImageHash", manifestProblem.verifierImageHash, verifierImageHashForDigest(local.verifier_image));
+  sameBindingHex("manifest verifierSourceHash", manifestProblem.verifierSourceHash, verifierSourceHashForDigest(local.verifier_source_digest));
+
+  const manifestFields = {
+    spec_hash: normalizedBytes32(manifestProblem.specHash, "manifest specHash"),
+    source_hash: normalizedBytes32(manifestProblem.verifierSourceHash, "manifest verifierSourceHash"),
+    image_hash: normalizedBytes32(manifestProblem.verifierImageHash, "manifest verifierImageHash"),
+    admission_hash: normalizedBytes32(manifestProblem.admissionMatrixHash, "manifest admissionMatrixHash"),
+    metadata_uri: String(manifestProblem.metadataURI ?? ""),
+    pool: requireAddress(manifestProblem.pool, "manifest pool"),
+    ledger: requireAddress(manifestProblem.ledger, "manifest ledger"),
+    submission_manager: requireAddress(manifestProblem.submissionManager, "manifest submissionManager"),
+    challenge_manager: requireAddress(manifestProblem.challengeManager, "manifest challengeManager"),
+    challenge_window_seconds: requireDecimal(manifest.parameters?.challengeWindowSeconds, "manifest challengeWindowSeconds", { positive: true }),
+    min_improvement_atoms: requireDecimal(manifestProblem.minImprovementAtoms, "manifest minImprovementAtoms", { positive: true }),
+  };
+  for (const [field, expectedValue] of Object.entries(manifestFields)) {
+    sameBindingField(`live registry ${field}`, expectedValue, snapshot[field]);
+  }
+
+  return validateRegistryBinding({
+    schema_version: REGISTRY_BINDING_SCHEMA,
+    image_hash_algorithm: VERIFIER_IMAGE_HASH_ALGORITHM,
+    source_digest_algorithm: VERIFIER_SOURCE_DIGEST_ALGORITHM,
+    source_hash_algorithm: VERIFIER_SOURCE_HASH_ALGORITHM,
+    chain_id: requirePositiveSafeInteger(chainId, "registry binding chain id"),
+    registry_address: requireAddress(registryAddress, "registry address"),
+    problem_id: problemId,
+    problem_slug: local.problem_slug,
+    verifier_version: local.verifier_version,
+    observation_block_number: requireSafeBlockNumber(observationBlockNumber, "registry binding observation block"),
+    observation_block_hash: normalizedBytes32(observationBlockHash, "registry binding observation block hash"),
+    verifier_image: local.verifier_image,
+    verifier_image_hash: snapshot.image_hash,
+    verifier_source_digest: local.verifier_source_digest,
+    verifier_source_hash: snapshot.source_hash,
+    spec_hash: snapshot.spec_hash,
+    admission_hash: snapshot.admission_hash,
+    metadata_uri: snapshot.metadata_uri,
+    pool: snapshot.pool,
+    ledger: snapshot.ledger,
+    submission_manager: snapshot.submission_manager,
+    challenge_manager: snapshot.challenge_manager,
+    challenge_window_seconds: snapshot.challenge_window_seconds,
+    min_improvement_atoms: snapshot.min_improvement_atoms,
+    frozen: true,
+    explicitly_frozen: true,
+  });
 }
 
 // Recover a reveal call from direct calldata or any ABI wrapper (P42AgentWallet,
@@ -453,8 +837,10 @@ export function operatorCursorBinding({
   submissionContract,
   challengeContract,
   problemId,
+  registryAddress = null,
+  registryProblemId = null,
 }) {
-  return {
+  const binding = {
     schema_version: "p42-operator-binding/v1",
     chain_id: Number(chainId),
     deployment_commit: String(manifest.deploymentCommit ?? "").toLowerCase(),
@@ -464,6 +850,14 @@ export function operatorCursorBinding({
     problem_id: String(problemId),
     manifest_start_block: Number(manifest.indexer?.startBlock ?? 0),
   };
+  if (registryAddress !== null || registryProblemId !== null) {
+    if (registryAddress === null || registryProblemId === null) {
+      throw new Error("operator cursor registry binding requires both registryAddress and registryProblemId");
+    }
+    binding.registry_address = requireAddress(registryAddress, "operator cursor registry address");
+    binding.registry_problem_id = requireDecimal(registryProblemId, "operator cursor registry problem id", { positive: true });
+  }
+  return binding;
 }
 
 export function validateOperatorCursor(cursor, binding) {

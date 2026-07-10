@@ -57,10 +57,16 @@ OPERATOR_PRIVATE_KEY=0x... node operator.mjs \
   --rpc https://sepolia.base.org \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem ../problems/hadamard-mini \
+  --registry-problem-id 1 \
   --runtime /var/lib/p42/operator/hadamard-mini \
   --agent-wallet 0x... \
   --max-challenge-bond 0.05
 ```
+
+`--registry-problem-id` is the immutable on-chain `P42ProblemRegistry` ID for
+the supplied problem directory. Startup requires it to resolve to the matching
+manifest slug, frozen source digest, image digest, contract wiring, and a
+finalized canonical block before it may queue or sign anything.
 
 The current checked-in `deployments/base-sepolia/p42-prizes.json` is a stale
 pre-remediation manifest and is invalid for this source; operator and
@@ -87,7 +93,8 @@ Runtime artifacts under `--runtime` are:
   recovery; it never authorizes an on-chain action by itself.
 - `operator-cursor.json`: durable finalized-block cursor plus overlap anchors.
 - `actions/`: exact `p42-session-call-policy/v1` call policies and signed challenge transaction journals.
-- `ALERTS.log`: quarantines, expired windows, and cap refusals.
+- `ALERTS.log`: quarantines, registry-binding refusals, expired windows, and cap
+  refusals.
 
 Each actionable challenge emits the exact
 `challenge(submissionId, revealInstanceHash, reasonHash)` calldata and Keccak
@@ -131,6 +138,7 @@ RESOLVER_PRIVATE_KEY=0x... node resolver.mjs \
   --rpc https://sepolia.base.org \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem-id hadamard-mini \
+  --registry-problem-id 1 \
   --transcripts /var/lib/p42/operator/hadamard-mini/transcripts \
   --runtime /var/lib/p42/resolver/hadamard-mini \
   --agent-wallet 0x... \
@@ -145,6 +153,11 @@ reveal fingerprint, and challenge fingerprint. Its exact call is
 transcriptHashBytes32, transcriptURI, verdictHash)` with the live
 `resolverDecisionBondWei`; `verdictHash` is a domain-separated commitment to
 the candidate, transcript, decision, and both instance hashes.
+
+The resolver requires the same `--registry-problem-id` as the operator. It
+rejects a transcript unless its typed registry binding names that frozen board,
+matches the manifest's source/image anchors and contract wiring, and still
+matches both the historical finalized observation and live registry state.
 
 Production mode requires `--agent-wallet`: the contract's resolver role must be
 that wallet, and its session key, chain, expiry, spend caps, allowlist, unused

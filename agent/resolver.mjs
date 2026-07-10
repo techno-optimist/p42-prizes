@@ -24,6 +24,7 @@ import {
   queryChunked,
   resolveOperatorFinality,
   sha256Canonical,
+  validateRegistryBinding,
   validateOperatorExecutionMode,
 } from "./lib.mjs";
 import { validateManifestEvidence } from "./indexer.mjs";
@@ -198,9 +199,10 @@ function validateChainClaim(value, expected) {
     claimed_score_atoms: asInteger(claim.claimed_score_atoms, "transcript.verifier.chain_claim.claimed_score_atoms"),
     reveal_instance_hash: normalizedBytes32(claim.reveal_instance_hash, "transcript.verifier.chain_claim.reveal_instance_hash"),
     challenge_ends_at: asNonnegativeDecimal(claim.challenge_ends_at, "transcript.verifier.chain_claim.challenge_ends_at"),
+    registry_binding: claim.registry_binding,
   };
   for (const [key, expectedValue] of Object.entries(expected)) {
-    if (expectedValue === undefined || expectedValue === null) continue;
+    if (expectedValue === undefined || expectedValue === null || !(key in normalized)) continue;
     if (String(normalized[key]).toLowerCase() !== String(expectedValue).toLowerCase()) {
       throw new Error(`transcript chain claim ${key} does not match the finalized challenge`);
     }
@@ -270,7 +272,7 @@ function validateCandidate(value, claim) {
   return candidate;
 }
 
-function validateDecisionEvidence(transcript, candidate) {
+function validateDecisionEvidence(transcript, candidate, registryBinding) {
   const verifier = requireObject(transcript.verifier, "transcript.verifier");
   if (typeof verifier.ok !== "boolean" || typeof verifier.valid !== "boolean") {
     throw new Error("transcript.verifier ok and valid must be booleans");
@@ -287,6 +289,15 @@ function validateDecisionEvidence(transcript, candidate) {
     report = validateVerdictReport(verifier.report, "transcript.verifier.report");
     if (!SHA256_RE.test(String(verifier.report_hash)) || sha256Canonical(report) !== verifier.report_hash) {
       throw new Error("transcript verifier report hash mismatch");
+    }
+    if (report.problem_id !== candidate.problem_id) {
+      throw new Error("VerdictReport.problem_id does not match the chain claim");
+    }
+    if (report.verifier_version !== registryBinding.verifier_version) {
+      throw new Error("VerdictReport.verifier_version does not match the registry binding");
+    }
+    if (report.verifier_image !== registryBinding.verifier_image) {
+      throw new Error("VerdictReport.verifier_image does not match the registry binding");
     }
   }
 
@@ -377,11 +388,18 @@ export function verifyResolverTranscript(transcriptValue, expected) {
     throw new Error("runner transcript resource_limits.address_space_limit_supported must be a boolean");
   }
   const claim = validateChainClaim(transcript.verifier?.chain_claim, expected);
+  const registryBinding = validateRegistryBinding(claim.registry_binding, {
+    chain_id: expected?.chain_id,
+    registry_address: expected?.registry_address,
+    problem_id: expected?.registry_problem_id,
+    problem_slug: expected?.registry_problem_slug,
+  });
   const candidate = validateCandidate(transcript.verifier?.challenge_candidate, claim);
-  const evidence = validateDecisionEvidence(transcript, candidate);
+  const evidence = validateDecisionEvidence(transcript, candidate, registryBinding);
   return {
     transcript,
     claim,
+    registryBinding,
     candidate,
     challengerWins: evidence.challengerWins,
     report: evidence.report,
@@ -592,6 +610,9 @@ function resolverBinding(context) {
     deployment_config_hash: String(context.manifest.deploymentConfigHash).toLowerCase(),
     submission_contract: String(context.subs.target).toLowerCase(),
     challenge_contract: String(context.chal.target).toLowerCase(),
+    registry_address: String(context.registry.target).toLowerCase(),
+    registry_problem_id: context.registryProblemId,
+    registry_problem_slug: context.manifestProblem.problemSlug,
     problem_id: context.problemId,
     manifest_start_block: context.startBlock,
   };
@@ -765,6 +786,9 @@ function findTranscriptForEvent(context, event) {
           challenge_contract: event.challenge_contract,
           submission_id: event.submission_id,
           reveal_instance_hash: event.reveal_instance_hash,
+          registry_address: String(context.registry.target).toLowerCase(),
+          registry_problem_id: context.registryProblemId,
+          registry_problem_slug: context.manifestProblem.problemSlug,
         }),
       });
     } catch (error) {
@@ -817,6 +841,100 @@ function assertActionPolicy(action, context) {
   return policy;
 }
 
+function assertBindingManifestFields(binding, context) {
+  const problem = context.manifestProblem;
+  if (problem.registrationStatus !== "registered-and-frozen" || problem.immutablePins !== true || problem.explicitlyFrozen !== true) {
+    throw new Error("deployment manifest problem is not registered, immutable, and explicitly frozen");
+  }
+  for (const [label, observed, expected] of [
+    ["problem slug", binding.problem_slug, problem.problemSlug],
+    ["verifier version", binding.verifier_version, problem.verifierVersion],
+    ["verifier image", binding.verifier_image, problem.verifierImageDigest],
+    ["verifier image hash", binding.verifier_image_hash, problem.verifierImageHash],
+    ["verifier source digest", binding.verifier_source_digest, problem.verifierSourceDigest],
+    ["verifier source hash", binding.verifier_source_hash, problem.verifierSourceHash],
+    ["spec hash", binding.spec_hash, problem.specHash],
+    ["admission hash", binding.admission_hash, problem.admissionMatrixHash],
+    ["metadata URI", binding.metadata_uri, problem.metadataURI],
+    ["pool", binding.pool, problem.pool],
+    ["ledger", binding.ledger, problem.ledger],
+    ["submission manager", binding.submission_manager, problem.submissionManager],
+    ["challenge manager", binding.challenge_manager, problem.challengeManager],
+    ["challenge window", binding.challenge_window_seconds, context.manifest.parameters.challengeWindowSeconds],
+    ["minimum improvement", binding.min_improvement_atoms, problem.minImprovementAtoms],
+  ]) {
+    if (label.includes("hash")) {
+      if (!sameBytes32(observed, expected)) throw new Error(`registry binding ${label} does not match deployment manifest`);
+    } else if (label.endsWith("manager") || ["pool", "ledger"].includes(label)) {
+      if (!sameAddress(observed, expected)) throw new Error(`registry binding ${label} does not match deployment manifest`);
+    } else if (String(observed) !== String(expected)) {
+      throw new Error(`registry binding ${label} does not match deployment manifest`);
+    }
+  }
+}
+
+function assertBindingRegistryFields(binding, problem, isFrozen, explicitlyFrozen, label) {
+  if (isFrozen !== true || explicitlyFrozen !== true || problem.frozen !== true) {
+    throw new Error(`${label} registry problem is not explicitly frozen`);
+  }
+  for (const [field, observed, expected] of [
+    ["spec hash", binding.spec_hash, problem.specHash],
+    ["source hash", binding.verifier_source_hash, problem.verifierSourceHash],
+    ["image hash", binding.verifier_image_hash, problem.verifierImageHash],
+    ["admission hash", binding.admission_hash, problem.admissionMatrixHash],
+  ]) {
+    if (!sameBytes32(observed, expected)) throw new Error(`${label} registry ${field} does not match the transcript binding`);
+  }
+  for (const [field, observed, expected] of [
+    ["metadata URI", binding.metadata_uri, problem.metadataURI],
+    ["pool", binding.pool, problem.pool],
+    ["ledger", binding.ledger, problem.ledger],
+    ["submission manager", binding.submission_manager, problem.submissionManager],
+    ["challenge manager", binding.challenge_manager, problem.challengeManager],
+    ["challenge window", binding.challenge_window_seconds, problem.challengeWindowSeconds],
+    ["minimum improvement", binding.min_improvement_atoms, problem.minImprovementAtoms],
+  ]) {
+    if (["pool", "ledger", "submission manager", "challenge manager"].includes(field)) {
+      if (!sameAddress(observed, expected)) throw new Error(`${label} registry ${field} does not match the transcript binding`);
+    } else if (String(observed) !== String(expected)) {
+      throw new Error(`${label} registry ${field} does not match the transcript binding`);
+    }
+  }
+}
+
+async function verifyLiveRegistryBinding(context, value) {
+  const binding = validateRegistryBinding(value, {
+    chain_id: context.chainId,
+    registry_address: String(context.registry.target).toLowerCase(),
+    problem_id: context.registryProblemId,
+    problem_slug: context.manifestProblem.problemSlug,
+  });
+  assertBindingManifestFields(binding, context);
+  if (binding.observation_block_number < context.startBlock) {
+    throw new Error("registry binding observation predates the deployment manifest start block");
+  }
+  const head = await context.provider.getBlockNumber();
+  if (binding.observation_block_number > head - context.finalityConfirmations) {
+    throw new Error("registry binding observation is not finalized at the configured confirmation depth");
+  }
+  const observedBlock = await context.provider.getBlock(binding.observation_block_number);
+  if (!observedBlock?.hash || !sameBytes32(observedBlock.hash, binding.observation_block_hash)) {
+    throw new Error("registry binding observation block is not canonical");
+  }
+  const problemId = BigInt(binding.problem_id);
+  const [historicalProblem, historicalFrozen, historicalExplicitlyFrozen, liveProblem, liveFrozen, liveExplicitlyFrozen] = await Promise.all([
+    context.registry.problems(problemId, { blockTag: binding.observation_block_number }),
+    context.registry.isFrozen(problemId, { blockTag: binding.observation_block_number }),
+    context.registry.explicitlyFrozen(problemId, { blockTag: binding.observation_block_number }),
+    context.registry.problems(problemId),
+    context.registry.isFrozen(problemId),
+    context.registry.explicitlyFrozen(problemId),
+  ]);
+  assertBindingRegistryFields(binding, historicalProblem, historicalFrozen, historicalExplicitlyFrozen, "historical");
+  assertBindingRegistryFields(binding, liveProblem, liveFrozen, liveExplicitlyFrozen, "live");
+  return binding;
+}
+
 async function currentChallenge(context, action) {
   const submissionId = BigInt(action.submission_id);
   const [submission, challenge, liveReveal, challengeReveal, challengeInstance, resolverAddress, latest, bond] = await Promise.all([
@@ -851,6 +969,15 @@ async function currentChallenge(context, action) {
     ["challenge instance", challengeInstance, action.challenge_instance_hash],
   ]) {
     if (!sameBytes32(observed, expected)) return { ok: false, terminal: true, reason: `${label} changed after finalization` };
+  }
+  try {
+    await verifyLiveRegistryBinding(context, action.registry_binding);
+  } catch (error) {
+    return {
+      ok: false,
+      status: "awaiting_registry_binding",
+      reason: `live registry binding rejected: ${error.shortMessage || error.message}`,
+    };
   }
   if (challenge.resolved || challenge.decisionPending) {
     const matchesDecision = challenge.decisionPending
@@ -977,9 +1104,13 @@ async function ensureSignedAction(context, action) {
   }
   const current = await currentChallenge(context, action);
   if (!current.ok) {
+    const previousStatus = action.status;
     action.status = current.status ?? "superseded";
     action.detail = current.reason;
     persistState(context);
+    if (action.status === "awaiting_registry_binding" && previousStatus !== "awaiting_registry_binding") {
+      appendAlert(context, `REGISTRY BINDING REFUSED ${action.event_hash}: ${current.reason}`);
+    }
     return null;
   }
   const request = await buildResolveTransactionRequest(context, action, current);
@@ -1053,7 +1184,12 @@ async function reconcileAction(context, action) {
 
 async function prepareAction(context, event) {
   const existing = context.state.actions[event.event_hash];
-  if (existing && !["awaiting_transcript", "invalid_transcript", "ambiguous_transcript"].includes(existing.status)) {
+  if (existing && ![
+    "awaiting_transcript",
+    "invalid_transcript",
+    "ambiguous_transcript",
+    "awaiting_registry_binding",
+  ].includes(existing.status)) {
     return existing;
   }
   let transcript;
@@ -1089,6 +1225,7 @@ async function prepareAction(context, event) {
   });
   const current = await currentChallenge(context, {
     ...event,
+    registry_binding: checked.registryBinding,
     transcript_hash_bytes32: checked.transcriptHashBytes32,
     verdict_hash: verdictHash,
     challenger_wins: checked.challengerWins,
@@ -1105,6 +1242,9 @@ async function prepareAction(context, event) {
     };
     context.state.actions[event.event_hash] = action;
     persistState(context);
+    if (action.status === "awaiting_registry_binding" && existing?.status !== "awaiting_registry_binding") {
+      appendAlert(context, `REGISTRY BINDING REFUSED ${event.event_hash}: ${current.reason}`);
+    }
     return action;
   }
   const callPolicy = buildResolveCallPolicy({
@@ -1136,6 +1276,7 @@ async function prepareAction(context, event) {
     transcript_path: transcript.path,
     transcript_hash: checked.transcript.transcript_hash,
     transcript_hash_bytes32: checked.transcriptHashBytes32,
+    registry_binding: checked.registryBinding,
     candidate_hash: checked.candidate.candidate_hash,
     challenger_wins: checked.challengerWins,
     verdict_hash: verdictHash,
@@ -1211,13 +1352,15 @@ async function scanOnce(context) {
 async function buildContext(argv) {
   const manifestPath = arg(argv, "manifest");
   const problemId = arg(argv, "problem-id");
+  const registryProblemIdArg = arg(argv, "registry-problem-id");
   const transcriptsArg = arg(argv, "transcripts");
   const transcriptUriTemplate = arg(argv, "transcript-uri-template");
   const localTest = Boolean(arg(argv, "local-test", false));
   const agentWalletAddress = arg(argv, "agent-wallet", null);
-  if (!manifestPath || !problemId || !transcriptsArg || !transcriptUriTemplate) {
-    throw new Error("required: --manifest <path> --problem-id <id> --transcripts <dir> --transcript-uri-template <ar://|ipfs://...{transcript_hash}>");
+  if (!manifestPath || !problemId || !registryProblemIdArg || !transcriptsArg || !transcriptUriTemplate) {
+    throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir> --transcript-uri-template <ar://|ipfs://...{transcript_hash}>");
   }
+  const registryProblemId = nonzeroSubmissionId(registryProblemIdArg, "--registry-problem-id");
   validateTranscriptUriTemplate(transcriptUriTemplate);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;
   if (!privateKey) throw new Error("set RESOLVER_PRIVATE_KEY to the resolver session key");
@@ -1230,6 +1373,14 @@ async function buildContext(argv) {
   ).abi;
   const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
   const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
+  const registry = new ethers.Contract(manifest.contracts.registry.address, abi("P42ProblemRegistry"), wallet);
+  const manifestProblem = manifest.problems?.find((entry) => String(entry?.problemId) === registryProblemId);
+  if (!manifestProblem) {
+    throw new Error(`--registry-problem-id ${registryProblemId} is absent from the deployment manifest`);
+  }
+  if (String(problemId) !== manifestProblem.problemSlug) {
+    throw new Error("--problem-id must equal the deployment manifest problemSlug for --registry-problem-id");
+  }
   const network = await provider.getNetwork();
   const chainId = Number(network.chainId);
   if (chainId !== Number(manifest.network.chainId)) {
@@ -1259,8 +1410,11 @@ async function buildContext(argv) {
     wallet,
     subs,
     chal,
+    registry,
     chainId,
     problemId: String(problemId),
+    registryProblemId,
+    manifestProblem,
     startBlock: Number(arg(argv, "from-block", manifest.indexer.startBlock)),
     finalityConfirmations: confirmations,
     reorgOverlapBlocks,
