@@ -110,10 +110,11 @@ curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
 - Treat `docs/HUMAN_ACTIONS.md` as the list of known owner/external actions. If
   this agent token hits `workflow` scope, deployer-key, audit, legal, or repo
   settings limits, document the blocker instead of bypassing the gate.
-- Do not retry publishing `.github/workflows/ci.yml` with the current OAuth app:
-  GitHub rejects workflow writes from this token with
+- `.github/workflows/ci.yml` is published. The current Git OAuth remote still
+  cannot update workflow files and returns
   `refusing to allow an OAuth App to create or update workflow ... without workflow scope`.
-  A repo owner must use the GitHub web UI or a PAT with `workflow` scope.
+  For a future workflow revision, use a workflow-capable owner credential or
+  the GitHub connector, then require a fresh successful `main` CI run.
 
 ## Contract Gate
 

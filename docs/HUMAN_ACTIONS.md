@@ -10,7 +10,7 @@ signature.
 | Gate | Open action | Exact evidence required |
 | --- | --- | --- |
 | All external gates | Provision the owner-controlled production attestation trust registry. The built-in production registry intentionally contains no signer registrations. | Registry conforming to `schemas/attestation-trust-registry.schema.json`, maintained separately from attestation packets, with pre-registered attestation class, role, identity, Ed25519 key, and validity window for every real signer; owner records custody, rotation, revocation, and independent verification of the registry distribution path. |
-| Gate 0 | Establish CI. GitHub currently reports **zero Actions workflows and zero check runs** for this repository. | Repo owner publishes the reviewed workflow with GitHub UI or a credential permitted to write workflows; the first real run covers the required Python, verifier, contract, agent, and web gates. |
+| Gate 0 | Maintain CI evidence. The reviewed workflow is published, and the post-merge [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) for `e152e2de36f0de820b7c5d717080d364605cd1d8` passed the Python verifier/seed, contract, autonomous-agent, and portal lanes. | Each deploy-relevant release has a completed required-check run against its exact `main` commit. This does not replace protected-release enforcement or private-vulnerability reporting. |
 | Gate 0 | Decide how protected releases will be enforced. Both branch-protection and rulesets APIs returned HTTP 403: `Upgrade to GitHub Pro or make this repository public to enable this feature` because `p42-prizes` is private. | Repo owner makes an explicit subscription/publicity decision: upgrade the applicable GitHub plan or make the repository public, then configure and independently verify required reviews/checks. The source-control gate remains open until enforcement is visible. |
 | Gate 0 | Enable and test private vulnerability reporting. | Security settings show private reporting enabled and a non-owner test reaches maintainers through the advisory route. |
 | Gate 1 | Deploy the remediated frozen release under intended testnet roles. The prior canonical Base Sepolia manifest predates current source, is machine-rejected as stale, and does not attest it. | New manifest and explorer verification bind the frozen commit, chain ID, all addresses, constructor/wiring/config values, source hashes, and runtime-bytecode hashes; reconciliation runs from deployment genesis. |
@@ -87,9 +87,12 @@ problem requirement.
 
 ## Exact Blockers At This Snapshot
 
-- Source control: zero workflows/check runs; workflow publication still needs
-  owner-capable workflow authority; branch protection and rulesets are blocked
-  by the private-repository GitHub plan until the owner upgrades or goes public.
+- Source control: the CI workflow is published and the post-merge
+  [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404)
+  for `e152e2de36f0de820b7c5d717080d364605cd1d8` passed all four required
+  lanes. Branch protection and rulesets remain blocked by the private-repository
+  GitHub plan until the owner upgrades or goes public; private vulnerability
+  reporting is also still unverified.
 - External audit: no commissioned auditor identity/engagement, signed report,
   remediation retest, or residual-risk acceptance for the frozen current source.
 - Attestation trust: no owner-controlled production registry currently names
