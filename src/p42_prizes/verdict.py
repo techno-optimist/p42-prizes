@@ -25,10 +25,23 @@ def _reject_json_constant(value: str) -> NoReturn:
     raise ValueError(f"non-JSON numeric constant: {value}")
 
 
-def strict_json_loads(value: str | bytes | bytearray) -> Any:
-    """Parse JSON without Python's non-standard NaN/Infinity extensions."""
+def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        value[key] = item
+    return value
 
-    return json.loads(value, parse_constant=_reject_json_constant)
+
+def strict_json_loads(value: str | bytes | bytearray) -> Any:
+    """Parse JSON without non-standard constants or duplicate object keys."""
+
+    return json.loads(
+        value,
+        parse_constant=_reject_json_constant,
+        object_pairs_hook=_reject_duplicate_object_keys,
+    )
 
 
 def _validate_json_value(value: Any, path: str = "$") -> None:
