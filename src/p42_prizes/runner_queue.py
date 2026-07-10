@@ -6,7 +6,10 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import fcntl
 import math
+import os
 from pathlib import Path
+import stat
+import tempfile
 from typing import Any, Iterator, Mapping
 
 from p42_prizes.secure_json import read_strict_json_file_if_exists
@@ -164,14 +167,29 @@ def read_runner_queue(queue_path: str | Path) -> dict[str, Any]:
 def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
     queue_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = queue_path.with_suffix(queue_path.suffix + ".lock")
-    with lock_path.open("w", encoding="utf-8") as lock:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise OSError("runner queue locks require platform O_NOFOLLOW support")
+    lock_fd = os.open(os.fspath(lock_path), os.O_RDWR | os.O_CREAT | nofollow, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
+            raise RunnerQueueError("runner queue lock must be a regular file")
+        os.fchmod(lock_fd, 0o600)
+        lock = os.fdopen(lock_fd, "r+", encoding="utf-8")
+        lock_fd = -1
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        queue = _read_queue_file(queue_path)
         try:
-            yield queue
+            queue = _read_queue_file(queue_path)
+            try:
+                yield queue
+            finally:
+                _write_queue_file(queue_path, queue)
         finally:
-            _write_queue_file(queue_path, queue)
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            lock.close()
+    finally:
+        if lock_fd >= 0:
+            os.close(lock_fd)
 
 
 def _read_queue_file(queue_path: Path) -> dict[str, Any]:
@@ -187,9 +205,28 @@ def _read_queue_file(queue_path: Path) -> dict[str, Any]:
 
 
 def _write_queue_file(queue_path: Path, queue: Mapping[str, Any]) -> None:
-    tmp = queue_path.with_suffix(queue_path.suffix + ".tmp")
-    tmp.write_text(canonical_json(dict(queue)) + "\n", encoding="utf-8")
-    tmp.replace(queue_path)
+    payload = (canonical_json(dict(queue)) + "\n").encode("utf-8")
+    fd, temporary = tempfile.mkstemp(prefix=f".{queue_path.name}.", suffix=".tmp", dir=queue_path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            fd = -1
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, queue_path)
+        directory_fd = os.open(os.fspath(queue_path.parent), os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def _job_by_id(queue: Mapping[str, Any], job_id: str) -> dict[str, Any]:
