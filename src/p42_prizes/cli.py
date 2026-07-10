@@ -458,7 +458,12 @@ def _cmd_runner_alerts(args: argparse.Namespace) -> int:
 
 def _cmd_runner_burst_validate(args: argparse.Namespace) -> int:
     try:
-        report = normalize_runner_burst_report(load_evidence_file(args.report))
+        trust_registry = load_evidence_file(args.trust_registry) if args.trust_registry else None
+        report = normalize_runner_burst_report(
+            load_evidence_file(args.report),
+            artifact_root=args.artifact_root,
+            trust_registry=trust_registry,
+        )
         _enforce_gate_schema(report, "runner-burst.schema.json")
     except (AdmissionError, RunnerBurstError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
@@ -744,6 +749,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash a Gate 1 verifier runner burst/OOM rehearsal report",
     )
     runner_burst.add_argument("--report", required=True)
+    runner_burst.add_argument("--artifact-root", required=True)
+    runner_burst.add_argument("--trust-registry", help="out-of-band registry required for an attesting signature")
     runner_burst.add_argument("--output")
     runner_burst.set_defaults(func=_cmd_runner_burst_validate)
 
