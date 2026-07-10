@@ -150,7 +150,7 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] Verifier image digests are pinned and immutable in registry.
 - [ ] Contracts still native-ETH only: do NOT advertise/accept USDC/ERC-20 bounties until an ERC-20 pool/fee/payout path is implemented and audited.
 - [ ] Protocol fee is capped in-contract at `MAX_FEE_BPS = 250` (2.5%).
-- [ ] Multisig signers, timelock, and emergency guardian are named (current scaffold is a single immutable EOA owner — no proxy/timelock/multisig).
+- [ ] Multisig signers, timelock, and emergency guardian are named and deployed. The v2 source ceremony makes `P42MultisigTimelock` the immutable owner of every new child contract, but no current canonical deployment has those named governance roles or rehearsal evidence.
 - [ ] Production wallet/session policy is reviewed across portal, contracts, and solver agents.
 - [ ] Distributed rate limits, idempotency store, API keys, abuse monitoring, and payload quarantine are live.
 - [ ] Transactional event ledger/indexer can reconstruct portal and on-chain state.
