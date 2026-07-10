@@ -1,9 +1,11 @@
 # Runner Burst And OOM Drill Evidence
 
-Gate 1 runner evidence is accepted only when it is recomputed from immutable,
-local artifacts. Reported metrics and true/false invariant claims are rejected.
-The external/live deployment blocker remains in force; this drill alone never
-establishes production readiness.
+Gate 1 runner evidence passes only after three distinct trusted identities and
+immutable local artifacts agree. A `release-authority` resolves the exact
+release binding, an independent `host-observer` attests host counters, and the
+`runner-operator` signs the fully derived report. Operator claims alone cannot
+make `gate_passed` true. The external/live deployment blocker remains in force;
+this drill never establishes production readiness by itself.
 
 ## Validate
 
@@ -15,55 +17,52 @@ PYTHONPATH=src python3 -m p42_prizes.cli runner-burst-validate \
   --output runs/runner-burst/normalized.json
 ```
 
-`--artifact-root` is mandatory. Every artifact reference has exactly `path`
-and `sha256`; paths must be relative regular files beneath that root. Reads use
-component-by-component `O_NOFOLLOW`, enforce a 2 MiB limit and JSON depth 32,
-reject duplicate JSON keys and unsafe numbers, and hash the bytes before use.
+Every artifact reference is a relative regular-file `path` plus SHA-256. The
+reader uses component-by-component `O_NOFOLLOW`, a 2 MiB limit, JSON depth 32,
+duplicate-key rejection, and byte hashing. The trust registry must register
+distinct keys for `release-authority`, `host-observer`, and `runner-operator`
+under attestation class `p42-runner-burst/v1`.
 
-## Evidence Files
+## Pinned Binding
 
-The report references seven JSON files: `queue_before`, `queue_after`,
-`loop_summary`, `transcript_archive`, `alert_bundle`, `guard_cases`, and
-`host_observations`. Every file contains a `binding` object exactly matching
-these report fields:
+All eight artifacts contain a `binding` exactly equal to the report binding.
+It includes the drill ID and nonfuture UTC window, environment and release,
+full 40-hex `git_commit`, exact `problem_id` and `board_id`, pullable
+`repository@sha256:<digest>` verifier image, admission-matrix SHA-256, runner
+host, and its Ed25519 host key. Short commits, tags in place of digests, future
+windows, and mismatched bindings fail closed.
 
-```json
-{
-  "drill_id": "gate1-burst-2026-07",
-  "started_at_utc": "2026-07-08T22:00:00Z",
-  "completed_at_utc": "2026-07-08T23:00:00Z",
-  "environment": "dgx-dry-run",
-  "release": "git:2899cc12f1b6a4755f9a55fc555c61a38d97829a",
-  "problem_id": "hadamard-mini",
-  "board_id": "board-hadamard",
-  "verifier_image": "registry.example/p42@sha256:<64 hex>",
-  "admission_matrix_hash": "sha256:<64 hex>",
-  "runner_host": "dgx-hermes"
-}
-```
+`authority_resolution` contains `resolution: "approved"` and a trusted
+`release-authority` Ed25519 signature over the entire artifact without its
+attestation. This is the authoritative decision input; the runner signature
+only attests the resulting drill report.
 
-The validator derives queue count and FIFO order from queue snapshots and loop
-events; concurrency from snapshots/events; success/failure counts from final
-queue state; transcript uniqueness and canonical hashes from the archive;
-invalid-result alert linkage from transcript and alert bytes; all four guard
-outcomes from unchanged queue hashes and no-start evidence; host failures from
-host observations; and a conservative secret scan from actual transcripts.
+## Loop Evidence
 
-Required guard reasons are `memory_guard_tripped`, `swap_guard_tripped`,
-`job_exceeds_host_capacity`, and `runner_concurrency_full`. The burst must show
-at least three queued jobs, exactly one active runner, at least one invalid
-transcript with a linked alert, and no OOM kill, worker restart, queue
-corruption, duplicate transcript, hash failure, or secret finding.
+`queue_before` proves at least three queued jobs. `queue_after` must contain the
+same job set with terminal statuses. `loop_summary.events` is nonempty and has
+one timestamped `started` followed by one timestamped `completed` event for
+every terminal job, with the completion binding its transcript hash. Event
+timestamps must be ordered. FIFO is derived from job creation timestamps and
+start events; concurrency is reconstructed from the start/completion state
+machine. Claimed counters are neither required nor trusted. The transcript set
+must exactly equal the terminal job set, and every invalid transcript needs a
+linked alert.
 
-## Attestation
+## Guard And Host Evidence
 
-`annotation` is always descriptive and is never itself an attestation. Without
-`attestation`, normalized output explicitly contains `gate_passed: false`.
-Setting an unsigned input claim to true is rejected.
+Each required guard case (`memory_guard_tripped`, `swap_guard_tripped`,
+`job_exceeds_host_capacity`, and `runner_concurrency_full`) contains distinct,
+ordered before/after journal records. Each record has a canonical hash. Equal
+queue-state hashes prove no mutation, and equal cumulative verifier-start
+counters prove no start; reusing one record as both snapshots is rejected.
 
-An attesting report includes an Ed25519 `attestation` over the canonical
-artifact-derived report with `gate_passed: false` and no `burst_hash` or
-attestation. The signer must be registered out of band for attestation class
-`p42-runner-burst/v1` and role `runner-operator`; the signature time must be
-within the registry validity window and no later than drill completion. Only a
-verified trusted signature changes normalized output to `gate_passed: true`.
+`host_observations` binds the runner host key and contains ordered before/after
+kernel OOM, cgroup OOM, worker restart, and queue-corruption counters. Every
+counter must remain unchanged. A trusted `host-observer`, whose key differs
+from both runner host/operator and release authority, signs this artifact.
+
+The validator recursively scans every report and artifact key and value. Keys
+such as `api_key`, `private_key`, `authorization`, and `token`, plus common
+Bearer, OpenAI, GitHub, and AWS token forms, are rejected even when nested in a
+structured object.

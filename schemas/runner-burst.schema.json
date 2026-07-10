@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/schemas/runner-burst-v1.json",
-  "title": "P42 artifact-derived runner burst drill",
+  "title": "P42 authoritative artifact-derived runner burst drill",
   "type": "object",
-  "required": ["schema_version", "drill_id", "started_at_utc", "completed_at_utc", "environment", "release", "problem_id", "board_id", "verifier_image", "admission_matrix_hash", "runner_host", "artifacts", "annotation", "derived", "gate_passed", "burst_hash"],
+  "required": ["schema_version", "drill_id", "started_at_utc", "completed_at_utc", "environment", "release", "git_commit", "problem_id", "board_id", "verifier_image", "admission_matrix_hash", "runner_host", "runner_host_key", "artifacts", "annotation", "derived", "gate_passed", "burst_hash"],
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "p42-runner-burst/v1"},
@@ -12,22 +12,39 @@
     "completed_at_utc": {"type": "string", "format": "date-time"},
     "environment": {"type": "string", "minLength": 1},
     "release": {"type": "string", "minLength": 1},
+    "git_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
     "problem_id": {"type": "string", "minLength": 1},
     "board_id": {"type": "string", "minLength": 1},
-    "verifier_image": {"type": "string", "minLength": 1},
+    "verifier_image": {"type": "string", "pattern": "^[^\\s:@]+(?:/[^\\s:@]+)+@sha256:[a-f0-9]{64}$"},
     "admission_matrix_hash": {"$ref": "#/$defs/hash"},
     "runner_host": {"type": "string", "minLength": 1},
-    "artifacts": {"type": "object", "required": ["queue_before", "queue_after", "loop_summary", "transcript_archive", "alert_bundle", "guard_cases", "host_observations"], "additionalProperties": false, "properties": {"queue_before": {"$ref": "#/$defs/ref"}, "queue_after": {"$ref": "#/$defs/ref"}, "loop_summary": {"$ref": "#/$defs/ref"}, "transcript_archive": {"$ref": "#/$defs/ref"}, "alert_bundle": {"$ref": "#/$defs/ref"}, "guard_cases": {"$ref": "#/$defs/ref"}, "host_observations": {"$ref": "#/$defs/ref"}}},
+    "runner_host_key": {"$ref": "#/$defs/publicKey"},
+    "artifacts": {
+      "type": "object",
+      "required": ["authority_resolution", "queue_before", "queue_after", "loop_summary", "transcript_archive", "alert_bundle", "guard_cases", "host_observations"],
+      "additionalProperties": false,
+      "properties": {
+        "authority_resolution": {"$ref": "#/$defs/ref"}, "queue_before": {"$ref": "#/$defs/ref"}, "queue_after": {"$ref": "#/$defs/ref"}, "loop_summary": {"$ref": "#/$defs/ref"}, "transcript_archive": {"$ref": "#/$defs/ref"}, "alert_bundle": {"$ref": "#/$defs/ref"}, "guard_cases": {"$ref": "#/$defs/ref"}, "host_observations": {"$ref": "#/$defs/ref"}
+      }
+    },
     "annotation": {"type": "object", "required": ["agent_operator", "statement"], "additionalProperties": false, "properties": {"agent_operator": {"type": "string", "minLength": 1}, "statement": {"type": "string", "minLength": 1}}},
-    "derived": {"type": "object", "required": ["submitted_jobs", "completed_jobs", "failed_jobs", "max_active_running", "max_observed_queue_depth", "fifo_order_preserved", "transcript_count", "invalid_transcript_count", "alerts_linked", "guards_proved", "secret_scan_passed", "external_live_blocker"], "additionalProperties": false, "properties": {"submitted_jobs": {"type": "integer", "minimum": 3}, "completed_jobs": {"type": "integer", "minimum": 1}, "failed_jobs": {"type": "integer", "minimum": 1}, "max_active_running": {"const": 1}, "max_observed_queue_depth": {"type": "integer", "minimum": 3}, "fifo_order_preserved": {"const": true}, "transcript_count": {"type": "integer", "minimum": 1}, "invalid_transcript_count": {"type": "integer", "minimum": 1}, "alerts_linked": {"const": true}, "guards_proved": {"type": "array", "minItems": 4, "uniqueItems": true, "items": {"type": "string"}}, "secret_scan_passed": {"const": true}, "external_live_blocker": {"const": true}}},
+    "derived": {
+      "type": "object",
+      "required": ["submitted_jobs", "completed_jobs", "failed_jobs", "max_active_running", "max_observed_queue_depth", "fifo_order_preserved", "transcript_count", "invalid_transcript_count", "alerts_linked", "guards_proved", "secret_scan_passed", "authority_resolved", "host_observer_verified", "external_live_blocker"],
+      "additionalProperties": false,
+      "properties": {
+        "submitted_jobs": {"type": "integer", "minimum": 3}, "completed_jobs": {"type": "integer", "minimum": 1}, "failed_jobs": {"type": "integer", "minimum": 1}, "max_active_running": {"const": 1}, "max_observed_queue_depth": {"type": "integer", "minimum": 3}, "fifo_order_preserved": {"const": true}, "transcript_count": {"type": "integer", "minimum": 1}, "invalid_transcript_count": {"type": "integer", "minimum": 1}, "alerts_linked": {"const": true}, "guards_proved": {"type": "array", "minItems": 4, "uniqueItems": true, "items": {"type": "string"}}, "secret_scan_passed": {"const": true}, "authority_resolved": {"const": true}, "host_observer_verified": {"const": true}, "external_live_blocker": {"const": true}
+      }
+    },
     "attestation": {"$ref": "#/$defs/attestation"},
     "gate_passed": {"type": "boolean"},
     "burst_hash": {"$ref": "#/$defs/hash"}
   },
   "$defs": {
     "hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "publicKey": {"type": "string", "pattern": "^ed25519:[a-f0-9]{64}$"},
     "ref": {"type": "object", "required": ["path", "sha256"], "additionalProperties": false, "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/hash"}}},
-    "identity": {"type": "object", "required": ["name", "organization", "professional_email", "public_key"], "additionalProperties": false, "properties": {"name": {"type": "string"}, "organization": {"type": "string"}, "professional_email": {"type": "string", "format": "email"}, "public_key": {"type": "string", "pattern": "^ed25519:[a-f0-9]{64}$"}}},
-    "attestation": {"type": "object", "required": ["identity", "algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"], "additionalProperties": false, "properties": {"identity": {"$ref": "#/$defs/identity"}, "algorithm": {"const": "ed25519"}, "signer_role": {"const": "runner-operator"}, "public_key": {"type": "string", "pattern": "^ed25519:[a-f0-9]{64}$"}, "signed_hash": {"$ref": "#/$defs/hash"}, "signed_at_utc": {"type": "string", "format": "date-time"}, "signature": {"type": "string", "pattern": "^ed25519:[a-f0-9]{128}$"}}}
+    "identity": {"type": "object", "required": ["name", "organization", "professional_email", "public_key"], "additionalProperties": false, "properties": {"name": {"type": "string"}, "organization": {"type": "string"}, "professional_email": {"type": "string", "format": "email"}, "public_key": {"$ref": "#/$defs/publicKey"}}},
+    "attestation": {"type": "object", "required": ["identity", "algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"], "additionalProperties": false, "properties": {"identity": {"$ref": "#/$defs/identity"}, "algorithm": {"const": "ed25519"}, "signer_role": {"const": "runner-operator"}, "public_key": {"$ref": "#/$defs/publicKey"}, "signed_hash": {"$ref": "#/$defs/hash"}, "signed_at_utc": {"type": "string", "format": "date-time"}, "signature": {"type": "string", "pattern": "^ed25519:[a-f0-9]{128}$"}}}
   }
 }
