@@ -36,7 +36,7 @@ jobs:
   agent:
     name: Autonomous agent gates
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: agent
@@ -47,8 +47,14 @@ jobs:
           node-version: "24.11.1"
           cache: npm
           cache-dependency-path: agent/package-lock.json
-      - name: Install dependencies
+      - name: Install agent dependencies
         run: npm ci
+      - name: Install contract build dependencies
+        working-directory: contracts
+        run: npm ci
+      - name: Compile contract artifacts
+        working-directory: contracts
+        run: npm run build
       - name: Run agent tests
         run: npm test
       - name: Audit dependencies
