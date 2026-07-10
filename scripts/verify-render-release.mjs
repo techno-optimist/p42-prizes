@@ -333,6 +333,22 @@ async function isAncestor(ancestor, descendant) {
   }
 }
 
+export async function assertReleaseAncestry(
+  { runtimeCommit, liveCommit, branchHead, remoteRef },
+  ancestorCheck = isAncestor,
+) {
+  if (!(await ancestorCheck(runtimeCommit, liveCommit))) {
+    throw new Error(
+      `Render live commit ${liveCommit} does not contain the deploy-relevant ${remoteRef} commit ${runtimeCommit} (${DEPLOY_RELEVANT_PATHS.join(", ")}).`,
+    );
+  }
+  if (!(await ancestorCheck(liveCommit, branchHead))) {
+    throw new Error(
+      `Render live commit ${liveCommit} is not on the exact fetched ${remoteRef} history ending at ${branchHead}.`,
+    );
+  }
+}
+
 async function commandJson(file, args) {
   const stdout = await command(file, args);
   try {
@@ -369,7 +385,8 @@ export function usage() {
   return `Usage: node scripts/verify-render-release.mjs [options]
 
 Read-only release guard. It verifies that Render is configured for the expected
-branch, its single live deployment contains the latest portal/config change,
+branch, its single live deployment is on that exact branch history and contains
+the latest portal/config change,
 and the Render origin plus the ProjectForty2 proxy return the expected portal,
 API contracts, fail-closed capabilities, and equivalent paired responses.
 
@@ -430,11 +447,7 @@ export async function main(argv = process.argv.slice(2)) {
 
   const liveDeploy = findLiveDeploy(deployments);
   const liveCommit = liveDeploy.commit.id.toLowerCase();
-  if (!(await isAncestor(runtimeCommit, liveCommit))) {
-    throw new Error(
-      `Render live commit ${liveCommit} does not contain the deploy-relevant ${remoteRef} commit ${runtimeCommit} (${DEPLOY_RELEVANT_PATHS.join(", ")}).`,
-    );
-  }
+  await assertReleaseAncestry({ runtimeCommit, liveCommit, branchHead, remoteRef });
 
   const configured = configuredProbes(options.renderOrigin, options.publicOrigin);
   const probeResults = await Promise.all(configured.map(probe));

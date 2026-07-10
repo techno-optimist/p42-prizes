@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DEPLOY_RELEVANT_PATHS,
   assertProbeEquivalence,
+  assertReleaseAncestry,
   findLiveDeploy,
   findService,
   parseArgs,
@@ -43,6 +44,13 @@ function validProblem(overrides = {}) {
 
 function result(routeId, origin, body, semanticBody = body) {
   return { route: { id: routeId }, origin, body, semanticBody };
+}
+
+function ancestry(...pairs) {
+  const relations = new Set(pairs.map(([ancestor, descendant]) => `${ancestor}:${descendant}`));
+  return async (ancestor, descendant) => (
+    ancestor === descendant || relations.has(`${ancestor}:${descendant}`)
+  );
 }
 
 test("findService unwraps Render CLI service records", () => {
@@ -91,6 +99,78 @@ test("runtime commit lookup follows the first-parent portal/config history", () 
   ]);
   assert.equal(parseCommitId("A".repeat(40), "fixture"), "a".repeat(40));
   assert.throws(() => parseCommitId("short", "fixture"), /full Git commit ID/);
+});
+
+test("release ancestry rejects an off-branch live descendant", async () => {
+  await assert.rejects(
+    () => assertReleaseAncestry(
+      {
+        runtimeCommit: "runtime",
+        liveCommit: "off-branch-live",
+        branchHead: "branch-head",
+        remoteRef: "origin/main",
+      },
+      ancestry(["runtime", "off-branch-live"], ["runtime", "branch-head"]),
+    ),
+    /not on the exact fetched origin\/main history/,
+  );
+});
+
+test("release ancestry rejects force-push and rollback divergence", async () => {
+  const rewrittenHistory = ancestry(
+    ["shared-base", "old-live"],
+    ["shared-base", "runtime"],
+    ["runtime", "new-head"],
+  );
+  await assert.rejects(
+    () => assertReleaseAncestry(
+      {
+        runtimeCommit: "runtime",
+        liveCommit: "old-live",
+        branchHead: "new-head",
+        remoteRef: "origin/main",
+      },
+      rewrittenHistory,
+    ),
+    /does not contain the deploy-relevant origin\/main commit runtime/,
+  );
+
+  await assert.rejects(
+    () => assertReleaseAncestry(
+      {
+        runtimeCommit: "runtime",
+        liveCommit: "shared-base",
+        branchHead: "new-head",
+        remoteRef: "origin/main",
+      },
+      rewrittenHistory,
+    ),
+    /does not contain the deploy-relevant origin\/main commit runtime/,
+  );
+});
+
+test("release ancestry accepts an older live commit on the exact branch", async () => {
+  await assert.doesNotReject(() => assertReleaseAncestry(
+    {
+      runtimeCommit: "runtime",
+      liveCommit: "live",
+      branchHead: "docs-only-head",
+      remoteRef: "origin/main",
+    },
+    ancestry(["runtime", "live"], ["live", "docs-only-head"]),
+  ));
+});
+
+test("release ancestry accepts the exact branch head as live", async () => {
+  await assert.doesNotReject(() => assertReleaseAncestry(
+    {
+      runtimeCommit: "runtime",
+      liveCommit: "branch-head",
+      branchHead: "branch-head",
+      remoteRef: "origin/main",
+    },
+    ancestry(["runtime", "branch-head"]),
+  ));
 });
 
 test("probeUrls retains the standalone and proxied prize paths", () => {
