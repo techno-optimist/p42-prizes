@@ -19,6 +19,7 @@ from typing import Any, Mapping, NoReturn
 # JS `$` (no multiline flag) rejects it. fullmatch requires the whole string to
 # be consumed, restoring byte-for-byte agreement with exact.ts.
 _RATIONAL_RE = re.compile(r"^[+-]?[0-9]+(?:/[+-]?[0-9]+)?$")
+_SHA256_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 SCORE_ATOM_SCALE = 10**18
 MIN_SCORE_ATOMS_BOUND = -(2**254)
 MAX_SCORE_ATOMS_BOUND = 2**254
@@ -82,27 +83,31 @@ def canonical_json(value: Mapping[str, Any]) -> str:
     )
 
 
-def _validate_verdict_detail(value: Any, path: str = "$.details") -> None:
-    """Restrict report details to the lossless p42:v1 cross-language domain."""
+def _normalize_verdict_detail(value: Any, path: str = "$.details") -> Any:
+    """Return a lossless p42:v1 detail snapshot shared by Python and Node."""
 
     if value is None or isinstance(value, (str, bool)):
-        return
+        return value
     if isinstance(value, int):
         if abs(value) > MAX_SAFE_JSON_INTEGER:
             raise ValueError(f"{path}: integer exceeds the p42:v1 safe JSON range")
-        return
+        return value
     if isinstance(value, float):
-        raise ValueError(f"{path}: p42:v1 report details do not permit floats")
+        if math.isfinite(value) and value.is_integer() and abs(value) <= MAX_SAFE_JSON_INTEGER:
+            return int(value)
+        raise ValueError(f"{path}: p42:v1 report details require lossless integral numbers")
     if isinstance(value, list):
-        for index, item in enumerate(value):
-            _validate_verdict_detail(item, f"{path}[{index}]")
-        return
+        return [
+            _normalize_verdict_detail(item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
     if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError(f"{path}: report detail keys must be strings")
-            _validate_verdict_detail(item, f"{path}.{key}")
-        return
+            normalized[key] = _normalize_verdict_detail(item, f"{path}.{key}")
+        return normalized
     raise TypeError(f"{path}: {type(value).__name__} is not a p42:v1 detail value")
 
 
@@ -173,7 +178,22 @@ class VerdictReport:
     details: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        _validate_verdict_detail(dict(self.details))
+        for field_name in (
+            "problem_id",
+            "verifier_version",
+            "verifier_image",
+            "reason",
+            "recomputed_at_commit",
+        ):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if not isinstance(self.solution_hash, str) or not _SHA256_RE.fullmatch(self.solution_hash):
+            raise ValueError("solution_hash must be a lowercase sha256 digest")
+        if not isinstance(self.valid, bool):
+            raise TypeError("valid must be a boolean")
+        if not isinstance(self.details, Mapping):
+            raise TypeError("details must be a mapping")
+        details_snapshot = _normalize_verdict_detail(dict(self.details))
         return {
             "problem_id": self.problem_id,
             "verifier_version": self.verifier_version,
@@ -184,7 +204,7 @@ class VerdictReport:
             "score": rational_to_string(self.score),
             "reason": self.reason,
             "recomputed_at_commit": self.recomputed_at_commit,
-            "details": dict(self.details),
+            "details": details_snapshot,
         }
 
     def to_canonical_json(self) -> str:

@@ -27,7 +27,8 @@ package dependency is required.
 
 Python's generic canonical JSON remains available to non-verdict evidence, but
 `VerdictReport.details` is restricted in both implementations to null, strings,
-booleans, recursively structured arrays/objects, and integers in JavaScript's
-safe range. Larger or fractional numeric evidence must use a registered string
+booleans, recursively structured arrays/objects, and lossless integral numbers
+in JavaScript's safe range. Python normalizes integral JSON floats such as `1.0`
+to `1`; larger or fractional numeric evidence must use a registered string
 format. This fail-closed boundary prevents distinct source values from
 collapsing to the same report bytes.

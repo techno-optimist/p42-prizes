@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from collections.abc import Iterator, Mapping
 
 import pytest
 
@@ -65,3 +66,62 @@ def test_verdict_details_reject_lossy_cross_language_numbers(details: dict[str, 
     )
     with pytest.raises(ValueError):
         report.to_canonical_json()
+
+
+def test_integral_json_number_normalizes_to_node_safe_integer() -> None:
+    report = _report(details={"integral": 1.0})
+    assert report.to_dict()["details"] == {"integral": 1}
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"problem_id": 123},
+        {"valid": 1},
+        {"solution_hash": "bad"},
+        {"reason": None},
+    ],
+)
+def test_python_rejects_reports_rejected_by_node_and_schema(override: dict[str, object]) -> None:
+    report = _report(**override)
+    with pytest.raises((TypeError, ValueError)):
+        report.to_canonical_json()
+
+
+class _SingleUseMapping(Mapping[str, object]):
+    def __init__(self) -> None:
+        self.iterations = 0
+
+    def __getitem__(self, key: str) -> object:
+        if key != "value":
+            raise KeyError(key)
+        return 1 if self.iterations == 1 else 0.5
+
+    def __iter__(self) -> Iterator[str]:
+        self.iterations += 1
+        yield "value"
+
+    def __len__(self) -> int:
+        return 1
+
+
+def _report(**override: object) -> VerdictReport:
+    fields: dict[str, object] = {
+        "problem_id": "conformance",
+        "verifier_version": "1",
+        "verifier_image": "sha256:" + "1" * 64,
+        "solution_hash": "sha256:" + "2" * 64,
+        "valid": False,
+        "improvement": "0/1",
+        "score": "0/1",
+        "details": {},
+    }
+    fields.update(override)
+    return VerdictReport(**fields)  # type: ignore[arg-type]
+
+
+def test_details_mapping_is_materialized_exactly_once() -> None:
+    details = _SingleUseMapping()
+    report = _report(details=details)
+    assert report.to_dict()["details"] == {"value": 1}
+    assert details.iterations == 1
