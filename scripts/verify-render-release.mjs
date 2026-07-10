@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { isDeepStrictEqual } from "node:util";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 
@@ -18,6 +21,111 @@ const DEFAULTS = Object.freeze({
   renderOrigin: "https://p42-prizes.onrender.com",
   serviceId: "srv-d96pokeq1p3s73foqk60",
 });
+
+const EXPECTED_CAPABILITIES = Object.freeze({
+  api_version: "p42-prizes-capabilities-v1",
+  mutations: Object.freeze({
+    status: "unconfigured",
+    available: false,
+    authentication: "unavailable",
+  }),
+});
+
+const BOARD_MANIFEST_SCHEMA = "p42-prizes-release-guard-problems-v1";
+const ALLOWED_BOARD_VALUES = Object.freeze({
+  status: Object.freeze(["pilot", "locked"]),
+  mode: Object.freeze(["construction", "hybrid", "proof"]),
+  direction: Object.freeze(["minimize", "maximize"]),
+});
+const PHASE0_INVARIANTS = Object.freeze({
+  donationWallet: Object.freeze({
+    chain: "Base Sepolia",
+    asset: "ETH",
+    address: null,
+    status: "not-deployed",
+    explorerUrl: null,
+  }),
+  donationTarget: null,
+  chainProvenance: Object.freeze({
+    settlementState: "local-only",
+    chain: "Base Sepolia",
+    chainId: 84532,
+    donationWalletAddress: null,
+    poolAddress: null,
+    poolRuntimeCodeHash: null,
+    deploymentTransactionHash: null,
+    registryAddress: null,
+    problemRegistryId: null,
+    verifierImageHash: "sha256:local-dev",
+    admissionMatrixHash: null,
+    deploymentCommit: null,
+    indexedThroughBlock: null,
+    reconciliationOk: false,
+    source: "static-portal-data",
+  }),
+});
+const BOARD_FIELDS = Object.freeze([
+  "id",
+  "slug",
+  "title",
+  "status",
+  "mode",
+  "direction",
+  "scoreName",
+  "currentBest",
+  "minImprovement",
+  "bountyEth",
+  "challengeWindowHours",
+  "verifierVersion",
+]);
+
+export const PROBE_ROUTES = Object.freeze([
+  Object.freeze({
+    id: "home",
+    path: "/prizes",
+    kind: "html",
+    origins: Object.freeze(["render", "public"]),
+    markers: Object.freeze([
+      "The machine went first.",
+      "Register of Records",
+      "Phase 0",
+    ]),
+  }),
+  Object.freeze({
+    id: "problems",
+    path: "/prizes/api/problems",
+    kind: "problems-json",
+    origins: Object.freeze(["render", "public"]),
+  }),
+  Object.freeze({
+    id: "capabilities",
+    path: "/prizes/api/capabilities",
+    kind: "capabilities-json",
+    origins: Object.freeze(["render", "public"]),
+  }),
+  Object.freeze({
+    id: "standings",
+    path: "/prizes/standings",
+    kind: "html",
+    origins: Object.freeze(["public"]),
+    markers: Object.freeze([
+      "P42 Prizes",
+      "The pilot cohort.",
+      "Modeled",
+    ]),
+  }),
+  Object.freeze({
+    id: "skill",
+    path: "/prizes/skill.md",
+    kind: "text",
+    origins: Object.freeze(["public"]),
+    markers: Object.freeze([
+      "name: p42-prizes",
+      "# P42 Prizes",
+      "## Mutation Capability Gate",
+    ]),
+  }),
+]);
 
 export function parseArgs(argv) {
   const options = { ...DEFAULTS };
@@ -109,14 +217,238 @@ export function runtimeCommitArgs(remoteRef) {
 }
 
 export function probeUrls(renderOrigin, publicOrigin) {
-  return [
-    new URL("/prizes", renderOrigin).toString(),
-    new URL("/prizes/api/problems", renderOrigin).toString(),
-    new URL("/prizes", publicOrigin).toString(),
-    new URL("/prizes/api/problems", publicOrigin).toString(),
-    new URL("/prizes/standings", publicOrigin).toString(),
-    new URL("/prizes/skill.md", publicOrigin).toString(),
-  ];
+  return configuredProbes(renderOrigin, publicOrigin).map((probe) => probe.url);
+}
+
+function configuredProbes(renderOrigin, publicOrigin) {
+  const origins = { render: renderOrigin, public: publicOrigin };
+  return PROBE_ROUTES.flatMap((route) => route.origins.map((origin) => ({
+    route,
+    origin,
+    url: new URL(route.path, origins[origin]).toString(),
+  })));
+}
+
+function describe(route, message) {
+  throw new Error(`${route.path} ${message}`);
+}
+
+function requireObject(value, route, description) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    describe(route, `must return ${description} as an object.`);
+  }
+}
+
+function requireString(value, route, description) {
+  if (typeof value !== "string" || value.length === 0) {
+    describe(route, `must return a non-empty string for ${description}.`);
+  }
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(
+      (key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function boardManifestFingerprint(manifest) {
+  const projection = { phase0: manifest.phase0, boards: manifest.boards };
+  return `sha256:${createHash("sha256").update(canonicalJson(projection)).digest("hex")}`;
+}
+
+export function validateBoardManifest(manifest) {
+  if (manifest?.schema_version !== BOARD_MANIFEST_SCHEMA) {
+    throw new Error(`Expected board manifest schema ${BOARD_MANIFEST_SCHEMA}.`);
+  }
+  if (!isDeepStrictEqual(manifest.phase0, PHASE0_INVARIANTS)) {
+    throw new Error("Expected board manifest changed the fixed Phase 0 funding/provenance invariants.");
+  }
+  if (!Array.isArray(manifest.boards) || manifest.boards.length !== 10) {
+    throw new Error("Expected board manifest must contain exactly 10 boards.");
+  }
+  const actualFingerprint = boardManifestFingerprint(manifest);
+  if (manifest.projection_sha256 !== actualFingerprint) {
+    throw new Error(
+      `Expected board manifest fingerprint mismatch (${manifest.projection_sha256} != ${actualFingerprint}).`,
+    );
+  }
+  return manifest;
+}
+
+function loadBoardManifest() {
+  const manifestUrl = new URL("./release-guard-problems-v1.json", import.meta.url);
+  try {
+    return validateBoardManifest(JSON.parse(readFileSync(manifestUrl, "utf8")));
+  } catch (error) {
+    throw new Error(`Could not load the expected board manifest: ${error.message}`);
+  }
+}
+
+export const EXPECTED_BOARD_MANIFEST = loadBoardManifest();
+
+function boardProjection(problem) {
+  return Object.fromEntries(BOARD_FIELDS.map((field) => [field, problem[field]]));
+}
+
+function phase0Projection(problem) {
+  return {
+    donationWallet: {
+      chain: problem.donationWallet?.chain,
+      asset: problem.donationWallet?.asset,
+      address: problem.donationWallet?.address,
+      status: problem.donationWallet?.status,
+      explorerUrl: problem.donationWallet?.explorerUrl,
+    },
+    donationTarget: problem.donationTarget,
+    chainProvenance: {
+      settlementState: problem.chainProvenance?.settlementState,
+      chain: problem.chainProvenance?.chain,
+      chainId: problem.chainProvenance?.chainId,
+      donationWalletAddress: problem.chainProvenance?.donationWalletAddress,
+      poolAddress: problem.chainProvenance?.poolAddress,
+      poolRuntimeCodeHash: problem.chainProvenance?.poolRuntimeCodeHash,
+      deploymentTransactionHash: problem.chainProvenance?.deploymentTransactionHash,
+      registryAddress: problem.chainProvenance?.registryAddress,
+      problemRegistryId: problem.chainProvenance?.problemRegistryId,
+      verifierImageHash: problem.chainProvenance?.verifierImageHash,
+      admissionMatrixHash: problem.chainProvenance?.admissionMatrixHash,
+      deploymentCommit: problem.chainProvenance?.deploymentCommit,
+      indexedThroughBlock: problem.chainProvenance?.indexedThroughBlock,
+      reconciliationOk: problem.chainProvenance?.reconciliationOk,
+      source: problem.chainProvenance?.source,
+    },
+  };
+}
+
+function validateProblems(payload, route) {
+  const manifest = EXPECTED_BOARD_MANIFEST;
+  if (!Array.isArray(payload) || payload.length !== manifest.boards.length) {
+    describe(route, `must return exactly ${manifest.boards.length} expected boards.`);
+  }
+
+  const ids = new Set();
+  const slugs = new Set();
+  for (const [index, problem] of payload.entries()) {
+    requireObject(problem, route, `problem ${index}`);
+    if (!Number.isInteger(problem.id) || problem.id <= 0) {
+      describe(route, `must return a positive integer id for problem ${index}.`);
+    }
+    for (const field of [
+      "slug",
+      "title",
+      "status",
+      "mode",
+      "direction",
+      "scoreName",
+      "currentBest",
+      "minImprovement",
+      "bountyEth",
+      "verifierVersion",
+    ]) {
+      requireString(problem[field], route, `problem ${index}.${field}`);
+    }
+    for (const field of ["status", "mode", "direction"]) {
+      if (!ALLOWED_BOARD_VALUES[field].includes(problem[field])) {
+        describe(route, `returned disallowed problem ${index}.${field} ${JSON.stringify(problem[field])}.`);
+      }
+    }
+    for (const field of ["currentBest", "minImprovement"]) {
+      if (!/^-?(0|[1-9]\d*)\/[1-9]\d*$/.test(problem[field])) {
+        describe(route, `must return a canonical rational for problem ${index}.${field}.`);
+      }
+    }
+    if (!/^(0|[1-9]\d*)\.\d{2}$/.test(problem.bountyEth) || Number(problem.bountyEth) > 100) {
+      describe(route, `must return a sane canonical ETH amount for problem ${index}.bountyEth.`);
+    }
+    if (!Number.isFinite(problem.challengeWindowHours) || problem.challengeWindowHours <= 0) {
+      describe(route, `must return a positive challengeWindowHours for problem ${index}.`);
+    }
+    if (!isDeepStrictEqual(phase0Projection(problem), manifest.phase0)) {
+      describe(route, `problem ${index} violates the exact Phase 0 funding/provenance state.`);
+    }
+    if (ids.has(problem.id) || slugs.has(problem.slug)) {
+      describe(route, `must not return duplicate problem ids or slugs (problem ${index}).`);
+    }
+    ids.add(problem.id);
+    slugs.add(problem.slug);
+  }
+
+  const liveBoards = payload.map(boardProjection).sort((left, right) => left.id - right.id);
+  if (!isDeepStrictEqual(liveBoards, manifest.boards)) {
+    describe(
+      route,
+      `does not match committed board projection ${manifest.projection_sha256}.`,
+    );
+  }
+}
+
+function parseJson(body, route) {
+  try {
+    return JSON.parse(body);
+  } catch (error) {
+    describe(route, `returned malformed JSON: ${error.message}`);
+  }
+}
+
+export function validateProbeBody(routeId, body, contentType) {
+  const route = PROBE_ROUTES.find((candidate) => candidate.id === routeId);
+  if (!route) {
+    throw new Error(`Unknown probe route: ${routeId}`);
+  }
+  if (typeof body !== "string") {
+    describe(route, "returned a non-text response body.");
+  }
+
+  if (route.kind.endsWith("-json")) {
+    if (!contentType.toLowerCase().includes("application/json")) {
+      describe(route, `returned ${JSON.stringify(contentType)} instead of application/json.`);
+    }
+    const payload = parseJson(body, route);
+    if (route.kind === "problems-json") {
+      validateProblems(payload, route);
+    } else if (!isDeepStrictEqual(payload, EXPECTED_CAPABILITIES)) {
+      describe(
+        route,
+        "must report the fail-closed unconfigured/unavailable mutation capability state.",
+      );
+    }
+    return payload;
+  }
+
+  const expectedType = route.kind === "html" ? "text/html" : "text/";
+  if (!contentType.toLowerCase().includes(expectedType)) {
+    describe(route, `returned ${JSON.stringify(contentType)} instead of ${expectedType}.`);
+  }
+  for (const marker of route.markers) {
+    if (!body.includes(marker)) {
+      describe(route, `is missing stable identity marker ${JSON.stringify(marker)}.`);
+    }
+  }
+  return body;
+}
+
+export function assertProbeEquivalence(results) {
+  for (const route of PROBE_ROUTES.filter((candidate) => candidate.origins.length === 2)) {
+    const render = results.find((result) => result.route.id === route.id && result.origin === "render");
+    const publicResult = results.find(
+      (result) => result.route.id === route.id && result.origin === "public",
+    );
+    if (!render || !publicResult) {
+      describe(route, "is missing a configured Render or public comparison response.");
+    }
+    const equivalent = route.kind.endsWith("-json")
+      ? isDeepStrictEqual(render.semanticBody, publicResult.semanticBody)
+      : render.body === publicResult.body;
+    if (!equivalent) {
+      describe(route, "diverges between the direct Render service and the public proxy.");
+    }
+  }
 }
 
 async function command(file, args) {
@@ -144,6 +476,22 @@ async function isAncestor(ancestor, descendant) {
   }
 }
 
+export async function assertReleaseAncestry(
+  { runtimeCommit, liveCommit, branchHead, remoteRef },
+  ancestorCheck = isAncestor,
+) {
+  if (!(await ancestorCheck(runtimeCommit, liveCommit))) {
+    throw new Error(
+      `Render live commit ${liveCommit} does not contain the deploy-relevant ${remoteRef} commit ${runtimeCommit} (${DEPLOY_RELEVANT_PATHS.join(", ")}).`,
+    );
+  }
+  if (!(await ancestorCheck(liveCommit, branchHead))) {
+    throw new Error(
+      `Render live commit ${liveCommit} is not on the exact fetched ${remoteRef} history ending at ${branchHead}.`,
+    );
+  }
+}
+
 async function commandJson(file, args) {
   const stdout = await command(file, args);
   try {
@@ -153,25 +501,38 @@ async function commandJson(file, args) {
   }
 }
 
-async function probe(url) {
+async function probe(config) {
   let response;
   try {
-    response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(30_000) });
+    response = await fetch(config.url, {
+      redirect: "follow",
+      signal: AbortSignal.timeout(30_000),
+    });
   } catch (error) {
-    throw new Error(`Probe failed for ${url}: ${error.message}`);
+    throw new Error(`Probe failed for ${config.url}: ${error.message}`);
   }
 
   if (!response.ok) {
-    throw new Error(`Probe failed for ${url}: HTTP ${response.status}.`);
+    throw new Error(`Probe failed for ${config.url}: HTTP ${response.status}.`);
   }
+  const body = await response.text();
+  const semanticBody = validateProbeBody(
+    config.route.id,
+    body,
+    response.headers.get("content-type") ?? "",
+  );
+  return { ...config, body, semanticBody };
 }
 
 export function usage() {
   return `Usage: node scripts/verify-render-release.mjs [options]
 
 Read-only release guard. It verifies that Render is configured for the expected
-branch, its single live deployment contains the latest portal/config change,
-and the Render origin plus the ProjectForty2 proxy respond successfully.
+branch, its single live deployment is on that exact branch history and contains
+the latest portal/config change,
+and the Render origin plus the ProjectForty2 proxy return the expected portal,
+versioned board projection, fail-closed capabilities, and equivalent paired
+responses.
 
 The service builds from web/, so documentation-only and release-tooling-only
 commits do not require a no-op Render deploy. The guard treats web/ and
@@ -230,14 +591,12 @@ export async function main(argv = process.argv.slice(2)) {
 
   const liveDeploy = findLiveDeploy(deployments);
   const liveCommit = liveDeploy.commit.id.toLowerCase();
-  if (!(await isAncestor(runtimeCommit, liveCommit))) {
-    throw new Error(
-      `Render live commit ${liveCommit} does not contain the deploy-relevant ${remoteRef} commit ${runtimeCommit} (${DEPLOY_RELEVANT_PATHS.join(", ")}).`,
-    );
-  }
+  await assertReleaseAncestry({ runtimeCommit, liveCommit, branchHead, remoteRef });
 
-  const urls = probeUrls(options.renderOrigin, options.publicOrigin);
-  await Promise.all(urls.map(probe));
+  const configured = configuredProbes(options.renderOrigin, options.publicOrigin);
+  const probeResults = await Promise.all(configured.map(probe));
+  assertProbeEquivalence(probeResults);
+  const urls = configured.map((probeConfig) => probeConfig.url);
 
   process.stdout.write(
     [
@@ -246,6 +605,7 @@ export async function main(argv = process.argv.slice(2)) {
       `  branch head: ${branchHead}`,
       `  runtime commit: ${runtimeCommit}`,
       `  live commit: ${liveCommit}`,
+      `  board projection: ${EXPECTED_BOARD_MANIFEST.projection_sha256}`,
       `  routes: ${urls.length}/${urls.length} healthy`,
     ].join("\n") + "\n",
   );

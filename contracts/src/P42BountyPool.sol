@@ -34,6 +34,7 @@ contract P42BountyPool {
     error P42_REGISTRY_NOT_SET();
     error P42_BAD_PROBLEM_BINDING();
     error P42_FUNDING_NOT_ARMED();
+    error P42_ROLLOVER_DESTINATION_NOT_SET();
     error P42_CREDIT_RECORDER_MISMATCH(address creditRecorder, address submissionManager);
     error P42_NOT_ACCEPTING_FUNDS();
     error P42_PROBLEM_NOT_FROZEN();
@@ -171,6 +172,9 @@ contract P42BountyPool {
     function setAcceptingFunds(bool accepting) external onlyOwner {
         if (accepting) {
             if (ledger == address(0)) revert P42_LEDGER_NOT_SET();
+            if (IP42PayoutLedger(ledger).rolloverDestination() == address(0)) {
+                revert P42_ROLLOVER_DESTINATION_NOT_SET();
+            }
             uint64 deadline = IP42PayoutLedger(ledger).fundingDeadline();
             if (block.timestamp > deadline) revert P42_FUNDING_WINDOW_CLOSED(deadline, uint64(block.timestamp));
             address registry_ = registry;

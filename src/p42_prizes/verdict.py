@@ -19,16 +19,33 @@ from typing import Any, Mapping, NoReturn
 # JS `$` (no multiline flag) rejects it. fullmatch requires the whole string to
 # be consumed, restoring byte-for-byte agreement with exact.ts.
 _RATIONAL_RE = re.compile(r"^[+-]?[0-9]+(?:/[+-]?[0-9]+)?$")
+SCORE_ATOM_SCALE = 10**18
+MIN_SCORE_ATOMS_BOUND = -(2**254)
+MAX_SCORE_ATOMS_BOUND = 2**254
+MAX_UINT256 = 2**256 - 1
 
 
 def _reject_json_constant(value: str) -> NoReturn:
     raise ValueError(f"non-JSON numeric constant: {value}")
 
 
-def strict_json_loads(value: str | bytes | bytearray) -> Any:
-    """Parse JSON without Python's non-standard NaN/Infinity extensions."""
+def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        value[key] = item
+    return value
 
-    return json.loads(value, parse_constant=_reject_json_constant)
+
+def strict_json_loads(value: str | bytes | bytearray) -> Any:
+    """Parse JSON without non-standard constants or duplicate object keys."""
+
+    return json.loads(
+        value,
+        parse_constant=_reject_json_constant,
+        object_pairs_hook=_reject_duplicate_object_keys,
+    )
 
 
 def _validate_json_value(value: Any, path: str = "$") -> None:
@@ -98,6 +115,23 @@ def parse_rational(value: str | int | Fraction) -> Fraction:
 def rational_to_string(value: str | int | Fraction) -> str:
     rational = parse_rational(value)
     return f"{rational.numerator}/{rational.denominator}"
+
+
+def atoms_from_score(value: str | int | Fraction) -> int:
+    """Mirror agent/lib.mjs atomsFromScore: ceil(value * 1e18)."""
+
+    rational = parse_rational(value)
+    scaled_numerator = rational.numerator * SCORE_ATOM_SCALE
+    return -((-scaled_numerator) // rational.denominator)
+
+
+def chain_score_atoms(value: str | int | Fraction, direction: str) -> int:
+    """Mirror agent/lib.mjs chainScoreAtoms on the minimization frontier."""
+
+    if direction not in ("minimize", "maximize"):
+        raise ValueError(f"unknown objective direction: {direction!r}")
+    rational = parse_rational(value)
+    return atoms_from_score(-rational if direction == "maximize" else rational)
 
 
 @dataclass(frozen=True)

@@ -343,6 +343,10 @@ describe("P42 second-pass contract acceptance", () => {
     await registry.waitForDeployment();
     await registry.setProblem(7, await pool.getAddress(), true);
     await pool.connect(owner).setRegistry(await registry.getAddress(), 7);
+    const Vault = await ethers.getContractFactory("P42RolloverVault");
+    const vault = await Vault.deploy(await registry.getAddress(), owner.address);
+    await vault.waitForDeployment();
+    await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: 1 });
 

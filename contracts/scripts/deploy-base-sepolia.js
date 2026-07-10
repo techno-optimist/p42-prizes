@@ -1,11 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { mkdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { network } from "hardhat";
-import { validateManifestEvidence, validatePreBroadcastManifestPlan } from "../../agent/indexer.mjs";
+import {
+  validateManifestEvidence,
+  validatePreBroadcastManifestPlan,
+  writeFileAtomicSync,
+} from "../../agent/indexer.mjs";
 
 import {
   assertDeploymentConfigHash,
@@ -114,17 +117,7 @@ function sameValue(left, right) {
 }
 
 async function writeManifestAtomically(path, manifest) {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, `${jsonStringify(manifest)}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: "wx",
-    });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  writeFileAtomicSync(path, `${jsonStringify(manifest)}\n`);
 }
 
 function check(name, actual, expected, comparator = sameValue) {
@@ -186,6 +179,67 @@ function contractInterfaces(deployments) {
   );
 }
 
+async function preflightSingleDeploymentPlan(ethers, deployer, config) {
+  const startNonce = await deployer.getNonce("pending");
+  const order = ["timelock", "registry", "rolloverVault", "pool", "ledger", "submissions", "challenges"];
+  const addresses = Object.fromEntries(order.map((key, index) => [
+    key,
+    ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + index }),
+  ]));
+  const interfaces = {};
+  for (const [key, name] of Object.entries(CONTRACT_NAMES)) {
+    const factory = await ethers.getContractFactory(name);
+    interfaces[key] = factory.interface;
+    constructorArgsFor(name, config, addresses);
+  }
+  const operations = buildSetupOperations({
+    ethers,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    timelockAddress: addresses.timelock,
+    addresses,
+    config,
+    interfaces,
+  });
+  const plan = validatePreBroadcastManifestPlan(MANIFEST_SCHEMA, 1);
+  if (operations.length !== plan.expectedOperations) throw new Error("pre-broadcast v1 operation plan is incomplete");
+}
+
+async function preflightMultiBoardDeploymentPlan(ethers, deployer, config) {
+  const startNonce = await deployer.getNonce("pending");
+  const rootAddresses = {
+    timelock: ethers.getCreateAddress({ from: deployer.address, nonce: startNonce }),
+    registry: ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + 1 }),
+    rolloverVault: ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + 2 }),
+  };
+  const boards = config.problems.map((problem, index) => {
+    const offset = startNonce + 3 + index * Object.keys(BOARD_CONTRACT_NAMES).length;
+    const addresses = { ...rootAddresses };
+    Object.keys(BOARD_CONTRACT_NAMES).forEach((key, childIndex) => {
+      addresses[key] = ethers.getCreateAddress({ from: deployer.address, nonce: offset + childIndex });
+    });
+    const boardConfig = boardCeremonyConfig(config, problem);
+    for (const [key, name] of Object.entries(BOARD_CONTRACT_NAMES)) constructorArgsFor(name, boardConfig, addresses);
+    return { problem, addresses };
+  });
+  const interfaces = {};
+  for (const [key, name] of Object.entries({
+    timelock: CONTRACT_NAMES.timelock,
+    registry: CONTRACT_NAMES.registry,
+    ...BOARD_CONTRACT_NAMES,
+  })) interfaces[key] = (await ethers.getContractFactory(name)).interface;
+  const operations = buildMultiBoardSetupOperations({
+    ethers,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    timelockAddress: rootAddresses.timelock,
+    registryAddress: rootAddresses.registry,
+    config,
+    boards,
+    interfaces,
+  });
+  const plan = validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
+  if (operations.length !== plan.expectedOperations) throw new Error("pre-broadcast v2 operation plan is incomplete");
+}
+
 async function deployCeremony(ethers) {
   requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
   const [deployer] = await ethers.getSigners();
@@ -193,6 +247,7 @@ async function deployCeremony(ethers) {
 
   const config = readCeremonyConfig(ethers, process.env, { deployerAddress: deployer.address });
   validatePreBroadcastManifestPlan(MANIFEST_SCHEMA, 1);
+  await preflightSingleDeploymentPlan(ethers, deployer, config);
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
   validateDeploymentTimestamps(config, latest.timestamp);
@@ -330,7 +385,7 @@ async function deployCeremony(ethers) {
   validateManifestEvidence(manifest);
 
   await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, `${jsonStringify(manifest)}\n`, { flag: "wx" });
+  await writeManifestAtomically(output, manifest);
   await completeManifestOutputReservation(output);
   console.log(`Wrote pending governance ceremony manifest: ${output}`);
   console.log(`Timelock owner: ${addresses.timelock}`);
@@ -392,6 +447,7 @@ async function deployMultiBoardCeremony(ethers) {
   const input = await readMultiBoardCeremonyInput();
   const config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
   validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
+  await preflightMultiBoardDeploymentPlan(ethers, deployer, config);
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
   validateMultiBoardDeploymentTimestamps(config, latest.timestamp);
@@ -547,7 +603,7 @@ async function deployMultiBoardCeremony(ethers) {
   validateManifestEvidence(manifest);
 
   await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, `${jsonStringify(manifest)}\n`, { flag: "wx" });
+  await writeManifestAtomically(output, manifest);
   await completeManifestOutputReservation(output);
   console.log(`Wrote pending multi-board governance ceremony manifest: ${output}`);
   console.log(`Shared timelock owner: ${rootAddresses.timelock}`);

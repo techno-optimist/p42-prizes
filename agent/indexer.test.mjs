@@ -119,11 +119,16 @@ function lifecycleFixture() {
     }],
   ]);
   tx([["submissions", "FundingArmed", { at: 20n }]], 20);
-  tx([["pool", "Funded", {
-    from: ADDR.owner,
-    amount: 100n,
-    newBalance: 100n,
-  }]], 25);
+  tx([
+    ["pool", "Funded", { from: ADDR.owner, amount: 100n, newBalance: 100n }],
+    ["pool", "SponsorshipFunded", {
+      payer: ADDR.owner,
+      sponsor: ADDR.owner,
+      amount: 100n,
+      sponsorPrincipal: 100n,
+      accountedBalance: 100n,
+    }],
+  ], 25);
   tx([
     ["submissions", "AllActionsPaused", { paused: false }],
     ["registry", "ProblemFrozen", { problemId: 1n }],
@@ -357,6 +362,7 @@ function snapshotFromReplay(state) {
     pausedAll: state.pausedAll,
     expiryGraceUntil: state.expiryGraceUntil,
     submissionsChallengeManager: state.challengeManager,
+    creditRecoveryEndsAt: state.creditRecoveryEndsAt,
     pool: {
       ledger: state.pool.ledger,
       submissionManager: state.pool.submissionManager,
@@ -376,6 +382,7 @@ function snapshotFromReplay(state) {
       everFunded: state.pool.everFunded,
       firstFundedAt: state.pool.firstFundedAt,
       acceptingFunds: state.pool.acceptingFunds,
+      sponsorshipOf: state.pool.sponsorshipOf,
       balance: state.pool.accountedBalance,
     },
     ledger: {
@@ -392,6 +399,11 @@ function snapshotFromReplay(state) {
       residualSwept: state.ledger.residualSwept,
       creditAtomsOf: state.ledger.creditAtomsOf,
       claimedWeiOf: state.ledger.claimedWeiOf,
+    },
+    rolloverVault: {
+      totalAllocated: state.rolloverVault.totalAllocated,
+      allocationOf: state.rolloverVault.allocationOf,
+      balance: state.rolloverVault.totalReceived - state.rolloverVault.totalFuturePoolFunded,
     },
     submissions,
     finalizeInfo,
@@ -470,8 +482,28 @@ describe("P42 deterministic indexer replay", () => {
     assert.equal(replay.challengePausedNewActions, true);
     assert.equal(replay.expiryGraceUntil, 50n);
     assert.equal(replay.pool.firstFundedAt, 25n);
+    assert.equal(replay.pool.sponsorshipOf[ADDR.owner], 100n);
     assert.equal(replay.registry.problems["1"].frozen, true);
     assert.deepEqual(checks.filter((entry) => !entry.ok), []);
+  });
+
+  it("requires forced recovery and caller-aware sweep events in the same transaction", () => {
+    const events = lifecycleFixture();
+    events.push({
+      source: "pool",
+      eventName: "ForcedEthRecovered",
+      args: { to: ADDR.owner, amount: 7n, remainingForcedEth: 0n },
+      blockNumber: 999,
+      blockHash: hash(999),
+      transactionHash: hash(1999),
+      transactionIndex: 0,
+      index: 0,
+      blockTimestamp: 999n,
+    });
+    assert.throws(
+      () => replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+      /forced ETH event pair incomplete/,
+    );
   });
 
   it("fails closed when a revealed event lacks its storage-bound instance hash", () => {

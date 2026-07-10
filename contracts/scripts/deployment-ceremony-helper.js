@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
-import { computeDeploymentConfigHash } from "../../agent/indexer.mjs";
+import { computeDeploymentConfigHash, writeFileAtomicSync } from "../../agent/indexer.mjs";
 import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
 
 export const MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v1";
@@ -958,13 +958,7 @@ function reservationRecord(path, metadata) {
 }
 
 async function writeReservationAtomic(path, value) {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, `${jsonStringify(value)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
-  }
+  writeFileAtomicSync(path, `${jsonStringify(value)}\n`);
 }
 
 export async function readManifestOutputReservation(path) {
@@ -996,6 +990,7 @@ export async function reserveManifestOutput(path, metadata = {}) {
   const reservationPath = manifestOutputReservationPath(output);
   await mkdir(dirname(output), { recursive: true });
   await assertManifestOutputIsVacant(output);
+  await assertManifestOutputIsVacant(`${output}.deployment-record.json`);
   try {
     await writeFile(reservationPath, `${jsonStringify(reservationRecord(output, metadata))}\n`, {
       encoding: "utf8",
@@ -1100,6 +1095,13 @@ export async function completeManifestOutputReservation(path) {
     }
     throw error;
   }
+  const reservation = await readManifestOutputReservation(output);
+  const archivePath = `${output}.deployment-record.json`;
+  writeFileAtomicSync(archivePath, `${jsonStringify({
+    ...reservation.record,
+    status: "manifest-published",
+    manifestPublishedAt: new Date().toISOString(),
+  })}\n`);
   await rm(reservationPath, { force: true });
 }
 

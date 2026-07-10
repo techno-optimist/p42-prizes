@@ -85,6 +85,10 @@ async function fixture() {
   });
   await registry.freeze(1);
   await pool.connect(deployer).setRegistry(await registry.getAddress(), 1);
+  const Vault = await ethers.getContractFactory("P42RolloverVault");
+  const vault = await Vault.deploy(await registry.getAddress(), deployer.address);
+  await vault.waitForDeployment();
+  await ledger.connect(deployer).setRolloverDestination(await vault.getAddress());
   await pool.connect(deployer).setAcceptingFunds(true);
   const Wallet = await ethers.getContractFactory("P42AgentWallet");
   const wallet = await Wallet.connect(owner).deploy(owner.address, session.address, PER_CALL, TOTAL, { value: FUNDING });

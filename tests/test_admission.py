@@ -477,17 +477,19 @@ def test_admit_ready_rejects_a_demo_fixture_even_with_exact_signed_image_evidenc
     assert completed.returncode == 1
     assert "permanently ineligible for funding" in completed.stderr
 
-    # The same evidence shape remains admissible for a non-demo package. This
-    # keeps the fixture block narrow rather than weakening image/matrix checks.
+    # The same evidence controls remain admissible for a non-demo package when
+    # its synthetic report also follows the manifest's raw-delta semantics.
     manifest["problem_id"] = "admission-fixture"
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     source_hash = compute_source_hash(problem)
+    report = _base_report(image=image, problem_id="admission-fixture")
+    report["improvement"] = "6/1"
     evidence = [
         _host_evidence(
             label,
             arch,
             libc,
-            report=_base_report(image=image, problem_id="admission-fixture"),
+            report=report,
             source_hash=source_hash,
             image_ref=f"{repository}@{image}",
             signing_key=signing_keys[index],

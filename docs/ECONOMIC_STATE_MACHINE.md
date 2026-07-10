@@ -33,7 +33,13 @@ accountedBalance = totalFunded
 At or after `closeByTimestamp`, anyone may attempt close. If the configured
 credit recorder reports a nonzero `openSubmissionCount`, close reverts; valid
 commit/reveal/challenge lifecycle work must first be finalized, expired, or
-timed out permissionlessly. Once that guard clears, `closedPoolBalance =
+timed out permissionlessly. A credit-bearing finalize also advances the exact
+`creditRecoveryEndsAt` view by the immutable 30-day recovery delay. Close
+reverts while that window or `pausedAll` remains active. A governance
+`voidFinalize` restores the prior stacked deadline, so an exact poison reversal
+can unblock close immediately after governance clears the pause. This prevents
+same-transaction `finalize -> close -> claim` settlement. Once those guards
+clear, `closedPoolBalance =
 accountedBalance` and the final credit total selects one irrevocable branch.
 
 ### Zero-credit branch

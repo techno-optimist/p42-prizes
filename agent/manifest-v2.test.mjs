@@ -7,6 +7,7 @@ import { ethers } from "ethers";
 
 import {
   computeDeploymentConfigHash,
+  deriveExactSetupOperations,
   MANIFEST_SCHEMA_V2,
   manifestProblemContracts,
   manifestProblemForRegistryId,
@@ -95,15 +96,6 @@ function v2Manifest() {
   second.onchainDa = false;
   second.maxSolutionBytes = "0";
 
-  const baseOperations = manifest.setupTransactions;
-  const boardOperations = [first, second].flatMap((board, boardIndex) =>
-    baseOperations.map((operation, index) => ({
-      ...deepCopy(operation),
-      sequence: boardIndex * 11 + index + 1,
-      label: `board/${board.problemId}.${operation.label}`,
-    })),
-  );
-
   manifest.schema = MANIFEST_SCHEMA_V2;
   manifest.contracts = {
     timelock: manifest.contracts.timelock,
@@ -127,7 +119,14 @@ function v2Manifest() {
     resolverFraudWindowSeconds: manifest.parameters.resolverFraudWindowSeconds,
   };
   manifest.problems = [first, second];
-  manifest.setupTransactions = boardOperations;
+  manifest.setupTransactions = deriveExactSetupOperations(manifest).map((operation) => ({
+    ...operation,
+    status: "pending",
+    executedOperationId: null,
+    executedOperationClass: null,
+    txHash: null,
+    blockNumber: null,
+  }));
   manifest.sourceVerification = {
     status: "pending",
     requiredExplorer: manifest.sourceVerification.requiredExplorer,
@@ -204,6 +203,10 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
 
   const mismatchedAdmission = v2Manifest();
   mismatchedAdmission.problems[1].admissionMatrixHash = digestHash(digest("f"));
+  mismatchedAdmission.setupTransactions = deriveExactSetupOperations(mismatchedAdmission).map((operation, index) => ({
+    ...mismatchedAdmission.setupTransactions[index],
+    ...operation,
+  }));
   rebind(mismatchedAdmission);
   assert.throws(() => validateManifestEvidence(mismatchedAdmission), /admissionMatrixHash must equal keccak256/);
 
@@ -222,4 +225,22 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
   ];
   rebind(reorderedSources);
   assert.throws(() => validateManifestEvidence(reorderedSources), /must match problems\[0\]\.problemId/);
+
+  for (const mutate of [
+    (operation) => { operation.target = address(0x99); },
+    (operation) => { operation.data = "0x1234"; },
+    (operation) => { operation.salt = ethers.ZeroHash; },
+    (operation) => { operation.operationId = ethers.ZeroHash; },
+    (operation) => { operation.dependsOn = [ethers.ZeroHash]; },
+    (operation) => { operation.requiredConfirmations = "99"; },
+    (operation) => { operation.transactionBuilder.execute.data = "0x1234"; },
+  ]) {
+    const mutated = v2Manifest();
+    mutate(mutated.setupTransactions[6]);
+    rebind(mutated);
+    assert.throws(
+      () => validateManifestEvidence(mutated),
+      /does not match the exact derived governance operation/,
+    );
+  }
 });

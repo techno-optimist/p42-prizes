@@ -8,10 +8,7 @@ import { GET as capabilitiesGet } from "@/app/api/capabilities/route";
 import { POST as challengePost } from "@/app/api/challenges/route";
 import { GET as eventsGet } from "@/app/api/events/route";
 import { GET as problemGet } from "@/app/api/problems/[slug]/route";
-import {
-  POST as coinbaseSessionPost,
-  assertWalletFirstDestination,
-} from "@/app/api/problems/[slug]/funding/coinbase-session/route";
+import { POST as coinbaseSessionPost } from "@/app/api/problems/[slug]/funding/coinbase-session/route";
 import { GET as problemsGet } from "@/app/api/problems/route";
 import { POST as solutionsPost } from "@/app/api/solutions/route";
 import { POST as commitPost } from "@/app/api/submissions/commit/route";
@@ -387,7 +384,8 @@ describe("mutable API routes", () => {
     });
   });
 
-  it("requires authenticated wallet-first Coinbase intents", async () => {
+  it("hard-disables Coinbase Onramp for v1", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
     const response = await coinbaseSessionPost(
       jsonRequest("/api/problems/hadamard-mini/funding/coinbase-session", {
         phase: "intent",
@@ -396,18 +394,12 @@ describe("mutable API routes", () => {
       { params: Promise.resolve({ slug: "hadamard-mini" }) },
     );
 
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(503);
+    expect(fetchSpy).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toMatchObject({
-      error: "Coinbase Onramp requires authenticated funding access",
+      error: "Coinbase Onramp is disabled for P42 Prizes v1",
+      capability: "disabled",
     });
-  });
-
-  it("fails closed when a Coinbase destination is the pool itself", () => {
-    const pool = "0x0000000000000000000000000000000000000042";
-    expect(() => assertWalletFirstDestination(pool, pool)).toThrow(/never a P42 pool/);
-    expect(() => assertWalletFirstDestination(
-      "0x0000000000000000000000000000000000000043", pool,
-    )).not.toThrow();
   });
 
   it("publishes only reconciled donation targets from problem APIs", async () => {

@@ -634,6 +634,46 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
   });
 
+  it("rolls back atomic finalize-close-claim and leaves a permissionless recovery window", async function () {
+    const fixture = await deployFixture({ feeBps: 0 });
+    const { owner, alice, pool, ledger, submissions } = fixture;
+    await pool.fund({ value: ethers.parseEther("1") });
+    const Attacker = await ethers.getContractFactory("AtomicSettlementAttacker");
+    const attacker = await Attacker.deploy();
+    await attacker.waitForDeployment();
+    const cid = "bafy-atomic-settlement-poison";
+    const salt = "atomic-settlement-poison";
+    const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
+      cid, await attacker.getAddress(), DA_HASH, salt
+    );
+    const bond = await submissions.requiredPostingBondNow();
+    await attacker.connect(alice).commit(await submissions.getAddress(), commitment, DA_HASH, { value: bond });
+    await attacker.reveal(await submissions.getAddress(), 1, cid, 1, 1000, salt);
+    await advanceToEffectiveClose(ledger);
+
+    await expectCustomError(
+      attacker.finalizeCloseClaim(
+        await submissions.getAddress(), await ledger.getAddress(), await pool.getAddress(), 1
+      ),
+      ledger,
+      "P42_CREDIT_RECOVERY_WINDOW_OPEN"
+    );
+    assert.equal((await submissions.submissions(1)).status, 2n);
+    assert.equal(await ledger.totalCreditAtoms(), 0n);
+    assert.equal(await ledger.closed(), false);
+
+    await attacker.finalize(await submissions.getAddress(), 1);
+    const recoveryEndsAt = await submissions.creditRecoveryEndsAt();
+    assert.equal(recoveryEndsAt > BigInt((await ethers.provider.getBlock("latest")).timestamp), true);
+    await submissions.connect(owner).setPausedAll(true);
+    await submissions.connect(owner).voidFinalize(1);
+    assert.equal(await submissions.creditRecoveryEndsAt(), 0n);
+    await submissions.connect(owner).setPausedAll(false);
+    await ledger.connect(alice).close();
+    assert.equal(await ledger.closed(), true);
+    assert.equal(await ledger.totalCreditAtoms(), 0n);
+  });
+
   it("scopes ledger credit recording to the owner before activation and recorder after activation", async function () {
     const { owner, alice, ledger, submissions } = await deployFixture({ activateRecorder: false });
 
@@ -1023,6 +1063,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
+    await increaseTime((await submissions.CREDIT_FINALIZE_RECOVERY_DELAY()) + 1n);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
 

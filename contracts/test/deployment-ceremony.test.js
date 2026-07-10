@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -396,6 +396,23 @@ describe("deployment ceremony input gate", () => {
     assert.doesNotThrow(() => assertVerifierImageAnchor(ethers, problem));
     assert.doesNotThrow(() => assertVerifierSourceAnchor(ethers, problem));
 
+    for (const mutate of [
+      (operation) => { operation.target = ADDRESSES.challenges; },
+      (operation) => { operation.data = "0x1234"; },
+      (operation) => { operation.salt = ethers.ZeroHash; },
+      (operation) => { operation.operationId = ethers.ZeroHash; },
+      (operation) => { operation.dependsOn = [ethers.ZeroHash]; },
+      (operation) => { operation.requiredConfirmations = "99"; },
+      (operation) => { operation.transactionBuilder.schedule.data = "0x1234"; },
+    ]) {
+      const operationMismatch = structuredClone(manifest);
+      mutate(operationMismatch.setupTransactions[6]);
+      assert.throws(
+        () => validateManifestEvidence(operationMismatch),
+        /does not match the exact derived governance operation/,
+      );
+    }
+
     const malformed = structuredClone(manifest);
     malformed.problems[0].verifierImageDigest = `sha256:${"A".repeat(64)}`;
     assert.throws(
@@ -486,6 +503,9 @@ describe("deployment ceremony input gate", () => {
       await writeFile(output, '{"status":"pending-governance-setup"}\n', { flag: "wx" });
       await completeManifestOutputReservation(output);
       await assert.rejects(() => access(manifestOutputReservationPath(output)));
+      const deploymentRecord = JSON.parse(await readFile(`${output}.deployment-record.json`, "utf8"));
+      assert.equal(deploymentRecord.status, "manifest-published");
+      assert.equal(deploymentRecord.deployments.timelock.address, ADDRESSES.timelock);
       await assert.rejects(
         () => reserveManifestOutput(output, { deploymentCommit: "b".repeat(40), deployer: ADDRESSES.deployer }),
         /Refusing to overwrite existing deployment manifest/,

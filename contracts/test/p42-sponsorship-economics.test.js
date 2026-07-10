@@ -85,12 +85,24 @@ async function deployFixture({ feeBps = 250, rejectingTreasury = false, configur
   await manager.waitForDeployment();
   await pool.setSubmissionManager(await manager.getAddress());
   await ledger.setCreditRecorder(await manager.getAddress());
-  await pool.setAcceptingFunds(true);
+  if (configureRollover) await pool.setAcceptingFunds(true);
 
   return { owner, treasury, alice, bob, recipient, outsider, pool, registry, vault, ledger, manager, closeBy };
 }
 
 describe("P42 sponsorship economics", function () {
+  it("refuses to enable funding before the canonical rollover destination is bound", async function () {
+    const fixture = await deployFixture({ configureRollover: false });
+    await expectCustomError(
+      fixture.pool.connect(fixture.owner).setAcceptingFunds(true),
+      fixture.pool,
+      "P42_ROLLOVER_DESTINATION_NOT_SET"
+    );
+    await fixture.ledger.connect(fixture.owner).setRolloverDestination(await fixture.vault.getAddress());
+    await fixture.pool.connect(fixture.owner).setAcceptingFunds(true);
+    assert.equal(await fixture.pool.acceptingFunds(), true);
+  });
+
   it("rejects a marker-spoofing rollover destination with arbitrary withdrawal code", async function () {
     const [owner, treasury] = await ethers.getSigners();
     const latest = await ethers.provider.getBlock("latest");

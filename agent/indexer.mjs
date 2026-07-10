@@ -2,13 +2,19 @@
 // Deterministic, fail-closed P42 event indexer and reconciliation core.
 
 import { ethers } from "ethers";
+import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { atomsFromScore, chainScoreAtoms, recoverRevealCalldata } from "./lib.mjs";
@@ -28,6 +34,25 @@ const DEPLOYMENT_MANIFEST_SCHEMAS = Object.freeze({
 const MULTIBOARD_CHECKPOINT_SCHEMA = JSON.parse(
   readFileSync(`${REPO_ROOT}/schemas/indexer-checkpoint-v2.schema.json`, "utf8")
 );
+const PRIVATE_FILE_MODE = 0o600;
+const PRIVATE_DIRECTORY_MODE = 0o700;
+const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set([
+  "EBADF",
+  "EINVAL",
+  "EISDIR",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EPERM",
+]);
+const DEFAULT_ATOMIC_FILE_OPERATIONS = Object.freeze({
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+});
 
 export const CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
 export const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
@@ -79,8 +104,11 @@ export const EVENT_CATALOG = Object.freeze({
   submissions: [
     "NewActionsPaused",
     "AllActionsPaused",
+    "AllActionsPauseRecovered",
     "FundingArmed",
     "FinalizeVoided",
+    "CreditRecoveryWindowAdvanced",
+    "CreditRecoveryWindowRestored",
     "ChallengeManagerSet",
     "Committed",
     "Revealed",
@@ -105,6 +133,12 @@ export const EVENT_CATALOG = Object.freeze({
     "BondClaimed",
   ],
   registry: ["ProblemRegistered", "ProblemUpdated", "ProblemFrozen"],
+  rolloverVault: [
+    "RolloverReceived",
+    "PoolAllocationSet",
+    "FuturePoolFunded",
+    "ZeroCreditRefundReclaimed",
+  ],
 });
 
 export const REQUIRED_LIFECYCLE_COVERAGE = Object.freeze(
@@ -231,6 +265,52 @@ function canonicalize(value) {
 
 export function stableStringify(value, space = 0) {
   return JSON.stringify(canonicalize(value), null, space);
+}
+
+function syncDirectoryAfterRename(directory, operations) {
+  let descriptor;
+  try {
+    descriptor = operations.openSync(directory, "r");
+    operations.fsyncSync(descriptor);
+  } catch (error) {
+    if (!UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(error?.code)) throw error;
+  } finally {
+    if (descriptor !== undefined) operations.closeSync(descriptor);
+  }
+}
+
+export function writeFileAtomicSync(path, data, operationOverrides = {}) {
+  const operations = { ...DEFAULT_ATOMIC_FILE_OPERATIONS, ...operationOverrides };
+  const outputPath = resolve(path);
+  const directory = dirname(outputPath);
+  const temporaryPath = join(
+    directory,
+    `.${basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let descriptor;
+  let temporaryCreated = false;
+
+  operations.mkdirSync(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  try {
+    descriptor = operations.openSync(temporaryPath, "wx", PRIVATE_FILE_MODE);
+    temporaryCreated = true;
+    operations.writeFileSync(descriptor, data);
+    operations.fsyncSync(descriptor);
+    operations.closeSync(descriptor);
+    descriptor = undefined;
+    operations.renameSync(temporaryPath, outputPath);
+    syncDirectoryAfterRename(directory, operations);
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        operations.closeSync(descriptor);
+      } catch {
+        // Preserve the publication error; cleanup below is still attempted.
+      }
+    }
+    if (temporaryCreated) operations.rmSync(temporaryPath, { force: true });
+  }
+  return outputPath;
 }
 
 export function deploymentConfigPayload(manifest) {
@@ -567,6 +647,7 @@ function boardManifestView(manifest, problem) {
     contracts: {
       timelock: manifest.contracts.timelock,
       registry: manifest.contracts.registry,
+      rolloverVault: manifest.contracts.rolloverVault,
       ...contracts,
     },
     problems: [problem],
@@ -779,6 +860,101 @@ function validateMultiBoardTopology(manifest) {
   }
 }
 
+export function deriveExactSetupOperations(manifest) {
+  const interfaces = Object.fromEntries(
+    Object.entries(CONTRACT_NAMES).map(([key, name]) => [key, new ethers.Interface(artifactAbi(name))]),
+  );
+  const expected = [];
+  for (const [boardIndex, problem] of manifest.problems.entries()) {
+    const contracts = manifestProblemContracts(manifest, problem);
+    const addresses = {
+      timelock: manifest.contracts.timelock.address,
+      registry: manifest.contracts.registry.address,
+      rolloverVault: manifest.contracts.rolloverVault.address,
+      ...Object.fromEntries(BOARD_CONTRACT_KEYS.map((key) => [key, contracts[key].address])),
+    };
+    const prefix = isMultiBoardManifest(manifest) ? `board/${problem.problemId}.` : "";
+    const label = (suffix) => `${prefix}${suffix}`;
+    const registryConfig = {
+      specHash: problem.specHash,
+      verifierSourceHash: problem.verifierSourceHash,
+      verifierImageHash: problem.verifierImageHash,
+      admissionMatrixHash: problem.admissionMatrixHash,
+      metadataURI: problem.metadataURI,
+      pool: addresses.pool,
+      ledger: addresses.ledger,
+      submissionManager: addresses.submissions,
+      challengeManager: addresses.challenges,
+      challengeWindowSeconds: manifest.parameters.challengeWindowSeconds,
+      minImprovementAtoms: problem.minImprovementAtoms,
+    };
+    const definitions = [
+      ["pool.setLedger", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setLedger", [addresses.ledger]), []],
+      ["ledger.setCreditRecorder", "standard", addresses.ledger, interfaces.ledger.encodeFunctionData("setCreditRecorder", [addresses.submissions]), []],
+      ["pool.setSubmissionManager", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setSubmissionManager", [addresses.submissions]), ["pool.setLedger"]],
+      ["submissions.setChallengeManager", "standard", addresses.submissions, interfaces.submissions.encodeFunctionData("setChallengeManager", [addresses.challenges]), ["ledger.setCreditRecorder"]],
+      ["registry.register", "standard", addresses.registry, interfaces.registry.encodeFunctionData("registerExpected", [registryConfig, problem.problemId]), ["pool.setLedger", "ledger.setCreditRecorder", "pool.setSubmissionManager", "submissions.setChallengeManager"]],
+      ["pool.setRegistry", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setRegistry", [addresses.registry, problem.problemId]), ["registry.register"]],
+      ["ledger.setRolloverDestination", "standard", addresses.ledger, interfaces.ledger.encodeFunctionData("setRolloverDestination", [addresses.rolloverVault]), ["pool.setRegistry"]],
+      ["registry.freeze", "standard", addresses.registry, interfaces.registry.encodeFunctionData("freeze", [problem.problemId]), ["registry.register", "pool.setRegistry", "ledger.setRolloverDestination"]],
+      ...["ledger", "submissions", "challenges"].map((key) => [`timelock.setPauseTarget.${key}`, "override", addresses.timelock, interfaces.timelock.encodeFunctionData("setPauseTarget", [addresses[key], true]), ["registry.freeze"]]),
+    ];
+    const byLabel = new Map();
+    for (const [offset, definition] of definitions.entries()) {
+      const [suffix, operationClass, target, data, dependencies] = definition;
+      const sequence = boardIndex * BOARD_SETUP_LABEL_SUFFIXES.length + offset + 1;
+      const fullLabel = label(suffix);
+      const saltFor = (saltLabel) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ["string", "uint256", "uint256", "string", "address", "bytes32"],
+        ["p42-prizes/governance-setup/v1", manifest.network.chainId, sequence, saltLabel, target, ethers.keccak256(data)],
+      ));
+      const idFor = (salt) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "uint256", "bytes", "bytes32"], [target, 0n, data, salt],
+      ));
+      const builderFor = (scheduleFunction, salt, id) => ({
+        schedule: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData(scheduleFunction, [target, 0n, data, salt]) },
+        confirm: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("confirm", [id]) },
+        execute: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("execute", [target, 0n, data, salt]) },
+      });
+      const salt = saltFor(fullLabel);
+      const operationId = idFor(salt);
+      const fallbackSalt = operationClass === "standard" ? saltFor(`${fullLabel}.override-fallback`) : null;
+      const fallbackId = fallbackSalt ? idFor(fallbackSalt) : null;
+      const derived = {
+        sequence, label: fullLabel, operationClass, target, value: "0", data, salt, operationId,
+        dependsOn: dependencies.map((dependency) => byLabel.get(label(dependency)).operationId),
+        requiredConfirmations: String(operationClass === "override" ? manifest.governance.overrideThreshold : manifest.governance.threshold),
+        delaySeconds: String(operationClass === "override" ? manifest.governance.overrideDelaySeconds : manifest.governance.delaySeconds),
+        transactionBuilder: builderFor(operationClass === "override" ? "scheduleOverride" : "schedule", salt, operationId),
+        overrideFallback: fallbackSalt ? {
+          operationId: fallbackId, salt: fallbackSalt,
+          requiredConfirmations: String(manifest.governance.overrideThreshold),
+          delaySeconds: String(manifest.governance.overrideDelaySeconds),
+          transactionBuilder: builderFor("scheduleOverride", fallbackSalt, fallbackId),
+        } : null,
+      };
+      byLabel.set(fullLabel, derived);
+      expected.push(derived);
+    }
+  }
+  return expected;
+}
+
+function validateExactSetupOperations(manifest) {
+  const expected = deriveExactSetupOperations(manifest);
+  const fields = ["sequence", "label", "operationClass", "target", "value", "data", "salt", "operationId", "dependsOn", "requiredConfirmations", "delaySeconds", "transactionBuilder", "overrideFallback"];
+  if (expected.length !== manifest.setupTransactions.length) {
+    throw new Error(`setupTransactions must contain exactly ${expected.length} derived operations`);
+  }
+  for (const [index, derived] of expected.entries()) {
+    const actual = Object.fromEntries(fields.map((field) => [field, manifest.setupTransactions[index][field]]));
+    const selected = Object.fromEntries(fields.map((field) => [field, derived[field]]));
+    if (stableStringify(actual) !== stableStringify(selected)) {
+      throw new Error(`setupTransactions[${index}] does not match the exact derived governance operation`);
+    }
+  }
+}
+
 export function validateManifestEvidence(manifest) {
   rejectKnownStaleRelease(manifest);
   validateDeploymentManifestSchema(manifest);
@@ -835,6 +1011,7 @@ export function validateManifestEvidence(manifest) {
       throw new Error(`Manifest missing problems[${index}].seedScoreAtoms; frontier seed is not bound`);
     }
   }
+  validateExactSetupOperations(manifest);
 
   const requiredParameters = isMultiBoardManifest(manifest)
     ? [
@@ -1224,6 +1401,8 @@ function newReplayState(config, coverage) {
     armedAt: 0n,
     pausedNewActions: false,
     pausedAll: false,
+    creditRecoveryEndsAt: 0n,
+    recoveryPriorBySubmission: {},
     expiryGraceUntil: 0n,
     challengeManager: ZERO_ADDRESS,
     submissionClaimableBondWei: {},
@@ -1237,10 +1416,17 @@ function newReplayState(config, coverage) {
     challengeClaimableBondWei: {},
     challengePausedNewActions: false,
     registry: { problemCount: 0n, problems: {} },
+    rolloverVault: {
+      totalReceived: 0n,
+      totalFuturePoolFunded: 0n,
+      totalAllocated: 0n,
+      allocationOf: {},
+    },
     pendingExpiredChallengeTxs: new Set(),
     pendingSubmissionResolutionByTx: {},
     recoveryByTx: {},
     claimConsumptionByTx: {},
+    forcedRecoveryByTx: {},
   };
 }
 
@@ -1404,8 +1590,24 @@ function replayPoolEvent(state, event) {
       break;
     case "ForcedEthRecovered":
       state.pool.totalForcedEthRecovered += asBigInt(getArg(event, "amount"));
+      state.forcedRecoveryByTx[txKey(event)] = {
+        ...(state.forcedRecoveryByTx[txKey(event)] ?? {}),
+        recovered: {
+          destination: addressKey(getArg(event, "to")),
+          amount: asBigInt(getArg(event, "amount")),
+          remaining: asBigInt(getArg(event, "remainingForcedEth")),
+        },
+      };
       break;
     case "ForcedEthSwept":
+      state.forcedRecoveryByTx[txKey(event)] = {
+        ...(state.forcedRecoveryByTx[txKey(event)] ?? {}),
+        swept: {
+          destination: addressKey(getArg(event, "destination")),
+          amount: asBigInt(getArg(event, "amount")),
+          remaining: asBigInt(getArg(event, "remainingForcedEth")),
+        },
+      };
       break;
   }
 }
@@ -1524,7 +1726,7 @@ function replaySubmissionEvent(state, event) {
         challengeEndsAt: 0n,
         maxDisputeEndsAt: 0n,
         status: "Committed",
-        finalizeInfo: { prevBestScoreAtoms: 0n, creditAtoms: 0n },
+        finalizeInfo: { prevBestScoreAtoms: 0n, creditAtoms: 0n, prevCreditRecoveryEndsAt: 0n },
       };
       return;
     }
@@ -1628,10 +1830,29 @@ function replaySubmissionEvent(state, event) {
       invariant(credit === expectedCredit, `Finalized ${id} credit mismatch`);
       submission.permanenceHash = getArg(event, "permanenceHash");
       submission.status = "Finalized";
-      submission.finalizeInfo = { prevBestScoreAtoms: previousBest, creditAtoms: credit };
+      submission.finalizeInfo = {
+        prevBestScoreAtoms: previousBest,
+        creditAtoms: credit,
+        prevCreditRecoveryEndsAt: state.recoveryPriorBySubmission[id] ?? state.creditRecoveryEndsAt,
+      };
       state.bestScoreAtoms = eventBest;
       invariant(state.openSubmissionCount > 0n, "openSubmissionCount underflow on finalize");
       state.openSubmissionCount -= 1n;
+      return;
+    }
+    case "CreditRecoveryWindowAdvanced": {
+      const previous = asBigInt(getArg(event, "previousEndsAt"));
+      const recoveryEndsAt = asBigInt(getArg(event, "recoveryEndsAt"));
+      invariant(previous === state.creditRecoveryEndsAt, `credit recovery previous deadline mismatch for ${id}`);
+      state.recoveryPriorBySubmission[id] = previous;
+      state.creditRecoveryEndsAt = recoveryEndsAt;
+      return;
+    }
+    case "CreditRecoveryWindowRestored": {
+      const previous = asBigInt(getArg(event, "previousEndsAt"));
+      const restored = asBigInt(getArg(event, "restoredEndsAt"));
+      invariant(previous === state.creditRecoveryEndsAt, `credit recovery restore source mismatch for ${id}`);
+      state.creditRecoveryEndsAt = restored;
       return;
     }
     case "FinalizeVoided": {
@@ -1848,6 +2069,35 @@ function replayRegistryEvent(state, event) {
   }
 }
 
+function replayRolloverVaultEvent(state, event) {
+  switch (event.eventName) {
+    case "RolloverReceived":
+      state.rolloverVault.totalReceived += asBigInt(getArg(event, "amount"));
+      break;
+    case "PoolAllocationSet": {
+      const pool = addressKey(getArg(event, "pool"));
+      const previous = asBigInt(getArg(event, "previousAmount"));
+      const amount = asBigInt(getArg(event, "amount"));
+      invariant((state.rolloverVault.allocationOf[pool] ?? 0n) === previous, "vault allocation previous amount mismatch");
+      state.rolloverVault.totalAllocated = state.rolloverVault.totalAllocated - previous + amount;
+      state.rolloverVault.allocationOf[pool] = amount;
+      break;
+    }
+    case "FuturePoolFunded": {
+      const pool = addressKey(getArg(event, "pool"));
+      const amount = asBigInt(getArg(event, "amount"));
+      const remaining = asBigInt(getArg(event, "remainingAllocation"));
+      invariant((state.rolloverVault.allocationOf[pool] ?? 0n) >= amount, "vault allocation underflow");
+      state.rolloverVault.totalAllocated -= amount;
+      state.rolloverVault.allocationOf[pool] = remaining;
+      state.rolloverVault.totalFuturePoolFunded += amount;
+      break;
+    }
+    case "ZeroCreditRefundReclaimed":
+      break;
+  }
+}
+
 function validatePairedEvents(state) {
   for (const [transactionHash, recovery] of Object.entries(state.recoveryByTx)) {
     const finalized = recovery.finalizeVoided;
@@ -1872,6 +2122,15 @@ function validatePairedEvents(state) {
       `claim event pair mismatch in ${transactionHash}`
     );
   }
+  for (const [transactionHash, forced] of Object.entries(state.forcedRecoveryByTx)) {
+    invariant(forced.recovered && forced.swept, `forced ETH event pair incomplete in ${transactionHash}`);
+    invariant(
+      forced.recovered.destination === forced.swept.destination &&
+        forced.recovered.amount === forced.swept.amount &&
+        forced.recovered.remaining === forced.swept.remaining,
+      `forced ETH event pair mismatch in ${transactionHash}`,
+    );
+  }
 }
 
 export function replayProtocolEvents(events, manifestOrConfig, { coverage = [] } = {}) {
@@ -1889,6 +2148,7 @@ export function replayProtocolEvents(events, manifestOrConfig, { coverage = [] }
     else if (event.source === "submissions") replaySubmissionEvent(state, event);
     else if (event.source === "challenges") replayChallengeEvent(state, event);
     else if (event.source === "registry") replayRegistryEvent(state, event);
+    else if (event.source === "rolloverVault") replayRolloverVaultEvent(state, event);
   }
   validatePairedEvents(state);
   invariant(state.coverage.complete, `historical query coverage incomplete: ${state.coverage.missing.join(", ")}`);
@@ -1943,6 +2203,7 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("submissions.pausedAll", state.pausedAll, snapshot.pausedAll),
     check("submissions.expiryGraceUntil", state.expiryGraceUntil, snapshot.expiryGraceUntil),
     check("submissions.challengeManager", state.challengeManager, snapshot.submissionsChallengeManager),
+    check("submissions.creditRecoveryEndsAt", state.creditRecoveryEndsAt, snapshot.creditRecoveryEndsAt),
     check("pool.ledger", state.pool.ledger, snapshot.pool.ledger),
     check("pool.submissionManager", state.pool.submissionManager, snapshot.pool.submissionManager),
     check("pool.registry", state.pool.registry, snapshot.pool.registry),
@@ -1966,6 +2227,7 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("pool.everFunded", state.pool.everFunded, snapshot.pool.everFunded),
     check("pool.firstFundedAt", state.pool.firstFundedAt, snapshot.pool.firstFundedAt),
     check("pool.acceptingFunds", state.pool.acceptingFunds, snapshot.pool.acceptingFunds),
+    check("pool.sponsorshipOf observed sponsors", state.pool.sponsorshipOf, snapshot.pool.sponsorshipOf),
     check("ledger.pausedNewActions", state.ledger.pausedNewActions, snapshot.ledger.pausedNewActions),
     check("ledger.creditRecorder", state.ledger.creditRecorder, snapshot.ledger.creditRecorder),
     check("ledger.totalCreditAtoms", state.ledger.totalCreditAtoms, snapshot.ledger.totalCreditAtoms),
@@ -1979,6 +2241,13 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("ledger.residualSwept", state.ledger.residualSwept, snapshot.ledger.residualSwept),
     check("registry.problemCount", state.registry.problemCount, snapshot.registry.problemCount),
     check("challenge pausedNewActions", state.challengePausedNewActions, snapshot.challengePausedNewActions),
+    check("rolloverVault.totalAllocated", state.rolloverVault.totalAllocated, snapshot.rolloverVault.totalAllocated),
+    check("rolloverVault observed allocations", state.rolloverVault.allocationOf, snapshot.rolloverVault.allocationOf),
+    check(
+      "rolloverVault event-derived balance",
+      state.rolloverVault.totalReceived - state.rolloverVault.totalFuturePoolFunded,
+      snapshot.rolloverVault.balance,
+    ),
   ];
   checks.push(
     check(
@@ -2189,6 +2458,11 @@ export function instantiateBoardContracts(provider, manifest, problem, artifacts
   return {
     timelock: new ethers.Contract(manifest.contracts.timelock.address, artifacts.timelock.abi, provider),
     registry: new ethers.Contract(manifest.contracts.registry.address, artifacts.registry.abi, provider),
+    rolloverVault: new ethers.Contract(
+      manifest.contracts.rolloverVault.address,
+      artifacts.rolloverVault.abi,
+      provider,
+    ),
     ...Object.fromEntries(
       BOARD_CONTRACT_KEYS.map((key) => [
         key,
@@ -2245,7 +2519,7 @@ function registryProblemView(value) {
 }
 
 export async function collectOnchainSnapshot(contracts, replay, blockTag = undefined) {
-  const { pool, ledger, submissions, challenges, registry } = contracts;
+  const { pool, ledger, submissions, challenges, registry, rolloverVault } = contracts;
   const atBlock = blockTag === undefined ? [] : [{ blockTag }];
   const [
     submissionCount,
@@ -2279,6 +2553,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     pausedAll,
     expiryGraceUntil,
     submissionsChallengeManager,
+    creditRecoveryEndsAt: await submissions.creditRecoveryEndsAt(...atBlock),
     pool: {
       ledger: await pool.ledger(...atBlock),
       submissionManager: await pool.submissionManager(...atBlock),
@@ -2298,6 +2573,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       everFunded: await pool.everFunded(...atBlock),
       firstFundedAt: await pool.firstFundedAt(...atBlock),
       acceptingFunds: await pool.acceptingFunds(...atBlock),
+      sponsorshipOf: {},
       balance: blockTag === undefined
         ? await pool.runner.provider.getBalance(await pool.getAddress())
         : await pool.runner.provider.getBalance(await pool.getAddress(), blockTag),
@@ -2316,6 +2592,15 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       residualSwept: await ledger.residualSwept(...atBlock),
       creditAtomsOf: {},
       claimedWeiOf: {},
+    },
+    rolloverVault: {
+      registry: await rolloverVault.registry(...atBlock),
+      allocator: await rolloverVault.allocator(...atBlock),
+      totalAllocated: await rolloverVault.totalAllocated(...atBlock),
+      balance: blockTag === undefined
+        ? await rolloverVault.runner.provider.getBalance(await rolloverVault.getAddress())
+        : await rolloverVault.runner.provider.getBalance(await rolloverVault.getAddress(), blockTag),
+      allocationOf: {},
     },
     submissions: {},
     finalizeInfo: {},
@@ -2341,6 +2626,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     snapshot.finalizeInfo[key] = {
       prevBestScoreAtoms: info.prevBestScoreAtoms,
       creditAtoms: info.creditAtoms,
+      prevCreditRecoveryEndsAt: info.prevCreditRecoveryEndsAt,
     };
   }
 
@@ -2350,6 +2636,12 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
   for (const solver of solverAddresses) {
     snapshot.ledger.creditAtomsOf[solver] = await ledger.creditAtomsOf(solver, ...atBlock);
     snapshot.ledger.claimedWeiOf[solver] = await ledger.claimedWeiOf(solver, ...atBlock);
+  }
+  for (const sponsor of Object.keys(replay.pool.sponsorshipOf)) {
+    snapshot.pool.sponsorshipOf[sponsor] = await pool.sponsorshipOf(sponsor, ...atBlock);
+  }
+  for (const target of Object.keys(replay.rolloverVault.allocationOf)) {
+    snapshot.rolloverVault.allocationOf[target] = await rolloverVault.allocationOf(target, ...atBlock);
   }
   for (const claimant of Object.keys(replay.submissionClaimableBondWei)) {
     snapshot.submissionClaimableBondWei[claimant] = await submissions.claimableBondWei(claimant, ...atBlock);
@@ -2379,7 +2671,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
 }
 
 export async function collectRuntimeConfigChecks(contracts, manifest, blockTag = undefined) {
-  const { timelock, pool, ledger, submissions, challenges, registry } = contracts;
+  const { timelock, pool, ledger, submissions, challenges, registry, rolloverVault } = contracts;
   const problem = manifest.problems[0];
   const parameters = manifest.parameters;
   const checks = [];
@@ -2430,6 +2722,17 @@ export async function collectRuntimeConfigChecks(contracts, manifest, blockTag =
   await add("pool.problemId", asBigInt(problem.problemId), pool.problemId(...atBlock));
   await add("ledger.owner", manifest.roles.owner, ledger.owner(...atBlock));
   await add("ledger.pool", manifest.contracts.pool.address, ledger.pool(...atBlock));
+  await add(
+    "ledger.rolloverDestination",
+    manifest.contracts.rolloverVault.address,
+    ledger.rolloverDestination(...atBlock),
+  );
+  await add(
+    "rolloverVault.registry",
+    manifest.contracts.registry.address,
+    rolloverVault.registry(...atBlock),
+  );
+  await add("rolloverVault.allocator", manifest.roles.owner, rolloverVault.allocator(...atBlock));
   await add("ledger.treasury", manifest.roles.treasury, ledger.treasury(...atBlock));
   await add("ledger.feeBps", asBigInt(parameters.feeBps), ledger.feeBps(...atBlock));
   await add("ledger.earliestCloseTimestamp", asBigInt(parameters.earliestCloseTimestamp), ledger.earliestCloseTimestamp(...atBlock));
@@ -2552,13 +2855,15 @@ export async function collectMultiBoardFinalizedReconciliation({
     try {
       await verifyRuntimeIdentity(provider, manifest, artifacts, toBlock);
       const sharedContracts = contractsByProblem[0]?.contracts;
-      if (!sharedContracts?.registry) throw new Error("multi-board reconciliation is missing shared registry contracts");
-      const registryScan = await scanEventCatalog(
-        { registry: sharedContracts.registry },
+      if (!sharedContracts?.registry || !sharedContracts?.rolloverVault) {
+        throw new Error("multi-board reconciliation is missing shared registry/vault contracts");
+      }
+      const sharedScan = await scanEventCatalog(
+        { registry: sharedContracts.registry, rolloverVault: sharedContracts.rolloverVault },
         fromBlock,
         toBlock,
         policy,
-        { sources: ["registry"] },
+        { sources: ["registry", "rolloverVault"] },
       );
       const boards = [];
       // Run board evidence serially. Each board has its own submission state,
@@ -2572,8 +2877,8 @@ export async function collectMultiBoardFinalizedReconciliation({
           { sources: BOARD_CONTRACT_KEYS },
         );
         const scan = {
-          coverage: [...registryScan.coverage, ...boardScan.coverage],
-          events: [...registryScan.events, ...boardScan.events].sort(compareEventOrder),
+          coverage: [...sharedScan.coverage, ...boardScan.coverage],
+          events: [...sharedScan.events, ...boardScan.events].sort(compareEventOrder),
         };
         await hydrateEventTimestamps(scan.events, provider, policy);
         const replay = replayProtocolEvents(scan.events, boardReplayConfig(manifest, entry.problem), {
@@ -2827,7 +3132,6 @@ function cidToFilename(cid) {
 
 export async function archiveCalldata(dir, reveals, submissions, provider) {
   const outDir = resolve(dir);
-  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
   const entries = [];
   const mismatches = [];
   let archived = 0;
@@ -2884,7 +3188,7 @@ export async function archiveCalldata(dir, reveals, submissions, provider) {
       mismatches.push({ submissionId, cid, anchor, computed, derivedCid, reason: "calldata does not match event/anchor" });
       continue;
     }
-    writeFileSync(filePath, bytes);
+    writeFileAtomicSync(filePath, bytes);
     archived += 1;
     entries.push({ submissionId, cid, anchor, byteLength: bytes.length, revealTxHash: event.transactionHash, store: "on-chain-calldata" });
   }
@@ -2895,7 +3199,7 @@ export async function archiveCalldata(dir, reveals, submissions, provider) {
     entries,
     mismatches,
   });
-  writeFileSync(`${outDir}/manifest.json`, `${stableStringify(archiveManifest, 2)}\n`);
+  writeFileAtomicSync(`${outDir}/manifest.json`, `${stableStringify(archiveManifest, 2)}\n`);
   return { ok: mismatches.length === 0, archived, skipped, offChain, mismatches };
 }
 
@@ -3001,8 +3305,7 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
       }
       refreshMultiBoardCheckpointReconstruction(checkpoint);
 
-      mkdirSync(dirname(resolvedOut), { recursive: true });
-      writeFileSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
+      writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
       console.log(`indexed ${boards.length} boards through finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
       for (const board of checkpoint.boards) {
         console.log(
@@ -3059,8 +3362,7 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
     }
     if (!archiveOk) checkpoint.reconstruction.ok = false;
 
-    mkdirSync(dirname(resolvedOut), { recursive: true });
-    writeFileSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
+    writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
     console.log(`indexed finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
     console.log(
       `lifecycle committed=${checkpoint.events.counts["submissions.Committed"]} ` +

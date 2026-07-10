@@ -19,6 +19,8 @@ interface IP42CanonicalPoolRegistry {
 
 interface IP42CreditCloseGuard {
     function openSubmissionCount() external view returns (uint256);
+    function pausedAll() external view returns (bool);
+    function creditRecoveryEndsAt() external view returns (uint64);
 }
 
 /// @notice Final-denominator improvement accounting for one problem pool.
@@ -46,6 +48,8 @@ contract P42PayoutLedger {
     error P42_ZERO_CREDIT();
     error P42_FEE_TOO_HIGH();
     error P42_OPEN_SUBMISSIONS(uint256 openSubmissionCount);
+    error P42_FULL_PAUSE_ACTIVE();
+    error P42_CREDIT_RECOVERY_WINDOW_OPEN(uint64 recoveryEndsAt, uint64 nowAt);
     error P42_BAD_EARLIEST_CLOSE();
     error P42_BAD_CLOSE_BY();
     error P42_CLOSE_BY_NOT_REACHED(uint64 closeByTimestamp, uint64 nowAt);
@@ -242,8 +246,14 @@ contract P42PayoutLedger {
         }
         if (rolloverDestination == address(0)) revert P42_ROLLOVER_DESTINATION_NOT_SET();
         if (creditRecorder != address(0)) {
-            uint256 openCount = IP42CreditCloseGuard(creditRecorder).openSubmissionCount();
+            IP42CreditCloseGuard guard = IP42CreditCloseGuard(creditRecorder);
+            uint256 openCount = guard.openSubmissionCount();
             if (openCount != 0) revert P42_OPEN_SUBMISSIONS(openCount);
+            if (guard.pausedAll()) revert P42_FULL_PAUSE_ACTIVE();
+            uint64 recoveryEndsAt = guard.creditRecoveryEndsAt();
+            if (block.timestamp < recoveryEndsAt) {
+                revert P42_CREDIT_RECOVERY_WINDOW_OPEN(recoveryEndsAt, uint64(block.timestamp));
+            }
         }
         closed = true;
         closedAt = uint64(block.timestamp);

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 import re
+from typing import Any, Mapping
 
 from p42_prizes.admission import (
     AdmissionError,
@@ -15,15 +17,141 @@ from p42_prizes.admission import (
 )
 from p42_prizes.problem import load_manifest, validate_problem
 from p42_prizes.runner_sandbox import RunnerSandboxError, compose_immutable_image_ref
-from p42_prizes.verdict import parse_rational
+from p42_prizes.verdict import (
+    MAX_SCORE_ATOMS_BOUND,
+    MAX_UINT256,
+    MIN_SCORE_ATOMS_BOUND,
+    atoms_from_score,
+    chain_score_atoms,
+    parse_rational,
+    rational_to_string,
+)
 
 
 IMMUTABLE_IMAGE_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 PLACEHOLDER_IMAGES = {"sha256:local-dev", "sha256:pending", "sha256:pilot"}
-# These packages exist to exercise the lifecycle locally. They are not merely
-# missing evidence: their bundled witnesses already solve the toy instance, so
-# no amount of image or host-matrix work can make them legitimate bounties.
-PERMANENTLY_UNFUNDABLE_FIXTURES = {"hadamard-mini"}
+# These are semantic funding blocks, not missing operational evidence. No image
+# or host-matrix work can make them eligible without the stated redesign.
+FUNDING_ADMISSION_BLOCKS = {
+    "hadamard-mini": (
+        "a Phase 0 demo fixture with bundled solving witnesses and is permanently "
+        "ineligible for funding"
+    ),
+    "signed-autoconvolution-c3-upper": (
+        "blocked from funding admission until its score semantics are redesigned; "
+        "the current signed C3 objective/verifier contract is not admission-safe"
+    ),
+}
+
+
+def _validate_report_objective_semantics(
+    manifest: Mapping[str, Any], matrix: Mapping[str, Any]
+) -> list[str]:
+    """Recompute funding semantics from the manifest and the bound report score."""
+
+    errors: list[str] = []
+    objective = manifest.get("objective")
+    if not isinstance(objective, Mapping):
+        return ["problem.yaml:objective must be an object for funding admission"]
+
+    direction = objective.get("direction")
+    if direction not in ("minimize", "maximize"):
+        errors.append(
+            "problem.yaml:objective.direction must be minimize or maximize for funding admission"
+        )
+
+    try:
+        seed_best = parse_rational(objective.get("seed_best"))
+    except (TypeError, ValueError) as exc:
+        errors.append(f"problem.yaml:objective.seed_best is not an exact rational: {exc}")
+        seed_best = None
+    try:
+        min_improvement = parse_rational(objective.get("min_improvement"))
+    except (TypeError, ValueError) as exc:
+        errors.append(f"problem.yaml:objective.min_improvement is not an exact rational: {exc}")
+        min_improvement = None
+    else:
+        if min_improvement <= 0:
+            errors.append(
+                "problem.yaml:objective.min_improvement must be positive for funding admission"
+            )
+
+    evidence = matrix.get("evidence")
+    report = None
+    if isinstance(evidence, list) and evidence and isinstance(evidence[0], Mapping):
+        report = evidence[0].get("report")
+    if not isinstance(report, Mapping):
+        errors.append("admission matrix: canonical verifier report is missing from signed evidence")
+        return errors
+
+    score_literal = report.get("score")
+    improvement_literal = report.get("improvement")
+    try:
+        score = parse_rational(score_literal)
+        if rational_to_string(score) != score_literal:
+            raise ValueError("score is not normalized")
+    except (TypeError, ValueError) as exc:
+        errors.append(f"admission matrix: report score is not a canonical rational: {exc}")
+        score = None
+    try:
+        reported_improvement = parse_rational(improvement_literal)
+        if rational_to_string(reported_improvement) != improvement_literal:
+            raise ValueError("improvement is not normalized")
+    except (TypeError, ValueError) as exc:
+        errors.append(f"admission matrix: report improvement is not a canonical rational: {exc}")
+        reported_improvement = None
+
+    report_valid = report.get("valid")
+    if not isinstance(report_valid, bool):
+        errors.append("admission matrix: report valid status must be a boolean")
+
+    if direction not in ("minimize", "maximize") or seed_best is None or score is None:
+        return errors
+
+    signed_delta = score - seed_best if direction == "maximize" else seed_best - score
+    derived_improvement = max(Fraction(0, 1), signed_delta)
+    derived_literal = rational_to_string(derived_improvement)
+    if reported_improvement is not None and reported_improvement != derived_improvement:
+        errors.append(
+            "admission matrix: report improvement "
+            f"{improvement_literal!r} does not equal manifest-derived {derived_literal!r} "
+            f"for objective.direction={direction}"
+        )
+
+    if min_improvement is None or min_improvement <= 0:
+        return errors
+
+    seed_atoms = chain_score_atoms(seed_best, direction)
+    score_atoms = chain_score_atoms(score, direction)
+    min_improvement_atoms = atoms_from_score(min_improvement)
+    atoms_in_range = True
+    for label, value in (("seedScoreAtoms", seed_atoms), ("scoreAtoms", score_atoms)):
+        if value <= MIN_SCORE_ATOMS_BOUND or value >= MAX_SCORE_ATOMS_BOUND:
+            atoms_in_range = False
+            errors.append(
+                f"admission matrix: deployment {label}={value} is outside "
+                "the open (-2^254, 2^254) score range"
+            )
+    if min_improvement_atoms <= 0 or min_improvement_atoms > MAX_UINT256:
+        atoms_in_range = False
+        errors.append(
+            "admission matrix: deployment minImprovementAtoms "
+            f"{min_improvement_atoms} is outside the uint256 positive range"
+        )
+    if not atoms_in_range:
+        return errors
+
+    marginal_atoms = max(0, seed_atoms - score_atoms)
+    funding_valid = marginal_atoms >= min_improvement_atoms
+    if isinstance(report_valid, bool) and report_valid != funding_valid:
+        errors.append(
+            "admission matrix: report valid status "
+            f"{report_valid!r} does not equal deployment-derived {funding_valid!r} "
+            f"(seedScoreAtoms={seed_atoms}, scoreAtoms={score_atoms}, "
+            f"marginalAtoms={marginal_atoms}, minImprovementAtoms={min_improvement_atoms})"
+        )
+
+    return errors
 
 
 def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path) -> list[str]:
@@ -40,10 +168,11 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
     repository = verifier.get("image_repository") if isinstance(verifier, dict) else None
     admission = verifier.get("admission") if isinstance(verifier, dict) else None
     problem_id = manifest.get("problem_id")
-    if problem_id in PERMANENTLY_UNFUNDABLE_FIXTURES:
-        errors.append(
-            f"problem.yaml: problem_id {problem_id!r} is a Phase 0 demo fixture and is permanently ineligible for funding"
-        )
+    blocked_reason = (
+        FUNDING_ADMISSION_BLOCKS.get(problem_id) if isinstance(problem_id, str) else None
+    )
+    if blocked_reason is not None:
+        errors.append(f"problem.yaml: problem_id {problem_id!r} is {blocked_reason}")
     if not isinstance(image, str) or image in PLACEHOLDER_IMAGES or not IMMUTABLE_IMAGE_RE.fullmatch(image):
         errors.append(
             "problem.yaml:verifier.image must be an immutable lowercase sha256:<64 hex> digest "
@@ -97,16 +226,12 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
         if not isinstance(source, dict) or source.get("tree_hash") != expected_source_hash:
             errors.append("admission matrix: source.tree_hash does not match the current normalized verifier source")
 
+    errors.extend(_validate_report_objective_semantics(manifest, matrix))
     if matrix.get("report_valid") is not True:
         errors.append(
             "admission matrix: admitted report is not a certified strict witness "
             f"(reason={matrix.get('report_reason')!r})"
         )
-    try:
-        if parse_rational(matrix.get("report_improvement")) <= 0:
-            errors.append("admission matrix: admitted report improvement must be positive")
-    except (TypeError, ValueError):
-        errors.append("admission matrix: report_improvement must be a normalized positive rational")
 
     coverage = matrix.get("coverage")
     if not isinstance(coverage, dict):

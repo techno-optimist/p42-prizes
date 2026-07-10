@@ -24,6 +24,14 @@ contract MockFundingArmed {
         return 0;
     }
 
+    function pausedAll() external pure returns (bool) {
+        return false;
+    }
+
+    function creditRecoveryEndsAt() external pure returns (uint64) {
+        return 0;
+    }
+
     function recordCredit(address ledger, address solver, uint256 atoms) external {
         IP42MockCreditLedger(ledger).recordCredit(solver, atoms);
     }
