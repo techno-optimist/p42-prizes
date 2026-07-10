@@ -143,8 +143,8 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] KYC/sanctions and Terms of Service posture approved.
 - [ ] N-host verifier matrix passes for every funded problem.
 - [ ] N-host matrix host metadata (arch/libc/label) is attested, not self-attested and spoofable.
-- [ ] Verifier totality/score fuzzing has run across all 10 launch verifiers, not fixtures only.
-- [ ] Cross-language determinism conformance is proven beyond the reference Python rational-grammar path.
+- [x] Deterministic verifier totality, mutation, score-oracle, and one-atom frontier-transition campaigns run across all 10 launch verifiers (`tests/test_verifier_fuzz_properties.py`). Full independent directed-rounding re-certification of the two largest transcendental fixtures remains external math-review work.
+- [x] Node/Python conformance proves byte-identical canonical `VerdictReport` JSON and hashes beyond rational parsing, with a lossless recursive details domain and adversarial corpus (`conformance/p42-v1.mjs`, `tests/test_p42_v1_node_conformance.py`).
 - [ ] Off-chain-verdict → on-chain-key bridge (trusted resolver/`creditRecorder`) is replaced or bounded; native-ETH-only until then.
 - [ ] Dynamic/on-chain differential testing runs against a live testnet deployment, not local unit tests only.
 - [ ] Verifier image digests are pinned and immutable in registry.
@@ -279,15 +279,18 @@ independent/external audit; that remains an open Gate 2 blocker) surfaced
 coverage gaps that are not yet closed by any evidence artifact. None of these may be marked closed; each is an open Gate 1
 or Gate 2 item.
 
-- **Verifier totality / score fuzzing across all 10 problems.** R4 totality and
-  score correctness have been exercised on fixtures only. There is no
-  fuzzing/property campaign over malformed, adversarial, and boundary inputs for
-  every one of the ten launch verifiers. Open.
-- **Cross-language determinism conformance beyond the rational grammar.** The
-  `p42:v1` rational grammar is finalized, but there is no conformance suite
-  proving that a non-Python re-implementation of a verifier produces byte-
-  identical canonical `VerdictReport`s. Determinism is asserted only for the
-  reference Python path. Open.
+- **Verifier totality / score fuzzing now has local all-ten coverage.** The
+  deterministic campaign covers malformed and nested-duplicate JSON, bounded
+  reads, seeded mutations, independent score oracles, and exact one-atom
+  accept/reject frontier transitions for all ten verifiers. The complete
+  Mertens `K=12000` and PNT 960,000-row directed-rounding certificates are
+  executed but not independently re-certified by a second interval
+  implementation; independent mathematical review remains open.
+- **Cross-language report determinism is implemented locally.** A dependency-
+  free Node implementation and adversarial corpus now match Python's canonical
+  `VerdictReport` bytes and SHA-256 hashes. This proves the wire contract, not a
+  second implementation of every problem-specific scoring algorithm; N-host
+  execution and independent math review remain open.
 - **Host-metadata attestation for the N-host matrix.** Architecture/libc/label
   fields are self-attested and spoofable from one machine (see
   `docs/VERIFIER_IMAGE_REGISTRY.md`). The multi-arch/multi-glibc gate is not
@@ -301,10 +304,11 @@ or Gate 2 item.
   bounties," but the contracts are **native-ETH only** — there is no ERC-20 pool,
   deposit, fee-skim, or payout path implemented or audited. USDC support is a
   target, not a shipped capability. Open.
-- **Dynamic / on-chain differential testing.** Contract evidence is local
-  Hardhat unit/property tests only. There is no dynamic on-chain differential
-  test (deployed-vs-reference state machine, fork/replay, or invariant fuzzing
-  against a live testnet deployment). Open.
+- **Dynamic / on-chain differential testing.** A deterministic local reference
+  state machine now differentially exercises funding gates, mutable credits,
+  close/claim boundaries, fees, refunds, rollover, forced ETH, rollback, and
+  conservation against deployed Hardhat contracts. A deployed-vs-reference
+  campaign against the current live testnet release is still absent. Open.
 - **Full-pause settlement liveness is implemented locally, not proven in a
   deployment.** Current source has bounded permissionless recovery, active-time
   tolling, anti-cycle spacing, and adversarial tests. It still needs external
