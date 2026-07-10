@@ -341,6 +341,15 @@
   "$defs": {
     "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+    "verifierImageDigest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Canonical bare verifier image digest. verifierImageHash = keccak256(utf8(verifierImageDigest))."
+    },
+    "verifierImageHashAlgorithm": {
+      "const": "keccak256-utf8/v1",
+      "description": "Versioned verifier-image anchor relation: verifierImageHash = keccak256(utf8(verifierImageDigest))."
+    },
     "calldata": { "type": "string", "pattern": "^0x(?:[0-9a-fA-F]{2})*$" },
     "transactionHash": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
     "uintString": { "type": "string", "pattern": "^[0-9]+$" },
@@ -508,6 +517,8 @@
         "metadataURI",
         "specHash",
         "verifierSourceHash",
+        "verifierImageDigest",
+        "verifierImageHashAlgorithm",
         "verifierImageHash",
         "admissionMatrixHash",
         "immutablePins",
@@ -530,6 +541,8 @@
         "metadataURI": { "type": "string", "minLength": 1 },
         "specHash": { "$ref": "#/$defs/bytes32" },
         "verifierSourceHash": { "$ref": "#/$defs/bytes32" },
+        "verifierImageDigest": { "$ref": "#/$defs/verifierImageDigest" },
+        "verifierImageHashAlgorithm": { "$ref": "#/$defs/verifierImageHashAlgorithm" },
         "verifierImageHash": { "$ref": "#/$defs/bytes32" },
         "admissionMatrixHash": { "$ref": "#/$defs/bytes32" },
         "immutablePins": { "const": true },

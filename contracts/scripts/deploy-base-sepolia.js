@@ -7,6 +7,7 @@ import { network } from "hardhat";
 
 import {
   assertDeploymentConfigHash,
+  assertVerifierImageAnchor,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
   buildSetupOperations,
@@ -228,6 +229,8 @@ async function deployCeremony(ethers) {
         metadataURI: config.problem.metadataURI,
         specHash: config.problem.specHash,
         verifierSourceHash: config.problem.verifierSourceHash,
+        verifierImageDigest: config.problem.verifierImageDigest,
+        verifierImageHashAlgorithm: config.problem.verifierImageHashAlgorithm,
         verifierImageHash: config.problem.verifierImageHash,
         admissionMatrixHash: config.problem.admissionMatrixHash,
         immutablePins: true,
@@ -534,6 +537,13 @@ async function continueCeremony(ethers) {
   const path = manifestPath();
   const manifest = JSON.parse(await readFile(path, "utf8"));
   if (manifest.schema !== MANIFEST_SCHEMA) throw new Error(`Unsupported manifest schema: ${manifest.schema}`);
+  for (const [index, problem] of manifest.problems.entries()) {
+    assertVerifierImageAnchor(ethers, problem, {
+      digestLabel: `manifest.problems[${index}].verifierImageDigest`,
+      hashLabel: `manifest.problems[${index}].verifierImageHash`,
+      algorithmLabel: `manifest.problems[${index}].verifierImageHashAlgorithm`
+    });
+  }
   assertDeploymentConfigHash(manifest);
   const head = await ethers.provider.getBlockNumber();
   const checkedBlock = head - manifest.indexer.finalityPolicy.confirmations;

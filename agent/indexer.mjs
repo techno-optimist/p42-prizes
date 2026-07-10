@@ -102,6 +102,8 @@ const STATUS_NUMBER = Object.freeze(
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_HASH = `0x${"0".repeat(64)}`;
+const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
+const VERIFIER_IMAGE_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 
 export const STALE_BASE_SEPOLIA_RELEASE_GUARDS = Object.freeze([
   {
@@ -222,6 +224,20 @@ export function computeDeploymentConfigHash(manifest) {
 function requireHex(value, bytes, label) {
   const pattern = new RegExp(`^0x[0-9a-fA-F]{${bytes * 2}}$`);
   if (!pattern.test(String(value))) throw new Error(`${label} must be ${bytes}-byte hex`);
+}
+
+function validateVerifierImageAnchor(problem, label) {
+  const digest = problem?.verifierImageDigest;
+  if (typeof digest !== "string" || !VERIFIER_IMAGE_DIGEST_RE.test(digest)) {
+    throw new Error(`${label}.verifierImageDigest must be a canonical bare sha256 digest`);
+  }
+  if (problem.verifierImageHashAlgorithm !== VERIFIER_IMAGE_HASH_ALGORITHM) {
+    throw new Error(`${label}.verifierImageHashAlgorithm must equal ${VERIFIER_IMAGE_HASH_ALGORITHM}`);
+  }
+  const expectedHash = ethers.keccak256(ethers.toUtf8Bytes(digest));
+  if (String(problem.verifierImageHash).toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new Error(`${label}.verifierImageHash must equal keccak256(utf8(verifierImageDigest))`);
+  }
 }
 
 function requireInteger(value, label, minimum = 0) {
@@ -468,6 +484,10 @@ export function validateManifestEvidence(manifest) {
         }
       }
     }
+  }
+
+  for (const [index, problem] of manifest.problems.entries()) {
+    validateVerifierImageAnchor(problem, `problems[${index}]`);
   }
 
   for (const field of [

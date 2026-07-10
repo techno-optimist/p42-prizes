@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { network } from "hardhat";
 
-import { computeDeploymentConfigHash } from "../../agent/indexer.mjs";
+import { computeDeploymentConfigHash, validateManifestEvidence } from "../../agent/indexer.mjs";
 import {
+  assertVerifierImageAnchor,
   assertManifestOutputIsVacant,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
@@ -23,10 +26,14 @@ import {
   readCeremonyConfig,
   recordManifestOutputDeployment,
   reserveManifestOutput,
-  requiredCompletionCheckNames
+  requiredCompletionCheckNames,
+  VERIFIER_IMAGE_HASH_ALGORITHM,
+  verifierImageHashForDigest
 } from "../scripts/deployment-ceremony-helper.js";
 
 const { ethers } = await network.create();
+const HERE = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(HERE, "../..");
 
 const ADDRESSES = Object.freeze({
   signer1: "0x0000000000000000000000000000000000000001",
@@ -43,6 +50,13 @@ const ADDRESSES = Object.freeze({
   challenges: "0x0000000000000000000000000000000000000014",
   registry: "0x0000000000000000000000000000000000000015"
 });
+const VERIFIER_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
+
+function readExampleManifest() {
+  return JSON.parse(
+    readFileSync(resolve(REPO_ROOT, "deployments/base-sepolia/p42-prizes.example.json"), "utf8")
+  );
+}
 
 function validEnv() {
   return {
@@ -69,7 +83,8 @@ function validEnv() {
     P42_RESOLVER_FRAUD_WINDOW_SECONDS: "86400",
     P42_PROBLEM_SPEC_HASH: `0x${"1".repeat(64)}`,
     P42_VERIFIER_SOURCE_HASH: `0x${"2".repeat(64)}`,
-    P42_VERIFIER_IMAGE_HASH: `0x${"3".repeat(64)}`,
+    P42_VERIFIER_IMAGE_DIGEST: VERIFIER_IMAGE_DIGEST,
+    P42_VERIFIER_IMAGE_HASH: verifierImageHashForDigest(ethers, VERIFIER_IMAGE_DIGEST),
     P42_ADMISSION_MATRIX_HASH: `0x${"4".repeat(64)}`,
     P42_METADATA_URI: "ipfs://p42-problem-metadata",
     P42_SEED_SCORE_ATOMS: "1000000000000000000000",
@@ -141,6 +156,62 @@ function minimalManifest(setupTransactions) {
 }
 
 describe("deployment ceremony input gate", () => {
+  it("requires a canonical digest and matching UTF-8 keccak anchor before deployment setup", () => {
+    const accepted = readCeremonyConfig(ethers, validEnv(), { deployerAddress: ADDRESSES.deployer });
+    assert.equal(accepted.problem.verifierImageDigest, VERIFIER_IMAGE_DIGEST);
+    assert.equal(accepted.problem.verifierImageHashAlgorithm, VERIFIER_IMAGE_HASH_ALGORITHM);
+    assert.equal(
+      accepted.problem.verifierImageHash,
+      verifierImageHashForDigest(ethers, accepted.problem.verifierImageDigest)
+    );
+
+    for (const digest of [
+      "sha256:local-dev",
+      `sha256:${"A".repeat(64)}`,
+      `registry.example/p42@${VERIFIER_IMAGE_DIGEST}`
+    ]) {
+      const malformed = validEnv();
+      malformed.P42_VERIFIER_IMAGE_DIGEST = digest;
+      assert.throws(
+        () => readCeremonyConfig(ethers, malformed, { deployerAddress: ADDRESSES.deployer }),
+        /P42_VERIFIER_IMAGE_DIGEST must be a canonical bare sha256:<64 lowercase hex> digest/
+      );
+    }
+
+    const mismatch = validEnv();
+    mismatch.P42_VERIFIER_IMAGE_HASH = `0x${"3".repeat(64)}`;
+    assert.throws(
+      () => readCeremonyConfig(ethers, mismatch, { deployerAddress: ADDRESSES.deployer }),
+      /P42_VERIFIER_IMAGE_HASH must equal keccak256\(utf8\(verifierImageDigest\)\)/
+    );
+  });
+
+  it("records a schema-valid explicit digest anchor in the non-deployed example", () => {
+    const manifest = readExampleManifest();
+    const problem = manifest.problems[0];
+    assert.equal(manifest.status, "example-not-deployed");
+    assert.equal(problem.fundingArmed, false);
+    assert.equal(problem.acceptingFunds, false);
+    assert.equal(problem.verifierImageHashAlgorithm, VERIFIER_IMAGE_HASH_ALGORITHM);
+    assert.equal(problem.verifierImageHash, verifierImageHashForDigest(ethers, problem.verifierImageDigest));
+    assert.doesNotThrow(() => validateManifestEvidence(manifest));
+    assert.doesNotThrow(() => assertVerifierImageAnchor(ethers, problem));
+
+    const malformed = structuredClone(manifest);
+    malformed.problems[0].verifierImageDigest = `sha256:${"A".repeat(64)}`;
+    assert.throws(
+      () => validateManifestEvidence(malformed),
+      /problems\[0\]\.verifierImageDigest does not match its required format/
+    );
+
+    const mismatch = structuredClone(manifest);
+    mismatch.problems[0].verifierImageHash = `0x${"3".repeat(64)}`;
+    assert.throws(
+      () => validateManifestEvidence(mismatch),
+      /problems\[0\]\.verifierImageHash must equal keccak256\(utf8\(verifierImageDigest\)\)/
+    );
+  });
+
   it("refuses to reuse a manifest destination that contains stale deployment evidence", async () => {
     const directory = await mkdtemp(join(tmpdir(), "p42-ceremony-"));
     const output = join(directory, "p42-prizes.json");

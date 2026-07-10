@@ -17,8 +17,10 @@ A problem may be marked fundable only when all of these match:
   `VerdictReport`.
 - The N-host admission matrix records the same `verifier_image`,
   `verifier_version`, and `problem_id` as `problem.yaml`.
-- The registry/deployment manifest records the same digest in
-  `verifierImageHash` for the on-chain problem.
+- A fresh Base deployment records `verifierImageDigest`,
+  `verifierImageHashAlgorithm: "keccak256-utf8/v1"`, and the on-chain
+  `verifierImageHash`, where
+  `verifierImageHash = keccak256(utf8(verifierImageDigest))`.
 
 Run the local gate:
 
@@ -39,7 +41,7 @@ letting a placeholder digest become funding evidence.
 | `problem.yaml.verifier.image` | problem repo | Immutable digest, no tags or placeholders |
 | `VerdictReport.verifier_image` | verifier output | Must equal the manifest digest |
 | `admission-matrix.verifier_image` | N-host matrix | Must equal the manifest digest |
-| `ProblemRegistry.verifierImageHash` | Base deployment manifest | Must equal the digest committed in problem metadata |
+| `ProblemRegistry.verifierImageHash` | Base deployment manifest | Must equal `keccak256(utf8(verifierImageDigest))`; the manifest also records the bare digest and `keccak256-utf8/v1` relation |
 | Portal `chainProvenance.verifierImageHash` | manifest/indexer | Shows `local-only` until a real deployment/reconciliation exists |
 
 ## Known Limitation: Host Metadata Is Self-Attested (Spoofable)
@@ -66,8 +68,12 @@ the strength of it alone.
 
 ## Current State
 
+- `deployments/base-sepolia/p42-prizes.example.json` is
+  `example-not-deployed`; its all-`a` digest/hash pair is synthetic anchor test
+  data, not a published verifier image or funding evidence.
 - `hadamard-mini` uses `sha256:local-dev` and is runnable only as a pilot
-  fixture.
+  fixture. A fresh Base ceremony rejects that placeholder as a verifier-image
+  digest.
 - The nine locked launch boards use `sha256:local-dev` placeholders in their
   local verifier packages and cannot be funded.
 - No Gate 2 verifier item is closed until a reviewed immutable digest and
