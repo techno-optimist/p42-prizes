@@ -20,11 +20,22 @@ P42_TREASURY_ADDRESS=0x... \
 P42_RESOLVER_ADDRESS=0x... \
 P42_PROBLEM_SPEC_HASH=0x... \
 P42_VERIFIER_SOURCE_HASH=0x... \
+P42_VERIFIER_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
 P42_VERIFIER_IMAGE_HASH=0x... \
 P42_ADMISSION_MATRIX_HASH=0x... \
 P42_METADATA_URI=ipfs://... \
 npm run deploy:base-sepolia
 ```
+
+Fresh ceremonies require `P42_VERIFIER_IMAGE_DIGEST` to be the bare canonical
+`sha256:<64 lowercase hex>` digest, not a registry reference, tag, or
+`sha256:local-dev` placeholder. `P42_VERIFIER_IMAGE_HASH` must equal
+`keccak256(utf8(P42_VERIFIER_IMAGE_DIGEST))`; the fresh manifest records both
+values and `verifierImageHashAlgorithm: "keccak256-utf8/v1"`.
+
+`p42-prizes.example.json` is explicitly `example-not-deployed`. Its all-`a`
+digest is synthetic and exists only to exercise this anchor relation; it does
+not identify a published image or make a problem fundable.
 
 Optional parameter overrides include `P42_RESOLVER_DECISION_BOND_WEI` and
 `P42_RESOLVER_FRAUD_WINDOW_SECONDS`; the example manifest uses a 24-hour

@@ -11,6 +11,8 @@ export const COMPLETE_SETUP_STATUS = "governance-setup-complete";
 export const DEPLOYMENT_RESERVATION_SCHEMA = "p42-prizes/deployment-reservation/v1";
 export const SCORE_ATOM_SCALE = 1_000_000_000_000_000_000n;
 export const OPERATION_GRACE_PERIOD_SECONDS = 7n * 24n * 60n * 60n;
+export const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
+export const VERIFIER_IMAGE_HASH_RELATION = "keccak256(utf8(verifierImageDigest))";
 
 export const DEFAULT_FINALITY_POLICY = Object.freeze({
   mode: "confirmations",
@@ -23,6 +25,7 @@ export const DEFAULT_FINALITY_POLICY = Object.freeze({
 });
 
 const ZERO_HASH = `0x${"0".repeat(64)}`;
+const VERIFIER_IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const CHILD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
 const ALL_CONTRACT_KEYS = ["timelock", ...CHILD_CONTRACT_KEYS];
 const PAUSE_TARGET_KEYS = ["ledger", "submissions", "challenges"];
@@ -80,6 +83,51 @@ function nonzeroHash(ethers, label, value) {
   if (!ethers.isHexString(value, 32)) throw new Error(`${label} must be bytes32 hex`);
   if (value.toLowerCase() === ZERO_HASH) throw new Error(`${label} must not be zero`);
   return value.toLowerCase();
+}
+
+function canonicalVerifierImageDigest(value, label) {
+  if (typeof value !== "string" || !VERIFIER_IMAGE_DIGEST_PATTERN.test(value)) {
+    throw new Error(`${label} must be a canonical bare sha256:<64 lowercase hex> digest`);
+  }
+  return value;
+}
+
+export function verifierImageHashForDigest(ethers, verifierImageDigest, label = "verifierImageDigest") {
+  const digest = canonicalVerifierImageDigest(verifierImageDigest, label);
+  return ethers.keccak256(ethers.toUtf8Bytes(digest));
+}
+
+export function assertVerifierImageAnchor(
+  ethers,
+  { verifierImageDigest, verifierImageHash, verifierImageHashAlgorithm },
+  {
+    digestLabel = "verifierImageDigest",
+    hashLabel = "verifierImageHash",
+    algorithmLabel = "verifierImageHashAlgorithm"
+  } = {}
+) {
+  if (verifierImageHashAlgorithm !== VERIFIER_IMAGE_HASH_ALGORITHM) {
+    throw new Error(`${algorithmLabel} must equal ${VERIFIER_IMAGE_HASH_ALGORITHM}`);
+  }
+  const digest = canonicalVerifierImageDigest(verifierImageDigest, digestLabel);
+  const hash = nonzeroHash(ethers, hashLabel, verifierImageHash);
+  const expectedHash = verifierImageHashForDigest(ethers, digest, digestLabel);
+  if (hash !== expectedHash) {
+    throw new Error(`${hashLabel} must equal ${VERIFIER_IMAGE_HASH_RELATION}: expected ${expectedHash}`);
+  }
+  return {
+    verifierImageDigest: digest,
+    verifierImageHashAlgorithm,
+    verifierImageHash: hash
+  };
+}
+
+function requiredVerifierImageDigest(env) {
+  const digest = required(env, "P42_VERIFIER_IMAGE_DIGEST");
+  if (String(env.P42_VERIFIER_IMAGE_DIGEST) !== digest) {
+    throw new Error("P42_VERIFIER_IMAGE_DIGEST must be a canonical bare sha256:<64 lowercase hex> digest");
+  }
+  return canonicalVerifierImageDigest(digest, "P42_VERIFIER_IMAGE_DIGEST");
 }
 
 function assertDistinct(label, entries) {
@@ -193,6 +241,20 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
     throw new Error("P42_MAX_SOLUTION_BYTES must be 0 when P42_ONCHAIN_DA is false");
   }
 
+  const verifierImageAnchor = assertVerifierImageAnchor(
+    ethers,
+    {
+      verifierImageDigest: requiredVerifierImageDigest(env),
+      verifierImageHashAlgorithm: VERIFIER_IMAGE_HASH_ALGORITHM,
+      verifierImageHash: required(env, "P42_VERIFIER_IMAGE_HASH")
+    },
+    {
+      digestLabel: "P42_VERIFIER_IMAGE_DIGEST",
+      hashLabel: "P42_VERIFIER_IMAGE_HASH",
+      algorithmLabel: "verifierImageHashAlgorithm"
+    }
+  );
+
   const problem = {
     specHash: nonzeroHash(ethers, "P42_PROBLEM_SPEC_HASH", required(env, "P42_PROBLEM_SPEC_HASH")),
     verifierSourceHash: nonzeroHash(
@@ -200,11 +262,7 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
       "P42_VERIFIER_SOURCE_HASH",
       required(env, "P42_VERIFIER_SOURCE_HASH")
     ),
-    verifierImageHash: nonzeroHash(
-      ethers,
-      "P42_VERIFIER_IMAGE_HASH",
-      required(env, "P42_VERIFIER_IMAGE_HASH")
-    ),
+    ...verifierImageAnchor,
     admissionMatrixHash: nonzeroHash(
       ethers,
       "P42_ADMISSION_MATRIX_HASH",

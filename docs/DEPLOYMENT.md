@@ -159,6 +159,7 @@ P42_ONCHAIN_DA=true \
 P42_MAX_SOLUTION_BYTES=524288 \
 P42_PROBLEM_SPEC_HASH=0x... \
 P42_VERIFIER_SOURCE_HASH=0x... \
+P42_VERIFIER_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
 P42_VERIFIER_IMAGE_HASH=0x... \
 P42_ADMISSION_MATRIX_HASH=0x... \
 P42_METADATA_URI=ipfs://... \
@@ -176,9 +177,19 @@ guardian, treasury, and resolver. `P42_OWNER_ADDRESS` is rejected because every
 immutable child owner must be the newly deployed timelock.
 
 For off-chain DA, set `P42_ONCHAIN_DA=false` and
-`P42_MAX_SOLUTION_BYTES=0`. Image and admission hashes must be nonzero immutable
-pins. `earliestClose` must be at least 30 days after deployment; `closeBy` must
-be at least 180 days after deployment and no earlier than `earliestClose`.
+`P42_MAX_SOLUTION_BYTES=0`. A fresh ceremony requires
+`P42_VERIFIER_IMAGE_DIGEST` to be exactly the bare canonical
+`sha256:<64 lowercase hex>` form. It rejects tags, registry-qualified strings,
+and local placeholders such as `sha256:local-dev`. The supplied
+`P42_VERIFIER_IMAGE_HASH` must equal
+`keccak256(utf8(P42_VERIFIER_IMAGE_DIGEST))` before the script reserves a
+manifest or deploys a contract. The manifest records the digest and
+`verifierImageHashAlgorithm: "keccak256-utf8/v1"` alongside the on-chain hash.
+This cryptographically binds the stated digest to the bytes32 anchor; it does
+not assert that an image is published, reviewed, or fundable. Image and
+admission hashes must be nonzero immutable pins. `earliestClose` must be at
+least 30 days after deployment; `closeBy` must be at least 180 days after
+deployment and no earlier than `earliestClose`.
 
 The script writes `deployments/base-sepolia/p42-prizes.json` with:
 
