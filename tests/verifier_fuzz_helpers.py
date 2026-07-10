@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import subprocess
 from types import ModuleType
 from typing import Any
 
@@ -46,3 +48,36 @@ def duplicate_first_key(fixture: dict[str, Any]) -> bytes:
     assert encoded.startswith("{")
     return ("{" + duplicate + encoded[1:]).encode()
 
+
+def duplicate_nested_key(slug: str, fixture: dict[str, Any]) -> bytes:
+    nested_fields = {
+        "arithmetic-kakeya": "relations",
+        "pnt-sparse-mertens-construction": "support",
+    }
+    field = nested_fields.get(slug)
+    if field is not None:
+        entries = fixture[field]
+        assert isinstance(entries, list) and entries and isinstance(entries[0], dict)
+        encoded_entry = json.dumps(entries[0], separators=(",", ":"))
+        key = next(iter(entries[0]))
+        duplicate = "{" + json.dumps(key) + ":null," + encoded_entry[1:]
+        encoded = json.dumps(fixture, separators=(",", ":"))
+        return encoded.replace(encoded_entry, duplicate, 1).encode()
+
+    wrapper = {"nested": {"sentinel": 1}, **fixture}
+    encoded = json.dumps(wrapper, separators=(",", ":"))
+    return encoded.replace('"nested":{"sentinel":1}', '"nested":{"sentinel":1,"sentinel":2}', 1).encode()
+
+
+def run_verifier_cli(slug: str, solution: Path, timeout: float = 5.0) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(ROOT / "src")
+    return subprocess.run(
+        ["python3", "verifier/verify.py", "--solution", str(solution)],
+        cwd=ROOT / "problems" / slug,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+    )
