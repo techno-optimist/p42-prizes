@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 
@@ -9,7 +10,9 @@ import pytest
 
 from attestation_helpers import AttestationFixture, attach_signatures
 from p42_prizes.operational_controls import (
+    ARTIFACT_ENVELOPE_SCHEMA_VERSION,
     OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+    REPORT_SIGNER_ROLE,
     REQUIRED_CONTROLS,
     SESSION_CONTROLS,
     OperationalControlsError,
@@ -20,6 +23,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
 SIGNED_AT = "2026-07-08T17:30:00Z"
+REPORT_SIGNED_AT = "2026-07-08T17:45:00Z"
 
 
 def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
@@ -27,6 +31,9 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
     release = fixture.release_binding("base-mainnet")
     owner = fixture.identity(
         "operations-owner", "Avery Nakamura", "operational-control-owner"
+    )
+    report_signer = fixture.identity(
+        "operations-report-signer", "Morgan Okafor", REPORT_SIGNER_ROLE
     )
     release_hash = sha256_bytes(canonical_json(release).encode("utf-8"))
     contracts = sorted(contract["address"].casefold() for contract in release["contracts"])
@@ -47,20 +54,30 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
                 "contract_addresses": contracts,
                 "problem_id": "erdos-minimum-overlap",
             }
+        command = f"p42-ops-test --control {name} --release {release['git_commit']}"
+        executed_at = f"2026-07-08T16:{index:02d}:00Z"
+        envelope = {
+            "schema_version": ARTIFACT_ENVELOPE_SCHEMA_VERSION,
+            "control": name,
+            "release_binding_hash": release_hash,
+            "command_hash": sha256_bytes(command.encode("utf-8")),
+            "executed_at_utc": executed_at,
+            "result": "passed",
+        }
         control = {
             "control": name,
             "status": "passed",
-            "command": f"p42-ops-test --control {name} --release {release['git_commit']}",
-            "executed_at_utc": f"2026-07-08T16:{index:02d}:00Z",
+            "command": command,
+            "executed_at_utc": executed_at,
             "environment": environment,
             "test_artifact": fixture.artifact(
                 f"operational-{name}-test",
-                content={"control": name, "test_suite": f"ops/{name}"},
+                content={**envelope, "artifact_type": "test"},
                 created_at_utc=f"2026-07-08T16:{index:02d}:00Z",
             ),
             "output_artifact": fixture.artifact(
                 f"operational-{name}-output",
-                content={"control": name, "passed": True, "deployment": release_hash},
+                content={**envelope, "artifact_type": "output"},
                 created_at_utc=f"2026-07-08T16:{index:02d}:00Z",
             ),
             "owner": copy.deepcopy(owner),
@@ -74,10 +91,15 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
         "window_completed_at_utc": "2026-07-08T18:00:00Z",
         "release_binding": release,
         "controls": controls,
+        "report_signer": report_signer,
     }
+    _resign_report(report)
     registry = fixture.trust_registry(
         OPERATIONAL_CONTROLS_SCHEMA_VERSION,
-        [("operational-control-owner", owner, SIGNED_AT)],
+        [
+            ("operational-control-owner", owner, SIGNED_AT),
+            (REPORT_SIGNER_ROLE, report_signer, REPORT_SIGNED_AT),
+        ],
     )
     return report, fixture, registry
 
@@ -93,6 +115,33 @@ def _resign(control: dict) -> None:
         signers=[("operational-control-owner", control["owner"], SIGNED_AT)],
         singular=True,
     )
+
+
+def _report_claim(report: dict) -> dict:
+    release_hash = sha256_bytes(canonical_json(report["release_binding"]).encode("utf-8"))
+    return {
+        "schema_version": OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        "evidence_id": report["evidence_id"],
+        "window_started_at_utc": report["window_started_at_utc"],
+        "window_completed_at_utc": report["window_completed_at_utc"],
+        "release_binding_hash": release_hash,
+        "ordered_control_hashes": [control["control_hash"] for control in report["controls"]],
+        "final_gate_claim": "passed",
+    }
+
+
+def _resign_report(report: dict) -> None:
+    claim = _report_claim(report)
+    attach_signatures(
+        claim,
+        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        hash_field="operational_controls_hash",
+        signatures_field="report_signature",
+        signers=[(REPORT_SIGNER_ROLE, report["report_signer"], REPORT_SIGNED_AT)],
+        singular=True,
+    )
+    report["operational_controls_hash"] = claim["operational_controls_hash"]
+    report["report_signature"] = claim["report_signature"]
 
 
 def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict:
@@ -111,6 +160,7 @@ def test_validates_exact_controls_artifacts_release_and_signatures(tmp_path: Pat
     jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
     assert {item["control"] for item in normalized["controls"]} == REQUIRED_CONTROLS
     assert normalized["operational_controls_hash"].startswith("sha256:")
+    assert normalized["final_gate_claim"] == "passed"
 
 
 @pytest.mark.parametrize("mode", ["missing", "duplicate", "unexpected"])
@@ -258,3 +308,103 @@ def test_default_production_registry_cannot_claim_gate_passed(tmp_path: Path) ->
         normalize_operational_controls(
             report, artifact_root=fixture.root, chain_reader=fixture.chain_reader
         )
+
+
+def test_rejects_different_problem_ids_across_session_controls(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = next(item for item in report["controls"] if item["control"] == "session_revocation")
+    control["environment"]["session_domain"]["problem_id"] = "different-problem"
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="one identical problem_id"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("signed_at", ["2026-07-08T15:59:59Z", "2026-07-08T18:00:01Z"])
+def test_rejects_owner_signature_outside_execution_to_completion_interval(
+    tmp_path: Path, signed_at: str
+) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    attach_signatures(
+        control,
+        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        hash_field="control_hash",
+        signatures_field="owner_signature",
+        signers=[("operational-control-owner", control["owner"], signed_at)],
+        singular=True,
+    )
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="on/after|not be after report completion"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("attack", ["relabel", "reorder", "gate_claim"])
+def test_report_signature_rejects_packet_relabel_reorder_and_gate_claim_tampering(
+    tmp_path: Path, attack: str
+) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    if attack == "relabel":
+        report["evidence_id"] = "relabeled-evidence"
+    elif attack == "reorder":
+        report["controls"][0], report["controls"][1] = report["controls"][1], report["controls"][0]
+    else:
+        report["final_gate_claim"] = "passed"
+    with pytest.raises(
+        OperationalControlsError,
+        match="supplied operational_controls_hash|unexpected",
+    ):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("placeholder", ["run-TODO-check", "check_tbd_release", "pending-output"])
+def test_rejects_placeholder_substrings_in_commands(tmp_path: Path, placeholder: str) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    control["command"] = placeholder
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="placeholder text"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("control", "session_expiry"),
+        ("release_binding_hash", "sha256:" + "0" * 64),
+        ("command_hash", "sha256:" + "1" * 64),
+        ("executed_at_utc", "2026-07-08T16:59:00Z"),
+        ("result", "pending"),
+        ("artifact_type", "arbitrary-bytes"),
+    ],
+)
+def test_rejects_artifact_envelopes_that_do_not_bind_control_execution_and_pass(
+    tmp_path: Path, field: str, bad_value: str
+) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    reference = control["output_artifact"]
+    path = fixture.root / reference["local_path"]
+    envelope = json.loads(path.read_text())
+    envelope[field] = bad_value
+    encoded = canonical_json(envelope).encode("utf-8")
+    path.write_bytes(encoded)
+    reference["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="semantic envelope"):
+        normalize(report, fixture, registry)
+
+
+def test_hash_is_optional_input_but_must_match_and_gate_claim_is_output_only(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    expected_hash = report.pop("operational_controls_hash")
+    normalized = normalize(report, fixture, registry)
+    assert normalized["operational_controls_hash"] == expected_hash
+    assert normalized["final_gate_claim"] == "passed"
+
+    report, fixture, registry = valid_report(tmp_path / "mismatch")
+    report["operational_controls_hash"] = "sha256:" + "f" * 64
+    with pytest.raises(OperationalControlsError, match="supplied operational_controls_hash"):
+        normalize(report, fixture, registry)

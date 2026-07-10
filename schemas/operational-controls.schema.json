@@ -3,7 +3,7 @@
   "$id": "https://p42.xyz/schemas/operational-controls-v1.json",
   "title": "P42 Gate 2 Operational Controls Evidence v1",
   "type": "object",
-  "required": ["schema_version", "evidence_id", "window_started_at_utc", "window_completed_at_utc", "release_binding", "controls", "operational_controls_hash"],
+  "required": ["schema_version", "evidence_id", "window_started_at_utc", "window_completed_at_utc", "release_binding", "controls", "report_signer", "final_gate_claim", "operational_controls_hash", "report_signature"],
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "p42-operational-controls/v1" },
@@ -17,7 +17,10 @@
       "maxItems": 11,
       "items": { "$ref": "#/$defs/control" }
     },
-    "operational_controls_hash": { "$ref": "#/$defs/hash" }
+    "report_signer": { "$ref": "#/$defs/reportIdentity" },
+    "final_gate_claim": { "const": "passed" },
+    "operational_controls_hash": { "$ref": "#/$defs/hash" },
+    "report_signature": { "$ref": "#/$defs/reportSignature" }
   },
   "$defs": {
     "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
@@ -47,6 +50,19 @@
         "identity_evidence": { "$ref": "#/$defs/artifact" }
       }
     },
+    "reportIdentity": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "operational-controls-report-signer" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
     "signature": {
       "type": "object",
       "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
@@ -54,6 +70,19 @@
       "properties": {
         "algorithm": { "const": "ed25519" },
         "signer_role": { "const": "operational-control-owner" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    },
+    "reportSignature": {
+      "type": "object",
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "const": "operational-controls-report-signer" },
         "public_key": { "$ref": "#/$defs/publicKey" },
         "signed_hash": { "$ref": "#/$defs/hash" },
         "signed_at_utc": { "type": "string", "format": "date-time" },
