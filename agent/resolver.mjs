@@ -27,7 +27,11 @@ import {
   validateRegistryBinding,
   validateOperatorExecutionMode,
 } from "./lib.mjs";
-import { validateManifestEvidence } from "./indexer.mjs";
+import {
+  manifestProblemContracts,
+  manifestProblemForRegistryId,
+  validateManifestEvidence,
+} from "./indexer.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
@@ -1371,13 +1375,11 @@ async function buildContext(argv) {
   const abi = (name) => JSON.parse(
     readFileSync(resolve(HERE, "..", "contracts", "artifacts", "src", `${name}.sol`, `${name}.json`), "utf8"),
   ).abi;
-  const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
-  const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
+  const manifestProblem = manifestProblemForRegistryId(manifest, registryProblemId);
+  const boardContracts = manifestProblemContracts(manifest, manifestProblem);
+  const subs = new ethers.Contract(boardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
+  const chal = new ethers.Contract(boardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
   const registry = new ethers.Contract(manifest.contracts.registry.address, abi("P42ProblemRegistry"), wallet);
-  const manifestProblem = manifest.problems?.find((entry) => String(entry?.problemId) === registryProblemId);
-  if (!manifestProblem) {
-    throw new Error(`--registry-problem-id ${registryProblemId} is absent from the deployment manifest`);
-  }
   if (String(problemId) !== manifestProblem.problemSlug) {
     throw new Error("--problem-id must equal the deployment manifest problemSlug for --registry-problem-id");
   }

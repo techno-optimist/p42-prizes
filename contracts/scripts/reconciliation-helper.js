@@ -3,8 +3,12 @@ import { dirname } from "node:path";
 
 import {
   buildCheckpoint,
+  buildMultiBoardCheckpoint,
   collectFinalizedReconciliation,
+  collectMultiBoardFinalizedReconciliation,
+  instantiateBoardContracts,
   instantiateContracts,
+  isMultiBoardManifest,
   loadContractArtifacts,
   stableStringify,
   validateManifestEvidence,
@@ -41,35 +45,70 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
   }
 
   const artifacts = loadContractArtifacts();
-  const contracts = instantiateContracts(ethers.provider, manifest.data, artifacts);
-  const { anchor, scan, replay, snapshot, checks } = await collectFinalizedReconciliation({
-    provider: ethers.provider,
-    contracts,
-    artifacts,
-    manifest: manifest.data,
-    fromBlock,
-    toBlock,
-    policy,
-  });
-  const checkpoint = buildCheckpoint({
-    binding,
-    finalityPolicy: policy,
-    fromBlock,
-    toBlock,
-    toBlockHash: anchor.hash,
-    events: scan.events,
-    replay,
-    snapshot,
-    checks,
-  });
+  const multiBoard = isMultiBoardManifest(manifest.data);
+  let checkpoint;
+  if (multiBoard) {
+    const contractsByProblem = manifest.data.problems.map((problem) => ({
+      problem,
+      contracts: instantiateBoardContracts(ethers.provider, manifest.data, problem, artifacts),
+    }));
+    const { anchor, boards } = await collectMultiBoardFinalizedReconciliation({
+      provider: ethers.provider,
+      contractsByProblem,
+      artifacts,
+      manifest: manifest.data,
+      fromBlock,
+      toBlock,
+      policy,
+    });
+    checkpoint = buildMultiBoardCheckpoint({
+      binding,
+      finalityPolicy: policy,
+      fromBlock,
+      toBlock,
+      toBlockHash: anchor.hash,
+      boards,
+    });
+  } else {
+    const contracts = instantiateContracts(ethers.provider, manifest.data, artifacts);
+    const { anchor, scan, replay, snapshot, checks } = await collectFinalizedReconciliation({
+      provider: ethers.provider,
+      contracts,
+      artifacts,
+      manifest: manifest.data,
+      fromBlock,
+      toBlock,
+      policy,
+    });
+    checkpoint = buildCheckpoint({
+      binding,
+      finalityPolicy: policy,
+      fromBlock,
+      toBlock,
+      toBlockHash: anchor.hash,
+      events: scan.events,
+      replay,
+      snapshot,
+      checks,
+    });
+  }
 
   const report = {
     ...checkpoint,
-    schema: "p42-prizes/reconciliation-report/v2",
+    schema: multiBoard ? "p42-prizes/reconciliation-report/v3" : "p42-prizes/reconciliation-report/v2",
     manifestPath: manifest.path,
-    contracts: Object.fromEntries(
-      Object.entries(manifest.data.contracts).map(([key, entry]) => [key, entry.address])
-    ),
+    contracts: multiBoard
+      ? {
+        timelock: manifest.data.contracts.timelock.address,
+        registry: manifest.data.contracts.registry.address,
+        boards: Object.fromEntries(manifest.data.problems.map((problem) => [
+          problem.problemId,
+          Object.fromEntries(Object.entries(problem.contracts).map(([key, entry]) => [key, entry.address])),
+        ])),
+      }
+      : Object.fromEntries(
+        Object.entries(manifest.data.contracts).map(([key, entry]) => [key, entry.address])
+      ),
   };
 
   if (outputPath) {

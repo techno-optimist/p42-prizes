@@ -11,16 +11,40 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { recoverRevealCalldata } from "./lib.mjs";
+import { atomsFromScore, chainScoreAtoms, recoverRevealCalldata } from "./lib.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
-const DEPLOYMENT_MANIFEST_SCHEMA = JSON.parse(
-  readFileSync(`${REPO_ROOT}/schemas/deployment-manifest.schema.json`, "utf8")
+export const MANIFEST_SCHEMA_V1 = "p42-prizes/deployment-manifest/v1";
+export const MANIFEST_SCHEMA_V2 = "p42-prizes/deployment-manifest/v2";
+const DEPLOYMENT_MANIFEST_SCHEMAS = Object.freeze({
+  [MANIFEST_SCHEMA_V1]: JSON.parse(
+    readFileSync(`${REPO_ROOT}/schemas/deployment-manifest.schema.json`, "utf8")
+  ),
+  [MANIFEST_SCHEMA_V2]: JSON.parse(
+    readFileSync(`${REPO_ROOT}/schemas/deployment-manifest-v2.schema.json`, "utf8")
+  ),
+});
+const MULTIBOARD_CHECKPOINT_SCHEMA = JSON.parse(
+  readFileSync(`${REPO_ROOT}/schemas/indexer-checkpoint-v2.schema.json`, "utf8")
 );
 
 export const CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
+export const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
+export const SHARED_CONTRACT_KEYS = ["timelock", "registry"];
 const EVIDENCE_CONTRACT_KEYS = ["timelock", ...CONTRACT_KEYS];
+const BOARD_SETUP_LABEL_SUFFIXES = Object.freeze([
+  "pool.setLedger",
+  "ledger.setCreditRecorder",
+  "pool.setSubmissionManager",
+  "submissions.setChallengeManager",
+  "registry.register",
+  "pool.setRegistry",
+  "registry.freeze",
+  "timelock.setPauseTarget.ledger",
+  "timelock.setPauseTarget.submissions",
+  "timelock.setPauseTarget.challenges",
+]);
 
 export const EVENT_CATALOG = Object.freeze({
   pool: [
@@ -106,6 +130,7 @@ const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
 const VERIFIER_IMAGE_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v1";
 const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
+const ADMISSION_MATRIX_HASH_ALGORITHM = "keccak256-utf8/v1";
 const PROBLEM_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const VERIFIER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 
@@ -267,6 +292,58 @@ function validateVerifierSourceAnchor(problem, label) {
   }
 }
 
+function validateAdmissionMatrixAnchor(problem, label) {
+  const digest = problem?.admissionMatrixDigest;
+  if (typeof digest !== "string" || !VERIFIER_IMAGE_DIGEST_RE.test(digest)) {
+    throw new Error(`${label}.admissionMatrixDigest must be a canonical admission-matrix sha256 digest`);
+  }
+  if (problem.admissionMatrixHashAlgorithm !== ADMISSION_MATRIX_HASH_ALGORITHM) {
+    throw new Error(`${label}.admissionMatrixHashAlgorithm must equal ${ADMISSION_MATRIX_HASH_ALGORITHM}`);
+  }
+  if (typeof problem.admissionMatrixURI !== "string" || !/^(?:ipfs|ar):\/\/\S+$/.test(problem.admissionMatrixURI)) {
+    throw new Error(`${label}.admissionMatrixURI must use an ipfs:// or ar:// durable URI`);
+  }
+  const expectedHash = ethers.keccak256(ethers.toUtf8Bytes(digest));
+  if (String(problem.admissionMatrixHash).toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new Error(`${label}.admissionMatrixHash must equal keccak256(utf8(admissionMatrixDigest))`);
+  }
+}
+
+function validateCertifiedObjective(problem, label) {
+  const certified = problem?.certifiedObjective;
+  if (!certified || typeof certified !== "object" || Array.isArray(certified)) {
+    throw new Error(`${label}.certifiedObjective must be an object`);
+  }
+  const expectedKeys = new Set(["seedBest", "direction", "minImprovement"]);
+  const missing = [...expectedKeys].filter((key) => !Object.hasOwn(certified, key));
+  const extra = Object.keys(certified).filter((key) => !expectedKeys.has(key));
+  if (missing.length || extra.length) {
+    throw new Error(`${label}.certifiedObjective must contain exactly seedBest, direction, and minImprovement`);
+  }
+  for (const key of ["seedBest", "minImprovement"]) {
+    if (typeof certified[key] !== "string" || certified[key].trim() === "" || certified[key].trim() !== certified[key]) {
+      throw new Error(`${label}.certifiedObjective.${key} must be a non-empty trimmed rational string`);
+    }
+  }
+  if (certified.direction !== "minimize" && certified.direction !== "maximize") {
+    throw new Error(`${label}.certifiedObjective.direction must be minimize or maximize`);
+  }
+  let expectedSeedAtoms;
+  let expectedMinImprovementAtoms;
+  try {
+    expectedSeedAtoms = chainScoreAtoms(certified.seedBest, certified.direction);
+    expectedMinImprovementAtoms = atomsFromScore(certified.minImprovement);
+  } catch (error) {
+    throw new Error(`${label}.certifiedObjective is not a valid rational objective: ${error.message}`);
+  }
+  if (expectedSeedAtoms !== BigInt(problem.seedScoreAtoms)) {
+    throw new Error(`${label}.seedScoreAtoms does not match certifiedObjective`);
+  }
+  if (expectedMinImprovementAtoms !== BigInt(problem.minImprovementAtoms)) {
+    throw new Error(`${label}.minImprovementAtoms does not match certifiedObjective`);
+  }
+}
+
 function requireInteger(value, label, minimum = 0) {
   if (!Number.isSafeInteger(value) || value < minimum) {
     throw new Error(`${label} must be an integer >= ${minimum}`);
@@ -397,7 +474,9 @@ function validateSchemaValue(value, schema, rootSchema, path) {
 }
 
 function validateDeploymentManifestSchema(manifest) {
-  validateSchemaValue(manifest, DEPLOYMENT_MANIFEST_SCHEMA, DEPLOYMENT_MANIFEST_SCHEMA, "manifest");
+  const schema = DEPLOYMENT_MANIFEST_SCHEMAS[manifest?.schema];
+  if (!schema) throw new Error(`Unsupported deployment manifest schema: ${String(manifest?.schema)}`);
+  validateSchemaValue(manifest, schema, schema, "manifest");
 }
 
 function rejectKnownStaleRelease(manifest) {
@@ -410,6 +489,106 @@ function rejectKnownStaleRelease(manifest) {
       throw new Error(`stale Base Sepolia manifest is invalid for this source: ${guard.reason}`);
     }
   }
+}
+
+export function isMultiBoardManifest(manifest) {
+  return manifest?.schema === MANIFEST_SCHEMA_V2;
+}
+
+export function manifestProblemForRegistryId(manifest, registryProblemId) {
+  const problemId = String(registryProblemId);
+  const matches = (manifest?.problems ?? []).filter((problem) => String(problem?.problemId) === problemId);
+  if (matches.length !== 1) {
+    throw new Error(`deployment manifest must contain exactly one problem with registry id ${problemId}`);
+  }
+  return matches[0];
+}
+
+export function manifestProblemContracts(manifest, problem) {
+  if (!problem || typeof problem !== "object") throw new Error("deployment manifest problem is missing");
+  if (isMultiBoardManifest(manifest)) {
+    if (!problem.contracts || typeof problem.contracts !== "object") {
+      throw new Error(`problem ${String(problem.problemId)} is missing per-board deployment contracts`);
+    }
+    return problem.contracts;
+  }
+  if (manifest?.schema !== MANIFEST_SCHEMA_V1) {
+    throw new Error(`unsupported deployment manifest schema: ${String(manifest?.schema)}`);
+  }
+  return Object.fromEntries(BOARD_CONTRACT_KEYS.map((key) => [key, manifest.contracts?.[key]]));
+}
+
+function boardManifestView(manifest, problem) {
+  if (!isMultiBoardManifest(manifest)) return manifest;
+  const contracts = manifestProblemContracts(manifest, problem);
+  return {
+    status: manifest.status,
+    governance: manifest.governance,
+    roles: manifest.roles,
+    parameters: {
+      ...manifest.parameters,
+      fundingCapWei: problem.fundingCapWei,
+      onchainDa: problem.onchainDa,
+      maxSolutionBytes: problem.maxSolutionBytes,
+      earliestCloseTimestamp: problem.earliestCloseTimestamp,
+      closeByTimestamp: problem.closeByTimestamp,
+    },
+    contracts: {
+      timelock: manifest.contracts.timelock,
+      registry: manifest.contracts.registry,
+      ...contracts,
+    },
+    problems: [problem],
+  };
+}
+
+function boardReplayConfig(manifest, problem) {
+  const view = boardManifestView(manifest, problem);
+  return {
+    seedScoreAtoms: problem.seedScoreAtoms,
+    minImprovementAtoms: problem.minImprovementAtoms,
+    challengeWindowSeconds: view.parameters.challengeWindowSeconds,
+    treasury: view.roles.treasury,
+    problemCount: manifest.problems.length,
+    fundingCapWei: view.parameters.fundingCapWei,
+    earliestCloseTimestamp: view.parameters.earliestCloseTimestamp,
+    closeByTimestamp: view.parameters.closeByTimestamp,
+  };
+}
+
+function manifestContractEvidenceEntries(manifest) {
+  if (isMultiBoardManifest(manifest)) {
+    return [
+      ...SHARED_CONTRACT_KEYS.map((key) => ({
+        key,
+        entry: manifest.contracts?.[key],
+        path: `contracts.${key}`,
+      })),
+      ...(manifest.problems ?? []).flatMap((problem, index) =>
+        BOARD_CONTRACT_KEYS.map((key) => ({
+          key,
+          entry: problem?.contracts?.[key],
+          path: `problems[${index}].contracts.${key}`,
+          problem,
+          index,
+        }))
+      ),
+    ];
+  }
+  return EVIDENCE_CONTRACT_KEYS.map((key) => ({
+    key,
+    entry: manifest.contracts?.[key],
+    path: `contracts.${key}`,
+  }));
+}
+
+function problemContractAddressField(key) {
+  return {
+    pool: "pool",
+    ledger: "ledger",
+    submissions: "submissionManager",
+    challenges: "challengeManager",
+  }[key];
 }
 
 export function validateFinalityPolicy(policy) {
@@ -432,10 +611,147 @@ export function validateFinalityPolicy(policy) {
   return policy;
 }
 
+function requireCanonicalUint(value, label, { positive = false } = {}) {
+  const pattern = positive ? /^[1-9][0-9]*$/ : /^(0|[1-9][0-9]*)$/;
+  if (typeof value !== "string" || !pattern.test(value)) {
+    throw new Error(`${label} must be a canonical ${positive ? "positive" : "non-negative"} integer string`);
+  }
+  return BigInt(value);
+}
+
+function validateContractEvidenceEntry({ key, entry, path, manifest }) {
+  if (!entry) throw new Error(`Manifest missing ${path}`);
+  if (entry.name !== CONTRACT_NAMES[key]) {
+    throw new Error(`${path}.name must be ${CONTRACT_NAMES[key]}`);
+  }
+  requireHex(entry.address, 20, `${path}.address`);
+  requireHex(entry.deployedCodeHash, 32, `${path}.deployedCodeHash`);
+  requireHex(entry.runtimeCodeHash, 32, `${path}.runtimeCodeHash`);
+  requireHex(entry.abiHash, 32, `${path}.abiHash`);
+  requireHex(entry.constructorArgsHash, 32, `${path}.constructorArgsHash`);
+  requireInteger(entry.blockNumber, `${path}.blockNumber`, 0);
+  if (manifest.status === "example-not-deployed") return;
+  if (manifest.deploymentCommit === "0".repeat(40)) {
+    throw new Error("deploymentCommit cannot be zero in a deployment evidence manifest");
+  }
+  if (entry.address.toLowerCase() === ZERO_ADDRESS) {
+    throw new Error(`${path}.address is zero in a deployment evidence manifest`);
+  }
+  if (entry.deployedCodeHash.toLowerCase() === ZERO_HASH) {
+    throw new Error(`${path}.deployedCodeHash is zero in a deployment evidence manifest`);
+  }
+  if (entry.abiHash.toLowerCase() === ZERO_HASH) {
+    throw new Error(`${path}.abiHash is zero in a deployment evidence manifest`);
+  }
+  if (entry.runtimeCodeHash.toLowerCase() === ZERO_HASH) {
+    throw new Error(`${path}.runtimeCodeHash is zero in a deployment evidence manifest`);
+  }
+  if (entry.constructorArgsHash.toLowerCase() === ZERO_HASH) {
+    throw new Error(`${path}.constructorArgsHash is zero in a deployment evidence manifest`);
+  }
+  if (entry.runtimeCodeHash.toLowerCase() !== entry.deployedCodeHash.toLowerCase()) {
+    throw new Error(`${path} runtimeCodeHash/deployedCodeHash mismatch`);
+  }
+  if (entry.txHash.toLowerCase() === ZERO_HASH || entry.blockNumber === 0) {
+    throw new Error(`${path} is missing real deployment transaction evidence`);
+  }
+}
+
+function validateMultiBoardTopology(manifest) {
+  const expectedOperationCount = manifest.problems.length * 10;
+  if (manifest.setupTransactions.length !== expectedOperationCount) {
+    throw new Error(
+      `multi-board manifest requires exactly 10 governance setup operations per problem (${expectedOperationCount} total)`
+    );
+  }
+  const operationLabels = new Set();
+  for (const [index, operation] of manifest.setupTransactions.entries()) {
+    if (operation.sequence !== index + 1) {
+      throw new Error(`setupTransactions[${index}].sequence must be contiguous from one`);
+    }
+    if (operationLabels.has(operation.label)) {
+      throw new Error(`setupTransactions[${index}].label is duplicated`);
+    }
+    operationLabels.add(operation.label);
+  }
+
+  const problemIds = new Set();
+  const slugs = new Set();
+  const addresses = new Map();
+  for (const descriptor of manifestContractEvidenceEntries(manifest)) {
+    const address = String(descriptor.entry?.address ?? "").toLowerCase();
+    if (addresses.has(address)) {
+      throw new Error(`${descriptor.path}.address reuses deployment address from ${addresses.get(address)}`);
+    }
+    addresses.set(address, descriptor.path);
+  }
+
+  for (const [index, problem] of manifest.problems.entries()) {
+    const id = requireCanonicalUint(problem.problemId, `problems[${index}].problemId`, { positive: true }).toString();
+    if (id !== String(index + 1)) {
+      throw new Error(`problems[${index}].problemId must equal deterministic registry position ${index + 1}`);
+    }
+    if (problemIds.has(id)) throw new Error(`problems[${index}].problemId duplicates registry id ${id}`);
+    problemIds.add(id);
+    if (slugs.has(problem.problemSlug)) throw new Error(`problems[${index}].problemSlug duplicates ${problem.problemSlug}`);
+    slugs.add(problem.problemSlug);
+
+    const contracts = manifestProblemContracts(manifest, problem);
+    for (const key of BOARD_CONTRACT_KEYS) {
+      const field = problemContractAddressField(key);
+      if (String(problem[field]).toLowerCase() !== String(contracts[key]?.address).toLowerCase()) {
+        throw new Error(`problems[${index}].${field} must match problems[${index}].contracts.${key}.address`);
+      }
+    }
+
+    const fundingCap = requireCanonicalUint(problem.fundingCapWei, `problems[${index}].fundingCapWei`, { positive: true });
+    const maxSolutionBytes = requireCanonicalUint(problem.maxSolutionBytes, `problems[${index}].maxSolutionBytes`);
+    const earliestClose = requireCanonicalUint(problem.earliestCloseTimestamp, `problems[${index}].earliestCloseTimestamp`, { positive: true });
+    const closeBy = requireCanonicalUint(problem.closeByTimestamp, `problems[${index}].closeByTimestamp`, { positive: true });
+    if (fundingCap <= 0n || closeBy < earliestClose) {
+      throw new Error(`problems[${index}] has invalid funding or close timestamps`);
+    }
+    if (problem.onchainDa === true && (maxSolutionBytes === 0n || maxSolutionBytes > 1_048_576n)) {
+      throw new Error(`problems[${index}].maxSolutionBytes must be 1..1048576 for on-chain DA`);
+    }
+    if (problem.onchainDa === false && maxSolutionBytes !== 0n) {
+      throw new Error(`problems[${index}].maxSolutionBytes must be 0 when onchainDa is false`);
+    }
+
+    for (const [operationOffset, suffix] of BOARD_SETUP_LABEL_SUFFIXES.entries()) {
+      const operation = manifest.setupTransactions[index * BOARD_SETUP_LABEL_SUFFIXES.length + operationOffset];
+      const expectedLabel = `board/${id}.${suffix}`;
+      if (operation?.label !== expectedLabel) {
+        throw new Error(
+          `setupTransactions[${index * BOARD_SETUP_LABEL_SUFFIXES.length + operationOffset}].label ` +
+          `must equal ${expectedLabel}`
+        );
+      }
+    }
+  }
+
+  const sourceBoards = manifest.sourceVerification?.contracts?.boards;
+  if (!Array.isArray(sourceBoards) || sourceBoards.length !== manifest.problems.length) {
+    throw new Error("sourceVerification.contracts.boards must contain exactly one entry per problem");
+  }
+  const sourceIds = new Set();
+  for (const [index, source] of sourceBoards.entries()) {
+    const id = requireCanonicalUint(source?.problemId, `sourceVerification.contracts.boards[${index}].problemId`, { positive: true }).toString();
+    if (sourceIds.has(id)) throw new Error(`sourceVerification.contracts.boards[${index}].problemId is duplicated`);
+    if (id !== String(manifest.problems[index].problemId)) {
+      throw new Error(`sourceVerification.contracts.boards[${index}].problemId must match problems[${index}].problemId`);
+    }
+    sourceIds.add(id);
+  }
+  for (const id of problemIds) {
+    if (!sourceIds.has(id)) throw new Error(`sourceVerification.contracts.boards is missing registry id ${id}`);
+  }
+}
+
 export function validateManifestEvidence(manifest) {
   rejectKnownStaleRelease(manifest);
   validateDeploymentManifestSchema(manifest);
-  if (manifest?.schema !== "p42-prizes/deployment-manifest/v1") {
+  if (![MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2].includes(manifest?.schema)) {
     throw new Error(`Unsupported deployment manifest schema: ${String(manifest?.schema)}`);
   }
   if (!/^[0-9a-fA-F]{40}$/.test(String(manifest.deploymentCommit))) {
@@ -446,45 +762,9 @@ export function validateManifestEvidence(manifest) {
   validateFinalityPolicy(manifest.indexer?.finalityPolicy);
   requireHex(manifest.deploymentConfigHash, 32, "deploymentConfigHash");
 
-  for (const key of EVIDENCE_CONTRACT_KEYS) {
-    const entry = manifest.contracts?.[key];
-    if (!entry) throw new Error(`Manifest missing contracts.${key}`);
-    if (entry.name !== CONTRACT_NAMES[key]) {
-      throw new Error(`contracts.${key}.name must be ${CONTRACT_NAMES[key]}`);
-    }
-    requireHex(entry.address, 20, `contracts.${key}.address`);
-    requireHex(entry.deployedCodeHash, 32, `contracts.${key}.deployedCodeHash`);
-    requireHex(entry.runtimeCodeHash, 32, `contracts.${key}.runtimeCodeHash`);
-    requireHex(entry.abiHash, 32, `contracts.${key}.abiHash`);
-    requireHex(entry.constructorArgsHash, 32, `contracts.${key}.constructorArgsHash`);
-    requireInteger(entry.blockNumber, `contracts.${key}.blockNumber`, 0);
-    if (manifest.status !== "example-not-deployed") {
-      if (manifest.deploymentCommit === "0".repeat(40)) {
-        throw new Error("deploymentCommit cannot be zero in a deployment evidence manifest");
-      }
-      if (entry.address.toLowerCase() === ZERO_ADDRESS) {
-        throw new Error(`contracts.${key}.address is zero in a deployment evidence manifest`);
-      }
-      if (entry.deployedCodeHash.toLowerCase() === ZERO_HASH) {
-        throw new Error(`contracts.${key}.deployedCodeHash is zero in a deployment evidence manifest`);
-      }
-      if (entry.abiHash.toLowerCase() === ZERO_HASH) {
-        throw new Error(`contracts.${key}.abiHash is zero in a deployment evidence manifest`);
-      }
-      if (entry.runtimeCodeHash.toLowerCase() === ZERO_HASH) {
-        throw new Error(`contracts.${key}.runtimeCodeHash is zero in a deployment evidence manifest`);
-      }
-      if (entry.constructorArgsHash.toLowerCase() === ZERO_HASH) {
-        throw new Error(`contracts.${key}.constructorArgsHash is zero in a deployment evidence manifest`);
-      }
-      if (entry.runtimeCodeHash.toLowerCase() !== entry.deployedCodeHash.toLowerCase()) {
-        throw new Error(`contracts.${key} runtimeCodeHash/deployedCodeHash mismatch`);
-      }
-      if (entry.txHash.toLowerCase() === ZERO_HASH || entry.blockNumber === 0) {
-        throw new Error(`contracts.${key} is missing real deployment transaction evidence`);
-      }
-    }
-  }
+  const contractEntries = manifestContractEvidenceEntries(manifest);
+  for (const descriptor of contractEntries) validateContractEvidenceEntry({ ...descriptor, manifest });
+  if (isMultiBoardManifest(manifest)) validateMultiBoardTopology(manifest);
 
   if (manifest.status !== "example-not-deployed") {
     for (const [role, address] of Object.entries(manifest.roles)) {
@@ -516,25 +796,43 @@ export function validateManifestEvidence(manifest) {
   for (const [index, problem] of manifest.problems.entries()) {
     validateVerifierImageAnchor(problem, `problems[${index}]`);
     validateVerifierSourceAnchor(problem, `problems[${index}]`);
+    if (isMultiBoardManifest(manifest)) {
+      validateAdmissionMatrixAnchor(problem, `problems[${index}]`);
+      validateCertifiedObjective(problem, `problems[${index}]`);
+    }
+    if (problem.seedScoreAtoms === undefined) {
+      throw new Error(`Manifest missing problems[${index}].seedScoreAtoms; frontier seed is not bound`);
+    }
   }
 
-  for (const field of [
-    "onchainDa",
-    "maxSolutionBytes",
-    "fundingCapWei",
-    "earliestCloseTimestamp",
-    "closeByTimestamp",
-  ]) {
+  const requiredParameters = isMultiBoardManifest(manifest)
+    ? [
+      "alphaBps",
+      "betaBps",
+      "challengeWindowSeconds",
+      "feeBps",
+      "minCounterBondWei",
+      "minPostingBondWei",
+      "rerunCostMultiplierBps",
+      "rerunCostWei",
+      "resolverDecisionBondWei",
+      "resolverFraudWindowSeconds",
+    ]
+    : [
+      "onchainDa",
+      "maxSolutionBytes",
+      "fundingCapWei",
+      "earliestCloseTimestamp",
+      "closeByTimestamp",
+    ];
+  for (const field of requiredParameters) {
     if (manifest.parameters?.[field] === undefined) {
       throw new Error(`Manifest missing parameters.${field}; deployment config is not fully bound`);
     }
   }
-  if (manifest.problems?.[0]?.seedScoreAtoms === undefined) {
-    throw new Error("Manifest missing problems[0].seedScoreAtoms; frontier seed is not bound");
-  }
 
   const evidenceBlocks = [
-    ...EVIDENCE_CONTRACT_KEYS.map((key) => manifest.contracts[key].blockNumber),
+    ...contractEntries.map(({ entry }) => entry?.blockNumber),
     ...(manifest.setupTransactions ?? []).map((entry) => entry.blockNumber),
     ...(manifest.problems ?? []).map((entry) => entry.registerBlockNumber),
   ].filter((value) => Number.isSafeInteger(value));
@@ -552,13 +850,9 @@ export function validateManifestEvidence(manifest) {
       `deploymentConfigHash mismatch: manifest=${manifest.deploymentConfigHash} computed=${computed}`
     );
   }
-  return {
-    deploymentCommit: manifest.deploymentCommit.toLowerCase(),
-    deploymentConfigHash: computed,
-    chainId: manifest.network.chainId,
-    startBlock: manifest.indexer.startBlock,
-    contracts: Object.fromEntries(
-      EVIDENCE_CONTRACT_KEYS.map((key) => [
+  const sharedContracts = Object.fromEntries(
+    (isMultiBoardManifest(manifest) ? SHARED_CONTRACT_KEYS : EVIDENCE_CONTRACT_KEYS)
+      .map((key) => [
         key,
         {
           address: manifest.contracts[key].address,
@@ -566,7 +860,26 @@ export function validateManifestEvidence(manifest) {
           abiHash: manifest.contracts[key].abiHash,
         },
       ])
-    ),
+  );
+  return {
+    deploymentCommit: manifest.deploymentCommit.toLowerCase(),
+    deploymentConfigHash: computed,
+    chainId: manifest.network.chainId,
+    startBlock: manifest.indexer.startBlock,
+    contracts: sharedContracts,
+    ...(isMultiBoardManifest(manifest) ? {
+      boards: Object.fromEntries(manifest.problems.map((problem) => [
+        problem.problemId,
+        Object.fromEntries(BOARD_CONTRACT_KEYS.map((key) => [
+          key,
+          {
+            address: problem.contracts[key].address,
+            deployedCodeHash: problem.contracts[key].deployedCodeHash,
+            abiHash: problem.contracts[key].abiHash,
+          },
+        ])),
+      ])),
+    } : {}),
   };
 }
 
@@ -689,10 +1002,18 @@ export function compareEventOrder(left, right) {
   );
 }
 
-export async function scanEventCatalog(contracts, fromBlock, toBlock, policy) {
+export async function scanEventCatalog(
+  contracts,
+  fromBlock,
+  toBlock,
+  policy,
+  { sources = Object.keys(EVENT_CATALOG) } = {},
+) {
   const events = [];
   const coverage = [];
-  for (const [source, eventNames] of Object.entries(EVENT_CATALOG)) {
+  for (const source of sources) {
+    const eventNames = EVENT_CATALOG[source];
+    if (!eventNames) throw new Error(`Unknown event catalog source ${source}`);
     const contract = contracts[source];
     if (!contract) throw new Error(`Missing contract instance for ${source}`);
     for (const eventName of eventNames) {
@@ -1703,34 +2024,53 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
   if (Number(network.chainId) !== manifest.network.chainId) {
     throw new Error(`chainId mismatch: manifest=${manifest.network.chainId} RPC=${network.chainId}`);
   }
-  for (const key of EVIDENCE_CONTRACT_KEYS) {
-    const entry = manifest.contracts[key];
+  for (const descriptor of manifestContractEvidenceEntries(manifest)) {
+    const { key, entry, path } = descriptor;
     const artifact = artifacts[key];
     const abiHash = ethers.keccak256(
       ethers.toUtf8Bytes(new ethers.Interface(artifact.abi).formatJson())
     );
     if (abiHash.toLowerCase() !== entry.abiHash.toLowerCase()) {
       throw new Error(
-        `${key} ABI drift: local artifact ${abiHash} != manifest ${entry.abiHash}; use deployment commit ${manifest.deploymentCommit}`
+        `${path} ABI drift: local artifact ${abiHash} != manifest ${entry.abiHash}; use deployment commit ${manifest.deploymentCommit}`
       );
     }
     const code = await provider.getCode(entry.address, toBlock);
-    if (code === "0x") throw new Error(`${key} has no runtime code at block ${toBlock}`);
+    if (code === "0x") throw new Error(`${path} has no runtime code at block ${toBlock}`);
     const codeHash = ethers.keccak256(code);
     if (codeHash.toLowerCase() !== entry.deployedCodeHash.toLowerCase()) {
-      throw new Error(`${key} runtime code hash ${codeHash} != manifest ${entry.deployedCodeHash}`);
+      throw new Error(`${path} runtime code hash ${codeHash} != manifest ${entry.deployedCodeHash}`);
     }
   }
   return binding;
 }
 
 export function instantiateContracts(provider, manifest, artifacts = loadContractArtifacts()) {
+  if (isMultiBoardManifest(manifest)) {
+    throw new Error("multi-board manifests require instantiateBoardContracts with an explicit registry problem id");
+  }
   return Object.fromEntries(
     EVIDENCE_CONTRACT_KEYS.map((key) => [
       key,
       new ethers.Contract(manifest.contracts[key].address, artifacts[key].abi, provider),
     ])
   );
+}
+
+export function instantiateBoardContracts(provider, manifest, problem, artifacts = loadContractArtifacts()) {
+  if (!isMultiBoardManifest(manifest)) return instantiateContracts(provider, manifest, artifacts);
+  const selected = manifestProblemForRegistryId(manifest, problem?.problemId ?? problem);
+  const boardContracts = manifestProblemContracts(manifest, selected);
+  return {
+    timelock: new ethers.Contract(manifest.contracts.timelock.address, artifacts.timelock.abi, provider),
+    registry: new ethers.Contract(manifest.contracts.registry.address, artifacts.registry.abi, provider),
+    ...Object.fromEntries(
+      BOARD_CONTRACT_KEYS.map((key) => [
+        key,
+        new ethers.Contract(boardContracts[key].address, artifacts[key].abi, provider),
+      ]),
+    ),
+  };
 }
 
 function submissionView(value) {
@@ -2056,6 +2396,85 @@ export async function collectFinalizedReconciliation({
   throw new ReorgDetectedError(`finality anchor ${toBlock} did not stabilize`);
 }
 
+export async function collectMultiBoardFinalizedReconciliation({
+  provider,
+  contractsByProblem,
+  artifacts,
+  manifest,
+  fromBlock,
+  toBlock,
+  policy,
+  onReorg = () => {},
+}) {
+  if (!isMultiBoardManifest(manifest)) {
+    throw new Error("collectMultiBoardFinalizedReconciliation requires a v2 deployment manifest");
+  }
+  for (let attempt = 0; attempt < policy.maxScanRestarts; attempt += 1) {
+    const anchor = await retryRead(
+      () => provider.getBlock(toBlock),
+      policy,
+      `getBlock(${toBlock}) finality anchor`,
+    );
+    if (!anchor?.hash) throw new Error(`cannot read finality anchor block ${toBlock}`);
+    try {
+      await verifyRuntimeIdentity(provider, manifest, artifacts, toBlock);
+      const sharedContracts = contractsByProblem[0]?.contracts;
+      if (!sharedContracts?.registry) throw new Error("multi-board reconciliation is missing shared registry contracts");
+      const registryScan = await scanEventCatalog(
+        { registry: sharedContracts.registry },
+        fromBlock,
+        toBlock,
+        policy,
+        { sources: ["registry"] },
+      );
+      const boards = [];
+      // Run board evidence serially. Each board has its own submission state,
+      // while the shared registry stream is replayed against that board's view.
+      for (const entry of contractsByProblem) {
+        const boardScan = await scanEventCatalog(
+          entry.contracts,
+          fromBlock,
+          toBlock,
+          policy,
+          { sources: BOARD_CONTRACT_KEYS },
+        );
+        const scan = {
+          coverage: [...registryScan.coverage, ...boardScan.coverage],
+          events: [...registryScan.events, ...boardScan.events].sort(compareEventOrder),
+        };
+        await hydrateEventTimestamps(scan.events, provider, policy);
+        const replay = replayProtocolEvents(scan.events, boardReplayConfig(manifest, entry.problem), {
+          coverage: scan.coverage,
+        });
+        const snapshot = await collectOnchainSnapshot(entry.contracts, replay, toBlock);
+        const checks = [
+          ...compareReplayToSnapshot(replay, snapshot, boardReplayConfig(manifest, entry.problem)),
+          ...(await collectRuntimeConfigChecks(entry.contracts, boardManifestView(manifest, entry.problem), toBlock)),
+        ];
+        boards.push({ ...entry, scan, replay, snapshot, checks });
+      }
+
+      const afterAllReads = await retryRead(
+        () => provider.getBlock(toBlock),
+        policy,
+        `recheck finality anchor ${toBlock}`,
+      );
+      if (!afterAllReads?.hash || afterAllReads.hash.toLowerCase() !== anchor.hash.toLowerCase()) {
+        throw new ReorgDetectedError(
+          `finality anchor ${toBlock} changed during multi-board scan/snapshot/config reads`,
+        );
+      }
+      return { anchor, boards };
+    } catch (error) {
+      if (!(error instanceof ReorgDetectedError) || attempt + 1 === policy.maxScanRestarts) {
+        throw error;
+      }
+      onReorg(error, attempt + 1);
+    }
+  }
+  throw new ReorgDetectedError(`finality anchor ${toBlock} did not stabilize`);
+}
+
 function eventDigestInput(event) {
   const args = {};
   if (event.fragment?.inputs) {
@@ -2149,6 +2568,126 @@ export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, t
   });
 }
 
+export function buildMultiBoardCheckpoint({
+  binding,
+  finalityPolicy,
+  fromBlock,
+  toBlock,
+  toBlockHash,
+  boards,
+}) {
+  if (!Array.isArray(boards) || boards.length === 0) {
+    throw new Error("multi-board checkpoint requires at least one board");
+  }
+  const boardReports = boards.map((board) => {
+    const report = buildCheckpoint({
+      binding,
+      finalityPolicy,
+      fromBlock,
+      toBlock,
+      toBlockHash,
+      events: board.scan.events,
+      replay: board.replay,
+      snapshot: board.snapshot,
+      checks: board.checks,
+    });
+    return {
+      problemId: String(board.problem.problemId),
+      problemSlug: board.problem.problemSlug,
+      events: report.events,
+      onchain: report.onchain,
+      state: report.state,
+      reconstruction: report.reconstruction,
+    };
+  });
+  const checks = boards.flatMap((board) =>
+    board.checks.map((check) => ({
+      ...check,
+      name: `board/${board.problem.problemId}.${check.name}`,
+    })),
+  );
+  const complete = boardReports.every((report) => report.reconstruction.complete);
+  const ok = complete && boardReports.every((report) => report.reconstruction.ok);
+  const checkpoint = canonicalize({
+    schema: "p42-prizes/indexer-checkpoint/v2",
+    manifestBinding: binding,
+    finalityPolicy,
+    range: { fromBlock, toBlock, toBlockHash },
+    boards: boardReports,
+    reconstruction: { ok, complete, checks },
+  });
+  return refreshMultiBoardCheckpointReconstruction(checkpoint);
+}
+
+function prefixedMultiBoardChecks(boards) {
+  return boards.flatMap((board) =>
+    board.reconstruction.checks.map((check) => ({
+      ...check,
+      name: `board/${board.problemId}.${check.name}`,
+    })),
+  );
+}
+
+function refreshMultiBoardCheckpointReconstruction(checkpoint) {
+  for (const board of checkpoint.boards) {
+    board.reconstruction.ok =
+      board.reconstruction.complete && board.reconstruction.checks.every((check) => check.ok);
+  }
+  checkpoint.reconstruction.complete = checkpoint.boards.every(
+    (board) => board.reconstruction.complete,
+  );
+  checkpoint.reconstruction.ok =
+    checkpoint.reconstruction.complete && checkpoint.boards.every((board) => board.reconstruction.ok);
+  checkpoint.reconstruction.checks = prefixedMultiBoardChecks(checkpoint.boards);
+  return validateMultiBoardCheckpoint(canonicalize(checkpoint));
+}
+
+export function validateMultiBoardCheckpoint(checkpoint) {
+  validateSchemaValue(checkpoint, MULTIBOARD_CHECKPOINT_SCHEMA, MULTIBOARD_CHECKPOINT_SCHEMA, "checkpoint");
+  if (checkpoint.range.toBlock < checkpoint.range.fromBlock) {
+    throw new Error("checkpoint.range.toBlock must not precede checkpoint.range.fromBlock");
+  }
+  const bindingIds = Object.keys(checkpoint.manifestBinding.boards);
+  if (bindingIds.some((id) => !/^[1-9][0-9]*$/.test(id))) {
+    throw new Error("checkpoint.manifestBinding.boards keys must be canonical positive registry ids");
+  }
+  const orderedBindingIds = [...bindingIds].sort((left, right) => {
+    const leftId = BigInt(left);
+    const rightId = BigInt(right);
+    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+  });
+  if (orderedBindingIds.length > 10 || orderedBindingIds.some((id, index) => id !== String(index + 1))) {
+    throw new Error("checkpoint.manifestBinding.boards must contain contiguous registry ids 1 through 10");
+  }
+  const boardIds = checkpoint.boards.map((board) => board.problemId);
+  if (new Set(boardIds).size !== boardIds.length) {
+    throw new Error("checkpoint.boards contains duplicate problem ids");
+  }
+  if (stableStringify(boardIds) !== stableStringify(orderedBindingIds)) {
+    throw new Error("checkpoint.boards must be ordered exactly as manifestBinding.boards registry ids");
+  }
+  for (const board of checkpoint.boards) {
+    const expectedBoardOk =
+      board.reconstruction.complete && board.reconstruction.checks.every((check) => check.ok);
+    if (board.reconstruction.ok !== expectedBoardOk) {
+      throw new Error(`checkpoint board ${board.problemId} reconstruction.ok must equal its evidence conjunction`);
+    }
+  }
+  const expectedComplete = checkpoint.boards.every((board) => board.reconstruction.complete);
+  if (checkpoint.reconstruction.complete !== expectedComplete) {
+    throw new Error("checkpoint.reconstruction.complete must equal the conjunction of board completion states");
+  }
+  const expectedChecks = prefixedMultiBoardChecks(checkpoint.boards);
+  if (stableStringify(checkpoint.reconstruction.checks) !== stableStringify(expectedChecks)) {
+    throw new Error("checkpoint.reconstruction.checks must contain every board check in deterministic order");
+  }
+  const expectedOk = expectedComplete && checkpoint.boards.every((board) => board.reconstruction.ok);
+  if (checkpoint.reconstruction.ok !== expectedOk) {
+    throw new Error("checkpoint.reconstruction.ok must equal the conjunction of board evidence states");
+  }
+  return checkpoint;
+}
+
 function cidToFilename(cid) {
   return cid.replace(/[^a-zA-Z0-9._-]/g, "_") + ".bin";
 }
@@ -2232,12 +2771,13 @@ function parseArg(argv, name, defaultValue = undefined) {
   return index === -1 ? defaultValue : argv[index + 1];
 }
 
-function loadPriorCheckpoint(path, binding) {
+function loadPriorCheckpoint(path, binding, schema) {
   if (!existsSync(path)) return null;
   const checkpoint = JSON.parse(readFileSync(path, "utf8"));
-  if (checkpoint.schema !== "p42-prizes/indexer-checkpoint/v1") {
+  if (checkpoint.schema !== schema) {
     throw new Error(`Refusing to overwrite non-checkpoint file ${path}`);
   }
+  if (schema === "p42-prizes/indexer-checkpoint/v2") validateMultiBoardCheckpoint(checkpoint);
   if (stableStringify(checkpoint.manifestBinding) !== stableStringify(binding)) {
     throw new Error(`Existing checkpoint ${path} belongs to a different deployment binding`);
   }
@@ -2251,10 +2791,11 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
   const resolvedOut = resolve(outPath);
   const manifest = JSON.parse(readFileSync(resolvedManifest, "utf8"));
   const binding = validateManifestEvidence(manifest);
+  const multiBoard = isMultiBoardManifest(manifest);
   const policy = manifest.indexer.finalityPolicy;
   const provider = new ethers.JsonRpcProvider(rpcUrl, manifest.network.chainId, { staticNetwork: true });
   const artifacts = loadContractArtifacts();
-  const contracts = instantiateContracts(provider, manifest, artifacts);
+  const contracts = multiBoard ? null : instantiateContracts(provider, manifest, artifacts);
 
   try {
     const head = await provider.getBlockNumber();
@@ -2263,12 +2804,93 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
     if (toBlock < fromBlock) {
       throw new Error(`finalized block ${toBlock} is before indexer start block ${fromBlock}`);
     }
-    const prior = loadPriorCheckpoint(resolvedOut, binding);
+    const prior = loadPriorCheckpoint(
+      resolvedOut,
+      binding,
+      multiBoard ? "p42-prizes/indexer-checkpoint/v2" : "p42-prizes/indexer-checkpoint/v1",
+    );
     if (prior) {
       const priorBlock = await provider.getBlock(prior.range.toBlock);
       if (!priorBlock || priorBlock.hash.toLowerCase() !== prior.range.toBlockHash.toLowerCase()) {
         console.warn(`prior checkpoint block ${prior.range.toBlock} was reorged; replaying from ${fromBlock}`);
       }
+    }
+
+    if (multiBoard) {
+      const contractsByProblem = manifest.problems.map((problem) => ({
+        problem,
+        contracts: instantiateBoardContracts(provider, manifest, problem, artifacts),
+      }));
+      const { anchor, boards } = await collectMultiBoardFinalizedReconciliation({
+        provider,
+        contractsByProblem,
+        artifacts,
+        manifest,
+        fromBlock,
+        toBlock,
+        policy,
+        onReorg: (error) =>
+          console.warn(`reorg detected (${error.message}); restarting from ${fromBlock}`),
+      });
+      const checkpoint = buildMultiBoardCheckpoint({
+        binding,
+        finalityPolicy: policy,
+        fromBlock,
+        toBlock,
+        toBlockHash: anchor.hash,
+        boards,
+      });
+
+      if (archivePath) {
+        for (const board of boards) {
+          const reveals = board.scan.events.filter(
+            (event) => event.source === "submissions" && event.eventName === "Revealed",
+          );
+          const archived = await archiveCalldata(
+            resolve(archivePath, `board-${board.problem.problemId}`),
+            reveals,
+            board.contracts.submissions,
+            provider,
+          );
+          if (!archived.ok) {
+            const report = checkpoint.boards.find(
+              (entry) => entry.problemId === String(board.problem.problemId),
+            );
+            if (!report) throw new Error(`checkpoint omitted board ${board.problem.problemId}`);
+            report.reconstruction.checks.push({
+              name: "archive.calldata",
+              ok: false,
+              expected: { mismatches: 0 },
+              actual: { mismatches: archived.mismatches.length },
+            });
+          }
+        }
+      }
+      refreshMultiBoardCheckpointReconstruction(checkpoint);
+
+      mkdirSync(dirname(resolvedOut), { recursive: true });
+      writeFileSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
+      console.log(`indexed ${boards.length} boards through finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
+      for (const board of checkpoint.boards) {
+        console.log(
+          `  board ${board.problemId} (${board.problemSlug}) ` +
+          `committed=${board.events.counts["submissions.Committed"]} ` +
+          `revealed=${board.events.counts["submissions.Revealed"]} ` +
+          `finalized=${board.events.counts["submissions.Finalized"]} ` +
+          `submissionCount=${board.onchain.submissionCount}`,
+        );
+      }
+      console.log(
+        `reconstruction: ${checkpoint.reconstruction.ok ? "VERIFIED" : "FAILED"} ` +
+        `(${checkpoint.reconstruction.checks.filter((entry) => entry.ok).length}/${checkpoint.reconstruction.checks.length} checks)`,
+      );
+      console.log(`checkpoint: ${resolvedOut}`);
+      if (!checkpoint.reconstruction.ok) {
+        for (const failed of checkpoint.reconstruction.checks.filter((entry) => !entry.ok)) {
+          console.error(`  FAIL ${failed.name}: expected=${stableStringify(failed.expected)} actual=${stableStringify(failed.actual)}`);
+        }
+      }
+      return checkpoint;
     }
 
     const { anchor, scan, replay, snapshot, checks } = await collectFinalizedReconciliation({

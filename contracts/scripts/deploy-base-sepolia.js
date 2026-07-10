@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { network } from "hardhat";
+import { validateManifestEvidence } from "../../agent/indexer.mjs";
 
 import {
   assertDeploymentConfigHash,
@@ -11,6 +13,8 @@ import {
   assertVerifierSourceAnchor,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
+  boardCeremonyConfig,
+  buildMultiBoardSetupOperations,
   buildSetupOperations,
   completeManifestOutputReservation,
   completeSetupManifest,
@@ -18,14 +22,21 @@ import {
   constructorArgsHash,
   jsonStringify,
   MANIFEST_SCHEMA,
+  MULTIBOARD_MANIFEST_SCHEMA,
   PENDING_SETUP_STATUS,
   readManifestOutputReservation,
   readCeremonyConfig,
+  recordManifestOutputBoardDeployment,
   recordManifestOutputDeployment,
   reserveManifestOutput,
   SCORE_ATOM_SCALE,
   validateDeploymentTimestamps
 } from "./deployment-ceremony-helper.js";
+import {
+  readMultiBoardCeremonyConfig,
+  validateMultiBoardAdmissionPreflight,
+  validateMultiBoardDeploymentTimestamps,
+} from "./multiboard-ceremony-helper.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const CONTRACT_NAMES = Object.freeze({
@@ -35,6 +46,12 @@ const CONTRACT_NAMES = Object.freeze({
   submissions: "P42SubmissionManager",
   challenges: "P42ChallengeManager",
   registry: "P42ProblemRegistry"
+});
+const BOARD_CONTRACT_NAMES = Object.freeze({
+  pool: "P42BountyPool",
+  ledger: "P42PayoutLedger",
+  submissions: "P42SubmissionManager",
+  challenges: "P42ChallengeManager",
 });
 
 function requiredEnv(name) {
@@ -49,12 +66,38 @@ function manifestPath() {
     : resolve(process.cwd(), "../deployments/base-sepolia/p42-prizes.json");
 }
 
+function multiBoardCeremonyConfigPath() {
+  return resolve(requiredEnv("P42_MULTIBOARD_CEREMONY_CONFIG"));
+}
+
+async function readMultiBoardCeremonyInput() {
+  const path = multiBoardCeremonyConfigPath();
+  try {
+    return { path, value: JSON.parse(await readFile(path, "utf8")) };
+  } catch (error) {
+    throw new Error(`Unable to parse multi-board ceremony config ${path}: ${error.message}`);
+  }
+}
+
 function gitCommit(repoRoot) {
   return execFileSync("git", ["rev-parse", "HEAD"], {
     cwd: repoRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "inherit"]
   }).trim();
+}
+
+function assertCleanGitTree(repoRoot) {
+  const status = execFileSync("git", ["status", "--porcelain=v1", "--untracked-files=normal"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (status.trim() !== "") {
+    throw new Error(
+      "Refusing deployment from a dirty worktree: commit or remove tracked/untracked changes so deploymentCommit identifies the deployed source"
+    );
+  }
 }
 
 function lower(value) {
@@ -67,6 +110,20 @@ function sameAddress(left, right) {
 
 function sameValue(left, right) {
   return String(left) === String(right);
+}
+
+async function writeManifestAtomically(path, manifest) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, `${jsonStringify(manifest)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 function check(name, actual, expected, comparator = sameValue) {
@@ -137,7 +194,9 @@ async function deployCeremony(ethers) {
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
   validateDeploymentTimestamps(config, latest.timestamp);
-  const deploymentCommit = gitCommit(resolve(process.cwd(), ".."));
+  const repoRoot = resolve(process.cwd(), "..");
+  assertCleanGitTree(repoRoot);
+  const deploymentCommit = gitCommit(repoRoot);
   const output = manifestPath();
   const reservation = await reserveManifestOutput(output, {
     deploymentCommit,
@@ -266,6 +325,7 @@ async function deployCeremony(ethers) {
       reconciliationReport: null
     }
   })));
+  validateManifestEvidence(manifest);
 
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${jsonStringify(manifest)}\n`, { flag: "wx" });
@@ -273,6 +333,212 @@ async function deployCeremony(ethers) {
   console.log(`Wrote pending governance ceremony manifest: ${output}`);
   console.log(`Timelock owner: ${addresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action.`);
+  console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
+  console.log("Use P42_DEPLOY_MODE=continue without a private key to inspect operation calldata and verify completion.");
+}
+
+function multiBoardManifestProblem(problem, deployments) {
+  const contracts = Object.fromEntries(
+    Object.entries(deployments).map(([key, deployment]) => [key, deployment.manifest])
+  );
+  return {
+    problemId: String(problem.problemId),
+    registrationStatus: "pending",
+    problemSlug: problem.problemSlug,
+    verifierVersion: problem.verifierVersion,
+    metadataURI: problem.metadataURI,
+    specHash: problem.specHash,
+    verifierSourceDigest: problem.verifierSourceDigest,
+    verifierSourceDigestAlgorithm: problem.verifierSourceDigestAlgorithm,
+    verifierSourceHash: problem.verifierSourceHash,
+    verifierSourceHashAlgorithm: problem.verifierSourceHashAlgorithm,
+    verifierImageDigest: problem.verifierImageDigest,
+    verifierImageHashAlgorithm: problem.verifierImageHashAlgorithm,
+    verifierImageHash: problem.verifierImageHash,
+    admissionMatrixDigest: problem.admissionMatrixDigest,
+    admissionMatrixHashAlgorithm: problem.admissionMatrixHashAlgorithm,
+    admissionMatrixHash: problem.admissionMatrixHash,
+    admissionMatrixURI: problem.admissionMatrixURI,
+    immutablePins: true,
+    minImprovementAtoms: problem.minImprovementAtoms.toString(),
+    seedScoreAtoms: problem.seedScoreAtoms.toString(),
+    certifiedObjective: problem.certifiedObjective,
+    scoreAtomScale: SCORE_ATOM_SCALE.toString(),
+    fundingCapWei: problem.fundingCapWei.toString(),
+    onchainDa: problem.onchainDa,
+    maxSolutionBytes: problem.maxSolutionBytes.toString(),
+    earliestCloseTimestamp: problem.earliestCloseTimestamp.toString(),
+    closeByTimestamp: problem.closeByTimestamp.toString(),
+    explicitlyFrozen: false,
+    fundingArmed: false,
+    acceptingFunds: false,
+    registerTxHash: null,
+    registerBlockNumber: null,
+    contracts,
+    pool: contracts.pool.address,
+    ledger: contracts.ledger.address,
+    submissionManager: contracts.submissions.address,
+    challengeManager: contracts.challenges.address,
+  };
+}
+
+async function deployMultiBoardCeremony(ethers) {
+  requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
+  const [deployer] = await ethers.getSigners();
+  if (deployer === undefined) throw new Error("No deployer signer available");
+
+  const input = await readMultiBoardCeremonyInput();
+  const config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
+  const latest = await ethers.provider.getBlock("latest");
+  if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
+  validateMultiBoardDeploymentTimestamps(config, latest.timestamp);
+  const repoRoot = resolve(process.cwd(), "..");
+  assertCleanGitTree(repoRoot);
+  const admissionPreflight = validateMultiBoardAdmissionPreflight(ethers, config, { repoRoot });
+  console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
+  const deploymentCommit = gitCommit(repoRoot);
+  const output = manifestPath();
+  const reservation = await reserveManifestOutput(output, {
+    deploymentCommit,
+    network: "baseSepolia",
+    chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+    deployer: deployer.address,
+    ceremonyConfig: input.path,
+    ceremonySchema: config.schema,
+  });
+  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
+
+  const rootDeployments = {};
+  const rootAddresses = {};
+  const rootConstructorArgs = {};
+  rootConstructorArgs.timelock = constructorArgsFor("P42MultisigTimelock", config);
+  rootDeployments.timelock = await deployPinnedContract(
+    ethers,
+    "P42MultisigTimelock",
+    rootConstructorArgs.timelock,
+    (deployment) => recordManifestOutputDeployment(output, "timelock", deployment),
+  );
+  rootAddresses.timelock = rootDeployments.timelock.manifest.address;
+  rootConstructorArgs.registry = constructorArgsFor("P42ProblemRegistry", config, rootAddresses);
+  rootDeployments.registry = await deployPinnedContract(
+    ethers,
+    "P42ProblemRegistry",
+    rootConstructorArgs.registry,
+    (deployment) => recordManifestOutputDeployment(output, "registry", deployment),
+  );
+  rootAddresses.registry = rootDeployments.registry.manifest.address;
+
+  const boards = [];
+  for (const problem of config.problems) {
+    const boardConfig = boardCeremonyConfig(config, problem);
+    const deployments = {};
+    const addresses = { ...rootAddresses };
+    const constructorArgs = {};
+    for (const [key, name] of Object.entries(BOARD_CONTRACT_NAMES)) {
+      constructorArgs[key] = constructorArgsFor(name, boardConfig, addresses);
+      deployments[key] = await deployPinnedContract(
+        ethers,
+        name,
+        constructorArgs[key],
+        (deployment) => recordManifestOutputBoardDeployment(output, problem.problemId, key, deployment),
+      );
+      addresses[key] = deployments[key].manifest.address;
+    }
+    assertTimelockOwnedConstructorArgs(rootAddresses.timelock, {
+      ...constructorArgs,
+      registry: rootConstructorArgs.registry,
+    });
+    boards.push({ problem, deployments, addresses });
+  }
+
+  const setupTransactions = buildMultiBoardSetupOperations({
+    ethers,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    timelockAddress: rootAddresses.timelock,
+    registryAddress: rootAddresses.registry,
+    config,
+    boards: boards.map(({ problem, addresses }) => ({ problem, addresses })),
+    interfaces: contractInterfaces({
+      timelock: rootDeployments.timelock,
+      registry: rootDeployments.registry,
+      ...boards[0].deployments,
+    }),
+  });
+  const firstBlock = Math.min(
+    ...Object.values(rootDeployments).map((entry) => entry.manifest.blockNumber),
+    ...boards.flatMap(({ deployments }) => Object.values(deployments).map((entry) => entry.manifest.blockNumber)),
+  );
+  const manifest = bindDeploymentConfigHash(JSON.parse(jsonStringify({
+    schema: MULTIBOARD_MANIFEST_SCHEMA,
+    status: PENDING_SETUP_STATUS,
+    deployedAt: new Date().toISOString(),
+    deploymentCommit,
+    network: {
+      name: "baseSepolia",
+      chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+      explorerBaseUrl: "https://sepolia.basescan.org",
+    },
+    governance: {
+      ownershipModel: "P42MultisigTimelock",
+      timelock: rootAddresses.timelock,
+      signers: config.governance.signers,
+      threshold: config.governance.threshold.toString(),
+      overrideThreshold: config.governance.overrideThreshold.toString(),
+      delaySeconds: config.governance.delaySeconds.toString(),
+      overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
+      operationGracePeriodSeconds: config.governance.operationGracePeriodSeconds.toString(),
+      guardian: config.governance.guardian,
+    },
+    roles: {
+      deployer: deployer.address,
+      owner: rootAddresses.timelock,
+      treasury: config.roles.treasury,
+      resolver: config.roles.resolver,
+      guardian: config.governance.guardian,
+    },
+    parameters: config.parameters,
+    contracts: {
+      timelock: rootDeployments.timelock.manifest,
+      registry: rootDeployments.registry.manifest,
+    },
+    governanceSetup: {
+      status: "pending",
+      completedAt: null,
+      completionBlock: null,
+      checks: [],
+    },
+    setupTransactions,
+    problems: boards.map(({ problem, deployments }) => multiBoardManifestProblem(problem, deployments)),
+    sourceVerification: {
+      status: "pending",
+      requiredExplorer: "https://sepolia.basescan.org",
+      contracts: {
+        timelock: null,
+        registry: null,
+        boards: boards.map(({ problem }) => ({
+          problemId: String(problem.problemId),
+          pool: null,
+          ledger: null,
+          submissions: null,
+          challenges: null,
+        })),
+      },
+    },
+    indexer: {
+      startBlock: firstBlock,
+      finalityPolicy: config.finalityPolicy,
+      indexedThroughBlock: null,
+      reconciliationReport: null,
+    },
+  })));
+  validateManifestEvidence(manifest);
+
+  await mkdir(dirname(output), { recursive: true });
+  await writeFile(output, `${jsonStringify(manifest)}\n`, { flag: "wx" });
+  await completeManifestOutputReservation(output);
+  console.log(`Wrote pending multi-board governance ceremony manifest: ${output}`);
+  console.log(`Shared timelock owner: ${rootAddresses.timelock}`);
+  console.log(`${setupTransactions.length} setup operations require independent signer action across ${boards.length} boards.`);
   console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
   console.log("Use P42_DEPLOY_MODE=continue without a private key to inspect operation calldata and verify completion.");
 }
@@ -286,6 +552,290 @@ async function readContractSet(ethers, manifest) {
       ])
     )
   );
+}
+
+async function readMultiBoardContractSet(ethers, manifest) {
+  const [timelock, registry] = await Promise.all([
+    ethers.getContractAt("P42MultisigTimelock", manifest.contracts.timelock.address, ethers.provider),
+    ethers.getContractAt("P42ProblemRegistry", manifest.contracts.registry.address, ethers.provider),
+  ]);
+  const boards = await Promise.all(manifest.problems.map(async (problem) => {
+    const contracts = Object.fromEntries(await Promise.all(
+      Object.entries(BOARD_CONTRACT_NAMES).map(async ([key, name]) => [
+        key,
+        await ethers.getContractAt(name, problem.contracts[key].address, ethers.provider),
+      ]),
+    ));
+    return { problem, contracts };
+  }));
+  return { timelock, registry, boards };
+}
+
+async function collectMultiBoardOperationEvidence(timelock, operations, startBlock, checkedBlock) {
+  const events = await timelock.queryFilter(timelock.filters.Executed(), startBlock, checkedBlock);
+  const eventsById = new Map();
+  for (const event of events) {
+    const id = String(event.args.id).toLowerCase();
+    const matching = eventsById.get(id) ?? [];
+    matching.push(event);
+    eventsById.set(id, matching);
+  }
+
+  return Promise.all(operations.map(async (operation) => {
+    const candidates = [
+      { operationId: operation.operationId, operationClass: operation.operationClass },
+      operation.overrideFallback === null
+        ? null
+        : { operationId: operation.overrideFallback.operationId, operationClass: "override" },
+    ].filter(Boolean);
+    const candidateEvidence = await Promise.all(candidates.map(async (candidate) => ({
+      ...candidate,
+      state: await timelock.stateOf(candidate.operationId, { blockTag: checkedBlock }),
+      events: eventsById.get(candidate.operationId.toLowerCase()) ?? [],
+    })));
+    const executedCandidates = candidateEvidence.filter(
+      (candidate) => candidate.state === 2n && candidate.events.length === 1,
+    );
+    const execution = executedCandidates.length === 1 ? executedCandidates[0] : null;
+    const event = execution?.events[0] ?? null;
+    return {
+      check: {
+        name: `operation.${operation.operationId}`,
+        ok: execution !== null,
+        actual: candidateEvidence.map((candidate) => ({
+          operationId: candidate.operationId,
+          state: candidate.state.toString(),
+          eventCount: candidate.events.length,
+        })),
+        expected: "exactly one primary or deterministic override-fallback execution",
+      },
+      operation: {
+        operationId: operation.operationId,
+        executedOperationId: execution?.operationId ?? null,
+        executedOperationClass: execution?.operationClass ?? null,
+        state: execution ? "executed" : "incomplete",
+        txHash: event?.transactionHash ?? null,
+        blockNumber: event?.blockNumber ?? null,
+      },
+    };
+  }));
+}
+
+async function collectMultiBoardContinuationSnapshot(ethers, manifest, contractSet, checkedBlock) {
+  const { timelock, registry, boards } = contractSet;
+  const atBlock = { blockTag: checkedBlock };
+  const checks = [];
+  const parameters = manifest.parameters;
+
+  for (const [key, deployment] of Object.entries(manifest.contracts)) {
+    const runtimeHash = ethers.keccak256(await ethers.provider.getCode(deployment.address, checkedBlock));
+    checks.push(check(`runtime.${key}`, runtimeHash, deployment.runtimeCodeHash));
+  }
+  checks.push(check("owner.registry", await registry.owner(atBlock), manifest.roles.owner, sameAddress));
+
+  const signerCount = Number(await timelock.signerCount(atBlock));
+  const actualSigners = await Promise.all(
+    Array.from({ length: signerCount }, (_value, index) => timelock.signers(index, atBlock)),
+  );
+  checks.push({
+    name: "governance.signers",
+    ok:
+      actualSigners.length === manifest.governance.signers.length &&
+      actualSigners.every((signer, index) => sameAddress(signer, manifest.governance.signers[index])),
+    actual: actualSigners,
+    expected: manifest.governance.signers,
+  });
+  checks.push(check("governance.threshold", await timelock.threshold(atBlock), manifest.governance.threshold));
+  checks.push(check("governance.delay", await timelock.delay(atBlock), manifest.governance.delaySeconds));
+  checks.push(check("governance.overrideDelay", await timelock.overrideDelay(atBlock), manifest.governance.overrideDelaySeconds));
+  checks.push(
+    check(
+      "governance.operationGracePeriod",
+      await timelock.operationGracePeriod(atBlock),
+      manifest.governance.operationGracePeriodSeconds,
+    ),
+  );
+  checks.push(check("governance.guardian", await timelock.guardian(atBlock), manifest.governance.guardian, sameAddress));
+  checks.push(check("registry.problemCount", await registry.problemCount(atBlock), String(manifest.problems.length)));
+
+  for (const { problem, contracts } of boards) {
+    const prefix = `board/${problem.problemId}`;
+    const { pool, ledger, submissions, challenges } = contracts;
+    for (const [key, deployment] of Object.entries(problem.contracts)) {
+      const runtimeHash = ethers.keccak256(await ethers.provider.getCode(deployment.address, checkedBlock));
+      checks.push(check(`runtime.${prefix}.${key}`, runtimeHash, deployment.runtimeCodeHash));
+    }
+    for (const [key, contract] of Object.entries(contracts)) {
+      checks.push(check(`owner.${prefix}.${key}`, await contract.owner(atBlock), manifest.roles.owner, sameAddress));
+    }
+
+    checks.push(check(`config.${prefix}.pool`, await pool.fundingCap(atBlock), problem.fundingCapWei));
+    const ledgerConfig = [
+      await ledger.pool(atBlock),
+      await ledger.treasury(atBlock),
+      await ledger.feeBps(atBlock),
+      await ledger.earliestCloseTimestamp(atBlock),
+      await ledger.closeByTimestamp(atBlock),
+    ];
+    checks.push({
+      name: `config.${prefix}.ledger`,
+      ok:
+        sameAddress(ledgerConfig[0], problem.contracts.pool.address) &&
+        sameAddress(ledgerConfig[1], manifest.roles.treasury) &&
+        sameValue(ledgerConfig[2], parameters.feeBps) &&
+        sameValue(ledgerConfig[3], problem.earliestCloseTimestamp) &&
+        sameValue(ledgerConfig[4], problem.closeByTimestamp),
+      actual: ledgerConfig.map(String),
+    });
+    const submissionConfig = [
+      await submissions.pool(atBlock),
+      await submissions.ledger(atBlock),
+      await submissions.treasury(atBlock),
+      await submissions.alphaBps(atBlock),
+      await submissions.minPostingBondWei(atBlock),
+      await submissions.challengeWindowSeconds(atBlock),
+      await submissions.onchainDa(atBlock),
+      await submissions.maxSolutionBytes(atBlock),
+      await submissions.seedScoreAtoms(atBlock),
+      await submissions.minImprovementAtoms(atBlock),
+    ];
+    checks.push({
+      name: `config.${prefix}.submissions`,
+      ok:
+        sameAddress(submissionConfig[0], problem.contracts.pool.address) &&
+        sameAddress(submissionConfig[1], problem.contracts.ledger.address) &&
+        sameAddress(submissionConfig[2], manifest.roles.treasury) &&
+        sameValue(submissionConfig[3], parameters.alphaBps) &&
+        sameValue(submissionConfig[4], parameters.minPostingBondWei) &&
+        sameValue(submissionConfig[5], parameters.challengeWindowSeconds) &&
+        submissionConfig[6] === problem.onchainDa &&
+        sameValue(submissionConfig[7], problem.maxSolutionBytes) &&
+        sameValue(submissionConfig[8], problem.seedScoreAtoms) &&
+        sameValue(submissionConfig[9], problem.minImprovementAtoms),
+      actual: submissionConfig.map(String),
+    });
+    const challengeConfig = [
+      await challenges.resolver(atBlock),
+      await challenges.treasury(atBlock),
+      await challenges.submissionManager(atBlock),
+      await challenges.challengeWindowSeconds(atBlock),
+      await challenges.betaBps(atBlock),
+      await challenges.minCounterBondWei(atBlock),
+      await challenges.rerunCostWei(atBlock),
+      await challenges.rerunCostMultiplierBps(atBlock),
+      await challenges.resolverDecisionBondWei(atBlock),
+      await challenges.resolverFraudWindowSeconds(atBlock),
+    ];
+    checks.push({
+      name: `config.${prefix}.challenges`,
+      ok:
+        sameAddress(challengeConfig[0], manifest.roles.resolver) &&
+        sameAddress(challengeConfig[1], manifest.roles.treasury) &&
+        sameAddress(challengeConfig[2], problem.contracts.submissions.address) &&
+        sameValue(challengeConfig[3], parameters.challengeWindowSeconds) &&
+        sameValue(challengeConfig[4], parameters.betaBps) &&
+        sameValue(challengeConfig[5], parameters.minCounterBondWei) &&
+        sameValue(challengeConfig[6], parameters.rerunCostWei) &&
+        sameValue(challengeConfig[7], parameters.rerunCostMultiplierBps) &&
+        sameValue(challengeConfig[8], parameters.resolverDecisionBondWei) &&
+        sameValue(challengeConfig[9], parameters.resolverFraudWindowSeconds),
+      actual: challengeConfig.map(String),
+    });
+
+    checks.push(
+      check(`wiring.${prefix}.poolLedger`, await pool.ledger(atBlock), problem.contracts.ledger.address, sameAddress),
+      check(
+        `wiring.${prefix}.ledgerCreditRecorder`,
+        await ledger.creditRecorder(atBlock),
+        problem.contracts.submissions.address,
+        sameAddress,
+      ),
+      check(
+        `wiring.${prefix}.poolSubmissionManager`,
+        await pool.submissionManager(atBlock),
+        problem.contracts.submissions.address,
+        sameAddress,
+      ),
+      check(
+        `wiring.${prefix}.submissionChallengeManager`,
+        await submissions.challengeManager(atBlock),
+        problem.contracts.challenges.address,
+        sameAddress,
+      ),
+    );
+    const poolRegistry = [await pool.registry(atBlock), await pool.problemId(atBlock)];
+    checks.push({
+      name: `wiring.${prefix}.poolRegistry`,
+      ok:
+        sameAddress(poolRegistry[0], manifest.contracts.registry.address) &&
+        sameValue(poolRegistry[1], problem.problemId),
+      actual: poolRegistry.map(String),
+    });
+
+    const registered = await registry.problems(problem.problemId, atBlock);
+    checks.push({
+      name: `problem.${prefix}.registeredPinsAndConfig`,
+      ok:
+        lower(registered.specHash) === lower(problem.specHash) &&
+        lower(registered.verifierSourceHash) === lower(problem.verifierSourceHash) &&
+        lower(registered.verifierImageHash) === lower(problem.verifierImageHash) &&
+        lower(registered.admissionMatrixHash) === lower(problem.admissionMatrixHash) &&
+        registered.metadataURI === problem.metadataURI &&
+        sameAddress(registered.pool, problem.pool) &&
+        sameAddress(registered.ledger, problem.ledger) &&
+        sameAddress(registered.submissionManager, problem.submissionManager) &&
+        sameAddress(registered.challengeManager, problem.challengeManager) &&
+        sameValue(registered.challengeWindowSeconds, parameters.challengeWindowSeconds) &&
+        sameValue(registered.minImprovementAtoms, problem.minImprovementAtoms),
+      actual: {
+        specHash: registered.specHash,
+        verifierImageHash: registered.verifierImageHash,
+        admissionMatrixHash: registered.admissionMatrixHash,
+      },
+    });
+    checks.push({
+      name: `problem.${prefix}.frozen`,
+      ok: await registry.explicitlyFrozen(problem.problemId, atBlock),
+      actual: await registry.explicitlyFrozen(problem.problemId, atBlock),
+      expected: true,
+    });
+    for (const key of ["ledger", "submissions", "challenges"]) {
+      checks.push({
+        name: `pauseTarget.${prefix}.${key}`,
+        ok: await timelock.pauseTargetAllowed(problem.contracts[key].address, atBlock),
+        actual: await timelock.pauseTargetAllowed(problem.contracts[key].address, atBlock),
+        expected: true,
+      });
+    }
+    checks.push({
+      name: `funding.${prefix}.fundingArmedFalse`,
+      ok: !(await submissions.fundingArmed(atBlock)),
+      actual: await submissions.fundingArmed(atBlock),
+      expected: false,
+    });
+    checks.push({
+      name: `funding.${prefix}.acceptingFundsFalse`,
+      ok: !(await pool.acceptingFunds(atBlock)),
+      actual: await pool.acceptingFunds(atBlock),
+      expected: false,
+    });
+  }
+
+  const operationEvidence = await collectMultiBoardOperationEvidence(
+    timelock,
+    manifest.setupTransactions,
+    manifest.indexer.startBlock,
+    checkedBlock,
+  );
+  checks.push(...operationEvidence.map(({ check: operationCheck }) => operationCheck));
+  const checked = await ethers.provider.getBlock(checkedBlock);
+  if (checked === null) throw new Error(`Unable to read finalized block ${checkedBlock}`);
+  return {
+    checkedAt: new Date(Number(checked.timestamp) * 1000).toISOString(),
+    checkedBlock,
+    checks,
+    operations: operationEvidence.map(({ operation }) => operation),
+  };
 }
 
 async function collectContinuationSnapshot(ethers, manifest, contracts, checkedBlock) {
@@ -539,10 +1089,47 @@ async function collectContinuationSnapshot(ethers, manifest, contracts, checkedB
   };
 }
 
+async function continueMultiBoardCeremony(ethers, path, manifest) {
+  const head = await ethers.provider.getBlockNumber();
+  const checkedBlock = head - manifest.indexer.finalityPolicy.confirmations;
+  if (checkedBlock < manifest.indexer.startBlock) {
+    throw new Error(`Finalized block ${checkedBlock} is before deployment block ${manifest.indexer.startBlock}`);
+  }
+  const contracts = await readMultiBoardContractSet(ethers, manifest);
+  const snapshot = await collectMultiBoardContinuationSnapshot(ethers, manifest, contracts, checkedBlock);
+  try {
+    const completed = completeSetupManifest(manifest, snapshot);
+    await writeManifestAtomically(path, completed);
+    console.log(`Multi-board governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
+  } catch (error) {
+    const pending = manifest.setupTransactions
+      .filter((operation) => {
+        const evidence = snapshot.operations.find(
+          (entry) => lower(entry.operationId) === lower(operation.operationId),
+        );
+        return evidence?.state !== "executed";
+      })
+      .map((operation) => ({
+        sequence: operation.sequence,
+        label: operation.label,
+        operationClass: operation.operationClass,
+        operationId: operation.operationId,
+        dependsOn: operation.dependsOn,
+        transactionBuilder: operation.transactionBuilder,
+        overrideFallback: operation.overrideFallback,
+      }));
+    console.log(jsonStringify({ checkedBlock, pendingOperations: pending }));
+    throw error;
+  }
+}
+
 async function continueCeremony(ethers) {
   const path = manifestPath();
   const manifest = JSON.parse(await readFile(path, "utf8"));
-  if (manifest.schema !== MANIFEST_SCHEMA) throw new Error(`Unsupported manifest schema: ${manifest.schema}`);
+  if (manifest.schema !== MANIFEST_SCHEMA && manifest.schema !== MULTIBOARD_MANIFEST_SCHEMA) {
+    throw new Error(`Unsupported manifest schema: ${manifest.schema}`);
+  }
+  validateManifestEvidence(manifest);
   for (const [index, problem] of manifest.problems.entries()) {
     assertVerifierImageAnchor(ethers, problem, {
       digestLabel: `manifest.problems[${index}].verifierImageDigest`,
@@ -559,6 +1146,10 @@ async function continueCeremony(ethers) {
     });
   }
   assertDeploymentConfigHash(manifest);
+  if (manifest.schema === MULTIBOARD_MANIFEST_SCHEMA) {
+    await continueMultiBoardCeremony(ethers, path, manifest);
+    return;
+  }
   const head = await ethers.provider.getBlockNumber();
   const checkedBlock = head - manifest.indexer.finalityPolicy.confirmations;
   if (checkedBlock < manifest.indexer.startBlock) {
@@ -568,7 +1159,7 @@ async function continueCeremony(ethers) {
   const snapshot = await collectContinuationSnapshot(ethers, manifest, contracts, checkedBlock);
   try {
     const completed = completeSetupManifest(manifest, snapshot);
-    await writeFile(path, `${jsonStringify(completed)}\n`);
+    await writeManifestAtomically(path, completed);
     console.log(`Governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
   } catch (error) {
     const pending = manifest.setupTransactions
@@ -593,8 +1184,8 @@ async function continueCeremony(ethers) {
 }
 
 const mode = (process.env.P42_DEPLOY_MODE ?? "deploy").trim().toLowerCase();
-if (mode !== "deploy" && mode !== "continue" && mode !== "inspect-reservation") {
-  throw new Error("P42_DEPLOY_MODE must be deploy, continue, or inspect-reservation");
+if (mode !== "deploy" && mode !== "deploy-multiboard" && mode !== "continue" && mode !== "inspect-reservation") {
+  throw new Error("P42_DEPLOY_MODE must be deploy, deploy-multiboard, continue, or inspect-reservation");
 }
 
 if (mode === "inspect-reservation") {
@@ -609,6 +1200,7 @@ if (mode === "inspect-reservation") {
       throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
     }
     if (mode === "deploy") await deployCeremony(ethers);
+    else if (mode === "deploy-multiboard") await deployMultiBoardCeremony(ethers);
     else await continueCeremony(ethers);
   } finally {
     await connection.close();

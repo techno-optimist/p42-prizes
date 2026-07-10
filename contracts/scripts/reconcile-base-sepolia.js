@@ -44,13 +44,26 @@ try {
     `finalizedRange=${report.range.fromBlock}..${report.range.toBlock} ` +
     `blockHash=${report.range.toBlockHash}`
   );
-  console.log(
-    `lifecycle committed=${report.events.counts["submissions.Committed"]} ` +
-    `revealed=${report.events.counts["submissions.Revealed"]} ` +
-    `finalized=${report.events.counts["submissions.Finalized"]} ` +
-    `voided=${report.events.counts["submissions.FinalizeVoided"]} ` +
-    `submissionCount=${report.onchain.submissionCount}`
-  );
+  if (Array.isArray(report.boards)) {
+    for (const board of report.boards) {
+      console.log(
+        `board=${board.problemId} slug=${board.problemSlug} ` +
+        `committed=${board.events.counts["submissions.Committed"]} ` +
+        `revealed=${board.events.counts["submissions.Revealed"]} ` +
+        `finalized=${board.events.counts["submissions.Finalized"]} ` +
+        `voided=${board.events.counts["submissions.FinalizeVoided"]} ` +
+        `submissionCount=${board.onchain.submissionCount}`
+      );
+    }
+  } else {
+    console.log(
+      `lifecycle committed=${report.events.counts["submissions.Committed"]} ` +
+      `revealed=${report.events.counts["submissions.Revealed"]} ` +
+      `finalized=${report.events.counts["submissions.Finalized"]} ` +
+      `voided=${report.events.counts["submissions.FinalizeVoided"]} ` +
+      `submissionCount=${report.onchain.submissionCount}`
+    );
+  }
   console.log(
     `reconstruction=${report.reconstruction.ok ? "VERIFIED" : "FAILED"} ` +
     `complete=${report.reconstruction.complete}`

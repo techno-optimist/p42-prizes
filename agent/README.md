@@ -40,6 +40,16 @@ challenge or a terminal quarantine. Each retry yields the verifier slot during
 a short durable backoff, so one unavailable submission cannot block later
 eligible jobs.
 
+On DGX, point the bridge at the existing isolated runtime instead of attempting
+a system-wide package install:
+
+```bash
+export P42_RUNTIME_PYTHON=/home/chronos/inference-venv/bin/python3
+```
+
+The optional value must be an absolute interpreter path. Without it the bridge
+uses `python3` from `PATH`.
+
 For on-chain DA, reveal calldata is recovered by scanning the transaction for a
 `reveal(...)` call and matching every decoded argument to the `Revealed` log.
 This handles direct calls, `P42AgentWallet.execute`, and ERC-4337-style nested
@@ -197,6 +207,7 @@ AGENT_PRIVATE_KEY=0x... node solver.mjs \
   --rpc https://sepolia.base.org \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem ../problems/hadamard-mini \
+  --registry-problem-id 1 \
   --solution ../problems/hadamard-mini/examples/valid-4.json \
   --state /var/lib/p42/solver/hadamard-mini.json
 ```
@@ -207,6 +218,10 @@ is populated and signed first; the raw signed bytes and hash are persisted befor
 broadcast. Re-running the same command resumes it; identity mismatches fail
 closed, and a restart reconciles or rebroadcasts the exact same transaction bytes
 instead of creating a replacement nonce transaction.
+
+`--registry-problem-id` is optional for a legacy one-board manifest and required
+for a multi-board manifest. It selects the only child pool, ledger, submission
+manager, and challenge manager the solver may touch.
 
 The submission id is parsed from the matching `Committed` receipt log. It is
 never inferred from global `submissionCount()`. The lifecycle loop handles:

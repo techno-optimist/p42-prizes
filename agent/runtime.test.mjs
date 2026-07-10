@@ -21,6 +21,7 @@ import {
   operatorCursorBinding,
   localProblemRuntimeIdentity,
   recoverRevealCalldata,
+  runtimePythonExecutable,
   resolveOperatorFinality,
   sha256Canonical,
   solverLifecycleDecision,
@@ -74,6 +75,19 @@ const RUNTIME_BINDING_ADDRESSES = {
 };
 const RUNTIME_IMAGE = `sha256:${"a".repeat(64)}`;
 const RUNTIME_SOURCE = `sha256:${"b".repeat(64)}`;
+
+test("runtime bridge interpreter selection requires an absolute configured path", () => {
+  assert.equal(runtimePythonExecutable({}), "python3");
+  assert.equal(runtimePythonExecutable({ P42_RUNTIME_PYTHON: "/opt/p42/bin/python3" }), "/opt/p42/bin/python3");
+  assert.throws(
+    () => runtimePythonExecutable({ P42_RUNTIME_PYTHON: "python3" }),
+    /must be an absolute interpreter path/,
+  );
+  assert.throws(
+    () => runtimePythonExecutable({ P42_RUNTIME_PYTHON: " /opt/p42/bin/python3" }),
+    /must be an absolute interpreter path/,
+  );
+});
 
 function runtimeBindingFixture(overrides = {}) {
   return {

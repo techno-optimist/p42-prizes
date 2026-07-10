@@ -5,9 +5,12 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { ethers } from "ethers";
 
+import { atomsFromScore } from "./lib.mjs";
+
 import {
   archiveCalldata,
   buildCheckpoint,
+  buildMultiBoardCheckpoint,
   compareReplayToSnapshot,
   EVENT_CATALOG,
   loadContractArtifacts,
@@ -17,6 +20,7 @@ import {
   REQUIRED_LIFECYCLE_COVERAGE,
   ReplayError,
   stableStringify,
+  validateMultiBoardCheckpoint,
 } from "./indexer.mjs";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -56,6 +60,18 @@ const STATUS = {
 
 function hash(number) {
   return `0x${BigInt(number).toString(16).padStart(64, "0")}`;
+}
+
+function address(number) {
+  return `0x${BigInt(number).toString(16).padStart(40, "0")}`;
+}
+
+function checkpointContract(number) {
+  return {
+    address: address(number),
+    deployedCodeHash: hash(number + 1000),
+    abiHash: hash(number + 2000),
+  };
 }
 
 function fixtureBuilder() {
@@ -403,6 +419,12 @@ const POLICY = {
 };
 
 describe("P42 deterministic indexer replay", () => {
+  it("rejects ambiguous exact-rational score notation", () => {
+    assert.equal(atomsFromScore("1/2"), 500_000_000_000_000_000n);
+    assert.throws(() => atomsFromScore("1/2/3"), /invalid exact rational/);
+    assert.throws(() => atomsFromScore("0.5"), /invalid exact rational/);
+  });
+
   it("pins a resolver-decision ABI event that emits challengerWins", () => {
     const event = loadContractArtifacts().challenges.abi.find(
       (entry) =>
@@ -689,6 +711,96 @@ describe("P42 deterministic indexer replay", () => {
       checks,
     };
     assert.equal(stableStringify(buildCheckpoint(args)), stableStringify(buildCheckpoint(args)));
+  });
+
+  it("keeps independent board reports in a deterministic v2 checkpoint", () => {
+    const events = lifecycleFixture();
+    const registration = events.find((event) => event.source === "registry" && event.eventName === "ProblemRegistered");
+    const frozen = events.find((event) => event.source === "registry" && event.eventName === "ProblemFrozen");
+    events.push(
+      {
+        ...registration,
+        index: 100,
+        args: { ...registration.args, problemId: 2n, pool: ADDR.pool, metadataURI: "ipfs://problem-two" },
+      },
+      { ...frozen, index: 101, args: { ...frozen.args, problemId: 2n } },
+    );
+    const config = { ...CONFIG, problemCount: 2 };
+    const replay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    const snapshot = snapshotFromReplay(replay);
+    const checks = compareReplayToSnapshot(replay, snapshot, config);
+    const args = {
+      binding: {
+        deploymentCommit: "a".repeat(40),
+        deploymentConfigHash: hash(99),
+        chainId: 84532,
+        startBlock: 1,
+        contracts: {
+          timelock: checkpointContract(1),
+          registry: checkpointContract(2),
+        },
+        boards: {
+          "1": {
+            pool: checkpointContract(11),
+            ledger: checkpointContract(12),
+            submissions: checkpointContract(13),
+            challenges: checkpointContract(14),
+          },
+          "2": {
+            pool: checkpointContract(21),
+            ledger: checkpointContract(22),
+            submissions: checkpointContract(23),
+            challenges: checkpointContract(24),
+          },
+        },
+      },
+      finalityPolicy: POLICY,
+      fromBlock: 1,
+      toBlock: 21,
+      toBlockHash: hash(1021),
+      boards: [
+        {
+          problem: { problemId: "1", problemSlug: "hadamard-mini" },
+          scan: { events },
+          replay,
+          snapshot,
+          checks,
+        },
+        {
+          problem: { problemId: "2", problemSlug: "arithmetic-kakeya" },
+          scan: { events },
+          replay,
+          snapshot,
+          checks,
+        },
+      ],
+    };
+    const checkpoint = buildMultiBoardCheckpoint(args);
+    assert.equal(checkpoint.schema, "p42-prizes/indexer-checkpoint/v2");
+    assert.deepEqual(checkpoint.boards.map((board) => board.problemId), ["1", "2"]);
+    assert.equal(checkpoint.reconstruction.ok, true);
+    assert.equal(stableStringify(checkpoint), stableStringify(buildMultiBoardCheckpoint(args)));
+
+    const reordered = structuredClone(checkpoint);
+    reordered.boards.reverse();
+    assert.throws(
+      () => validateMultiBoardCheckpoint(reordered),
+      /ordered exactly as manifestBinding\.boards registry ids/,
+    );
+
+    const falseAggregate = structuredClone(checkpoint);
+    falseAggregate.reconstruction.ok = false;
+    assert.throws(
+      () => validateMultiBoardCheckpoint(falseAggregate),
+      /reconstruction\.ok must equal the conjunction of board evidence states/,
+    );
+
+    const alteredAggregateCheck = structuredClone(checkpoint);
+    alteredAggregateCheck.reconstruction.checks[0].actual = "tampered";
+    assert.throws(
+      () => validateMultiBoardCheckpoint(alteredAggregateCheck),
+      /checks must contain every board check in deterministic order/,
+    );
   });
 });
 

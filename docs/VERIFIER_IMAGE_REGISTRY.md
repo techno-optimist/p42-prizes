@@ -25,6 +25,9 @@ A problem may be marked fundable only when all of these match:
   `p42-source-tree-sha256/v1` `verifierSourceDigest` over the copied verifier
   source tree. The on-chain `verifierSourceHash` must equal
   `keccak256(utf8(verifierSourceDigest))`.
+- A v2 multi-board ceremony first runs `admit-ready` against the local matrix,
+  then records `admissionMatrixDigest`, a durable `ipfs://` or `ar://` matrix
+  URI, and on-chain `admissionMatrixHash = keccak256(utf8(admissionMatrixDigest))`.
 
 Run the local gate:
 
@@ -48,6 +51,8 @@ letting a placeholder digest become funding evidence.
 | `verifierSourceDigest` | deployment manifest | Canonical source-tree digest for the named slug/version; the local command is part of this tree |
 | `ProblemRegistry.verifierSourceHash` | Base deployment manifest | Must equal `keccak256(utf8(verifierSourceDigest))` under `p42-source-tree-sha256/v1` |
 | `ProblemRegistry.verifierImageHash` | Base deployment manifest | Must equal `keccak256(utf8(verifierImageDigest))`; the manifest also records the bare digest and `keccak256-utf8/v1` relation |
+| `admissionMatrixDigest` / `admissionMatrixURI` | v2 deployment manifest | Canonical validated matrix digest plus a durable retrieval locator; the local path is only a deploy-time input |
+| `ProblemRegistry.admissionMatrixHash` | Base deployment manifest | Must equal `keccak256(utf8(admissionMatrixDigest))` under `keccak256-utf8/v1` |
 | Portal `chainProvenance.verifierImageHash` | manifest/indexer | Shows `local-only` until a real deployment/reconciliation exists |
 
 ## Known Limitation: Host Metadata Is Self-Attested (Spoofable)

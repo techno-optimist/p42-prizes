@@ -303,6 +303,21 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
   });
 
+  it("binds a multi-board registration to its expected sequential registry id", async function () {
+    const fixture = await deployFixture();
+    const config = await registryConfig(fixture);
+
+    await expectCustomError(
+      fixture.registry.registerExpected(config, 2),
+      fixture.registry,
+      "P42_UNEXPECTED_PROBLEM_ID",
+    );
+    await fixture.registry.registerExpected(config, 1);
+    assert.equal(await fixture.registry.problemCount(), 1n);
+    await fixture.registry.registerExpected({ ...config, metadataURI: "ipfs://second-board" }, 2);
+    assert.equal(await fixture.registry.problemCount(), 2n);
+  });
+
   it("supports explicit registry freeze before funding", async function () {
     const fixture = await deployFixture();
     await fixture.registry.register(await registryConfig(fixture));

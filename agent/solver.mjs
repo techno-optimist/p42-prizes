@@ -16,12 +16,19 @@ import {
   atomsFromImprovement,
   buildSignedTransactionRecord,
   chainScoreAtoms,
+  problemRunnerConfig,
   problemObjective,
   runVerifier,
   sha256Canonical,
   solverLifecycleDecision,
   submissionIdFromCommittedReceipt,
 } from "./lib.mjs";
+import {
+  MANIFEST_SCHEMA_V2,
+  manifestProblemContracts,
+  manifestProblemForRegistryId,
+  validateManifestEvidence,
+} from "./indexer.mjs";
 import { putBlob } from "./da-local.mjs";
 import { uploadToArweave } from "./da-arweave.mjs";
 
@@ -37,6 +44,7 @@ const RPC = arg("rpc", "https://sepolia.base.org");
 const MANIFEST = arg("manifest");
 const PROBLEM = arg("problem");
 const SOLUTION = arg("solution");
+const REGISTRY_PROBLEM_ID = arg("registry-problem-id", null);
 const FUND = arg("fund", null);
 const CLOSE = arg("close", false);
 const DA_DIR = arg("da-dir", null);
@@ -51,7 +59,7 @@ const MAX_CONSECUTIVE_ERRORS = Number(arg("max-consecutive-errors", "12"));
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 
 if (!MANIFEST || !PROBLEM || !SOLUTION) {
-  console.error("required: --manifest <path> --problem <dir> --solution <file>");
+  console.error("required: --manifest <path> --problem <dir> --solution <file> [--registry-problem-id <id>]");
   process.exit(2);
 }
 if (!Number.isInteger(MAX_CONSECUTIVE_ERRORS) || MAX_CONSECUTIVE_ERRORS < 1 || POLL_MS < 0) {
@@ -70,13 +78,25 @@ const abi = (name) => JSON.parse(
   readFileSync(`${REPO_ROOT}/contracts/artifacts/src/${name}.sol/${name}.json`, "utf8"),
 ).abi;
 const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
+if (manifest.schema === MANIFEST_SCHEMA_V2) {
+  if (!REGISTRY_PROBLEM_ID) {
+    throw new Error("--registry-problem-id is required for a multi-board deployment manifest");
+  }
+  validateManifestEvidence(manifest);
+}
+const manifestProblem = REGISTRY_PROBLEM_ID
+  ? manifestProblemForRegistryId(manifest, REGISTRY_PROBLEM_ID)
+  : manifest.problems?.[0] ?? null;
+const boardContracts = manifestProblem
+  ? manifestProblemContracts(manifest, manifestProblem)
+  : manifest.contracts;
 const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
 const solver = wallet.address;
-const pool = new ethers.Contract(manifest.contracts.pool.address, abi("P42BountyPool"), wallet);
-const ledger = new ethers.Contract(manifest.contracts.ledger.address, abi("P42PayoutLedger"), wallet);
-const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
-const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
+const pool = new ethers.Contract(boardContracts.pool.address, abi("P42BountyPool"), wallet);
+const ledger = new ethers.Contract(boardContracts.ledger.address, abi("P42PayoutLedger"), wallet);
+const subs = new ethers.Contract(boardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
+const chal = new ethers.Contract(boardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
 
 let state;
 let statePath;
@@ -354,6 +374,10 @@ async function runLifecycle(submissionId, revealArgs) {
 }
 
 async function main() {
+  const runner = problemRunnerConfig(resolve(PROBLEM));
+  if (manifestProblem && runner.problemId !== manifestProblem.problemSlug) {
+    throw new Error("--problem does not match the selected deployment-manifest board");
+  }
   const verdict = runVerifier(resolve(PROBLEM), resolve(SOLUTION), REPO_ROOT);
   if (!verdict.valid && !FORCE) throw new Error("local exact verifier rejected the solution (use --force only for adversarial testing)");
   const objective = problemObjective(resolve(PROBLEM));
@@ -368,6 +392,7 @@ async function main() {
   const onchainDa = await subs.onchainDa();
   const identity = {
     chain_id: Number(network.chainId),
+    registry_problem_id: manifestProblem?.problemId ?? null,
     submission_contract: String(subs.target).toLowerCase(),
     solver: solver.toLowerCase(),
     problem: resolve(PROBLEM),

@@ -6,6 +6,7 @@ import { computeDeploymentConfigHash } from "../../agent/indexer.mjs";
 import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
 
 export const MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v1";
+export const MULTIBOARD_MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v2";
 export const PENDING_SETUP_STATUS = "pending-governance-setup";
 export const COMPLETE_SETUP_STATUS = "governance-setup-complete";
 export const DEPLOYMENT_RESERVATION_SCHEMA = "p42-prizes/deployment-reservation/v1";
@@ -16,6 +17,8 @@ export const VERIFIER_IMAGE_HASH_RELATION = "keccak256(utf8(verifierImageDigest)
 export const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v1";
 export const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
 export const VERIFIER_SOURCE_HASH_RELATION = "keccak256(utf8(verifierSourceDigest))";
+export const ADMISSION_MATRIX_HASH_ALGORITHM = "keccak256-utf8/v1";
+export const ADMISSION_MATRIX_HASH_RELATION = "keccak256(utf8(admissionMatrixDigest))";
 
 export const DEFAULT_FINALITY_POLICY = Object.freeze({
   mode: "confirmations",
@@ -34,6 +37,8 @@ const VERIFIER_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?
 const CHILD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
 const ALL_CONTRACT_KEYS = ["timelock", ...CHILD_CONTRACT_KEYS];
 const PAUSE_TARGET_KEYS = ["ledger", "submissions", "challenges"];
+const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
+const BOARD_DEPLOYMENT_KEYS = new Set(BOARD_CONTRACT_KEYS);
 
 const PARAM_ENV = Object.freeze({
   alphaBps: "P42_ALPHA_BPS",
@@ -154,6 +159,43 @@ function canonicalVerifierSourceDigest(value, label) {
     throw new Error(`${label} must be a canonical sha256:<64 lowercase hex> source-tree digest`);
   }
   return value;
+}
+
+function canonicalAdmissionMatrixDigest(value, label) {
+  if (typeof value !== "string" || !VERIFIER_IMAGE_DIGEST_PATTERN.test(value)) {
+    throw new Error(`${label} must be a canonical sha256:<64 lowercase hex> admission-matrix digest`);
+  }
+  return value;
+}
+
+export function admissionMatrixHashForDigest(ethers, admissionMatrixDigest, label = "admissionMatrixDigest") {
+  const digest = canonicalAdmissionMatrixDigest(admissionMatrixDigest, label);
+  return ethers.keccak256(ethers.toUtf8Bytes(digest));
+}
+
+export function assertAdmissionMatrixAnchor(
+  ethers,
+  { admissionMatrixDigest, admissionMatrixHash, admissionMatrixHashAlgorithm },
+  {
+    digestLabel = "admissionMatrixDigest",
+    hashLabel = "admissionMatrixHash",
+    algorithmLabel = "admissionMatrixHashAlgorithm",
+  } = {},
+) {
+  if (admissionMatrixHashAlgorithm !== ADMISSION_MATRIX_HASH_ALGORITHM) {
+    throw new Error(`${algorithmLabel} must equal ${ADMISSION_MATRIX_HASH_ALGORITHM}`);
+  }
+  const digest = canonicalAdmissionMatrixDigest(admissionMatrixDigest, digestLabel);
+  const hash = nonzeroHash(ethers, hashLabel, admissionMatrixHash);
+  const expectedHash = admissionMatrixHashForDigest(ethers, digest, digestLabel);
+  if (hash !== expectedHash) {
+    throw new Error(`${hashLabel} must equal ${ADMISSION_MATRIX_HASH_RELATION}: expected ${expectedHash}`);
+  }
+  return {
+    admissionMatrixDigest: digest,
+    admissionMatrixHashAlgorithm,
+    admissionMatrixHash: hash,
+  };
 }
 
 export function verifierSourceHashForDigest(ethers, verifierSourceDigest, label = "verifierSourceDigest") {
@@ -413,6 +455,11 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
           `ceil-quantized min_improvement "${String(certifiedMinImprovement).trim()}" is ${expectedMinAtoms}`
       );
     }
+    problem.certifiedObjective = {
+      seedBest: String(certifiedSeed).trim(),
+      direction: String(certifiedDirection).trim(),
+      minImprovement: String(certifiedMinImprovement).trim(),
+    };
   }
 
   return {
@@ -545,8 +592,26 @@ export function buildSetupOperations({
   timelockAddress,
   addresses,
   config,
-  interfaces
+  interfaces,
+  problemId = 1n,
+  labelPrefix = "",
+  sequenceOffset = 0,
 }) {
+  const normalizedProblemId = BigInt(problemId);
+  if (normalizedProblemId < 1n) throw new Error("problemId must be positive");
+  if (!Number.isInteger(sequenceOffset) || sequenceOffset < 0) {
+    throw new Error("sequenceOffset must be a non-negative integer");
+  }
+  const labelFor = (suffix) => labelPrefix ? `${labelPrefix}.${suffix}` : suffix;
+  const labels = Object.freeze({
+    poolSetLedger: labelFor("pool.setLedger"),
+    ledgerSetCreditRecorder: labelFor("ledger.setCreditRecorder"),
+    poolSetSubmissionManager: labelFor("pool.setSubmissionManager"),
+    submissionsSetChallengeManager: labelFor("submissions.setChallengeManager"),
+    registryRegister: labelFor("registry.register"),
+    poolSetRegistry: labelFor("pool.setRegistry"),
+    registryFreeze: labelFor("registry.freeze"),
+  });
   const registryConfig = {
     specHash: config.problem.specHash,
     verifierSourceHash: config.problem.verifierSourceHash,
@@ -562,71 +627,71 @@ export function buildSetupOperations({
   };
   const definitions = [
     {
-      label: "pool.setLedger",
+      label: labels.poolSetLedger,
       operationClass: "standard",
       target: addresses.pool,
       data: interfaces.pool.encodeFunctionData("setLedger", [addresses.ledger]),
       dependsOnLabels: []
     },
     {
-      label: "ledger.setCreditRecorder",
+      label: labels.ledgerSetCreditRecorder,
       operationClass: "standard",
       target: addresses.ledger,
       data: interfaces.ledger.encodeFunctionData("setCreditRecorder", [addresses.submissions]),
       dependsOnLabels: []
     },
     {
-      label: "pool.setSubmissionManager",
+      label: labels.poolSetSubmissionManager,
       operationClass: "standard",
       target: addresses.pool,
       data: interfaces.pool.encodeFunctionData("setSubmissionManager", [addresses.submissions]),
-      dependsOnLabels: ["pool.setLedger"]
+      dependsOnLabels: [labels.poolSetLedger]
     },
     {
-      label: "submissions.setChallengeManager",
+      label: labels.submissionsSetChallengeManager,
       operationClass: "standard",
       target: addresses.submissions,
       data: interfaces.submissions.encodeFunctionData("setChallengeManager", [addresses.challenges]),
-      dependsOnLabels: ["ledger.setCreditRecorder"]
+      dependsOnLabels: [labels.ledgerSetCreditRecorder]
     },
     {
-      label: "registry.register",
+      label: labels.registryRegister,
       operationClass: "standard",
       target: addresses.registry,
-      data: interfaces.registry.encodeFunctionData("register", [registryConfig]),
+      data: interfaces.registry.encodeFunctionData("registerExpected", [registryConfig, normalizedProblemId]),
       dependsOnLabels: [
-        "pool.setLedger",
-        "ledger.setCreditRecorder",
-        "pool.setSubmissionManager",
-        "submissions.setChallengeManager"
+        labels.poolSetLedger,
+        labels.ledgerSetCreditRecorder,
+        labels.poolSetSubmissionManager,
+        labels.submissionsSetChallengeManager
       ]
     },
     {
-      label: "pool.setRegistry",
+      label: labels.poolSetRegistry,
       operationClass: "standard",
       target: addresses.pool,
-      data: interfaces.pool.encodeFunctionData("setRegistry", [addresses.registry, 1n]),
-      dependsOnLabels: ["registry.register"]
+      data: interfaces.pool.encodeFunctionData("setRegistry", [addresses.registry, normalizedProblemId]),
+      dependsOnLabels: [labels.registryRegister]
     },
     {
-      label: "registry.freeze",
+      label: labels.registryFreeze,
       operationClass: "standard",
       target: addresses.registry,
-      data: interfaces.registry.encodeFunctionData("freeze", [1n]),
-      dependsOnLabels: ["registry.register", "pool.setRegistry"]
+      data: interfaces.registry.encodeFunctionData("freeze", [normalizedProblemId]),
+      dependsOnLabels: [labels.registryRegister, labels.poolSetRegistry]
     },
     ...PAUSE_TARGET_KEYS.map((key) => ({
-      label: `timelock.setPauseTarget.${key}`,
+      label: labelFor(`timelock.setPauseTarget.${key}`),
       operationClass: "override",
       target: timelockAddress,
       data: interfaces.timelock.encodeFunctionData("setPauseTarget", [addresses[key], true]),
-      dependsOnLabels: ["registry.freeze"]
+      dependsOnLabels: [labels.registryFreeze]
     }))
   ];
 
   const byLabel = new Map();
   return definitions.map((definition, index) => {
-    const sequence = index + 1;
+    const sequence = sequenceOffset + index + 1;
     const value = 0n;
     const salt = operationSalt(
       ethers,
@@ -751,6 +816,80 @@ export function buildSetupOperations({
     byLabel.set(definition.label, operation);
     return operation;
   });
+}
+
+export function boardCeremonyConfig(config, problem) {
+  if (!problem || typeof problem !== "object") throw new Error("multi-board problem config is required");
+  for (const field of [
+    "fundingCapWei",
+    "onchainDa",
+    "maxSolutionBytes",
+    "earliestCloseTimestamp",
+    "closeByTimestamp",
+  ]) {
+    if (problem[field] === undefined) throw new Error(`multi-board problem is missing ${field}`);
+  }
+  return {
+    governance: config.governance,
+    roles: config.roles,
+    parameters: {
+      ...config.parameters,
+      fundingCapWei: BigInt(problem.fundingCapWei),
+      onchainDa: problem.onchainDa,
+      maxSolutionBytes: BigInt(problem.maxSolutionBytes),
+      earliestCloseTimestamp: BigInt(problem.earliestCloseTimestamp),
+      closeByTimestamp: BigInt(problem.closeByTimestamp),
+    },
+    problem,
+    finalityPolicy: config.finalityPolicy,
+  };
+}
+
+export function buildMultiBoardSetupOperations({
+  ethers,
+  chainId,
+  timelockAddress,
+  registryAddress,
+  config,
+  boards,
+  interfaces,
+}) {
+  if (!Array.isArray(boards) || boards.length < 1 || boards.length > 10) {
+    throw new Error("multi-board ceremony requires 1..10 board deployments");
+  }
+  const seenProblemIds = new Set();
+  const operations = [];
+  for (const [index, board] of boards.entries()) {
+    const problem = board?.problem;
+    const addresses = board?.addresses;
+    if (!problem || !addresses) throw new Error(`board ${index} requires problem and addresses`);
+    const problemId = BigInt(problem.problemId);
+    if (problemId < 1n || problemId !== BigInt(index + 1)) {
+      throw new Error(`board ${index} problemId must equal deterministic registry position ${index + 1}`);
+    }
+    if (seenProblemIds.has(problemId.toString())) throw new Error(`duplicate multi-board problemId ${problemId}`);
+    seenProblemIds.add(problemId.toString());
+    const boardConfig = boardCeremonyConfig(config, problem);
+    operations.push(...buildSetupOperations({
+      ethers,
+      chainId,
+      timelockAddress,
+      addresses: {
+        timelock: timelockAddress,
+        registry: registryAddress,
+        pool: addresses.pool,
+        ledger: addresses.ledger,
+        submissions: addresses.submissions,
+        challenges: addresses.challenges,
+      },
+      config: boardConfig,
+      interfaces,
+      problemId,
+      labelPrefix: `board/${problemId}`,
+      sequenceOffset: operations.length,
+    }));
+  }
+  return operations;
 }
 
 export function constructorArgsHash(ethers, factory, args) {
@@ -894,6 +1033,51 @@ export async function recordManifestOutputDeployment(path, key, deployment) {
   return { path: reservation.path, record };
 }
 
+export async function recordManifestOutputBoardDeployment(path, problemId, key, deployment) {
+  const normalizedProblemId = String(problemId);
+  if (!/^[1-9][0-9]*$/.test(normalizedProblemId)) {
+    throw new Error("board deployment reservation problemId must be a positive integer");
+  }
+  if (!BOARD_DEPLOYMENT_KEYS.has(key)) {
+    throw new Error(`board deployment reservation key must be one of ${[...BOARD_DEPLOYMENT_KEYS].join(", ")}`);
+  }
+  if (!deployment || typeof deployment !== "object") {
+    throw new Error("board deployment reservation entry must be an object");
+  }
+
+  const reservation = await readManifestOutputReservation(path);
+  const boards = reservation.record.deployments.boards ?? {};
+  if (!boards || typeof boards !== "object" || Array.isArray(boards)) {
+    throw new Error("deployment reservation boards journal is malformed");
+  }
+  const existingBoard = boards[normalizedProblemId] ?? {};
+  if (!existingBoard || typeof existingBoard !== "object" || Array.isArray(existingBoard)) {
+    throw new Error(`deployment reservation board ${normalizedProblemId} journal is malformed`);
+  }
+  const existing = existingBoard[key] ?? {};
+  for (const field of ["address", "txHash"]) {
+    if (existing[field] !== undefined && deployment[field] !== undefined && existing[field] !== deployment[field]) {
+      throw new Error(`board deployment reservation ${normalizedProblemId}.${key}.${field} changed during ceremony`);
+    }
+  }
+  const record = {
+    ...reservation.record,
+    updatedAt: new Date().toISOString(),
+    deployments: {
+      ...reservation.record.deployments,
+      boards: {
+        ...boards,
+        [normalizedProblemId]: {
+          ...existingBoard,
+          [key]: { ...existing, ...deployment },
+        },
+      },
+    },
+  };
+  await writeReservationAtomic(reservation.path, record);
+  return { path: reservation.path, record };
+}
+
 export async function completeManifestOutputReservation(path) {
   const output = resolve(path);
   const reservationPath = manifestOutputReservationPath(output);
@@ -909,6 +1093,43 @@ export async function completeManifestOutputReservation(path) {
 }
 
 export function requiredCompletionCheckNames(manifest) {
+  if (manifest?.schema === MULTIBOARD_MANIFEST_SCHEMA) {
+    const boardChecks = (manifest.problems ?? []).flatMap((problem) => {
+      const prefix = `board/${problem.problemId}`;
+      return [
+        ...BOARD_CONTRACT_KEYS.map((key) => `runtime.${prefix}.${key}`),
+        ...BOARD_CONTRACT_KEYS.map((key) => `owner.${prefix}.${key}`),
+        `config.${prefix}.pool`,
+        `config.${prefix}.ledger`,
+        `config.${prefix}.submissions`,
+        `config.${prefix}.challenges`,
+        `wiring.${prefix}.poolLedger`,
+        `wiring.${prefix}.ledgerCreditRecorder`,
+        `wiring.${prefix}.poolSubmissionManager`,
+        `wiring.${prefix}.submissionChallengeManager`,
+        `wiring.${prefix}.poolRegistry`,
+        `problem.${prefix}.registeredPinsAndConfig`,
+        `problem.${prefix}.frozen`,
+        ...PAUSE_TARGET_KEYS.map((key) => `pauseTarget.${prefix}.${key}`),
+        `funding.${prefix}.fundingArmedFalse`,
+        `funding.${prefix}.acceptingFundsFalse`,
+      ];
+    });
+    return [
+      "runtime.timelock",
+      "runtime.registry",
+      "owner.registry",
+      "governance.signers",
+      "governance.threshold",
+      "governance.delay",
+      "governance.overrideDelay",
+      "governance.operationGracePeriod",
+      "governance.guardian",
+      "registry.problemCount",
+      ...boardChecks,
+      ...manifest.setupTransactions.map((operation) => `operation.${operation.operationId}`),
+    ];
+  }
   return [
     ...ALL_CONTRACT_KEYS.map((key) => `runtime.${key}`),
     ...CHILD_CONTRACT_KEYS.map((key) => `owner.${key}`),
@@ -990,11 +1211,29 @@ export function completeSetupManifest(manifest, snapshot) {
       blockNumber: execution.blockNumber
     };
   });
-  const registration = completed.setupTransactions.find((operation) => operation.label === "registry.register");
-  completed.problems[0].registerTxHash = registration.txHash;
-  completed.problems[0].registerBlockNumber = registration.blockNumber;
-  completed.problems[0].registrationStatus = "registered-and-frozen";
-  completed.problems[0].explicitlyFrozen = true;
+  if (completed.schema === MULTIBOARD_MANIFEST_SCHEMA) {
+    completed.problems = completed.problems.map((problem) => {
+      const registration = completed.setupTransactions.find(
+        (operation) => operation.label === `board/${problem.problemId}.registry.register`,
+      );
+      if (!registration) {
+        throw new Error(`multi-board manifest is missing registry registration operation for problem ${problem.problemId}`);
+      }
+      return {
+        ...problem,
+        registerTxHash: registration.txHash,
+        registerBlockNumber: registration.blockNumber,
+        registrationStatus: "registered-and-frozen",
+        explicitlyFrozen: true,
+      };
+    });
+  } else {
+    const registration = completed.setupTransactions.find((operation) => operation.label === "registry.register");
+    completed.problems[0].registerTxHash = registration.txHash;
+    completed.problems[0].registerBlockNumber = registration.blockNumber;
+    completed.problems[0].registrationStatus = "registered-and-frozen";
+    completed.problems[0].explicitlyFrozen = true;
+  }
   completed.deploymentConfigHash = computeDeploymentConfigHash(completed);
   return completed;
 }

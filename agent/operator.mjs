@@ -35,7 +35,11 @@ import {
   validateOperatorCursor,
   validateOperatorExecutionMode,
 } from "./lib.mjs";
-import { validateManifestEvidence } from "./indexer.mjs";
+import {
+  manifestProblemContracts,
+  manifestProblemForRegistryId,
+  validateManifestEvidence,
+} from "./indexer.mjs";
 import { getBlob } from "./da-local.mjs";
 import { fetchFromArweave, findTxidByCid } from "./da-arweave.mjs";
 
@@ -99,12 +103,18 @@ const abi = (name) => JSON.parse(
   readFileSync(`${REPO_ROOT}/contracts/artifacts/src/${name}.sol/${name}.json`, "utf8"),
 ).abi;
 const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
+const selectedManifestProblem = Array.isArray(manifest.problems)
+  ? manifestProblemForRegistryId(manifest, REGISTRY_PROBLEM_ID)
+  : null;
+const selectedBoardContracts = selectedManifestProblem
+  ? manifestProblemContracts(manifest, selectedManifestProblem)
+  : manifest.contracts;
 const problem = resolve(PROBLEM);
 const runnerConfig = problemRunnerConfig(problem);
 const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
-const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
-const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
+const subs = new ethers.Contract(selectedBoardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
+const chal = new ethers.Contract(selectedBoardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
 const registry = new ethers.Contract(manifest.contracts.registry.address, abi("P42ProblemRegistry"), wallet);
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const log = (...values) => console.log(...values);

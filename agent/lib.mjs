@@ -2,7 +2,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { ethers } from "ethers";
 
 // Rational "improvement" -> integer atoms over a fixed 1e6 denominator.
@@ -35,6 +35,7 @@ export const REGISTRY_BINDING_SCHEMA = "p42-registry-binding/v1";
 const BARE_SHA256_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const POSITIVE_DECIMAL_RE = /^[1-9][0-9]*$/;
 const UNSIGNED_DECIMAL_RE = /^(0|[1-9][0-9]*)$/;
+const RATIONAL_RE = /^-?[0-9]+(?:\/-?[0-9]+)?$/;
 const PROBLEM_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const VERIFIER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 
@@ -42,6 +43,9 @@ const VERIFIER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 // normalized {num, den} with den > 0.
 function parseRational(value) {
   const text = String(value).trim();
+  if (!RATIONAL_RE.test(text)) {
+    throw new Error(`invalid exact rational: ${text}`);
+  }
   const [numStr, denStr = "1"] = text.split("/");
   let num = BigInt(numStr);
   let den = BigInt(denStr);
@@ -960,12 +964,21 @@ export async function receiptForSignedTransaction(provider, record) {
   return reconciled.transaction.wait();
 }
 
+export function runtimePythonExecutable(env = process.env) {
+  const configured = env.P42_RUNTIME_PYTHON;
+  if (configured === undefined || configured === "") return "python3";
+  if (typeof configured !== "string" || configured.trim() !== configured || !isAbsolute(configured)) {
+    throw new Error("P42_RUNTIME_PYTHON must be an absolute interpreter path when configured");
+  }
+  return configured;
+}
+
 export function runRuntimeBridge(repoRoot, args) {
   const env = { ...process.env, PYTHONPATH: `${repoRoot}/src` };
   for (const name of Object.keys(env)) {
     if (/(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD|RPC_URL)/i.test(name)) delete env[name];
   }
-  const completed = spawnSync("python3", [`${repoRoot}/agent/runtime_bridge.py`, ...args], {
+  const completed = spawnSync(runtimePythonExecutable(env), [`${repoRoot}/agent/runtime_bridge.py`, ...args], {
     cwd: repoRoot,
     encoding: "utf8",
     env,

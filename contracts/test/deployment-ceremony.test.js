@@ -10,11 +10,15 @@ import { network } from "hardhat";
 
 import { computeDeploymentConfigHash, validateManifestEvidence } from "../../agent/indexer.mjs";
 import {
+  ADMISSION_MATRIX_HASH_ALGORITHM,
+  admissionMatrixHashForDigest,
+  assertAdmissionMatrixAnchor,
   assertVerifierImageAnchor,
   assertVerifierSourceAnchor,
   assertManifestOutputIsVacant,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
+  buildMultiBoardSetupOperations,
   buildSetupOperations,
   completeManifestOutputReservation,
   completeSetupManifest,
@@ -22,10 +26,12 @@ import {
   constructorArgsFor,
   manifestOutputReservationPath,
   MANIFEST_SCHEMA,
+  MULTIBOARD_MANIFEST_SCHEMA,
   PENDING_SETUP_STATUS,
   readManifestOutputReservation,
   readCeremonyConfig,
   recordManifestOutputDeployment,
+  recordManifestOutputBoardDeployment,
   reserveManifestOutput,
   requiredCompletionCheckNames,
   VERIFIER_IMAGE_HASH_ALGORITHM,
@@ -34,6 +40,12 @@ import {
   verifierImageHashForDigest,
   verifierSourceHashForDigest
 } from "../scripts/deployment-ceremony-helper.js";
+import {
+  MULTIBOARD_CEREMONY_SCHEMA,
+  readMultiBoardCeremonyConfig,
+  validateMultiBoardAdmissionPreflight,
+  validateMultiBoardDeploymentTimestamps,
+} from "../scripts/multiboard-ceremony-helper.js";
 
 const { ethers } = await network.create();
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +68,7 @@ const ADDRESSES = Object.freeze({
 });
 const VERIFIER_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
 const VERIFIER_SOURCE_DIGEST = `sha256:${"b".repeat(64)}`;
+const ADMISSION_MATRIX_DIGEST = `sha256:${"c".repeat(64)}`;
 
 function readExampleManifest() {
   return JSON.parse(
@@ -118,6 +131,68 @@ function config() {
   return readCeremonyConfig(ethers, validEnv(), { deployerAddress: ADDRESSES.deployer });
 }
 
+function multiBoardInput() {
+  const env = validEnv();
+  const problem = {
+    fundingCapWei: env.P42_FUNDING_CAP_WEI,
+    maxSolutionBytes: env.P42_MAX_SOLUTION_BYTES,
+    earliestCloseTimestamp: env.P42_EARLIEST_CLOSE_TIMESTAMP,
+    closeByTimestamp: env.P42_CLOSE_BY_TIMESTAMP,
+    specHash: env.P42_PROBLEM_SPEC_HASH,
+    problemSlug: env.P42_PROBLEM_SLUG,
+    verifierVersion: env.P42_VERIFIER_VERSION,
+    verifierSourceDigest: env.P42_VERIFIER_SOURCE_DIGEST,
+    verifierSourceHash: env.P42_VERIFIER_SOURCE_HASH,
+    verifierImageDigest: env.P42_VERIFIER_IMAGE_DIGEST,
+    verifierImageHash: env.P42_VERIFIER_IMAGE_HASH,
+    admissionMatrixDigest: ADMISSION_MATRIX_DIGEST,
+    admissionMatrixURI: "ipfs://p42-admission-matrix",
+    admissionMatrixPath: "admission-matrix.json",
+    metadataURI: env.P42_METADATA_URI,
+    seedScoreAtoms: env.P42_SEED_SCORE_ATOMS,
+    minImprovementAtoms: env.P42_MIN_IMPROVEMENT_ATOMS,
+    onchainDa: true,
+    certifiedObjective: {
+      seedBest: "1000",
+      direction: "minimize",
+      minImprovement: "1/1000000000000000000",
+    },
+  };
+  return {
+    schema: MULTIBOARD_CEREMONY_SCHEMA,
+    governance: {
+      signers: env.P42_GOVERNANCE_SIGNERS.split(","),
+      threshold: env.P42_GOVERNANCE_THRESHOLD,
+      delaySeconds: env.P42_GOVERNANCE_DELAY_SECONDS,
+      guardian: env.P42_GUARDIAN_ADDRESS,
+    },
+    roles: {
+      treasury: env.P42_TREASURY_ADDRESS,
+      resolver: env.P42_RESOLVER_ADDRESS,
+    },
+    parameters: {
+      alphaBps: env.P42_ALPHA_BPS,
+      betaBps: env.P42_BETA_BPS,
+      challengeWindowSeconds: env.P42_CHALLENGE_WINDOW_SECONDS,
+      feeBps: env.P42_FEE_BPS,
+      minCounterBondWei: env.P42_MIN_COUNTER_BOND_WEI,
+      minPostingBondWei: env.P42_MIN_POSTING_BOND_WEI,
+      rerunCostMultiplierBps: env.P42_RERUN_COST_MULTIPLIER_BPS,
+      rerunCostWei: env.P42_RERUN_COST_WEI,
+      resolverDecisionBondWei: env.P42_RESOLVER_DECISION_BOND_WEI,
+      resolverFraudWindowSeconds: env.P42_RESOLVER_FRAUD_WINDOW_SECONDS,
+    },
+    problems: [
+      problem,
+      {
+        ...problem,
+        problemSlug: "arithmetic-kakeya",
+        metadataURI: "ipfs://p42-arithmetic-kakeya",
+      },
+    ],
+  };
+}
+
 function constructorArgs(deploymentConfig) {
   return {
     timelock: constructorArgsFor("P42MultisigTimelock", deploymentConfig, ADDRESSES),
@@ -164,6 +239,83 @@ function minimalManifest(setupTransactions) {
 }
 
 describe("deployment ceremony input gate", () => {
+  it("parses a strict multi-board ceremony with independent board terms", () => {
+    const input = multiBoardInput();
+    const parsed = readMultiBoardCeremonyConfig(ethers, input, { deployerAddress: ADDRESSES.deployer });
+    assert.equal(parsed.problems.length, 2);
+    assert.deepEqual(parsed.problems.map((problem) => problem.problemId), ["1", "2"]);
+    assert.deepEqual(parsed.problems[0].certifiedObjective, input.problems[0].certifiedObjective);
+    assert.equal(parsed.problems[1].problemSlug, "arithmetic-kakeya");
+    assert.equal(parsed.problems[0].fundingCapWei, 10_000_000_000_000_000_000n);
+    assert.equal(parsed.problems[0].admissionMatrixDigest, ADMISSION_MATRIX_DIGEST);
+    assert.equal(parsed.problems[0].admissionMatrixHashAlgorithm, ADMISSION_MATRIX_HASH_ALGORITHM);
+    assert.equal(
+      parsed.problems[0].admissionMatrixHash,
+      admissionMatrixHashForDigest(ethers, ADMISSION_MATRIX_DIGEST),
+    );
+    assert.doesNotThrow(() => validateMultiBoardDeploymentTimestamps(parsed, 1_700_000_000n));
+
+    const duplicateSlug = structuredClone(input);
+    duplicateSlug.problems[1].problemSlug = duplicateSlug.problems[0].problemSlug;
+    assert.throws(
+      () => readMultiBoardCeremonyConfig(ethers, duplicateSlug, { deployerAddress: ADDRESSES.deployer }),
+      /problemSlug is duplicated/,
+    );
+
+    const partialCertifiedObjective = structuredClone(input);
+    partialCertifiedObjective.problems[0].certifiedObjective = { seedBest: "1000" };
+    assert.throws(
+      () => readMultiBoardCeremonyConfig(ethers, partialCertifiedObjective, { deployerAddress: ADDRESSES.deployer }),
+      /problem\.certifiedObjective keys mismatch/,
+    );
+
+    const missingCertifiedObjective = structuredClone(input);
+    delete missingCertifiedObjective.problems[0].certifiedObjective;
+    assert.throws(
+      () => readMultiBoardCeremonyConfig(ethers, missingCertifiedObjective, { deployerAddress: ADDRESSES.deployer }),
+      /problem keys mismatch \(missing: certifiedObjective/,
+    );
+
+    assert.throws(
+      () => validateMultiBoardDeploymentTimestamps(parsed, 1_798_000_000n),
+      /multi-board problem 1 \(hadamard-mini\): P42_EARLIEST_CLOSE_TIMESTAMP/,
+    );
+  });
+
+  it("binds each multi-board deployment to a validated admission-matrix digest", () => {
+    const parsed = readMultiBoardCeremonyConfig(ethers, multiBoardInput(), { deployerAddress: ADDRESSES.deployer });
+    const invocations = [];
+    const verified = validateMultiBoardAdmissionPreflight(ethers, parsed, {
+      repoRoot: REPO_ROOT,
+      runAdmitReady: (context) => invocations.push(context),
+      readMatrix: () => ({ matrix_hash: ADMISSION_MATRIX_DIGEST }),
+    });
+    assert.equal(invocations.length, 2);
+    assert.deepEqual(verified.map((entry) => entry.problemId), ["1", "2"]);
+    assert.doesNotThrow(() => assertAdmissionMatrixAnchor(ethers, parsed.problems[0]));
+
+    const mismatchedMatrix = structuredClone(parsed);
+    assert.throws(
+      () => validateMultiBoardAdmissionPreflight(ethers, mismatchedMatrix, {
+        repoRoot: REPO_ROOT,
+        runAdmitReady: () => {},
+        readMatrix: () => ({ matrix_hash: `sha256:${"d".repeat(64)}` }),
+      }),
+      /matrix_hash does not match admissionMatrixDigest/,
+    );
+
+    const tamperedAnchor = structuredClone(parsed);
+    tamperedAnchor.problems[0].admissionMatrixHash = `0x${"1".repeat(64)}`;
+    assert.throws(
+      () => validateMultiBoardAdmissionPreflight(ethers, tamperedAnchor, {
+        repoRoot: REPO_ROOT,
+        runAdmitReady: () => {},
+        readMatrix: () => ({ matrix_hash: ADMISSION_MATRIX_DIGEST }),
+      }),
+      /admissionMatrixHash must equal keccak256\(utf8\(admissionMatrixDigest\)\)/,
+    );
+  });
+
   it("requires a canonical digest and matching UTF-8 keccak anchor before deployment setup", () => {
     const accepted = readCeremonyConfig(ethers, validEnv(), { deployerAddress: ADDRESSES.deployer });
     assert.equal(accepted.problem.verifierImageDigest, VERIFIER_IMAGE_DIGEST);
@@ -307,6 +459,22 @@ describe("deployment ceremony input gate", () => {
       const journaled = await readManifestOutputReservation(output);
       assert.equal(journaled.record.deployments.timelock.state, "broadcast");
       assert.equal(journaled.record.deployments.timelock.address, ADDRESSES.timelock);
+
+      await recordManifestOutputBoardDeployment(output, "1", "pool", {
+        name: "P42BountyPool",
+        address: ADDRESSES.pool,
+        txHash: `0x${"b".repeat(64)}`,
+        state: "broadcast",
+        blockNumber: null,
+      });
+      const boardJournal = await readManifestOutputReservation(output);
+      assert.equal(boardJournal.record.deployments.boards["1"].pool.address, ADDRESSES.pool);
+      await assert.rejects(
+        () => recordManifestOutputBoardDeployment(output, "1", "pool", {
+          address: "0x0000000000000000000000000000000000000099",
+        }),
+        /changed during ceremony/,
+      );
 
       await assert.rejects(
         () => completeManifestOutputReservation(output),
@@ -463,6 +631,80 @@ describe("deployment ceremony construction", () => {
     assert.notEqual(first[0].operationId, first[0].overrideFallback.operationId);
   });
 
+  it("builds isolated board plans with deterministic expected registry ids", async () => {
+    const deploymentConfig = config();
+    const makeProblem = (problemId, metadataURI) => ({
+      ...deploymentConfig.problem,
+      problemId: String(problemId),
+      metadataURI,
+      fundingCapWei: deploymentConfig.parameters.fundingCapWei.toString(),
+      onchainDa: deploymentConfig.parameters.onchainDa,
+      maxSolutionBytes: deploymentConfig.parameters.maxSolutionBytes.toString(),
+      earliestCloseTimestamp: deploymentConfig.parameters.earliestCloseTimestamp.toString(),
+      closeByTimestamp: deploymentConfig.parameters.closeByTimestamp.toString(),
+    });
+    const boardPlan = await buildMultiBoardSetupOperations({
+      ethers,
+      chainId: 84532n,
+      timelockAddress: ADDRESSES.timelock,
+      registryAddress: ADDRESSES.registry,
+      config: deploymentConfig,
+      boards: [
+        {
+          problem: makeProblem(1, "ipfs://board-one"),
+          addresses: {
+            pool: ADDRESSES.pool,
+            ledger: ADDRESSES.ledger,
+            submissions: ADDRESSES.submissions,
+            challenges: ADDRESSES.challenges,
+          },
+        },
+        {
+          problem: makeProblem(2, "ipfs://board-two"),
+          addresses: {
+            pool: "0x0000000000000000000000000000000000000021",
+            ledger: "0x0000000000000000000000000000000000000022",
+            submissions: "0x0000000000000000000000000000000000000023",
+            challenges: "0x0000000000000000000000000000000000000024",
+          },
+        },
+      ],
+      interfaces: await interfaces(),
+    });
+    assert.equal(boardPlan.length, 20);
+    assert.deepEqual(boardPlan.map((operation) => operation.sequence), Array.from({ length: 20 }, (_value, index) => index + 1));
+    assert.ok(boardPlan.slice(0, 10).every((operation) => operation.label.startsWith("board/1.")));
+    assert.ok(boardPlan.slice(10).every((operation) => operation.label.startsWith("board/2.")));
+
+    const registry = (await interfaces()).registry;
+    const registerCalls = boardPlan
+      .filter((operation) => operation.label.endsWith("registry.register"))
+      .map((operation) => registry.decodeFunctionData("registerExpected", operation.data));
+    assert.deepEqual(registerCalls.map((call) => call[1]), [1n, 2n]);
+
+    const malformed = [{
+      problem: makeProblem(2, "ipfs://wrong-first-id"),
+      addresses: {
+        pool: ADDRESSES.pool,
+        ledger: ADDRESSES.ledger,
+        submissions: ADDRESSES.submissions,
+        challenges: ADDRESSES.challenges,
+      },
+    }];
+    assert.throws(
+      () => buildMultiBoardSetupOperations({
+        ethers,
+        chainId: 84532n,
+        timelockAddress: ADDRESSES.timelock,
+        registryAddress: ADDRESSES.registry,
+        config: deploymentConfig,
+        boards: malformed,
+        interfaces: {},
+      }),
+      /deterministic registry position 1/,
+    );
+  });
+
   it("binds the stable deployment config hash and detects config drift", async () => {
     const manifest = bindDeploymentConfigHash(minimalManifest(await operations()));
     assert.equal(manifest.deploymentConfigHash, computeDeploymentConfigHash(manifest));
@@ -521,6 +763,81 @@ describe("deployment ceremony construction", () => {
     assert.equal(completed.problems[0].fundingArmed, false);
     assert.equal(completed.problems[0].acceptingFunds, false);
     assert.equal(completed.deploymentConfigHash, computeDeploymentConfigHash(completed));
+  });
+
+  it("marks every v2 board registered only after every board check and operation is evidenced", async () => {
+    const deploymentConfig = config();
+    const makeProblem = (problemId, metadataURI) => ({
+      ...deploymentConfig.problem,
+      problemId: String(problemId),
+      metadataURI,
+      fundingCapWei: deploymentConfig.parameters.fundingCapWei.toString(),
+      onchainDa: deploymentConfig.parameters.onchainDa,
+      maxSolutionBytes: deploymentConfig.parameters.maxSolutionBytes.toString(),
+      earliestCloseTimestamp: deploymentConfig.parameters.earliestCloseTimestamp.toString(),
+      closeByTimestamp: deploymentConfig.parameters.closeByTimestamp.toString(),
+    });
+    const problems = [makeProblem(1, "ipfs://board-one"), makeProblem(2, "ipfs://board-two")];
+    const boardAddresses = [
+      {
+        pool: ADDRESSES.pool,
+        ledger: ADDRESSES.ledger,
+        submissions: ADDRESSES.submissions,
+        challenges: ADDRESSES.challenges,
+      },
+      {
+        pool: "0x0000000000000000000000000000000000000021",
+        ledger: "0x0000000000000000000000000000000000000022",
+        submissions: "0x0000000000000000000000000000000000000023",
+        challenges: "0x0000000000000000000000000000000000000024",
+      },
+    ];
+    const setupTransactions = buildMultiBoardSetupOperations({
+      ethers,
+      chainId: 84532n,
+      timelockAddress: ADDRESSES.timelock,
+      registryAddress: ADDRESSES.registry,
+      config: deploymentConfig,
+      boards: problems.map((problem, index) => ({ problem, addresses: boardAddresses[index] })),
+      interfaces: await interfaces(),
+    });
+    const manifest = {
+      schema: MULTIBOARD_MANIFEST_SCHEMA,
+      status: PENDING_SETUP_STATUS,
+      deploymentCommit: "0".repeat(40),
+      network: { name: "baseSepolia", chainId: 84532 },
+      roles: { owner: ADDRESSES.timelock },
+      parameters: {},
+      contracts: {},
+      governanceSetup: { status: "pending", completedAt: null, completionBlock: null, checks: [] },
+      setupTransactions,
+      problems,
+      indexer: { startBlock: 1, finalityPolicy: { mode: "confirmations", confirmations: 64 } },
+    };
+    const snapshot = {
+      checkedAt: "2026-07-09T00:00:00.000Z",
+      checkedBlock: 100,
+      checks: requiredCompletionCheckNames(manifest).map((name) => ({ name, ok: true })),
+      operations: setupTransactions.map((operation, index) => ({
+        operationId: operation.operationId,
+        executedOperationId: operation.operationId,
+        executedOperationClass: operation.operationClass,
+        state: "executed",
+        txHash: `0x${String(index + 1).padStart(64, "0")}`,
+        blockNumber: 50 + index,
+      })),
+    };
+    const completed = completeSetupManifest(manifest, snapshot);
+    assert.equal(completed.status, "governance-setup-complete");
+    assert.deepEqual(completed.problems.map((problem) => problem.registrationStatus), [
+      "registered-and-frozen",
+      "registered-and-frozen",
+    ]);
+    assert.deepEqual(completed.problems.map((problem) => problem.explicitlyFrozen), [true, true]);
+    assert.deepEqual(
+      completed.problems.map((problem) => problem.registerTxHash),
+      [completed.setupTransactions[4].txHash, completed.setupTransactions[14].txHash],
+    );
   });
 });
 

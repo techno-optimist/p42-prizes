@@ -33,6 +33,21 @@ the operator compares the event fingerprint with `revealInstanceHashOf` on the
 current canonical chain; the contract also rejects a mismatch. This supplements,
 but does not replace, finalized-block/reorg monitoring.
 
+## DGX Runtime
+
+The Python bridge used by `agent/operator.mjs` defaults to `python3`. On DGX,
+the system interpreter is deliberately externally managed, so the operator must
+use the existing isolated environment rather than attempting a global `pip`
+install:
+
+```bash
+export P42_RUNTIME_PYTHON=/home/chronos/inference-venv/bin/python3
+```
+
+The bridge accepts only an absolute configured interpreter path and invokes it
+without a shell. This controls the trusted queue/worker bridge only; untrusted
+verifier payloads still run in the pinned Docker sandbox.
+
 ## Trust Boundary
 
 - DGX/CHRONOS/Hermes output is evidence, not authority.
