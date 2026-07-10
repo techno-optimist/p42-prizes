@@ -11,6 +11,7 @@ from test_adversarial import valid_campaign_report
 from test_governance import valid_governance_report
 from test_incident import valid_drill_report
 from test_legal import valid_legal_memo
+from test_operational_controls import valid_report as valid_operational_controls
 from test_runner_burst import _fixture as runner_burst_fixture
 
 
@@ -35,6 +36,7 @@ ATTESTATION_GATE_CASES = [
     ("governance-signoff-validate", valid_governance_report),
     ("incident-drill-validate", valid_drill_report),
     ("adversarial-campaign-validate", valid_campaign_report),
+    ("operational-controls-validate", valid_operational_controls),
 ]
 
 

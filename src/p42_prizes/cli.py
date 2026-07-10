@@ -29,6 +29,10 @@ from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_rep
 from p42_prizes.legal import ChainReader, LegalMemoError, normalize_legal_memo
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
+from p42_prizes.operational_controls import (
+    OperationalControlsError,
+    normalize_operational_controls,
+)
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
 from p42_prizes.readiness import validate_fundable_admission
 from p42_prizes.runner_alerts import RunnerAlertError, build_runner_alerts
@@ -540,6 +544,23 @@ def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_operational_controls_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_operational_controls(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
+        _enforce_gate_schema(report, "operational-controls.schema.json")
+    except (AdmissionError, OperationalControlsError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -789,6 +810,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_attestation_validation_args(legal_memo)
     legal_memo.add_argument("--output")
     legal_memo.set_defaults(func=_cmd_legal_memo_validate)
+
+    operational_controls = subparsers.add_parser(
+        "operational-controls-validate",
+        help="validate and hash Gate 2 wallet/session and abuse-control evidence",
+    )
+    operational_controls.add_argument("--report", required=True)
+    _add_attestation_validation_args(operational_controls)
+    operational_controls.add_argument("--output")
+    operational_controls.set_defaults(func=_cmd_operational_controls_validate)
 
     return parser
 
