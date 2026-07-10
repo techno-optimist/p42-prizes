@@ -152,6 +152,12 @@ events and finalized contract storage. It fails closed if the RPC cannot supply
 the full range or any evidence binding is incomplete; queue and local envelope
 rows do not determine the three-open cap.
 
+Each reservation embeds a durable action intent. Pre-journal failures release
+it; after signed raw bytes are journaled, the intent stores the exact journal
+path and transaction hash so restart resumes without consuming another pending
+slot. Lock ownership is token/PID/host-bound and never expires by age; only a
+same-host `ESRCH` owner can be reclaimed.
+
 ## Resolver Path
 
 `resolver.mjs` resolves only from evidence that independently passes all of the

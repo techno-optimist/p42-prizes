@@ -6,9 +6,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { ethers } from "ethers";
 import {
-  buildClaimBondPolicy, claimedBondAmountFromReceipt, finalizeChallengeSpend, limitsFromProvisioning,
+  acquireEnvelopeLock, buildClaimBondPolicy, claimedBondAmountFromReceipt, finalizeChallengeSpend, limitsFromProvisioning,
+  releaseEnvelopeLock,
   reconcileClaimLifecycle, releaseChallengeReservation, reserveChallengeSpend, runnerHealthAdmission,
-  utcDay, validateCanonicalOpenEvidence, validateProvisioningArtifact,
+  runChallengeActionIntent, utcDay, validateCanonicalOpenEvidence, validateProvisioningArtifact,
 } from "./challenge-envelope.mjs";
 
 const CHALLENGE = `0x${"1".repeat(40)}`;
@@ -103,6 +104,54 @@ test("one pending exact policy remains global across UTC buckets and concurrent 
   assert.equal(results.filter((status) => status === 0).length, 1);
 });
 
+test("live owner cannot be stolen after an arbitrarily old lock timestamp", () => {
+  const lock = join(root(), "state.lock");
+  const owner = acquireEnvelopeLock(lock, { now: () => 0 });
+  assert.throws(() => acquireEnvelopeLock(lock, { timeoutMs: 20 }), /lock timeout/);
+  releaseEnvelopeLock(lock, owner);
+});
+
+test("stale release token cannot remove a successor lock", () => {
+  const lock = join(root(), "state.lock");
+  const first = acquireEnvelopeLock(lock);
+  releaseEnvelopeLock(lock, first);
+  const successor = acquireEnvelopeLock(lock);
+  assert.throws(() => releaseEnvelopeLock(lock, first), /token mismatch/);
+  assert.throws(() => acquireEnvelopeLock(lock, { timeoutMs: 20 }), /lock timeout/);
+  releaseEnvelopeLock(lock, successor);
+});
+
+test("same-host lock is reclaimed only after its owner process is dead", () => {
+  const lock = join(root(), "state.lock");
+  const module = new URL("./challenge-envelope.mjs", import.meta.url).href;
+  execFileSync(process.execPath, ["--input-type=module", "-e", `import {acquireEnvelopeLock} from '${module}'; acquireEnvelopeLock(process.argv[1]);`, lock]);
+  const replacement = acquireEnvelopeLock(lock, { timeoutMs: 1000 });
+  releaseEnvelopeLock(lock, replacement);
+});
+
+test("pre-journal fault releases reservation and restart can use sole pending slot", async () => {
+  const path = join(root(), "state.json"); const config = await provisioning();
+  reserveChallengeSpend(path, reserveInput(config), { now: NOW });
+  await assert.rejects(
+    runChallengeActionIntent(path, "a", async () => { throw new Error("fault-before-journal"); }, { now: NOW }),
+    /fault-before-journal/,
+  );
+  assert.equal(JSON.parse(readFileSync(path)).days["2026-07-10"].reservations.a, undefined);
+  assert.equal(reserveChallengeSpend(path, reserveInput(config, { id: "restart" }), { now: NOW }).reserved, true);
+});
+
+test("post-journal fault preserves intent and restart resumes same reservation", async () => {
+  const path = join(root(), "state.json"); const config = await provisioning();
+  reserveChallengeSpend(path, reserveInput(config), { now: NOW });
+  await assert.rejects(
+    runChallengeActionIntent(path, "a", async ({ markJournalDurable }) => { markJournalDurable({ journalPath: join(root(), "signed.json"), signedTransactionHash: `0x${"a".repeat(64)}` }); throw new Error("fault-after-journal"); }, { now: NOW }),
+    /fault-after-journal/,
+  );
+  assert.equal(JSON.parse(readFileSync(path)).days["2026-07-10"].reservations.a.action_intent.status, "journal_durable");
+  assert.equal(reserveChallengeSpend(path, reserveInput(config), { now: NOW }).idempotent, true);
+  assert.equal(await runChallengeActionIntent(path, "a", async ({ markJournalDurable }) => { markJournalDurable({ journalPath: join(root(), "signed.json"), signedTransactionHash: `0x${"a".repeat(64)}` }); return "resumed"; }, { now: NOW }), "resumed");
+});
+
 test("health requires complete explicit green fields, freshness, and no future timestamp", () => {
   assert.equal(runnerHealthAdmission(health(), { now: NOW }).allowed, true);
   for (const bad of [health({ observed_at_utc: new Date(NOW + 1).toISOString() }), health({ swap_guard: undefined }), health({ host_capacity: "red" }), health({ concurrency_guard: undefined }), health({ oom_kills: 1 }), health({ queue_corruption_events: undefined })]) assert.equal(runnerHealthAdmission(bad, { now: NOW }).allowed, false);
@@ -133,6 +182,18 @@ test("provisioning validates complete bindings, hashes, rehearsal, and signature
   for (const mutate of [(v) => { v.chain_id = 1; }, (v) => { v.challenge_manager = ethers.ZeroAddress; }, (v) => { v.rehearsal.deep_reorg_verified = false; }, (v) => { v.artifact_hash = `sha256:${"0".repeat(64)}`; }, (v) => { v.signature.signature = `0x${"0".repeat(130)}`; }]) {
     const bad = structuredClone(config); mutate(bad); assert.throws(() => validateProvisioningArtifact(bad), /provisioning|rehearsal/);
   }
+});
+
+test("published provisioning schema rejects extras and exact-type violations", async () => {
+  const config = await provisioning();
+  const topExtra = { ...config, surprise: true };
+  assert.throws(() => validateProvisioningArtifact(topExtra), /additional properties/);
+  const nestedExtra = structuredClone(config); nestedExtra.rehearsal.surprise = true;
+  assert.throws(() => validateProvisioningArtifact(nestedExtra), /additional properties/);
+  const stringChain = structuredClone(config); stringChain.chain_id = "84532";
+  assert.throws(() => validateProvisioningArtifact(stringChain), /must be integer/);
+  const stringOpen = structuredClone(config); stringOpen.max_canonical_open = "3";
+  assert.throws(() => validateProvisioningArtifact(stringOpen), /must be equal to constant/);
 });
 
 test("claim call policy remains an exact one-call selector policy", () => {

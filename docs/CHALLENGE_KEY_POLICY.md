@@ -81,6 +81,17 @@ Rules:
   bucket across rollover; a later finalized receipt converts that same row to a
   spend in the original bucket. State replacement is fsync + same-directory
   rename. Missing reservations and legacy/incomplete state fail closed.
+- A reservation and `p42-challenge-action-intent/v1` record are written
+  atomically. Any exception before the signed raw-transaction journal is durable
+  releases the reservation. Once the signed journal path/hash is durably bound
+  to the intent, exceptions preserve the sole pending slot and restart resumes
+  that exact journal instead of signing a replacement.
+- Envelope locks record PID, random 256-bit token, hostname, process start, and
+  lock creation time. Age never authorizes stealing. A lock may be reclaimed
+  only when it belongs to this host and `kill(pid, 0)` proves `ESRCH`; foreign,
+  live, permission-denied, malformed, or incomplete ownership fails closed.
+  Release and reclaim verify the moved token before deletion, so a stale owner
+  cannot remove a successor lock.
 - Limits come only from the signed, hash-bound immutable
   `p42-challenge-provisioning/v1` artifact. Runtime policy may tighten those
   values, never raise them. There is no public cap-raising operator flag.
@@ -174,6 +185,9 @@ manager/agent-wallet/operator addresses, default caps, health/restart/deep-reorg
 rehearsals, rehearsal artifact hash, canonical artifact hash, and an EIP-191
 operator signature are all mandatory. Canonical open evidence validates against
 `schemas/canonical-open-evidence.schema.json`.
+The runtime compiles the published Draft 2020-12 provisioning schema with Ajv
+before applying hash, signature, and deployment-binding checks; unknown
+top-level/nested properties and type coercion are rejected.
 
 ## Transcript And Audit
 

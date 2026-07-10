@@ -53,6 +53,7 @@ import {
   limitsFromProvisioning,
   releaseChallengeReservation,
   reserveChallengeSpend,
+  runChallengeActionIntent,
   validateProvisioningArtifact,
 } from "./challenge-envelope.mjs";
 import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
@@ -1189,53 +1190,56 @@ async function consumeCandidate(job) {
     return;
   }
 
-  const reasonHash = ethers.keccak256(
-    ethers.toUtf8Bytes(`p42-challenge-candidate/v1:${candidate.candidate_hash}`),
-  );
-  const callPolicy = buildChallengeCallPolicy({
-    challengeInterface: chal.interface,
-    challengeContract: String(chal.target),
-    chainId,
-    problemId: runnerConfig.problemId,
-    submissionId,
-    revealInstanceHash: candidate.reveal_instance_hash,
-    reasonHash,
-    candidateHash: candidate.candidate_hash,
-    sourceEventHash: candidate.source_event_hash,
-    expiresAt: candidate.challenge_ends_at,
-    valueWei: bond,
+  await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash, async ({ markJournalDurable }) => {
+    const reasonHash = ethers.keccak256(
+      ethers.toUtf8Bytes(`p42-challenge-candidate/v1:${candidate.candidate_hash}`),
+    );
+    const callPolicy = buildChallengeCallPolicy({
+      challengeInterface: chal.interface,
+      challengeContract: String(chal.target),
+      chainId,
+      problemId: runnerConfig.problemId,
+      submissionId,
+      revealInstanceHash: candidate.reveal_instance_hash,
+      reasonHash,
+      candidateHash: candidate.candidate_hash,
+      sourceEventHash: candidate.source_event_hash,
+      expiresAt: candidate.challenge_ends_at,
+      valueWei: bond,
+    });
+    const policyPath = join(
+      ACTIONS,
+      `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.json`,
+    );
+    writeCanonicalAtomic(policyPath, callPolicy);
+    log(`  exact session call policy: ${policyPath} (${callPolicy.policy_hash})`);
+    const request = await buildChallengeTransactionRequest(
+      callPolicy,
+      bond,
+      BigInt(latest.timestamp),
+    );
+    const signed = await signedActionRecord(candidate, callPolicy, request);
+    markJournalDurable({ journalPath: signed.path, signedTransactionHash: signed.record.hash });
+    assertOperatorSignedRecord(signed.record, candidate, callPolicy);
+    const detail = canonicalJson({
+      bond_wei: bond.toString(),
+      call_policy_path: policyPath,
+      call_policy_hash: callPolicy.policy_hash,
+      calldata_hash: callPolicy.calldata_hash,
+      scope_hash: callPolicy.scope_hash,
+      expires_at: callPolicy.expires_at,
+      max_calls: callPolicy.max_calls,
+      execution_mode: executionMode.mode,
+      agent_wallet: executionMode.agentWalletAddress,
+      signed_tx_path: signed.path,
+      signed_tx_hash: signed.record.hash,
+      signed_tx_data_hash: signed.record.data_hash,
+      signed_tx_nonce: signed.record.nonce,
+    });
+    recordAction(job, candidate, "signed", signed.record.hash, detail);
+    log(`  challenge signed for #${submissionId}: ${signed.record.hash} bond=${ethers.formatEther(bond)} ETH`);
+    await reconcileBroadcast({ ...job, action: { status: "signed", transaction_hash: signed.record.hash, detail } });
   });
-  const policyPath = join(
-    ACTIONS,
-    `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.json`,
-  );
-  writeCanonicalAtomic(policyPath, callPolicy);
-  log(`  exact session call policy: ${policyPath} (${callPolicy.policy_hash})`);
-  const request = await buildChallengeTransactionRequest(
-    callPolicy,
-    bond,
-    BigInt(latest.timestamp),
-  );
-  const signed = await signedActionRecord(candidate, callPolicy, request);
-  assertOperatorSignedRecord(signed.record, candidate, callPolicy);
-  const detail = canonicalJson({
-    bond_wei: bond.toString(),
-    call_policy_path: policyPath,
-    call_policy_hash: callPolicy.policy_hash,
-    calldata_hash: callPolicy.calldata_hash,
-    scope_hash: callPolicy.scope_hash,
-    expires_at: callPolicy.expires_at,
-    max_calls: callPolicy.max_calls,
-    execution_mode: executionMode.mode,
-    agent_wallet: executionMode.agentWalletAddress,
-    signed_tx_path: signed.path,
-    signed_tx_hash: signed.record.hash,
-    signed_tx_data_hash: signed.record.data_hash,
-    signed_tx_nonce: signed.record.nonce,
-  });
-  recordAction(job, candidate, "signed", signed.record.hash, detail);
-  log(`  challenge signed for #${submissionId}: ${signed.record.hash} bond=${ethers.formatEther(bond)} ETH`);
-  await reconcileBroadcast({ ...job, action: { status: "signed", transaction_hash: signed.record.hash, detail } });
 }
 
 async function consumeCandidates() {

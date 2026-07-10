@@ -909,3 +909,12 @@ test("operator commits finalized challenge accounting before terminal queue stat
   const earlierBlock = source.slice(source.indexOf("} else {", source.indexOf("async function reconcileBroadcast")), source.indexOf("if (!receipt) {", source.indexOf("async function reconcileBroadcast")));
   assert.ok(earlierBlock.indexOf("finalizeChallengeSpend(") < earlierBlock.indexOf("recordAction("));
 });
+
+test("operator reservation is guarded until signed journal durability", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const guard = source.indexOf("await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash");
+  const signed = source.indexOf("const signed = await signedActionRecord", guard);
+  const durable = source.indexOf("markJournalDurable({", guard);
+  const terminal = source.indexOf("recordAction(job, candidate, \"signed\"", guard);
+  assert.ok(guard >= 0 && signed > guard && durable > signed && terminal > durable);
+});

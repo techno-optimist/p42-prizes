@@ -28,6 +28,7 @@
     "test": "node --test *.test.mjs"
   },
   "dependencies": {
+    "ajv": "8.20.0",
     "arweave": "^1.15.7",
     "ethers": "^6.17.0",
     "multiformats": "^13.4.2"

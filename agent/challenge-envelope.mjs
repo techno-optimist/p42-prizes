@@ -1,7 +1,10 @@
 import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, statSync, writeFileSync,
+  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readdirSync, renameSync, rmSync, writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { randomBytes } from "node:crypto";
+import { hostname } from "node:os";
+import Ajv2020 from "ajv/dist/2020.js";
 import { ethers } from "ethers";
 import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
 import { readStrictJsonFileSync } from "./strict-json.mjs";
@@ -12,6 +15,15 @@ const DEFAULTS = Object.freeze({
   perChallengeWei: ethers.parseEther("0.05"), perProblemDayWei: ethers.parseEther("0.10"),
   globalDayWei: ethers.parseEther("0.30"), maxCanonicalOpen: 3, maxPendingProvisioned: 1,
 });
+let validateProvisioningSchema;
+
+function provisioningSchemaValidator() {
+  if (!validateProvisioningSchema) {
+    const schema = readStrictJsonFileSync(new URL("../schemas/challenge-provisioning.schema.json", import.meta.url), JSON_LIMITS);
+    validateProvisioningSchema = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+  }
+  return validateProvisioningSchema;
+}
 
 function canonicalJson(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -50,24 +62,103 @@ function readState(path) {
   return state;
 }
 
-function acquire(lockPath, timeoutMs = 5000) {
+function writeLockOwner(path, owner) {
+  const fd = openSync(path, "wx", 0o600);
+  try { writeFileSync(fd, `${canonicalJson(owner)}\n`); fsyncSync(fd); } finally { closeSync(fd); }
+}
+
+function readLockOwner(lockPath) {
+  const owner = readStrictJsonFileSync(join(lockPath, "owner.json"), JOURNAL_LIMITS);
+  if (owner?.schema_version !== "p42-envelope-lock-owner/v1" || !Number.isSafeInteger(owner.pid) || owner.pid < 1
+    || !/^[a-f0-9]{64}$/.test(owner.token ?? "") || typeof owner.host !== "string"
+    || typeof owner.process_started_at_utc !== "string" || typeof owner.lock_created_at_utc !== "string") {
+    throw new Error("challenge envelope lock owner record is invalid");
+  }
+  return owner;
+}
+
+function ownerIsDeadOnThisHost(owner) {
+  if (owner.host !== hostname()) return false;
+  try { process.kill(owner.pid, 0); return false; }
+  catch (error) {
+    if (error.code === "ESRCH") return true;
+    if (error.code === "EPERM") return false;
+    throw error;
+  }
+}
+
+function reclaimDeadOwner(lockPath, observed) {
+  const reclaimPath = `${lockPath}.reclaim`;
+  try { mkdirSync(reclaimPath, { mode: 0o700 }); }
+  catch (error) { if (error.code === "EEXIST") return false; throw error; }
+  try {
+    const current = readLockOwner(lockPath);
+    if (canonicalJson(current) !== canonicalJson(observed) || !ownerIsDeadOnThisHost(current)) return false;
+    const tombstone = `${lockPath}.dead.${current.token}`;
+    renameSync(lockPath, tombstone);
+    const moved = readLockOwner(tombstone);
+    if (moved.token !== current.token) {
+      if (!existsSync(lockPath)) renameSync(tombstone, lockPath);
+      throw new Error("challenge envelope lock changed during reclaim");
+    }
+    rmSync(tombstone, { recursive: true });
+    return true;
+  } finally { rmSync(reclaimPath, { recursive: true, force: true }); }
+}
+
+export function acquireEnvelopeLock(lockPath, { timeoutMs = 5000, now = Date.now } = {}) {
   const started = Date.now();
   for (;;) {
-    try { mkdirSync(lockPath, { mode: 0o700 }); writeFileSync(`${lockPath}/owner`, `${process.pid}\n`, { flag: "wx", mode: 0o600 }); return; }
+    if (existsSync(`${lockPath}.reclaim`)) {
+      if (Date.now() - started >= timeoutMs) throw new Error("challenge envelope lock timeout");
+      continue;
+    }
+    const owner = {
+      schema_version: "p42-envelope-lock-owner/v1", pid: process.pid, token: randomBytes(32).toString("hex"),
+      host: hostname(), process_started_at_utc: new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString(),
+      lock_created_at_utc: new Date(now()).toISOString(),
+    };
+    let created = false;
+    try {
+      mkdirSync(lockPath, { mode: 0o700 }); created = true;
+      writeLockOwner(join(lockPath, "owner.json"), owner);
+      return owner;
+    }
     catch (error) {
+      if (created) { rmSync(lockPath, { recursive: true, force: true }); throw error; }
       if (error.code !== "EEXIST") throw error;
-      try { if (Date.now() - statSync(lockPath).mtimeMs > 60_000) { rmSync(lockPath, { recursive: true }); continue; } }
-      catch (statError) { if (statError.code !== "ENOENT") throw statError; }
+      let observed;
+      try { observed = readLockOwner(lockPath); }
+      catch (readError) {
+        if (readError.code === "ENOENT") continue;
+        throw new Error(`challenge envelope lock is incomplete; refusing reclaim: ${readError.message}`);
+      }
+      if (ownerIsDeadOnThisHost(observed) && reclaimDeadOwner(lockPath, observed)) continue;
       if (Date.now() - started >= timeoutMs) throw new Error("challenge envelope lock timeout");
     }
   }
 }
 
+export function releaseEnvelopeLock(lockPath, owner) {
+  const current = readLockOwner(lockPath);
+  if (current.token !== owner?.token || current.pid !== owner?.pid || current.host !== owner?.host) {
+    throw new Error("challenge envelope lock release token mismatch");
+  }
+  const tombstone = `${lockPath}.release.${owner.token}`;
+  renameSync(lockPath, tombstone);
+  const moved = readLockOwner(tombstone);
+  if (moved.token !== owner.token || moved.pid !== owner.pid || moved.host !== owner.host) {
+    if (!existsSync(lockPath)) renameSync(tombstone, lockPath);
+    throw new Error("challenge envelope lock changed during release");
+  }
+  rmSync(tombstone, { recursive: true });
+}
+
 export function withEnvelopeLock(statePath, operation, { now = Date.now(), timeoutMs = 5000 } = {}) {
   const path = resolve(statePath); const lock = `${path}.lock`;
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); acquire(lock, timeoutMs);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 }); const owner = acquireEnvelopeLock(lock, { timeoutMs, now: () => now });
   try { const state = readState(path); const result = operation(state, utcDay(now)); atomicWrite(path, state); return result; }
-  finally { rmSync(lock, { recursive: true, force: true }); }
+  finally { releaseEnvelopeLock(lock, owner); }
 }
 
 function artifactPreimage(value) {
@@ -76,7 +167,11 @@ function artifactPreimage(value) {
 }
 
 export function validateProvisioningArtifact(value, expected = {}) {
-  if (value?.schema_version !== "p42-challenge-provisioning/v1") throw new Error("unsupported provisioning artifact");
+  const validateSchema = provisioningSchemaValidator();
+  if (!validateSchema(value)) {
+    const detail = validateSchema.errors.map((error) => `${error.instancePath || "/"} ${error.message}`).join("; ");
+    throw new Error(`provisioning schema validation failed: ${detail}`);
+  }
   if (!Number.isSafeInteger(value.chain_id) || value.chain_id < 1) throw new Error("provisioning chain_id is invalid");
   for (const field of ["challenge_manager", "agent_wallet", "operator"]) {
     if (!ethers.isAddress(value[field]) || value[field] === ethers.ZeroAddress) throw new Error(`provisioning ${field} is invalid`);
@@ -159,7 +254,12 @@ export function reserveChallengeSpend(statePath, input, options = {}) {
     const problem = rows.filter((row) => row.problem_id === input.problemId).reduce((sum, row) => sum + BigInt(row.amount_wei), 0n);
     if (problem + amount > limits.perProblemDayWei) throw new Error("per-problem UTC-day spend cap exceeded");
     if (global + amount > limits.globalDayWei) throw new Error("global UTC-day spend cap exceeded");
-    bucket.reservations[input.id] = { problem_id: input.problemId, amount_wei: amount.toString(), reserved_at_utc: new Date(options.now ?? Date.now()).toISOString() };
+    bucket.reservations[input.id] = {
+      problem_id: input.problemId,
+      amount_wei: amount.toString(),
+      reserved_at_utc: new Date(options.now ?? Date.now()).toISOString(),
+      action_intent: { schema_version: "p42-challenge-action-intent/v1", intent_id: input.id, status: "reserved" },
+    };
     return { reserved: true, idempotent: false, day };
   }, options);
 }
@@ -183,6 +283,35 @@ export function releaseChallengeReservation(statePath, id, options = {}) {
     for (const bucket of Object.values(state.days)) if (bucket.reservations && delete bucket.reservations[id]) return { released: true };
     return { released: false };
   }, options);
+}
+
+export async function runChallengeActionIntent(statePath, id, operation, options = {}) {
+  let durable = false;
+  try {
+    return await operation({
+      markJournalDurable: ({ journalPath, signedTransactionHash } = {}) => {
+        durable = true;
+        if (typeof journalPath !== "string" || !journalPath || !ethers.isHexString(signedTransactionHash, 32)) {
+          throw new Error("durable challenge journal evidence is invalid");
+        }
+        withEnvelopeLock(statePath, (state) => {
+          for (const bucket of Object.values(state.days)) {
+            const reservation = bucket.reservations?.[id];
+            if (!reservation) continue;
+            reservation.action_intent = {
+              schema_version: "p42-challenge-action-intent/v1", intent_id: id, status: "journal_durable",
+              journal_path: resolve(journalPath), signed_transaction_hash: signedTransactionHash.toLowerCase(),
+            };
+            return;
+          }
+          throw new Error("durable challenge journal has no reservation");
+        }, options);
+      },
+    });
+  } catch (error) {
+    if (!durable) releaseChallengeReservation(statePath, id, options);
+    throw error;
+  }
 }
 
 export function buildClaimBondPolicy({ challengeInterface, challengeContract, chainId, claimant, expiresAt }) {
