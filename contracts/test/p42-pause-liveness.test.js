@@ -125,6 +125,24 @@ describe("P42 pausedAll settlement liveness", function () {
     const block = await ethers.provider.getBlock(receipt.blockNumber);
     assert.equal(await submissions.pausedAll(), false);
     assert.equal(await submissions.expiryGraceUntil(), BigInt(block.timestamp) + CHALLENGE_WINDOW);
+
+    const graceUntil = await submissions.expiryGraceUntil();
+    await increaseTime(1n);
+    await expectCustomError(
+      submissions.connect(owner).setPausedAll(false),
+      submissions,
+      "P42_NOT_PAUSED_ALL"
+    );
+    assert.equal(await submissions.expiryGraceUntil(), graceUntil);
+
+    await submissions.connect(owner).setPausedAll(true);
+    const nextPausedAt = await submissions.pausedAllAt();
+    assert.ok(nextPausedAt > pausedAt);
+    await expectCustomError(
+      submissions.connect(outsider).recoverPausedAll(),
+      submissions,
+      "P42_PAUSED_ALL_RECOVERY_OPEN"
+    );
   });
 
   it("unblocks a matured settlement without reopening new submissions", async function () {

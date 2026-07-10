@@ -380,6 +380,7 @@ contract P42SubmissionManager {
             emit AllActionsPaused(true);
             return;
         }
+        if (!pausedAll) revert P42_NOT_PAUSED_ALL();
         _clearPausedAll();
     }
 

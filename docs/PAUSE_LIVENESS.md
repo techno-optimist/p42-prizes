@@ -24,6 +24,8 @@ The recovery call is intentionally narrow:
   checks, after which the ledger can close normally.
 - Before the deadline it reverts, and a non-owner cannot call the regular
   `setPausedAll(false)` path.
+- The owner may only use `setPausedAll(false)` for an active full-pause
+  episode. An unpaired false call reverts and cannot extend expiry grace.
 
 The owner still has the full 30-day interval to perform `voidFinalize` under
 the stable frontier. The recovery timestamp is fixed for that pause episode,
