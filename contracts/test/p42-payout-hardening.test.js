@@ -66,7 +66,7 @@ async function deployFixture({ setRecorder = true, activateFunding = true } = {}
   await ledger.waitForDeployment();
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
-  const SubmissionManager = await ethers.getContractFactory("MockPayoutSubmissionManager");
+  const SubmissionManager = await ethers.getContractFactory("MockFundingArmed");
   const submissionManager = await SubmissionManager.deploy(true);
   await submissionManager.waitForDeployment();
   await pool.connect(owner).setSubmissionManager(await submissionManager.getAddress());
@@ -99,7 +99,7 @@ async function closeWithCredit(fixture, solverAddress, funding = ethers.parseEth
 describe("P42 payout hardening", function () {
   it("refuses funding activation when the credit recorder differs from the submission manager", async function () {
     const fixture = await deployFixture({ setRecorder: false, activateFunding: false });
-    const OtherManager = await ethers.getContractFactory("MockPayoutSubmissionManager");
+    const OtherManager = await ethers.getContractFactory("MockFundingArmed");
     const otherManager = await OtherManager.deploy(true);
     await otherManager.waitForDeployment();
     await fixture.ledger.connect(fixture.owner).setCreditRecorder(await otherManager.getAddress());
@@ -150,7 +150,21 @@ describe("P42 payout hardening", function () {
     assert.equal(await fixture.ledger.claimable(solverAddress), entitlement);
 
     const recipientBefore = await ethers.provider.getBalance(fixture.recipient.address);
-    await rejectingSolver.claimTo(await fixture.pool.getAddress(), fixture.recipient.address);
+    const claimTx = await rejectingSolver.claimTo(await fixture.pool.getAddress(), fixture.recipient.address);
+    const claimReceipt = await claimTx.wait();
+    const claimedTo = claimReceipt.logs
+      .map((log) => {
+        try {
+          return fixture.pool.interface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((parsed) => parsed?.name === "ClaimedTo");
+    assert.ok(claimedTo, "ClaimedTo event present");
+    assert.equal(claimedTo.args.solver, solverAddress);
+    assert.equal(claimedTo.args.recipient, fixture.recipient.address);
+    assert.equal(claimedTo.args.amount, entitlement);
     assert.equal((await ethers.provider.getBalance(fixture.recipient.address)) - recipientBefore, entitlement);
     assert.equal(await fixture.ledger.claimedWeiOf(solverAddress), entitlement);
     assert.equal(await fixture.ledger.claimable(solverAddress), 0n);

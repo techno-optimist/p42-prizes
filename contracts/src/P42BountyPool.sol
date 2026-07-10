@@ -80,6 +80,7 @@ contract P42BountyPool {
         uint64 closeByTimestamp
     );
     event Claimed(address indexed solver, uint256 amount);
+    event ClaimedTo(address indexed solver, address indexed recipient, uint256 amount);
     event FeePaid(address indexed to, uint256 amount);
     event ResidualPaid(address indexed to, uint256 amount);
 
@@ -197,6 +198,7 @@ contract P42BountyPool {
         (bool ok,) = recipient.call{value: amount}("");
         if (!ok) revert P42_TRANSFER_FAILED();
         emit Claimed(solver, amount);
+        emit ClaimedTo(solver, recipient, amount);
     }
 
     /// @notice Pays the ledger-computed protocol fee out of escrow (L1). Callable

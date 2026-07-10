@@ -290,6 +290,7 @@ describe("P42 contract property checks", function () {
       const Mock = await ethers.getContractFactory("MockFundingArmed");
       const mock = await Mock.deploy(true);
       await mock.waitForDeployment();
+      await ledger.connect(owner).setCreditRecorder(await mock.getAddress());
       await pool.connect(owner).setSubmissionManager(await mock.getAddress());
       const Registry = await ethers.getContractFactory("P42ProblemRegistry");
       const registry = await Registry.deploy(owner.address);
@@ -312,7 +313,7 @@ describe("P42 contract property checks", function () {
       await pool.connect(owner).setAcceptingFunds(true);
       await pool.fund({ value: 10_003n });
       for (const [solver, atoms] of credits) {
-        await ledger.connect(owner).recordCredit(solver.address, atoms);
+        await mock.recordCredit(await ledger.getAddress(), solver.address, atoms);
       }
       await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
       await advanceToEffectiveClose(ledger);

@@ -232,6 +232,7 @@ describe("P42 second-pass contract acceptance", () => {
     const Armed = await ethers.getContractFactory("MockFundingArmed");
     const armed = await Armed.deploy(true);
     await armed.waitForDeployment();
+    await ledger.connect(owner).setCreditRecorder(await armed.getAddress());
     await pool.connect(owner).setSubmissionManager(await armed.getAddress());
     const Registry = await ethers.getContractFactory("MockProblemRegistry");
     const registry = await Registry.deploy();
@@ -242,8 +243,12 @@ describe("P42 second-pass contract acceptance", () => {
     await pool.fund({ value: ethers.parseEther("10") });
 
     const maxCredit = await ledger.MAX_TOTAL_CREDIT_ATOMS();
-    await ledger.connect(owner).recordCredit(alice.address, maxCredit);
-    await expectCustomError(ledger.connect(owner).recordCredit(bob.address, 1), ledger, "P42_CREDIT_BOUND_EXCEEDED");
+    await armed.recordCredit(await ledger.getAddress(), alice.address, maxCredit);
+    await expectCustomError(
+      armed.recordCredit(await ledger.getAddress(), bob.address, 1),
+      ledger,
+      "P42_CREDIT_BOUND_EXCEEDED"
+    );
     await advanceTo(await ledger.effectiveEarliestCloseTimestamp());
     await ledger.connect(owner).close();
     assert.equal(await ledger.finalEntitlement(alice.address), ethers.parseEther("10"));
@@ -323,6 +328,7 @@ describe("P42 second-pass contract acceptance", () => {
     const Armed = await ethers.getContractFactory("MockFundingArmed");
     const armed = await Armed.deploy(true);
     await armed.waitForDeployment();
+    await ledger.connect(owner).setCreditRecorder(await armed.getAddress());
     await pool.connect(owner).setSubmissionManager(await armed.getAddress());
     const Registry = await ethers.getContractFactory("MockProblemRegistry");
     const registry = await Registry.deploy();

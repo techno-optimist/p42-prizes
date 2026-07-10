@@ -65,6 +65,7 @@ async function fixture() {
   const Mock = await ethers.getContractFactory("MockFundingArmed");
   const mock = await Mock.deploy(true);
   await mock.waitForDeployment();
+  await ledger.connect(deployer).setCreditRecorder(await mock.getAddress());
   await pool.connect(deployer).setSubmissionManager(await mock.getAddress());
   const Registry = await ethers.getContractFactory("P42ProblemRegistry");
   const registry = await Registry.deploy(deployer.address);
