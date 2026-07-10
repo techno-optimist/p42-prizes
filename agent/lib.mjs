@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { ethers } from "ethers";
+import { parseStrictJsonText } from "./strict-json.mjs";
 
 // Rational "improvement" -> integer atoms over a fixed 1e6 denominator.
 // Single-solver-safe; solver and operator MUST agree on this scale so the
@@ -271,7 +272,11 @@ export function runVerifier(problemDir, solutionPath, repoRoot) {
   }
   const line = out.trim();
   if (!line) throw new Error("verifier produced no VerdictReport");
-  return JSON.parse(line);
+  return parseStrictJsonText(line, {
+    label: "verifier VerdictReport",
+    maxBytes: 16 * 1024 * 1024,
+    maxDepth: 64,
+  });
 }
 
 export function canonicalJson(value) {
@@ -990,7 +995,11 @@ export function runRuntimeBridge(repoRoot, args) {
   }
   const output = completed.stdout.trim();
   if (!output) throw new Error("runtime bridge produced no JSON");
-  return JSON.parse(output);
+  return parseStrictJsonText(output, {
+    label: "runtime bridge output",
+    maxBytes: 16 * 1024 * 1024,
+    maxDepth: 64,
+  });
 }
 
 // Page a queryFilter over small block windows SEQUENTIALLY with retries, so a
