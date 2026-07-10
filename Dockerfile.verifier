@@ -43,12 +43,8 @@ COPY src /repo/src
 COPY problems/${PROBLEM} /repo/problems/${PROBLEM}
 WORKDIR /repo/problems/${PROBLEM}
 
-# Pinned per-problem deps (mpmath for Mertens, etc.); comments-only locks are a no-op.
-# TODO(F23, needs human): the requirements.lock files pin versions but carry no
-# hashes, so `--require-hashes` would fail today (checked: every problems/*/
-# requirements.lock lacks `--hash=`). Regenerate each lock with
-# `pip-compile --generate-hashes` (or `pip hash`), then add `--require-hashes`
-# here so a hijacked PyPI release of a pinned version cannot slip in.
-RUN pip install --no-cache-dir -r requirements.lock
+# Pinned per-problem deps (mpmath for Mertens, etc.). Non-stdlib locks carry
+# every accepted PyPI distribution hash; comments-only locks are a no-op.
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 CMD ["make", "verify"]

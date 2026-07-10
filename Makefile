@@ -13,7 +13,7 @@ all: validate lint test verify-seed
 
 install-verifier-deps:
 	@for requirements in $(PROBLEMS:%=%/requirements.lock); do \
-		PIP_DISABLE_PIP_VERSION_CHECK=1 $(PYTHON) -m pip install -r $$requirements || exit $$?; \
+		PIP_DISABLE_PIP_VERSION_CHECK=1 $(PYTHON) -m pip install --require-hashes -r $$requirements || exit $$?; \
 	done
 
 validate:
