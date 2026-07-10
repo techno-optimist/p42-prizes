@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 interface IP42PayoutLedger {
     function consumeClaim(address solver) external returns (uint256);
+    function creditRecorder() external view returns (address);
     function closed() external view returns (bool);
     function earliestCloseTimestamp() external view returns (uint64);
     function effectiveEarliestCloseTimestamp() external view returns (uint64);
@@ -34,11 +35,13 @@ contract P42BountyPool {
     error P42_REGISTRY_NOT_SET();
     error P42_BAD_PROBLEM_BINDING();
     error P42_FUNDING_NOT_ARMED();
+    error P42_CREDIT_RECORDER_MISMATCH(address creditRecorder, address submissionManager);
     error P42_NOT_ACCEPTING_FUNDS();
     error P42_PROBLEM_NOT_FROZEN();
     error P42_FUNDING_WINDOW_CLOSED(uint64 fundingDeadline, uint64 nowAt);
     error P42_FUNDING_CAP_EXCEEDED(uint256 cap, uint256 attemptedTotal);
     error P42_NOTHING_TO_CLAIM();
+    error P42_RECIPIENT_ZERO();
     error P42_POOL_CLOSED();
     error P42_ACCOUNTING_UNDERFLOW(uint256 available, uint256 requested);
     error P42_TRANSFER_FAILED();
@@ -153,6 +156,10 @@ contract P42BountyPool {
             if (registry_ == address(0)) revert P42_REGISTRY_NOT_SET();
             _requireFrozenRegistryBinding(registry_);
             address manager = submissionManager;
+            address recorder = IP42PayoutLedger(ledger).creditRecorder();
+            if (recorder != manager) {
+                revert P42_CREDIT_RECORDER_MISMATCH(recorder, manager);
+            }
             if (manager == address(0) || !ISubmissionManagerArmed(manager).fundingArmed()) {
                 revert P42_FUNDING_NOT_ARMED();
             }
@@ -170,15 +177,26 @@ contract P42BountyPool {
     }
 
     function claim() external nonReentrant {
+        _claimTo(msg.sender, payable(msg.sender));
+    }
+
+    /// @notice Lets a solver redirect its own entitlement to a payable recipient.
+    /// The ledger debit remains keyed to msg.sender, never the recipient.
+    function claimTo(address payable recipient) external nonReentrant {
+        if (recipient == address(0)) revert P42_RECIPIENT_ZERO();
+        _claimTo(msg.sender, recipient);
+    }
+
+    function _claimTo(address solver, address payable recipient) private {
         address ledger_ = ledger;
         if (ledger_ == address(0)) revert P42_LEDGER_NOT_SET();
-        uint256 amount = IP42PayoutLedger(ledger_).consumeClaim(msg.sender);
+        uint256 amount = IP42PayoutLedger(ledger_).consumeClaim(solver);
         if (amount == 0) revert P42_NOTHING_TO_CLAIM();
         _debitAccounted(amount);
         totalClaimed += amount;
-        (bool ok,) = payable(msg.sender).call{value: amount}("");
+        (bool ok,) = recipient.call{value: amount}("");
         if (!ok) revert P42_TRANSFER_FAILED();
-        emit Claimed(msg.sender, amount);
+        emit Claimed(solver, amount);
     }
 
     /// @notice Pays the ledger-computed protocol fee out of escrow (L1). Callable
@@ -196,7 +214,7 @@ contract P42BountyPool {
 
     /// @notice Pays the post-deadline residual sweep out of escrow (F15).
     /// Callable only by the ledger, which enforces closed + deadline-elapsed +
-    /// single-use semantics. Deliberately a DEDICATED path — reusing payFee
+    /// residual-sweep semantics. Deliberately a DEDICATED path — reusing payFee
     /// here would pollute the totalFeePaid counter with non-fee outflows.
     /// CEI + nonReentrant: accounting is updated before the external transfer.
     function payResidual(address to, uint256 amount) external nonReentrant {

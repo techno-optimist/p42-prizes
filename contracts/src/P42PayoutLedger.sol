@@ -253,6 +253,7 @@ contract P42PayoutLedger {
     }
 
     function claimable(address solver) public view returns (uint256) {
+        if (!closed || block.timestamp > closedAt + CLAIM_DEADLINE_SECONDS) return 0;
         uint256 entitlement = finalEntitlement(solver);
         uint256 claimed = claimedWeiOf[solver];
         if (entitlement <= claimed) return 0;
@@ -287,19 +288,21 @@ contract P42PayoutLedger {
     /// @notice F15 residual sweep: once the claim deadline has passed, anyone
     /// may send the pool's ENTIRE remaining balance (flooring dust plus every
     /// never-claimed entitlement, and the whole balance when
-    /// totalCreditAtoms == 0) to the treasury. One-shot. Routed through the
-    /// dedicated pool.payResidual — NOT payFee — so the fee counter stays
-    /// clean; sweepFee remains independently available before this fires (an
-    /// unswept feeReserve is simply folded into the full-balance sweep).
+    /// totalCreditAtoms == 0) to the treasury. A later forced ETH transfer can
+    /// be swept in a subsequent call, but an already-empty swept pool still
+    /// rejects repeats. Routed through the dedicated pool.payResidual — NOT
+    /// payFee — so the fee counter stays clean; sweepFee remains independently
+    /// available before this fires (an unswept feeReserve is simply folded into
+    /// the full-balance sweep).
     function sweepResidual() external {
         if (!closed) revert P42_NOT_CLOSED();
         uint64 deadline = closedAt + CLAIM_DEADLINE_SECONDS;
         if (block.timestamp <= deadline) {
             revert P42_CLAIMS_NOT_EXPIRED(deadline, uint64(block.timestamp));
         }
-        if (residualSwept) revert P42_RESIDUAL_ALREADY_SWEPT();
-        residualSwept = true;
         uint256 amount = pool.balance;
+        if (amount == 0 && residualSwept) revert P42_RESIDUAL_ALREADY_SWEPT();
+        residualSwept = true;
         if (amount != 0) {
             IP42FeeSink(pool).payResidual(treasury, amount);
         }

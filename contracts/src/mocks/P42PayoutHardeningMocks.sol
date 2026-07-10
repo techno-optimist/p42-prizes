@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IP42PayoutLedgerCreditRecorder {
+    function recordCredit(address solver, uint256 atoms) external;
+}
+
+interface IP42PayoutPoolClaimer {
+    function claim() external;
+    function claimTo(address payable recipient) external;
+}
+
+/// @notice Focused test double for the pool/ledger wiring path.
+contract MockPayoutSubmissionManager {
+    bool public fundingArmed;
+
+    constructor(bool armed) {
+        fundingArmed = armed;
+    }
+
+    function setFundingArmed(bool armed) external {
+        fundingArmed = armed;
+    }
+
+    function openSubmissionCount() external pure returns (uint256) {
+        return 0;
+    }
+
+    function recordCredit(address ledger, address solver, uint256 atoms) external {
+        IP42PayoutLedgerCreditRecorder(ledger).recordCredit(solver, atoms);
+    }
+}
+
+/// @notice Solver that cannot receive ETH but can redirect a pool claim.
+contract RejectingPayoutSolver {
+    error P42_REJECT_ETH();
+
+    receive() external payable {
+        revert P42_REJECT_ETH();
+    }
+
+    function claim(address pool) external {
+        IP42PayoutPoolClaimer(pool).claim();
+    }
+
+    function claimTo(address pool, address payable recipient) external {
+        IP42PayoutPoolClaimer(pool).claimTo(recipient);
+    }
+}
+
+/// @notice Sends ETH without calling the recipient's receive or fallback path.
+contract ForceEther {
+    constructor() payable {}
+
+    function force(address payable recipient) external {
+        selfdestruct(recipient);
+    }
+}
