@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/operational-controls-v1.json",
+  "title": "P42 Gate 2 Operational Controls Evidence v1",
+  "type": "object",
+  "required": ["schema_version", "evidence_id", "window_started_at_utc", "window_completed_at_utc", "release_binding", "controls", "operational_controls_hash"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-operational-controls/v1" },
+    "evidence_id": { "type": "string", "minLength": 1 },
+    "window_started_at_utc": { "type": "string", "format": "date-time" },
+    "window_completed_at_utc": { "type": "string", "format": "date-time" },
+    "release_binding": { "$ref": "#/$defs/releaseBinding" },
+    "controls": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": { "$ref": "#/$defs/control" }
+    },
+    "operational_controls_hash": { "$ref": "#/$defs/hash" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "artifact": {
+      "type": "object",
+      "required": ["uri", "local_path", "sha256", "created_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "local_path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+" },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "created_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "identity": {
+      "type": "object",
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "operational-control-owner" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "const": "operational-control-owner" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    },
+    "sessionDomain": {
+      "type": "object",
+      "required": ["chain_id", "contract_addresses", "problem_id"],
+      "additionalProperties": false,
+      "properties": {
+        "chain_id": { "type": "integer", "minimum": 1 },
+        "contract_addresses": { "type": "array", "minItems": 5, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
+        "problem_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "required": ["class", "network", "chain_id", "git_commit", "release_binding_hash", "deployment_manifest_hash", "configuration_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "class": { "const": "production-equivalent" },
+        "network": { "enum": ["base-sepolia", "base-mainnet"] },
+        "chain_id": { "enum": [8453, 84532] },
+        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "release_binding_hash": { "$ref": "#/$defs/hash" },
+        "deployment_manifest_hash": { "$ref": "#/$defs/hash" },
+        "configuration_hash": { "$ref": "#/$defs/hash" },
+        "session_domain": { "$ref": "#/$defs/sessionDomain" }
+      }
+    },
+    "control": {
+      "type": "object",
+      "required": ["control", "status", "command", "executed_at_utc", "environment", "test_artifact", "output_artifact", "owner", "control_hash", "owner_signature"],
+      "additionalProperties": false,
+      "properties": {
+        "control": { "enum": ["mutation_api_auth", "distributed_rate_limit", "distributed_idempotency", "abuse_alerting", "payload_size_limit", "payload_quarantine", "malware_archive_bomb_rejection", "session_expiry", "session_revocation", "chain_contract_problem_scope_binding", "spend_cap_and_forbidden_actions"] },
+        "status": { "const": "passed" },
+        "command": { "type": "string", "minLength": 1 },
+        "executed_at_utc": { "type": "string", "format": "date-time" },
+        "environment": { "$ref": "#/$defs/environment" },
+        "test_artifact": { "$ref": "#/$defs/artifact" },
+        "output_artifact": { "$ref": "#/$defs/artifact" },
+        "owner": { "$ref": "#/$defs/identity" },
+        "control_hash": { "$ref": "#/$defs/hash" },
+        "owner_signature": { "$ref": "#/$defs/signature" }
+      }
+    },
+    "contract": {
+      "type": "object",
+      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "enum": ["P42BountyPool", "P42PayoutLedger", "P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"] },
+        "address": { "$ref": "#/$defs/address" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "source_artifact": { "$ref": "#/$defs/artifact" },
+        "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
+        "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "releaseBinding": {
+      "type": "object",
+      "required": ["repository_uri", "git_commit", "network", "chain_id", "deployment_manifest", "configuration_artifact", "contracts"],
+      "additionalProperties": false,
+      "properties": {
+        "repository_uri": { "type": "string", "pattern": "^https://" },
+        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "network": { "enum": ["base-sepolia", "base-mainnet"] },
+        "chain_id": { "enum": [8453, 84532] },
+        "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "configuration_artifact": { "$ref": "#/$defs/artifact" },
+        "contracts": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/contract" } }
+      }
+    }
+  }
+}

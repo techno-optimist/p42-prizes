@@ -90,3 +90,41 @@ disabled.
 - Production deploy sets `P42_REQUIRE_MUTATION_API_KEY=1` with hashed keys.
 - Distributed rate limits, API audit logs, and payload quarantine are live.
 - Session-key behavior is tested against the deployed Base contracts.
+
+### Operational-control evidence packet
+
+Gate 2 operational readiness is established only by a successfully normalized
+`p42-operational-controls/v1` packet conforming to
+`schemas/operational-controls.schema.json`. Source, policy, mock, or fixture
+claims are not operational evidence and must not be described as a gate pass.
+
+The packet must contain exactly these independently evidenced controls:
+
+- `mutation_api_auth`
+- `distributed_rate_limit`
+- `distributed_idempotency`
+- `abuse_alerting`
+- `payload_size_limit`
+- `payload_quarantine`
+- `malware_archive_bomb_rejection`
+- `session_expiry`
+- `session_revocation`
+- `chain_contract_problem_scope_binding`
+- `spend_cap_and_forbidden_actions`
+
+Every control needs its own resolved, hash-bound test artifact and output
+artifact; artifacts or hashes cannot be reused between controls. The record
+also includes the exact command, passed status, UTC execution time inside the
+packet evidence window, and a production-equivalent environment binding to the
+same Git commit, chain, deployment manifest, configuration, and canonical
+release hash. Session controls additionally bind the chain, every deployed P42
+contract address, and problem id so evidence from another deployment or scope
+cannot be substituted.
+
+The responsible operational-control owner is a real evidenced identity. That
+owner signs each canonical control hash with Ed25519 after all evidence was
+created and before packet completion. The key, identity, role, attestation
+class, and validity window must already exist in the out-of-band trust
+registry. The built-in production registry intentionally trusts nobody, so a
+fresh checkout cannot claim Gate 2 passed. Test registries and generated test
+artifacts exercise rejection behavior only; they are never launch evidence.
