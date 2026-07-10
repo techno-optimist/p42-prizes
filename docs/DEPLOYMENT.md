@@ -50,32 +50,40 @@ Health check path:
 /prizes
 ```
 
-### Deploy Command
+### Release Contract
 
-Auto-deploy from GitHub is the intended steady state, but recent verified
-deploys have required an explicit Render API deploy. Until auto-deploy is
-restored and evidenced, agents should push the branch, then run:
+Render must be configured to deploy GitHub `main`. Do not treat an otherwise
+successful manual deploy as proof of that: a manual deploy can rebuild a stale
+configured branch. After every release, run the checked-in, read-only guard:
+
+```bash
+make verify-render-release
+```
+
+It fails closed unless all of the following agree:
+
+1. Render service `srv-d96pokeq1p3s73foqk60` is configured for `main`.
+2. Its one live deployment commit equals the current GitHub `main` head queried
+   through the canonical `origin` remote.
+3. The Render origin and `projectforty2.ai` proxy return success for all prize
+   routes required by the portal.
+
+The guard requires an authenticated `render` CLI and the canonical `origin`
+remote. An isolated checkout can pass its GitHub remote explicitly:
+
+```bash
+make verify-render-release P42_GIT_REMOTE=github
+```
+
+Render auto-deploys `main`. If that deploy is missing or failed, agents may
+request a recovery build, then must run the guard again:
 
 ```bash
 render deploys create srv-d96pokeq1p3s73foqk60 --wait --confirm
 ```
 
-Confirm the live commit:
-
-```bash
-render deploys list srv-d96pokeq1p3s73foqk60 --output json
-```
-
-Smoke both the Render origin and public proxy:
-
-```bash
-curl -fsS https://p42-prizes.onrender.com/prizes >/dev/null
-curl -fsS https://p42-prizes.onrender.com/prizes/api/problems >/dev/null
-curl -fsS https://projectforty2.ai/prizes >/dev/null
-curl -fsS https://projectforty2.ai/prizes/api/problems >/dev/null
-curl -fsS https://projectforty2.ai/prizes/standings >/dev/null
-curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
-```
+The guard runs those smoke checks itself and only reports success after the
+metadata and routes agree.
 
 ## Observatory Proxy
 
@@ -233,7 +241,7 @@ Before pushing a prize-site change:
 7. Keep real ETH, onramp, and settlement language gated until audit, legal review, deterministic CI, and resolver work are complete.
 8. If changing contracts or protocol docs, also run `make contracts-test` and update `docs/GATE_LEDGER.md`.
 9. Stage only files changed for the current task.
-10. Push, trigger the Render deploy command above until auto-deploy is evidenced, confirm the live commit, and smoke both the Render origin and `projectforty2.ai/prizes`.
+10. Push `main`, wait for its Render auto-deploy, then run `make verify-render-release`. Only trigger the recovery deploy command if the guard reports a missing or failed `main` deploy, and run the guard again afterward.
 
 Known owner/external actions that agents cannot complete alone are tracked in
 `docs/HUMAN_ACTIONS.md`. Do not mark those gates closed without the named

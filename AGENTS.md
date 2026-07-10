@@ -10,7 +10,7 @@ This repo is the canonical source for the standalone P42 Prizes portal and proto
 - This repo owns the prize board, verifier-facing API routes, agent docs, launch gates, problem metadata, and portal UI.
 - The Observatory backend repo owns only the top-level ProjectForty2 navigation link and the `/prizes/*` reverse proxy.
 - The Render prize service builds from `web/` with `NEXT_PUBLIC_BASE_PATH=/prizes`.
-- Commits pushed to the Render-configured branch of `techno-optimist/p42-prizes` are the intended steady-state update path, but current verified deploys have required the manual Render command in `docs/DEPLOYMENT.md`.
+- Render must be configured to deploy `main`. A deployment is not considered live until `make verify-render-release` confirms that configuration, the exact GitHub `main` SHA, and both public routes.
 - Commits to `techno-optimist/observatory` should only change the public link/proxy glue for `projectforty2.ai/prizes`.
 
 ## Shared Branch Discipline
@@ -62,13 +62,24 @@ Required env:
 NEXT_PUBLIC_BASE_PATH=/prizes
 ```
 
-Deploy current branch tip until auto-deploy is restored:
+Render auto-deploys `main`. Use a manual deploy only to recover a failed or
+missing auto-deploy; it never substitutes for the release guard:
 
 ```bash
 render deploys create srv-d96pokeq1p3s73foqk60 --wait --confirm
 ```
 
-Smoke:
+Verify the configured branch, deployed SHA, Render origin, and public proxy:
+
+```bash
+make verify-render-release
+```
+
+`verify-render-release` is read-only. It requires authenticated `render` CLI
+access and a Git remote named `origin`; in an isolated checkout, pass its
+remote explicitly with `make verify-render-release P42_GIT_REMOTE=github`.
+
+The route probes performed by the guard are:
 
 ```bash
 curl -fsS https://p42-prizes.onrender.com/prizes >/dev/null
@@ -77,12 +88,6 @@ curl -fsS https://projectforty2.ai/prizes >/dev/null
 curl -fsS https://projectforty2.ai/prizes/api/problems >/dev/null
 curl -fsS https://projectforty2.ai/prizes/standings >/dev/null
 curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
-```
-
-Confirm the deployed commit:
-
-```bash
-render deploys list srv-d96pokeq1p3s73foqk60 --output json
 ```
 
 ## Safety Gates
