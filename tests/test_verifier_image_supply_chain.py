@@ -13,6 +13,15 @@ def test_canonical_verifier_image_requires_hash_locked_dependencies() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     assert re.search(r"^FROM\s+[^\s]+@sha256:[0-9a-f]{64}$", dockerfile, flags=re.MULTILINE)
+    for argument in ("SOURCE_COMMIT", "VERIFIER_SOURCE_SHA256", "VERIFIER_PROBLEM_ID", "VERIFIER_VERSION"):
+        assert f"ARG {argument}" in dockerfile
+    for label in (
+        "org.opencontainers.image.revision",
+        "io.projectforty2.verifier.source-sha256",
+        "io.projectforty2.verifier.problem-id",
+        "io.projectforty2.verifier.version",
+    ):
+        assert label in dockerfile
     assert "PYTHONPATH=/repo/src" in dockerfile
     assert "COPY requirements.runtime.lock /repo/requirements.runtime.lock" in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r /repo/requirements.runtime.lock" in dockerfile

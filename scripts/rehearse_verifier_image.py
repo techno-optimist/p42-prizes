@@ -20,7 +20,15 @@ import time
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
-from p42_prizes.admission import AdmissionError, validate_report_shape
+from p42_prizes.admission import (
+    AdmissionError,
+    OCI_REVISION_LABEL,
+    PROBLEM_ID_LABEL,
+    SOURCE_HASH_LABEL,
+    VERIFIER_VERSION_LABEL,
+    compute_source_hash,
+    validate_report_shape,
+)
 from p42_prizes.problem import load_manifest, repo_root_from_problem
 from p42_prizes.runner_sandbox import (
     SANDBOX_USER,
@@ -119,6 +127,40 @@ def _verdict_integrity_violations(
     return violations
 
 
+def _image_label_violations(
+    labels: Mapping[str, Any],
+    *,
+    source_commit: str,
+    source_hash: str,
+    problem_id: str,
+    verifier_version: str,
+) -> list[str]:
+    expected = {
+        OCI_REVISION_LABEL: source_commit,
+        SOURCE_HASH_LABEL: source_hash,
+        PROBLEM_ID_LABEL: problem_id,
+        VERIFIER_VERSION_LABEL: verifier_version,
+    }
+    return [
+        f"image label {name} does not match the executed source"
+        for name, value in expected.items()
+        if labels.get(name) != value
+    ]
+
+
+def _inspect_image_labels(runtime: str, image_tag: str) -> dict[str, Any]:
+    output = _run_checked(
+        [runtime, "image", "inspect", "--format", "{{json .Config.Labels}}", image_tag]
+    ).stdout.strip()
+    try:
+        decoded = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise SmokeError("container runtime returned malformed image labels") from exc
+    if not isinstance(decoded, dict):
+        raise SmokeError("container runtime image has no OCI labels")
+    return decoded
+
+
 def _finalize_report(report: Mapping[str, Any]) -> dict[str, Any]:
     normalized = dict(report)
     normalized.pop("smoke_hash", None)
@@ -187,6 +229,9 @@ def rehearse(
     source_commit = _run_checked(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout.strip()
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
         raise SmokeError("could not determine a full source commit")
+    source_hash = compute_source_hash(problem)
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", source_hash):
+        raise SmokeError("could not determine a canonical verifier source hash")
     docker_info = _run_checked(
         [runtime, "info", "--format", "{{.ServerVersion}} {{.OSType}}/{{.Architecture}} cgroup={{.CgroupVersion}}"]
     ).stdout.strip()
@@ -199,6 +244,14 @@ def rehearse(
         str(root / "Dockerfile.verifier"),
         "--build-arg",
         f"PROBLEM={manifest['problem_id']}",
+        "--build-arg",
+        f"SOURCE_COMMIT={source_commit}",
+        "--build-arg",
+        f"VERIFIER_SOURCE_SHA256={source_hash}",
+        "--build-arg",
+        f"VERIFIER_PROBLEM_ID={manifest['problem_id']}",
+        "--build-arg",
+        f"VERIFIER_VERSION={verifier['version']}",
         "-t",
         image_tag,
         str(root),
@@ -207,6 +260,14 @@ def rehearse(
     image_id = _run_checked([runtime, "image", "inspect", "--format", "{{.Id}}", image_tag]).stdout.strip()
     if not IMAGE_ID_RE.fullmatch(image_id):
         raise SmokeError(f"container runtime returned a non-canonical image ID: {image_id!r}")
+    image_labels = _inspect_image_labels(runtime, image_tag)
+    label_violations = _image_label_violations(
+        image_labels,
+        source_commit=source_commit,
+        source_hash=source_hash,
+        problem_id=manifest["problem_id"],
+        verifier_version=verifier["version"],
+    )
 
     container_name = f"p42-smoke-{manifest['problem_id']}-{uuid4().hex[:12]}"
     sandbox_command = build_sandbox_command(
@@ -260,6 +321,7 @@ def rehearse(
             "not_launch_evidence": True,
             "completed_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "source_commit": source_commit,
+            "source_hash": source_hash,
             "problem": {
                 "problem_id": manifest["problem_id"],
                 "manifest_verifier_image": verifier.get("image"),
@@ -267,7 +329,12 @@ def rehearse(
             },
             "solution_sha256": solution_sha256,
             "runtime": {"docker_info": docker_info},
-            "image": {"tag": image_tag, "local_image_id": image_id, "registry_pullable": False},
+            "image": {
+                "tag": image_tag,
+                "local_image_id": image_id,
+                "registry_pullable": False,
+                "provenance_label_violations": label_violations,
+            },
             "sandbox": {
                 "network": "none",
                 "memory_mb": selected_memory,
@@ -295,6 +362,7 @@ def rehearse(
         and not timed_out
         and not contract_violations
         and not integrity_violations
+        and not label_violations
     )
 
 

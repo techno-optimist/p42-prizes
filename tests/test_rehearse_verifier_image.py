@@ -89,3 +89,27 @@ def test_smoke_requires_a_canonical_identity_bound_verdict() -> None:
     assert smoke._verdict_integrity_violations(smoke.canonical_json(altered) + "\n", altered, **kwargs) == [
         "VerdictReport verifier_image does not match the executed input"
     ]
+
+
+def test_smoke_requires_image_provenance_labels() -> None:
+    smoke = load_smoke_module()
+    source_hash = "sha256:" + "d" * 64
+    kwargs = {
+        "source_commit": "e" * 40,
+        "source_hash": source_hash,
+        "problem_id": "hadamard-mini",
+        "verifier_version": "0.1.1",
+    }
+    labels = {
+        smoke.OCI_REVISION_LABEL: kwargs["source_commit"],
+        smoke.SOURCE_HASH_LABEL: source_hash,
+        smoke.PROBLEM_ID_LABEL: kwargs["problem_id"],
+        smoke.VERIFIER_VERSION_LABEL: kwargs["verifier_version"],
+    }
+    assert smoke._image_label_violations(labels, **kwargs) == []
+    assert smoke._image_label_violations({}, **kwargs) == [
+        f"image label {smoke.OCI_REVISION_LABEL} does not match the executed source",
+        f"image label {smoke.SOURCE_HASH_LABEL} does not match the executed source",
+        f"image label {smoke.PROBLEM_ID_LABEL} does not match the executed source",
+        f"image label {smoke.VERIFIER_VERSION_LABEL} does not match the executed source",
+    ]

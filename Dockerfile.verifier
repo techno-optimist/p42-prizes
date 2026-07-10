@@ -19,6 +19,18 @@
 #   docker pull python:<tag> && docker inspect --format='{{index .RepoDigests 0}}' python:<tag>
 FROM python:3.14.2-slim@sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925
 ARG PROBLEM
+ARG SOURCE_COMMIT
+ARG VERIFIER_SOURCE_SHA256
+ARG VERIFIER_PROBLEM_ID
+ARG VERIFIER_VERSION
+
+# Registry admission binds the pulled image to the exact checkout and verifier
+# package it was built from. The local smoke tool supplies all four values and
+# verifies them after the build; incomplete labels fail the admission gate.
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      io.projectforty2.verifier.source-sha256="${VERIFIER_SOURCE_SHA256}" \
+      io.projectforty2.verifier.problem-id="${VERIFIER_PROBLEM_ID}" \
+      io.projectforty2.verifier.version="${VERIFIER_VERSION}"
 
 # Determinism knobs the verifier standard requires.
 ENV PYTHONHASHSEED=0 \
