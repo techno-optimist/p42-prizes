@@ -910,6 +910,15 @@ test("operator commits finalized challenge accounting before terminal queue stat
   assert.ok(earlierBlock.indexOf("finalizeChallengeSpend(") < earlierBlock.indexOf("recordAction("));
 });
 
+test("operator requires canonical newline-terminated runtime bridge output", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const bridgeStart = source.indexOf("function bridge(...args)");
+  const bridgeEnd = source.indexOf("\nfunction readQueue()", bridgeStart);
+  const bridgeSource = source.slice(bridgeStart, bridgeEnd);
+  assert.match(bridgeSource, /canonicalBytes:\s*true/);
+  assert.match(bridgeSource, /trailingNewline:\s*"require"/);
+});
+
 test("operator reservation is guarded until signed journal durability", () => {
   const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
   const guard = source.indexOf("await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash");

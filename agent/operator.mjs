@@ -232,7 +232,12 @@ function bridge(...args) {
     throw new Error((completed.stderr || completed.stdout || `runtime bridge exited ${completed.status}`).trim());
   }
   if (!completed.stdout.trim()) throw new Error("runtime bridge produced no JSON");
-  return parseStrictJsonText(completed.stdout, { maxBytes: 16 * 1024 * 1024, maxDepth: 64 });
+  return parseStrictJsonText(completed.stdout, {
+    maxBytes: 16 * 1024 * 1024,
+    maxDepth: 64,
+    canonicalBytes: true,
+    trailingNewline: "require",
+  });
 }
 
 function readQueue() {
