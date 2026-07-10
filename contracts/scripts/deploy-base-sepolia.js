@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
 import { mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -40,6 +39,10 @@ import {
   validateMultiBoardAdmissionPreflight,
   validateMultiBoardDeploymentTimestamps,
 } from "./multiboard-ceremony-helper.js";
+import {
+  readContractsArtifactJson,
+  readContractsConfigJson,
+} from "./strict-json-helper.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const CONTRACT_NAMES = Object.freeze({
@@ -77,7 +80,7 @@ function multiBoardCeremonyConfigPath() {
 async function readMultiBoardCeremonyInput() {
   const path = multiBoardCeremonyConfigPath();
   try {
-    return { path, value: JSON.parse(await readFile(path, "utf8")) };
+    return { path, value: await readContractsConfigJson(path) };
   } catch (error) {
     throw new Error(`Unable to parse multi-board ceremony config ${path}: ${error.message}`);
   }
@@ -1206,7 +1209,7 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
 
 async function continueCeremony(ethers) {
   const path = manifestPath();
-  const manifest = JSON.parse(await readFile(path, "utf8"));
+  const manifest = await readContractsArtifactJson(path);
   if (manifest.schema !== MANIFEST_SCHEMA && manifest.schema !== MULTIBOARD_MANIFEST_SCHEMA) {
     throw new Error(`Unsupported manifest schema: ${manifest.schema}`);
   }

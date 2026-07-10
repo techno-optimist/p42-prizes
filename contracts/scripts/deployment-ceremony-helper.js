@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { computeDeploymentConfigHash, writeFileAtomicSync } from "../../agent/indexer.mjs";
 import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
+import { readContractsArtifactJson } from "./strict-json-helper.js";
 
 export const MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v1";
 export const MULTIBOARD_MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v2";
@@ -966,7 +967,7 @@ export async function readManifestOutputReservation(path) {
   const reservationPath = manifestOutputReservationPath(output);
   let parsed;
   try {
-    parsed = JSON.parse(await readFile(reservationPath, "utf8"));
+    parsed = await readContractsArtifactJson(reservationPath);
   } catch (error) {
     if (error?.code === "ENOENT") throw reservationCollisionError(reservationPath);
     throw new Error(`Could not read deployment reservation ${reservationPath}: ${error.message}`);

@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
 
 import {
@@ -10,6 +9,7 @@ import {
   readCeremonyConfig,
   validateDeploymentTimestamps,
 } from "./deployment-ceremony-helper.js";
+import { readContractsConfigJsonSync } from "./strict-json-helper.js";
 
 export const MULTIBOARD_CEREMONY_SCHEMA = "p42-prizes/multi-board-ceremony/v1";
 
@@ -199,7 +199,7 @@ function runAdmitReadyCommand({ repoRoot, problemPath, matrixPath, pythonExecuta
 
 function loadAdmissionMatrix(path) {
   try {
-    const matrix = JSON.parse(readFileSync(path, "utf8"));
+    const matrix = readContractsConfigJsonSync(path);
     if (!matrix || typeof matrix !== "object" || Array.isArray(matrix)) {
       throw new Error("matrix must be a JSON object");
     }

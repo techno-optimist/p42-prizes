@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
 import {
@@ -14,6 +14,7 @@ import {
   stableStringify,
   validateManifestEvidence,
 } from "../../agent/indexer.mjs";
+import { readContractsArtifactJson } from "./strict-json-helper.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
 const PRIVATE_FILE_MODE = 0o600;
@@ -76,7 +77,7 @@ export async function writeReconciliationReportAtomic(path, report, operationOve
 
 export async function loadManifestFromPath(path) {
   try {
-    return { path, data: JSON.parse(await readFile(path, "utf8")) };
+    return { path, data: await readContractsArtifactJson(path) };
   } catch (error) {
     throw new Error(`Unable to read deployment manifest at ${path}: ${error.message}`);
   }
