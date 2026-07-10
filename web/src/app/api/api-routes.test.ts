@@ -7,7 +7,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GET as capabilitiesGet } from "@/app/api/capabilities/route";
 import { POST as challengePost } from "@/app/api/challenges/route";
 import { GET as eventsGet } from "@/app/api/events/route";
+import { GET as problemGet } from "@/app/api/problems/[slug]/route";
 import { POST as coinbaseSessionPost } from "@/app/api/problems/[slug]/funding/coinbase-session/route";
+import { GET as problemsGet } from "@/app/api/problems/route";
 import { POST as solutionsPost } from "@/app/api/solutions/route";
 import { POST as commitPost } from "@/app/api/submissions/commit/route";
 import { POST as revealPost } from "@/app/api/submissions/reveal/route";
@@ -394,6 +396,30 @@ describe("mutable API routes", () => {
     await expect(response.json()).resolves.toMatchObject({
       error: "Coinbase Onramp is gated until a reviewed Base mainnet pool is configured",
       donationWallet: { chain: "Base Sepolia", asset: "ETH", address: null, status: "not-deployed" },
+    });
+  });
+
+  it("publishes only reconciled donation targets from problem APIs", async () => {
+    const listResponse = await problemsGet();
+    const list = await listResponse.json();
+    expect(listResponse.status).toBe(200);
+    expect(list).toHaveLength(10);
+    for (const entry of list) {
+      expect(entry.donationTarget).toBeNull();
+      expect(entry.donationWallet.address).toBeNull();
+      expect(entry.donationWallet.explorerUrl).toBeNull();
+    }
+
+    const detailResponse = await problemGet(
+      new Request("http://localhost/api/problems/hadamard-mini"),
+      { params: Promise.resolve({ slug: "hadamard-mini" }) },
+    );
+    const detail = await detailResponse.json();
+    expect(detailResponse.status).toBe(200);
+    expect(detail).toMatchObject({
+      donationTarget: null,
+      poolAddress: null,
+      donationWallet: { address: null, explorerUrl: null },
     });
   });
 
