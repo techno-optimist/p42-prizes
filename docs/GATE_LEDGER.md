@@ -176,7 +176,7 @@ Evidence" table in `PRODUCTION_READINESS.md`).
 | Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence, local diagnostic event ledger, process-local rate limits, local idempotency for retryable verifier/submission POSTs, opt-in hash-based mutation API key gate, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
 | Pool funding | Per-problem Base Sepolia testnet/demo donation-wallet metadata exposed in API/UI; no real settlement or deployed prize-pool claim | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, EIP-191 solver ownership signature for non-local commits, local contract commitment helper, and `p42-da-receipt/v1` evidence validator | Deployed on-chain commit; on-chain-at-reveal DA on the canonical deployment (reveal enforces `sha256(bytes) == commitDaHash`; anchored off-chain store for the 3 large problems). A permanence receipt at finalize is optional (mirror only) — see `docs/DATA_AVAILABILITY.md` |
-| Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; `admit-host`/`admit-matrix` enforce typed N-host evidence locally; `admit-ready` rejects placeholder verifier images before funding | Canonical sandbox runner, pinned image digest, collected N-host identical verdict matrix artifacts |
+| Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; source runner code requires a fail-closed Docker sandbox for chain-linked jobs, validates pullable immutable image references, and applies aggregate cgroup memory/PID controls; `admit-host`/`admit-matrix` enforce typed N-host evidence locally; `admit-ready` rejects placeholder verifier images before funding | Pullable production image digest, production Linux/DGX sandbox rehearsal, collected N-host identical verdict matrix artifacts |
 | Settlement math | Final-denominator pool simulator, incremental portal credit model, and Hardhat scaffold tests for escrow-until-close, final-denominator claims, reveal/finalize, challenge outcomes, bond return/slash, seeded payout/bond property checks, and ledger credit | Complete deployed contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
 | Challenges | Endpoint returns `501`; local Hardhat challenge scaffold covers counter-bond sizing, one active challenge per submission, open-challenge finalization block, resolver outcome hooks, and challenge-bond routing | Integrated testnet bond escrow, resolver transcript flow, fraud-window/slashing path |
 | Resolver | Local transcript-required resolver scaffold with per-decision bond, fraud-window-gated release, and owner-slash proof hash | Verifiable transcript committee on testnet; non-owner-trusted slashing policy; fraud-proof track before scale |
@@ -324,11 +324,15 @@ already captured by a gate row or residual gap above. All open.
   add at real-ETH scale, not a launch blocker. For the 3 off-chain-DA
   problems, unavailable-payload policing is an operator challenge, not an
   automatic slash.
-- The runner's untrusted-verifier isolation is process-level only: verifiers
-  run in their own process group with a process-tree kill on timeout and a
-  scrubbed/allowlisted environment, but there is no container/cgroup sandbox
-  and `RLIMIT_AS` is per-process, so a forking verifier can still exceed the
-  aggregate memory bound.
+- The source runner has two untrusted-verifier policies. Chain-linked jobs
+  require the fail-closed Docker policy: it rejects unavailable runtimes and
+  mutable or placeholder images, runs with `--network=none`, read-only
+  filesystem and solution mount, non-root/no-capabilities, and aggregate cgroup
+  memory/PID/CPU caps. Local non-chain runs may still use process-group,
+  allowlisted-environment, and per-process-`RLIMIT_AS` mode, so a forking
+  verifier can exceed that local aggregate memory bound. No production
+  Linux/DGX exercise has yet demonstrated the Docker policy against a pullable
+  pinned verifier image; that remains a Gate 1 runtime-evidence requirement.
 
 ## Closed Evidence History
 

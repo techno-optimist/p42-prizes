@@ -221,12 +221,15 @@ with a `p42-runner-loop/v1` summary. If the oldest queued job does not fit, can
 never fit the host, swap is above threshold, a runner slot is already occupied,
 or a stale lease needs supervisor action, it records a `wait` event and sleeps
 before trying again. This is the burst behavior we want: many submissions create
-queue depth and latency, not simultaneous verifier processes. Serialization plus
-the per-process `RLIMIT_AS` guard sharply reduces box-level OOM pressure but does
-not fully eliminate it (a single forking verifier can still exceed the aggregate
-bound — see the OOM guard limitation above); a container/cgroup sandbox is the
-pending fix. Use `--max-jobs` for a bounded batch and `--max-iterations` for
-rehearsals.
+queue depth and latency, not simultaneous verifier processes. For local
+`sandbox = "none"` runs, serialization plus the per-process `RLIMIT_AS` guard
+sharply reduces box-level OOM pressure but does not fully eliminate it (a single
+forking verifier can still exceed the aggregate bound — see the OOM guard
+limitation above). Chain-linked verifier jobs instead require
+`policy.sandbox = "docker"` and use the source-level aggregate cgroup memory and
+PID caps. A production Linux/DGX rehearsal against a pullable pinned image is
+still required to demonstrate that policy in the actual worker environment. Use
+`--max-jobs` for a bounded batch and `--max-iterations` for rehearsals.
 
 Transcripts include `resource_limits.required_memory_mb`,
 `resource_limits.child_address_space_limit_mb`, and whether the address-space
