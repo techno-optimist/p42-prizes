@@ -338,21 +338,32 @@ def test_build_verifier_env_defaults_determinism_knobs(monkeypatch: pytest.Monke
         assert env[name] == "1"
 
 
-def test_build_verifier_env_preserves_explicit_determinism_overrides(
+def test_build_verifier_env_forces_determinism_knobs_despite_hostile_ambient_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    overrides = {
-        "PYTHONHASHSEED": "7",
-        "OMP_NUM_THREADS": "2",
-        "OPENBLAS_NUM_THREADS": "3",
-        "MKL_NUM_THREADS": "4",
+    hostile_values = {
+        "PYTHONHASHSEED": "random",
+        "OMP_NUM_THREADS": "64",
+        "OPENBLAS_NUM_THREADS": "32",
+        "MKL_NUM_THREADS": "16",
     }
-    for name, value in overrides.items():
+    for name, value in hostile_values.items():
         monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PATH", "/hostile/bin")
+    monkeypatch.setenv("PYTHONPATH", "/hostile/pythonpath")
+    monkeypatch.setenv("P42_VERIFIER_IMAGE", "sha256:" + "b" * 64)
 
     env = build_verifier_env(ROOT / "problems" / "hadamard-mini")
 
-    assert {name: env[name] for name in overrides} == overrides
+    assert {name: env[name] for name in hostile_values} == {
+        "PYTHONHASHSEED": "0",
+        "OMP_NUM_THREADS": "1",
+        "OPENBLAS_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1",
+    }
+    assert env["PATH"] == "/hostile/bin"
+    assert env["PYTHONPATH"] == f"{ROOT / 'src'}{os.pathsep}/hostile/pythonpath"
+    assert env["P42_VERIFIER_IMAGE"] == "sha256:local-dev"
 
 
 def test_run_verifier_once_emits_default_determinism_env_when_host_unset(
