@@ -14,6 +14,8 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  assertRegistryBindingStable,
+  buildRegistryBinding,
   buildChallengeCallPolicy,
   buildOperatorCursor,
   buildSignedTransactionRecord,
@@ -22,12 +24,14 @@ import {
   exactCallRequestFromPolicy,
   nextOperatorScanRange,
   operatorCursorBinding,
+  localProblemRuntimeIdentity,
   problemRunnerConfig,
   queryChunked,
   recoverRevealCalldata,
   resolveOperatorFinality,
   runRuntimeBridge,
   sha256Canonical,
+  validateRegistryBinding,
   validateOperatorCursor,
   validateOperatorExecutionMode,
 } from "./lib.mjs";
@@ -46,6 +50,7 @@ function arg(name, def = undefined) {
 const RPC = arg("rpc", "https://sepolia.base.org");
 const MANIFEST = arg("manifest");
 const PROBLEM = arg("problem");
+const REGISTRY_PROBLEM_ID = arg("registry-problem-id");
 const DA_DIR = arg("da-dir");
 const ARWEAVE = arg("arweave", false);
 const ONCE = arg("once", false);
@@ -72,8 +77,12 @@ const MEMORY_SAFETY_FACTOR = Number(arg("memory-safety-factor", "2"));
 const RUNNER_CHAIN_TIMESTAMP_ENV = "P42_RUNNER_CHAIN_TIMESTAMP";
 const RETRY_BACKOFF_MS = 15_000;
 
-if (!MANIFEST || !PROBLEM) {
-  console.error("required: --manifest <path> --problem <dir>");
+if (!MANIFEST || !PROBLEM || !REGISTRY_PROBLEM_ID) {
+  console.error("required: --manifest <path> --problem <dir> --registry-problem-id <positive numeric id>");
+  process.exit(2);
+}
+if (!/^[1-9][0-9]*$/.test(String(REGISTRY_PROBLEM_ID))) {
+  console.error("--registry-problem-id must be a positive canonical integer");
   process.exit(2);
 }
 if (!Number.isInteger(MAX_JOBS_PER_SCAN) || MAX_JOBS_PER_SCAN < 1) {
@@ -96,6 +105,7 @@ const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
 const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
 const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
+const registry = new ethers.Contract(manifest.contracts.registry.address, abi("P42ProblemRegistry"), wallet);
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const log = (...values) => console.log(...values);
 
@@ -106,9 +116,71 @@ let finalityConfirmations;
 let reorgOverlapBlocks;
 let executionMode;
 let agentWallet = null;
+let registryProblemId;
+let localProblem;
 let cursorBinding;
 let cursorState;
 const blockCache = new Map();
+
+function registryBindingExpected() {
+  return {
+    chain_id: chainId,
+    registry_address: String(registry.target).toLowerCase(),
+    problem_id: registryProblemId,
+    problem_slug: runnerConfig.problemId,
+  };
+}
+
+async function registryBindingAt(blockNumber, blockHash) {
+  const [registryProblem, isFrozen, explicitlyFrozen] = await Promise.all([
+    registry.problems(BigInt(registryProblemId), { blockTag: blockNumber }),
+    registry.isFrozen(BigInt(registryProblemId), { blockTag: blockNumber }),
+    registry.explicitlyFrozen(BigInt(registryProblemId), { blockTag: blockNumber }),
+  ]);
+  return buildRegistryBinding({
+    manifest,
+    localProblem,
+    registryAddress: String(registry.target),
+    registryProblemId,
+    chainId,
+    observationBlockNumber: blockNumber,
+    observationBlockHash: blockHash,
+    registryProblem,
+    registryIsFrozen: isFrozen,
+    registryExplicitlyFrozen: explicitlyFrozen,
+  });
+}
+
+async function currentRegistryBinding() {
+  const head = await provider.getBlockNumber();
+  const safeHead = head - finalityConfirmations;
+  if (safeHead < START_BLOCK) {
+    throw new Error(`registry binding needs a finalized block at or after manifest start block ${START_BLOCK}`);
+  }
+  const block = await provider.getBlock(safeHead);
+  if (!block?.hash) throw new Error(`cannot load finalized registry observation block ${safeHead}`);
+  return registryBindingAt(safeHead, block.hash);
+}
+
+async function revalidateRecordedRegistryBinding(value) {
+  const recorded = validateRegistryBinding(value, registryBindingExpected());
+  if (recorded.observation_block_number < START_BLOCK) {
+    throw new Error("recorded registry binding predates the manifest start block");
+  }
+  const head = await provider.getBlockNumber();
+  if (recorded.observation_block_number > head - finalityConfirmations) {
+    throw new Error("recorded registry binding observation is not finalized");
+  }
+  const historicalBlock = await provider.getBlock(recorded.observation_block_number);
+  if (!historicalBlock?.hash || historicalBlock.hash.toLowerCase() !== recorded.observation_block_hash) {
+    throw new Error("recorded registry binding observation block is no longer canonical");
+  }
+  const historical = await registryBindingAt(recorded.observation_block_number, historicalBlock.hash);
+  assertRegistryBindingStable(recorded, historical);
+  const current = await currentRegistryBinding();
+  assertRegistryBindingStable(recorded, current);
+  return current;
+}
 
 function bridge(...args) {
   return runRuntimeBridge(REPO_ROOT, args);
@@ -305,6 +377,11 @@ function jobIsCurrentOperator(job, fromBlock, toBlock) {
   if (Number(claim.chain_id) !== chainId) return false;
   if (String(claim.problem_id) !== runnerConfig.problemId) return false;
   if (String(claim.submission_contract).toLowerCase() !== String(subs.target).toLowerCase()) return false;
+  try {
+    validateRegistryBinding(claim.registry_binding, registryBindingExpected());
+  } catch {
+    return false;
+  }
   const blockNumber = Number(claim.block_number);
   return Number.isInteger(blockNumber) && blockNumber >= fromBlock && blockNumber <= toBlock;
 }
@@ -513,6 +590,9 @@ async function refreshRetryableJobs(latest) {
 }
 
 async function ingestReveal(event) {
+  // Fail before any payload retrieval or queue write when the local package no
+  // longer names the finalized registry source/image identity.
+  const registryBinding = await currentRegistryBinding();
   const jobId = eventJobId(event);
   const paths = retryPaths(jobId);
   const submissionId = event.args.submissionId;
@@ -579,6 +659,7 @@ async function ingestReveal(event) {
     challenge_ends_at: event.args.challengeEndsAt.toString(),
     solution_bytes_length: Number(event.args.solutionBytesLength ?? 0n),
     onchain_da: onchainDa,
+    registry_binding: registryBinding,
     payload_source: payload.payloadSource,
     reveal_calldata_offset_bytes: payload.calldataOffsetBytes ?? null,
     transaction_from: payload.transactionFrom?.toLowerCase() ?? null,
@@ -802,6 +883,14 @@ async function reconcileBroadcast(job) {
         recordAction(job, transcript.candidate, "reorged", action.transaction_hash);
         appendAlert(`REORGED CHALLENGE ${job.job_id}: receipt disappeared before finality`);
       }
+      try {
+        await revalidateRecordedRegistryBinding(transcript.transcript.verifier?.chain_claim?.registry_binding);
+      } catch (error) {
+        const reason = `registry binding rejected before rebroadcast: ${error.shortMessage || error.message}`;
+        recordAction(job, transcript.candidate, "registry_binding_rejected", action.transaction_hash, reason);
+        appendAlert(`REFUSED ${job.job_id}: ${reason}`);
+        return true;
+      }
       const current = await candidateStillChallengeable(transcript.candidate);
       if (!current.ok) {
         recordAction(job, transcript.candidate, "superseded", action.transaction_hash, current.reason);
@@ -884,6 +973,14 @@ async function consumeCandidate(job) {
   }
   if (candidate.source_event_hash !== job.source_event_hash) {
     throw new Error(`candidate source event mismatch for ${job.job_id}`);
+  }
+  try {
+    await revalidateRecordedRegistryBinding(checked.transcript.verifier?.chain_claim?.registry_binding);
+  } catch (error) {
+    const detail = `registry binding rejected before signing: ${error.shortMessage || error.message}`;
+    recordAction(job, candidate, "registry_binding_rejected", null, detail);
+    appendAlert(`REFUSED ${job.job_id}: ${detail}`);
+    return;
   }
   const candidateCap = BigInt(candidate.max_bond_wei || "0");
   if (candidateCap <= 0n || candidateCap > MAX_BOND) {
@@ -1033,6 +1130,11 @@ async function main() {
   if (Number(manifest.network.chainId) !== chainId) {
     throw new Error(`manifest chain ${manifest.network.chainId} does not match RPC chain ${chainId}`);
   }
+  registryProblemId = String(REGISTRY_PROBLEM_ID);
+  localProblem = localProblemRuntimeIdentity(problem, REPO_ROOT);
+  if (localProblem.problem_slug !== runnerConfig.problemId) {
+    throw new Error("problem.yaml identity changed while loading the operator runtime");
+  }
   ({ confirmations: finalityConfirmations, reorgOverlapBlocks } = resolveOperatorFinality({
     manifest,
     confirmations: CONFIRMATIONS_ARG,
@@ -1049,12 +1151,17 @@ async function main() {
   if (executionMode.mode === "agent-wallet") {
     agentWallet = new ethers.Contract(executionMode.agentWalletAddress, abi("P42AgentWallet"), wallet);
   }
+  // Fail startup before queueing or spending when the finalized registry cannot
+  // attest this exact local verifier source/image identity.
+  await currentRegistryBinding();
   cursorBinding = operatorCursorBinding({
     manifest,
     chainId,
     submissionContract: String(subs.target),
     challengeContract: String(chal.target),
     problemId: runnerConfig.problemId,
+    registryAddress: String(registry.target),
+    registryProblemId,
   });
   cursorState = loadOperatorCursor();
   writeJsonAtomic(CURSOR, cursorState);

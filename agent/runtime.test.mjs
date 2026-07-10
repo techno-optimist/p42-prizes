@@ -9,6 +9,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ethers } from "ethers";
 
 import {
+  assertRegistryBindingStable,
+  buildRegistryBinding,
   buildChallengeCallPolicy,
   classifyReceiptFinality,
   exactCallRequestFromPolicy,
@@ -17,13 +19,17 @@ import {
   canonicalJson,
   nextOperatorScanRange,
   operatorCursorBinding,
+  localProblemRuntimeIdentity,
   recoverRevealCalldata,
   resolveOperatorFinality,
   sha256Canonical,
   solverLifecycleDecision,
   submissionIdFromCommittedReceipt,
+  validateRegistryBinding,
   validateOperatorCursor,
   validateOperatorExecutionMode,
+  verifierImageHashForDigest,
+  verifierSourceHashForDigest,
 } from "./lib.mjs";
 
 
@@ -58,6 +64,180 @@ const expected = {
   solutionBytesLength: solution.length,
 };
 const anchoredExpected = { ...expected, commitDaHash: ethers.sha256(solution) };
+
+const RUNTIME_BINDING_ADDRESSES = {
+  registry: "0x1111111111111111111111111111111111111111",
+  pool: "0x2222222222222222222222222222222222222222",
+  ledger: "0x3333333333333333333333333333333333333333",
+  submissions: "0x4444444444444444444444444444444444444444",
+  challenges: "0x5555555555555555555555555555555555555555",
+};
+const RUNTIME_IMAGE = `sha256:${"a".repeat(64)}`;
+const RUNTIME_SOURCE = `sha256:${"b".repeat(64)}`;
+
+function runtimeBindingFixture(overrides = {}) {
+  return {
+    schema_version: "p42-registry-binding/v1",
+    image_hash_algorithm: "keccak256-utf8/v1",
+    source_digest_algorithm: "p42-source-tree-sha256/v1",
+    source_hash_algorithm: "keccak256-utf8/v1",
+    chain_id: 84532,
+    registry_address: RUNTIME_BINDING_ADDRESSES.registry,
+    problem_id: "1",
+    problem_slug: "hadamard-mini",
+    verifier_version: "0.1.1",
+    observation_block_number: 100,
+    observation_block_hash: `0x${"1".repeat(64)}`,
+    verifier_image: RUNTIME_IMAGE,
+    verifier_image_hash: verifierImageHashForDigest(RUNTIME_IMAGE),
+    verifier_source_digest: RUNTIME_SOURCE,
+    verifier_source_hash: verifierSourceHashForDigest(RUNTIME_SOURCE),
+    spec_hash: `0x${"2".repeat(64)}`,
+    admission_hash: `0x${"3".repeat(64)}`,
+    metadata_uri: "ipfs://runtime-fixture",
+    pool: RUNTIME_BINDING_ADDRESSES.pool,
+    ledger: RUNTIME_BINDING_ADDRESSES.ledger,
+    submission_manager: RUNTIME_BINDING_ADDRESSES.submissions,
+    challenge_manager: RUNTIME_BINDING_ADDRESSES.challenges,
+    challenge_window_seconds: "259200",
+    min_improvement_atoms: "1",
+    frozen: true,
+    explicitly_frozen: true,
+    ...overrides,
+  };
+}
+
+test("registry bindings bind explicit source/image preimages and remain stable across observations", () => {
+  const first = validateRegistryBinding(runtimeBindingFixture(), {
+    chain_id: 84532,
+    registry_address: RUNTIME_BINDING_ADDRESSES.registry,
+    problem_id: "1",
+    problem_slug: "hadamard-mini",
+  });
+  const later = validateRegistryBinding(runtimeBindingFixture({
+    observation_block_number: 101,
+    observation_block_hash: `0x${"4".repeat(64)}`,
+  }));
+  assert.doesNotThrow(() => assertRegistryBindingStable(first, later));
+
+  const changed = runtimeBindingFixture({
+    verifier_source_digest: `sha256:${"c".repeat(64)}`,
+    verifier_source_hash: verifierSourceHashForDigest(`sha256:${"c".repeat(64)}`),
+  });
+  assert.throws(() => assertRegistryBindingStable(first, changed), /changed after transcript creation/);
+
+  const localDev = runtimeBindingFixture({ verifier_image: "sha256:local-dev" });
+  assert.throws(() => validateRegistryBinding(localDev), /canonical bare sha256/);
+
+  assert.throws(
+    () => validateRegistryBinding(runtimeBindingFixture({ chain_id: 0 })),
+    /registry binding chain_id must be a positive safe integer/,
+  );
+
+  assert.throws(
+    () => validateRegistryBinding(
+      runtimeBindingFixture({ verifier_version: "0.1.1-ALPHA" }),
+      { verifier_version: "0.1.1-alpha" },
+    ),
+    /registry binding verifier_version mismatch/,
+  );
+});
+
+test("registry binding builder rejects the local phase-0 placeholder before any chain action", () => {
+  assert.throws(
+    () => localProblemRuntimeIdentity(resolve(REPO_ROOT, "problems/hadamard-mini"), REPO_ROOT),
+    /problem.yaml verifier.image must be a canonical bare sha256/,
+  );
+});
+
+test("registry binding builder cross-checks every frozen manifest and registry anchor", () => {
+  const localProblem = {
+    problem_slug: "hadamard-mini",
+    verifier_version: "0.1.1",
+    verifier_image: RUNTIME_IMAGE,
+    verifier_source_digest: RUNTIME_SOURCE,
+  };
+  const manifestProblem = {
+    problemId: "1",
+    registrationStatus: "registered-and-frozen",
+    immutablePins: true,
+    explicitlyFrozen: true,
+    problemSlug: localProblem.problem_slug,
+    verifierVersion: localProblem.verifier_version,
+    verifierImageDigest: localProblem.verifier_image,
+    verifierImageHashAlgorithm: "keccak256-utf8/v1",
+    verifierImageHash: verifierImageHashForDigest(localProblem.verifier_image),
+    verifierSourceDigest: localProblem.verifier_source_digest,
+    verifierSourceDigestAlgorithm: "p42-source-tree-sha256/v1",
+    verifierSourceHash: verifierSourceHashForDigest(localProblem.verifier_source_digest),
+    verifierSourceHashAlgorithm: "keccak256-utf8/v1",
+    specHash: `0x${"2".repeat(64)}`,
+    admissionMatrixHash: `0x${"3".repeat(64)}`,
+    metadataURI: "ipfs://runtime-fixture",
+    pool: RUNTIME_BINDING_ADDRESSES.pool,
+    ledger: RUNTIME_BINDING_ADDRESSES.ledger,
+    submissionManager: RUNTIME_BINDING_ADDRESSES.submissions,
+    challengeManager: RUNTIME_BINDING_ADDRESSES.challenges,
+    minImprovementAtoms: "1",
+  };
+  const built = buildRegistryBinding({
+    manifest: {
+      network: { chainId: 84532 },
+      parameters: { challengeWindowSeconds: "259200" },
+      problems: [manifestProblem],
+    },
+    localProblem,
+    registryAddress: RUNTIME_BINDING_ADDRESSES.registry,
+    registryProblemId: "1",
+    chainId: 84532,
+    observationBlockNumber: 100,
+    observationBlockHash: `0x${"1".repeat(64)}`,
+    registryProblem: {
+      specHash: manifestProblem.specHash,
+      verifierSourceHash: manifestProblem.verifierSourceHash,
+      verifierImageHash: manifestProblem.verifierImageHash,
+      admissionMatrixHash: manifestProblem.admissionMatrixHash,
+      metadataURI: manifestProblem.metadataURI,
+      pool: manifestProblem.pool,
+      ledger: manifestProblem.ledger,
+      submissionManager: manifestProblem.submissionManager,
+      challengeManager: manifestProblem.challengeManager,
+      challengeWindowSeconds: 259200n,
+      minImprovementAtoms: 1n,
+    },
+    registryIsFrozen: true,
+    registryExplicitlyFrozen: true,
+  });
+  assert.equal(built.verifier_image, RUNTIME_IMAGE);
+  assert.equal(built.verifier_source_digest, RUNTIME_SOURCE);
+  assert.throws(
+    () => buildRegistryBinding({
+      manifest: { network: { chainId: 84532 }, parameters: { challengeWindowSeconds: "259200" }, problems: [manifestProblem] },
+      localProblem: { ...localProblem, verifier_source_digest: `sha256:${"c".repeat(64)}` },
+      registryAddress: RUNTIME_BINDING_ADDRESSES.registry,
+      registryProblemId: "1",
+      chainId: 84532,
+      observationBlockNumber: 100,
+      observationBlockHash: `0x${"1".repeat(64)}`,
+      registryProblem: {
+        specHash: manifestProblem.specHash,
+        verifierSourceHash: manifestProblem.verifierSourceHash,
+        verifierImageHash: manifestProblem.verifierImageHash,
+        admissionMatrixHash: manifestProblem.admissionMatrixHash,
+        metadataURI: manifestProblem.metadataURI,
+        pool: manifestProblem.pool,
+        ledger: manifestProblem.ledger,
+        submissionManager: manifestProblem.submissionManager,
+        challengeManager: manifestProblem.challengeManager,
+        challengeWindowSeconds: 259200n,
+        minImprovementAtoms: 1n,
+      },
+      registryIsFrozen: true,
+      registryExplicitlyFrozen: true,
+    }),
+    /local verifier source digest mismatch/,
+  );
+});
 
 
 test("recoverRevealCalldata decodes a direct reveal", () => {
@@ -476,16 +656,27 @@ test("operator retries transient calldata retrieval until the canonical deadline
     "P42ChallengeManager.sol",
     "P42ChallengeManager.json",
   );
+  const registryArtifact = join(
+    directory,
+    "contracts",
+    "artifacts",
+    "src",
+    "P42ProblemRegistry.sol",
+    "P42ProblemRegistry.json",
+  );
   mkdirSync(dirname(submissionsArtifact), { recursive: true });
   mkdirSync(dirname(challengesArtifact), { recursive: true });
+  mkdirSync(dirname(registryArtifact), { recursive: true });
   writeFileSync(submissionsArtifact, JSON.stringify({
     abi: ["function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)"],
   }), "utf8");
   writeFileSync(challengesArtifact, JSON.stringify({ abi: [] }), "utf8");
+  writeFileSync(registryArtifact, JSON.stringify({ abi: [] }), "utf8");
   writeFileSync(manifestPath, JSON.stringify({
     contracts: {
       submissions: { address: submissions },
       challenges: { address: challenges },
+      registry: { address: "0x6666666666666666666666666666666666666666" },
     },
   }), "utf8");
 
@@ -496,6 +687,7 @@ test("operator retries transient calldata retrieval until the canonical deadline
     join(HERE, "operator.mjs"),
     "--manifest", manifestPath,
     "--problem", join(REPO_ROOT, "problems", "hadamard-mini"),
+    "--registry-problem-id", "1",
     "--runtime", join(directory, "runtime"),
     "--rpc", endpoint,
     "--repo-root", directory,
