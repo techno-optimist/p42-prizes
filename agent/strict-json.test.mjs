@@ -14,7 +14,12 @@ const REJECTION_FIXTURES = [
   ['{"__proto__":1}', /forbidden object key/],
   ['{"prototype":1}', /forbidden object key/],
   ['{"constructor":1}', /forbidden object key/],
-  ["9007199254740993", /safe integer range/],
+  ["9007199254740993", /safe numeric range/],
+  ["9007199254740993.0", /safe numeric range/],
+  ["9007199254740993e0", /safe numeric range/],
+  ["9007199254740992.5", /safe numeric range/],
+  ["1.0000000000000001", /represented exactly/],
+  ["1e-400", /represented exactly/],
   ["NaN", /expected a JSON value/],
   ["Infinity", /expected a JSON value/],
   ["01", /leading zero/],
@@ -26,6 +31,16 @@ describe("strict JSON parser", () => {
     assert.deepEqual(parseStrictJsonText('{"ok":[true,false,null,-12.5e2],"s":"x\\n"}'), {
       ok: [true, false, null, -1250], s: "x\n",
     });
+  });
+
+  it("accepts decimal-round-trip-stable finite numbers within the safe numeric range", () => {
+    for (const [lexeme, expected] of [
+      ["9007199254740991", 9007199254740991],
+      ["-9007199254740991.0", -9007199254740991],
+      ["0.1", 0.1],
+      ["1.2300e+2", 123],
+      ["5e-324", 5e-324],
+    ]) assert.equal(parseStrictJsonText(lexeme), expected, lexeme);
   });
 
   it("rejects representative dangerous lexemes before object construction", () => {
@@ -41,6 +56,14 @@ describe("strict JSON parser", () => {
     assert.throws(() => parseStrictJsonBytes(Buffer.from("null"), { maxBytes: 3 }), /maxBytes/);
   });
 
+  it("rejects excessive nesting before the JavaScript call stack is approached", () => {
+    assert.deepEqual(parseStrictJsonText('[[{"ok":true}]]', { maxDepth: 3 }), [[{ ok: true }]]);
+    assert.throws(() => parseStrictJsonText('[[{"no":true}]]', { maxDepth: 2 }), /maxDepth \(2\)/);
+    assert.throws(() => parseStrictJsonText("[".repeat(10_000) + "]".repeat(10_000), { maxDepth: 64 }), /maxDepth \(64\)/);
+    assert.throws(() => parseStrictJsonText("[]", { maxDepth: 0 }), /maxDepth \(0\)/);
+    assert.throws(() => parseStrictJsonText("null", { maxDepth: -1 }), /maxDepth/);
+  });
+
   it("enforces canonical bytes and trailing-newline modes", () => {
     assert.deepEqual(parseStrictJsonText('{"a":1,"b":2}', { canonical: true }), { a: 1, b: 2 });
     assert.throws(() => parseStrictJsonText('{"b":2,"a":1}', { canonicalBytes: true }), /not canonical/);
@@ -48,7 +71,11 @@ describe("strict JSON parser", () => {
     assert.equal(parseStrictJsonText("null\n", { canonical: true, trailingNewline: "require" }), null);
     assert.throws(() => parseStrictJsonText("null", { trailingNewline: true }), /must end/);
     assert.throws(() => parseStrictJsonText("null\n", { trailingNewline: false }), /must not end/);
-    assert.throws(() => parseStrictJsonText("null\r\n", { canonical: true }), /exactly one LF/);
+    assert.throws(() => parseStrictJsonText("null\r\n", { canonical: true }), /not canonical/);
+    assert.throws(() => parseStrictJsonText("null\n  ", { trailingNewline: "forbid" }), /must not/);
+    assert.throws(() => parseStrictJsonText("null\r  ", { trailingNewline: "forbid" }), /must not/);
+    assert.throws(() => parseStrictJsonText("null\n  ", { trailingNewline: "require" }), /exactly one LF/);
+    assert.throws(() => parseStrictJsonText("null  \n", { trailingNewline: "require" }), /exactly one LF/);
   });
 });
 
