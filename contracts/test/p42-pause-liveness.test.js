@@ -47,6 +47,12 @@ async function increaseTime(seconds) {
   await ethers.provider.send("evm_mine", []);
 }
 
+async function advanceTo(timestamp) {
+  const latest = await ethers.provider.getBlock("latest");
+  const remaining = timestamp - BigInt(latest.timestamp);
+  if (remaining > 0n) await increaseTime(remaining);
+}
+
 async function deployFixture() {
   const [owner, treasury, solver, outsider] = await ethers.getSigners();
   const latest = await ethers.provider.getBlock("latest");
@@ -97,6 +103,22 @@ async function commitAndReveal(fixture) {
   return submissionId;
 }
 
+async function commitOnly(fixture, cid, salt) {
+  const { submissions, solver } = fixture;
+  const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
+    cid, solver.address, DA_HASH, salt
+  );
+  await submissions.connect(solver).commit(commitment, DA_HASH, { value: MIN_BOND });
+  return { submissionId: await submissions.submissionCount(), cid, salt };
+}
+
+async function revealCommitted(fixture, committed) {
+  const { submissions, solver } = fixture;
+  await submissions.connect(solver).reveal(
+    committed.submissionId, committed.cid, 1n, 1n, committed.salt, "0x"
+  );
+}
+
 describe("P42 pausedAll settlement liveness", function () {
   it("keeps the recovery deadline fixed and rejects premature permissionless recovery", async function () {
     const { owner, outsider, submissions } = await deployFixture();
@@ -135,6 +157,12 @@ describe("P42 pausedAll settlement liveness", function () {
     );
     assert.equal(await submissions.expiryGraceUntil(), graceUntil);
 
+    await expectCustomError(
+      submissions.connect(owner).setPausedAll(true),
+      submissions,
+      "P42_PAUSED_ALL_REARM_OPEN"
+    );
+    await advanceTo(graceUntil);
     await submissions.connect(owner).setPausedAll(true);
     const nextPausedAt = await submissions.pausedAllAt();
     assert.ok(nextPausedAt > pausedAt);
@@ -142,6 +170,100 @@ describe("P42 pausedAll settlement liveness", function () {
       submissions.connect(outsider).recoverPausedAll(),
       submissions,
       "P42_PAUSED_ALL_RECOVERY_OPEN"
+    );
+  });
+
+  it("tolls a live commit and preserves its bond through reveal and finalize", async function () {
+    const fixture = await deployFixture();
+    const { owner, treasury, solver, outsider, submissions } = fixture;
+    const committed = await commitOnly(fixture, "bafy-tolled-commit", "tolled-commit");
+    const committedAt = (await submissions.submissions(committed.submissionId)).committedAt;
+    const activeDeadline = (await submissions.committedActiveAtOf(committed.submissionId)) + CHALLENGE_WINDOW;
+    assert.equal(await ethers.provider.getBalance(await submissions.getAddress()), MIN_BOND);
+
+    await submissions.connect(owner).setPausedAll(true);
+    const activeAtPause = await submissions.activeTimestamp();
+    await increaseTime(await submissions.PAUSED_ALL_RECOVERY_DELAY());
+    assert.equal(await submissions.activeTimestamp(), activeAtPause);
+    await submissions.connect(outsider).recoverPausedAll();
+
+    const latest = await ethers.provider.getBlock("latest");
+    assert.ok(BigInt(latest.timestamp) > committedAt + CHALLENGE_WINDOW);
+    assert.ok(activeDeadline - (await submissions.activeTimestamp()) > CHALLENGE_WINDOW - 10n);
+
+    await revealCommitted(fixture, committed);
+    assert.equal((await submissions.submissions(committed.submissionId)).bondWei, MIN_BOND);
+    assert.equal(await submissions.claimableBondWei(treasury.address), 0n);
+
+    await increaseTime(CHALLENGE_WINDOW + 1n);
+    await submissions.connect(solver).finalize(committed.submissionId, ethers.ZeroHash);
+    assert.equal(await submissions.claimableBondWei(solver.address), MIN_BOND);
+    assert.equal(await submissions.claimableBondWei(treasury.address), 0n);
+    assert.equal(await ethers.provider.getBalance(await submissions.getAddress()), MIN_BOND);
+    assert.equal(
+      await submissions.claimableBondWei(solver.address)
+        + await submissions.claimableBondWei(treasury.address),
+      await ethers.provider.getBalance(await submissions.getAddress())
+    );
+
+    await submissions.connect(solver).claimBond();
+    assert.equal(await ethers.provider.getBalance(await submissions.getAddress()), 0n);
+  });
+
+  it("does not resurrect a commit that expired before the full pause", async function () {
+    const fixture = await deployFixture();
+    const { owner, treasury, outsider, submissions } = fixture;
+    const committed = await commitOnly(fixture, "bafy-prepause-expired", "prepause-expired");
+
+    await increaseTime(CHALLENGE_WINDOW);
+    await submissions.connect(owner).setPausedAll(true);
+    await increaseTime(await submissions.PAUSED_ALL_RECOVERY_DELAY());
+    await submissions.connect(outsider).recoverPausedAll();
+
+    await expectCustomError(revealCommitted(fixture, committed), submissions, "P42_COMMIT_EXPIRED");
+    assert.ok((await submissions.activeTimestamp()) >=
+      (await submissions.committedActiveAtOf(committed.submissionId)) + CHALLENGE_WINDOW);
+    assert.equal(await ethers.provider.getBalance(await submissions.getAddress()), MIN_BOND);
+    assert.equal(await submissions.claimableBondWei(treasury.address), 0n);
+
+    await expectCustomError(
+      submissions.connect(outsider).expireCommitted(committed.submissionId),
+      submissions,
+      "P42_REVEAL_WINDOW_OPEN"
+    );
+    await advanceTo(await submissions.expiryGraceUntil());
+    await submissions.connect(outsider).expireCommitted(committed.submissionId);
+    assert.equal(await submissions.claimableBondWei(treasury.address), MIN_BOND);
+    assert.equal(await ethers.provider.getBalance(await submissions.getAddress()), MIN_BOND);
+  });
+
+  it("requires a usable interval between full-pause episodes, including same-block cycles", async function () {
+    const { owner, outsider, submissions } = await deployFixture();
+    await submissions.connect(owner).setPausedAll(true);
+
+    for (let cycle = 0; cycle < 2; cycle += 1) {
+      const pausedAt = await submissions.pausedAllAt();
+      await submissions.connect(owner).setPausedAll(false);
+      const rearmAt = await submissions.expiryGraceUntil();
+
+      await expectCustomError(
+        submissions.connect(owner).setPausedAll(true),
+        submissions,
+        "P42_PAUSED_ALL_REARM_OPEN"
+      );
+      await advanceTo(rearmAt + 1n);
+      await submissions.connect(owner).setPausedAll(true);
+      assert.ok((await submissions.pausedAllAt()) > pausedAt);
+    }
+
+    await submissions.connect(owner).setPausedAll(false);
+    await submissions.connect(owner).setPausedNewActions(true);
+    assert.equal(await submissions.pausedNewActions(), true);
+    const commitment = ethers.keccak256(ethers.toUtf8Bytes("incident-brake"));
+    await expectCustomError(
+      submissions.connect(outsider).commit(commitment, DA_HASH, { value: MIN_BOND }),
+      submissions,
+      "P42_PAUSED_NEW_ACTIONS"
     );
   });
 
