@@ -15,10 +15,12 @@ def test_canonical_verifier_image_requires_hash_locked_dependencies() -> None:
     assert re.search(r"^FROM\s+[^\s]+@sha256:[0-9a-f]{64}$", dockerfile, flags=re.MULTILINE)
     assert "COPY requirements.runtime.lock /repo/requirements.runtime.lock" in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r /repo/requirements.runtime.lock" in dockerfile
+    assert "COPY schemas /repo/schemas" in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r requirements.lock" in dockerfile
     assert "-m pip install --require-hashes -r requirements.runtime.lock" in makefile
     assert "-m pip install --require-hashes -r $$requirements" in makefile
     assert "!requirements.runtime.lock" in dockerignore
+    assert "!schemas" in dockerignore
 
 
 def test_every_runtime_and_problem_requirement_has_a_sha256_hash() -> None:

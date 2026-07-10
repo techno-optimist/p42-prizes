@@ -45,6 +45,7 @@ RUN pip install --no-cache-dir --require-hashes -r /repo/requirements.runtime.lo
 # Preserve the repo-relative layout: the problem Makefile uses PYTHONPATH=../../src,
 # so the problem must sit two levels under /repo with src as a sibling.
 COPY src /repo/src
+COPY schemas /repo/schemas
 COPY problems/${PROBLEM} /repo/problems/${PROBLEM}
 WORKDIR /repo/problems/${PROBLEM}
 
