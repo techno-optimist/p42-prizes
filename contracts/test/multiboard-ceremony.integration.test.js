@@ -237,9 +237,21 @@ describe("multi-board governance ceremony integration", () => {
     assert.equal(await rolloverVault.totalAllocated(), 100n);
     assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
 
-    await rolloverVault.connect(allocator).setPoolAllocation(pool0, pool0Hash, 0n);
-    assert.equal(await rolloverVault.allocationCodehashOf(pool0), ethers.ZeroHash);
+    await rolloverVault.connect(allocator).setPoolAllocation(pool0, pool0Hash, 35n);
+    assert.equal(await rolloverVault.allocationOf(pool0), 35n);
+    assert.equal(await rolloverVault.totalAllocated(), 95n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
     await rolloverVault.connect(allocator).setPoolAllocation(pool0, pool0Hash, 40n);
+    assert.equal(await rolloverVault.totalAllocated(), 100n);
+
+    await ethers.provider.send("hardhat_setCode", [pool0, "0x00"]);
+    await rolloverVault.connect(allocator).setPoolAllocation(pool0, ethers.ZeroHash, 0n);
+    assert.equal(await rolloverVault.allocationOf(pool0), 0n);
+    assert.equal(await rolloverVault.totalAllocated(), 60n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), ethers.ZeroHash);
+    await ethers.provider.send("hardhat_setCode", [pool0, pool0Code]);
+    await rolloverVault.connect(allocator).setPoolAllocation(pool0, pool0Hash, 40n);
+    assert.equal(await rolloverVault.totalAllocated(), 100n);
     assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
 
     await ethers.provider.send("hardhat_setCode", [pool0, "0x00"]);
@@ -255,7 +267,10 @@ describe("multi-board governance ceremony integration", () => {
     await advance(BigInt(input.parameters.challengeWindowSeconds) + 1n);
     await boards[0].contracts.submissions.connect(allocator).armFunding();
     await boards[0].contracts.pool.connect(allocator).setAcceptingFunds(true);
-    await rolloverVault.connect(allocator).fundRegisteredPool(pool0, 40n);
+    await rolloverVault.connect(allocator).fundRegisteredPool(pool0, 10n);
+    assert.equal(await rolloverVault.allocationOf(pool0), 30n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
+    await rolloverVault.connect(allocator).fundRegisteredPool(pool0, 30n);
     assert.equal(await boards[0].contracts.pool.sponsorshipOf(rootAddresses.rolloverVault), 40n);
     assert.equal(await boards[0].contracts.pool.accountedBalance(), 40n);
     assert.equal(await rolloverVault.allocationOf(pool0), 0n);

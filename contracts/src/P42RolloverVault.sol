@@ -71,8 +71,12 @@ contract P42RolloverVault {
     }
 
     function setPoolAllocation(address payable pool, bytes32 expectedCodehash, uint256 amount) external onlyAllocator {
-        _registeredPool(pool, expectedCodehash);
         uint256 previous = allocationOf[pool];
+        bytes32 allocationCodehash = allocationCodehashOf[pool];
+        if (amount != 0) {
+            _registeredPool(pool, expectedCodehash);
+            allocationCodehash = expectedCodehash;
+        }
         uint256 allocated = totalAllocated - previous + amount;
         if (allocated > address(this).balance) revert P42_ALLOCATION_EXCEEDS_BALANCE(allocated, address(this).balance);
         allocationOf[pool] = amount;
@@ -82,7 +86,7 @@ contract P42RolloverVault {
             allocationCodehashOf[pool] = expectedCodehash;
         }
         totalAllocated = allocated;
-        emit PoolAllocationSet(pool, expectedCodehash, previous, amount);
+        emit PoolAllocationSet(pool, allocationCodehash, previous, amount);
     }
 
     function fundRegisteredPool(address payable pool, uint256 amount) external onlyAllocator {
