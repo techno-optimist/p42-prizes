@@ -191,6 +191,9 @@ class VerdictReport:
             raise ValueError("solution_hash must be a lowercase sha256 digest")
         if not isinstance(self.valid, bool):
             raise TypeError("valid must be a boolean")
+        for field_name in ("improvement", "score"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a rational string")
         if not isinstance(self.details, Mapping):
             raise TypeError("details must be a mapping")
         details_snapshot = _normalize_verdict_detail(dict(self.details))

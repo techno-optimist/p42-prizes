@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from fractions import Fraction
 from pathlib import Path
 import subprocess
 from collections.abc import Iterator, Mapping
@@ -80,6 +81,8 @@ def test_integral_json_number_normalizes_to_node_safe_integer() -> None:
         {"valid": 1},
         {"solution_hash": "bad"},
         {"reason": None},
+        {"improvement": 1},
+        {"score": Fraction(1, 2)},
     ],
 )
 def test_python_rejects_reports_rejected_by_node_and_schema(override: dict[str, object]) -> None:
