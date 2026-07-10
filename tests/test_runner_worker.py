@@ -166,6 +166,31 @@ def test_required_manifest_identity_binds_report_solution_hash_to_verified_bytes
     assert "solution_hash" in result["error"]
 
 
+def test_required_manifest_identity_accepts_complete_report_for_verified_bytes(tmp_path: Path) -> None:
+    verifier_body = (
+        "import hashlib, json, sys\n"
+        "with open(sys.argv[2], 'rb') as handle:\n"
+        "    solution_hash = 'sha256:' + hashlib.sha256(handle.read()).hexdigest()\n"
+        "print(json.dumps({'details': {}, 'improvement': '1/1', 'problem_id': 'worker-fixture', "
+        "'reason': '', 'recomputed_at_commit': 'test', 'score': '0/1', "
+        "'solution_hash': solution_hash, 'valid': True, 'verifier_version': 'test', "
+        "'verifier_image': 'sha256:fixture'}, sort_keys=True, separators=(',', ':')))\n"
+    )
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="valid.py", verifier_body=verifier_body, wall_seconds=10
+    )
+
+    result = _run_verifier_for_transcript(
+        problem,
+        solution,
+        child_address_space_limit_mb=256,
+        require_manifest_identity=True,
+    )
+
+    assert result["ok"] is True, result
+    assert result["valid"] is True
+
+
 def test_sandbox_uses_manifest_repository_at_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     image = "sha256:" + "a" * 64
     repository = "registry.example.com/p42/worker-fixture"
