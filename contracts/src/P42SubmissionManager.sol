@@ -23,6 +23,7 @@ contract P42SubmissionManager {
     error P42_PAUSED_NEW_ACTIONS();
     error P42_PAUSED_ALL();
     error P42_NOT_PAUSED_ALL();
+    error P42_PAUSED_ALL_RECOVERY_OPEN(uint64 recoveryAt, uint64 nowAt);
     error P42_FUNDING_ALREADY_ARMED();
     error P42_OPEN_WITNESS_WINDOW_OPEN(uint64 armNotBefore, uint64 nowAt);
     error P42_VOID_NOT_ADVANCE(int256 prevBestScoreAtoms, int256 claimedScoreAtoms);
@@ -64,6 +65,10 @@ contract P42SubmissionManager {
     uint64 public constant MIN_COMMIT_AGE_BLOCKS = 1;
     uint64 public constant MAX_CUMULATIVE_DISPUTE_WINDOWS = 3;
     uint64 public constant MAX_CHALLENGE_WINDOW_SECONDS = 30 days;
+    /// @notice A continuous full-pause may not block settlement indefinitely.
+    /// Governance has this fixed interval to investigate and, when needed,
+    /// call voidFinalize before anyone can resume normal settlement.
+    uint64 public constant PAUSED_ALL_RECOVERY_DELAY = 30 days;
 
     /// @notice Hard ceiling on on-chain solution bytes, bounding reveal-tx
     /// calldata gas. Problems whose certificates exceed this (e.g. the
@@ -182,6 +187,10 @@ contract P42SubmissionManager {
     /// governance recovery (`voidFinalize`) can never race a finalize that
     /// would move `bestScoreAtoms` and stale its frontier-equality check.
     bool public pausedAll;
+    /// @notice Start of the current continuous full-pause episode. Repeated
+    /// pause=true calls cannot refresh it, so they cannot postpone the
+    /// permissionless recovery deadline.
+    uint64 public pausedAllAt;
     /// @notice OPEN-WITNESS-PHASE gate. While false (deployment default) the
     /// problem is in the unpaid OPEN phase: witness postings advance the
     /// frontier but record ZERO ledger credit, and the bounty pool refuses
@@ -226,6 +235,7 @@ contract P42SubmissionManager {
 
     event NewActionsPaused(bool paused);
     event AllActionsPaused(bool paused);
+    event AllActionsPauseRecovered(address indexed caller, uint64 recoveryAt);
     event OpenWitnessWindowConfigured(uint64 deployedAt, uint64 armNotBefore);
     event FundingArmed(uint64 at);
     event FinalizeVoided(
@@ -360,14 +370,31 @@ contract P42SubmissionManager {
     /// `pausedNewActions`, this also gates reveal() and finalize(), freezing
     /// the frontier so `voidFinalize` operates on a stable `bestScoreAtoms`.
     function setPausedAll(bool paused) external onlyOwner {
-        pausedAll = paused;
-        // On unpause, grant a full fresh challenge window before any expiry can
-        // fire, so a submission frozen out by the recovery is not immediately
-        // expirable (bond-forfeited) the instant it can finally act.
-        if (!paused) {
-            expiryGraceUntil = uint64(block.timestamp) + challengeWindowSeconds;
+        if (paused) {
+            // Keep the first timestamp for this continuous pause episode.
+            // Otherwise a compromised owner could refresh the timer forever.
+            if (!pausedAll) {
+                pausedAll = true;
+                pausedAllAt = uint64(block.timestamp);
+            }
+            emit AllActionsPaused(true);
+            return;
         }
-        emit AllActionsPaused(paused);
+        _clearPausedAll();
+    }
+
+    /// @notice Permissionlessly ends a continuous full pause after governance
+    /// had a fixed interval to execute its exact-inverse recovery. This only
+    /// clears `pausedAll`; `pausedNewActions` remains untouched, and the
+    /// standard fresh expiry grace protects in-flight submissions.
+    function recoverPausedAll() external {
+        if (!pausedAll) revert P42_NOT_PAUSED_ALL();
+        uint64 recoveryAt = pausedAllAt + PAUSED_ALL_RECOVERY_DELAY;
+        if (block.timestamp < recoveryAt) {
+            revert P42_PAUSED_ALL_RECOVERY_OPEN(recoveryAt, uint64(block.timestamp));
+        }
+        _clearPausedAll();
+        emit AllActionsPauseRecovered(msg.sender, recoveryAt);
     }
 
     /// @notice One-way switch from the unpaid OPEN phase to the PAID phase.
@@ -1063,6 +1090,14 @@ contract P42SubmissionManager {
 
     function _decrementOpenSubmission() private {
         if (openSubmissionCount > 0) openSubmissionCount -= 1;
+    }
+
+    function _clearPausedAll() private {
+        pausedAll = false;
+        // Grant a full fresh challenge window before any expiry can fire, so a
+        // submission frozen out by recovery is not immediately forfeitable.
+        expiryGraceUntil = uint64(block.timestamp) + challengeWindowSeconds;
+        emit AllActionsPaused(false);
     }
 
     function _boundedRearmDeadline(uint256 submissionId) private view returns (uint64) {
