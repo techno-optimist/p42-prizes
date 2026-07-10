@@ -40,7 +40,7 @@ describe("contracts strict JSON ingestion", () => {
     await withTempDirectory("p42-strict-json-bounds-", async (directory) => {
       const cases = [
         ["unsafe.json", '{"value":9007199254740992}', /outside the safe numeric range/],
-        ["rounded.json", '{"value":1.0000000000000001}', /cannot be represented exactly/],
+        ["rounded.json", '{"value":1.0000000000000001}', /decimal-round-trip stable/],
         ["deep.json", `${"[".repeat(65)}null${"]".repeat(65)}`, /exceeds maxDepth \(64\)/],
       ];
       for (const [name, bytes, pattern] of cases) {
