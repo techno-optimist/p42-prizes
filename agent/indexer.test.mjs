@@ -403,6 +403,7 @@ function snapshotFromReplay(state) {
     rolloverVault: {
       totalAllocated: state.rolloverVault.totalAllocated,
       allocationOf: state.rolloverVault.allocationOf,
+      allocationCodehashOf: state.rolloverVault.allocationCodehashOf,
       balance: state.rolloverVault.totalReceived - state.rolloverVault.totalFuturePoolFunded,
     },
     submissions,
@@ -439,6 +440,70 @@ const POLICY = {
 };
 
 describe("P42 deterministic indexer replay", () => {
+  it("replays rollover allocation codehash pins through set, replacement, zero, partial, and full funding", () => {
+    const { events, tx } = fixtureBuilder();
+    const pool = address(101);
+    const firstPin = hash(101);
+    const replacementPin = hash(102);
+
+    tx([["rolloverVault", "PoolAllocationSet", {
+      pool, codehash: firstPin, previousAmount: 0n, amount: 100n,
+    }]]);
+    tx([["rolloverVault", "PoolAllocationSet", {
+      pool, codehash: replacementPin, previousAmount: 100n, amount: 80n,
+    }]]);
+    let replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    assert.equal(replay.rolloverVault.allocationCodehashOf[pool], replacementPin);
+
+    tx([["rolloverVault", "PoolAllocationSet", {
+      pool, codehash: replacementPin, previousAmount: 80n, amount: 0n,
+    }]]);
+    replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    assert.equal(replay.rolloverVault.allocationCodehashOf[pool], ZERO_HASH);
+
+    tx([["rolloverVault", "PoolAllocationSet", {
+      pool, codehash: firstPin, previousAmount: 0n, amount: 60n,
+    }]]);
+    tx([["rolloverVault", "FuturePoolFunded", {
+      pool, amount: 20n, remainingAllocation: 40n,
+    }]]);
+    replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    assert.equal(replay.rolloverVault.allocationCodehashOf[pool], firstPin);
+
+    tx([["rolloverVault", "FuturePoolFunded", {
+      pool, amount: 40n, remainingAllocation: 0n,
+    }]]);
+    replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    assert.equal(replay.rolloverVault.allocationCodehashOf[pool], ZERO_HASH);
+  });
+
+  it("fails rollover allocation codehash pin reconciliation on snapshot drift", () => {
+    const events = lifecycleFixture();
+    const pool = address(102);
+    events.push({
+      source: "rolloverVault",
+      eventName: "PoolAllocationSet",
+      args: { pool, codehash: hash(201), previousAmount: 0n, amount: 10n },
+      blockNumber: 999,
+      blockHash: hash(999),
+      transactionHash: hash(1999),
+      transactionIndex: 0,
+      index: 0,
+      blockTimestamp: 999n,
+    });
+    const replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    const snapshot = snapshotFromReplay(replay);
+    snapshot.rolloverVault.allocationCodehashOf = {
+      ...snapshot.rolloverVault.allocationCodehashOf,
+      [pool]: hash(202),
+    };
+
+    const failed = compareReplayToSnapshot(replay, snapshot, CONFIG)
+      .filter((entry) => !entry.ok)
+      .map((entry) => entry.name);
+    assert.deepEqual(failed, ["rolloverVault observed allocation codehash pins"]);
+  });
+
   it("rejects ambiguous exact-rational score notation", () => {
     assert.equal(atomsFromScore("1/2"), 500_000_000_000_000_000n);
     assert.throws(() => atomsFromScore("1/2/3"), /invalid exact rational/);

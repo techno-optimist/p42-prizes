@@ -1421,6 +1421,7 @@ function newReplayState(config, coverage) {
       totalFuturePoolFunded: 0n,
       totalAllocated: 0n,
       allocationOf: {},
+      allocationCodehashOf: {},
     },
     pendingExpiredChallengeTxs: new Set(),
     pendingSubmissionResolutionByTx: {},
@@ -2081,6 +2082,9 @@ function replayRolloverVaultEvent(state, event) {
       invariant((state.rolloverVault.allocationOf[pool] ?? 0n) === previous, "vault allocation previous amount mismatch");
       state.rolloverVault.totalAllocated = state.rolloverVault.totalAllocated - previous + amount;
       state.rolloverVault.allocationOf[pool] = amount;
+      state.rolloverVault.allocationCodehashOf[pool] = amount === 0n
+        ? ZERO_HASH
+        : getArg(event, "codehash");
       break;
     }
     case "FuturePoolFunded": {
@@ -2090,6 +2094,7 @@ function replayRolloverVaultEvent(state, event) {
       invariant((state.rolloverVault.allocationOf[pool] ?? 0n) >= amount, "vault allocation underflow");
       state.rolloverVault.totalAllocated -= amount;
       state.rolloverVault.allocationOf[pool] = remaining;
+      if (remaining === 0n) state.rolloverVault.allocationCodehashOf[pool] = ZERO_HASH;
       state.rolloverVault.totalFuturePoolFunded += amount;
       break;
     }
@@ -2243,6 +2248,11 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("challenge pausedNewActions", state.challengePausedNewActions, snapshot.challengePausedNewActions),
     check("rolloverVault.totalAllocated", state.rolloverVault.totalAllocated, snapshot.rolloverVault.totalAllocated),
     check("rolloverVault observed allocations", state.rolloverVault.allocationOf, snapshot.rolloverVault.allocationOf),
+    check(
+      "rolloverVault observed allocation codehash pins",
+      state.rolloverVault.allocationCodehashOf,
+      snapshot.rolloverVault.allocationCodehashOf,
+    ),
     check(
       "rolloverVault event-derived balance",
       state.rolloverVault.totalReceived - state.rolloverVault.totalFuturePoolFunded,
@@ -2601,6 +2611,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
         ? await rolloverVault.runner.provider.getBalance(await rolloverVault.getAddress())
         : await rolloverVault.runner.provider.getBalance(await rolloverVault.getAddress(), blockTag),
       allocationOf: {},
+      allocationCodehashOf: {},
     },
     submissions: {},
     finalizeInfo: {},
@@ -2642,6 +2653,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
   }
   for (const target of Object.keys(replay.rolloverVault.allocationOf)) {
     snapshot.rolloverVault.allocationOf[target] = await rolloverVault.allocationOf(target, ...atBlock);
+    snapshot.rolloverVault.allocationCodehashOf[target] = await rolloverVault.allocationCodehashOf(target, ...atBlock);
   }
   for (const claimant of Object.keys(replay.submissionClaimableBondWei)) {
     snapshot.submissionClaimableBondWei[claimant] = await submissions.claimableBondWei(claimant, ...atBlock);
