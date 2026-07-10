@@ -194,6 +194,56 @@ describe("P42 Gate 1 contract scaffold", function () {
     return { submissionId, solutionCid, salt, solver, bond };
   }
 
+  async function openChallenge(fixture, signer, submissionId, reasonHash, overrides) {
+    return fixture.challenges.connect(signer).challenge(
+      submissionId,
+      await fixture.submissions.revealInstanceHashOf(submissionId),
+      reasonHash,
+      overrides,
+    );
+  }
+
+  async function resolveChallenge(fixture, signer, submissionId, challengerWins, transcriptHash, transcriptURI, verdictHash, overrides) {
+    return fixture.challenges.connect(signer).resolve(
+      submissionId,
+      await fixture.challenges.challengeInstanceHashOf(submissionId),
+      challengerWins,
+      transcriptHash,
+      transcriptURI,
+      verdictHash,
+      overrides,
+    );
+  }
+
+  async function finalizeChallengeResolution(fixture, submissionId) {
+    return fixture.challenges.finalizeResolution(
+      submissionId,
+      await fixture.challenges.challengeInstanceHashOf(submissionId),
+    );
+  }
+
+  async function releaseResolverBond(fixture, submissionId) {
+    return fixture.challenges.releaseResolverBond(
+      submissionId,
+      await fixture.challenges.challengeInstanceHashOf(submissionId),
+    );
+  }
+
+  async function expireChallenge(fixture, signer, submissionId) {
+    return fixture.challenges.connect(signer).expireChallenge(
+      submissionId,
+      await fixture.challenges.challengeInstanceHashOf(submissionId),
+    );
+  }
+
+  async function slashResolverBond(fixture, submissionId, proofHash) {
+    return fixture.challenges.connect(fixture.owner).slashResolverBond(
+      submissionId,
+      await fixture.challenges.challengeInstanceHashOf(submissionId),
+      proofHash,
+    );
+  }
+
   it("registers problem metadata anchors and component addresses", async function () {
     const fixture = await deployFixture();
     const config = await registryConfig(fixture);
@@ -606,18 +656,18 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await challenges.requiredChallengeBond(disputedEntitlement), required);
 
     await expectCustomError(
-      challenges.connect(challenger).challenge(999, reasonHash, { value: required }),
+      openChallenge(fixture, challenger, 999, reasonHash, { value: required }),
       submissions,
       "P42_UNKNOWN_SUBMISSION"
     );
     // A caller can no longer pass 0 to collapse the bond: it is derived on-chain.
     await expectCustomError(
-      challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required - 1n }),
+      openChallenge(fixture, challenger, submissionId, reasonHash, { value: required - 1n }),
       challenges,
       "P42_INSUFFICIENT_CHALLENGE_BOND"
     );
 
-    await challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required });
+    await openChallenge(fixture, challenger, submissionId, reasonHash, { value: required });
     const challenge = await challenges.challenges(submissionId);
     const challenged = await submissions.submissions(submissionId);
     assert.equal(challenged.status, 3n);
@@ -635,11 +685,11 @@ describe("P42 Gate 1 contract scaffold", function () {
     const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("first challenge"));
     const required = await challenges.requiredChallengeBond(0);
 
-    await challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required });
+    await openChallenge(fixture, challenger, submissionId, reasonHash, { value: required });
     const original = await challenges.challenges(submissionId);
 
     await expectCustomError(
-      challenges.connect(alice).challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("second challenge")), {
+      openChallenge(fixture, alice, submissionId, ethers.keccak256(ethers.toUtf8Bytes("second challenge")), {
         value: required,
       }),
       challenges,
@@ -648,6 +698,61 @@ describe("P42 Gate 1 contract scaffold", function () {
     const after = await challenges.challenges(submissionId);
     assert.equal(after.disputeEndsAt, original.disputeEndsAt);
     assert.equal(after.challenger, challenger.address);
+  });
+
+  it("binds challenge actions to the reveal and dispute instances they were signed for", async function () {
+    const fixture = await deployFixture();
+    const { owner, resolver, challenger, submissions, challenges } = fixture;
+    const { submissionId } = await commitAndReveal(fixture);
+    const reasonHash = ethers.id("instance-bound-evidence");
+    const required = await challenges.requiredChallengeBond(0);
+    const revealInstanceHash = await submissions.revealInstanceHashOf(submissionId);
+
+    // This models a raw challenge transaction signed on an orphaned branch:
+    // same submission id, but a different replacement reveal fingerprint.
+    await expectCustomError(
+      challenges.connect(challenger).challenge(
+        submissionId,
+        ethers.id("replacement-reveal-instance"),
+        reasonHash,
+        { value: required },
+      ),
+      challenges,
+      "P42_REVEAL_INSTANCE_MISMATCH",
+    );
+    await openChallenge(fixture, challenger, submissionId, reasonHash, { value: required });
+    const challengeInstanceHash = await challenges.challengeInstanceHashOf(submissionId);
+    assert.notEqual(challengeInstanceHash, ethers.ZeroHash);
+    assert.equal(await challenges.challengeRevealInstanceHashOf(submissionId), revealInstanceHash);
+
+    const staleChallengeInstanceHash = ethers.id("orphaned-challenge-instance");
+    await expectCustomError(
+      challenges.connect(resolver).resolve(
+        submissionId,
+        staleChallengeInstanceHash,
+        false,
+        ethers.id("stale-transcript"),
+        "ar://stale-transcript",
+        ethers.id("stale-verdict"),
+        { value: await challenges.resolverDecisionBondWei() },
+      ),
+      challenges,
+      "P42_CHALLENGE_INSTANCE_MISMATCH",
+    );
+    await expectCustomError(
+      challenges.expireChallenge(submissionId, staleChallengeInstanceHash),
+      challenges,
+      "P42_CHALLENGE_INSTANCE_MISMATCH",
+    );
+    await expectCustomError(
+      challenges.connect(owner).slashResolverBond(
+        submissionId,
+        staleChallengeInstanceHash,
+        ethers.id("stale-proof"),
+      ),
+      challenges,
+      "P42_CHALLENGE_INSTANCE_MISMATCH",
+    );
   });
 
   it("requires resolver transcripts and a bonded resolver decision", async function () {
@@ -661,7 +766,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const required = await challenges.requiredChallengeBond(0);
     const resolverBond = await challenges.resolverDecisionBondWei();
 
-    await challenges.connect(challenger).challenge(submissionId, reasonHash, { value: required });
+    await openChallenge(fixture, challenger, submissionId, reasonHash, { value: required });
     await expectCustomError(
       submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH),
       submissions,
@@ -669,38 +774,38 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
 
     await expectCustomError(
-      challenges.connect(alice).resolve(submissionId, true, transcriptHash, transcriptURI, verdictHash, { value: resolverBond }),
+      resolveChallenge(fixture, alice, submissionId, true, transcriptHash, transcriptURI, verdictHash, { value: resolverBond }),
       challenges,
       "P42_NOT_RESOLVER"
     );
     await expectCustomError(
-      challenges.connect(resolver).resolve(submissionId, true, transcriptHash, transcriptURI, verdictHash, {
+      resolveChallenge(fixture, resolver, submissionId, true, transcriptHash, transcriptURI, verdictHash, {
         value: resolverBond - 1n,
       }),
       challenges,
       "P42_INSUFFICIENT_RESOLVER_BOND"
     );
     await expectCustomError(
-      challenges.connect(resolver).resolve(submissionId, true, ethers.ZeroHash, transcriptURI, verdictHash, {
+      resolveChallenge(fixture, resolver, submissionId, true, ethers.ZeroHash, transcriptURI, verdictHash, {
         value: resolverBond,
       }),
       challenges,
       "P42_EMPTY_TRANSCRIPT_HASH"
     );
     await expectCustomError(
-      challenges.connect(resolver).resolve(submissionId, true, transcriptHash, "", verdictHash, { value: resolverBond }),
+      resolveChallenge(fixture, resolver, submissionId, true, transcriptHash, "", verdictHash, { value: resolverBond }),
       challenges,
       "P42_EMPTY_TRANSCRIPT_URI"
     );
     await expectCustomError(
-      challenges.connect(resolver).resolve(submissionId, true, transcriptHash, transcriptURI, ethers.ZeroHash, {
+      resolveChallenge(fixture, resolver, submissionId, true, transcriptHash, transcriptURI, ethers.ZeroHash, {
         value: resolverBond,
       }),
       challenges,
       "P42_EMPTY_VERDICT_HASH"
     );
 
-    await challenges.connect(resolver).resolve(submissionId, true, transcriptHash, transcriptURI, verdictHash, {
+    await resolveChallenge(fixture, resolver, submissionId, true, transcriptHash, transcriptURI, verdictHash, {
       value: resolverBond,
     });
     const resolved = await challenges.challenges(submissionId);
@@ -723,17 +828,17 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await submissions.claimableBondWei(treasury.address), 0n);
 
     await expectCustomError(
-      challenges.releaseResolverBond(submissionId),
+      releaseResolverBond(fixture, submissionId),
       challenges,
       "P42_RESOLVER_BOND_LOCKED"
     );
     await expectCustomError(
-      challenges.connect(owner).slashResolverBond(submissionId, ethers.ZeroHash),
+      slashResolverBond(fixture, submissionId, ethers.ZeroHash),
       challenges,
       "P42_EMPTY_FRAUD_PROOF_HASH"
     );
     const slashProof = ethers.keccak256(ethers.toUtf8Bytes("resolver transcript fraud proof"));
-    await challenges.connect(owner).slashResolverBond(submissionId, slashProof);
+    await slashResolverBond(fixture, submissionId, slashProof);
     const slashed = await challenges.resolverBonds(submissionId);
     assert.equal(slashed.amountWei, 0n);
     assert.equal(slashed.slashProofHash, slashProof);
@@ -741,7 +846,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await challenges.claimableBondWei(challenger.address), required);
     assert.equal((await submissions.submissions(submissionId)).status, 2n);
     await expectCustomError(
-      challenges.releaseResolverBond(submissionId),
+      releaseResolverBond(fixture, submissionId),
       challenges,
       "P42_UNKNOWN_CHALLENGE"
     );
@@ -752,7 +857,7 @@ describe("P42 Gate 1 contract scaffold", function () {
       "P42_CHALLENGE_WINDOW_OPEN"
     );
     await expectCustomError(
-      challenges.connect(resolver).resolve(submissionId, true, transcriptHash, transcriptURI, verdictHash, {
+      resolveChallenge(fixture, resolver, submissionId, true, transcriptHash, transcriptURI, verdictHash, {
         value: resolverBond,
       }),
       challenges,
@@ -765,12 +870,15 @@ describe("P42 Gate 1 contract scaffold", function () {
     const { alice, treasury, resolver, challenger, ledger, submissions, challenges } = fixture;
     const { submissionId } = await commitAndReveal(fixture, { improvementAtoms: 5 });
     const required = await challenges.requiredChallengeBond(0);
-    await challenges
-      .connect(challenger)
-      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("bad challenge")), { value: required });
-
-    await challenges.connect(resolver).resolve(
+    await openChallenge(
+      fixture,
+      challenger,
       submissionId,
+      ethers.keccak256(ethers.toUtf8Bytes("bad challenge")),
+      { value: required },
+    );
+
+    await resolveChallenge(fixture, resolver, submissionId,
       false,
       ethers.keccak256(ethers.toUtf8Bytes("solver wins transcript")),
       "ar://solver-wins",
@@ -782,12 +890,12 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await challenges.claimableBondWei(resolver.address), 0n);
     assert.equal((await submissions.submissions(submissionId)).status, 3n);
     await expectCustomError(
-      challenges.releaseResolverBond(submissionId),
+      releaseResolverBond(fixture, submissionId),
       challenges,
       "P42_RESOLVER_BOND_LOCKED"
     );
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await challenges.releaseResolverBond(submissionId);
+    await releaseResolverBond(fixture, submissionId);
     assert.equal(await challenges.claimableBondWei(treasury.address), required);
     assert.equal(await challenges.claimableBondWei(resolver.address), await challenges.resolverDecisionBondWei());
     const before = await ethers.provider.getBalance(await challenges.getAddress());
@@ -809,21 +917,25 @@ describe("P42 Gate 1 contract scaffold", function () {
     await pool.fund({ value: ethers.parseEther("1") });
     const { submissionId } = await commitAndReveal(fixture, { improvementAtoms: 5 });
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
-    await challenges
-      .connect(challenger)
-      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("stalled dispute")), { value: required });
+    await openChallenge(
+      fixture,
+      challenger,
+      submissionId,
+      ethers.keccak256(ethers.toUtf8Bytes("stalled dispute")),
+      { value: required },
+    );
     assert.equal((await submissions.submissions(submissionId)).status, 3n);
 
     // Before the dispute deadline the permissionless timeout is closed.
     await expectCustomError(
-      challenges.expireChallenge(submissionId),
+      expireChallenge(fixture, alice, submissionId),
       challenges,
       "P42_DISPUTE_WINDOW_OPEN"
     );
 
     // The resolver never posts a decision; anyone can time the challenge out.
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await challenges.connect(alice).expireChallenge(submissionId);
+    await expireChallenge(fixture, alice, submissionId);
     // The one-shot challenge slot is cleared so a fresh challenge stays
     // possible in the re-armed window (F3).
     const expired = await challenges.challenges(submissionId);
@@ -844,7 +956,7 @@ describe("P42 Gate 1 contract scaffold", function () {
 
     // The cleared slot cannot be re-expired afterwards.
     await expectCustomError(
-      challenges.expireChallenge(submissionId),
+      expireChallenge(fixture, alice, submissionId),
       challenges,
       "P42_UNKNOWN_CHALLENGE"
     );
@@ -855,12 +967,15 @@ describe("P42 Gate 1 contract scaffold", function () {
     const { treasury, resolver, challenger, submissions, challenges } = fixture;
     const { submissionId, bond } = await commitAndReveal(fixture, { improvementAtoms: 3 });
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
-    await challenges
-      .connect(challenger)
-      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("provable fraud")), { value: required });
-
-    await challenges.connect(resolver).resolve(
+    await openChallenge(
+      fixture,
+      challenger,
       submissionId,
+      ethers.keccak256(ethers.toUtf8Bytes("provable fraud")),
+      { value: required },
+    );
+
+    await resolveChallenge(fixture, resolver, submissionId,
       true,
       ethers.keccak256(ethers.toUtf8Bytes("challenger wins transcript")),
       "ar://challenger-wins",
@@ -868,7 +983,7 @@ describe("P42 Gate 1 contract scaffold", function () {
       { value: await challenges.resolverDecisionBondWei() }
     );
     await increaseTime(RESOLVER_FRAUD_WINDOW_SECONDS + 1n);
-    await challenges.finalizeResolution(submissionId);
+    await finalizeChallengeResolution(fixture, submissionId);
 
     // Own counter-bond refunded on the challenge manager...
     const ownRefund = await challenges.claimableBondWei(challenger.address);

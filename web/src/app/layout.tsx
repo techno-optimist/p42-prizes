@@ -17,14 +17,15 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://projectforty2.ai"),
   title: "P42 Prizes — Register of Records",
   description:
-    "Open math bounties settled by an exact, deterministic verifier anyone can re-run. The proof is the re-run.",
+    "Phase 0 Base Sepolia testnet pilot for open math bounty mechanics: not audited, not legally reviewed, and no live settlement or user payments.",
   alternates: {
     canonical: sitePath("/"),
   },
   openGraph: {
     title: "P42 Prizes — The proof is the re-run.",
-    description: "Open math bounties settled by an exact, deterministic verifier anyone can execute.",
-    images: [{ url: sitePath("/og.png"), width: 1200, height: 630 }],
+    description:
+      "Phase 0 Base Sepolia testnet pilot for deterministic verifier mechanics; not audited and not currently settling or paying bounties.",
+    images: [{ url: sitePath("/og-phase0.png"), width: 1200, height: 630 }],
   },
 };
 

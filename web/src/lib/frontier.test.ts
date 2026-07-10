@@ -119,4 +119,11 @@ describe("problem anchor invariants", () => {
     // The launch frontier must equal the published record, not something better.
     expect(frontierBest(p, [])).toBe(p.currentBest);
   });
+
+  it.each(problems.filter((p) => p.status === "locked").map((p) => [p.slug, p] as const))(
+    "%s: locked board model starts at its manifest frontier",
+    (_slug, p) => {
+      expect(p.seedBest).toBe(p.currentBest);
+    },
+  );
 });

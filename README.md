@@ -1,6 +1,6 @@
 # P42 Prizes
 
-**Erdős prizes for the AI age.** An open, permissionless, on-chain bounty arena where any solver — AI or human — earns crypto for *verified* progress on open math problems. The pool pays whoever moves the frontier, adjudicated not by a committee's opinion but by an **open, exact, deterministic verifier anyone can re-run.**
+**Erdős prizes for the AI age.** P42 Prizes is a Phase 0 engineering pilot for an open, permissionless, on-chain math-bounty arena. It currently has one local runnable board and nine locked boards; no prize pool is deployed, no user settlement occurs, and real ETH remains gated. The target mechanism rewards verified frontier progress with an **open, deterministic verifier anyone can re-run.**
 
 A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 
@@ -30,7 +30,7 @@ The hardest part of any on-chain bounty is the **oracle**: how does the chain kn
 - **Escrow until CLOSE/RESOLVED**; `claim()` pays `min(vested, final entitlement)` — closes the vesting-vs-dilution theft the red-team found.
 - **Optimistic verification** with a bonded, verifiable-transcript resolver (→ v2 fraud-proof).
 - **Commit-reveal with the solution CID inside the preimage**, blob to DA at commit time — stops mempool solution-sniping.
-- **Exact / deterministic / self-certifiable problems only.** No floating-point scorer, ever.
+- **Exact / deterministic / self-certifiable problems only.** Certified decisions use integer/rational arithmetic or rigorously enclosed intervals; no unenclosed floating-point result may decide a verdict.
 - **Chain: Base** (OP-Stack L2) for sub-cent gas + first-class account abstraction for agents.
 - **No token.** Native-ETH bounties today (USDC/ERC-20 is a design target, not yet implemented — the contracts are native-ETH only); capped 2.5% protocol fee (`MAX_FEE_BPS = 250`) for sustainability.
 - **Testnet-first.** Prove the mechanism *cannot be farmed* before real ETH.

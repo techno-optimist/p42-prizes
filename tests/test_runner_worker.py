@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -11,7 +12,15 @@ from p42_prizes.runner_queue import MemorySnapshot, RunnerPolicy
 from p42_prizes.runner_worker import _run_job, _run_verifier_for_transcript, run_next_job_once
 
 
-def _write_problem(root: Path, *, verifier_name: str, verifier_body: str, wall_seconds: int) -> tuple[Path, Path]:
+def _write_problem(
+    root: Path,
+    *,
+    verifier_name: str,
+    verifier_body: str,
+    wall_seconds: int,
+    image: str = "sha256:fixture",
+    image_repository: str | None = None,
+) -> tuple[Path, Path]:
     # repo_root_from_problem walks up for schemas/problem.schema.json; the src/
     # tree referenced by the allowlisted PYTHONPATH need not exist for this test.
     (root / "schemas").mkdir(parents=True, exist_ok=True)
@@ -25,6 +34,9 @@ def _write_problem(root: Path, *, verifier_name: str, verifier_body: str, wall_s
                 "schema_version: p42-problem/v1",
                 "problem_id: worker-fixture",
                 "verifier:",
+                "  version: test",
+                f"  image: {image}",
+                *([f"  image_repository: {image_repository}"] if image_repository else []),
                 f'  command: "python3 verifier/{verifier_name} --solution {{solution}}"',
                 "  max_compute:",
                 f"    wall_seconds: {wall_seconds}",
@@ -76,6 +88,117 @@ def test_noncanonical_report_is_never_marked_valid(tmp_path: Path) -> None:
     assert result["ok"] is False
     assert result["valid"] is False
     assert "canonical" in result["error"]
+
+
+def test_required_manifest_identity_mismatch_is_quarantined(tmp_path: Path) -> None:
+    verifier_body = (
+        "import json\n"
+        "print(json.dumps({'details': {}, 'improvement': '0/1', 'problem_id': 'wrong-problem', "
+        "'reason': '', 'recomputed_at_commit': 'test', 'score': '0/1', "
+        "'solution_hash': 'sha256:' + '1' * 64, 'valid': True, "
+        "'verifier_version': 'test', 'verifier_image': 'sha256:fixture'}, "
+        "sort_keys=True, separators=(',', ':')))\n"
+    )
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="identity.py", verifier_body=verifier_body, wall_seconds=10
+    )
+
+    result = _run_verifier_for_transcript(
+        problem,
+        solution,
+        child_address_space_limit_mb=256,
+        require_manifest_identity=True,
+    )
+
+    assert result["ok"] is False
+    assert result["valid"] is False
+    assert result["integrity_failure"] == "report_identity_mismatch"
+    assert "problem_id" in result["error"]
+
+
+def test_required_manifest_identity_rejects_partial_report(tmp_path: Path) -> None:
+    verifier_body = (
+        "import json\n"
+        "print(json.dumps({'valid': True, 'problem_id': 'worker-fixture', "
+        "'verifier_version': 'test', 'verifier_image': 'sha256:fixture'}, "
+        "sort_keys=True, separators=(',', ':')))\n"
+    )
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="partial.py", verifier_body=verifier_body, wall_seconds=10
+    )
+
+    result = _run_verifier_for_transcript(
+        problem,
+        solution,
+        child_address_space_limit_mb=256,
+        require_manifest_identity=True,
+    )
+
+    assert result["ok"] is False
+    assert result["valid"] is False
+    assert result["integrity_failure"] == "report_shape_invalid"
+    assert "missing keys" in result["error"]
+
+
+def test_required_manifest_identity_binds_report_solution_hash_to_verified_bytes(tmp_path: Path) -> None:
+    verifier_body = (
+        "import json\n"
+        "print(json.dumps({'details': {}, 'improvement': '0/1', 'problem_id': 'worker-fixture', "
+        "'reason': '', 'recomputed_at_commit': 'test', 'score': '0/1', "
+        "'solution_hash': 'sha256:' + '1' * 64, 'valid': True, "
+        "'verifier_version': 'test', 'verifier_image': 'sha256:fixture'}, "
+        "sort_keys=True, separators=(',', ':')))\n"
+    )
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="wrong-hash.py", verifier_body=verifier_body, wall_seconds=10
+    )
+
+    result = _run_verifier_for_transcript(
+        problem,
+        solution,
+        child_address_space_limit_mb=256,
+        require_manifest_identity=True,
+    )
+
+    assert result["ok"] is False
+    assert result["valid"] is False
+    assert result["integrity_failure"] == "report_solution_hash_mismatch"
+    assert "solution_hash" in result["error"]
+
+
+def test_sandbox_uses_manifest_repository_at_digest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    image = "sha256:" + "a" * 64
+    repository = "registry.example.com/p42/worker-fixture"
+    problem, solution = _write_problem(
+        tmp_path,
+        verifier_name="ok.py",
+        verifier_body="",
+        wall_seconds=10,
+        image=image,
+        image_repository=repository,
+    )
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda: True)
+
+    def fake_run(command, **_kwargs):
+        observed["command"] = command
+        return subprocess.CompletedProcess(command, 0, '{"valid":true}', "")
+
+    monkeypatch.setattr("p42_prizes.runner_worker._run_isolated_verifier", fake_run)
+
+    result = _run_verifier_for_transcript(
+        problem,
+        solution,
+        child_address_space_limit_mb=256,
+        sandbox="docker",
+        sandbox_memory_mb=256,
+    )
+
+    assert result["ok"] is True
+    command = observed["command"]
+    assert f"{repository}@{image}" in command
+    assert f"P42_VERIFIER_IMAGE={image}" in command
 
 
 def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:

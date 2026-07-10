@@ -135,8 +135,8 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
             </div>
             <p className="prose">
               Authority rests with the problem repo and the canonical verifier command. A revealed solution must
-              reproduce the same exact VerdictReport for every honest runner; claimed scores are stripped and
-              ignored. {isLocked && "This board is not yet admitted — its verifier has not passed the gates below."}
+              reproduce the same exact VerdictReport for every honest runner using the same declared verifier
+              environment; immutable image pinning is an admission gate, and claimed scores are stripped and ignored. {isLocked && "This board is not yet admitted — its verifier has not passed the gates below."}
             </p>
             {!isLocked && (
               <Plate

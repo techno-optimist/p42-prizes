@@ -7,6 +7,17 @@ const nextConfig: NextConfig = {
   basePath,
   poweredByHeader: false,
   typedRoutes: false,
+  // Turbopack over-traces runtime-configurable portal state paths back to
+  // compile-time TS inputs; the server runtime uses emitted .next chunks.
+  outputFileTracingExcludes: {
+    "/*": [
+      "./next.config.ts",
+      "./vite.config.ts",
+      "./tsconfig.json",
+      "./tsconfig.tsbuildinfo",
+      "./src/**/*",
+    ],
+  },
   async headers() {
     return [
       {

@@ -109,7 +109,7 @@ export function runVerifier(problemDir, solutionPath, repoRoot) {
   const { wallSeconds } = problemRunnerConfig(problemDir);
   let out;
   try {
-    out = execFileSync("python3", [`${problemDir}/verifier/verify.py`, "--solution", solutionPath], {
+    out = execFileSync("python3", ["-m", "p42_prizes.cli", "verify", "--problem", problemDir, "--solution", solutionPath], {
       encoding: "utf8",
       timeout: (wallSeconds + 5) * 1000,
       maxBuffer: 16 * 1024 * 1024,
@@ -143,17 +143,29 @@ export function sha256Canonical(value) {
   return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 }
 
+function normalizedBytes32(value, label) {
+  if (!ethers.isHexString(value, 32)) throw new Error(`${label} must be 32-byte hex`);
+  return String(value).toLowerCase();
+}
+
 // Recover a reveal call from direct calldata or any ABI wrapper (P42AgentWallet,
 // ERC-4337 account/EntryPoint, multisend, etc.). Dynamic bytes preserve the
 // nested call verbatim, so scanning for the selector and validating every
 // decoded field against the Revealed log is both wrapper-agnostic and bound to
-// the exact event being processed.
+// the exact event being processed. When commitDaHash is supplied, matching log
+// context is not enough: every candidate must also hash to the committed bytes
+// anchor, and any extra candidate/decoy fails closed.
 export function recoverRevealCalldata(transactionData, submissionInterface, expected = {}) {
   const raw = String(transactionData).toLowerCase();
   if (!raw.startsWith("0x")) throw new Error("transaction calldata must be 0x-prefixed");
   const hex = raw.slice(2);
   const fragment = submissionInterface.getFunction("reveal");
   const selector = fragment.selector.toLowerCase().slice(2);
+  const expectedCommitDaHash = expected.commitDaHash === undefined
+    ? null
+    : normalizedBytes32(expected.commitDaHash, "expected.commitDaHash");
+  const matches = [];
+  const decoys = [];
   let cursor = 0;
   while (cursor <= hex.length - selector.length) {
     const index = hex.indexOf(selector, cursor);
@@ -173,7 +185,7 @@ export function recoverRevealCalldata(transactionData, submissionInterface, expe
     if (expected.improvementAtoms !== undefined && BigInt(improvementAtoms) !== BigInt(expected.improvementAtoms)) continue;
     const solutionBytesLength = (String(solution).length - 2) / 2;
     if (expected.solutionBytesLength !== undefined && solutionBytesLength !== Number(expected.solutionBytesLength)) continue;
-    return {
+    const recovered = {
       submissionId: BigInt(submissionId),
       solutionCid,
       claimedScoreAtoms: BigInt(claimedScoreAtoms),
@@ -185,6 +197,21 @@ export function recoverRevealCalldata(transactionData, submissionInterface, expe
       nested: index !== 0,
       callData: encoded,
     };
+    if (expectedCommitDaHash !== null) {
+      recovered.commitDaHash = ethers.sha256(solution).toLowerCase();
+      if (recovered.commitDaHash !== expectedCommitDaHash) {
+        decoys.push(recovered);
+        continue;
+      }
+    }
+    matches.push(recovered);
+  }
+  if (matches.length === 1 && decoys.length === 0) return matches[0];
+  if (matches.length > 1) {
+    throw new Error(`ambiguous reveal calldata: ${matches.length} candidates matched the Revealed log and commitDaHash`);
+  }
+  if (decoys.length > 0) {
+    throw new Error("reveal calldata decoy matched the Revealed log but not commitDaHash");
   }
   throw new Error("no reveal calldata matched the Revealed log context");
 }
@@ -254,13 +281,19 @@ export function buildChallengeCallPolicy({
   chainId,
   problemId,
   submissionId,
+  revealInstanceHash,
   reasonHash,
   candidateHash,
   sourceEventHash,
   expiresAt,
   valueWei,
 }) {
-  const calldata = challengeInterface.encodeFunctionData("challenge", [submissionId, reasonHash]);
+  const boundRevealInstanceHash = normalizedBytes32(revealInstanceHash, "revealInstanceHash");
+  const calldata = challengeInterface.encodeFunctionData("challenge", [
+    submissionId,
+    boundRevealInstanceHash,
+    reasonHash,
+  ]);
   const selector = challengeInterface.getFunction("challenge").selector;
   const target = String(challengeContract).toLowerCase();
   const scope = [
@@ -269,6 +302,7 @@ export function buildChallengeCallPolicy({
     `target:${target}`,
     `problem:${problemId}`,
     `submission:${submissionId}`,
+    `reveal:${boundRevealInstanceHash}`,
     `event:${sourceEventHash}`,
     `candidate:${candidateHash}`,
   ].join("|");
@@ -307,6 +341,229 @@ export function buildChallengeCallPolicy({
   };
   policy.policy_hash = sha256Canonical(policy);
   return policy;
+}
+
+// Direct local-test execution must use the exact same bytes that a production
+// P42AgentWallet policy binds. Keeping this adapter here makes ABI drift visible
+// in the runtime tests instead of only after talking to a local chain.
+export function exactCallRequestFromPolicy(callPolicy, valueWei = callPolicy?.call_value_wei) {
+  if (callPolicy?.schema_version !== "p42-session-call-policy/v1") {
+    throw new Error("exact call policy has an unsupported schema");
+  }
+  if (!ethers.isAddress(callPolicy.target) || !ethers.isHexString(callPolicy.calldata)) {
+    throw new Error("exact call policy target or calldata is invalid");
+  }
+  const value = BigInt(valueWei);
+  if (value < 0n) throw new Error("exact call policy value must be non-negative");
+  if (String(value) !== String(callPolicy.call_value_wei)) {
+    throw new Error("exact call policy value does not match the bound call value");
+  }
+  return { to: ethers.getAddress(callPolicy.target), data: callPolicy.calldata, value };
+}
+
+// A receipt is only terminal after its containing block is still canonical and
+// has satisfied the configured finality depth. A missing/replaced block means
+// the raw signed transaction must return to the journal/rebroadcast path.
+export function classifyReceiptFinality({
+  receiptBlockNumber,
+  receiptBlockHash,
+  canonicalBlockHash,
+  latestBlockNumber,
+  confirmations,
+}) {
+  const blockNumber = Number(receiptBlockNumber);
+  const latest = Number(latestBlockNumber);
+  const required = Number(confirmations);
+  if (!Number.isInteger(blockNumber) || blockNumber < 0) {
+    throw new Error("receipt block number is invalid");
+  }
+  if (!Number.isInteger(latest) || latest < blockNumber) {
+    throw new Error("latest block number is invalid for receipt finality");
+  }
+  if (!Number.isInteger(required) || required < 0) {
+    throw new Error("receipt finality confirmations must be a non-negative integer");
+  }
+  if (
+    !ethers.isHexString(receiptBlockHash, 32)
+    || !ethers.isHexString(canonicalBlockHash, 32)
+    || receiptBlockHash.toLowerCase() !== canonicalBlockHash.toLowerCase()
+  ) {
+    return "reorged";
+  }
+  return latest - blockNumber + 1 >= required ? "confirmed" : "submitted";
+}
+
+export const LOCAL_OPERATOR_CHAIN_IDS = new Set([1337, 31337]);
+
+export function resolveOperatorFinality({
+  manifest,
+  confirmations,
+  reorgOverlapBlocks,
+  localTest = false,
+}) {
+  const policy = manifest.indexer?.finalityPolicy ?? {};
+  const resolvedConfirmations = confirmations === null || confirmations === undefined
+    ? Number(policy.confirmations ?? 0)
+    : Number(confirmations);
+  const resolvedOverlap = reorgOverlapBlocks === null || reorgOverlapBlocks === undefined
+    ? Number(policy.reorgOverlapBlocks ?? 1)
+    : Number(reorgOverlapBlocks);
+  if (!Number.isInteger(resolvedConfirmations) || resolvedConfirmations < 0) {
+    throw new Error("operator confirmations must be a non-negative integer");
+  }
+  if (!Number.isInteger(resolvedOverlap) || resolvedOverlap < 1) {
+    throw new Error("operator reorg overlap must be a positive integer");
+  }
+  if (!localTest && resolvedConfirmations < 1) {
+    throw new Error("production operator requires at least one finality confirmation");
+  }
+  return { confirmations: resolvedConfirmations, reorgOverlapBlocks: resolvedOverlap };
+}
+
+export function validateOperatorExecutionMode({
+  manifest,
+  chainId,
+  localTest = false,
+  agentWalletAddress = null,
+  operatorAddress = null,
+}) {
+  const numericChainId = Number(chainId);
+  if (localTest) {
+    if (!LOCAL_OPERATOR_CHAIN_IDS.has(numericChainId)) {
+      throw new Error("direct EOA local-test mode is only allowed on local chain ids 1337 or 31337");
+    }
+    return { mode: "direct-eoa-local-test", agentWalletAddress: null };
+  }
+  if (!agentWalletAddress) {
+    throw new Error("production operator requires --agent-wallet <P42AgentWallet address>");
+  }
+  const normalizedAgentWallet = ethers.getAddress(agentWalletAddress).toLowerCase();
+  if (operatorAddress && normalizedAgentWallet === ethers.getAddress(operatorAddress).toLowerCase()) {
+    throw new Error("agent wallet address must differ from the operator session-key EOA");
+  }
+  if (manifest.status === "example-not-deployed") {
+    throw new Error("production operator cannot run against an example-not-deployed manifest");
+  }
+  return { mode: "agent-wallet", agentWalletAddress: normalizedAgentWallet };
+}
+
+export function operatorCursorBinding({
+  manifest,
+  chainId,
+  submissionContract,
+  challengeContract,
+  problemId,
+}) {
+  return {
+    schema_version: "p42-operator-binding/v1",
+    chain_id: Number(chainId),
+    deployment_commit: String(manifest.deploymentCommit ?? "").toLowerCase(),
+    deployment_config_hash: String(manifest.deploymentConfigHash ?? "").toLowerCase(),
+    submission_contract: String(submissionContract).toLowerCase(),
+    challenge_contract: String(challengeContract).toLowerCase(),
+    problem_id: String(problemId),
+    manifest_start_block: Number(manifest.indexer?.startBlock ?? 0),
+  };
+}
+
+export function validateOperatorCursor(cursor, binding) {
+  if (cursor.schema_version !== "p42-operator-cursor/v1") {
+    throw new Error("unsupported operator cursor schema");
+  }
+  if (canonicalJson(cursor.binding) !== canonicalJson(binding)) {
+    throw new Error("operator cursor belongs to a different deployment binding");
+  }
+  if (!Number.isInteger(cursor.next_block) || cursor.next_block < binding.manifest_start_block) {
+    throw new Error("operator cursor next_block is invalid for this manifest");
+  }
+  if (!Array.isArray(cursor.anchors)) throw new Error("operator cursor anchors must be an array");
+  for (const anchor of cursor.anchors) {
+    if (!Number.isInteger(anchor.block_number) || anchor.block_number < binding.manifest_start_block) {
+      throw new Error("operator cursor anchor block_number is invalid");
+    }
+    if (!ethers.isHexString(anchor.block_hash, 32)) {
+      throw new Error("operator cursor anchor block_hash must be bytes32 hex");
+    }
+  }
+  return cursor;
+}
+
+export function nextOperatorScanRange({ cursor, startBlock, safeLatest, overlapBlocks }) {
+  if (!Number.isInteger(startBlock) || startBlock < 0) throw new Error("startBlock must be a non-negative integer");
+  if (!Number.isInteger(safeLatest) || safeLatest < 0) throw new Error("safeLatest must be a non-negative integer");
+  if (!Number.isInteger(overlapBlocks) || overlapBlocks < 1) throw new Error("overlapBlocks must be positive");
+  const nextBlock = cursor?.next_block ?? startBlock;
+  const fromBlock = Math.max(startBlock, nextBlock - overlapBlocks);
+  if (fromBlock > safeLatest) return null;
+  return { fromBlock, toBlock: safeLatest };
+}
+
+export function buildOperatorCursor({ binding, nextBlock, anchors, overlapBlocks }) {
+  if (!Number.isInteger(nextBlock) || nextBlock < binding.manifest_start_block) {
+    throw new Error("operator cursor nextBlock is invalid");
+  }
+  const anchorFloor = Math.max(binding.manifest_start_block, nextBlock - overlapBlocks - 1);
+  return {
+    schema_version: "p42-operator-cursor/v1",
+    binding,
+    next_block: nextBlock,
+    anchors: [...anchors]
+      .filter((anchor) => anchor.block_number >= anchorFloor)
+      .sort((left, right) => left.block_number - right.block_number),
+    updated_at_utc: new Date().toISOString(),
+  };
+}
+
+export async function buildSignedTransactionRecord({
+  wallet,
+  request,
+  label,
+  chainId = undefined,
+}) {
+  const populateInput = { ...request, chainId: chainId ?? request.chainId };
+  const populated = wallet.provider
+    ? await wallet.populateTransaction(populateInput)
+    : { from: wallet.address, ...populateInput };
+  const signable = { ...populated };
+  delete signable.from;
+  const rawTx = await wallet.signTransaction(signable);
+  const hash = ethers.keccak256(rawTx);
+  return {
+    schema_version: "p42-signed-transaction/v1",
+    label,
+    signer: wallet.address.toLowerCase(),
+    hash,
+    raw_tx: rawTx,
+    chain_id: Number(signable.chainId ?? chainId),
+    nonce: Number(signable.nonce),
+    to: signable.to ? String(signable.to).toLowerCase() : null,
+    value: (signable.value ?? 0n).toString(),
+    data_hash: ethers.keccak256(signable.data ?? "0x"),
+    signed_at_utc: new Date().toISOString(),
+  };
+}
+
+export async function reconcileSignedTransaction(provider, record) {
+  if (record?.schema_version !== "p42-signed-transaction/v1") {
+    throw new Error("unsupported signed transaction journal record");
+  }
+  const receipt = await provider.getTransactionReceipt(record.hash);
+  if (receipt) return { status: "receipt", receipt };
+  const pending = await provider.getTransaction(record.hash);
+  if (pending) return { status: "pending", transaction: pending };
+  try {
+    return { status: "broadcast", transaction: await provider.broadcastTransaction(record.raw_tx) };
+  } catch (error) {
+    const after = await provider.getTransaction(record.hash);
+    if (after) return { status: "pending", transaction: after };
+    throw error;
+  }
+}
+
+export async function receiptForSignedTransaction(provider, record) {
+  const reconciled = await reconcileSignedTransaction(provider, record);
+  if (reconciled.receipt) return reconciled.receipt;
+  return reconciled.transaction.wait();
 }
 
 export function runRuntimeBridge(repoRoot, args) {

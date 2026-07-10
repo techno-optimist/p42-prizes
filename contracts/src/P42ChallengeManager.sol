@@ -9,6 +9,7 @@ interface IP42SubmissionChallengeHook {
     function cancelChallenge(uint256 submissionId) external;
     function disputedEntitlementWei(uint256 submissionId) external view returns (uint256);
     function solverOf(uint256 submissionId) external view returns (address);
+    function revealInstanceHashOf(uint256 submissionId) external view returns (bytes32);
     function maxDisputeDeadline(uint256 submissionId) external view returns (uint64);
 }
 
@@ -41,6 +42,10 @@ contract P42ChallengeManager {
     error P42_RESOLVER_BOND_LOCKED(uint64 releaseAt, uint64 nowAt);
     error P42_RESOLVER_FRAUD_WINDOW_CLOSED(uint64 releaseAt, uint64 nowAt);
     error P42_EMPTY_FRAUD_PROOF_HASH();
+    error P42_EMPTY_REVEAL_INSTANCE_HASH();
+    error P42_REVEAL_INSTANCE_MISMATCH(bytes32 expected, bytes32 actual);
+    error P42_EMPTY_CHALLENGE_INSTANCE_HASH();
+    error P42_CHALLENGE_INSTANCE_MISMATCH(bytes32 expected, bytes32 actual);
     error P42_TRANSFER_FAILED();
 
     uint16 public constant MAX_BETA_BPS = 10_000;
@@ -83,6 +88,13 @@ contract P42ChallengeManager {
     bool private _claiming;
 
     mapping(uint256 => Challenge) public challenges;
+    /// @notice The reveal fingerprint a challenge was opened against. Retained
+    /// after resolution for audit, overwritten only by a new active challenge.
+    mapping(uint256 => bytes32) public challengeRevealInstanceHashOf;
+    /// @notice Per-dispute fingerprint required by every follow-on action.
+    /// This prevents a raw resolver/expiry/slash transaction from an orphaned
+    /// branch being applied to a different challenge for the same submission.
+    mapping(uint256 => bytes32) public challengeInstanceHashOf;
     mapping(uint256 => ResolverBond) public resolverBonds;
     mapping(address => uint256) public claimableBondWei;
 
@@ -92,7 +104,9 @@ contract P42ChallengeManager {
         address indexed challenger,
         bytes32 indexed reasonHash,
         uint256 bondWei,
-        uint64 disputeEndsAt
+        uint64 disputeEndsAt,
+        bytes32 revealInstanceHash,
+        bytes32 challengeInstanceHash
     );
     event ResolverTranscriptPosted(
         uint256 indexed submissionId,
@@ -102,13 +116,26 @@ contract P42ChallengeManager {
         bytes32 verdictHash,
         uint256 resolverBondWei,
         uint64 resolverBondReleaseAt,
-        bool challengerWins
+        bool challengerWins,
+        bytes32 challengeInstanceHash
     );
-    event Resolved(uint256 indexed submissionId, bool challengerWins);
-    event ResolverDecisionCancelled(uint256 indexed submissionId, address indexed challenger, bytes32 proofHash);
-    event ChallengeExpired(uint256 indexed submissionId, address indexed challenger, uint256 refundedBondWei);
-    event ResolverBondReleased(uint256 indexed submissionId, address indexed resolver, uint256 amount);
-    event ResolverBondSlashed(uint256 indexed submissionId, address indexed treasury, uint256 amount, bytes32 proofHash);
+    event Resolved(uint256 indexed submissionId, bool challengerWins, bytes32 challengeInstanceHash);
+    event ResolverDecisionCancelled(
+        uint256 indexed submissionId, address indexed challenger, bytes32 proofHash, bytes32 challengeInstanceHash
+    );
+    event ChallengeExpired(
+        uint256 indexed submissionId, address indexed challenger, uint256 refundedBondWei, bytes32 challengeInstanceHash
+    );
+    event ResolverBondReleased(
+        uint256 indexed submissionId, address indexed resolver, uint256 amount, bytes32 challengeInstanceHash
+    );
+    event ResolverBondSlashed(
+        uint256 indexed submissionId,
+        address indexed treasury,
+        uint256 amount,
+        bytes32 proofHash,
+        bytes32 challengeInstanceHash
+    );
     event BondClaimed(address indexed claimant, uint256 amount);
 
     modifier onlyOwner() {
@@ -182,14 +209,14 @@ contract P42ChallengeManager {
 
     function challenge(
         uint256 submissionId,
+        bytes32 expectedRevealInstanceHash,
         bytes32 reasonHash
     ) external payable {
         if (pausedNewActions) revert P42_PAUSED_NEW_ACTIONS();
         if (submissionId == 0) revert P42_BAD_SUBMISSION();
         if (reasonHash == bytes32(0)) revert P42_EMPTY_REASON();
 
-        Challenge storage existing = challenges[submissionId];
-        if (existing.challenger != address(0)) revert P42_ALREADY_CHALLENGED();
+        if (challenges[submissionId].challenger != address(0)) revert P42_ALREADY_CHALLENGED();
 
         // A solver must not challenge their own submission: a free self-
         // challenge would consume the challenge slot and shield a fraudulent
@@ -201,23 +228,47 @@ contract P42ChallengeManager {
         // Size the counter-bond from the ledger-derived disputed entitlement so
         // a caller cannot collapse the value-proportional bond to the floor by
         // under-reporting it (H2). The submission manager is the trusted oracle.
-        uint256 disputedEntitlementWei = submissionManager.disputedEntitlementWei(submissionId);
-        uint256 required = requiredChallengeBond(disputedEntitlementWei);
+        _requireRevealInstance(submissionId, expectedRevealInstanceHash);
+        uint256 required = requiredChallengeBond(submissionManager.disputedEntitlementWei(submissionId));
         if (msg.value < required) revert P42_INSUFFICIENT_CHALLENGE_BOND(required, msg.value);
 
         submissionManager.markChallenged(submissionId);
+        _openChallenge(submissionId, expectedRevealInstanceHash, reasonHash, msg.sender, msg.value);
+    }
 
-        uint64 proposedDisputeEndsAt = uint64(block.timestamp) + challengeWindowSeconds;
+    function _openChallenge(
+        uint256 submissionId,
+        bytes32 revealInstanceHash,
+        bytes32 reasonHash,
+        address challenger,
+        uint256 bondWei
+    ) private {
+        uint64 challengedAt = uint64(block.timestamp);
+        uint64 proposedDisputeEndsAt = challengedAt + challengeWindowSeconds;
         uint64 maxDisputeEndsAt = submissionManager.maxDisputeDeadline(submissionId);
         uint64 disputeEndsAt = proposedDisputeEndsAt < maxDisputeEndsAt
             ? proposedDisputeEndsAt
             : maxDisputeEndsAt;
+        bytes32 challengeInstanceHash = keccak256(
+            abi.encode(
+                address(this),
+                block.chainid,
+                submissionId,
+                revealInstanceHash,
+                challenger,
+                reasonHash,
+                challengedAt,
+                disputeEndsAt
+            )
+        );
+        challengeRevealInstanceHashOf[submissionId] = revealInstanceHash;
+        challengeInstanceHashOf[submissionId] = challengeInstanceHash;
         challenges[submissionId] = Challenge({
             submissionId: submissionId,
-            challenger: msg.sender,
+            challenger: challenger,
             reasonHash: reasonHash,
-            challengeBondWei: msg.value,
-            challengedAt: uint64(block.timestamp),
+            challengeBondWei: bondWei,
+            challengedAt: challengedAt,
             disputeEndsAt: disputeEndsAt,
             resolved: false,
             decisionPending: false,
@@ -226,11 +277,20 @@ contract P42ChallengeManager {
             transcriptURI: "",
             verdictHash: bytes32(0)
         });
-        emit Challenged(submissionId, msg.sender, reasonHash, msg.value, disputeEndsAt);
+        emit Challenged(
+            submissionId,
+            challenger,
+            reasonHash,
+            bondWei,
+            disputeEndsAt,
+            revealInstanceHash,
+            challengeInstanceHash
+        );
     }
 
     function resolve(
         uint256 submissionId,
+        bytes32 expectedChallengeInstanceHash,
         bool challengerWins,
         bytes32 transcriptHash,
         string calldata transcriptURI,
@@ -238,6 +298,7 @@ contract P42ChallengeManager {
     ) external payable onlyResolver {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        _requireChallengeInstance(submissionId, expectedChallengeInstanceHash);
         if (current.resolved || current.decisionPending) revert P42_ALREADY_RESOLVED();
         if (block.timestamp >= current.disputeEndsAt) {
             revert P42_DISPUTE_WINDOW_CLOSED(current.disputeEndsAt, uint64(block.timestamp));
@@ -268,9 +329,10 @@ contract P42ChallengeManager {
     /// elapsed unslashed. The resolver bond is released in the same transition,
     /// so a solver-favorable decision cannot occupy the sole challenge slot
     /// after it has returned the submission to Revealed.
-    function finalizeResolution(uint256 submissionId) public {
+    function finalizeResolution(uint256 submissionId, bytes32 expectedChallengeInstanceHash) public {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        _requireChallengeInstance(submissionId, expectedChallengeInstanceHash);
         if (!current.decisionPending) {
             if (current.resolved) revert P42_ALREADY_RESOLVED();
             revert P42_NO_PENDING_DECISION();
@@ -308,8 +370,8 @@ contract P42ChallengeManager {
             delete challenges[submissionId];
         }
 
-        emit ResolverBondReleased(submissionId, resolver, resolverBond);
-        emit Resolved(submissionId, challengerWins);
+        emit ResolverBondReleased(submissionId, resolver, resolverBond, expectedChallengeInstanceHash);
+        emit Resolved(submissionId, challengerWins, expectedChallengeInstanceHash);
     }
 
     /// @notice Permissionless timeout resolving a stalled challenge in the
@@ -318,9 +380,10 @@ contract P42ChallengeManager {
     /// submission forever, which also blocks the payout ledger's close() and
     /// therefore locks the whole pool (M1). Because no adjudication took place,
     /// the challenger's posted bond is returned to them.
-    function expireChallenge(uint256 submissionId) external {
+    function expireChallenge(uint256 submissionId, bytes32 expectedChallengeInstanceHash) external {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        _requireChallengeInstance(submissionId, expectedChallengeInstanceHash);
         if (current.resolved) revert P42_ALREADY_RESOLVED();
         if (current.decisionPending) revert P42_DECISION_PENDING();
         if (block.timestamp < current.disputeEndsAt) {
@@ -343,17 +406,21 @@ contract P42ChallengeManager {
         // beneficiary argument is unused because the solver prevails by default.
         submissionManager.resolveChallenge(submissionId, false, address(0));
 
-        emit ChallengeExpired(submissionId, challenger, refund);
-        emit Resolved(submissionId, false);
+        emit ChallengeExpired(submissionId, challenger, refund, expectedChallengeInstanceHash);
+        emit Resolved(submissionId, false, expectedChallengeInstanceHash);
     }
 
-    function releaseResolverBond(uint256 submissionId) external {
-        finalizeResolution(submissionId);
+    function releaseResolverBond(uint256 submissionId, bytes32 expectedChallengeInstanceHash) external {
+        finalizeResolution(submissionId, expectedChallengeInstanceHash);
     }
 
-    function slashResolverBond(uint256 submissionId, bytes32 proofHash) external onlyOwner {
+    function slashResolverBond(uint256 submissionId, bytes32 expectedChallengeInstanceHash, bytes32 proofHash)
+        external
+        onlyOwner
+    {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        _requireChallengeInstance(submissionId, expectedChallengeInstanceHash);
         if (!current.decisionPending) revert P42_NO_PENDING_DECISION();
         if (proofHash == bytes32(0)) revert P42_EMPTY_FRAUD_PROOF_HASH();
         ResolverBond storage decisionBond = resolverBonds[submissionId];
@@ -371,8 +438,8 @@ contract P42ChallengeManager {
         claimableBondWei[challenger] += challengeBond;
         delete challenges[submissionId];
         submissionManager.cancelChallenge(submissionId);
-        emit ResolverBondSlashed(submissionId, treasury, amount, proofHash);
-        emit ResolverDecisionCancelled(submissionId, challenger, proofHash);
+        emit ResolverBondSlashed(submissionId, treasury, amount, proofHash, expectedChallengeInstanceHash);
+        emit ResolverDecisionCancelled(submissionId, challenger, proofHash, expectedChallengeInstanceHash);
     }
 
     function claimBond() external nonReentrant {
@@ -393,6 +460,22 @@ contract P42ChallengeManager {
         return uint64(proposedReleaseAt);
     }
 
+    function _requireChallengeInstance(uint256 submissionId, bytes32 expectedChallengeInstanceHash) private view {
+        if (expectedChallengeInstanceHash == bytes32(0)) revert P42_EMPTY_CHALLENGE_INSTANCE_HASH();
+        bytes32 actualChallengeInstanceHash = challengeInstanceHashOf[submissionId];
+        if (actualChallengeInstanceHash != expectedChallengeInstanceHash) {
+            revert P42_CHALLENGE_INSTANCE_MISMATCH(expectedChallengeInstanceHash, actualChallengeInstanceHash);
+        }
+    }
+
+    function _requireRevealInstance(uint256 submissionId, bytes32 expectedRevealInstanceHash) private view {
+        if (expectedRevealInstanceHash == bytes32(0)) revert P42_EMPTY_REVEAL_INSTANCE_HASH();
+        bytes32 actualRevealInstanceHash = submissionManager.revealInstanceHashOf(submissionId);
+        if (actualRevealInstanceHash != expectedRevealInstanceHash) {
+            revert P42_REVEAL_INSTANCE_MISMATCH(expectedRevealInstanceHash, actualRevealInstanceHash);
+        }
+    }
+
     function _emitResolverTranscriptPosted(uint256 submissionId, uint64 releaseAt) private {
         Challenge storage current = challenges[submissionId];
         emit ResolverTranscriptPosted(
@@ -403,7 +486,8 @@ contract P42ChallengeManager {
             current.verdictHash,
             resolverBonds[submissionId].amountWei,
             releaseAt,
-            current.challengerWins
+            current.challengerWins,
+            challengeInstanceHashOf[submissionId]
         );
     }
 }

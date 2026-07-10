@@ -12,9 +12,9 @@ N-host matrix.
 ## Bottom Line
 
 The portal is correctly fail-closed and honest for Phase 0: all ten boards are
-listed, every board has a reserved testnet donation wallet, and only
-`hadamard-mini` accepts local pilot submissions. All ten boards now have local
-P42 exact-verifier packages, but the nine locked boards are not
+listed, every board has a dedicated donation-pool surface that is explicitly
+marked not deployed, and only `hadamard-mini` accepts local pilot submissions.
+All ten boards now have local P42 exact-verifier packages, but the nine locked boards are not
 production-admitted prize problems yet because immutable images, collected
 N-host matrices, and external review gates are still missing.
 
@@ -82,8 +82,9 @@ Additional arena and certificate evidence:
 
 1. The verifier moat is working as a policy: the portal refuses submissions for
    every board that lacks an admitted exact verifier.
-2. The current donation-wallet surface is safe only because the wallets are
-   marked testnet/local-chain provenance and the locked boards cannot settle.
+2. The current donation-pool surface is safe because it publishes no address or
+   donation action until a reconciled bytecode-backed pool exists, and locked
+   boards cannot settle.
 3. The local admission tooling is correctly stricter than "two runs on one
    machine": it requires at least four distinct host labels, x86 and ARM
    coverage, two glibc versions, and identical canonical report hashes.

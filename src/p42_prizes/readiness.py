@@ -14,6 +14,7 @@ from p42_prizes.admission import (
     validate_admission_matrix,
 )
 from p42_prizes.problem import load_manifest, validate_problem
+from p42_prizes.runner_sandbox import RunnerSandboxError, compose_immutable_image_ref
 from p42_prizes.verdict import parse_rational
 
 
@@ -40,8 +41,11 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
             "problem.yaml:verifier.image must be an immutable lowercase sha256:<64 hex> digest "
             f"before funding; got {image!r}"
         )
-    if not isinstance(repository, str) or not repository or "@" in repository:
-        errors.append("problem.yaml:verifier.image_repository must be a tag-free registry repository")
+    try:
+        expected_ref = compose_immutable_image_ref(repository, image)
+    except RunnerSandboxError as exc:
+        errors.append(f"problem.yaml:{exc}")
+        expected_ref = None
 
     trusted_keys = admission.get("trusted_host_keys") if isinstance(admission, dict) else None
     trusted_fingerprints: set[str] = set()
@@ -113,7 +117,6 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
         if coverage.get("execution_modes") != ["immutable-container"]:
             errors.append("admission matrix: every host must execute the exact immutable container image")
 
-    expected_ref = f"{repository}@{image}" if isinstance(repository, str) and isinstance(image, str) else None
     observed_fingerprints: set[str] = set()
     evidence_items = matrix.get("evidence")
     if not isinstance(evidence_items, list):
@@ -126,7 +129,7 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
             execution = evidence.get("execution")
             if not isinstance(execution, dict) or execution.get("mode") != "immutable-container":
                 errors.append(f"admission matrix: evidence[{index}] did not execute an immutable container")
-            elif execution.get("image_ref") != expected_ref or execution.get("image_digest") != image:
+            elif expected_ref is None or execution.get("image_ref") != expected_ref or execution.get("image_digest") != image:
                 errors.append(f"admission matrix: evidence[{index}] executed a different image reference")
             attestation = evidence.get("attestation")
             fingerprint = attestation.get("key_fingerprint") if isinstance(attestation, dict) else None

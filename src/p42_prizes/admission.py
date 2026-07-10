@@ -14,7 +14,12 @@ import tempfile
 from typing import Any, Iterable, Mapping
 
 from p42_prizes.problem import load_manifest, repo_root_from_problem
-from p42_prizes.runner_sandbox import build_sandbox_command, force_remove_container
+from p42_prizes.runner_sandbox import (
+    RunnerSandboxError,
+    build_sandbox_command,
+    compose_immutable_image_ref,
+    force_remove_container,
+)
 from p42_prizes.verdict import (
     canonical_json,
     rational_to_string,
@@ -185,14 +190,14 @@ def _canonical_report_from_stdout(stdout: str) -> tuple[dict[str, Any], str]:
         raise AdmissionError(f"verifier emitted malformed JSON: {exc}") from exc
     if not isinstance(report, dict):
         raise AdmissionError("verifier report must be a JSON object")
-    _validate_report_shape(report)
+    validate_report_shape(report)
     canonical = canonical_json(report)
     if stdout not in (canonical, canonical + "\n"):
         raise AdmissionError("verifier report must be canonical JSON with sorted keys and no extra stdout")
     return report, canonical
 
 
-def _validate_report_shape(report: Mapping[str, Any]) -> None:
+def validate_report_shape(report: Mapping[str, Any]) -> None:
     missing = [key for key in REPORT_KEYS if key not in report]
     extra = [key for key in report if key not in REPORT_KEYS]
     if missing:
@@ -218,6 +223,7 @@ def _validate_report_shape(report: Mapping[str, Any]) -> None:
 
 
 def build_verifier_env(problem: Path) -> dict[str, str]:
+    manifest = load_manifest(problem)
     src = str(repo_root_from_problem(problem) / "src")
     env = {
         "PATH": os.environ.get("PATH", os.defpath),
@@ -225,7 +231,29 @@ def build_verifier_env(problem: Path) -> dict[str, str]:
     }
     for name, default in VERIFIER_ENV_DEFAULTS.items():
         env[name] = os.environ.get(name, default)
+    verifier = manifest.get("verifier")
+    image = verifier.get("image") if isinstance(verifier, Mapping) else None
+    if isinstance(image, str) and image:
+        # The report identity must come from the problem manifest, not an
+        # ambient operator environment variable.
+        env["P42_VERIFIER_IMAGE"] = image
     return env
+
+
+def validate_report_identity(manifest: Mapping[str, Any], report: Mapping[str, Any]) -> None:
+    """Require a verifier report to identify the manifest it actually ran."""
+
+    verifier = manifest.get("verifier")
+    expected = {
+        "problem_id": manifest.get("problem_id"),
+        "verifier_version": verifier.get("version") if isinstance(verifier, Mapping) else None,
+        "verifier_image": verifier.get("image") if isinstance(verifier, Mapping) else None,
+    }
+    for field, value in expected.items():
+        if not isinstance(value, str) or not value:
+            raise AdmissionError(f"problem.yaml must define {field} before report identity can be checked")
+        if report.get(field) != value:
+            raise AdmissionError(f"verifier report {field} does not match problem.yaml")
 
 
 def _completed_verifier_run(completed: subprocess.CompletedProcess[str]) -> VerifierRun:
@@ -266,20 +294,22 @@ def run_verifier_once(problem: Path, solution: Path) -> VerifierRun:
         raise AdmissionError(f"verifier timed out after {wall_seconds}s") from exc
     except OSError as exc:
         raise AdmissionError(f"could not execute verifier: {type(exc).__name__}") from exc
-    return _completed_verifier_run(completed)
+    run = _completed_verifier_run(completed)
+    validate_report_identity(manifest, run.report)
+    return run
 
 
 def _inspect_image(problem: Path, image_ref: str, runtime: str) -> ImageIdentity:
     manifest = load_manifest(problem)
     verifier = manifest["verifier"]
     image_digest = verifier["image"]
-    match = PINNED_IMAGE_REF_RE.fullmatch(image_ref)
-    if match is None or match.group("digest") != image_digest:
-        raise AdmissionError("image-ref must be repository@<the exact problem.yaml verifier.image digest>")
     repository = verifier.get("image_repository")
-    if not isinstance(repository, str) or not repository:
-        raise AdmissionError("problem.yaml verifier.image_repository is required for immutable admission")
-    if image_ref != f"{repository}@{image_digest}":
+    try:
+        expected_ref = compose_immutable_image_ref(repository, image_digest)
+    except RunnerSandboxError as exc:
+        raise AdmissionError(str(exc)) from exc
+    match = PINNED_IMAGE_REF_RE.fullmatch(image_ref)
+    if match is None or match.group("digest") != image_digest or image_ref != expected_ref:
         raise AdmissionError("image-ref does not match problem.yaml verifier.image_repository and verifier.image")
 
     pulled = subprocess.run(
@@ -360,8 +390,6 @@ def _run_image_verifier_once(
         container_name=container_name,
         binary=runtime,
     )
-    image_index = command.index(image.image_ref)
-    command[image_index:image_index] = ["-e", f"P42_VERIFIER_IMAGE={image.image_digest}"]
     try:
         completed = subprocess.run(
             command,
@@ -537,12 +565,7 @@ def generate_host_evidence(
     for index, run in enumerate(observed, start=1):
         if run.report != first.report:
             raise AdmissionError(f"run {index} produced a different VerdictReport")
-        if run.report["problem_id"] != manifest["problem_id"]:
-            raise AdmissionError("verifier report problem_id does not match problem.yaml")
-        if run.report["verifier_version"] != verifier["version"]:
-            raise AdmissionError("verifier report verifier_version does not match problem.yaml")
-        if run.report["verifier_image"] != verifier["image"]:
-            raise AdmissionError("verifier report verifier_image does not match problem.yaml")
+        validate_report_identity(manifest, run.report)
         if run.report["solution_hash"] != expected_solution_hash:
             raise AdmissionError("verifier report solution_hash does not match admitted solution bytes")
 
@@ -584,7 +607,7 @@ def _validate_host_evidence(evidence: Mapping[str, Any], index: int) -> tuple[di
     report = evidence.get("report")
     if not isinstance(report, dict):
         raise AdmissionError(f"{prefix}.report must be an object")
-    _validate_report_shape(report)
+    validate_report_shape(report)
     expected_report_hash = sha256_bytes(canonical_json(report).encode("utf-8"))
     if evidence.get("report_hash") != expected_report_hash:
         raise AdmissionError(f"{prefix}.report_hash does not match canonical report bytes")

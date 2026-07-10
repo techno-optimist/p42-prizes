@@ -78,8 +78,10 @@ export default function HomePage() {
           <h1 className="display">The machine went first.</h1>
           <p className="standfirst">
             Between 4 and 9 July 2026, the ProjectForty2 / CHRONOS agent stack set five records in the
-            mathematical literature — exact certificates, no floating point in any certified inequality, each
-            published under a DOI. The protocol below now pays anyone, human or machine, to push them further.{" "}
+            mathematical literature — rigorously certified certificates, with no unenclosed floating-point value in
+            any certified inequality, each
+            published under a DOI. This Volume 0 page is a Phase 0 Base Sepolia testnet demonstration of future bounty
+            mechanics; it does not currently settle or pay users, and real ETH remains gated.{" "}
             <em>The proof is the re-run.</em>
           </p>
           <BoundSpecimen
@@ -271,8 +273,8 @@ export default function HomePage() {
           A solver’s share of a pool is its fraction of the total frontier distance ever traveled — not whether it
           ever held first place. Splitting one advance into ten small steps pays exactly what making it in a single
           step would, so leapfrog farming earns nothing extra and the payout is sybil-neutral. By the rule, nothing may
-          leave escrow until the pool closes or a submission resolves — the escrow contract is deployed and
-          BaseScan-verified on Base Sepolia, but its on-chain enforcement is still an unchecked Gate 1 item.
+          leave escrow until the pool closes or a submission resolves. The contract implementation is local source
+          evidence; the historical Base Sepolia deployment is stale and does not attest to this release.
         </p>
         <div className="statement">
           <MathBlock tex="\text{share}_i \;=\; \frac{\Delta_i}{\sum_j \Delta_j}, \qquad \Delta_i = \text{the exact rational distance submission } i \text{ moved the record}" />
@@ -307,10 +309,12 @@ export default function HomePage() {
           </div>
         </div>
         <p className="prose">
-          An admissible verifier is exact (integer, rational, or enclosed-interval arithmetic — never floating
-          point), recomputes every score from raw solution bytes while ignoring anything the solver claims, and
-          returns a canonical report that is byte-identical for every honest runner. The report — not this page —
-          is the unit of dispute.
+          An admissible verifier uses integer, rational, or rigorously enclosed interval arithmetic; no unenclosed
+          floating-point result may decide a verdict. It recomputes every score from raw solution bytes while
+          ignoring anything the solver claims, and
+          returns a canonical report that is byte-identical for every honest runner using the same declared verifier
+          environment. Immutable manifest-pinned images remain an admission gate, not a claim made by this pilot.
+          The report — not this page — is the unit of dispute.
         </p>
         <Plate
           no="2"
@@ -465,8 +469,8 @@ export default function HomePage() {
           <div>
             <span className="smallcaps">Specified — gate pending</span>
             <ul>
-              <li>Base contracts deployed and BaseScan-verified on Base Sepolia; escrow-until-close, claim(), and bonded challenges — Gate 1, unchecked</li>
-              <li>Resolver posts on-chain re-run transcripts — Gate 1; fraud-proof resolver — Gate 3</li>
+              <li>Local contract scaffolding covers escrow-until-close, claim(), and bonded challenges; the historical Base Sepolia deployment is stale, so a current canonical deployment remains Gate 1</li>
+              <li>Phase 0 resolver records a transcript hash and URI on-chain; full transcript availability and a fraud-proof resolver remain Gates 1 / 3</li>
               <li>N-host determinism matrix (x86 + ARM, two glibc) — Gate 2 / admission, no artifacts yet</li>
               <li>External audit and written legal opinion — Gate 2, unchecked</li>
             </ul>

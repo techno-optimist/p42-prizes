@@ -22,6 +22,7 @@ from p42_prizes.admission import (
     build_verifier_env,
     compute_source_hash,
     generate_host_evidence,
+    run_verifier_once,
     validate_admission_matrix,
 )
 from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
@@ -327,12 +328,27 @@ def test_build_verifier_env_defaults_determinism_knobs(monkeypatch: pytest.Monke
     knobs = ("PYTHONHASHSEED", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
     for name in knobs:
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("P42_VERIFIER_IMAGE", "sha256:" + "a" * 64)
 
     env = build_verifier_env(ROOT / "problems" / "hadamard-mini")
 
     assert env["PYTHONHASHSEED"] == "0"
+    assert env["P42_VERIFIER_IMAGE"] == "sha256:local-dev"
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
         assert env[name] == "1"
+
+
+def test_run_verifier_once_uses_the_manifest_image_not_ambient_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("P42_VERIFIER_IMAGE", "sha256:" + "b" * 64)
+
+    run = run_verifier_once(
+        ROOT / "problems" / "hadamard-mini",
+        ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json",
+    )
+
+    assert run.report["verifier_image"] == "sha256:local-dev"
 
 
 def test_source_hash_normalizes_the_self_referential_image_digest(tmp_path: Path) -> None:

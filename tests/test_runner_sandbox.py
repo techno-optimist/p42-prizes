@@ -10,6 +10,7 @@ from p42_prizes.runner_sandbox import (
     RunnerSandboxError,
     SANDBOX_SOLUTION_PATH,
     build_sandbox_command,
+    compose_immutable_image_ref,
     docker_available,
 )
 from p42_prizes.runner_worker import _run_verifier_for_transcript
@@ -48,6 +49,8 @@ def test_build_sandbox_command_applies_all_hardening():
     for knob in ("PYTHONHASHSEED=0", "OMP_NUM_THREADS=1", "OPENBLAS_NUM_THREADS=1", "MKL_NUM_THREADS=1"):
         assert knob in cmd, f"missing determinism knob: {knob}"
         assert cmd[cmd.index(knob) - 1] == "-e"
+    assert f"P42_VERIFIER_IMAGE={PINNED_IMAGE}" in cmd
+    assert cmd[cmd.index(f"P42_VERIFIER_IMAGE={PINNED_IMAGE}") - 1] == "-e"
     # image, then the verifier command with {solution} resolved to the mount
     assert PINNED_IMAGE in cmd
     assert f"SOLUTION={SANDBOX_SOLUTION_PATH}" in cmd
@@ -93,6 +96,14 @@ def test_accepts_repo_at_digest_image_reference():
         memory_mb=128,
     )
     assert f"registry.example.com/p42/verifier@{PINNED_IMAGE}" in cmd
+
+
+def test_composes_pullable_immutable_manifest_reference_and_rejects_tags():
+    assert compose_immutable_image_ref("registry.example.com:5000/p42/verifier", PINNED_IMAGE) == (
+        f"registry.example.com:5000/p42/verifier@{PINNED_IMAGE}"
+    )
+    with pytest.raises(RunnerSandboxError, match="mutable tag"):
+        compose_immutable_image_ref("registry.example.com/p42/verifier:latest", PINNED_IMAGE)
 
 
 def test_requires_solution_placeholder_and_valid_limits():

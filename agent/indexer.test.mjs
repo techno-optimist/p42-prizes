@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
+import { ethers } from "ethers";
 
 import {
+  archiveCalldata,
   buildCheckpoint,
   compareReplayToSnapshot,
   EVENT_CATALOG,
@@ -127,6 +132,7 @@ function lifecycleFixture() {
     claimedScoreAtoms: 900n,
     challengeEndsAt: 60n,
     solutionBytesLength: 0n,
+    revealInstanceHash: hash(601),
   }]], 50);
   tx([
     ["ledger", "CreditRecorded", { solver: ADDR.solverA, atoms: 100n, totalCreditAtoms: 100n }],
@@ -176,6 +182,7 @@ function lifecycleFixture() {
     claimedScoreAtoms: 800n,
     challengeEndsAt: 120n,
     solutionBytesLength: 0n,
+    revealInstanceHash: hash(602),
   }]], 110);
   tx([
     ["submissions", "SubmissionChallenged", { submissionId: 2n, challengeManager: ADDR.challenges }],
@@ -185,6 +192,8 @@ function lifecycleFixture() {
       reasonHash: hash(401),
       bondWei: 20n,
       disputeEndsAt: 130n,
+      revealInstanceHash: hash(602),
+      challengeInstanceHash: hash(702),
     }],
   ], 120);
   tx([["challenges", "ResolverTranscriptPosted", {
@@ -193,15 +202,21 @@ function lifecycleFixture() {
     transcriptHash: hash(501),
     transcriptURI: "ipfs://transcript",
     verdictHash: hash(502),
-    resolverBondWei: 5n,
-    resolverBondReleaseAt: 150n,
-    challengerWins: true,
-  }]], 130);
+      resolverBondWei: 5n,
+      resolverBondReleaseAt: 150n,
+      challengerWins: true,
+      challengeInstanceHash: hash(702),
+    }]], 130);
   tx([
     ["submissions", "SubmissionBondClaimable", { submissionId: 2n, claimant: ADDR.challenger, amount: 40n }],
     ["submissions", "SubmissionChallengeResolved", { submissionId: 2n, challengerWins: true }],
-    ["challenges", "ResolverBondReleased", { submissionId: 2n, resolver: ADDR.resolver, amount: 5n }],
-    ["challenges", "Resolved", { submissionId: 2n, challengerWins: true }],
+    ["challenges", "ResolverBondReleased", {
+      submissionId: 2n,
+      resolver: ADDR.resolver,
+      amount: 5n,
+      challengeInstanceHash: hash(702),
+    }],
+    ["challenges", "Resolved", { submissionId: 2n, challengerWins: true, challengeInstanceHash: hash(702) }],
   ], 150);
 
   tx([["submissions", "Committed", {
@@ -223,6 +238,7 @@ function lifecycleFixture() {
     claimedScoreAtoms: 700n,
     challengeEndsAt: 180n,
     solutionBytesLength: 0n,
+    revealInstanceHash: hash(603),
   }]], 170);
   tx([
     ["submissions", "SubmissionChallenged", { submissionId: 3n, challengeManager: ADDR.challenges }],
@@ -232,12 +248,19 @@ function lifecycleFixture() {
       reasonHash: hash(402),
       bondWei: 21n,
       disputeEndsAt: 190n,
+      revealInstanceHash: hash(603),
+      challengeInstanceHash: hash(703),
     }],
   ], 180);
   tx([
     ["submissions", "SubmissionChallengeResolved", { submissionId: 3n, challengerWins: false }],
-    ["challenges", "ChallengeExpired", { submissionId: 3n, challenger: ADDR.challenger, refundedBondWei: 21n }],
-    ["challenges", "Resolved", { submissionId: 3n, challengerWins: false }],
+    ["challenges", "ChallengeExpired", {
+      submissionId: 3n,
+      challenger: ADDR.challenger,
+      refundedBondWei: 21n,
+      challengeInstanceHash: hash(703),
+    }],
+    ["challenges", "Resolved", { submissionId: 3n, challengerWins: false, challengeInstanceHash: hash(703) }],
   ], 190);
   tx([
     ["ledger", "CreditRecorded", { solver: ADDR.solverC, atoms: 300n, totalCreditAtoms: 300n }],
@@ -274,6 +297,7 @@ function snapshotFromReplay(state) {
       committedBlock: entry.committedBlock,
       paidAtCommit: entry.paidAtCommit,
       revealedAt: entry.revealedAt,
+      revealInstanceHash: entry.revealInstanceHash,
       challengeEndsAt: entry.challengeEndsAt,
       maxDisputeEndsAt: entry.maxDisputeEndsAt,
       status: STATUS[entry.status],
@@ -282,6 +306,7 @@ function snapshotFromReplay(state) {
   }
 
   const challenges = {};
+  const challengeInstances = {};
   const resolverBonds = {};
   for (const id of state.knownChallengeIds) {
     challenges[id] = state.challenges[id] ? { ...state.challenges[id] } : {
@@ -303,6 +328,7 @@ function snapshotFromReplay(state) {
       releaseAt: 0n,
       slashProofHash: ZERO_HASH,
     };
+    challengeInstances[id] = state.challengeInstances[id];
   }
 
   return {
@@ -348,6 +374,7 @@ function snapshotFromReplay(state) {
     submissionClaimableBondWei: state.submissionClaimableBondWei,
     challengePausedNewActions: state.challengePausedNewActions,
     challenges,
+    challengeInstances,
     resolverBonds,
     challengeClaimableBondWei: state.challengeClaimableBondWei,
     registry: {
@@ -415,6 +442,35 @@ describe("P42 deterministic indexer replay", () => {
     assert.equal(replay.pool.firstFundedAt, 25n);
     assert.equal(replay.registry.problems["1"].frozen, true);
     assert.deepEqual(checks.filter((entry) => !entry.ok), []);
+  });
+
+  it("fails closed when a revealed event lacks its storage-bound instance hash", () => {
+    const events = lifecycleFixture();
+    const reveal = events.find((event) => event.source === "submissions" && event.eventName === "Revealed");
+    delete reveal.args.revealInstanceHash;
+
+    assert.throws(
+      () => replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+      /missing arg revealInstanceHash/
+    );
+  });
+
+  it("fails closed when challenge events do not bind the current reveal and dispute instances", () => {
+    const wrongReveal = lifecycleFixture();
+    const challenge = wrongReveal.find((event) => event.source === "challenges" && event.eventName === "Challenged");
+    challenge.args.revealInstanceHash = hash(999);
+    assert.throws(
+      () => replayProtocolEvents(wrongReveal, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+      /reveal instance hash mismatch/
+    );
+
+    const wrongDispute = lifecycleFixture();
+    const resolved = wrongDispute.find((event) => event.source === "challenges" && event.eventName === "Resolved");
+    resolved.args.challengeInstanceHash = hash(999);
+    assert.throws(
+      () => replayProtocolEvents(wrongDispute, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+      /challenge instance hash mismatch/
+    );
   });
 
   it("fails closed when either side of a paid void recovery is missing", () => {
@@ -546,6 +602,69 @@ describe("P42 deterministic indexer replay", () => {
       ReorgDetectedError
     );
   });
+
+
+  it("archives nested reveal calldata and rejects commitDaHash decoys", async () => {
+    const archiveInterface = new ethers.Interface([
+      "function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)",
+    ]);
+    const walletInterface = new ethers.Interface([
+      "function execute(address target,uint256 value,bytes data) returns (bytes)",
+    ]);
+    const solution = ethers.toUtf8Bytes('{"answer":42}');
+    const commitDaHash = ethers.sha256(solution);
+    const cid = `sha256:${commitDaHash.slice(2)}`;
+    const reveal = archiveInterface.encodeFunctionData("reveal", [1n, cid, -7n, 3n, "salt", solution]);
+    const nested = walletInterface.encodeFunctionData("execute", [ADDR.submissions, 0n, reveal]);
+    const event = {
+      source: "submissions",
+      eventName: "Revealed",
+      args: {
+        submissionId: 1n,
+        solutionCid: cid,
+        claimedScoreAtoms: -7n,
+        improvementAtoms: 3n,
+        solutionBytesLength: BigInt(solution.length),
+      },
+      blockNumber: 12,
+      blockHash: hash(12),
+      transactionHash: hash(9001),
+      transactionIndex: 0,
+      index: 0,
+    };
+    const submissions = {
+      interface: archiveInterface,
+      async submissions(id) {
+        assert.equal(String(id), "1");
+        return { commitDaHash };
+      },
+    };
+    const provider = { async getTransaction() { return { data: nested, value: 0n }; } };
+    const dir = mkdtempSync(join(tmpdir(), "p42-archive-"));
+
+    const ok = await archiveCalldata(dir, [event], submissions, provider);
+    assert.equal(ok.ok, true);
+    assert.equal(ok.archived, 1);
+    assert.equal(readFileSync(join(dir, `${cid.replace(/[^a-zA-Z0-9._-]/g, "_")}.bin`)).toString(), Buffer.from(solution).toString());
+
+    const decoy = archiveInterface.encodeFunctionData("reveal", [
+      1n,
+      cid,
+      -7n,
+      3n,
+      "salt",
+      ethers.toUtf8Bytes('{"answer":43}'),
+    ]);
+    const bad = await archiveCalldata(
+      mkdtempSync(join(tmpdir(), "p42-archive-decoy-")),
+      [event],
+      submissions,
+      { async getTransaction() { return { data: ethers.concat([decoy, nested]), value: 0n }; } },
+    );
+    assert.equal(bad.ok, false);
+    assert.match(bad.mismatches[0].reason, /decoy matched|ambiguous reveal calldata/);
+  });
+
 
   it("builds byte-stable checkpoints for identical finalized evidence", () => {
     const events = lifecycleFixture();

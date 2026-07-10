@@ -15,13 +15,23 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildChallengeCallPolicy,
+  buildOperatorCursor,
+  buildSignedTransactionRecord,
   canonicalJson,
+  classifyReceiptFinality,
+  exactCallRequestFromPolicy,
+  nextOperatorScanRange,
+  operatorCursorBinding,
   problemRunnerConfig,
   queryChunked,
   recoverRevealCalldata,
+  resolveOperatorFinality,
   runRuntimeBridge,
   sha256Canonical,
+  validateOperatorCursor,
+  validateOperatorExecutionMode,
 } from "./lib.mjs";
+import { validateManifestEvidence } from "./indexer.mjs";
 import { getBlob } from "./da-local.mjs";
 import { fetchFromArweave, findTxidByCid } from "./da-arweave.mjs";
 
@@ -39,8 +49,13 @@ const PROBLEM = arg("problem");
 const DA_DIR = arg("da-dir");
 const ARWEAVE = arg("arweave", false);
 const ONCE = arg("once", false);
+const LOCAL_TEST = arg("local-test", false);
+const AGENT_WALLET = arg("agent-wallet", null);
+const CONFIRMATIONS_ARG = arg("confirmations", null);
+const REORG_OVERLAP_ARG = arg("reorg-overlap-blocks", null);
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 const RUNTIME = resolve(arg("runtime", join(HERE, "runtime")));
+const CURSOR = resolve(arg("cursor", join(RUNTIME, "operator-cursor.json")));
 const QUEUE = resolve(arg("queue", join(RUNTIME, "runner-queue.json")));
 const TRANSCRIPTS = resolve(arg("transcripts", join(RUNTIME, "transcripts")));
 const INPUTS = join(RUNTIME, "inputs");
@@ -50,7 +65,6 @@ const ALERTS = join(RUNTIME, "ALERTS.log");
 const MAX_BOND = ethers.parseEther(String(arg("max-challenge-bond", "0.01")));
 const MAX_JOBS_PER_SCAN = Number(arg("max-jobs-per-scan", "1"));
 const POLL_MS = Number(arg("poll-ms", "12000"));
-const CONFIRMATIONS = Number(arg("confirmations", "0"));
 const RESERVE_MEMORY_MB = Number(arg("reserve-memory-mb", "8192"));
 const MAX_SWAP_USED_MB = Number(arg("max-swap-used-mb", "1024"));
 const MEMORY_SAFETY_FACTOR = Number(arg("memory-safety-factor", "2"));
@@ -83,8 +97,14 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const log = (...values) => console.log(...values);
 
 for (const path of [RUNTIME, TRANSCRIPTS, INPUTS, JOB_SPECS, ACTIONS]) mkdirSync(path, { recursive: true });
-let fromBlock = Number(arg("from-block", manifest.indexer?.startBlock ?? 0));
+const START_BLOCK = Number(arg("from-block", manifest.indexer?.startBlock ?? 0));
 let chainId;
+let finalityConfirmations;
+let reorgOverlapBlocks;
+let executionMode;
+let agentWallet = null;
+let cursorBinding;
+let cursorState;
 const blockCache = new Map();
 
 function bridge(...args) {
@@ -118,6 +138,121 @@ function writePayloadAtomic(path, bytes) {
   renameSync(temporary, path);
 }
 
+function readJsonOrNull(path) {
+  if (!existsSync(path)) return null;
+  return JSON.parse(readFileSync(path, "utf8"));
+}
+
+function writeJsonAtomic(path, value, mode = 0o600) {
+  const temporary = `${path}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${canonicalJson(value)}\n`, { encoding: "utf8", mode, flag: "wx" });
+  renameSync(temporary, path);
+}
+
+function sourceEventHashFor(event, submission) {
+  return sha256Canonical({
+    schema_version: "p42-reveal-event/v1",
+    chain_id: chainId,
+    problem_id: runnerConfig.problemId,
+    submission_contract: String(subs.target).toLowerCase(),
+    challenge_contract: String(chal.target).toLowerCase(),
+    submission_id: event.args.submissionId.toString(),
+    block_number: event.blockNumber,
+    block_hash: event.blockHash,
+    transaction_hash: event.transactionHash,
+    transaction_index: Number(event.transactionIndex ?? 0),
+    log_index: Number(event.index ?? event.logIndex),
+    solver: String(event.args.solver).toLowerCase(),
+    solution_cid: event.args.solutionCid,
+    commit_da_hash: submission.commitDaHash.toLowerCase(),
+    claimed_score_atoms: event.args.claimedScoreAtoms.toString(),
+    claimed_improvement_atoms: event.args.improvementAtoms.toString(),
+    reveal_instance_hash: String(event.args.revealInstanceHash).toLowerCase(),
+    challenge_ends_at: event.args.challengeEndsAt.toString(),
+    solution_bytes_length: Number(event.args.solutionBytesLength ?? 0n),
+    onchain_da: Number(event.args.solutionBytesLength ?? 0n) > 0,
+  });
+}
+
+async function canonicalRevealRecords(events) {
+  const byJobId = new Map();
+  const bySourceHash = new Set();
+  for (const event of events) {
+    const submission = await subs.submissions(event.args.submissionId);
+    const sourceEventHash = sourceEventHashFor(event, submission);
+    byJobId.set(eventJobId(event), sourceEventHash);
+    bySourceHash.add(sourceEventHash);
+  }
+  return { byJobId, bySourceHash };
+}
+
+function loadOperatorCursor() {
+  const existing = readJsonOrNull(CURSOR);
+  if (existing) return validateOperatorCursor(existing, cursorBinding);
+  return buildOperatorCursor({
+    binding: cursorBinding,
+    nextBlock: START_BLOCK,
+    anchors: [],
+    overlapBlocks: reorgOverlapBlocks,
+  });
+}
+
+async function cursorAnchorMismatch(cursor) {
+  for (const anchor of cursor.anchors ?? []) {
+    const block = await provider.getBlock(anchor.block_number);
+    if (!block || String(block.hash).toLowerCase() !== String(anchor.block_hash).toLowerCase()) {
+      return anchor.block_number;
+    }
+  }
+  return null;
+}
+
+async function persistCursor(nextBlock) {
+  const anchorFrom = Math.max(START_BLOCK, nextBlock - reorgOverlapBlocks - 1);
+  const anchors = [];
+  for (let number = anchorFrom; number < nextBlock; number += 1) {
+    const block = await provider.getBlock(number);
+    if (block?.hash) anchors.push({ block_number: number, block_hash: block.hash.toLowerCase() });
+  }
+  cursorState = buildOperatorCursor({
+    binding: cursorBinding,
+    nextBlock,
+    anchors,
+    overlapBlocks: reorgOverlapBlocks,
+  });
+  writeJsonAtomic(CURSOR, cursorState);
+}
+
+function jobIsCurrentOperator(job, fromBlock, toBlock) {
+  const claim = job.chain_claim;
+  if (!claim || claim.schema_version !== "p42-chain-claim/v1") return false;
+  if (Number(claim.chain_id) !== chainId) return false;
+  if (String(claim.problem_id) !== runnerConfig.problemId) return false;
+  if (String(claim.submission_contract).toLowerCase() !== String(subs.target).toLowerCase()) return false;
+  const blockNumber = Number(claim.block_number);
+  return Number.isInteger(blockNumber) && blockNumber >= fromBlock && blockNumber <= toBlock;
+}
+
+async function quarantineOrphanedJobs(fromBlock, toBlock, canonical, reason) {
+  const queue = readQueue();
+  const targets = queue.jobs
+    .filter((job) => jobIsCurrentOperator(job, fromBlock, toBlock))
+    .filter((job) => job.canonical_status !== "orphaned_reorg")
+    .filter((job) => !canonical.bySourceHash.has(job.source_event_hash))
+    .map((job) => job.job_id);
+  if (targets.length === 0) return;
+  const args = ["quarantine-canonical", "--queue", QUEUE, "--reason", reason];
+  for (const jobId of targets) args.push("--job-id", jobId);
+  const result = bridge(...args);
+  appendAlert(`CANONICAL INVALIDATION ${result.invalidated_job_ids.length} job(s): ${reason}`);
+}
+
+function parseDetailJson(detail) {
+  if (typeof detail !== "string" || !detail.trim().startsWith("{")) return {};
+  try { return JSON.parse(detail); }
+  catch { return {}; }
+}
+
 function appendAlert(message) {
   const line = `${new Date().toISOString()} ${message}`;
   console.error(`  !!! ${line}`);
@@ -133,7 +268,13 @@ async function blockFor(number) {
 
 function eventJobId(event) {
   const logIndex = Number(event.index ?? event.logIndex);
-  return `${chainId}:${String(subs.target).toLowerCase()}:${event.transactionHash.toLowerCase()}:${logIndex}`;
+  return [
+    chainId,
+    String(subs.target).toLowerCase(),
+    String(event.blockHash).toLowerCase(),
+    event.transactionHash.toLowerCase(),
+    logIndex,
+  ].join(":");
 }
 
 async function recoverPayload(event, submission) {
@@ -153,6 +294,7 @@ async function recoverPayload(event, submission) {
         claimedScoreAtoms: event.args.claimedScoreAtoms,
         improvementAtoms: event.args.improvementAtoms,
         solutionBytesLength,
+        commitDaHash: submission.commitDaHash,
       });
       return {
         blob: ethers.getBytes(reveal.solution),
@@ -206,18 +348,29 @@ async function recoverPayload(event, submission) {
 
 async function ingestReveal(event) {
   const jobId = eventJobId(event);
+  const submissionId = event.args.submissionId;
+  const submission = await subs.submissions(submissionId);
+  const revealInstanceHash = String(event.args.revealInstanceHash).toLowerCase();
+  if (!ethers.isHexString(revealInstanceHash, 32) || revealInstanceHash === ethers.ZeroHash) {
+    throw new Error(`reveal #${submissionId} emitted an invalid instance hash`);
+  }
+  const currentRevealInstanceHash = (await subs.revealInstanceHashOf(submissionId)).toLowerCase();
+  if (currentRevealInstanceHash !== revealInstanceHash) {
+    throw new Error(
+      `reveal #${submissionId} event instance ${revealInstanceHash} does not match current on-chain instance ${currentRevealInstanceHash}`,
+    );
+  }
+  const sourceEventHash = sourceEventHashFor(event, submission);
   const queue = readQueue();
-  const existing = queue.jobs.find((job) => job.job_id === jobId);
+  const existing = queue.jobs.find((job) => job.job_id === jobId || job.source_event_hash === sourceEventHash);
   if (existing) {
     const recordedBlockHash = existing.chain_claim?.block_hash;
     if (String(recordedBlockHash).toLowerCase() !== String(event.blockHash).toLowerCase()) {
-      throw new Error(`reorg/collision for persisted reveal job ${jobId}`);
+      throw new Error(`reorg/collision for persisted reveal job ${existing.job_id}`);
     }
     return false;
   }
 
-  const submissionId = event.args.submissionId;
-  const submission = await subs.submissions(submissionId);
   const block = await blockFor(event.blockNumber);
   const payload = await recoverPayload(event, submission);
   const onchainDa = Number(event.args.solutionBytesLength ?? 0n) > 0;
@@ -255,6 +408,7 @@ async function ingestReveal(event) {
     commit_da_hash: submission.commitDaHash.toLowerCase(),
     claimed_score_atoms: event.args.claimedScoreAtoms.toString(),
     claimed_improvement_atoms: event.args.improvementAtoms.toString(),
+    reveal_instance_hash: revealInstanceHash.toLowerCase(),
     challenge_ends_at: event.args.challengeEndsAt.toString(),
     solution_bytes_length: Number(event.args.solutionBytesLength ?? 0n),
     onchain_da: onchainDa,
@@ -263,27 +417,6 @@ async function ingestReveal(event) {
     transaction_from: payload.transactionFrom?.toLowerCase() ?? null,
     transaction_to: payload.transactionTo?.toLowerCase() ?? null,
   };
-  const sourceEventHash = sha256Canonical({
-    schema_version: "p42-reveal-event/v1",
-    chain_id: chainClaim.chain_id,
-    problem_id: chainClaim.problem_id,
-    submission_contract: chainClaim.submission_contract,
-    challenge_contract: chainClaim.challenge_contract,
-    submission_id: chainClaim.submission_id,
-    block_number: chainClaim.block_number,
-    block_hash: chainClaim.block_hash,
-    transaction_hash: chainClaim.transaction_hash,
-    transaction_index: chainClaim.transaction_index,
-    log_index: chainClaim.log_index,
-    solver: chainClaim.solver,
-    solution_cid: chainClaim.solution_cid,
-    commit_da_hash: chainClaim.commit_da_hash,
-    claimed_score_atoms: chainClaim.claimed_score_atoms,
-    claimed_improvement_atoms: chainClaim.claimed_improvement_atoms,
-    challenge_ends_at: chainClaim.challenge_ends_at,
-    solution_bytes_length: chainClaim.solution_bytes_length,
-    onchain_da: chainClaim.onchain_da,
-  });
   const job = {
     job_id: jobId,
     status: "queued",
@@ -344,23 +477,192 @@ function recordAction(job, candidate, status, transactionHash = null, detail = n
   return bridge(...args);
 }
 
+function signedActionPath(candidate, callPolicy) {
+  return join(ACTIONS, `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.signed-tx.json`);
+}
+
+async function signedActionRecord(candidate, callPolicy, request) {
+  const path = signedActionPath(candidate, callPolicy);
+  if (existsSync(path)) return { path, record: JSON.parse(readFileSync(path, "utf8")) };
+  const record = await buildSignedTransactionRecord({
+    wallet,
+    request,
+    label: `challenge:${candidate.submission_id}:${candidate.candidate_hash}`,
+  });
+  writeCanonicalAtomic(path, record);
+  return { path, record };
+}
+
+async function assertAgentWalletPolicy(callPolicy, bond, latestTimestamp) {
+  if (!agentWallet) throw new Error("agent wallet is not configured");
+  const selector = callPolicy.selector;
+  const target = callPolicy.target;
+  const [
+    sessionKey,
+    sessionChainId,
+    sessionExpiresAt,
+    revoked,
+    perCallCap,
+    totalCap,
+    spentWei,
+    allowed,
+    policy,
+  ] = await Promise.all([
+    agentWallet.sessionKey(),
+    agentWallet.sessionChainId(),
+    agentWallet.sessionExpiresAt(),
+    agentWallet.revoked(),
+    agentWallet.perCallValueCapWei(),
+    agentWallet.totalSpendCapWei(),
+    agentWallet.spentWei(),
+    agentWallet.allowed(target, selector),
+    agentWallet.callPolicies(target, selector),
+  ]);
+  if (String(sessionKey).toLowerCase() !== wallet.address.toLowerCase()) {
+    throw new Error("P42AgentWallet sessionKey does not match OPERATOR_PRIVATE_KEY address");
+  }
+  if (Number(sessionChainId) !== chainId) throw new Error("P42AgentWallet session chain mismatch");
+  if (revoked) throw new Error("P42AgentWallet session key is revoked");
+  if (BigInt(sessionExpiresAt) <= latestTimestamp) throw new Error("P42AgentWallet session is expired");
+  if (BigInt(perCallCap) < bond) throw new Error("P42AgentWallet per-call cap is below required challenge bond");
+  if (BigInt(spentWei) + bond > BigInt(totalCap)) throw new Error("P42AgentWallet total spend cap is exhausted");
+  if (allowed !== true) throw new Error("P42AgentWallet target/selector is not allowlisted");
+  if (policy.configured !== true) throw new Error("P42AgentWallet exact calldata policy is missing");
+  if (Number(policy.chainId) !== chainId) throw new Error("P42AgentWallet call policy chain mismatch");
+  if (BigInt(policy.expiresAt) < BigInt(callPolicy.expires_at)) throw new Error("P42AgentWallet call policy expires before challenge window");
+  if (BigInt(policy.expiresAt) <= latestTimestamp) throw new Error("P42AgentWallet call policy is expired");
+  if (Number(policy.maxCalls) !== Number(callPolicy.max_calls)) throw new Error("P42AgentWallet call policy max_calls mismatch");
+  if (Number(policy.calls) !== 0) throw new Error("P42AgentWallet call policy was already consumed");
+  if (String(policy.calldataHash).toLowerCase() !== callPolicy.calldata_hash.toLowerCase()) {
+    throw new Error("P42AgentWallet call policy calldata hash mismatch");
+  }
+  if (String(policy.scopeHash).toLowerCase() !== callPolicy.scope_hash.toLowerCase()) {
+    throw new Error("P42AgentWallet call policy scope hash mismatch");
+  }
+}
+
+async function buildChallengeTransactionRequest(callPolicy, bond, latestTimestamp) {
+  if (executionMode.mode === "direct-eoa-local-test") {
+    const request = exactCallRequestFromPolicy(callPolicy, bond);
+    await provider.call({ ...request, from: wallet.address });
+    return wallet.populateTransaction(request);
+  }
+  await assertAgentWalletPolicy(callPolicy, bond, latestTimestamp);
+  await agentWallet.execute.staticCall(callPolicy.target, bond, callPolicy.calldata);
+  return agentWallet.execute.populateTransaction(callPolicy.target, bond, callPolicy.calldata);
+}
+
+async function candidateStillChallengeable(candidate) {
+  const submissionId = BigInt(candidate.submission_id);
+  const submission = await subs.submissions(submissionId);
+  if (Number(submission.status) !== 2) {
+    return { ok: false, reason: `submission status is ${submission.status}` };
+  }
+  const liveRevealInstanceHash = (await subs.revealInstanceHashOf(submissionId)).toLowerCase();
+  if (liveRevealInstanceHash !== String(candidate.reveal_instance_hash).toLowerCase()) {
+    return { ok: false, reason: "reveal instance changed before rebroadcast" };
+  }
+  const latest = await provider.getBlock("latest");
+  if (!latest || BigInt(latest.timestamp) >= BigInt(candidate.challenge_ends_at)) {
+    return { ok: false, reason: "challenge window closed before rebroadcast" };
+  }
+  return { ok: true };
+}
+
 async function reconcileBroadcast(job) {
   const action = job.action;
-  if (action?.status !== "broadcast" || !action.transaction_hash) return false;
-  const receipt = await provider.getTransactionReceipt(action.transaction_hash);
-  if (!receipt) return true;
+  if (!action || !action.transaction_hash) return false;
+  if (["confirmed", "broadcast_reverted"].includes(action.status)) return true;
+  if (!["signed", "broadcast", "submitted", "reorged"].includes(action.status)) return false;
   const transcript = verifyTranscript(job.transcript_path);
-  recordAction(
-    job,
-    transcript.candidate,
-    receipt.status === 1 ? "submitted" : "broadcast_reverted",
-    action.transaction_hash,
-    `receipt status ${receipt.status}`,
-  );
+  if (!transcript.candidate) throw new Error(`action ${job.job_id} has no challenge candidate`);
+  const detail = parseDetailJson(action.detail);
+  let receipt = await provider.getTransactionReceipt(action.transaction_hash);
+  if (receipt) {
+    const canonicalBlock = await provider.getBlock(receipt.blockNumber);
+    const receiptState = classifyReceiptFinality({
+      receiptBlockNumber: receipt.blockNumber,
+      receiptBlockHash: receipt.blockHash,
+      canonicalBlockHash: canonicalBlock?.hash,
+      latestBlockNumber: await provider.getBlockNumber(),
+      confirmations: finalityConfirmations,
+    });
+    if (receiptState === "reorged") {
+      if (action.status !== "reorged") {
+        recordAction(job, transcript.candidate, "reorged", action.transaction_hash);
+        appendAlert(`REORGED CHALLENGE ${job.job_id}: receipt block is no longer canonical`);
+      }
+      receipt = null;
+    } else if (receiptState === "submitted") {
+      if (action.status !== "submitted") {
+        recordAction(job, transcript.candidate, "submitted", action.transaction_hash);
+      }
+      return true;
+    } else {
+      recordAction(
+        job,
+        transcript.candidate,
+        receipt.status === 1 ? "confirmed" : "broadcast_reverted",
+        action.transaction_hash,
+      );
+      return true;
+    }
+  }
+  if (!receipt) {
+    let pending = await provider.getTransaction(action.transaction_hash);
+    if (!pending) {
+      if (!detail.signed_tx_path) {
+        throw new Error(`signed action ${action.transaction_hash} lacks signed_tx_path`);
+      }
+      if (action.status === "submitted") {
+        recordAction(job, transcript.candidate, "reorged", action.transaction_hash);
+        appendAlert(`REORGED CHALLENGE ${job.job_id}: receipt disappeared before finality`);
+      }
+      const current = await candidateStillChallengeable(transcript.candidate);
+      if (!current.ok) {
+        recordAction(job, transcript.candidate, "superseded", action.transaction_hash, current.reason);
+        appendAlert(`SUPERSEDED ${job.job_id}: ${current.reason}`);
+        return true;
+      }
+      const signed = JSON.parse(readFileSync(detail.signed_tx_path, "utf8"));
+      if (signed.hash.toLowerCase() !== action.transaction_hash.toLowerCase()) {
+        throw new Error(`signed action hash mismatch for ${job.job_id}`);
+      }
+      try {
+        pending = await provider.broadcastTransaction(signed.raw_tx);
+      } catch (error) {
+        pending = await provider.getTransaction(action.transaction_hash);
+        if (!pending) throw error;
+      }
+    }
+    if (action.status !== "broadcast") {
+      recordAction(job, transcript.candidate, "broadcast", action.transaction_hash);
+    }
+    receipt = await pending.wait();
+  }
+  const canonicalBlock = await provider.getBlock(receipt.blockNumber);
+  const receiptState = classifyReceiptFinality({
+    receiptBlockNumber: receipt.blockNumber,
+    receiptBlockHash: receipt.blockHash,
+    canonicalBlockHash: canonicalBlock?.hash,
+    latestBlockNumber: await provider.getBlockNumber(),
+    confirmations: finalityConfirmations,
+  });
+  if (receiptState === "reorged") {
+    recordAction(job, transcript.candidate, "reorged", action.transaction_hash);
+    appendAlert(`REORGED CHALLENGE ${job.job_id}: freshly mined receipt is not canonical`);
+    return true;
+  }
+  if (receiptState === "submitted") {
+    recordAction(job, transcript.candidate, "submitted", action.transaction_hash);
+    return true;
+  }
+  recordAction(job, transcript.candidate, receipt.status === 1 ? "confirmed" : "broadcast_reverted", action.transaction_hash);
   return true;
 }
 
 async function consumeCandidate(job) {
+  if (job.canonical_status === "orphaned_reorg") return;
   if (!job.transcript_path) return;
   if (job.action) {
     await reconcileBroadcast(job);
@@ -408,6 +710,18 @@ async function consumeCandidate(job) {
     recordAction(job, candidate, "superseded", null, `submission status is ${submission.status}`);
     return;
   }
+  const liveRevealInstanceHash = (await subs.revealInstanceHashOf(submissionId)).toLowerCase();
+  if (liveRevealInstanceHash !== String(candidate.reveal_instance_hash).toLowerCase()) {
+    recordAction(
+      job,
+      candidate,
+      "superseded",
+      null,
+      `reveal instance changed from ${candidate.reveal_instance_hash} to ${liveRevealInstanceHash}`,
+    );
+    appendAlert(`SUPERSEDED ${job.job_id}: reveal instance changed before action consumption`);
+    return;
+  }
   const latest = await provider.getBlock("latest");
   if (!latest || BigInt(latest.timestamp) >= BigInt(candidate.challenge_ends_at)) {
     recordAction(job, candidate, "window_expired", null, "challenge window closed before action consumption");
@@ -431,6 +745,7 @@ async function consumeCandidate(job) {
     chainId,
     problemId: runnerConfig.problemId,
     submissionId,
+    revealInstanceHash: candidate.reveal_instance_hash,
     reasonHash,
     candidateHash: candidate.candidate_hash,
     sourceEventHash: candidate.source_event_hash,
@@ -443,9 +758,13 @@ async function consumeCandidate(job) {
   );
   writeCanonicalAtomic(policyPath, callPolicy);
   log(`  exact session call policy: ${policyPath} (${callPolicy.policy_hash})`);
-  await chal.challenge.staticCall(submissionId, reasonHash, { value: bond });
-  const tx = await chal.challenge(submissionId, reasonHash, { value: bond });
-  recordAction(job, candidate, "broadcast", tx.hash, canonicalJson({
+  const request = await buildChallengeTransactionRequest(
+    callPolicy,
+    bond,
+    BigInt(latest.timestamp),
+  );
+  const signed = await signedActionRecord(candidate, callPolicy, request);
+  const detail = canonicalJson({
     bond_wei: bond.toString(),
     call_policy_path: policyPath,
     call_policy_hash: callPolicy.policy_hash,
@@ -453,10 +772,16 @@ async function consumeCandidate(job) {
     scope_hash: callPolicy.scope_hash,
     expires_at: callPolicy.expires_at,
     max_calls: callPolicy.max_calls,
-  }));
-  log(`  challenge broadcast for #${submissionId}: ${tx.hash} bond=${ethers.formatEther(bond)} ETH`);
-  const receipt = await tx.wait();
-  recordAction(job, candidate, receipt.status === 1 ? "submitted" : "broadcast_reverted", tx.hash, `receipt status ${receipt.status}`);
+    execution_mode: executionMode.mode,
+    agent_wallet: executionMode.agentWalletAddress,
+    signed_tx_path: signed.path,
+    signed_tx_hash: signed.record.hash,
+    signed_tx_data_hash: signed.record.data_hash,
+    signed_tx_nonce: signed.record.nonce,
+  });
+  recordAction(job, candidate, "signed", signed.record.hash, detail);
+  log(`  challenge signed for #${submissionId}: ${signed.record.hash} bond=${ethers.formatEther(bond)} ETH`);
+  await reconcileBroadcast({ ...job, action: { status: "signed", transaction_hash: signed.record.hash, detail } });
 }
 
 async function consumeCandidates() {
@@ -466,11 +791,36 @@ async function consumeCandidates() {
 
 async function scanOnce() {
   const latest = await provider.getBlockNumber();
-  const safeLatest = Math.max(0, latest - CONFIRMATIONS);
-  if (fromBlock <= safeLatest) {
-    const events = await queryChunked(subs, subs.filters.Revealed(), fromBlock, safeLatest);
+  const safeLatest = Math.max(0, latest - finalityConfirmations);
+  const mismatch = await cursorAnchorMismatch(cursorState);
+  if (mismatch !== null) {
+    appendAlert(`REORG detected at anchored block ${mismatch}; rescanning overlap from durable cursor`);
+    cursorState = buildOperatorCursor({
+      binding: cursorBinding,
+      nextBlock: mismatch,
+      anchors: cursorState.anchors.filter((anchor) => anchor.block_number < mismatch),
+      overlapBlocks: reorgOverlapBlocks,
+    });
+    writeJsonAtomic(CURSOR, cursorState);
+  }
+
+  const range = nextOperatorScanRange({
+    cursor: cursorState,
+    startBlock: START_BLOCK,
+    safeLatest,
+    overlapBlocks: reorgOverlapBlocks,
+  });
+  if (range) {
+    const events = await queryChunked(subs, subs.filters.Revealed(), range.fromBlock, range.toBlock);
+    const canonical = await canonicalRevealRecords(events);
+    await quarantineOrphanedJobs(
+      range.fromBlock,
+      range.toBlock,
+      canonical,
+      `canonical rescan ${range.fromBlock}..${range.toBlock} did not contain the original Revealed source event`,
+    );
     for (const event of events) await ingestReveal(event);
-    fromBlock = safeLatest + 1;
+    await persistCursor(range.toBlock + 1);
   }
 
   for (let index = 0; index < MAX_JOBS_PER_SCAN; index += 1) {
@@ -488,8 +838,39 @@ async function scanOnce() {
 async function main() {
   const network = await provider.getNetwork();
   chainId = Number(network.chainId);
-  log(`P42 operator ${wallet.address} chain=${chainId}`);
-  log(`queue=${QUEUE} sandbox=docker max_running=1 max_bond=${ethers.formatEther(MAX_BOND)} ETH`);
+  validateManifestEvidence(manifest);
+  if (Number(manifest.network.chainId) !== chainId) {
+    throw new Error(`manifest chain ${manifest.network.chainId} does not match RPC chain ${chainId}`);
+  }
+  ({ confirmations: finalityConfirmations, reorgOverlapBlocks } = resolveOperatorFinality({
+    manifest,
+    confirmations: CONFIRMATIONS_ARG,
+    reorgOverlapBlocks: REORG_OVERLAP_ARG,
+    localTest: Boolean(LOCAL_TEST),
+  }));
+  executionMode = validateOperatorExecutionMode({
+    manifest,
+    chainId,
+    localTest: Boolean(LOCAL_TEST),
+    agentWalletAddress: AGENT_WALLET,
+    operatorAddress: wallet.address,
+  });
+  if (executionMode.mode === "agent-wallet") {
+    agentWallet = new ethers.Contract(executionMode.agentWalletAddress, abi("P42AgentWallet"), wallet);
+  }
+  cursorBinding = operatorCursorBinding({
+    manifest,
+    chainId,
+    submissionContract: String(subs.target),
+    challengeContract: String(chal.target),
+    problemId: runnerConfig.problemId,
+  });
+  cursorState = loadOperatorCursor();
+  writeJsonAtomic(CURSOR, cursorState);
+
+  log(`P42 operator ${wallet.address} chain=${chainId} mode=${executionMode.mode}`);
+  log(`queue=${QUEUE} cursor=${CURSOR} finality=${finalityConfirmations} overlap=${reorgOverlapBlocks}`);
+  log(`sandbox=docker max_running=1 max_bond=${ethers.formatEther(MAX_BOND)} ETH`);
   await consumeCandidates();
   if (ONCE) {
     await scanOnce();

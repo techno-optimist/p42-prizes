@@ -14,6 +14,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   atomsFromImprovement,
+  buildSignedTransactionRecord,
   chainScoreAtoms,
   problemObjective,
   runVerifier,
@@ -71,12 +72,11 @@ const abi = (name) => JSON.parse(
 const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
 const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
-const signer = new ethers.NonceManager(wallet);
 const solver = wallet.address;
-const pool = new ethers.Contract(manifest.contracts.pool.address, abi("P42BountyPool"), signer);
-const ledger = new ethers.Contract(manifest.contracts.ledger.address, abi("P42PayoutLedger"), signer);
-const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), signer);
-const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), signer);
+const pool = new ethers.Contract(manifest.contracts.pool.address, abi("P42BountyPool"), wallet);
+const ledger = new ethers.Contract(manifest.contracts.ledger.address, abi("P42PayoutLedger"), wallet);
+const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
+const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
 
 let state;
 let statePath;
@@ -125,28 +125,47 @@ function loadState(identity, defaultPath) {
 async function receiptFor(transaction) {
   const receipt = await provider.getTransactionReceipt(transaction.hash);
   if (receipt) return receipt;
-  const pending = await provider.getTransaction(transaction.hash);
-  if (!pending) throw new Error(`persisted transaction ${transaction.hash} is not retrievable yet`);
+  if (!transaction.raw_tx) {
+    const pending = await provider.getTransaction(transaction.hash);
+    if (!pending) throw new Error(`persisted transaction ${transaction.hash} is not retrievable yet`);
+    return pending.wait();
+  }
+
+  let pending = await provider.getTransaction(transaction.hash);
+  if (!pending) {
+    try {
+      pending = await provider.broadcastTransaction(transaction.raw_tx);
+    } catch (error) {
+      pending = await provider.getTransaction(transaction.hash);
+      if (!pending) throw error;
+    }
+  }
+  if (transaction.status !== "broadcast") {
+    transaction.status = "broadcast";
+    transaction.broadcast_at_utc = new Date().toISOString();
+    persistState();
+    log(`  ${transaction.label || "tx"}: broadcast ${transaction.hash}`);
+  }
   return pending.wait();
 }
 
-async function sendPersistent(label, factory) {
+async function sendPersistent(label, requestFactory) {
   let record = state.transactions[label];
-  let receipt;
-  if (record && record.status !== "reverted") {
-    receipt = await receiptFor(record);
-  } else {
-    if (record?.status === "reverted") {
-      delete state.transactions[label];
-      persistState();
-    }
-    const tx = await factory();
-    record = { hash: tx.hash, status: "broadcast", broadcast_at_utc: new Date().toISOString() };
+  if (record?.status === "reverted") {
+    throw new Error(`${label} previously reverted (${record.hash}); refusing to replace deterministic nonce tx`);
+  }
+  if (!record) {
+    const request = await requestFactory();
+    record = {
+      ...(await buildSignedTransactionRecord({ wallet, request, label })),
+      status: "signed",
+    };
     state.transactions[label] = record;
     persistState();
-    log(`  ${label}: broadcast ${tx.hash}`);
-    receipt = await tx.wait();
+    log(`  ${label}: signed ${record.hash} nonce=${record.nonce}`);
   }
+
+  const receipt = await receiptFor(record);
   if (!receipt || receipt.status !== 1) {
     state.transactions[label] = { ...record, status: "reverted", block_number: receipt?.blockNumber ?? null };
     persistState();
@@ -213,8 +232,10 @@ async function lifecycleSnapshot(submissionId) {
   let decisionPending = false;
   let disputeEndsAt = 0n;
   let resolverBondReleaseAt = 0n;
+  let challengeInstanceHash = ethers.ZeroHash;
   if (status === 3) {
     const challenge = await chal.challenges(submissionId);
+    challengeInstanceHash = await chal.challengeInstanceHashOf(submissionId);
     challengeResolved = challenge.resolved;
     decisionPending = challenge.decisionPending;
     disputeEndsAt = BigInt(challenge.disputeEndsAt);
@@ -232,6 +253,7 @@ async function lifecycleSnapshot(submissionId) {
     decisionPending,
     disputeEndsAt,
     resolverBondReleaseAt,
+    challengeInstanceHash,
     bondShortfallWei: status === 2 && now >= BigInt(submission.challengeEndsAt)
       ? await bondShortfall(submissionId, submission)
       : 0n,
@@ -263,7 +285,7 @@ async function runLifecycle(submissionId, revealArgs) {
       }
 
       if (decision.action === "reveal") {
-        await sendPersistent("reveal", () => subs.reveal(...revealArgs));
+        await sendPersistent("reveal", () => subs.reveal.populateTransaction(...revealArgs));
       } else if (
         decision.action === "wait_challenge_window"
         || decision.action === "wait_resolution"
@@ -273,28 +295,31 @@ async function runLifecycle(submissionId, revealArgs) {
         await sleep(Math.min(POLL_MS, Math.max(250, remainingMs + 1000)));
       } else if (decision.action === "top_up_bond") {
         const label = `topUpBond:${snapshot.submission.bondWei}:${decision.valueWei}`;
-        await sendPersistent(label, () => subs.topUpBond(submissionId, { value: decision.valueWei }));
+        await sendPersistent(label, () => subs.topUpBond.populateTransaction(submissionId, { value: decision.valueWei }));
       } else if (decision.action === "finalize") {
         const label = `finalize:${snapshot.challengeEndsAt}`;
-        await sendPersistent(label, () => subs.finalize(submissionId, state.mirror_receipt_hash));
+        await sendPersistent(label, () => subs.finalize.populateTransaction(submissionId, state.mirror_receipt_hash));
       } else if (decision.action === "expire_challenge") {
-        const label = `expireChallenge:${snapshot.disputeEndsAt}`;
-        await sendPersistent(label, () => chal.expireChallenge(submissionId));
+        const label = `expireChallenge:${snapshot.disputeEndsAt}:${snapshot.challengeInstanceHash}`;
+        await sendPersistent(label, () => chal.expireChallenge.populateTransaction(submissionId, snapshot.challengeInstanceHash));
       } else if (decision.action === "finalize_resolution") {
-        const label = `finalizeResolution:${snapshot.resolverBondReleaseAt}`;
-        await sendPersistent(label, () => chal.finalizeResolution(submissionId));
+        const label = `finalizeResolution:${snapshot.resolverBondReleaseAt}:${snapshot.challengeInstanceHash}`;
+        await sendPersistent(
+          label,
+          () => chal.finalizeResolution.populateTransaction(submissionId, snapshot.challengeInstanceHash),
+        );
       } else if (decision.action === "refresh_chain_state") {
         await sleep(Math.max(250, POLL_MS));
       } else if (decision.action === "claim_bond") {
         const label = `claimBond:${decision.valueWei}`;
-        await sendPersistent(label, () => subs.claimBond());
+        await sendPersistent(label, () => subs.claimBond.populateTransaction());
       } else if (decision.action === "close") {
-        await sendPersistent("ledger.close", () => ledger.close());
+        await sendPersistent("ledger.close", () => ledger.close.populateTransaction());
       } else if (decision.action === "wait_close") {
         await sleep(Math.max(250, POLL_MS));
       } else if (decision.action === "claim_payout") {
         const label = `pool.claim:${decision.valueWei}`;
-        await sendPersistent(label, () => pool.claim());
+        await sendPersistent(label, () => pool.claim.populateTransaction());
       } else if (decision.action === "done") {
         state.phase = snapshot.status === 4 ? "complete" : "terminated";
         state.completed_at_utc = new Date().toISOString();
@@ -367,7 +392,7 @@ async function main() {
     }
   }
   if (state.fund_wei !== "0") {
-    await sendPersistent("pool.fund", () => pool.fund({ value: BigInt(state.fund_wei) }));
+    await sendPersistent("pool.fund", () => pool.fund.populateTransaction({ value: BigInt(state.fund_wei) }));
   }
   if (!state.submission_id) {
     const commitment = await subs["computeCommitment(string,address,bytes32,string)"](
@@ -377,7 +402,7 @@ async function main() {
       state.salt,
     );
     const bond = await subs.requiredPostingBondNow();
-    const receipt = await sendPersistent("commit", () => subs.commit(commitment, daHash, { value: bond }));
+    const receipt = await sendPersistent("commit", () => subs.commit.populateTransaction(commitment, daHash, { value: bond }));
     const submissionId = submissionIdFromCommittedReceipt(
       receipt,
       subs.interface,
