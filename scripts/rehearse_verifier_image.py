@@ -40,6 +40,14 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 SMOKE_SCHEMA_VERSION = "p42-verifier-image-smoke/v1"
 IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+BUILD_INPUT_PATHS = (
+    "Dockerfile.verifier",
+    ".dockerignore",
+    "requirements.runtime.lock",
+    "schemas",
+    "src",
+    "problems",
+)
 
 
 class SmokeError(RuntimeError):
@@ -63,6 +71,14 @@ def _run_checked(argv: Sequence[str], *, timeout: int = 120) -> subprocess.Compl
         detail = (completed.stderr or completed.stdout).strip()[-2_000:]
         raise SmokeError(f"command failed ({completed.returncode}): {' '.join(argv[:3])}: {detail}")
     return completed
+
+
+def _require_clean_build_inputs(root: Path) -> None:
+    dirty = _run_checked(
+        ["git", "-C", str(root), "status", "--porcelain", "--", *BUILD_INPUT_PATHS]
+    ).stdout.strip()
+    if dirty:
+        raise SmokeError("refusing to build a verifier image from dirty build inputs")
 
 
 def _parse_last_json(stdout: str) -> dict[str, Any] | None:
@@ -226,6 +242,7 @@ def rehearse(
     _require_positive(selected_memory, "memory limit")
     _require_positive(selected_wall, "wall limit")
 
+    _require_clean_build_inputs(root)
     source_commit = _run_checked(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout.strip()
     if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
         raise SmokeError("could not determine a full source commit")

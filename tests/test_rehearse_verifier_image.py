@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 import sys
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -113,3 +116,15 @@ def test_smoke_requires_image_provenance_labels() -> None:
         f"image label {smoke.PROBLEM_ID_LABEL} does not match the executed source",
         f"image label {smoke.VERIFIER_VERSION_LABEL} does not match the executed source",
     ]
+
+
+def test_smoke_refuses_dirty_docker_build_inputs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    smoke = load_smoke_module()
+
+    def git_status(argv, *, timeout=120):
+        assert argv[:5] == ["git", "-C", str(tmp_path), "status", "--porcelain"]
+        return subprocess.CompletedProcess(argv, 0, stdout=" M src/p42_prizes/cli.py\n", stderr="")
+
+    monkeypatch.setattr(smoke, "_run_checked", git_status)
+    with pytest.raises(smoke.SmokeError, match="dirty build inputs"):
+        smoke._require_clean_build_inputs(tmp_path)
