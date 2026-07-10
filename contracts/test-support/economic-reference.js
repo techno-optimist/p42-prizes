@@ -1,5 +1,5 @@
 export class EconomicReference {
-  constructor({ feeBps, sponsors, solvers }) {
+  constructor({ feeBps, sponsors, solvers, fundingCap = (1n << 256n) - 1n }) {
     this.feeBps = BigInt(feeBps);
     this.sponsorships = new Map(sponsors.map((address) => [address, 0n]));
     this.credits = new Map(solvers.map((address) => [address, 0n]));
@@ -21,10 +21,21 @@ export class EconomicReference {
     this.paused = false;
     this.expired = false;
     this.rolloverSwept = false;
+    this.fundingCap = fundingCap;
+    this.acceptingFunds = true;
+    this.fundingArmed = true;
+    this.fundingWindowOpen = true;
+    this.closeReady = false;
+    this.openSubmissions = 0;
+    this.pausedAll = false;
+    this.recoveryWindowOpen = false;
   }
 
   fund(sponsor, amount) {
-    if (this.closed) return false;
+    if (
+      amount === 0n || this.closed || !this.acceptingFunds || !this.fundingArmed
+        || !this.fundingWindowOpen || amount > this.fundingCap - this.accounted
+    ) return false;
     this.accounted += amount;
     this.totalFunded += amount;
     this.sponsorships.set(sponsor, this.sponsorships.get(sponsor) + amount);
@@ -32,14 +43,25 @@ export class EconomicReference {
   }
 
   recordCredit(solver, atoms) {
-    if (this.closed || this.paused) return false;
+    if (atoms === 0n || this.closed || this.paused) return false;
     this.credits.set(solver, this.credits.get(solver) + atoms);
     this.totalCredit += atoms;
     return true;
   }
 
+  voidCredit(solver, atoms) {
+    const credit = this.credits.get(solver);
+    if (this.closed || atoms === 0n || atoms > credit) return false;
+    this.credits.set(solver, credit - atoms);
+    this.totalCredit -= atoms;
+    return true;
+  }
+
   close() {
-    if (this.closed) return false;
+    if (
+      this.closed || !this.closeReady || this.openSubmissions !== 0
+        || this.pausedAll || this.recoveryWindowOpen
+    ) return false;
     this.closed = true;
     this.closedPoolBalance = this.accounted;
     return true;
