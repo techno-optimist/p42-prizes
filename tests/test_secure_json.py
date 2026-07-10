@@ -16,12 +16,16 @@ from p42_prizes.secure_json import StrictJSONError, loads_strict_json, read_stri
         ('{"a":1,"\\u0061":2}', "duplicate object key"),
         ('{"outer":{"__proto__":1}}', "forbidden object key"),
         ('{"n":9007199254740993}', "safe numeric range"),
-        ('{"n":1.0000000000000001}', "represented exactly"),
+        ('{"n":1.0000000000000001}', "decimal-round-trip stable"),
     ],
 )
 def test_strict_json_rejects_ambiguous_values(payload: str, message: str) -> None:
     with pytest.raises(StrictJSONError, match=message):
         loads_strict_json(payload)
+
+
+def test_strict_json_accepts_decimal_round_trip_stable_subnormal() -> None:
+    assert loads_strict_json('{"n":5e-324}') == {"n": 5e-324}
 
 
 def test_strict_json_rejects_depth_300() -> None:

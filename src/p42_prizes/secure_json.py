@@ -51,7 +51,7 @@ def _parse_float(lexeme: str) -> float:
     if abs(value) > MAX_SAFE_INTEGER:
         raise StrictJSONError("number is outside the safe numeric range")
     if _normalized_decimal(lexeme) != _normalized_decimal(repr(value)):
-        raise StrictJSONError("number cannot be represented exactly")
+        raise StrictJSONError("number is not decimal-round-trip stable")
     return value
 
 

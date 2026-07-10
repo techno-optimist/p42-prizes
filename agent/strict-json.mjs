@@ -141,7 +141,7 @@ class Parser {
     const value = Number(lexeme);
     if (!Number.isFinite(value)) this.error("number is not finite");
     if (Math.abs(value) > Number.MAX_SAFE_INTEGER) this.error("number is outside the safe numeric range");
-    if (!sameExactDecimal(lexeme, JSON.stringify(value))) this.error("number cannot be represented exactly");
+    if (!sameExactDecimal(lexeme, JSON.stringify(value))) this.error("number is not decimal-round-trip stable");
     return value;
   }
 
