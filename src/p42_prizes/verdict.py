@@ -19,6 +19,10 @@ from typing import Any, Mapping, NoReturn
 # JS `$` (no multiline flag) rejects it. fullmatch requires the whole string to
 # be consumed, restoring byte-for-byte agreement with exact.ts.
 _RATIONAL_RE = re.compile(r"^[+-]?[0-9]+(?:/[+-]?[0-9]+)?$")
+SCORE_ATOM_SCALE = 10**18
+MIN_SCORE_ATOMS_BOUND = -(2**254)
+MAX_SCORE_ATOMS_BOUND = 2**254
+MAX_UINT256 = 2**256 - 1
 
 
 def _reject_json_constant(value: str) -> NoReturn:
@@ -111,6 +115,23 @@ def parse_rational(value: str | int | Fraction) -> Fraction:
 def rational_to_string(value: str | int | Fraction) -> str:
     rational = parse_rational(value)
     return f"{rational.numerator}/{rational.denominator}"
+
+
+def atoms_from_score(value: str | int | Fraction) -> int:
+    """Mirror agent/lib.mjs atomsFromScore: ceil(value * 1e18)."""
+
+    rational = parse_rational(value)
+    scaled_numerator = rational.numerator * SCORE_ATOM_SCALE
+    return -((-scaled_numerator) // rational.denominator)
+
+
+def chain_score_atoms(value: str | int | Fraction, direction: str) -> int:
+    """Mirror agent/lib.mjs chainScoreAtoms on the minimization frontier."""
+
+    if direction not in ("minimize", "maximize"):
+        raise ValueError(f"unknown objective direction: {direction!r}")
+    rational = parse_rational(value)
+    return atoms_from_score(-rational if direction == "maximize" else rational)
 
 
 @dataclass(frozen=True)

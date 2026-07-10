@@ -17,7 +17,15 @@ from p42_prizes.admission import (
 )
 from p42_prizes.problem import load_manifest, validate_problem
 from p42_prizes.runner_sandbox import RunnerSandboxError, compose_immutable_image_ref
-from p42_prizes.verdict import parse_rational, rational_to_string
+from p42_prizes.verdict import (
+    MAX_SCORE_ATOMS_BOUND,
+    MAX_UINT256,
+    MIN_SCORE_ATOMS_BOUND,
+    atoms_from_score,
+    chain_score_atoms,
+    parse_rational,
+    rational_to_string,
+)
 
 
 IMMUTABLE_IMAGE_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
@@ -110,14 +118,38 @@ def _validate_report_objective_semantics(
             f"for objective.direction={direction}"
         )
 
-    if min_improvement is not None and min_improvement > 0 and isinstance(report_valid, bool):
-        derived_valid = derived_improvement >= min_improvement
-        if report_valid != derived_valid:
+    if min_improvement is None or min_improvement <= 0:
+        return errors
+
+    seed_atoms = chain_score_atoms(seed_best, direction)
+    score_atoms = chain_score_atoms(score, direction)
+    min_improvement_atoms = atoms_from_score(min_improvement)
+    atoms_in_range = True
+    for label, value in (("seedScoreAtoms", seed_atoms), ("scoreAtoms", score_atoms)):
+        if value <= MIN_SCORE_ATOMS_BOUND or value >= MAX_SCORE_ATOMS_BOUND:
+            atoms_in_range = False
             errors.append(
-                "admission matrix: report valid status "
-                f"{report_valid!r} does not equal manifest-derived {derived_valid!r} "
-                f"at min_improvement={rational_to_string(min_improvement)!r}"
+                f"admission matrix: deployment {label}={value} is outside "
+                "the open (-2^254, 2^254) score range"
             )
+    if min_improvement_atoms <= 0 or min_improvement_atoms > MAX_UINT256:
+        atoms_in_range = False
+        errors.append(
+            "admission matrix: deployment minImprovementAtoms "
+            f"{min_improvement_atoms} is outside the uint256 positive range"
+        )
+    if not atoms_in_range:
+        return errors
+
+    marginal_atoms = max(0, seed_atoms - score_atoms)
+    funding_valid = marginal_atoms >= min_improvement_atoms
+    if isinstance(report_valid, bool) and report_valid != funding_valid:
+        errors.append(
+            "admission matrix: report valid status "
+            f"{report_valid!r} does not equal deployment-derived {funding_valid!r} "
+            f"(seedScoreAtoms={seed_atoms}, scoreAtoms={score_atoms}, "
+            f"marginalAtoms={marginal_atoms}, minImprovementAtoms={min_improvement_atoms})"
+        )
 
     return errors
 

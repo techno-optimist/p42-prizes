@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 
 import pytest
@@ -8,10 +9,33 @@ from p42_prizes.readiness import (
     _validate_report_objective_semantics,
     validate_fundable_admission,
 )
-from p42_prizes.verdict import canonical_json, strict_json_loads
+from p42_prizes.runner_worker import _chain_score_atoms as runner_chain_score_atoms
+from p42_prizes.verdict import (
+    MAX_SCORE_ATOMS_BOUND,
+    MAX_UINT256,
+    MIN_SCORE_ATOMS_BOUND,
+    SCORE_ATOM_SCALE,
+    atoms_from_score,
+    canonical_json,
+    chain_score_atoms,
+    rational_to_string,
+    strict_json_loads,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Duplicated cross-language goldens for agent/lib.mjs atomsFromScore and
+# chainScoreAtoms. The runner assertions pin the existing Python execution path
+# to the same values, while the admission assertions pin the funding gate.
+CHAIN_SCORE_GOLDENS = [
+    ("1/3", "minimize", 333333333333333334),
+    ("-1/3", "minimize", -333333333333333333),
+    ("1/3", "maximize", -333333333333333333),
+    ("-1/3", "maximize", 333333333333333334),
+    ("102/10000000000000000000", "minimize", 11),
+    ("91/10000000000000000000", "minimize", 10),
+]
 
 
 def _manifest(
@@ -93,6 +117,136 @@ def test_objective_semantics_reject_report_using_the_opposite_direction() -> Non
         for error in errors
     )
     assert any("report valid status True" in error for error in errors)
+
+
+def test_admission_uses_deployed_atoms_when_exact_delta_would_pass() -> None:
+    manifest = _manifest(
+        seed_best="102/10000000000000000000",
+        min_improvement="11/10000000000000000000",
+    )
+    matrix = _matrix(
+        score="91/10000000000000000000",
+        improvement="11/10000000000000000000",
+        valid=True,
+    )
+
+    errors = _validate_report_objective_semantics(manifest, matrix)
+
+    assert any(
+        "deployment-derived False" in error
+        and "seedScoreAtoms=11" in error
+        and "scoreAtoms=10" in error
+        and "marginalAtoms=1" in error
+        and "minImprovementAtoms=2" in error
+        for error in errors
+    )
+
+    matrix["evidence"][0]["report"]["valid"] = False
+    assert _validate_report_objective_semantics(manifest, matrix) == []
+
+
+def test_admission_uses_deployed_atoms_when_exact_delta_is_below_threshold() -> None:
+    errors = _validate_report_objective_semantics(
+        _manifest(
+            seed_best="11/10000000000000000000",
+            min_improvement="3/10000000000000000000",
+        ),
+        _matrix(
+            score="9/10000000000000000000",
+            improvement="1/5000000000000000000",
+            valid=True,
+        ),
+    )
+
+    assert errors == []
+
+
+def test_admission_accepts_atom_threshold_equality() -> None:
+    errors = _validate_report_objective_semantics(
+        _manifest(seed_best="2/1000000000000000000", min_improvement="1/1000000000000000000"),
+        _matrix(
+            score="1/1000000000000000000",
+            improvement="1/1000000000000000000",
+            valid=True,
+        ),
+    )
+
+    assert errors == []
+
+
+@pytest.mark.parametrize(
+    ("direction", "seed_best", "score"),
+    [
+        ("minimize", "-1/3", "-2/3"),
+        ("maximize", "-2/3", "-1/3"),
+    ],
+)
+def test_negative_nondividing_scores_are_directional_and_conservative(
+    direction: str, seed_best: str, score: str
+) -> None:
+    errors = _validate_report_objective_semantics(
+        _manifest(direction=direction, seed_best=seed_best, min_improvement="1/3"),
+        _matrix(score=score, improvement="1/3", valid=False),
+    )
+
+    assert errors == []
+
+
+@pytest.mark.parametrize(("score", "direction", "expected"), CHAIN_SCORE_GOLDENS)
+def test_admission_atom_conversion_matches_runner_and_javascript_goldens(
+    score: str, direction: str, expected: int
+) -> None:
+    assert chain_score_atoms(score, direction) == expected
+    assert runner_chain_score_atoms(score, direction) == expected
+
+
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [("1/3", 333333333333333334), ("11/10000000000000000000", 2)],
+)
+def test_threshold_atom_conversion_matches_javascript_goldens(score: str, expected: int) -> None:
+    assert atoms_from_score(score) == expected
+
+
+@pytest.mark.parametrize(
+    ("seed_atoms", "score_atoms", "expected_label"),
+    [
+        (MAX_SCORE_ATOMS_BOUND, 0, "seedScoreAtoms"),
+        (0, MIN_SCORE_ATOMS_BOUND, "scoreAtoms"),
+    ],
+)
+def test_admission_rejects_contract_score_atom_boundaries(
+    seed_atoms: int, score_atoms: int, expected_label: str
+) -> None:
+    seed = Fraction(seed_atoms, SCORE_ATOM_SCALE)
+    score = Fraction(score_atoms, SCORE_ATOM_SCALE)
+    improvement = max(Fraction(0, 1), seed - score)
+    errors = _validate_report_objective_semantics(
+        _manifest(
+            seed_best=rational_to_string(seed),
+            min_improvement="1/1000000000000000000",
+        ),
+        _matrix(
+            score=rational_to_string(score),
+            improvement=rational_to_string(improvement),
+            valid=True,
+        ),
+    )
+
+    assert any(expected_label in error and "open (-2^254, 2^254)" in error for error in errors)
+
+
+def test_admission_rejects_minimum_improvement_above_uint256() -> None:
+    threshold = Fraction(MAX_UINT256 + 1, SCORE_ATOM_SCALE)
+    errors = _validate_report_objective_semantics(
+        _manifest(seed_best="0/1", min_improvement=rational_to_string(threshold)),
+        _matrix(score="0/1", improvement="0/1", valid=False),
+    )
+
+    assert any(
+        "minImprovementAtoms" in error and "uint256 positive range" in error
+        for error in errors
+    )
 
 
 def test_objective_semantics_require_a_positive_threshold() -> None:

@@ -13,9 +13,9 @@ The readiness gate takes objective policy only from `problem.yaml`:
 - `objective.min_improvement`, which must be a positive exact rational
 
 It takes the candidate score from the canonical rational `report.score` embedded
-in the signed admission evidence. All arithmetic uses `fractions.Fraction`; no
-float conversion, decimal approximation, verifier gauge string, or verifier
-threshold decision participates in admission.
+in the signed admission evidence. Rational parsing and scaling are exact; no
+float conversion, decimal approximation, verifier gauge string, or unbound
+verifier threshold decision participates in admission.
 
 ## Independent derivation
 
@@ -31,18 +31,56 @@ For a minimizing objective:
 derived_improvement = max(0, objective.seed_best - report.score)
 ```
 
-The derived funding status is:
+The exact value above is the only acceptable `report.improvement`. Funding
+validity is deliberately not decided by comparing that rational directly with
+`objective.min_improvement`, because deployment quantizes the seed, candidate,
+and threshold independently.
+
+## Deployment atom derivation
+
+Admission mirrors `agent/lib.mjs`, the runner, the deployment ceremony, and
+`P42SubmissionManager` at `SCORE_ATOM_SCALE = 10^18`:
 
 ```text
-derived_valid = derived_improvement >= objective.min_improvement
+atomsFromScore(x) = ceil(x * 10^18)
+
+chainScoreAtoms(x, minimize) = atomsFromScore(x)
+chainScoreAtoms(x, maximize) = atomsFromScore(-x)
+
+seedScoreAtoms       = chainScoreAtoms(seed_best, direction)
+scoreAtoms           = chainScoreAtoms(report.score, direction)
+minImprovementAtoms  = atomsFromScore(min_improvement)
+marginalAtoms        = max(0, seedScoreAtoms - scoreAtoms)
+fundingValid         = marginalAtoms >= minImprovementAtoms
+```
+
+Ceiling is applied to each input before subtraction. Quantizing the exact delta
+instead is not equivalent. For example:
+
+```text
+seed_best              = 102 / 10^19  -> seedScoreAtoms = 11
+report.score            =  91 / 10^19  -> scoreAtoms = 10
+min_improvement         =  11 / 10^19  -> minImprovementAtoms = 2
+exact improvement       =  11 / 10^19
+marginalAtoms           = 1
+fundingValid            = false
 ```
 
 Admission requires `report.improvement` to equal `derived_improvement` exactly
-and `report.valid` to equal `derived_valid`. The gate also independently requires
-the admitted report to be valid. A verifier that uses a ratio, inverted
-direction, stale seed, different threshold, rounded value, or any other score
-semantics inconsistent with the manifest therefore fails closed even when its
-image, signatures, report hashes, and N-host matrix are otherwise valid.
+and `report.valid` to equal `fundingValid`. The gate independently requires the
+admitted report to be valid. Seed and candidate atoms must be strictly inside
+`(-2^254, 2^254)`, matching the submission-manager score range, and
+`minImprovementAtoms` must fit a positive `uint256`. These checks cover negative
+scores and both native objective directions.
+
+A verifier that uses a ratio, inverted direction, stale seed, different
+threshold, rounded value, exact-delta thresholding, or any other score semantics
+inconsistent with deployment therefore fails closed even when its image,
+signatures, report hashes, and N-host matrix are otherwise valid.
+
+Cross-language golden vectors in `tests/test_admission_semantics.py` duplicate
+the expected BigInt outputs of `agent/lib.mjs` explicitly and assert that both
+admission and the Python runner produce those values.
 
 ## JSON boundary
 
