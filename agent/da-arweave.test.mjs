@@ -12,11 +12,12 @@ const TXID = "a".repeat(43);
 const BYTES = Buffer.from('{"answer":"42"}');
 
 function response(body, { status = 200, json = false } = {}) {
+  const bytes = Buffer.from(json ? JSON.stringify(body) : String(body));
   return {
     ok: status >= 200 && status < 300,
     status,
-    arrayBuffer: async () => Buffer.from(body),
-    json: async () => json ? body : JSON.parse(String(body)),
+    headers: { get: () => String(bytes.length) },
+    body: new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } }),
   };
 }
 
@@ -54,6 +55,26 @@ describe("Arweave permanent DA", () => {
       if (previous === undefined) delete process.env.ARWEAVE_JWK_JSON;
       else process.env.ARWEAVE_JWK_JSON = previous;
     }
+  });
+
+  it("strictly parses wallet and bounded GraphQL JSON", async () => {
+    const previous = process.env.ARWEAVE_JWK_JSON;
+    process.env.ARWEAVE_JWK_JSON = '{"kty":"RSA","kty":"forged"}';
+    try {
+      await assert.rejects(() => uploadToArweave(BYTES, {
+        arweaveClient: { createTransaction: async () => { throw new Error("should not run"); } },
+        gateways: ["https://one.example", "https://two.example"],
+        maxAttempts: 1,
+      }), /duplicate object key/);
+    } finally {
+      if (previous === undefined) delete process.env.ARWEAVE_JWK_JSON;
+      else process.env.ARWEAVE_JWK_JSON = previous;
+    }
+
+    const cid = cidOf(BYTES);
+    await assert.rejects(() => findTxidByCid(cid, {
+      fetchImpl: async () => response('{"data":{},"data":{"transactions":{"edges":[]}}}'),
+    }), /duplicate object key/);
   });
 
   it("requires confirmation and byte-identical retrieval from two gateways", async () => {

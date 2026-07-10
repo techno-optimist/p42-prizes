@@ -270,12 +270,13 @@ export function runVerifier(problemDir, solutionPath, repoRoot) {
     if (e.code === "ETIMEDOUT") throw new Error(`verifier timed out after ${wallSeconds + 5}s`);
     out = e.stdout || "";
   }
-  const line = out.trim();
-  if (!line) throw new Error("verifier produced no VerdictReport");
-  return parseStrictJsonText(line, {
+  if (!out) throw new Error("verifier produced no VerdictReport");
+  return parseStrictJsonText(out, {
     label: "verifier VerdictReport",
     maxBytes: 16 * 1024 * 1024,
     maxDepth: 64,
+    canonicalBytes: true,
+    trailingNewline: "require",
   });
 }
 
@@ -993,12 +994,13 @@ export function runRuntimeBridge(repoRoot, args) {
   if (completed.status !== 0) {
     throw new Error((completed.stderr || completed.stdout || `runtime bridge exited ${completed.status}`).trim());
   }
-  const output = completed.stdout.trim();
-  if (!output) throw new Error("runtime bridge produced no JSON");
-  return parseStrictJsonText(output, {
+  if (!completed.stdout) throw new Error("runtime bridge produced no JSON");
+  return parseStrictJsonText(completed.stdout, {
     label: "runtime bridge output",
     maxBytes: 16 * 1024 * 1024,
     maxDepth: 64,
+    canonicalBytes: true,
+    trailingNewline: "require",
   });
 }
 
