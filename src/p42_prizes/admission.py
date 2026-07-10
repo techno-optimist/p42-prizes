@@ -58,7 +58,7 @@ SOURCE_COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
 SSH_PUBLIC_KEY_RE = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$")
 SOURCE_IMAGE_SENTINEL = "sha256:runtime-bound"
 
-VERIFIER_ENV_DEFAULTS = {
+CERTIFICATION_VERIFIER_ENV = {
     "PYTHONHASHSEED": "0",
     "OMP_NUM_THREADS": "1",
     "OPENBLAS_NUM_THREADS": "1",
@@ -229,8 +229,9 @@ def build_verifier_env(problem: Path) -> dict[str, str]:
         "PATH": os.environ.get("PATH", os.defpath),
         "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", ""),
     }
-    for name, default in VERIFIER_ENV_DEFAULTS.items():
-        env[name] = os.environ.get(name, default)
+    # These controls are certification invariants, so ambient runner values
+    # must never affect a local verifier run.
+    env.update(CERTIFICATION_VERIFIER_ENV)
     verifier = manifest.get("verifier")
     image = verifier.get("image") if isinstance(verifier, Mapping) else None
     if isinstance(image, str) and image:
