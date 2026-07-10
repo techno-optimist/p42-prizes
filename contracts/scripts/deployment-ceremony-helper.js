@@ -1,3 +1,5 @@
+import { lstat } from "node:fs/promises";
+
 import { computeDeploymentConfigHash } from "../../agent/indexer.mjs";
 import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
 
@@ -608,6 +610,16 @@ export function assertDeploymentConfigHash(manifest) {
     throw new Error(`deploymentConfigHash mismatch: manifest=${manifest.deploymentConfigHash} computed=${computed}`);
   }
   return computed;
+}
+
+export async function assertManifestOutputIsVacant(path) {
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (error?.code === "ENOENT") return;
+    throw error;
+  }
+  throw new Error(`Refusing to overwrite existing deployment manifest: ${path}`);
 }
 
 export function requiredCompletionCheckNames(manifest) {

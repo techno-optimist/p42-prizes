@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Mapping
 
+from p42_prizes.legal import _reject_unknown_top_level
 from p42_prizes.runner_worker import RUNNER_LOOP_SCHEMA_VERSION
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
@@ -16,6 +17,23 @@ REQUIRED_GUARD_REASONS = {
     "runner_concurrency_full",
 }
 PLACEHOLDERS = {"", "tbd", "todo", "pending", "n/a", "na", "none", "null", "unknown"}
+RUNNER_BURST_REPORT_KEYS = {
+    "schema_version",
+    "drill_id",
+    "completed_at_utc",
+    "environment",
+    "agent_operator",
+    "runner_host",
+    "artifacts",
+    "queue_policy",
+    "burst_metrics",
+    "loop_summary",
+    "guard_cases",
+    "invariants_checked",
+    "regressions",
+    "agent_attestation",
+    "burst_hash",
+}
 
 
 class RunnerBurstError(ValueError):
@@ -25,6 +43,7 @@ class RunnerBurstError(ValueError):
 def normalize_runner_burst_report(report: Mapping[str, Any]) -> dict[str, Any]:
     if report.get("schema_version") != RUNNER_BURST_SCHEMA_VERSION:
         raise RunnerBurstError(f"schema_version must be {RUNNER_BURST_SCHEMA_VERSION}")
+    _reject_unknown_top_level(report, RUNNER_BURST_REPORT_KEYS, RunnerBurstError)
 
     normalized = dict(report)
     provided_hash = normalized.pop("burst_hash", None)

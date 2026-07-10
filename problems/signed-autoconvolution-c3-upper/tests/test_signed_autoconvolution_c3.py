@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -8,6 +10,11 @@ import subprocess
 
 PROBLEM = Path(__file__).resolve().parents[1]
 ROOT = PROBLEM.parents[1]
+VERIFIER_PATH = PROBLEM / "verifier" / "verify.py"
+VERIFIER_SPEC = importlib.util.spec_from_file_location("signed_autoconvolution_c3_verify", VERIFIER_PATH)
+assert VERIFIER_SPEC is not None and VERIFIER_SPEC.loader is not None
+VERIFIER = importlib.util.module_from_spec(VERIFIER_SPEC)
+VERIFIER_SPEC.loader.exec_module(VERIFIER)
 # Corrected L-infinity score (~4.9875) of the bundled OrganonAgent witness.
 # The pre-fix signed-max scorer reported ~1.4523 and wrongly certified it.
 EXPECTED_SCORE = (
@@ -34,6 +41,33 @@ def run_verify(solution: str | Path) -> tuple[int, dict]:
     )
     assert completed.stdout, completed.stderr
     return completed.returncode, json.loads(completed.stdout)
+
+
+def naive_autoconvolution(values: list[int]) -> list[int]:
+    coefficients = [0] * (2 * len(values) - 1)
+    for left_index, left in enumerate(values):
+        for right_index, right in enumerate(values):
+            coefficients[left_index + right_index] += left * right
+    return coefficients
+
+
+def signed_packed_autoconvolution(values: list[int]) -> list[int]:
+    max_abs = max(abs(value) for value in values)
+    bound = len(values) * max_abs * max_abs
+    slot_bytes = (bound.bit_length() + 2 + 7) // 8
+    packed = VERIFIER.pack_signed(values, slot_bytes)
+    return VERIFIER.unpack_signed(packed * packed, slot_bytes, 2 * len(values) - 1)
+
+
+def test_signed_packing_matches_naive_convolution_with_borrows_and_trailing_zeroes() -> None:
+    for values in ([2, -3], [0, 2, -3, 0], [4, -5, 3, -2, 0]):
+        assert signed_packed_autoconvolution(values) == naive_autoconvolution(values)
+
+    # The small exhaustive space exercises both borrow directions and carry
+    # propagation without relying only on the large production fixture.
+    for values in itertools.product(range(-3, 4), repeat=4):
+        vector = list(values)
+        assert signed_packed_autoconvolution(vector) == naive_autoconvolution(vector)
 
 
 def test_organon_upper_bound_scores_linf_and_is_rejected() -> None:

@@ -1,11 +1,20 @@
 PYTHON ?= python3
 PYTHONPATH := $(CURDIR)/src
 P42_GIT_REMOTE ?= origin
+# Per-problem tests invoke `make verify` while the root test target is itself a
+# Make recipe. Suppress recursive directory banners so verifier stdout stays a
+# single canonical JSON report across GNU Make versions and CI hosts.
+MAKEFLAGS += --no-print-directory
 PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/edges-vs-triangles problems/arithmetic-kakeya problems/autoconvolution-c1-upper problems/autoconvolution-c2-lower problems/signed-autoconvolution-c3-upper problems/mertens-lp-ceiling-k12000 problems/pnt-sparse-mertens-construction problems/hadamard-668-defect
 
-.PHONY: test validate lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test verify-render-release all
+.PHONY: install-verifier-deps test validate lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test verify-render-release all
 
 all: validate lint test verify-seed
+
+install-verifier-deps:
+	@for requirements in $(PROBLEMS:%=%/requirements.lock); do \
+		PIP_DISABLE_PIP_VERSION_CHECK=1 $(PYTHON) -m pip install -r $$requirements || exit $$?; \
+	done
 
 validate:
 	@for problem in $(PROBLEMS); do \
@@ -17,10 +26,10 @@ lint:
 		PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli lint --problem $$problem || exit $$?; \
 	done
 
-test:
+test: install-verifier-deps
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q
 
-verify-seed:
+verify-seed: install-verifier-deps
 	@status=0; \
 	for problem in $(PROBLEMS); do \
 		$(MAKE) -C $$problem verify-seed || status=1; \
@@ -28,7 +37,7 @@ verify-seed:
 	done; \
 	exit $$status
 
-verify-open-witness-release:
+verify-open-witness-release: install-verifier-deps
 	@status=0; \
 	for problem in $(PROBLEMS); do \
 		$(MAKE) -C $$problem verify-open-witness || status=1; \

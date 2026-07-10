@@ -7,6 +7,7 @@ import { network } from "hardhat";
 
 import {
   assertDeploymentConfigHash,
+  assertManifestOutputIsVacant,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
   buildSetupOperations,
@@ -113,6 +114,8 @@ function contractInterfaces(deployments) {
 }
 
 async function deployCeremony(ethers) {
+  const output = manifestPath();
+  await assertManifestOutputIsVacant(output);
   requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
   const [deployer] = await ethers.getSigners();
   if (deployer === undefined) throw new Error("No deployer signer available");
@@ -224,9 +227,8 @@ async function deployCeremony(ethers) {
     }
   })));
 
-  const output = manifestPath();
   await mkdir(dirname(output), { recursive: true });
-  await writeFile(output, `${jsonStringify(manifest)}\n`);
+  await writeFile(output, `${jsonStringify(manifest)}\n`, { flag: "wx" });
   console.log(`Wrote pending governance ceremony manifest: ${output}`);
   console.log(`Timelock owner: ${addresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action.`);

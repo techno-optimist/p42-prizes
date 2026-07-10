@@ -105,13 +105,36 @@ def pack_nonnegative(values: list[int], slot_bytes: int) -> int:
     return int.from_bytes(buffer, "little")
 
 
-def unpack_nonnegative(value: int, slot_bytes: int, length: int) -> list[int]:
-    used_bytes = (value.bit_length() + 7) // 8
-    raw = value.to_bytes(used_bytes, "little").ljust(slot_bytes * length, b"\x00")
-    return [
-        int.from_bytes(raw[index * slot_bytes:(index + 1) * slot_bytes], "little")
-        for index in range(length)
-    ]
+def pack_signed(values: list[int], slot_bytes: int) -> int:
+    positives = [value if value > 0 else 0 for value in values]
+    negatives = [-value if value < 0 else 0 for value in values]
+    return pack_nonnegative(positives, slot_bytes) - pack_nonnegative(negatives, slot_bytes)
+
+
+def unpack_signed(value: int, slot_bytes: int, length: int) -> list[int]:
+    if value < 0:
+        raise VerifierFailure("PACKING_CHECKSUM", "signed packed square is negative")
+
+    target_bytes = slot_bytes * length
+    used_bytes = max(1, (value.bit_length() + 7) // 8)
+    if used_bytes > target_bytes:
+        raise VerifierFailure("PACKING_CHECKSUM", "signed packed product exceeds allotted slots")
+    raw = value.to_bytes(used_bytes, "little").ljust(target_bytes, b"\x00")
+
+    base = 1 << (8 * slot_bytes)
+    half_base = base >> 1
+    carry = 0
+    coefficients: list[int] = []
+    for index in range(length):
+        digit = int.from_bytes(raw[index * slot_bytes:(index + 1) * slot_bytes], "little")
+        # Negative balanced digits borrow one base unit from the next slot.
+        balanced = digit if digit < half_base else digit - base
+        coefficients.append(balanced - carry)
+        carry = -1 if balanced < 0 else 0
+
+    if carry:
+        raise VerifierFailure("PACKING_CHECKSUM", "signed packed product has an unterminated borrow")
+    return coefficients
 
 
 def compute_score(values: list[int]) -> tuple[Fraction, dict[str, Any]]:
@@ -120,23 +143,12 @@ def compute_score(values: list[int]) -> tuple[Fraction, dict[str, Any]]:
     if max_abs == 0:
         raise VerifierFailure("ZERO_MASS", "all values are zero")
 
-    positives = [value if value > 0 else 0 for value in values]
-    negatives = [-value if value < 0 else 0 for value in values]
-
     bound = N * max_abs * max_abs
     slot_bytes = (bound.bit_length() + 2 + 7) // 8
     length = 2 * N - 1
 
-    packed_pos = pack_nonnegative(positives, slot_bytes)
-    packed_neg = pack_nonnegative(negatives, slot_bytes)
-    conv_pos_pos = unpack_nonnegative(packed_pos * packed_pos, slot_bytes, length)
-    conv_neg_neg = unpack_nonnegative(packed_neg * packed_neg, slot_bytes, length)
-    conv_pos_neg = unpack_nonnegative(packed_pos * packed_neg, slot_bytes, length)
-
-    coefficients = [
-        conv_pos_pos[index] - 2 * conv_pos_neg[index] + conv_neg_neg[index]
-        for index in range(length)
-    ]
+    packed_values = pack_signed(values, slot_bytes)
+    coefficients = unpack_signed(packed_values * packed_values, slot_bytes, length)
     if sum(coefficients) != total * total:
         raise VerifierFailure("PACKING_CHECKSUM", "autoconvolution checksum failed")
 

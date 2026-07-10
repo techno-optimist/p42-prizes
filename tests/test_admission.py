@@ -338,6 +338,47 @@ def test_build_verifier_env_defaults_determinism_knobs(monkeypatch: pytest.Monke
         assert env[name] == "1"
 
 
+def test_build_verifier_env_preserves_explicit_determinism_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    overrides = {
+        "PYTHONHASHSEED": "7",
+        "OMP_NUM_THREADS": "2",
+        "OPENBLAS_NUM_THREADS": "3",
+        "MKL_NUM_THREADS": "4",
+    }
+    for name, value in overrides.items():
+        monkeypatch.setenv(name, value)
+
+    env = build_verifier_env(ROOT / "problems" / "hadamard-mini")
+
+    assert {name: env[name] for name in overrides} == overrides
+
+
+def test_run_verifier_once_emits_default_determinism_env_when_host_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    knobs = ("PYTHONHASHSEED", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
+    for name in knobs:
+        monkeypatch.delenv(name, raising=False)
+    observed_env: dict[str, str] = {}
+
+    def fake_run(command, **kwargs):
+        observed_env.update(kwargs["env"])
+        return subprocess.CompletedProcess(command, 0, canonical_json(_base_report()), "")
+
+    monkeypatch.setattr(admission.subprocess, "run", fake_run)
+
+    run_verifier_once(
+        ROOT / "problems" / "hadamard-mini",
+        ROOT / "problems" / "hadamard-mini" / "examples" / "valid-4.json",
+    )
+
+    assert observed_env["PYTHONHASHSEED"] == "0"
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        assert observed_env[name] == "1"
+
+
 def test_run_verifier_once_uses_the_manifest_image_not_ambient_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
