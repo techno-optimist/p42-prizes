@@ -124,7 +124,7 @@ async function executeSetupOperation(timelock, signers, operation) {
 }
 
 describe("multi-board governance ceremony integration", () => {
-  it("wires, registers, freezes, and leaves two boards unfundable", async () => {
+  it("wires two boards and restricts rollover funding until a future board is armed", async () => {
     const signers = await ethers.getSigners();
     const [signer1, signer2, signer3, guardian, treasury, resolver, deployer] = signers;
     const input = {
@@ -232,6 +232,25 @@ describe("multi-board governance ceremony integration", () => {
     assert.equal(await rolloverVault.allocationOf(pool0), 40n);
     assert.equal(await rolloverVault.allocationOf(pool1), 60n);
     assert.equal(await rolloverVault.totalAllocated(), 100n);
+
+    await advance(BigInt(input.parameters.challengeWindowSeconds) + 1n);
+    await boards[0].contracts.submissions.connect(allocator).armFunding();
+    await boards[0].contracts.pool.connect(allocator).setAcceptingFunds(true);
+    await rolloverVault.connect(allocator).fundRegisteredPool(pool0, 40n);
+    assert.equal(await boards[0].contracts.pool.sponsorshipOf(rootAddresses.rolloverVault), 40n);
+    assert.equal(await boards[0].contracts.pool.accountedBalance(), 40n);
+    assert.equal(await rolloverVault.allocationOf(pool0), 0n);
+    assert.equal(await rolloverVault.allocationOf(pool1), 60n);
+    assert.equal(await rolloverVault.totalAllocated(), 60n);
+    assert.equal(await ethers.provider.getBalance(rootAddresses.rolloverVault), 60n);
+
+    await advance(BigInt(input.problems[0].closeByTimestamp) - BigInt((await ethers.provider.getBlock("latest")).timestamp));
+    await boards[0].contracts.ledger.connect(deployer).close();
+    assert.equal(await boards[0].contracts.ledger.sponsorRefundsEnabled(), true);
+    await rolloverVault.connect(deployer).reclaimZeroCreditSponsorRefund(pool0);
+    assert.equal(await boards[0].contracts.pool.sponsorshipOf(rootAddresses.rolloverVault), 0n);
+    assert.equal(await boards[0].contracts.pool.accountedBalance(), 0n);
+    assert.equal(await ethers.provider.getBalance(rootAddresses.rolloverVault), 100n);
     await ethers.provider.send("hardhat_stopImpersonatingAccount", [rootAddresses.timelock]);
   });
 });

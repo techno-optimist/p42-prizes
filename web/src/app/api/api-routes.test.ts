@@ -386,13 +386,7 @@ describe("mutable API routes", () => {
 
   it("hard-disables Coinbase Onramp for v1", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
-    const response = await coinbaseSessionPost(
-      jsonRequest("/api/problems/hadamard-mini/funding/coinbase-session", {
-        phase: "intent",
-        wallet_address: "0x0000000000000000000000000000000000000020",
-      }),
-      { params: Promise.resolve({ slug: "hadamard-mini" }) },
-    );
+    const response = await coinbaseSessionPost();
 
     expect(response.status).toBe(503);
     expect(fetchSpy).not.toHaveBeenCalled();
