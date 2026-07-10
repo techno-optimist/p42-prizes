@@ -13,7 +13,8 @@ from p42_prizes.secure_json import StrictJSONError, loads_strict_json, read_stri
     [
         ('{"a":1,"a":2}', "duplicate object key"),
         ('{"outer":{"x":1,"x":2}}', "duplicate object key"),
-        ('{"a":1,"\\u0061":2}', "duplicate object key"),
+        ('{"a":1,"\\u0061":2}', "escaped object keys"),
+        ('{"\\u0061":1}', "escaped object keys"),
         ('{"outer":{"__proto__":1}}', "forbidden object key"),
         ('{"n":9007199254740993}', "safe numeric range"),
         ('{"n":1.0000000000000001}', "decimal-round-trip stable"),

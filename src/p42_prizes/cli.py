@@ -41,12 +41,15 @@ from p42_prizes.runner_queue import (
     plan_runner_queue,
 )
 from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
+from p42_prizes.secure_json import read_strict_json_stream
 from p42_prizes.verdict import canonical_json, parse_rational
 
 
 # Gate validators enforce the published schemas' additionalProperties:false, so a
 # gate report with unknown top-level keys is rejected at the CLI boundary.
 _SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
+_RPC_MAX_RESPONSE_BYTES = 1024 * 1024
+_RPC_MAX_RESPONSE_DEPTH = 64
 
 
 def _enforce_gate_schema(report: dict, schema_name: str) -> None:
@@ -85,7 +88,11 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
             method="POST",
         )
         with urllib_request.urlopen(rpc_request, timeout=10) as response:
-            parsed = json.loads(response.read())
+            parsed = read_strict_json_stream(
+                response,
+                max_bytes=_RPC_MAX_RESPONSE_BYTES,
+                max_depth=_RPC_MAX_RESPONSE_DEPTH,
+            )
         if not isinstance(parsed, dict) or "error" in parsed or "result" not in parsed:
             raise ValueError(f"JSON-RPC {method} returned an error or malformed response")
         return parsed["result"]
