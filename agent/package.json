@@ -6,6 +6,7 @@
   "description": "Autonomous P42 solver/operator agent client (Phase 1 plumbing). Drives the full on-chain lifecycle — self-verify, commit, reveal, finalize, claim — unattended against a deployed P42 manifest.",
   "files": [
     "README.md",
+    "challenge-envelope.mjs",
     "da-arweave.mjs",
     "da-local.mjs",
     "indexer.mjs",

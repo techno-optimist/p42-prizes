@@ -76,6 +76,17 @@ v1 testnet defaults (consistent with the deploy defaults in
 
 Rules:
 
+- `agent/challenge-envelope.mjs` enforces these defaults in a restart-persistent,
+  lock-protected ledger. Reservations count before signing; state replacement is
+  fsync + same-directory rename, and UTC rollover preserves canonical-open rows
+  while resetting only the daily spend bucket.
+- The current wallet stores one exact policy per `(target, selector)`. Therefore
+  **at most one challenge exact policy may be provisioned/pending at a time**.
+  Three canonical challenges may remain open after their filing policies are
+  consumed, but this source does not claim three simultaneous unconsumed exact
+  `challenge(...)` policies. Raising that limit requires a wallet contract
+  redesign and audit; contracts are intentionally unchanged here.
+
 - If `requiredChallengeBond(disputedEntitlementWei)` > per-challenge max, the
   runner MUST NOT file; it raises an alert for human review instead.
 - Reaching any daily cap disables auto-file until the next UTC day; open
@@ -129,6 +140,25 @@ Rules:
   `max_active_running = 1`. A tripped memory/swap/host-capacity/concurrency guard
   (`runner-plan` -> `wait`) or any burst-drill regression MUST disable auto-file
   until the runner is healthy again — a degraded runner may emit bad candidates.
+  The operator requires a fresh (at most five minutes old)
+  `p42-runner-health/v1` artifact at `--runner-health`; missing, stale,
+  malformed, `wait`, OOM, restart, corruption, swap, capacity, or concurrency
+  evidence disables auto-file fail-closed.
+
+## Bond Recovery
+
+`P42ChallengeManager.claimBond()` is an autonomous zero-value action, but it is
+still exact-policy gated. `agent/challenge-envelope.mjs` exports the operator
+`P42ChallengeManager` lifecycle: verify the session/chain/allowlist and exact
+calldata/scope policy, journal signed raw bytes before broadcast, resume the
+same transaction after restart, and credit `recovered_wei` only after the
+receipt is canonical and final. A disappeared/noncanonical receipt becomes
+`reorged`; it is never counted as recovered. Because `claimBond()` has its own
+selector it does not overwrite the one pending `challenge(...)` policy.
+
+Provisioning/rehearsal evidence must validate against
+`schemas/challenge-provisioning.schema.json`; the local validator additionally
+locks the documented cap and concurrency defaults.
 
 ## Transcript And Audit
 

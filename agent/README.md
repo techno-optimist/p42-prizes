@@ -103,6 +103,10 @@ Runtime artifacts under `--runtime` are:
   recovery; it never authorizes an on-chain action by itself.
 - `operator-cursor.json`: durable finalized-block cursor plus overlap anchors.
 - `actions/`: exact `p42-session-call-policy/v1` call policies and signed challenge transaction journals.
+- `challenge-envelope.json`: atomic, lock-protected UTC spend reservations,
+  committed spends, and canonical-open challenge accounting.
+- `runner-health.json`: externally produced fresh `p42-runner-health/v1`
+  admission evidence; absent/stale/red health disables auto-file.
 - `ALERTS.log`: quarantines, registry-binding refusals, expired windows, and cap
   refusals.
 
@@ -132,6 +136,11 @@ window. If an anchored block changes or a rescan no longer contains a queued
 job's original `Revealed` source event, the bridge marks that job/action
 `canonical_invalidated` and cancels queued work instead of wedging or replaying
 from genesis.
+
+The wallet currently has one exact-call slot per target/selector. The operator
+therefore permits one pending provisioned `challenge(...)` policy, even though
+up to three already-filed canonical challenges may remain open. Do not provision
+three simultaneous challenge policies with this contract version.
 
 ## Resolver Path
 
