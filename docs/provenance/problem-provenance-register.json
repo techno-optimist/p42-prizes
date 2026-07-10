@@ -1,6 +1,7 @@
 {
   "schema_version": "p42-provenance-register/v1",
   "audited_at": "2026-07-10",
+  "audit_scope": "internal repository-source review only; not independent mathematical, legal, licensing, or funding approval",
   "source_repository_commit": "52ddf44e2d06a1a9467b2cd5179536e53b12a833",
   "tree_hash_algorithm": "git-tree-sha1",
   "witness_hash_algorithm": "sha256",

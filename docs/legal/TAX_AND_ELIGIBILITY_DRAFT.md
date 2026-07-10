@@ -182,8 +182,9 @@ The proposed fee is 2.5% of a gross Solver award actually claimed. It is not
 charged at funding or close, and no fee is charged when no Solver payout occurs.
 The operator's tax and accounting treatment of the fee requires separate advice.
 
-Integer dust and expired Solver awards go to a restricted rollover vault, not
-the operating treasury. Rollover assets are not automatically P42 revenue and
+Under the proposed contract policy, integer dust and expired Solver awards would
+go to a restricted rollover vault rather than the operating treasury. This
+treatment is not deployed or counsel-approved. Rollover assets are not automatically P42 revenue and
 may be subject to restrictions, unclaimed-property law, sanctions controls, and
 special accounting. The vault must have a separate ledger and permitted-use
 policy. Colorado's [2025 unclaimed-property amendments](https://leg.colorado.gov/bills/HB25-1224)

@@ -1,6 +1,8 @@
 # P42 Problem Provenance And IP Evidence Register
 
-Status date: 2026-07-10. Evidence snapshot only; not legal advice.
+Internal provenance review date: 2026-07-10. This is repository-source
+verification, not independent mathematical, legal, licensing, or funding
+approval.
 
 This register audits the ten packages at repository commit
 `52ddf44e2d06a1a9467b2cd5179536e53b12a833`. A package tree hash is the Git

@@ -9,18 +9,17 @@ This document specifies the settlement accounting implemented by
   that timestamp; the owner has no early-close path.
 - Governance sets `rolloverDestination` exactly once after the pool's canonical
   registry binding exists. It must be a bytecode-pinned `P42RolloverVault`
-  whose `registry` equals that canonical registry and whose immutable
-  `allocator` equals the pool/ledger governance timelock. It cannot equal the
+  whose `registry` equals that canonical registry and whose constructor-fixed,
+  non-updatable `allocator` equals the pool/ledger governance timelock. It cannot equal the
   fee treasury.
 - The fee recipient and `feeBps <= 250` are immutable constructor values.
 
 ## Open state
 
-Every successful `fund()` or direct `receive()` records both
-`sponsorshipOf[msg.sender]` and
-`totalFunded`. `accountedBalance` contains only accepted `fund()` value. ETH
-that arrives without executing `fund()` is forced ETH and is excluded from all
-sponsor, prize, fee, and rollover calculations.
+Every successful `fund()` or direct `receive()` passes through the same `_fund`
+path and records `sponsorshipOf[msg.sender]`, `totalFunded`, and
+`accountedBalance`. ETH that bypasses `_fund`, such as protocol-forced ETH, is
+excluded from sponsor, prize, fee, and rollover accounting.
 
 The open-state identity is:
 
@@ -92,8 +91,9 @@ totalFeeAccrued = totalFeePaid + accruedFeeBalance
 ```
 
 `totalClaimed` is net solver ETH; `totalGrossClaimed` is consumed entitlement.
-Events `Funded`, `SponsorRefunded`, `SolverClaimSettled`, `FeePaid`, and
-`RolloverPaid` expose every accounted term for indexers.
+Events `Funded`, `SponsorshipFunded`, `SponsorRefunded`, `SolverClaimSettled`,
+`FeeAccrued`, `FeePaid`, `RolloverPaid`, and `ForcedEthRecovered` expose every
+accounting term for indexers.
 
 ## Forced ETH
 
@@ -119,8 +119,9 @@ rawPoolBalance = accountedBalance + forcedEthAvailable
 
 ## Rollover vault restriction
 
-`P42RolloverVault` has no arbitrary withdrawal. Only its immutable allocator,
-the canonical governance timelock, can assign and consume per-pool quotas. A
+`P42RolloverVault` has no arbitrary withdrawal. Only its constructor-fixed,
+non-updatable allocator, the canonical governance timelock, can assign and
+consume per-pool quotas. A
 target must match the allocation-time runtime code hash, map back through the
 canonical registry, share the allocator as owner, and prove the complete
 pool/ledger/submission-manager topology. The recipient pool's normal funding

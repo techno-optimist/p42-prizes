@@ -187,8 +187,9 @@ to force funds bears the risk that the transfer is unrecoverable or restricted.
 
 ## 9. Wallets, Agents, Gas, And Bonds
 
-Participants control their wallets and Agents. P42 does not custody private
-keys. Wallet transactions are generally irreversible. Network gas, posting
+The proposed model does not require P42 to custody participant private keys;
+the final operator and deployed architecture must verify and disclose any
+custody or key-management role. Wallet transactions are generally irreversible. Network gas, posting
 bonds, challenge bonds, resolver bonds, and third-party onramp charges are
 separate from prize-pool funding and the platform fee. The final problem rules
 must state when each bond is returned, forfeited, or paid.

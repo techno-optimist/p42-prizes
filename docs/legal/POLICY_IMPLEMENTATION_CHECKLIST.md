@@ -13,6 +13,10 @@ Review baseline: repository commit `55bab919a7d7aec6e93bb854438bc9fe6fed809e`.
 This hash identifies the code reviewed for gap analysis; it is not a final legal
 release hash, terms hash, deployment manifest, or deployed address.
 
+Historical baseline only: current source locally implements several listed
+economic controls, but every checkbox remains open pending release-specific
+tests, deployment evidence, audit, and counsel approval.
+
 The policy artifacts are:
 
 - [Terms](TERMS_DRAFT.md)
