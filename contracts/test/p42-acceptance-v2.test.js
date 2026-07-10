@@ -126,6 +126,7 @@ async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10"
   });
   await registry.connect(owner).freeze(1);
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+  await increaseTime(WINDOW + 1n);
   await submissions.connect(owner).armFunding();
   await pool.connect(owner).setAcceptingFunds(true);
   if (fund > 0n) await pool.fund({ value: fund });

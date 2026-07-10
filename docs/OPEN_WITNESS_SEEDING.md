@@ -26,8 +26,10 @@ anyone bothered to prove on-chain **for free** before funding opens.
   path, but records **zero credit** (`finalize` gates credit on the commit
   phase). This establishes the true public frontier on-chain **by construction**.
 - **Paid phase.** The funder calls `armFunding()` (one-shot, the single arm
-  authority) and deposits ETH. From then on, a submission **committed after the
-  arm** earns the **marginal over whatever frontier the open phase established**.
+  authority) and deposits ETH. The contract refuses to arm until one full
+  configured challenge window has elapsed from deployment. From then on, a
+  submission **committed after the arm** earns the **marginal over whatever
+  frontier the open phase established**.
 
 The erdos-vs-Haugland question dissolves entirely: whatever the Hyra witness
 scores under the verifier, posting it for free during the open phase *is* the
@@ -67,9 +69,11 @@ irreducible human residue is (1) **verifier soundness** (a formal-proofs researc
 track) and (2) **legal accountability** (liability attaches to a person/entity,
 not a keypair) — neither of which is a verification task the oracle could perform.
 
-## Optional hardening (not in this pass)
+## Enforced boundary
 
-An on-chain `OPEN_PHASE_MIN_SECONDS` gate on `armFunding` (require a minimum
-public window before arming) would make "the public had a fair shot" a protocol
-guarantee rather than relying on funder incentive. A `NOTE` marks the insertion
-point in `P42SubmissionManager.armFunding`.
+Each manager records `deployedAt` and immutable `armNotBefore`; the latter is
+one full `challengeWindowSeconds` after deployment. `armFunding()` reverts
+before that point, so a funder cannot deploy and immediately convert a private
+frontier into paid credit. The protocol still requires a current strict public
+witness transcript and launch-board evidence: elapsed time proves opportunity,
+not that every relevant outside-world result was posted.

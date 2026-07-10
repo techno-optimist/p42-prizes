@@ -131,7 +131,10 @@ async function deployFixture({
   });
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
   if (freeze) await registry.connect(owner).freeze(1);
-  if (arm) await submissions.connect(owner).armFunding();
+  if (arm) {
+    await increaseTime(CHALLENGE_WINDOW + 1n);
+    await submissions.connect(owner).armFunding();
+  }
   if (acceptFunds) await pool.connect(owner).setAcceptingFunds(true);
 
   return {
@@ -219,6 +222,7 @@ async function slashResolverBond(fixture, submissionId, proofHash) {
 describe("P42 2026-07-09 economic and lifecycle audit regressions", function () {
   it("stores commit phase identity for both transaction orders in one block", async function () {
     const preArm = await deployFixture({ arm: false, acceptFunds: false });
+    await increaseTime(CHALLENGE_WINDOW + 1n);
     const preCid = "bafy-phase-before-arm";
     const preSalt = "phase-before-arm";
     const preCommitment = await commitmentFor(preArm.submissions, preArm.owner, preCid, preSalt);
@@ -252,6 +256,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(await preArm.ledger.totalCreditAtoms(), 0n);
 
     const postArm = await deployFixture({ arm: false, acceptFunds: false });
+    await increaseTime(CHALLENGE_WINDOW + 1n);
     const postCid = "bafy-phase-after-arm";
     const postSalt = "phase-after-arm";
     const postCommitment = await commitmentFor(postArm.submissions, postArm.owner, postCid, postSalt);
@@ -505,6 +510,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(await fixture.submissions.fundingArmed(), false);
     assert.equal(await fixture.registry.isFrozen(1), false);
 
+    await increaseTime(CHALLENGE_WINDOW + 1n);
     await fixture.submissions.connect(fixture.owner).armFunding();
     await expectCustomError(
       fixture.pool.connect(fixture.owner).setAcceptingFunds(true),

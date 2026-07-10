@@ -98,10 +98,10 @@ const subs = await deploy("P42SubmissionManager", [
 ]);
 await (await ledger.c.setCreditRecorder(subs.addr)).wait();
 // Open-witness-phase wiring: the pool refuses deposits until the manager is
-// wired AND funding is armed. Demo instances auto-arm so a full lifecycle runs
-// immediately (a real deployment runs an open phase first, then arms).
+// wired AND funding is armed. This helper intentionally leaves the instance in
+// the unpaid phase; publish a witness and wait through armNotBefore before a
+// separate governed arm transaction.
 await (await pool.c.setSubmissionManager(subs.addr)).wait();
-await (await subs.c.armFunding()).wait();
 const chal = await deploy("P42ChallengeManager", [
   owner, resolver, treasury, subs.addr,
   challengeWindow, DEMO.betaBps, DEMO.minCounterBondWei,
@@ -128,6 +128,9 @@ const manifest = {
     seedScoreAtoms: seedScoreAtoms.toString(),
     minImprovementAtoms: minImprovementAtoms.toString(),
     scoreAtomScale: SCORE_SCALE.toString(),
+    deployedAt: (await subs.c.deployedAt()).toString(),
+    armNotBefore: (await subs.c.armNotBefore()).toString(),
+    fundingArmed: false,
   },
   parameters: {
     alphaBps: Number(DEMO.alphaBps), betaBps: Number(DEMO.betaBps), feeBps: Number(DEMO.feeBps),

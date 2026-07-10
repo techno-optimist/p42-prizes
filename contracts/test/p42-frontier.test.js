@@ -83,6 +83,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     // credit, so the fixture arms funding up front. Open-phase suites pass
     // arm: false to exercise the free witness phase.
     arm = true,
+    advanceCompetition = true,
   } = {}) {
     const [owner, treasury, resolver, alice, bob, carol] = await ethers.getSigners();
     const Pool = await ethers.getContractFactory("P42BountyPool");
@@ -136,10 +137,11 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await fundingRegistry.freeze(1);
     await pool.connect(owner).setRegistry(await fundingRegistry.getAddress(), 1);
     if (arm) {
+      await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
       await submissions.connect(owner).armFunding();
       await pool.connect(owner).setAcceptingFunds(true);
     }
-    await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
+    if (advanceCompetition) await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
     return { owner, treasury, resolver, alice, bob, carol, pool, ledger, submissions, minBond };
   }
@@ -807,13 +809,24 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
   // ===========================================================================
 
   it("armFunding is owner-only, one-shot, and emits FundingArmed", async function () {
-    const fixture = await deployFixture({ arm: false });
+    const fixture = await deployFixture({ arm: false, advanceCompetition: false });
     const { owner, alice, submissions } = fixture;
     assert.equal(await submissions.fundingArmed(), false);
+    const deployedAt = await submissions.deployedAt();
+    const armNotBefore = await submissions.armNotBefore();
+    assert.equal(armNotBefore, deployedAt + CHALLENGE_WINDOW_SECONDS);
 
     await expectCustomError(submissions.connect(alice).armFunding(), submissions, "P42_NOT_OWNER");
     assert.equal(await submissions.fundingArmed(), false);
 
+    await expectCustomError(
+      submissions.connect(owner).armFunding(),
+      submissions,
+      "P42_OPEN_WITNESS_WINDOW_OPEN"
+    );
+    assert.equal(await submissions.fundingArmed(), false);
+
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     const tx = await submissions.connect(owner).armFunding();
     const receipt = await tx.wait();
     const armed = receipt.logs
@@ -866,6 +879,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     );
 
     // The single arm call opens the deposit path.
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(owner).armFunding();
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
@@ -1079,6 +1093,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     const attack = await commitReveal(fixture, alice, 600n * SCALE);
 
     // Funder arms; pool is funded.
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(owner).armFunding();
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.connect(owner).fund({ value: ethers.parseEther("1") });

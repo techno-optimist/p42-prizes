@@ -146,6 +146,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     });
     await fundingRegistry.freeze(1);
     await pool.connect(owner).setRegistry(await fundingRegistry.getAddress(), 1);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(owner).armFunding();
     await pool.connect(owner).setAcceptingFunds(true);
     await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);

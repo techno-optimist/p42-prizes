@@ -24,6 +24,7 @@ contract P42SubmissionManager {
     error P42_PAUSED_ALL();
     error P42_NOT_PAUSED_ALL();
     error P42_FUNDING_ALREADY_ARMED();
+    error P42_OPEN_WITNESS_WINDOW_OPEN(uint64 armNotBefore, uint64 nowAt);
     error P42_VOID_NOT_ADVANCE(int256 prevBestScoreAtoms, int256 claimedScoreAtoms);
     error P42_VOID_NOT_FRONTIER(int256 bestScoreAtoms, int256 claimedScoreAtoms);
     error P42_BAD_ALPHA();
@@ -144,6 +145,12 @@ contract P42SubmissionManager {
     uint16 public immutable alphaBps;
     uint256 public immutable minPostingBondWei;
     uint64 public immutable challengeWindowSeconds;
+    /// @notice Deployment time and the earliest time at which funding may be
+    /// armed. The unpaid phase always lasts at least one full configured
+    /// challenge window, so the public has a protocol-enforced chance to post
+    /// and inspect frontier witnesses before ETH can enter the pool.
+    uint64 public immutable deployedAt;
+    uint64 public immutable armNotBefore;
     /// @notice When true, the reveal tx must carry the raw solution bytes and
     /// the contract enforces sha256(bytes)==commitDaHash on-chain (data
     /// availability rides the chain itself). When false, this problem's
@@ -219,6 +226,7 @@ contract P42SubmissionManager {
 
     event NewActionsPaused(bool paused);
     event AllActionsPaused(bool paused);
+    event OpenWitnessWindowConfigured(uint64 deployedAt, uint64 armNotBefore);
     event FundingArmed(uint64 at);
     event FinalizeVoided(
         uint256 indexed submissionId,
@@ -329,6 +337,9 @@ contract P42SubmissionManager {
         alphaBps = alphaBps_;
         minPostingBondWei = minPostingBondWei_;
         challengeWindowSeconds = challengeWindowSeconds_;
+        uint64 deployedAt_ = uint64(block.timestamp);
+        deployedAt = deployedAt_;
+        armNotBefore = deployedAt_ + challengeWindowSeconds_;
         onchainDa = onchainDa_;
         maxSolutionBytes = maxSolutionBytes_;
         if (seedScoreAtoms_ <= MIN_SCORE_ATOMS_BOUND || seedScoreAtoms_ >= MAX_SCORE_ATOMS_BOUND) {
@@ -337,6 +348,7 @@ contract P42SubmissionManager {
         seedScoreAtoms = seedScoreAtoms_;
         minImprovementAtoms = minImprovementAtoms_;
         bestScoreAtoms = seedScoreAtoms_;
+        emit OpenWitnessWindowConfigured(deployedAt_, deployedAt_ + challengeWindowSeconds_);
     }
 
     function setPausedNewActions(bool paused) external onlyOwner {
@@ -366,14 +378,16 @@ contract P42SubmissionManager {
     /// open-established frontier and the pool accepts funding — one call is
     /// the single arm authority for both.
     ///
-    /// Timing is the funder's discretion in this pass: the funder is
-    /// economically incentivized to run a real open phase (tightening the
-    /// frontier means not overpaying for already-public results).
-    /// NOTE: an on-chain OPEN_PHASE_MIN_SECONDS gate (require block.timestamp
-    /// >= deployedAt + OPEN_PHASE_MIN_SECONDS) can be added here if arming
-    /// discretion should be constrained protocol-side.
+    /// The unpaid OPEN phase is immutable and lasts at least one full challenge
+    /// window from deployment. This prevents an owner from deploying and
+    /// immediately arming a private paid frontier. A timer does not prove that
+    /// a public witness was posted, so the strict open-witness transcript and
+    /// arm/fund-boundary evidence remain separate launch gates.
     function armFunding() external onlyOwner {
         if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
+        if (block.timestamp < armNotBefore) {
+            revert P42_OPEN_WITNESS_WINDOW_OPEN(armNotBefore, uint64(block.timestamp));
+        }
         fundingArmed = true;
         armedAt = uint64(block.timestamp);
         emit FundingArmed(uint64(block.timestamp));

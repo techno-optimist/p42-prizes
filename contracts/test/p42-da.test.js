@@ -123,6 +123,7 @@ async function deploy(onchainDa, maxSolutionBytes) {
   });
   await registry.freeze(1);
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+  await increaseTime(CHALLENGE_WINDOW + 1n);
   await submissions.connect(owner).armFunding();
   await pool.connect(owner).setAcceptingFunds(true);
 
