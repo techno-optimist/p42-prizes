@@ -116,6 +116,20 @@ describe("P42AgentWallet — scoped session-key safety", () => {
       wallet, "CallNotAllowed");
   });
 
+  it("limits a selector-zero allowance to bare empty calldata", async () => {
+    const { owner, session, outsider, wallet } = await fixture();
+    // A raw transfer can be intentional, but arbitrary fallback bytes must
+    // never inherit the selector-zero compatibility allowance.
+    await wallet.connect(owner).setAllowed(outsider.address, "0x00000000", true);
+    await wallet.connect(session).execute(outsider.address, 0n, "0x");
+
+    for (const fallbackData of ["0x01", "0x0102", "0x010203", "0x00000000"]) {
+      await expectCustomError(
+        wallet.connect(session).execute(outsider.address, 0n, fallbackData),
+        wallet, "ExactCalldataPolicyRequired");
+    }
+  });
+
   it("enforces the per-call value cap", async () => {
     const { session, pool, wallet, fundData } = await fixture();
     await expectCustomError(
