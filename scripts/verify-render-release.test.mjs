@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   DEPLOY_RELEVANT_PATHS,
+  EXPECTED_BOARD_MANIFEST,
   assertProbeEquivalence,
   assertReleaseAncestry,
   findLiveDeploy,
@@ -12,6 +13,7 @@ import {
   parseRemoteHead,
   probeUrls,
   runtimeCommitArgs,
+  validateBoardManifest,
   validateProbeBody,
 } from "./verify-render-release.mjs";
 
@@ -21,25 +23,23 @@ const contentTypes = {
   text: "text/markdown; charset=utf-8",
 };
 
-function validProblem(overrides = {}) {
-  return {
-    id: 1,
-    slug: "hadamard-mini",
-    title: "Hadamard Mini",
-    status: "pilot",
-    mode: "construction",
-    direction: "minimize",
-    scoreName: "defect",
-    currentBest: "0/1",
-    minImprovement: "1/6",
-    bountyEth: "0.00",
-    donationWallet: {},
+function validProblems() {
+  return EXPECTED_BOARD_MANIFEST.boards.map((board) => ({
+    ...structuredClone(board),
+    donationWallet: {
+      ...structuredClone(EXPECTED_BOARD_MANIFEST.phase0.donationWallet),
+      note: "Non-material human-readable funding note.",
+    },
     donationTarget: null,
-    chainProvenance: { settlementState: "local-only", reconciliationOk: false },
-    challengeWindowHours: 72,
-    verifierVersion: "0.1.1",
-    ...overrides,
-  };
+    chainProvenance: {
+      ...structuredClone(EXPECTED_BOARD_MANIFEST.phase0.chainProvenance),
+      note: "Non-material human-readable provenance note.",
+    },
+  }));
+}
+
+function validProblem(overrides = {}) {
+  return { ...validProblems()[0], ...overrides };
 }
 
 function result(routeId, origin, body, semanticBody = body) {
@@ -207,16 +207,53 @@ test("API probes reject malformed JSON and wrong response shapes", () => {
   );
   assert.throws(
     () => validateProbeBody("problems", JSON.stringify({ ok: true }), contentTypes.json),
-    /non-empty array/,
+    /exactly 10 expected boards/,
   );
+  const wrongSlug = validProblems();
+  wrongSlug[0].slug = "";
   assert.throws(
-    () => validateProbeBody("problems", JSON.stringify([validProblem({ slug: "" })]), contentTypes.json),
+    () => validateProbeBody("problems", JSON.stringify(wrongSlug), contentTypes.json),
     /problem 0\.slug/,
   );
+  const expected = validProblems();
   assert.deepEqual(
-    validateProbeBody("problems", JSON.stringify([validProblem()]), contentTypes.json),
-    [validProblem()],
+    validateProbeBody("problems", JSON.stringify(expected), contentTypes.json),
+    expected,
   );
+});
+
+test("problems probe rejects forged board identity and material state", () => {
+  const forgeries = [
+    ["board count", (problems) => problems.pop(), /exactly 10 expected boards/],
+    ["board id", (problems) => { problems[0].id = 42; }, /committed board projection/],
+    ["open status", (problems) => { problems[0].status = "open"; }, /disallowed problem 0\.status/],
+    ["huge bounty", (problems) => { problems[0].bountyEth = "999999.00"; }, /sane canonical ETH/],
+    ["live provenance", (problems) => {
+      problems[0].chainProvenance.settlementState = "mainnet-indexed";
+    }, /exact Phase 0 funding\/provenance state/],
+    ["donation address", (problems) => {
+      problems[0].donationWallet.address = "0xdead";
+    }, /exact Phase 0 funding\/provenance state/],
+    ["reconciled chain", (problems) => {
+      problems[0].chainProvenance.reconciliationOk = true;
+    }, /exact Phase 0 funding\/provenance state/],
+  ];
+
+  for (const [description, forge, expectedError] of forgeries) {
+    const problems = validProblems();
+    forge(problems);
+    assert.throws(
+      () => validateProbeBody("problems", JSON.stringify(problems), contentTypes.json),
+      expectedError,
+      description,
+    );
+  }
+});
+
+test("expected board manifest rejects projection tampering", () => {
+  const tampered = structuredClone(EXPECTED_BOARD_MANIFEST);
+  tampered.boards[0].bountyEth = "1000000.00";
+  assert.throws(() => validateBoardManifest(tampered), /fingerprint mismatch/);
 });
 
 test("capabilities probe requires the secret-free fail-closed production state", () => {

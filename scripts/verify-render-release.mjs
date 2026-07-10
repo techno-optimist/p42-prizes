@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { isDeepStrictEqual } from "node:util";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
@@ -28,6 +30,54 @@ const EXPECTED_CAPABILITIES = Object.freeze({
     authentication: "unavailable",
   }),
 });
+
+const BOARD_MANIFEST_SCHEMA = "p42-prizes-release-guard-problems-v1";
+const ALLOWED_BOARD_VALUES = Object.freeze({
+  status: Object.freeze(["pilot", "locked"]),
+  mode: Object.freeze(["construction", "hybrid", "proof"]),
+  direction: Object.freeze(["minimize", "maximize"]),
+});
+const PHASE0_INVARIANTS = Object.freeze({
+  donationWallet: Object.freeze({
+    chain: "Base Sepolia",
+    asset: "ETH",
+    address: null,
+    status: "not-deployed",
+    explorerUrl: null,
+  }),
+  donationTarget: null,
+  chainProvenance: Object.freeze({
+    settlementState: "local-only",
+    chain: "Base Sepolia",
+    chainId: 84532,
+    donationWalletAddress: null,
+    poolAddress: null,
+    poolRuntimeCodeHash: null,
+    deploymentTransactionHash: null,
+    registryAddress: null,
+    problemRegistryId: null,
+    verifierImageHash: "sha256:local-dev",
+    admissionMatrixHash: null,
+    deploymentCommit: null,
+    indexedThroughBlock: null,
+    reconciliationOk: false,
+    source: "static-portal-data",
+  }),
+});
+const BOARD_FIELDS = Object.freeze([
+  "id",
+  "slug",
+  "title",
+  "status",
+  "mode",
+  "direction",
+  "scoreName",
+  "currentBest",
+  "minImprovement",
+  "bountyEth",
+  "challengeWindowHours",
+  "verifierVersion",
+]);
 
 export const PROBE_ROUTES = Object.freeze([
   Object.freeze({
@@ -195,9 +245,91 @@ function requireString(value, route, description) {
   }
 }
 
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value !== null && typeof value === "object") {
+    return `{${Object.keys(value).sort().map(
+      (key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
+    ).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function boardManifestFingerprint(manifest) {
+  const projection = { phase0: manifest.phase0, boards: manifest.boards };
+  return `sha256:${createHash("sha256").update(canonicalJson(projection)).digest("hex")}`;
+}
+
+export function validateBoardManifest(manifest) {
+  if (manifest?.schema_version !== BOARD_MANIFEST_SCHEMA) {
+    throw new Error(`Expected board manifest schema ${BOARD_MANIFEST_SCHEMA}.`);
+  }
+  if (!isDeepStrictEqual(manifest.phase0, PHASE0_INVARIANTS)) {
+    throw new Error("Expected board manifest changed the fixed Phase 0 funding/provenance invariants.");
+  }
+  if (!Array.isArray(manifest.boards) || manifest.boards.length !== 10) {
+    throw new Error("Expected board manifest must contain exactly 10 boards.");
+  }
+  const actualFingerprint = boardManifestFingerprint(manifest);
+  if (manifest.projection_sha256 !== actualFingerprint) {
+    throw new Error(
+      `Expected board manifest fingerprint mismatch (${manifest.projection_sha256} != ${actualFingerprint}).`,
+    );
+  }
+  return manifest;
+}
+
+function loadBoardManifest() {
+  const manifestUrl = new URL("./release-guard-problems-v1.json", import.meta.url);
+  try {
+    return validateBoardManifest(JSON.parse(readFileSync(manifestUrl, "utf8")));
+  } catch (error) {
+    throw new Error(`Could not load the expected board manifest: ${error.message}`);
+  }
+}
+
+export const EXPECTED_BOARD_MANIFEST = loadBoardManifest();
+
+function boardProjection(problem) {
+  return Object.fromEntries(BOARD_FIELDS.map((field) => [field, problem[field]]));
+}
+
+function phase0Projection(problem) {
+  return {
+    donationWallet: {
+      chain: problem.donationWallet?.chain,
+      asset: problem.donationWallet?.asset,
+      address: problem.donationWallet?.address,
+      status: problem.donationWallet?.status,
+      explorerUrl: problem.donationWallet?.explorerUrl,
+    },
+    donationTarget: problem.donationTarget,
+    chainProvenance: {
+      settlementState: problem.chainProvenance?.settlementState,
+      chain: problem.chainProvenance?.chain,
+      chainId: problem.chainProvenance?.chainId,
+      donationWalletAddress: problem.chainProvenance?.donationWalletAddress,
+      poolAddress: problem.chainProvenance?.poolAddress,
+      poolRuntimeCodeHash: problem.chainProvenance?.poolRuntimeCodeHash,
+      deploymentTransactionHash: problem.chainProvenance?.deploymentTransactionHash,
+      registryAddress: problem.chainProvenance?.registryAddress,
+      problemRegistryId: problem.chainProvenance?.problemRegistryId,
+      verifierImageHash: problem.chainProvenance?.verifierImageHash,
+      admissionMatrixHash: problem.chainProvenance?.admissionMatrixHash,
+      deploymentCommit: problem.chainProvenance?.deploymentCommit,
+      indexedThroughBlock: problem.chainProvenance?.indexedThroughBlock,
+      reconciliationOk: problem.chainProvenance?.reconciliationOk,
+      source: problem.chainProvenance?.source,
+    },
+  };
+}
+
 function validateProblems(payload, route) {
-  if (!Array.isArray(payload) || payload.length === 0) {
-    describe(route, "must return a non-empty array of problems.");
+  const manifest = EXPECTED_BOARD_MANIFEST;
+  if (!Array.isArray(payload) || payload.length !== manifest.boards.length) {
+    describe(route, `must return exactly ${manifest.boards.length} expected boards.`);
   }
 
   const ids = new Set();
@@ -221,27 +353,38 @@ function validateProblems(payload, route) {
     ]) {
       requireString(problem[field], route, `problem ${index}.${field}`);
     }
+    for (const field of ["status", "mode", "direction"]) {
+      if (!ALLOWED_BOARD_VALUES[field].includes(problem[field])) {
+        describe(route, `returned disallowed problem ${index}.${field} ${JSON.stringify(problem[field])}.`);
+      }
+    }
+    for (const field of ["currentBest", "minImprovement"]) {
+      if (!/^-?(0|[1-9]\d*)\/[1-9]\d*$/.test(problem[field])) {
+        describe(route, `must return a canonical rational for problem ${index}.${field}.`);
+      }
+    }
+    if (!/^(0|[1-9]\d*)\.\d{2}$/.test(problem.bountyEth) || Number(problem.bountyEth) > 100) {
+      describe(route, `must return a sane canonical ETH amount for problem ${index}.bountyEth.`);
+    }
     if (!Number.isFinite(problem.challengeWindowHours) || problem.challengeWindowHours <= 0) {
       describe(route, `must return a positive challengeWindowHours for problem ${index}.`);
     }
-    requireObject(problem.donationWallet, route, `problem ${index}.donationWallet`);
-    if (problem.donationTarget !== null) {
-      requireObject(problem.donationTarget, route, `problem ${index}.donationTarget`);
-    }
-    requireObject(problem.chainProvenance, route, `problem ${index}.chainProvenance`);
-    requireString(
-      problem.chainProvenance.settlementState,
-      route,
-      `problem ${index}.chainProvenance.settlementState`,
-    );
-    if (typeof problem.chainProvenance.reconciliationOk !== "boolean") {
-      describe(route, `must return a boolean reconciliationOk for problem ${index}.chainProvenance.`);
+    if (!isDeepStrictEqual(phase0Projection(problem), manifest.phase0)) {
+      describe(route, `problem ${index} violates the exact Phase 0 funding/provenance state.`);
     }
     if (ids.has(problem.id) || slugs.has(problem.slug)) {
       describe(route, `must not return duplicate problem ids or slugs (problem ${index}).`);
     }
     ids.add(problem.id);
     slugs.add(problem.slug);
+  }
+
+  const liveBoards = payload.map(boardProjection).sort((left, right) => left.id - right.id);
+  if (!isDeepStrictEqual(liveBoards, manifest.boards)) {
+    describe(
+      route,
+      `does not match committed board projection ${manifest.projection_sha256}.`,
+    );
   }
 }
 
@@ -388,7 +531,8 @@ Read-only release guard. It verifies that Render is configured for the expected
 branch, its single live deployment is on that exact branch history and contains
 the latest portal/config change,
 and the Render origin plus the ProjectForty2 proxy return the expected portal,
-API contracts, fail-closed capabilities, and equivalent paired responses.
+versioned board projection, fail-closed capabilities, and equivalent paired
+responses.
 
 The service builds from web/, so documentation-only and release-tooling-only
 commits do not require a no-op Render deploy. The guard treats web/ and
@@ -461,6 +605,7 @@ export async function main(argv = process.argv.slice(2)) {
       `  branch head: ${branchHead}`,
       `  runtime commit: ${runtimeCommit}`,
       `  live commit: ${liveCommit}`,
+      `  board projection: ${EXPECTED_BOARD_MANIFEST.projection_sha256}`,
       `  routes: ${urls.length}/${urls.length} healthy`,
     ].join("\n") + "\n",
   );
