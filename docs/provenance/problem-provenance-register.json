@@ -1,0 +1,602 @@
+{
+  "schema_version": "p42-provenance-register/v1",
+  "audited_at": "2026-07-10",
+  "source_repository_commit": "52ddf44e2d06a1a9467b2cd5179536e53b12a833",
+  "tree_hash_algorithm": "git-tree-sha1",
+  "witness_hash_algorithm": "sha256",
+  "global_real_eth_funding_decision": "NO_GO",
+  "root_repository_license": {
+    "spdx": null,
+    "license_file_present": false,
+    "decision_owner": "operator_and_legal_counsel",
+    "note": "No root or package license is declared. The example license string in docs/BUILD.md is not a grant. This register does not select a root license."
+  },
+  "validation": {
+    "manifest_validation": "passed_10_of_10",
+    "verifier_lint": "passed_10_of_10",
+    "problem_tests": "40_passed_in_130.17_seconds",
+    "upstream_transform_checks": [
+      "erdos_float_bits_to_dyadic_match",
+      "c1_decimal_tokens_times_10_pow_35_match",
+      "c2_integer_vector_match",
+      "c3_float_bits_to_dyadic_match",
+      "mertens_npz_m_and_Y_arrays_match"
+    ]
+  },
+  "boards": [
+    {
+      "slug": "hadamard-mini",
+      "package_tree": "410bb673253334e2f4eceb7bf5db3cc8e14cfd15",
+      "witness": {
+        "path": "problems/hadamard-mini/examples/valid-4.json",
+        "sha256": "4771e6e4e18ebecb9f4f74f9849f69b784319256d8bd4d04c9f62164a9cdb1b7",
+        "bytes": 58,
+        "score": "0/1"
+      },
+      "declared_source": null,
+      "stated_source_url": null,
+      "upstream": [],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": null,
+        "redistribution_status": "NOT_CLEARED"
+      },
+      "publication": [],
+      "attribution": "Local P42 fixture; the artifact is the standard order-4 Sylvester matrix, but the package contains no artifact authorship statement.",
+      "portal_verifier_match": {
+        "status": "yes",
+        "reason": "The portal and verifier both minimize nonorthogonal row-pair defect for a 4 by 4 sign matrix."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": false,
+        "immutable_upstream_ref_present": false,
+        "upstream_transform_reproduced": null,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": false,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "Artifact authorship and license declaration",
+        "Root/package redistribution policy",
+        "Immutable verifier image and N-host evidence"
+      ],
+      "real_eth_decision": "NO_GO_DEMO_FIXTURE"
+    },
+    {
+      "slug": "erdos-min-overlap",
+      "package_tree": "a09f6e5b93a1fd17de8064f90e004378468464c0",
+      "witness": {
+        "path": "problems/erdos-min-overlap/examples/hyra-upper.json",
+        "sha256": "f37c8f97ae3f3b8a50344d7b9e9ffb3be506457a26a8d55622004b83f5ae64d1",
+        "bytes": 59086,
+        "score": "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401"
+      },
+      "declared_source": "arena/erdos_note/certs/erdos_hyra_current.json converted from exact Python float bit patterns",
+      "stated_source_url": "https://github.com/techno-optimist/erdos-minimum-overlap-bound",
+      "upstream": [
+        {
+          "role": "bundled_witness_source",
+          "url": "https://github.com/techno-optimist/erdos-minimum-overlap-bound/blob/8fa0854d0099e0c6e8e211f5d6b108c7015f1256/certs/erdos_hyra_current.json",
+          "tag": "v1.0",
+          "commit": "8fa0854d0099e0c6e8e211f5d6b108c7015f1256",
+          "tree": "dfffe3d7eb245d08d83435c22b6e5fe9422d5c3d",
+          "path": "certs/erdos_hyra_current.json",
+          "blob": "9ab03527b57314d666c235d3d5893b1ab1d051f1",
+          "source_sha256": "5fd088018f1b648b73a4f0086eceb64f9cf50a7390cc8ddf3cf7b60352f824ba"
+        },
+        {
+          "role": "current_published_frontier",
+          "url": "https://github.com/techno-optimist/erdos-minimum-overlap-bound/blob/e0ddacb424a2701689a65419582293b0974f7edf/certs/erdos_dc_n512.json",
+          "tag": "v1.1",
+          "commit": "e0ddacb424a2701689a65419582293b0974f7edf",
+          "tree": "4df105264240681b45c4f95004354e04b2701c54",
+          "path": "certs/erdos_dc_n512.json",
+          "blob": "773d0fc40fd278159f415b36041aecc194656439",
+          "source_sha256": "47de552f3ce9c8eed1866c628b41fd1c9916826a8ef5ac670a5b1ce00236c04d"
+        }
+      ],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": ["MIT", "CC-BY-4.0"],
+        "upstream_scope": "MIT for code and certificate data; CC-BY-4.0 for note text and figures.",
+        "redistribution_status": "CONDITIONAL_UPSTREAM_PERMISSION_BUT_NOTICE_ABSENT_IN_PACKAGE"
+      },
+      "publication": [
+        {
+          "role": "witness_version",
+          "doi": "10.5281/zenodo.21194861",
+          "version": "v1.0",
+          "status": "verified"
+        },
+        {
+          "role": "portal_cited_current_version",
+          "doi": "10.5281/zenodo.21246903",
+          "concept_doi": "10.5281/zenodo.21194860",
+          "version": "v1.1",
+          "status": "verified"
+        }
+      ],
+      "attribution": "Hyra for the n=2400 witness; Kevin Russell, ProjectForty2, for the publication and certificate repository.",
+      "portal_verifier_match": {
+        "status": "partial",
+        "reason": "The verifier matches the superseded v1.0 n=2400 functional and witness. The portal cites v1.1, whose n=512 certificate proves the tighter bound mu < 0.3808622032020279475140496; the board cannot accept that n=512 witness and still displays the old 0.3808669097979875909124431 frontier."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": true,
+        "immutable_upstream_ref_present": true,
+        "upstream_transform_reproduced": true,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": true,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "Package-level MIT notice and attribution file",
+        "Verifier/package update for the current v1.1 n=512 frontier or an explicit frozen-v1.0 rationale",
+        "Independent review of the continuum reduction and discretization semantics",
+        "Immutable verifier image and N-host evidence"
+      ],
+      "real_eth_decision": "NO_GO_SUPERSEDED_FRONTIER"
+    },
+    {
+      "slug": "edges-vs-triangles",
+      "package_tree": "24fec7eb3fa3b97bf3e5ad5d9fcc18c8fce63402",
+      "witness": {
+        "path": "problems/edges-vs-triangles/examples/rational-curve-sample.json",
+        "sha256": "a662d18c930fbb2c351ca5987e78113be30657a04615cbff87e4781745969214",
+        "bytes": 24241,
+        "score": "-16684282317138839/23437500000000000"
+      },
+      "declared_source": "Fixed-row-sum rational sampling of the slope-3 edge-triangle density curve; not the missing historical Arena incumbent artifact.",
+      "stated_source_url": null,
+      "upstream": [],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": null,
+        "redistribution_status": "NOT_CLEARED"
+      },
+      "publication": [],
+      "attribution": "Locally generated P42 rational sample; no named artifact author or upstream receipt is included.",
+      "portal_verifier_match": {
+        "status": "yes",
+        "reason": "The portal accurately describes the local exact slope-3 area plus max-gap model and expressly disclaims recovery of the historical Arena incumbent."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": false,
+        "immutable_upstream_ref_present": false,
+        "upstream_transform_reproduced": null,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": false,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "Historical Arena receipt/incumbent and immutable source",
+        "Named provenance and license for the bundled sample",
+        "External review that the rationalized score is a meaningful open frontier rather than denser sampling of a known curve",
+        "Immutable verifier image and N-host evidence"
+      ],
+      "real_eth_decision": "NO_GO_HOLD_RESPEC_REQUIRED"
+    },
+    {
+      "slug": "arithmetic-kakeya",
+      "package_tree": "dcf2cb0064fbfedb0726acd5628e85eaacab71eb",
+      "witness": {
+        "path": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
+        "sha256": "031865755a17795bf2a4c65a24986589b6a8d10085d6a062fae5293c38a7f118",
+        "bytes": 345,
+        "score": "7/4"
+      },
+      "declared_source": "arithmetic_kakeya_forcing_certificate_2026_06.md section 3",
+      "stated_source_url": null,
+      "upstream": [
+        {
+          "role": "primary_problem_context_only",
+          "url": "https://epoch.ai/files/open-problems/arithmetic-kakeya.pdf",
+          "immutable_ref": null,
+          "retrieved_sha256": "496de63b6831db0d69fdeb2a5fad78d40d8b2bbde549bf4b3d9a29395f37223b",
+          "retrieved_bytes": 512893,
+          "note": "The URL is mutable and is not the locally named certificate source."
+        }
+      ],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": null,
+        "upstream_note": "Epoch's site gives a general Creative Commons Attribution statement, but the PDF and local certificate do not state a versioned SPDX grant.",
+        "redistribution_status": "NOT_CLEARED_FOR_LOCAL_CERTIFICATE"
+      },
+      "publication": [],
+      "attribution": "Epoch AI for the public problem write-up; Katz and Tao for the 7/4 warm-up lineage; no named author or durable copy of the local certificate note is bundled.",
+      "portal_verifier_match": {
+        "status": "partial",
+        "reason": "The board copy correctly calls this a scoped 2x2 warm-up at 7/4, but the wider portal calls it the FrontierMath open problem. The verifier scores one local forcing language and does not verify the broader open target or a general finite certificate space."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": false,
+        "immutable_upstream_ref_present": false,
+        "upstream_transform_reproduced": false,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": false,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "The locally named source note itself, its author, hash, license, and immutable repository ref",
+        "A pinned primary version of the Epoch problem statement",
+        "Proof that the accepted certificate language and score imply the advertised arithmetic-Kakeya progress",
+        "Proof that the paid certificate search space is bounded or otherwise economically well-defined",
+        "Immutable verifier image and N-host evidence"
+      ],
+      "real_eth_decision": "NO_GO_HOLD_SCOPE_NOT_PROVEN"
+    },
+    {
+      "slug": "autoconvolution-c1-upper",
+      "package_tree": "ea1586e043fb068475032474ea268e43effc8b9f",
+      "witness": {
+        "path": "problems/autoconvolution-c1-upper/examples/hyra-upper.json",
+        "sha256": "0dc121b9404193d8a423400b946645e14ed1403c2d7bcb6c3b23ffc07675ad0e",
+        "bytes": 2564099,
+        "score": "15041971118343665197137380984232095998912388144895190342004000000000000/10008961702715850455872036862958802052289156042841554837278437518918769"
+      },
+      "declared_source": "Hyra ac_board2_leader.json decimal literals scaled by 10^35",
+      "stated_source_url": "https://github.com/techno-optimist/autoconvolution-inequality-certificates",
+      "upstream": [
+        {
+          "url": "https://github.com/techno-optimist/autoconvolution-inequality-certificates/blob/1827a116b1d704a7237c9064507a490045a039d6/vectors/ac_board2_leader.json",
+          "tag": "v1.0",
+          "commit": "1827a116b1d704a7237c9064507a490045a039d6",
+          "tree": "5aaf12666ff5c68f26325cccc1a18231f5130229",
+          "path": "vectors/ac_board2_leader.json",
+          "blob": "22f953fb5a8578d8ce0c4a68435762852685c758",
+          "source_sha256": "84b6eed3781a94067e79d17381594fba23d89b84c3758688661da69b2394099b"
+        }
+      ],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": ["MIT", "CC-BY-4.0"],
+        "upstream_scope": "README states MIT for code/certificate data and CC-BY-4.0 for note text/figures; the LICENSE scope footer contains stale filenames.",
+        "redistribution_status": "CONDITIONAL_UPSTREAM_PERMISSION_BUT_NOTICE_ABSENT_IN_PACKAGE"
+      },
+      "publication": [
+        {
+          "concept_doi": "10.5281/zenodo.21194862",
+          "version_doi": "10.5281/zenodo.21194863",
+          "version": "v1.0",
+          "status": "verified"
+        }
+      ],
+      "attribution": "Hyra for the witness; Kevin Russell, ProjectForty2, for the exact-certificate publication.",
+      "portal_verifier_match": {
+        "status": "yes",
+        "reason": "The portal and verifier use the publication's nonnegative C1 signed-maximum functional, and the exact decimal-token scaling was reproduced."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": true,
+        "immutable_upstream_ref_present": true,
+        "upstream_transform_reproduced": true,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": true,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "Package-level MIT notice and corrected scope statement",
+        "Committed transformation recipe/transcript from the immutable vector to the bundled JSON",
+        "Current-literature and independent functional review",
+        "Immutable verifier image and N-host timing/memory evidence"
+      ],
+      "real_eth_decision": "NO_GO_NEEDS_RESEARCH_AND_ADMISSION"
+    },
+    {
+      "slug": "autoconvolution-c2-lower",
+      "package_tree": "01185e6d67731c71f1e326e4d6c54eafa0485a77",
+      "witness": {
+        "path": "problems/autoconvolution-c2-lower/examples/hyra-lower.json",
+        "sha256": "6e785f481b592e0a6d1a77dd367c0379b8a3e55fe3b739c5cd1b352d7a25f064",
+        "bytes": 1949278,
+        "score": "140651861665566489683881393353250795846281833/146070932420211259869783468438333325818535926"
+      },
+      "declared_source": "autoconvolution-inequality-certificates/vectors/ac_board3_leader.json",
+      "stated_source_url": "https://github.com/techno-optimist/autoconvolution-inequality-certificates",
+      "upstream": [
+        {
+          "url": "https://github.com/techno-optimist/autoconvolution-inequality-certificates/blob/1827a116b1d704a7237c9064507a490045a039d6/vectors/ac_board3_leader.json",
+          "tag": "v1.0",
+          "commit": "1827a116b1d704a7237c9064507a490045a039d6",
+          "tree": "5aaf12666ff5c68f26325cccc1a18231f5130229",
+          "path": "vectors/ac_board3_leader.json",
+          "blob": "d19c22f4362a31ec6fa08d138f2e4a92eb753a23",
+          "source_sha256": "a78b8e4cff437cbd6bf260e6a80d98a10800f9a8649818fb5b401c8870d00e6c"
+        }
+      ],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": ["MIT", "CC-BY-4.0"],
+        "upstream_scope": "README states MIT for code/certificate data and CC-BY-4.0 for note text/figures; the LICENSE scope footer contains stale filenames.",
+        "redistribution_status": "CONDITIONAL_UPSTREAM_PERMISSION_BUT_NOTICE_ABSENT_IN_PACKAGE"
+      },
+      "publication": [
+        {
+          "concept_doi": "10.5281/zenodo.21194862",
+          "version_doi": "10.5281/zenodo.21194863",
+          "version": "v1.0",
+          "status": "verified"
+        }
+      ],
+      "attribution": "Hyra for the witness; Kevin Russell, ProjectForty2, for the exact-certificate publication. The publication describes C2 as exact recertification of an existing arena construction, not a new leaderboard win.",
+      "portal_verifier_match": {
+        "status": "yes",
+        "reason": "The portal and verifier use the publication's exact C2 functional, and the 524288-entry integer vector matches upstream exactly."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": true,
+        "immutable_upstream_ref_present": true,
+        "upstream_transform_reproduced": true,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": true,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "Package-level MIT notice and corrected scope statement",
+        "Independent functional/current-frontier review",
+        "Immutable verifier image and N-host timing/memory evidence"
+      ],
+      "real_eth_decision": "NO_GO_OPERATOR_WITNESS_ONLY"
+    },
+    {
+      "slug": "signed-autoconvolution-c3-upper",
+      "package_tree": "96de3c662aa00bfe7cc494cf119345845dd9f8e1",
+      "witness": {
+        "path": "problems/signed-autoconvolution-c3-upper/examples/organon-upper.json",
+        "sha256": "546aa6f4f08fcf78c7cdf762c405281d423025a1260930f3269813a4138e294e",
+        "bytes": 2285094,
+        "score": "40362551506526560656553725091979410551071047680000000/8092744874989952471246071559466128309374865340943729"
+      },
+      "declared_source": "autoconvolution-inequality-certificates/vectors/ac_board4_leader.json converted from exact Python float bit patterns",
+      "stated_source_url": "https://github.com/techno-optimist/autoconvolution-inequality-certificates",
+      "upstream": [
+        {
+          "url": "https://github.com/techno-optimist/autoconvolution-inequality-certificates/blob/1827a116b1d704a7237c9064507a490045a039d6/vectors/ac_board4_leader.json",
+          "tag": "v1.0",
+          "commit": "1827a116b1d704a7237c9064507a490045a039d6",
+          "tree": "5aaf12666ff5c68f26325cccc1a18231f5130229",
+          "path": "vectors/ac_board4_leader.json",
+          "blob": "8d8e2d625b2435fa5b3c8980c7209c90d5850657",
+          "source_sha256": "b4f6a1acd6c625cca66d7a44cf13ed56546e461ef44dfd6483f00c4c2e820c62"
+        }
+      ],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": ["MIT", "CC-BY-4.0"],
+        "upstream_scope": "README states MIT for code/certificate data and CC-BY-4.0 for note text/figures; the LICENSE scope footer contains stale filenames.",
+        "redistribution_status": "CONDITIONAL_UPSTREAM_PERMISSION_BUT_NOTICE_ABSENT_IN_PACKAGE"
+      },
+      "publication": [
+        {
+          "concept_doi": "10.5281/zenodo.21194862",
+          "version_doi": "10.5281/zenodo.21194863",
+          "version": "v1.0",
+          "status": "verified_but_does_not_support_local_functional"
+        }
+      ],
+      "attribution": "OrganonAgent for the witness; Kevin Russell, ProjectForty2, for the exact-certificate publication.",
+      "portal_verifier_match": {
+        "status": "no",
+        "reason": "The publication defines C3 with abs(max_t(f*f)(t)), equivalent here to the positive signed maximum, and certifies about 1.45230433. The local verifier instead computes max_t abs((f*f)(t)), the L-infinity cousin explicitly distinguished by the publication. The negative-dominant bundled witness then scores about 4.98749832, so the portal's published C3 claim is not evidence for the verifier's functional."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": true,
+        "immutable_upstream_ref_present": true,
+        "upstream_transform_reproduced": true,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": true,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "A governance decision selecting signed-maximum C3 or the L-infinity cousin",
+        "Portal/spec/verifier alignment after that decision",
+        "A valid frontier witness and publication for the selected functional",
+        "Fresh immutable image evidence replacing stale pre-fix evidence",
+        "Package-level license notice and N-host/external reduction review"
+      ],
+      "real_eth_decision": "NO_GO_BLOCKED_SEMANTIC_MISMATCH"
+    },
+    {
+      "slug": "mertens-lp-ceiling-k12000",
+      "package_tree": "51a00684d558e6dd724b78049c77d873891d7acd",
+      "witness": {
+        "path": "problems/mertens-lp-ceiling-k12000/examples/certificate-k12000.json",
+        "sha256": "769a2cc98425695b4024d9c6ef549cc668e31882ae7773992967744540cb2795",
+        "bytes": 171839,
+        "score": "249371902576813203926437/250000000000000000000000",
+        "embedded_y_hash_sha256": "2089d81dde22f590ef27e4aeaa4ead55932a8138250d3d05d2299d12647baffd"
+      },
+      "declared_source": "pnt-ceiling-certificates/duals/certified_dual_K12000.npz plus certs/certificate_K12000.json",
+      "stated_source_url": "https://github.com/techno-optimist/pnt-ceiling-certificates",
+      "upstream": [
+        {
+          "url": "https://github.com/techno-optimist/pnt-ceiling-certificates/tree/301043cc15a0d08d804bfde4e095cdfe2340c5c2",
+          "tag": "v1.1",
+          "commit": "301043cc15a0d08d804bfde4e095cdfe2340c5c2",
+          "tree": "6882b9af184ee80533d730b7f3dab4e2bead6a9a",
+          "source_files": [
+            {
+              "path": "duals/certified_dual_K12000.npz",
+              "blob": "5cb29364d9a96cb069462fe6626be204555a48b4",
+              "sha256": "5f87de72c15f863e48647aeb9ee227cec9863abe59f64961de5222bc58a0d36b"
+            },
+            {
+              "path": "certs/certificate_K12000.json",
+              "blob": "fa3540434c9d5b1e87616b76b2eca05103ea72fc",
+              "sha256": "f7eb7c23f88044aaad1649d42aed5bd99f8847406afef5df76c7c32b6f9c2b51"
+            }
+          ]
+        }
+      ],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": ["MIT", "CC-BY-4.0"],
+        "upstream_scope": "MIT for code, certs, and duals; CC-BY-4.0 for note text and figures.",
+        "redistribution_status": "CONDITIONAL_UPSTREAM_PERMISSION_BUT_NOTICE_ABSENT_IN_PACKAGE"
+      },
+      "publication": [
+        {
+          "concept_doi": "10.5281/zenodo.21221207",
+          "version_doi": "10.5281/zenodo.21221833",
+          "version": "v1.1",
+          "status": "verified"
+        }
+      ],
+      "attribution": "Kevin Russell, ProjectForty2/CHRONOS, for the publication and dual certificate repository.",
+      "portal_verifier_match": {
+        "status": "yes",
+        "reason": "The portal and verifier both implement the finite K=12000 weak-duality ceiling with exact integer residuals and interval-enclosed logarithms; the bundled m/Y arrays match the v1.1 NPZ."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": true,
+        "immutable_upstream_ref_present": true,
+        "upstream_transform_reproduced": true,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": true,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "Package-level MIT notice and a committed NPZ-to-JSON extraction transcript",
+        "Portal pin to the immutable v1.1 version DOI rather than only the concept DOI",
+        "Independent proof-side review and in-house solve determining whether meaningful room remains",
+        "Immutable verifier image and N-host timing evidence"
+      ],
+      "real_eth_decision": "NO_GO_POSSIBLY_CLOSED_PROOF_TRACK"
+    },
+    {
+      "slug": "pnt-sparse-mertens-construction",
+      "package_tree": "f6a1a0d67bda0642a7e60061a3dc91c3fb77a2d3",
+      "witness": {
+        "path": "problems/pnt-sparse-mertens-construction/examples/chronos-96000.json",
+        "sha256": "a60e6687ed1731009b3e3383fba1429bfac2bff694ee8e4fe256eef1fa42fb05",
+        "bytes": 98097,
+        "score": "9974252022196793/10000000000000000"
+      },
+      "declared_source": "CHRONOS accepted Arena solution 2386, converted from /private/tmp/pnt_candidate_96000_safe_scaled.json decimal literals",
+      "stated_source_url": "https://github.com/techno-optimist/pnt-ceiling-certificates",
+      "upstream": [],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": null,
+        "redistribution_status": "NOT_CLEARED"
+      },
+      "publication": [
+        {
+          "concept_doi": "10.5281/zenodo.21221207",
+          "status": "verified_but_unrelated_to_bundled_construction_source",
+          "reason": "The DOI certifies proof-side ceilings at K=4800 and K=12000; it does not publish the reach-96000 construction witness."
+        }
+      ],
+      "attribution": "CHRONOS and Arena solution 2386 per the witness source string; no durable submitter identity, receipt, or source artifact is included.",
+      "portal_verifier_match": {
+        "status": "partial",
+        "reason": "The board copy matches the local reach-96000 construction verifier, but the discovery linkage to the PNT ceiling publication does not establish provenance or correctness for this different construction functional and artifact."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": false,
+        "immutable_upstream_ref_present": false,
+        "upstream_transform_reproduced": false,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": false,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "Arena solution 2386 receipt, raw source file, submitter/agent identity, timestamp, and immutable hash",
+        "Public repository or archive for the reach-96000 construction",
+        "License and redistribution grant for the source and converted witness",
+        "Independent interval-objective review, immutable verifier image, and N-host evidence"
+      ],
+      "real_eth_decision": "NO_GO_OPERATOR_WITNESS_WITHOUT_DURABLE_PROVENANCE"
+    },
+    {
+      "slug": "hadamard-668-defect",
+      "package_tree": "ee911e581b9c0b7e15b280583310b66241beda72",
+      "witness": {
+        "path": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
+        "sha256": "4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6",
+        "bytes": 113745,
+        "score": "55444/1"
+      },
+      "declared_source": "First 668 rows and first 668 columns of the Sylvester order-1024 Hadamard matrix; bit 1 denotes one sign and bit 0 the other.",
+      "stated_source_url": null,
+      "upstream": [],
+      "license": {
+        "package_spdx": null,
+        "upstream_spdx": null,
+        "redistribution_status": "NOT_CLEARED"
+      },
+      "publication": [],
+      "attribution": "Classical Sylvester construction lineage; the concrete truncation is locally generated and has no named artifact author or generation transcript.",
+      "portal_verifier_match": {
+        "status": "yes",
+        "reason": "The portal and verifier both minimize the number of nonorthogonal row pairs in a 668 by 668 sign matrix; neither claims the bundled defect-55444 baseline solves the Hadamard problem."
+      },
+      "checklist": {
+        "tree_hash_verified": true,
+        "witness_hash_verified": true,
+        "witness_functionally_tested": true,
+        "source_url_present": false,
+        "immutable_upstream_ref_present": false,
+        "upstream_transform_reproduced": null,
+        "package_license_present": false,
+        "redistribution_cleared": false,
+        "publication_present": false,
+        "missing_evidence_empty": false,
+        "real_eth_fundable": false
+      },
+      "missing_evidence": [
+        "Committed deterministic generation transcript and artifact authorship/license declaration",
+        "Primary current-literature source for the claim that order 668 remains the smallest unknown order",
+        "Compute-indexed baseline search and public seed challenge window",
+        "Immutable verifier image, N-host timing, and external open-problem scope review"
+      ],
+      "real_eth_decision": "NO_GO_BASELINE_AND_LITERATURE_EVIDENCE_MISSING"
+    }
+  ]
+}
