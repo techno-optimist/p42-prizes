@@ -9,12 +9,56 @@ export interface MutationPrincipal {
   authenticated: boolean;
 }
 
+export type MutationApiConfigurationStatus = "configured" | "unconfigured" | "misconfigured";
+
+export interface MutationApiCapabilities {
+  status: MutationApiConfigurationStatus;
+  available: boolean;
+  authentication: "api-key" | "local-development-opt-out" | "unavailable";
+}
+
+interface MutationApiAuthConfiguration {
+  status: MutationApiConfigurationStatus;
+  allowedHashes: string[];
+  localOptOut: boolean;
+}
+
 function configuredKeyHashes(): string[] {
   const raw = process.env.P42_MUTATION_API_KEY_SHA256S ?? "";
   return raw
     .split(",")
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean);
+}
+
+function currentMutationApiAuthConfiguration(): MutationApiAuthConfiguration {
+  const allowedHashes = configuredKeyHashes();
+  const localOptOut = process.env.NODE_ENV !== "production"
+    && process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS === "1";
+
+  if (allowedHashes.some((hash) => !HASH_RE.test(hash))) {
+    return { status: "misconfigured", allowedHashes, localOptOut };
+  }
+  if (allowedHashes.length === 0) {
+    return { status: "unconfigured", allowedHashes, localOptOut };
+  }
+  return { status: "configured", allowedHashes, localOptOut };
+}
+
+// This is deliberately coarse-grained: callers can decide whether to attempt a
+// mutation without learning how many keys exist or anything about their hashes.
+export function mutationApiCapabilities(): MutationApiCapabilities {
+  const configuration = currentMutationApiAuthConfiguration();
+  if (configuration.status === "misconfigured") {
+    return { status: "misconfigured", available: false, authentication: "unavailable" };
+  }
+  if (configuration.status === "unconfigured") {
+    if (configuration.localOptOut) {
+      return { status: "unconfigured", available: true, authentication: "local-development-opt-out" };
+    }
+    return { status: "unconfigured", available: false, authentication: "unavailable" };
+  }
+  return { status: "configured", available: true, authentication: "api-key" };
 }
 
 function presentedKey(req: Request): string | undefined {
@@ -37,15 +81,13 @@ function safeEqual(left: string, right: string): boolean {
 }
 
 export function enforceMutationApiKey(req: Request, scope: string): MutationPrincipal {
-  const allowedHashes = configuredKeyHashes();
-  if (allowedHashes.some((hash) => !HASH_RE.test(hash))) {
+  const configuration = currentMutationApiAuthConfiguration();
+  if (configuration.status === "misconfigured") {
     throw new ApiError("mutation API key configuration contains an invalid key hash", 503);
   }
 
-  const localOptOut = process.env.NODE_ENV !== "production"
-    && process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS === "1";
-  if (allowedHashes.length === 0) {
-    if (localOptOut) return { authenticated: false };
+  if (configuration.status === "unconfigured") {
+    if (configuration.localOptOut) return { authenticated: false };
     throw new ApiError("mutation API authentication is not configured", 503);
   }
 
@@ -57,7 +99,7 @@ export function enforceMutationApiKey(req: Request, scope: string): MutationPrin
   }
 
   const keyHash = sha256Key(key);
-  if (!allowedHashes.some((allowed) => safeEqual(allowed, keyHash))) {
+  if (!configuration.allowedHashes.some((allowed) => safeEqual(allowed, keyHash))) {
     throw new ApiError("invalid P42 mutation API key", 403);
   }
 

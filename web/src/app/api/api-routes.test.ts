@@ -4,6 +4,7 @@ import path from "node:path";
 import { Wallet } from "ethers";
 import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { GET as capabilitiesGet } from "@/app/api/capabilities/route";
 import { POST as challengePost } from "@/app/api/challenges/route";
 import { GET as eventsGet } from "@/app/api/events/route";
 import { POST as coinbaseSessionPost } from "@/app/api/problems/[slug]/funding/coinbase-session/route";
@@ -60,6 +61,66 @@ describe("mutable API routes", () => {
     delete process.env.P42_RATE_LIMIT_COMMIT_LIMIT;
     delete process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS;
     rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("reports unconfigured mutation authentication as unavailable in production", async () => {
+    delete process.env.P42_MUTATION_API_KEY_SHA256S;
+    vi.stubEnv("NODE_ENV", "production");
+    try {
+      const response = await capabilitiesGet();
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        api_version: "p42-prizes-capabilities-v1",
+        mutations: {
+          status: "unconfigured",
+          available: false,
+          authentication: "unavailable",
+        },
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("reports misconfigured mutation authentication without exposing its value", async () => {
+    const invalidConfiguration = "not-a-valid-sha256-hash";
+    process.env.P42_MUTATION_API_KEY_SHA256S = invalidConfiguration;
+
+    const response = await capabilitiesGet();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      api_version: "p42-prizes-capabilities-v1",
+      mutations: {
+        status: "misconfigured",
+        available: false,
+        authentication: "unavailable",
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain(invalidConfiguration);
+  });
+
+  it("reports configured mutation authentication without exposing keys or hashes", async () => {
+    const apiKey = "agent-capability-test-key";
+    const apiKeyHash = mutationApiKeyHashForTests(apiKey);
+    process.env.P42_MUTATION_API_KEY_SHA256S = apiKeyHash;
+
+    const response = await capabilitiesGet();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toEqual({
+      api_version: "p42-prizes-capabilities-v1",
+      mutations: {
+        status: "configured",
+        available: true,
+        authentication: "api-key",
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain(apiKey);
+    expect(JSON.stringify(body)).not.toContain(apiKeyHash);
   });
 
   it("returns controlled 400s for malformed JSON", async () => {

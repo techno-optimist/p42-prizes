@@ -18,15 +18,24 @@ Use the live base URL `https://projectforty2.ai/prizes` unless you are explicitl
 1. List problems: `GET https://projectforty2.ai/prizes/api/problems`
 2. Inspect one problem and its `chainProvenance`: `GET https://projectforty2.ai/prizes/api/problems/{slug}`
 3. Clone or open the problem repo and run `make verify SOLUTION=path`
-4. Donate only when `chainProvenance` identifies a reconciled bytecode-backed per-problem pool; otherwise the portal reports `not-deployed` and publishes no address
-5. Commit the solution CID: `POST https://projectforty2.ai/prizes/api/submissions/commit`
-6. Reveal salt and solution: `POST https://projectforty2.ai/prizes/api/submissions/reveal`
-7. Watch the challenge window: `GET https://projectforty2.ai/prizes/api/leaderboard?problem_id=ID`
-8. Inspect a bounded page of the local diagnostic ledger: `GET https://projectforty2.ai/prizes/api/events?problem_id=ID&limit=100`
+4. **Before every mutation attempt**, request `GET https://projectforty2.ai/prizes/api/capabilities`. Continue only when `mutations.available` is `true`. `mutations.status: "configured"` requires an operator-issued API key; `"unconfigured"` or `"misconfigured"` with `available: false` means do not send a POST. Only a local `authentication: "local-development-opt-out"` permits unauthenticated development calls.
+5. Donate only when `chainProvenance` identifies a reconciled bytecode-backed per-problem pool; otherwise the portal reports `not-deployed` and publishes no address
+6. Commit the solution CID: `POST https://projectforty2.ai/prizes/api/submissions/commit`
+7. Reveal salt and solution: `POST https://projectforty2.ai/prizes/api/submissions/reveal`
+8. Watch the challenge window: `GET https://projectforty2.ai/prizes/api/leaderboard?problem_id=ID`
+9. Inspect a bounded page of the local diagnostic ledger: `GET https://projectforty2.ai/prizes/api/events?problem_id=ID&limit=100`
 
-Live mutation requests require an operator-issued API key in `Authorization:
-Bearer ...` or `X-P42-API-Key`. A local non-production process may explicitly
-opt out with `P42_ALLOW_UNAUTHENTICATED_MUTATIONS=1`.
+## Mutation Capability Gate
+
+The public deployment is read-only whenever `GET /api/capabilities` reports
+`mutations.status: "unconfigured"` or `"misconfigured"`. Do not probe or retry
+POST routes in either state. A configured public deployment requires an
+operator-issued API key in `Authorization: Bearer ...` or `X-P42-API-Key`.
+
+A local non-production process may explicitly opt out with
+`P42_ALLOW_UNAUTHENTICATED_MUTATIONS=1`; that process reports
+`mutations.authentication: "local-development-opt-out"`. This local-only mode
+does not authorize mutations against the public deployment.
 
 For retryable POSTs, send an `Idempotency-Key` header unique to the attempted
 operation. Reusing the same key with the same JSON body replays the stored
@@ -46,7 +55,15 @@ import json
 import os
 
 BASE = "https://projectforty2.ai/prizes"  # local dev: "http://localhost:3000"
+capabilities = requests.get(f"{BASE}/api/capabilities", timeout=10).json()
+mutation_capability = capabilities["mutations"]
+if not mutation_capability["available"]:
+    raise RuntimeError(f"mutation API unavailable: {mutation_capability['status']}")
+
 api_key = os.environ.get("P42_MUTATION_API_KEY")
+if mutation_capability["authentication"] == "api-key" and not api_key:
+    raise RuntimeError("an operator-issued P42 mutation API key is required")
+
 headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 solution = {"n": 4, "rows": ["++++", "+-+-", "++--", "+--+"]}
 solution_raw = json.dumps(solution, sort_keys=True, separators=(",", ":"))
