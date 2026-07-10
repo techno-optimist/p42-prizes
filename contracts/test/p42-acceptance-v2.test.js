@@ -126,12 +126,16 @@ async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10"
   });
   await registry.connect(owner).freeze(1);
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+  const Vault = await ethers.getContractFactory("P42RolloverVault");
+  const vault = await Vault.deploy(await registry.getAddress());
+  await vault.waitForDeployment();
+  await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(WINDOW + 1n);
   await submissions.connect(owner).armFunding();
   await pool.connect(owner).setAcceptingFunds(true);
   if (fund > 0n) await pool.fund({ value: fund });
 
-  return { owner, treasury, resolver, alice, bob, carol, pool, ledger, submissions, challenges };
+  return { owner, treasury, resolver, alice, bob, carol, pool, ledger, submissions, challenges, vault };
 }
 
 async function commitOnly(fixture, solver, cid, salt) {
@@ -210,7 +214,7 @@ describe("P42 second-pass contract acceptance", () => {
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal(await ledger.totalCreditAtoms(), (1n << 255n) - 2n);
 
-    await advanceTo(await ledger.effectiveEarliestCloseTimestamp());
+    await advanceTo(await ledger.closeByTimestamp());
     await ledger.connect(owner).close();
     assert.equal(await ledger.finalEntitlement(alice.address), ethers.parseEther("10"));
     await pool.connect(alice).claim();
@@ -239,6 +243,10 @@ describe("P42 second-pass contract acceptance", () => {
     await registry.waitForDeployment();
     await registry.setProblem(1, await pool.getAddress(), true);
     await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+    const Vault = await ethers.getContractFactory("P42RolloverVault");
+    const vault = await Vault.deploy(await registry.getAddress());
+    await vault.waitForDeployment();
+    await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("10") });
 
@@ -249,7 +257,7 @@ describe("P42 second-pass contract acceptance", () => {
       ledger,
       "P42_CREDIT_BOUND_EXCEEDED"
     );
-    await advanceTo(await ledger.effectiveEarliestCloseTimestamp());
+    await advanceTo(await ledger.closeByTimestamp());
     await ledger.connect(owner).close();
     assert.equal(await ledger.finalEntitlement(alice.address), ethers.parseEther("10"));
   });

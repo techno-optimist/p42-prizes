@@ -41,6 +41,7 @@ import {
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const CONTRACT_NAMES = Object.freeze({
   timelock: "P42MultisigTimelock",
+  rolloverVault: "P42RolloverVault",
   pool: "P42BountyPool",
   ledger: "P42PayoutLedger",
   submissions: "P42SubmissionManager",
@@ -218,7 +219,7 @@ async function deployCeremony(ethers) {
   );
   addresses.timelock = deployments.timelock.manifest.address;
 
-  for (const key of ["pool", "ledger", "submissions", "challenges", "registry"]) {
+  for (const key of ["registry", "rolloverVault", "pool", "ledger", "submissions", "challenges"]) {
     const name = CONTRACT_NAMES[key];
     const args = constructorArgsFor(name, config, addresses);
     deployments[key] = await deployPinnedContract(
@@ -427,6 +428,14 @@ async function deployMultiBoardCeremony(ethers) {
     (deployment) => recordManifestOutputDeployment(output, "registry", deployment),
   );
   rootAddresses.registry = rootDeployments.registry.manifest.address;
+  rootConstructorArgs.rolloverVault = constructorArgsFor("P42RolloverVault", config, rootAddresses);
+  rootDeployments.rolloverVault = await deployPinnedContract(
+    ethers,
+    "P42RolloverVault",
+    rootConstructorArgs.rolloverVault,
+    (deployment) => recordManifestOutputDeployment(output, "rolloverVault", deployment),
+  );
+  rootAddresses.rolloverVault = rootDeployments.rolloverVault.manifest.address;
 
   const boards = [];
   for (const problem of config.problems) {
@@ -500,6 +509,7 @@ async function deployMultiBoardCeremony(ethers) {
     contracts: {
       timelock: rootDeployments.timelock.manifest,
       registry: rootDeployments.registry.manifest,
+      rolloverVault: rootDeployments.rolloverVault.manifest,
     },
     governanceSetup: {
       status: "pending",
@@ -515,6 +525,7 @@ async function deployMultiBoardCeremony(ethers) {
       contracts: {
         timelock: null,
         registry: null,
+        rolloverVault: null,
         boards: boards.map(({ problem }) => ({
           problemId: String(problem.problemId),
           pool: null,
@@ -751,6 +762,12 @@ async function collectMultiBoardContinuationSnapshot(ethers, manifest, contractS
         sameAddress,
       ),
       check(
+        `wiring.${prefix}.ledgerRolloverDestination`,
+        await ledger.rolloverDestination(atBlock),
+        manifest.contracts.rolloverVault.address,
+        sameAddress,
+      ),
+      check(
         `wiring.${prefix}.poolSubmissionManager`,
         await pool.submissionManager(atBlock),
         problem.contracts.submissions.address,
@@ -965,6 +982,12 @@ async function collectContinuationSnapshot(ethers, manifest, contracts, checkedB
       "wiring.ledgerCreditRecorder",
       await contracts.ledger.creditRecorder(atBlock),
       manifest.contracts.submissions.address,
+      sameAddress
+    ),
+    check(
+      "wiring.ledgerRolloverDestination",
+      await contracts.ledger.rolloverDestination(atBlock),
+      manifest.contracts.rolloverVault.address,
       sameAddress
     ),
     check(

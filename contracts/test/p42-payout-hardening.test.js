@@ -76,6 +76,10 @@ async function deployFixture({ setRecorder = true, activateFunding = true } = {}
   await registry.waitForDeployment();
   await registry.setProblem(1, await pool.getAddress(), true);
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+  const Vault = await ethers.getContractFactory("P42RolloverVault");
+  const vault = await Vault.deploy(await registry.getAddress());
+  await vault.waitForDeployment();
+  await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
 
   if (setRecorder) {
     await ledger.connect(owner).setCreditRecorder(await submissionManager.getAddress());
@@ -84,14 +88,14 @@ async function deployFixture({ setRecorder = true, activateFunding = true } = {}
     await pool.connect(owner).setAcceptingFunds(true);
   }
 
-  return { owner, treasury, solver, recipient, caller, pool, ledger, submissionManager };
+  return { owner, treasury, solver, recipient, caller, pool, ledger, submissionManager, vault };
 }
 
 async function closeWithCredit(fixture, solverAddress, funding = ethers.parseEther("10")) {
   const { owner, pool, ledger, submissionManager } = fixture;
   await pool.connect(owner).fund({ value: funding });
   await submissionManager.recordCredit(await ledger.getAddress(), solverAddress, 1);
-  await advanceTo(await ledger.effectiveEarliestCloseTimestamp());
+  await advanceTo(await ledger.closeByTimestamp());
   await ledger.connect(owner).close();
   return funding;
 }
@@ -187,16 +191,16 @@ describe("P42 payout hardening", function () {
     assert.equal(await fixture.ledger.claimedWeiOf(fixture.solver.address), 0n);
   });
 
-  it("recovers forced ETH arriving after an earlier residual sweep without changing payout accounting", async function () {
+  it("keeps forced ETH outside rollover accounting and recovers it explicitly", async function () {
     const fixture = await deployFixture();
     const funding = await closeWithCredit(fixture, fixture.solver.address);
     const entitlement = await fixture.ledger.finalEntitlement(fixture.solver.address);
 
     await increaseTime((await fixture.ledger.CLAIM_DEADLINE_SECONDS()) + 1n);
-    const treasuryBeforeFirstSweep = await ethers.provider.getBalance(fixture.treasury.address);
+    const vaultBeforeFirstSweep = await ethers.provider.getBalance(await fixture.vault.getAddress());
     await fixture.ledger.connect(fixture.caller).sweepResidual();
     assert.equal(
-      (await ethers.provider.getBalance(fixture.treasury.address)) - treasuryBeforeFirstSweep,
+      (await ethers.provider.getBalance(await fixture.vault.getAddress())) - vaultBeforeFirstSweep,
       funding
     );
     assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), 0n);
@@ -215,19 +219,19 @@ describe("P42 payout hardening", function () {
     assert.equal(await fixture.ledger.finalEntitlement(fixture.solver.address), entitlement);
     assert.equal(await fixture.ledger.claimable(fixture.solver.address), 0n);
 
-    const treasuryBeforeRecovery = await ethers.provider.getBalance(fixture.treasury.address);
-    await fixture.ledger.connect(fixture.caller).sweepResidual();
-    assert.equal(
-      (await ethers.provider.getBalance(fixture.treasury.address)) - treasuryBeforeRecovery,
-      forcedAmount
+    await expectCustomError(
+      fixture.ledger.connect(fixture.caller).sweepResidual(),
+      fixture.ledger,
+      "P42_ROLLOVER_ALREADY_SWEPT"
     );
+    await fixture.pool.connect(fixture.owner).recoverForcedEth(forcedAmount);
     assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), 0n);
-    assert.equal(await fixture.pool.totalResidualPaid(), funding + forcedAmount);
+    assert.equal(await fixture.pool.totalResidualPaid(), funding);
     assert.equal(await fixture.ledger.residualSwept(), true);
     await expectCustomError(
       fixture.ledger.connect(fixture.caller).sweepResidual(),
       fixture.ledger,
-      "P42_RESIDUAL_ALREADY_SWEPT"
+      "P42_ROLLOVER_ALREADY_SWEPT"
     );
   });
 });

@@ -35,7 +35,7 @@ const VERIFIER_IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const PROBLEM_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const VERIFIER_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 const CHILD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
-const ALL_CONTRACT_KEYS = ["timelock", ...CHILD_CONTRACT_KEYS];
+const ALL_CONTRACT_KEYS = ["timelock", "rolloverVault", ...CHILD_CONTRACT_KEYS];
 const PAUSE_TARGET_KEYS = ["ledger", "submissions", "challenges"];
 const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
 const BOARD_DEPLOYMENT_KEYS = new Set(BOARD_CONTRACT_KEYS);
@@ -510,6 +510,8 @@ export function constructorArgsFor(name, config, addresses = {}) {
         config.parameters.earliestCloseTimestamp,
         config.parameters.closeByTimestamp
       ];
+    case "P42RolloverVault":
+      return [addresses.registry];
     case "P42SubmissionManager":
       return [
         addresses.pool,
@@ -606,6 +608,7 @@ export function buildSetupOperations({
   const labels = Object.freeze({
     poolSetLedger: labelFor("pool.setLedger"),
     ledgerSetCreditRecorder: labelFor("ledger.setCreditRecorder"),
+    ledgerSetRolloverDestination: labelFor("ledger.setRolloverDestination"),
     poolSetSubmissionManager: labelFor("pool.setSubmissionManager"),
     submissionsSetChallengeManager: labelFor("submissions.setChallengeManager"),
     registryRegister: labelFor("registry.register"),
@@ -641,6 +644,13 @@ export function buildSetupOperations({
       dependsOnLabels: []
     },
     {
+      label: labels.ledgerSetRolloverDestination,
+      operationClass: "standard",
+      target: addresses.ledger,
+      data: interfaces.ledger.encodeFunctionData("setRolloverDestination", [addresses.rolloverVault]),
+      dependsOnLabels: [labels.poolSetLedger]
+    },
+    {
       label: labels.poolSetSubmissionManager,
       operationClass: "standard",
       target: addresses.pool,
@@ -652,7 +662,7 @@ export function buildSetupOperations({
       operationClass: "standard",
       target: addresses.submissions,
       data: interfaces.submissions.encodeFunctionData("setChallengeManager", [addresses.challenges]),
-      dependsOnLabels: [labels.ledgerSetCreditRecorder]
+      dependsOnLabels: [labels.ledgerSetCreditRecorder, labels.ledgerSetRolloverDestination]
     },
     {
       label: labels.registryRegister,
@@ -877,6 +887,7 @@ export function buildMultiBoardSetupOperations({
       addresses: {
         timelock: timelockAddress,
         registry: registryAddress,
+        rolloverVault: addresses.rolloverVault,
         pool: addresses.pool,
         ledger: addresses.ledger,
         submissions: addresses.submissions,
@@ -1105,6 +1116,7 @@ export function requiredCompletionCheckNames(manifest) {
         `config.${prefix}.challenges`,
         `wiring.${prefix}.poolLedger`,
         `wiring.${prefix}.ledgerCreditRecorder`,
+        `wiring.${prefix}.ledgerRolloverDestination`,
         `wiring.${prefix}.poolSubmissionManager`,
         `wiring.${prefix}.submissionChallengeManager`,
         `wiring.${prefix}.poolRegistry`,
@@ -1118,6 +1130,7 @@ export function requiredCompletionCheckNames(manifest) {
     return [
       "runtime.timelock",
       "runtime.registry",
+      "runtime.rolloverVault",
       "owner.registry",
       "governance.signers",
       "governance.threshold",
@@ -1145,6 +1158,7 @@ export function requiredCompletionCheckNames(manifest) {
     "config.challenges",
     "wiring.poolLedger",
     "wiring.ledgerCreditRecorder",
+    "wiring.ledgerRolloverDestination",
     "wiring.poolSubmissionManager",
     "wiring.submissionChallengeManager",
     "wiring.poolRegistry",

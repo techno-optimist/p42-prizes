@@ -27,8 +27,11 @@ accountedBalance = totalFunded
 
 ## Close state
 
-At close, `closedPoolBalance = accountedBalance` and the final credit total
-selects one irrevocable branch.
+At or after `closeByTimestamp`, anyone may attempt close. If the configured
+credit recorder reports a nonzero `openSubmissionCount`, close reverts; valid
+commit/reveal/challenge lifecycle work must first be finalized, expired, or
+timed out permissionlessly. Once that guard clears, `closedPoolBalance =
+accountedBalance` and the final credit total selects one irrevocable branch.
 
 ### Zero-credit branch
 

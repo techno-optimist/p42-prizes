@@ -12,12 +12,16 @@ const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
 const SEED_SCORE_ATOMS = 1_000_000n;
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("property permanence receipt"));
 const FUNDING_CAP = ethers.parseEther("100");
-const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
 const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
 
 async function nextEarliestClose() {
   const latest = await ethers.provider.getBlock("latest");
   return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
+
+async function nextCloseBy() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + 181n * 24n * 60n * 60n;
 }
 
 async function expectCustomError(action, contract, errorName) {
@@ -59,7 +63,7 @@ async function increaseTime(seconds) {
 }
 
 async function advanceToEffectiveClose(ledger) {
-  const target = await ledger.effectiveEarliestCloseTimestamp();
+  const target = await ledger.closeByTimestamp();
   const latest = await ethers.provider.getBlock("latest");
   if (target > BigInt(latest.timestamp)) await increaseTime(target - BigInt(latest.timestamp));
 }
@@ -102,7 +106,7 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   const Ledger = await ethers.getContractFactory("P42PayoutLedger");
   const ledger = await Ledger.deploy(
     await pool.getAddress(), owner.address, treasury.address, feeBps,
-    await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+    await nextEarliestClose(), await nextCloseBy()
   );
   await ledger.waitForDeployment();
   await pool.connect(owner).setLedger(await ledger.getAddress());
@@ -145,12 +149,16 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   });
   await registry.freeze(1);
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+  const Vault = await ethers.getContractFactory("P42RolloverVault");
+  const vault = await Vault.deploy(await registry.getAddress());
+  await vault.waitForDeployment();
+  await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
   await submissions.connect(owner).armFunding();
   await pool.connect(owner).setAcceptingFunds(true);
   await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
-  return { owner, treasury, resolver, participants, pool, ledger, submissions };
+  return { owner, treasury, resolver, participants, pool, ledger, submissions, vault };
 }
 
 async function submitAndFinalize(fixture, solver, scenarioSeed, index, claimedScoreAtoms, improvementAtoms, donationBeforeFinalizeWei) {
@@ -243,27 +251,29 @@ describe("P42 contract property checks", function () {
       await ledger.connect(fixture.owner).close();
 
       const closedPoolBalance = await ledger.closedPoolBalance();
-      const feeReserve = await ledger.feeReserve();
-      const distributable = closedPoolBalance - feeReserve;
       const totalCredit = [...expectedCredits.values()].reduce((sum, atoms) => sum + atoms, 0n);
       assert.equal(await ledger.totalCreditAtoms(), totalCredit);
 
       let expectedTotalClaimed = 0n;
+      let expectedTotalFee = 0n;
       for (const [solverAddress, creditAtoms] of expectedCredits.entries()) {
-        const expected = distributable * creditAtoms / totalCredit;
+        const expected = closedPoolBalance * creditAtoms / totalCredit;
+        const fee = expected * BigInt(scenario.feeBps) / 10_000n;
         assert.equal(await ledger.creditAtomsOf(solverAddress), creditAtoms);
         assert.equal(await ledger.finalEntitlement(solverAddress), expected);
         assert.equal(await ledger.claimable(solverAddress), expected);
 
         const solver = participants.find((participant) => participant.address === solverAddress);
         await pool.connect(solver).claim();
-        expectedTotalClaimed += expected;
+        expectedTotalClaimed += expected - fee;
+        expectedTotalFee += fee;
         assert.equal(await pool.totalClaimed(), expectedTotalClaimed);
+        assert.equal(await pool.totalFeePaid(), expectedTotalFee);
         assert.equal(await ledger.claimedWeiOf(solverAddress), expected);
         await expectCustomError(pool.connect(solver).claim(), pool, "P42_NOTHING_TO_CLAIM");
       }
 
-      const dust = distributable - expectedTotalClaimed;
+      const dust = closedPoolBalance - (await ledger.totalGrossClaimed());
       assert.equal(dust >= 0n, true);
       assert.equal(dust < BigInt(expectedCredits.size), true);
     }
@@ -280,7 +290,7 @@ describe("P42 contract property checks", function () {
       await pool.waitForDeployment();
       const ledger = await Ledger.deploy(
         await pool.getAddress(), owner.address, treasury.address, 0,
-        await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+        await nextEarliestClose(), await nextCloseBy()
       );
       await ledger.waitForDeployment();
       await pool.connect(owner).setLedger(await ledger.getAddress());
@@ -310,6 +320,10 @@ describe("P42 contract property checks", function () {
       });
       await registry.freeze(1);
       await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+      const Vault = await ethers.getContractFactory("P42RolloverVault");
+      const vault = await Vault.deploy(await registry.getAddress());
+      await vault.waitForDeployment();
+      await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
       await pool.connect(owner).setAcceptingFunds(true);
       await pool.fund({ value: 10_003n });
       for (const [solver, atoms] of credits) {
@@ -359,7 +373,7 @@ describe("P42 contract property checks", function () {
     // 250 bps (2.5%) is the maximum accepted fee.
     const capped = await Ledger.deploy(
       await pool.getAddress(), owner.address, treasury.address, 250,
-      await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+      await nextEarliestClose(), await nextCloseBy()
     );
     await capped.waitForDeployment();
     assert.equal(await capped.feeBps(), 250n);
@@ -369,7 +383,7 @@ describe("P42 contract property checks", function () {
     await expectCustomError(
       Ledger.deploy(
         await pool.getAddress(), owner.address, treasury.address, 251,
-        await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+        await nextEarliestClose(), await nextCloseBy()
       ),
       Ledger,
       "P42_FEE_TOO_HIGH"

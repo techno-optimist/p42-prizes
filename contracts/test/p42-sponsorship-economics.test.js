@@ -174,6 +174,30 @@ describe("P42 sponsorship economics", function () {
     await expectCustomError(fixture.ledger.sweepRollover(), fixture.ledger, "P42_ROLLOVER_NOT_AVAILABLE");
   });
 
+  it("prevents sponsor-refund reentrancy and lets a rejecting sponsor redirect its principal", async function () {
+    const fixture = await deployFixture();
+    const ReentrantSponsor = await ethers.getContractFactory("ReentrantSponsor");
+    const reentrant = await ReentrantSponsor.deploy();
+    await reentrant.waitForDeployment();
+    const RejectingSponsor = await ethers.getContractFactory("RejectingSponsor");
+    const rejecting = await RejectingSponsor.deploy();
+    await rejecting.waitForDeployment();
+    await reentrant.fundPool(await fixture.pool.getAddress(), { value: 7n });
+    await rejecting.fundPool(await fixture.pool.getAddress(), { value: 11n });
+    await advanceTo(fixture.closeBy);
+    await fixture.ledger.close();
+
+    await reentrant.refund(await fixture.pool.getAddress());
+    assert.equal(await reentrant.reentryAttempted(), true);
+    assert.equal(await fixture.pool.sponsorshipOf(await reentrant.getAddress()), 0n);
+    await expectCustomError(rejecting.refund(await fixture.pool.getAddress()), fixture.pool, "P42_TRANSFER_FAILED");
+    assert.equal(await fixture.pool.sponsorshipOf(await rejecting.getAddress()), 11n);
+    const recipientBefore = await ethers.provider.getBalance(fixture.recipient.address);
+    await rejecting.refundTo(await fixture.pool.getAddress(), fixture.recipient.address);
+    assert.equal((await ethers.provider.getBalance(fixture.recipient.address)) - recipientBefore, 11n);
+    assert.equal(await fixture.pool.funded(), 0n);
+  });
+
   it("settles a positive-credit claim as gross entitlement minus an atomic per-claim fee", async function () {
     const fixture = await deployFixture();
     const funding = ethers.parseEther("10");

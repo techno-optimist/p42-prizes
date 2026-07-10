@@ -64,7 +64,8 @@ const ADDRESSES = Object.freeze({
   ledger: "0x0000000000000000000000000000000000000012",
   submissions: "0x0000000000000000000000000000000000000013",
   challenges: "0x0000000000000000000000000000000000000014",
-  registry: "0x0000000000000000000000000000000000000015"
+  registry: "0x0000000000000000000000000000000000000015",
+  rolloverVault: "0x0000000000000000000000000000000000000016"
 });
 const VERIFIER_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
 const VERIFIER_SOURCE_DIGEST = `sha256:${"b".repeat(64)}`;
@@ -587,13 +588,14 @@ describe("deployment ceremony construction", () => {
   it("emits deterministic standard/override operations in dependency order", async () => {
     const first = await operations();
     const second = await operations();
-    assert.equal(first.length, 10);
+    assert.equal(first.length, 11);
     assert.deepEqual(first, second);
     assert.deepEqual(
       first.map((operation) => operation.label),
       [
         "pool.setLedger",
         "ledger.setCreditRecorder",
+        "ledger.setRolloverDestination",
         "pool.setSubmissionManager",
         "submissions.setChallengeManager",
         "registry.register",
@@ -604,10 +606,10 @@ describe("deployment ceremony construction", () => {
         "timelock.setPauseTarget.challenges"
       ]
     );
-    assert.ok(first.slice(0, 7).every((operation) => operation.operationClass === "standard"));
-    assert.ok(first.slice(7).every((operation) => operation.operationClass === "override"));
-    assert.ok(first.slice(0, 7).every((operation) => operation.overrideFallback !== null));
-    assert.ok(first.slice(7).every((operation) => operation.overrideFallback === null));
+    assert.ok(first.slice(0, 8).every((operation) => operation.operationClass === "standard"));
+    assert.ok(first.slice(8).every((operation) => operation.operationClass === "override"));
+    assert.ok(first.slice(0, 8).every((operation) => operation.overrideFallback !== null));
+    assert.ok(first.slice(8).every((operation) => operation.overrideFallback === null));
     assert.ok(first.every((operation) => operation.status === "pending"));
     assert.ok(first.every((operation) => operation.txHash === null && operation.blockNumber === null));
 
@@ -621,7 +623,7 @@ describe("deployment ceremony construction", () => {
       "schedule"
     );
     assert.equal(
-      timelockInterface.parseTransaction({ data: first[7].transactionBuilder.schedule.data }).name,
+      timelockInterface.parseTransaction({ data: first[8].transactionBuilder.schedule.data }).name,
       "scheduleOverride"
     );
     assert.equal(
@@ -653,6 +655,7 @@ describe("deployment ceremony construction", () => {
         {
           problem: makeProblem(1, "ipfs://board-one"),
           addresses: {
+            rolloverVault: ADDRESSES.rolloverVault,
             pool: ADDRESSES.pool,
             ledger: ADDRESSES.ledger,
             submissions: ADDRESSES.submissions,
@@ -662,6 +665,7 @@ describe("deployment ceremony construction", () => {
         {
           problem: makeProblem(2, "ipfs://board-two"),
           addresses: {
+            rolloverVault: ADDRESSES.rolloverVault,
             pool: "0x0000000000000000000000000000000000000021",
             ledger: "0x0000000000000000000000000000000000000022",
             submissions: "0x0000000000000000000000000000000000000023",
@@ -671,10 +675,10 @@ describe("deployment ceremony construction", () => {
       ],
       interfaces: await interfaces(),
     });
-    assert.equal(boardPlan.length, 20);
-    assert.deepEqual(boardPlan.map((operation) => operation.sequence), Array.from({ length: 20 }, (_value, index) => index + 1));
-    assert.ok(boardPlan.slice(0, 10).every((operation) => operation.label.startsWith("board/1.")));
-    assert.ok(boardPlan.slice(10).every((operation) => operation.label.startsWith("board/2.")));
+    assert.equal(boardPlan.length, 22);
+    assert.deepEqual(boardPlan.map((operation) => operation.sequence), Array.from({ length: 22 }, (_value, index) => index + 1));
+    assert.ok(boardPlan.slice(0, 11).every((operation) => operation.label.startsWith("board/1.")));
+    assert.ok(boardPlan.slice(11).every((operation) => operation.label.startsWith("board/2.")));
 
     const registry = (await interfaces()).registry;
     const registerCalls = boardPlan
@@ -780,12 +784,14 @@ describe("deployment ceremony construction", () => {
     const problems = [makeProblem(1, "ipfs://board-one"), makeProblem(2, "ipfs://board-two")];
     const boardAddresses = [
       {
+        rolloverVault: ADDRESSES.rolloverVault,
         pool: ADDRESSES.pool,
         ledger: ADDRESSES.ledger,
         submissions: ADDRESSES.submissions,
         challenges: ADDRESSES.challenges,
       },
       {
+        rolloverVault: ADDRESSES.rolloverVault,
         pool: "0x0000000000000000000000000000000000000021",
         ledger: "0x0000000000000000000000000000000000000022",
         submissions: "0x0000000000000000000000000000000000000023",
@@ -836,7 +842,7 @@ describe("deployment ceremony construction", () => {
     assert.deepEqual(completed.problems.map((problem) => problem.explicitlyFrozen), [true, true]);
     assert.deepEqual(
       completed.problems.map((problem) => problem.registerTxHash),
-      [completed.setupTransactions[4].txHash, completed.setupTransactions[14].txHash],
+      [completed.setupTransactions[5].txHash, completed.setupTransactions[16].txHash],
     );
   });
 });

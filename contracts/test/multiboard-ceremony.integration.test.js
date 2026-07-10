@@ -166,6 +166,12 @@ describe("multi-board governance ceremony integration", () => {
       constructorArgsFor("P42ProblemRegistry", config, rootAddresses),
     );
     rootAddresses.registry = await registry.getAddress();
+    const rolloverVault = await deployContract(
+      deployer,
+      "P42RolloverVault",
+      constructorArgsFor("P42RolloverVault", config, rootAddresses),
+    );
+    rootAddresses.rolloverVault = await rolloverVault.getAddress();
 
     const boards = [];
     for (const problem of config.problems) {
@@ -181,7 +187,7 @@ describe("multi-board governance ceremony integration", () => {
       boards: boards.map(({ problem, addresses }) => ({ problem, addresses })),
       interfaces: await contractInterfaces(),
     });
-    assert.equal(operations.length, 20);
+    assert.equal(operations.length, 22);
     for (const operation of operations) {
       await executeSetupOperation(timelock, [signer1, signer2, signer3], operation);
     }
@@ -191,6 +197,7 @@ describe("multi-board governance ceremony integration", () => {
       const problemId = BigInt(index + 1);
       assert.equal(await registry.explicitlyFrozen(problemId), true);
       assert.equal(await board.contracts.pool.registry(), rootAddresses.registry);
+      assert.equal(await board.contracts.ledger.rolloverDestination(), rootAddresses.rolloverVault);
       assert.equal(await board.contracts.pool.problemId(), problemId);
       assert.equal(await board.contracts.submissions.fundingArmed(), false);
       assert.equal(await board.contracts.pool.acceptingFunds(), false);

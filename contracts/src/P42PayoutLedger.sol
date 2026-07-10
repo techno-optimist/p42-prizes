@@ -213,6 +213,10 @@ contract P42PayoutLedger {
             revert P42_CLOSE_BY_NOT_REACHED(closeByTimestamp, uint64(block.timestamp));
         }
         if (rolloverDestination == address(0)) revert P42_ROLLOVER_DESTINATION_NOT_SET();
+        if (creditRecorder != address(0)) {
+            uint256 openCount = IP42CreditCloseGuard(creditRecorder).openSubmissionCount();
+            if (openCount != 0) revert P42_OPEN_SUBMISSIONS(openCount);
+        }
         closed = true;
         closedAt = uint64(block.timestamp);
         closedPoolBalance = IP42EscrowPool(pool).funded();

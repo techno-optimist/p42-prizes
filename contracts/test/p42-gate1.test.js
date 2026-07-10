@@ -7,12 +7,16 @@ const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
 const RESOLVER_FRAUD_WINDOW_SECONDS = 24n * 60n * 60n;
 const FUNDING_CAP = ethers.parseEther("100");
-const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
 const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
 
 async function nextEarliestClose() {
   const latest = await ethers.provider.getBlock("latest");
   return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
+
+async function nextCloseBy() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + 181n * 24n * 60n * 60n;
 }
 // Absolute-score frontier seed for these economic fixtures. Reveals claim
 // ABSOLUTE scores strictly below this; finalize credits the marginal
@@ -60,7 +64,7 @@ async function increaseTime(seconds) {
 }
 
 async function advanceToEffectiveClose(ledger) {
-  const target = await ledger.effectiveEarliestCloseTimestamp();
+  const target = await ledger.closeByTimestamp();
   const latest = await ethers.provider.getBlock("latest");
   if (target > BigInt(latest.timestamp)) await increaseTime(target - BigInt(latest.timestamp));
 }
@@ -81,7 +85,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const Ledger = await ethers.getContractFactory("P42PayoutLedger");
     const ledger = await Ledger.deploy(
       await pool.getAddress(), owner.address, treasury.address, feeBps,
-      await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+      await nextEarliestClose(), await nextCloseBy()
     );
     await ledger.waitForDeployment();
     await pool.connect(owner).setLedger(await ledger.getAddress());
@@ -156,6 +160,10 @@ describe("P42 Gate 1 contract scaffold", function () {
     });
     await fundingRegistry.freeze(1);
     await pool.connect(owner).setRegistry(await fundingRegistry.getAddress(), 1);
+    const Vault = await ethers.getContractFactory("P42RolloverVault");
+    const vault = await Vault.deploy(await fundingRegistry.getAddress());
+    await vault.waitForDeployment();
+    await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     if (activateRecorder && !mockRecorder) await submissions.connect(owner).armFunding();
     if (activateRecorder || mockRecorder) await pool.connect(owner).setAcceptingFunds(true);
@@ -173,6 +181,7 @@ describe("P42 Gate 1 contract scaffold", function () {
       submissions,
       challenges,
       registry,
+      vault,
       creditRecorder,
       minBond,
     };
@@ -558,20 +567,13 @@ describe("P42 Gate 1 contract scaffold", function () {
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: bond });
     assert.equal(await submissions.openSubmissionCount(), 1n);
 
+    await advanceToEffectiveClose(ledger);
     await expectCustomError(ledger.close(), ledger, "P42_OPEN_SUBMISSIONS");
-    await expectCustomError(
-      submissions.expireCommitted(1),
-      submissions,
-      "P42_REVEAL_WINDOW_OPEN"
-    );
-
-    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.expireCommitted(1);
     const expired = await submissions.submissions(1);
     assert.equal(expired.status, 5n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
     assert.equal(await submissions.claimableBondWei(treasury.address), bond);
-    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
   });
@@ -585,21 +587,13 @@ describe("P42 Gate 1 contract scaffold", function () {
     });
     assert.equal(await submissions.openSubmissionCount(), 1n);
 
+    await advanceToEffectiveClose(ledger);
     await expectCustomError(ledger.close(), ledger, "P42_OPEN_SUBMISSIONS");
-    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await expectCustomError(
-      submissions.expireRevealed(submissionId),
-      submissions,
-      "P42_PERMANENCE_GRACE_OPEN"
-    );
-
-    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.expireRevealed(submissionId);
     const expired = await submissions.submissions(submissionId);
     assert.equal(expired.status, 5n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
     assert.equal(await submissions.claimableBondWei(treasury.address), bond);
-    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
   });
@@ -973,8 +967,11 @@ describe("P42 Gate 1 contract scaffold", function () {
       "P42_DISPUTE_WINDOW_OPEN"
     );
 
+    // At closeBy an unresolved challenge still blocks the permissionless close.
+    await advanceToEffectiveClose(ledger);
+    await expectCustomError(ledger.close(), ledger, "P42_OPEN_SUBMISSIONS");
+
     // The resolver never posts a decision; anyone can time the challenge out.
-    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await expireChallenge(fixture, alice, submissionId);
     // The one-shot challenge slot is cleared so a fresh challenge stays
     // possible in the re-armed window (F3).
@@ -990,7 +987,6 @@ describe("P42 Gate 1 contract scaffold", function () {
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal((await submissions.submissions(submissionId)).status, 4n);
     assert.equal(await submissions.openSubmissionCount(), 0n);
-    await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.closed(), true);
 
@@ -1038,36 +1034,23 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(netClaimable > required, true);
   });
 
-  it("sweeps the withheld fee to the treasury exactly once after close (L1)", async function () {
+  it("pays the protocol fee only with a successful solver claim (L1)", async function () {
     const { alice, treasury, pool, ledger, creditRecorder } = await deployFixture({ feeBps: 250, mockRecorder: true });
     await pool.fund({ value: ethers.parseEther("10") });
     await creditRecorder.recordCredit(await ledger.getAddress(), alice.address, 1);
 
-    // Nothing to sweep before close.
-    await expectCustomError(ledger.sweepFee(), ledger, "P42_NOT_CLOSED");
+    await expectCustomError(ledger.sweepFee(), ledger, "P42_FEE_CLAIM_ONLY");
 
     await advanceToEffectiveClose(ledger);
     await ledger.close();
-    const feeReserve = await ledger.feeReserve();
-    assert.equal(feeReserve, (ethers.parseEther("10") * 250n) / 10_000n);
-
     const treasuryBefore = await ethers.provider.getBalance(treasury.address);
     const poolBefore = await ethers.provider.getBalance(await pool.getAddress());
-    await ledger.sweepFee();
-    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, feeReserve);
-    assert.equal(poolBefore - (await ethers.provider.getBalance(await pool.getAddress())), feeReserve);
-    assert.equal(await ledger.feeSwept(), true);
-    assert.equal(await pool.totalFeePaid(), feeReserve);
-
-    // The fee cannot be swept twice.
-    await expectCustomError(ledger.sweepFee(), ledger, "P42_FEE_ALREADY_SWEPT");
-
-    // The solver still claims the full distributable pool with no underflow.
-    const distributable = await ledger.distributablePool();
-    const before = await ethers.provider.getBalance(await pool.getAddress());
     await pool.connect(alice).claim();
-    assert.equal(await ledger.claimedWeiOf(alice.address), distributable);
-    assert.equal(before - (await ethers.provider.getBalance(await pool.getAddress())), distributable);
+    const fee = ethers.parseEther("10") * 250n / 10_000n;
+    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, fee);
+    assert.equal(poolBefore - (await ethers.provider.getBalance(await pool.getAddress())), ethers.parseEther("10"));
+    assert.equal(await ledger.claimedWeiOf(alice.address), ethers.parseEther("10"));
+    assert.equal(await pool.totalFeePaid(), fee);
     assert.equal(await pool.funded(), 0n);
   });
 
@@ -1163,8 +1146,8 @@ describe("P42 Gate 1 contract scaffold", function () {
     assert.equal(await ledger.claimedWeiOf(bob.address), 0n);
   });
 
-  it("sweeps the full residual to the treasury only after the claim deadline (F15)", async function () {
-    const { alice, bob, treasury, pool, ledger, creditRecorder } = await deployFixture({ feeBps: 0, mockRecorder: true });
+  it("sweeps positive-credit residual only to the rollover vault after the claim deadline (F15)", async function () {
+    const { alice, bob, vault, pool, ledger, creditRecorder } = await deployFixture({ feeBps: 0, mockRecorder: true });
     await pool.fund({ value: ethers.parseEther("10") });
     await creditRecorder.recordCredit(await ledger.getAddress(), alice.address, 3);
     await creditRecorder.recordCredit(await ledger.getAddress(), bob.address, 7);
@@ -1183,10 +1166,10 @@ describe("P42 Gate 1 contract scaffold", function () {
     await increaseTime(CLAIM_DEADLINE_SECONDS + 1n);
     const residual = await pool.funded();
     assert.equal(residual, ethers.parseEther("10") - aliceShare); // bob's stranded share
-    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+    const vaultBefore = await ethers.provider.getBalance(await vault.getAddress());
     // Permissionless: any caller may trigger the sweep.
     await ledger.connect(bob).sweepResidual();
-    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, residual);
+    assert.equal((await ethers.provider.getBalance(await vault.getAddress())) - vaultBefore, residual);
     assert.equal(await pool.funded(), 0n);
     assert.equal(await ledger.residualSwept(), true);
     // Dedicated accounting: the residual never pollutes the fee counter.
@@ -1195,48 +1178,38 @@ describe("P42 Gate 1 contract scaffold", function () {
 
     // Late claims stay blocked and the sweep is one-shot.
     await expectCustomError(pool.connect(bob).claim(), ledger, "P42_CLAIMS_EXPIRED");
-    await expectCustomError(ledger.sweepResidual(), ledger, "P42_RESIDUAL_ALREADY_SWEPT");
+    await expectCustomError(ledger.sweepResidual(), ledger, "P42_ROLLOVER_ALREADY_SWEPT");
   });
 
-  it("sweeps the whole balance of a pool that closed with zero credited solvers (F15 canary edge)", async function () {
-    const { treasury, pool, ledger } = await deployFixture({ feeBps: 0, mockRecorder: true });
+  it("keeps zero-credit principal available only to its sponsor (F15 canary edge)", async function () {
+    const { pool, ledger } = await deployFixture({ feeBps: 0, mockRecorder: true });
     await pool.fund({ value: ethers.parseEther("1") });
     await advanceToEffectiveClose(ledger);
     await ledger.close();
     assert.equal(await ledger.totalCreditAtoms(), 0n);
 
-    await increaseTime(CLAIM_DEADLINE_SECONDS + 1n);
-    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
-    await ledger.sweepResidual();
-    // finalEntitlement is 0 for everyone, yet the FULL balance is recovered.
-    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, ethers.parseEther("1"));
+    await expectCustomError(ledger.sweepResidual(), ledger, "P42_ROLLOVER_NOT_AVAILABLE");
+    await pool.sponsorRefund();
     assert.equal(await pool.funded(), 0n);
-    assert.equal(await pool.totalResidualPaid(), ethers.parseEther("1"));
+    assert.equal(await pool.totalResidualPaid(), 0n);
   });
 
-  it("keeps payResidual ledger-only and the fee sweep independently available (F15)", async function () {
-    const { alice, treasury, pool, ledger, creditRecorder } = await deployFixture({ feeBps: 250, mockRecorder: true });
+  it("disables legacy residual and fee sweep surfaces (F15)", async function () {
+    const { alice, vault, pool, ledger, creditRecorder } = await deployFixture({ feeBps: 250, mockRecorder: true });
     await pool.fund({ value: ethers.parseEther("10") });
     await creditRecorder.recordCredit(await ledger.getAddress(), alice.address, 1);
     await advanceToEffectiveClose(ledger);
     await ledger.close();
 
-    // Direct calls to the escrow's residual path are ledger-only.
-    await expectCustomError(pool.connect(alice).payResidual(alice.address, 1n), pool, "P42_NOT_LEDGER");
-
-    // sweepFee remains independently available before the residual sweep.
-    await ledger.sweepFee();
-    const feeReserve = await ledger.feeReserve();
-    assert.equal(await pool.totalFeePaid(), feeReserve);
+    await expectCustomError(pool.connect(alice).payResidual(alice.address, 1n), pool, "P42_RESIDUAL_DISABLED");
+    await expectCustomError(ledger.sweepFee(), ledger, "P42_FEE_CLAIM_ONLY");
 
     await increaseTime(CLAIM_DEADLINE_SECONDS + 1n);
     const residual = await pool.funded();
-    assert.equal(residual, ethers.parseEther("10") - feeReserve); // alice never claimed
-    const treasuryBefore = await ethers.provider.getBalance(treasury.address);
+    const vaultBefore = await ethers.provider.getBalance(await vault.getAddress());
     await ledger.sweepResidual();
-    assert.equal((await ethers.provider.getBalance(treasury.address)) - treasuryBefore, residual);
-    // Fee and residual counters stay segregated.
-    assert.equal(await pool.totalFeePaid(), feeReserve);
+    assert.equal((await ethers.provider.getBalance(await vault.getAddress())) - vaultBefore, residual);
+    assert.equal(await pool.totalFeePaid(), 0n);
     assert.equal(await pool.totalResidualPaid(), residual);
     assert.equal(await pool.funded(), 0n);
   });

@@ -6,6 +6,12 @@ interface IP42PayoutPoolClaimer {
     function claimTo(address payable recipient) external;
 }
 
+interface IP42PayoutPoolSponsor {
+    function fund() external payable;
+    function sponsorRefund() external;
+    function sponsorRefundTo(address payable recipient) external;
+}
+
 /// @notice Solver that cannot receive ETH but can redirect a pool claim.
 contract RejectingPayoutSolver {
     error P42_REJECT_ETH();
@@ -55,4 +61,44 @@ contract MarkerSpoofRolloverDestination {
     }
 
     receive() external payable {}
+}
+
+contract RejectingSponsor {
+    error P42_REJECT_ETH();
+
+    receive() external payable {
+        revert P42_REJECT_ETH();
+    }
+
+    function fundPool(address pool) external payable {
+        IP42PayoutPoolSponsor(pool).fund{value: msg.value}();
+    }
+
+    function refund(address pool) external {
+        IP42PayoutPoolSponsor(pool).sponsorRefund();
+    }
+
+    function refundTo(address pool, address payable recipient) external {
+        IP42PayoutPoolSponsor(pool).sponsorRefundTo(recipient);
+    }
+}
+
+contract ReentrantSponsor {
+    address private _pool;
+    bool public reentryAttempted;
+
+    receive() external payable {
+        reentryAttempted = true;
+        try IP42PayoutPoolSponsor(_pool).sponsorRefund() {} catch {}
+    }
+
+    function fundPool(address pool) external payable {
+        _pool = pool;
+        IP42PayoutPoolSponsor(pool).fund{value: msg.value}();
+    }
+
+    function refund(address pool) external {
+        _pool = pool;
+        IP42PayoutPoolSponsor(pool).sponsorRefund();
+    }
 }
