@@ -7,17 +7,20 @@ import { network } from "hardhat";
 
 import {
   assertDeploymentConfigHash,
-  assertManifestOutputIsVacant,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
   buildSetupOperations,
+  completeManifestOutputReservation,
   completeSetupManifest,
   constructorArgsFor,
   constructorArgsHash,
   jsonStringify,
   MANIFEST_SCHEMA,
   PENDING_SETUP_STATUS,
+  readManifestOutputReservation,
   readCeremonyConfig,
+  recordManifestOutputDeployment,
+  reserveManifestOutput,
   SCORE_ATOM_SCALE,
   validateDeploymentTimestamps
 } from "./deployment-ceremony-helper.js";
@@ -86,12 +89,18 @@ async function waitForDeployment(contract) {
   };
 }
 
-async function deployPinnedContract(ethers, name, args) {
+async function deployPinnedContract(ethers, name, args, onProgress = undefined) {
   const factory = await ethers.getContractFactory(name);
   const contract = await factory.deploy(...args);
+  const transaction = contract.deploymentTransaction();
+  if (transaction === null) throw new Error("Deployment transaction was not available");
+  const address = await contract.getAddress();
+  if (onProgress) {
+    await onProgress({ name, address, txHash: transaction.hash, state: "broadcast", blockNumber: null });
+  }
   const deployment = await waitForDeployment(contract);
   const runtimeCodeHash = ethers.keccak256(await ethers.provider.getCode(deployment.address));
-  return {
+  const result = {
     contract,
     factory,
     manifest: {
@@ -105,6 +114,10 @@ async function deployPinnedContract(ethers, name, args) {
       constructorArgs: args
     }
   };
+  if (onProgress) {
+    await onProgress({ ...result.manifest, state: "mined" });
+  }
+  return result;
 }
 
 function contractInterfaces(deployments) {
@@ -114,8 +127,6 @@ function contractInterfaces(deployments) {
 }
 
 async function deployCeremony(ethers) {
-  const output = manifestPath();
-  await assertManifestOutputIsVacant(output);
   requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
   const [deployer] = await ethers.getSigners();
   if (deployer === undefined) throw new Error("No deployer signer available");
@@ -124,17 +135,37 @@ async function deployCeremony(ethers) {
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
   validateDeploymentTimestamps(config, latest.timestamp);
+  const deploymentCommit = gitCommit(resolve(process.cwd(), ".."));
+  const output = manifestPath();
+  const reservation = await reserveManifestOutput(output, {
+    deploymentCommit,
+    network: "baseSepolia",
+    chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+    deployer: deployer.address,
+  });
+  const recordDeployment = (key, deployment) => recordManifestOutputDeployment(output, key, deployment);
+  console.log(`Reserved deployment manifest destination: ${reservation.path}`);
 
   const deployments = {};
   const addresses = {};
   const timelockArgs = constructorArgsFor("P42MultisigTimelock", config);
-  deployments.timelock = await deployPinnedContract(ethers, "P42MultisigTimelock", timelockArgs);
+  deployments.timelock = await deployPinnedContract(
+    ethers,
+    "P42MultisigTimelock",
+    timelockArgs,
+    (deployment) => recordDeployment("timelock", deployment),
+  );
   addresses.timelock = deployments.timelock.manifest.address;
 
   for (const key of ["pool", "ledger", "submissions", "challenges", "registry"]) {
     const name = CONTRACT_NAMES[key];
     const args = constructorArgsFor(name, config, addresses);
-    deployments[key] = await deployPinnedContract(ethers, name, args);
+    deployments[key] = await deployPinnedContract(
+      ethers,
+      name,
+      args,
+      (deployment) => recordDeployment(key, deployment),
+    );
     addresses[key] = deployments[key].manifest.address;
   }
   assertTimelockOwnedConstructorArgs(
@@ -155,7 +186,7 @@ async function deployCeremony(ethers) {
     schema: MANIFEST_SCHEMA,
     status: PENDING_SETUP_STATUS,
     deployedAt: new Date().toISOString(),
-    deploymentCommit: gitCommit(resolve(process.cwd(), "..")),
+    deploymentCommit,
     network: {
       name: "baseSepolia",
       chainId: Number(BASE_SEPOLIA_CHAIN_ID),
@@ -229,6 +260,7 @@ async function deployCeremony(ethers) {
 
   await mkdir(dirname(output), { recursive: true });
   await writeFile(output, `${jsonStringify(manifest)}\n`, { flag: "wx" });
+  await completeManifestOutputReservation(output);
   console.log(`Wrote pending governance ceremony manifest: ${output}`);
   console.log(`Timelock owner: ${addresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action.`);
@@ -536,21 +568,25 @@ async function continueCeremony(ethers) {
   }
 }
 
-requiredEnv("BASE_SEPOLIA_RPC_URL");
 const mode = (process.env.P42_DEPLOY_MODE ?? "deploy").trim().toLowerCase();
-if (mode !== "deploy" && mode !== "continue") {
-  throw new Error("P42_DEPLOY_MODE must be deploy or continue");
+if (mode !== "deploy" && mode !== "continue" && mode !== "inspect-reservation") {
+  throw new Error("P42_DEPLOY_MODE must be deploy, continue, or inspect-reservation");
 }
 
-const connection = await network.create("baseSepolia");
-try {
-  const { ethers } = connection;
-  const chain = await ethers.provider.getNetwork();
-  if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
-    throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+if (mode === "inspect-reservation") {
+  console.log(jsonStringify((await readManifestOutputReservation(manifestPath())).record));
+} else {
+  requiredEnv("BASE_SEPOLIA_RPC_URL");
+  const connection = await network.create("baseSepolia");
+  try {
+    const { ethers } = connection;
+    const chain = await ethers.provider.getNetwork();
+    if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+      throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+    }
+    if (mode === "deploy") await deployCeremony(ethers);
+    else await continueCeremony(ethers);
+  } finally {
+    await connection.close();
   }
-  if (mode === "deploy") await deployCeremony(ethers);
-  else await continueCeremony(ethers);
-} finally {
-  await connection.close();
 }
