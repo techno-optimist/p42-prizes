@@ -11,13 +11,19 @@ HASH_RE = re.compile(r"--hash=sha256:[0-9a-f]{64}$")
 def test_canonical_verifier_image_requires_hash_locked_dependencies() -> None:
     dockerfile = (ROOT / "Dockerfile.verifier").read_text(encoding="utf-8")
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     assert re.search(r"^FROM\s+[^\s]+@sha256:[0-9a-f]{64}$", dockerfile, flags=re.MULTILINE)
+    assert "COPY requirements.runtime.lock /repo/requirements.runtime.lock" in dockerfile
+    assert "pip install --no-cache-dir --require-hashes -r /repo/requirements.runtime.lock" in dockerfile
     assert "pip install --no-cache-dir --require-hashes -r requirements.lock" in dockerfile
+    assert "-m pip install --require-hashes -r requirements.runtime.lock" in makefile
     assert "-m pip install --require-hashes -r $$requirements" in makefile
+    assert "!requirements.runtime.lock" in dockerignore
 
 
-def test_every_nonstdlib_verifier_requirement_has_a_sha256_hash() -> None:
-    for lock_path in sorted((ROOT / "problems").glob("*/requirements.lock")):
+def test_every_runtime_and_problem_requirement_has_a_sha256_hash() -> None:
+    lock_paths = [ROOT / "requirements.runtime.lock", *sorted((ROOT / "problems").glob("*/requirements.lock"))]
+    for lock_path in lock_paths:
         active_requirement: str | None = None
         hash_count = 0
         for raw_line in lock_path.read_text(encoding="utf-8").splitlines():

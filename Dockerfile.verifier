@@ -37,6 +37,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends make \
     && rm -rf /var/lib/apt/lists/*
 
+# The P42 CLI is part of every verifier invocation. Install its fully
+# hash-locked runtime before copying the source tree it imports from.
+COPY requirements.runtime.lock /repo/requirements.runtime.lock
+RUN pip install --no-cache-dir --require-hashes -r /repo/requirements.runtime.lock
+
 # Preserve the repo-relative layout: the problem Makefile uses PYTHONPATH=../../src,
 # so the problem must sit two levels under /repo with src as a sibling.
 COPY src /repo/src
