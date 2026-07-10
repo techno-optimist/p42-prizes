@@ -11,6 +11,7 @@ import { network } from "hardhat";
 import { computeDeploymentConfigHash, validateManifestEvidence } from "../../agent/indexer.mjs";
 import {
   assertVerifierImageAnchor,
+  assertVerifierSourceAnchor,
   assertManifestOutputIsVacant,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
@@ -28,7 +29,10 @@ import {
   reserveManifestOutput,
   requiredCompletionCheckNames,
   VERIFIER_IMAGE_HASH_ALGORITHM,
-  verifierImageHashForDigest
+  VERIFIER_SOURCE_DIGEST_ALGORITHM,
+  VERIFIER_SOURCE_HASH_ALGORITHM,
+  verifierImageHashForDigest,
+  verifierSourceHashForDigest
 } from "../scripts/deployment-ceremony-helper.js";
 
 const { ethers } = await network.create();
@@ -51,6 +55,7 @@ const ADDRESSES = Object.freeze({
   registry: "0x0000000000000000000000000000000000000015"
 });
 const VERIFIER_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
+const VERIFIER_SOURCE_DIGEST = `sha256:${"b".repeat(64)}`;
 
 function readExampleManifest() {
   return JSON.parse(
@@ -82,7 +87,10 @@ function validEnv() {
     P42_RESOLVER_DECISION_BOND_WEI: "5000000000000000",
     P42_RESOLVER_FRAUD_WINDOW_SECONDS: "86400",
     P42_PROBLEM_SPEC_HASH: `0x${"1".repeat(64)}`,
-    P42_VERIFIER_SOURCE_HASH: `0x${"2".repeat(64)}`,
+    P42_PROBLEM_SLUG: "hadamard-mini",
+    P42_VERIFIER_VERSION: "0.1.1",
+    P42_VERIFIER_SOURCE_DIGEST: VERIFIER_SOURCE_DIGEST,
+    P42_VERIFIER_SOURCE_HASH: verifierSourceHashForDigest(ethers, VERIFIER_SOURCE_DIGEST),
     P42_VERIFIER_IMAGE_DIGEST: VERIFIER_IMAGE_DIGEST,
     P42_VERIFIER_IMAGE_HASH: verifierImageHashForDigest(ethers, VERIFIER_IMAGE_DIGEST),
     P42_ADMISSION_MATRIX_HASH: `0x${"4".repeat(64)}`,
@@ -186,6 +194,40 @@ describe("deployment ceremony input gate", () => {
     );
   });
 
+  it("requires an explicit source-tree digest, slug, version, and matching source anchor", () => {
+    const accepted = readCeremonyConfig(ethers, validEnv(), { deployerAddress: ADDRESSES.deployer });
+    assert.equal(accepted.problem.problemSlug, "hadamard-mini");
+    assert.equal(accepted.problem.verifierVersion, "0.1.1");
+    assert.equal(accepted.problem.verifierSourceDigest, VERIFIER_SOURCE_DIGEST);
+    assert.equal(accepted.problem.verifierSourceDigestAlgorithm, VERIFIER_SOURCE_DIGEST_ALGORITHM);
+    assert.equal(accepted.problem.verifierSourceHashAlgorithm, VERIFIER_SOURCE_HASH_ALGORITHM);
+    assert.equal(
+      accepted.problem.verifierSourceHash,
+      verifierSourceHashForDigest(ethers, accepted.problem.verifierSourceDigest)
+    );
+
+    const badSlug = validEnv();
+    badSlug.P42_PROBLEM_SLUG = "Hadamard Mini";
+    assert.throws(
+      () => readCeremonyConfig(ethers, badSlug, { deployerAddress: ADDRESSES.deployer }),
+      /P42_PROBLEM_SLUG must be a canonical lowercase problem slug/
+    );
+
+    const badVersion = validEnv();
+    badVersion.P42_VERIFIER_VERSION = "v0.1";
+    assert.throws(
+      () => readCeremonyConfig(ethers, badVersion, { deployerAddress: ADDRESSES.deployer }),
+      /P42_VERIFIER_VERSION must be a canonical semantic version/
+    );
+
+    const mismatch = validEnv();
+    mismatch.P42_VERIFIER_SOURCE_HASH = `0x${"2".repeat(64)}`;
+    assert.throws(
+      () => readCeremonyConfig(ethers, mismatch, { deployerAddress: ADDRESSES.deployer }),
+      /P42_VERIFIER_SOURCE_HASH must equal keccak256\(utf8\(verifierSourceDigest\)\)/
+    );
+  });
+
   it("records a schema-valid explicit digest anchor in the non-deployed example", () => {
     const manifest = readExampleManifest();
     const problem = manifest.problems[0];
@@ -194,8 +236,12 @@ describe("deployment ceremony input gate", () => {
     assert.equal(problem.acceptingFunds, false);
     assert.equal(problem.verifierImageHashAlgorithm, VERIFIER_IMAGE_HASH_ALGORITHM);
     assert.equal(problem.verifierImageHash, verifierImageHashForDigest(ethers, problem.verifierImageDigest));
+    assert.equal(problem.verifierSourceDigestAlgorithm, VERIFIER_SOURCE_DIGEST_ALGORITHM);
+    assert.equal(problem.verifierSourceHashAlgorithm, VERIFIER_SOURCE_HASH_ALGORITHM);
+    assert.equal(problem.verifierSourceHash, verifierSourceHashForDigest(ethers, problem.verifierSourceDigest));
     assert.doesNotThrow(() => validateManifestEvidence(manifest));
     assert.doesNotThrow(() => assertVerifierImageAnchor(ethers, problem));
+    assert.doesNotThrow(() => assertVerifierSourceAnchor(ethers, problem));
 
     const malformed = structuredClone(manifest);
     malformed.problems[0].verifierImageDigest = `sha256:${"A".repeat(64)}`;
@@ -209,6 +255,13 @@ describe("deployment ceremony input gate", () => {
     assert.throws(
       () => validateManifestEvidence(mismatch),
       /problems\[0\]\.verifierImageHash must equal keccak256\(utf8\(verifierImageDigest\)\)/
+    );
+
+    const sourceMismatch = structuredClone(manifest);
+    sourceMismatch.problems[0].verifierSourceHash = `0x${"2".repeat(64)}`;
+    assert.throws(
+      () => validateManifestEvidence(sourceMismatch),
+      /problems\[0\]\.verifierSourceHash must equal keccak256\(utf8\(verifierSourceDigest\)\)/
     );
   });
 

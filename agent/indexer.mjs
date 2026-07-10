@@ -104,6 +104,10 @@ const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
 const VERIFIER_IMAGE_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v1";
+const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
+const PROBLEM_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const VERIFIER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 
 export const STALE_BASE_SEPOLIA_RELEASE_GUARDS = Object.freeze([
   {
@@ -237,6 +241,29 @@ function validateVerifierImageAnchor(problem, label) {
   const expectedHash = ethers.keccak256(ethers.toUtf8Bytes(digest));
   if (String(problem.verifierImageHash).toLowerCase() !== expectedHash.toLowerCase()) {
     throw new Error(`${label}.verifierImageHash must equal keccak256(utf8(verifierImageDigest))`);
+  }
+}
+
+function validateVerifierSourceAnchor(problem, label) {
+  if (typeof problem?.problemSlug !== "string" || !PROBLEM_SLUG_RE.test(problem.problemSlug)) {
+    throw new Error(`${label}.problemSlug must be a canonical lowercase problem slug`);
+  }
+  if (typeof problem?.verifierVersion !== "string" || !VERIFIER_VERSION_RE.test(problem.verifierVersion)) {
+    throw new Error(`${label}.verifierVersion must be a canonical semantic version`);
+  }
+  const digest = problem?.verifierSourceDigest;
+  if (typeof digest !== "string" || !VERIFIER_IMAGE_DIGEST_RE.test(digest)) {
+    throw new Error(`${label}.verifierSourceDigest must be a canonical source-tree sha256 digest`);
+  }
+  if (problem.verifierSourceDigestAlgorithm !== VERIFIER_SOURCE_DIGEST_ALGORITHM) {
+    throw new Error(`${label}.verifierSourceDigestAlgorithm must equal ${VERIFIER_SOURCE_DIGEST_ALGORITHM}`);
+  }
+  if (problem.verifierSourceHashAlgorithm !== VERIFIER_SOURCE_HASH_ALGORITHM) {
+    throw new Error(`${label}.verifierSourceHashAlgorithm must equal ${VERIFIER_SOURCE_HASH_ALGORITHM}`);
+  }
+  const expectedHash = ethers.keccak256(ethers.toUtf8Bytes(digest));
+  if (String(problem.verifierSourceHash).toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new Error(`${label}.verifierSourceHash must equal keccak256(utf8(verifierSourceDigest))`);
   }
 }
 
@@ -488,6 +515,7 @@ export function validateManifestEvidence(manifest) {
 
   for (const [index, problem] of manifest.problems.entries()) {
     validateVerifierImageAnchor(problem, `problems[${index}]`);
+    validateVerifierSourceAnchor(problem, `problems[${index}]`);
   }
 
   for (const field of [

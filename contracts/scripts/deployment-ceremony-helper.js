@@ -13,6 +13,9 @@ export const SCORE_ATOM_SCALE = 1_000_000_000_000_000_000n;
 export const OPERATION_GRACE_PERIOD_SECONDS = 7n * 24n * 60n * 60n;
 export const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
 export const VERIFIER_IMAGE_HASH_RELATION = "keccak256(utf8(verifierImageDigest))";
+export const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v1";
+export const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
+export const VERIFIER_SOURCE_HASH_RELATION = "keccak256(utf8(verifierSourceDigest))";
 
 export const DEFAULT_FINALITY_POLICY = Object.freeze({
   mode: "confirmations",
@@ -26,6 +29,8 @@ export const DEFAULT_FINALITY_POLICY = Object.freeze({
 
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const VERIFIER_IMAGE_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
+const PROBLEM_SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const VERIFIER_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 const CHILD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
 const ALL_CONTRACT_KEYS = ["timelock", ...CHILD_CONTRACT_KEYS];
 const PAUSE_TARGET_KEYS = ["ledger", "submissions", "challenges"];
@@ -128,6 +133,83 @@ function requiredVerifierImageDigest(env) {
     throw new Error("P42_VERIFIER_IMAGE_DIGEST must be a canonical bare sha256:<64 lowercase hex> digest");
   }
   return canonicalVerifierImageDigest(digest, "P42_VERIFIER_IMAGE_DIGEST");
+}
+
+function canonicalProblemSlug(value, label) {
+  if (typeof value !== "string" || !PROBLEM_SLUG_PATTERN.test(value)) {
+    throw new Error(`${label} must be a canonical lowercase problem slug`);
+  }
+  return value;
+}
+
+function canonicalVerifierVersion(value, label) {
+  if (typeof value !== "string" || !VERIFIER_VERSION_PATTERN.test(value)) {
+    throw new Error(`${label} must be a canonical semantic version`);
+  }
+  return value;
+}
+
+function canonicalVerifierSourceDigest(value, label) {
+  if (typeof value !== "string" || !VERIFIER_IMAGE_DIGEST_PATTERN.test(value)) {
+    throw new Error(`${label} must be a canonical sha256:<64 lowercase hex> source-tree digest`);
+  }
+  return value;
+}
+
+export function verifierSourceHashForDigest(ethers, verifierSourceDigest, label = "verifierSourceDigest") {
+  const digest = canonicalVerifierSourceDigest(verifierSourceDigest, label);
+  return ethers.keccak256(ethers.toUtf8Bytes(digest));
+}
+
+export function assertVerifierSourceAnchor(
+  ethers,
+  {
+    problemSlug,
+    verifierVersion,
+    verifierSourceDigest,
+    verifierSourceDigestAlgorithm,
+    verifierSourceHash,
+    verifierSourceHashAlgorithm,
+  },
+  {
+    slugLabel = "problemSlug",
+    versionLabel = "verifierVersion",
+    digestLabel = "verifierSourceDigest",
+    digestAlgorithmLabel = "verifierSourceDigestAlgorithm",
+    hashLabel = "verifierSourceHash",
+    hashAlgorithmLabel = "verifierSourceHashAlgorithm",
+  } = {}
+) {
+  const slug = canonicalProblemSlug(problemSlug, slugLabel);
+  const version = canonicalVerifierVersion(verifierVersion, versionLabel);
+  if (verifierSourceDigestAlgorithm !== VERIFIER_SOURCE_DIGEST_ALGORITHM) {
+    throw new Error(`${digestAlgorithmLabel} must equal ${VERIFIER_SOURCE_DIGEST_ALGORITHM}`);
+  }
+  if (verifierSourceHashAlgorithm !== VERIFIER_SOURCE_HASH_ALGORITHM) {
+    throw new Error(`${hashAlgorithmLabel} must equal ${VERIFIER_SOURCE_HASH_ALGORITHM}`);
+  }
+  const digest = canonicalVerifierSourceDigest(verifierSourceDigest, digestLabel);
+  const hash = nonzeroHash(ethers, hashLabel, verifierSourceHash);
+  const expectedHash = verifierSourceHashForDigest(ethers, digest, digestLabel);
+  if (hash !== expectedHash) {
+    throw new Error(`${hashLabel} must equal ${VERIFIER_SOURCE_HASH_RELATION}: expected ${expectedHash}`);
+  }
+  return {
+    problemSlug: slug,
+    verifierVersion: version,
+    verifierSourceDigest: digest,
+    verifierSourceDigestAlgorithm,
+    verifierSourceHash: hash,
+    verifierSourceHashAlgorithm,
+  };
+}
+
+function requiredVerifierSourceDigest(env) {
+  const digest = required(env, "P42_VERIFIER_SOURCE_DIGEST");
+  if (String(env.P42_VERIFIER_SOURCE_DIGEST) !== digest) {
+    throw new Error("P42_VERIFIER_SOURCE_DIGEST must be a canonical sha256:<64 lowercase hex> source-tree digest");
+  }
+  return canonicalVerifierSourceDigest(digest, "P42_VERIFIER_SOURCE_DIGEST");
 }
 
 function assertDistinct(label, entries) {
@@ -254,14 +336,29 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
       algorithmLabel: "verifierImageHashAlgorithm"
     }
   );
+  const verifierSourceAnchor = assertVerifierSourceAnchor(
+    ethers,
+    {
+      problemSlug: required(env, "P42_PROBLEM_SLUG"),
+      verifierVersion: required(env, "P42_VERIFIER_VERSION"),
+      verifierSourceDigest: requiredVerifierSourceDigest(env),
+      verifierSourceDigestAlgorithm: VERIFIER_SOURCE_DIGEST_ALGORITHM,
+      verifierSourceHash: required(env, "P42_VERIFIER_SOURCE_HASH"),
+      verifierSourceHashAlgorithm: VERIFIER_SOURCE_HASH_ALGORITHM,
+    },
+    {
+      slugLabel: "P42_PROBLEM_SLUG",
+      versionLabel: "P42_VERIFIER_VERSION",
+      digestLabel: "P42_VERIFIER_SOURCE_DIGEST",
+      digestAlgorithmLabel: "verifierSourceDigestAlgorithm",
+      hashLabel: "P42_VERIFIER_SOURCE_HASH",
+      hashAlgorithmLabel: "verifierSourceHashAlgorithm",
+    }
+  );
 
   const problem = {
     specHash: nonzeroHash(ethers, "P42_PROBLEM_SPEC_HASH", required(env, "P42_PROBLEM_SPEC_HASH")),
-    verifierSourceHash: nonzeroHash(
-      ethers,
-      "P42_VERIFIER_SOURCE_HASH",
-      required(env, "P42_VERIFIER_SOURCE_HASH")
-    ),
+    ...verifierSourceAnchor,
     ...verifierImageAnchor,
     admissionMatrixHash: nonzeroHash(
       ethers,

@@ -8,6 +8,7 @@ import { network } from "hardhat";
 import {
   assertDeploymentConfigHash,
   assertVerifierImageAnchor,
+  assertVerifierSourceAnchor,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
   buildSetupOperations,
@@ -226,9 +227,14 @@ async function deployCeremony(ethers) {
       {
         problemId: "1",
         registrationStatus: "pending",
+        problemSlug: config.problem.problemSlug,
+        verifierVersion: config.problem.verifierVersion,
         metadataURI: config.problem.metadataURI,
         specHash: config.problem.specHash,
+        verifierSourceDigest: config.problem.verifierSourceDigest,
+        verifierSourceDigestAlgorithm: config.problem.verifierSourceDigestAlgorithm,
         verifierSourceHash: config.problem.verifierSourceHash,
+        verifierSourceHashAlgorithm: config.problem.verifierSourceHashAlgorithm,
         verifierImageDigest: config.problem.verifierImageDigest,
         verifierImageHashAlgorithm: config.problem.verifierImageHashAlgorithm,
         verifierImageHash: config.problem.verifierImageHash,
@@ -542,6 +548,14 @@ async function continueCeremony(ethers) {
       digestLabel: `manifest.problems[${index}].verifierImageDigest`,
       hashLabel: `manifest.problems[${index}].verifierImageHash`,
       algorithmLabel: `manifest.problems[${index}].verifierImageHashAlgorithm`
+    });
+    assertVerifierSourceAnchor(ethers, problem, {
+      slugLabel: `manifest.problems[${index}].problemSlug`,
+      versionLabel: `manifest.problems[${index}].verifierVersion`,
+      digestLabel: `manifest.problems[${index}].verifierSourceDigest`,
+      digestAlgorithmLabel: `manifest.problems[${index}].verifierSourceDigestAlgorithm`,
+      hashLabel: `manifest.problems[${index}].verifierSourceHash`,
+      hashAlgorithmLabel: `manifest.problems[${index}].verifierSourceHashAlgorithm`,
     });
   }
   assertDeploymentConfigHash(manifest);

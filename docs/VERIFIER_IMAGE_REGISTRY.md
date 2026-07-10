@@ -21,6 +21,10 @@ A problem may be marked fundable only when all of these match:
   `verifierImageHashAlgorithm: "keccak256-utf8/v1"`, and the on-chain
   `verifierImageHash`, where
   `verifierImageHash = keccak256(utf8(verifierImageDigest))`.
+- It also records the problem slug, verifier version, and a
+  `p42-source-tree-sha256/v1` `verifierSourceDigest` over the copied verifier
+  source tree. The on-chain `verifierSourceHash` must equal
+  `keccak256(utf8(verifierSourceDigest))`.
 
 Run the local gate:
 
@@ -41,6 +45,8 @@ letting a placeholder digest become funding evidence.
 | `problem.yaml.verifier.image` | problem repo | Immutable digest, no tags or placeholders |
 | `VerdictReport.verifier_image` | verifier output | Must equal the manifest digest |
 | `admission-matrix.verifier_image` | N-host matrix | Must equal the manifest digest |
+| `verifierSourceDigest` | deployment manifest | Canonical source-tree digest for the named slug/version; the local command is part of this tree |
+| `ProblemRegistry.verifierSourceHash` | Base deployment manifest | Must equal `keccak256(utf8(verifierSourceDigest))` under `p42-source-tree-sha256/v1` |
 | `ProblemRegistry.verifierImageHash` | Base deployment manifest | Must equal `keccak256(utf8(verifierImageDigest))`; the manifest also records the bare digest and `keccak256-utf8/v1` relation |
 | Portal `chainProvenance.verifierImageHash` | manifest/indexer | Shows `local-only` until a real deployment/reconciliation exists |
 

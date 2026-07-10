@@ -18,7 +18,10 @@ BASE_SEPOLIA_RPC_URL=... \
 BASE_SEPOLIA_PRIVATE_KEY=... \
 P42_TREASURY_ADDRESS=0x... \
 P42_RESOLVER_ADDRESS=0x... \
+P42_PROBLEM_SLUG=hadamard-mini \
+P42_VERIFIER_VERSION=0.1.1 \
 P42_PROBLEM_SPEC_HASH=0x... \
+P42_VERIFIER_SOURCE_DIGEST=sha256:<64-lowercase-hex> \
 P42_VERIFIER_SOURCE_HASH=0x... \
 P42_VERIFIER_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
 P42_VERIFIER_IMAGE_HASH=0x... \
@@ -36,6 +39,12 @@ values and `verifierImageHashAlgorithm: "keccak256-utf8/v1"`.
 `p42-prizes.example.json` is explicitly `example-not-deployed`. Its all-`a`
 digest is synthetic and exists only to exercise this anchor relation; it does
 not identify a published image or make a problem fundable.
+
+The source anchor is separate: `P42_VERIFIER_SOURCE_DIGEST` is the canonical
+`p42-source-tree-sha256/v1` digest of `src/` plus `problems/<slug>/`, with
+`problem.yaml.verifier.image` normalized to its source sentinel. The ceremony
+records the problem slug and verifier version, and requires
+`P42_VERIFIER_SOURCE_HASH = keccak256(utf8(P42_VERIFIER_SOURCE_DIGEST))`.
 
 Optional parameter overrides include `P42_RESOLVER_DECISION_BOND_WEI` and
 `P42_RESOLVER_FRAUD_WINDOW_SECONDS`; the example manifest uses a 24-hour
