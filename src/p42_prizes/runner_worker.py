@@ -37,6 +37,7 @@ from p42_prizes.runner_queue import (
     plan_runner_queue,
     reap_stale_leases,
 )
+from p42_prizes.secure_json import loads_strict_json, read_strict_json_file
 from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes, sha256_file
 
 try:
@@ -533,12 +534,11 @@ def _effective_da_failure(job: Mapping[str, Any]) -> Any:
     state_path = job.get("retry_state_path")
     if not isinstance(state_path, str) or not state_path:
         return original
-    retry_state_path = Path(state_path)
-    if not retry_state_path.exists():
-        return original
     try:
-        state = json.loads(retry_state_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        state = read_strict_json_file(state_path)
+    except FileNotFoundError:
+        return original
+    except (OSError, ValueError) as exc:
         return _retry_state_unavailable(f"could not read retry state: {exc}")
     if not isinstance(state, Mapping):
         return _retry_state_unavailable("retry state must be an object")
@@ -908,7 +908,7 @@ def _run_verifier_for_transcript(
     if stderr_tail:
         result["stderr_tail"] = stderr_tail
 
-    stdout = completed.stdout.strip()
+    stdout = completed.stdout
     if not stdout:
         result["error"] = _no_stdout_error(completed.returncode, stderr_tail)
         if sandbox == "docker" and _looks_like_sandbox_unavailable(stderr_tail):
@@ -916,8 +916,8 @@ def _run_verifier_for_transcript(
             result["failure_kind"] = "sandbox_unavailable"
         return result
     try:
-        report = json.loads(stdout)
-    except json.JSONDecodeError as exc:
+        report = loads_strict_json(stdout, canonical=True, trailing_newline="require")
+    except ValueError as exc:
         result["error"] = f"verifier emitted malformed JSON: {exc}"
         return result
     if not isinstance(report, dict):
@@ -927,7 +927,7 @@ def _run_verifier_for_transcript(
     canonical = canonical_json(report)
     result["report"] = report
     result["report_hash"] = sha256_bytes(canonical.encode("utf-8"))
-    if completed.stdout not in (canonical, canonical + "\n"):
+    if completed.stdout != canonical + "\n":
         # Leave the initialized valid=False: a rejected report must never mark
         # the submission accepted, so transcript, job status, and loop event
         # all agree the job failed.

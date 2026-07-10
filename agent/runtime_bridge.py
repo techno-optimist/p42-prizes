@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-import json
 from pathlib import Path
 import sys
 from typing import Any
@@ -29,12 +28,13 @@ from p42_prizes.runner_queue import (  # noqa: E402
     read_runner_queue,
     record_runner_action,
 )
+from p42_prizes.secure_json import read_strict_json_file  # noqa: E402
 from p42_prizes.runner_worker import run_next_job_once  # noqa: E402
 from p42_prizes.verdict import canonical_json  # noqa: E402
 
 
 def _load_object(path: str) -> dict[str, Any]:
-    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    value = read_strict_json_file(path)
     if not isinstance(value, dict):
         raise ValueError(f"{path}: expected a JSON object")
     return value
