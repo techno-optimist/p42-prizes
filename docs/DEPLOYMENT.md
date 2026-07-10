@@ -104,6 +104,30 @@ deployment creates governance-owned contracts and pending operation bundles;
 independent governance signers schedule, confirm, and execute those bundles;
 then a keyless continuation verifies finalized on-chain completion.
 
+### Exclusive Manifest Reservation And Recovery
+
+`deploy-base-sepolia.js` exclusively creates a sibling
+`p42-prizes.json.deployment-reservation.json` before it sends the first
+deployment transaction. The reservation records each broadcast/mined contract
+transaction as the ceremony progresses. A second deploy invocation refuses to
+run while that reservation exists, so it cannot silently create a competing
+set of contracts and then lose the manifest write race.
+
+If a ceremony stops before its manifest is written, do not restart it. Inspect
+the retained journal first; it may describe already-broadcast deployment
+transactions:
+
+```bash
+P42_DEPLOY_MODE=inspect-reservation \
+P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
+npx hardhat run scripts/deploy-base-sepolia.js
+```
+
+The script intentionally never clears an incomplete reservation. Reconcile the
+recorded transactions and manifest destination before any owner-approved
+recovery action. The reservation is removed only after the exclusive final
+manifest write succeeds.
+
 ### 1. Freeze Inputs And Roles
 
 The deploy command requires all constructor policy to be explicit. No economic

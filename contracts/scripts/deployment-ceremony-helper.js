@@ -1,4 +1,6 @@
-import { lstat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
 
 import { computeDeploymentConfigHash } from "../../agent/indexer.mjs";
 import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
@@ -6,6 +8,7 @@ import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
 export const MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v1";
 export const PENDING_SETUP_STATUS = "pending-governance-setup";
 export const COMPLETE_SETUP_STATUS = "governance-setup-complete";
+export const DEPLOYMENT_RESERVATION_SCHEMA = "p42-prizes/deployment-reservation/v1";
 export const SCORE_ATOM_SCALE = 1_000_000_000_000_000_000n;
 export const OPERATION_GRACE_PERIOD_SECONDS = 7n * 24n * 60n * 60n;
 
@@ -620,6 +623,134 @@ export async function assertManifestOutputIsVacant(path) {
     throw error;
   }
   throw new Error(`Refusing to overwrite existing deployment manifest: ${path}`);
+}
+
+export function manifestOutputReservationPath(path) {
+  return `${resolve(path)}.deployment-reservation.json`;
+}
+
+function reservationCollisionError(path) {
+  return new Error(
+    `Refusing to start a second deployment ceremony while reservation exists: ${path}. ` +
+    "A prior ceremony may have broadcast contract deployments; inspect the reservation before recovery.",
+  );
+}
+
+function reservationRecord(path, metadata) {
+  const { deploymentCommit, network, chainId, deployer } = metadata;
+  return {
+    schema: DEPLOYMENT_RESERVATION_SCHEMA,
+    status: "deploying",
+    manifestPath: resolve(path),
+    reservedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    deploymentCommit,
+    network,
+    chainId,
+    deployer,
+    deployments: {},
+  };
+}
+
+async function writeReservationAtomic(path, value) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporary, `${jsonStringify(value)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+    await rename(temporary, path);
+  } finally {
+    await rm(temporary, { force: true });
+  }
+}
+
+export async function readManifestOutputReservation(path) {
+  const output = resolve(path);
+  const reservationPath = manifestOutputReservationPath(output);
+  let parsed;
+  try {
+    parsed = JSON.parse(await readFile(reservationPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") throw reservationCollisionError(reservationPath);
+    throw new Error(`Could not read deployment reservation ${reservationPath}: ${error.message}`);
+  }
+  if (
+    !parsed ||
+    parsed.schema !== DEPLOYMENT_RESERVATION_SCHEMA ||
+    parsed.status !== "deploying" ||
+    parsed.manifestPath !== output ||
+    !parsed.deployments ||
+    typeof parsed.deployments !== "object" ||
+    Array.isArray(parsed.deployments)
+  ) {
+    throw new Error(`Deployment reservation ${reservationPath} is malformed; do not start another ceremony`);
+  }
+  return { path: reservationPath, record: parsed };
+}
+
+export async function reserveManifestOutput(path, metadata = {}) {
+  const output = resolve(path);
+  const reservationPath = manifestOutputReservationPath(output);
+  await mkdir(dirname(output), { recursive: true });
+  await assertManifestOutputIsVacant(output);
+  try {
+    await writeFile(reservationPath, `${jsonStringify(reservationRecord(output, metadata))}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+  } catch (error) {
+    if (error?.code === "EEXIST") throw reservationCollisionError(reservationPath);
+    throw error;
+  }
+  try {
+    // The second check closes the window between the first vacancy check and
+    // our exclusive reservation. A process following this ceremony will see
+    // the reservation and never issue a competing deployment transaction.
+    await assertManifestOutputIsVacant(output);
+  } catch (error) {
+    await rm(reservationPath, { force: true });
+    throw error;
+  }
+  return readManifestOutputReservation(output);
+}
+
+export async function recordManifestOutputDeployment(path, key, deployment) {
+  if (typeof key !== "string" || !/^[a-z][a-z0-9_]*$/.test(key)) {
+    throw new Error("deployment reservation key must be a lowercase identifier");
+  }
+  if (!deployment || typeof deployment !== "object") {
+    throw new Error("deployment reservation entry must be an object");
+  }
+  const reservation = await readManifestOutputReservation(path);
+  const existing = reservation.record.deployments[key] ?? {};
+  for (const field of ["address", "txHash"]) {
+    if (existing[field] !== undefined && deployment[field] !== undefined && existing[field] !== deployment[field]) {
+      throw new Error(`deployment reservation ${key}.${field} changed during ceremony`);
+    }
+  }
+  const record = {
+    ...reservation.record,
+    updatedAt: new Date().toISOString(),
+    deployments: {
+      ...reservation.record.deployments,
+      [key]: { ...existing, ...deployment },
+    },
+  };
+  await writeReservationAtomic(reservation.path, record);
+  return { path: reservation.path, record };
+}
+
+export async function completeManifestOutputReservation(path) {
+  const output = resolve(path);
+  const reservationPath = manifestOutputReservationPath(output);
+  try {
+    await lstat(output);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(`Cannot complete deployment reservation before manifest exists: ${output}`);
+    }
+    throw error;
+  }
+  await rm(reservationPath, { force: true });
 }
 
 export function requiredCompletionCheckNames(manifest) {

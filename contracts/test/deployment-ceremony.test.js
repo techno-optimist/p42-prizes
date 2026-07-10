@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -12,12 +12,17 @@ import {
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
   buildSetupOperations,
+  completeManifestOutputReservation,
   completeSetupManifest,
   constructorArgsHash,
   constructorArgsFor,
+  manifestOutputReservationPath,
   MANIFEST_SCHEMA,
   PENDING_SETUP_STATUS,
+  readManifestOutputReservation,
   readCeremonyConfig,
+  recordManifestOutputDeployment,
+  reserveManifestOutput,
   requiredCompletionCheckNames
 } from "../scripts/deployment-ceremony-helper.js";
 
@@ -145,6 +150,52 @@ describe("deployment ceremony input gate", () => {
       await assert.rejects(
         () => assertManifestOutputIsVacant(output),
         /Refusing to overwrite existing deployment manifest/
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("atomically reserves the manifest before deployment and retains crash recovery evidence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "p42-ceremony-reservation-"));
+    const output = join(directory, "p42-prizes.json");
+    try {
+      const reservations = await Promise.allSettled([
+        reserveManifestOutput(output, { deploymentCommit: "a".repeat(40), deployer: ADDRESSES.deployer }),
+        reserveManifestOutput(output, { deploymentCommit: "a".repeat(40), deployer: ADDRESSES.deployer }),
+      ]);
+      const fulfilled = reservations.filter((result) => result.status === "fulfilled");
+      const rejected = reservations.filter((result) => result.status === "rejected");
+      assert.equal(fulfilled.length, 1);
+      assert.equal(rejected.length, 1);
+      assert.match(rejected[0].reason.message, /second deployment ceremony/);
+
+      const reservation = await readManifestOutputReservation(output);
+      assert.equal(reservation.record.manifestPath, output);
+      assert.equal(reservation.record.deployments.timelock, undefined);
+      await recordManifestOutputDeployment(output, "timelock", {
+        name: "P42MultisigTimelock",
+        address: ADDRESSES.timelock,
+        txHash: `0x${"a".repeat(64)}`,
+        state: "broadcast",
+        blockNumber: null,
+      });
+      const journaled = await readManifestOutputReservation(output);
+      assert.equal(journaled.record.deployments.timelock.state, "broadcast");
+      assert.equal(journaled.record.deployments.timelock.address, ADDRESSES.timelock);
+
+      await assert.rejects(
+        () => completeManifestOutputReservation(output),
+        /before manifest exists/,
+      );
+      await assert.doesNotReject(() => access(manifestOutputReservationPath(output)));
+
+      await writeFile(output, '{"status":"pending-governance-setup"}\n', { flag: "wx" });
+      await completeManifestOutputReservation(output);
+      await assert.rejects(() => access(manifestOutputReservationPath(output)));
+      await assert.rejects(
+        () => reserveManifestOutput(output, { deploymentCommit: "b".repeat(40), deployer: ADDRESSES.deployer }),
+        /Refusing to overwrite existing deployment manifest/,
       );
     } finally {
       await rm(directory, { recursive: true, force: true });
