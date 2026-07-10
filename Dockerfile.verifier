@@ -1,10 +1,10 @@
 # Canonical, self-contained P42 verifier image.
 #
 # Builds a runnable, pinnable image for one problem's exact verifier. Unlike the
-# per-problem Dockerfiles (which assumed the repo layout and lacked `make`), this
-# bundles the p42_prizes package AND the problem, preserving the `../../src`
-# layout the problem Makefile expects, and installs `make` + the problem's pinned
-# deps. Build from the REPO ROOT:
+# per-problem Dockerfiles (which assumed the repo layout), this bundles the
+# p42_prizes package AND the problem. The sandbox invokes the explicit
+# `problem.yaml` verifier command, so no mutable system package is needed.
+# Build from the REPO ROOT:
 #
 #   docker build -f Dockerfile.verifier --build-arg PROBLEM=hadamard-mini \
 #     -t p42-verifier/hadamard-mini .
@@ -39,17 +39,6 @@ ENV PYTHONHASHSEED=0 \
     MKL_NUM_THREADS=1 \
     PYTHONPATH=/repo/src
 
-# `make` is the verifier entrypoint; slim images omit it.
-# TODO(F23, needs human): `make` is installed unpinned — `apt-get update` fetches
-# the live Debian archive, so its version can drift between builds even with the
-# digest-pinned base. Full determinism needs snapshot.debian.org sources (e.g.
-# `deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/<TS>/ trixie main`)
-# plus `make=<exact version>`; exact pins go stale as the archive rolls, so this
-# needs an owner to pick and maintain a snapshot timestamp.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends make \
-    && rm -rf /var/lib/apt/lists/*
-
 # The P42 CLI is part of every verifier invocation. Install its fully
 # hash-locked runtime before copying the source tree it imports from.
 COPY requirements.runtime.lock /repo/requirements.runtime.lock
@@ -66,4 +55,5 @@ WORKDIR /repo/problems/${PROBLEM}
 # every accepted PyPI distribution hash; comments-only locks are a no-op.
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
-CMD ["make", "verify"]
+# The runtime always supplies the manifest-pinned verifier.command explicitly.
+# Leave no image-local Makefile entrypoint that could diverge from that command.

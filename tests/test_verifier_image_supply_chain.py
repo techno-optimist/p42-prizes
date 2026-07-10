@@ -13,6 +13,8 @@ def test_canonical_verifier_image_requires_hash_locked_dependencies() -> None:
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     assert re.search(r"^FROM\s+[^\s]+@sha256:[0-9a-f]{64}$", dockerfile, flags=re.MULTILINE)
+    assert "apt-get" not in dockerfile
+    assert 'CMD ["make", "verify"]' not in dockerfile
     for argument in ("SOURCE_COMMIT", "VERIFIER_SOURCE_SHA256", "VERIFIER_PROBLEM_ID", "VERIFIER_VERSION"):
         assert f"ARG {argument}" in dockerfile
     for label in (
