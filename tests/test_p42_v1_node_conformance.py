@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import subprocess
 
+import pytest
+
 from p42_prizes.verdict import VerdictReport, canonical_json, strict_json_loads
 
 
@@ -40,3 +42,26 @@ def test_node_and_python_emit_identical_p42_v1_bytes_and_hashes() -> None:
 def test_corpus_has_unambiguous_json_structure() -> None:
     parsed = strict_json_loads(CORPUS.read_bytes())
     assert strict_json_loads(canonical_json(parsed)) == parsed
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        {"fractional": 0.5},
+        {"too_large": 9_007_199_254_740_992},
+        {"nested": [0, {"too_small": -9_007_199_254_740_992}]},
+    ],
+)
+def test_verdict_details_reject_lossy_cross_language_numbers(details: dict[str, object]) -> None:
+    report = VerdictReport(
+        problem_id="conformance",
+        verifier_version="1",
+        verifier_image="sha256:" + "1" * 64,
+        solution_hash="sha256:" + "2" * 64,
+        valid=False,
+        improvement="0/1",
+        score="0/1",
+        details=details,
+    )
+    with pytest.raises(ValueError):
+        report.to_canonical_json()

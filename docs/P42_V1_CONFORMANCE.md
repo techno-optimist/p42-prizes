@@ -25,9 +25,9 @@ package dependency is required.
 
 ## Numeric boundary
 
-Python's generic canonical JSON accepts arbitrary integers and finite floats.
-JavaScript's `number` cannot represent all of either domain without loss. The
-Node p42:v1 implementation therefore accepts only safe integers in `details`;
-larger or fractional numeric evidence must be encoded by a registered string
+Python's generic canonical JSON remains available to non-verdict evidence, but
+`VerdictReport.details` is restricted in both implementations to null, strings,
+booleans, recursively structured arrays/objects, and integers in JavaScript's
+safe range. Larger or fractional numeric evidence must use a registered string
 format. This fail-closed boundary prevents distinct source values from
 collapsing to the same report bytes.

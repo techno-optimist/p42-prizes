@@ -26,13 +26,35 @@
     "score": { "$ref": "#/$defs/rational" },
     "reason": { "type": "string" },
     "recomputed_at_commit": { "type": "string" },
-    "details": { "type": "object" }
+    "details": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/detailValue" }
+    }
   },
   "$defs": {
     "rational": {
       "type": "string",
       "pattern": "^-?[0-9]+/[1-9][0-9]*$"
+    },
+    "detailValue": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "string" },
+        { "type": "boolean" },
+        {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/detailValue" }
+        },
+        {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/detailValue" }
+        }
+      ]
     }
   }
 }
-

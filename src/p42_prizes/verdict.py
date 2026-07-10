@@ -23,6 +23,7 @@ SCORE_ATOM_SCALE = 10**18
 MIN_SCORE_ATOMS_BOUND = -(2**254)
 MAX_SCORE_ATOMS_BOUND = 2**254
 MAX_UINT256 = 2**256 - 1
+MAX_SAFE_JSON_INTEGER = 2**53 - 1
 
 
 def _reject_json_constant(value: str) -> NoReturn:
@@ -79,6 +80,30 @@ def canonical_json(value: Mapping[str, Any]) -> str:
         ensure_ascii=True,
         allow_nan=False,
     )
+
+
+def _validate_verdict_detail(value: Any, path: str = "$.details") -> None:
+    """Restrict report details to the lossless p42:v1 cross-language domain."""
+
+    if value is None or isinstance(value, (str, bool)):
+        return
+    if isinstance(value, int):
+        if abs(value) > MAX_SAFE_JSON_INTEGER:
+            raise ValueError(f"{path}: integer exceeds the p42:v1 safe JSON range")
+        return
+    if isinstance(value, float):
+        raise ValueError(f"{path}: p42:v1 report details do not permit floats")
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_verdict_detail(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path}: report detail keys must be strings")
+            _validate_verdict_detail(item, f"{path}.{key}")
+        return
+    raise TypeError(f"{path}: {type(value).__name__} is not a p42:v1 detail value")
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -148,6 +173,7 @@ class VerdictReport:
     details: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        _validate_verdict_detail(dict(self.details))
         return {
             "problem_id": self.problem_id,
             "verifier_version": self.verifier_version,
