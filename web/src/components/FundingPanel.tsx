@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { validatedDonationTarget } from "@/lib/chain-provenance";
+import { publishedDonationTarget } from "@/lib/chain-provenance";
 import type { ChainProvenance, DonationWallet } from "@/lib/types";
 
 export function FundingPanel({
@@ -16,7 +16,7 @@ export function FundingPanel({
   compact?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
-  const target = validatedDonationTarget(provenance);
+  const target = publishedDonationTarget(wallet, provenance);
 
   async function copyAddress() {
     if (!target) return;

@@ -1,7 +1,11 @@
 import { z } from "zod";
 import { apiError, json, readJson } from "@/lib/api";
 import { enforceMutationApiKey } from "@/lib/api-auth";
-import { chainProvenanceForProblem, validatedDonationTarget } from "@/lib/chain-provenance";
+import {
+  chainProvenanceForProblem,
+  publicDonationWallet,
+  publishedDonationTarget,
+} from "@/lib/chain-provenance";
 import { getProblemBySlug } from "@/lib/data";
 import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
 
@@ -42,9 +46,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ slug: s
     const problem = getProblemBySlug(slug);
     if (!problem) return json({ error: "Problem not found" }, { status: 404 });
 
-    const wallet = problem.donationWallet;
-    const donationTarget = validatedDonationTarget(chainProvenanceForProblem(problem));
-    if (!donationTarget || donationTarget.chain !== "Base" || wallet.status !== "enabled") {
+    const chainProvenance = chainProvenanceForProblem(problem);
+    const wallet = publicDonationWallet(problem.donationWallet, chainProvenance);
+    const donationTarget = publishedDonationTarget(problem.donationWallet, chainProvenance);
+    if (!donationTarget || donationTarget.chain !== "Base") {
       return json(
         {
           error: "Coinbase Onramp is gated until a reviewed Base mainnet pool is configured",

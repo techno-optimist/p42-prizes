@@ -2,9 +2,15 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { chainProvenanceForProblem, validatedDonationTarget } from "@/lib/chain-provenance";
+import {
+  chainProvenanceForProblem,
+  publicDonationWallet,
+  publishedDonationTarget,
+  validatedDonationTarget,
+} from "@/lib/chain-provenance";
 import { problems } from "@/lib/data";
 import { parseRational } from "@/lib/exact";
+import type { DonationWallet } from "@/lib/types";
 
 type ProblemManifest = {
   problem_id: string;
@@ -83,6 +89,46 @@ describe("problem funding wallets", () => {
       asset: "ETH",
       chainId: 84532,
     });
+
+    const testnetWallet: DonationWallet = {
+      chain: "Base Sepolia",
+      asset: "ETH",
+      address: deployedAddress,
+      status: "testnet-only",
+      explorerUrl: "https://sepolia.basescan.org/address/0x1111111111111111111111111111111111111111",
+      note: "Reconciled testnet pool.",
+    };
+    expect(publishedDonationTarget(testnetWallet, evidence)).toMatchObject({ address: deployedAddress });
+    expect(publicDonationWallet(testnetWallet, evidence)).toMatchObject({
+      address: deployedAddress,
+      explorerUrl: "https://sepolia.basescan.org/address/0x1111111111111111111111111111111111111111",
+    });
+    expect(publishedDonationTarget({ ...testnetWallet, status: "not-deployed" }, evidence)).toBeNull();
+    expect(publishedDonationTarget({ ...testnetWallet, address: "0x2222222222222222222222222222222222222222" }, evidence)).toBeNull();
+    expect(publicDonationWallet({ ...testnetWallet, status: "mainnet-gated" }, evidence)).toMatchObject({
+      address: null,
+      explorerUrl: null,
+      status: "mainnet-gated",
+    });
+
+    const mainnetEvidence = {
+      ...evidence,
+      settlementState: "mainnet-indexed" as const,
+      chain: "Base" as const,
+      chainId: 8453,
+    };
+    const enabledMainnetWallet: DonationWallet = {
+      ...testnetWallet,
+      chain: "Base",
+      status: "enabled",
+      explorerUrl: "https://basescan.org/address/0x1111111111111111111111111111111111111111",
+    };
+    expect(publishedDonationTarget(enabledMainnetWallet, mainnetEvidence)).toMatchObject({
+      address: deployedAddress,
+      chain: "Base",
+      chainId: 8453,
+    });
+    expect(publishedDonationTarget({ ...enabledMainnetWallet, status: "mainnet-gated" }, mainnetEvidence)).toBeNull();
 
     const placeholder = "0x4242000000000000000000000000000000000001";
     expect(validatedDonationTarget({

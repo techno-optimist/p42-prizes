@@ -1,4 +1,4 @@
-import type { ChainProvenance, Problem } from "@/lib/types";
+import type { ChainProvenance, DonationWallet, Problem } from "@/lib/types";
 
 const ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 const HASH = /^0x[a-fA-F0-9]{64}$/;
@@ -80,5 +80,41 @@ export function validatedDonationTarget(provenance: ChainProvenance): DonationTa
     chainId: provenance.chainId,
     explorerUrl: `${explorerBase}/address/${address}`,
     walletUri: `ethereum:${address}@${provenance.chainId}`,
+  };
+}
+
+/**
+ * Return a transfer target only when both the reconciled chain evidence and
+ * the per-problem funding policy agree that it is publishable. Raw portal
+ * metadata is never sufficient to instruct a donor where to send funds.
+ */
+export function publishedDonationTarget(
+  wallet: DonationWallet,
+  provenance: ChainProvenance,
+): DonationTarget | null {
+  const target = validatedDonationTarget(provenance);
+  if (!target) return null;
+  if (
+    wallet.chain !== target.chain
+    || wallet.asset !== target.asset
+    || wallet.address?.toLowerCase() !== target.address.toLowerCase()
+  ) return null;
+
+  const statusAllowsTarget = target.chain === "Base"
+    ? wallet.status === "enabled"
+    : wallet.status === "testnet-only";
+  return statusAllowsTarget ? target : null;
+}
+
+/** Return public funding metadata without exposing an unverified address. */
+export function publicDonationWallet(
+  wallet: DonationWallet,
+  provenance: ChainProvenance,
+): DonationWallet {
+  const target = publishedDonationTarget(wallet, provenance);
+  return {
+    ...wallet,
+    address: target?.address ?? null,
+    explorerUrl: target?.explorerUrl ?? null,
   };
 }
