@@ -149,6 +149,41 @@ async function commitReveal(fixture, solver, cid, score, salt) {
   return submissionId;
 }
 
+async function openChallenge(fixture, signer, submissionId, reasonHash, overrides) {
+  return fixture.challenges.connect(signer).challenge(
+    submissionId,
+    await fixture.submissions.revealInstanceHashOf(submissionId),
+    reasonHash,
+    overrides,
+  );
+}
+
+async function resolveChallenge(fixture, signer, submissionId, challengerWins, transcriptHash, transcriptURI, verdictHash, overrides) {
+  return fixture.challenges.connect(signer).resolve(
+    submissionId,
+    await fixture.challenges.challengeInstanceHashOf(submissionId),
+    challengerWins,
+    transcriptHash,
+    transcriptURI,
+    verdictHash,
+    overrides,
+  );
+}
+
+async function finalizeChallengeResolution(fixture, submissionId) {
+  return fixture.challenges.finalizeResolution(
+    submissionId,
+    await fixture.challenges.challengeInstanceHashOf(submissionId),
+  );
+}
+
+async function expireChallenge(fixture, submissionId) {
+  return fixture.challenges.expireChallenge(
+    submissionId,
+    await fixture.challenges.challengeInstanceHashOf(submissionId),
+  );
+}
+
 describe("P42 second-pass contract acceptance", () => {
   it("uses full-precision entitlement math for the largest accepted marginal and remains challengeable/claimable", async () => {
     const upper = (1n << 254n) - 1n;
@@ -160,9 +195,8 @@ describe("P42 second-pass contract acceptance", () => {
     const disputed = await submissions.disputedEntitlementWei(submissionId);
     assert.equal(disputed, ethers.parseEther("10"));
     const challengeBond = await challenges.requiredChallengeBond(disputed);
-    await challenges.connect(bob).challenge(submissionId, ethers.id("extreme-score-check"), { value: challengeBond });
-    await challenges.connect(resolver).resolve(
-      submissionId,
+    await openChallenge(fixture, bob, submissionId, ethers.id("extreme-score-check"), { value: challengeBond });
+    await resolveChallenge(fixture, resolver, submissionId,
       false,
       ethers.id("extreme-transcript"),
       "ar://extreme-transcript",
@@ -170,7 +204,7 @@ describe("P42 second-pass contract acceptance", () => {
       { value: await challenges.resolverDecisionBondWei() },
     );
     await increaseTime(FRAUD_WINDOW + 1n);
-    await challenges.finalizeResolution(submissionId);
+    await finalizeChallengeResolution(fixture, submissionId);
     await advanceTo((await submissions.submissions(submissionId)).challengeEndsAt);
     await submissions.connect(alice).finalize(submissionId, PERMANENCE_HASH);
     assert.equal(await ledger.totalCreditAtoms(), (1n << 255n) - 2n);
@@ -219,14 +253,13 @@ describe("P42 second-pass contract acceptance", () => {
     const { resolver, alice, bob, submissions, challenges } = fixture;
     const submissionId = await commitReveal(fixture, alice, "bafy-late-resolver", 900_000, "late-resolver");
     const maxDeadline = await submissions.maxDisputeEndsAtOf(submissionId);
-    await challenges.connect(bob).challenge(submissionId, ethers.id("late-resolver"), {
+    await openChallenge(fixture, bob, submissionId, ethers.id("late-resolver"), {
       value: await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId)),
     });
     const challenge = await challenges.challenges(submissionId);
     await advanceTo(challenge.disputeEndsAt);
     await expectCustomError(
-      challenges.connect(resolver).resolve(
-        submissionId,
+      resolveChallenge(fixture, resolver, submissionId,
         false,
         ethers.id("late-transcript"),
         "ar://late-transcript",
@@ -236,7 +269,7 @@ describe("P42 second-pass contract acceptance", () => {
       challenges,
       "P42_DISPUTE_WINDOW_CLOSED",
     );
-    await challenges.expireChallenge(submissionId);
+    await expireChallenge(fixture, submissionId);
     assert.equal((await submissions.submissions(submissionId)).status, 2n);
     assert.equal(await submissions.maxDisputeEndsAtOf(submissionId), maxDeadline);
     assert.equal(challenge.disputeEndsAt <= maxDeadline, true);
@@ -253,7 +286,8 @@ describe("P42 second-pass contract acceptance", () => {
     assert.equal(await submissions.prioritySubmissionOf(ethers.keccak256(ethers.toUtf8Bytes(cid))), bobId);
 
     const aliceCommit = await submissions.submissions(aliceId);
-    await advanceTo(aliceCommit.committedAt + WINDOW - 2n);
+    // Leave enough room for the reveal block to mine before commit expiry.
+    await advanceTo(aliceCommit.committedAt + WINDOW - 30n);
     await submissions.connect(alice).reveal(aliceId, cid, 800_000, 1, "alice-priority", "0x");
     assert.equal(await submissions.prioritySubmissionOf(ethers.keccak256(ethers.toUtf8Bytes(cid))), aliceId);
     assert.equal((await submissions.submissions(bobId)).status, 5n);
@@ -319,7 +353,7 @@ describe("P42 second-pass contract acceptance", () => {
     assert.equal(await submissions.bestScoreAtoms(), frontier);
     assert.equal(await ledger.totalCreditAtoms(), credit);
 
-    await challenges.connect(alice).challenge(pendingId, ethers.id("pending-challenge"), {
+    await openChallenge(fixture, alice, pendingId, ethers.id("pending-challenge"), {
       value: await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(pendingId)),
     });
     assert.equal(await submissions.revealedSubmissionCount(), 0n);

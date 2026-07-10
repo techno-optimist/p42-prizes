@@ -57,7 +57,7 @@ export const DISCOVERIES_META = {
   author: "Kevin Russell",
   lab: "ProjectForty2 · CHRONOS agent",
   // The shared property every result has and no forger can counterfeit.
-  invariant: "exact integer / rational arithmetic — no floating point in the certified inequality",
+  invariant: "exact rational or rigorously enclosed interval arithmetic — no unenclosed floating point in the certified inequality",
 } as const;
 
 export const discoveries: Discovery[] = [

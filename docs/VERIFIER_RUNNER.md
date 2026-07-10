@@ -17,7 +17,10 @@ On every reveal, the DGX runner should:
 3. Quarantine the payload in an untrusted work directory.
 4. Run `p42-prizes da-verify` for any optional mirror-receipt artifact present.
 5. Run the exact verifier in the pinned sandbox.
-6. Compare the canonical `VerdictReport` with the claimed score/improvement.
+6. Bind the chain `problem_id`, `reveal_instance_hash`, and report
+   `problem_id`/version/image to the fetched manifest, then compare the
+   recomputed score atoms with the single on-chain `claimed_score_atoms` field.
+   The verifier recomputes improvement; it is not a separate chain-claim field.
 7. Publish a transcript containing command, image digest, payload hash,
    `VerdictReport` hash, wall time, and exit status.
 8. Alert, and eventually auto-challenge, if any required field mismatches.
@@ -25,7 +28,10 @@ On every reveal, the DGX runner should:
 This should happen immediately after reveal. The 72-hour challenge window remains
 because other parties must be able to independently re-run and dispute; the DGX
 runner can fail, lag, use a stale image, hit provider downtime, or find a slow
-problem that needs more than one pass.
+problem that needs more than one pass. Before signing an automated challenge,
+the operator compares the event fingerprint with `revealInstanceHashOf` on the
+current canonical chain; the contract also rejects a mismatch. This supplements,
+but does not replace, finalized-block/reorg monitoring.
 
 ## Trust Boundary
 
@@ -51,15 +57,17 @@ problem that needs more than one pass.
   sandbox on the production Linux runner.
 - Runner transcripts must never include secrets, RPC keys, API keys, Telegram
   tokens, or private solver material.
-- Auto-challenge requires an explicit funded agent key, counter-bond policy,
-  spend cap, and revocation path before it can touch money.
+- Auto-challenge requires an explicit funded `P42AgentWallet`, exact-calldata
+  call policy, counter-bond cap, cumulative spend cap, and revocation path
+  before it can touch money. Production operators must not challenge directly
+  from an EOA; direct EOA challenge sends are local-test only.
 
 ## Bottlenecks
 
 The bottleneck is not raw DGX compute for small boards. The real launch blockers
 are:
 
-- pinned verifier images and a canonical sandbox runner,
+- pullable `registry/repository@sha256:...` verifier images and a canonical sandbox runner (a bare digest is not enough on a fresh host),
 - live retrieval of solution bytes from reveal calldata (and the anchored
   off-chain store for the 3 large problems; Arweave is an optional mirror),
 - chain/indexer event source of truth,
@@ -94,8 +102,9 @@ not memory pressure. Queue, plan, and transcript schemas live at
   **per-process only** — a verifier that `fork`s or spawns children can exceed
   the aggregate memory bound because each child gets its own limit. This guard
   therefore reduces, but does not eliminate, host OOM risk from an adversarial or
-  buggy verifier. A real **container/cgroup sandbox** (which can bound aggregate
-  memory for the whole process tree) is still pending and is a launch blocker.
+  buggy verifier. The Docker policy already applies a real aggregate cgroup
+  memory/PID cap with `--network=none`; launch evidence must demonstrate that
+  policy against the pinned production image on the production Linux runner.
 - `required_memory_mb` comes from the problem manifest/runtime admission evidence,
   then gets raised to observed peak RSS after dry runs.
 - Queue depth, oldest queued age, active lease, memory headroom, and swap usage
@@ -137,8 +146,10 @@ Minimal queue shape:
 ```
 
 The launch rule is fail-closed: if queue state is malformed, a stale lease needs
-reaping, memory headroom is too low, swap usage is above threshold, or the active
-runner slot is full, no verifier starts and no auto-challenge key is touched.
+reaping, memory headroom is too low, swap usage is above threshold, the active
+runner slot is full, the operator cursor detects a reorg, or the queued reveal
+artifact is no longer canonical, no verifier starts and no auto-challenge key is
+touched. Reorg-orphaned jobs/actions are marked `canonical_invalidated`.
 
 ## Worker Once
 
@@ -208,6 +219,16 @@ guard was supported on that host. A transcript whose verifier error says it
 exceeded the memory limit before emitting `VerdictReport` is a failed
 submission/run, not a runner outage, as long as the worker stays healthy and
 the queue continues draining.
+
+
+## Base Sepolia Manifest Guard
+
+The checked-in `deployments/base-sepolia/p42-prizes.json` is stale for this
+source tree. It predates the governed manifest schema, runtime cursor/journal
+remediation, and reconciliation archive fixes, so reconciliation and operator
+startup reject it before scanning. A current deployment must produce a new
+manifest and reconciliation report; agents must not rewrite stale addresses or
+tx hashes into a fake current release.
 
 ## Portal Shortcut Guard
 

@@ -104,8 +104,31 @@ def record_runner_action(
                 raise RunnerQueueError(f"runner action candidate changed for {job_id}")
             if current.get("status") == status and current.get("transaction_hash") == transaction_hash:
                 return dict(current)
-            if current.get("status") == "submitted":
-                raise RunnerQueueError(f"runner action for {job_id} is already submitted")
+            current_status = current.get("status")
+            # A receipt is provisional until its block survives the configured
+            # finality depth. Permit only the recovery transitions that let a
+            # reorged raw transaction return to the durable journal/rebroadcast
+            # path; a confirmed or reverted canonical receipt is terminal.
+            if current_status in {"confirmed", "broadcast_reverted"}:
+                raise RunnerQueueError(f"runner action for {job_id} is already terminal: {current_status}")
+            if current_status == "submitted" and status not in {
+                "submitted",
+                "confirmed",
+                "broadcast_reverted",
+                "reorged",
+            }:
+                raise RunnerQueueError(f"runner action for {job_id} has a pending receipt")
+            if current_status == "reorged" and status not in {
+                "reorged",
+                "signed",
+                "broadcast",
+                "submitted",
+                "confirmed",
+                "broadcast_reverted",
+                "superseded",
+                "window_expired",
+            }:
+                raise RunnerQueueError(f"runner action for {job_id} cannot recover to {status}")
 
         action = {
             "candidate_hash": candidate_hash,

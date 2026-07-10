@@ -1,7 +1,30 @@
+import { readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { chainProvenanceForProblem, validatedDonationTarget } from "@/lib/chain-provenance";
 import { problems } from "@/lib/data";
 import { parseRational } from "@/lib/exact";
+
+type ProblemManifest = {
+  problem_id: string;
+  objective: {
+    direction: "minimize" | "maximize";
+    seed_best: string;
+    optimum: string;
+    min_improvement: string;
+  };
+  verifier: {
+    version: string;
+    image: string;
+  };
+};
+
+const repoRoot = resolve(process.cwd(), "..");
+
+function readProblemManifest(repoPath: string): ProblemManifest {
+  return parse(readFileSync(join(repoRoot, repoPath, "problem.yaml"), "utf8")) as ProblemManifest;
+}
 
 describe("problem funding wallets", () => {
   it("lists the ten-board Phase 0 launch slate", () => {
@@ -77,6 +100,22 @@ describe("problem funding wallets", () => {
       expect(() => parseRational(problem.currentBest), `${problem.slug} currentBest`).not.toThrow();
       expect(() => parseRational(problem.optimum), `${problem.slug} optimum`).not.toThrow();
       expect(() => parseRational(problem.minImprovement), `${problem.slug} minImprovement`).not.toThrow();
+    }
+  });
+
+  it("derives every portal baseline from its packaged verifier manifest", () => {
+    for (const problem of problems) {
+      const manifest = readProblemManifest(problem.repoPath);
+      expect(problem.repoId, `${problem.slug} problem_id`).toBe(manifest.problem_id);
+      expect(problem.direction, `${problem.slug} direction`).toBe(manifest.objective.direction);
+      expect(problem.seedBest, `${problem.slug} seedBest`).toBe(manifest.objective.seed_best);
+      expect(problem.optimum, `${problem.slug} optimum`).toBe(manifest.objective.optimum);
+      expect(problem.minImprovement, `${problem.slug} minImprovement`).toBe(manifest.objective.min_improvement);
+      expect(problem.verifierVersion, `${problem.slug} verifierVersion`).toBe(manifest.verifier.version);
+      expect(problem.verifierImage, `${problem.slug} verifierImage`).toBe(manifest.verifier.image);
+      if (problem.status === "locked") {
+        expect(problem.currentBest, `${problem.slug} locked currentBest`).toBe(manifest.objective.seed_best);
+      }
     }
   });
 });

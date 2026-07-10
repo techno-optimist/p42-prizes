@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { H4, Mark } from "@/components/Mark";
 
 const PAIRS = [
@@ -18,6 +19,14 @@ const TICK_MS = 135;
 const SOLVED_HOLD_TICKS = 14;
 const UNSOLVED_HOLD_TICKS = 6;
 const THEME_STORAGE_KEY = "p42-prizes-theme";
+const FOCUSABLE_SELECTOR = [
+  "a[href]",
+  "button:not([disabled])",
+  "input:not([disabled])",
+  "select:not([disabled])",
+  "textarea:not([disabled])",
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
 const ENTRY_VECTORS = [
   [-148, -128, -16],
@@ -83,7 +92,15 @@ function phaseLabel(step: number, direction: Direction, hold: number) {
   return "record sealed";
 }
 
+function visibleFocusableElements(dialog: HTMLElement) {
+  return Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter((element) => {
+    if (element.hasAttribute("disabled") || element.getAttribute("aria-hidden") === "true") return false;
+    return element.offsetParent !== null || element === document.activeElement;
+  });
+}
+
 export function HadamardEasterEgg() {
+  const [mounted, setMounted] = useState(false);
   const [open, setOpen] = useState(false);
   const [theme, setTheme] = useState<Theme>("light");
   const [loop, setLoop] = useState<{ direction: Direction; hold: number; step: number }>({
@@ -91,6 +108,10 @@ export function HadamardEasterEgg() {
     hold: 0,
     step: 0,
   });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
   const { direction, hold, step } = loop;
   const proofRows = useMemo(
     () =>
@@ -105,6 +126,10 @@ export function HadamardEasterEgg() {
       }),
     [],
   );
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -145,26 +170,188 @@ export function HadamardEasterEgg() {
         return { ...current, step: current.step - 1 };
       });
     }, TICK_MS);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
     return () => {
       window.clearInterval(interval);
-      document.body.style.overflow = previousOverflow;
     };
   }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const dialog = dialogRef.current;
+      if (!dialog) return;
+      const focusable = visibleFocusableElements(dialog);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey) {
+        if (active === first || !dialog.contains(active)) {
+          event.preventDefault();
+          last.focus();
+        }
+        return;
+      }
+      if (active === last || !dialog.contains(active)) {
+        event.preventDefault();
+        first.focus();
+      }
     };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+
+    const background = document.querySelector<HTMLElement>(".shell");
+    const previousActive = document.activeElement instanceof HTMLElement ? document.activeElement : triggerRef.current;
+    const previousOverflow = document.body.style.overflow;
+    const previousInert = background?.inert ?? false;
+    const previousAriaHidden = background ? background.getAttribute("aria-hidden") : null;
+    restoreFocusRef.current = previousActive;
+    document.body.style.overflow = "hidden";
+    if (background) {
+      background.inert = true;
+      background.setAttribute("aria-hidden", "true");
+    }
+    window.setTimeout(() => {
+      (closeButtonRef.current ?? dialogRef.current)?.focus();
+    }, 0);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+      if (background) {
+        background.inert = previousInert;
+        if (previousAriaHidden === null) {
+          background.removeAttribute("aria-hidden");
+        } else {
+          background.setAttribute("aria-hidden", previousAriaHidden);
+        }
+      }
+      const restoreTarget = restoreFocusRef.current;
+      if (restoreTarget && document.contains(restoreTarget)) {
+        restoreTarget.focus();
+      }
+      restoreFocusRef.current = null;
+    };
   }, [open]);
+
+  const modal = open ? (
+    <div className="hadamard-modal" role="presentation" onMouseDown={() => setOpen(false)}>
+      <section
+        ref={dialogRef}
+        className="hadamard-dialog"
+        data-egg-theme={theme}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="hadamard-dialog-title"
+        tabIndex={-1}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="hadamard-controls">
+          <button
+            className="hadamard-theme-toggle"
+            type="button"
+            aria-label={`Switch site to ${theme === "light" ? "dark" : "light"} mode`}
+            aria-pressed={theme === "dark"}
+            onClick={() => {
+              const nextTheme = theme === "light" ? "dark" : "light";
+              setTheme(nextTheme);
+              applySiteTheme(nextTheme);
+            }}
+          >
+            <span className={theme === "light" ? "is-active" : ""}>Light</span>
+            <span className={theme === "dark" ? "is-active" : ""}>Dark</span>
+          </button>
+          <button
+            ref={closeButtonRef}
+            className="hadamard-close"
+            type="button"
+            aria-label="Close"
+            onClick={() => setOpen(false)}
+          >
+            ×
+          </button>
+        </div>
+        <div className="hadamard-stage" aria-hidden="true">
+          <div className="hadamard-orbit">
+            <Mark size={112} animated className="hadamard-stage-mark" />
+          </div>
+          <div
+            className={`hadamard-matrix ${direction === -1 ? "is-releasing" : "is-solving"}`}
+            style={{ "--egg-step": step } as CSSProperties}
+          >
+            {H4.flatMap((row, i) =>
+              row.map((value, j) => {
+                const index = i * 4 + j;
+                const [fromX, fromY, fromRotate] = ENTRY_VECTORS[index];
+                return (
+                  <span
+                    key={`${i}-${j}`}
+                    className={`hadamard-cell ${value === 1 ? "is-plus" : "is-minus"}${
+                      step >= index ? " is-live" : ""
+                    }`}
+                    style={
+                      {
+                        "--cell-index": index,
+                        "--exit-index": 15 - index,
+                        "--from-x": `${fromX}px`,
+                        "--from-y": `${fromY}px`,
+                        "--from-rotate": `${fromRotate}deg`,
+                      } as CSSProperties
+                    }
+                  >
+                    {sign(value)}
+                  </span>
+                );
+              }),
+            )}
+          </div>
+          <div className="hadamard-readout">
+            <div>
+              <span>{phaseLabel(step, direction, hold)}</span>
+              <code>{String(Math.min(step, MAX_STEP)).padStart(2, "0")}/{MAX_STEP}</code>
+            </div>
+            <i style={{ "--readout-progress": Math.min(step, MAX_STEP) / MAX_STEP } as CSSProperties} />
+          </div>
+        </div>
+        <div className="hadamard-proof">
+          <p className="smallcaps">The mark is not decoration</p>
+          <h2 id="hadamard-dialog-title">H₄ verifies itself.</h2>
+          <p>
+            The logo starts as an unsolved digital 42 display, then resolves into the order-4 Hadamard witness:
+            sixteen signs, six row-pair checks, one canonical zero-defect certificate.
+          </p>
+          <div className="proof-trace" aria-label="Hadamard row orthogonality trace">
+            {proofRows.map((row, index) => {
+              const active = step >= 16 + index;
+              return (
+                <div key={row.id} className={`proof-line${active ? " is-live" : ""}`}>
+                  <span>{row.lhs}</span>
+                  <code>{active ? `${row.terms} = ${row.value}` : "···"}</code>
+                </div>
+              );
+            })}
+          </div>
+          <div className={`verdict-seal${step >= 23 ? " is-live" : ""}`}>
+            <span>VerdictReport</span>
+            <strong>valid · defect 0/1 · improvement 1/1</strong>
+          </div>
+        </div>
+      </section>
+    </div>
+  ) : null;
 
   return (
     <>
       <button
+        ref={triggerRef}
         className="brand-mark-button"
         type="button"
         aria-label="Open the Hadamard mark"
@@ -173,104 +360,7 @@ export function HadamardEasterEgg() {
       >
         <Mark size={30} animated />
       </button>
-
-      {open ? (
-        <div className="hadamard-modal" role="presentation" onMouseDown={() => setOpen(false)}>
-          <section
-            className="hadamard-dialog"
-            data-egg-theme={theme}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="hadamard-dialog-title"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="hadamard-controls">
-              <button
-                className="hadamard-theme-toggle"
-                type="button"
-                aria-label={`Switch site to ${theme === "light" ? "dark" : "light"} mode`}
-                aria-pressed={theme === "dark"}
-                onClick={() => {
-                  const nextTheme = theme === "light" ? "dark" : "light";
-                  setTheme(nextTheme);
-                  applySiteTheme(nextTheme);
-                }}
-              >
-                <span className={theme === "light" ? "is-active" : ""}>Light</span>
-                <span className={theme === "dark" ? "is-active" : ""}>Dark</span>
-              </button>
-              <button className="hadamard-close" type="button" aria-label="Close" onClick={() => setOpen(false)}>
-                ×
-              </button>
-            </div>
-            <div className="hadamard-stage" aria-hidden="true">
-              <div className="hadamard-orbit">
-                <Mark size={112} animated className="hadamard-stage-mark" />
-              </div>
-              <div
-                className={`hadamard-matrix ${direction === -1 ? "is-releasing" : "is-solving"}`}
-                style={{ "--egg-step": step } as CSSProperties}
-              >
-                {H4.flatMap((row, i) =>
-                  row.map((value, j) => {
-                    const index = i * 4 + j;
-                    const [fromX, fromY, fromRotate] = ENTRY_VECTORS[index];
-                    return (
-                      <span
-                        key={`${i}-${j}`}
-                        className={`hadamard-cell ${value === 1 ? "is-plus" : "is-minus"}${
-                          step >= index ? " is-live" : ""
-                        }`}
-                        style={
-                          {
-                            "--cell-index": index,
-                            "--exit-index": 15 - index,
-                            "--from-x": `${fromX}px`,
-                            "--from-y": `${fromY}px`,
-                            "--from-rotate": `${fromRotate}deg`,
-                          } as CSSProperties
-                        }
-                      >
-                        {sign(value)}
-                      </span>
-                    );
-                  }),
-                )}
-              </div>
-              <div className="hadamard-readout">
-                <div>
-                  <span>{phaseLabel(step, direction, hold)}</span>
-                  <code>{String(Math.min(step, MAX_STEP)).padStart(2, "0")}/{MAX_STEP}</code>
-                </div>
-                <i style={{ "--readout-progress": Math.min(step, MAX_STEP) / MAX_STEP } as CSSProperties} />
-              </div>
-            </div>
-            <div className="hadamard-proof">
-              <p className="smallcaps">The mark is not decoration</p>
-              <h2 id="hadamard-dialog-title">H₄ verifies itself.</h2>
-              <p>
-                The logo starts as an unsolved digital 42 display, then resolves into the order-4 Hadamard witness:
-                sixteen signs, six row-pair checks, one canonical zero-defect certificate.
-              </p>
-              <div className="proof-trace" aria-label="Hadamard row orthogonality trace">
-                {proofRows.map((row, index) => {
-                  const active = step >= 16 + index;
-                  return (
-                    <div key={row.id} className={`proof-line${active ? " is-live" : ""}`}>
-                      <span>{row.lhs}</span>
-                      <code>{active ? `${row.terms} = ${row.value}` : "···"}</code>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className={`verdict-seal${step >= 23 ? " is-live" : ""}`}>
-                <span>VerdictReport</span>
-                <strong>valid · defect 0/1 · improvement 1/1</strong>
-              </div>
-            </div>
-          </section>
-        </div>
-      ) : null}
+      {mounted && modal ? createPortal(modal, document.body) : null}
     </>
   );
 }

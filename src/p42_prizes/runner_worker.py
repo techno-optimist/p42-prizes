@@ -6,6 +6,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import shlex
 import signal
 import subprocess
@@ -13,10 +14,17 @@ import sys
 import time
 from typing import Any, Callable, Mapping
 
-from p42_prizes.admission import AdmissionError, build_verifier_env, load_evidence_file
+from p42_prizes.admission import (
+    AdmissionError,
+    build_verifier_env,
+    load_evidence_file,
+    validate_report_identity,
+    validate_report_shape,
+)
 from p42_prizes.runner_sandbox import (
     RunnerSandboxError,
     build_sandbox_command,
+    compose_immutable_image_ref,
     docker_available,
     force_remove_container,
 )
@@ -39,6 +47,7 @@ except ImportError:  # pragma: no cover - resource is POSIX-only.
 
 RUNNER_TRANSCRIPT_SCHEMA_VERSION = "p42-runner-transcript/v1"
 RUNNER_LOOP_SCHEMA_VERSION = "p42-runner-loop/v1"
+BYTES32_RE = re.compile(r"0x[0-9a-fA-F]{64}")
 
 
 class RunnerWorkerError(ValueError):
@@ -252,6 +261,13 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
     chain_claim = job.get("chain_claim")
     if chain_claim is not None and not isinstance(chain_claim, Mapping):
         raise RunnerWorkerError("job.chain_claim must be an object when provided")
+    if chain_claim is not None:
+        chain_claim = _normalized_chain_claim(chain_claim)
+        canonical_problem = _canonical_problem_for_chain_claim(chain_claim["problem_id"])
+        if problem != canonical_problem:
+            raise RunnerWorkerError(
+                "chain job problem path must match the canonical source checkout for its problem_id"
+            )
     solution_value = job.get("solution")
     solution = (
         Path(solution_value).resolve()
@@ -310,6 +326,7 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
             sandbox_pids_limit=policy.sandbox_pids_limit,
             sandbox_cpus=policy.sandbox_cpus,
             job_id=job_id,
+            require_manifest_identity=chain_claim is not None,
         )
 
     if chain_claim is not None:
@@ -424,9 +441,15 @@ def _adjudicate_chain_claim(
     da_result: Mapping[str, Any] | None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     claim = _normalized_chain_claim(chain_claim)
+    manifest = load_manifest(problem)
+    expected_problem_id = manifest.get("problem_id")
+    if not isinstance(expected_problem_id, str) or not expected_problem_id:
+        raise RunnerWorkerError("problem.yaml problem_id must be a non-empty string")
     claimed_atoms = int(claim["claimed_score_atoms"])
     comparison: dict[str, Any] = {
         "objective_direction": None,
+        "claimed_problem_id": claim["problem_id"],
+        "manifest_problem_id": expected_problem_id,
         "claimed_score_atoms": str(claimed_atoms),
         "verifier_score": None,
         "verifier_score_atoms": None,
@@ -438,7 +461,18 @@ def _adjudicate_chain_claim(
     reason_code = "verified_claim"
     evidence_hash = job.get("source_event_hash")
 
-    if isinstance(da_result, Mapping) and da_result.get("ok") is False:
+    if claim["problem_id"] != expected_problem_id:
+        comparison["relation"] = "problem_id_mismatch"
+        action = "quarantine"
+        reason_code = "problem_id_mismatch"
+    elif verifier.get("integrity_failure") in {
+        "report_identity_mismatch",
+        "report_shape_invalid",
+        "report_solution_hash_mismatch",
+    }:
+        action = "quarantine"
+        reason_code = str(verifier["integrity_failure"])
+    elif isinstance(da_result, Mapping) and da_result.get("ok") is False:
         action = "challenge" if da_result.get("challengeable") is True else "quarantine"
         reason_code = f"da_{da_result.get('failure_kind', 'failed')}"
     elif isinstance(verifier.get("report"), Mapping) and verifier["report"].get("valid") is False:
@@ -493,6 +527,7 @@ def _adjudicate_chain_claim(
         "submission_contract": claim["submission_contract"],
         "challenge_contract": claim["challenge_contract"],
         "submission_id": claim["submission_id"],
+        "reveal_instance_hash": claim["reveal_instance_hash"],
         "source_event_hash": job["source_event_hash"],
         "evidence_hash": evidence_hash,
         "challenge_ends_at": claim["challenge_ends_at"],
@@ -509,6 +544,7 @@ def _normalized_chain_claim(value: Mapping[str, Any]) -> dict[str, Any]:
         "challenge_contract",
         "submission_id",
         "claimed_score_atoms",
+        "reveal_instance_hash",
         "challenge_ends_at",
     )
     normalized = dict(value)
@@ -525,7 +561,37 @@ def _normalized_chain_claim(value: Mapping[str, Any]) -> dict[str, Any]:
             int(value[key])
         except ValueError as exc:
             raise RunnerWorkerError(f"job.chain_claim.{key} must be an integer string") from exc
+    if not BYTES32_RE.fullmatch(value["reveal_instance_hash"]):
+        raise RunnerWorkerError("job.chain_claim.reveal_instance_hash must be a 32-byte 0x-prefixed hex string")
+    normalized["reveal_instance_hash"] = value["reveal_instance_hash"].lower()
     return normalized
+
+
+def _canonical_problem_for_chain_claim(problem_id: str) -> Path:
+    """Return the source-controlled Phase 0 package for a chain claim.
+
+    A queued chain job must never select an arbitrary directory and execute its
+    verifier. The production registry/image fetcher will replace this local
+    allowlist only after it verifies the frozen on-chain source/image anchors.
+    """
+
+    root = (Path(__file__).resolve().parents[2] / "problems").resolve()
+    candidate = (root / problem_id).resolve()
+    if candidate.parent != root or not (candidate / "problem.yaml").is_file():
+        raise RunnerWorkerError("chain_claim.problem_id does not name a canonical problem package")
+    return candidate
+
+
+def _manifest_sandbox_image_ref(manifest: Mapping[str, Any]) -> str:
+    """Resolve the manifest's digest to a pullable, immutable OCI reference."""
+
+    verifier = manifest.get("verifier")
+    if not isinstance(verifier, Mapping):
+        raise RunnerWorkerError("problem.yaml verifier must be an object")
+    try:
+        return compose_immutable_image_ref(verifier.get("image_repository"), verifier.get("image"))
+    except RunnerSandboxError as exc:
+        raise RunnerWorkerError(f"sandbox requires a pullable immutable verifier image: {exc}") from exc
 
 
 def _problem_direction(problem: Path) -> str:
@@ -612,6 +678,7 @@ def _run_verifier_for_transcript(
     sandbox_pids_limit: int = 256,
     sandbox_cpus: float = 1.0,
     job_id: str = "job",
+    require_manifest_identity: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
     wall_seconds = 30
@@ -639,7 +706,7 @@ def _run_verifier_for_transcript(
                 }
             container_name = f"p42-verify-{_safe_job_id(job_id)}"
             command = build_sandbox_command(
-                image=manifest["verifier"]["image"],
+                image=_manifest_sandbox_image_ref(manifest),
                 host_solution=solution,
                 verifier_command_template=command_template,
                 memory_mb=max(1, int(sandbox_memory_mb)),
@@ -724,6 +791,24 @@ def _run_verifier_for_transcript(
         # all agree the job failed.
         result["error"] = "verifier report was not canonical JSON"
         return result
+    if require_manifest_identity:
+        try:
+            validate_report_shape(report)
+        except AdmissionError as exc:
+            result["integrity_failure"] = "report_shape_invalid"
+            result["error"] = str(exc)
+            return result
+        try:
+            validate_report_identity(manifest, report)
+        except AdmissionError as exc:
+            result["integrity_failure"] = "report_identity_mismatch"
+            result["error"] = str(exc)
+            return result
+        expected_solution_hash = sha256_file(solution)
+        if report.get("solution_hash") != expected_solution_hash:
+            result["integrity_failure"] = "report_solution_hash_mismatch"
+            result["error"] = "verifier report solution_hash does not match the verified payload bytes"
+            return result
     # Only a report that survived the canonical-JSON check may set valid, and
     # valid REQUIRES a clean exit: a verifier that prints a canonical valid=true
     # report but then exits non-zero (crash / sys.exit(1) after printing) must

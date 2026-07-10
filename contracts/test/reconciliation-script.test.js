@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   buildCheckpoint,
   computeDeploymentConfigHash,
+  STALE_BASE_SEPOLIA_RELEASE_GUARDS,
   validateManifestEvidence,
 } from "../../agent/indexer.mjs";
 import { reconcileWithProvider } from "../scripts/reconciliation-helper.js";
@@ -33,9 +34,10 @@ describe("Base Sepolia reconciliation evidence gate", () => {
 
   it("rejects the stale canonical manifest before any zero-event scan can pass", () => {
     const manifest = readJson("deployments/base-sepolia/p42-prizes.json");
+    assert.ok(STALE_BASE_SEPOLIA_RELEASE_GUARDS.some((guard) => guard.deploymentCommit === manifest.deploymentCommit));
     assert.throws(
       () => validateManifestEvidence(manifest),
-      /finalityPolicy|deploymentConfigHash|deployedCodeHash/
+      /stale Base Sepolia manifest is invalid for this source/
     );
   });
 

@@ -173,6 +173,49 @@ async function commitAndReveal(fixture, solver, { cid, salt, score = SCORE }) {
   return committed;
 }
 
+async function openChallenge(fixture, signer, submissionId, reasonHash, overrides) {
+  return fixture.challenges.connect(signer).challenge(
+    submissionId,
+    await fixture.submissions.revealInstanceHashOf(submissionId),
+    reasonHash,
+    overrides,
+  );
+}
+
+async function resolveChallenge(fixture, signer, submissionId, challengerWins, transcriptHash, transcriptURI, verdictHash, overrides) {
+  return fixture.challenges.connect(signer).resolve(
+    submissionId,
+    await fixture.challenges.challengeInstanceHashOf(submissionId),
+    challengerWins,
+    transcriptHash,
+    transcriptURI,
+    verdictHash,
+    overrides,
+  );
+}
+
+async function finalizeChallengeResolution(fixture, submissionId) {
+  return fixture.challenges.finalizeResolution(
+    submissionId,
+    await fixture.challenges.challengeInstanceHashOf(submissionId),
+  );
+}
+
+async function expireChallenge(fixture, submissionId) {
+  return fixture.challenges.expireChallenge(
+    submissionId,
+    await fixture.challenges.challengeInstanceHashOf(submissionId),
+  );
+}
+
+async function slashResolverBond(fixture, submissionId, proofHash) {
+  return fixture.challenges.connect(fixture.owner).slashResolverBond(
+    submissionId,
+    await fixture.challenges.challengeInstanceHashOf(submissionId),
+    proofHash,
+  );
+}
+
 describe("P42 2026-07-09 economic and lifecycle audit regressions", function () {
   it("stores commit phase identity for both transaction orders in one block", async function () {
     const preArm = await deployFixture({ arm: false, acceptFunds: false });
@@ -373,11 +416,8 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     const challengeBond = await fixture.challenges.requiredChallengeBond(
       await fixture.submissions.disputedEntitlementWei(submission.submissionId)
     );
-    await fixture.challenges
-      .connect(fixture.bob)
-      .challenge(submission.submissionId, ethers.id("resolver-lie"), { value: challengeBond });
-    const resolveTx = await fixture.challenges.connect(fixture.resolver).resolve(
-      submission.submissionId,
+    await openChallenge(fixture, fixture.bob, submission.submissionId, ethers.id("resolver-lie"), { value: challengeBond });
+    const resolveTx = await resolveChallenge(fixture, fixture.resolver, submission.submissionId,
       false,
       ethers.id("false-transcript"),
       "ipfs://false-transcript",
@@ -400,19 +440,17 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal((await fixture.submissions.submissions(submission.submissionId)).status, 3n);
     assert.equal((await fixture.challenges.challenges(submission.submissionId)).decisionPending, true);
     await expectCustomError(
-      fixture.challenges.finalizeResolution(submission.submissionId),
+      finalizeChallengeResolution(fixture, submission.submissionId),
       fixture.challenges,
       "P42_RESOLVER_BOND_LOCKED"
     );
 
-    await fixture.challenges
-      .connect(fixture.owner)
-      .slashResolverBond(submission.submissionId, ethers.id("resolver-fraud-proof"));
+    await slashResolverBond(fixture, submission.submissionId, ethers.id("resolver-fraud-proof"));
     assert.equal((await fixture.submissions.submissions(submission.submissionId)).status, 2n);
     assert.equal((await fixture.challenges.challenges(submission.submissionId)).challenger, ethers.ZeroAddress);
     assert.equal(await fixture.challenges.claimableBondWei(fixture.bob.address), challengeBond);
     await expectCustomError(
-      fixture.challenges.finalizeResolution(submission.submissionId),
+      finalizeChallengeResolution(fixture, submission.submissionId),
       fixture.challenges,
       "P42_UNKNOWN_CHALLENGE"
     );
@@ -422,9 +460,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
       "P42_CHALLENGE_WINDOW_OPEN"
     );
 
-    await fixture.challenges
-      .connect(fixture.carol)
-      .challenge(submission.submissionId, ethers.id("fresh-fraud-proof"), { value: challengeBond });
+    await openChallenge(fixture, fixture.carol, submission.submissionId, ethers.id("fresh-fraud-proof"), { value: challengeBond });
     assert.equal((await fixture.challenges.challenges(submission.submissionId)).challenger, fixture.carol.address);
   });
 
@@ -439,18 +475,14 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     );
 
     for (let attempt = 1; attempt <= 3; attempt += 1) {
-      await fixture.challenges
-        .connect(fixture.bob)
-        .challenge(submission.submissionId, ethers.id(`recycled-${attempt}`), { value: challengeBond });
+      await openChallenge(fixture, fixture.bob, submission.submissionId, ethers.id(`recycled-${attempt}`), { value: challengeBond });
       await increaseTime(CHALLENGE_WINDOW + 1n);
-      await fixture.challenges.expireChallenge(submission.submissionId);
+      await expireChallenge(fixture, submission.submissionId);
     }
 
     assert.equal(await fixture.challenges.claimableBondWei(fixture.bob.address), 3n * challengeBond);
     await expectCustomError(
-      fixture.challenges
-        .connect(fixture.bob)
-        .challenge(submission.submissionId, ethers.id("recycled-forever"), { value: challengeBond }),
+      openChallenge(fixture, fixture.bob, submission.submissionId, ethers.id("recycled-forever"), { value: challengeBond }),
       fixture.submissions,
       "P42_CHALLENGE_WINDOW_CLOSED"
     );

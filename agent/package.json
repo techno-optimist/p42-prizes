@@ -4,8 +4,20 @@
   "private": true,
   "type": "module",
   "description": "Autonomous P42 solver/operator agent client (Phase 1 plumbing). Drives the full on-chain lifecycle — self-verify, commit, reveal, finalize, claim — unattended against a deployed P42 manifest.",
+  "files": [
+    "README.md",
+    "da-arweave.mjs",
+    "da-local.mjs",
+    "indexer.mjs",
+    "lib.mjs",
+    "operator.mjs",
+    "resolver.mjs",
+    "runtime_bridge.py",
+    "solver.mjs"
+  ],
   "bin": {
-    "p42-solve": "solver.mjs"
+    "p42-solve": "solver.mjs",
+    "p42-resolve": "resolver.mjs"
   },
   "scripts": {
     "test": "node --test *.test.mjs"

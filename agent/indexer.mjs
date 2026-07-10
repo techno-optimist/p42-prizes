@@ -11,6 +11,8 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { recoverRevealCalldata } from "./lib.mjs";
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 const DEPLOYMENT_MANIFEST_SCHEMA = JSON.parse(
@@ -100,6 +102,15 @@ const STATUS_NUMBER = Object.freeze(
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_HASH = `0x${"0".repeat(64)}`;
+
+export const STALE_BASE_SEPOLIA_RELEASE_GUARDS = Object.freeze([
+  {
+    chainId: 84532,
+    status: "base-sepolia-testnet",
+    deploymentCommit: "3121a1a2036d2d19742183d409de1c108d3ae1b2",
+    reason: "canonical Base Sepolia manifest predates the current governed manifest schema and runtime/reconciliation fixes",
+  },
+]);
 
 export class ReplayError extends Error {
   constructor(message) {
@@ -346,6 +357,18 @@ function validateDeploymentManifestSchema(manifest) {
   validateSchemaValue(manifest, DEPLOYMENT_MANIFEST_SCHEMA, DEPLOYMENT_MANIFEST_SCHEMA, "manifest");
 }
 
+function rejectKnownStaleRelease(manifest) {
+  for (const guard of STALE_BASE_SEPOLIA_RELEASE_GUARDS) {
+    if (
+      Number(manifest?.network?.chainId) === guard.chainId &&
+      manifest?.status === guard.status &&
+      String(manifest?.deploymentCommit ?? "").toLowerCase() === guard.deploymentCommit
+    ) {
+      throw new Error(`stale Base Sepolia manifest is invalid for this source: ${guard.reason}`);
+    }
+  }
+}
+
 export function validateFinalityPolicy(policy) {
   if (policy?.mode !== "confirmations") {
     throw new Error("indexer.finalityPolicy.mode must be confirmations");
@@ -367,6 +390,7 @@ export function validateFinalityPolicy(policy) {
 }
 
 export function validateManifestEvidence(manifest) {
+  rejectKnownStaleRelease(manifest);
   validateDeploymentManifestSchema(manifest);
   if (manifest?.schema !== "p42-prizes/deployment-manifest/v1") {
     throw new Error(`Unsupported deployment manifest schema: ${String(manifest?.schema)}`);
@@ -796,6 +820,10 @@ function newReplayState(config, coverage) {
     submissionClaimableBondWei: {},
     challenges: {},
     knownChallengeIds: new Set(),
+    // The latest dispute epoch observed for each submission. These mappings
+    // intentionally outlive a deleted challenge record on-chain, so preserve
+    // them in replay and reconcile them independently of `challenges(id)`.
+    challengeInstances: {},
     resolverBonds: {},
     challengeClaimableBondWei: {},
     challengePausedNewActions: false,
@@ -818,6 +846,28 @@ function requireStatus(submission, expected, event, id) {
     submission.status === expected,
     `${event.source}.${event.eventName}: submission ${id} expected ${expected}, got ${submission.status}`
   );
+}
+
+function requireNonzeroBytes32(value, label) {
+  invariant(
+    typeof value === "string" && ethers.isHexString(value, 32) && value.toLowerCase() !== ZERO_HASH,
+    `${label} must be a nonzero bytes32`
+  );
+  return value.toLowerCase();
+}
+
+function requireChallengeInstance(state, id, event) {
+  const expected = state.challengeInstances[id];
+  invariant(expected, `${event.source}.${event.eventName}: unknown challenge instance ${id}`);
+  const actual = requireNonzeroBytes32(
+    getArg(event, "challengeInstanceHash"),
+    `${event.source}.${event.eventName} ${id} challengeInstanceHash`
+  );
+  invariant(
+    actual === expected.challengeInstanceHash,
+    `${event.source}.${event.eventName}: challenge instance hash mismatch for ${id}`
+  );
+  return actual;
 }
 
 function txKey(event) {
@@ -1015,6 +1065,7 @@ function replaySubmissionEvent(state, event) {
         committedBlock: asBigInt(getArg(event, "committedBlock")),
         paidAtCommit: asBoolean(getArg(event, "paidAtCommit")),
         revealedAt: 0n,
+        revealInstanceHash: ZERO_HASH,
         challengeEndsAt: 0n,
         maxDisputeEndsAt: 0n,
         status: "Committed",
@@ -1043,6 +1094,14 @@ function replaySubmissionEvent(state, event) {
       submission.improvementAtoms = asBigInt(getArg(event, "improvementAtoms"));
       submission.claimedScoreAtoms = asBigInt(getArg(event, "claimedScoreAtoms"));
       submission.revealedAt = asBigInt(event.blockTimestamp);
+      const revealInstanceHash = getArg(event, "revealInstanceHash");
+      invariant(
+        typeof revealInstanceHash === "string"
+          && ethers.isHexString(revealInstanceHash, 32)
+          && revealInstanceHash.toLowerCase() !== ZERO_HASH,
+        `Revealed ${id} missing/invalid revealInstanceHash`
+      );
+      submission.revealInstanceHash = revealInstanceHash.toLowerCase();
       submission.challengeEndsAt = asBigInt(getArg(event, "challengeEndsAt"));
       submission.maxDisputeEndsAt =
         submission.challengeEndsAt + state.config.challengeWindowSeconds * 2n;
@@ -1176,7 +1235,21 @@ function replayChallengeEvent(state, event) {
     case "Challenged": {
       invariant(state.challenges[id] === undefined, `duplicate active challenge ${id}`);
       invariant(event.blockTimestamp !== undefined, `Challenged ${id} missing blockTimestamp`);
+      const submission = requireSubmission(state, id, event);
+      const revealInstanceHash = requireNonzeroBytes32(
+        getArg(event, "revealInstanceHash"),
+        `Challenged ${id} revealInstanceHash`
+      );
+      invariant(
+        revealInstanceHash === submission.revealInstanceHash,
+        `Challenged ${id} reveal instance hash mismatch`
+      );
+      const challengeInstanceHash = requireNonzeroBytes32(
+        getArg(event, "challengeInstanceHash"),
+        `Challenged ${id} challengeInstanceHash`
+      );
       state.knownChallengeIds.add(id);
+      state.challengeInstances[id] = { revealInstanceHash, challengeInstanceHash };
       state.challenges[id] = {
         submissionId: id,
         challenger: getArg(event, "challenger"),
@@ -1195,6 +1268,7 @@ function replayChallengeEvent(state, event) {
     }
     case "ResolverDecisionPosted":
     case "ResolverTranscriptPosted": {
+      requireChallengeInstance(state, id, event);
       const challenge = state.challenges[id];
       invariant(
         challenge && !challenge.resolved && !challenge.decisionPending,
@@ -1213,6 +1287,7 @@ function replayChallengeEvent(state, event) {
       return;
     }
     case "ChallengeExpired": {
+      requireChallengeInstance(state, id, event);
       const challenge = state.challenges[id];
       invariant(challenge && !challenge.resolved, `expiration for absent/resolved challenge ${id}`);
       const refund = asBigInt(getArg(event, "refundedBondWei"));
@@ -1223,6 +1298,7 @@ function replayChallengeEvent(state, event) {
       return;
     }
     case "Resolved": {
+      requireChallengeInstance(state, id, event);
       const challengerWins = asBoolean(getArg(event, "challengerWins"));
       const hook = state.pendingSubmissionResolutionByTx[txKey(event)];
       invariant(hook?.id === id && hook.challengerWins === challengerWins, `Resolved ${id} missing/mismatched submission hook`);
@@ -1243,6 +1319,7 @@ function replayChallengeEvent(state, event) {
       return;
     }
     case "ResolverBondReleased": {
+      requireChallengeInstance(state, id, event);
       const bond = state.resolverBonds[id];
       const amount = asBigInt(getArg(event, "amount"));
       invariant(bond && bond.amountWei === amount, `resolver bond release mismatch for ${id}`);
@@ -1251,6 +1328,7 @@ function replayChallengeEvent(state, event) {
       return;
     }
     case "ResolverDecisionCancelled": {
+      requireChallengeInstance(state, id, event);
       const challenge = state.challenges[id];
       invariant(challenge?.decisionPending, `cancelled resolver decision missing for ${id}`);
       const hook = state.pendingSubmissionResolutionByTx[txKey(event)];
@@ -1264,6 +1342,7 @@ function replayChallengeEvent(state, event) {
       return;
     }
     case "ResolverBondSlashed": {
+      requireChallengeInstance(state, id, event);
       const bond = state.resolverBonds[id];
       const amount = asBigInt(getArg(event, "amount"));
       invariant(bond && bond.amountWei === amount, `resolver bond slash mismatch for ${id}`);
@@ -1386,6 +1465,7 @@ function expectedSubmissionForComparison(submission) {
     committedBlock: submission.committedBlock,
     paidAtCommit: submission.paidAtCommit,
     revealedAt: submission.revealedAt,
+    revealInstanceHash: submission.revealInstanceHash,
     challengeEndsAt: submission.challengeEndsAt,
     maxDisputeEndsAt: submission.maxDisputeEndsAt,
     status: STATUS_NUMBER[submission.status],
@@ -1527,6 +1607,7 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     };
     checks.push(
       check(`challenges(${id})`, expected, snapshot.challenges[id]),
+      check(`challengeInstances(${id})`, state.challengeInstances[id], snapshot.challengeInstances[id]),
       check(
         `resolverBonds(${id})`,
         state.resolverBonds[id] ?? { amountWei: 0n, releaseAt: 0n, slashProofHash: ZERO_HASH },
@@ -1720,6 +1801,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     submissionClaimableBondWei: {},
     challengePausedNewActions: await challenges.pausedNewActions(...atBlock),
     challenges: {},
+    challengeInstances: {},
     resolverBonds: {},
     challengeClaimableBondWei: {},
     registry: { problemCount: await registry.problemCount(...atBlock), problems: {} },
@@ -1731,6 +1813,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       ...submissionView(await submissions.submissions(id, ...atBlock)),
       committedBlock: await submissions.committedBlockOf(id, ...atBlock),
       paidAtCommit: await submissions.paidAtCommit(id, ...atBlock),
+      revealInstanceHash: await submissions.revealInstanceHashOf(id, ...atBlock),
       maxDisputeEndsAt: await submissions.maxDisputeEndsAtOf(id, ...atBlock),
     };
     const info = await submissions.finalizeInfo(id, ...atBlock);
@@ -1755,6 +1838,10 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
   }
   for (const id of replay.knownChallengeIds) {
     snapshot.challenges[id] = challengeView(await challenges.challenges(id, ...atBlock));
+    snapshot.challengeInstances[id] = {
+      revealInstanceHash: await challenges.challengeRevealInstanceHashOf(id, ...atBlock),
+      challengeInstanceHash: await challenges.challengeInstanceHashOf(id, ...atBlock),
+    };
     const bond = await challenges.resolverBonds(id, ...atBlock);
     snapshot.resolverBonds[id] = {
       amountWei: bond.amountWei,
@@ -1974,6 +2061,11 @@ export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, t
   ].every((value) => value !== undefined) &&
     Object.keys(replay.registry?.problems ?? {}).every(
       (id) => snapshot.registry?.problems?.[id]?.frozen !== undefined
+    ) &&
+    Object.keys(replay.challengeInstances ?? {}).every(
+      (id) =>
+        snapshot.challengeInstances?.[id]?.revealInstanceHash !== undefined &&
+        snapshot.challengeInstances?.[id]?.challengeInstanceHash !== undefined
     );
   const complete =
     replay.coverage.complete && lifecycleCountsComplete && lifecycleSnapshotComplete;
@@ -2013,7 +2105,7 @@ function cidToFilename(cid) {
   return cid.replace(/[^a-zA-Z0-9._-]/g, "_") + ".bin";
 }
 
-async function archiveCalldata(dir, reveals, submissions, provider) {
+export async function archiveCalldata(dir, reveals, submissions, provider) {
   const outDir = resolve(dir);
   if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
   const entries = [];
@@ -2046,22 +2138,29 @@ async function archiveCalldata(dir, reveals, submissions, provider) {
       mismatches.push({ submissionId, cid, reason: "reveal transaction not found" });
       continue;
     }
-    let parsed;
+    let reveal;
     try {
-      parsed = submissions.interface.parseTransaction({ data: tx.data, value: tx.value });
+      reveal = recoverRevealCalldata(tx.data, submissions.interface, {
+        submissionId,
+        solutionCid: cid,
+        claimedScoreAtoms: getArg(event, "claimedScoreAtoms"),
+        improvementAtoms: getArg(event, "improvementAtoms"),
+        solutionBytesLength: byteLength,
+        commitDaHash: anchor,
+      });
     } catch (error) {
-      mismatches.push({ submissionId, cid, reason: `unparseable calldata: ${error.shortMessage ?? error.message}` });
+      mismatches.push({
+        submissionId,
+        cid,
+        anchor,
+        reason: `calldata recovery failed closed: ${error.shortMessage ?? error.message}`,
+      });
       continue;
     }
-    if (parsed?.name !== "reveal") {
-      mismatches.push({ submissionId, cid, reason: `transaction is ${parsed?.name ?? "unknown"}, not reveal` });
-      continue;
-    }
-    const solution = parsed.args.solution;
-    const computed = ethers.sha256(solution);
+    const computed = reveal.commitDaHash ?? ethers.sha256(reveal.solution);
     const derivedCid = `sha256:${computed.slice(2)}`;
-    const bytes = ethers.getBytes(solution);
-    if (computed !== anchor || derivedCid !== cid || BigInt(bytes.length) !== byteLength) {
+    const bytes = ethers.getBytes(reveal.solution);
+    if (computed !== anchor || BigInt(bytes.length) !== byteLength) {
       mismatches.push({ submissionId, cid, anchor, computed, derivedCid, reason: "calldata does not match event/anchor" });
       continue;
     }

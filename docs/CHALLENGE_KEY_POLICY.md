@@ -19,7 +19,8 @@ authoritative; this document adds only the auto-challenge envelope.
   bonded on-chain dispute inside a fixed spend envelope, fast enough to land
   inside the 72-hour challenge window without a human in the transaction loop.
 - The key may call **only** `P42ChallengeManager.challenge(submissionId,
-  reasonHash)` and `P42ChallengeManager.claimBond()`. Nothing else.
+  revealInstanceHash, reasonHash)` and `P42ChallengeManager.claimBond()`.
+  Nothing else.
 - The key **never** holds or moves pool funds, never signs owner/resolver/
   treasury/deployer/solver actions, never posts resolver decisions, never
   finalizes, never claims solver entitlement, and never touches Atlas or any
@@ -37,7 +38,7 @@ authoritative; this document adds only the auto-challenge envelope.
 | Address | `<CHALLENGE_KEY_ADDRESS>` | Dedicated EOA/session key; testnet only |
 | Chain | Base Sepolia (`84532`) | Bound; must not sign mainnet |
 | Bound contract | `<P42ChallengeManager address>` | From `deployments/base-sepolia/p42-prizes.json` |
-| Allowed selectors | `challenge(uint256,bytes32)`, `claimBond()` | No other selector may be signed |
+| Allowed selectors | `challenge(uint256,bytes32,bytes32)`, `claimBond()` | No other selector may be signed |
 | Storage | hashed reference only | Same posture as API keys: store `sha256:<hex>` reference, never the raw key, in ops config; never in runner transcripts |
 
 Isolation requirements:
@@ -92,10 +93,12 @@ Rules:
    `agent_action_mode: auto_challenge_candidate`,
    `requires_agent_challenge_key: true`, `requires_spend_cap: true`.
 3. Bounded auto-file: the challenge key reads `requiredChallengeBond`, checks it
-   against every cap above, and — if inside the envelope — calls
-   `challenge(submissionId, reasonHash)` on-chain with `reasonHash` bound to the
-   published transcript evidence. Because of H2, no entitlement is passed; the
-   bond is sized on-chain.
+   against every cap above, reads the `Revealed` event's `revealInstanceHash`,
+   re-checks that hash against current chain state, and — if inside the envelope
+   — calls `challenge(submissionId, revealInstanceHash, reasonHash)` on-chain
+   with `reasonHash` bound to the published transcript evidence. Because of H2,
+   no entitlement is passed; the bond is sized on-chain. A stale raw transaction
+   therefore reverts rather than attaching to a replacement reveal after a reorg.
 4. **Hard boundary:** the candidate is filed on-chain automatically, but **NO
    Atlas/prize-state write happens without explicit user confirmation.** The
    challenge transaction is the only automatic effect. Finalization, resolver

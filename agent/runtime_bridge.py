@@ -10,6 +10,7 @@ Docker and one active verifier.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
@@ -23,6 +24,7 @@ from p42_prizes.runner_queue import (  # noqa: E402
     MemorySnapshot,
     RunnerPolicy,
     enqueue_runner_job,
+    locked_runner_queue,
     memory_snapshot_from_proc,
     read_runner_queue,
     record_runner_action,
@@ -36,6 +38,59 @@ def _load_object(path: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{path}: expected a JSON object")
     return value
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _quarantine_canonical(queue_path: str, job_ids: list[str], reason: str) -> dict[str, Any]:
+    targets = {job_id for job_id in job_ids if job_id}
+    if not targets:
+        raise ValueError("at least one --job-id is required")
+    now = _utc_now()
+    invalidated: list[str] = []
+    missing = set(targets)
+    with locked_runner_queue(Path(queue_path)) as queue:
+        jobs = queue.get("jobs")
+        if not isinstance(jobs, list):
+            raise ValueError("queue.jobs must be an array")
+        for job in jobs:
+            if not isinstance(job, dict) or job.get("job_id") not in targets:
+                continue
+            missing.discard(str(job.get("job_id")))
+            previous_action = job.get("action")
+            if isinstance(previous_action, dict):
+                job["previous_action"] = previous_action
+            candidate_hash = (
+                previous_action.get("candidate_hash")
+                if isinstance(previous_action, dict) and isinstance(previous_action.get("candidate_hash"), str)
+                else job.get("challenge_candidate_hash")
+            )
+            if not isinstance(candidate_hash, str):
+                candidate_hash = job.get("source_event_hash", "")
+            if not isinstance(candidate_hash, str) or not candidate_hash:
+                candidate_hash = "sha256:" + "0" * 64
+            action: dict[str, Any] = {
+                "candidate_hash": candidate_hash,
+                "status": "canonical_invalidated",
+                "recorded_at_utc": now,
+                "detail": reason,
+            }
+            if isinstance(previous_action, dict) and isinstance(previous_action.get("transaction_hash"), str):
+                action["transaction_hash"] = previous_action["transaction_hash"]
+            job["action"] = action
+            job["canonical_status"] = "orphaned_reorg"
+            job["canonical_invalidated_at_utc"] = now
+            job["canonical_invalidated_reason"] = reason
+            if job.get("status") in {"queued", "running", "succeeded", "failed"}:
+                job["status"] = "cancelled"
+            invalidated.append(str(job.get("job_id")))
+    return {
+        "schema_version": "p42-canonical-quarantine/v1",
+        "invalidated_job_ids": invalidated,
+        "missing_job_ids": sorted(missing),
+    }
 
 
 def _memory(args: argparse.Namespace) -> MemorySnapshot:
@@ -82,6 +137,11 @@ def _parser() -> argparse.ArgumentParser:
     action.add_argument("--status", required=True)
     action.add_argument("--transaction-hash")
     action.add_argument("--detail")
+
+    quarantine = commands.add_parser("quarantine-canonical")
+    quarantine.add_argument("--queue", required=True)
+    quarantine.add_argument("--job-id", action="append", required=True)
+    quarantine.add_argument("--reason", required=True)
     return parser
 
 
@@ -100,6 +160,8 @@ def main() -> int:
             transaction_hash=args.transaction_hash,
             detail=args.detail,
         )
+    elif args.command == "quarantine-canonical":
+        result = _quarantine_canonical(args.queue, args.job_id, args.reason)
     else:
         policy = RunnerPolicy(
             max_running=1,

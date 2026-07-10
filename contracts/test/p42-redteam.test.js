@@ -168,6 +168,41 @@ async function commitReveal(fixture, { solverAddr, sendCommit, sendReveal, impro
 }
 
 describe("P42 red-team attack coverage", function () {
+  async function openChallenge(fixture, signer, submissionId, reasonHash, overrides) {
+    return fixture.challenges.connect(signer).challenge(
+      submissionId,
+      await fixture.submissions.revealInstanceHashOf(submissionId),
+      reasonHash,
+      overrides,
+    );
+  }
+
+  async function resolveChallenge(fixture, signer, submissionId, challengerWins, transcriptHash, transcriptURI, verdictHash, overrides) {
+    return fixture.challenges.connect(signer).resolve(
+      submissionId,
+      await fixture.challenges.challengeInstanceHashOf(submissionId),
+      challengerWins,
+      transcriptHash,
+      transcriptURI,
+      verdictHash,
+      overrides,
+    );
+  }
+
+  async function finalizeChallengeResolution(fixture, submissionId) {
+    return fixture.challenges.finalizeResolution(
+      submissionId,
+      await fixture.challenges.challengeInstanceHashOf(submissionId),
+    );
+  }
+
+  async function expireChallenge(fixture, submissionId) {
+    return fixture.challenges.expireChallenge(
+      submissionId,
+      await fixture.challenges.challengeInstanceHashOf(submissionId),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Risk 12 — reentrancy against every ETH-outflow path.
   // A concrete malicious receiver (ReentrantClaimer) re-enters the caller mid
@@ -273,11 +308,14 @@ describe("P42 red-team attack coverage", function () {
     // becomes claimable on the challenge manager.
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
     const reasonHash = ethers.keccak256(ethers.toUtf8Bytes("attacker challenge"));
-    const challengeData = challenges.interface.encodeFunctionData("challenge", [submissionId, reasonHash]);
+    const challengeData = challenges.interface.encodeFunctionData("challenge", [
+      submissionId,
+      await submissions.revealInstanceHashOf(submissionId),
+      reasonHash,
+    ]);
     await attacker.exec(chalAddr, required, challengeData, { value: required });
 
-    await challenges.connect(resolver).resolve(
-      submissionId,
+    await resolveChallenge(fixture, resolver, submissionId,
       true,
       ethers.keccak256(ethers.toUtf8Bytes("challenger wins transcript")),
       "ar://redteam-challenger-wins",
@@ -285,7 +323,7 @@ describe("P42 red-team attack coverage", function () {
       { value: await challenges.resolverDecisionBondWei() }
     );
     await increaseTime(RESOLVER_FRAUD_WINDOW_SECONDS + 1n);
-    await challenges.finalizeResolution(submissionId);
+    await finalizeChallengeResolution(fixture, submissionId);
     assert.equal(await challenges.claimableBondWei(attackerAddr), required);
 
     const claimData = challenges.interface.encodeFunctionData("claimBond");
@@ -422,14 +460,14 @@ describe("P42 red-team attack coverage", function () {
 
     // (a) The solver's own challenge is rejected outright.
     await expectCustomError(
-      challenges.connect(alice).challenge(submissionId, reasonHash, { value: required }),
+      openChallenge(fixture, alice, submissionId, reasonHash, { value: required }),
       challenges,
       "P42_SELF_CHALLENGE"
     );
     assert.equal((await submissions.submissions(submissionId)).status, 2n); // still Revealed
 
     // (b) A third-party challenger is unaffected by the guard.
-    await challenges.connect(bob).challenge(submissionId, reasonHash, { value: required });
+    await openChallenge(fixture, bob, submissionId, reasonHash, { value: required });
     assert.equal((await submissions.submissions(submissionId)).status, 3n); // Challenged
     assert.equal((await challenges.challenges(submissionId)).challenger, bob.address);
   });
@@ -442,11 +480,15 @@ describe("P42 red-team attack coverage", function () {
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
 
     // Bob posts a frivolous challenge and lets it time out unresolved.
-    await challenges
-      .connect(bob)
-      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("frivolous")), { value: required });
+    await openChallenge(
+      fixture,
+      bob,
+      submissionId,
+      ethers.keccak256(ethers.toUtf8Bytes("frivolous")),
+      { value: required },
+    );
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await challenges.expireChallenge(submissionId);
+    await expireChallenge(fixture, submissionId);
 
     // The slot is cleared, bob's bond is refunded, the submission is Revealed
     // again — and it is NOT immunized: the solver still cannot self-challenge...
@@ -454,7 +496,7 @@ describe("P42 red-team attack coverage", function () {
     assert.equal(await challenges.claimableBondWei(bob.address), required);
     assert.equal((await submissions.submissions(submissionId)).status, 2n);
     await expectCustomError(
-      challenges.connect(alice).challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("re-burn")), {
+      openChallenge(fixture, alice, submissionId, ethers.keccak256(ethers.toUtf8Bytes("re-burn")), {
         value: required,
       }),
       challenges,
@@ -462,9 +504,13 @@ describe("P42 red-team attack coverage", function () {
     );
 
     // ...and a different party can post a fresh challenge in the re-armed window.
-    await challenges
-      .connect(carol)
-      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("real fraud evidence")), { value: required });
+    await openChallenge(
+      fixture,
+      carol,
+      submissionId,
+      ethers.keccak256(ethers.toUtf8Bytes("real fraud evidence")),
+      { value: required },
+    );
     assert.equal((await submissions.submissions(submissionId)).status, 3n);
     assert.equal((await challenges.challenges(submissionId)).challenger, carol.address);
   });
@@ -474,16 +520,19 @@ describe("P42 red-team attack coverage", function () {
     const { alice, bob, resolver, ledger, submissions, challenges } = fixture;
     const { submissionId } = await revealAsAlice(fixture);
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
-    await challenges
-      .connect(bob)
-      .challenge(submissionId, ethers.keccak256(ethers.toUtf8Bytes("meritless dispute")), { value: required });
+    await openChallenge(
+      fixture,
+      bob,
+      submissionId,
+      ethers.keccak256(ethers.toUtf8Bytes("meritless dispute")),
+      { value: required },
+    );
 
     // Resolve near the active dispute deadline. The full fraud window carries
     // finality beyond the original reveal deadline, while remaining inside the
     // submission's immutable cumulative settlement horizon.
     await increaseTime(CHALLENGE_WINDOW_SECONDS - RESOLVER_FRAUD_WINDOW_SECONDS / 2n);
-    await challenges.connect(resolver).resolve(
-      submissionId,
+    await resolveChallenge(fixture, resolver, submissionId,
       false,
       ethers.keccak256(ethers.toUtf8Bytes("solver prevails transcript")),
       "ar://solver-prevails",
@@ -492,7 +541,7 @@ describe("P42 red-team attack coverage", function () {
     );
     assert.equal((await submissions.submissions(submissionId)).status, 3n); // decision pending
     await increaseTime(RESOLVER_FRAUD_WINDOW_SECONDS + 1n);
-    await challenges.finalizeResolution(submissionId);
+    await finalizeChallengeResolution(fixture, submissionId);
     assert.equal((await submissions.submissions(submissionId)).status, 2n); // Revealed again
 
     // With the stale deadline, expireRevealed would strip the honest winner's

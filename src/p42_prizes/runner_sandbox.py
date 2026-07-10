@@ -37,6 +37,7 @@ PLACEHOLDER_IMAGES = ("sha256:local-dev", "sha256:pending", "")
 # from what was admitted — the executor fails closed on any non-pinned image
 # independent of the readiness gate.
 PINNED_IMAGE_RE = re.compile(r"^(?:[^\s@]+@)?sha256:[0-9a-f]{64}$")
+IMMUTABLE_IMAGE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Determinism knobs forced inside the container. Host-side build_verifier_env
 # is irrelevant in sandbox mode (no host environment reaches `docker run`), so
 # each knob must be passed explicitly via -e.
@@ -46,6 +47,28 @@ SANDBOX_DETERMINISM_ENV = (
     "OPENBLAS_NUM_THREADS=1",
     "MKL_NUM_THREADS=1",
 )
+
+
+def compose_immutable_image_ref(repository: str, digest: str) -> str:
+    """Return the registry-qualified immutable reference for a manifest image.
+
+    A bare digest can identify a locally cached image, but it cannot tell a
+    fresh runner where to retrieve that image. Production execution therefore
+    always needs ``repository@sha256:...``. Registry ports are valid; mutable
+    repository tags are not.
+    """
+
+    if not isinstance(repository, str) or not repository or repository.strip() != repository:
+        raise RunnerSandboxError("verifier.image_repository must be a non-empty repository")
+    if any(char.isspace() for char in repository) or "@" in repository:
+        raise RunnerSandboxError("verifier.image_repository must be a tag-free registry repository")
+    # A colon in the final path component is an OCI tag. A registry port occurs
+    # before the final slash and remains valid (for example localhost:5000/p42).
+    if ":" in repository.rsplit("/", 1)[-1]:
+        raise RunnerSandboxError("verifier.image_repository must not include a mutable tag")
+    if not isinstance(digest, str) or not IMMUTABLE_IMAGE_DIGEST_RE.fullmatch(digest):
+        raise RunnerSandboxError("verifier.image must be an immutable lowercase sha256:<64 hex> digest")
+    return f"{repository}@{digest}"
 
 
 def docker_available(binary: str = "docker") -> bool:
@@ -98,6 +121,7 @@ def build_sandbox_command(
             "refusing to sandbox a non-pinned verifier image "
             f"(need sha256:<64hex> or repo@sha256:<64hex>): {image!r}"
         )
+    image_digest = image.rsplit("@", 1)[-1]
     if "{solution}" not in verifier_command_template:
         raise RunnerSandboxError("verifier command must include the {solution} placeholder")
     if not isinstance(memory_mb, int) or memory_mb < 1:
@@ -127,6 +151,9 @@ def build_sandbox_command(
     ]
     for knob in SANDBOX_DETERMINISM_ENV:
         args += ["-e", knob]
+    # The report binds to the manifest digest, never a caller-controlled host
+    # environment variable. This also makes the Docker and admission paths agree.
+    args += ["-e", f"P42_VERIFIER_IMAGE={image_digest}"]
     if container_name:
         args += ["--name", container_name]
     args.append(image)

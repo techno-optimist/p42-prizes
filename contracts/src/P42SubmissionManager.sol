@@ -204,6 +204,10 @@ contract P42SubmissionManager {
     mapping(uint256 => uint64) public committedBlockOf;
     mapping(uint256 => uint64) public maxDisputeEndsAtOf;
     mapping(uint256 => bool) public paidAtCommit;
+    /// @notice Immutable fingerprint of the currently revealed claim. Challenge
+    /// calls bind this value so a raw transaction signed before a reorg cannot
+    /// be replayed against a replacement reveal with the same submission id.
+    mapping(uint256 => bytes32) public revealInstanceHashOf;
     mapping(uint256 => bytes32) public solutionCidHashOf;
     mapping(bytes32 => uint256) public prioritySubmissionOf;
     mapping(address => uint256) public claimableBondWei;
@@ -241,7 +245,8 @@ contract P42SubmissionManager {
         uint256 improvementAtoms,
         int256 claimedScoreAtoms,
         uint64 challengeEndsAt,
-        uint256 solutionBytesLength
+        uint256 solutionBytesLength,
+        bytes32 revealInstanceHash
     );
     /// @param creditAtoms The MARGINAL frontier reduction credited to the
     /// solver (previous best - claimed score), 0 when the submission was
@@ -514,12 +519,21 @@ contract P42SubmissionManager {
         submission.improvementAtoms = improvementAtoms;
         submission.revealedAt = uint64(block.timestamp);
         submission.challengeEndsAt = challengeEndsAt;
+        bytes32 revealInstanceHash = _revealInstanceHash(submissionId, submission);
+        revealInstanceHashOf[submissionId] = revealInstanceHash;
         maxDisputeEndsAtOf[submissionId] =
             uint64(block.timestamp) + challengeWindowSeconds * MAX_CUMULATIVE_DISPUTE_WINDOWS;
         _assignDuplicatePriority(submissionId, solutionCid);
 
         emit Revealed(
-            submissionId, msg.sender, solutionCid, improvementAtoms, claimedScoreAtoms, challengeEndsAt, solution.length
+            submissionId,
+            msg.sender,
+            solutionCid,
+            improvementAtoms,
+            claimedScoreAtoms,
+            challengeEndsAt,
+            solution.length,
+            revealInstanceHash
         );
     }
 
@@ -992,6 +1006,23 @@ contract P42SubmissionManager {
     function _requireCommitMature(uint256 submissionId) private view {
         uint256 eligibleBlock = uint256(committedBlockOf[submissionId]) + MIN_COMMIT_AGE_BLOCKS;
         if (block.number < eligibleBlock) revert P42_COMMIT_NOT_MATURE(eligibleBlock, block.number);
+    }
+
+    function _revealInstanceHash(uint256 submissionId, Submission storage submission) private view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                address(this),
+                block.chainid,
+                submissionId,
+                submission.solver,
+                submission.commitment,
+                submission.commitDaHash,
+                keccak256(bytes(submission.solutionCid)),
+                submission.claimedScoreAtoms,
+                submission.improvementAtoms,
+                submission.challengeEndsAt
+            )
+        );
     }
 
     function _validateSolutionDa(bytes32 expectedHash, bytes calldata solution) private view {

@@ -17,6 +17,7 @@ from p42_prizes.runner_queue import (
 from p42_prizes.runner_alerts import build_runner_alerts
 from p42_prizes.runner_worker import (
     RunnerWorkerError,
+    _adjudicate_chain_claim,
     _chain_score_atoms,
     _run_job,
 )
@@ -38,6 +39,7 @@ def _claim(*, onchain_da: bool = False, claimed: str = "0") -> dict:
         "challenge_contract": "0x" + "3" * 40,
         "submission_id": "7",
         "claimed_score_atoms": claimed,
+        "reveal_instance_hash": "0x" + "4" * 64,
         "challenge_ends_at": "1999999999",
         "solution_cid": sha256_file(SOLUTION),
         "commit_da_hash": "0x" + sha256_file(SOLUTION).removeprefix("sha256:"),
@@ -75,6 +77,61 @@ def test_chain_score_atoms_uses_exact_ceiling_for_both_objective_directions() ->
     assert _chain_score_atoms("-1/3", "maximize") == 333333333333333334
 
 
+def test_chain_claim_problem_id_mismatch_is_quarantined() -> None:
+    claim = _claim()
+    claim["problem_id"] = "arithmetic-kakeya"
+    report = {"valid": True, "score": "0/1"}
+    comparison, candidate = _adjudicate_chain_claim(
+        {"source_event_hash": SOURCE_HASH},
+        claim,
+        problem=PROBLEM,
+        verifier={
+            "valid": True,
+            "report": report,
+            "report_hash": sha256_bytes(canonical_json(report).encode("utf-8")),
+        },
+        da_result={"ok": True},
+    )
+
+    assert comparison["relation"] == "problem_id_mismatch"
+    assert comparison["manifest_problem_id"] == "hadamard-mini"
+    assert candidate["action"] == "quarantine"
+    assert candidate["reason_code"] == "problem_id_mismatch"
+    assert candidate["reveal_instance_hash"] == claim["reveal_instance_hash"]
+
+
+def test_chain_claim_report_payload_hash_mismatch_is_quarantined() -> None:
+    claim = _claim()
+    report = {"valid": True, "score": "0/1"}
+    _, candidate = _adjudicate_chain_claim(
+        {"source_event_hash": SOURCE_HASH},
+        claim,
+        problem=PROBLEM,
+        verifier={
+            "valid": False,
+            "integrity_failure": "report_solution_hash_mismatch",
+            "report": report,
+            "report_hash": sha256_bytes(canonical_json(report).encode("utf-8")),
+        },
+        da_result={"ok": True},
+    )
+
+    assert candidate["action"] == "quarantine"
+    assert candidate["reason_code"] == "report_solution_hash_mismatch"
+
+
+def test_chain_job_refuses_a_noncanonical_problem_path(tmp_path: Path) -> None:
+    forged_problem = tmp_path / "problems" / "hadamard-mini"
+    forged_problem.mkdir(parents=True)
+
+    with pytest.raises(RunnerWorkerError, match="canonical source checkout"):
+        _run_job(
+            _job(problem=str(forged_problem)),
+            tmp_path / "transcripts",
+            policy=RunnerPolicy(sandbox="docker"),
+        )
+
+
 def test_enqueue_is_idempotent_and_action_updates_are_fenced(tmp_path: Path) -> None:
     queue = tmp_path / "queue.json"
     job = _job()
@@ -102,6 +159,40 @@ def test_enqueue_is_idempotent_and_action_updates_are_fenced(tmp_path: Path) -> 
             job_id=job["job_id"],
             candidate_hash="sha256:" + "6" * 64,
             status="submitted",
+        )
+
+
+def test_action_receipt_reorg_can_rebroadcast_before_final_confirmation(tmp_path: Path) -> None:
+    queue = tmp_path / "queue.json"
+    job = _job()
+    candidate_hash = "sha256:" + "4" * 64
+    tx_hash = "0x" + "5" * 64
+    enqueue_runner_job(queue, job)
+    state = read_runner_queue(queue)
+    state["jobs"][0]["challenge_candidate_hash"] = candidate_hash
+    queue.write_text(canonical_json(state) + "\n", encoding="utf-8")
+
+    record_runner_action(queue, job_id=job["job_id"], candidate_hash=candidate_hash, status="signed", transaction_hash=tx_hash)
+    record_runner_action(queue, job_id=job["job_id"], candidate_hash=candidate_hash, status="submitted", transaction_hash=tx_hash)
+    record_runner_action(queue, job_id=job["job_id"], candidate_hash=candidate_hash, status="reorged", transaction_hash=tx_hash)
+    record_runner_action(queue, job_id=job["job_id"], candidate_hash=candidate_hash, status="broadcast", transaction_hash=tx_hash)
+    record_runner_action(queue, job_id=job["job_id"], candidate_hash=candidate_hash, status="submitted", transaction_hash=tx_hash)
+    confirmed = record_runner_action(
+        queue,
+        job_id=job["job_id"],
+        candidate_hash=candidate_hash,
+        status="confirmed",
+        transaction_hash=tx_hash,
+    )
+
+    assert confirmed["status"] == "confirmed"
+    with pytest.raises(RunnerQueueError, match="terminal"):
+        record_runner_action(
+            queue,
+            job_id=job["job_id"],
+            candidate_hash=candidate_hash,
+            status="reorged",
+            transaction_hash=tx_hash,
         )
 
 
