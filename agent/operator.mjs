@@ -42,6 +42,10 @@ import {
 } from "./indexer.mjs";
 import { getBlob } from "./da-local.mjs";
 import { fetchFromArweave, findTxidByCid } from "./da-arweave.mjs";
+import {
+  assertApprovedJournalPath,
+  assertSignedTransactionRecord,
+} from "./signed-transaction.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -758,7 +762,7 @@ function signedActionPath(candidate, callPolicy) {
 
 async function signedActionRecord(candidate, callPolicy, request) {
   const path = signedActionPath(candidate, callPolicy);
-  if (existsSync(path)) return { path, record: JSON.parse(readFileSync(path, "utf8")) };
+  if (existsSync(path)) return { path, record: JSON.parse(readFileSync(assertApprovedJournalPath(path, ACTIONS, path), "utf8")) };
   const record = await buildSignedTransactionRecord({
     wallet,
     request,
@@ -766,6 +770,67 @@ async function signedActionRecord(candidate, callPolicy, request) {
   });
   writeCanonicalAtomic(path, record);
   return { path, record };
+}
+
+function assertOperatorSignedRecord(record, candidate, callPolicy, action = null, detail = null) {
+  const expectedRequest = executionMode.mode === "direct-eoa-local-test"
+    ? exactCallRequestFromPolicy(callPolicy)
+    : {
+      to: executionMode.agentWalletAddress,
+      value: 0n,
+      data: agentWallet.interface.encodeFunctionData("execute", [
+        callPolicy.target,
+        callPolicy.call_value_wei,
+        callPolicy.calldata,
+      ]),
+    };
+  const expectedLabel = `challenge:${candidate.submission_id}:${candidate.candidate_hash}`;
+  const checked = assertSignedTransactionRecord(record, {
+    signer: wallet.address,
+    chainId,
+    ...expectedRequest,
+    hash: action?.transaction_hash ?? detail?.signed_tx_hash,
+    nonce: detail?.signed_tx_nonce,
+    label: expectedLabel,
+  });
+  if (detail) {
+    if (detail.call_policy_hash !== callPolicy.policy_hash
+      || detail.calldata_hash !== callPolicy.calldata_hash
+      || detail.scope_hash !== callPolicy.scope_hash
+      || detail.signed_tx_data_hash !== record.data_hash) {
+      throw new Error("signed transaction journal disagrees with declared policy or journal hashes");
+    }
+  }
+  return checked.record;
+}
+
+function assertPersistedChallengePolicy(candidate, detail) {
+  const reasonHash = ethers.keccak256(
+    ethers.toUtf8Bytes(`p42-challenge-candidate/v1:${candidate.candidate_hash}`),
+  );
+  const expected = buildChallengeCallPolicy({
+    challengeInterface: chal.interface,
+    challengeContract: String(chal.target),
+    chainId,
+    problemId: runnerConfig.problemId,
+    submissionId: BigInt(candidate.submission_id),
+    revealInstanceHash: candidate.reveal_instance_hash,
+    reasonHash,
+    candidateHash: candidate.candidate_hash,
+    sourceEventHash: candidate.source_event_hash,
+    expiresAt: candidate.challenge_ends_at,
+    valueWei: BigInt(detail.bond_wei),
+  });
+  const expectedPath = join(
+    ACTIONS,
+    `${candidate.candidate_hash.slice(7)}-${expected.policy_hash.slice(7, 23)}.json`,
+  );
+  const policyPath = assertApprovedJournalPath(detail.call_policy_path, ACTIONS, expectedPath);
+  const persisted = JSON.parse(readFileSync(policyPath, "utf8"));
+  if (canonicalJson(persisted) !== canonicalJson(expected)) {
+    throw new Error("persisted challenge call policy does not match the candidate binding");
+  }
+  return expected;
 }
 
 async function assertAgentWalletPolicy(callPolicy, bond, latestTimestamp) {
@@ -852,6 +917,12 @@ async function reconcileBroadcast(job) {
   const transcript = verifyTranscript(job.transcript_path);
   if (!transcript.candidate) throw new Error(`action ${job.job_id} has no challenge candidate`);
   const detail = parseDetailJson(action.detail);
+  const callPolicy = assertPersistedChallengePolicy(transcript.candidate, detail);
+  const expectedPath = signedActionPath(transcript.candidate, callPolicy);
+  const journalPath = assertApprovedJournalPath(detail.signed_tx_path, ACTIONS, expectedPath);
+  const signedRecord = assertOperatorSignedRecord(
+    JSON.parse(readFileSync(journalPath, "utf8")), transcript.candidate, callPolicy, action, detail,
+  );
   let receipt = await provider.getTransactionReceipt(action.transaction_hash);
   if (receipt) {
     const canonicalBlock = await provider.getBlock(receipt.blockNumber);
@@ -907,12 +978,8 @@ async function reconcileBroadcast(job) {
         appendAlert(`SUPERSEDED ${job.job_id}: ${current.reason}`);
         return true;
       }
-      const signed = JSON.parse(readFileSync(detail.signed_tx_path, "utf8"));
-      if (signed.hash.toLowerCase() !== action.transaction_hash.toLowerCase()) {
-        throw new Error(`signed action hash mismatch for ${job.job_id}`);
-      }
       try {
-        pending = await provider.broadcastTransaction(signed.raw_tx);
+        pending = await provider.broadcastTransaction(signedRecord.raw_tx);
       } catch (error) {
         pending = await provider.getTransaction(action.transaction_hash);
         if (!pending) throw error;
@@ -1059,6 +1126,7 @@ async function consumeCandidate(job) {
     BigInt(latest.timestamp),
   );
   const signed = await signedActionRecord(candidate, callPolicy, request);
+  assertOperatorSignedRecord(signed.record, candidate, callPolicy);
   const detail = canonicalJson({
     bond_wei: bond.toString(),
     call_policy_path: policyPath,

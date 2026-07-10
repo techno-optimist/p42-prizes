@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -32,6 +32,10 @@ import {
   verifierImageHashForDigest,
   verifierSourceHashForDigest,
 } from "./lib.mjs";
+import {
+  assertApprovedJournalPath,
+  assertSignedTransactionRecord,
+} from "./signed-transaction.mjs";
 
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -553,6 +557,82 @@ test("signed transaction journal records raw bytes before broadcast", async () =
   assert.equal(record.signer, signingWallet.address.toLowerCase());
   assert.equal(record.nonce, 0);
   assert.equal(record.value, "123");
+});
+
+test("signed transaction journals reject forged raw bytes and every transport binding", async () => {
+  const wallet = ethers.Wallet.createRandom();
+  const other = ethers.Wallet.createRandom();
+  const base = {
+    to: "0x9999999999999999999999999999999999999999",
+    value: 123n,
+    data: "0x1234",
+    nonce: 7,
+    gasLimit: 50000n,
+    gasPrice: 1n,
+    chainId: 31337,
+    type: 0,
+  };
+  const record = await buildSignedTransactionRecord({ wallet, request: base, label: "bound" });
+  const expected = { signer: wallet.address, ...base, hash: record.hash, label: "bound" };
+  assert.equal(assertSignedTransactionRecord(record, expected).hash, record.hash);
+
+  const declaredHash = { ...record, hash: ethers.ZeroHash };
+  assert.throws(() => assertSignedTransactionRecord(declaredHash, expected), /raw transaction hash mismatch/);
+  const declaredData = { ...record, data_hash: ethers.ZeroHash };
+  assert.throws(() => assertSignedTransactionRecord(declaredData, expected), /declared calldata hash mismatch/);
+  const declaredNonce = { ...record, nonce: 8 };
+  assert.throws(() => assertSignedTransactionRecord(declaredNonce, expected), /nonce mismatch/);
+
+  for (const [field, request, signer, pattern] of [
+    ["signer", base, other, /signer mismatch/],
+    ["chain", { ...base, chainId: 1 }, wallet, /chain mismatch/],
+    ["to", { ...base, to: "0x8888888888888888888888888888888888888888" }, wallet, /destination mismatch/],
+    ["value", { ...base, value: 124n }, wallet, /value mismatch/],
+    ["data", { ...base, data: "0xabcd" }, wallet, /calldata mismatch/],
+    ["nonce", { ...base, nonce: 8 }, wallet, /nonce does not match persisted nonce/],
+  ]) {
+    const forged = await buildSignedTransactionRecord({ wallet: signer, request, label: "bound" });
+    assert.throws(() => assertSignedTransactionRecord(forged, { ...expected, hash: forged.hash }), pattern, field);
+  }
+});
+
+test("signed transaction journal paths stay in the approved root and reject symlinks", () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-journals-"));
+  const outside = join(dirname(root), `${Date.now()}-outside.json`);
+  const approved = join(root, "approved.json");
+  const link = join(root, "linked.json");
+  writeFileSync(approved, "{}\n");
+  writeFileSync(outside, "{}\n");
+  symlinkSync(outside, link);
+  assert.equal(assertApprovedJournalPath(approved, root, approved), realpathSync(approved));
+  assert.throws(() => assertApprovedJournalPath(outside, root), /outside the approved/);
+  assert.throws(() => assertApprovedJournalPath(link, root), /non-symlink/);
+  assert.throws(() => assertApprovedJournalPath(approved, root, join(root, "wrong.json")), /derived journal path/);
+});
+
+test("a signed transaction journal remains fully validated after restart", async () => {
+  const wallet = ethers.Wallet.createRandom();
+  const request = {
+    to: "0x7777777777777777777777777777777777777777",
+    value: 9n,
+    data: "0xabcdef",
+    nonce: 3,
+    gasLimit: 50000n,
+    gasPrice: 1n,
+    chainId: 31337,
+    type: 0,
+  };
+  const record = await buildSignedTransactionRecord({ wallet, request, label: "restart" });
+  const root = mkdtempSync(join(tmpdir(), "p42-restart-journal-"));
+  const path = join(root, "restart.json");
+  writeFileSync(path, JSON.stringify(record));
+  const reloaded = JSON.parse(readFileSync(assertApprovedJournalPath(path, root, path), "utf8"));
+  assert.equal(assertSignedTransactionRecord(reloaded, {
+    signer: wallet.address,
+    ...request,
+    hash: record.hash,
+    label: "restart",
+  }).hash, record.hash);
 });
 
 

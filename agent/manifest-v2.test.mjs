@@ -14,6 +14,7 @@ import {
   validateManifestEvidence,
   validatePreBroadcastManifestPlan,
 } from "./indexer.mjs";
+import { validateSolverManifest } from "./solver-manifest.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -143,6 +144,20 @@ function v2Manifest() {
   manifest.deploymentConfigHash = computeDeploymentConfigHash(manifest);
   return manifest;
 }
+
+test("solver validates v1 deployment evidence and config before startup", () => {
+  const manifest = JSON.parse(readFileSync(
+    resolve(REPO_ROOT, "deployments/base-sepolia/p42-prizes.example.json"),
+    "utf8",
+  ));
+  assert.doesNotThrow(() => validateSolverManifest(manifest));
+  const tamperedEvidence = deepCopy(manifest);
+  tamperedEvidence.contracts.registry.deployedCodeHash = `0x${"f".repeat(64)}`;
+  assert.throws(() => validateSolverManifest(tamperedEvidence), /deployedCodeHash|deploymentConfigHash/);
+  const tamperedConfig = deepCopy(manifest);
+  tamperedConfig.parameters.fundingCapWei = (BigInt(tamperedConfig.parameters.fundingCapWei) + 1n).toString();
+  assert.throws(() => validateSolverManifest(tamperedConfig), /deploymentConfigHash|setupTransactions/);
+});
 
 function rebind(manifest) {
   manifest.deploymentConfigHash = computeDeploymentConfigHash(manifest);

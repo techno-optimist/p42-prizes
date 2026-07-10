@@ -24,13 +24,13 @@ import {
   submissionIdFromCommittedReceipt,
 } from "./lib.mjs";
 import {
-  MANIFEST_SCHEMA_V2,
   manifestProblemContracts,
   manifestProblemForRegistryId,
-  validateManifestEvidence,
 } from "./indexer.mjs";
 import { putBlob } from "./da-local.mjs";
 import { uploadToArweave } from "./da-arweave.mjs";
+import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
+import { validateSolverManifest } from "./solver-manifest.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -78,12 +78,7 @@ const abi = (name) => JSON.parse(
   readFileSync(`${REPO_ROOT}/contracts/artifacts/src/${name}.sol/${name}.json`, "utf8"),
 ).abi;
 const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
-if (manifest.schema === MANIFEST_SCHEMA_V2) {
-  if (!REGISTRY_PROBLEM_ID) {
-    throw new Error("--registry-problem-id is required for a multi-board deployment manifest");
-  }
-  validateManifestEvidence(manifest);
-}
+validateSolverManifest(manifest, REGISTRY_PROBLEM_ID);
 const manifestProblem = REGISTRY_PROBLEM_ID
   ? manifestProblemForRegistryId(manifest, REGISTRY_PROBLEM_ID)
   : manifest.problems?.[0] ?? null;
@@ -142,7 +137,17 @@ function loadState(identity, defaultPath) {
   }
 }
 
-async function receiptFor(transaction) {
+async function receiptFor(transaction, expectedRequest) {
+  const checked = assertSignedTransactionRecord(transaction, {
+    signer: wallet.address,
+    chainId: manifest.network.chainId,
+    to: expectedRequest.to,
+    data: expectedRequest.data ?? "0x",
+    value: expectedRequest.value ?? 0n,
+    hash: transaction.hash,
+    nonce: transaction.nonce,
+    label: transaction.label,
+  });
   const receipt = await provider.getTransactionReceipt(transaction.hash);
   if (receipt) return receipt;
   if (!transaction.raw_tx) {
@@ -154,7 +159,7 @@ async function receiptFor(transaction) {
   let pending = await provider.getTransaction(transaction.hash);
   if (!pending) {
     try {
-      pending = await provider.broadcastTransaction(transaction.raw_tx);
+      pending = await provider.broadcastTransaction(checked.record.raw_tx);
     } catch (error) {
       pending = await provider.getTransaction(transaction.hash);
       if (!pending) throw error;
@@ -174,8 +179,8 @@ async function sendPersistent(label, requestFactory) {
   if (record?.status === "reverted") {
     throw new Error(`${label} previously reverted (${record.hash}); refusing to replace deterministic nonce tx`);
   }
+  const request = await requestFactory();
   if (!record) {
-    const request = await requestFactory();
     record = {
       ...(await buildSignedTransactionRecord({ wallet, request, label })),
       status: "signed",
@@ -185,7 +190,18 @@ async function sendPersistent(label, requestFactory) {
     log(`  ${label}: signed ${record.hash} nonce=${record.nonce}`);
   }
 
-  const receipt = await receiptFor(record);
+  assertSignedTransactionRecord(record, {
+    signer: wallet.address,
+    chainId: manifest.network.chainId,
+    to: request.to,
+    data: request.data ?? "0x",
+    value: request.value ?? 0n,
+    hash: record.hash,
+    nonce: record.nonce,
+    label,
+  });
+
+  const receipt = await receiptFor(record, request);
   if (!receipt || receipt.status !== 1) {
     state.transactions[label] = { ...record, status: "reverted", block_number: receipt?.blockNumber ?? null };
     persistState();
