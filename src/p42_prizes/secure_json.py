@@ -70,32 +70,6 @@ def _object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _reject_escaped_object_keys(text: str) -> None:
-    index = 0
-    while index < len(text):
-        if text[index] != '"':
-            index += 1
-            continue
-        index += 1
-        escaped = False
-        while index < len(text):
-            if text[index] == "\\":
-                escaped = True
-                index += 2
-                continue
-            if text[index] == '"':
-                break
-            index += 1
-        if index >= len(text):
-            return
-        following = index + 1
-        while following < len(text) and text[following] in " \t\r\n":
-            following += 1
-        if escaped and following < len(text) and text[following] == ":":
-            raise StrictJSONError("escaped object keys are forbidden")
-        index += 1
-
-
 def _check_depth(value: Any, max_depth: int) -> None:
     pending = [(value, 0)]
     while pending:
@@ -124,7 +98,6 @@ def loads_strict_json(
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise StrictJSONError(f"JSON is not valid UTF-8: {exc}") from exc
-    _reject_escaped_object_keys(text)
     try:
         value = json.loads(
             text,

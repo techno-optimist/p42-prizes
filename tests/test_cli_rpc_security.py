@@ -50,7 +50,7 @@ def test_http_chain_reader_preserves_valid_json_rpc(monkeypatch: pytest.MonkeyPa
     "body, message",
     [
         (b'{"jsonrpc":"2.0","id":1,"result":"0x1","result":"0x2"}', "duplicate object key"),
-        (b'{"jsonrpc":"2.0","id":1,"\\u0072esult":"0x1"}', "escaped object keys"),
+        (b'{"jsonrpc":"2.0","id":1,"result":"0x1","\\u0072esult":"0x2"}', "duplicate object key"),
         (b'{"jsonrpc":"2.0","id":1,"__proto__":{},"result":"0x1"}', "forbidden object key"),
         (b'{"jsonrpc":"2.0","id":9007199254740993,"result":"0x1"}', "safe numeric range"),
         (b'[' * 65 + b'null' + b']' * 65, "maxDepth"),

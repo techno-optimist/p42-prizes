@@ -10,7 +10,7 @@ from p42_prizes.runner_alerts import build_runner_alerts
 
 AMBIGUOUS_JSON = (
     ('{"a":1,"a":2}\n', "duplicate object key"),
-    ('{"\\u0061":1}\n', "escaped object keys"),
+    ('{"a":1,"\\u0061":2}\n', "duplicate object key"),
     ('{"__proto__":1}\n', "forbidden object key"),
     ('{"n":9007199254740993}\n', "safe numeric range"),
     ("[" * 129 + "null" + "]" * 129 + "\n", "maxDepth"),
