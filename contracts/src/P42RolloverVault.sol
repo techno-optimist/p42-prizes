@@ -43,6 +43,7 @@ contract P42RolloverVault {
     address public allocator;
     uint256 public totalAllocated;
     mapping(address => uint256) public allocationOf;
+    mapping(address => bytes32) public allocationCodehashOf;
 
     event RolloverReceived(address indexed from, uint256 amount);
     event PoolAllocationSet(address indexed pool, bytes32 indexed codehash, uint256 previousAmount, uint256 amount);
@@ -75,6 +76,11 @@ contract P42RolloverVault {
         uint256 allocated = totalAllocated - previous + amount;
         if (allocated > address(this).balance) revert P42_ALLOCATION_EXCEEDS_BALANCE(allocated, address(this).balance);
         allocationOf[pool] = amount;
+        if (amount == 0) {
+            delete allocationCodehashOf[pool];
+        } else {
+            allocationCodehashOf[pool] = expectedCodehash;
+        }
         totalAllocated = allocated;
         emit PoolAllocationSet(pool, expectedCodehash, previous, amount);
     }
@@ -83,9 +89,10 @@ contract P42RolloverVault {
         if (amount == 0 || amount > allocationOf[pool] || amount > address(this).balance) {
             revert P42_INVALID_ROLLOVER_AMOUNT();
         }
-        IP42RegisteredPool target = _registeredPool(pool, pool.codehash);
+        IP42RegisteredPool target = _registeredPool(pool, allocationCodehashOf[pool]);
         allocationOf[pool] -= amount;
         totalAllocated -= amount;
+        if (allocationOf[pool] == 0) delete allocationCodehashOf[pool];
         try target.fund{value: amount}() {
             emit FuturePoolFunded(msg.sender, pool, amount, allocationOf[pool]);
         } catch {

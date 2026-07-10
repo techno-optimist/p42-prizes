@@ -213,10 +213,13 @@ describe("multi-board governance ceremony integration", () => {
     const allocator = await ethers.getSigner(rootAddresses.timelock);
     const pool0 = boards[0].addresses.pool;
     const pool1 = boards[1].addresses.pool;
-    const pool0Hash = ethers.keccak256(await ethers.provider.getCode(pool0));
+    const pool0Code = await ethers.provider.getCode(pool0);
+    const pool0Hash = ethers.keccak256(pool0Code);
     const pool1Hash = ethers.keccak256(await ethers.provider.getCode(pool1));
     await rolloverVault.connect(allocator).setPoolAllocation(pool0, pool0Hash, 40n);
     await rolloverVault.connect(allocator).setPoolAllocation(pool1, pool1Hash, 60n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool1), pool1Hash);
     await assert.rejects(
       rolloverVault.connect(deployer).fundRegisteredPool(pool0, 1n),
       /P42_NOT_ALLOCATOR/,
@@ -232,6 +235,22 @@ describe("multi-board governance ceremony integration", () => {
     assert.equal(await rolloverVault.allocationOf(pool0), 40n);
     assert.equal(await rolloverVault.allocationOf(pool1), 60n);
     assert.equal(await rolloverVault.totalAllocated(), 100n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
+
+    await rolloverVault.connect(allocator).setPoolAllocation(pool0, pool0Hash, 0n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), ethers.ZeroHash);
+    await rolloverVault.connect(allocator).setPoolAllocation(pool0, pool0Hash, 40n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
+
+    await ethers.provider.send("hardhat_setCode", [pool0, "0x00"]);
+    await assert.rejects(
+      rolloverVault.connect(allocator).fundRegisteredPool(pool0, 40n),
+      /P42_CODEHASH_MISMATCH/,
+    );
+    assert.equal(await rolloverVault.allocationOf(pool0), 40n);
+    assert.equal(await rolloverVault.totalAllocated(), 100n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
+    await ethers.provider.send("hardhat_setCode", [pool0, pool0Code]);
 
     await advance(BigInt(input.parameters.challengeWindowSeconds) + 1n);
     await boards[0].contracts.submissions.connect(allocator).armFunding();
@@ -240,6 +259,7 @@ describe("multi-board governance ceremony integration", () => {
     assert.equal(await boards[0].contracts.pool.sponsorshipOf(rootAddresses.rolloverVault), 40n);
     assert.equal(await boards[0].contracts.pool.accountedBalance(), 40n);
     assert.equal(await rolloverVault.allocationOf(pool0), 0n);
+    assert.equal(await rolloverVault.allocationCodehashOf(pool0), ethers.ZeroHash);
     assert.equal(await rolloverVault.allocationOf(pool1), 60n);
     assert.equal(await rolloverVault.totalAllocated(), 60n);
     assert.equal(await ethers.provider.getBalance(rootAddresses.rolloverVault), 60n);
