@@ -1,15 +1,18 @@
 # Funding Problem Pools
 
-Every listed problem exposes a `donationWallet` in `GET /api/problems` and
-`GET /api/problems/{slug}`. This gives funders a stable place to increase the
-visible prize surface for a specific problem.
+Every listed problem exposes a `donationWallet` state in `GET /api/problems`
+and `GET /api/problems/{slug}`. A transferable target is published only after
+the problem has a reconciled, bytecode-backed pool on the declared chain.
 
 ## Phase 0
 
-- Current wallets are **Base Sepolia testnet-only**.
-- They are for UX, accounting, and agent-flow testing.
-- Do not send mainnet ETH or USDC to these addresses.
-- The portal shows copy buttons and BaseScan links for each problem wallet.
+- All current wallets are **`not-deployed`**: no address, copy control,
+  wallet URI, or BaseScan link is published for any board.
+- Do not send testnet or mainnet ETH or USDC for a P42 Prize today. There is
+  no deployed pool to receive it.
+- A future Base Sepolia or Base target must pass the portal's chain,
+  reconciliation, runtime-bytecode, registry, and deployment-commit checks
+  before a donation action is exposed.
 
 ## Coinbase Onramp
 

@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
 
 import { computeDeploymentConfigHash } from "../../agent/indexer.mjs";
 import {
+  assertManifestOutputIsVacant,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
   buildSetupOperations,
@@ -132,6 +136,21 @@ function minimalManifest(setupTransactions) {
 }
 
 describe("deployment ceremony input gate", () => {
+  it("refuses to reuse a manifest destination that contains stale deployment evidence", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "p42-ceremony-"));
+    const output = join(directory, "p42-prizes.json");
+    try {
+      await assert.doesNotReject(() => assertManifestOutputIsVacant(output));
+      await writeFile(output, '{"deploymentCommit":"stale"}\n');
+      await assert.rejects(
+        () => assertManifestOutputIsVacant(output),
+        /Refusing to overwrite existing deployment manifest/
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("rejects the old EOA owner path and non-timelock child constructor ownership", () => {
     assert.throws(
       () => readCeremonyConfig(ethers, { ...validEnv(), P42_OWNER_ADDRESS: ADDRESSES.deployer }),

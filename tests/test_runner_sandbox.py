@@ -20,7 +20,10 @@ from p42_prizes.runner_worker import _run_verifier_for_transcript
 PINNED_IMAGE = "sha256:" + "ab" * 32
 
 
-def test_build_sandbox_command_applies_all_hardening():
+def test_build_sandbox_command_applies_all_hardening(monkeypatch: pytest.MonkeyPatch):
+    for name in ("PYTHONHASHSEED", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.delenv(name, raising=False)
+
     cmd = build_sandbox_command(
         image=PINNED_IMAGE,
         host_solution="/tmp/sol.json",
