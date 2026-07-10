@@ -3,7 +3,7 @@
   "$id": "https://p42.xyz/schemas/runner-health-v1.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "observed_at_utc", "oom_kills", "worker_restarts", "queue_corruption_events", "max_active_running", "decision"],
+  "required": ["schema_version", "observed_at_utc", "oom_kills", "worker_restarts", "queue_corruption_events", "max_active_running", "decision", "swap_guard", "host_capacity", "concurrency_guard"],
   "properties": {
     "schema_version": { "const": "p42-runner-health/v1" },
     "observed_at_utc": { "type": "string", "format": "date-time" },

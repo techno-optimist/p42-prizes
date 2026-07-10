@@ -898,3 +898,14 @@ test("operator retries transient calldata retrieval until the canonical deadline
     await new Promise((done) => rpc.close(done));
   }
 });
+
+test("operator commits finalized challenge accounting before terminal queue status", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const terminal = "recordAction(job, transcript.candidate, receipt.status === 1 ? \"confirmed\" : \"broadcast_reverted\"";
+  const occurrences = [...source.matchAll(new RegExp(terminal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))].map((match) => match.index);
+  assert.equal(occurrences.length, 1);
+  const finalBlock = source.slice(source.lastIndexOf("const receiptState = classifyReceiptFinality"), occurrences[0] + terminal.length);
+  assert.ok(finalBlock.indexOf("finalizeChallengeSpend(") < finalBlock.indexOf(terminal));
+  const earlierBlock = source.slice(source.indexOf("} else {", source.indexOf("async function reconcileBroadcast")), source.indexOf("if (!receipt) {", source.indexOf("async function reconcileBroadcast")));
+  assert.ok(earlierBlock.indexOf("finalizeChallengeSpend(") < earlierBlock.indexOf("recordAction("));
+});

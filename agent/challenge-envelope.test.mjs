@@ -1,94 +1,142 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { ethers } from "ethers";
 import {
-  DEFAULT_CHALLENGE_LIMITS, buildClaimBondPolicy, closeCanonicalChallenge, finalizeChallengeSpend,
+  buildClaimBondPolicy, claimedBondAmountFromReceipt, finalizeChallengeSpend, limitsFromProvisioning,
   reconcileClaimLifecycle, releaseChallengeReservation, reserveChallengeSpend, runnerHealthAdmission,
-  utcDay, validateProvisioningArtifact,
+  utcDay, validateCanonicalOpenEvidence, validateProvisioningArtifact,
 } from "./challenge-envelope.mjs";
 
-const GREEN = { oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0, max_active_running: 1, decision: "start" };
-const root = () => mkdtempSync(join(tmpdir(), "p42-envelope-"));
+const CHALLENGE = `0x${"1".repeat(40)}`;
+const AGENT_WALLET = `0x${"2".repeat(40)}`;
+const OPERATOR_KEY = `0x${"3".repeat(64)}`;
+const operator = new ethers.Wallet(OPERATOR_KEY);
+const NOW = Date.UTC(2026, 6, 10, 12);
+const root = () => mkdtempSync(join(tmpdir(), "p42-envelope-v2-"));
 
-test("UTC rollover preserves open challenges but resets daily spend", () => {
-  const path = join(root(), "state.json");
-  reserveChallengeSpend(path, { id: "a", problemId: "p", amountWei: DEFAULT_CHALLENGE_LIMITS.perChallengeWei, health: GREEN }, { now: Date.UTC(2026, 6, 10, 23, 59) });
-  finalizeChallengeSpend(path, "a", { now: Date.UTC(2026, 6, 10, 23, 59) });
-  reserveChallengeSpend(path, { id: "b", problemId: "p", amountWei: DEFAULT_CHALLENGE_LIMITS.perChallengeWei, health: GREEN }, { now: Date.UTC(2026, 6, 11, 0, 0) });
+function canonical(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
+async function provisioning(overrides = {}) {
+  const value = {
+    schema_version: "p42-challenge-provisioning/v1", chain_id: 84532, challenge_manager: CHALLENGE,
+    agent_wallet: AGENT_WALLET, operator: operator.address, per_challenge_wei: "50000000000000000",
+    per_problem_day_wei: "100000000000000000", global_day_wei: "300000000000000000",
+    max_canonical_open: 3, max_pending_provisioned: 1,
+    rehearsal: { health_gate_verified: true, restart_recovery_verified: true, deep_reorg_verified: true, artifact_hash: `sha256:${"a".repeat(64)}` },
+    ...overrides,
+  };
+  const preimage = structuredClone(value);
+  value.artifact_hash = `sha256:${ethers.sha256(ethers.toUtf8Bytes(canonical(preimage))).slice(2)}`;
+  value.signature = { scheme: "eip191", signer: operator.address, signature: await operator.signMessage(value.artifact_hash) };
+  return value;
+}
+
+function health(overrides = {}) {
+  return { schema_version: "p42-runner-health/v1", observed_at_utc: new Date(NOW).toISOString(), oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0, max_active_running: 1, decision: "start", swap_guard: "green", host_capacity: "green", concurrency_guard: "green", ...overrides };
+}
+
+function evidence(open = [], overrides = {}) {
+  return { schema_version: "p42-canonical-open-evidence/v1", chain_id: 84532, challenge_manager: CHALLENGE, finalized_through_block: 100, observed_at_utc: new Date(NOW).toISOString(), complete: true, open_challenges: open, ...overrides };
+}
+
+function reserveInput(config, overrides = {}) {
+  return { id: "a", problemId: "p", amountWei: ethers.parseEther("0.05"), provisioning: config, health: health(), canonicalOpenEvidence: evidence(), canonicalEvidenceExpected: { chainId: 84532, challengeManager: CHALLENGE, finalizedThroughBlock: 100, now: NOW }, ...overrides };
+}
+
+test("pending reservation survives UTC rollover and finalized tx charges original day", async () => {
+  const path = join(root(), "state.json"); const config = await provisioning();
+  const atRollover = Date.UTC(2026, 6, 10, 23, 59);
+  reserveChallengeSpend(path, reserveInput(config, { health: health({ observed_at_utc: new Date(atRollover).toISOString() }) }), { now: atRollover });
+  finalizeChallengeSpend(path, "a", { now: Date.UTC(2026, 6, 11), finalizedReceipt: { canonical: true, transaction_hash: `0x${"4".repeat(64)}`, block_number: 101, block_hash: `0x${"5".repeat(64)}` } });
   const state = JSON.parse(readFileSync(path));
-  assert.equal(state.utc_day, "2026-07-11");
-  assert.ok(state.open.a);
-  assert.ok(state.reservations.b);
+  assert.ok(state.days["2026-07-10"].spends.a);
+  assert.equal(state.days["2026-07-10"].reservations.a, undefined);
+  assert.equal(state.days["2026-07-11"], undefined);
   assert.equal(utcDay(Date.UTC(2026, 6, 11)), "2026-07-11");
 });
 
-test("caps are inclusive and reservations survive restart", () => {
-  const path = join(root(), "state.json");
-  reserveChallengeSpend(path, { id: "a", problemId: "p", amountWei: ethers.parseEther("0.05"), health: GREEN });
-  assert.throws(() => reserveChallengeSpend(path, { id: "b", problemId: "p", amountWei: 1n, health: GREEN }), /one exact/);
-  releaseChallengeReservation(path, "a");
-  reserveChallengeSpend(path, { id: "b", problemId: "p", amountWei: ethers.parseEther("0.05"), health: GREEN });
-  finalizeChallengeSpend(path, "b");
-  reserveChallengeSpend(path, { id: "c", problemId: "p", amountWei: ethers.parseEther("0.05"), health: GREEN });
-  finalizeChallengeSpend(path, "c");
-  assert.throws(() => reserveChallengeSpend(path, { id: "d", problemId: "p", amountWei: 1n, health: GREEN }), /per-problem/);
-  closeCanonicalChallenge(path, "b");
+test("finalized tx fails closed without durable reservation and never loses accounting row", async () => {
+  const path = join(root(), "state.json"); const config = await provisioning();
+  reserveChallengeSpend(path, reserveInput(config), { now: NOW });
+  assert.throws(() => finalizeChallengeSpend(path, "a", { now: NOW, finalizedReceipt: { canonical: false } }), /finalized canonical/);
+  assert.ok(JSON.parse(readFileSync(path)).days["2026-07-10"].reservations.a);
+  assert.throws(() => finalizeChallengeSpend(join(root(), "empty.json"), "missing", { now: NOW, finalizedReceipt: { canonical: true, transaction_hash: `0x${"4".repeat(64)}`, block_number: 1, block_hash: `0x${"5".repeat(64)}` } }), /no durable reservation/);
 });
 
-test("health admission is fail closed for red, wait, malformed, and green only", () => {
-  assert.equal(runnerHealthAdmission(GREEN).allowed, true);
-  assert.equal(runnerHealthAdmission({ ...GREEN, oom_kills: 1 }).allowed, false);
-  assert.equal(runnerHealthAdmission({ ...GREEN, decision: "wait" }).allowed, false);
-  assert.equal(runnerHealthAdmission({}).allowed, false);
+test("admission uses complete finalized canonical chain evidence and rejects local or incomplete guesses", async () => {
+  const config = await provisioning(); const path = join(root(), "state.json");
+  for (const bad of [null, evidence([], { complete: false }), evidence([], { finalized_through_block: 99 }), evidence([], { observed_at_utc: new Date(NOW + 1).toISOString() })]) {
+    assert.throws(() => reserveChallengeSpend(path, reserveInput(config, { canonicalOpenEvidence: bad }), { now: NOW }), /canonical open evidence/);
+  }
+  const open = [1, 2, 3].map((id) => ({ submission_id: String(id), challenge_instance_hash: `0x${String(id).repeat(64)}` }));
+  assert.throws(() => reserveChallengeSpend(path, reserveInput(config, { canonicalOpenEvidence: evidence(open) }), { now: NOW }), /open challenge cap/);
+  assert.doesNotThrow(() => validateCanonicalOpenEvidence(evidence(), { chainId: 84532, challengeManager: CHALLENGE, finalizedThroughBlock: 100, now: NOW }));
 });
 
-test("concurrent processes admit only one pending exact challenge policy", () => {
-  const path = join(root(), "state.json");
+test("limits come from signed provisioning and runtime values may only tighten", async () => {
+  const config = await provisioning();
+  assert.equal(limitsFromProvisioning(config).perChallengeWei, ethers.parseEther("0.05"));
+  assert.equal(limitsFromProvisioning(config, { perChallengeWei: ethers.parseEther("0.04") }).perChallengeWei, ethers.parseEther("0.04"));
+  assert.throws(() => limitsFromProvisioning(config, { perChallengeWei: ethers.parseEther("0.06") }), /only tighten/);
+  assert.throws(() => limitsFromProvisioning(config, { inventedCap: 1 }), /unknown/);
+  assert.throws(() => reserveChallengeSpend(join(root(), "state.json"), reserveInput(config, { limits: { perChallengeWei: ethers.parseEther("1") } }), { now: NOW }), /overrides are forbidden/);
+});
+
+test("one pending exact policy remains global across UTC buckets and concurrent processes", async () => {
+  const path = join(root(), "state.json"); const config = await provisioning();
+  reserveChallengeSpend(path, reserveInput(config), { now: NOW });
+  const nextDay = NOW + 86_400_000;
+  assert.throws(() => reserveChallengeSpend(path, reserveInput(config, { id: "b", amountWei: 1n, health: health({ observed_at_utc: new Date(nextDay).toISOString() }), canonicalOpenEvidence: evidence([], { observed_at_utc: new Date(nextDay).toISOString() }), canonicalEvidenceExpected: { chainId: 84532, challengeManager: CHALLENGE, finalizedThroughBlock: 100, now: nextDay } }), { now: nextDay }), /one exact/);
+  releaseChallengeReservation(path, "a", { now: NOW + 86_400_000 });
   const module = new URL("./challenge-envelope.mjs", import.meta.url).href;
-  const script = `import {reserveChallengeSpend} from '${module}'; try { reserveChallengeSpend(process.argv[1], {id:process.argv[2],problemId:'p',amountWei:1n,health:{oom_kills:0,worker_restarts:0,queue_corruption_events:0,max_active_running:1,decision:'start'}}); } catch(e) { process.exit(3); }`;
-  const results = ["a", "b", "c"].map((id) => { try { execFileSync(process.execPath, ["--input-type=module", "-e", script, path, id]); return 0; } catch (e) { return e.status; } });
+  const encoded = Buffer.from(JSON.stringify(config)).toString("base64");
+  const script = `import {reserveChallengeSpend} from '${module}'; const c=JSON.parse(Buffer.from(process.argv[3],'base64')); try { reserveChallengeSpend(process.argv[1],{id:process.argv[2],problemId:'p',amountWei:1n,provisioning:c,health:${JSON.stringify(health())},canonicalOpenEvidence:${JSON.stringify(evidence())},canonicalEvidenceExpected:{chainId:84532,challengeManager:'${CHALLENGE}',finalizedThroughBlock:100,now:${NOW}}},{now:${NOW}}); } catch { process.exit(3); }`;
+  const results = ["x", "y"].map((id) => { try { execFileSync(process.execPath, ["--input-type=module", "-e", script, path, id, encoded]); return 0; } catch (error) { return error.status; } });
   assert.equal(results.filter((status) => status === 0).length, 1);
-  assert.equal(Object.keys(JSON.parse(readFileSync(path)).reservations).length, 1);
 });
 
-test("claim policy is exact and receipt reconciliation handles recovery and reorg", () => {
+test("health requires complete explicit green fields, freshness, and no future timestamp", () => {
+  assert.equal(runnerHealthAdmission(health(), { now: NOW }).allowed, true);
+  for (const bad of [health({ observed_at_utc: new Date(NOW + 1).toISOString() }), health({ swap_guard: undefined }), health({ host_capacity: "red" }), health({ concurrency_guard: undefined }), health({ oom_kills: 1 }), health({ queue_corruption_events: undefined })]) assert.equal(runnerHealthAdmission(bad, { now: NOW }).allowed, false);
+});
+
+test("claim recovery derives exact BondClaimed event amount and rejects ambiguity", () => {
+  const iface = new ethers.Interface(["event BondClaimed(address indexed claimant,uint256 amount)", "function claimBond()"]);
+  const event = iface.encodeEventLog(iface.getEvent("BondClaimed"), [AGENT_WALLET, 17n]);
+  const receipt = { status: 1, blockNumber: 10, blockHash: `0x${"b".repeat(64)}`, logs: [{ address: CHALLENGE, ...event }] };
+  assert.equal(claimedBondAmountFromReceipt({ receipt, challengeInterface: iface, challengeContract: CHALLENGE, claimant: AGENT_WALLET }), 17n);
+  const journal = { schema_version: "p42-claim-bond-action/v1", status: "broadcast" };
+  assert.deepEqual(reconcileClaimLifecycle({ journal, receipt, canonicalBlockHash: receipt.blockHash, latestBlockNumber: 12, confirmations: 3, challengeInterface: iface, challengeContract: CHALLENGE, claimant: AGENT_WALLET }), { status: "confirmed", recovered_wei: "17" });
+  assert.throws(() => claimedBondAmountFromReceipt({ receipt: { ...receipt, logs: [...receipt.logs, ...receipt.logs] }, challengeInterface: iface, challengeContract: CHALLENGE, claimant: AGENT_WALLET }), /exactly one/);
+});
+
+test("deep reorg rolls confirmed recovered amount back to zero", () => {
+  const iface = new ethers.Interface(["event BondClaimed(address indexed claimant,uint256 amount)"]);
+  const event = iface.encodeEventLog(iface.getEvent("BondClaimed"), [AGENT_WALLET, 19n]);
+  const receipt = { status: 1, blockNumber: 20, blockHash: `0x${"c".repeat(64)}`, logs: [{ address: CHALLENGE, ...event }] };
+  const journal = { schema_version: "p42-claim-bond-action/v1", status: "confirmed", recovered_wei: "19" };
+  assert.deepEqual(reconcileClaimLifecycle({ journal, receipt, canonicalBlockHash: `0x${"d".repeat(64)}`, latestBlockNumber: 30, confirmations: 3, challengeInterface: iface, challengeContract: CHALLENGE, claimant: AGENT_WALLET }), { status: "reorged", recovered_wei: "0" });
+  assert.deepEqual(reconcileClaimLifecycle({ journal, receipt: null, latestBlockNumber: 30, confirmations: 3, challengeInterface: iface, challengeContract: CHALLENGE, claimant: AGENT_WALLET }), { status: "rebroadcast", recovered_wei: "0" });
+});
+
+test("provisioning validates complete bindings, hashes, rehearsal, and signature", async () => {
+  const config = await provisioning();
+  assert.equal(validateProvisioningArtifact(config, { chainId: 84532, challengeManager: CHALLENGE, agentWallet: AGENT_WALLET, operator: operator.address }), config);
+  for (const mutate of [(v) => { v.chain_id = 1; }, (v) => { v.challenge_manager = ethers.ZeroAddress; }, (v) => { v.rehearsal.deep_reorg_verified = false; }, (v) => { v.artifact_hash = `sha256:${"0".repeat(64)}`; }, (v) => { v.signature.signature = `0x${"0".repeat(130)}`; }]) {
+    const bad = structuredClone(config); mutate(bad); assert.throws(() => validateProvisioningArtifact(bad), /provisioning|rehearsal/);
+  }
+});
+
+test("claim call policy remains an exact one-call selector policy", () => {
   const iface = new ethers.Interface(["function claimBond()"]);
-  const policy = buildClaimBondPolicy({ challengeInterface: iface, challengeContract: `0x${"1".repeat(40)}`, chainId: 84532, claimant: `0x${"2".repeat(40)}`, expiresAt: 99 });
-  assert.equal(policy.calldata, iface.encodeFunctionData("claimBond"));
-  const journal = { schema_version: "p42-claim-bond-action/v1", status: "broadcast", expected_claimable_wei: "7" };
-  const receipt = { status: 1, blockNumber: 10, blockHash: `0x${"a".repeat(64)}` };
-  assert.equal(reconcileClaimLifecycle({ journal, receipt, canonicalBlockHash: receipt.blockHash, latestBlockNumber: 12, confirmations: 3 }).recovered_wei, "7");
-  assert.equal(reconcileClaimLifecycle({ journal, receipt, canonicalBlockHash: `0x${"b".repeat(64)}`, latestBlockNumber: 12, confirmations: 3 }).status, "reorged");
-  assert.equal(reconcileClaimLifecycle({ journal: { ...journal, status: "confirmed" }, claimableWei: 0 }).status, "confirmed");
-});
-
-test("claim recovery resumes from a restart-persisted journal without counting before finality", () => {
-  const path = join(root(), "claim-bond.signed-tx.json");
-  const journal = { schema_version: "p42-claim-bond-action/v1", status: "broadcast", expected_claimable_wei: "11" };
-  writeFileSync(path, `${JSON.stringify(journal)}\n`);
-  const restarted = JSON.parse(readFileSync(path));
-  const receipt = { status: 1, blockNumber: 20, blockHash: `0x${"c".repeat(64)}` };
-  assert.deepEqual(
-    reconcileClaimLifecycle({ journal: restarted, receipt, canonicalBlockHash: receipt.blockHash, latestBlockNumber: 20, confirmations: 2 }),
-    { status: "submitted", recovered_wei: "0" },
-  );
-  assert.deepEqual(
-    reconcileClaimLifecycle({ journal: restarted, receipt, canonicalBlockHash: receipt.blockHash, latestBlockNumber: 21, confirmations: 2 }),
-    { status: "confirmed", recovered_wei: "11" },
-  );
-});
-
-test("replacement reveal gets a disjoint reservation identity", () => {
-  const path = join(root(), "state.json");
-  reserveChallengeSpend(path, { id: "reveal-a", problemId: "p", amountWei: 1n, health: GREEN });
-  releaseChallengeReservation(path, "reveal-a");
-  assert.equal(reserveChallengeSpend(path, { id: "reveal-b", problemId: "p", amountWei: 1n, health: GREEN }).reserved, true);
-});
-
-test("provisioning validator locks documented defaults and rehearsal evidence", () => {
-  assert.doesNotThrow(() => validateProvisioningArtifact({ schema_version: "p42-challenge-provisioning/v1", per_challenge_wei: "50000000000000000", per_problem_day_wei: "100000000000000000", global_day_wei: "300000000000000000", max_canonical_open: 3, max_pending_provisioned: 1, rehearsal: { health_gate_verified: true, restart_recovery_verified: true } }));
+  const policy = buildClaimBondPolicy({ challengeInterface: iface, challengeContract: CHALLENGE, chainId: 84532, claimant: AGENT_WALLET, expiresAt: 99 });
+  assert.equal(policy.calldata, iface.encodeFunctionData("claimBond")); assert.equal(policy.max_calls, 1);
 });

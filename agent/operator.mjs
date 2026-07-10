@@ -49,10 +49,11 @@ import {
 } from "./signed-transaction.mjs";
 import {
   P42ChallengeManager as ChallengeBondOperator,
-  closeCanonicalChallenge,
   finalizeChallengeSpend,
+  limitsFromProvisioning,
   releaseChallengeReservation,
   reserveChallengeSpend,
+  validateProvisioningArtifact,
 } from "./challenge-envelope.mjs";
 import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
 
@@ -90,8 +91,8 @@ const ACTIONS = join(RUNTIME, "actions");
 const ALERTS = join(RUNTIME, "ALERTS.log");
 const ENVELOPE = resolve(arg("challenge-envelope", join(RUNTIME, "challenge-envelope.json")));
 const RUNNER_HEALTH = resolve(arg("runner-health", join(RUNTIME, "runner-health.json")));
+const CHALLENGE_PROVISIONING = resolve(arg("challenge-provisioning", join(RUNTIME, "challenge-provisioning.json")));
 const AUTO_CLAIM_BOND = arg("auto-claim-bond", true) !== "false";
-const MAX_BOND = ethers.parseEther(String(arg("max-challenge-bond", "0.05")));
 const MAX_JOBS_PER_SCAN = Number(arg("max-jobs-per-scan", "1"));
 const POLL_MS = Number(arg("poll-ms", "12000"));
 const RESERVE_MEMORY_MB = Number(arg("reserve-memory-mb", "8192"));
@@ -146,6 +147,8 @@ let reorgOverlapBlocks;
 let executionMode;
 let agentWallet = null;
 let challengeBondOperator = null;
+let challengeProvisioning;
+let challengeLimits;
 let registryProblemId;
 let localProblem;
 let cursorBinding;
@@ -264,12 +267,36 @@ function readJsonOrNull(path) {
 }
 
 function runnerHealth() {
-  if (LOCAL_TEST) return { oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0, max_active_running: 1, decision: "start" };
+  if (LOCAL_TEST) return { schema_version: "p42-runner-health/v1", observed_at_utc: new Date().toISOString(), oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0, max_active_running: 1, decision: "start", swap_guard: "green", host_capacity: "green", concurrency_guard: "green" };
   const health = readJsonOrNull(RUNNER_HEALTH);
   if (!health || health.schema_version !== "p42-runner-health/v1") return null;
   const observed = Date.parse(health.observed_at_utc);
-  if (!Number.isFinite(observed) || Date.now() - observed > 5 * 60_000) return null;
+  if (!Number.isFinite(observed) || observed > Date.now() || Date.now() - observed > 5 * 60_000) return null;
   return health;
+}
+
+async function canonicalOpenEvidence() {
+  const latest = await provider.getBlockNumber();
+  const finalizedThrough = latest - finalityConfirmations;
+  if (finalizedThrough < START_BLOCK) throw new Error("canonical open evidence has no finalized range");
+  const events = await queryChunked(chal, chal.filters.Challenged(), START_BLOCK, finalizedThrough);
+  const ids = [...new Set(events.map((event) => event.args.submissionId.toString()))];
+  const openChallenges = [];
+  for (const submissionId of ids) {
+    const [current, instanceHash] = await Promise.all([
+      chal.challenges(BigInt(submissionId), { blockTag: finalizedThrough }),
+      chal.challengeInstanceHashOf(BigInt(submissionId), { blockTag: finalizedThrough }),
+    ]);
+    if (String(current.challenger).toLowerCase() !== ethers.ZeroAddress && current.resolved !== true) {
+      if (!ethers.isHexString(instanceHash, 32) || instanceHash === ethers.ZeroHash) throw new Error("finalized open challenge has no instance hash");
+      openChallenges.push({ submission_id: submissionId, challenge_instance_hash: instanceHash.toLowerCase() });
+    }
+  }
+  return {
+    schema_version: "p42-canonical-open-evidence/v1", chain_id: chainId,
+    challenge_manager: String(chal.target).toLowerCase(), finalized_through_block: finalizedThrough,
+    observed_at_utc: new Date().toISOString(), complete: true, open_challenges: openChallenges,
+  };
 }
 
 function writeJsonAtomic(path, value, mode = 0o600) {
@@ -985,14 +1012,14 @@ async function reconcileBroadcast(job) {
       }
       return true;
     } else {
+      if (receipt.status === 1) finalizeChallengeSpend(ENVELOPE, transcript.candidate.candidate_hash, { finalizedReceipt: { canonical: true, transaction_hash: action.transaction_hash, block_number: receipt.blockNumber, block_hash: receipt.blockHash } });
+      else releaseChallengeReservation(ENVELOPE, transcript.candidate.candidate_hash);
       recordAction(
         job,
         transcript.candidate,
         receipt.status === 1 ? "confirmed" : "broadcast_reverted",
         action.transaction_hash,
       );
-      if (receipt.status === 1) finalizeChallengeSpend(ENVELOPE, transcript.candidate.candidate_hash, { canonicalOpenId: `${chainId}:${chal.target}:${transcript.candidate.submission_id}` });
-      else releaseChallengeReservation(ENVELOPE, transcript.candidate.candidate_hash);
       return true;
     }
   }
@@ -1049,9 +1076,9 @@ async function reconcileBroadcast(job) {
     recordAction(job, transcript.candidate, "submitted", action.transaction_hash);
     return true;
   }
-  recordAction(job, transcript.candidate, receipt.status === 1 ? "confirmed" : "broadcast_reverted", action.transaction_hash);
-  if (receipt.status === 1) finalizeChallengeSpend(ENVELOPE, transcript.candidate.candidate_hash, { canonicalOpenId: `${chainId}:${chal.target}:${transcript.candidate.submission_id}` });
+  if (receipt.status === 1) finalizeChallengeSpend(ENVELOPE, transcript.candidate.candidate_hash, { finalizedReceipt: { canonical: true, transaction_hash: action.transaction_hash, block_number: receipt.blockNumber, block_hash: receipt.blockHash } });
   else releaseChallengeReservation(ENVELOPE, transcript.candidate.candidate_hash);
+  recordAction(job, transcript.candidate, receipt.status === 1 ? "confirmed" : "broadcast_reverted", action.transaction_hash);
   return true;
 }
 
@@ -1104,8 +1131,8 @@ async function consumeCandidate(job) {
     return;
   }
   const candidateCap = BigInt(candidate.max_bond_wei || "0");
-  if (candidateCap <= 0n || candidateCap > MAX_BOND) {
-    recordAction(job, candidate, "invalid_spend_cap", null, `candidate cap ${candidateCap} exceeds operator cap ${MAX_BOND}`);
+  if (candidateCap <= 0n || candidateCap > challengeLimits.perChallengeWei) {
+    recordAction(job, candidate, "invalid_spend_cap", null, `candidate cap ${candidateCap} exceeds provisioned cap ${challengeLimits.perChallengeWei}`);
     appendAlert(`REFUSED ${job.job_id}: invalid candidate spend cap ${candidateCap}`);
     return;
   }
@@ -1136,18 +1163,26 @@ async function consumeCandidate(job) {
   }
   const disputed = await subs.disputedEntitlementWei(submissionId);
   const bond = await chal.requiredChallengeBond(disputed);
-  if (bond > candidateCap || bond > MAX_BOND) {
+  if (bond > candidateCap || bond > challengeLimits.perChallengeWei) {
     recordAction(job, candidate, "bond_over_cap", null, `required ${bond}; cap ${candidateCap}`);
     appendAlert(`UNPOLICED ${job.job_id}: bond ${bond} exceeds cap ${candidateCap} (${candidate.candidate_hash})`);
     return;
   }
 
   try {
+    const openEvidence = await canonicalOpenEvidence();
     reserveChallengeSpend(ENVELOPE, {
       id: candidate.candidate_hash,
       problemId: runnerConfig.problemId,
       amountWei: bond,
+      provisioning: challengeProvisioning,
       health: runnerHealth(),
+      canonicalOpenEvidence: openEvidence,
+      canonicalEvidenceExpected: {
+        chainId,
+        challengeManager: String(chal.target),
+        finalizedThroughBlock: openEvidence.finalized_through_block,
+      },
     });
   } catch (error) {
     appendAlert(`AUTO-FILE DISABLED ${job.job_id}: ${error.message}`);
@@ -1208,18 +1243,6 @@ async function consumeCandidates() {
   for (const job of queue.jobs) await consumeCandidate(job);
 }
 
-async function reconcileCanonicalOpenChallenges() {
-  const queue = readQueue();
-  for (const job of queue.jobs) {
-    if (job.action?.status !== "confirmed" || !job.transcript_path) continue;
-    const { candidate } = verifyTranscript(job.transcript_path);
-    if (!candidate || candidate.action !== "challenge") continue;
-    const current = await chal.challenges(BigInt(candidate.submission_id));
-    const stillOpen = String(current.challenger).toLowerCase() !== ethers.ZeroAddress && current.resolved !== true;
-    if (!stillOpen) closeCanonicalChallenge(ENVELOPE, `${chainId}:${chal.target}:${candidate.submission_id}`);
-  }
-}
-
 async function scanOnce() {
   const latest = await provider.getBlockNumber();
   const latestBlock = await provider.getBlock(latest);
@@ -1257,7 +1280,6 @@ async function scanOnce() {
   }
 
   await refreshRetryableJobs(latestBlock);
-  await reconcileCanonicalOpenChallenges();
   for (let index = 0; index < MAX_JOBS_PER_SCAN; index += 1) {
     const result = runWorkerOnce(latestBlock.timestamp);
     if (result.schema_version === "p42-runner-transcript/v1") {
@@ -1315,6 +1337,17 @@ async function main() {
       confirmations: finalityConfirmations,
     });
   }
+  challengeProvisioning = validateProvisioningArtifact(
+    readStrictJsonFileSync(CHALLENGE_PROVISIONING, IMMUTABLE_JSON_LIMITS),
+    {
+      chainId,
+      challengeManager: String(chal.target),
+      agentWallet: executionMode.agentWalletAddress,
+      operator: wallet.address,
+    },
+  );
+  challengeLimits = limitsFromProvisioning(challengeProvisioning);
+  await canonicalOpenEvidence();
   // Fail startup before queueing or spending when the finalized registry cannot
   // attest this exact local verifier source/image identity.
   await currentRegistryBinding();
@@ -1332,7 +1365,7 @@ async function main() {
 
   log(`P42 operator ${wallet.address} chain=${chainId} mode=${executionMode.mode}`);
   log(`queue=${QUEUE} cursor=${CURSOR} finality=${finalityConfirmations} overlap=${reorgOverlapBlocks}`);
-  log(`sandbox=docker max_running=1 max_bond=${ethers.formatEther(MAX_BOND)} ETH`);
+  log(`sandbox=docker max_running=1 max_bond=${ethers.formatEther(challengeLimits.perChallengeWei)} ETH`);
   await consumeCandidates();
   if (ONCE) {
     await scanOnce();

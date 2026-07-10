@@ -70,7 +70,7 @@ OPERATOR_PRIVATE_KEY=0x... node operator.mjs \
   --registry-problem-id 1 \
   --runtime /var/lib/p42/operator/hadamard-mini \
   --agent-wallet 0x... \
-  --max-challenge-bond 0.05
+  --challenge-provisioning /var/lib/p42/operator/hadamard-mini/challenge-provisioning.json
 ```
 
 `--registry-problem-id` is the immutable on-chain `P42ProblemRegistry` ID for
@@ -103,8 +103,12 @@ Runtime artifacts under `--runtime` are:
   recovery; it never authorizes an on-chain action by itself.
 - `operator-cursor.json`: durable finalized-block cursor plus overlap anchors.
 - `actions/`: exact `p42-session-call-policy/v1` call policies and signed challenge transaction journals.
-- `challenge-envelope.json`: atomic, lock-protected UTC spend reservations,
-  committed spends, and canonical-open challenge accounting.
+- `challenge-envelope.json`: atomic, lock-protected v2 UTC-day history. Pending
+  reservations survive rollover and finalized spends remain charged to their
+  reservation day. This file is not an open-challenge authority.
+- `challenge-provisioning.json`: immutable hash-bound, EIP-191-signed chain,
+  wallet, operator, cap, and rehearsal configuration. Runtime limits may only
+  tighten it.
 - `runner-health.json`: externally produced fresh `p42-runner-health/v1`
   admission evidence; absent/stale/red health disables auto-file.
 - `ALERTS.log`: quarantines, registry-binding refusals, expired windows, and cap
@@ -141,6 +145,12 @@ The wallet currently has one exact-call slot per target/selector. The operator
 therefore permits one pending provisioned `challenge(...)` policy, even though
 up to three already-filed canonical challenges may remain open. Do not provision
 three simultaneous challenge policies with this contract version.
+
+At startup and before every challenge admission, the operator rebuilds a
+complete `p42-canonical-open-evidence/v1` snapshot from finalized challenge
+events and finalized contract storage. It fails closed if the RPC cannot supply
+the full range or any evidence binding is incomplete; queue and local envelope
+rows do not determine the three-open cap.
 
 ## Resolver Path
 
