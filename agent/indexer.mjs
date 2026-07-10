@@ -2,13 +2,19 @@
 // Deterministic, fail-closed P42 event indexer and reconciliation core.
 
 import { ethers } from "ethers";
+import { randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { atomsFromScore, chainScoreAtoms, recoverRevealCalldata } from "./lib.mjs";
@@ -28,6 +34,25 @@ const DEPLOYMENT_MANIFEST_SCHEMAS = Object.freeze({
 const MULTIBOARD_CHECKPOINT_SCHEMA = JSON.parse(
   readFileSync(`${REPO_ROOT}/schemas/indexer-checkpoint-v2.schema.json`, "utf8")
 );
+const PRIVATE_FILE_MODE = 0o600;
+const PRIVATE_DIRECTORY_MODE = 0o700;
+const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set([
+  "EBADF",
+  "EINVAL",
+  "EISDIR",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EPERM",
+]);
+const DEFAULT_ATOMIC_FILE_OPERATIONS = Object.freeze({
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+});
 
 export const CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
 export const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
@@ -222,6 +247,52 @@ function canonicalize(value) {
 
 export function stableStringify(value, space = 0) {
   return JSON.stringify(canonicalize(value), null, space);
+}
+
+function syncDirectoryAfterRename(directory, operations) {
+  let descriptor;
+  try {
+    descriptor = operations.openSync(directory, "r");
+    operations.fsyncSync(descriptor);
+  } catch (error) {
+    if (!UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(error?.code)) throw error;
+  } finally {
+    if (descriptor !== undefined) operations.closeSync(descriptor);
+  }
+}
+
+export function writeFileAtomicSync(path, data, operationOverrides = {}) {
+  const operations = { ...DEFAULT_ATOMIC_FILE_OPERATIONS, ...operationOverrides };
+  const outputPath = resolve(path);
+  const directory = dirname(outputPath);
+  const temporaryPath = join(
+    directory,
+    `.${basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let descriptor;
+  let temporaryCreated = false;
+
+  operations.mkdirSync(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  try {
+    descriptor = operations.openSync(temporaryPath, "wx", PRIVATE_FILE_MODE);
+    temporaryCreated = true;
+    operations.writeFileSync(descriptor, data);
+    operations.fsyncSync(descriptor);
+    operations.closeSync(descriptor);
+    descriptor = undefined;
+    operations.renameSync(temporaryPath, outputPath);
+    syncDirectoryAfterRename(directory, operations);
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        operations.closeSync(descriptor);
+      } catch {
+        // Preserve the publication error; cleanup below is still attempted.
+      }
+    }
+    if (temporaryCreated) operations.rmSync(temporaryPath, { force: true });
+  }
+  return outputPath;
 }
 
 export function deploymentConfigPayload(manifest) {
@@ -2694,7 +2765,6 @@ function cidToFilename(cid) {
 
 export async function archiveCalldata(dir, reveals, submissions, provider) {
   const outDir = resolve(dir);
-  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
   const entries = [];
   const mismatches = [];
   let archived = 0;
@@ -2751,7 +2821,7 @@ export async function archiveCalldata(dir, reveals, submissions, provider) {
       mismatches.push({ submissionId, cid, anchor, computed, derivedCid, reason: "calldata does not match event/anchor" });
       continue;
     }
-    writeFileSync(filePath, bytes);
+    writeFileAtomicSync(filePath, bytes);
     archived += 1;
     entries.push({ submissionId, cid, anchor, byteLength: bytes.length, revealTxHash: event.transactionHash, store: "on-chain-calldata" });
   }
@@ -2762,7 +2832,7 @@ export async function archiveCalldata(dir, reveals, submissions, provider) {
     entries,
     mismatches,
   });
-  writeFileSync(`${outDir}/manifest.json`, `${stableStringify(archiveManifest, 2)}\n`);
+  writeFileAtomicSync(`${outDir}/manifest.json`, `${stableStringify(archiveManifest, 2)}\n`);
   return { ok: mismatches.length === 0, archived, skipped, offChain, mismatches };
 }
 
@@ -2868,8 +2938,7 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
       }
       refreshMultiBoardCheckpointReconstruction(checkpoint);
 
-      mkdirSync(dirname(resolvedOut), { recursive: true });
-      writeFileSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
+      writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
       console.log(`indexed ${boards.length} boards through finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
       for (const board of checkpoint.boards) {
         console.log(
@@ -2926,8 +2995,7 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
     }
     if (!archiveOk) checkpoint.reconstruction.ok = false;
 
-    mkdirSync(dirname(resolvedOut), { recursive: true });
-    writeFileSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
+    writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
     console.log(`indexed finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
     console.log(
       `lifecycle committed=${checkpoint.events.counts["submissions.Committed"]} ` +

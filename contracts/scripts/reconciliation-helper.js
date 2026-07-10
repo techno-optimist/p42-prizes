@@ -1,5 +1,6 @@
-import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { basename, dirname, join, resolve } from "node:path";
 
 import {
   buildCheckpoint,
@@ -15,6 +16,63 @@ import {
 } from "../../agent/indexer.mjs";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
+const PRIVATE_FILE_MODE = 0o600;
+const PRIVATE_DIRECTORY_MODE = 0o700;
+const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set([
+  "EBADF",
+  "EINVAL",
+  "EISDIR",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EPERM",
+]);
+const DEFAULT_REPORT_FILE_OPERATIONS = Object.freeze({ mkdir, open, rename, rm });
+
+async function syncDirectoryAfterRename(directory, operations) {
+  let handle;
+  try {
+    handle = await operations.open(directory, "r");
+    await handle.sync();
+  } catch (error) {
+    if (!UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(error?.code)) throw error;
+  } finally {
+    if (handle) await handle.close();
+  }
+}
+
+export async function writeReconciliationReportAtomic(path, report, operationOverrides = {}) {
+  const operations = { ...DEFAULT_REPORT_FILE_OPERATIONS, ...operationOverrides };
+  const outputPath = resolve(path);
+  const directory = dirname(outputPath);
+  const temporaryPath = join(
+    directory,
+    `.${basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let handle;
+  let temporaryCreated = false;
+
+  await operations.mkdir(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  try {
+    handle = await operations.open(temporaryPath, "wx", PRIVATE_FILE_MODE);
+    temporaryCreated = true;
+    await handle.writeFile(`${stableStringify(report, 2)}\n`, { encoding: "utf8" });
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await operations.rename(temporaryPath, outputPath);
+    await syncDirectoryAfterRename(directory, operations);
+  } finally {
+    if (handle) {
+      try {
+        await handle.close();
+      } catch {
+        // Preserve the publication error; cleanup below is still attempted.
+      }
+    }
+    if (temporaryCreated) await operations.rm(temporaryPath, { force: true });
+  }
+  return outputPath;
+}
 
 export async function loadManifestFromPath(path) {
   try {
@@ -112,8 +170,7 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
   };
 
   if (outputPath) {
-    await mkdir(dirname(outputPath), { recursive: true });
-    await writeFile(outputPath, `${stableStringify(report, 2)}\n`);
+    await writeReconciliationReportAtomic(outputPath, report);
   }
   return report;
 }
