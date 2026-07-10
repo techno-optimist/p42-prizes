@@ -67,6 +67,23 @@ def _parse_last_json(stdout: str) -> dict[str, Any] | None:
     return None
 
 
+def _verdict_exit_contract_violations(returncode: int, verdict: Mapping[str, Any] | None) -> list[str]:
+    """Mirror the direct verifier 0/1 exit contract enforced at admission."""
+
+    if not isinstance(verdict, Mapping):
+        return ["verifier did not emit a VerdictReport JSON object"]
+    valid = verdict.get("valid")
+    if not isinstance(valid, bool):
+        return ["VerdictReport valid field must be a boolean"]
+    if returncode not in (0, 1):
+        return [f"verifier returned unsupported exit code {returncode}"]
+    if valid and returncode != 0:
+        return ["verifier returned non-zero while reporting valid=true"]
+    if not valid and returncode != 1:
+        return ["verifier returned zero while reporting valid=false"]
+    return []
+
+
 def _finalize_report(report: Mapping[str, Any]) -> dict[str, Any]:
     normalized = dict(report)
     normalized.pop("smoke_hash", None)
@@ -190,6 +207,8 @@ def rehearse(
     elapsed_ms = int((time.monotonic() - started) * 1_000)
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
+    verdict = _parse_last_json(stdout)
+    contract_violations = _verdict_exit_contract_violations(completed.returncode, verdict)
     report = _finalize_report(
         {
             "schema_version": SMOKE_SCHEMA_VERSION,
@@ -220,12 +239,17 @@ def rehearse(
                 "elapsed_ms": elapsed_ms,
                 "stdout_sha256": sha256_bytes(stdout.encode("utf-8")),
                 "stderr_sha256": sha256_bytes(stderr.encode("utf-8")),
-                "verdict": _parse_last_json(stdout),
+                "verdict": verdict,
+                "verdict_exit_contract_violations": contract_violations,
             },
         }
     )
     _write_report(output_path, report)
-    return report, completed.returncode in expected_returncodes and not timed_out
+    return report, (
+        completed.returncode in expected_returncodes
+        and not timed_out
+        and not contract_violations
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -235,7 +259,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tag", required=True, help="local image tag for this smoke build")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--runtime", default="docker")
-    parser.add_argument("--expected-returncode", action="append", type=int)
+    parser.add_argument(
+        "--expected-returncode",
+        action="append",
+        type=int,
+        help="expected direct verifier exit code; valid reports use 0 and rejected reports use 1",
+    )
     parser.add_argument("--memory-mb", type=int)
     parser.add_argument("--pids-limit", type=int, default=256)
     parser.add_argument("--cpus", type=float, default=1.0)
