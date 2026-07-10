@@ -20,6 +20,7 @@ import time
 from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
+from p42_prizes.admission import AdmissionError, validate_report_shape
 from p42_prizes.problem import load_manifest, repo_root_from_problem
 from p42_prizes.runner_sandbox import (
     SANDBOX_USER,
@@ -82,6 +83,40 @@ def _verdict_exit_contract_violations(returncode: int, verdict: Mapping[str, Any
     if not valid and returncode != 1:
         return ["verifier returned zero while reporting valid=false"]
     return []
+
+
+def _verdict_integrity_violations(
+    stdout: str,
+    verdict: Mapping[str, Any] | None,
+    *,
+    problem_id: str,
+    verifier_version: str,
+    verifier_image: str,
+    solution_sha256: str,
+) -> list[str]:
+    """Require the same canonical report binding expected from a real runner."""
+
+    if not isinstance(verdict, Mapping):
+        return ["verifier did not emit a VerdictReport JSON object"]
+    try:
+        validate_report_shape(verdict)
+    except AdmissionError as exc:
+        return [f"VerdictReport shape is invalid: {exc}"]
+
+    violations: list[str] = []
+    expected_identity = {
+        "problem_id": problem_id,
+        "verifier_version": verifier_version,
+        "verifier_image": verifier_image,
+        "solution_hash": solution_sha256,
+    }
+    for field, expected in expected_identity.items():
+        if verdict.get(field) != expected:
+            violations.append(f"VerdictReport {field} does not match the executed input")
+    canonical = canonical_json(dict(verdict))
+    if stdout not in (canonical, canonical + "\n"):
+        violations.append("verifier report is not canonical JSON with no extra stdout")
+    return violations
 
 
 def _finalize_report(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -207,8 +242,17 @@ def rehearse(
     elapsed_ms = int((time.monotonic() - started) * 1_000)
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
+    solution_sha256 = sha256_bytes(solution.read_bytes())
     verdict = _parse_last_json(stdout)
     contract_violations = _verdict_exit_contract_violations(completed.returncode, verdict)
+    integrity_violations = _verdict_integrity_violations(
+        stdout,
+        verdict,
+        problem_id=manifest["problem_id"],
+        verifier_version=verifier["version"],
+        verifier_image=image_id,
+        solution_sha256=solution_sha256,
+    )
     report = _finalize_report(
         {
             "schema_version": SMOKE_SCHEMA_VERSION,
@@ -221,7 +265,7 @@ def rehearse(
                 "manifest_verifier_image": verifier.get("image"),
                 "path": str(problem.relative_to(root)),
             },
-            "solution_sha256": sha256_bytes(solution.read_bytes()),
+            "solution_sha256": solution_sha256,
             "runtime": {"docker_info": docker_info},
             "image": {"tag": image_tag, "local_image_id": image_id, "registry_pullable": False},
             "sandbox": {
@@ -241,6 +285,7 @@ def rehearse(
                 "stderr_sha256": sha256_bytes(stderr.encode("utf-8")),
                 "verdict": verdict,
                 "verdict_exit_contract_violations": contract_violations,
+                "verdict_integrity_violations": integrity_violations,
             },
         }
     )
@@ -249,6 +294,7 @@ def rehearse(
         completed.returncode in expected_returncodes
         and not timed_out
         and not contract_violations
+        and not integrity_violations
     )
 
 

@@ -54,3 +54,38 @@ def test_smoke_enforces_the_direct_verifier_exit_contract() -> None:
     assert smoke._verdict_exit_contract_violations(0, None) == [
         "verifier did not emit a VerdictReport JSON object"
     ]
+
+
+def _verdict(*, image: str = "sha256:" + "a" * 64, solution: str = "sha256:" + "b" * 64) -> dict:
+    return {
+        "details": {},
+        "improvement": "1/1",
+        "problem_id": "hadamard-mini",
+        "reason": "",
+        "recomputed_at_commit": "local-dev",
+        "score": "0/1",
+        "solution_hash": solution,
+        "valid": True,
+        "verifier_image": image,
+        "verifier_version": "0.1.1",
+    }
+
+
+def test_smoke_requires_a_canonical_identity_bound_verdict() -> None:
+    smoke = load_smoke_module()
+    verdict = _verdict()
+    canonical = smoke.canonical_json(verdict)
+    kwargs = {
+        "problem_id": "hadamard-mini",
+        "verifier_version": "0.1.1",
+        "verifier_image": verdict["verifier_image"],
+        "solution_sha256": verdict["solution_hash"],
+    }
+    assert smoke._verdict_integrity_violations(canonical + "\n", verdict, **kwargs) == []
+    assert smoke._verdict_integrity_violations("noise\n" + canonical + "\n", verdict, **kwargs) == [
+        "verifier report is not canonical JSON with no extra stdout"
+    ]
+    altered = _verdict(image="sha256:" + "c" * 64)
+    assert smoke._verdict_integrity_violations(smoke.canonical_json(altered) + "\n", altered, **kwargs) == [
+        "VerdictReport verifier_image does not match the executed input"
+    ]
