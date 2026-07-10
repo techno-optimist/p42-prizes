@@ -37,9 +37,10 @@ PYTHONPATH=src python3 -m p42_prizes.cli admit-ready \
   --matrix admission-matrix.json
 ```
 
-`admit-ready` deliberately rejects the Phase 0 fixture while its image remains
-`sha256:local-dev`. That is the point: local evidence can stay runnable without
-letting a placeholder digest become funding evidence.
+`admit-ready` permanently rejects the `hadamard-mini` Phase 0 demo fixture,
+even if a caller supplies an immutable image and otherwise valid host matrix.
+Its bundled witness already solves the toy instance. Other Phase 0 packages
+remain blocked by their placeholder image and their wider launch gates.
 
 ## Registry Fields
 
@@ -83,8 +84,8 @@ the strength of it alone.
   `example-not-deployed`; its all-`a` digest/hash pair is synthetic anchor test
   data, not a published verifier image or funding evidence.
 - `hadamard-mini` uses `sha256:local-dev` and is runnable only as a pilot
-  fixture. A fresh Base ceremony rejects that placeholder as a verifier-image
-  digest.
+  fixture. It is permanently ineligible for funding; `admit-ready` and the
+  v2 ceremony preflight reject it even with a non-placeholder image.
 - The nine locked launch boards use `sha256:local-dev` placeholders in their
   local verifier packages and cannot be funded.
 - No Gate 2 verifier item is closed until a reviewed immutable digest and

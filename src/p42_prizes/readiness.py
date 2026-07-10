@@ -20,6 +20,10 @@ from p42_prizes.verdict import parse_rational
 
 IMMUTABLE_IMAGE_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
 PLACEHOLDER_IMAGES = {"sha256:local-dev", "sha256:pending", "sha256:pilot"}
+# These packages exist to exercise the lifecycle locally. They are not merely
+# missing evidence: their bundled witnesses already solve the toy instance, so
+# no amount of image or host-matrix work can make them legitimate bounties.
+PERMANENTLY_UNFUNDABLE_FIXTURES = {"hadamard-mini"}
 
 
 def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path) -> list[str]:
@@ -36,6 +40,10 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
     repository = verifier.get("image_repository") if isinstance(verifier, dict) else None
     admission = verifier.get("admission") if isinstance(verifier, dict) else None
     problem_id = manifest.get("problem_id")
+    if problem_id in PERMANENTLY_UNFUNDABLE_FIXTURES:
+        errors.append(
+            f"problem.yaml: problem_id {problem_id!r} is a Phase 0 demo fixture and is permanently ineligible for funding"
+        )
     if not isinstance(image, str) or image in PLACEHOLDER_IMAGES or not IMMUTABLE_IMAGE_RE.fullmatch(image):
         errors.append(
             "problem.yaml:verifier.image must be an immutable lowercase sha256:<64 hex> digest "
