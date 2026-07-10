@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from fractions import Fraction
 from pathlib import Path
+import re
 from typing import Any
 
 from mpmath import iv
@@ -18,7 +19,7 @@ from p42_prizes.verdict import (
 
 
 PROBLEM_ID = "pnt-sparse-mertens-construction"
-VERIFIER_VERSION = "0.1.1"
+VERIFIER_VERSION = "0.1.2"
 VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
 REACH = 96000
 DOMAIN_MAX = 10 * REACH
@@ -28,6 +29,7 @@ VALUE_CAP_MULTIPLIER = 10
 TAU = Fraction(10001, 10000)
 PRINTED_DECIMAL_DIGITS = 16
 DECIMAL_UNIT = Fraction(1, 10**16)
+PRINTED_DECIMAL_RE = re.compile(r"^(?:0|[1-9][0-9]*)\.[0-9]{16}$")
 MAX_SOLUTION_BYTES = 512 * 1024
 LOW_PRECISION_BITS = 400
 HIGH_PRECISION_BITS = 700
@@ -86,12 +88,11 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
         )
 
     printed_decimal = require_string(data.get("printed_decimal"), "printed_decimal")
-    if (
-        len(printed_decimal) != 2 + PRINTED_DECIMAL_DIGITS
-        or not printed_decimal.startswith("0.")
-        or not printed_decimal[2:].isdigit()
-    ):
-        raise VerifierFailure("BAD_DECIMAL", "printed_decimal must be 0.<16 digits>")
+    if not PRINTED_DECIMAL_RE.fullmatch(printed_decimal):
+        raise VerifierFailure(
+            "BAD_DECIMAL",
+            "printed_decimal must be a canonical non-negative decimal with exactly 16 fractional digits",
+        )
 
     raw_support = data.get("support")
     if not isinstance(raw_support, list) or len(raw_support) == 0 or len(raw_support) > MAX_SUPPORT:
