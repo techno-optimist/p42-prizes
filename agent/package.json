@@ -14,7 +14,11 @@
     "operator.mjs",
     "resolver.mjs",
     "runtime_bridge.py",
-    "solver.mjs"
+    "signed-transaction.mjs",
+    "solver-manifest.mjs",
+    "solver.mjs",
+    "strict-json.mjs",
+    "transcript-store.mjs"
   ],
   "bin": {
     "p42-solve": "solver.mjs",

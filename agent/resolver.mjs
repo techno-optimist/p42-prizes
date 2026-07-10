@@ -7,8 +7,10 @@ import { ethers } from "ethers";
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   statSync,
@@ -39,6 +41,10 @@ import {
   publishAndVerifyTranscript,
   receiptSpoolPublisher,
 } from "./transcript-store.mjs";
+import {
+  assertApprovedJournalPath,
+  assertSignedTransactionRecord,
+} from "./signed-transaction.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
@@ -823,7 +829,31 @@ function actionPaths(context, eventHash, policyHash) {
   };
 }
 
+function pathEntryExists(path) {
+  try { lstatSync(path); return true; } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+export function assertResolverActionPaths(action, context, { signedMustExist = false } = {}) {
+  const expected = actionPaths(context, action.event_hash, action.call_policy_hash);
+  if (resolve(action.call_policy_path) !== resolve(expected.policyPath)) {
+    throw new Error("resolver call policy path does not match the deterministic action path");
+  }
+  if (resolve(action.signed_tx_path) !== resolve(expected.signedPath)) {
+    throw new Error("resolver signed transaction path does not match the deterministic action path");
+  }
+  const policyPath = assertApprovedJournalPath(action.call_policy_path, context.actionsPath, expected.policyPath);
+  let signedPath = expected.signedPath;
+  if (signedMustExist || pathEntryExists(action.signed_tx_path)) {
+    signedPath = assertApprovedJournalPath(action.signed_tx_path, context.actionsPath, expected.signedPath);
+  }
+  return { policyPath, signedPath };
+}
+
 function assertActionPolicy(action, context) {
+  const paths = assertResolverActionPaths(action, context);
   const policy = requireObject(action.call_policy, "resolver action call_policy");
   const unsigned = { ...policy };
   const policyHash = unsigned.policy_hash;
@@ -831,7 +861,7 @@ function assertActionPolicy(action, context) {
   if (policyHash !== sha256Canonical(unsigned) || action.call_policy_hash !== policyHash) {
     throw new Error("resolver action call policy self-hash mismatch");
   }
-  if (canonicalJson(JSON.parse(readFileSync(action.call_policy_path, "utf8"))) !== canonicalJson(policy)) {
+  if (canonicalJson(JSON.parse(readFileSync(paths.policyPath, "utf8"))) !== canonicalJson(policy)) {
     throw new Error("resolver action call policy differs from its immutable artifact");
   }
   const decoded = context.chal.interface.decodeFunctionData("resolve", policy.calldata);
@@ -1075,39 +1105,34 @@ async function buildResolveTransactionRequest(context, action, current) {
   return context.wallet.populateTransaction(request);
 }
 
-function assertSignedRecord(record, action, context) {
-  if (record?.schema_version !== "p42-signed-transaction/v1") {
-    throw new Error("signed resolver journal has an unsupported schema");
-  }
-  if (!sameBytes32(ethers.keccak256(record.raw_tx), record.hash)) throw new Error("signed resolver journal raw transaction hash mismatch");
-  const transaction = ethers.Transaction.from(record.raw_tx);
-  if (!sameAddress(transaction.from, context.wallet.address) || !sameAddress(record.signer, context.wallet.address)) {
-    throw new Error("signed resolver journal signer mismatch");
-  }
+export function assertResolverSignedRecord(record, action, context) {
   const expected = buildResolverTransportRequest({
     callPolicy: action.call_policy,
     executionMode: context.executionMode,
     agentWalletInterface: context.agentWallet?.interface,
     agentWalletAddress: context.executionMode.agentWalletAddress,
   });
-  if (!sameAddress(transaction.to, expected.to) || !sameBytes32(ethers.keccak256(transaction.data), ethers.keccak256(expected.data))) {
-    throw new Error("signed resolver journal does not contain the exact resolve call");
-  }
-  if (transaction.value !== BigInt(expected.value) || Number(transaction.chainId) !== context.chainId) {
-    throw new Error("signed resolver journal value or chain mismatch");
-  }
-  return record;
+  const label = `resolve:${action.submission_id}:${action.challenge_instance_hash}:${action.transcript_hash}`;
+  return assertSignedTransactionRecord(record, {
+    signer: context.wallet.address,
+    chainId: context.chainId,
+    to: expected.to,
+    data: expected.data,
+    value: expected.value,
+    nonce: action.transaction_nonce,
+    label,
+    hash: action.transaction_hash,
+  }).record;
 }
 
 async function ensureSignedAction(context, action) {
   assertActionPolicy(action, context);
-  if (existsSync(action.signed_tx_path)) {
-    const record = assertSignedRecord(JSON.parse(readFileSync(action.signed_tx_path, "utf8")), action, context);
-    if (action.transaction_hash && !sameBytes32(action.transaction_hash, record.hash)) {
-      throw new Error("resolver action transaction hash disagrees with its signed journal");
-    }
+  if (pathEntryExists(action.signed_tx_path)) {
+    const paths = assertResolverActionPaths(action, context, { signedMustExist: true });
+    const record = assertResolverSignedRecord(JSON.parse(readFileSync(paths.signedPath, "utf8")), action, context);
     if (!action.transaction_hash || action.status === "prepared") {
       action.transaction_hash = record.hash;
+      action.transaction_nonce = record.nonce;
       action.status = "signed";
       persistState(context);
     }
@@ -1132,8 +1157,9 @@ async function ensureSignedAction(context, action) {
   });
   // The raw bytes land on disk before the mutable action state can say signed.
   writeCanonicalAtomic(action.signed_tx_path, record);
-  assertSignedRecord(record, action, context);
+  assertResolverSignedRecord(record, action, context);
   action.transaction_hash = record.hash;
+  action.transaction_nonce = record.nonce;
   action.status = "signed";
   persistState(context);
   return record;
@@ -1529,7 +1555,7 @@ export async function main(argv = process.argv.slice(2), clients = {}) {
   }
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
+const invokedPath = process.argv[1] ? pathToFileURL(realpathSync(resolve(process.argv[1]))).href : null;
 if (invokedPath === import.meta.url) {
   main().catch((error) => {
     console.error("FAILED:", error.shortMessage || error.message);

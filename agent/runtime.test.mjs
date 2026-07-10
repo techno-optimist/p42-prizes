@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -48,6 +48,28 @@ const submissionInterface = new ethers.Interface([
 const walletInterface = new ethers.Interface([
   "function execute(address target,uint256 value,bytes data) returns (bytes)",
 ]);
+
+test("npm pack installs complete runnable agent binaries", () => {
+  const packDir = mkdtempSync(join(tmpdir(), "p42-pack-"));
+  const installDir = mkdtempSync(join(tmpdir(), "p42-install-"));
+  const tarballName = execFileSync("npm", ["pack", "--pack-destination", packDir], {
+    cwd: HERE, encoding: "utf8",
+  }).trim().split("\n").at(-1);
+  execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", join(packDir, tarballName)], {
+    cwd: installDir, encoding: "utf8",
+  });
+  for (const module of ["transcript-store.mjs", "strict-json.mjs", "signed-transaction.mjs", "solver-manifest.mjs"]) {
+    assert.equal(readFileSync(join(installDir, "node_modules", "p42-agent", module)).length > 0, true, module);
+  }
+  for (const binary of ["p42-resolve", "p42-solve"]) {
+    const result = spawnSync(join(installDir, "node_modules", ".bin", binary), [], { encoding: "utf8" });
+    assert.notEqual(result.status, 126, `${binary} is executable`);
+    assert.notEqual(result.status, 127, `${binary} resolves its packaged modules`);
+    assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/, binary);
+    assert.doesNotMatch(result.stderr, /ENOENT/, binary);
+    assert.match(`${result.stdout}\n${result.stderr}`, /required:|set AGENT_PRIVATE_KEY/, `${binary} reached argument validation`);
+  }
+});
 const entryPointLike = new ethers.Interface([
   "function handle(bytes accountCallData,address beneficiary)",
 ]);

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
+import { request as httpsRequest } from "node:https";
 import { join, resolve } from "node:path";
 import { CID } from "multiformats/cid";
 import { canonicalJson, sha256Canonical } from "./lib.mjs";
@@ -95,7 +96,19 @@ function isForbiddenAddress(address) {
   const version = isIP(address);
   if (version === 4) return isForbiddenIpv4(address);
   const normalized = address.toLowerCase();
-  if (version === 6 && normalized.startsWith("::ffff:")) return isForbiddenIpv4(normalized.slice(7));
+  if (version === 6) {
+    const marker = normalized.lastIndexOf("ffff:");
+    if (marker !== -1 && /^[0:]*$/.test(normalized.slice(0, marker))) {
+      const tail = normalized.slice(marker + 5);
+      if (isIP(tail) === 4) return isForbiddenIpv4(tail);
+      const words = tail.split(":");
+      if (words.length === 2 && words.every((word) => /^[0-9a-f]{1,4}$/.test(word))) {
+        const high = Number.parseInt(words[0], 16);
+        const low = Number.parseInt(words[1], 16);
+        return isForbiddenIpv4(`${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`);
+      }
+    }
+  }
   return version === 6 && (
     normalized === "::1" || normalized === "::" || normalized.startsWith("fc") ||
     normalized.startsWith("fd") || normalized.startsWith("fe8") || normalized.startsWith("fe9") ||
@@ -251,9 +264,68 @@ export function httpTranscriptFetchClient(fetchImpl = fetch, lookupImpl = lookup
       if (!addresses.length || addresses.some(({ address }) => isForbiddenAddress(address))) {
         throw new Error("retrieval endpoint DNS resolved to private or link-local IP space");
       }
-      return boundedFetchBytes(`${endpoint}/${parsed.identifier}${parsed.path}`, { fetchImpl, timeoutMs, maxBytes });
+      if (fetchImpl !== fetch) {
+        throw new Error("custom fetch adapters cannot guarantee DNS address pinning");
+      }
+      return pinnedHttpsFetchBytes(`${endpoint}/${parsed.identifier}${parsed.path}`, {
+        addresses, timeoutMs, maxBytes,
+      });
     },
   };
+}
+
+export function pinnedHttpsFetchBytes(url, {
+  addresses,
+  timeoutMs = DEFAULT_TRANSCRIPT_TIMEOUT_MS,
+  maxBytes = MAX_TRANSCRIPT_ARTIFACT_BYTES,
+  requestImpl = httpsRequest,
+} = {}) {
+  if (!Array.isArray(addresses) || addresses.length === 0 || addresses.some(({ address }) => isForbiddenAddress(address))) {
+    throw new Error("pinned HTTPS retrieval requires validated public addresses");
+  }
+  const target = new URL(url);
+  const selected = addresses[0];
+  return new Promise((resolvePromise, rejectPromise) => {
+    const request = requestImpl(target, {
+      method: "GET",
+      servername: target.hostname,
+      lookup(_hostname, _options, callback) {
+        callback(null, selected.address, selected.family);
+      },
+    }, (response) => {
+      if (response.statusCode >= 300 && response.statusCode < 400) {
+        response.destroy();
+        rejectPromise(new Error("transcript retrieval redirects are forbidden"));
+        return;
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        response.destroy();
+        rejectPromise(new Error(`transcript retrieval returned HTTP ${response.statusCode}`));
+        return;
+      }
+      const declared = Number(response.headers["content-length"]);
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        response.destroy();
+        rejectPromise(new Error("transcript retrieval exceeds the byte limit"));
+        return;
+      }
+      const chunks = [];
+      let length = 0;
+      response.on("data", (value) => {
+        if (length + value.length > maxBytes) {
+          response.destroy(new Error("transcript retrieval exceeds the byte limit"));
+          return;
+        }
+        chunks.push(value);
+        length += value.length;
+      });
+      response.once("end", () => resolvePromise(Buffer.concat(chunks, length)));
+      response.once("error", rejectPromise);
+    });
+    request.setTimeout(timeoutMs, () => request.destroy(new Error("transcript retrieval timed out")));
+    request.once("error", rejectPromise);
+    request.end();
+  });
 }
 
 export async function publishAndVerifyTranscript({ transcript, publisher, endpoints, fetchClient }) {

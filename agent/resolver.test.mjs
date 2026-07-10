@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { ethers } from "ethers";
 
 import {
   canonicalJson,
+  buildSignedTransactionRecord,
   sha256Canonical,
   verifierImageHashForDigest,
   verifierSourceHashForDigest,
@@ -18,6 +19,8 @@ import {
   configureResolverPublication,
   expandTranscriptUri,
   resolverEventHashFor,
+  assertResolverActionPaths,
+  assertResolverSignedRecord,
   validateTranscriptUriTemplate,
   verifyResolverTranscript,
 } from "./resolver.mjs";
@@ -374,4 +377,87 @@ test("resolver event identities bind all dispute instance fields", () => {
 test("fixture transcript is canonical JSON for the same bytes its hashes bind", () => {
   const value = transcript();
   assert.equal(JSON.parse(canonicalJson(value)).transcript_hash, value.transcript_hash);
+});
+
+async function resolverRestartFixture() {
+  const actionsPath = mkdtempSync(join(tmpdir(), "p42-resolver-restart-"));
+  const wallet = ethers.Wallet.createRandom();
+  const challengeInterface = new ethers.Interface([
+    "function resolve(uint256,bytes32,bool,bytes32,string,bytes32) payable",
+  ]);
+  const transcriptHash = SHA("7");
+  const challengeInstanceHash = HASH("9");
+  const verdictHash = HASH("8");
+  const policy = buildResolveCallPolicy({
+    challengeInterface, challengeContract: ADDR.challenges, chainId: 31337,
+    problemId: expected.problem_id, submissionId: expected.submission_id,
+    revealInstanceHash: expected.reveal_instance_hash, challengeInstanceHash,
+    challengerWins: true, transcriptHash,
+    transcriptURI: `ar://${"a".repeat(43)}`, verdictHash,
+    candidateHash: SHA("8"), sourceEventHash: SHA("6"),
+    expiresAt: "2000000000", valueWei: 5n,
+  });
+  const eventHash = SHA("5");
+  const prefix = `${eventHash.slice(7)}-${policy.policy_hash.slice(7, 23)}`;
+  const policyPath = join(actionsPath, `${prefix}.policy.json`);
+  const signedPath = join(actionsPath, `${prefix}.signed-tx.json`);
+  writeFileSync(policyPath, `${canonicalJson(policy)}\n`);
+  const action = {
+    event_hash: eventHash, call_policy_hash: policy.policy_hash,
+    call_policy_path: policyPath, signed_tx_path: signedPath, call_policy: policy,
+    submission_id: expected.submission_id, challenge_instance_hash: challengeInstanceHash,
+    transcript_hash: transcriptHash,
+  };
+  const request = buildResolverTransportRequest({ callPolicy: policy, executionMode: "direct-eoa-local-test" });
+  const record = await buildSignedTransactionRecord({
+    wallet,
+    request: { ...request, nonce: 3, gasLimit: 500000n, gasPrice: 1n, chainId: 31337, type: 0 },
+    label: `resolve:${action.submission_id}:${action.challenge_instance_hash}:${action.transcript_hash}`,
+  });
+  const context = {
+    actionsPath, wallet, chainId: 31337,
+    executionMode: { mode: "direct-eoa-local-test" },
+    chal: { interface: challengeInterface, target: ADDR.challenges }, agentWallet: null,
+  };
+  return { action, context, record, policyPath, signedPath };
+}
+
+test("resolver restart uses the complete shared transaction journal validator", async () => {
+  const { action, context, record } = await resolverRestartFixture();
+  assert.equal(assertResolverSignedRecord(record, action, context).hash, record.hash);
+  for (const [field, value, pattern] of [
+    ["chain_id", 1, /chain mismatch/],
+    ["to", ADDR.submissions, /destination mismatch/],
+    ["data_hash", ethers.ZeroHash, /declared calldata hash mismatch/],
+    ["value", "6", /value mismatch/],
+    ["nonce", 4, /nonce mismatch/],
+    ["label", "resolve:conflict", /label binding mismatch/],
+    ["hash", ethers.ZeroHash, /raw transaction hash mismatch/],
+  ]) assert.throws(() => assertResolverSignedRecord({ ...record, [field]: value }, action, context), pattern, field);
+  assert.throws(
+    () => assertResolverSignedRecord(record, { ...action, transaction_hash: ethers.ZeroHash }, context),
+    /hash does not match persisted transaction hash/,
+  );
+  assert.throws(
+    () => assertResolverSignedRecord(record, { ...action, transaction_nonce: 4 }, context),
+    /nonce does not match persisted nonce/,
+  );
+});
+
+test("resolver restart paths are deterministic regular files under actions root", async () => {
+  const { action, context, record, signedPath } = await resolverRestartFixture();
+  writeFileSync(signedPath, `${canonicalJson(record)}\n`);
+  assert.equal(basename(assertResolverActionPaths(action, context, { signedMustExist: true }).signedPath), basename(signedPath));
+  assert.throws(
+    () => assertResolverActionPaths({ ...action, signed_tx_path: join(context.actionsPath, "..", "outside.json") }, context),
+    /deterministic action path/,
+  );
+  const outside = join(tmpdir(), `p42-resolver-outside-${Date.now()}.json`);
+  writeFileSync(outside, "{}\n");
+  rmSync(signedPath);
+  symlinkSync(outside, signedPath);
+  assert.throws(
+    () => assertResolverActionPaths(action, context, { signedMustExist: true }),
+    /non-symlink/,
+  );
 });

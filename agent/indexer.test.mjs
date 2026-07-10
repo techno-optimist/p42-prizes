@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -10,6 +10,7 @@ import { atomsFromScore, canonicalJson, sha256Canonical } from "./lib.mjs";
 import {
   archiveCalldata,
   archiveFinalizedResolverTranscripts,
+  archiveMultiBoardGeneration,
   buildCheckpoint,
   buildMultiBoardCheckpoint,
   compareReplayToSnapshot,
@@ -68,6 +69,44 @@ it("indexer CLI configures trusted transcript retrieval", () => {
   );
   assert.deepEqual(configured.endpoints, ["https://one.example", "https://two.test"]);
   assert.equal(typeof configured.fetchClient.fetchTranscript, "function");
+});
+
+it("multiboard archive generations commit together and roll back failures", async () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-multiboard-generation-"));
+  writeFileSync(join(root, "old-generation"), "old");
+  const boards = [1, 2].map((problemId) => ({
+    problem: { problemId: String(problemId) },
+    contracts: { submissions: {} },
+    scan: { events: [] },
+  }));
+  const calldata = async (dir) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "calldata"), "ok");
+    return { ok: true, mismatches: [] };
+  };
+  const failed = await archiveMultiBoardGeneration(root, boards, {}, {
+    archiveCalldataImpl: calldata,
+    archiveTranscriptsImpl: async (dir) => {
+      mkdirSync(dir, { recursive: true });
+      return { ok: !dir.includes("board-2"), failures: [{ reason: "fixture" }] };
+    },
+  });
+  assert.equal(failed.committed, false);
+  assert.equal(readFileSync(join(root, "old-generation"), "utf8"), "old");
+  assert.equal(existsSync(join(root, "board-1")), false);
+
+  const succeeded = await archiveMultiBoardGeneration(root, boards, {}, {
+    archiveCalldataImpl: calldata,
+    archiveTranscriptsImpl: async (dir) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "transcript"), "ok");
+      return { ok: true, failures: [] };
+    },
+  });
+  assert.equal(succeeded.committed, true);
+  assert.equal(existsSync(join(root, "old-generation")), false);
+  assert.equal(readFileSync(join(root, "board-1", "calldata"), "utf8"), "ok");
+  assert.equal(readFileSync(join(root, "board-2", "resolver-transcripts", "transcript"), "utf8"), "ok");
 });
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";

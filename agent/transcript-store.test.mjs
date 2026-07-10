@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import { sha256Canonical } from "./lib.mjs";
@@ -12,6 +14,7 @@ import {
   fetchTranscriptClientBytes,
   httpTranscriptFetchClient,
   parseTranscriptUri,
+  pinnedHttpsFetchBytes,
   publishAndVerifyTranscript,
   receiptSpoolPublisher,
   validateRetrievalEndpoints,
@@ -76,6 +79,9 @@ test("trusted endpoints reject SSRF targets and ignore receipt endpoint injectio
     ["https://localhost", "https://other.test"],
     ["https://127.0.0.1", "https://other.test"],
     ["https://169.254.1.2", "https://other.test"],
+    ["https://[::ffff:127.0.0.1]", "https://other.test"],
+    ["https://[::ffff:7f00:1]", "https://other.test"],
+    ["https://[::ffff:0a00:1]", "https://other.test"],
     ["https://service.local", "https://other.test"],
   ]) assert.throws(() => validateRetrievalEndpoints(endpoints));
   assert.deepEqual(
@@ -99,6 +105,37 @@ test("trusted endpoints reject SSRF targets and ignore receipt endpoint injectio
   await assert.rejects(dnsGuarded.fetchTranscript({
     endpoint: "https://public.example", uri: `ar://${"a".repeat(43)}`,
   }), /DNS resolved to private/);
+});
+
+test("HTTPS retrieval pins the validated DNS address and keeps hostname SNI", async () => {
+  let options;
+  const requestImpl = (_target, requestOptions, callback) => {
+    options = requestOptions;
+    const request = new EventEmitter();
+    request.setTimeout = () => {};
+    request.end = () => {
+      const response = new PassThrough();
+      response.statusCode = 200;
+      response.headers = {};
+      callback(response);
+      response.end("bound");
+    };
+    request.destroy = (error) => request.emit("error", error);
+    return request;
+  };
+  const bytes = await pinnedHttpsFetchBytes("https://gateway.example/object", {
+    addresses: [{ address: "8.8.8.8", family: 4 }], requestImpl,
+  });
+  assert.equal(bytes.toString(), "bound");
+  assert.equal(options.servername, "gateway.example");
+  await new Promise((resolveLookup, rejectLookup) => options.lookup("gateway.example", {}, (error, address) => {
+    if (error) rejectLookup(error);
+    else { assert.equal(address, "8.8.8.8"); resolveLookup(); }
+  }));
+  const unpinned = httpTranscriptFetchClient(async () => {}, async () => [{ address: "8.8.8.8", family: 4 }]);
+  await assert.rejects(unpinned.fetchTranscript({
+    endpoint: "https://gateway.example", uri: `ar://${"a".repeat(43)}`,
+  }), /cannot guarantee DNS address pinning/);
 });
 
 test("receipt spool provides a real prepublished production adapter", async () => {

@@ -31,17 +31,21 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 export const MANIFEST_SCHEMA_V1 = "p42-prizes/deployment-manifest/v1";
 export const MANIFEST_SCHEMA_V2 = "p42-prizes/deployment-manifest/v2";
-const DEPLOYMENT_MANIFEST_SCHEMAS = Object.freeze({
-  [MANIFEST_SCHEMA_V1]: JSON.parse(
-    readFileSync(`${REPO_ROOT}/schemas/deployment-manifest.schema.json`, "utf8")
-  ),
-  [MANIFEST_SCHEMA_V2]: JSON.parse(
-    readFileSync(`${REPO_ROOT}/schemas/deployment-manifest-v2.schema.json`, "utf8")
-  ),
-});
-const MULTIBOARD_CHECKPOINT_SCHEMA = JSON.parse(
-  readFileSync(`${REPO_ROOT}/schemas/indexer-checkpoint-v2.schema.json`, "utf8")
-);
+let deploymentManifestSchemas;
+let multiboardCheckpointSchema;
+function manifestSchemas() {
+  deploymentManifestSchemas ??= Object.freeze({
+    [MANIFEST_SCHEMA_V1]: JSON.parse(readFileSync(`${REPO_ROOT}/schemas/deployment-manifest.schema.json`, "utf8")),
+    [MANIFEST_SCHEMA_V2]: JSON.parse(readFileSync(`${REPO_ROOT}/schemas/deployment-manifest-v2.schema.json`, "utf8")),
+  });
+  return deploymentManifestSchemas;
+}
+function checkpointSchema() {
+  multiboardCheckpointSchema ??= JSON.parse(
+    readFileSync(`${REPO_ROOT}/schemas/indexer-checkpoint-v2.schema.json`, "utf8"),
+  );
+  return multiboardCheckpointSchema;
+}
 const PRIVATE_FILE_MODE = 0o600;
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set([
@@ -571,13 +575,13 @@ function validateSchemaValue(value, schema, rootSchema, path) {
 }
 
 function validateDeploymentManifestSchema(manifest) {
-  const schema = DEPLOYMENT_MANIFEST_SCHEMAS[manifest?.schema];
+  const schema = manifestSchemas()[manifest?.schema];
   if (!schema) throw new Error(`Unsupported deployment manifest schema: ${String(manifest?.schema)}`);
   validateSchemaValue(manifest, schema, schema, "manifest");
 }
 
 export function validatePreBroadcastManifestPlan(schemaName, problemCount = 1) {
-  const schema = DEPLOYMENT_MANIFEST_SCHEMAS[schemaName];
+  const schema = manifestSchemas()[schemaName];
   if (!schema) throw new Error(`Unsupported deployment manifest schema: ${schemaName}`);
   if (!Number.isInteger(problemCount) || problemCount < 1 || problemCount > 10) {
     throw new Error("problemCount must be an integer from 1 through 10");
@@ -3101,7 +3105,7 @@ function refreshMultiBoardCheckpointReconstruction(checkpoint) {
 }
 
 export function validateMultiBoardCheckpoint(checkpoint) {
-  validateSchemaValue(checkpoint, MULTIBOARD_CHECKPOINT_SCHEMA, MULTIBOARD_CHECKPOINT_SCHEMA, "checkpoint");
+  validateSchemaValue(checkpoint, checkpointSchema(), checkpointSchema(), "checkpoint");
   if (checkpoint.range.toBlock < checkpoint.range.fromBlock) {
     throw new Error("checkpoint.range.toBlock must not precede checkpoint.range.fromBlock");
   }
@@ -3327,6 +3331,61 @@ export function failMissingMultiboardTranscriptArchives(checkpoint, boards) {
   return refreshMultiBoardCheckpointReconstruction(checkpoint);
 }
 
+export async function archiveMultiBoardGeneration(dir, boards, provider, {
+  endpoints,
+  fetchClient,
+  archiveCalldataImpl = archiveCalldata,
+  archiveTranscriptsImpl = archiveFinalizedResolverTranscripts,
+} = {}) {
+  const outDir = resolve(dir);
+  const stageDir = `${outDir}.stage-${randomUUID()}`;
+  const backupDir = `${outDir}.backup-${randomUUID()}`;
+  const failedDir = `${outDir}.failed-${randomUUID()}`;
+  mkdirSync(stageDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  const results = [];
+  try {
+    for (const board of boards) {
+      const boardDir = resolve(stageDir, `board-${board.problem.problemId}`);
+      const reveals = board.scan.events.filter(
+        (event) => event.source === "submissions" && event.eventName === "Revealed",
+      );
+      const calldata = await archiveCalldataImpl(boardDir, reveals, board.contracts.submissions, provider);
+      const transcripts = await archiveTranscriptsImpl(
+        resolve(boardDir, "resolver-transcripts"), board.scan.events, { endpoints, fetchClient },
+      );
+      results.push({ problemId: String(board.problem.problemId), calldata, transcripts });
+    }
+    if (results.some((result) => !result.calldata.ok || !result.transcripts.ok)) {
+      rmSync(stageDir, { recursive: true, force: true });
+      return { ok: false, committed: false, results };
+    }
+    let backedUp = false;
+    try {
+      mkdirSync(dirname(outDir), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+      if (existsSync(outDir)) {
+        renameSync(outDir, backupDir);
+        backedUp = true;
+      }
+      renameSync(stageDir, outDir);
+      syncDirectoryAfterRename(dirname(outDir), DEFAULT_ATOMIC_FILE_OPERATIONS);
+      if (backedUp) rmSync(backupDir, { recursive: true, force: true });
+    } catch (error) {
+      if (existsSync(stageDir)) rmSync(stageDir, { recursive: true, force: true });
+      if (backedUp && existsSync(backupDir)) {
+        if (existsSync(outDir)) renameSync(outDir, failedDir);
+        renameSync(backupDir, outDir);
+        syncDirectoryAfterRename(dirname(outDir), DEFAULT_ATOMIC_FILE_OPERATIONS);
+        rmSync(failedDir, { recursive: true, force: true });
+      }
+      throw error;
+    }
+    return { ok: true, committed: true, results };
+  } catch (error) {
+    rmSync(stageDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
 function parseArg(argv, name, defaultValue = undefined) {
   const index = argv.indexOf(`--${name}`);
   return index === -1 ? defaultValue : argv[index + 1];
@@ -3410,40 +3469,27 @@ export async function runIndexer({
       });
 
       if (archivePath) {
-        for (const board of boards) {
-          const reveals = board.scan.events.filter(
-            (event) => event.source === "submissions" && event.eventName === "Revealed",
-          );
-          const archived = await archiveCalldata(
-            resolve(archivePath, `board-${board.problem.problemId}`),
-            reveals,
-            board.contracts.submissions,
-            provider,
-          );
-          if (!archived.ok) {
-            const report = checkpoint.boards.find(
-              (entry) => entry.problemId === String(board.problem.problemId),
-            );
-            if (!report) throw new Error(`checkpoint omitted board ${board.problem.problemId}`);
+        const generation = await archiveMultiBoardGeneration(archivePath, boards, provider, {
+          endpoints: transcriptEndpoints,
+          fetchClient: transcriptFetchClient,
+        });
+        for (const result of generation.results) {
+          const report = checkpoint.boards.find((entry) => entry.problemId === result.problemId);
+          if (!report) throw new Error(`checkpoint omitted board ${result.problemId}`);
+          if (!result.calldata.ok) {
             report.reconstruction.checks.push({
               name: "archive.calldata",
               ok: false,
               expected: { mismatches: 0 },
-              actual: { mismatches: archived.mismatches.length },
+              actual: { mismatches: result.calldata.mismatches.length },
             });
           }
-          const transcriptArchive = await archiveFinalizedResolverTranscripts(
-              resolve(archivePath, `board-${board.problem.problemId}`, "resolver-transcripts"),
-              board.scan.events,
-              { endpoints: transcriptEndpoints, fetchClient: transcriptFetchClient },
-            );
-          if (!transcriptArchive.ok) {
-            const report = checkpoint.boards.find((entry) => entry.problemId === String(board.problem.problemId));
+          if (!result.transcripts.ok) {
             report.reconstruction.checks.push({
               name: "archive.resolverTranscripts",
               ok: false,
               expected: { missingOrUnverified: 0 },
-              actual: { missingOrUnverified: transcriptArchive.failures.length || 1 },
+              actual: { missingOrUnverified: result.transcripts.failures.length || 1 },
             });
           }
         }
