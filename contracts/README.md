@@ -49,6 +49,18 @@ deployer key to deploy `P42MultisigTimelock` and the current per-problem
 contracts. Every child receives the timelock as its immutable owner. The
 deployer never wires or registers a child directly.
 
+```bash
+BASE_SEPOLIA_RPC_URL=https://primary.example \
+P42_PRIMARY_RPC_OPERATOR_ID=primary-operator \
+P42_SECONDARY_BASE_SEPOLIA_RPC_URL=https://secondary.example \
+P42_SECONDARY_RPC_OPERATOR_ID=secondary-operator \
+BASE_SEPOLIA_PRIVATE_KEY=... \
+npm run deploy:base-sepolia
+```
+
+The RPC URLs must normalize to distinct hosts and origins, and the operator IDs
+must identify distinct infrastructure operators.
+
 The script requires distinct public governance signer addresses, a threshold,
 delay, and guardian; separate treasury and resolver roles; every economic and
 DA constructor parameter; and nonzero frozen problem/verifier/image/admission
