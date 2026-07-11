@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from p42_prizes import cli
 
 from test_adversarial import valid_campaign_report
 from test_governance import valid_governance_report
@@ -83,30 +84,21 @@ def test_production_registry_requires_out_of_band_digest(tmp_path: Path) -> None
             rpc_url,
         )
     assert completed.returncode == 1
-    assert "P42_PRODUCTION_TRUST_REGISTRY_SHA256" in completed.stderr
+    assert "protected root file" in completed.stderr
 
 
-def test_production_registry_accepts_only_matching_out_of_band_digest(tmp_path: Path) -> None:
-    report, fixture, registry = valid_legal_memo(tmp_path)
+def test_production_registry_accepts_only_matching_protected_digest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, fixture, registry = valid_legal_memo(tmp_path)
     registry["environment"] = "production"
-    report_path = tmp_path / "report.json"
-    report_path.write_text(json.dumps(report), encoding="utf-8")
     registry_path = fixture.write_registry(registry)
     registry_hash = sha256_bytes(canonical_json(registry).encode("utf-8"))
-    with fixture.chain_rpc_server() as rpc_url:
-        completed = run_cli(
-            "legal-memo-validate",
-            "--report",
-            str(report_path),
-            "--trust-registry",
-            str(registry_path),
-            "--artifact-root",
-            str(tmp_path),
-            "--chain-rpc-url",
-            rpc_url,
-            env_overrides={"P42_PRODUCTION_TRUST_REGISTRY_SHA256": registry_hash},
-        )
-    assert completed.returncode == 0, completed.stderr
+    pin_path = tmp_path / "production-attestation-root.sha256"
+    pin_path.write_text(registry_hash + "\n", encoding="ascii")
+    pin_path.chmod(0o444)
+    monkeypatch.setattr(cli, "_PRODUCTION_TRUST_ROOT", pin_path)
+    assert cli._load_pinned_trust_registry(str(registry_path), allow_test=False) == registry
 
 
 @pytest.mark.parametrize("command, builder", ATTESTATION_GATE_CASES)

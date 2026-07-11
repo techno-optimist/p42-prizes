@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 from urllib import request as urllib_request
@@ -54,6 +55,7 @@ from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes
 _SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
 _RPC_MAX_RESPONSE_BYTES = 1024 * 1024
 _RPC_MAX_RESPONSE_DEPTH = 64
+_PRODUCTION_TRUST_ROOT = Path("/etc/p42/production-attestation-root.sha256")
 
 
 def _enforce_gate_schema(report: dict, schema_name: str) -> None:
@@ -65,21 +67,51 @@ def _load_pinned_trust_registry(path: str, *, allow_test: bool) -> dict:
     trust_registry = load_evidence_file(path)
     _enforce_gate_schema(trust_registry, "attestation-trust-registry.schema.json")
     if trust_registry.get("environment") == "production":
-        expected_registry_hash = os.environ.get("P42_PRODUCTION_TRUST_REGISTRY_SHA256")
-        if expected_registry_hash is None:
-            raise AdmissionError(
-                "production trust requires out-of-band P42_PRODUCTION_TRUST_REGISTRY_SHA256"
-            )
+        expected_registry_hash = _read_production_trust_root()
         actual_registry_hash = sha256_bytes(canonical_json(trust_registry).encode("utf-8"))
         if expected_registry_hash != actual_registry_hash:
             raise AdmissionError(
-                "production trust registry does not match P42_PRODUCTION_TRUST_REGISTRY_SHA256"
+                "production trust registry does not match the protected root digest"
             )
     elif not allow_test:
         raise AdmissionError(
             "test trust registries are rejected by default; use a production root registry or explicitly allow test trust"
         )
     return trust_registry
+
+
+def _read_production_trust_root() -> str:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise AdmissionError("production trust roots require platform O_NOFOLLOW support")
+    try:
+        fd = os.open(_PRODUCTION_TRUST_ROOT, os.O_RDONLY | nofollow)
+    except OSError as exc:
+        raise AdmissionError(
+            f"production trust requires protected root file {_PRODUCTION_TRUST_ROOT}"
+        ) from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise AdmissionError("production trust root must be a regular file")
+        if metadata.st_mode & 0o0222:
+            raise AdmissionError("production trust root must not be writable")
+        raw = os.read(fd, 256)
+        if os.read(fd, 1):
+            raise AdmissionError("production trust root file is oversized")
+    finally:
+        os.close(fd)
+    try:
+        value = raw.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise AdmissionError("production trust root must be ASCII") from exc
+    if (
+        len(value) != 71
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise AdmissionError("production trust root must be sha256:<64-lowercase-hex>")
+    return value
 
 
 def _load_attestation_inputs(args: argparse.Namespace) -> tuple[dict, Path, ChainReader]:
