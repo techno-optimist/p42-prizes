@@ -23,6 +23,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 OPERATIONAL_CONTROLS_SCHEMA_VERSION = "p42-operational-controls/v1"
 OWNER_ROLE = "operational-control-owner"
 REPORT_SIGNER_ROLE = "operational-controls-report-signer"
+EXECUTION_RUNNER_ROLE = "operational-control-execution-runner"
 ARTIFACT_ENVELOPE_SCHEMA_VERSION = "p42-operational-control-artifact/v1"
 REQUIRED_CONTROLS = frozenset(
     {
@@ -81,6 +82,7 @@ def normalize_operational_controls(
             "release_binding",
             "controls",
             "operational_controls_hash",
+            "final_gate_claim",
             "report_signer",
             "report_signature",
         },
@@ -89,6 +91,10 @@ def normalize_operational_controls(
     normalized = dict(report)
     provided_hash = normalized.pop("operational_controls_hash", None)
     report_signature = normalized.pop("report_signature", None)
+    if provided_hash is None:
+        raise OperationalControlsError("report.operational_controls_hash is required")
+    if normalized.get("final_gate_claim") != "passed":
+        raise OperationalControlsError("report.final_gate_claim must be passed")
     evidence_id = _require_text(normalized.get("evidence_id"), "report.evidence_id")
     del evidence_id
     started_at = _require_utc(
@@ -140,8 +146,9 @@ def normalize_operational_controls(
     seen_artifact_paths: set[str] = set()
     seen_artifact_hashes: set[str] = set()
     session_problem_id: str | None = None
+    control_signature_times: list[datetime] = []
     for index, control in enumerate(controls):
-        problem_id = _validate_control(
+        problem_id, control_signed_at = _validate_control(
             control,
             index=index,
             started_at=started_at,
@@ -154,6 +161,7 @@ def normalize_operational_controls(
             seen_artifact_paths=seen_artifact_paths,
             seen_artifact_hashes=seen_artifact_hashes,
         )
+        control_signature_times.append(control_signed_at)
         if problem_id is not None:
             if session_problem_id is None:
                 session_problem_id = problem_id
@@ -176,7 +184,7 @@ def normalize_operational_controls(
         "window_completed_at_utc": normalized["window_completed_at_utc"],
         "release_binding_hash": release_hash,
         "ordered_control_hashes": [control["control_hash"] for control in controls],
-        "final_gate_claim": "passed",
+        "final_gate_claim": normalized["final_gate_claim"],
     }
     packet_hash = sha256_bytes(canonical_json(report_claim).encode("utf-8"))
     if provided_hash is not None and provided_hash != packet_hash:
@@ -184,7 +192,7 @@ def normalize_operational_controls(
             "supplied operational_controls_hash does not match the normalized report claim: "
             f"expected {packet_hash}, got {provided_hash}"
         )
-    _validate_signature(
+    validated_report_signature = _validate_signature(
         report_signature,
         "report.report_signature",
         schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
@@ -195,7 +203,15 @@ def normalize_operational_controls(
         context=context,
         not_after=completed_at,
     )
-    normalized["final_gate_claim"] = "passed"
+    report_signed_at = _require_utc(
+        validated_report_signature["signed_at_utc"],
+        "report.report_signature.signed_at_utc",
+        OperationalControlsError,
+    )
+    if report_signed_at < max(control_signature_times):
+        raise OperationalControlsError(
+            "report.report_signature.signed_at_utc must be on/after every control signature"
+        )
     normalized["operational_controls_hash"] = packet_hash
     normalized["report_signature"] = report_signature
     return normalized
@@ -214,7 +230,7 @@ def _validate_control(
     context: AttestationValidationContext,
     seen_artifact_paths: set[str],
     seen_artifact_hashes: set[str],
-) -> str | None:
+) -> tuple[str | None, datetime]:
     prefix = f"report.controls[{index}]"
     if not isinstance(value, dict):
         raise OperationalControlsError(f"{prefix} must be an object")
@@ -240,6 +256,7 @@ def _validate_control(
     _validate_environment(
         value.get("environment"), prefix, name, release, release_hash, deployment_hash, configuration_hash
     )
+    artifacts: dict[str, Mapping[str, Any]] = {}
     for field in ("test_artifact", "output_artifact"):
         artifact = _validate_artifact_reference(
             value.get(field), f"{prefix}.{field}", OperationalControlsError, context
@@ -253,15 +270,37 @@ def _validate_control(
             raise OperationalControlsError("control test/output artifacts and hashes must be distinct and never reused")
         seen_artifact_paths.add(artifact["local_path"])
         seen_artifact_hashes.add(artifact["sha256"])
-        _validate_artifact_envelope(
-            context,
-            artifact,
-            prefix=f"{prefix}.{field}",
-            artifact_type="test" if field == "test_artifact" else "output",
-            control=name,
-            release_hash=release_hash,
-            command_hash=command_hash,
-            executed_at_utc=value["executed_at_utc"],
+        artifacts[field] = artifact
+    test_definition = _validate_test_definition(
+        context,
+        artifacts["test_artifact"],
+        prefix=f"{prefix}.test_artifact",
+        control=name,
+        release_hash=release_hash,
+        deployment_hash=deployment_hash,
+        command_hash=command_hash,
+    )
+    runner_signed_at, execution_started_at = _validate_execution_result(
+        context,
+        artifacts["output_artifact"],
+        prefix=f"{prefix}.output_artifact",
+        control=name,
+        release_hash=release_hash,
+        deployment_hash=deployment_hash,
+        command_hash=command_hash,
+        executed_at=executed_at,
+        test_definition_hash=artifacts["test_artifact"]["sha256"],
+        execution_id=test_definition["execution_id"],
+        report_completed_at=completed_at,
+    )
+    test_created_at = _require_utc(
+        artifacts["test_artifact"]["created_at_utc"],
+        f"{prefix}.test_artifact.created_at_utc",
+        OperationalControlsError,
+    )
+    if test_created_at > execution_started_at:
+        raise OperationalControlsError(
+            f"{prefix}.test_artifact must be created before execution starts"
         )
     owner = _validate_identity(
         value.get("owner"), prefix + ".owner", expected_role=OWNER_ROLE,
@@ -292,9 +331,13 @@ def _validate_control(
         raise OperationalControlsError(
             f"{prefix}.owner_signature.signed_at_utc must be on/after executed_at_utc"
         )
+    if signed_at < runner_signed_at:
+        raise OperationalControlsError(
+            f"{prefix}.owner_signature.signed_at_utc must be on/after the execution runner signature"
+        )
     if name in SESSION_CONTROLS:
-        return value["environment"]["session_domain"]["problem_id"].strip()
-    return None
+        return value["environment"]["session_domain"]["problem_id"].strip(), signed_at
+    return None, signed_at
 
 
 def _validate_environment(
@@ -349,38 +392,153 @@ def _require_text(value: Any, prefix: str) -> str:
 
 def _contains_placeholder_substring(value: str) -> bool:
     lowered = value.casefold()
-    return any(token in lowered for token in ("todo", "tbd", "pending"))
+    return any(
+        token in lowered
+        for token in (
+            "todo", "tbd", "pending", "fixme", "not implemented", "fake", "dummy",
+            "placeholder",
+        )
+    )
 
 
-def _validate_artifact_envelope(
+def _parse_artifact_envelope(
     context: AttestationValidationContext,
     artifact: Mapping[str, Any],
     *,
     prefix: str,
-    artifact_type: str,
-    control: str,
-    release_hash: str,
-    command_hash: str,
-    executed_at_utc: str,
-) -> None:
+) -> dict[str, Any]:
     raw = context.resolved_artifacts[(str(artifact["local_path"]), str(artifact["sha256"]))]
     try:
         envelope = json.loads(raw)
     except (UnicodeDecodeError, ValueError) as exc:
         raise OperationalControlsError(f"{prefix} must contain a JSON semantic envelope") from exc
+    if not isinstance(envelope, dict):
+        raise OperationalControlsError(f"{prefix} semantic envelope must be an object")
+    return envelope
+
+
+def _validate_test_definition(
+    context: AttestationValidationContext,
+    artifact: Mapping[str, Any],
+    *,
+    prefix: str,
+    control: str,
+    release_hash: str,
+    deployment_hash: str,
+    command_hash: str,
+) -> dict[str, Any]:
+    envelope = _parse_artifact_envelope(context, artifact, prefix=prefix)
     expected = {
         "schema_version": ARTIFACT_ENVELOPE_SCHEMA_VERSION,
-        "artifact_type": artifact_type,
+        "artifact_type": "test-definition",
+        "execution_id": envelope.get("execution_id"),
         "control": control,
         "release_binding_hash": release_hash,
+        "deployment_manifest_hash": deployment_hash,
         "command_hash": command_hash,
-        "executed_at_utc": executed_at_utc,
+        "assertions": envelope.get("assertions"),
+    }
+    assertions = envelope.get("assertions")
+    if (
+        envelope != expected
+        or not isinstance(envelope.get("execution_id"), str)
+        or _contains_placeholder_substring(envelope["execution_id"])
+        or not isinstance(assertions, list)
+        or not assertions
+        or any(not isinstance(item, str) or not item.strip() or _contains_placeholder_substring(item) for item in assertions)
+    ):
+        raise OperationalControlsError(
+            f"{prefix} must contain a concrete typed test-definition envelope"
+        )
+    return envelope
+
+
+def _validate_execution_result(
+    context: AttestationValidationContext,
+    artifact: Mapping[str, Any],
+    *,
+    prefix: str,
+    control: str,
+    release_hash: str,
+    deployment_hash: str,
+    command_hash: str,
+    executed_at: datetime,
+    test_definition_hash: str,
+    execution_id: str,
+    report_completed_at: datetime,
+) -> tuple[datetime, datetime]:
+    envelope = _parse_artifact_envelope(context, artifact, prefix=prefix)
+    runner = _validate_identity(
+        envelope.get("runner"), prefix + ".runner", expected_role=EXECUTION_RUNNER_ROLE,
+        error_type=OperationalControlsError, context=context,
+    )
+    unsigned = dict(envelope)
+    result_hash = unsigned.pop("execution_result_hash", None)
+    runner_signature = unsigned.pop("runner_signature", None)
+    expected_hash = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
+    if result_hash != expected_hash:
+        raise OperationalControlsError(f"{prefix}.execution_result_hash must match canonical result bytes")
+    required_exact = {
+        "schema_version": ARTIFACT_ENVELOPE_SCHEMA_VERSION,
+        "artifact_type": "execution-result",
+        "execution_id": execution_id,
+        "test_definition_hash": test_definition_hash,
+        "control": control,
+        "release_binding_hash": release_hash,
+        "deployment_manifest_hash": deployment_hash,
+        "command_hash": command_hash,
+        "exit_code": 0,
         "result": "passed",
     }
-    if not isinstance(envelope, dict) or envelope != expected:
-        raise OperationalControlsError(
-            f"{prefix} semantic envelope must exactly bind the control, release, command, execution time, and passed result"
-        )
+    for field, expected in required_exact.items():
+        if envelope.get(field) != expected:
+            raise OperationalControlsError(f"{prefix} must contain a bound typed execution-result envelope")
+    allowed = set(required_exact) | {
+        "started_at_utc", "completed_at_utc", "stdout_hash", "stderr_hash",
+        "observations", "runner", "execution_result_hash", "runner_signature",
+    }
+    if set(envelope) != allowed:
+        raise OperationalControlsError(f"{prefix} execution-result envelope has missing or unknown fields")
+    started = _require_utc(envelope.get("started_at_utc"), prefix + ".started_at_utc", OperationalControlsError)
+    completed = _require_utc(envelope.get("completed_at_utc"), prefix + ".completed_at_utc", OperationalControlsError)
+    if started >= completed or completed != executed_at:
+        raise OperationalControlsError(f"{prefix} must bind a real execution interval ending at executed_at_utc")
+    for field in ("stdout_hash", "stderr_hash"):
+        value = envelope.get(field)
+        if (
+            not isinstance(value, str)
+            or not value.startswith("sha256:")
+            or len(value) != 71
+            or any(character not in "0123456789abcdef" for character in value[7:])
+        ):
+            raise OperationalControlsError(f"{prefix}.{field} must be a sha256 hash")
+    observations = envelope.get("observations")
+    if not isinstance(observations, list) or not observations:
+        raise OperationalControlsError(f"{prefix}.observations must contain concrete passed observations")
+    for observation in observations:
+        if (
+            not isinstance(observation, dict)
+            or set(observation) != {"name", "expected", "observed", "passed"}
+            or observation.get("passed") is not True
+            or any(not isinstance(observation.get(field), str) or not observation[field].strip() for field in ("name", "expected", "observed"))
+            or any(_contains_placeholder_substring(observation[field]) for field in ("name", "expected", "observed"))
+        ):
+            raise OperationalControlsError(f"{prefix}.observations must contain concrete passed observations")
+    validated = _validate_signature(
+        runner_signature,
+        prefix + ".runner_signature",
+        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        artifact_hash=expected_hash,
+        identity=runner,
+        expected_role=EXECUTION_RUNNER_ROLE,
+        error_type=OperationalControlsError,
+        context=context,
+        not_after=report_completed_at,
+    )
+    signed_at = _require_utc(validated["signed_at_utc"], prefix + ".runner_signature.signed_at_utc", OperationalControlsError)
+    if signed_at < completed:
+        raise OperationalControlsError(f"{prefix}.runner_signature must be signed on/after execution completion")
+    return signed_at, started
 
 
 def _reject_operational_placeholders(value: Any, prefix: str = "report") -> None:

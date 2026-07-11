@@ -11,6 +11,7 @@ import pytest
 from attestation_helpers import AttestationFixture, attach_signatures
 from p42_prizes.operational_controls import (
     ARTIFACT_ENVELOPE_SCHEMA_VERSION,
+    EXECUTION_RUNNER_ROLE,
     OPERATIONAL_CONTROLS_SCHEMA_VERSION,
     REPORT_SIGNER_ROLE,
     REQUIRED_CONTROLS,
@@ -24,6 +25,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 ROOT = Path(__file__).resolve().parents[1]
 SIGNED_AT = "2026-07-08T17:30:00Z"
 REPORT_SIGNED_AT = "2026-07-08T17:45:00Z"
+RUNNER_SIGNED_AT = "2026-07-08T17:00:00Z"
 
 
 def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
@@ -34,6 +36,9 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
     )
     report_signer = fixture.identity(
         "operations-report-signer", "Morgan Okafor", REPORT_SIGNER_ROLE
+    )
+    runner = fixture.identity(
+        "operations-execution-runner", "Jordan Mensah", EXECUTION_RUNNER_ROLE
     )
     release_hash = sha256_bytes(canonical_json(release).encode("utf-8"))
     contracts = sorted(contract["address"].casefold() for contract in release["contracts"])
@@ -55,30 +60,66 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
                 "problem_id": "erdos-minimum-overlap",
             }
         command = f"p42-ops-test --control {name} --release {release['git_commit']}"
-        executed_at = f"2026-07-08T16:{index:02d}:00Z"
-        envelope = {
+        executed_at = f"2026-07-08T16:{20 + index:02d}:00Z"
+        started_at = f"2026-07-08T16:{19 + index:02d}:00Z"
+        execution_id = f"ops-run-{index:02d}-{name}"
+        test_definition = {
             "schema_version": ARTIFACT_ENVELOPE_SCHEMA_VERSION,
+            "artifact_type": "test-definition",
+            "execution_id": execution_id,
             "control": name,
             "release_binding_hash": release_hash,
+            "deployment_manifest_hash": release["deployment_manifest"]["sha256"],
             "command_hash": sha256_bytes(command.encode("utf-8")),
-            "executed_at_utc": executed_at,
-            "result": "passed",
+            "assertions": [f"{name} rejects the prohibited operation"],
         }
+        test_artifact = fixture.artifact(
+            f"operational-{name}-test",
+            content=test_definition,
+            created_at_utc=started_at,
+        )
+        execution_result = {
+            "schema_version": ARTIFACT_ENVELOPE_SCHEMA_VERSION,
+            "artifact_type": "execution-result",
+            "execution_id": execution_id,
+            "test_definition_hash": test_artifact["sha256"],
+            "control": name,
+            "release_binding_hash": release_hash,
+            "deployment_manifest_hash": release["deployment_manifest"]["sha256"],
+            "command_hash": sha256_bytes(command.encode("utf-8")),
+            "started_at_utc": started_at,
+            "completed_at_utc": executed_at,
+            "exit_code": 0,
+            "stdout_hash": sha256_bytes(f"{name}: passed\n".encode()),
+            "stderr_hash": sha256_bytes(b""),
+            "observations": [{
+                "name": f"{name} enforcement",
+                "expected": "prohibited operation rejected",
+                "observed": "prohibited operation rejected",
+                "passed": True,
+            }],
+            "result": "passed",
+            "runner": copy.deepcopy(runner),
+        }
+        attach_signatures(
+            execution_result,
+            schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+            hash_field="execution_result_hash",
+            signatures_field="runner_signature",
+            signers=[(EXECUTION_RUNNER_ROLE, runner, RUNNER_SIGNED_AT)],
+            singular=True,
+        )
         control = {
             "control": name,
             "status": "passed",
             "command": command,
             "executed_at_utc": executed_at,
             "environment": environment,
-            "test_artifact": fixture.artifact(
-                f"operational-{name}-test",
-                content={**envelope, "artifact_type": "test"},
-                created_at_utc=f"2026-07-08T16:{index:02d}:00Z",
-            ),
+            "test_artifact": test_artifact,
             "output_artifact": fixture.artifact(
                 f"operational-{name}-output",
-                content={**envelope, "artifact_type": "output"},
-                created_at_utc=f"2026-07-08T16:{index:02d}:00Z",
+                content=execution_result,
+                created_at_utc=executed_at,
             ),
             "owner": copy.deepcopy(owner),
         }
@@ -92,6 +133,7 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
         "release_binding": release,
         "controls": controls,
         "report_signer": report_signer,
+        "final_gate_claim": "passed",
     }
     _resign_report(report)
     registry = fixture.trust_registry(
@@ -99,6 +141,7 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
         [
             ("operational-control-owner", owner, SIGNED_AT),
             (REPORT_SIGNER_ROLE, report_signer, REPORT_SIGNED_AT),
+            (EXECUTION_RUNNER_ROLE, runner, RUNNER_SIGNED_AT),
         ],
     )
     return report, fixture, registry
@@ -155,8 +198,9 @@ def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict
 
 def test_validates_exact_controls_artifacts_release_and_signatures(tmp_path: Path) -> None:
     report, fixture, registry = valid_report(tmp_path)
-    normalized = normalize(report, fixture, registry)
     schema = json.loads((ROOT / "schemas" / "operational-controls.schema.json").read_text())
+    jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
+    normalized = normalize(report, fixture, registry)
     jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
     assert {item["control"] for item in normalized["controls"]} == REQUIRED_CONTROLS
     assert normalized["operational_controls_hash"].startswith("sha256:")
@@ -287,6 +331,13 @@ def test_rejects_invalid_signature_and_owner_identity(tmp_path: Path) -> None:
         normalize(report, fixture, registry)
 
 
+def test_signature_timestamp_is_cryptographically_bound(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    report["controls"][0]["owner_signature"]["signed_at_utc"] = "2026-07-08T17:40:00Z"
+    with pytest.raises(OperationalControlsError, match="not valid"):
+        normalize(report, fixture, registry)
+
+
 def test_rejects_signature_before_evidence_and_after_window(tmp_path: Path) -> None:
     report, fixture, registry = valid_report(tmp_path)
     control = report["controls"][0]
@@ -349,15 +400,21 @@ def test_report_signature_rejects_packet_relabel_reorder_and_gate_claim_tamperin
     elif attack == "reorder":
         report["controls"][0], report["controls"][1] = report["controls"][1], report["controls"][0]
     else:
-        report["final_gate_claim"] = "passed"
+        report["final_gate_claim"] = "failed"
     with pytest.raises(
         OperationalControlsError,
-        match="supplied operational_controls_hash|unexpected",
+        match="supplied operational_controls_hash|must be passed",
     ):
         normalize(report, fixture, registry)
 
 
-@pytest.mark.parametrize("placeholder", ["run-TODO-check", "check_tbd_release", "pending-output"])
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        "run-TODO-check", "check_tbd_release", "pending-output", "FIXME command",
+        "not implemented", "fake-run", "dummy command", "placeholder script",
+    ],
+)
 def test_rejects_placeholder_substrings_in_commands(tmp_path: Path, placeholder: str) -> None:
     report, fixture, registry = valid_report(tmp_path)
     control = report["controls"][0]
@@ -374,7 +431,7 @@ def test_rejects_placeholder_substrings_in_commands(tmp_path: Path, placeholder:
         ("control", "session_expiry"),
         ("release_binding_hash", "sha256:" + "0" * 64),
         ("command_hash", "sha256:" + "1" * 64),
-        ("executed_at_utc", "2026-07-08T16:59:00Z"),
+        ("completed_at_utc", "2026-07-08T16:59:00Z"),
         ("result", "pending"),
         ("artifact_type", "arbitrary-bytes"),
     ],
@@ -388,23 +445,102 @@ def test_rejects_artifact_envelopes_that_do_not_bind_control_execution_and_pass(
     path = fixture.root / reference["local_path"]
     envelope = json.loads(path.read_text())
     envelope[field] = bad_value
+    envelope.pop("execution_result_hash", None)
+    envelope.pop("runner_signature", None)
+    attach_signatures(
+        envelope,
+        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        hash_field="execution_result_hash",
+        signatures_field="runner_signature",
+        signers=[(EXECUTION_RUNNER_ROLE, envelope["runner"], RUNNER_SIGNED_AT)],
+        singular=True,
+    )
     encoded = canonical_json(envelope).encode("utf-8")
     path.write_bytes(encoded)
     reference["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
     _resign(control)
     _resign_report(report)
-    with pytest.raises(OperationalControlsError, match="semantic envelope"):
+    with pytest.raises(OperationalControlsError, match="execution-result|execution interval"):
         normalize(report, fixture, registry)
 
 
-def test_hash_is_optional_input_but_must_match_and_gate_claim_is_output_only(tmp_path: Path) -> None:
+@pytest.mark.parametrize("missing", ["operational_controls_hash", "final_gate_claim"])
+def test_hash_and_final_gate_claim_are_required_input(tmp_path: Path, missing: str) -> None:
     report, fixture, registry = valid_report(tmp_path)
-    expected_hash = report.pop("operational_controls_hash")
-    normalized = normalize(report, fixture, registry)
-    assert normalized["operational_controls_hash"] == expected_hash
-    assert normalized["final_gate_claim"] == "passed"
+    report.pop(missing)
+    with pytest.raises(OperationalControlsError, match="required|must be passed"):
+        normalize(report, fixture, registry)
 
+
+def test_supplied_hash_must_match(tmp_path: Path) -> None:
     report, fixture, registry = valid_report(tmp_path / "mismatch")
     report["operational_controls_hash"] = "sha256:" + "f" * 64
     with pytest.raises(OperationalControlsError, match="supplied operational_controls_hash"):
+        normalize(report, fixture, registry)
+
+
+def test_report_signature_must_follow_every_control_signature(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    claim = _report_claim(report)
+    attach_signatures(
+        claim,
+        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        hash_field="operational_controls_hash",
+        signatures_field="report_signature",
+        signers=[(REPORT_SIGNER_ROLE, report["report_signer"], "2026-07-08T17:20:00Z")],
+        singular=True,
+    )
+    report["operational_controls_hash"] = claim["operational_controls_hash"]
+    report["report_signature"] = claim["report_signature"]
+    with pytest.raises(OperationalControlsError, match="after every control signature"):
+        normalize(report, fixture, registry)
+
+
+def test_execution_runner_is_distinct_and_trusted(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    registry["registrations"] = [
+        registration for registration in registry["registrations"]
+        if registration["signer_role"] != EXECUTION_RUNNER_ROLE
+    ]
+    with pytest.raises(OperationalControlsError, match="not pre-registered"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize(
+    ("target", "field", "value"),
+    [
+        ("test", "assertions", []),
+        ("test", "artifact_type", "metadata"),
+        ("result", "exit_code", 1),
+        ("result", "observations", []),
+        ("result", "test_definition_hash", "sha256:" + "a" * 64),
+        ("result", "stdout_hash", "not-a-hash"),
+    ],
+)
+def test_rejects_metadata_only_or_unbound_execution_evidence(
+    tmp_path: Path, target: str, field: str, value: object
+) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    reference = control["test_artifact" if target == "test" else "output_artifact"]
+    path = fixture.root / reference["local_path"]
+    envelope = json.loads(path.read_text())
+    envelope[field] = value
+    if target == "result":
+        envelope.pop("execution_result_hash", None)
+        envelope.pop("runner_signature", None)
+        attach_signatures(
+            envelope,
+            schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+            hash_field="execution_result_hash",
+            signatures_field="runner_signature",
+            signers=[(EXECUTION_RUNNER_ROLE, envelope["runner"], RUNNER_SIGNED_AT)],
+            singular=True,
+        )
+    encoded = canonical_json(envelope).encode("utf-8")
+    path.write_bytes(encoded)
+    reference["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="test-definition|execution-result|observations|stdout_hash"):
         normalize(report, fixture, registry)
