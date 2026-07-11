@@ -628,6 +628,7 @@ def test_image_inspection_binds_registry_digest_and_source_labels(
         return subprocess.CompletedProcess(command, 0, stdout, "")
 
     monkeypatch.setattr(admission.subprocess, "run", fake_run)
+    monkeypatch.setattr(admission, "_extract_image_source_hash", lambda **_kwargs: source_hash)
 
     identity = _inspect_image(problem, image_ref, "docker")
 
@@ -636,4 +637,13 @@ def test_image_inspection_binds_registry_digest_and_source_labels(
     assert identity.image_architecture == "x86_64"
     inspection[0]["Config"]["Labels"]["io.projectforty2.verifier.source-sha256"] = "sha256:" + "c" * 64
     with pytest.raises(AdmissionError, match="does not match the checkout source"):
+        _inspect_image(problem, image_ref, "docker")
+
+    inspection[0]["Config"]["Labels"]["io.projectforty2.verifier.source-sha256"] = source_hash
+    monkeypatch.setattr(
+        admission,
+        "_extract_image_source_hash",
+        lambda **_kwargs: "sha256:" + "d" * 64,
+    )
+    with pytest.raises(AdmissionError, match="filesystem source does not match"):
         _inspect_image(problem, image_ref, "docker")

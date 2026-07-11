@@ -350,6 +350,11 @@ def _inspect_image(problem: Path, image_ref: str, runtime: str) -> ImageIdentity
         raise AdmissionError("immutable verifier image has no OCI source labels")
 
     expected_source_hash = compute_source_hash(problem)
+    extracted_source_hash = _extract_image_source_hash(
+        problem_id=manifest["problem_id"], image_ref=image_ref, runtime=runtime
+    )
+    if extracted_source_hash != expected_source_hash:
+        raise AdmissionError("immutable verifier image filesystem source does not match the checkout source")
     source_commit = labels.get(OCI_REVISION_LABEL)
     source_hash = labels.get(SOURCE_HASH_LABEL)
     if not isinstance(source_commit, str) or not SOURCE_COMMIT_RE.fullmatch(source_commit):
@@ -370,6 +375,38 @@ def _inspect_image(problem: Path, image_ref: str, runtime: str) -> ImageIdentity
         source_commit=source_commit,
         source_hash=source_hash,
     )
+
+
+def _extract_image_source_hash(*, problem_id: str, image_ref: str, runtime: str) -> str:
+    container_name = f"p42-source-inspect-{os.getpid()}-{os.urandom(6).hex()}"
+    created = subprocess.run(
+        [runtime, "create", "--name", container_name, image_ref, "true"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        raise AdmissionError("could not create verifier image for source inspection")
+    try:
+        with tempfile.TemporaryDirectory(prefix="p42-image-source-") as temporary:
+            root = Path(temporary)
+            (root / "problems").mkdir()
+            copies = (
+                ("/repo/src", root / "src"),
+                (f"/repo/problems/{problem_id}", root / "problems" / problem_id),
+            )
+            for source, destination in copies:
+                copied = subprocess.run(
+                    [runtime, "cp", f"{container_name}:{source}", str(destination)],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if copied.returncode != 0:
+                    raise AdmissionError(f"could not extract verifier image source path {source}")
+            return compute_source_hash(root / "problems" / problem_id)
+    finally:
+        force_remove_container(container_name, runtime)
 
 
 def _run_image_verifier_once(
