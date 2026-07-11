@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
@@ -320,6 +321,16 @@ def _validate_control(
         raise OperationalControlsError(
             f"{prefix}.test_artifact must be created before execution starts"
         )
+    for field in ("executable_artifact", "test_harness_artifact"):
+        dependency_created_at = _require_utc(
+            test_definition[field]["created_at_utc"],
+            f"{prefix}.test_artifact.{field}.created_at_utc",
+            OperationalControlsError,
+        )
+        if dependency_created_at > execution_started_at:
+            raise OperationalControlsError(
+                f"{prefix}.test_artifact.{field} must be created before execution starts"
+            )
     owner = _validate_identity(
         value.get("owner"), prefix + ".owner", expected_role=OWNER_ROLE,
         error_type=OperationalControlsError, context=context,
@@ -506,6 +517,12 @@ def _validate_test_definition(
     if argv[0] != executable["local_path"] or len(argv) < 2 or argv[1] != harness["local_path"]:
         raise OperationalControlsError(
             f"{prefix}.argv must invoke the resolved executable and test harness exactly"
+        )
+    executable_path = context.artifact_root / executable["local_path"]
+    executable_mode = executable_path.stat(follow_symlinks=False).st_mode
+    if not stat.S_ISREG(executable_mode) or executable_mode & 0o111 == 0:
+        raise OperationalControlsError(
+            f"{prefix}.executable_artifact must resolve to an executable regular file"
         )
     return envelope
 

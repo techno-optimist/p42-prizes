@@ -68,6 +68,7 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
             created_at_utc=started_at,
             suffix=".sh",
         )
+        (fixture.root / executable_artifact["local_path"]).chmod(0o755)
         harness_artifact = fixture.artifact(
             f"operational-{name}-harness",
             content=f"# executable test harness for {name}\nprint('run {name}')\n",
@@ -490,6 +491,35 @@ def test_rejects_argv_without_resolved_execution_artifacts(tmp_path: Path, field
     _resign(control)
     _resign_report(report)
     with pytest.raises(OperationalControlsError, match=field):
+        normalize(report, fixture, registry)
+
+
+def test_rejects_execution_dependency_created_after_start(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    test_ref = control["test_artifact"]
+    envelope = json.loads((fixture.root / test_ref["local_path"]).read_text())
+    envelope["executable_artifact"]["created_at_utc"] = control["executed_at_utc"]
+    _write_envelope(test_ref, fixture, envelope)
+    output_ref = control["output_artifact"]
+    output_envelope = json.loads((fixture.root / output_ref["local_path"]).read_text())
+    output_envelope["test_definition_hash"] = test_ref["sha256"]
+    _resign_execution_result(output_envelope)
+    _write_envelope(output_ref, fixture, output_envelope)
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="created before execution starts"):
+        normalize(report, fixture, registry)
+
+
+def test_rejects_non_executable_direct_argv(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    test_ref = control["test_artifact"]
+    envelope = json.loads((fixture.root / test_ref["local_path"]).read_text())
+    executable_path = fixture.root / envelope["executable_artifact"]["local_path"]
+    executable_path.chmod(0o644)
+    with pytest.raises(OperationalControlsError, match="executable regular file"):
         normalize(report, fixture, registry)
 
 
