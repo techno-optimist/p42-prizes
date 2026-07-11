@@ -71,7 +71,7 @@ def normalize_open_witness_launch(
     attestations = normalized.pop("attestations", None)
     supplied_outputs = {key: normalized.pop(key, None) for key in ("evidence_valid", "attestation_valid", "gate_passed")}
     if supplied_outputs["gate_passed"] is True:
-        raise OpenWitnessError("caller-authored gate_passed=true is forbidden until production collector authority is integrated")
+        raise OpenWitnessError("caller-authored gate_passed=true is forbidden; only the production promotion command may set it")
     if any(value not in (None, False) for value in supplied_outputs.values()):
         raise OpenWitnessError("derived validity fields must not be caller-authored")
 
@@ -315,13 +315,24 @@ def _validate_live_snapshot(live: Mapping[str, Any], board: Mapping[str, Any], w
     }
     for phase, receipt in receipts.items():
         transaction = _mapping(transactions.get(phase), f"chain_reader.open_witness.transactions.{phase}")
-        _exact_keys(transaction, {"transaction_hash", "target", "raw_input", "raw_receipt_logs"}, f"chain_reader.open_witness.transactions.{phase}")
+        _exact_keys(
+            transaction,
+            {
+                "transaction_hash", "target", "rpc_transaction_input", "rpc_receipt_logs",
+                "collector_decoded_input", "collector_decoded_receipt_events",
+            },
+            f"chain_reader.open_witness.transactions.{phase}",
+        )
         if transaction["transaction_hash"] != receipt["transaction_hash"] or str(transaction["target"]).casefold() != board["submission_manager"].casefold():
-            raise OpenWitnessError(f"raw {phase} transaction is not bound to the claimed receipt and target")
-        if _decode_canonical_proof_bytes(transaction["raw_input"], f"raw {phase} input") != expected_inputs[phase]:
-            raise OpenWitnessError(f"raw {phase} transaction input does not decode to the required phase and arguments")
-        if _decode_canonical_proof_bytes(transaction["raw_receipt_logs"], f"raw {phase} receipt logs") != expected_events[phase]:
-            raise OpenWitnessError(f"raw {phase} receipt logs do not decode to required event signatures and arguments")
+            raise OpenWitnessError(f"{phase} transaction is not bound to the claimed receipt and target")
+        _hex(transaction["rpc_transaction_input"], None, f"RPC {phase} transaction input")
+        rpc_logs = transaction["rpc_receipt_logs"]
+        if not isinstance(rpc_logs, list) or not rpc_logs:
+            raise OpenWitnessError(f"RPC {phase} receipt logs are required")
+        if _decode_canonical_proof_bytes(transaction["collector_decoded_input"], f"collector-decoded {phase} input") != expected_inputs[phase]:
+            raise OpenWitnessError(f"collector-decoded {phase} transaction input does not match the required phase and arguments")
+        if _decode_canonical_proof_bytes(transaction["collector_decoded_receipt_events"], f"collector-decoded {phase} receipt events") != expected_events[phase]:
+            raise OpenWitnessError(f"collector-decoded {phase} receipt events do not match required signatures and arguments")
     finalize = witness["finalize_receipt"]
     arm = funding["arm_receipt"]
     if not _position(finalize) < _position(arm):

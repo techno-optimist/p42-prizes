@@ -2416,16 +2416,21 @@ async function collectHistoricalOpenWitnessState({ provider, artifacts, contract
 }
 
 async function verifyCanonicalEvidenceEvent(provider, event, contractAddress, contractInterface, label) {
-  const [receipt, block] = await Promise.all([
+  const [transaction, receipt, block] = await Promise.all([
+    provider.getTransaction(event.transactionHash),
     provider.getTransactionReceipt(event.transactionHash),
     provider.getBlock(event.blockNumber),
   ]);
+  invariant(transaction, `${label} transaction disappeared from provider`);
   invariant(receipt, `${label} receipt disappeared from provider`);
   invariant(block?.hash, `${label} canonical block disappeared from provider`);
   invariant(String(block.hash).toLowerCase() === String(event.blockHash).toLowerCase(), `${label} block hash changed on provider`);
   invariant(Number(receipt.blockNumber) === event.blockNumber, `${label} receipt moved blocks on provider`);
   invariant(String(receipt.blockHash).toLowerCase() === String(event.blockHash).toLowerCase(), `${label} receipt block hash changed on provider`);
   invariant(String(receipt.hash ?? receipt.transactionHash).toLowerCase() === String(event.transactionHash).toLowerCase(), `${label} receipt transaction hash mismatch`);
+  invariant(String(transaction.hash).toLowerCase() === String(event.transactionHash).toLowerCase(), `${label} transaction hash mismatch`);
+  invariant(String(transaction.to).toLowerCase() === String(contractAddress).toLowerCase(), `${label} transaction target mismatch`);
+  invariant(/^0x(?:[0-9a-fA-F]{2})*$/.test(String(transaction.data)), `${label}.transactionInput must be hex bytes`);
   invariant(Number(receipt.status) === 1, `${label} transaction did not succeed`);
   const logIndex = event.index ?? event.logIndex;
   const matchingLogs = (receipt.logs ?? []).filter((log) =>
@@ -2447,6 +2452,18 @@ async function verifyCanonicalEvidenceEvent(provider, event, contractAddress, co
       `${label} canonical receipt argument ${input.name} differs from replay`,
     );
   });
+  return canonicalize({
+    transactionHash: event.transactionHash,
+    transactionTo: transaction.to,
+    transactionInput: transaction.data,
+    receiptStatus: Number(receipt.status),
+    receiptLogs: matchingLogs.map((log) => ({
+      address: log.address,
+      topics: log.topics,
+      data: log.data,
+      logIndex: Number(log.index ?? log.logIndex),
+    })),
+  });
 }
 
 /** Collect authoritative evidence only from independently re-read canonical chain data. */
@@ -2458,6 +2475,7 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
   transcriptHash,
   reportHash,
   provider,
+  finalityAnchorBlockNumber,
 }) {
   invariant(provider && typeof provider === "object", "canonical open-witness collector requires a provider");
   for (const method of ["getNetwork", "getTransaction", "getTransactionReceipt", "getBlock", "getBalance", "call"]) {
@@ -2486,7 +2504,7 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
   const artifacts = loadContractArtifacts();
   const submissionsInterface = new ethers.Interface(artifacts.submissions.abi);
   const registryInterface = new ethers.Interface(artifacts.registry.abi);
-  await Promise.all([
+  const [commitMaterial, revealMaterial, finalizeMaterial, armMaterial, registrationMaterial] = await Promise.all([
     verifyCanonicalEvidenceEvent(provider, commit, contracts.submissions.address, submissionsInterface, "commit"),
     verifyCanonicalEvidenceEvent(provider, reveal, contracts.submissions.address, submissionsInterface, "reveal"),
     verifyCanonicalEvidenceEvent(provider, finalize, contracts.submissions.address, submissionsInterface, "finalize"),
@@ -2512,7 +2530,9 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
   invariant(beforeArmBlockNumber >= 0, "funding arm has no historical predecessor block");
   const latestBlock = await provider.getBlock("latest");
   invariant(latestBlock?.hash && Number.isSafeInteger(latestBlock.number), "canonical latest block is unavailable");
-  const anchorBlockNumber = latestBlock.number - manifest.indexer.finalityPolicy.confirmations;
+  const maximumFinalizedAnchor = latestBlock.number - manifest.indexer.finalityPolicy.confirmations;
+  const anchorBlockNumber = finalityAnchorBlockNumber ?? maximumFinalizedAnchor;
+  invariant(Number.isSafeInteger(anchorBlockNumber) && anchorBlockNumber <= maximumFinalizedAnchor, "requested finality anchor is not confirmed by provider");
   invariant(anchorBlockNumber >= arm.blockNumber, "canonical armFunding does not satisfy manifest confirmation policy");
   const [beforeArmBlock, armBlock, finalizeBlock, registrationBlock, anchorBlock] = await Promise.all([
     provider.getBlock(beforeArmBlockNumber),
@@ -2547,6 +2567,13 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
     finalizedEvidence: { blockNumber: anchorBlock.number, blockHash: anchorBlock.hash },
     observedRegistryTuple: registryAtRegistration.registryTuple,
   });
+  projected.chainMaterial = {
+    commit: commitMaterial,
+    reveal: revealMaterial,
+    finalize: finalizeMaterial,
+    arm: armMaterial,
+    registration: registrationMaterial,
+  };
   return canonicalize(projected);
 }
 

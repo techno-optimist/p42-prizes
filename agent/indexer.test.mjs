@@ -683,8 +683,13 @@ function openWitnessFixture() {
     },
     async getTransactionReceipt(transactionHash) { return receipts.get(transactionHash) ?? null; },
     async getTransaction(transactionHash) {
-      if (transactionHash !== events.find((event) => event.eventName === "Revealed").transactionHash) return null;
-      return { hash: transactionHash, to: board.submissions.address, data: revealData };
+      const event = events.find((entry) => entry.transactionHash === transactionHash);
+      if (!event) return null;
+      return {
+        hash: transactionHash,
+        to: event.source === "registry" ? manifest.contracts.registry.address : board.submissions.address,
+        data: event.eventName === "Revealed" ? revealData : "0x1234",
+      };
     },
   };
   const args = {
@@ -705,6 +710,8 @@ describe("P42 deterministic indexer replay", () => {
     assert.equal(evidence.submission.creditRecorded, false);
     assert.equal(evidence.funding.armedAfterFinalize, true);
     assert.equal(evidence.releaseBinding.problemId, "1");
+    assert.equal(evidence.chainMaterial.reveal.transactionInput.startsWith("0x"), true);
+    assert.equal(evidence.chainMaterial.finalize.receiptLogs[0].topics.length > 0, true);
     assert.equal(stableStringify(evidence), stableStringify(await collectCanonicalOpenWitnessLaunchEvidence(args)));
   });
 
@@ -737,6 +744,7 @@ describe("P42 deterministic indexer replay", () => {
         return block;
       };
     }, /historical block changed during collection/);
+    await mutate((args) => { args.finalityAnchorBlockNumber = Number.MAX_SAFE_INTEGER; }, /requested finality anchor is not confirmed/);
     await mutate((args) => {
       const original = args.provider.getTransactionReceipt;
       args.provider.getTransactionReceipt = async (txHash) => {

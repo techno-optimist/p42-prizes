@@ -9,9 +9,11 @@ import signal
 import stat
 import subprocess
 import sys
+from typing import Any, Mapping
 from urllib import request as urllib_request
 
 import jsonschema
+from referencing import Registry, Resource
 
 from p42_prizes.admission import (
     AdmissionError,
@@ -34,6 +36,14 @@ from p42_prizes.operational_controls import (
     OperationalControlsError,
     normalize_operational_controls,
 )
+from p42_prizes.open_witness import normalize_open_witness_launch
+from p42_prizes.open_witness_authority import (
+    OpenWitnessAuthorityError,
+    _build_open_witness_promotion,
+    collector_proof_from_quorum,
+    validate_open_witness_collector_authority,
+)
+from p42_prizes.open_witness_policy import OpenWitnessPolicyError, load_production_open_witness_policy
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
 from p42_prizes.readiness import validate_fundable_admission
 from p42_prizes.runner_alerts import RunnerAlertError, build_runner_alerts
@@ -59,13 +69,39 @@ _PRODUCTION_TRUST_ROOT = Path("/etc/p42/production-attestation-root.sha256")
 
 
 def _enforce_gate_schema(report: dict, schema_name: str) -> None:
-    schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
-    jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
+    target_schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
+    target_id = target_schema.get("$id")
+    schema_entries = [
+        (path, json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(_SCHEMA_DIR.glob("*.schema.json"))
+    ]
+    resources = []
+    selected = None
+    for path, schema in schema_entries:
+        schema_id = schema.get("$id")
+        resource = Resource.from_contents(schema)
+        if isinstance(schema_id, str):
+            resources.append((schema_id, resource))
+        resources.append((f"https://p42.xyz/schemas/{path.name}", resource))
+        if schema.get("$id") == target_id:
+            selected = schema
+    if selected is None:
+        raise AdmissionError(f"schema {schema_name} has no registered $id")
+    registry = Registry().with_resources(resources)
+    jsonschema.Draft202012Validator(
+        selected, registry=registry, format_checker=jsonschema.FormatChecker()
+    ).validate(report)
 
 
 def _load_pinned_trust_registry(path: str, *, allow_test: bool) -> dict:
     trust_registry = load_evidence_file(path)
     _enforce_gate_schema(trust_registry, "attestation-trust-registry.schema.json")
+    collector_key_ids = [
+        item["key_id"] for item in trust_registry.get("registrations", [])
+        if item.get("attestation_class") == "p42-open-witness-collector-authority/v1"
+    ]
+    if len(collector_key_ids) != len(set(collector_key_ids)):
+        raise AdmissionError("collector authority key ids must be unique in the trust registry")
     if trust_registry.get("environment") == "production":
         expected_registry_hash = _read_production_trust_root()
         actual_registry_hash = sha256_bytes(canonical_json(trust_registry).encode("utf-8"))
@@ -91,14 +127,21 @@ def _read_production_trust_root() -> str:
             f"production trust requires protected root file {_PRODUCTION_TRUST_ROOT}"
         ) from exc
     try:
-        metadata = os.fstat(fd)
-        if not stat.S_ISREG(metadata.st_mode):
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
             raise AdmissionError("production trust root must be a regular file")
-        if metadata.st_mode & 0o0222:
+        if before.st_uid != 0:
+            raise AdmissionError("production trust root must be owned by root")
+        if before.st_mode & 0o0222:
             raise AdmissionError("production trust root must not be writable")
         raw = os.read(fd, 256)
         if os.read(fd, 1):
             raise AdmissionError("production trust root file is oversized")
+        after = os.fstat(fd)
+        if (before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_size) != (
+            after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_size
+        ):
+            raise AdmissionError("production trust root changed while being read")
     finally:
         os.close(fd)
     try:
@@ -172,6 +215,35 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
         return {"block_hash": block["hash"], "runtime_bytecode": runtime_bytecode}
 
     return read_chain
+
+
+class _OpenWitnessQuorumChainReader:
+    def __init__(
+        self, policy: Mapping[str, Any], proof: Mapping[str, Any], expected_query: Mapping[str, Any]
+    ):
+        self._readers = [_build_http_chain_reader(item["url"]) for item in policy["rpc_endpoints"]]
+        self._required = policy["rpc_quorum"]
+        self._proof = dict(proof)
+        self._expected_query = dict(expected_query)
+
+    def __call__(self, network: str, chain_id: int, address: str, block_number: int) -> Mapping[str, Any]:
+        observations = [reader(network, chain_id, address, block_number) for reader in self._readers]
+        groups: dict[str, list[Mapping[str, Any]]] = {}
+        for observation in observations:
+            groups.setdefault(canonical_json(observation), []).append(observation)
+        agreed = [items for items in groups.values() if len(items) >= self._required]
+        if len(agreed) != 1:
+            raise OpenWitnessAuthorityError("pinned RPC providers did not agree on release chain state")
+        return agreed[0][0]
+
+    def read_open_witness(
+        self, network: str, chain_id: int, query: Mapping[str, Any]
+    ) -> Mapping[str, Any]:
+        if network != "base-sepolia" or chain_id != 84532:
+            raise OpenWitnessAuthorityError("open-witness proof requested for the wrong production network")
+        if dict(query) != self._expected_query:
+            raise OpenWitnessAuthorityError("open-witness proof query does not match the collected board and witness")
+        return self._proof
 
 
 def _add_attestation_validation_args(parser: argparse.ArgumentParser) -> None:
@@ -615,6 +687,54 @@ def _cmd_operational_controls_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_open_witness_promote(args: argparse.Namespace) -> int:
+    try:
+        report = load_evidence_file(args.report)
+        policy = load_production_open_witness_policy()
+        trust_registry = _load_pinned_trust_registry(args.trust_registry, allow_test=False)
+        collector_output = load_evidence_file(args.collector_output)
+        if set(collector_output) != {"quorum", "authority_envelope"}:
+            raise OpenWitnessAuthorityError(
+                "collector output must contain exactly authority_envelope and quorum"
+            )
+        validate_open_witness_collector_authority(
+            report, quorum=collector_output["quorum"],
+            authority_envelope=collector_output["authority_envelope"],
+            policy=policy, trust_registry=trust_registry,
+        )
+        expected_query = {
+            "registry_problem_id": report["board"]["registry_problem_id"],
+            "slug": report["board"]["slug"],
+            "problem_registry": report["board"]["problem_registry"],
+            "bounty_pool": report["board"]["bounty_pool"],
+            "submission_manager": report["board"]["submission_manager"],
+            "witness_id": report["witness"]["witness_id"],
+        }
+        chain_reader = _OpenWitnessQuorumChainReader(
+            policy, collector_proof_from_quorum(report, collector_output["quorum"]), expected_query
+        )
+        normalized = normalize_open_witness_launch(
+            report, trust_registry=trust_registry, artifact_root=args.artifact_root,
+            chain_reader=chain_reader,
+        )
+        promoted = _build_open_witness_promotion(
+            normalized,
+            quorum=collector_output["quorum"],
+            authority_envelope=collector_output["authority_envelope"],
+            policy=policy,
+            trust_registry=trust_registry,
+        )
+        _enforce_gate_schema(promoted, "open-witness-promotion.schema.json")
+    except (
+        AdmissionError, OpenWitnessAuthorityError, OpenWitnessPolicyError,
+        jsonschema.ValidationError, KeyError, OSError, TypeError, ValueError,
+    ) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(promoted, args.output)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="p42-prizes")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -874,6 +994,17 @@ def build_parser() -> argparse.ArgumentParser:
     _add_attestation_validation_args(operational_controls)
     operational_controls.add_argument("--output")
     operational_controls.set_defaults(func=_cmd_operational_controls_validate)
+
+    open_witness_promote = subparsers.add_parser(
+        "open-witness-promote",
+        help="re-verify and promote raw open-witness evidence through the fixed production collector policy",
+    )
+    open_witness_promote.add_argument("--report", required=True)
+    open_witness_promote.add_argument("--collector-output", required=True)
+    open_witness_promote.add_argument("--trust-registry", required=True)
+    open_witness_promote.add_argument("--artifact-root", required=True)
+    open_witness_promote.add_argument("--output")
+    open_witness_promote.set_defaults(func=_cmd_open_witness_promote)
 
     return parser
 

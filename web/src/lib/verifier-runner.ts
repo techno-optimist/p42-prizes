@@ -10,9 +10,9 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_TIMEOUT_MS = 7_000;
 const MB = 1024 * 1024;
 
-// The verifier is invoked through `make verify`, which remaps a recipe failure
-// (verify.py exit 1) to make's own exit code 2, so the specific non-zero code is
-// not load-bearing. The convention we CAN enforce: exit 0 => accepted
+// The portal invokes the release-bound verifier entrypoint directly. The
+// specific non-zero rejection code is not load-bearing; the convention we
+// enforce is: exit 0 => accepted
 // (valid=true); any non-zero exit that still produced a parseable verdict =>
 // rejection (valid=false). A timeout, missing output, or a verdict inconsistent
 // with that (e.g. non-zero exit carrying valid=true) is an infrastructure error.
@@ -257,11 +257,7 @@ async function runCanonicalVerifierNow(input: {
       PYTHONPATH: [path.join(root, "src"), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
     };
     const args = [
-      "-m",
-      "p42_prizes.cli",
-      "verify",
-      "--problem",
-      path.join(root, "problems", input.problemSlug),
+      path.join(root, "problems", input.problemSlug, "verifier", "verify.py"),
       "--solution",
       solutionPath,
     ];

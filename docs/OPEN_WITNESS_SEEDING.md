@@ -25,17 +25,20 @@ artifact and release-binding validators.
 
 The legacy Python `ChainReader` proves only block hashes and runtime code and is
 explicitly insufficient. The normalizer requires an `OpenWitnessChainReader`
-with `read_open_witness(...)`. No production CLI builds that reader today, so
-production remains unavailable and fail-closed until the JS indexer/collector
-integrates it. The explicit reader must return:
+with `read_open_witness(...)`. The production CLI now builds that reader only
+after validating a fixed, root-owned collector policy, a root-pinned production
+trust registry, and a signed collector output. It remains operationally
+unavailable and fail-closed until those protected files, keys, and current
+deployment evidence are provisioned. The explicit reader must return:
 
 - canonical, successful commit, reveal, finalize, and `armFunding` receipts;
 - each receipt's transaction hash, block number, and current finalized block hash;
-- versioned canonical collector-format transaction and event summaries encoded
-  as hex JSON; Python checks their phase, target, submission ID, solver, CID,
-  DA hash, score/frontier, event signatures, and arguments. These fields retain
-  the schema names `raw_input` and `raw_receipt_logs` for v1 compatibility,
-  but they are not raw Ethereum calldata, topics, or receipt bytes;
+- actual RPC transaction input plus receipt log addresses, topics, data, and
+  log indexes, preserved in the signed provider observations;
+- separately named collector-decoded transaction and event summaries encoded
+  as canonical hex JSON; Python checks their phase, target, submission ID,
+  solver, CID, DA hash, score/frontier, event signatures, and arguments without
+  misrepresenting those semantic projections as raw Ethereum bytes;
 - registry problem ID, board/problem slug, contract addresses, verifier pins,
   witness ID, solution CID/DA hash, and canonical report hash;
 - finalized storage reads for the exact pre/post frontier atoms, submission
@@ -50,10 +53,12 @@ funds, or arming before/at finalization rejects the gate claim. Cached fixture
 data cannot claim a live gate because `canonical` and `finalized` must come from
 the out-of-band reader and all receipt/state fields must resolve live.
 
-The production collector must independently fetch and ABI-decode the actual
+The production collector independently fetches and ABI-decodes the actual
 transaction calldata and receipt logs before constructing these summaries.
-Python validates the collector-format contract only; it does not independently
-decode Ethereum ABI bytes, and therefore cannot set `gate_passed`.
+Python validates both the preserved RPC material and the collector-format
+contract, then re-runs the complete launch normalizer. Python does not itself
+ABI-decode the Ethereum bytes; the final authority statement is therefore an
+attestation by the registered collector key, not a trustless RPC fraud proof.
 
 The JS collector also performs every evidence-relevant state read itself. It
 issues ABI-bound `eth_call` requests with explicit historical block tags to the
@@ -68,11 +73,15 @@ requires a trusted archive-capable RPC endpoint; unavailable historical state,
 malformed ABI results, insufficient confirmations, or a reorg fails closed.
 The dependency-injected collector still emits `collector_authoritative: false`:
 an arbitrary caller can supply a self-consistent synthetic provider, so generic
-library verification cannot establish production RPC trust. Multi-board
+library verification cannot establish production RPC trust. The fixed adapter
+creates three distinct clients for three credential-free HTTPS endpoints,
+collects all observations at one shared finalized anchor, retains dissent, and
+signs a canonical transcript digest. This makes omitted, relabeled, or altered
+observations detectable, but it does not prove that the three RPC operators are
+independent or authenticate their responses separately from the collector key.
+Multi-board
 checkpoint construction rejects caller-supplied open-witness evidence rather
-than accepting a self-asserted authority flag. Promotion remains unavailable
-until a production adapter pins the release-manifest digest and RPC trust policy
-outside evidence-caller control.
+than accepting a self-asserted authority flag.
 
 The release-bound configuration must identify the exact board and admission
 matrix, declare `objective: minimize`, and pin a positive `min_improvement_atoms`.
@@ -91,7 +100,10 @@ and validity windows must already exist in the out-of-band trust registry for
 invalid. Successful normalization emits `evidence_valid: true` and
 `attestation_valid: true`, but always emits `gate_passed: false`. Caller-authored
 `gate_passed: true` is rejected. Test registries and generic readers can never
-elevate the gate; explicit production collector authority is not integrated.
+elevate the gate. `p42-prizes open-witness-promote` re-runs normalization from
+the raw packet and sets `gate_passed: true` only after the protected production
+policy, signed three-provider transcript, registered collector key, release
+manifest, exact policy finality, and promotion schema all validate.
 
 The deployment ceremony has **11 setup operations per board**; evidence binds
 the resulting final addresses and state and must not assume the older count 10.
