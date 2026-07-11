@@ -13,6 +13,7 @@ from typing import Any, Mapping
 from urllib import request as urllib_request
 
 import jsonschema
+from referencing import Registry, Resource
 
 from p42_prizes.admission import (
     AdmissionError,
@@ -68,8 +69,28 @@ _PRODUCTION_TRUST_ROOT = Path("/etc/p42/production-attestation-root.sha256")
 
 
 def _enforce_gate_schema(report: dict, schema_name: str) -> None:
-    schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
-    jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
+    target_schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
+    target_id = target_schema.get("$id")
+    schema_entries = [
+        (path, json.loads(path.read_text(encoding="utf-8")))
+        for path in sorted(_SCHEMA_DIR.glob("*.schema.json"))
+    ]
+    resources = []
+    selected = None
+    for path, schema in schema_entries:
+        schema_id = schema.get("$id")
+        resource = Resource.from_contents(schema)
+        if isinstance(schema_id, str):
+            resources.append((schema_id, resource))
+        resources.append((f"https://p42.xyz/schemas/{path.name}", resource))
+        if schema.get("$id") == target_id:
+            selected = schema
+    if selected is None:
+        raise AdmissionError(f"schema {schema_name} has no registered $id")
+    registry = Registry().with_resources(resources)
+    jsonschema.Draft202012Validator(
+        selected, registry=registry, format_checker=jsonschema.FormatChecker()
+    ).validate(report)
 
 
 def _load_pinned_trust_registry(path: str, *, allow_test: bool) -> dict:
@@ -197,10 +218,13 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
 
 
 class _OpenWitnessQuorumChainReader:
-    def __init__(self, policy: Mapping[str, Any], proof: Mapping[str, Any]):
+    def __init__(
+        self, policy: Mapping[str, Any], proof: Mapping[str, Any], expected_query: Mapping[str, Any]
+    ):
         self._readers = [_build_http_chain_reader(item["url"]) for item in policy["rpc_endpoints"]]
         self._required = policy["rpc_quorum"]
         self._proof = dict(proof)
+        self._expected_query = dict(expected_query)
 
     def __call__(self, network: str, chain_id: int, address: str, block_number: int) -> Mapping[str, Any]:
         observations = [reader(network, chain_id, address, block_number) for reader in self._readers]
@@ -215,9 +239,10 @@ class _OpenWitnessQuorumChainReader:
     def read_open_witness(
         self, network: str, chain_id: int, query: Mapping[str, Any]
     ) -> Mapping[str, Any]:
-        del query
         if network != "base-sepolia" or chain_id != 84532:
             raise OpenWitnessAuthorityError("open-witness proof requested for the wrong production network")
+        if dict(query) != self._expected_query:
+            raise OpenWitnessAuthorityError("open-witness proof query does not match the collected board and witness")
         return self._proof
 
 
@@ -677,8 +702,16 @@ def _cmd_open_witness_promote(args: argparse.Namespace) -> int:
             authority_envelope=collector_output["authority_envelope"],
             policy=policy, trust_registry=trust_registry,
         )
+        expected_query = {
+            "registry_problem_id": report["board"]["registry_problem_id"],
+            "slug": report["board"]["slug"],
+            "problem_registry": report["board"]["problem_registry"],
+            "bounty_pool": report["board"]["bounty_pool"],
+            "submission_manager": report["board"]["submission_manager"],
+            "witness_id": report["witness"]["witness_id"],
+        }
         chain_reader = _OpenWitnessQuorumChainReader(
-            policy, collector_proof_from_quorum(report, collector_output["quorum"])
+            policy, collector_proof_from_quorum(report, collector_output["quorum"]), expected_query
         )
         normalized = normalize_open_witness_launch(
             report, trust_registry=trust_registry, artifact_root=args.artifact_root,

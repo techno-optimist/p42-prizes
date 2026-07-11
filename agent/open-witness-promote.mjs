@@ -119,6 +119,13 @@ export function agreeCollectorEvidence({ policy, policyDigest, manifestDigest, l
   invariant(agreed.length === 1, "collector providers did not produce one exact quorum proof");
   const [evidenceDigest, providerIds] = agreed[0];
   const evidence = observations.find((entry) => entry.evidence_digest === evidenceDigest).evidence;
+  const providerObservations = [...observations]
+    .sort((left, right) => left.provider_id.localeCompare(right.provider_id))
+    .map((entry) => ({
+      provider_id: entry.provider_id,
+      evidence_digest: entry.evidence_digest,
+      evidence: entry.evidence,
+    }));
   return {
     schema_version: "p42-open-witness-quorum/v1",
     environment: policy.environment,
@@ -127,6 +134,8 @@ export function agreeCollectorEvidence({ policy, policyDigest, manifestDigest, l
     launch_evidence_hash: launchEvidenceHash,
     evidence_digest: evidenceDigest,
     provider_ids: [...providerIds].sort(),
+    observation_transcript_digest: canonicalSha256(providerObservations),
+    provider_observations: providerObservations,
     finalized_evidence: evidence.finalizedEvidence,
     evidence,
   };
@@ -182,6 +191,7 @@ export function collectorAuthorityMessage(quorum, metadata) {
     launch_evidence_hash: quorum.launch_evidence_hash,
     evidence_digest: quorum.evidence_digest,
     provider_ids: quorum.provider_ids,
+    observation_transcript_digest: quorum.observation_transcript_digest,
     finalized_evidence: quorum.finalized_evidence,
     key_id: metadata?.key_id,
     signed_at_utc: metadata?.signed_at_utc,
@@ -205,6 +215,7 @@ export function signCollectorQuorum({ quorum, policy, keyId, privateKey, signedA
     launch_evidence_hash: quorum.launch_evidence_hash,
     evidence_digest: quorum.evidence_digest,
     provider_ids: quorum.provider_ids,
+    observation_transcript_digest: quorum.observation_transcript_digest,
     finalized_evidence: quorum.finalized_evidence,
     key_id: keyId,
     signed_at_utc: signedAtUtc,
@@ -217,7 +228,7 @@ export function verifyCollectorAuthorityEnvelope({ quorum, envelope, registratio
   invariant(registration?.attestation_class === COLLECTOR_AUTHORITY_CLASS, "collector key registration class is invalid");
   invariant(registration.signer_role === "collector-authority", "collector key registration role is invalid");
   invariant(envelope.key_id === registration.key_id, "collector authority key id is not registered");
-  for (const field of ["policy_digest", "manifest_digest", "launch_evidence_hash", "evidence_digest"]) {
+  for (const field of ["policy_digest", "manifest_digest", "launch_evidence_hash", "evidence_digest", "observation_transcript_digest"]) {
     invariant(envelope[field] === quorum[field], `collector authority ${field} mismatch`);
   }
   invariant(stableStringify(envelope.provider_ids) === stableStringify(quorum.provider_ids), "collector authority provider quorum mismatch");

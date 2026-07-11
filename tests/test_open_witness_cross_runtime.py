@@ -6,11 +6,9 @@ import json
 from pathlib import Path
 import subprocess
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-import jsonschema
 import pytest
 
+from p42_prizes.cli import _enforce_gate_schema
 from p42_prizes.open_witness import normalize_open_witness_launch
 from p42_prizes.open_witness_authority import (
     OpenWitnessAuthorityError,
@@ -118,9 +116,10 @@ def _collector_evidence(report: dict, reader: FixtureOpenWitnessReader) -> dict:
     }
 
 
-def _node_collector_output(policy: dict, report: dict, evidence: dict, private_pem: str) -> dict:
+def _node_collector_output(policy: dict, report: dict, evidence: dict) -> dict:
     script = r"""
 import fs from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
 import {
   agreeCollectorEvidence,
   evidenceDigest,
@@ -152,20 +151,26 @@ const quorum = agreeCollectorEvidence({
     observation("c", dissent),
   ],
 });
+const { privateKey, publicKey } = generateKeyPairSync("ed25519");
 const authority_envelope = signCollectorQuorum({
   quorum,
   policy: input.policy,
   keyId: "collector-1",
-  privateKey: input.private_pem,
+  privateKey,
   signedAtUtc: "2026-07-08T20:01:00Z",
 });
-process.stdout.write(JSON.stringify({ quorum, authority_envelope }));
+const publicDer = publicKey.export({ format: "der", type: "spki" });
+process.stdout.write(JSON.stringify({
+  quorum,
+  authority_envelope,
+  public_key: `ed25519:${publicDer.subarray(-32).toString("hex")}`,
+}));
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "--eval", script],
         cwd=ROOT,
         input=json.dumps(
-            {"policy": policy, "report": report, "evidence": evidence, "private_pem": private_pem}
+            {"policy": policy, "report": report, "evidence": evidence}
         ),
         text=True,
         capture_output=True,
@@ -177,15 +182,6 @@ process.stdout.write(JSON.stringify({ quorum, authority_envelope }));
 
 def test_raw_report_crosses_node_quorum_and_python_promotion(tmp_path: Path) -> None:
     report, fixture, registry, fixture_reader = _support(tmp_path)
-    private_key = Ed25519PrivateKey.generate()
-    public_key = private_key.public_key().public_bytes(
-        serialization.Encoding.Raw, serialization.PublicFormat.Raw
-    )
-    private_pem = private_key.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ).decode("ascii")
     policy = {
         "schema_version": "p42-open-witness-collector-policy/v1",
         "environment": "production",
@@ -209,6 +205,9 @@ def test_raw_report_crosses_node_quorum_and_python_promotion(tmp_path: Path) -> 
         "authority_class": "p42-open-witness-collector-authority/v1",
         "authority_key_ids": ["collector-1"],
     }
+    collector = _node_collector_output(
+        policy, report, _collector_evidence(report, fixture_reader)
+    )
     registry["environment"] = "production"
     registry["registrations"].append(
         {
@@ -220,14 +219,11 @@ def test_raw_report_crosses_node_quorum_and_python_promotion(tmp_path: Path) -> 
                 "professional_email": "collector@independent-operations.org",
             },
             "key_id": "collector-1",
-            "public_key": f"ed25519:{public_key.hex()}",
+            "public_key": collector["public_key"],
             "valid_from_utc": "2026-07-08T00:00:00Z",
         }
     )
 
-    collector = _node_collector_output(
-        policy, report, _collector_evidence(report, fixture_reader), private_pem
-    )
     proof = collector_proof_from_quorum(report, collector["quorum"])
     reader = FixtureOpenWitnessReader(fixture, proof)
     normalized = normalize_open_witness_launch(
@@ -246,27 +242,13 @@ def test_raw_report_crosses_node_quorum_and_python_promotion(tmp_path: Path) -> 
         now_utc=NOW,
     )
 
-    schema_path = ROOT / "schemas/open-witness-promotion.schema.json"
-    schema = json.loads(schema_path.read_text())
-    schema_store = {}
-    for path in (ROOT / "schemas").glob("*.json"):
-        candidate = json.loads(path.read_text())
-        schema_store[path.name] = candidate
-        schema_store[path.as_uri()] = candidate
-        schema_store[f"https://p42.xyz/schemas/{path.name}"] = candidate
-        if "$id" in candidate:
-            schema_store[candidate["$id"]] = candidate
-    resolver = jsonschema.RefResolver(
-        base_uri=(ROOT / "schemas").as_uri() + "/", referrer=schema, store=schema_store
-    )
-    jsonschema.Draft202012Validator(
-        schema, resolver=resolver, format_checker=jsonschema.FormatChecker()
-    ).validate(promoted)
+    _enforce_gate_schema(promoted, "open-witness-promotion.schema.json")
     assert collector["quorum"]["provider_ids"] == ["a", "b"]
     assert normalized["gate_passed"] is False
     assert promoted["gate_passed"] is True
     assert promoted["collector_authoritative"] is True
     assert promoted["evidence_hash"] == report["evidence_hash"]
+    assert promoted["collector_authority"]["quorum"] == collector["quorum"]
 
     tampered = deepcopy(collector["authority_envelope"])
     tampered["signature"] = "ed25519:" + "0" * 128

@@ -59,6 +59,7 @@ def _build_open_witness_promotion(
         "policy_digest": canonical_policy_digest(normalized_policy),
         "manifest_digest": quorum["manifest_digest"],
         "quorum_digest": sha256_bytes(canonical_json(dict(quorum)).encode("utf-8")),
+        "quorum": dict(quorum),
         "authority_envelope": dict(authority_envelope),
         "registration_key_id": registration["key_id"],
     }
@@ -145,12 +146,15 @@ def collector_proof_from_quorum(report: Mapping[str, Any], quorum: Mapping[str, 
         "finalize": [{"event_signature": "SubmissionFinalized(uint256,uint256,int256)", "submission_id": witness["submission_id"], "credit_atoms": 0, "best_score_atoms": witness["post_frontier_atoms"]}],
         "arm": [{"event_signature": "FundingArmed()"}],
     }
+    chain_material = evidence["chainMaterial"]
     transactions = {
         phase: {
             "transaction_hash": receipts[phase]["transaction_hash"],
             "target": board["submission_manager"],
-            "raw_input": _hex_canonical(inputs[phase]),
-            "raw_receipt_logs": _hex_canonical(events[phase]),
+            "rpc_transaction_input": chain_material[phase]["transactionInput"],
+            "rpc_receipt_logs": chain_material[phase]["receiptLogs"],
+            "collector_decoded_input": _hex_canonical(inputs[phase]),
+            "collector_decoded_receipt_events": _hex_canonical(events[phase]),
         }
         for phase in receipts
     }
@@ -187,6 +191,7 @@ def collector_authority_message(quorum: Mapping[str, Any], metadata: Mapping[str
         "launch_evidence_hash": quorum.get("launch_evidence_hash"),
         "evidence_digest": quorum.get("evidence_digest"),
         "provider_ids": quorum.get("provider_ids"),
+        "observation_transcript_digest": quorum.get("observation_transcript_digest"),
         "finalized_evidence": quorum.get("finalized_evidence"),
         "key_id": None if metadata is None else metadata.get("key_id"),
         "signed_at_utc": None if metadata is None else metadata.get("signed_at_utc"),
@@ -251,6 +256,101 @@ def _validate_js_evidence_binding(report: Mapping[str, Any], evidence: Mapping[s
     if funding.get("poolBalanceBeforeArmWei") != "0" or funding.get("acceptingFundsBeforeArm") is not False or funding.get("armedAfterFinalize") is not True:
         raise OpenWitnessAuthorityError("collector evidence funding boundary mismatch")
     _validate_receipt_log_bindings(report, evidence)
+    _validate_chain_material(report, evidence)
+
+
+def _validate_chain_material(report: Mapping[str, Any], evidence: Mapping[str, Any]) -> None:
+    material = evidence.get("chainMaterial")
+    if not isinstance(material, Mapping) or set(material) != {
+        "commit", "reveal", "finalize", "arm", "registration"
+    }:
+        raise OpenWitnessAuthorityError("collector chain material is incomplete")
+    receipts = {
+        "commit": report["witness"]["commit_receipt"],
+        "reveal": report["witness"]["reveal_receipt"],
+        "finalize": report["witness"]["finalize_receipt"],
+        "arm": report["funding"]["arm_receipt"],
+    }
+    submission_manager = report["board"]["submission_manager"]
+    for phase, receipt in receipts.items():
+        item = material.get(phase)
+        if not isinstance(item, Mapping) or set(item) != {
+            "transactionHash", "transactionTo", "transactionInput",
+            "receiptStatus", "receiptLogs",
+        }:
+            raise OpenWitnessAuthorityError(f"collector {phase} chain material is invalid")
+        if (
+            str(item.get("transactionHash", "")).casefold()
+            != str(receipt["transaction_hash"]).casefold()
+            or str(item.get("transactionTo", "")).casefold() != submission_manager.casefold()
+            or item.get("receiptStatus") != 1
+        ):
+            raise OpenWitnessAuthorityError(f"collector {phase} chain material binding mismatch")
+        _require_hex_bytes(item.get("transactionInput"), f"collector {phase} transaction input")
+        logs = item.get("receiptLogs")
+        if not isinstance(logs, list) or len(logs) != 1:
+            raise OpenWitnessAuthorityError(f"collector {phase} receipt log material is invalid")
+        log = logs[0]
+        if not isinstance(log, Mapping) or set(log) != {"address", "topics", "data", "logIndex"}:
+            raise OpenWitnessAuthorityError(f"collector {phase} receipt log material is invalid")
+        if str(log.get("address", "")).casefold() != submission_manager.casefold():
+            raise OpenWitnessAuthorityError(f"collector {phase} receipt log address mismatch")
+        if not isinstance(log.get("logIndex"), int) or isinstance(log.get("logIndex"), bool) or log["logIndex"] < 0:
+            raise OpenWitnessAuthorityError(f"collector {phase} receipt log index is invalid")
+        topics = log.get("topics")
+        if not isinstance(topics, list) or not topics:
+            raise OpenWitnessAuthorityError(f"collector {phase} receipt log topics are invalid")
+        for topic in topics:
+            if not isinstance(topic, str) or len(topic) != 66 or not topic.startswith("0x"):
+                raise OpenWitnessAuthorityError(f"collector {phase} receipt log topic is invalid")
+            _require_hex_bytes(topic, f"collector {phase} receipt log topic")
+        _require_hex_bytes(log.get("data"), f"collector {phase} receipt log data")
+    registration = material["registration"]
+    if not isinstance(registration, Mapping) or set(registration) != {
+        "transactionHash", "transactionTo", "transactionInput", "receiptStatus", "receiptLogs"
+    }:
+        raise OpenWitnessAuthorityError("collector registration chain material is invalid")
+    registry = report["board"]["problem_registry"]
+    if (
+        str(registration.get("transactionTo", "")).casefold() != registry.casefold()
+        or registration.get("receiptStatus") != 1
+    ):
+        raise OpenWitnessAuthorityError("collector registration chain material binding mismatch")
+    transaction_hash = registration.get("transactionHash")
+    if not isinstance(transaction_hash, str) or len(transaction_hash) != 66:
+        raise OpenWitnessAuthorityError("collector registration transaction hash is invalid")
+    _require_hex_bytes(transaction_hash, "collector registration transaction hash")
+    _require_hex_bytes(registration.get("transactionInput"), "collector registration transaction input")
+    registration_logs = registration.get("receiptLogs")
+    if not isinstance(registration_logs, list) or len(registration_logs) != 1:
+        raise OpenWitnessAuthorityError("collector registration receipt log material is invalid")
+    registration_log = registration_logs[0]
+    if (
+        not isinstance(registration_log, Mapping)
+        or set(registration_log) != {"address", "topics", "data", "logIndex"}
+        or str(registration_log.get("address", "")).casefold() != registry.casefold()
+    ):
+        raise OpenWitnessAuthorityError("collector registration receipt log binding mismatch")
+    if not isinstance(registration_log.get("logIndex"), int) or isinstance(registration_log.get("logIndex"), bool) or registration_log["logIndex"] < 0:
+        raise OpenWitnessAuthorityError("collector registration receipt log index is invalid")
+    registration_topics = registration_log.get("topics")
+    if not isinstance(registration_topics, list) or not registration_topics:
+        raise OpenWitnessAuthorityError("collector registration receipt log topics are invalid")
+    for topic in registration_topics:
+        if not isinstance(topic, str) or len(topic) != 66:
+            raise OpenWitnessAuthorityError("collector registration receipt log topic is invalid")
+        _require_hex_bytes(topic, "collector registration receipt log topic")
+    _require_hex_bytes(registration_log.get("data"), "collector registration receipt log data")
+
+
+def _require_hex_bytes(value: Any, label: str) -> None:
+    if (
+        not isinstance(value, str)
+        or not value.startswith("0x")
+        or len(value) % 2 != 0
+        or any(character not in "0123456789abcdefABCDEF" for character in value[2:])
+    ):
+        raise OpenWitnessAuthorityError(f"{label} must be hex bytes")
 
 
 def _validate_receipt_log_bindings(report: Mapping[str, Any], evidence: Mapping[str, Any]) -> None:
@@ -293,7 +393,9 @@ def _validate_quorum(
         quorum,
         {
             "schema_version", "environment", "policy_digest", "manifest_digest",
-            "launch_evidence_hash", "evidence_digest", "provider_ids", "finalized_evidence", "evidence",
+            "launch_evidence_hash", "evidence_digest", "provider_ids",
+            "observation_transcript_digest", "provider_observations",
+            "finalized_evidence", "evidence",
         },
         "quorum",
     )
@@ -326,6 +428,30 @@ def _validate_quorum(
         or not set(provider_ids).issubset(configured)
     ):
         raise OpenWitnessAuthorityError("collector quorum provider identities are invalid")
+    observations = quorum.get("provider_observations")
+    if not isinstance(observations, list) or len(observations) != len(configured):
+        raise OpenWitnessAuthorityError("collector provider observation transcript is incomplete")
+    observed_ids: list[str] = []
+    matching_ids: list[str] = []
+    for observation in observations:
+        _require_exact(observation, {"provider_id", "evidence_digest", "evidence"}, "provider observation")
+        provider_id = observation.get("provider_id")
+        observed_evidence = observation.get("evidence")
+        if provider_id not in configured or not isinstance(observed_evidence, Mapping):
+            raise OpenWitnessAuthorityError("collector provider observation is invalid")
+        observed_digest = sha256_bytes(canonical_json(dict(observed_evidence)).encode("utf-8"))
+        if observation.get("evidence_digest") != observed_digest:
+            raise OpenWitnessAuthorityError("collector provider observation digest mismatch")
+        observed_ids.append(provider_id)
+        if observed_digest == evidence_digest:
+            matching_ids.append(provider_id)
+    if observed_ids != sorted(configured) or len(set(observed_ids)) != len(observed_ids):
+        raise OpenWitnessAuthorityError("collector provider observation identities are invalid")
+    if sorted(matching_ids) != provider_ids:
+        raise OpenWitnessAuthorityError("collector provider agreement does not match its observation transcript")
+    transcript_digest = sha256_bytes(canonical_json(observations).encode("utf-8"))
+    if quorum.get("observation_transcript_digest") != transcript_digest:
+        raise OpenWitnessAuthorityError("collector provider observation transcript digest mismatch")
 
 
 def _validate_authority_envelope(
@@ -342,6 +468,7 @@ def _validate_authority_envelope(
         {
             "schema_version", "policy_digest", "manifest_digest", "launch_evidence_hash",
             "evidence_digest", "provider_ids", "finalized_evidence", "key_id", "signed_at_utc", "signature",
+            "observation_transcript_digest",
         },
         "authority_envelope",
     )
@@ -349,7 +476,7 @@ def _validate_authority_envelope(
         raise OpenWitnessAuthorityError("collector authority envelope class is invalid")
     for field in (
         "policy_digest", "manifest_digest", "launch_evidence_hash", "evidence_digest",
-        "provider_ids", "finalized_evidence",
+        "provider_ids", "observation_transcript_digest", "finalized_evidence",
     ):
         if envelope.get(field) != quorum.get(field):
             raise OpenWitnessAuthorityError(f"collector authority {field} mismatch")

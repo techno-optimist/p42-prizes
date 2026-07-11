@@ -37,6 +37,8 @@ describe("production open-witness quorum authority", () => {
       observations: [observation("a", agreed), observation("b", agreed), observation("c", dissent)],
     });
     assert.deepEqual(quorum.provider_ids, ["a", "b"]);
+    assert.deepEqual(quorum.provider_observations.map((entry) => entry.provider_id), ["a", "b", "c"]);
+    assert.equal(quorum.provider_observations[2].evidence.finalizedEvidence.blockNumber, 51);
     const { privateKey, publicKey } = generateKeyPairSync("ed25519");
     const publicDer = publicKey.export({ format: "der", type: "spki" });
     const envelope = signCollectorQuorum({ quorum, policy, keyId: "collector-1", privateKey, signedAtUtc: "2026-07-11T00:00:00Z" });
@@ -46,6 +48,7 @@ describe("production open-witness quorum authority", () => {
     };
     assert.equal(verifyCollectorAuthorityEnvelope({ quorum, envelope, registration }), true);
     assert.throws(() => verifyCollectorAuthorityEnvelope({ quorum: { ...quorum, evidence_digest: hash(9) }, envelope, registration }), /evidence_digest mismatch/);
+    assert.throws(() => verifyCollectorAuthorityEnvelope({ quorum: { ...quorum, observation_transcript_digest: hash(9) }, envelope, registration }), /observation_transcript_digest mismatch/);
     const relabeledTime = { ...envelope, signed_at_utc: "2026-07-11T00:00:01Z" };
     assert.throws(() => verifyCollectorAuthorityEnvelope({ quorum, envelope: relabeledTime, registration }), /signature is invalid/);
   });

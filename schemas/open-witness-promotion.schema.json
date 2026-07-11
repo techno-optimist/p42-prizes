@@ -13,13 +13,13 @@
     "schema_version": { "const": "p42-open-witness-launch/v1" },
     "evidence_id": { "type": "string", "minLength": 3 },
     "observed_at_utc": { "type": "string", "format": "date-time" },
-    "release_binding": { "type": "object" },
-    "board": { "type": "object" },
-    "artifacts": { "type": "object" },
-    "witness": { "type": "object" },
-    "funding": { "type": "object" },
-    "reviewers": { "type": "array", "minItems": 2, "maxItems": 2 },
-    "attestations": { "type": "array", "minItems": 2, "maxItems": 2 },
+    "release_binding": { "$ref": "open-witness-launch-v1.json#/properties/release_binding" },
+    "board": { "$ref": "open-witness-launch-v1.json#/properties/board" },
+    "artifacts": { "$ref": "open-witness-launch-v1.json#/properties/artifacts" },
+    "witness": { "$ref": "open-witness-launch-v1.json#/properties/witness" },
+    "funding": { "$ref": "open-witness-launch-v1.json#/properties/funding" },
+    "reviewers": { "$ref": "open-witness-launch-v1.json#/properties/reviewers" },
+    "attestations": { "$ref": "open-witness-launch-v1.json#/properties/attestations" },
     "evidence_hash": { "$ref": "#/$defs/hash" },
     "evidence_valid": { "const": true },
     "attestation_valid": { "const": true },
@@ -28,11 +28,12 @@
     "collector_authority": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["policy_digest", "manifest_digest", "quorum_digest", "authority_envelope", "registration_key_id"],
+      "required": ["policy_digest", "manifest_digest", "quorum_digest", "quorum", "authority_envelope", "registration_key_id"],
       "properties": {
         "policy_digest": { "$ref": "#/$defs/hash" },
         "manifest_digest": { "$ref": "#/$defs/hash" },
         "quorum_digest": { "$ref": "#/$defs/hash" },
+        "quorum": { "$ref": "#/$defs/quorum" },
         "registration_key_id": { "$ref": "#/$defs/keyId" },
         "authority_envelope": { "$ref": "#/$defs/authorityEnvelope" }
       }
@@ -42,12 +43,48 @@
     "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
     "keyId": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{2,127}$" },
+    "providerObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["provider_id", "evidence_digest", "evidence"],
+      "properties": {
+        "provider_id": { "type": "string", "minLength": 1 },
+        "evidence_digest": { "$ref": "#/$defs/hash" },
+        "evidence": { "type": "object" }
+      }
+    },
+    "finalizedEvidence": {
+      "type": "object", "additionalProperties": false, "required": ["blockNumber", "blockHash"],
+      "properties": { "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" } }
+    },
+    "quorum": {
+      "type": "object", "additionalProperties": false,
+      "required": [
+        "schema_version", "environment", "policy_digest", "manifest_digest",
+        "launch_evidence_hash", "evidence_digest", "provider_ids",
+        "observation_transcript_digest", "provider_observations",
+        "finalized_evidence", "evidence"
+      ],
+      "properties": {
+        "schema_version": { "const": "p42-open-witness-quorum/v1" },
+        "environment": { "const": "production" },
+        "policy_digest": { "$ref": "#/$defs/hash" },
+        "manifest_digest": { "$ref": "#/$defs/hash" },
+        "launch_evidence_hash": { "$ref": "#/$defs/hash" },
+        "evidence_digest": { "$ref": "#/$defs/hash" },
+        "provider_ids": { "type": "array", "minItems": 2, "maxItems": 3, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "observation_transcript_digest": { "$ref": "#/$defs/hash" },
+        "provider_observations": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/providerObservation" } },
+        "finalized_evidence": { "$ref": "#/$defs/finalizedEvidence" },
+        "evidence": { "type": "object" }
+      }
+    },
     "authorityEnvelope": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "schema_version", "policy_digest", "manifest_digest", "launch_evidence_hash",
-        "evidence_digest", "provider_ids", "finalized_evidence", "key_id", "signed_at_utc", "signature"
+        "evidence_digest", "provider_ids", "observation_transcript_digest",
+        "finalized_evidence", "key_id", "signed_at_utc", "signature"
       ],
       "properties": {
         "schema_version": { "const": "p42-open-witness-collector-authority/v1" },
@@ -56,10 +93,8 @@
         "launch_evidence_hash": { "$ref": "#/$defs/hash" },
         "evidence_digest": { "$ref": "#/$defs/hash" },
         "provider_ids": { "type": "array", "minItems": 2, "maxItems": 3, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-        "finalized_evidence": {
-          "type": "object", "additionalProperties": false, "required": ["blockNumber", "blockHash"],
-          "properties": { "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" } }
-        },
+        "observation_transcript_digest": { "$ref": "#/$defs/hash" },
+        "finalized_evidence": { "$ref": "#/$defs/finalizedEvidence" },
         "key_id": { "$ref": "#/$defs/keyId" },
         "signed_at_utc": { "type": "string", "format": "date-time" },
         "signature": { "type": "string", "pattern": "^ed25519:[0-9a-f]{128}$" }

@@ -133,7 +133,14 @@ def _support(tmp_path: Path) -> tuple[dict, AttestationFixture, dict, FixtureOpe
         "schema_version": "p42-open-witness-collector-proof/v1",
         "observed_at_utc": "2026-07-08T20:00:00Z",
         "finalized_head": {"block_number": 5020, "block_hash": "0x" + "a" * 64, "timestamp_utc": "2026-07-08T20:00:00Z", "canonical_block_hashes": {str(r["block_number"]): r["block_hash"] for r in receipts.values()}},
-        "transactions": {phase: {"transaction_hash": receipts[phase]["transaction_hash"], "target": board["submission_manager"], "raw_input": _raw(inputs[phase]), "raw_receipt_logs": _raw(event_proofs[phase])} for phase in inputs},
+        "transactions": {phase: {
+            "transaction_hash": receipts[phase]["transaction_hash"],
+            "target": board["submission_manager"],
+            "rpc_transaction_input": "0x1234",
+            "rpc_receipt_logs": [{"address": board["submission_manager"], "topics": ["0x" + "1" * 64], "data": "0x", "logIndex": 0}],
+            "collector_decoded_input": _raw(inputs[phase]),
+            "collector_decoded_receipt_events": _raw(event_proofs[phase]),
+        } for phase in inputs},
         "storage_reads": {"registry_problem_id": "7", "best_score_atoms_before": 1000, "best_score_atoms_after": 900, "submission_credit_atoms": 0, "funding_armed_at_commit": False, "funding_armed_at_finalize": False, "pool_balance_before_arm_wei": 0, "funding_armed_after_arm": True},
     }
     return report, af, registry, FixtureOpenWitnessReader(af, snapshot)
@@ -168,8 +175,8 @@ def test_plain_chain_reader_fails_closed(tmp_path: Path) -> None:
         (lambda report, reader: report["funding"]["arm_receipt"].update(block_number=5001), "strictly after"),
         (lambda report, reader: report["witness"].update(credit_atoms=1), "zero credit"),
         (lambda report, reader: reader.snapshot["storage_reads"].update(best_score_atoms_after=899), "storage read"),
-        (lambda report, reader: reader.snapshot["transactions"]["finalize"].update(raw_receipt_logs=_raw([{"event_signature": "SubmissionFinalized(uint256,uint256,int256)", "submission_id": 42, "credit_atoms": 1, "best_score_atoms": 900}])), "raw finalize receipt logs"),
-        (lambda report, reader: reader.snapshot["transactions"]["reveal"].update(raw_input=_raw({"phase": "reveal", "submission_id": 42})), "raw reveal transaction input"),
+        (lambda report, reader: reader.snapshot["transactions"]["finalize"].update(collector_decoded_receipt_events=_raw([{"event_signature": "SubmissionFinalized(uint256,uint256,int256)", "submission_id": 42, "credit_atoms": 1, "best_score_atoms": 900}])), "collector-decoded finalize receipt events"),
+        (lambda report, reader: reader.snapshot["transactions"]["reveal"].update(collector_decoded_input=_raw({"phase": "reveal", "submission_id": 42})), "collector-decoded reveal transaction input"),
         (lambda report, reader: report["witness"].update(post_frontier_atoms=960), "minImprovementAtoms"),
     ],
 )
