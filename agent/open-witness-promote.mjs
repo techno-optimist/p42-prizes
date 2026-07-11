@@ -24,6 +24,7 @@ import {
   signCollectorQuorum,
 } from "./open-witness-authority-core.mjs";
 import { readStrictJsonFileSync } from "./strict-json.mjs";
+import { loadProductionValidationContextSync } from "./production-validation-context.mjs";
 
 export * from "./open-witness-authority-core.mjs";
 
@@ -70,7 +71,7 @@ export async function runProductionOpenWitnessCollection({ reportPath, outPath }
   invariant(reportPath && outPath, "required: --report <raw-launch-evidence.json> --out <collector.json>");
   const { policy, policyDigest } = readProductionPolicy();
   const manifest = readStrictJsonFileSync(policy.release_binding.manifest_path, JSON_LIMITS);
-  validateManifestEvidence(manifest);
+  validateManifestEvidence(manifest, loadProductionValidationContextSync(manifest));
   const manifestDigest = canonicalSha256(manifest);
   invariant(manifestDigest === policy.release_binding.manifest_sha256, "deployment manifest digest does not match collector policy");
   invariant(manifest.deploymentCommit === policy.release_binding.git_commit, "deployment commit does not match collector policy");

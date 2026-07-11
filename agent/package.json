@@ -14,6 +14,7 @@
     "operator.mjs",
     "open-witness-authority-core.mjs",
     "open-witness-promote.mjs",
+    "production-validation-context.mjs",
     "resolver.mjs",
     "runner-transcript.mjs",
     "runtime_bridge.py",

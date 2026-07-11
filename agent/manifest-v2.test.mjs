@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
@@ -7,6 +8,7 @@ import { ethers } from "ethers";
 
 import {
   computeDeploymentConfigHash,
+  computeProductionReleaseEvidence,
   deriveExactSetupOperations,
   MANIFEST_SCHEMA_V2,
   manifestProblemContracts,
@@ -15,6 +17,7 @@ import {
   validatePreBroadcastManifestPlan,
 } from "./indexer.mjs";
 import { validateSolverManifest } from "./solver-manifest.mjs";
+import { createReleaseCapsule, immutableValuesFromConstructor, reconstructExpectedRuntime } from "../contracts/scripts/release-capsule-helper.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -35,6 +38,7 @@ function digest(char) {
 function digestHash(value) {
   return ethers.keccak256(ethers.toUtf8Bytes(value));
 }
+const sha = (label) => `sha256:${createHash("sha256").update(label).digest("hex")}`;
 
 function boardContracts(contracts, offset = 0) {
   return Object.fromEntries(BOARD_KEYS.map((key, index) => [
@@ -98,6 +102,8 @@ function v2Manifest() {
   second.maxSolutionBytes = "0";
 
   manifest.schema = MANIFEST_SCHEMA_V2;
+  manifest.releaseMode = "fixture";
+  manifest.releaseEvidence = null;
   manifest.contracts = {
     timelock: manifest.contracts.timelock,
     registry: manifest.contracts.registry,
@@ -163,10 +169,11 @@ function rebind(manifest) {
   manifest.deploymentConfigHash = computeDeploymentConfigHash(manifest);
   return manifest;
 }
+const validateFixture = (manifest) => validateManifestEvidence(manifest, { allowFixture: true });
 
 test("v2 deployment manifests bind isolated board stacks and per-board DA terms", () => {
   const manifest = v2Manifest();
-  const binding = validateManifestEvidence(manifest);
+  const binding = validateFixture(manifest);
 
   assert.equal(binding.chainId, 84532);
   assert.deepEqual(Object.keys(binding.boards), ["1", "2"]);
@@ -189,32 +196,32 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
   const duplicateId = v2Manifest();
   duplicateId.problems[1].problemId = "1";
   rebind(duplicateId);
-  assert.throws(() => validateManifestEvidence(duplicateId), /must equal deterministic registry position 2/);
+  assert.throws(() => validateFixture(duplicateId), /must equal deterministic registry position 2/);
 
   const mismatchedAddress = v2Manifest();
   mismatchedAddress.problems[1].pool = address(0x99);
   rebind(mismatchedAddress);
-  assert.throws(() => validateManifestEvidence(mismatchedAddress), /must match problems\[1\]\.contracts\.pool\.address/);
+  assert.throws(() => validateFixture(mismatchedAddress), /must match problems\[1\]\.contracts\.pool\.address/);
 
   const malformedDa = v2Manifest();
   malformedDa.problems[1].maxSolutionBytes = "1";
   rebind(malformedDa);
-  assert.throws(() => validateManifestEvidence(malformedDa), /maxSolutionBytes must equal "0"/);
+  assert.throws(() => validateFixture(malformedDa), /maxSolutionBytes must equal "0"/);
 
   const incompletePlan = v2Manifest();
   incompletePlan.setupTransactions.pop();
   rebind(incompletePlan);
-  assert.throws(() => validateManifestEvidence(incompletePlan), /exactly 11 governance setup operations per problem/);
+  assert.throws(() => validateFixture(incompletePlan), /exactly 11 governance setup operations per problem/);
 
   const incompleteSources = v2Manifest();
   incompleteSources.sourceVerification.contracts.boards.pop();
   rebind(incompleteSources);
-  assert.throws(() => validateManifestEvidence(incompleteSources), /exactly one entry per problem/);
+  assert.throws(() => validateFixture(incompleteSources), /exactly one entry per problem/);
 
   const mismatchedObjective = v2Manifest();
   mismatchedObjective.problems[1].certifiedObjective.direction = "maximize";
   rebind(mismatchedObjective);
-  assert.throws(() => validateManifestEvidence(mismatchedObjective), /seedScoreAtoms does not match certifiedObjective/);
+  assert.throws(() => validateFixture(mismatchedObjective), /seedScoreAtoms does not match certifiedObjective/);
 
   const mismatchedAdmission = v2Manifest();
   mismatchedAdmission.problems[1].admissionMatrixHash = digestHash(digest("f"));
@@ -223,7 +230,7 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
     ...operation,
   }));
   rebind(mismatchedAdmission);
-  assert.throws(() => validateManifestEvidence(mismatchedAdmission), /admissionMatrixHash must equal keccak256/);
+  assert.throws(() => validateFixture(mismatchedAdmission), /admissionMatrixHash must equal keccak256/);
 
   const swappedOperations = v2Manifest();
   [swappedOperations.setupTransactions[0].label, swappedOperations.setupTransactions[1].label] = [
@@ -231,7 +238,7 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
     swappedOperations.setupTransactions[0].label,
   ];
   rebind(swappedOperations);
-  assert.throws(() => validateManifestEvidence(swappedOperations), /setupTransactions\[0\]\.label must equal board\/1\.pool\.setLedger/);
+  assert.throws(() => validateFixture(swappedOperations), /setupTransactions\[0\]\.label must equal board\/1\.pool\.setLedger/);
 
   const reorderedSources = v2Manifest();
   [reorderedSources.sourceVerification.contracts.boards[0], reorderedSources.sourceVerification.contracts.boards[1]] = [
@@ -239,7 +246,7 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
     reorderedSources.sourceVerification.contracts.boards[0],
   ];
   rebind(reorderedSources);
-  assert.throws(() => validateManifestEvidence(reorderedSources), /must match problems\[0\]\.problemId/);
+  assert.throws(() => validateFixture(reorderedSources), /must match problems\[0\]\.problemId/);
 
   for (const mutate of [
     (operation) => { operation.target = address(0x99); },
@@ -254,8 +261,88 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
     mutate(mutated.setupTransactions[6]);
     rebind(mutated);
     assert.throws(
-      () => validateManifestEvidence(mutated),
+      () => validateFixture(mutated),
       /does not match the exact derived governance operation/,
     );
   }
+});
+
+function productionManifest(capsule) {
+  const manifest = v2Manifest();
+  const slateIdentities = Array.from({ length: 10 }, (_, index) => ({
+    problemId: String(index + 1), problemSlug: `certified-${index + 1}`, verifierVersion: "1.0.0",
+    specHash: `0x${createHash("sha256").update(`spec-${index}`).digest("hex")}`,
+    verifierSourceDigest: sha(`source-${index}`), verifierImageDigest: sha(`image-${index}`), admissionMatrixDigest: sha(`matrix-${index}`),
+  }));
+  const slateBody = { schema: "p42-prizes/production-release-slate/v1", mode: "production", status: "ready", generatedAt: "2026-07-11T00:00:00.000Z", sourceCommit: manifest.deploymentCommit, imageRegistry: { path: "registry.json", digest: digest("f") }, boards: slateIdentities.map((identity, index) => ({ ...identity, problemPath: `problems/${identity.problemSlug}`, problemPackageDigest: identity.verifierSourceDigest, admissionMatrixPath: `matrix-${index}.json` })) };
+  const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  const slate = { ...slateBody, slateDigest: `sha256:${createHash("sha256").update(canonical(slateBody)).digest("hex")}` };
+  const template = deepCopy(manifest.problems[0]);
+  manifest.problems = slateIdentities.map((identity, index) => {
+    const problem = { ...deepCopy(template), ...identity };
+    problem.verifierSourceHash = digestHash(problem.verifierSourceDigest);
+    problem.verifierImageHash = digestHash(problem.verifierImageDigest);
+    problem.admissionMatrixHash = digestHash(problem.admissionMatrixDigest);
+    problem.admissionMatrixURI = `ipfs://production-matrix-${index + 1}`;
+    problem.metadataURI = `ipfs://production-metadata-${index + 1}`;
+    problem.contracts = boardContracts(template.contracts, 0x100 + index * 0x10);
+    problem.pool = problem.contracts.pool.address;
+    problem.ledger = problem.contracts.ledger.address;
+    problem.submissionManager = problem.contracts.submissions.address;
+    problem.challengeManager = problem.contracts.challenges.address;
+    return problem;
+  });
+  const capsuleByName = new Map(capsule.contracts.map((contract) => [contract.name, contract]));
+  const bindContract = (entry) => {
+    const artifact = capsuleByName.get(entry.name); const timestamp = 1_800_000_000;
+    const types = (artifact.abi.find((item) => item.type === "constructor")?.inputs ?? []).map((input) => input.type);
+    if (entry.constructorArgs.length !== types.length) entry.constructorArgs = types.map((type) => type.endsWith("[]") ? [] : type === "address" ? address(1) : type === "bool" ? false : "0");
+    const initCodeHash = ethers.keccak256(ethers.concat([artifact.creationCode, ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs)]));
+    const runtimeHash = ethers.keccak256(reconstructExpectedRuntime(artifact, immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: timestamp })));
+    Object.assign(entry, { capsuleArtifactDigest: artifact.artifactDigest, initCodeHash, deploymentBlockTimestamp: timestamp, blockTimestampEvidence: { timestamp, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: `0x${"a".repeat(64)}`, secondaryBlockHash: `0x${"a".repeat(64)}` }, runtimeCodeHash: runtimeHash, deployedCodeHash: runtimeHash, expectedRuntimeCodeHash: runtimeHash, primaryObservedRuntimeCodeHash: runtimeHash, secondaryObservedRuntimeCodeHash: runtimeHash });
+  };
+  Object.values(manifest.contracts).forEach(bindContract);
+  manifest.problems.flatMap(({ contracts }) => Object.values(contracts)).forEach(bindContract);
+  manifest.setupTransactions = deriveExactSetupOperations(manifest).map((operation) => ({ ...operation, status: "pending", executedOperationId: null, executedOperationClass: null, txHash: null, blockNumber: null }));
+  manifest.sourceVerification.contracts.boards = manifest.problems.map(({ problemId }) => ({ problemId, pool: null, ledger: null, submissions: null, challenges: null }));
+  manifest.releaseMode = "production";
+  manifest.releaseEvidence = { mode: "production", slateDigest: slate.slateDigest, capsuleDigest: capsule.capsuleDigest, configDigest: digest("b"), boardSetDigest: digest("0"), operationPlanDigest: digest("0"), contractCount: 43, boardCount: 10, operationCount: 110 };
+  manifest.releaseEvidence.releaseBindingDigest = `sha256:${createHash("sha256").update(JSON.stringify({ capsuleDigest: manifest.releaseEvidence.capsuleDigest, configDigest: manifest.releaseEvidence.configDigest, deploymentCommit: manifest.deploymentCommit, slateDigest: manifest.releaseEvidence.slateDigest })).digest("hex")}`;
+  Object.assign(manifest.releaseEvidence, computeProductionReleaseEvidence(manifest, { productionSlate: slate }));
+  return { manifest: rebind(manifest), slate };
+}
+
+test("production indexer validation recomputes exact-ten release evidence and runtime bindings", async () => {
+  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40) });
+  const optionsFor = (slate) => ({ productionSlate: slate, capsuleResolver: () => capsule, blockTimestampResolver: ({ entry }) => entry.deploymentBlockTimestamp });
+  {
+    const { manifest, slate } = productionManifest(capsule);
+    assert.doesNotThrow(() => validateManifestEvidence(manifest, optionsFor(slate)));
+    assert.throws(() => validateManifestEvidence(manifest, { productionSlate: slate }), /requires trusted capsule and block-timestamp resolvers/);
+    assert.throws(() => validateManifestEvidence(manifest, { ...optionsFor(slate), capsuleResolver: () => null }), /trusted release capsule/);
+  }
+  for (const [name, mutate, pattern] of [
+    ["release hash", (m) => { m.releaseEvidence.boardSetDigest = digest("0"); }, /boardSetDigest mismatch/],
+    ["capsule binding", (m) => { m.releaseEvidence.capsuleDigest = digest("c"); }, /releaseBindingDigest mismatch/],
+    ["capsule artifact", (m) => { m.problems[0].contracts.pool.capsuleArtifactDigest = m.problems[0].contracts.ledger.capsuleArtifactDigest; }, /artifact digest does not match trusted capsule/],
+    ["initcode", (m) => { m.problems[0].contracts.pool.initCodeHash = m.problems[0].contracts.ledger.initCodeHash; }, /initCodeHash does not match/],
+    ["expected runtime", (m) => { m.problems[0].contracts.pool.expectedRuntimeCodeHash = `0x${"f".repeat(64)}`; }, /runtime hashes must match/],
+    ["operator runtime", (m) => { m.problems[0].contracts.pool.secondaryObservedRuntimeCodeHash = `0x${"f".repeat(64)}`; }, /runtime hashes must match/],
+  ]) {
+    const { manifest: changed, slate } = productionManifest(capsule); mutate(changed); rebind(changed);
+    assert.throws(() => validateManifestEvidence(changed, optionsFor(slate)), pattern, name);
+  }
+  {
+    const { manifest, slate } = productionManifest(capsule);
+    assert.throws(() => validateManifestEvidence(manifest, { ...optionsFor(slate), blockTimestampResolver: ({ entry }) => entry.deploymentBlockTimestamp + 1 }), /trusted deployment block timestamp mismatch/);
+  }
+});
+
+test("fixture validation is test-only and rejects production identity collisions", async () => {
+  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40) });
+  const { manifest: fixture, slate } = productionManifest(capsule); fixture.releaseMode = "fixture"; fixture.releaseEvidence = null; rebind(fixture);
+  assert.throws(() => validateManifestEvidence(fixture), /test-only/);
+  assert.throws(() => validateManifestEvidence(fixture, { allowFixture: true, productionSlate: slate }), /collides/);
+  const { manifest: implicit } = productionManifest(capsule); delete implicit.releaseMode; rebind(implicit);
+  assert.throws(() => validateManifestEvidence(implicit), /releaseMode|explicit production or fixture/);
 });

@@ -27,14 +27,68 @@ import {
   verifyPublicationReceipt,
 } from "./transcript-store.mjs";
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
+import { loadProductionValidationContext } from "./production-validation-context.mjs";
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
+const PRODUCTION_CAPSULE_CONTRACTS = ["P42MultisigTimelock", "P42RolloverVault", "P42BountyPool", "P42PayoutLedger", "P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"];
+
+function capsuleCanonical(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(capsuleCanonical).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${capsuleCanonical(value[key])}`).join(",")}}`;
+}
+
+function capsuleDigest(value) { return `sha256:${createHash("sha256").update(capsuleCanonical(value)).digest("hex")}`; }
+
+function validateReleaseCapsule(capsule) {
+  if (!capsule || capsule.schema !== "p42-prizes/release-capsule/v1" || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !Array.isArray(capsule.contracts) || !Array.isArray(capsule.buildInfos)) throw new Error("trusted release capsule is malformed");
+  if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CAPSULE_CONTRACTS.join("\0")) throw new Error("trusted release capsule contract set is incomplete or reordered");
+  const infos = new Set(capsule.buildInfos.map(({ id }) => id));
+  if (infos.size !== capsule.buildInfos.length) throw new Error("trusted release capsule has duplicate build-info identities");
+  for (const contract of capsule.contracts) {
+    if (!infos.has(contract.buildInfoId) || !/^sha256:[0-9a-f]{64}$/.test(contract.artifactDigest) || !/^0x(?:[0-9a-f]{2})*$/.test(contract.creationCode) || !/^0x(?:[0-9a-f]{2})*$/.test(contract.runtimeTemplate) || !Array.isArray(contract.abi) || !Array.isArray(contract.immutableBindings)) throw new Error(`trusted release capsule ${contract.name} artifact is malformed`);
+  }
+  const { capsuleDigest: claimed, ...body } = capsule;
+  if (capsuleDigest(body) !== claimed) throw new Error("trusted release capsule digest mismatch");
+  return capsule;
+}
+
+function encodedImmutableWord(value, type, length) {
+  let integer = typeof value === "boolean" ? (value ? 1n : 0n) : BigInt(value);
+  const limit = 1n << BigInt(length * 8); if (type.startsWith("int") && integer < 0) integer += limit;
+  if (integer < 0 || integer >= limit) throw new Error("capsule immutable value is out of range");
+  return integer.toString(16).padStart(length * 2, "0");
+}
+
+function reconstructExpectedRuntime(contract, values) {
+  const bytes = contract.runtimeTemplate.slice(2).split(""); const seen = new Set();
+  for (const binding of contract.immutableBindings) {
+    if (seen.has(binding.astId) || !Array.isArray(binding.ranges) || !Object.hasOwn(values, binding.name)) throw new Error(`${contract.name} immutable binding is incomplete`);
+    seen.add(binding.astId);
+    for (const range of binding.ranges) {
+      if (!Number.isSafeInteger(range.start) || !Number.isSafeInteger(range.length) || range.start < 0 || range.length < 1 || range.start + range.length > bytes.length / 2) throw new Error(`${contract.name} immutable range is invalid`);
+      bytes.splice(range.start * 2, range.length * 2, ...encodedImmutableWord(values[binding.name], binding.type, range.length));
+    }
+  }
+  return `0x${bytes.join("")}`;
+}
+
+function immutableValuesFromConstructor(contract, constructorArgs, { blockTimestamp }) {
+  const inputs = contract.abi.find((entry) => entry.type === "constructor")?.inputs ?? [];
+  if (!Array.isArray(constructorArgs) || constructorArgs.length !== inputs.length) throw new Error(`${contract.name} constructor argument count mismatch`);
+  const names = new Set(contract.immutableBindings.map(({ name }) => name)); const values = {};
+  inputs.forEach((input, index) => { const name = input.name.replace(/_$/, ""); if (names.has(name)) values[name] = constructorArgs[index]; });
+  if (contract.name === "P42MultisigTimelock") { const delay = BigInt(constructorArgs[inputs.findIndex(({ name }) => name === "delaySeconds_")]); values.delay = delay; values.overrideDelay = delay * 2n; values.operationGracePeriod = 604800n; }
+  if (contract.name === "P42SubmissionManager") { if (!Number.isSafeInteger(blockTimestamp)) throw new Error("trusted deployment block timestamp is required"); values.deployedAt = blockTimestamp; values.armNotBefore = BigInt(blockTimestamp) + BigInt(constructorArgs[inputs.findIndex(({ name }) => name === "challengeWindowSeconds_")]); }
+  return values;
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
 export const MANIFEST_SCHEMA_V1 = "p42-prizes/deployment-manifest/v1";
 export const MANIFEST_SCHEMA_V2 = "p42-prizes/deployment-manifest/v2";
+export const PRODUCTION_RELEASE_MODE = "production";
 let deploymentManifestSchemas;
 let multiboardCheckpointSchema;
 function manifestSchemas() {
@@ -335,6 +389,8 @@ export function deploymentConfigPayload(manifest) {
     schema: manifest.schema,
     status: manifest.status,
     deploymentCommit: manifest.deploymentCommit,
+    releaseMode: manifest.releaseMode,
+    releaseEvidence: manifest.releaseEvidence,
     network: manifest.network,
     governance: manifest.governance,
     roles: manifest.roles,
@@ -347,6 +403,35 @@ export function deploymentConfigPayload(manifest) {
       startBlock: manifest.indexer?.startBlock,
       finalityPolicy: manifest.indexer?.finalityPolicy,
     },
+  };
+}
+
+export function computeProductionReleaseEvidence(manifest, { productionSlate } = {}) {
+  if (manifest?.releaseMode !== PRODUCTION_RELEASE_MODE) throw new Error("production validation requires explicit production release mode");
+  if (!Array.isArray(manifest.problems) || manifest.problems.length !== 10) throw new Error("production release requires exactly 10 boards");
+  if (!Array.isArray(manifest.setupTransactions) || manifest.setupTransactions.length !== 110) throw new Error("production release requires exactly 110 governance operations");
+  const boardIdentities = manifest.problems.map((problem, index) => ({
+    problemId: String(problem.problemId), problemSlug: problem.problemSlug, verifierVersion: problem.verifierVersion,
+    specHash: problem.specHash, verifierSourceDigest: problem.verifierSourceDigest,
+    verifierImageDigest: problem.verifierImageDigest, admissionMatrixDigest: problem.admissionMatrixDigest,
+  }));
+  boardIdentities.forEach((board, index) => {
+    if (board.problemId !== String(index + 1)) throw new Error(`production board ${index + 1} is not in exact registry order`);
+  });
+  const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+  const digest = (value) => `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
+  const slate = productionSlate;
+  if (!slate || slate.status !== "ready" || !Array.isArray(slate.boards)) throw new Error("production validation requires a trusted status-ready slate");
+  const { slateDigest, ...slateBody } = slate;
+  const slateIdentities = slate.boards.map((board) => Object.fromEntries(["problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"].map((field) => [field, board[field]])));
+  if (digest(slateBody) !== slateDigest || canonical(boardIdentities) !== canonical(slateIdentities)) throw new Error("production boards do not match the trusted closed release slate");
+  if (manifest.releaseEvidence?.slateDigest !== slateDigest) throw new Error("production releaseEvidence.slateDigest does not match the checked-in slate");
+  return {
+    boardSetDigest: digest(boardIdentities),
+    operationPlanDigest: digest(manifest.setupTransactions.map(({ sequence, label, operationId }) => ({ sequence, label, operationId }))),
+    contractCount: 43,
+    boardCount: 10,
+    operationCount: 110,
   };
 }
 
@@ -972,7 +1057,7 @@ function validateExactSetupOperations(manifest) {
   }
 }
 
-export function validateManifestEvidence(manifest) {
+export function validateManifestEvidence(manifest, { allowFixture = false, productionSlate, capsuleResolver, blockTimestampResolver } = {}) {
   rejectKnownStaleRelease(manifest);
   validateDeploymentManifestSchema(manifest);
   if (![MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2].includes(manifest?.schema)) {
@@ -989,6 +1074,48 @@ export function validateManifestEvidence(manifest) {
   const contractEntries = manifestContractEvidenceEntries(manifest);
   for (const descriptor of contractEntries) validateContractEvidenceEntry({ ...descriptor, manifest });
   if (isMultiBoardManifest(manifest)) validateMultiBoardTopology(manifest);
+  if (isMultiBoardManifest(manifest) && manifest.releaseMode === PRODUCTION_RELEASE_MODE) {
+    if (typeof capsuleResolver !== "function" || typeof blockTimestampResolver !== "function") throw new Error("production validation requires trusted capsule and block-timestamp resolvers");
+    const derived = computeProductionReleaseEvidence(manifest, { productionSlate });
+    const evidence = manifest.releaseEvidence;
+    if (!evidence || evidence.mode !== PRODUCTION_RELEASE_MODE) throw new Error("production manifest is missing release evidence");
+    const bindingPayload = { capsuleDigest: evidence.capsuleDigest, configDigest: evidence.configDigest, deploymentCommit: manifest.deploymentCommit, slateDigest: evidence.slateDigest };
+    const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+    const expectedBinding = `sha256:${createHash("sha256").update(canonical(bindingPayload)).digest("hex")}`;
+    if (evidence.releaseBindingDigest !== expectedBinding) throw new Error("production releaseEvidence.releaseBindingDigest mismatch");
+    for (const field of ["boardSetDigest", "operationPlanDigest", "contractCount", "boardCount", "operationCount"]) {
+      if (evidence[field] !== derived[field]) throw new Error(`production releaseEvidence.${field} mismatch`);
+    }
+    const capsule = capsuleResolver(evidence.capsuleDigest);
+    validateReleaseCapsule(capsule);
+    if (capsule.capsuleDigest !== evidence.capsuleDigest || capsule.gitCommit !== manifest.deploymentCommit) throw new Error("trusted capsule identity does not match production release evidence");
+    const capsuleContracts = new Map(capsule.contracts.map((contract) => [contract.name, contract]));
+    for (const descriptor of contractEntries) {
+      const entry = descriptor.entry;
+      if (!/^sha256:[0-9a-f]{64}$/.test(entry.capsuleArtifactDigest)) throw new Error(`${descriptor.path}.capsuleArtifactDigest must be sha256`);
+      for (const field of ["initCodeHash", "expectedRuntimeCodeHash", "primaryObservedRuntimeCodeHash", "secondaryObservedRuntimeCodeHash"]) requireHex(entry[field], 32, `${descriptor.path}.${field}`);
+      const artifact = capsuleContracts.get(entry.name);
+      const timestampEvidence = entry.blockTimestampEvidence;
+      if (!timestampEvidence || timestampEvidence.timestamp !== entry.deploymentBlockTimestamp || timestampEvidence.primaryOperatorId === timestampEvidence.secondaryOperatorId || timestampEvidence.primaryBlockHash.toLowerCase() !== timestampEvidence.secondaryBlockHash.toLowerCase()) throw new Error(`${descriptor.path} dual-RPC block timestamp evidence is invalid`);
+      if (!artifact || artifact.artifactDigest !== entry.capsuleArtifactDigest) throw new Error(`${descriptor.path} artifact digest does not match trusted capsule`);
+      const encodedArgs = ethers.AbiCoder.defaultAbiCoder().encode((artifact.abi.find((item) => item.type === "constructor")?.inputs ?? []).map((input) => input.type), entry.constructorArgs);
+      const expectedInitCodeHash = ethers.keccak256(ethers.concat([artifact.creationCode, encodedArgs]));
+      if (entry.initCodeHash.toLowerCase() !== expectedInitCodeHash.toLowerCase()) throw new Error(`${descriptor.path}.initCodeHash does not match capsule creation code and constructor args`);
+      const timestamp = blockTimestampResolver({ blockNumber: entry.blockNumber, entry, path: descriptor.path });
+      if (!Number.isSafeInteger(timestamp) || timestamp < 0 || timestamp !== entry.deploymentBlockTimestamp) throw new Error(`${descriptor.path} trusted deployment block timestamp mismatch`);
+      const values = immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: timestamp });
+      const expectedRuntimeHash = ethers.keccak256(reconstructExpectedRuntime(artifact, values));
+      if (entry.expectedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.runtimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.deployedCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.primaryObservedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.secondaryObservedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase()) throw new Error(`${descriptor.path} reconstructed expected and all observed runtime hashes must match`);
+    }
+  } else if (isMultiBoardManifest(manifest) && manifest.releaseMode === "fixture") {
+    if (!allowFixture) throw new Error("fixture manifests are test-only and rejected by default");
+    if (productionSlate?.boards && manifest.problems.some((problem, index) => {
+      const expected = productionSlate.boards[index];
+      return expected && ["problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"].every((field) => String(problem[field]) === String(expected[field]));
+    })) throw new Error("fixture identity collides with supplied production slate");
+  } else if (isMultiBoardManifest(manifest)) {
+    throw new Error("multi-board manifest requires explicit production or fixture release mode");
+  }
 
   if (manifest.status !== "example-not-deployed") {
     for (const [role, address] of Object.entries(manifest.roles)) {
@@ -2840,7 +2967,7 @@ export function loadContractArtifacts() {
 }
 
 export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlock) {
-  const binding = validateManifestEvidence(manifest);
+  const binding = validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
   const network = await provider.getNetwork();
   if (Number(network.chainId) !== manifest.network.chainId) {
     throw new Error(`chainId mismatch: manifest=${manifest.network.chainId} RPC=${network.chainId}`);
@@ -3830,10 +3957,10 @@ export async function runIndexer({
   const resolvedManifest = resolve(manifestPath);
   const resolvedOut = resolve(outPath);
   const manifest = readStrictJsonFileSync(resolvedManifest, MANIFEST_JSON_LIMITS);
-  const binding = validateManifestEvidence(manifest);
   const multiBoard = isMultiBoardManifest(manifest);
   const policy = manifest.indexer.finalityPolicy;
   const provider = new ethers.JsonRpcProvider(rpcUrl, manifest.network.chainId, { staticNetwork: true });
+  const binding = validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
   const artifacts = loadContractArtifacts();
   const contracts = multiBoard ? null : instantiateContracts(provider, manifest, artifacts);
 

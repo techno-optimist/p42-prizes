@@ -15,6 +15,7 @@ import {
   validateManifestEvidence,
 } from "../../agent/indexer.mjs";
 import { readContractsArtifactJson } from "./strict-json-helper.js";
+import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
 const PRIVATE_FILE_MODE = 0o600;
@@ -84,7 +85,7 @@ export async function loadManifestFromPath(path) {
 }
 
 export async function reconcileWithProvider({ ethers, manifest, outputPath = null }) {
-  const binding = validateManifestEvidence(manifest.data);
+  const binding = validateManifestEvidence(manifest.data, await loadProductionValidationContext(manifest.data, { provider: ethers.provider }));
   const policy = manifest.data.indexer.finalityPolicy;
   const chain = await ethers.provider.getNetwork();
   if (Number(chain.chainId) !== BASE_SEPOLIA_CHAIN_ID) {

@@ -63,7 +63,8 @@ const RESERVATION_IDENTITY_KEYS = new Set([
 ]);
 const DEPLOYMENT_ENTRY_KEYS = new Set([
   "name", "address", "txHash", "state", "blockNumber", "abiHash", "runtimeCodeHash", "deployedCodeHash",
-  "constructorArgsHash", "constructorArgs",
+  "constructorArgsHash", "constructorArgs", "capsuleArtifactDigest", "initCodeHash", "expectedRuntimeCodeHash",
+  "primaryObservedRuntimeCodeHash", "secondaryObservedRuntimeCodeHash", "deploymentBlockTimestamp", "blockTimestampEvidence",
 ]);
 const ARCHIVE_KEYS = new Set([...RESERVATION_KEYS, "manifestPublishedAt", "manifestDigest", "reservationDigest"]);
 
@@ -984,6 +985,14 @@ export function deploymentReservationConfigDigest(config) {
     bytes = Buffer.from(canonicalJson(config), "utf8");
   }
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+export function productionReleaseBindingDigest({ deploymentCommit, configDigest, slateDigest, capsuleDigest }) {
+  for (const [label, value] of Object.entries({ configDigest, slateDigest, capsuleDigest })) {
+    if (!/^sha256:[0-9a-f]{64}$/.test(String(value))) throw new Error(`production release ${label} must be a canonical sha256 digest`);
+  }
+  if (!/^[0-9a-f]{40}$/.test(String(deploymentCommit))) throw new Error("production release deploymentCommit must be an exact lowercase commit");
+  return `sha256:${createHash("sha256").update(canonicalJson({ capsuleDigest, configDigest, deploymentCommit, slateDigest })).digest("hex")}`;
 }
 
 function identityDigest(identity) {

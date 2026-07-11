@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 
 import { network } from "hardhat";
 import {
+  computeProductionReleaseEvidence,
   validateManifestEvidence,
   validatePreBroadcastManifestPlan,
   writeFileAtomicSync,
@@ -29,6 +30,7 @@ import {
   MANIFEST_SCHEMA,
   MULTIBOARD_MANIFEST_SCHEMA,
   PENDING_SETUP_STATUS,
+  productionReleaseBindingDigest,
   readManifestOutputReservation,
   readCeremonyConfig,
   recordManifestOutputBoardDeployment,
@@ -38,10 +40,20 @@ import {
   validateDeploymentTimestamps
 } from "./deployment-ceremony-helper.js";
 import {
+  bindReleaseMode,
   readMultiBoardCeremonyConfig,
+  validateProductionReleaseSlate,
+  validateProductionSlatePreflight,
   validateMultiBoardAdmissionPreflight,
   validateMultiBoardDeploymentTimestamps,
 } from "./multiboard-ceremony-helper.js";
+import {
+  attestReleaseCapsuleAgainstCheckout,
+  immutableValuesFromConstructor,
+  readReleaseBuildJson,
+  reconstructExpectedRuntime,
+  validateReleaseCapsule,
+} from "./release-capsule-helper.js";
 import {
   readContractsArtifactJson,
   readContractsConfigJson,
@@ -54,6 +66,7 @@ import {
   reserveDeploymentNoncePlan,
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
+import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const CONTRACT_NAMES = Object.freeze({
@@ -95,6 +108,17 @@ async function readMultiBoardCeremonyInput() {
   } catch (error) {
     throw new Error(`Unable to parse multi-board ceremony config ${path}: ${error.message}`);
   }
+}
+
+async function productionReleaseInputs(repoRoot, deploymentCommit) {
+  const slatePath = resolve(requiredEnv("P42_PRODUCTION_SLATE_PATH"));
+  const capsulePath = resolve(requiredEnv("P42_RELEASE_CAPSULE"));
+  const [slate, capsule] = await Promise.all([readContractsConfigJson(slatePath), readReleaseBuildJson(capsulePath)]);
+  validateProductionReleaseSlate(slate);
+  if (slate.sourceCommit !== deploymentCommit) throw new Error("production slate sourceCommit differs from exact deployment commit");
+  validateReleaseCapsule(capsule);
+  await attestReleaseCapsuleAgainstCheckout(capsule, { repoRoot, expectedGitCommit: deploymentCommit });
+  return { slate, capsule, slatePath, capsulePath };
 }
 
 function gitCommit(repoRoot) {
@@ -159,7 +183,7 @@ async function materializeDeploymentSteps(ethers, definitions, addresses) {
   return result;
 }
 
-async function executeSignedDeploymentPlan(ethers, deployer, output, reservationIdentity, definitions, recordProgress, requiredConfirmations) {
+async function executeSignedDeploymentPlan(ethers, deployer, output, reservationIdentity, definitions, recordProgress, requiredConfirmations, releaseCapsule = null) {
   const liveNetwork = await ethers.provider.getNetwork();
   if (liveNetwork.chainId !== BASE_SEPOLIA_CHAIN_ID) {
     throw new Error(`provider chain drift: expected ${BASE_SEPOLIA_CHAIN_ID}, got ${liveNetwork.chainId}`);
@@ -207,6 +231,11 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
     ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + index }),
   ]));
   const steps = await materializeDeploymentSteps(ethers, definitions, addresses);
+  const capsuleContracts = releaseCapsule ? new Map(releaseCapsule.contracts.map((contract) => [contract.name, contract])) : null;
+  if (capsuleContracts) for (const step of steps) {
+    const artifact = capsuleContracts.get(step.name);
+    if (!artifact || !step.expectedInitCode.startsWith(artifact.creationCode)) throw new Error(`${step.name} initcode is not bound to the attested release capsule`);
+  }
   const expected = buildDeploymentNoncePlan(ethers, {
     identityDigest: reservationIdentity.identityDigest,
     network: "baseSepolia",
@@ -243,15 +272,36 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
       reconciliation = await reconcileSignedDeployment({ ethers, provider: ethers.provider, secondaryProvider, journalPath, planDigest: expected.planDigest, index, allowBroadcast: false, requiredConfirmations });
     }
     if (reconciliation.state !== "mined") throw new Error(`deployment transaction did not reconcile as mined: ${durable.expectedHash}`);
-    const code = await ethers.provider.getCode(durable.address);
-    if (code === "0x") throw new Error(`mined deployment has no runtime code at ${durable.address}`);
-    const runtimeCodeHash = ethers.keccak256(code);
+    const [code, secondaryCode, receiptBlock, secondaryReceiptBlock] = await Promise.all([
+      ethers.provider.getCode(durable.address, reconciliation.step.blockNumber), secondaryProvider.getCode(durable.address, reconciliation.step.blockNumber),
+      ethers.provider.getBlock(reconciliation.step.blockNumber),
+      secondaryProvider.getBlock(reconciliation.step.blockNumber),
+    ]);
+    if (code === "0x" || secondaryCode === "0x" || receiptBlock === null || secondaryReceiptBlock === null || receiptBlock.hash !== secondaryReceiptBlock.hash || receiptBlock.timestamp !== secondaryReceiptBlock.timestamp) throw new Error(`mined deployment lacks matching dual-RPC runtime or receipt block evidence at ${durable.address}`);
+    const primaryObservedRuntimeCodeHash = ethers.keccak256(code);
+    const secondaryObservedRuntimeCodeHash = ethers.keccak256(secondaryCode);
+    let expectedRuntimeCodeHash = primaryObservedRuntimeCodeHash;
+    let capsuleArtifactDigest;
+    if (capsuleContracts) {
+      const artifact = capsuleContracts.get(definition.name);
+      const values = immutableValuesFromConstructor(artifact, definition.args, { blockTimestamp: receiptBlock.timestamp });
+      expectedRuntimeCodeHash = ethers.keccak256(reconstructExpectedRuntime(artifact, values));
+      capsuleArtifactDigest = artifact.artifactDigest;
+      if (primaryObservedRuntimeCodeHash !== expectedRuntimeCodeHash || secondaryObservedRuntimeCodeHash !== expectedRuntimeCodeHash) throw new Error(`${definition.name} runtime differs from capsule reconstruction on an operator-distinct RPC`);
+    }
+    const runtimeCodeHash = expectedRuntimeCodeHash;
     const manifest = {
       name: definition.name, address: durable.address, txHash: durable.expectedHash,
       blockNumber: reconciliation.step.blockNumber,
       abiHash: ethers.keccak256(ethers.toUtf8Bytes(definition.factory.interface.formatJson())),
       runtimeCodeHash, deployedCodeHash: runtimeCodeHash,
       constructorArgsHash: definition.constructorArgsHash, constructorArgs: definition.args,
+      ...(capsuleContracts ? {
+        capsuleArtifactDigest, initCodeHash: ethers.keccak256(definition.expectedInitCode), expectedRuntimeCodeHash,
+        primaryObservedRuntimeCodeHash, secondaryObservedRuntimeCodeHash,
+        deploymentBlockTimestamp: receiptBlock.timestamp,
+        blockTimestampEvidence: { timestamp: receiptBlock.timestamp, primaryOperatorId, secondaryOperatorId, primaryBlockHash: receiptBlock.hash, secondaryBlockHash: secondaryReceiptBlock.hash },
+      } : {}),
     };
     await recordProgress(definition, { ...manifest, state: "mined" });
     deployments[definition.id] = { contract: definition.factory.attach(durable.address), factory: definition.factory, manifest };
@@ -457,7 +507,7 @@ async function deployCeremony(ethers) {
       reconciliationReport: null
     }
   })));
-  validateManifestEvidence(manifest);
+  validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider: ethers.provider }));
 
   await mkdir(dirname(output), { recursive: true });
   await writeManifestAtomically(output, manifest);
@@ -514,13 +564,13 @@ function multiBoardManifestProblem(problem, deployments) {
   };
 }
 
-async function deployMultiBoardCeremony(ethers) {
+async function deployMultiBoardCeremony(ethers, releaseMode) {
   requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
   const [deployer] = await ethers.getSigners();
   if (deployer === undefined) throw new Error("No deployer signer available");
 
   const input = await readMultiBoardCeremonyInput();
-  const config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
+  let config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
   validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
   await preflightMultiBoardDeploymentPlan(ethers, deployer, config);
   const latest = await ethers.provider.getBlock("latest");
@@ -528,16 +578,23 @@ async function deployMultiBoardCeremony(ethers) {
   validateMultiBoardDeploymentTimestamps(config, latest.timestamp);
   const repoRoot = resolve(process.cwd(), "..");
   assertCleanGitTree(repoRoot);
-  const admissionPreflight = validateMultiBoardAdmissionPreflight(ethers, config, { repoRoot });
-  console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const deploymentCommit = gitCommit(repoRoot);
+  const release = releaseMode === "production" ? await productionReleaseInputs(repoRoot, deploymentCommit) : null;
+  config = bindReleaseMode(config, { releaseMode, slate: release?.slate });
+  const admissionPreflight = release
+    ? validateProductionSlatePreflight(ethers, release.slate, config, { repoRoot })
+    : validateMultiBoardAdmissionPreflight(ethers, config, { repoRoot });
+  console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const output = manifestPath();
   const reservationIdentity = createDeploymentReservationIdentity(output, {
     deploymentCommit,
     network: "baseSepolia",
     chainId: Number(BASE_SEPOLIA_CHAIN_ID),
     deployer: deployer.address,
-  }, { trustedRoot: dirname(output), configBytes: input.bytes });
+  }, { trustedRoot: dirname(output), configValue: {
+    config: input.value, releaseMode, slateDigest: release?.slate.slateDigest ?? null,
+    capsuleDigest: release?.capsule.capsuleDigest ?? null,
+  } });
   const reservation = await ensureManifestReservation(reservationIdentity);
   console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
 
@@ -565,6 +622,7 @@ async function deployMultiBoardCeremony(ethers) {
       ? recordManifestOutputBoardDeployment(reservationIdentity, definition.id.split("-")[1], definition.id.split("-")[2], deployment)
       : recordManifestOutputDeployment(reservationIdentity, definition.id, deployment),
     config.finalityPolicy.confirmations,
+    release?.capsule ?? null,
   );
   const rootDeployments = Object.fromEntries(["timelock", "registry", "rolloverVault"].map((key) => [key, executed.deployments[key]]));
   const rootAddresses = Object.fromEntries(["timelock", "registry", "rolloverVault"].map((key) => [key, executed.addresses[key]]));
@@ -595,11 +653,19 @@ async function deployMultiBoardCeremony(ethers) {
     ...Object.values(rootDeployments).map((entry) => entry.manifest.blockNumber),
     ...boards.flatMap(({ deployments }) => Object.values(deployments).map((entry) => entry.manifest.blockNumber)),
   );
-  const manifest = bindDeploymentConfigHash(JSON.parse(jsonStringify({
+  let manifestBody = JSON.parse(jsonStringify({
     schema: MULTIBOARD_MANIFEST_SCHEMA,
     status: PENDING_SETUP_STATUS,
     deployedAt: new Date().toISOString(),
     deploymentCommit,
+    releaseMode,
+    releaseEvidence: release ? {
+      mode: "production", slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest,
+      configDigest: reservationIdentity.configDigest,
+      releaseBindingDigest: productionReleaseBindingDigest({ deploymentCommit, configDigest: reservationIdentity.configDigest, slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest }),
+      boardSetDigest: `sha256:${"0".repeat(64)}`, operationPlanDigest: `sha256:${"0".repeat(64)}`,
+      contractCount: 43, boardCount: 10, operationCount: 110,
+    } : null,
     network: {
       name: "baseSepolia",
       chainId: Number(BASE_SEPOLIA_CHAIN_ID),
@@ -659,8 +725,14 @@ async function deployMultiBoardCeremony(ethers) {
       indexedThroughBlock: null,
       reconciliationReport: null,
     },
-  })));
-  validateManifestEvidence(manifest);
+  }));
+  if (release) Object.assign(manifestBody.releaseEvidence, computeProductionReleaseEvidence(manifestBody, { productionSlate: release.slate }));
+  const manifest = bindDeploymentConfigHash(manifestBody);
+  validateManifestEvidence(manifest, {
+    productionSlate: release?.slate,
+    capsuleResolver: (digest) => digest === release?.capsule.capsuleDigest ? release.capsule : null,
+    blockTimestampResolver: ({ entry }) => entry.deploymentBlockTimestamp,
+  });
 
   await mkdir(dirname(output), { recursive: true });
   await writeManifestAtomically(output, manifest);
@@ -1270,7 +1342,7 @@ async function continueCeremony(ethers) {
   if (manifest.schema !== MANIFEST_SCHEMA && manifest.schema !== MULTIBOARD_MANIFEST_SCHEMA) {
     throw new Error(`Unsupported manifest schema: ${manifest.schema}`);
   }
-  validateManifestEvidence(manifest);
+  validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider: ethers.provider }));
   for (const [index, problem] of manifest.problems.entries()) {
     assertVerifierImageAnchor(ethers, problem, {
       digestLabel: `manifest.problems[${index}].verifierImageDigest`,
@@ -1325,8 +1397,8 @@ async function continueCeremony(ethers) {
 }
 
 const mode = (process.env.P42_DEPLOY_MODE ?? "deploy").trim().toLowerCase();
-if (mode !== "deploy" && mode !== "deploy-multiboard" && mode !== "continue" && mode !== "inspect-reservation") {
-  throw new Error("P42_DEPLOY_MODE must be deploy, deploy-multiboard, continue, or inspect-reservation");
+if (mode !== "deploy" && mode !== "deploy-multiboard-production" && mode !== "continue" && mode !== "inspect-reservation") {
+  throw new Error("P42_DEPLOY_MODE must be deploy, deploy-multiboard-production, continue, or inspect-reservation");
 }
 
 if (mode === "inspect-reservation") {
@@ -1343,7 +1415,7 @@ if (mode === "inspect-reservation") {
       throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
     }
     if (mode === "deploy") await deployCeremony(ethers);
-    else if (mode === "deploy-multiboard") await deployMultiBoardCeremony(ethers);
+    else if (mode === "deploy-multiboard-production") await deployMultiBoardCeremony(ethers, "production");
     else await continueCeremony(ethers);
   } finally {
     await connection.close();

@@ -507,6 +507,7 @@ describe("deployment ceremony input gate", () => {
 
       const completionManifest = bindDeploymentConfigHash({
         schema: MULTIBOARD_MANIFEST_SCHEMA,
+        releaseMode: "fixture", releaseEvidence: null,
         status: PENDING_SETUP_STATUS,
         deploymentCommit: "a".repeat(40),
         network: { name: "baseSepolia", chainId: 84532, explorerBaseUrl: "https://sepolia.basescan.org" },
@@ -843,6 +844,7 @@ describe("deployment ceremony construction", () => {
     });
     const manifest = {
       schema: MULTIBOARD_MANIFEST_SCHEMA,
+      releaseMode: "fixture", releaseEvidence: null,
       status: PENDING_SETUP_STATUS,
       deploymentCommit: "0".repeat(40),
       network: { name: "baseSepolia", chainId: 84532 },

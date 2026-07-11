@@ -31,6 +31,8 @@ function artifacts() {
   problem.admissionMatrixURI = "ipfs://admission-matrix";
   problem.certifiedObjective = { seedBest: "1", direction: "minimize", minImprovement: "1" };
   base.schema = "p42-prizes/deployment-manifest/v2";
+  base.releaseMode = "fixture";
+  base.releaseEvidence = null;
   base.contracts = {
     timelock: base.contracts.timelock,
     registry: base.contracts.registry,

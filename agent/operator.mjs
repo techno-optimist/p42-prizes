@@ -60,6 +60,7 @@ import {
 } from "./challenge-envelope.mjs";
 import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
 import { verifyRunnerTranscript } from "./runner-transcript.mjs";
+import { loadProductionValidationContext } from "./production-validation-context.mjs";
 
 const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
@@ -1373,7 +1374,7 @@ async function scanOnce() {
 async function main() {
   const network = await provider.getNetwork();
   chainId = Number(network.chainId);
-  validateManifestEvidence(manifest);
+  validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
   if (Number(manifest.network.chainId) !== chainId) {
     throw new Error(`manifest chain ${manifest.network.chainId} does not match RPC chain ${chainId}`);
   }

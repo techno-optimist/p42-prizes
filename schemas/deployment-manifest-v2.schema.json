@@ -10,6 +10,7 @@
     "deployedAt",
     "deploymentCommit",
     "deploymentConfigHash",
+    "releaseMode",
     "network",
     "governance",
     "roles",
@@ -33,6 +34,22 @@
     "deployedAt": { "type": "string", "format": "date-time" },
     "deploymentCommit": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" },
     "deploymentConfigHash": { "$ref": "#/$defs/bytes32" },
+    "releaseMode": { "enum": ["production", "fixture"] },
+    "releaseEvidence": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "object", "additionalProperties": false,
+          "required": ["mode", "slateDigest", "capsuleDigest", "configDigest", "releaseBindingDigest", "boardSetDigest", "operationPlanDigest", "contractCount", "boardCount", "operationCount"],
+          "properties": {
+            "mode": { "const": "production" },
+            "slateDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "configDigest": { "$ref": "#/$defs/digest" },
+            "releaseBindingDigest": { "$ref": "#/$defs/digest" },
+            "boardSetDigest": { "$ref": "#/$defs/digest" }, "operationPlanDigest": { "$ref": "#/$defs/digest" },
+            "contractCount": { "const": 43 }, "boardCount": { "const": 10 }, "operationCount": { "const": 110 }
+          }
+        }
+      ]
+    },
     "network": {
       "type": "object",
       "additionalProperties": false,
@@ -338,6 +355,7 @@
   "$defs": {
     "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "verifierImageDigest": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -439,7 +457,24 @@
         "runtimeCodeHash": { "$ref": "#/$defs/bytes32" },
         "deployedCodeHash": { "$ref": "#/$defs/bytes32" },
         "constructorArgsHash": { "$ref": "#/$defs/bytes32" },
-        "constructorArgs": { "type": "array" }
+        "constructorArgs": { "type": "array" },
+        "deploymentBlockTimestamp": { "type": "integer", "minimum": 0 },
+        "blockTimestampEvidence": {
+          "type": "object", "additionalProperties": false,
+          "required": ["timestamp", "primaryOperatorId", "secondaryOperatorId", "primaryBlockHash", "secondaryBlockHash"],
+          "properties": {
+            "timestamp": { "type": "integer", "minimum": 0 },
+            "primaryOperatorId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
+            "secondaryOperatorId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
+            "primaryBlockHash": { "$ref": "#/$defs/bytes32" },
+            "secondaryBlockHash": { "$ref": "#/$defs/bytes32" }
+          }
+        },
+        "capsuleArtifactDigest": { "$ref": "#/$defs/digest" },
+        "initCodeHash": { "$ref": "#/$defs/bytes32" },
+        "expectedRuntimeCodeHash": { "$ref": "#/$defs/bytes32" },
+        "primaryObservedRuntimeCodeHash": { "$ref": "#/$defs/bytes32" },
+        "secondaryObservedRuntimeCodeHash": { "$ref": "#/$defs/bytes32" }
       }
     },
     "boardSourceVerification": {
