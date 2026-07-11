@@ -1,6 +1,7 @@
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
-import deploymentSchema from "../../../schemas/deployment-manifest-v2.schema.json";
-import checkpointSchema from "../../../schemas/indexer-checkpoint-v2.schema.json";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { keccak256, toUtf8Bytes } from "ethers";
+import deploymentSchema from "@/schemas/deployment-manifest-v2.schema.json";
+import checkpointSchema from "@/schemas/indexer-checkpoint-v2.schema.json";
 import type { ChainProvenance, Problem } from "@/lib/types";
 
 const MAX_ARTIFACT_BYTES = 4 * 1024 * 1024;
@@ -31,6 +32,19 @@ function object(value: unknown, label: string): JsonObject {
 function schemaRef(root: JsonSchema, ref: string): JsonSchema {
   if (!ref.startsWith("#/$defs/")) throw new Error(`unsupported schema reference ${ref}`);
   return object(object(root.$defs, "$defs")[ref.slice(8)], ref) as JsonSchema;
+}
+
+function isRfc3339DateTime(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!match) return false;
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offsetHourText, offsetMinuteText] = match;
+  const year = Number(yearText); const month = Number(monthText); const day = Number(dayText);
+  const hour = Number(hourText); const minute = Number(minuteText); const second = Number(secondText);
+  const offsetHour = offsetHourText === undefined ? 0 : Number(offsetHourText);
+  const offsetMinute = offsetMinuteText === undefined ? 0 : Number(offsetMinuteText);
+  const daysInMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth &&
+    hour <= 23 && minute <= 59 && second <= 59 && offsetHour <= 23 && offsetMinute <= 59;
 }
 
 function validateSchema(value: unknown, rawSchema: unknown, root: JsonSchema, path: string): void {
@@ -79,7 +93,7 @@ function validateSchema(value: unknown, rawSchema: unknown, root: JsonSchema, pa
     if (typeof value !== "string") throw new Error(`${path} must be a string`);
     if (typeof schema.minLength === "number" && value.length < schema.minLength) throw new Error(`${path} is too short`);
     if (typeof schema.pattern === "string" && !new RegExp(schema.pattern).test(value)) throw new Error(`${path} has an invalid format`);
-    if (schema.format === "date-time" && !Number.isFinite(Date.parse(value))) throw new Error(`${path} must be a date-time`);
+    if (schema.format === "date-time" && !isRfc3339DateTime(value)) throw new Error(`${path} must be an RFC 3339 date-time`);
     if (schema.format === "uri") { try { new URL(value); } catch { throw new Error(`${path} must be an absolute URI`); } }
     return;
   }
@@ -94,16 +108,41 @@ function validateSchema(value: unknown, rawSchema: unknown, root: JsonSchema, pa
 
 function readBoundedRegularJson(path: string): unknown {
   if (!path || path.includes("\0")) throw new Error("artifact path is invalid");
-  const linkStat = lstatSync(path);
-  if (!linkStat.isFile() || linkStat.isSymbolicLink() || linkStat.size > MAX_ARTIFACT_BYTES) throw new Error("artifact must be a bounded regular file");
-  const descriptor = openSync(path, "r");
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const stat = fstatSync(descriptor);
-    if (!stat.isFile() || stat.size !== linkStat.size || stat.dev !== linkStat.dev || stat.ino !== linkStat.ino) throw new Error("artifact changed while opening");
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.size > MAX_ARTIFACT_BYTES) throw new Error("artifact must be a bounded regular file");
     const bytes = readFileSync(descriptor);
-    if (bytes.length > MAX_ARTIFACT_BYTES || bytes.length !== stat.size) throw new Error("artifact size is invalid");
+    const after = fstatSync(descriptor);
+    if (bytes.length > MAX_ARTIFACT_BYTES || bytes.length !== before.size ||
+        before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size ||
+        before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+      throw new Error("artifact changed while reading");
+    }
     return JSON.parse(bytes.toString("utf8")) as unknown;
   } finally { closeSync(descriptor); }
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    const record = value as JsonObject;
+    return Object.fromEntries(Object.keys(record).sort().map((key) => [key, canonicalize(record[key])]));
+  }
+  return value;
+}
+
+export function computePortalDeploymentConfigHash(manifest: JsonObject): string {
+  const indexer = object(manifest.indexer, "manifest.indexer");
+  const payload = {
+    schema: manifest.schema, status: manifest.status, deploymentCommit: manifest.deploymentCommit,
+    network: manifest.network, governance: manifest.governance, roles: manifest.roles,
+    parameters: manifest.parameters, contracts: manifest.contracts,
+    governanceSetup: manifest.governanceSetup, setupTransactions: manifest.setupTransactions,
+    problems: manifest.problems,
+    indexer: { startBlock: indexer.startBlock, finalityPolicy: indexer.finalityPolicy },
+  };
+  return keccak256(toUtf8Bytes(JSON.stringify(canonicalize(payload))));
 }
 
 function same(left: unknown, right: unknown): boolean {
@@ -121,6 +160,7 @@ function validateBindings(manifest: JsonObject, checkpoint: JsonObject, problem:
   const indexer = object(manifest.indexer, "manifest.indexer");
   const network = object(manifest.network, "manifest.network");
   requireBinding(same(binding.deploymentCommit, manifest.deploymentCommit));
+  requireBinding(same(manifest.deploymentConfigHash, computePortalDeploymentConfigHash(manifest)));
   requireBinding(same(binding.deploymentConfigHash, manifest.deploymentConfigHash));
   requireBinding(binding.chainId === network.chainId && binding.startBlock === indexer.startBlock);
   requireBinding(JSON.stringify(checkpoint.finalityPolicy) === JSON.stringify(indexer.finalityPolicy));
@@ -174,19 +214,13 @@ function localOnly(problem: Problem): ChainProvenance {
     deploymentTransactionHash: null, registryAddress: null, problemRegistryId: null,
     verifierImageHash: problem.verifierImage.startsWith("sha256:") ? problem.verifierImage : null,
     admissionMatrixHash: null, deploymentCommit: null, indexedThroughBlock: null,
-    indexedFrontierBlock: null, checkpointBlock: null, reconciliationOk: false,
+    indexedFrontierAtoms: null, checkpointBlock: null, reconciliationOk: false,
     source: "static-portal-data",
     note: "Phase 0 portal state only: complete, matching deployment and indexer artifacts are unavailable.",
   };
 }
 
-export function loadIndexerProvenance(problem: Problem, paths = configuredIndexerArtifactPaths()): ChainProvenance {
-  if (!paths) return localOnly(problem);
-  try {
-    const manifest = object(readBoundedRegularJson(paths.deploymentManifestPath), "manifest");
-    const checkpoint = object(readBoundedRegularJson(paths.indexerCheckpointPath), "checkpoint");
-    validateSchema(manifest, deploymentSchema, deploymentSchema as JsonSchema, "manifest");
-    validateSchema(checkpoint, checkpointSchema, checkpointSchema as JsonSchema, "checkpoint");
+function provenanceFromArtifacts(problem: Problem, manifest: JsonObject, checkpoint: JsonObject): ChainProvenance {
     const aggregate = object(checkpoint.reconstruction, "checkpoint.reconstruction");
     requireBinding(aggregate.ok === true && aggregate.complete === true);
     const { board, manifestProblem } = validateBindings(manifest, checkpoint, problem);
@@ -197,7 +231,9 @@ export function loadIndexerProvenance(problem: Problem, paths = configuredIndexe
     const registry = object(object(manifest.contracts, "manifest.contracts").registry, "manifest.contracts.registry");
     const pool = object(object(manifestProblem.contracts, "problem.contracts").pool, "problem.contracts.pool");
     requireBinding(ADDRESS.test(String(registry.address)) && HASH.test(String(pool.runtimeCodeHash)));
-    const frontier = object(manifest.indexer, "manifest.indexer").indexedThroughBlock as number;
+    const frontierAtomsValue = object(board.onchain, "board.onchain").bestScoreAtoms;
+    requireBinding(typeof frontierAtomsValue === "string" && /^-?[0-9]+$/.test(frontierAtomsValue));
+    const frontierAtoms = frontierAtomsValue as string;
     const checkpointBlock = object(checkpoint.range, "checkpoint.range").toBlock as number;
     return {
       settlementState: "manifest-pending",
@@ -211,11 +247,41 @@ export function loadIndexerProvenance(problem: Problem, paths = configuredIndexe
       admissionMatrixHash: manifestProblem.admissionMatrixHash as string,
       deploymentCommit: manifest.deploymentCommit as string,
       indexedThroughBlock: checkpointBlock,
-      indexedFrontierBlock: frontier,
+      indexedFrontierAtoms: frontierAtoms,
       checkpointBlock,
       reconciliationOk: true,
       source: "indexer-artifacts-v2",
       note: "Verified deployment and complete indexer reconstruction evidence. Funding publication remains disabled.",
     };
+}
+
+function readValidatedArtifacts(paths: IndexerArtifactPaths): { manifest: JsonObject; checkpoint: JsonObject } {
+  const manifest = object(readBoundedRegularJson(paths.deploymentManifestPath), "manifest");
+  const checkpoint = object(readBoundedRegularJson(paths.indexerCheckpointPath), "checkpoint");
+  validateSchema(manifest, deploymentSchema, deploymentSchema as JsonSchema, "manifest");
+  validateSchema(checkpoint, checkpointSchema, checkpointSchema as JsonSchema, "checkpoint");
+  return { manifest, checkpoint };
+}
+
+export function loadIndexerProvenance(problem: Problem, paths = configuredIndexerArtifactPaths()): ChainProvenance {
+  if (!paths) return localOnly(problem);
+  try {
+    const { manifest, checkpoint } = readValidatedArtifacts(paths);
+    return provenanceFromArtifacts(problem, manifest, checkpoint);
   } catch { return localOnly(problem); }
+}
+
+/** Read one artifact generation and derive every board from that immutable parse. */
+export function loadIndexerProvenanceSnapshot(
+  problems: readonly Problem[],
+  paths = configuredIndexerArtifactPaths(),
+): ReadonlyMap<string, ChainProvenance> {
+  if (!paths) return new Map(problems.map((problem) => [problem.slug, localOnly(problem)]));
+  try {
+    const { manifest, checkpoint } = readValidatedArtifacts(paths);
+    const entries = problems.map((problem) => [problem.slug, provenanceFromArtifacts(problem, manifest, checkpoint)] as const);
+    return new Map(entries);
+  } catch {
+    return new Map(problems.map((problem) => [problem.slug, localOnly(problem)]));
+  }
 }

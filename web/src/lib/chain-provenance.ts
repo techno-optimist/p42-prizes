@@ -1,5 +1,4 @@
 import type { ChainProvenance, DonationWallet, Problem } from "@/lib/types";
-import { loadIndexerProvenance } from "@/lib/indexer-provenance";
 
 const ADDRESS = /^0x[a-fA-F0-9]{40}$/;
 const HASH = /^0x[a-fA-F0-9]{64}$/;
@@ -16,10 +15,6 @@ export interface DonationTarget {
 }
 
 export function chainProvenanceForProblem(problem: Problem): ChainProvenance {
-  return loadIndexerProvenance(problem);
-}
-
-export function localOnlyChainProvenance(problem: Problem): ChainProvenance {
   return {
     settlementState: "local-only",
     chain: "Base Sepolia",
@@ -34,7 +29,7 @@ export function localOnlyChainProvenance(problem: Problem): ChainProvenance {
     admissionMatrixHash: null,
     deploymentCommit: null,
     indexedThroughBlock: null,
-    indexedFrontierBlock: null,
+    indexedFrontierAtoms: null,
     checkpointBlock: null,
     reconciliationOk: false,
     source: "static-portal-data",

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { problems } from "@/lib/data";
-import { configuredIndexerArtifactPaths, loadIndexerProvenance } from "@/lib/indexer-provenance";
+import { computePortalDeploymentConfigHash, configuredIndexerArtifactPaths, loadIndexerProvenance } from "@/lib/indexer-provenance";
 
 const root = resolve(process.cwd(), "..");
 const boardKeys = ["pool", "ledger", "submissions", "challenges"] as const;
@@ -41,6 +41,7 @@ function artifacts() {
   base.problems = [problem];
   base.sourceVerification.contracts = { timelock: null, registry: null, rolloverVault: null, boards: [{ problemId: "1", pool: null, ledger: null, submissions: null, challenges: null }] };
   base.indexer.indexedThroughBlock = 100;
+  base.deploymentConfigHash = computePortalDeploymentConfigHash(base);
   const contractBinding = (entry: Record<string, any>) => ({ address: entry.address, deployedCodeHash: entry.deployedCodeHash, abiHash: entry.abiHash });
   const checks = [{ name: "complete", ok: true, expected: true, actual: true }];
   const checkpoint = {
@@ -80,10 +81,25 @@ function expectLocalOnly(result: ReturnType<typeof loadIndexerProvenance>) {
 afterEach(() => { for (const path of created.splice(0)) require("node:fs").rmSync(path, { recursive: true, force: true }); });
 
 describe("indexer provenance v2", () => {
+  it("reproduces the protocol deployment-config hash", () => {
+    const manifest = JSON.parse(require("node:fs").readFileSync(
+      join(root, "deployments/base-sepolia/p42-prizes.example.json"), "utf8",
+    ));
+    expect(computePortalDeploymentConfigHash(manifest)).toBe(manifest.deploymentConfigHash);
+  });
+
+  it("keeps Render-bundled schemas byte-equivalent to canonical protocol schemas", () => {
+    for (const name of ["deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json"]) {
+      const canonical = JSON.parse(require("node:fs").readFileSync(join(root, "schemas", name), "utf8"));
+      const bundled = JSON.parse(require("node:fs").readFileSync(join(process.cwd(), "src", "schemas", name), "utf8"));
+      expect(bundled).toEqual(canonical);
+    }
+  });
+
   it("loads only a fully bound, completely reconstructed board and keeps funding disabled", () => {
     const { manifest, checkpoint } = artifacts();
     const result = loadIndexerProvenance(problems[0], writeArtifacts(manifest, checkpoint));
-    expect(result).toMatchObject({ source: "indexer-artifacts-v2", reconciliationOk: true, indexedFrontierBlock: 100, checkpointBlock: 100, poolAddress: null, donationWalletAddress: null, deploymentTransactionHash: null });
+    expect(result).toMatchObject({ source: "indexer-artifacts-v2", reconciliationOk: true, indexedFrontierAtoms: "0", checkpointBlock: 100, poolAddress: null, donationWalletAddress: null, deploymentTransactionHash: null });
   });
 
   it.each([
@@ -92,7 +108,10 @@ describe("indexer provenance v2", () => {
     ["finality", (m: any, c: any) => { c.finalityPolicy.confirmations += 1; }],
     ["board slug", (m: any, c: any) => { c.boards[0].problemSlug = "wrong"; }],
     ["contract ABI", (m: any, c: any) => { c.manifestBinding.boards["1"].pool.abiHash = hash("f"); }],
+    ["manifest content with stale digest", (m: any) => { m.problems[0].metadataURI = "ipfs://relabeled"; }],
+    ["impossible RFC 3339 date", (m: any) => { m.generatedAt = "2024-02-30T12:00:00Z"; }],
     ["frontier", (m: any) => { m.indexer.indexedThroughBlock = 99; }],
+    ["malformed frontier atoms", (_m: any, c: any) => { c.boards[0].onchain.bestScoreAtoms = "1.5"; }],
   ])("fails closed on %s mismatch", (_name, mutate) => {
     const { manifest, checkpoint } = artifacts(); mutate(manifest, checkpoint);
     expectLocalOnly(loadIndexerProvenance(problems[0], writeArtifacts(manifest, checkpoint)));
