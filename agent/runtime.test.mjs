@@ -708,8 +708,36 @@ test("runtime bridge quarantines orphaned canonical jobs under the queue lock", 
   assert.equal(updated.status, "cancelled");
   assert.equal(updated.canonical_status, "orphaned_reorg");
   assert.equal(updated.action.status, "canonical_invalidated");
+  assert.equal(updated.challenge_candidate_hash, `sha256:${"4".repeat(64)}`);
   assert.equal(updated.action.transaction_hash, `0x${"5".repeat(64)}`);
   assert.equal(updated.previous_action.status, "broadcast");
+});
+
+
+test("runtime bridge binds pre-verification canonical quarantine to the source event", () => {
+  const dir = mkdtempSync(join(tmpdir(), "p42-bridge-preverify-"));
+  const queue = join(dir, "queue.json");
+  const sourceEventHash = `sha256:${"7".repeat(64)}`;
+  const job = {
+    job_id: "84532:submission:preverify:0",
+    status: "queued",
+    required_memory_mb: 128,
+    source_event_hash: sourceEventHash,
+  };
+  writeFileSync(queue, `${canonicalJson({ schema_version: "p42-runner-queue/v1", jobs: [job] })}\n`, "utf8");
+
+  execFileSync("python3", [
+    join(REPO_ROOT, "agent", "runtime_bridge.py"),
+    "quarantine-canonical",
+    "--queue", queue,
+    "--job-id", job.job_id,
+    "--reason", "canonical event disappeared before verification",
+  ], { cwd: REPO_ROOT, encoding: "utf8" });
+  const updated = JSON.parse(readFileSync(queue, "utf8")).jobs[0];
+  assert.equal(updated.status, "cancelled");
+  assert.equal(updated.challenge_candidate_hash, sourceEventHash);
+  assert.equal(updated.action.candidate_hash, sourceEventHash);
+  assert.equal(updated.action.status, "canonical_invalidated");
 });
 
 

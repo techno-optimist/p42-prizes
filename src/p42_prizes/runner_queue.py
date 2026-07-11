@@ -5,10 +5,12 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import fcntl
+import hashlib
 import math
 import os
 from pathlib import Path
 import stat
+import threading
 from typing import Any, Iterator, Mapping
 
 from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json
@@ -23,6 +25,31 @@ JOB_STATUSES = {"queued", "running", "succeeded", "failed", "cancelled"}
 # module constant (not a RunnerPolicy field) because the published
 # runner-plan schema pins policy with additionalProperties=false.
 DEFAULT_MAX_JOB_ATTEMPTS = 3
+ACTIVE_JOB_ADMISSION_LIMIT = 960
+ORDINARY_JOB_ADMISSION_LIMIT = 896
+QUEUE_WRITE_HEADROOM_BYTES = 64 * 1024
+TERMINAL_JOB_STATUSES = {"succeeded", "failed", "cancelled"}
+TERMINAL_ACTION_STATUSES = {
+    "confirmed",
+    "broadcast_reverted",
+    "superseded",
+    "window_expired",
+    "no_action",
+    "quarantined",
+    "registry_binding_rejected",
+    "invalid_spend_cap",
+    "bond_over_cap",
+    "onchain_observed",
+    "resolved_elsewhere",
+    "orphaned_reorg",
+    "canonical_invalidated",
+}
+ACTION_STATUSES = TERMINAL_ACTION_STATUSES | {"signed", "broadcast", "submitted", "reorged"}
+URGENT_DEADLINE_SLACK_SECONDS = 6 * 60 * 60
+_THREAD_LOCKS_GUARD = threading.Lock()
+_THREAD_LOCKS: dict[str, threading.RLock] = {}
+ARCHIVE_SCHEMA_VERSION = "p42-runner-job-archive/v1"
+TOMBSTONE_SCHEMA_VERSION = "p42-runner-job-tombstone/v1"
 
 
 class RunnerQueueError(ValueError):
@@ -65,7 +92,20 @@ def enqueue_runner_job(queue_path: str | Path, job: Mapping[str, Any]) -> dict[s
     queue_file = Path(queue_path)
     with locked_runner_queue(queue_file) as queue:
         _validate_jobs(queue)
+        tombstone = _find_tombstone(queue_file, candidate.get("job_id"), source_event_hash)
+        if tombstone is not None:
+            return {
+                "created": False,
+                "job_id": tombstone["job_id"],
+                "status": tombstone["terminal_status"],
+                "source_event_hash": source_event_hash,
+            }
         for existing in queue["jobs"]:
+            if (
+                existing.get("source_event_hash") == source_event_hash
+                and existing.get("job_id") != candidate.get("job_id")
+            ):
+                raise RunnerQueueError("runner source_event_hash collision with different job_id")
             if existing.get("job_id") != candidate.get("job_id"):
                 continue
             if existing.get("source_event_hash") != source_event_hash:
@@ -79,8 +119,15 @@ def enqueue_runner_job(queue_path: str | Path, job: Mapping[str, Any]) -> dict[s
                 "source_event_hash": source_event_hash,
             }
 
+        admission_limit = ACTIVE_JOB_ADMISSION_LIMIT if _is_urgent_deadline_job(candidate) else ORDINARY_JOB_ADMISSION_LIMIT
+        _archive_for_admission(queue_file, queue, candidate, admission_limit=admission_limit)
+        if len(queue["jobs"]) >= admission_limit:
+            raise RunnerQueueError(
+                f"runner active queue admission limit reached ({admission_limit})"
+            )
         trial = {**queue, "jobs": [*queue["jobs"], candidate]}
         _validate_jobs(trial)
+        _encode_queue_for_write(trial)
         queue["jobs"].append(candidate)
         return {
             "created": True,
@@ -111,6 +158,8 @@ def record_runner_action(
         raise RunnerQueueError("candidate_hash must be a sha256 string")
     if not status:
         raise RunnerQueueError("action status must be non-empty")
+    if status not in ACTION_STATUSES:
+        raise RunnerQueueError(f"unknown runner action status: {status}")
 
     with locked_runner_queue(Path(queue_path)) as queue:
         job = _job_by_id(queue, job_id)
@@ -130,25 +179,13 @@ def record_runner_action(
             # finality depth. Permit only the recovery transitions that let a
             # reorged raw transaction return to the durable journal/rebroadcast
             # path; a confirmed or reverted canonical receipt is terminal.
-            if current_status in {"confirmed", "broadcast_reverted"}:
+            if current_status in TERMINAL_ACTION_STATUSES:
                 raise RunnerQueueError(f"runner action for {job_id} is already terminal: {current_status}")
-            if current_status == "submitted" and status not in {
-                "submitted",
-                "confirmed",
-                "broadcast_reverted",
-                "reorged",
-            }:
+            if current_status == "submitted" and status not in ({"submitted", "reorged"} | TERMINAL_ACTION_STATUSES):
                 raise RunnerQueueError(f"runner action for {job_id} has a pending receipt")
-            if current_status == "reorged" and status not in {
-                "reorged",
-                "signed",
-                "broadcast",
-                "submitted",
-                "confirmed",
-                "broadcast_reverted",
-                "superseded",
-                "window_expired",
-            }:
+            if current_status == "reorged" and status not in (
+                {"reorged", "signed", "broadcast", "submitted"} | TERMINAL_ACTION_STATUSES
+            ):
                 raise RunnerQueueError(f"runner action for {job_id} cannot recover to {status}")
 
         action = {
@@ -182,6 +219,16 @@ def read_runner_queue(queue_path: str | Path) -> dict[str, Any]:
 
 @contextmanager
 def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
+    lock_key = str(queue_path.resolve(strict=False))
+    with _THREAD_LOCKS_GUARD:
+        thread_lock = _THREAD_LOCKS.setdefault(lock_key, threading.RLock())
+    with thread_lock:
+        with _locked_runner_queue_process(queue_path) as queue:
+            yield queue
+
+
+@contextmanager
+def _locked_runner_queue_process(queue_path: Path) -> Iterator[dict[str, Any]]:
     directory_fd = open_secure_runner_directory(queue_path.parent)
     lock_path = queue_path.with_suffix(queue_path.suffix + ".lock")
     lock_fd = -1
@@ -189,12 +236,7 @@ def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         if not nofollow:
             raise OSError("runner queue locks require platform O_NOFOLLOW support")
-        lock_fd = os.open(
-            lock_path.name,
-            os.O_RDWR | os.O_CREAT | nofollow,
-            0o600,
-            dir_fd=directory_fd,
-        )
+        lock_fd = _open_stable_lock_at(directory_fd, lock_path.name)
         if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
             raise RunnerQueueError("runner queue lock must be a regular file")
         os.fchmod(lock_fd, 0o600)
@@ -210,10 +252,17 @@ def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
             ):
                 raise RunnerQueueError("runner queue lock changed during acquisition")
             queue = _read_queue_file_at(directory_fd, queue_path.name)
+            original = copy.deepcopy(queue)
+            _reconcile_archived_duplicates(queue_path, queue)
             try:
                 yield queue
-            finally:
-                _write_queue_file_at(directory_fd, queue_path.name, queue)
+            except BaseException:
+                queue.clear()
+                queue.update(original)
+                raise
+            else:
+                if queue != original:
+                    _write_queue_file_at(directory_fd, queue_path.name, queue)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             lock.close()
@@ -221,6 +270,50 @@ def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
         if lock_fd >= 0:
             os.close(lock_fd)
         os.close(directory_fd)
+
+
+def _open_stable_lock_at(directory_fd: int, lock_name: str) -> int:
+    """Open one permanent lock inode without racing O_CREAT on its final name."""
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDWR | nofollow
+    try:
+        return os.open(lock_name, flags, dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
+
+    temporary = f".{lock_name}.{os.getpid()}.{os.urandom(8).hex()}.init"
+    temporary_fd = -1
+    try:
+        temporary_fd = os.open(
+            temporary,
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        os.fchmod(temporary_fd, 0o600)
+        try:
+            os.link(
+                temporary,
+                lock_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            os.fsync(directory_fd)
+        except FileExistsError:
+            pass
+    finally:
+        if temporary_fd >= 0:
+            os.close(temporary_fd)
+        try:
+            os.unlink(temporary, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+
+    # The link either won or lost to an equivalent contender. Opening without
+    # O_CREAT now observes the single permanent inode; unsafe symlinks fail via
+    # O_NOFOLLOW and a removed parent directory fails rather than spinning.
+    return os.open(lock_name, flags, dir_fd=directory_fd)
 
 
 def _read_queue_file_at(directory_fd: int, queue_name: str) -> dict[str, Any]:
@@ -264,7 +357,7 @@ def _read_queue_file_at(directory_fd: int, queue_name: str) -> dict[str, Any]:
 
 
 def _write_queue_file_at(directory_fd: int, queue_name: str, queue: Mapping[str, Any]) -> None:
-    payload = (canonical_json(dict(queue)) + "\n").encode("utf-8")
+    payload = _encode_queue_for_write(queue)
     temporary = f".{queue_name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(temporary, flags, 0o600, dir_fd=directory_fd)
@@ -289,6 +382,286 @@ def _write_queue_file_at(directory_fd: int, queue_name: str, queue: Mapping[str,
             os.unlink(temporary, dir_fd=directory_fd)
         except FileNotFoundError:
             pass
+
+
+def _encode_queue_for_write(queue: Mapping[str, Any]) -> bytes:
+    payload = (canonical_json(dict(queue)) + "\n").encode("utf-8")
+    limit = DEFAULT_MAX_BYTES - QUEUE_WRITE_HEADROOM_BYTES
+    if len(payload) > limit:
+        raise RunnerQueueError(f"runner queue canonical write exceeds reserved limit ({limit})")
+    return payload
+
+
+def _archive_for_admission(
+    queue_path: Path,
+    queue: dict[str, Any],
+    candidate: Mapping[str, Any],
+    *,
+    admission_limit: int,
+) -> None:
+    """Archive settled jobs until an enqueue has count and byte headroom."""
+    while True:
+        trial = {**queue, "jobs": [*queue["jobs"], dict(candidate)]}
+        count_ok = len(trial["jobs"]) <= admission_limit
+        try:
+            _encode_queue_for_write(trial)
+            bytes_ok = True
+        except RunnerQueueError:
+            bytes_ok = False
+        if count_ok and bytes_ok:
+            return
+        index = next((i for i, job in enumerate(queue["jobs"]) if _is_archivable(job)), None)
+        if index is None:
+            reason = "count" if not count_ok else "canonical byte"
+            raise RunnerQueueError(f"runner queue has no settled terminal job to recover {reason} headroom")
+        job = queue["jobs"][index]
+        _persist_archived_job(queue_path, job)
+        del queue["jobs"][index]
+
+
+def _is_archivable(job: Mapping[str, Any]) -> bool:
+    if job.get("status") not in TERMINAL_JOB_STATUSES or not _is_sha256(job.get("source_event_hash")):
+        return False
+    action = job.get("action")
+    return (
+        isinstance(action, dict)
+        and action.get("status") in TERMINAL_ACTION_STATUSES
+        and _is_sha256(action.get("candidate_hash"))
+        and action.get("candidate_hash") == job.get("challenge_candidate_hash")
+    )
+
+
+def _challenge_deadline(job: Mapping[str, Any]) -> int | None:
+    claim = job.get("chain_claim")
+    if not isinstance(claim, dict) or "challenge_ends_at" not in claim:
+        return None
+    raw = claim["challenge_ends_at"]
+    if not isinstance(raw, str) or not raw or not raw.isascii() or not raw.isdecimal():
+        raise RunnerQueueError("chain_claim.challenge_ends_at must be a canonical decimal Unix timestamp string")
+    if len(raw) > 1 and raw.startswith("0"):
+        raise RunnerQueueError("chain_claim.challenge_ends_at must not contain leading zeroes")
+    deadline = int(raw)
+    if deadline < 1 or deadline > 2**63 - 1:
+        raise RunnerQueueError("chain_claim.challenge_ends_at is outside the supported Unix timestamp range")
+    return deadline
+
+
+def _is_urgent_deadline_job(job: Mapping[str, Any], *, now: datetime | None = None) -> bool:
+    deadline = _challenge_deadline(job)
+    if deadline is None:
+        return False
+    current = int((now or datetime.now(timezone.utc)).timestamp())
+    return current < deadline <= current + URGENT_DEADLINE_SLACK_SECONDS
+
+
+def _artifact_digest(value: Mapping[str, Any]) -> tuple[bytes, str]:
+    payload = (canonical_json(dict(value)) + "\n").encode("utf-8")
+    return payload, "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _safe_key(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _archive_paths(queue_path: Path) -> tuple[Path, Path]:
+    root = queue_path.parent / f"{queue_path.name}.archive"
+    return root / "records", root / "tombstones"
+
+
+def _ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    metadata = path.lstat()
+    if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+        raise RunnerQueueError(f"runner archive directory is not private: {path}")
+
+
+def _write_immutable_json(path: Path, value: Mapping[str, Any]) -> None:
+    payload, _ = _artifact_digest(value)
+    _ensure_private_directory(path.parent)
+    if path.exists():
+        if _read_private_regular_bytes(path) != payload:
+            raise RunnerQueueError(f"immutable runner artifact collision: {path}")
+        return
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            fd = -1
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, path, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temporary.unlink(missing_ok=True)
+    if _read_private_regular_bytes(path) != payload:
+        raise RunnerQueueError(f"immutable runner artifact collision: {path}")
+
+
+def _read_private_regular_bytes(path: Path) -> bytes:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise OSError("immutable runner artifacts require platform O_NOFOLLOW support")
+    try:
+        before = path.lstat()
+        descriptor = os.open(path, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0))
+    except (FileNotFoundError, OSError) as exc:
+        raise RunnerQueueError(f"immutable runner artifact is unavailable or unsafe: {path}") from exc
+    try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not stat.S_ISREG(opened.st_mode)
+            or before.st_dev != opened.st_dev
+            or before.st_ino != opened.st_ino
+            or opened.st_uid != os.geteuid()
+            or opened.st_mode & 0o077
+            or opened.st_size > DEFAULT_MAX_BYTES
+        ):
+            raise RunnerQueueError(f"immutable runner artifact is not a private regular file: {path}")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(64 * 1024, DEFAULT_MAX_BYTES - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > DEFAULT_MAX_BYTES:
+                raise RunnerQueueError(f"immutable runner artifact exceeds maxBytes: {path}")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _persist_archived_job(queue_path: Path, job: Mapping[str, Any]) -> None:
+    records, tombstones = _archive_paths(queue_path)
+    _ensure_private_directory(records.parent)
+    archive = {"schema_version": ARCHIVE_SCHEMA_VERSION, "job": dict(job)}
+    archive_payload, archive_hash = _artifact_digest(archive)
+    record_path = records / f"{archive_hash.removeprefix('sha256:')}.json"
+    _write_immutable_json(record_path, archive)
+    if record_path.read_bytes() != archive_payload:
+        raise RunnerQueueError(f"runner archive record digest collision: {record_path}")
+    tombstone = {
+        "schema_version": TOMBSTONE_SCHEMA_VERSION,
+        "job_id": job["job_id"],
+        "source_event_hash": job["source_event_hash"],
+        "terminal_status": job["status"],
+        "terminal_action_status": job["action"]["status"],
+        "candidate_hash": job["action"]["candidate_hash"],
+        "archive_hash": archive_hash,
+    }
+    _write_immutable_json(tombstones / f"job-{_safe_key(job['job_id'])}.json", tombstone)
+    _write_immutable_json(tombstones / f"event-{_safe_key(job['source_event_hash'])}.json", tombstone)
+
+
+def _read_tombstone(path: Path) -> dict[str, Any] | None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
+        raise RunnerQueueError(f"runner tombstone is not a private regular file: {path}")
+    try:
+        value = loads_strict_json(path.read_bytes(), max_bytes=DEFAULT_MAX_BYTES)
+    except Exception as exc:
+        raise RunnerQueueError(f"corrupt runner tombstone: {path}") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != TOMBSTONE_SCHEMA_VERSION:
+        raise RunnerQueueError(f"invalid runner tombstone: {path}")
+    if not isinstance(value.get("job_id"), str) or not _is_sha256(value.get("source_event_hash")):
+        raise RunnerQueueError(f"invalid runner tombstone: {path}")
+    if (
+        value.get("terminal_status") not in TERMINAL_JOB_STATUSES
+        or value.get("terminal_action_status") not in TERMINAL_ACTION_STATUSES
+        or not _is_sha256(value.get("candidate_hash"))
+        or not _is_sha256(value.get("archive_hash"))
+    ):
+        raise RunnerQueueError(f"invalid runner tombstone: {path}")
+    records, _ = _archive_paths(path.parents[1].parent / path.parents[1].name.removesuffix(".archive"))
+    record = records / f"{value['archive_hash'].removeprefix('sha256:')}.json"
+    try:
+        record_metadata = record.lstat()
+    except FileNotFoundError:
+        record_metadata = None
+    if (
+        record_metadata is None
+        or not stat.S_ISREG(record_metadata.st_mode)
+        or record_metadata.st_uid != os.geteuid()
+        or record_metadata.st_mode & 0o077
+        or "sha256:" + hashlib.sha256(record.read_bytes()).hexdigest() != value["archive_hash"]
+    ):
+        raise RunnerQueueError(f"runner tombstone archive target is missing or corrupt: {path}")
+    try:
+        archive = loads_strict_json(record.read_bytes(), max_bytes=DEFAULT_MAX_BYTES)
+    except Exception as exc:
+        raise RunnerQueueError(f"runner tombstone archive target is invalid: {path}") from exc
+    archived_job = archive.get("job") if isinstance(archive, dict) else None
+    if (
+        not isinstance(archive, dict)
+        or archive.get("schema_version") != ARCHIVE_SCHEMA_VERSION
+        or not isinstance(archived_job, dict)
+        or archived_job.get("job_id") != value["job_id"]
+        or archived_job.get("source_event_hash") != value["source_event_hash"]
+        or archived_job.get("status") != value["terminal_status"]
+        or archived_job.get("challenge_candidate_hash") != value["candidate_hash"]
+        or archived_job.get("action", {}).get("status") != value["terminal_action_status"]
+        or archived_job.get("action", {}).get("candidate_hash") != value["candidate_hash"]
+        or not _is_archivable(archived_job)
+    ):
+        raise RunnerQueueError(f"runner tombstone archive target does not match index: {path}")
+    return value
+
+
+def _find_tombstone(queue_path: Path, job_id: Any, source_event_hash: str) -> dict[str, Any] | None:
+    if not isinstance(job_id, str) or not job_id:
+        raise RunnerQueueError("new runner job_id must be non-empty")
+    _, tombstones = _archive_paths(queue_path)
+    by_job = _read_tombstone(tombstones / f"job-{_safe_key(job_id)}.json")
+    by_event = _read_tombstone(tombstones / f"event-{_safe_key(source_event_hash)}.json")
+    for found in (by_job, by_event):
+        if found is None:
+            continue
+        if found["job_id"] != job_id or found["source_event_hash"] != source_event_hash:
+            raise RunnerQueueError("runner replay key collision with archived terminal job")
+    if (by_job is None) != (by_event is None) or (by_job is not None and by_job != by_event):
+        raise RunnerQueueError("runner tombstone index is incomplete or inconsistent")
+    return by_job
+
+
+def _reconcile_archived_duplicates(queue_path: Path, queue: dict[str, Any]) -> None:
+    """Finish archive transactions interrupted before canonical queue removal."""
+    jobs = queue.get("jobs")
+    if not isinstance(jobs, list):
+        return
+    retained: list[dict[str, Any]] = []
+    for job in jobs:
+        if not isinstance(job, dict) or not _is_archivable(job):
+            retained.append(job)
+            continue
+        records, tombstones = _archive_paths(queue_path)
+        archive = {"schema_version": ARCHIVE_SCHEMA_VERSION, "job": dict(job)}
+        _, archive_hash = _artifact_digest(archive)
+        record_path = records / f"{archive_hash.removeprefix('sha256:')}.json"
+        job_path = tombstones / f"job-{_safe_key(job['job_id'])}.json"
+        event_path = tombstones / f"event-{_safe_key(job['source_event_hash'])}.json"
+        if not record_path.exists() and not job_path.exists() and not event_path.exists():
+            retained.append(job)
+            continue
+        _persist_archived_job(queue_path, job)
+        found = _find_tombstone(queue_path, job["job_id"], job["source_event_hash"])
+        if found is None or found["archive_hash"] != archive_hash:
+            raise RunnerQueueError("runner archive reconciliation did not reproduce the active job")
+    queue["jobs"] = retained
 
 
 def _job_by_id(queue: Mapping[str, Any], job_id: str) -> dict[str, Any]:
@@ -344,7 +717,7 @@ def plan_runner_queue(
     jobs = _validate_jobs(queue)
     queued = sorted(
         [job for job in jobs if job["status"] == "queued"],
-        key=_job_sort_key,
+        key=lambda job: _job_sort_key(job, now_epoch=int(now.timestamp())),
     )
     eligible_queued = [job for job in queued if _retry_not_before(job) is None or _retry_not_before(job) <= now]
     active_running = []
@@ -536,6 +909,7 @@ def _validate_jobs(queue: Mapping[str, Any]) -> list[dict[str, Any]]:
         raise RunnerQueueError("queue.jobs must be an array")
     normalized: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    seen_events: set[str] = set()
     for index, job in enumerate(jobs):
         if not isinstance(job, dict):
             raise RunnerQueueError(f"queue.jobs[{index}] must be an object")
@@ -545,6 +919,13 @@ def _validate_jobs(queue: Mapping[str, Any]) -> list[dict[str, Any]]:
         if job_id in seen_ids:
             raise RunnerQueueError(f"duplicate runner job_id: {job_id}")
         seen_ids.add(job_id)
+        source_event_hash = job.get("source_event_hash")
+        if source_event_hash is not None:
+            if not _is_sha256(source_event_hash):
+                raise RunnerQueueError(f"queue.jobs[{index}].source_event_hash must be a sha256 string")
+            if source_event_hash in seen_events:
+                raise RunnerQueueError(f"duplicate runner source_event_hash: {source_event_hash}")
+            seen_events.add(source_event_hash)
         status = job.get("status")
         if status not in JOB_STATUSES:
             raise RunnerQueueError(f"queue.jobs[{index}].status must be one of {', '.join(sorted(JOB_STATUSES))}")
@@ -561,6 +942,7 @@ def _validate_jobs(queue: Mapping[str, Any]) -> list[dict[str, Any]]:
                     f"queue.jobs[{index}].retry_not_before_utc must be a UTC timestamp string"
                 )
             _parse_utc(retry_not_before)
+        _challenge_deadline(job)
         normalized.append(dict(job))
     return normalized
 
@@ -572,7 +954,17 @@ def _required_memory_mb(job: Mapping[str, Any], prefix: str = "job") -> int:
     return value
 
 
-def _job_sort_key(job: Mapping[str, Any]) -> tuple[int, int, str, str]:
+def _job_sort_key(job: Mapping[str, Any], *, now_epoch: int) -> tuple[int, int, int, int, str, str]:
+    deadline = _challenge_deadline(job)
+    if deadline is not None and deadline > now_epoch:
+        deadline_class = 0
+        deadline_order = deadline
+    elif deadline is None:
+        deadline_class = 1
+        deadline_order = 2**63 - 1
+    else:
+        deadline_class = 2
+        deadline_order = deadline
     block_number = job.get("chain_block_number")
     log_index = job.get("chain_log_index")
     created_at = job.get("created_at_utc")
@@ -582,7 +974,7 @@ def _job_sort_key(job: Mapping[str, Any]) -> tuple[int, int, str, str]:
         log_index = 2**31 - 1
     if not isinstance(created_at, str):
         created_at = ""
-    return (block_number, log_index, created_at, str(job["job_id"]))
+    return (deadline_class, deadline_order, block_number, log_index, created_at, str(job["job_id"]))
 
 
 def _retry_not_before(job: Mapping[str, Any]) -> datetime | None:
