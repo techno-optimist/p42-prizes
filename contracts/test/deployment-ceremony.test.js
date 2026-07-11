@@ -22,6 +22,7 @@ import {
   buildSetupOperations,
   completeManifestOutputReservation,
   completeSetupManifest,
+  createDeploymentReservationIdentity,
   constructorArgsHash,
   constructorArgsFor,
   manifestOutputReservationPath,
@@ -454,9 +455,12 @@ describe("deployment ceremony input gate", () => {
     const directory = await mkdtemp(join(tmpdir(), "p42-ceremony-reservation-"));
     const output = join(directory, "p42-prizes.json");
     try {
+      const identity = createDeploymentReservationIdentity(output, {
+        deploymentCommit: "a".repeat(40), network: "baseSepolia", chainId: 84532, deployer: ADDRESSES.deployer,
+      }, { trustedRoot: directory, configValue: { ceremony: "test" } });
       const reservations = await Promise.allSettled([
-        reserveManifestOutput(output, { deploymentCommit: "a".repeat(40), deployer: ADDRESSES.deployer }),
-        reserveManifestOutput(output, { deploymentCommit: "a".repeat(40), deployer: ADDRESSES.deployer }),
+        reserveManifestOutput(identity),
+        reserveManifestOutput(identity),
       ]);
       const fulfilled = reservations.filter((result) => result.status === "fulfilled");
       const rejected = reservations.filter((result) => result.status === "rejected");
@@ -464,50 +468,60 @@ describe("deployment ceremony input gate", () => {
       assert.equal(rejected.length, 1);
       assert.match(rejected[0].reason.message, /second deployment ceremony/);
 
-      const reservation = await readManifestOutputReservation(output);
+      const reservation = await readManifestOutputReservation(identity);
       assert.equal(reservation.record.manifestPath, output);
       assert.equal(reservation.record.deployments.timelock, undefined);
-      await recordManifestOutputDeployment(output, "timelock", {
+      await recordManifestOutputDeployment(identity, "timelock", {
         name: "P42MultisigTimelock",
         address: ADDRESSES.timelock,
         txHash: `0x${"a".repeat(64)}`,
         state: "broadcast",
         blockNumber: null,
       });
-      const journaled = await readManifestOutputReservation(output);
+      const journaled = await readManifestOutputReservation(identity);
       assert.equal(journaled.record.deployments.timelock.state, "broadcast");
       assert.equal(journaled.record.deployments.timelock.address, ADDRESSES.timelock);
 
-      await recordManifestOutputBoardDeployment(output, "1", "pool", {
+      await recordManifestOutputBoardDeployment(identity, "1", "pool", {
         name: "P42BountyPool",
         address: ADDRESSES.pool,
         txHash: `0x${"b".repeat(64)}`,
         state: "broadcast",
         blockNumber: null,
       });
-      const boardJournal = await readManifestOutputReservation(output);
+      const boardJournal = await readManifestOutputReservation(identity);
       assert.equal(boardJournal.record.deployments.boards["1"].pool.address, ADDRESSES.pool);
       await assert.rejects(
-        () => recordManifestOutputBoardDeployment(output, "1", "pool", {
-          address: "0x0000000000000000000000000000000000000099",
+        () => recordManifestOutputBoardDeployment(identity, "1", "pool", {
+          name: "P42BountyPool", address: "0x0000000000000000000000000000000000000099",
+          txHash: `0x${"b".repeat(64)}`, state: "broadcast", blockNumber: null,
         }),
         /changed during ceremony/,
       );
 
       await assert.rejects(
-        () => completeManifestOutputReservation(output),
+        () => completeManifestOutputReservation(identity),
         /before manifest exists/,
       );
       await assert.doesNotReject(() => access(manifestOutputReservationPath(output)));
 
-      await writeFile(output, '{"status":"pending-governance-setup"}\n', { flag: "wx" });
-      await completeManifestOutputReservation(output);
+      const completionManifest = bindDeploymentConfigHash({
+        schema: MULTIBOARD_MANIFEST_SCHEMA,
+        status: PENDING_SETUP_STATUS,
+        deploymentCommit: "a".repeat(40),
+        network: { name: "baseSepolia", chainId: 84532, explorerBaseUrl: "https://sepolia.basescan.org" },
+        governance: {}, roles: { deployer: ADDRESSES.deployer }, parameters: {}, contracts: {},
+        governanceSetup: { status: "pending" }, setupTransactions: [], problems: [],
+        indexer: { startBlock: 1, finalityPolicy: {} },
+      });
+      await writeFile(output, `${JSON.stringify(completionManifest)}\n`, { flag: "wx", mode: 0o600 });
+      await completeManifestOutputReservation(identity);
       await assert.rejects(() => access(manifestOutputReservationPath(output)));
       const deploymentRecord = JSON.parse(await readFile(`${output}.deployment-record.json`, "utf8"));
       assert.equal(deploymentRecord.status, "manifest-published");
       assert.equal(deploymentRecord.deployments.timelock.address, ADDRESSES.timelock);
       await assert.rejects(
-        () => reserveManifestOutput(output, { deploymentCommit: "b".repeat(40), deployer: ADDRESSES.deployer }),
+        () => reserveManifestOutput(identity),
         /Refusing to overwrite existing deployment manifest/,
       );
     } finally {
