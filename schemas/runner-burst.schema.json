@@ -3,7 +3,7 @@
   "$id": "https://p42.xyz/schemas/runner-burst-v1.json",
   "title": "P42 authoritative artifact-derived runner burst drill",
   "type": "object",
-  "required": ["schema_version", "drill_id", "started_at_utc", "completed_at_utc", "environment", "release", "git_commit", "problem_id", "board_id", "verifier_image", "admission_matrix_hash", "runner_host", "runner_host_key", "artifacts", "annotation", "derived", "gate_passed", "burst_hash"],
+  "required": ["schema_version", "drill_id", "started_at_utc", "completed_at_utc", "environment", "release", "git_commit", "problem_id", "board_id", "verifier_image", "admission_matrix_hash", "runner_host", "runner_host_key", "artifacts", "annotation", "derived", "attestation_valid", "gate_passed", "burst_hash"],
   "additionalProperties": false,
   "properties": {
     "schema_version": {"const": "p42-runner-burst/v1"},
@@ -30,14 +30,15 @@
     "annotation": {"type": "object", "required": ["agent_operator", "statement"], "additionalProperties": false, "properties": {"agent_operator": {"type": "string", "minLength": 1}, "statement": {"type": "string", "minLength": 1}}},
     "derived": {
       "type": "object",
-      "required": ["submitted_jobs", "completed_jobs", "failed_jobs", "max_active_running", "max_observed_queue_depth", "fifo_order_preserved", "transcript_count", "invalid_transcript_count", "alerts_linked", "guards_proved", "secret_scan_passed", "authority_resolved", "host_observer_verified", "external_live_blocker"],
+      "required": ["submitted_jobs", "completed_jobs", "failed_jobs", "max_active_running", "max_observed_queue_depth", "fifo_order_preserved", "transcript_count", "invalid_transcript_count", "alerts_linked", "guards_proved", "secret_scan_passed", "authority_attestation_verified", "host_observer_attestation_verified", "live_authority_resolution_required", "external_live_blocker"],
       "additionalProperties": false,
       "properties": {
-        "submitted_jobs": {"type": "integer", "minimum": 3}, "completed_jobs": {"type": "integer", "minimum": 1}, "failed_jobs": {"type": "integer", "minimum": 1}, "max_active_running": {"const": 1}, "max_observed_queue_depth": {"type": "integer", "minimum": 3}, "fifo_order_preserved": {"const": true}, "transcript_count": {"type": "integer", "minimum": 1}, "invalid_transcript_count": {"type": "integer", "minimum": 1}, "alerts_linked": {"const": true}, "guards_proved": {"type": "array", "minItems": 4, "uniqueItems": true, "items": {"type": "string"}}, "secret_scan_passed": {"const": true}, "authority_resolved": {"const": true}, "host_observer_verified": {"const": true}, "external_live_blocker": {"const": true}
+        "submitted_jobs": {"type": "integer", "minimum": 3}, "completed_jobs": {"type": "integer", "minimum": 1}, "failed_jobs": {"type": "integer", "minimum": 1}, "max_active_running": {"const": 1}, "max_observed_queue_depth": {"type": "integer", "minimum": 3}, "fifo_order_preserved": {"const": true}, "transcript_count": {"type": "integer", "minimum": 1}, "invalid_transcript_count": {"type": "integer", "minimum": 1}, "alerts_linked": {"const": true}, "guards_proved": {"type": "array", "minItems": 4, "uniqueItems": true, "items": {"type": "string"}}, "secret_scan_passed": {"const": true}, "authority_attestation_verified": {"const": true}, "host_observer_attestation_verified": {"const": true}, "live_authority_resolution_required": {"const": true}, "external_live_blocker": {"const": true}
       }
     },
     "attestation": {"$ref": "#/$defs/attestation"},
-    "gate_passed": {"type": "boolean"},
+    "attestation_valid": {"type": "boolean"},
+    "gate_passed": {"const": false},
     "burst_hash": {"$ref": "#/$defs/hash"}
   },
   "$defs": {

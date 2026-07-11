@@ -23,7 +23,7 @@ PUBLIC_KEY_RE = re.compile(r"ed25519:[a-f0-9]{64}")
 REQUIRED_GUARDS = {"memory_guard_tripped", "swap_guard_tripped", "job_exceeds_host_capacity", "runner_concurrency_full"}
 SECRET_KEY_RE = re.compile(r"(?i)(?:^|[_-])(api[_-]?key|private[_-]?key|authorization|token|access[_-]?token|refresh[_-]?token)(?:$|[_-])")
 SECRET_VALUE_RE = re.compile(r"(?i)(?:bearer\s+[A-Za-z0-9._~+/=-]{12,}|(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{12,}|AKIA[0-9A-Z]{16})")
-TOP_KEYS = {"schema_version", "drill_id", "started_at_utc", "completed_at_utc", "environment", "release", "git_commit", "problem_id", "board_id", "verifier_image", "admission_matrix_hash", "runner_host", "runner_host_key", "artifacts", "annotation", "attestation", "gate_passed", "burst_hash"}
+TOP_KEYS = {"schema_version", "drill_id", "started_at_utc", "completed_at_utc", "environment", "release", "git_commit", "problem_id", "board_id", "verifier_image", "admission_matrix_hash", "runner_host", "runner_host_key", "artifacts", "annotation", "attestation", "attestation_valid", "gate_passed", "burst_hash"}
 ARTIFACT_KEYS = {"authority_resolution", "queue_before", "queue_after", "loop_summary", "transcript_archive", "alert_bundle", "guard_cases", "host_observations"}
 
 
@@ -43,7 +43,12 @@ def normalize_runner_burst_report(report: Mapping[str, Any], *, artifact_root: s
     normalized = dict(report)
     provided_hash = normalized.pop("burst_hash", None)
     operator_signature = normalized.pop("attestation", None)
+    provided_attestation_valid = normalized.pop("attestation_valid", None)
     provided_gate = normalized.pop("gate_passed", None)
+    if provided_gate is True:
+        raise RunnerBurstError("caller-provided gate_passed true is forbidden while the external live blocker remains")
+    if provided_attestation_valid is True:
+        raise RunnerBurstError("caller-provided attestation_valid true is forbidden")
     binding = _binding(normalized)
     refs = _mapping(normalized.get("artifacts"), "report.artifacts")
     if set(refs) != ARTIFACT_KEYS:
@@ -52,27 +57,29 @@ def normalize_runner_burst_report(report: Mapping[str, Any], *, artifact_root: s
     for name, value in artifacts.items():
         _scan_secrets(value, f"artifact {name}")
         _check_binding(value, binding, f"artifact {name}")
-    authority_key = _validate_authority(artifacts["authority_resolution"], binding, context)
-    host_key = _validate_host_observer(artifacts["host_observations"], binding, context)
-    if authority_key == host_key:
+    authority_identity, authority_signed_at = _validate_authority(artifacts["authority_resolution"], binding, context)
+    host_identity, host_signed_at = _validate_host_observer(artifacts["host_observations"], binding, context)
+    if _identity_fingerprint(authority_identity) == _identity_fingerprint(host_identity):
         raise RunnerBurstError("release authority and host observer must use distinct identities")
-    derived = _derive(artifacts)
+    derived = _derive(artifacts, binding)
     normalized["derived"] = derived
     annotation = _mapping(normalized.get("annotation"), "report.annotation")
     if set(annotation) != {"agent_operator", "statement"} or not all(isinstance(v, str) and v.strip() for v in annotation.values()):
         raise RunnerBurstError("report.annotation must contain non-empty agent_operator and statement")
+    normalized["attestation_valid"] = False
     normalized["gate_passed"] = False
     unsigned_hash = sha256_bytes(canonical_json(normalized).encode())
     if operator_signature is not None:
         identity = _mapping(operator_signature.get("identity") if isinstance(operator_signature, dict) else None, "report.attestation.identity")
-        operator_key = identity.get("public_key")
-        if operator_key in {authority_key, host_key}:
+        operator_fingerprint = _identity_fingerprint(identity)
+        if operator_fingerprint in {_identity_fingerprint(authority_identity), _identity_fingerprint(host_identity)}:
             raise RunnerBurstError("runner operator must be distinct from release authority and host observer")
-        _validate_signature(operator_signature, "report.attestation", schema_version=RUNNER_BURST_SCHEMA_VERSION, artifact_hash=unsigned_hash, identity=identity, expected_role="runner-operator", error_type=RunnerBurstError, context=context, not_after=_utc(binding["completed_at_utc"], "completed_at_utc"))
+        operator_signed_at = _signature_time_within_window(operator_signature, binding, "report.attestation")
+        if operator_signed_at <= max(authority_signed_at, host_signed_at):
+            raise RunnerBurstError("runner operator signature must be after all authority and host-observer evidence")
+        _validate_signature(operator_signature, "report.attestation", schema_version=RUNNER_BURST_SCHEMA_VERSION, artifact_hash=unsigned_hash, identity=identity, expected_role="runner-operator", error_type=RunnerBurstError, context=context, expected_signed_at=operator_signed_at, not_after=_utc(binding["completed_at_utc"], "completed_at_utc"))
         normalized["attestation"] = dict(operator_signature)
-        normalized["gate_passed"] = True
-    elif provided_gate is True:
-        raise RunnerBurstError("unsigned runner burst claims cannot pass the gate")
+        normalized["attestation_valid"] = True
     normalized["burst_hash"] = sha256_bytes(canonical_json(normalized).encode())
     if provided_hash is not None and provided_hash != normalized["burst_hash"]:
         raise RunnerBurstError("burst_hash does not match canonical validated report")
@@ -150,7 +157,7 @@ def _check_binding(value: Mapping[str, Any], binding: Mapping[str, Any], prefix:
         raise RunnerBurstError(f"{prefix} has cross-board/release or timestamp binding mismatch")
 
 
-def _validate_authority(value: Mapping[str, Any], binding: Mapping[str, Any], context: Any) -> str:
+def _validate_authority(value: Mapping[str, Any], binding: Mapping[str, Any], context: Any) -> tuple[Mapping[str, Any], datetime]:
     if value.get("resolution") != "approved":
         raise RunnerBurstError("authority resolution must explicitly approve the bound drill")
     signature = value.get("attestation")
@@ -158,12 +165,12 @@ def _validate_authority(value: Mapping[str, Any], binding: Mapping[str, Any], co
     unsigned.pop("attestation", None)
     artifact_hash = sha256_bytes(canonical_json(unsigned).encode())
     identity = _mapping(signature.get("identity") if isinstance(signature, dict) else None, "authority_resolution.attestation.identity")
-    completed_at = _utc(binding["completed_at_utc"], "completed_at_utc")
-    _validate_signature(signature, "authority_resolution.attestation", schema_version=RUNNER_BURST_SCHEMA_VERSION, artifact_hash=artifact_hash, identity=identity, expected_role="release-authority", error_type=RunnerBurstError, context=context, expected_signed_at=completed_at, not_after=completed_at)
-    return str(identity.get("public_key"))
+    signed_at = _signature_time_within_window(signature, binding, "authority_resolution.attestation")
+    _validate_signature(signature, "authority_resolution.attestation", schema_version=RUNNER_BURST_SCHEMA_VERSION, artifact_hash=artifact_hash, identity=identity, expected_role="release-authority", error_type=RunnerBurstError, context=context, expected_signed_at=signed_at, not_after=_utc(binding["completed_at_utc"], "completed_at_utc"))
+    return identity, signed_at
 
 
-def _validate_host_observer(value: Mapping[str, Any], binding: Mapping[str, Any], context: Any) -> str:
+def _validate_host_observer(value: Mapping[str, Any], binding: Mapping[str, Any], context: Any) -> tuple[Mapping[str, Any], datetime]:
     before, after = _mapping(value.get("before"), "host_observations.before"), _mapping(value.get("after"), "host_observations.after")
     required = {"observed_at_utc", "kernel_oom_kills", "cgroup_oom_kills", "worker_restarts", "queue_corruption_events"}
     if set(before) != required or set(after) != required:
@@ -182,12 +189,14 @@ def _validate_host_observer(value: Mapping[str, Any], binding: Mapping[str, Any]
     identity = _mapping(signature.get("identity") if isinstance(signature, dict) else None, "host_observations.attestation.identity")
     if identity.get("public_key") == binding["runner_host_key"]:
         raise RunnerBurstError("host observer must be independent from the runner host/operator key")
-    completed_at = _utc(binding["completed_at_utc"], "completed_at_utc")
-    _validate_signature(signature, "host_observations.attestation", schema_version=RUNNER_BURST_SCHEMA_VERSION, artifact_hash=artifact_hash, identity=identity, expected_role="host-observer", error_type=RunnerBurstError, context=context, expected_signed_at=completed_at, not_after=completed_at)
-    return str(identity.get("public_key"))
+    signed_at = _signature_time_within_window(signature, binding, "host_observations.attestation")
+    if signed_at < _utc(after["observed_at_utc"], "host after time"):
+        raise RunnerBurstError("host-observer signature must not predate its final observation")
+    _validate_signature(signature, "host_observations.attestation", schema_version=RUNNER_BURST_SCHEMA_VERSION, artifact_hash=artifact_hash, identity=identity, expected_role="host-observer", error_type=RunnerBurstError, context=context, expected_signed_at=signed_at, not_after=_utc(binding["completed_at_utc"], "completed_at_utc"))
+    return identity, signed_at
 
 
-def _derive(a: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+def _derive(a: Mapping[str, Mapping[str, Any]], binding: Mapping[str, Any]) -> dict[str, Any]:
     before, after = _jobs(a["queue_before"]), _jobs(a["queue_after"])
     submitted = [j for j in before if j.get("status") == "queued"]
     if len(submitted) < 3:
@@ -198,6 +207,11 @@ def _derive(a: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     if set(before_ids) != set(after_ids):
         raise RunnerBurstError("queue_before and queue_after job sets differ")
     terminal = {j.get("job_id") for j in after if j.get("status") in {"succeeded", "failed"}}
+    window_start, window_end = _utc(binding["started_at_utc"], "started_at_utc"), _utc(binding["completed_at_utc"], "completed_at_utc")
+    for job in before + after:
+        created_at = _utc(job.get("created_at_utc"), "job created_at_utc")
+        if not window_start <= created_at <= window_end:
+            raise RunnerBurstError("every job created_at_utc must be within the drill window")
     order = [j.get("job_id") for j in sorted(submitted, key=lambda j: (_utc(j.get("created_at_utc"), "job created_at_utc"), j.get("job_id")))]
     events = a["loop_summary"].get("events")
     if not isinstance(events, list) or not events:
@@ -209,6 +223,8 @@ def _derive(a: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
         if set(event) != ({"kind", "job_id", "at_utc"} | ({"transcript_hash"} if event.get("kind") == "completed" else set())):
             raise RunnerBurstError("loop events must contain only timestamped start/completion evidence")
         when = _utc(event.get("at_utc"), f"loop_summary.events[{index}].at_utc")
+        if not window_start <= when <= window_end:
+            raise RunnerBurstError("every loop event timestamp must be within the drill window")
         if last_time is not None and when < last_time:
             raise RunnerBurstError("loop events are not timestamp ordered")
         last_time = when
@@ -276,7 +292,25 @@ def _derive(a: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     if not REQUIRED_GUARDS.issubset(reasons):
         raise RunnerBurstError("guard evidence is missing required outcomes")
     after_status = {j.get("job_id"): j.get("status") for j in after}
-    return {"submitted_jobs": len(submitted), "completed_jobs": len(terminal), "failed_jobs": sum(after_status.get(j) == "failed" for j in terminal), "max_active_running": max_active, "max_observed_queue_depth": len(submitted), "fifo_order_preserved": True, "transcript_count": len(transcripts), "invalid_transcript_count": len(invalid), "alerts_linked": True, "guards_proved": sorted(REQUIRED_GUARDS), "secret_scan_passed": True, "authority_resolved": True, "host_observer_verified": True, "external_live_blocker": True}
+    return {"submitted_jobs": len(submitted), "completed_jobs": len(terminal), "failed_jobs": sum(after_status.get(j) == "failed" for j in terminal), "max_active_running": max_active, "max_observed_queue_depth": len(submitted), "fifo_order_preserved": True, "transcript_count": len(transcripts), "invalid_transcript_count": len(invalid), "alerts_linked": True, "guards_proved": sorted(REQUIRED_GUARDS), "secret_scan_passed": True, "authority_attestation_verified": True, "host_observer_attestation_verified": True, "live_authority_resolution_required": True, "external_live_blocker": True}
+
+
+def _identity_fingerprint(identity: Mapping[str, Any]) -> tuple[str, str, str]:
+    values = []
+    for key in ("name", "organization", "professional_email"):
+        value = identity.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise RunnerBurstError(f"attestation identity {key} must be non-empty")
+        values.append(" ".join(value.split()).casefold())
+    return values[0], values[1], values[2]
+
+
+def _signature_time_within_window(signature: Any, binding: Mapping[str, Any], prefix: str) -> datetime:
+    mapping = _mapping(signature, prefix)
+    signed_at = _utc(mapping.get("signed_at_utc"), f"{prefix}.signed_at_utc")
+    if not _utc(binding["started_at_utc"], "started_at_utc") <= signed_at <= _utc(binding["completed_at_utc"], "completed_at_utc"):
+        raise RunnerBurstError(f"{prefix}.signed_at_utc must be within the drill window")
+    return signed_at
 
 
 def _guard_record(value: Any) -> Mapping[str, Any]:

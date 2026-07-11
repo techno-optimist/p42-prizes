@@ -16,7 +16,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _signed(identity: dict, role: str, value: dict, at: str = "2026-07-08T23:00:00Z") -> dict:
+def _signed(identity: dict, role: str, value: dict, at: str) -> dict:
     unsigned = dict(value)
     unsigned.pop("attestation", None)
     digest = sha256_bytes(canonical_json(unsigned).encode())
@@ -57,13 +57,13 @@ def _fixture(root: Path) -> tuple[dict, dict]:
             {"kind": "completed", "job_id": transcript["job_id"], "at_utc": f"2026-07-08T22:{11 + index * 2}:00Z", "transcript_hash": transcript["transcript_hash"]},
         ])
     authority_resolution = {"binding": binding, "resolution": "approved"}
-    authority_resolution["attestation"] = _signed(authority, "release-authority", authority_resolution)
+    authority_resolution["attestation"] = _signed(authority, "release-authority", authority_resolution, "2026-07-08T22:55:00Z")
     host_observations = {
         "binding": binding, "runner_host_key": host["public_key"],
         "before": {"observed_at_utc": "2026-07-08T22:00:00Z", "kernel_oom_kills": 4, "cgroup_oom_kills": 2, "worker_restarts": 7, "queue_corruption_events": 0},
-        "after": {"observed_at_utc": "2026-07-08T23:00:00Z", "kernel_oom_kills": 4, "cgroup_oom_kills": 2, "worker_restarts": 7, "queue_corruption_events": 0},
+        "after": {"observed_at_utc": "2026-07-08T22:58:00Z", "kernel_oom_kills": 4, "cgroup_oom_kills": 2, "worker_restarts": 7, "queue_corruption_events": 0},
     }
-    host_observations["attestation"] = _signed(observer, "host-observer", host_observations)
+    host_observations["attestation"] = _signed(observer, "host-observer", host_observations, "2026-07-08T22:59:00Z")
     queue_hash = "sha256:" + "c" * 64
     artifacts = {
         "authority_resolution": authority_resolution, "queue_before": {"binding": binding, "jobs": jobs}, "queue_after": {"binding": binding, "jobs": after},
@@ -78,7 +78,7 @@ def _fixture(root: Path) -> tuple[dict, dict]:
         (root / f"{name}.json").write_bytes(raw)
         refs[name] = {"path": f"{name}.json", "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
     report = {"schema_version": "p42-runner-burst/v1", **binding, "artifacts": refs, "annotation": {"agent_operator": "CHRONOS", "statement": "Local drill annotation."}}
-    return report, {"registry": registry, "runner": runner, "authority": authority, "observer": observer}
+    return report, {"fixture": af, "registry": registry, "runner": runner, "authority": authority, "observer": observer}
 
 
 def _rewrite(root: Path, report: dict, name: str, mutate) -> None:
@@ -90,21 +90,24 @@ def _rewrite(root: Path, report: dict, name: str, mutate) -> None:
     report["artifacts"][name]["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-def _operator_sign(report: dict, root: Path, registry: dict, identity: dict) -> None:
+def _operator_sign(report: dict, root: Path, registry: dict, identity: dict, *, signed_at: str = "2026-07-08T23:00:00Z") -> None:
     unsigned = normalize_runner_burst_report(report, artifact_root=root, trust_registry=registry)
     digest = sha256_bytes(canonical_json({k: v for k, v in unsigned.items() if k != "burst_hash"}).encode())
-    report["attestation"] = {"identity": {k: identity[k] for k in ("name", "organization", "professional_email", "public_key")}, **_sign(identity, "runner-operator", "p42-runner-burst/v1", digest, "2026-07-08T23:00:00Z")}
+    report["attestation"] = {"identity": {k: identity[k] for k in ("name", "organization", "professional_email", "public_key")}, **_sign(identity, "runner-operator", "p42-runner-burst/v1", digest, signed_at)}
 
 
-def test_authoritative_signed_evidence_passes(tmp_path: Path) -> None:
+def test_three_party_attestation_is_valid_but_gate_remains_blocked(tmp_path: Path) -> None:
     report, support = _fixture(tmp_path)
     registry = support["registry"]
     unsigned = normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=registry)
+    assert unsigned["attestation_valid"] is False
     assert unsigned["gate_passed"] is False
     assert unsigned["derived"]["completed_jobs"] == 3
     _operator_sign(report, tmp_path, registry, support["runner"])
     out = normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=registry)
-    assert out["gate_passed"] is True
+    assert out["attestation_valid"] is True
+    assert out["gate_passed"] is False
+    assert out["derived"]["live_authority_resolution_required"] is True
     jsonschema.validate(out, json.loads((ROOT / "schemas/runner-burst.schema.json").read_text()))
 
 
@@ -124,6 +127,52 @@ def test_operator_claim_cannot_replace_authority_resolution(tmp_path: Path) -> N
     report, support = _fixture(tmp_path)
     _rewrite(tmp_path, report, "authority_resolution", lambda value: value.update(resolution="approved-by-operator"))
     with pytest.raises(RunnerBurstError, match="explicitly approve"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_rejects_caller_provided_gate_passed_true(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    report["gate_passed"] = True
+    with pytest.raises(RunnerBurstError, match="caller-provided gate_passed"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_one_real_world_identity_cannot_use_three_keys(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    af = support["fixture"]
+    common = {"organization": "Meridian Systems", "professional_email": "alex.morgan@meridian.systems"}
+    authority = af.identity("same-authority", "Alex Morgan", "release-authority", **common)
+    observer = af.identity("same-observer", "Alex Morgan", "host-observer", **common)
+    runner = af.identity("same-runner", "Alex Morgan", "runner-operator", **common)
+    registry = af.trust_registry("p42-runner-burst/v1", [("release-authority", authority, "2026-07-08T22:55:00Z"), ("host-observer", observer, "2026-07-08T22:59:00Z"), ("runner-operator", runner, "2026-07-08T23:00:00Z")])
+    def resign_authority(value: dict) -> None:
+        value["attestation"] = _signed(authority, "release-authority", value, "2026-07-08T22:55:00Z")
+    def resign_observer(value: dict) -> None:
+        value["attestation"] = _signed(observer, "host-observer", value, "2026-07-08T22:59:00Z")
+    _rewrite(tmp_path, report, "authority_resolution", resign_authority)
+    _rewrite(tmp_path, report, "host_observations", resign_observer)
+    with pytest.raises(RunnerBurstError, match="distinct identities"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=registry)
+
+
+@pytest.mark.parametrize("name,mutate,match", [
+    ("queue_before", lambda value: value["jobs"][0].update(created_at_utc="2099-01-01T00:00:00Z"), "job created_at_utc"),
+    ("loop_summary", lambda value: value["events"][0].update(at_utc="2099-01-01T00:00:00Z"), "event timestamp"),
+    ("host_observations", lambda value: value["after"].update(observed_at_utc="2099-01-01T00:00:00Z"), "host observations"),
+    ("authority_resolution", lambda value: value["attestation"].update(signed_at_utc="2099-01-01T00:00:00Z"), "signed_at_utc"),
+    ("host_observations", lambda value: value["attestation"].update(signed_at_utc="2099-01-01T00:00:00Z"), "signed_at_utc"),
+])
+def test_rejects_2099_evidence_timestamps(tmp_path: Path, name: str, mutate, match: str) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, name, mutate)
+    with pytest.raises(RunnerBurstError, match=match):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_rejects_2099_operator_signature(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    _operator_sign(report, tmp_path, support["registry"], support["runner"], signed_at="2099-01-01T00:00:00Z")
+    with pytest.raises(RunnerBurstError, match="signed_at_utc"):
         normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
 
 
