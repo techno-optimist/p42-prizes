@@ -605,6 +605,7 @@ def test_runner_health_v2_producer_is_signed_bound_and_atomic(tmp_path: Path) ->
     jsonschema.validate(artifact, json.loads((ROOT / "schemas" / "runner-health-v2.schema.json").read_text()))
     assert artifact["producer"] == {"host_id": "dgx", "boot_id": "boot-1", "queue_id": "challenge-main"}
     assert artifact["prior_artifact_hash"] is None and artifact["sequence"] == 1
+    assert artifact["queue"]["queue_bytes"] + artifact["queue"]["canonical_byte_headroom"] == 1024 * 1024 - 64 * 1024
     assert output.stat().st_mode & 0o777 == 0o600
     key.public_key().verify(
         bytes.fromhex(artifact["signature"]["signature"].removeprefix("ed25519:")),
