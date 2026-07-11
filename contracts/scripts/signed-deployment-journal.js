@@ -407,7 +407,7 @@ function discardOwnedCandidate(candidate, token) {
   } catch (error) { if (error?.code !== "ENOENT") throw error; }
 }
 
-async function withJournalLock(journalPath, operation, hooks = {}) {
+export async function withDurableJournalLock(journalPath, operation, hooks = {}) {
   const lockPath = `${journalPath}.lock`;
   assertTrustedAncestors(lockPath);
   const owner = { ...deploymentLockOwnerIdentity(), createdAt: new Date().toISOString(), token: randomUUID() };
@@ -539,7 +539,7 @@ async function reconcileLocked({ provider, secondaryProvider, journalPath, planD
 }
 
 export async function reconcileSignedDeployment(args) {
-  return withJournalLock(args.journalPath, () => reconcileLocked({ ...args, allowBroadcast: args.allowBroadcast ?? true }), args.lockHooks);
+  return withDurableJournalLock(args.journalPath, () => reconcileLocked({ ...args, allowBroadcast: args.allowBroadcast ?? true }), args.lockHooks);
 }
 
 export function readSignedDeploymentJournal(path) {

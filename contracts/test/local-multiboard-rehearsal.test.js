@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -12,6 +12,13 @@ import {
   constructorArgsFor,
 } from "../scripts/deployment-ceremony-helper.js";
 import { readMultiBoardCeremonyConfig } from "../scripts/multiboard-ceremony-helper.js";
+import {
+  buildGovernanceOperationJournal,
+  observeGovernanceOperation,
+  readGovernanceOperationJournal,
+  recordGovernanceObservation,
+  reserveGovernanceOperationJournal,
+} from "../scripts/governance-operation-journal.js";
 
 const FIXTURE = new URL("./fixtures/multiboard-ceremony-10.json", import.meta.url);
 const { ethers } = await network.create();
@@ -48,44 +55,45 @@ async function deployBoard(deployer, config, roots) {
   return { contracts, addresses };
 }
 
-async function appendJournal(path, entry) {
-  const current = JSON.parse(await readFile(path, "utf8"));
-  current.entries.push(entry);
-  await writeFile(path, `${JSON.stringify(current, null, 2)}\n`);
-}
-
-async function executePending(timelock, signers, operations, journalPath, stopAfter = Infinity) {
-  const journal = JSON.parse(await readFile(journalPath, "utf8"));
-  const completed = new Set(journal.entries.map((entry) => entry.operationId));
+async function executePending(timelock, signers, operations, journalPath, { crashAfterExecute = Infinity } = {}) {
+  const journalIdentity = readGovernanceOperationJournal(journalPath);
+  const planDigest = journalIdentity.planDigest;
+  const observe = async (operation) => observeGovernanceOperation(timelock, operation, {
+    chainId: journalIdentity.chainId,
+    timelockAddress: journalIdentity.timelock,
+    expectedTimelockCodeHash: journalIdentity.expectedTimelockCodeHash,
+    toBlock: await ethers.provider.getBlockNumber(),
+  });
   let executed = 0;
-  for (const operation of operations) {
-    if (completed.has(operation.operationId)) {
-      assert.equal(await timelock.stateOf(operation.operationId), 2n);
+  for (const [index, operation] of operations.entries()) {
+    let evidence = await observe(operation);
+    await recordGovernanceObservation(journalPath, planDigest, index, evidence);
+    if (evidence.state === "executed") {
       continue;
     }
     const args = [operation.target, operation.value, operation.data, operation.salt];
-    const scheduleFunction = operation.operationClass === "override" ? "scheduleOverride" : "schedule";
-    await timelock.connect(signers[0])[scheduleFunction](...args);
-    for (let index = 1; index < Number(operation.requiredConfirmations); index += 1) {
-      await timelock.connect(signers[index]).confirm(operation.operationId);
+    if (evidence.state === "planned") {
+      const scheduleFunction = operation.operationClass === "override" ? "scheduleOverride" : "schedule";
+      await (await timelock.connect(signers[0])[scheduleFunction](...args)).wait();
+      evidence = await observe(operation);
+      await recordGovernanceObservation(journalPath, planDigest, index, evidence);
+    }
+    for (let signerIndex = 0; signerIndex < Number(operation.requiredConfirmations); signerIndex += 1) {
+      if (!await timelock.confirmedBy(operation.operationId, signers[signerIndex].address)) {
+        await (await timelock.connect(signers[signerIndex]).confirm(operation.operationId)).wait();
+      }
     }
     await ethers.provider.send("evm_increaseTime", [Number(operation.delaySeconds) + 1]);
     await ethers.provider.send("evm_mine", []);
-    let receipt;
     try {
-      receipt = await (await timelock.connect(signers[0]).execute(...args)).wait();
+      await (await timelock.connect(signers[0]).execute(...args)).wait();
     } catch (error) {
       throw new Error(`operation ${operation.sequence} (${operation.label}) failed: ${error.message}`);
     }
-    await appendJournal(journalPath, {
-      sequence: operation.sequence,
-      label: operation.label,
-      operationId: operation.operationId,
-      txHash: receipt.hash,
-      blockNumber: receipt.blockNumber,
-    });
     executed += 1;
-    if (executed === stopAfter) throw new Error("injected rehearsal interruption");
+    if (executed === crashAfterExecute) throw new Error("injected post-execution pre-journal crash");
+    evidence = await observe(operation);
+    await recordGovernanceObservation(journalPath, planDigest, index, evidence);
   }
 }
 
@@ -130,16 +138,46 @@ describe("exact ten-board local ceremony rehearsal", { timeout: 240_000 }, funct
     const directory = await mkdtemp(join(tmpdir(), "p42-local-ceremony-"));
     const journalPath = join(directory, "journal.json");
     try {
-      await writeFile(journalPath, `${JSON.stringify({ schema: "p42-prizes/local-ceremony-journal/v1", entries: [] }, null, 2)}\n`, { flag: "wx" });
+      const expectedJournal = buildGovernanceOperationJournal({
+        chainId: 31337, timelock: roots.timelock,
+        deploymentConfigHash: ethers.keccak256(ethers.toUtf8Bytes("local-ten-board-rehearsal")),
+        releaseBindingDigest: `sha256:${"0".repeat(64)}`,
+        expectedTimelockCodeHash: ethers.keccak256(await ethers.provider.getCode(roots.timelock)),
+        operations,
+      });
+      reserveGovernanceOperationJournal(journalPath, expectedJournal);
+      await assert.rejects(observeGovernanceOperation(timelock, operations[0], {
+        chainId: 1, timelockAddress: roots.timelock, expectedTimelockCodeHash: expectedJournal.expectedTimelockCodeHash,
+        toBlock: await ethers.provider.getBlockNumber(),
+      }), /chain or timelock binding/);
+      await assert.rejects(observeGovernanceOperation(timelock, operations[0], {
+        chainId: 31337, timelockAddress: roots.timelock, expectedTimelockCodeHash: expectedJournal.expectedTimelockCodeHash,
+      }), /exact numeric chain range/);
+      await assert.rejects(observeGovernanceOperation(timelock, operations[0], {
+        chainId: 31337, timelockAddress: roots.timelock, expectedTimelockCodeHash: expectedJournal.expectedTimelockCodeHash,
+        toBlock: await ethers.provider.getBlockNumber(), requireIndependent: true,
+      }), /independent governance operation evidence is required/);
       await assert.rejects(
-        executePending(timelock, [signer1, signer2, signer3], operations, journalPath, 37),
-        /injected rehearsal interruption/,
+        executePending(timelock, [signer1, signer2, signer3], operations, journalPath, { crashAfterExecute: 37 }),
+        /post-execution pre-journal crash/,
       );
-      assert.equal(JSON.parse(await readFile(journalPath, "utf8")).entries.length, 37);
+      const interrupted = readGovernanceOperationJournal(journalPath);
+      assert.equal(interrupted.operations.filter(({ state }) => state === "executed").length, 36);
+      assert.equal(await timelock.stateOf(operations[36].operationId), 2n);
+      const disagreeingTimelock = {
+        runner: timelock.runner, filters: timelock.filters,
+        getAddress: () => timelock.getAddress(),
+        stateOf: async () => 0n,
+        queryFilter: (...args) => timelock.queryFilter(...args),
+      };
+      await assert.rejects(observeGovernanceOperation(timelock, operations[36], {
+        chainId: 31337, timelockAddress: roots.timelock, expectedTimelockCodeHash: expectedJournal.expectedTimelockCodeHash,
+        toBlock: await ethers.provider.getBlockNumber(), secondaryTimelock: disagreeingTimelock, requireIndependent: true,
+      }), /state.event mismatch|evidence disagreement/);
       await executePending(timelock, [signer1, signer2, signer3], operations, journalPath);
-      const journal = JSON.parse(await readFile(journalPath, "utf8"));
-      assert.equal(journal.entries.length, 110);
-      assert.equal(new Set(journal.entries.map((entry) => entry.operationId)).size, 110);
+      const journal = readGovernanceOperationJournal(journalPath);
+      assert.equal(journal.operations.filter(({ state }) => state === "executed").length, 110);
+      assert.equal(new Set(journal.operations.map((entry) => entry.operationId)).size, 110);
       assert.equal(await registry.problemCount(), 10n);
 
       for (const [index, board] of boards.entries()) {

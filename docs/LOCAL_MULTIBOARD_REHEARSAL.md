@@ -18,14 +18,21 @@ evidence and not deployable production values.
 
 The test deploys one timelock, one registry, one rollover vault, and four child
 contracts per board (43 contracts total). It derives all 110 governance setup
-operations through the production helper, executes 37, injects an in-process
-interruption, reloads the local test journal, verifies every recorded operation is
-already executed, and runs the remaining 73 exactly once. Reconciliation then
+operations through the production helper and reserves their complete ordered
+identity in a private, no-follow journal before the first schedule. Journal
+generations use file fsync, atomic same-directory rename, and parent-directory
+fsync. The rehearsal executes operation 37 and injects a crash before that
+receipt is journaled. Restart queries `stateOf`, validates the unique local
+`Scheduled` and `Executed` events plus the internally consistent successful
+receipt/block binding at one explicit local block,
+recovers the missing observation, and runs every remaining operation exactly
+once. Reconciliation then
 checks all ten sequential registrations, immutable freezes, ownership and
 wiring, zero pool/vault balances, and both funding gates false.
 
-This proves local construction, execution, logical replay idempotence, and
-final-state reconciliation. The test journal is ordinary local test storage; it
-does not prove crash-durable deployment journaling or filesystem power-loss
-safety. It also does not prove admission matrices, release hashes, testnet
+This proves local construction, execution, durable journal replay, recovery of
+the mined-before-persisted crash window, and final-state reconciliation. The
+journal also fails closed on plan substitution, regression, conflicting receipt
+evidence, permissive files, symlinks, and byte tampering. It does not prove
+actual host power-loss behavior, admission matrices, release hashes, testnet
 gas/finality, signer custody, explorer verification, or authorization to deploy.
