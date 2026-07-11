@@ -13,10 +13,11 @@ problem:
 
 - One `P42MultisigTimelock`.
 - One `P42ProblemRegistry` owned by that timelock.
+- One `P42RolloverVault` bound to that registry.
 - Per board: `P42BountyPool`, `P42PayoutLedger`,
   `P42SubmissionManager`, and `P42ChallengeManager`.
 
-Ten boards therefore create 42 contracts. Every board receives its own funding
+Ten boards therefore create 43 contracts. Every board receives its own funding
 cap, data-availability mode and byte cap, close window, seed score, minimum
 improvement, certified objective, source-tree anchor, image anchor, and
 admission-matrix digest, durable matrix URI, and derived on-chain matrix
@@ -107,7 +108,7 @@ verifier environment. It then writes a
 validator accepts it.
 
 The deployer sends no governance, `armFunding`, or `setAcceptingFunds(true)`
-transaction. It emits exactly ten timelock operations per board:
+transaction. It emits exactly eleven timelock operations per board:
 
 1. Pool-to-ledger wiring.
 2. Ledger credit-recorder wiring.
@@ -115,15 +116,23 @@ transaction. It emits exactly ten timelock operations per board:
 4. Submission-manager-to-challenge-manager wiring.
 5. Expected-ID registry registration.
 6. Pool-to-registry wiring.
-7. Registry freeze.
-8. Ledger pause-target authorization.
-9. Submission-manager pause-target authorization.
-10. Challenge-manager pause-target authorization.
+7. Ledger-to-rollover-vault wiring.
+8. Registry freeze.
+9. Ledger pause-target authorization.
+10. Submission-manager pause-target authorization.
+11. Challenge-manager pause-target authorization.
 
-For ten boards this is 100 independently confirmed operations. The only
+For ten boards this is 110 independently confirmed operations. The only
 supported continuation command is `P42_DEPLOY_MODE=continue`. Production
 continuation requires two named, operator-distinct RPCs to agree on canonical
 Base Sepolia `finalized`/`safe` tags and OP Stack L1-origin/finality evidence.
+It reserves a private governance-operation journal bound to the authenticated
+release, deployment-config hash, timelock address/runtime, and complete ordered
+operation builders. The continuation process has no governance signer keys and
+never schedules or confirms an operation. It only ingests execution evidence at
+the agreed finalized block, including a deterministic override fallback, and
+persists recovered observations through the same fenced, dead-owner-reclaiming
+lock used by the signed deployment journal.
 The immutable policy is release evidence, not mutable indexer confirmations.
 It rechecks the anchor immediately before atomically updating the manifest only after it proves every
 runtime hash, owner, governance term, board term, registry pin, registry freeze,

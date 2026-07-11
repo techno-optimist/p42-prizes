@@ -70,6 +70,13 @@ import {
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
+import {
+  buildGovernanceOperationJournal,
+  governanceOperationJournalPath,
+  observeGovernanceOperation,
+  recordGovernanceObservation,
+  reserveGovernanceOperationJournal,
+} from "./governance-operation-journal.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const CONTRACT_NAMES = Object.freeze({
@@ -1302,7 +1309,37 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
     throw new Error(`Finalized block ${checkedBlock} is before deployment block ${manifest.indexer.startBlock}`);
   }
   const contracts = await readMultiBoardContractSet(ethers, manifest);
+  const secondaryTimelock = contracts.timelock.connect(secondary);
   const snapshot = await collectMultiBoardContinuationSnapshot(ethers, manifest, contracts, checkedBlock);
+  const governanceJournalPath = governanceOperationJournalPath(path);
+  const expectedGovernanceJournal = buildGovernanceOperationJournal({
+    chainId: Number(BASE_SEPOLIA_CHAIN_ID), timelock: manifest.contracts.timelock.address,
+    deploymentConfigHash: manifest.deploymentConfigHash,
+    releaseBindingDigest: manifest.releaseEvidence.releaseBindingDigest,
+    expectedTimelockCodeHash: manifest.contracts.timelock.runtimeCodeHash,
+    operations: manifest.setupTransactions,
+  });
+  const governanceJournal = reserveGovernanceOperationJournal(governanceJournalPath, expectedGovernanceJournal);
+  for (const [index, operation] of manifest.setupTransactions.entries()) {
+    const snapshotEntry = snapshot.operations[index];
+    if (snapshotEntry?.state !== "executed") continue;
+    const fallback = operation.overrideFallback;
+    const observedCandidate = lower(snapshotEntry.executedOperationId) === lower(operation.operationId)
+      ? operation
+      : fallback && lower(snapshotEntry.executedOperationId) === lower(fallback.operationId)
+        ? { ...operation, operationId: fallback.operationId, salt: fallback.salt, operationClass: "override" }
+        : null;
+    if (observedCandidate === null) throw new Error(`Executed operation candidate mismatch at sequence ${operation.sequence}`);
+    const evidence = await observeGovernanceOperation(contracts.timelock, observedCandidate, {
+      chainId: Number(BASE_SEPOLIA_CHAIN_ID), timelockAddress: manifest.contracts.timelock.address,
+      expectedTimelockCodeHash: manifest.contracts.timelock.runtimeCodeHash,
+      fromBlock: manifest.indexer.startBlock, toBlock: checkedBlock,
+      secondaryTimelock, requireIndependent: true,
+    });
+    await recordGovernanceObservation(governanceJournalPath, governanceJournal.planDigest, index, {
+      ...evidence, operationId: operation.operationId, observedOperationId: observedCandidate.operationId,
+    });
+  }
   snapshot.checkedAt = new Date(completionBlockEvidence.timestamp * 1000).toISOString();
   snapshot.completionBlockEvidence = completionBlockEvidence;
   try {
