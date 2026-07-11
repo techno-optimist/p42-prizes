@@ -9,6 +9,13 @@ this drill never establishes production readiness by itself.
 
 ## Validate
 
+For a production registry, the owner must provision its canonical digest out
+of band before validation:
+
+```bash
+export P42_PRODUCTION_TRUST_REGISTRY_SHA256=sha256:<64-lowercase-hex>
+```
+
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli runner-burst-validate \
   --report runs/runner-burst/report.json \
@@ -22,6 +29,8 @@ reader uses component-by-component `O_NOFOLLOW`, a 2 MiB limit, JSON depth 32,
 duplicate-key rejection, and byte hashing. The trust registry must register
 distinct keys for `release-authority`, `host-observer`, and `runner-operator`
 under attestation class `p42-runner-burst/v1`.
+Merely setting `environment: production` in a registry is insufficient; its
+canonical digest must match the pinned environment value.
 
 ## Pinned Binding
 
