@@ -48,8 +48,10 @@ The local `P42MultisigTimelock` governance lane implements:
 - ordinary threshold approval plus a public timelock;
 - override-class operations with twice the ordinary delay and no guardian
   veto; ordinary override targets require the higher current-signer threshold,
-  while signer/threshold/guardian recovery self-calls use the base threshold so
-  the configured `N - threshold` signer-loss tolerance cannot deadlock rotation;
+  while replacement of one lost signer may use the base threshold only after
+  the independent guardian approves that exact delayed swap; threshold,
+  guardian, and every other governance mutation still require the higher
+  override threshold;
 - one guardian cancellation per target-and-calldata family;
 - operation expiry and signer-majority self-cancel;
 - signer, guardian, pauser, and target rotation only through override-class

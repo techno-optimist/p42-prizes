@@ -9,10 +9,9 @@ import math
 import os
 from pathlib import Path
 import stat
-import tempfile
 from typing import Any, Iterator, Mapping
 
-from p42_prizes.secure_json import read_strict_json_file_if_exists
+from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json
 from p42_prizes.verdict import canonical_json
 
 
@@ -28,6 +27,24 @@ DEFAULT_MAX_JOB_ATTEMPTS = 3
 
 class RunnerQueueError(ValueError):
     """Raised when runner queue state or policy input is malformed."""
+
+
+def open_secure_runner_directory(directory: Path) -> int:
+    directory.mkdir(parents=True, exist_ok=True)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    if not getattr(os, "O_NOFOLLOW", 0):
+        raise OSError("runner artifact directories require platform O_NOFOLLOW support")
+    descriptor = os.open(directory, flags)
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISDIR(metadata.st_mode):
+        os.close(descriptor)
+        raise RunnerQueueError("runner artifact root must be a real directory")
+    if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+        os.close(descriptor)
+        raise RunnerQueueError(
+            "runner artifact root must be owned by the runner UID and not group/world-writable"
+        )
+    return descriptor
 
 
 def enqueue_runner_job(queue_path: str | Path, job: Mapping[str, Any]) -> dict[str, Any]:
@@ -165,13 +182,19 @@ def read_runner_queue(queue_path: str | Path) -> dict[str, Any]:
 
 @contextmanager
 def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
+    directory_fd = open_secure_runner_directory(queue_path.parent)
     lock_path = queue_path.with_suffix(queue_path.suffix + ".lock")
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    if not nofollow:
-        raise OSError("runner queue locks require platform O_NOFOLLOW support")
-    lock_fd = os.open(os.fspath(lock_path), os.O_RDWR | os.O_CREAT | nofollow, 0o600)
+    lock_fd = -1
     try:
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow:
+            raise OSError("runner queue locks require platform O_NOFOLLOW support")
+        lock_fd = os.open(
+            lock_path.name,
+            os.O_RDWR | os.O_CREAT | nofollow,
+            0o600,
+            dir_fd=directory_fd,
+        )
         if not stat.S_ISREG(os.fstat(lock_fd).st_mode):
             raise RunnerQueueError("runner queue lock must be a regular file")
         os.fchmod(lock_fd, 0o600)
@@ -179,34 +202,72 @@ def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
         lock_fd = -1
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         try:
-            queue = _read_queue_file(queue_path)
+            lock_metadata = os.fstat(lock.fileno())
+            current_lock = os.stat(lock_path.name, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                current_lock.st_dev != lock_metadata.st_dev
+                or current_lock.st_ino != lock_metadata.st_ino
+            ):
+                raise RunnerQueueError("runner queue lock changed during acquisition")
+            queue = _read_queue_file_at(directory_fd, queue_path.name)
             try:
                 yield queue
             finally:
-                _write_queue_file(queue_path, queue)
+                _write_queue_file_at(directory_fd, queue_path.name, queue)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             lock.close()
     finally:
         if lock_fd >= 0:
             os.close(lock_fd)
+        os.close(directory_fd)
 
 
-def _read_queue_file(queue_path: Path) -> dict[str, Any]:
+def _read_queue_file_at(directory_fd: int, queue_name: str) -> dict[str, Any]:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
-        value = read_strict_json_file_if_exists(queue_path)
-    except Exception as exc:
-        raise RunnerQueueError(f"{queue_path}: could not read runner queue JSON: {exc}") from exc
-    if value is None:
+        descriptor = os.open(
+            queue_name,
+            os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=directory_fd,
+        )
+    except FileNotFoundError:
         return {"schema_version": QUEUE_SCHEMA_VERSION, "jobs": []}
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RunnerQueueError("runner queue must be a regular file")
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+            raise RunnerQueueError(
+                "runner queue must be owned by the runner UID and not group/world-writable"
+            )
+        if metadata.st_size > DEFAULT_MAX_BYTES:
+            raise RunnerQueueError(f"runner queue exceeds maxBytes ({DEFAULT_MAX_BYTES})")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(descriptor, min(64 * 1024, DEFAULT_MAX_BYTES - total + 1))
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > DEFAULT_MAX_BYTES:
+                raise RunnerQueueError(f"runner queue exceeds maxBytes ({DEFAULT_MAX_BYTES})")
+            chunks.append(chunk)
+        value = loads_strict_json(b"".join(chunks), max_bytes=DEFAULT_MAX_BYTES)
+    except Exception as exc:
+        raise RunnerQueueError(f"{queue_name}: could not read runner queue JSON: {exc}") from exc
+    finally:
+        os.close(descriptor)
     if not isinstance(value, dict):
-        raise RunnerQueueError(f"{queue_path}: runner queue must be a JSON object")
+        raise RunnerQueueError(f"{queue_name}: runner queue must be a JSON object")
     return value
 
 
-def _write_queue_file(queue_path: Path, queue: Mapping[str, Any]) -> None:
+def _write_queue_file_at(directory_fd: int, queue_name: str, queue: Mapping[str, Any]) -> None:
     payload = (canonical_json(dict(queue)) + "\n").encode("utf-8")
-    fd, temporary = tempfile.mkstemp(prefix=f".{queue_path.name}.", suffix=".tmp", dir=queue_path.parent)
+    temporary = f".{queue_name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(temporary, flags, 0o600, dir_fd=directory_fd)
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as output:
@@ -214,17 +275,18 @@ def _write_queue_file(queue_path: Path, queue: Mapping[str, Any]) -> None:
             output.write(payload)
             output.flush()
             os.fsync(output.fileno())
-        os.replace(temporary, queue_path)
-        directory_fd = os.open(os.fspath(queue_path.parent), os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+        os.replace(
+            temporary,
+            queue_name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        os.fsync(directory_fd)
     finally:
         if fd >= 0:
             os.close(fd)
         try:
-            os.unlink(temporary)
+            os.unlink(temporary, dir_fd=directory_fd)
         except FileNotFoundError:
             pass
 
@@ -388,6 +450,7 @@ def reap_stale_leases(
         attempts += 1
         job["attempts"] = attempts
         job.pop("lease_expires_at_utc", None)
+        job.pop("lease_token", None)
         if attempts >= max_attempts:
             # Poison-job guard: repeated worker deaths on the same job fail it
             # closed instead of cycling it through the queue indefinitely.

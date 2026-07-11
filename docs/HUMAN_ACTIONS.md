@@ -27,9 +27,10 @@ signature.
 ## Implemented But Not Attested
 
 The local governance lane now implements override-class operations with longer
-delay/no guardian veto, a higher threshold for ordinary overrides, and the base
-threshold for signer/threshold/guardian recovery so the configured signer-loss
-tolerance remains executable. It also enforces one guardian cancellation per
+delay/no guardian veto and a higher threshold for governance mutations. A base
+signer quorum can replace one lost signer only when the independent guardian
+approves that exact delayed swap; it cannot rotate the guardian, lower the
+threshold, or seize the override quorum by itself. It also enforces one guardian cancellation per
 target/calldata family, expiry, signer-majority self-cancel, override-only
 rotation, and direct `pause=true` only. Local `P42AgentWallet` sessions are
 chain/expiry-bound with a 30-day maximum lifetime; argument-bearing calls

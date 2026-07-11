@@ -8,8 +8,18 @@ from pathlib import Path
 
 import pytest
 
-from p42_prizes.runner_queue import MemorySnapshot, RunnerPolicy
-from p42_prizes.runner_worker import _run_job, _run_verifier_for_transcript, run_next_job_once
+from p42_prizes.runner_queue import MemorySnapshot, RunnerPolicy, RunnerQueueError
+from p42_prizes.runner_worker import (
+    LeaseHeartbeatError,
+    RunnerWorkerError,
+    _exclusive_execution_slot,
+    _publish_transcript,
+    _run_isolated_verifier,
+    _run_job,
+    _run_verifier_for_transcript,
+    run_next_job_once,
+)
+from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 def _write_problem(
@@ -276,6 +286,20 @@ def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:
         assert json.loads(Path(path).read_text(encoding="utf-8"))["job_id"] == job_id
 
 
+def test_transcript_publication_is_content_addressed_and_never_overwrites(tmp_path: Path) -> None:
+    body = {"schema_version": "p42-runner-transcript/v1", "job_id": "lease-a"}
+    transcript = {**body, "transcript_hash": sha256_bytes(canonical_json(body).encode("utf-8"))}
+    published = _publish_transcript(tmp_path / "transcripts", transcript)
+
+    assert published.name == f"{transcript['transcript_hash'][7:]}.json"
+    assert json.loads(published.read_text(encoding="utf-8")) == transcript
+    assert _publish_transcript(tmp_path / "transcripts", transcript) == published
+
+    published.write_text("{}\n", encoding="utf-8")
+    with pytest.raises(RunnerWorkerError, match="does not match its digest"):
+        _publish_transcript(tmp_path / "transcripts", transcript)
+
+
 def test_worker_reaps_expired_lease_and_runs_the_job(tmp_path: Path) -> None:
     # A previous worker died mid-job: the queue holds a running entry with an
     # expired lease. The next worker must reap it atomically and run it rather
@@ -318,6 +342,202 @@ def test_worker_reaps_expired_lease_and_runs_the_job(tmp_path: Path) -> None:
     assert updated["status"] == "succeeded"
     assert updated["attempts"] == 1
     assert "lease_expires_at_utc" not in updated
+
+
+def test_worker_refuses_lease_shorter_than_enforced_runtime(tmp_path: Path) -> None:
+    problem, solution = _write_problem(
+        tmp_path,
+        verifier_name="slow.py",
+        verifier_body="print('{}')\n",
+        wall_seconds=90,
+    )
+    queue_path = tmp_path / "queue.json"
+    queue_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "p42-runner-queue/v1",
+                "jobs": [
+                    {
+                        "job_id": "short-lease",
+                        "status": "queued",
+                        "required_memory_mb": 64,
+                        "problem": str(problem),
+                        "solution": str(solution),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RunnerWorkerError, match="lease_seconds must be at least 120"):
+        run_next_job_once(
+            queue_path,
+            tmp_path / "transcripts",
+            memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+            lease_seconds=60,
+        )
+    queued = json.loads(queue_path.read_text(encoding="utf-8"))["jobs"][0]
+    assert queued["status"] == "queued"
+    assert "lease_expires_at_utc" not in queued
+
+
+def test_worker_pins_one_manifest_snapshot_for_lease_and_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem, solution = _write_problem(
+        tmp_path,
+        verifier_name="ok.py",
+        verifier_body="import json\nprint(json.dumps({'valid': True}, sort_keys=True, separators=(',', ':')))\n",
+        wall_seconds=10,
+    )
+    queue_path = tmp_path / "queue.json"
+    queue_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "p42-runner-queue/v1",
+                "jobs": [
+                    {
+                        "job_id": "manifest-snapshot",
+                        "status": "queued",
+                        "required_memory_mb": 64,
+                        "problem": str(problem),
+                        "solution": str(solution),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    from p42_prizes import runner_worker
+
+    real_load = runner_worker.load_manifest
+    loads = 0
+
+    def counted_load(path):
+        nonlocal loads
+        loads += 1
+        manifest = real_load(path)
+        if loads > 1:
+            manifest["verifier"]["max_compute"]["wall_seconds"] = 600
+        return manifest
+
+    monkeypatch.setattr(runner_worker, "load_manifest", counted_load)
+    result = run_next_job_once(
+        queue_path,
+        tmp_path / "transcripts",
+        memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+        lease_seconds=60,
+    )
+
+    assert result["schema_version"] == "p42-runner-transcript/v1"
+    assert loads == 1
+
+
+def test_transcript_storage_failure_clears_the_live_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    problem, solution = _write_problem(
+        tmp_path,
+        verifier_name="ok.py",
+        verifier_body="print('{}')\n",
+        wall_seconds=10,
+    )
+    queue_path = tmp_path / "queue.json"
+    queue_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "p42-runner-queue/v1",
+                "jobs": [
+                    {
+                        "job_id": "storage-failure",
+                        "status": "queued",
+                        "required_memory_mb": 64,
+                        "problem": str(problem),
+                        "solution": str(solution),
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "p42_prizes.runner_worker._run_job",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    result = run_next_job_once(
+        queue_path,
+        tmp_path / "transcripts",
+        memory=MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0),
+    )
+
+    assert result["reason"] == "transcript_storage_retry_queued"
+    queued = json.loads(queue_path.read_text(encoding="utf-8"))["jobs"][0]
+    assert queued["status"] == "queued"
+    assert queued["storage_retry_count"] == 1
+    assert queued["last_retry_reason"] == "transcript_storage_error: disk full"
+    assert "lease_expires_at_utc" not in queued
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process-group kill is POSIX-only")
+def test_lost_lease_cancels_the_running_process_group(tmp_path: Path) -> None:
+    import threading
+
+    cancelled = threading.Event()
+    cancelled.set()
+    with pytest.raises(LeaseHeartbeatError, match="lost during verifier execution"):
+        _run_isolated_verifier(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            cwd=tmp_path,
+            env={"PATH": str(Path(sys.executable).parent)},
+            wall_seconds=30,
+            preexec_fn=None,
+            cancellation_event=cancelled,
+        )
+
+
+def test_execution_slot_prevents_overlapping_workers(tmp_path: Path) -> None:
+    import threading
+
+    queue_path = tmp_path / "queue.json"
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first_worker() -> None:
+        with _exclusive_execution_slot(queue_path):
+            first_entered.set()
+            assert release_first.wait(timeout=5)
+
+    def second_worker() -> None:
+        assert first_entered.wait(timeout=5)
+        with _exclusive_execution_slot(queue_path):
+            second_entered.set()
+
+    first = threading.Thread(target=first_worker)
+    second = threading.Thread(target=second_worker)
+    first.start()
+    second.start()
+    assert first_entered.wait(timeout=5)
+    assert not second_entered.wait(timeout=0.1)
+    release_first.set()
+    first.join(timeout=5)
+    second.join(timeout=5)
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert second_entered.is_set()
+
+
+def test_execution_slot_rejects_group_or_world_writable_root(tmp_path: Path) -> None:
+    insecure = tmp_path / "insecure"
+    insecure.mkdir()
+    insecure.chmod(0o777)
+    with pytest.raises(RunnerQueueError, match="not group/world-writable"):
+        with _exclusive_execution_slot(insecure / "queue.json"):
+            pytest.fail("insecure execution root must not be entered")
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process-group kill is POSIX-only")

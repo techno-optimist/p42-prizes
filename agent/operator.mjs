@@ -57,6 +57,7 @@ import {
   validateProvisioningArtifact,
 } from "./challenge-envelope.mjs";
 import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
+import { verifyRunnerTranscript } from "./runner-transcript.mjs";
 
 const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
@@ -802,21 +803,6 @@ function runWorkerOnce(chainTimestamp) {
   }
 }
 
-function verifyTranscript(path) {
-  const transcript = readStrictJsonFileSync(path, IMMUTABLE_JSON_LIMITS);
-  const expected = transcript.transcript_hash;
-  const unhashed = { ...transcript };
-  delete unhashed.transcript_hash;
-  if (sha256Canonical(unhashed) !== expected) throw new Error(`transcript self-hash mismatch: ${path}`);
-  const candidate = transcript.verifier?.challenge_candidate;
-  if (!candidate) return { transcript, candidate: null };
-  const candidateHash = candidate.candidate_hash;
-  const unsigned = { ...candidate };
-  delete unsigned.candidate_hash;
-  if (sha256Canonical(unsigned) !== candidateHash) throw new Error(`candidate self-hash mismatch: ${path}`);
-  return { transcript, candidate };
-}
-
 function recordAction(job, candidate, status, transactionHash = null, detail = null) {
   const args = [
     "record-action", "--queue", QUEUE,
@@ -987,7 +973,7 @@ async function reconcileBroadcast(job) {
   if (!action || !action.transaction_hash) return false;
   if (["confirmed", "broadcast_reverted"].includes(action.status)) return true;
   if (!["signed", "broadcast", "submitted", "reorged"].includes(action.status)) return false;
-  const transcript = verifyTranscript(job.transcript_path);
+  const transcript = verifyRunnerTranscript(job.transcript_path, job.transcript_hash);
   if (!transcript.candidate) throw new Error(`action ${job.job_id} has no challenge candidate`);
   const detail = parseDetailJson(action.detail);
   const callPolicy = assertPersistedChallengePolicy(transcript.candidate, detail);
@@ -1096,7 +1082,7 @@ async function consumeCandidate(job) {
     return;
   }
   let checked;
-  try { checked = verifyTranscript(job.transcript_path); }
+  try { checked = verifyRunnerTranscript(job.transcript_path, job.transcript_hash); }
   catch (error) {
     appendAlert(`QUARANTINE ${job.job_id}: ${error.message}`);
     return;

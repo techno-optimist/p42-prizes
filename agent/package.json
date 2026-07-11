@@ -15,6 +15,7 @@
     "open-witness-authority-core.mjs",
     "open-witness-promote.mjs",
     "resolver.mjs",
+    "runner-transcript.mjs",
     "runtime_bridge.py",
     "signed-transaction.mjs",
     "solver-manifest.mjs",
