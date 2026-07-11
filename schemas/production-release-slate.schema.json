@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/production-release-slate.schema.json",
+  "title": "P42 exact-ten production release slate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "mode", "status", "generatedAt", "sourceCommit", "imageRegistry", "boards", "slateDigest"],
+  "properties": {
+    "schema": { "const": "p42-prizes/production-release-slate/v1" },
+    "mode": { "const": "production" },
+    "status": { "const": "ready" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "imageRegistry": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "digest"],
+      "properties": { "path": { "$ref": "#/$defs/repoPath" }, "digest": { "$ref": "#/$defs/digest" } }
+    },
+    "boards": {
+      "type": "array", "minItems": 10, "maxItems": 10,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest"],
+        "properties": {
+          "problemId": { "type": "string", "pattern": "^(?:[1-9]|10)$" },
+          "problemSlug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+          "problemPath": { "$ref": "#/$defs/repoPath" },
+          "problemPackageDigest": { "$ref": "#/$defs/digest" },
+          "verifierVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$" },
+          "specHash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+          "verifierSourceDigest": { "$ref": "#/$defs/digest" },
+          "verifierImageDigest": { "$ref": "#/$defs/digest" },
+          "admissionMatrixPath": { "$ref": "#/$defs/repoPath" },
+          "admissionMatrixDigest": { "$ref": "#/$defs/digest" }
+        }
+      }
+    },
+    "slateDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "not": { "pattern": "^sha256:([0-9a-f])\\1{63}$" }
+    },
+    "repoPath": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$" }
+  }
+}

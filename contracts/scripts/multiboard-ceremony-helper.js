@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { delimiter, resolve } from "node:path";
 
 import {
@@ -12,6 +14,107 @@ import {
 import { readContractsConfigJsonSync } from "./strict-json-helper.js";
 
 export const MULTIBOARD_CEREMONY_SCHEMA = "p42-prizes/multi-board-ceremony/v1";
+export const PRODUCTION_RELEASE_SLATE_SCHEMA = "p42-prizes/production-release-slate/v1";
+export const RELEASE_MODES = Object.freeze({ PRODUCTION: "production", FIXTURE: "fixture" });
+
+const RELEASE_IDENTITY_KEYS = ["problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"];
+const RELEASE_BOARD_KEYS = ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest"];
+const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+const PLACEHOLDER_DIGEST_RE = /^sha256:([0-9a-f])\1{63}$/;
+
+function canonical(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
+function sha256Canonical(value) {
+  return `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
+}
+
+export function releaseBoardIdentity(problem, index) {
+  return {
+    problemId: String(problem.problemId ?? index + 1),
+    problemSlug: problem.problemSlug,
+    verifierVersion: problem.verifierVersion,
+    specHash: problem.specHash,
+    verifierSourceDigest: problem.verifierSourceDigest,
+    verifierImageDigest: problem.verifierImageDigest,
+    admissionMatrixDigest: problem.admissionMatrixDigest,
+  };
+}
+
+export function validateProductionReleaseSlate(slate, problems) {
+  const root = exactObject(slate, ["schema", "mode", "status", "generatedAt", "sourceCommit", "imageRegistry", "boards", "slateDigest"], "production release slate");
+  if (root.schema !== PRODUCTION_RELEASE_SLATE_SCHEMA || root.mode !== RELEASE_MODES.PRODUCTION || root.status !== "ready") throw new Error("production release slate must have production/ready identity");
+  if (!/^[0-9a-f]{40}$/.test(root.sourceCommit) || !Number.isFinite(Date.parse(root.generatedAt))) throw new Error("production release slate provenance is invalid");
+  exactObject(root.imageRegistry, ["path", "digest"], "production release slate.imageRegistry");
+  if (!DIGEST_RE.test(root.imageRegistry.digest) || PLACEHOLDER_DIGEST_RE.test(root.imageRegistry.digest)) throw new Error("production image registry digest is placeholder or invalid");
+  if (!Array.isArray(root.boards) || root.boards.length !== 10) throw new Error("production release slate must contain exactly 10 boards");
+  root.boards.forEach((board, index) => {
+    exactObject(board, RELEASE_BOARD_KEYS, `production release slate.boards[${index}]`);
+    if (board.problemId !== String(index + 1)) throw new Error(`production release slate board ${index + 1} must have ordered problemId ${index + 1}`);
+    if (board.problemPath !== `problems/${board.problemSlug}`) throw new Error(`production board ${index + 1} problemPath must be canonical`);
+    for (const field of ["problemPackageDigest", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"]) {
+      if (!DIGEST_RE.test(board[field]) || PLACEHOLDER_DIGEST_RE.test(board[field]) || /local-dev|placeholder/i.test(board[field])) throw new Error(`production board ${index + 1} ${field} is placeholder or invalid`);
+    }
+  });
+  for (const field of ["problemPackageDigest", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"]) {
+    if (new Set(root.boards.map((board) => board[field])).size !== 10) throw new Error(`production ${field} values must be distinct`);
+  }
+  const { slateDigest, ...body } = root;
+  if (sha256Canonical(body) !== slateDigest) throw new Error("production release slate digest mismatch");
+  if (problems !== undefined) {
+    if (!Array.isArray(problems) || problems.length !== 10) throw new Error("production release requires exactly 10 complete boards");
+    problems.forEach((problem, index) => {
+      const expected = Object.fromEntries(RELEASE_IDENTITY_KEYS.map((key) => [key, root.boards[index][key]]));
+      if (canonical(releaseBoardIdentity(problem, index)) !== canonical(expected)) {
+        throw new Error(`production board identity ${index + 1} does not match the closed release slate`);
+      }
+    });
+  }
+  return root;
+}
+
+function resolveWithin(root, relativePath, label) {
+  const path = resolve(root, relativePath);
+  if (path !== root && !path.startsWith(`${root}/`)) throw new Error(`${label} escapes repository root`);
+  return path;
+}
+
+export function validateProductionSlatePreflight(ethers, slate, config, {
+  repoRoot,
+  pythonExecutable = process.env.P42_ADMISSION_PYTHON ?? process.env.P42_RUNTIME_PYTHON ?? "python3",
+  runAdmitReady = runAdmitReadyCommand,
+  readJson = loadAdmissionMatrix,
+  readBytes = readFileSync,
+} = {}) {
+  validateProductionReleaseSlate(slate, config.problems);
+  const root = resolve(repoRoot ?? "");
+  if (!repoRoot) throw new Error("production slate preflight requires an explicit repository root");
+  const registryPath = resolveWithin(root, slate.imageRegistry.path, "image registry path");
+  const registryBytes = readBytes(registryPath);
+  if (`sha256:${createHash("sha256").update(registryBytes).digest("hex")}` !== slate.imageRegistry.digest) throw new Error("immutable image registry digest mismatch");
+  const registry = readJson(registryPath);
+  if (registry.status !== "ready" || !Array.isArray(registry.images)) throw new Error("immutable image registry must be status-ready");
+  const images = new Map(registry.images.map((entry) => [entry.problemSlug, entry.verifierImageDigest]));
+  return slate.boards.map((board, index) => {
+    const problemPath = resolveWithin(root, board.problemPath, `board ${index + 1} problemPath`);
+    const matrixPath = resolveWithin(root, board.admissionMatrixPath, `board ${index + 1} admissionMatrixPath`);
+    runAdmitReady({ repoRoot: root, problemPath, matrixPath, pythonExecutable });
+    const matrix = readJson(matrixPath);
+    if (matrix.matrix_hash !== board.admissionMatrixDigest || matrix.problem_id !== board.problemSlug || matrix.verifier_version !== board.verifierVersion || matrix.verifier_image !== board.verifierImageDigest) throw new Error(`production board ${index + 1} admission matrix identity mismatch`);
+    if (matrix.source?.tree_hash !== board.verifierSourceDigest || board.problemPackageDigest !== board.verifierSourceDigest) throw new Error(`production board ${index + 1} package/source provenance mismatch`);
+    if (images.get(board.problemSlug) !== board.verifierImageDigest) throw new Error(`production board ${index + 1} immutable image registry mismatch`);
+    return { problemId: board.problemId, problemSlug: board.problemSlug, matrixDigest: board.admissionMatrixDigest };
+  });
+}
+
+export function bindReleaseMode(config, { releaseMode, slate } = {}) {
+  if (!Object.values(RELEASE_MODES).includes(releaseMode)) throw new Error("release mode must be explicitly production or fixture");
+  if (releaseMode === RELEASE_MODES.PRODUCTION) validateProductionReleaseSlate(slate, config.problems);
+  return { ...config, releaseMode, releaseSlateDigest: releaseMode === RELEASE_MODES.PRODUCTION ? slate.slateDigest : null };
+}
 
 const ROOT_KEYS = ["schema", "governance", "roles", "parameters", "problems"];
 const GOVERNANCE_KEYS = ["signers", "threshold", "delaySeconds", "guardian"];

@@ -39,6 +39,7 @@ import {
   manifestProblemForRegistryId,
   validateManifestEvidence,
 } from "./indexer.mjs";
+import { loadProductionValidationContext } from "./production-validation-context.mjs";
 import {
   canonicalTranscriptArtifact,
   configuredTranscriptEndpoints,
@@ -1562,9 +1563,9 @@ export async function buildResolverContext(argv, clients = {}) {
   const publicationClients = configureResolverPublication(argv, process.env, clients);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;
   if (!privateKey) throw new Error("set RESOLVER_PRIVATE_KEY to the resolver session key");
-  const manifest = readStrictJsonFileSync(resolve(manifestPath), RUNTIME_JSON_LIMITS);
-  validateManifestEvidence(manifest);
   const provider = new ethers.JsonRpcProvider(arg(argv, "rpc", "https://sepolia.base.org"));
+  const manifest = readStrictJsonFileSync(resolve(manifestPath), RUNTIME_JSON_LIMITS);
+  validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
   const wallet = new ethers.Wallet(privateKey, provider);
   const abi = (name) => JSON.parse(
     readFileSync(resolve(HERE, "..", "contracts", "artifacts", "src", `${name}.sol`, `${name}.json`), "utf8"),

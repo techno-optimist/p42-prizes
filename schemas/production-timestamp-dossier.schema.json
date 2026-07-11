@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/production-timestamp-dossier.schema.json",
+  "title": "P42 production deployment timestamp dossier",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "manifestDigest", "deploymentConfigHash", "deploymentCommit", "slateDigest", "capsuleDigest", "blocks"],
+  "properties": {
+    "schema": { "const": "p42-prizes/production-timestamp-dossier/v1" },
+    "manifestDigest": { "$ref": "#/$defs/digest" },
+    "deploymentConfigHash": { "$ref": "#/$defs/bytes32" },
+    "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "slateDigest": { "$ref": "#/$defs/digest" },
+    "capsuleDigest": { "$ref": "#/$defs/digest" },
+    "blocks": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["blockNumber", "blockHash", "timestamp", "primaryOperatorId", "secondaryOperatorId"],
+        "properties": {
+          "blockNumber": { "type": "integer", "minimum": 0 },
+          "blockHash": { "$ref": "#/$defs/bytes32" },
+          "timestamp": { "type": "integer", "minimum": 0 },
+          "primaryOperatorId": { "$ref": "#/$defs/operatorId" },
+          "secondaryOperatorId": { "$ref": "#/$defs/operatorId" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+    "operatorId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" }
+  }
+}
