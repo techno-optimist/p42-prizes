@@ -218,11 +218,21 @@ export async function boundedFetchBytes(url, {
   } finally { clearTimeout(timer); }
 }
 
-export async function verifyPublicationReceipt({ artifact, receipt, endpoints, fetchClient }) {
+export function validatePublicationReceipt({ artifact, receipt }) {
   if (!receipt || typeof receipt !== "object" || Array.isArray(receipt)) throw new Error("publication receipt is required");
+  const keys = Object.keys(receipt).sort();
+  if (keys.join(",") !== "artifact_sha256,length,uri") {
+    throw new Error("publication receipt keys must be exactly artifact_sha256, length, and uri");
+  }
   const parsed = parseTranscriptUri(receipt.uri);
   if (receipt.artifact_sha256 !== artifact.artifact_sha256) throw new Error("publication receipt artifact_sha256 mismatch");
   if (receipt.length !== artifact.length) throw new Error("publication receipt length mismatch");
+  return { receipt: { ...receipt, uri: parsed.uri }, parsed };
+}
+
+export async function verifyPublicationReceipt({ artifact, receipt, endpoints, fetchClient }) {
+  const validated = validatePublicationReceipt({ artifact, receipt });
+  const { parsed } = validated;
   if (endpoints === undefined) throw new Error("trusted retrieval endpoints are required; receipt endpoints are ignored");
   const configured = validateRetrievalEndpoints(endpoints);
   const retrieve = fetchClient?.fetchTranscript
@@ -240,7 +250,7 @@ export async function verifyPublicationReceipt({ artifact, receipt, endpoints, f
     length: artifact.length,
     artifact_sha256: artifact.artifact_sha256,
     transcript_hash: artifact.transcript_hash,
-    receipt,
+    receipt: validated.receipt,
   };
 }
 

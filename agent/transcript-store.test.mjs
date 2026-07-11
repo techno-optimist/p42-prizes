@@ -17,6 +17,7 @@ import {
   pinnedHttpsFetchBytes,
   publishAndVerifyTranscript,
   receiptSpoolPublisher,
+  validatePublicationReceipt,
   validateRetrievalEndpoints,
 } from "./transcript-store.mjs";
 
@@ -73,6 +74,20 @@ test("publication requires a receipt and exact bytes from two independent endpoi
   );
 });
 
+test("publication receipts have an exact crash-journal shape", () => {
+  const artifact = canonicalTranscriptArtifact(transcript());
+  const receipt = {
+    uri: `ar://${"j".repeat(43)}`,
+    artifact_sha256: artifact.artifact_sha256,
+    length: artifact.length,
+  };
+  assert.deepEqual(validatePublicationReceipt({ artifact, receipt }).receipt, receipt);
+  assert.throws(
+    () => validatePublicationReceipt({ artifact, receipt: { ...receipt, endpoint: "https://attacker.example" } }),
+    /keys must be exactly/,
+  );
+});
+
 test("trusted endpoints reject SSRF targets and ignore receipt endpoint injection", async () => {
   for (const endpoints of [
     ["http://public.example", "https://other.test"],
@@ -91,7 +106,6 @@ test("trusted endpoints reject SSRF targets and ignore receipt endpoint injectio
   const artifact = canonicalTranscriptArtifact(transcript());
   const receipt = {
     uri: `ar://${"z".repeat(43)}`, artifact_sha256: artifact.artifact_sha256, length: artifact.length,
-    endpoints: ["https://attacker.example", "https://attacker.test"],
   };
   await assert.rejects(publishAndVerifyTranscript({
     transcript: transcript(),

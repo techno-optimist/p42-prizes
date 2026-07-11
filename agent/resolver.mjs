@@ -6,14 +6,19 @@
 import { ethers } from "ethers";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
+  fsyncSync,
+  linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
   readdirSync,
   renameSync,
   statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -35,12 +40,15 @@ import {
   validateManifestEvidence,
 } from "./indexer.mjs";
 import {
+  canonicalTranscriptArtifact,
   configuredTranscriptEndpoints,
   httpTranscriptFetchClient,
   parseTranscriptUri,
-  publishAndVerifyTranscript,
   receiptSpoolPublisher,
+  validatePublicationReceipt,
+  verifyPublicationReceipt,
 } from "./transcript-store.mjs";
+import { arweaveTranscriptPublisher } from "./transcript-arweave.mjs";
 import {
   assertApprovedJournalPath,
   assertSignedTransactionRecord,
@@ -49,6 +57,7 @@ import { readStrictJsonFileSync } from "./strict-json.mjs";
 
 const RUNTIME_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...RUNTIME_JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
+const PREPARED_UPLOAD_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 64, canonicalBytes: true, trailingNewline: "require" });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
@@ -140,34 +149,6 @@ function arg(argv, name, defaultValue = undefined) {
 
 function sleep(ms) {
   return new Promise((done) => setTimeout(done, ms));
-}
-
-export function validateTranscriptUriTemplate(value) {
-  const template = requireString(value, "--transcript-uri-template");
-  if ((template.match(/\{transcript_hash\}/g) ?? []).length !== 1) {
-    throw new Error("--transcript-uri-template must contain exactly one {transcript_hash} placeholder");
-  }
-  if (/\s/.test(template) || !/^(ar|ipfs):\/\//.test(template)) {
-    throw new Error("--transcript-uri-template must be an ar:// or ipfs:// durable URI template");
-  }
-  if (/^file:/i.test(template) || template.includes("..")) {
-    throw new Error("--transcript-uri-template must not name a file or traversal path");
-  }
-  const probe = template.startsWith("ar://")
-    ? template.replace("{transcript_hash}", "a".repeat(43))
-    : template.replace("{transcript_hash}", `b${"a".repeat(58)}`);
-  parseTranscriptUri(probe);
-  return template;
-}
-
-export function expandTranscriptUri(template, transcriptHash) {
-  const checked = validateTranscriptUriTemplate(template);
-  if (!SHA256_RE.test(String(transcriptHash))) {
-    throw new Error("transcript hash must be sha256:<64 lowercase hex>");
-  }
-  const uri = checked.replace("{transcript_hash}", transcriptHash);
-  if (uri.includes("{") || uri.includes("}")) throw new Error("transcript URI template left an unresolved placeholder");
-  return uri;
 }
 
 function validateVerdictReport(value, label) {
@@ -834,6 +815,145 @@ function actionPaths(context, eventHash, policyHash) {
   };
 }
 
+function publicationReceiptPath(context, eventHash, transcriptHash) {
+  if (!SHA256_RE.test(String(eventHash)) || !SHA256_RE.test(String(transcriptHash))) {
+    throw new Error("publication journal identity must use canonical sha256 hashes");
+  }
+  return join(
+    context.actionsPath,
+    `${eventHash.slice(7)}-${transcriptHash.slice(7)}.publication-receipt.json`,
+  );
+}
+
+function publicationUploadPath(context, eventHash, transcriptHash) {
+  return publicationReceiptPath(context, eventHash, transcriptHash)
+    .replace(/\.publication-receipt\.json$/, ".arweave-signed-upload.json");
+}
+
+function readPublicationReceipt(path) {
+  const metadata = lstatSync(path);
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    throw new Error("publication receipt journal must be a regular non-symlink file");
+  }
+  return readStrictJsonFileSync(path, IMMUTABLE_JSON_LIMITS);
+}
+
+function writePublicationReceiptExclusive(path, value) {
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  let descriptor;
+  try {
+    descriptor = openSync(temporary, "wx", 0o600);
+    writeFileSync(descriptor, `${canonicalJson(value)}\n`, { encoding: "utf8" });
+    fsyncSync(descriptor);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  try {
+    linkSync(temporary, path);
+    const directory = openSync(dirname(path), "r");
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  } finally {
+    try { unlinkSync(temporary); } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
+}
+
+export async function publishResolverTranscript(context, eventHash, transcript) {
+  const artifact = canonicalTranscriptArtifact(transcript);
+  const receiptPath = publicationReceiptPath(context, eventHash, artifact.transcript_hash);
+  const uploadPath = publicationUploadPath(context, eventHash, artifact.transcript_hash);
+  let receipt;
+  if (pathEntryExists(receiptPath)) {
+    receipt = readPublicationReceipt(receiptPath);
+  } else {
+    const persistAcceptedReceipt = async (accepted) => {
+      const validated = validatePublicationReceipt({ artifact, receipt: accepted }).receipt;
+      if (pathEntryExists(receiptPath)) {
+        if (canonicalJson(readPublicationReceipt(receiptPath)) !== canonicalJson(validated)) {
+          throw new Error("publication provider returned a receipt that conflicts with its journal");
+        }
+      } else {
+        writePublicationReceiptExclusive(receiptPath, validated);
+      }
+    };
+    const persistPreparedUpload = async (prepared) => {
+      if (pathEntryExists(uploadPath)) {
+        const existing = readStrictJsonFileSync(uploadPath, PREPARED_UPLOAD_JSON_LIMITS);
+        if (canonicalJson(existing) !== canonicalJson(prepared)) {
+          throw new Error("Arweave publisher returned a signed upload that conflicts with its journal");
+        }
+      } else {
+        writePublicationReceiptExclusive(uploadPath, prepared);
+      }
+    };
+    receipt = await context.transcriptPublisher.publishTranscript(artifact.bytes, {
+      transcript_hash: artifact.transcript_hash,
+      artifact_sha256: artifact.artifact_sha256,
+      length: artifact.length,
+      onReceipt: persistAcceptedReceipt,
+      preparedTransaction: pathEntryExists(uploadPath)
+        ? readStrictJsonFileSync(uploadPath, PREPARED_UPLOAD_JSON_LIMITS)
+        : undefined,
+      onPrepared: persistPreparedUpload,
+    });
+    receipt = validatePublicationReceipt({ artifact, receipt }).receipt;
+    await persistAcceptedReceipt(receipt);
+  }
+  if (typeof context.transcriptPublisher.confirmReceipt === "function") {
+    await context.transcriptPublisher.confirmReceipt(artifact.bytes, receipt);
+  }
+  const publication = await verifyPublicationReceipt({
+    artifact,
+    receipt,
+    endpoints: context.transcriptEndpoints,
+    fetchClient: context.transcriptFetchClient,
+  });
+  return {
+    status: "published",
+    artifact,
+    publication,
+    receiptPath,
+    uploadPath: pathEntryExists(uploadPath) ? uploadPath : undefined,
+  };
+}
+
+export async function assertActionPublication(context, action) {
+  const cacheKey = `${action.event_hash}:${action.transcript_hash}`;
+  context.verifiedPublications ??= new Set();
+  if (context.verifiedPublications.has(cacheKey)) return;
+  const expectedReceiptPath = publicationReceiptPath(context, action.event_hash, action.transcript_hash);
+  if (resolve(action.publication_receipt_path) !== resolve(expectedReceiptPath)) {
+    throw new Error("resolver publication receipt path does not match the deterministic action path");
+  }
+  const transcript = readTranscript(action.transcript_path);
+  const artifact = canonicalTranscriptArtifact(transcript);
+  if (
+    artifact.transcript_hash !== action.transcript_hash
+    || artifact.artifact_sha256 !== action.artifact_sha256
+    || artifact.length !== action.artifact_length
+  ) {
+    throw new Error("resolver publication artifact does not match the persisted action");
+  }
+  const receipt = readPublicationReceipt(expectedReceiptPath);
+  if (typeof context.transcriptPublisher.confirmReceipt === "function") {
+    await context.transcriptPublisher.confirmReceipt(artifact.bytes, receipt);
+  }
+  const publication = await verifyPublicationReceipt({
+    artifact,
+    receipt,
+    endpoints: context.transcriptEndpoints,
+    fetchClient: context.transcriptFetchClient,
+  });
+  if (
+    publication.uri !== action.transcript_uri
+    || canonicalJson(publication) !== canonicalJson(action.publication)
+  ) {
+    throw new Error("resolver publication evidence does not match the persisted action");
+  }
+  context.verifiedPublications.add(cacheKey);
+}
+
 function pathEntryExists(path) {
   try { lstatSync(path); return true; } catch (error) {
     if (error?.code === "ENOENT") return false;
@@ -1131,6 +1251,7 @@ export function assertResolverSignedRecord(record, action, context) {
 }
 
 async function ensureSignedAction(context, action) {
+  await assertActionPublication(context, action);
   assertActionPolicy(action, context);
   if (pathEntryExists(action.signed_tx_path)) {
     const paths = assertResolverActionPaths(action, context, { signedMustExist: true });
@@ -1260,12 +1381,7 @@ async function prepareAction(context, event) {
   const checked = transcript.checked;
   let published;
   try {
-    published = await publishAndVerifyTranscript({
-      transcript: checked.transcript,
-      publisher: context.transcriptPublisher,
-      endpoints: context.transcriptEndpoints,
-      fetchClient: context.transcriptFetchClient,
-    });
+    published = await publishResolverTranscript(context, event.event_hash, checked.transcript);
   } catch (error) {
     published = { status: "awaiting_publication", detail: error.message };
   }
@@ -1281,6 +1397,8 @@ async function prepareAction(context, event) {
       transcript_hash: checked.transcript.transcript_hash,
       artifact_sha256: published.artifact?.artifact_sha256,
       artifact_length: published.artifact?.length,
+      publication_receipt_path: published.receiptPath,
+      publication_upload_path: published.uploadPath,
       created_at_utc: existing?.created_at_utc ?? new Date().toISOString(),
     };
     context.state.actions[event.event_hash] = action;
@@ -1354,6 +1472,8 @@ async function prepareAction(context, event) {
     verdict_hash: verdictHash,
     transcript_uri: transcriptURI,
     publication: published.publication,
+    publication_receipt_path: published.receiptPath,
+    publication_upload_path: published.uploadPath,
     artifact_sha256: published.artifact.artifact_sha256,
     artifact_length: published.artifact.length,
     bond_wei: current.bond.toString(),
@@ -1436,7 +1556,9 @@ export async function buildResolverContext(argv, clients = {}) {
     throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir>");
   }
   const registryProblemId = nonzeroSubmissionId(registryProblemIdArg, "--registry-problem-id");
-  if (transcriptUriTemplate) validateTranscriptUriTemplate(transcriptUriTemplate);
+  if (transcriptUriTemplate) {
+    throw new Error("--transcript-uri-template was removed; use --transcript-store arweave or --publication-receipts");
+  }
   const publicationClients = configureResolverPublication(argv, process.env, clients);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;
   if (!privateKey) throw new Error("set RESOLVER_PRIVATE_KEY to the resolver session key");
@@ -1494,7 +1616,6 @@ export async function buildResolverContext(argv, clients = {}) {
     reorgOverlapBlocks,
     executionMode,
     agentWallet: null,
-    transcriptUriTemplate,
     transcriptPublisher: publicationClients.publisher,
     transcriptFetchClient: publicationClients.fetchClient,
     transcriptEndpoints: publicationClients.endpoints,
@@ -1523,9 +1644,20 @@ export function configureResolverPublication(argv = [], env = process.env, clien
     ? configuredTranscriptEndpoints([], { P42_TRANSCRIPT_ENDPOINTS: clients.endpoints.join(",") })
     : configuredTranscriptEndpoints(argv, env);
   const spool = arg(argv, "publication-receipts", env.P42_TRANSCRIPT_RECEIPT_SPOOL);
-  const publisher = clients.publisher ?? (spool ? receiptSpoolPublisher(spool) : null);
+  const store = arg(argv, "transcript-store", env.P42_TRANSCRIPT_STORE);
+  if (spool && store) throw new Error("configure exactly one transcript publisher mode");
+  if (store && store !== "arweave") throw new Error("--transcript-store must be arweave");
+  const publisher = clients.publisher
+    ?? (store === "arweave"
+      ? arweaveTranscriptPublisher({
+        owner: env.P42_ARWEAVE_OWNER,
+        ...clients.arweaveOptions,
+      })
+      : spool
+        ? receiptSpoolPublisher(spool)
+        : null);
   if (!publisher?.publishTranscript) {
-    throw new Error("configure a receipt-backed publisher or --publication-receipts/P42_TRANSCRIPT_RECEIPT_SPOOL; URI templates cannot publish transcripts");
+    throw new Error("configure --transcript-store arweave or a receipt-backed publisher; URI templates cannot publish transcripts");
   }
   return {
     endpoints,
