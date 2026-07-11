@@ -350,6 +350,11 @@ def _inspect_image(problem: Path, image_ref: str, runtime: str) -> ImageIdentity
         raise AdmissionError("immutable verifier image has no OCI source labels")
 
     expected_source_hash = compute_source_hash(problem)
+    extracted_source_hash = _extract_image_source_hash(
+        problem_id=manifest["problem_id"], image_ref=image_ref, runtime=runtime
+    )
+    if extracted_source_hash != expected_source_hash:
+        raise AdmissionError("immutable verifier image filesystem source does not match the checkout source")
     source_commit = labels.get(OCI_REVISION_LABEL)
     source_hash = labels.get(SOURCE_HASH_LABEL)
     if not isinstance(source_commit, str) or not SOURCE_COMMIT_RE.fullmatch(source_commit):
@@ -370,6 +375,38 @@ def _inspect_image(problem: Path, image_ref: str, runtime: str) -> ImageIdentity
         source_commit=source_commit,
         source_hash=source_hash,
     )
+
+
+def _extract_image_source_hash(*, problem_id: str, image_ref: str, runtime: str) -> str:
+    container_name = f"p42-source-inspect-{os.getpid()}-{os.urandom(6).hex()}"
+    created = subprocess.run(
+        [runtime, "create", "--name", container_name, image_ref, "true"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        raise AdmissionError("could not create verifier image for source inspection")
+    try:
+        with tempfile.TemporaryDirectory(prefix="p42-image-source-") as temporary:
+            root = Path(temporary)
+            (root / "problems").mkdir()
+            copies = (
+                ("/repo/src", root / "src"),
+                (f"/repo/problems/{problem_id}", root / "problems" / problem_id),
+            )
+            for source, destination in copies:
+                copied = subprocess.run(
+                    [runtime, "cp", f"{container_name}:{source}", str(destination)],
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if copied.returncode != 0:
+                    raise AdmissionError(f"could not extract verifier image source path {source}")
+            return compute_source_hash(root / "problems" / problem_id)
+    finally:
+        force_remove_container(container_name, runtime)
 
 
 def _run_image_verifier_once(
@@ -649,6 +686,16 @@ def _validate_host_evidence(evidence: Mapping[str, Any], index: int) -> tuple[di
         raise AdmissionError(f"{prefix}.execution.mode is unsupported")
     if execution.get("image_digest") != report["verifier_image"]:
         raise AdmissionError(f"{prefix}.execution.image_digest does not match report.verifier_image")
+    execution_architecture = _normalize_architecture(
+        _require_string(execution, "image_architecture", f"{prefix}.execution")
+    )
+    execution_os = _require_string(execution, "image_os", f"{prefix}.execution").lower()
+    if execution.get("image_architecture") != execution_architecture:
+        raise AdmissionError(f"{prefix}.execution.image_architecture must use its canonical name")
+    if execution.get("image_os") != execution_os:
+        raise AdmissionError(f"{prefix}.execution.image_os must use lowercase canonical form")
+    if execution_architecture != normalized_host["architecture"] or execution_os != normalized_host["os"]:
+        raise AdmissionError(f"{prefix}.execution image platform does not match signed host metadata")
 
     source = evidence.get("source")
     if not isinstance(source, dict):
