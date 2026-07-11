@@ -347,7 +347,12 @@ def _sign(
 ) -> dict[str, str]:
     public_key = identity_value["public_key"]
     seed = _SIGNING_SEEDS[public_key]
-    message = _attestation_message(schema_version, artifact_hash)
+    message = _attestation_message(
+        schema_version,
+        artifact_hash,
+        role,
+        signed_at_utc,
+    )
     expanded = hashlib.sha512(seed).digest()
     scalar_bytes = bytearray(expanded[:32])
     scalar_bytes[0] &= 248

@@ -12,8 +12,9 @@ PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/edges-vs-
 all: validate lint test verify-seed
 
 install-verifier-deps:
+	@PIP_DISABLE_PIP_VERSION_CHECK=1 $(PYTHON) -m pip install --require-hashes -r requirements.runtime.lock
 	@for requirements in $(PROBLEMS:%=%/requirements.lock); do \
-		PIP_DISABLE_PIP_VERSION_CHECK=1 $(PYTHON) -m pip install -r $$requirements || exit $$?; \
+		PIP_DISABLE_PIP_VERSION_CHECK=1 $(PYTHON) -m pip install --require-hashes -r $$requirements || exit $$?; \
 	done
 
 validate:

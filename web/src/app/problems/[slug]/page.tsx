@@ -4,8 +4,8 @@ import { FrontierChart, type FrontierPoint } from "@/components/FrontierChart";
 import { FundingPanel } from "@/components/FundingPanel";
 import { MathBlock } from "@/components/Math";
 import { Plate } from "@/components/Plate";
-import { chainProvenanceForProblem } from "@/lib/chain-provenance";
 import { getProblemBySlug, sortLeaderboardRows } from "@/lib/data";
+import { loadIndexerProvenance } from "@/lib/indexer-provenance";
 import { discoveries } from "@/lib/discoveries";
 import { allSubmissions } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
@@ -19,7 +19,7 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
   const { slug } = await params;
   const problem = getProblemBySlug(slug);
   if (!problem) notFound();
-  const chainProvenance = chainProvenanceForProblem(problem);
+  const chainProvenance = loadIndexerProvenance(problem);
   const seedDiscovery = discoveries.find((discovery) => discovery.boardSlugs.includes(slug));
 
   const rows = sortLeaderboardRows(problem.id, allSubmissions());

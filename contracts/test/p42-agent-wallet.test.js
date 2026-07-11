@@ -65,6 +65,7 @@ async function fixture() {
   const Mock = await ethers.getContractFactory("MockFundingArmed");
   const mock = await Mock.deploy(true);
   await mock.waitForDeployment();
+  await ledger.connect(deployer).setCreditRecorder(await mock.getAddress());
   await pool.connect(deployer).setSubmissionManager(await mock.getAddress());
   const Registry = await ethers.getContractFactory("P42ProblemRegistry");
   const registry = await Registry.deploy(deployer.address);
@@ -84,6 +85,10 @@ async function fixture() {
   });
   await registry.freeze(1);
   await pool.connect(deployer).setRegistry(await registry.getAddress(), 1);
+  const Vault = await ethers.getContractFactory("P42RolloverVault");
+  const vault = await Vault.deploy(await registry.getAddress(), deployer.address);
+  await vault.waitForDeployment();
+  await ledger.connect(deployer).setRolloverDestination(await vault.getAddress());
   await pool.connect(deployer).setAcceptingFunds(true);
   const Wallet = await ethers.getContractFactory("P42AgentWallet");
   const wallet = await Wallet.connect(owner).deploy(owner.address, session.address, PER_CALL, TOTAL, { value: FUNDING });
@@ -114,6 +119,20 @@ describe("P42AgentWallet — scoped session-key safety", () => {
     await expectCustomError(
       wallet.connect(session).execute(ethers.Wallet.createRandom().address, PER_CALL, "0x"),
       wallet, "CallNotAllowed");
+  });
+
+  it("limits a selector-zero allowance to bare empty calldata", async () => {
+    const { owner, session, outsider, wallet } = await fixture();
+    // A raw transfer can be intentional, but arbitrary fallback bytes must
+    // never inherit the selector-zero compatibility allowance.
+    await wallet.connect(owner).setAllowed(outsider.address, "0x00000000", true);
+    await wallet.connect(session).execute(outsider.address, 0n, "0x");
+
+    for (const fallbackData of ["0x01", "0x0102", "0x010203", "0x00000000"]) {
+      await expectCustomError(
+        wallet.connect(session).execute(outsider.address, 0n, fallbackData),
+        wallet, "ExactCalldataPolicyRequired");
+    }
   });
 
   it("enforces the per-call value cap", async () => {

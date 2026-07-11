@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 from urllib import request as urllib_request
@@ -29,6 +30,10 @@ from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_rep
 from p42_prizes.legal import ChainReader, LegalMemoError, normalize_legal_memo
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
+from p42_prizes.operational_controls import (
+    OperationalControlsError,
+    normalize_operational_controls,
+)
 from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
 from p42_prizes.readiness import validate_fundable_admission
 from p42_prizes.runner_alerts import RunnerAlertError, build_runner_alerts
@@ -41,12 +46,16 @@ from p42_prizes.runner_queue import (
     plan_runner_queue,
 )
 from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
-from p42_prizes.verdict import canonical_json, parse_rational
+from p42_prizes.secure_json import read_strict_json_stream
+from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes
 
 
 # Gate validators enforce the published schemas' additionalProperties:false, so a
 # gate report with unknown top-level keys is rejected at the CLI boundary.
 _SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
+_RPC_MAX_RESPONSE_BYTES = 1024 * 1024
+_RPC_MAX_RESPONSE_DEPTH = 64
+_PRODUCTION_TRUST_ROOT = Path("/etc/p42/production-attestation-root.sha256")
 
 
 def _enforce_gate_schema(report: dict, schema_name: str) -> None:
@@ -54,13 +63,62 @@ def _enforce_gate_schema(report: dict, schema_name: str) -> None:
     jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
 
 
-def _load_attestation_inputs(args: argparse.Namespace) -> tuple[dict, Path, ChainReader]:
-    trust_registry = load_evidence_file(args.trust_registry)
+def _load_pinned_trust_registry(path: str, *, allow_test: bool) -> dict:
+    trust_registry = load_evidence_file(path)
     _enforce_gate_schema(trust_registry, "attestation-trust-registry.schema.json")
-    if trust_registry.get("environment") != "production" and not args.allow_test_trust_registry:
+    if trust_registry.get("environment") == "production":
+        expected_registry_hash = _read_production_trust_root()
+        actual_registry_hash = sha256_bytes(canonical_json(trust_registry).encode("utf-8"))
+        if expected_registry_hash != actual_registry_hash:
+            raise AdmissionError(
+                "production trust registry does not match the protected root digest"
+            )
+    elif not allow_test:
         raise AdmissionError(
             "test trust registries are rejected by default; use a production root registry or explicitly allow test trust"
         )
+    return trust_registry
+
+
+def _read_production_trust_root() -> str:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise AdmissionError("production trust roots require platform O_NOFOLLOW support")
+    try:
+        fd = os.open(_PRODUCTION_TRUST_ROOT, os.O_RDONLY | nofollow)
+    except OSError as exc:
+        raise AdmissionError(
+            f"production trust requires protected root file {_PRODUCTION_TRUST_ROOT}"
+        ) from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise AdmissionError("production trust root must be a regular file")
+        if metadata.st_mode & 0o0222:
+            raise AdmissionError("production trust root must not be writable")
+        raw = os.read(fd, 256)
+        if os.read(fd, 1):
+            raise AdmissionError("production trust root file is oversized")
+    finally:
+        os.close(fd)
+    try:
+        value = raw.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise AdmissionError("production trust root must be ASCII") from exc
+    if (
+        len(value) != 71
+        or not value.startswith("sha256:")
+        or any(character not in "0123456789abcdef" for character in value[7:])
+    ):
+        raise AdmissionError("production trust root must be sha256:<64-lowercase-hex>")
+    return value
+
+
+def _load_attestation_inputs(args: argparse.Namespace) -> tuple[dict, Path, ChainReader]:
+    trust_registry = _load_pinned_trust_registry(
+        args.trust_registry,
+        allow_test=args.allow_test_trust_registry,
+    )
     artifact_root = Path(args.artifact_root).resolve()
     if not artifact_root.is_dir():
         raise AdmissionError("--artifact-root must be an existing directory")
@@ -85,7 +143,11 @@ def _build_http_chain_reader(rpc_url: str) -> ChainReader:
             method="POST",
         )
         with urllib_request.urlopen(rpc_request, timeout=10) as response:
-            parsed = json.loads(response.read())
+            parsed = read_strict_json_stream(
+                response,
+                max_bytes=_RPC_MAX_RESPONSE_BYTES,
+                max_depth=_RPC_MAX_RESPONSE_DEPTH,
+            )
         if not isinstance(parsed, dict) or "error" in parsed or "result" not in parsed:
             raise ValueError(f"JSON-RPC {method} returned an error or malformed response")
         return parsed["result"]
@@ -388,6 +450,9 @@ def _runner_policy_from_args(args: argparse.Namespace) -> RunnerPolicy:
         reserve_memory_mb=args.reserve_memory_mb,
         max_swap_used_mb=args.max_swap_used_mb,
         memory_safety_factor=args.memory_safety_factor,
+        sandbox=args.sandbox,
+        sandbox_pids_limit=args.sandbox_pids_limit,
+        sandbox_cpus=args.sandbox_cpus,
     )
 
 
@@ -448,7 +513,15 @@ def _cmd_runner_alerts(args: argparse.Namespace) -> int:
 
 def _cmd_runner_burst_validate(args: argparse.Namespace) -> int:
     try:
-        report = normalize_runner_burst_report(load_evidence_file(args.report))
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
+        report = normalize_runner_burst_report(
+            load_evidence_file(args.report),
+            artifact_root=args.artifact_root,
+            trust_registry=trust_registry,
+        )
         _enforce_gate_schema(report, "runner-burst.schema.json")
     except (AdmissionError, RunnerBurstError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
@@ -519,6 +592,23 @@ def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
         )
         _enforce_gate_schema(report, "legal-memo.schema.json")
     except (AdmissionError, LegalMemoError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
+def _cmd_operational_controls_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_operational_controls(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
+        _enforce_gate_schema(report, "operational-controls.schema.json")
+    except (AdmissionError, OperationalControlsError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(report, args.output)
@@ -662,6 +752,9 @@ def build_parser() -> argparse.ArgumentParser:
     runner_plan.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_plan.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_plan.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_plan.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_plan.add_argument("--sandbox-pids-limit", type=int, default=256)
+    runner_plan.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_plan.add_argument("--now-utc")
     runner_plan.set_defaults(func=_cmd_runner_plan)
 
@@ -679,6 +772,9 @@ def build_parser() -> argparse.ArgumentParser:
     runner_work.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_work.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_work.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_work.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_work.add_argument("--sandbox-pids-limit", type=int, default=256)
+    runner_work.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_work.add_argument("--now-utc")
     runner_work.set_defaults(func=_cmd_runner_work_once)
 
@@ -699,6 +795,9 @@ def build_parser() -> argparse.ArgumentParser:
     runner_drain.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_drain.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_drain.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_drain.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_drain.add_argument("--sandbox-pids-limit", type=int, default=256)
+    runner_drain.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_drain.set_defaults(func=_cmd_runner_drain)
 
     runner_alerts = subparsers.add_parser(
@@ -725,6 +824,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash a Gate 1 verifier runner burst/OOM rehearsal report",
     )
     runner_burst.add_argument("--report", required=True)
+    runner_burst.add_argument("--artifact-root", required=True)
+    runner_burst.add_argument("--trust-registry", required=True)
+    runner_burst.add_argument("--allow-test-trust-registry", action="store_true")
     runner_burst.add_argument("--output")
     runner_burst.set_defaults(func=_cmd_runner_burst_validate)
 
@@ -763,6 +865,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_attestation_validation_args(legal_memo)
     legal_memo.add_argument("--output")
     legal_memo.set_defaults(func=_cmd_legal_memo_validate)
+
+    operational_controls = subparsers.add_parser(
+        "operational-controls-validate",
+        help="validate and hash Gate 2 wallet/session and abuse-control evidence",
+    )
+    operational_controls.add_argument("--report", required=True)
+    _add_attestation_validation_args(operational_controls)
+    operational_controls.add_argument("--output")
+    operational_controls.set_defaults(func=_cmd_operational_controls_validate)
 
     return parser
 

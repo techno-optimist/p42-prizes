@@ -384,18 +384,15 @@ describe("mutable API routes", () => {
     });
   });
 
-  it("gates Coinbase Onramp sessions while the per-problem pool is not deployed", async () => {
-    const response = await coinbaseSessionPost(
-      jsonRequest("/api/problems/hadamard-mini/funding/coinbase-session", {
-        preset_fiat_amount: "25.00",
-      }),
-      { params: Promise.resolve({ slug: "hadamard-mini" }) },
-    );
+  it("hard-disables Coinbase Onramp for v1", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const response = await coinbaseSessionPost();
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(503);
+    expect(fetchSpy).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toMatchObject({
-      error: "Coinbase Onramp is gated until a reviewed Base mainnet pool is configured",
-      donationWallet: { chain: "Base Sepolia", asset: "ETH", address: null, status: "not-deployed" },
+      error: "Coinbase Onramp is disabled for P42 Prizes v1",
+      capability: "disabled",
     });
   });
 

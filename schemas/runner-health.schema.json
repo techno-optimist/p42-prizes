@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/runner-health-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "observed_at_utc", "oom_kills", "worker_restarts", "queue_corruption_events", "max_active_running", "decision", "swap_guard", "host_capacity", "concurrency_guard"],
+  "properties": {
+    "schema_version": { "const": "p42-runner-health/v1" },
+    "observed_at_utc": { "type": "string", "format": "date-time" },
+    "oom_kills": { "type": "integer", "minimum": 0 },
+    "worker_restarts": { "type": "integer", "minimum": 0 },
+    "queue_corruption_events": { "type": "integer", "minimum": 0 },
+    "max_active_running": { "type": "integer", "minimum": 0 },
+    "decision": { "enum": ["start", "wait"] },
+    "swap_guard": { "enum": ["green", "red"] },
+    "host_capacity": { "enum": ["green", "red"] },
+    "concurrency_guard": { "enum": ["green", "red"] }
+  }
+}

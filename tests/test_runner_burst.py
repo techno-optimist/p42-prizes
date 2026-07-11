@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,202 +9,222 @@ import subprocess
 import jsonschema
 import pytest
 
+from attestation_helpers import AttestationFixture, _sign
 from p42_prizes.runner_burst import RunnerBurstError, normalize_runner_burst_report
 from p42_prizes.verdict import canonical_json, sha256_bytes
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    env["PYTHONPATH"] = str(ROOT / "src")
-    return subprocess.run(
-        ["python3", "-m", "p42_prizes.cli", *args],
-        cwd=ROOT,
-        env=env,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+def _signed(identity: dict, role: str, value: dict, at: str) -> dict:
+    unsigned = dict(value)
+    unsigned.pop("attestation", None)
+    digest = sha256_bytes(canonical_json(unsigned).encode())
+    return {"identity": {k: identity[k] for k in ("name", "organization", "professional_email", "public_key")}, **_sign(identity, role, "p42-runner-burst/v1", digest, at)}
 
 
-def valid_burst_report() -> dict:
-    guard_cases = [
-        ("low-memory", "memory_guard_tripped", {"total_mb": 131072, "available_mb": 8192, "swap_used_mb": 0}),
-        ("swap-pressure", "swap_guard_tripped", {"total_mb": 131072, "available_mb": 64000, "swap_used_mb": 2048}),
-        ("too-large", "job_exceeds_host_capacity", {"total_mb": 131072, "available_mb": 131072, "swap_used_mb": 0}),
-        ("active-slot", "runner_concurrency_full", {"total_mb": 131072, "available_mb": 64000, "swap_used_mb": 0}),
-    ]
-    return {
-        "schema_version": "p42-runner-burst/v1",
-        "drill_id": "gate1-runner-burst-local-2026-07",
-        "completed_at_utc": "2026-07-08T23:00:00Z",
-        "environment": "local-rehearsal",
-        "agent_operator": "CHRONOS",
-        "runner_host": "local-mac-dry-run",
-        "artifacts": {
-            "queue_before": "runs/runner-burst/queue-before.json",
-            "queue_after": "runs/runner-burst/queue-after.json",
-            "loop_summary": "runs/runner-burst/loop-summary.json",
-            "transcript_archive": "runs/runner-burst/transcripts/",
-            "alert_bundle": "runs/runner-burst/runner-alerts.json",
-        },
-        "queue_policy": {
-            "max_running": 1,
-            "reserve_memory_mb": 4096,
-            "max_swap_used_mb": 1024,
-            "memory_safety_factor": 2.0,
-        },
-        "burst_metrics": {
-            "submitted_jobs": 4,
-            "completed_jobs": 2,
-            "failed_jobs": 1,
-            "max_active_running": 1,
-            "max_observed_queue_depth": 4,
-            "oldest_queued_age_seconds": 90,
-            "oom_kills": 0,
-            "worker_restarts": 0,
-            "queue_corruption_events": 0,
-        },
-        "loop_summary": {
-            "schema_version": "p42-runner-loop/v1",
-            "generated_at_utc": "2026-07-08T23:00:00Z",
-            "iterations": 3,
-            "completed_jobs": 2,
-            "stop_reason": "max_jobs_reached",
-            "events": [
-                {
-                    "kind": "completed",
-                    "job_id": "burst-1",
-                    "status": "succeeded",
-                    "transcript_hash": "sha256:" + "1" * 64,
-                    "transcript_path": "runs/runner-burst/transcripts/burst-1.json",
-                },
-                {
-                    "kind": "completed",
-                    "job_id": "burst-2",
-                    "status": "succeeded",
-                    "transcript_hash": "sha256:" + "2" * 64,
-                    "transcript_path": "runs/runner-burst/transcripts/burst-2.json",
-                },
-                {
-                    "kind": "wait",
-                    "reason": "memory_guard_tripped",
-                    "selected_job_id": "big-job",
-                    "queued_count": 1,
-                    "oldest_queued_age_seconds": 90,
-                    "active_running_count": 0,
-                    "min_available_memory_mb": 12288,
-                    "memory": {"total_mb": 131072, "available_mb": 8192, "swap_used_mb": 0},
-                },
-            ],
-        },
-        "guard_cases": [
-            {
-                "case_id": case_id,
-                "decision": "wait",
-                "plan_reason": reason,
-                "queue_mutated": False,
-                "started_verifier": False,
-                "memory": memory,
-                "evidence": f"runs/runner-burst/guards/{case_id}.json",
-            }
-            for case_id, reason, memory in guard_cases
-        ],
-        "invariants_checked": {
-            "fifo_order_preserved": True,
-            "max_one_active_verifier": True,
-            "low_memory_waited_without_mutation": True,
-            "swap_guard_blocks_start": True,
-            "host_capacity_blocks_start": True,
-            "runner_slot_blocks_start": True,
-            "transcripts_hash_validated": True,
-            "alerts_generated_for_invalid": True,
-            "no_secret_material_in_transcripts": True,
-        },
-        "regressions": [
-            {
-                "command": "python3 -m pytest tests/test_cli_and_core.py -k runner",
-                "status": "passed",
-            }
-        ],
-        "agent_attestation": {
-            "agent_operator": "CHRONOS",
-            "signed_at_utc": "2026-07-08T23:00:00Z",
-            "statement": "CHRONOS agent completed the Gate 1 runner burst rehearsal with one active runner.",
-        },
+def _record(sequence: int, queue_hash: str, starts: int) -> dict:
+    value = {"sequence": sequence, "queue_state_hash": queue_hash, "verifier_starts": starts}
+    value["record_hash"] = sha256_bytes(canonical_json(value).encode())
+    return value
+
+
+def _fixture(root: Path) -> tuple[dict, dict]:
+    af = AttestationFixture(root / "registry")
+    runner = af.identity("runner", "Runner Operator", "runner-operator")
+    authority = af.identity("authority", "Release Authority", "release-authority")
+    observer = af.identity("observer", "Independent Host Observer", "host-observer", independent=True)
+    host = af.identity("host", "Runner Host", "runner-host")
+    registry = af.trust_registry("p42-runner-burst/v1", [("runner-operator", runner, "2026-07-08T23:00:00Z"), ("release-authority", authority, "2026-07-08T23:00:00Z"), ("host-observer", observer, "2026-07-08T23:00:00Z")])
+    binding = {
+        "drill_id": "burst-7", "started_at_utc": "2026-07-08T22:00:00Z", "completed_at_utc": "2026-07-08T23:00:00Z",
+        "environment": "local-rehearsal", "release": "release-2026-07", "git_commit": "2" * 40,
+        "problem_id": "hadamard-mini", "board_id": "board-hadamard",
+        "verifier_image": "registry.example/p42/verifier@sha256:" + "a" * 64,
+        "admission_matrix_hash": "sha256:" + "b" * 64, "runner_host": "dgx-hermes", "runner_host_key": host["public_key"],
     }
+    jobs = [{"job_id": f"j{i}", "status": "queued", "created_at_utc": f"2026-07-08T22:0{i}:00Z"} for i in range(1, 4)]
+    after = [dict(j, status="failed" if j["job_id"] == "j2" else "succeeded") for j in jobs]
+    transcripts = []
+    for jid, valid in (("j1", True), ("j2", False), ("j3", True)):
+        transcript = {"binding": binding, "schema_version": "p42-runner-transcript/v1", "job_id": jid, "problem": binding["problem_id"], "verifier": {"valid": valid}}
+        transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode())
+        transcripts.append(transcript)
+    events = []
+    for index, transcript in enumerate(transcripts):
+        events.extend([
+            {"kind": "started", "job_id": transcript["job_id"], "at_utc": f"2026-07-08T22:{10 + index * 2}:00Z"},
+            {"kind": "completed", "job_id": transcript["job_id"], "at_utc": f"2026-07-08T22:{11 + index * 2}:00Z", "transcript_hash": transcript["transcript_hash"]},
+        ])
+    authority_resolution = {"binding": binding, "resolution": "approved"}
+    authority_resolution["attestation"] = _signed(authority, "release-authority", authority_resolution, "2026-07-08T22:55:00Z")
+    host_observations = {
+        "binding": binding, "runner_host_key": host["public_key"],
+        "before": {"observed_at_utc": "2026-07-08T22:00:00Z", "kernel_oom_kills": 4, "cgroup_oom_kills": 2, "worker_restarts": 7, "queue_corruption_events": 0},
+        "after": {"observed_at_utc": "2026-07-08T22:58:00Z", "kernel_oom_kills": 4, "cgroup_oom_kills": 2, "worker_restarts": 7, "queue_corruption_events": 0},
+    }
+    host_observations["attestation"] = _signed(observer, "host-observer", host_observations, "2026-07-08T22:59:00Z")
+    queue_hash = "sha256:" + "c" * 64
+    artifacts = {
+        "authority_resolution": authority_resolution, "queue_before": {"binding": binding, "jobs": jobs}, "queue_after": {"binding": binding, "jobs": after},
+        "loop_summary": {"binding": binding, "events": events}, "transcript_archive": {"binding": binding, "transcripts": transcripts},
+        "alert_bundle": {"binding": binding, "alerts": [{"job_id": "j2", "category": "verifier_rejected"}]},
+        "guard_cases": {"binding": binding, "cases": [{"reason": reason, "decision": "wait", "before_record": _record(i * 2, queue_hash, 9), "after_record": _record(i * 2 + 1, queue_hash, 9)} for i, reason in enumerate(("memory_guard_tripped", "swap_guard_tripped", "job_exceeds_host_capacity", "runner_concurrency_full"), 1)]},
+        "host_observations": host_observations,
+    }
+    refs = {}
+    for name, value in artifacts.items():
+        raw = canonical_json(value).encode()
+        (root / f"{name}.json").write_bytes(raw)
+        refs[name] = {"path": f"{name}.json", "sha256": "sha256:" + hashlib.sha256(raw).hexdigest()}
+    report = {"schema_version": "p42-runner-burst/v1", **binding, "artifacts": refs, "annotation": {"agent_operator": "CHRONOS", "statement": "Local drill annotation."}}
+    return report, {"fixture": af, "registry": registry, "runner": runner, "authority": authority, "observer": observer}
 
 
-def test_runner_burst_normalizes_hash_and_matches_schema() -> None:
-    normalized = normalize_runner_burst_report(valid_burst_report())
-
-    schema = json.loads((ROOT / "schemas" / "runner-burst.schema.json").read_text())
-    jsonschema.validate(normalized, schema)
-    expected = normalized["burst_hash"]
-    without_hash = dict(normalized)
-    without_hash.pop("burst_hash")
-    assert expected == sha256_bytes(canonical_json(without_hash).encode("utf-8"))
+def _rewrite(root: Path, report: dict, name: str, mutate) -> None:
+    path = root / report["artifacts"][name]["path"]
+    value = json.loads(path.read_text())
+    mutate(value)
+    raw = canonical_json(value).encode()
+    path.write_bytes(raw)
+    report["artifacts"][name]["sha256"] = "sha256:" + hashlib.sha256(raw).hexdigest()
 
 
-def test_runner_burst_cli_outputs_normalized_report(tmp_path: Path) -> None:
-    report_path = tmp_path / "runner-burst.json"
-    report_path.write_text(json.dumps(valid_burst_report()), encoding="utf-8")
-
-    completed = run_cli("runner-burst-validate", "--report", str(report_path))
-
-    assert completed.returncode == 0, completed.stderr
-    normalized = json.loads(completed.stdout)
-    assert normalized["schema_version"] == "p42-runner-burst/v1"
-    assert normalized["burst_hash"].startswith("sha256:")
+def _operator_sign(report: dict, root: Path, registry: dict, identity: dict, *, signed_at: str = "2026-07-08T23:00:00Z") -> None:
+    unsigned = normalize_runner_burst_report(report, artifact_root=root, trust_registry=registry)
+    digest = sha256_bytes(canonical_json({k: v for k, v in unsigned.items() if k != "burst_hash"}).encode())
+    report["attestation"] = {"identity": {k: identity[k] for k in ("name", "organization", "professional_email", "public_key")}, **_sign(identity, "runner-operator", "p42-runner-burst/v1", digest, signed_at)}
 
 
-def test_runner_burst_rejects_missing_guard_reason() -> None:
-    report = valid_burst_report()
-    report["guard_cases"] = [
-        case for case in report["guard_cases"] if case["plan_reason"] != "swap_guard_tripped"
-    ]
-
-    with pytest.raises(RunnerBurstError, match="missing required guard reason"):
-        normalize_runner_burst_report(report)
-
-
-def test_runner_burst_rejects_oom_kills() -> None:
-    report = valid_burst_report()
-    report["burst_metrics"]["oom_kills"] = 1
-
-    with pytest.raises(RunnerBurstError, match="oom_kills must be 0"):
-        normalize_runner_burst_report(report)
+def test_three_party_attestation_is_valid_but_gate_remains_blocked(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    registry = support["registry"]
+    unsigned = normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=registry)
+    assert unsigned["attestation_valid"] is False
+    assert unsigned["gate_passed"] is False
+    assert unsigned["derived"]["completed_jobs"] == 3
+    _operator_sign(report, tmp_path, registry, support["runner"])
+    out = normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=registry)
+    assert out["attestation_valid"] is True
+    assert out["gate_passed"] is False
+    assert out["derived"]["live_authority_resolution_required"] is True
+    jsonschema.validate(out, json.loads((ROOT / "schemas/runner-burst.schema.json").read_text()))
 
 
-def test_runner_burst_rejects_max_running_above_one() -> None:
-    report = valid_burst_report()
-    report["queue_policy"]["max_running"] = 2
-
-    with pytest.raises(RunnerBurstError, match="max_running must be 1"):
-        normalize_runner_burst_report(report)
-
-
-def test_runner_burst_rejects_failed_regression() -> None:
-    report = valid_burst_report()
-    report["regressions"][0]["status"] = "failed"
-
-    with pytest.raises(RunnerBurstError, match="status must be passed"):
-        normalize_runner_burst_report(report)
+@pytest.mark.parametrize("field,value,match", [
+    ("completed_at_utc", "2099-01-01T00:00:00Z", "future"),
+    ("verifier_image", "not-an-image", "immutable image"),
+    ("git_commit", "deadbeef", "40-character"),
+])
+def test_rejects_unpinned_authority_binding(tmp_path: Path, field: str, value: str, match: str) -> None:
+    report, support = _fixture(tmp_path)
+    report[field] = value
+    with pytest.raises(RunnerBurstError, match=match):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
 
 
-def test_runner_burst_rejects_placeholder_artifact() -> None:
-    report = valid_burst_report()
-    report["artifacts"]["alert_bundle"] = "TBD"
+def test_operator_claim_cannot_replace_authority_resolution(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, "authority_resolution", lambda value: value.update(resolution="approved-by-operator"))
+    with pytest.raises(RunnerBurstError, match="explicitly approve"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
 
-    with pytest.raises(RunnerBurstError, match="alert_bundle"):
-        normalize_runner_burst_report(report)
+
+def test_rejects_caller_provided_gate_passed_true(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    report["gate_passed"] = True
+    with pytest.raises(RunnerBurstError, match="caller-provided gate_passed"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
 
 
-def test_runner_burst_rejects_mismatched_hash() -> None:
-    report = valid_burst_report()
-    report["burst_hash"] = "sha256:" + "0" * 64
+def test_one_real_world_identity_cannot_use_three_keys(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    af = support["fixture"]
+    common = {"organization": "Meridian Systems", "professional_email": "alex.morgan@meridian.systems"}
+    authority = af.identity("same-authority", "Alex Morgan", "release-authority", **common)
+    observer = af.identity("same-observer", "Alex Morgan", "host-observer", **common)
+    runner = af.identity("same-runner", "Alex Morgan", "runner-operator", **common)
+    registry = af.trust_registry("p42-runner-burst/v1", [("release-authority", authority, "2026-07-08T22:55:00Z"), ("host-observer", observer, "2026-07-08T22:59:00Z"), ("runner-operator", runner, "2026-07-08T23:00:00Z")])
+    def resign_authority(value: dict) -> None:
+        value["attestation"] = _signed(authority, "release-authority", value, "2026-07-08T22:55:00Z")
+    def resign_observer(value: dict) -> None:
+        value["attestation"] = _signed(observer, "host-observer", value, "2026-07-08T22:59:00Z")
+    _rewrite(tmp_path, report, "authority_resolution", resign_authority)
+    _rewrite(tmp_path, report, "host_observations", resign_observer)
+    with pytest.raises(RunnerBurstError, match="distinct identities"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=registry)
 
-    with pytest.raises(RunnerBurstError, match="burst_hash does not match"):
-        normalize_runner_burst_report(report)
+
+@pytest.mark.parametrize("name,mutate,match", [
+    ("queue_before", lambda value: value["jobs"][0].update(created_at_utc="2099-01-01T00:00:00Z"), "job created_at_utc"),
+    ("loop_summary", lambda value: value["events"][0].update(at_utc="2099-01-01T00:00:00Z"), "event timestamp"),
+    ("host_observations", lambda value: value["after"].update(observed_at_utc="2099-01-01T00:00:00Z"), "host observations"),
+    ("authority_resolution", lambda value: value["attestation"].update(signed_at_utc="2099-01-01T00:00:00Z"), "signed_at_utc"),
+    ("host_observations", lambda value: value["attestation"].update(signed_at_utc="2099-01-01T00:00:00Z"), "signed_at_utc"),
+])
+def test_rejects_2099_evidence_timestamps(tmp_path: Path, name: str, mutate, match: str) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, name, mutate)
+    with pytest.raises(RunnerBurstError, match=match):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_rejects_2099_operator_signature(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    _operator_sign(report, tmp_path, support["registry"], support["runner"], signed_at="2099-01-01T00:00:00Z")
+    with pytest.raises(RunnerBurstError, match="signed_at_utc"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+@pytest.mark.parametrize("mutate,match", [
+    (lambda value: value.update(events=[]), "nonempty complete"),
+    (lambda value: value["events"].pop(), "exactly cover"),
+    (lambda value: value["events"].insert(1, {"kind": "started", "job_id": "j2", "at_utc": "2026-07-08T22:10:30Z"}), "exactly one active"),
+])
+def test_rejects_incomplete_or_claimed_loop_metrics(tmp_path: Path, mutate, match: str) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, "loop_summary", mutate)
+    with pytest.raises(RunnerBurstError, match=match):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_guard_requires_distinct_hashed_no_mutation_records(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    def mutate(value: dict) -> None:
+        value["cases"][0]["after_record"] = dict(value["cases"][0]["before_record"])
+    _rewrite(tmp_path, report, "guard_cases", mutate)
+    with pytest.raises(RunnerBurstError, match="distinct ordered"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_host_observer_must_be_independent_and_counters_unchanged(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, "host_observations", lambda value: value["after"].update(cgroup_oom_kills=3))
+    with pytest.raises(RunnerBurstError, match="cgroup_oom_kills"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+@pytest.mark.parametrize("name,mutate", [
+    ("transcript_archive", lambda value: value["transcripts"][0].update(api_key={"value": "redacted"})),
+    ("alert_bundle", lambda value: value["alerts"][0].update(detail="Bearer abcdefghijklmnop")),
+])
+def test_recursive_secret_scan(tmp_path: Path, name: str, mutate) -> None:
+    report, support = _fixture(tmp_path)
+    _rewrite(tmp_path, report, name, mutate)
+    with pytest.raises(RunnerBurstError, match="secret"):
+        normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+
+
+def test_external_live_blocker_is_preserved(tmp_path: Path) -> None:
+    report, support = _fixture(tmp_path)
+    out = normalize_runner_burst_report(report, artifact_root=tmp_path, trust_registry=support["registry"])
+    assert out["derived"]["external_live_blocker"] is True
+
+
+def test_cli_requires_artifact_root(tmp_path: Path) -> None:
+    report, _ = _fixture(tmp_path)
+    path = tmp_path / "report.json"
+    path.write_text(json.dumps(report))
+    env = dict(os.environ, PYTHONPATH=str(ROOT / "src"))
+    result = subprocess.run(["python3", "-m", "p42_prizes.cli", "runner-burst-validate", "--report", str(path)], cwd=ROOT, env=env, text=True, capture_output=True)
+    assert result.returncode == 2 and "--artifact-root" in result.stderr

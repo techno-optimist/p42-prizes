@@ -7,12 +7,16 @@ const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
 const RESOLVER_FRAUD_WINDOW_SECONDS = 24n * 60n * 60n;
 const FUNDING_CAP = ethers.parseEther("100");
-const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
 const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
 
 async function nextEarliestClose() {
   const latest = await ethers.provider.getBlock("latest");
   return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
+
+async function nextCloseBy() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + 181n * 24n * 60n * 60n;
 }
 // Absolute-score frontier seed (F1): fixtures reveal claimed score 0, which
 // strictly beats this and earns the full seed-relative marginal.
@@ -59,7 +63,7 @@ async function increaseTime(seconds) {
 }
 
 async function advanceToEffectiveClose(ledger) {
-  const target = await ledger.effectiveEarliestCloseTimestamp();
+  const target = await ledger.closeByTimestamp();
   const latest = await ethers.provider.getBlock("latest");
   if (target > BigInt(latest.timestamp)) await increaseTime(target - BigInt(latest.timestamp));
 }
@@ -78,7 +82,7 @@ async function deployFixture({
   const Ledger = await ethers.getContractFactory("P42PayoutLedger");
   const ledger = await Ledger.deploy(
     await pool.getAddress(), owner.address, treasury.address, feeBps,
-    await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+    await nextEarliestClose(), await nextCloseBy()
   );
   await ledger.waitForDeployment();
   await pool.connect(owner).setLedger(await ledger.getAddress());
@@ -98,13 +102,22 @@ async function deployFixture({
     1n // minImprovementAtoms
   );
   await submissions.waitForDeployment();
+  let fundingManager = submissions;
+  let creditRecorder = submissions;
   if (activateRecorder) {
     await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
+  } else {
+    const Mock = await ethers.getContractFactory("MockFundingArmed");
+    const mock = await Mock.deploy(true);
+    await mock.waitForDeployment();
+    fundingManager = mock;
+    creditRecorder = mock;
+    await ledger.connect(owner).setCreditRecorder(await mock.getAddress());
   }
 
   // OPEN-WITNESS-PHASE wiring: arm funding up front so the red-team scenarios
   // run in the PAID phase (their credit/payout assertions are unchanged).
-  await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
+  await pool.connect(owner).setSubmissionManager(await fundingManager.getAddress());
 
   const Challenges = await ethers.getContractFactory("P42ChallengeManager");
   const challenges = await Challenges.deploy(
@@ -134,20 +147,39 @@ async function deployFixture({
     metadataURI: "ipfs://redteam-fixture",
     pool: await pool.getAddress(),
     ledger: await ledger.getAddress(),
-    submissionManager: await submissions.getAddress(),
+    submissionManager: await fundingManager.getAddress(),
     challengeManager: await challenges.getAddress(),
     challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
     minImprovementAtoms: 1n,
   });
   await registry.freeze(1);
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
-  await submissions.connect(owner).armFunding();
+  const Vault = await ethers.getContractFactory("P42RolloverVault");
+  const vault = await Vault.deploy(await registry.getAddress(), owner.address);
+  await vault.waitForDeployment();
+  await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
+  await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+  if (activateRecorder) await submissions.connect(owner).armFunding();
   await pool.connect(owner).setAcceptingFunds(true);
   await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
   const Attacker = await ethers.getContractFactory("ReentrantClaimer");
 
-  return { owner, treasury, resolver, alice, bob, pool, ledger, submissions, challenges, Attacker, minBond };
+  return {
+    owner,
+    treasury,
+    resolver,
+    alice,
+    bob,
+    pool,
+    ledger,
+    submissions,
+    challenges,
+    creditRecorder,
+    vault,
+    Attacker,
+    minBond,
+  };
 }
 
 // Drive commit + reveal for a submission whose solver is `solverAddr`, sending
@@ -212,7 +244,7 @@ describe("P42 red-team attack coverage", function () {
 
   it("risk12: reentrant receiver cannot double-withdraw from P42BountyPool.claim()", async function () {
     const fixture = await deployFixture({ feeBps: 0, activateRecorder: false });
-    const { owner, pool, ledger, Attacker } = fixture;
+    const { owner, pool, ledger, creditRecorder, Attacker } = fixture;
     const attacker = await Attacker.deploy();
     await attacker.waitForDeployment();
     const attackerAddr = await attacker.getAddress();
@@ -220,7 +252,7 @@ describe("P42 red-team attack coverage", function () {
     await pool.fund({ value: ethers.parseEther("5") });
     // Attacker is the sole credited solver, so its honest entitlement is the
     // whole distributable pool. A working reentrancy would drain twice.
-    await ledger.connect(owner).recordCredit(attackerAddr, 1);
+    await creditRecorder.recordCredit(await ledger.getAddress(), attackerAddr, 1);
     await advanceToEffectiveClose(ledger);
     await ledger.connect(owner).close();
     const entitlement = await ledger.finalEntitlement(attackerAddr);

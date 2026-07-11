@@ -19,16 +19,35 @@ from typing import Any, Mapping, NoReturn
 # JS `$` (no multiline flag) rejects it. fullmatch requires the whole string to
 # be consumed, restoring byte-for-byte agreement with exact.ts.
 _RATIONAL_RE = re.compile(r"^[+-]?[0-9]+(?:/[+-]?[0-9]+)?$")
+_SHA256_RE = re.compile(r"^sha256:[a-f0-9]{64}$")
+SCORE_ATOM_SCALE = 10**18
+MIN_SCORE_ATOMS_BOUND = -(2**254)
+MAX_SCORE_ATOMS_BOUND = 2**254
+MAX_UINT256 = 2**256 - 1
+MAX_SAFE_JSON_INTEGER = 2**53 - 1
 
 
 def _reject_json_constant(value: str) -> NoReturn:
     raise ValueError(f"non-JSON numeric constant: {value}")
 
 
-def strict_json_loads(value: str | bytes | bytearray) -> Any:
-    """Parse JSON without Python's non-standard NaN/Infinity extensions."""
+def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        value[key] = item
+    return value
 
-    return json.loads(value, parse_constant=_reject_json_constant)
+
+def strict_json_loads(value: str | bytes | bytearray) -> Any:
+    """Parse JSON without non-standard constants or duplicate object keys."""
+
+    return json.loads(
+        value,
+        parse_constant=_reject_json_constant,
+        object_pairs_hook=_reject_duplicate_object_keys,
+    )
 
 
 def _validate_json_value(value: Any, path: str = "$") -> None:
@@ -62,6 +81,34 @@ def canonical_json(value: Mapping[str, Any]) -> str:
         ensure_ascii=True,
         allow_nan=False,
     )
+
+
+def _normalize_verdict_detail(value: Any, path: str = "$.details") -> Any:
+    """Return a lossless p42:v1 detail snapshot shared by Python and Node."""
+
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int):
+        if abs(value) > MAX_SAFE_JSON_INTEGER:
+            raise ValueError(f"{path}: integer exceeds the p42:v1 safe JSON range")
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer() and abs(value) <= MAX_SAFE_JSON_INTEGER:
+            return int(value)
+        raise ValueError(f"{path}: p42:v1 report details require lossless integral numbers")
+    if isinstance(value, list):
+        return [
+            _normalize_verdict_detail(item, f"{path}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{path}: report detail keys must be strings")
+            normalized[key] = _normalize_verdict_detail(item, f"{path}.{key}")
+        return normalized
+    raise TypeError(f"{path}: {type(value).__name__} is not a p42:v1 detail value")
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -100,6 +147,23 @@ def rational_to_string(value: str | int | Fraction) -> str:
     return f"{rational.numerator}/{rational.denominator}"
 
 
+def atoms_from_score(value: str | int | Fraction) -> int:
+    """Mirror agent/lib.mjs atomsFromScore: ceil(value * 1e18)."""
+
+    rational = parse_rational(value)
+    scaled_numerator = rational.numerator * SCORE_ATOM_SCALE
+    return -((-scaled_numerator) // rational.denominator)
+
+
+def chain_score_atoms(value: str | int | Fraction, direction: str) -> int:
+    """Mirror agent/lib.mjs chainScoreAtoms on the minimization frontier."""
+
+    if direction not in ("minimize", "maximize"):
+        raise ValueError(f"unknown objective direction: {direction!r}")
+    rational = parse_rational(value)
+    return atoms_from_score(-rational if direction == "maximize" else rational)
+
+
 @dataclass(frozen=True)
 class VerdictReport:
     problem_id: str
@@ -114,6 +178,25 @@ class VerdictReport:
     details: Mapping[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        for field_name in (
+            "problem_id",
+            "verifier_version",
+            "verifier_image",
+            "reason",
+            "recomputed_at_commit",
+        ):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+        if not isinstance(self.solution_hash, str) or not _SHA256_RE.fullmatch(self.solution_hash):
+            raise ValueError("solution_hash must be a lowercase sha256 digest")
+        if not isinstance(self.valid, bool):
+            raise TypeError("valid must be a boolean")
+        for field_name in ("improvement", "score"):
+            if not isinstance(getattr(self, field_name), str):
+                raise TypeError(f"{field_name} must be a rational string")
+        if not isinstance(self.details, Mapping):
+            raise TypeError("details must be a mapping")
+        details_snapshot = _normalize_verdict_detail(dict(self.details))
         return {
             "problem_id": self.problem_id,
             "verifier_version": self.verifier_version,
@@ -124,7 +207,7 @@ class VerdictReport:
             "score": rational_to_string(self.score),
             "reason": self.reason,
             "recomputed_at_commit": self.recomputed_at_commit,
-            "details": dict(self.details),
+            "details": details_snapshot,
         }
 
     def to_canonical_json(self) -> str:

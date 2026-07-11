@@ -90,6 +90,25 @@ def test_noncanonical_report_is_never_marked_valid(tmp_path: Path) -> None:
     assert "canonical" in result["error"]
 
 
+@pytest.mark.parametrize("stdout", ['{"valid":true}', '{"valid":true}\n\n'])
+def test_verifier_report_requires_exactly_one_trailing_newline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stdout: str
+) -> None:
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="newline.py", verifier_body="", wall_seconds=10
+    )
+    monkeypatch.setattr(
+        "p42_prizes.runner_worker._run_isolated_verifier",
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout, ""),
+    )
+
+    result = _run_verifier_for_transcript(problem, solution, child_address_space_limit_mb=256)
+
+    assert result["ok"] is False
+    assert result["valid"] is False
+    assert "exactly one LF" in result["error"]
+
+
 def test_required_manifest_identity_mismatch_is_quarantined(tmp_path: Path) -> None:
     verifier_body = (
         "import json\n"
@@ -208,7 +227,7 @@ def test_sandbox_uses_manifest_repository_at_digest(tmp_path: Path, monkeypatch:
 
     def fake_run(command, **_kwargs):
         observed["command"] = command
-        return subprocess.CompletedProcess(command, 0, '{"valid":true}', "")
+        return subprocess.CompletedProcess(command, 0, '{"valid":true}\n', "")
 
     monkeypatch.setattr("p42_prizes.runner_worker._run_isolated_verifier", fake_run)
 

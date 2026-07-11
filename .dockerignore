@@ -10,6 +10,8 @@
 # Dockerfile.verifier COPY sources: `COPY src ...` and `COPY problems/${PROBLEM} ...`.
 !src
 !problems
+!schemas
+!requirements.runtime.lock
 
 # The Dockerfile itself (the classic builder reads it from the context;
 # BuildKit sends it out-of-band, so this is harmless there).

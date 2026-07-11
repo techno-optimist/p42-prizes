@@ -2,25 +2,91 @@
 // Deterministic, fail-closed P42 event indexer and reconciliation core.
 
 import { ethers } from "ethers";
+import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
+  fsyncSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { recoverRevealCalldata } from "./lib.mjs";
+import { atomsFromScore, chainScoreAtoms, recoverRevealCalldata } from "./lib.mjs";
+import {
+  canonicalTranscriptArtifact,
+  configuredTranscriptEndpoints,
+  fetchTranscriptClientBytes,
+  httpTranscriptFetchClient,
+  parseTranscriptUri,
+  verifyPublicationReceipt,
+} from "./transcript-store.mjs";
+import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
+
+const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
+const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
-const DEPLOYMENT_MANIFEST_SCHEMA = JSON.parse(
-  readFileSync(`${REPO_ROOT}/schemas/deployment-manifest.schema.json`, "utf8")
-);
+export const MANIFEST_SCHEMA_V1 = "p42-prizes/deployment-manifest/v1";
+export const MANIFEST_SCHEMA_V2 = "p42-prizes/deployment-manifest/v2";
+let deploymentManifestSchemas;
+let multiboardCheckpointSchema;
+function manifestSchemas() {
+  deploymentManifestSchemas ??= Object.freeze({
+    [MANIFEST_SCHEMA_V1]: JSON.parse(readFileSync(`${REPO_ROOT}/schemas/deployment-manifest.schema.json`, "utf8")),
+    [MANIFEST_SCHEMA_V2]: JSON.parse(readFileSync(`${REPO_ROOT}/schemas/deployment-manifest-v2.schema.json`, "utf8")),
+  });
+  return deploymentManifestSchemas;
+}
+function checkpointSchema() {
+  multiboardCheckpointSchema ??= JSON.parse(
+    readFileSync(`${REPO_ROOT}/schemas/indexer-checkpoint-v2.schema.json`, "utf8"),
+  );
+  return multiboardCheckpointSchema;
+}
+const PRIVATE_FILE_MODE = 0o600;
+const PRIVATE_DIRECTORY_MODE = 0o700;
+const UNSUPPORTED_DIRECTORY_SYNC_ERRORS = new Set([
+  "EBADF",
+  "EINVAL",
+  "EISDIR",
+  "ENOTSUP",
+  "EOPNOTSUPP",
+  "EPERM",
+]);
+const DEFAULT_ATOMIC_FILE_OPERATIONS = Object.freeze({
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+});
 
 export const CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
-const EVIDENCE_CONTRACT_KEYS = ["timelock", ...CONTRACT_KEYS];
+export const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
+export const SHARED_CONTRACT_KEYS = ["timelock", "registry", "rolloverVault"];
+const EVIDENCE_CONTRACT_KEYS = ["timelock", "rolloverVault", ...CONTRACT_KEYS];
+const BOARD_SETUP_LABEL_SUFFIXES = Object.freeze([
+  "pool.setLedger",
+  "ledger.setCreditRecorder",
+  "pool.setSubmissionManager",
+  "submissions.setChallengeManager",
+  "registry.register",
+  "pool.setRegistry",
+  "ledger.setRolloverDestination",
+  "registry.freeze",
+  "timelock.setPauseTarget.ledger",
+  "timelock.setPauseTarget.submissions",
+  "timelock.setPauseTarget.challenges",
+]);
 
 export const EVENT_CATALOG = Object.freeze({
   pool: [
@@ -29,9 +95,17 @@ export const EVENT_CATALOG = Object.freeze({
     "RegistrySet",
     "AcceptingFundsSet",
     "Funded",
+    "SponsorshipFunded",
     "Claimed",
+    "ClaimedTo",
+    "SolverClaimSettled",
+    "SponsorRefunded",
+    "FeeAccrued",
+    "FeeClaimed",
     "FeePaid",
-    "ResidualPaid",
+    "RolloverPaid",
+    "ForcedEthRecovered",
+    "ForcedEthSwept",
   ],
   ledger: [
     "NewActionsPaused",
@@ -40,14 +114,17 @@ export const EVENT_CATALOG = Object.freeze({
     "CreditVoided",
     "Closed",
     "ClaimConsumed",
-    "FeeSwept",
-    "ResidualSwept",
+    "RolloverDestinationSet",
+    "RolloverSwept",
   ],
   submissions: [
     "NewActionsPaused",
     "AllActionsPaused",
+    "AllActionsPauseRecovered",
     "FundingArmed",
     "FinalizeVoided",
+    "CreditRecoveryWindowAdvanced",
+    "CreditRecoveryWindowRestored",
     "ChallengeManagerSet",
     "Committed",
     "Revealed",
@@ -72,6 +149,12 @@ export const EVENT_CATALOG = Object.freeze({
     "BondClaimed",
   ],
   registry: ["ProblemRegistered", "ProblemUpdated", "ProblemFrozen"],
+  rolloverVault: [
+    "RolloverReceived",
+    "PoolAllocationSet",
+    "FuturePoolFunded",
+    "ZeroCreditRefundReclaimed",
+  ],
 });
 
 export const REQUIRED_LIFECYCLE_COVERAGE = Object.freeze(
@@ -102,10 +185,12 @@ const STATUS_NUMBER = Object.freeze(
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_HASH = `0x${"0".repeat(64)}`;
+const REPLAY_EVENT_TRACE = Symbol("p42.replayEventTrace");
 const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
 const VERIFIER_IMAGE_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v1";
 const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
+const ADMISSION_MATRIX_HASH_ALGORITHM = "keccak256-utf8/v1";
 const PROBLEM_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const VERIFIER_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$/;
 
@@ -199,6 +284,52 @@ export function stableStringify(value, space = 0) {
   return JSON.stringify(canonicalize(value), null, space);
 }
 
+function syncDirectoryAfterRename(directory, operations) {
+  let descriptor;
+  try {
+    descriptor = operations.openSync(directory, "r");
+    operations.fsyncSync(descriptor);
+  } catch (error) {
+    if (!UNSUPPORTED_DIRECTORY_SYNC_ERRORS.has(error?.code)) throw error;
+  } finally {
+    if (descriptor !== undefined) operations.closeSync(descriptor);
+  }
+}
+
+export function writeFileAtomicSync(path, data, operationOverrides = {}) {
+  const operations = { ...DEFAULT_ATOMIC_FILE_OPERATIONS, ...operationOverrides };
+  const outputPath = resolve(path);
+  const directory = dirname(outputPath);
+  const temporaryPath = join(
+    directory,
+    `.${basename(outputPath)}.${process.pid}.${randomUUID()}.tmp`,
+  );
+  let descriptor;
+  let temporaryCreated = false;
+
+  operations.mkdirSync(directory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  try {
+    descriptor = operations.openSync(temporaryPath, "wx", PRIVATE_FILE_MODE);
+    temporaryCreated = true;
+    operations.writeFileSync(descriptor, data);
+    operations.fsyncSync(descriptor);
+    operations.closeSync(descriptor);
+    descriptor = undefined;
+    operations.renameSync(temporaryPath, outputPath);
+    syncDirectoryAfterRename(directory, operations);
+  } finally {
+    if (descriptor !== undefined) {
+      try {
+        operations.closeSync(descriptor);
+      } catch {
+        // Preserve the publication error; cleanup below is still attempted.
+      }
+    }
+    if (temporaryCreated) operations.rmSync(temporaryPath, { force: true });
+  }
+  return outputPath;
+}
+
 export function deploymentConfigPayload(manifest) {
   return {
     schema: manifest.schema,
@@ -264,6 +395,58 @@ function validateVerifierSourceAnchor(problem, label) {
   const expectedHash = ethers.keccak256(ethers.toUtf8Bytes(digest));
   if (String(problem.verifierSourceHash).toLowerCase() !== expectedHash.toLowerCase()) {
     throw new Error(`${label}.verifierSourceHash must equal keccak256(utf8(verifierSourceDigest))`);
+  }
+}
+
+function validateAdmissionMatrixAnchor(problem, label) {
+  const digest = problem?.admissionMatrixDigest;
+  if (typeof digest !== "string" || !VERIFIER_IMAGE_DIGEST_RE.test(digest)) {
+    throw new Error(`${label}.admissionMatrixDigest must be a canonical admission-matrix sha256 digest`);
+  }
+  if (problem.admissionMatrixHashAlgorithm !== ADMISSION_MATRIX_HASH_ALGORITHM) {
+    throw new Error(`${label}.admissionMatrixHashAlgorithm must equal ${ADMISSION_MATRIX_HASH_ALGORITHM}`);
+  }
+  if (typeof problem.admissionMatrixURI !== "string" || !/^(?:ipfs|ar):\/\/\S+$/.test(problem.admissionMatrixURI)) {
+    throw new Error(`${label}.admissionMatrixURI must use an ipfs:// or ar:// durable URI`);
+  }
+  const expectedHash = ethers.keccak256(ethers.toUtf8Bytes(digest));
+  if (String(problem.admissionMatrixHash).toLowerCase() !== expectedHash.toLowerCase()) {
+    throw new Error(`${label}.admissionMatrixHash must equal keccak256(utf8(admissionMatrixDigest))`);
+  }
+}
+
+function validateCertifiedObjective(problem, label) {
+  const certified = problem?.certifiedObjective;
+  if (!certified || typeof certified !== "object" || Array.isArray(certified)) {
+    throw new Error(`${label}.certifiedObjective must be an object`);
+  }
+  const expectedKeys = new Set(["seedBest", "direction", "minImprovement"]);
+  const missing = [...expectedKeys].filter((key) => !Object.hasOwn(certified, key));
+  const extra = Object.keys(certified).filter((key) => !expectedKeys.has(key));
+  if (missing.length || extra.length) {
+    throw new Error(`${label}.certifiedObjective must contain exactly seedBest, direction, and minImprovement`);
+  }
+  for (const key of ["seedBest", "minImprovement"]) {
+    if (typeof certified[key] !== "string" || certified[key].trim() === "" || certified[key].trim() !== certified[key]) {
+      throw new Error(`${label}.certifiedObjective.${key} must be a non-empty trimmed rational string`);
+    }
+  }
+  if (certified.direction !== "minimize" && certified.direction !== "maximize") {
+    throw new Error(`${label}.certifiedObjective.direction must be minimize or maximize`);
+  }
+  let expectedSeedAtoms;
+  let expectedMinImprovementAtoms;
+  try {
+    expectedSeedAtoms = chainScoreAtoms(certified.seedBest, certified.direction);
+    expectedMinImprovementAtoms = atomsFromScore(certified.minImprovement);
+  } catch (error) {
+    throw new Error(`${label}.certifiedObjective is not a valid rational objective: ${error.message}`);
+  }
+  if (expectedSeedAtoms !== BigInt(problem.seedScoreAtoms)) {
+    throw new Error(`${label}.seedScoreAtoms does not match certifiedObjective`);
+  }
+  if (expectedMinImprovementAtoms !== BigInt(problem.minImprovementAtoms)) {
+    throw new Error(`${label}.minImprovementAtoms does not match certifiedObjective`);
   }
 }
 
@@ -397,7 +580,31 @@ function validateSchemaValue(value, schema, rootSchema, path) {
 }
 
 function validateDeploymentManifestSchema(manifest) {
-  validateSchemaValue(manifest, DEPLOYMENT_MANIFEST_SCHEMA, DEPLOYMENT_MANIFEST_SCHEMA, "manifest");
+  const schema = manifestSchemas()[manifest?.schema];
+  if (!schema) throw new Error(`Unsupported deployment manifest schema: ${String(manifest?.schema)}`);
+  validateSchemaValue(manifest, schema, schema, "manifest");
+}
+
+export function validatePreBroadcastManifestPlan(schemaName, problemCount = 1) {
+  const schema = manifestSchemas()[schemaName];
+  if (!schema) throw new Error(`Unsupported deployment manifest schema: ${schemaName}`);
+  if (!Number.isInteger(problemCount) || problemCount < 1 || problemCount > 10) {
+    throw new Error("problemCount must be an integer from 1 through 10");
+  }
+  const requiredContracts = new Set(schema.properties?.contracts?.required ?? []);
+  const requiredSources = new Set(
+    schema.properties?.sourceVerification?.properties?.contracts?.required ?? []
+  );
+  for (const key of ["timelock", "registry", "rolloverVault"]) {
+    if (!requiredContracts.has(key)) throw new Error(`${schemaName} contracts schema omits ${key}`);
+    if (!requiredSources.has(key)) throw new Error(`${schemaName} source-verification schema omits ${key}`);
+  }
+  const expectedOperations = 11 * problemCount;
+  const setup = schema.properties?.setupTransactions;
+  if (expectedOperations < setup.minItems || expectedOperations > setup.maxItems) {
+    throw new Error(`${schemaName} rejects the full ${expectedOperations}-operation deployment plan`);
+  }
+  return { schema: schemaName, problemCount, expectedOperations };
 }
 
 function rejectKnownStaleRelease(manifest) {
@@ -410,6 +617,107 @@ function rejectKnownStaleRelease(manifest) {
       throw new Error(`stale Base Sepolia manifest is invalid for this source: ${guard.reason}`);
     }
   }
+}
+
+export function isMultiBoardManifest(manifest) {
+  return manifest?.schema === MANIFEST_SCHEMA_V2;
+}
+
+export function manifestProblemForRegistryId(manifest, registryProblemId) {
+  const problemId = String(registryProblemId);
+  const matches = (manifest?.problems ?? []).filter((problem) => String(problem?.problemId) === problemId);
+  if (matches.length !== 1) {
+    throw new Error(`deployment manifest must contain exactly one problem with registry id ${problemId}`);
+  }
+  return matches[0];
+}
+
+export function manifestProblemContracts(manifest, problem) {
+  if (!problem || typeof problem !== "object") throw new Error("deployment manifest problem is missing");
+  if (isMultiBoardManifest(manifest)) {
+    if (!problem.contracts || typeof problem.contracts !== "object") {
+      throw new Error(`problem ${String(problem.problemId)} is missing per-board deployment contracts`);
+    }
+    return problem.contracts;
+  }
+  if (manifest?.schema !== MANIFEST_SCHEMA_V1) {
+    throw new Error(`unsupported deployment manifest schema: ${String(manifest?.schema)}`);
+  }
+  return Object.fromEntries(BOARD_CONTRACT_KEYS.map((key) => [key, manifest.contracts?.[key]]));
+}
+
+function boardManifestView(manifest, problem) {
+  if (!isMultiBoardManifest(manifest)) return manifest;
+  const contracts = manifestProblemContracts(manifest, problem);
+  return {
+    status: manifest.status,
+    governance: manifest.governance,
+    roles: manifest.roles,
+    parameters: {
+      ...manifest.parameters,
+      fundingCapWei: problem.fundingCapWei,
+      onchainDa: problem.onchainDa,
+      maxSolutionBytes: problem.maxSolutionBytes,
+      earliestCloseTimestamp: problem.earliestCloseTimestamp,
+      closeByTimestamp: problem.closeByTimestamp,
+    },
+    contracts: {
+      timelock: manifest.contracts.timelock,
+      registry: manifest.contracts.registry,
+      rolloverVault: manifest.contracts.rolloverVault,
+      ...contracts,
+    },
+    problems: [problem],
+  };
+}
+
+function boardReplayConfig(manifest, problem) {
+  const view = boardManifestView(manifest, problem);
+  return {
+    seedScoreAtoms: problem.seedScoreAtoms,
+    minImprovementAtoms: problem.minImprovementAtoms,
+    challengeWindowSeconds: view.parameters.challengeWindowSeconds,
+    treasury: view.roles.treasury,
+    problemCount: manifest.problems.length,
+    fundingCapWei: view.parameters.fundingCapWei,
+    earliestCloseTimestamp: view.parameters.earliestCloseTimestamp,
+    closeByTimestamp: view.parameters.closeByTimestamp,
+  };
+}
+
+function manifestContractEvidenceEntries(manifest) {
+  if (isMultiBoardManifest(manifest)) {
+    return [
+      ...SHARED_CONTRACT_KEYS.map((key) => ({
+        key,
+        entry: manifest.contracts?.[key],
+        path: `contracts.${key}`,
+      })),
+      ...(manifest.problems ?? []).flatMap((problem, index) =>
+        BOARD_CONTRACT_KEYS.map((key) => ({
+          key,
+          entry: problem?.contracts?.[key],
+          path: `problems[${index}].contracts.${key}`,
+          problem,
+          index,
+        }))
+      ),
+    ];
+  }
+  return EVIDENCE_CONTRACT_KEYS.map((key) => ({
+    key,
+    entry: manifest.contracts?.[key],
+    path: `contracts.${key}`,
+  }));
+}
+
+function problemContractAddressField(key) {
+  return {
+    pool: "pool",
+    ledger: "ledger",
+    submissions: "submissionManager",
+    challenges: "challengeManager",
+  }[key];
 }
 
 export function validateFinalityPolicy(policy) {
@@ -432,10 +740,242 @@ export function validateFinalityPolicy(policy) {
   return policy;
 }
 
+function requireCanonicalUint(value, label, { positive = false } = {}) {
+  const pattern = positive ? /^[1-9][0-9]*$/ : /^(0|[1-9][0-9]*)$/;
+  if (typeof value !== "string" || !pattern.test(value)) {
+    throw new Error(`${label} must be a canonical ${positive ? "positive" : "non-negative"} integer string`);
+  }
+  return BigInt(value);
+}
+
+function validateContractEvidenceEntry({ key, entry, path, manifest }) {
+  if (!entry) throw new Error(`Manifest missing ${path}`);
+  if (entry.name !== CONTRACT_NAMES[key]) {
+    throw new Error(`${path}.name must be ${CONTRACT_NAMES[key]}`);
+  }
+  requireHex(entry.address, 20, `${path}.address`);
+  requireHex(entry.deployedCodeHash, 32, `${path}.deployedCodeHash`);
+  requireHex(entry.runtimeCodeHash, 32, `${path}.runtimeCodeHash`);
+  requireHex(entry.abiHash, 32, `${path}.abiHash`);
+  requireHex(entry.constructorArgsHash, 32, `${path}.constructorArgsHash`);
+  requireInteger(entry.blockNumber, `${path}.blockNumber`, 0);
+  if (manifest.status === "example-not-deployed") return;
+  if (manifest.deploymentCommit === "0".repeat(40)) {
+    throw new Error("deploymentCommit cannot be zero in a deployment evidence manifest");
+  }
+  if (entry.address.toLowerCase() === ZERO_ADDRESS) {
+    throw new Error(`${path}.address is zero in a deployment evidence manifest`);
+  }
+  if (entry.deployedCodeHash.toLowerCase() === ZERO_HASH) {
+    throw new Error(`${path}.deployedCodeHash is zero in a deployment evidence manifest`);
+  }
+  if (entry.abiHash.toLowerCase() === ZERO_HASH) {
+    throw new Error(`${path}.abiHash is zero in a deployment evidence manifest`);
+  }
+  if (entry.runtimeCodeHash.toLowerCase() === ZERO_HASH) {
+    throw new Error(`${path}.runtimeCodeHash is zero in a deployment evidence manifest`);
+  }
+  if (entry.constructorArgsHash.toLowerCase() === ZERO_HASH) {
+    throw new Error(`${path}.constructorArgsHash is zero in a deployment evidence manifest`);
+  }
+  if (entry.runtimeCodeHash.toLowerCase() !== entry.deployedCodeHash.toLowerCase()) {
+    throw new Error(`${path} runtimeCodeHash/deployedCodeHash mismatch`);
+  }
+  if (entry.txHash.toLowerCase() === ZERO_HASH || entry.blockNumber === 0) {
+    throw new Error(`${path} is missing real deployment transaction evidence`);
+  }
+}
+
+function validateMultiBoardTopology(manifest) {
+  const expectedOperationCount = manifest.problems.length * BOARD_SETUP_LABEL_SUFFIXES.length;
+  if (manifest.setupTransactions.length !== expectedOperationCount) {
+    throw new Error(
+      `multi-board manifest requires exactly ${BOARD_SETUP_LABEL_SUFFIXES.length} governance setup operations per problem (${expectedOperationCount} total)`
+    );
+  }
+  const operationLabels = new Set();
+  for (const [index, operation] of manifest.setupTransactions.entries()) {
+    if (operation.sequence !== index + 1) {
+      throw new Error(`setupTransactions[${index}].sequence must be contiguous from one`);
+    }
+    if (operationLabels.has(operation.label)) {
+      throw new Error(`setupTransactions[${index}].label is duplicated`);
+    }
+    operationLabels.add(operation.label);
+  }
+
+  const problemIds = new Set();
+  const slugs = new Set();
+  const addresses = new Map();
+  for (const descriptor of manifestContractEvidenceEntries(manifest)) {
+    const address = String(descriptor.entry?.address ?? "").toLowerCase();
+    if (addresses.has(address)) {
+      throw new Error(`${descriptor.path}.address reuses deployment address from ${addresses.get(address)}`);
+    }
+    addresses.set(address, descriptor.path);
+  }
+
+  for (const [index, problem] of manifest.problems.entries()) {
+    const id = requireCanonicalUint(problem.problemId, `problems[${index}].problemId`, { positive: true }).toString();
+    if (id !== String(index + 1)) {
+      throw new Error(`problems[${index}].problemId must equal deterministic registry position ${index + 1}`);
+    }
+    if (problemIds.has(id)) throw new Error(`problems[${index}].problemId duplicates registry id ${id}`);
+    problemIds.add(id);
+    if (slugs.has(problem.problemSlug)) throw new Error(`problems[${index}].problemSlug duplicates ${problem.problemSlug}`);
+    slugs.add(problem.problemSlug);
+
+    const contracts = manifestProblemContracts(manifest, problem);
+    for (const key of BOARD_CONTRACT_KEYS) {
+      const field = problemContractAddressField(key);
+      if (String(problem[field]).toLowerCase() !== String(contracts[key]?.address).toLowerCase()) {
+        throw new Error(`problems[${index}].${field} must match problems[${index}].contracts.${key}.address`);
+      }
+    }
+
+    const fundingCap = requireCanonicalUint(problem.fundingCapWei, `problems[${index}].fundingCapWei`, { positive: true });
+    const maxSolutionBytes = requireCanonicalUint(problem.maxSolutionBytes, `problems[${index}].maxSolutionBytes`);
+    const earliestClose = requireCanonicalUint(problem.earliestCloseTimestamp, `problems[${index}].earliestCloseTimestamp`, { positive: true });
+    const closeBy = requireCanonicalUint(problem.closeByTimestamp, `problems[${index}].closeByTimestamp`, { positive: true });
+    if (fundingCap <= 0n || closeBy < earliestClose) {
+      throw new Error(`problems[${index}] has invalid funding or close timestamps`);
+    }
+    if (problem.onchainDa === true && (maxSolutionBytes === 0n || maxSolutionBytes > 1_048_576n)) {
+      throw new Error(`problems[${index}].maxSolutionBytes must be 1..1048576 for on-chain DA`);
+    }
+    if (problem.onchainDa === false && maxSolutionBytes !== 0n) {
+      throw new Error(`problems[${index}].maxSolutionBytes must be 0 when onchainDa is false`);
+    }
+
+    for (const [operationOffset, suffix] of BOARD_SETUP_LABEL_SUFFIXES.entries()) {
+      const operation = manifest.setupTransactions[index * BOARD_SETUP_LABEL_SUFFIXES.length + operationOffset];
+      const expectedLabel = `board/${id}.${suffix}`;
+      if (operation?.label !== expectedLabel) {
+        throw new Error(
+          `setupTransactions[${index * BOARD_SETUP_LABEL_SUFFIXES.length + operationOffset}].label ` +
+          `must equal ${expectedLabel}`
+        );
+      }
+    }
+  }
+
+  const sourceBoards = manifest.sourceVerification?.contracts?.boards;
+  if (!Array.isArray(sourceBoards) || sourceBoards.length !== manifest.problems.length) {
+    throw new Error("sourceVerification.contracts.boards must contain exactly one entry per problem");
+  }
+  const sourceIds = new Set();
+  for (const [index, source] of sourceBoards.entries()) {
+    const id = requireCanonicalUint(source?.problemId, `sourceVerification.contracts.boards[${index}].problemId`, { positive: true }).toString();
+    if (sourceIds.has(id)) throw new Error(`sourceVerification.contracts.boards[${index}].problemId is duplicated`);
+    if (id !== String(manifest.problems[index].problemId)) {
+      throw new Error(`sourceVerification.contracts.boards[${index}].problemId must match problems[${index}].problemId`);
+    }
+    sourceIds.add(id);
+  }
+  for (const id of problemIds) {
+    if (!sourceIds.has(id)) throw new Error(`sourceVerification.contracts.boards is missing registry id ${id}`);
+  }
+}
+
+export function deriveExactSetupOperations(manifest) {
+  const interfaces = Object.fromEntries(
+    Object.entries(CONTRACT_NAMES).map(([key, name]) => [key, new ethers.Interface(artifactAbi(name))]),
+  );
+  const expected = [];
+  for (const [boardIndex, problem] of manifest.problems.entries()) {
+    const contracts = manifestProblemContracts(manifest, problem);
+    const addresses = {
+      timelock: manifest.contracts.timelock.address,
+      registry: manifest.contracts.registry.address,
+      rolloverVault: manifest.contracts.rolloverVault.address,
+      ...Object.fromEntries(BOARD_CONTRACT_KEYS.map((key) => [key, contracts[key].address])),
+    };
+    const prefix = isMultiBoardManifest(manifest) ? `board/${problem.problemId}.` : "";
+    const label = (suffix) => `${prefix}${suffix}`;
+    const registryConfig = {
+      specHash: problem.specHash,
+      verifierSourceHash: problem.verifierSourceHash,
+      verifierImageHash: problem.verifierImageHash,
+      admissionMatrixHash: problem.admissionMatrixHash,
+      metadataURI: problem.metadataURI,
+      pool: addresses.pool,
+      ledger: addresses.ledger,
+      submissionManager: addresses.submissions,
+      challengeManager: addresses.challenges,
+      challengeWindowSeconds: manifest.parameters.challengeWindowSeconds,
+      minImprovementAtoms: problem.minImprovementAtoms,
+    };
+    const definitions = [
+      ["pool.setLedger", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setLedger", [addresses.ledger]), []],
+      ["ledger.setCreditRecorder", "standard", addresses.ledger, interfaces.ledger.encodeFunctionData("setCreditRecorder", [addresses.submissions]), []],
+      ["pool.setSubmissionManager", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setSubmissionManager", [addresses.submissions]), ["pool.setLedger"]],
+      ["submissions.setChallengeManager", "standard", addresses.submissions, interfaces.submissions.encodeFunctionData("setChallengeManager", [addresses.challenges]), ["ledger.setCreditRecorder"]],
+      ["registry.register", "standard", addresses.registry, interfaces.registry.encodeFunctionData("registerExpected", [registryConfig, problem.problemId]), ["pool.setLedger", "ledger.setCreditRecorder", "pool.setSubmissionManager", "submissions.setChallengeManager"]],
+      ["pool.setRegistry", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setRegistry", [addresses.registry, problem.problemId]), ["registry.register"]],
+      ["ledger.setRolloverDestination", "standard", addresses.ledger, interfaces.ledger.encodeFunctionData("setRolloverDestination", [addresses.rolloverVault]), ["pool.setRegistry"]],
+      ["registry.freeze", "standard", addresses.registry, interfaces.registry.encodeFunctionData("freeze", [problem.problemId]), ["registry.register", "pool.setRegistry", "ledger.setRolloverDestination"]],
+      ...["ledger", "submissions", "challenges"].map((key) => [`timelock.setPauseTarget.${key}`, "override", addresses.timelock, interfaces.timelock.encodeFunctionData("setPauseTarget", [addresses[key], true]), ["registry.freeze"]]),
+    ];
+    const byLabel = new Map();
+    for (const [offset, definition] of definitions.entries()) {
+      const [suffix, operationClass, target, data, dependencies] = definition;
+      const sequence = boardIndex * BOARD_SETUP_LABEL_SUFFIXES.length + offset + 1;
+      const fullLabel = label(suffix);
+      const saltFor = (saltLabel) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ["string", "uint256", "uint256", "string", "address", "bytes32"],
+        ["p42-prizes/governance-setup/v1", manifest.network.chainId, sequence, saltLabel, target, ethers.keccak256(data)],
+      ));
+      const idFor = (salt) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ["address", "uint256", "bytes", "bytes32"], [target, 0n, data, salt],
+      ));
+      const builderFor = (scheduleFunction, salt, id) => ({
+        schedule: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData(scheduleFunction, [target, 0n, data, salt]) },
+        confirm: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("confirm", [id]) },
+        execute: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("execute", [target, 0n, data, salt]) },
+      });
+      const salt = saltFor(fullLabel);
+      const operationId = idFor(salt);
+      const fallbackSalt = operationClass === "standard" ? saltFor(`${fullLabel}.override-fallback`) : null;
+      const fallbackId = fallbackSalt ? idFor(fallbackSalt) : null;
+      const derived = {
+        sequence, label: fullLabel, operationClass, target, value: "0", data, salt, operationId,
+        dependsOn: dependencies.map((dependency) => byLabel.get(label(dependency)).operationId),
+        requiredConfirmations: String(operationClass === "override" ? manifest.governance.overrideThreshold : manifest.governance.threshold),
+        delaySeconds: String(operationClass === "override" ? manifest.governance.overrideDelaySeconds : manifest.governance.delaySeconds),
+        transactionBuilder: builderFor(operationClass === "override" ? "scheduleOverride" : "schedule", salt, operationId),
+        overrideFallback: fallbackSalt ? {
+          operationId: fallbackId, salt: fallbackSalt,
+          requiredConfirmations: String(manifest.governance.overrideThreshold),
+          delaySeconds: String(manifest.governance.overrideDelaySeconds),
+          transactionBuilder: builderFor("scheduleOverride", fallbackSalt, fallbackId),
+        } : null,
+      };
+      byLabel.set(fullLabel, derived);
+      expected.push(derived);
+    }
+  }
+  return expected;
+}
+
+function validateExactSetupOperations(manifest) {
+  const expected = deriveExactSetupOperations(manifest);
+  const fields = ["sequence", "label", "operationClass", "target", "value", "data", "salt", "operationId", "dependsOn", "requiredConfirmations", "delaySeconds", "transactionBuilder", "overrideFallback"];
+  if (expected.length !== manifest.setupTransactions.length) {
+    throw new Error(`setupTransactions must contain exactly ${expected.length} derived operations`);
+  }
+  for (const [index, derived] of expected.entries()) {
+    const actual = Object.fromEntries(fields.map((field) => [field, manifest.setupTransactions[index][field]]));
+    const selected = Object.fromEntries(fields.map((field) => [field, derived[field]]));
+    if (stableStringify(actual) !== stableStringify(selected)) {
+      throw new Error(`setupTransactions[${index}] does not match the exact derived governance operation`);
+    }
+  }
+}
+
 export function validateManifestEvidence(manifest) {
   rejectKnownStaleRelease(manifest);
   validateDeploymentManifestSchema(manifest);
-  if (manifest?.schema !== "p42-prizes/deployment-manifest/v1") {
+  if (![MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2].includes(manifest?.schema)) {
     throw new Error(`Unsupported deployment manifest schema: ${String(manifest?.schema)}`);
   }
   if (!/^[0-9a-fA-F]{40}$/.test(String(manifest.deploymentCommit))) {
@@ -446,45 +986,9 @@ export function validateManifestEvidence(manifest) {
   validateFinalityPolicy(manifest.indexer?.finalityPolicy);
   requireHex(manifest.deploymentConfigHash, 32, "deploymentConfigHash");
 
-  for (const key of EVIDENCE_CONTRACT_KEYS) {
-    const entry = manifest.contracts?.[key];
-    if (!entry) throw new Error(`Manifest missing contracts.${key}`);
-    if (entry.name !== CONTRACT_NAMES[key]) {
-      throw new Error(`contracts.${key}.name must be ${CONTRACT_NAMES[key]}`);
-    }
-    requireHex(entry.address, 20, `contracts.${key}.address`);
-    requireHex(entry.deployedCodeHash, 32, `contracts.${key}.deployedCodeHash`);
-    requireHex(entry.runtimeCodeHash, 32, `contracts.${key}.runtimeCodeHash`);
-    requireHex(entry.abiHash, 32, `contracts.${key}.abiHash`);
-    requireHex(entry.constructorArgsHash, 32, `contracts.${key}.constructorArgsHash`);
-    requireInteger(entry.blockNumber, `contracts.${key}.blockNumber`, 0);
-    if (manifest.status !== "example-not-deployed") {
-      if (manifest.deploymentCommit === "0".repeat(40)) {
-        throw new Error("deploymentCommit cannot be zero in a deployment evidence manifest");
-      }
-      if (entry.address.toLowerCase() === ZERO_ADDRESS) {
-        throw new Error(`contracts.${key}.address is zero in a deployment evidence manifest`);
-      }
-      if (entry.deployedCodeHash.toLowerCase() === ZERO_HASH) {
-        throw new Error(`contracts.${key}.deployedCodeHash is zero in a deployment evidence manifest`);
-      }
-      if (entry.abiHash.toLowerCase() === ZERO_HASH) {
-        throw new Error(`contracts.${key}.abiHash is zero in a deployment evidence manifest`);
-      }
-      if (entry.runtimeCodeHash.toLowerCase() === ZERO_HASH) {
-        throw new Error(`contracts.${key}.runtimeCodeHash is zero in a deployment evidence manifest`);
-      }
-      if (entry.constructorArgsHash.toLowerCase() === ZERO_HASH) {
-        throw new Error(`contracts.${key}.constructorArgsHash is zero in a deployment evidence manifest`);
-      }
-      if (entry.runtimeCodeHash.toLowerCase() !== entry.deployedCodeHash.toLowerCase()) {
-        throw new Error(`contracts.${key} runtimeCodeHash/deployedCodeHash mismatch`);
-      }
-      if (entry.txHash.toLowerCase() === ZERO_HASH || entry.blockNumber === 0) {
-        throw new Error(`contracts.${key} is missing real deployment transaction evidence`);
-      }
-    }
-  }
+  const contractEntries = manifestContractEvidenceEntries(manifest);
+  for (const descriptor of contractEntries) validateContractEvidenceEntry({ ...descriptor, manifest });
+  if (isMultiBoardManifest(manifest)) validateMultiBoardTopology(manifest);
 
   if (manifest.status !== "example-not-deployed") {
     for (const [role, address] of Object.entries(manifest.roles)) {
@@ -516,25 +1020,44 @@ export function validateManifestEvidence(manifest) {
   for (const [index, problem] of manifest.problems.entries()) {
     validateVerifierImageAnchor(problem, `problems[${index}]`);
     validateVerifierSourceAnchor(problem, `problems[${index}]`);
+    if (isMultiBoardManifest(manifest)) {
+      validateAdmissionMatrixAnchor(problem, `problems[${index}]`);
+      validateCertifiedObjective(problem, `problems[${index}]`);
+    }
+    if (problem.seedScoreAtoms === undefined) {
+      throw new Error(`Manifest missing problems[${index}].seedScoreAtoms; frontier seed is not bound`);
+    }
   }
+  validateExactSetupOperations(manifest);
 
-  for (const field of [
-    "onchainDa",
-    "maxSolutionBytes",
-    "fundingCapWei",
-    "earliestCloseTimestamp",
-    "closeByTimestamp",
-  ]) {
+  const requiredParameters = isMultiBoardManifest(manifest)
+    ? [
+      "alphaBps",
+      "betaBps",
+      "challengeWindowSeconds",
+      "feeBps",
+      "minCounterBondWei",
+      "minPostingBondWei",
+      "rerunCostMultiplierBps",
+      "rerunCostWei",
+      "resolverDecisionBondWei",
+      "resolverFraudWindowSeconds",
+    ]
+    : [
+      "onchainDa",
+      "maxSolutionBytes",
+      "fundingCapWei",
+      "earliestCloseTimestamp",
+      "closeByTimestamp",
+    ];
+  for (const field of requiredParameters) {
     if (manifest.parameters?.[field] === undefined) {
       throw new Error(`Manifest missing parameters.${field}; deployment config is not fully bound`);
     }
   }
-  if (manifest.problems?.[0]?.seedScoreAtoms === undefined) {
-    throw new Error("Manifest missing problems[0].seedScoreAtoms; frontier seed is not bound");
-  }
 
   const evidenceBlocks = [
-    ...EVIDENCE_CONTRACT_KEYS.map((key) => manifest.contracts[key].blockNumber),
+    ...contractEntries.map(({ entry }) => entry?.blockNumber),
     ...(manifest.setupTransactions ?? []).map((entry) => entry.blockNumber),
     ...(manifest.problems ?? []).map((entry) => entry.registerBlockNumber),
   ].filter((value) => Number.isSafeInteger(value));
@@ -552,13 +1075,9 @@ export function validateManifestEvidence(manifest) {
       `deploymentConfigHash mismatch: manifest=${manifest.deploymentConfigHash} computed=${computed}`
     );
   }
-  return {
-    deploymentCommit: manifest.deploymentCommit.toLowerCase(),
-    deploymentConfigHash: computed,
-    chainId: manifest.network.chainId,
-    startBlock: manifest.indexer.startBlock,
-    contracts: Object.fromEntries(
-      EVIDENCE_CONTRACT_KEYS.map((key) => [
+  const sharedContracts = Object.fromEntries(
+    (isMultiBoardManifest(manifest) ? SHARED_CONTRACT_KEYS : EVIDENCE_CONTRACT_KEYS)
+      .map((key) => [
         key,
         {
           address: manifest.contracts[key].address,
@@ -566,7 +1085,26 @@ export function validateManifestEvidence(manifest) {
           abiHash: manifest.contracts[key].abiHash,
         },
       ])
-    ),
+  );
+  return {
+    deploymentCommit: manifest.deploymentCommit.toLowerCase(),
+    deploymentConfigHash: computed,
+    chainId: manifest.network.chainId,
+    startBlock: manifest.indexer.startBlock,
+    contracts: sharedContracts,
+    ...(isMultiBoardManifest(manifest) ? {
+      boards: Object.fromEntries(manifest.problems.map((problem) => [
+        problem.problemId,
+        Object.fromEntries(BOARD_CONTRACT_KEYS.map((key) => [
+          key,
+          {
+            address: problem.contracts[key].address,
+            deployedCodeHash: problem.contracts[key].deployedCodeHash,
+            abiHash: problem.contracts[key].abiHash,
+          },
+        ])),
+      ])),
+    } : {}),
   };
 }
 
@@ -689,10 +1227,18 @@ export function compareEventOrder(left, right) {
   );
 }
 
-export async function scanEventCatalog(contracts, fromBlock, toBlock, policy) {
+export async function scanEventCatalog(
+  contracts,
+  fromBlock,
+  toBlock,
+  policy,
+  { sources = Object.keys(EVENT_CATALOG) } = {},
+) {
   const events = [];
   const coverage = [];
-  for (const [source, eventNames] of Object.entries(EVENT_CATALOG)) {
+  for (const source of sources) {
+    const eventNames = EVENT_CATALOG[source];
+    if (!eventNames) throw new Error(`Unknown event catalog source ${source}`);
     const contract = contracts[source];
     if (!contract) throw new Error(`Missing contract instance for ${source}`);
     for (const eventName of eventNames) {
@@ -839,8 +1385,15 @@ function newReplayState(config, coverage) {
       accountedBalance: 0n,
       totalFunded: 0n,
       totalClaimed: 0n,
+      totalGrossClaimed: 0n,
+      totalFeeAccrued: 0n,
       totalFeePaid: 0n,
+      accruedFeeBalance: 0n,
+      totalSponsorRefunded: 0n,
+      totalRolloverPaid: 0n,
+      totalForcedEthRecovered: 0n,
       totalResidualPaid: 0n,
+      sponsorshipOf: {},
     },
     ledger: {
       pausedNewActions: false,
@@ -852,6 +1405,8 @@ function newReplayState(config, coverage) {
       totalCreditAtoms: 0n,
       creditAtomsOf: {},
       claimedWeiOf: {},
+      totalGrossClaimed: 0n,
+      totalFeeAccrued: 0n,
       feeSwept: false,
       residualSwept: false,
     },
@@ -863,6 +1418,8 @@ function newReplayState(config, coverage) {
     armedAt: 0n,
     pausedNewActions: false,
     pausedAll: false,
+    creditRecoveryEndsAt: 0n,
+    recoveryPriorBySubmission: {},
     expiryGraceUntil: 0n,
     challengeManager: ZERO_ADDRESS,
     submissionClaimableBondWei: {},
@@ -876,10 +1433,18 @@ function newReplayState(config, coverage) {
     challengeClaimableBondWei: {},
     challengePausedNewActions: false,
     registry: { problemCount: 0n, problems: {} },
+    rolloverVault: {
+      totalReceived: 0n,
+      totalFuturePoolFunded: 0n,
+      totalAllocated: 0n,
+      allocationOf: {},
+      allocationCodehashOf: {},
+    },
     pendingExpiredChallengeTxs: new Set(),
     pendingSubmissionResolutionByTx: {},
     recoveryByTx: {},
     claimConsumptionByTx: {},
+    forcedRecoveryByTx: {},
   };
 }
 
@@ -975,14 +1540,53 @@ function replayPoolEvent(state, event) {
       }
       break;
     }
+    case "SponsorshipFunded": {
+      const sponsor = getArg(event, "sponsor");
+      const principal = asBigInt(getArg(event, "sponsorPrincipal"));
+      state.pool.sponsorshipOf[addressKey(sponsor)] = principal;
+      invariant(
+        asBigInt(getArg(event, "accountedBalance")) === state.pool.accountedBalance,
+        "SponsorshipFunded accounted balance does not match Funded"
+      );
+      break;
+    }
     case "Claimed": {
       const amount = asBigInt(getArg(event, "amount"));
       state.pool.totalClaimed += amount;
       invariant(state.pool.accountedBalance >= amount, "pool accounted balance underflow on claim");
       state.pool.accountedBalance -= amount;
+      break;
+    }
+    case "ClaimedTo":
+      break;
+    case "SolverClaimSettled": {
       const paired = state.claimConsumptionByTx[txKey(event)] ?? {};
-      paired.pool = { solver: addressKey(getArg(event, "solver")), amount };
+      paired.pool = {
+        solver: addressKey(getArg(event, "solver")),
+        grossAmount: asBigInt(getArg(event, "grossAmount")),
+        feeAmount: asBigInt(getArg(event, "feeAmount")),
+      };
+      state.pool.totalGrossClaimed += paired.pool.grossAmount;
       state.claimConsumptionByTx[txKey(event)] = paired;
+      break;
+    }
+    case "SponsorRefunded": {
+      const sponsor = addressKey(getArg(event, "sponsor"));
+      const amount = asBigInt(getArg(event, "principal"));
+      invariant(state.pool.accountedBalance >= amount, "pool accounted balance underflow on sponsor refund");
+      state.pool.accountedBalance -= amount;
+      state.pool.totalSponsorRefunded += amount;
+      state.pool.sponsorshipOf[sponsor] = 0n;
+      break;
+    }
+    case "FeeAccrued":
+      state.pool.totalFeeAccrued += asBigInt(getArg(event, "amount"));
+      state.pool.accruedFeeBalance = asBigInt(getArg(event, "accruedFeeBalance"));
+      break;
+    case "FeeClaimed": {
+      const amount = asBigInt(getArg(event, "amount"));
+      invariant(state.pool.accruedFeeBalance >= amount, "pool accrued fee balance underflow");
+      state.pool.accruedFeeBalance -= amount;
       break;
     }
     case "FeePaid":
@@ -993,13 +1597,35 @@ function replayPoolEvent(state, event) {
       state.pool.totalFeePaid += asBigInt(getArg(event, "amount"));
       state.pool.accountedBalance -= asBigInt(getArg(event, "amount"));
       break;
-    case "ResidualPaid":
+    case "RolloverPaid":
       invariant(
         state.pool.accountedBalance >= asBigInt(getArg(event, "amount")),
         "pool accounted balance underflow on residual"
       );
+      state.pool.totalRolloverPaid += asBigInt(getArg(event, "amount"));
       state.pool.totalResidualPaid += asBigInt(getArg(event, "amount"));
       state.pool.accountedBalance -= asBigInt(getArg(event, "amount"));
+      break;
+    case "ForcedEthRecovered":
+      state.pool.totalForcedEthRecovered += asBigInt(getArg(event, "amount"));
+      state.forcedRecoveryByTx[txKey(event)] = {
+        ...(state.forcedRecoveryByTx[txKey(event)] ?? {}),
+        recovered: {
+          destination: addressKey(getArg(event, "to")),
+          amount: asBigInt(getArg(event, "amount")),
+          remaining: asBigInt(getArg(event, "remainingForcedEth")),
+        },
+      };
+      break;
+    case "ForcedEthSwept":
+      state.forcedRecoveryByTx[txKey(event)] = {
+        ...(state.forcedRecoveryByTx[txKey(event)] ?? {}),
+        swept: {
+          destination: addressKey(getArg(event, "destination")),
+          amount: asBigInt(getArg(event, "amount")),
+          remaining: asBigInt(getArg(event, "remainingForcedEth")),
+        },
+      };
       break;
   }
 }
@@ -1048,18 +1674,19 @@ function replayLedgerEvent(state, event) {
       break;
     case "ClaimConsumed": {
       const solver = getArg(event, "solver");
-      const amount = asBigInt(getArg(event, "amount"));
-      increment(state.ledger.claimedWeiOf, solver, amount);
+      const grossAmount = asBigInt(getArg(event, "grossAmount"));
+      const feeAmount = asBigInt(getArg(event, "feeAmount"));
+      increment(state.ledger.claimedWeiOf, solver, grossAmount);
+      state.ledger.totalGrossClaimed += grossAmount;
+      state.ledger.totalFeeAccrued += feeAmount;
       const paired = state.claimConsumptionByTx[txKey(event)] ?? {};
-      paired.ledger = { solver: addressKey(solver), amount };
+      paired.ledger = { solver: addressKey(solver), grossAmount, feeAmount };
       state.claimConsumptionByTx[txKey(event)] = paired;
       break;
     }
-    case "FeeSwept":
-      invariant(!state.ledger.feeSwept, "duplicate FeeSwept event");
-      state.ledger.feeSwept = true;
+    case "RolloverDestinationSet":
       break;
-    case "ResidualSwept":
+    case "RolloverSwept":
       invariant(!state.ledger.residualSwept, "duplicate ResidualSwept event");
       state.ledger.residualSwept = true;
       break;
@@ -1117,7 +1744,7 @@ function replaySubmissionEvent(state, event) {
         challengeEndsAt: 0n,
         maxDisputeEndsAt: 0n,
         status: "Committed",
-        finalizeInfo: { prevBestScoreAtoms: 0n, creditAtoms: 0n },
+        finalizeInfo: { prevBestScoreAtoms: 0n, creditAtoms: 0n, prevCreditRecoveryEndsAt: 0n },
       };
       return;
     }
@@ -1221,10 +1848,29 @@ function replaySubmissionEvent(state, event) {
       invariant(credit === expectedCredit, `Finalized ${id} credit mismatch`);
       submission.permanenceHash = getArg(event, "permanenceHash");
       submission.status = "Finalized";
-      submission.finalizeInfo = { prevBestScoreAtoms: previousBest, creditAtoms: credit };
+      submission.finalizeInfo = {
+        prevBestScoreAtoms: previousBest,
+        creditAtoms: credit,
+        prevCreditRecoveryEndsAt: state.recoveryPriorBySubmission[id] ?? state.creditRecoveryEndsAt,
+      };
       state.bestScoreAtoms = eventBest;
       invariant(state.openSubmissionCount > 0n, "openSubmissionCount underflow on finalize");
       state.openSubmissionCount -= 1n;
+      return;
+    }
+    case "CreditRecoveryWindowAdvanced": {
+      const previous = asBigInt(getArg(event, "previousEndsAt"));
+      const recoveryEndsAt = asBigInt(getArg(event, "recoveryEndsAt"));
+      invariant(previous === state.creditRecoveryEndsAt, `credit recovery previous deadline mismatch for ${id}`);
+      state.recoveryPriorBySubmission[id] = previous;
+      state.creditRecoveryEndsAt = recoveryEndsAt;
+      return;
+    }
+    case "CreditRecoveryWindowRestored": {
+      const previous = asBigInt(getArg(event, "previousEndsAt"));
+      const restored = asBigInt(getArg(event, "restoredEndsAt"));
+      invariant(previous === state.creditRecoveryEndsAt, `credit recovery restore source mismatch for ${id}`);
+      state.creditRecoveryEndsAt = restored;
       return;
     }
     case "FinalizeVoided": {
@@ -1441,6 +2087,39 @@ function replayRegistryEvent(state, event) {
   }
 }
 
+function replayRolloverVaultEvent(state, event) {
+  switch (event.eventName) {
+    case "RolloverReceived":
+      state.rolloverVault.totalReceived += asBigInt(getArg(event, "amount"));
+      break;
+    case "PoolAllocationSet": {
+      const pool = addressKey(getArg(event, "pool"));
+      const previous = asBigInt(getArg(event, "previousAmount"));
+      const amount = asBigInt(getArg(event, "amount"));
+      invariant((state.rolloverVault.allocationOf[pool] ?? 0n) === previous, "vault allocation previous amount mismatch");
+      state.rolloverVault.totalAllocated = state.rolloverVault.totalAllocated - previous + amount;
+      state.rolloverVault.allocationOf[pool] = amount;
+      state.rolloverVault.allocationCodehashOf[pool] = amount === 0n
+        ? ZERO_HASH
+        : getArg(event, "codehash");
+      break;
+    }
+    case "FuturePoolFunded": {
+      const pool = addressKey(getArg(event, "pool"));
+      const amount = asBigInt(getArg(event, "amount"));
+      const remaining = asBigInt(getArg(event, "remainingAllocation"));
+      invariant((state.rolloverVault.allocationOf[pool] ?? 0n) >= amount, "vault allocation underflow");
+      state.rolloverVault.totalAllocated -= amount;
+      state.rolloverVault.allocationOf[pool] = remaining;
+      if (remaining === 0n) state.rolloverVault.allocationCodehashOf[pool] = ZERO_HASH;
+      state.rolloverVault.totalFuturePoolFunded += amount;
+      break;
+    }
+    case "ZeroCreditRefundReclaimed":
+      break;
+  }
+}
+
 function validatePairedEvents(state) {
   for (const [transactionHash, recovery] of Object.entries(state.recoveryByTx)) {
     const finalized = recovery.finalizeVoided;
@@ -1459,8 +2138,19 @@ function validatePairedEvents(state) {
   for (const [transactionHash, claim] of Object.entries(state.claimConsumptionByTx)) {
     invariant(claim.pool && claim.ledger, `claim event pair incomplete in ${transactionHash}`);
     invariant(
-      claim.pool.solver === claim.ledger.solver && claim.pool.amount === claim.ledger.amount,
+      claim.pool.solver === claim.ledger.solver &&
+        claim.pool.grossAmount === claim.ledger.grossAmount &&
+        claim.pool.feeAmount === claim.ledger.feeAmount,
       `claim event pair mismatch in ${transactionHash}`
+    );
+  }
+  for (const [transactionHash, forced] of Object.entries(state.forcedRecoveryByTx)) {
+    invariant(forced.recovered && forced.swept, `forced ETH event pair incomplete in ${transactionHash}`);
+    invariant(
+      forced.recovered.destination === forced.swept.destination &&
+        forced.recovered.amount === forced.swept.amount &&
+        forced.recovered.remaining === forced.swept.remaining,
+      `forced ETH event pair mismatch in ${transactionHash}`,
     );
   }
 }
@@ -1480,10 +2170,384 @@ export function replayProtocolEvents(events, manifestOrConfig, { coverage = [] }
     else if (event.source === "submissions") replaySubmissionEvent(state, event);
     else if (event.source === "challenges") replayChallengeEvent(state, event);
     else if (event.source === "registry") replayRegistryEvent(state, event);
+    else if (event.source === "rolloverVault") replayRolloverVaultEvent(state, event);
   }
   validatePairedEvents(state);
   invariant(state.coverage.complete, `historical query coverage incomplete: ${state.coverage.missing.join(", ")}`);
+  Object.defineProperty(state, REPLAY_EVENT_TRACE, {
+    value: [...events].sort(compareEventOrder).map(eventDigestInput),
+    enumerable: false,
+  });
   return state;
+}
+
+function evidenceLogIdentity(event, label, contractAddress) {
+  invariant(event, `open-witness evidence is missing canonical ${label} log`);
+  requireHex(event.transactionHash, 32, `${label}.transactionHash`);
+  requireHex(event.blockHash, 32, `${label}.blockHash`);
+  invariant(Number.isSafeInteger(event.blockNumber), `${label}.blockNumber is missing`);
+  const logIndex = event.index ?? event.logIndex;
+  invariant(Number.isSafeInteger(logIndex), `${label}.logIndex is missing`);
+  return {
+    source: event.source,
+    eventName: event.eventName,
+    contractAddress,
+    blockNumber: event.blockNumber,
+    blockHash: event.blockHash.toLowerCase(),
+    transactionHash: event.transactionHash.toLowerCase(),
+    transactionIndex: event.transactionIndex ?? 0,
+    logIndex,
+  };
+}
+
+function sameEventPosition(left, right) {
+  return compareEventOrder(left, right) < 0;
+}
+
+function requireHistoricalObservation(value, label) {
+  invariant(value && typeof value === "object", `missing historical storage observation ${label}`);
+  invariant(Number.isSafeInteger(value.blockNumber), `${label}.blockNumber is missing`);
+  requireHex(value.blockHash, 32, `${label}.blockHash`);
+  return value;
+}
+
+/**
+ * Project a Gate-1 open-witness proof from an already validated replay.
+ * Inputs are source artifacts/read results only; protocol conclusions are derived here.
+ */
+function projectOpenWitnessLaunchEvidence({
+  replay,
+  manifest,
+  problemId,
+  submissionId,
+  solutionBytes,
+  transcriptHash,
+  reportHash,
+  historicalStorage,
+  finalizedEvidence,
+  observedRegistryTuple,
+}) {
+  invariant(replay?.coverage?.complete, "open-witness evidence requires a complete replay");
+  const events = replay[REPLAY_EVENT_TRACE];
+  invariant(Array.isArray(events), "open-witness evidence requires the canonical replay event trace");
+  const id = asBigInt(submissionId, "submissionId").toString();
+  const registryId = asBigInt(problemId, "problemId").toString();
+  const problem = manifestProblemForRegistryId(manifest, registryId);
+  const contracts = manifestProblemContracts(manifest, problem);
+  const submission = replay.submissions[id];
+  invariant(submission, `open-witness submission ${id} is absent from replay`);
+  invariant(submission.status === "Finalized", `open-witness submission ${id} is not a nonvoid canonical finalize`);
+  invariant(submission.paidAtCommit === false, `open-witness submission ${id} was paid at commit`);
+
+  const matching = (source, eventName) => events.filter((event) =>
+    event.source === source && event.eventName === eventName &&
+    (event.args?.submissionId === undefined || asBigInt(event.args.submissionId).toString() === id));
+  const exactlyOne = (source, name) => {
+    const found = matching(source, name);
+    invariant(found.length === 1, `open-witness evidence requires exactly one ${source}.${name} log for submission ${id}`);
+    return found[0];
+  };
+  const commit = exactlyOne("submissions", "Committed");
+  const reveal = exactlyOne("submissions", "Revealed");
+  const finalize = exactlyOne("submissions", "Finalized");
+  invariant(sameEventPosition(commit, reveal) && sameEventPosition(reveal, finalize), "open-witness commit/reveal/finalize ordering is not canonical");
+  invariant(addressKey(getArg(commit, "solver")) === addressKey(submission.solver), "open-witness commit belongs to another submission/board");
+  invariant(addressKey(getArg(reveal, "solver")) === addressKey(submission.solver), "open-witness reveal belongs to another submission/board");
+  invariant(addressKey(getArg(finalize, "solver")) === addressKey(submission.solver), "open-witness finalize belongs to another submission/board");
+
+  const bytes = ethers.getBytes(solutionBytes);
+  const solutionBytesHash = `0x${createHash("sha256").update(bytes).digest("hex")}`;
+  invariant(solutionBytesHash === String(getArg(commit, "commitDaHash")).toLowerCase(), "reveal calldata/solution bytes hash does not match commitDaHash");
+  invariant(asBigInt(getArg(reveal, "solutionBytesLength")) === BigInt(bytes.length), "reveal solution byte length mismatch");
+  const prevFrontier = submission.finalizeInfo.prevBestScoreAtoms;
+  const currentFrontier = asBigInt(getArg(finalize, "bestScoreAtoms"));
+  invariant(asBigInt(getArg(finalize, "creditAtoms")) === 0n && submission.finalizeInfo.creditAtoms === 0n, "open-witness finalize has positive credit");
+  invariant(!matching("ledger", "CreditRecorded").some((event) =>
+    addressKey(getArg(event, "solver")) === addressKey(submission.solver)), "open-witness has a CreditRecorded ledger delta");
+
+  const armEvents = events.filter((event) => event.source === "submissions" && event.eventName === "FundingArmed");
+  invariant(armEvents.length === 1, "open-witness evidence requires exactly one FundingArmed log");
+  const arm = armEvents[0];
+  invariant(sameEventPosition(finalize, arm), "FundingArmed must be strictly later than open-witness finalize");
+  invariant(!events.some((event) => event.source === "submissions" && event.eventName === "FinalizeVoided" && asBigInt(event.args.submissionId).toString() === id), "open-witness canonical finalize was voided");
+
+  const beforeArm = requireHistoricalObservation(historicalStorage?.beforeArm, "historicalStorage.beforeArm");
+  const atFinalize = requireHistoricalObservation(historicalStorage?.atFinalize, "historicalStorage.atFinalize");
+  invariant(atFinalize.blockNumber === finalize.blockNumber && atFinalize.blockHash.toLowerCase() === finalize.blockHash.toLowerCase(), "historical finalize storage is not pinned to the canonical finalize block");
+  invariant(beforeArm.blockNumber < arm.blockNumber, "before-arm storage observation is not historical");
+  invariant(asBigInt(beforeArm.poolBalanceWei) === 0n && beforeArm.acceptingFunds === false, "pool was nonzero or accepting funds before arm");
+  invariant(asBigInt(beforeArm.totalCreditAtoms) === 0n && asBigInt(atFinalize.totalCreditAtoms) === 0n, "ledger credit changed before arm");
+  invariant(asBigInt(atFinalize.solverCreditAtoms) === 0n, "solver ledger credit is positive at finalize");
+  invariant(String(atFinalize.submissionStatus) === "Finalized", "historical finalize storage does not prove Finalized status");
+  invariant(atFinalize.paidAtCommit === false, "historical finalize storage says witness was paid at commit");
+  invariant(asBigInt(atFinalize.finalizeCreditAtoms) === 0n, "historical finalize storage has positive credit");
+  invariant(asBigInt(atFinalize.prevBestScoreAtoms) === asBigInt(prevFrontier), "historical finalize frontier predecessor differs from replay");
+  invariant(asBigInt(atFinalize.bestScoreAtoms) === currentFrontier, "historical finalize frontier differs from canonical event");
+  invariant(atFinalize.fundingArmed === false, "funding was already armed at open-witness finalize");
+  invariant(String(atFinalize.anchorSubmissionStatus) === "Finalized", "confirmed chain state no longer has a nonvoid finalized witness");
+
+  const finalized = requireHistoricalObservation({
+    blockNumber: finalizedEvidence?.blockNumber,
+    blockHash: finalizedEvidence?.blockHash,
+  }, "finalizedEvidence");
+  invariant(finalized.blockNumber >= finalize.blockNumber, "finalized evidence block predates finalize");
+
+  const registrations = events.filter((event) => event.source === "registry" && event.eventName === "ProblemRegistered" && asBigInt(event.args.problemId).toString() === registryId);
+  invariant(registrations.length === 1, `registry problem ${registryId} does not have one exact registration tuple`);
+  const registration = registrations[0];
+  const tupleFields = ["specHash", "verifierSourceHash", "verifierImageHash", "admissionMatrixHash", "metadataURI", "pool", "ledger", "submissionManager", "challengeManager", "challengeWindowSeconds", "minImprovementAtoms"];
+  const registryTuple = Object.fromEntries(tupleFields.map((field) => {
+    invariant(observedRegistryTuple?.[field] !== undefined, `historical registry tuple is missing ${field}`);
+    return [field, observedRegistryTuple[field]];
+  }));
+  const expectedTuple = {
+    specHash: problem.specHash, verifierSourceHash: problem.verifierSourceHash,
+    verifierImageHash: problem.verifierImageHash, admissionMatrixHash: problem.admissionMatrixHash,
+    metadataURI: problem.metadataURI, pool: contracts.pool.address, ledger: contracts.ledger.address,
+    submissionManager: contracts.submissions.address, challengeManager: contracts.challenges.address,
+    challengeWindowSeconds: manifest.parameters.challengeWindowSeconds,
+    minImprovementAtoms: problem.minImprovementAtoms,
+  };
+  invariant(stableStringify(registryTuple).toLowerCase() === stableStringify(expectedTuple).toLowerCase(), "canonical registry tuple does not match selected board deployment");
+  for (const [value, label] of [[transcriptHash, "transcriptHash"], [reportHash, "reportHash"]]) requireHex(value, 32, label);
+
+  return canonicalize({
+    schema: "p42-prizes/open-witness-launch-evidence/v1",
+    collector_authoritative: false,
+    releaseBinding: {
+      deploymentCommit: manifest.deploymentCommit,
+      deploymentConfigHash: manifest.deploymentConfigHash,
+      chainId: manifest.network.chainId,
+      problemId: registryId,
+      problemSlug: problem.problemSlug,
+      contracts: { registry: manifest.contracts.registry.address, ...Object.fromEntries(Object.entries(contracts).map(([key, value]) => [key, value.address])) },
+    },
+    artifactBinding: {
+      specHash: problem.specHash,
+      verifierImageHash: problem.verifierImageHash,
+      admissionMatrixHash: problem.admissionMatrixHash,
+      solutionBytesHash,
+      transcriptHash,
+      reportHash,
+    },
+    registryTuple,
+    submission: {
+      submissionId: id, solver: submission.solver, paidAtCommit: false,
+      commitDaHash: submission.commitDaHash, solutionCid: submission.solutionCid,
+      logs: {
+        commit: evidenceLogIdentity(commit, "commit", contracts.submissions.address),
+        reveal: evidenceLogIdentity(reveal, "reveal", contracts.submissions.address),
+        finalize: evidenceLogIdentity(finalize, "finalize", contracts.submissions.address),
+      },
+      frontier: { previousAtoms: prevFrontier, currentAtoms: currentFrontier },
+      creditAtoms: 0n, creditRecorded: false, ledgerDeltaAtoms: 0n,
+      nonvoidCanonicalFinalize: true,
+    },
+    funding: {
+      armedAfterFinalize: true, armLog: evidenceLogIdentity(arm, "funding arm", contracts.submissions.address),
+      poolBalanceBeforeArmWei: 0n, acceptingFundsBeforeArm: false,
+      beforeArmStorageBlock: { blockNumber: beforeArm.blockNumber, blockHash: beforeArm.blockHash },
+    },
+    finalizedEvidence: { blockNumber: finalized.blockNumber, blockHash: finalized.blockHash },
+  });
+}
+
+function requireReaderFunction(value, label) {
+  invariant(typeof value === "function", `canonical open-witness collector requires ${label} reader`);
+  return value;
+}
+
+async function readContractFunction(provider, contractInterface, address, functionName, args, blockTag, label) {
+  let raw;
+  try {
+    raw = await provider.call({
+      to: address,
+      data: contractInterface.encodeFunctionData(functionName, args),
+      blockTag,
+    });
+  } catch (error) {
+    throw new ReplayError(`${label} historical RPC read failed: ${error?.message ?? String(error)}`);
+  }
+  invariant(typeof raw === "string" && raw.startsWith("0x"), `${label} historical RPC returned malformed data`);
+  try {
+    return contractInterface.decodeFunctionResult(functionName, raw);
+  } catch {
+    throw new ReplayError(`${label} historical RPC result cannot be decoded by the deployed ABI`);
+  }
+}
+
+async function collectHistoricalOpenWitnessState({ provider, artifacts, contracts, registryAddress, registryId, submissionId, solver, beforeArmBlockNumber, finalizeBlockNumber, registrationBlockNumber, anchorBlockNumber }) {
+  const interfaces = Object.fromEntries(
+    ["pool", "ledger", "submissions", "registry"].map((key) => [key, new ethers.Interface(artifacts[key].abi)]),
+  );
+  const read = (key, address, name, args, blockTag, label) =>
+    readContractFunction(provider, interfaces[key], address, name, args, blockTag, label);
+  const [poolBalanceWei, acceptingFunds, beforeTotalCredit, finalizeTotalCredit, solverCredit, submission, anchorSubmission, paidAtCommit, finalizeInfo, bestScoreAtoms, fundingArmed, registryTuple] = await Promise.all([
+    provider.getBalance(contracts.pool.address, beforeArmBlockNumber),
+    read("pool", contracts.pool.address, "acceptingFunds", [], beforeArmBlockNumber, "pool.acceptingFunds"),
+    read("ledger", contracts.ledger.address, "totalCreditAtoms", [], beforeArmBlockNumber, "ledger.totalCreditAtoms before arm"),
+    read("ledger", contracts.ledger.address, "totalCreditAtoms", [], finalizeBlockNumber, "ledger.totalCreditAtoms at finalize"),
+    read("ledger", contracts.ledger.address, "creditAtomsOf", [solver], finalizeBlockNumber, "ledger.creditAtomsOf at finalize"),
+    read("submissions", contracts.submissions.address, "submissions", [submissionId], finalizeBlockNumber, "submissions.submissions at finalize"),
+    read("submissions", contracts.submissions.address, "submissions", [submissionId], anchorBlockNumber, "submissions.submissions at confirmed anchor"),
+    read("submissions", contracts.submissions.address, "paidAtCommit", [submissionId], finalizeBlockNumber, "submissions.paidAtCommit at finalize"),
+    read("submissions", contracts.submissions.address, "finalizeInfo", [submissionId], finalizeBlockNumber, "submissions.finalizeInfo at finalize"),
+    read("submissions", contracts.submissions.address, "bestScoreAtoms", [], finalizeBlockNumber, "submissions.bestScoreAtoms at finalize"),
+    read("submissions", contracts.submissions.address, "fundingArmed", [], finalizeBlockNumber, "submissions.fundingArmed at finalize"),
+    read("registry", registryAddress, "problems", [registryId], registrationBlockNumber, "registry.problems at registration"),
+  ]);
+  const tupleFields = ["specHash", "verifierSourceHash", "verifierImageHash", "admissionMatrixHash", "metadataURI", "pool", "ledger", "submissionManager", "challengeManager", "challengeWindowSeconds", "minImprovementAtoms"];
+  return {
+    beforeArm: {
+      poolBalanceWei, acceptingFunds: acceptingFunds[0], totalCreditAtoms: beforeTotalCredit[0],
+    },
+    atFinalize: {
+      totalCreditAtoms: finalizeTotalCredit[0], solverCreditAtoms: solverCredit[0],
+      submissionStatus: Number(submission.status ?? submission[13]) === 4 ? "Finalized" : String(submission.status ?? submission[13]),
+      anchorSubmissionStatus: Number(anchorSubmission.status ?? anchorSubmission[13]) === 4 ? "Finalized" : String(anchorSubmission.status ?? anchorSubmission[13]),
+      paidAtCommit: paidAtCommit[0], finalizeCreditAtoms: finalizeInfo.creditAtoms ?? finalizeInfo[1],
+      prevBestScoreAtoms: finalizeInfo.prevBestScoreAtoms ?? finalizeInfo[0],
+      bestScoreAtoms: bestScoreAtoms[0], fundingArmed: fundingArmed[0],
+    },
+    registryAtRegistration: {
+      registryTuple: Object.fromEntries(tupleFields.map((field, index) => [field, registryTuple[field] ?? registryTuple[index]])),
+    },
+  };
+}
+
+async function verifyCanonicalEvidenceEvent(provider, event, contractAddress, contractInterface, label) {
+  const [receipt, block] = await Promise.all([
+    provider.getTransactionReceipt(event.transactionHash),
+    provider.getBlock(event.blockNumber),
+  ]);
+  invariant(receipt, `${label} receipt disappeared from provider`);
+  invariant(block?.hash, `${label} canonical block disappeared from provider`);
+  invariant(String(block.hash).toLowerCase() === String(event.blockHash).toLowerCase(), `${label} block hash changed on provider`);
+  invariant(Number(receipt.blockNumber) === event.blockNumber, `${label} receipt moved blocks on provider`);
+  invariant(String(receipt.blockHash).toLowerCase() === String(event.blockHash).toLowerCase(), `${label} receipt block hash changed on provider`);
+  invariant(String(receipt.hash ?? receipt.transactionHash).toLowerCase() === String(event.transactionHash).toLowerCase(), `${label} receipt transaction hash mismatch`);
+  invariant(Number(receipt.status) === 1, `${label} transaction did not succeed`);
+  const logIndex = event.index ?? event.logIndex;
+  const matchingLogs = (receipt.logs ?? []).filter((log) =>
+    Number(log.index ?? log.logIndex) === logIndex &&
+    String(log.address).toLowerCase() === String(contractAddress).toLowerCase() &&
+    String(log.blockHash).toLowerCase() === String(event.blockHash).toLowerCase() &&
+    String(log.transactionHash).toLowerCase() === String(event.transactionHash).toLowerCase());
+  invariant(matchingLogs.length === 1, `${label} canonical receipt log disappeared or was replaced`);
+  let parsed;
+  try {
+    parsed = contractInterface.parseLog(matchingLogs[0]);
+  } catch {
+    throw new ReplayError(`${label} canonical receipt log cannot be decoded by the deployed ABI`);
+  }
+  invariant(parsed?.name === event.eventName, `${label} canonical receipt emitted a different event`);
+  parsed.fragment.inputs.forEach((input, index) => {
+    invariant(
+      stableStringify(parsed.args[index]).toLowerCase() === stableStringify(getArg(event, input.name)).toLowerCase(),
+      `${label} canonical receipt argument ${input.name} differs from replay`,
+    );
+  });
+}
+
+/** Collect authoritative evidence only from independently re-read canonical chain data. */
+export async function collectCanonicalOpenWitnessLaunchEvidence({
+  replay,
+  manifest,
+  problemId,
+  submissionId,
+  transcriptHash,
+  reportHash,
+  provider,
+}) {
+  invariant(provider && typeof provider === "object", "canonical open-witness collector requires a provider");
+  for (const method of ["getNetwork", "getTransaction", "getTransactionReceipt", "getBlock", "getBalance", "call"]) {
+    requireReaderFunction(provider[method], `provider.${method}`);
+  }
+  const network = await provider.getNetwork();
+  invariant(Number(network.chainId) === manifest.network.chainId, "canonical collector provider chainId does not match deployment");
+
+  const events = replay?.[REPLAY_EVENT_TRACE];
+  invariant(Array.isArray(events), "canonical collector requires the replay event trace");
+  const id = asBigInt(submissionId, "submissionId").toString();
+  const registryId = asBigInt(problemId, "problemId").toString();
+  const problem = manifestProblemForRegistryId(manifest, registryId);
+  const contracts = manifestProblemContracts(manifest, problem);
+  const findOne = (source, eventName, predicate = () => true) => {
+    const found = events.filter((event) => event.source === source && event.eventName === eventName && predicate(event));
+    invariant(found.length === 1, `canonical collector requires exactly one ${source}.${eventName} observation`);
+    return found[0];
+  };
+  const forSubmission = (event) => asBigInt(event.args?.submissionId).toString() === id;
+  const commit = findOne("submissions", "Committed", forSubmission);
+  const reveal = findOne("submissions", "Revealed", forSubmission);
+  const finalize = findOne("submissions", "Finalized", forSubmission);
+  const arm = findOne("submissions", "FundingArmed");
+  const registration = findOne("registry", "ProblemRegistered", (event) => asBigInt(event.args?.problemId).toString() === registryId);
+  const artifacts = loadContractArtifacts();
+  const submissionsInterface = new ethers.Interface(artifacts.submissions.abi);
+  const registryInterface = new ethers.Interface(artifacts.registry.abi);
+  await Promise.all([
+    verifyCanonicalEvidenceEvent(provider, commit, contracts.submissions.address, submissionsInterface, "commit"),
+    verifyCanonicalEvidenceEvent(provider, reveal, contracts.submissions.address, submissionsInterface, "reveal"),
+    verifyCanonicalEvidenceEvent(provider, finalize, contracts.submissions.address, submissionsInterface, "finalize"),
+    verifyCanonicalEvidenceEvent(provider, arm, contracts.submissions.address, submissionsInterface, "funding arm"),
+    verifyCanonicalEvidenceEvent(provider, registration, manifest.contracts.registry.address, registryInterface, "registry registration"),
+  ]);
+
+  const revealTransaction = await provider.getTransaction(reveal.transactionHash);
+  invariant(revealTransaction, "canonical reveal transaction disappeared from provider");
+  invariant(String(revealTransaction.hash).toLowerCase() === String(reveal.transactionHash).toLowerCase(), "canonical reveal transaction hash mismatch");
+  invariant(String(revealTransaction.to).toLowerCase() === String(contracts.submissions.address).toLowerCase() || String(revealTransaction.data).length > 10, "canonical reveal transaction has no recoverable calldata");
+  const recovered = recoverRevealCalldata(revealTransaction.data, submissionsInterface, {
+    submissionId: id,
+    solutionCid: getArg(reveal, "solutionCid"),
+    claimedScoreAtoms: getArg(reveal, "claimedScoreAtoms"),
+    improvementAtoms: getArg(reveal, "improvementAtoms"),
+    solutionBytesLength: getArg(reveal, "solutionBytesLength"),
+    commitDaHash: getArg(commit, "commitDaHash"),
+  });
+  const solutionBytes = ethers.getBytes(recovered.solution);
+
+  const beforeArmBlockNumber = arm.blockNumber - 1;
+  invariant(beforeArmBlockNumber >= 0, "funding arm has no historical predecessor block");
+  const latestBlock = await provider.getBlock("latest");
+  invariant(latestBlock?.hash && Number.isSafeInteger(latestBlock.number), "canonical latest block is unavailable");
+  const anchorBlockNumber = latestBlock.number - manifest.indexer.finalityPolicy.confirmations;
+  invariant(anchorBlockNumber >= arm.blockNumber, "canonical armFunding does not satisfy manifest confirmation policy");
+  const [beforeArmBlock, armBlock, finalizeBlock, registrationBlock, anchorBlock] = await Promise.all([
+    provider.getBlock(beforeArmBlockNumber),
+    provider.getBlock(arm.blockNumber),
+    provider.getBlock(finalize.blockNumber),
+    provider.getBlock(registration.blockNumber),
+    provider.getBlock(anchorBlockNumber),
+  ]);
+  invariant(beforeArmBlock?.hash && armBlock?.hash && finalizeBlock?.hash && registrationBlock?.hash && anchorBlock?.hash, "canonical historical blocks are unavailable");
+  invariant(String(armBlock.hash).toLowerCase() === String(arm.blockHash).toLowerCase(), "canonical armFunding block changed before collection");
+  invariant(String(armBlock.parentHash).toLowerCase() === String(beforeArmBlock.hash).toLowerCase(), "canonical armFunding parent does not match pre-arm block");
+  const historicalStatePromise = collectHistoricalOpenWitnessState({
+    provider, artifacts, contracts, registryAddress: manifest.contracts.registry.address,
+    registryId, submissionId: id, solver: replay.submissions[id]?.solver,
+    beforeArmBlockNumber, finalizeBlockNumber: finalize.blockNumber,
+    registrationBlockNumber: registration.blockNumber, anchorBlockNumber,
+  });
+  const historicalState = await historicalStatePromise;
+  const rereadBlocks = await Promise.all([
+    provider.getBlock(beforeArmBlockNumber), provider.getBlock(arm.blockNumber), provider.getBlock(finalize.blockNumber),
+    provider.getBlock(registration.blockNumber), provider.getBlock(anchorBlockNumber),
+  ]);
+  for (const [index, original] of [beforeArmBlock, armBlock, finalizeBlock, registrationBlock, anchorBlock].entries()) {
+    invariant(rereadBlocks[index]?.hash && String(rereadBlocks[index].hash).toLowerCase() === String(original.hash).toLowerCase(), "canonical historical block changed during collection");
+  }
+  const beforeArm = { ...historicalState.beforeArm, blockNumber: beforeArmBlockNumber, blockHash: beforeArmBlock.hash };
+  const atFinalize = { ...historicalState.atFinalize, blockNumber: finalize.blockNumber, blockHash: finalizeBlock.hash };
+  const registryAtRegistration = { ...historicalState.registryAtRegistration, blockNumber: registration.blockNumber, blockHash: registrationBlock.hash };
+  const projected = projectOpenWitnessLaunchEvidence({
+    replay, manifest, problemId: registryId, submissionId: id, solutionBytes,
+    transcriptHash, reportHash, historicalStorage: { beforeArm, atFinalize },
+    finalizedEvidence: { blockNumber: anchorBlock.number, blockHash: anchorBlock.hash },
+    observedRegistryTuple: registryAtRegistration.registryTuple,
+  });
+  return canonicalize(projected);
 }
 
 function check(name, expected, actual) {
@@ -1534,13 +2598,20 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("submissions.pausedAll", state.pausedAll, snapshot.pausedAll),
     check("submissions.expiryGraceUntil", state.expiryGraceUntil, snapshot.expiryGraceUntil),
     check("submissions.challengeManager", state.challengeManager, snapshot.submissionsChallengeManager),
+    check("submissions.creditRecoveryEndsAt", state.creditRecoveryEndsAt, snapshot.creditRecoveryEndsAt),
     check("pool.ledger", state.pool.ledger, snapshot.pool.ledger),
     check("pool.submissionManager", state.pool.submissionManager, snapshot.pool.submissionManager),
     check("pool.registry", state.pool.registry, snapshot.pool.registry),
     check("pool.problemId", state.pool.problemId, snapshot.pool.problemId),
     check("pool.totalFunded", state.pool.totalFunded, snapshot.pool.totalFunded),
     check("pool.totalClaimed", state.pool.totalClaimed, snapshot.pool.totalClaimed),
+    check("pool.totalGrossClaimed", state.pool.totalGrossClaimed, snapshot.pool.totalGrossClaimed),
+    check("pool.totalFeeAccrued", state.pool.totalFeeAccrued, snapshot.pool.totalFeeAccrued),
     check("pool.totalFeePaid", state.pool.totalFeePaid, snapshot.pool.totalFeePaid),
+    check("pool.accruedFeeBalance", state.pool.accruedFeeBalance, snapshot.pool.accruedFeeBalance),
+    check("pool.totalSponsorRefunded", state.pool.totalSponsorRefunded, snapshot.pool.totalSponsorRefunded),
+    check("pool.totalRolloverPaid", state.pool.totalRolloverPaid, snapshot.pool.totalRolloverPaid),
+    check("pool.totalForcedEthRecovered", state.pool.totalForcedEthRecovered, snapshot.pool.totalForcedEthRecovered),
     check("pool.totalResidualPaid", state.pool.totalResidualPaid, snapshot.pool.totalResidualPaid),
     check("pool.accountedBalance", state.pool.accountedBalance, snapshot.pool.accountedBalance),
     check(
@@ -1551,9 +2622,12 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("pool.everFunded", state.pool.everFunded, snapshot.pool.everFunded),
     check("pool.firstFundedAt", state.pool.firstFundedAt, snapshot.pool.firstFundedAt),
     check("pool.acceptingFunds", state.pool.acceptingFunds, snapshot.pool.acceptingFunds),
+    check("pool.sponsorshipOf observed sponsors", state.pool.sponsorshipOf, snapshot.pool.sponsorshipOf),
     check("ledger.pausedNewActions", state.ledger.pausedNewActions, snapshot.ledger.pausedNewActions),
     check("ledger.creditRecorder", state.ledger.creditRecorder, snapshot.ledger.creditRecorder),
     check("ledger.totalCreditAtoms", state.ledger.totalCreditAtoms, snapshot.ledger.totalCreditAtoms),
+    check("ledger.totalGrossClaimed", state.ledger.totalGrossClaimed, snapshot.ledger.totalGrossClaimed),
+    check("ledger.totalFeeAccrued", state.ledger.totalFeeAccrued, snapshot.ledger.totalFeeAccrued),
     check("ledger.closed", state.ledger.closed, snapshot.ledger.closed),
     check("ledger.closedPoolBalance", state.ledger.closedPoolBalance, snapshot.ledger.closedPoolBalance),
     check("ledger.feeReserve", state.ledger.feeReserve, snapshot.ledger.feeReserve),
@@ -1562,7 +2636,47 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("ledger.residualSwept", state.ledger.residualSwept, snapshot.ledger.residualSwept),
     check("registry.problemCount", state.registry.problemCount, snapshot.registry.problemCount),
     check("challenge pausedNewActions", state.challengePausedNewActions, snapshot.challengePausedNewActions),
+    check("rolloverVault.totalAllocated", state.rolloverVault.totalAllocated, snapshot.rolloverVault.totalAllocated),
+    check("rolloverVault observed allocations", state.rolloverVault.allocationOf, snapshot.rolloverVault.allocationOf),
+    check(
+      "rolloverVault observed allocation codehash pins",
+      state.rolloverVault.allocationCodehashOf,
+      snapshot.rolloverVault.allocationCodehashOf,
+    ),
+    check(
+      "rolloverVault event-derived balance",
+      state.rolloverVault.totalReceived - state.rolloverVault.totalFuturePoolFunded,
+      snapshot.rolloverVault.balance,
+    ),
   ];
+  checks.push(
+    check(
+      "pool gross claims equal net claims plus accrued fees",
+      snapshot.pool.totalGrossClaimed,
+      snapshot.pool.totalClaimed + snapshot.pool.totalFeeAccrued,
+    ),
+    check(
+      "pool fee liability conserves accrued fees",
+      snapshot.pool.totalFeeAccrued,
+      snapshot.pool.totalFeePaid + snapshot.pool.accruedFeeBalance,
+    ),
+    check(
+      "pool accounted ETH conserves all categorized outflows",
+      snapshot.pool.totalFunded,
+      snapshot.pool.accountedBalance + snapshot.pool.totalClaimed + snapshot.pool.totalFeePaid
+        + snapshot.pool.totalSponsorRefunded + snapshot.pool.totalRolloverPaid,
+    ),
+    check(
+      "pool and ledger gross claims agree",
+      snapshot.pool.totalGrossClaimed,
+      snapshot.ledger.totalGrossClaimed,
+    ),
+    check(
+      "pool and ledger accrued fees agree",
+      snapshot.pool.totalFeeAccrued,
+      snapshot.ledger.totalFeeAccrued,
+    ),
+  );
 
   const finalizedStatuses = Object.values(state.submissions).filter((entry) => entry.status === "Finalized").length;
   const voidedStatuses = Object.values(state.submissions).filter((entry) => entry.status === "Voided").length;
@@ -1684,6 +2798,7 @@ function artifactAbi(name) {
 
 const CONTRACT_NAMES = Object.freeze({
   timelock: "P42MultisigTimelock",
+  rolloverVault: "P42RolloverVault",
   pool: "P42BountyPool",
   ledger: "P42PayoutLedger",
   submissions: "P42SubmissionManager",
@@ -1703,34 +2818,58 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
   if (Number(network.chainId) !== manifest.network.chainId) {
     throw new Error(`chainId mismatch: manifest=${manifest.network.chainId} RPC=${network.chainId}`);
   }
-  for (const key of EVIDENCE_CONTRACT_KEYS) {
-    const entry = manifest.contracts[key];
+  for (const descriptor of manifestContractEvidenceEntries(manifest)) {
+    const { key, entry, path } = descriptor;
     const artifact = artifacts[key];
     const abiHash = ethers.keccak256(
       ethers.toUtf8Bytes(new ethers.Interface(artifact.abi).formatJson())
     );
     if (abiHash.toLowerCase() !== entry.abiHash.toLowerCase()) {
       throw new Error(
-        `${key} ABI drift: local artifact ${abiHash} != manifest ${entry.abiHash}; use deployment commit ${manifest.deploymentCommit}`
+        `${path} ABI drift: local artifact ${abiHash} != manifest ${entry.abiHash}; use deployment commit ${manifest.deploymentCommit}`
       );
     }
     const code = await provider.getCode(entry.address, toBlock);
-    if (code === "0x") throw new Error(`${key} has no runtime code at block ${toBlock}`);
+    if (code === "0x") throw new Error(`${path} has no runtime code at block ${toBlock}`);
     const codeHash = ethers.keccak256(code);
     if (codeHash.toLowerCase() !== entry.deployedCodeHash.toLowerCase()) {
-      throw new Error(`${key} runtime code hash ${codeHash} != manifest ${entry.deployedCodeHash}`);
+      throw new Error(`${path} runtime code hash ${codeHash} != manifest ${entry.deployedCodeHash}`);
     }
   }
   return binding;
 }
 
 export function instantiateContracts(provider, manifest, artifacts = loadContractArtifacts()) {
+  if (isMultiBoardManifest(manifest)) {
+    throw new Error("multi-board manifests require instantiateBoardContracts with an explicit registry problem id");
+  }
   return Object.fromEntries(
     EVIDENCE_CONTRACT_KEYS.map((key) => [
       key,
       new ethers.Contract(manifest.contracts[key].address, artifacts[key].abi, provider),
     ])
   );
+}
+
+export function instantiateBoardContracts(provider, manifest, problem, artifacts = loadContractArtifacts()) {
+  if (!isMultiBoardManifest(manifest)) return instantiateContracts(provider, manifest, artifacts);
+  const selected = manifestProblemForRegistryId(manifest, problem?.problemId ?? problem);
+  const boardContracts = manifestProblemContracts(manifest, selected);
+  return {
+    timelock: new ethers.Contract(manifest.contracts.timelock.address, artifacts.timelock.abi, provider),
+    registry: new ethers.Contract(manifest.contracts.registry.address, artifacts.registry.abi, provider),
+    rolloverVault: new ethers.Contract(
+      manifest.contracts.rolloverVault.address,
+      artifacts.rolloverVault.abi,
+      provider,
+    ),
+    ...Object.fromEntries(
+      BOARD_CONTRACT_KEYS.map((key) => [
+        key,
+        new ethers.Contract(boardContracts[key].address, artifacts[key].abi, provider),
+      ]),
+    ),
+  };
 }
 
 function submissionView(value) {
@@ -1780,7 +2919,7 @@ function registryProblemView(value) {
 }
 
 export async function collectOnchainSnapshot(contracts, replay, blockTag = undefined) {
-  const { pool, ledger, submissions, challenges, registry } = contracts;
+  const { pool, ledger, submissions, challenges, registry, rolloverVault } = contracts;
   const atBlock = blockTag === undefined ? [] : [{ blockTag }];
   const [
     submissionCount,
@@ -1814,6 +2953,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     pausedAll,
     expiryGraceUntil,
     submissionsChallengeManager,
+    creditRecoveryEndsAt: await submissions.creditRecoveryEndsAt(...atBlock),
     pool: {
       ledger: await pool.ledger(...atBlock),
       submissionManager: await pool.submissionManager(...atBlock),
@@ -1821,12 +2961,19 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       problemId: await pool.problemId(...atBlock),
       totalFunded: await pool.totalFunded(...atBlock),
       totalClaimed: await pool.totalClaimed(...atBlock),
+      totalGrossClaimed: await pool.totalGrossClaimed(...atBlock),
+      totalFeeAccrued: await pool.totalFeeAccrued(...atBlock),
       totalFeePaid: await pool.totalFeePaid(...atBlock),
+      accruedFeeBalance: await pool.accruedFeeBalance(...atBlock),
+      totalSponsorRefunded: await pool.totalSponsorRefunded(...atBlock),
+      totalRolloverPaid: await pool.totalRolloverPaid(...atBlock),
+      totalForcedEthRecovered: await pool.totalForcedEthRecovered(...atBlock),
       totalResidualPaid: await pool.totalResidualPaid(...atBlock),
       accountedBalance: await pool.accountedBalance(...atBlock),
       everFunded: await pool.everFunded(...atBlock),
       firstFundedAt: await pool.firstFundedAt(...atBlock),
       acceptingFunds: await pool.acceptingFunds(...atBlock),
+      sponsorshipOf: {},
       balance: blockTag === undefined
         ? await pool.runner.provider.getBalance(await pool.getAddress())
         : await pool.runner.provider.getBalance(await pool.getAddress(), blockTag),
@@ -1835,6 +2982,8 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       pausedNewActions: await ledger.pausedNewActions(...atBlock),
       creditRecorder: await ledger.creditRecorder(...atBlock),
       totalCreditAtoms: await ledger.totalCreditAtoms(...atBlock),
+      totalGrossClaimed: await ledger.totalGrossClaimed(...atBlock),
+      totalFeeAccrued: await ledger.totalFeeAccrued(...atBlock),
       closed: await ledger.closed(...atBlock),
       closedPoolBalance: await ledger.closedPoolBalance(...atBlock),
       feeReserve: await ledger.feeReserve(...atBlock),
@@ -1843,6 +2992,16 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       residualSwept: await ledger.residualSwept(...atBlock),
       creditAtomsOf: {},
       claimedWeiOf: {},
+    },
+    rolloverVault: {
+      registry: await rolloverVault.registry(...atBlock),
+      allocator: await rolloverVault.allocator(...atBlock),
+      totalAllocated: await rolloverVault.totalAllocated(...atBlock),
+      balance: blockTag === undefined
+        ? await rolloverVault.runner.provider.getBalance(await rolloverVault.getAddress())
+        : await rolloverVault.runner.provider.getBalance(await rolloverVault.getAddress(), blockTag),
+      allocationOf: {},
+      allocationCodehashOf: {},
     },
     submissions: {},
     finalizeInfo: {},
@@ -1868,6 +3027,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     snapshot.finalizeInfo[key] = {
       prevBestScoreAtoms: info.prevBestScoreAtoms,
       creditAtoms: info.creditAtoms,
+      prevCreditRecoveryEndsAt: info.prevCreditRecoveryEndsAt,
     };
   }
 
@@ -1877,6 +3037,13 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
   for (const solver of solverAddresses) {
     snapshot.ledger.creditAtomsOf[solver] = await ledger.creditAtomsOf(solver, ...atBlock);
     snapshot.ledger.claimedWeiOf[solver] = await ledger.claimedWeiOf(solver, ...atBlock);
+  }
+  for (const sponsor of Object.keys(replay.pool.sponsorshipOf)) {
+    snapshot.pool.sponsorshipOf[sponsor] = await pool.sponsorshipOf(sponsor, ...atBlock);
+  }
+  for (const target of Object.keys(replay.rolloverVault.allocationOf)) {
+    snapshot.rolloverVault.allocationOf[target] = await rolloverVault.allocationOf(target, ...atBlock);
+    snapshot.rolloverVault.allocationCodehashOf[target] = await rolloverVault.allocationCodehashOf(target, ...atBlock);
   }
   for (const claimant of Object.keys(replay.submissionClaimableBondWei)) {
     snapshot.submissionClaimableBondWei[claimant] = await submissions.claimableBondWei(claimant, ...atBlock);
@@ -1906,7 +3073,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
 }
 
 export async function collectRuntimeConfigChecks(contracts, manifest, blockTag = undefined) {
-  const { timelock, pool, ledger, submissions, challenges, registry } = contracts;
+  const { timelock, pool, ledger, submissions, challenges, registry, rolloverVault } = contracts;
   const problem = manifest.problems[0];
   const parameters = manifest.parameters;
   const checks = [];
@@ -1957,6 +3124,17 @@ export async function collectRuntimeConfigChecks(contracts, manifest, blockTag =
   await add("pool.problemId", asBigInt(problem.problemId), pool.problemId(...atBlock));
   await add("ledger.owner", manifest.roles.owner, ledger.owner(...atBlock));
   await add("ledger.pool", manifest.contracts.pool.address, ledger.pool(...atBlock));
+  await add(
+    "ledger.rolloverDestination",
+    manifest.contracts.rolloverVault.address,
+    ledger.rolloverDestination(...atBlock),
+  );
+  await add(
+    "rolloverVault.registry",
+    manifest.contracts.registry.address,
+    rolloverVault.registry(...atBlock),
+  );
+  await add("rolloverVault.allocator", manifest.roles.owner, rolloverVault.allocator(...atBlock));
   await add("ledger.treasury", manifest.roles.treasury, ledger.treasury(...atBlock));
   await add("ledger.feeBps", asBigInt(parameters.feeBps), ledger.feeBps(...atBlock));
   await add("ledger.earliestCloseTimestamp", asBigInt(parameters.earliestCloseTimestamp), ledger.earliestCloseTimestamp(...atBlock));
@@ -2046,6 +3224,87 @@ export async function collectFinalizedReconciliation({
         );
       }
       return { anchor, scan, replay, snapshot, checks };
+    } catch (error) {
+      if (!(error instanceof ReorgDetectedError) || attempt + 1 === policy.maxScanRestarts) {
+        throw error;
+      }
+      onReorg(error, attempt + 1);
+    }
+  }
+  throw new ReorgDetectedError(`finality anchor ${toBlock} did not stabilize`);
+}
+
+export async function collectMultiBoardFinalizedReconciliation({
+  provider,
+  contractsByProblem,
+  artifacts,
+  manifest,
+  fromBlock,
+  toBlock,
+  policy,
+  onReorg = () => {},
+}) {
+  if (!isMultiBoardManifest(manifest)) {
+    throw new Error("collectMultiBoardFinalizedReconciliation requires a v2 deployment manifest");
+  }
+  for (let attempt = 0; attempt < policy.maxScanRestarts; attempt += 1) {
+    const anchor = await retryRead(
+      () => provider.getBlock(toBlock),
+      policy,
+      `getBlock(${toBlock}) finality anchor`,
+    );
+    if (!anchor?.hash) throw new Error(`cannot read finality anchor block ${toBlock}`);
+    try {
+      await verifyRuntimeIdentity(provider, manifest, artifacts, toBlock);
+      const sharedContracts = contractsByProblem[0]?.contracts;
+      if (!sharedContracts?.registry || !sharedContracts?.rolloverVault) {
+        throw new Error("multi-board reconciliation is missing shared registry/vault contracts");
+      }
+      const sharedScan = await scanEventCatalog(
+        { registry: sharedContracts.registry, rolloverVault: sharedContracts.rolloverVault },
+        fromBlock,
+        toBlock,
+        policy,
+        { sources: ["registry", "rolloverVault"] },
+      );
+      const boards = [];
+      // Run board evidence serially. Each board has its own submission state,
+      // while the shared registry stream is replayed against that board's view.
+      for (const entry of contractsByProblem) {
+        const boardScan = await scanEventCatalog(
+          entry.contracts,
+          fromBlock,
+          toBlock,
+          policy,
+          { sources: BOARD_CONTRACT_KEYS },
+        );
+        const scan = {
+          coverage: [...sharedScan.coverage, ...boardScan.coverage],
+          events: [...sharedScan.events, ...boardScan.events].sort(compareEventOrder),
+        };
+        await hydrateEventTimestamps(scan.events, provider, policy);
+        const replay = replayProtocolEvents(scan.events, boardReplayConfig(manifest, entry.problem), {
+          coverage: scan.coverage,
+        });
+        const snapshot = await collectOnchainSnapshot(entry.contracts, replay, toBlock);
+        const checks = [
+          ...compareReplayToSnapshot(replay, snapshot, boardReplayConfig(manifest, entry.problem)),
+          ...(await collectRuntimeConfigChecks(entry.contracts, boardManifestView(manifest, entry.problem), toBlock)),
+        ];
+        boards.push({ ...entry, scan, replay, snapshot, checks });
+      }
+
+      const afterAllReads = await retryRead(
+        () => provider.getBlock(toBlock),
+        policy,
+        `recheck finality anchor ${toBlock}`,
+      );
+      if (!afterAllReads?.hash || afterAllReads.hash.toLowerCase() !== anchor.hash.toLowerCase()) {
+        throw new ReorgDetectedError(
+          `finality anchor ${toBlock} changed during multi-board scan/snapshot/config reads`,
+        );
+      }
+      return { anchor, boards };
     } catch (error) {
       if (!(error instanceof ReorgDetectedError) || attempt + 1 === policy.maxScanRestarts) {
         throw error;
@@ -2149,13 +3408,135 @@ export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, t
   });
 }
 
+export function buildMultiBoardCheckpoint({
+  binding,
+  finalityPolicy,
+  fromBlock,
+  toBlock,
+  toBlockHash,
+  boards,
+}) {
+  if (!Array.isArray(boards) || boards.length === 0) {
+    throw new Error("multi-board checkpoint requires at least one board");
+  }
+  const boardReports = boards.map((board) => {
+    if (board.openWitnessLaunchEvidence !== undefined) {
+      throw new Error("multi-board checkpoint rejects caller-supplied open-witness authority");
+    }
+    const report = buildCheckpoint({
+      binding,
+      finalityPolicy,
+      fromBlock,
+      toBlock,
+      toBlockHash,
+      events: board.scan.events,
+      replay: board.replay,
+      snapshot: board.snapshot,
+      checks: board.checks,
+    });
+    return {
+      problemId: String(board.problem.problemId),
+      problemSlug: board.problem.problemSlug,
+      events: report.events,
+      onchain: report.onchain,
+      state: report.state,
+      reconstruction: report.reconstruction,
+    };
+  });
+  const checks = boards.flatMap((board) =>
+    board.checks.map((check) => ({
+      ...check,
+      name: `board/${board.problem.problemId}.${check.name}`,
+    })),
+  );
+  const complete = boardReports.every((report) => report.reconstruction.complete);
+  const ok = complete && boardReports.every((report) => report.reconstruction.ok);
+  const checkpoint = canonicalize({
+    schema: "p42-prizes/indexer-checkpoint/v2",
+    manifestBinding: binding,
+    finalityPolicy,
+    range: { fromBlock, toBlock, toBlockHash },
+    boards: boardReports,
+    reconstruction: { ok, complete, checks },
+  });
+  return refreshMultiBoardCheckpointReconstruction(checkpoint);
+}
+
+function prefixedMultiBoardChecks(boards) {
+  return boards.flatMap((board) =>
+    board.reconstruction.checks.map((check) => ({
+      ...check,
+      name: `board/${board.problemId}.${check.name}`,
+    })),
+  );
+}
+
+function refreshMultiBoardCheckpointReconstruction(checkpoint) {
+  for (const board of checkpoint.boards) {
+    board.reconstruction.ok =
+      board.reconstruction.complete && board.reconstruction.checks.every((check) => check.ok);
+  }
+  checkpoint.reconstruction.complete = checkpoint.boards.every(
+    (board) => board.reconstruction.complete,
+  );
+  checkpoint.reconstruction.ok =
+    checkpoint.reconstruction.complete && checkpoint.boards.every((board) => board.reconstruction.ok);
+  checkpoint.reconstruction.checks = prefixedMultiBoardChecks(checkpoint.boards);
+  return validateMultiBoardCheckpoint(canonicalize(checkpoint));
+}
+
+export function validateMultiBoardCheckpoint(checkpoint) {
+  validateSchemaValue(checkpoint, checkpointSchema(), checkpointSchema(), "checkpoint");
+  if (checkpoint.range.toBlock < checkpoint.range.fromBlock) {
+    throw new Error("checkpoint.range.toBlock must not precede checkpoint.range.fromBlock");
+  }
+  const bindingIds = Object.keys(checkpoint.manifestBinding.boards);
+  if (bindingIds.some((id) => !/^[1-9][0-9]*$/.test(id))) {
+    throw new Error("checkpoint.manifestBinding.boards keys must be canonical positive registry ids");
+  }
+  const orderedBindingIds = [...bindingIds].sort((left, right) => {
+    const leftId = BigInt(left);
+    const rightId = BigInt(right);
+    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+  });
+  if (orderedBindingIds.length > 10 || orderedBindingIds.some((id, index) => id !== String(index + 1))) {
+    throw new Error("checkpoint.manifestBinding.boards must contain contiguous registry ids 1 through 10");
+  }
+  const boardIds = checkpoint.boards.map((board) => board.problemId);
+  if (new Set(boardIds).size !== boardIds.length) {
+    throw new Error("checkpoint.boards contains duplicate problem ids");
+  }
+  if (stableStringify(boardIds) !== stableStringify(orderedBindingIds)) {
+    throw new Error("checkpoint.boards must be ordered exactly as manifestBinding.boards registry ids");
+  }
+  for (const board of checkpoint.boards) {
+    const expectedBoardOk =
+      board.reconstruction.complete && board.reconstruction.checks.every((check) => check.ok);
+    if (board.reconstruction.ok !== expectedBoardOk) {
+      throw new Error(`checkpoint board ${board.problemId} reconstruction.ok must equal its evidence conjunction`);
+    }
+  }
+  const expectedComplete = checkpoint.boards.every((board) => board.reconstruction.complete);
+  if (checkpoint.reconstruction.complete !== expectedComplete) {
+    throw new Error("checkpoint.reconstruction.complete must equal the conjunction of board completion states");
+  }
+  const expectedChecks = prefixedMultiBoardChecks(checkpoint.boards);
+  if (stableStringify(checkpoint.reconstruction.checks) !== stableStringify(expectedChecks)) {
+    throw new Error("checkpoint.reconstruction.checks must contain every board check in deterministic order");
+  }
+  const expectedOk = expectedComplete && checkpoint.boards.every((board) => board.reconstruction.ok);
+  if (checkpoint.reconstruction.ok !== expectedOk) {
+    throw new Error("checkpoint.reconstruction.ok must equal the conjunction of board evidence states");
+  }
+  return checkpoint;
+}
+
 function cidToFilename(cid) {
   return cid.replace(/[^a-zA-Z0-9._-]/g, "_") + ".bin";
 }
 
 export async function archiveCalldata(dir, reveals, submissions, provider) {
   const outDir = resolve(dir);
-  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true });
   const entries = [];
   const mismatches = [];
   let archived = 0;
@@ -2212,7 +3593,7 @@ export async function archiveCalldata(dir, reveals, submissions, provider) {
       mismatches.push({ submissionId, cid, anchor, computed, derivedCid, reason: "calldata does not match event/anchor" });
       continue;
     }
-    writeFileSync(filePath, bytes);
+    writeFileAtomicSync(filePath, bytes);
     archived += 1;
     entries.push({ submissionId, cid, anchor, byteLength: bytes.length, revealTxHash: event.transactionHash, store: "on-chain-calldata" });
   }
@@ -2223,8 +3604,172 @@ export async function archiveCalldata(dir, reveals, submissions, provider) {
     entries,
     mismatches,
   });
-  writeFileSync(`${outDir}/manifest.json`, `${stableStringify(archiveManifest, 2)}\n`);
+  writeFileAtomicSync(`${outDir}/manifest.json`, `${stableStringify(archiveManifest, 2)}\n`);
   return { ok: mismatches.length === 0, archived, skipped, offChain, mismatches };
+}
+
+export async function archiveFinalizedResolverTranscripts(dir, events, {
+  endpoints,
+  fetchClient,
+} = {}) {
+  const outDir = resolve(dir);
+  const stageDir = `${outDir}.stage-${randomUUID()}`;
+  const backupDir = `${outDir}.backup-${randomUUID()}`;
+  mkdirSync(stageDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  const posted = [...events].filter(
+    (event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted",
+  ).sort(compareEventOrder);
+  const entries = [];
+  const failures = [];
+  for (const event of posted) {
+    const submissionId = getArg(event, "submissionId").toString();
+    const uri = getArg(event, "transcriptURI");
+    const onchainHash = String(getArg(event, "transcriptHash")).toLowerCase();
+    const eventId = `${event.transactionHash}:${event.index ?? event.logIndex}`;
+    try {
+      const parsed = parseTranscriptUri(uri);
+      if (!fetchClient || !Array.isArray(endpoints) || endpoints.length < 2) {
+        throw new Error("independent transcript retrieval clients/endpoints are required");
+      }
+      const firstBytes = await fetchTranscriptClientBytes(fetchClient, {
+        endpoint: endpoints[0], uri: parsed.uri,
+      });
+      const transcript = parseStrictJsonBytes(firstBytes, {
+        maxBytes: 16 * 1024 * 1024,
+        maxDepth: 64,
+        canonicalBytes: true,
+        trailingNewline: "require",
+      });
+      const artifact = canonicalTranscriptArtifact(transcript);
+      if (!firstBytes.equals(artifact.bytes)) throw new Error("retrieved transcript is not exact canonical JSON with one newline");
+      if (`0x${artifact.transcript_hash.slice(7)}` !== onchainHash) {
+        throw new Error("embedded transcript self-hash does not match the on-chain transcript hash");
+      }
+      const publication = await verifyPublicationReceipt({
+        artifact,
+        receipt: { uri: parsed.uri, artifact_sha256: artifact.artifact_sha256, length: artifact.length },
+        endpoints,
+        fetchClient,
+      });
+      const stem = `${String(event.transactionHash).replace(/^0x/, "")}-${event.index ?? event.logIndex}`;
+      const artifactPath = join(stageDir, `${stem}.json`);
+      const metadataPath = join(stageDir, `${stem}.metadata.json`);
+      writeFileAtomicSync(artifactPath, artifact.bytes);
+      const metadata = canonicalize({
+        schema_version: "p42-indexed-resolver-transcript/v1",
+        event: eventDigestInput(event),
+        event_id: eventId,
+        submission_id: submissionId,
+        uri: parsed.uri,
+        endpoints: publication.endpoints,
+        length: artifact.length,
+        artifact_sha256: artifact.artifact_sha256,
+        transcript_hash: artifact.transcript_hash,
+        onchain_transcript_hash: onchainHash,
+        artifact: basename(artifactPath),
+      });
+      writeFileAtomicSync(metadataPath, `${stableStringify(metadata)}\n`);
+      entries.push(metadata);
+    } catch (error) {
+      failures.push({ eventId, submissionId, uri, onchainHash, reason: error.message });
+    }
+  }
+  const manifest = canonicalize({
+    schema_version: "p42-resolver-transcript-archive/v1",
+    summary: { total: posted.length, archived: entries.length, failures: failures.length },
+    entries,
+    failures,
+  });
+  writeFileAtomicSync(join(stageDir, "manifest.json"), `${stableStringify(manifest, 2)}\n`);
+  let backedUp = false;
+  try {
+    mkdirSync(dirname(outDir), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+    if (existsSync(outDir)) {
+      renameSync(outDir, backupDir);
+      backedUp = true;
+    }
+    renameSync(stageDir, outDir);
+    syncDirectoryAfterRename(dirname(outDir), DEFAULT_ATOMIC_FILE_OPERATIONS);
+    if (backedUp) rmSync(backupDir, { recursive: true, force: true });
+  } catch (error) {
+    rmSync(stageDir, { recursive: true, force: true });
+    if (backedUp && !existsSync(outDir)) renameSync(backupDir, outDir);
+    throw error;
+  }
+  return { ok: failures.length === 0, archived: entries.length, failures, entries };
+}
+
+export function failMissingMultiboardTranscriptArchives(checkpoint, boards) {
+  for (const board of boards) {
+    const count = board.scan.events.filter(
+      (event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted",
+    ).length;
+    if (!count) continue;
+    const report = checkpoint.boards.find((entry) => entry.problemId === String(board.problem.problemId));
+    if (!report) throw new Error(`checkpoint omitted board ${board.problem.problemId}`);
+    report.reconstruction.checks.push({
+      name: "archive.resolverTranscripts",
+      ok: false,
+      expected: { missingOrUnverified: 0 },
+      actual: { missingOrUnverified: count },
+    });
+  }
+  return refreshMultiBoardCheckpointReconstruction(checkpoint);
+}
+
+export async function archiveMultiBoardGeneration(dir, boards, provider, {
+  endpoints,
+  fetchClient,
+  archiveCalldataImpl = archiveCalldata,
+  archiveTranscriptsImpl = archiveFinalizedResolverTranscripts,
+} = {}) {
+  const outDir = resolve(dir);
+  const stageDir = `${outDir}.stage-${randomUUID()}`;
+  const backupDir = `${outDir}.backup-${randomUUID()}`;
+  const failedDir = `${outDir}.failed-${randomUUID()}`;
+  mkdirSync(stageDir, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+  const results = [];
+  try {
+    for (const board of boards) {
+      const boardDir = resolve(stageDir, `board-${board.problem.problemId}`);
+      const reveals = board.scan.events.filter(
+        (event) => event.source === "submissions" && event.eventName === "Revealed",
+      );
+      const calldata = await archiveCalldataImpl(boardDir, reveals, board.contracts.submissions, provider);
+      const transcripts = await archiveTranscriptsImpl(
+        resolve(boardDir, "resolver-transcripts"), board.scan.events, { endpoints, fetchClient },
+      );
+      results.push({ problemId: String(board.problem.problemId), calldata, transcripts });
+    }
+    if (results.some((result) => !result.calldata.ok || !result.transcripts.ok)) {
+      rmSync(stageDir, { recursive: true, force: true });
+      return { ok: false, committed: false, results };
+    }
+    let backedUp = false;
+    try {
+      mkdirSync(dirname(outDir), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+      if (existsSync(outDir)) {
+        renameSync(outDir, backupDir);
+        backedUp = true;
+      }
+      renameSync(stageDir, outDir);
+      syncDirectoryAfterRename(dirname(outDir), DEFAULT_ATOMIC_FILE_OPERATIONS);
+      if (backedUp) rmSync(backupDir, { recursive: true, force: true });
+    } catch (error) {
+      if (existsSync(stageDir)) rmSync(stageDir, { recursive: true, force: true });
+      if (backedUp && existsSync(backupDir)) {
+        if (existsSync(outDir)) renameSync(outDir, failedDir);
+        renameSync(backupDir, outDir);
+        syncDirectoryAfterRename(dirname(outDir), DEFAULT_ATOMIC_FILE_OPERATIONS);
+        rmSync(failedDir, { recursive: true, force: true });
+      }
+      throw error;
+    }
+    return { ok: true, committed: true, results };
+  } catch (error) {
+    rmSync(stageDir, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function parseArg(argv, name, defaultValue = undefined) {
@@ -2232,29 +3777,38 @@ function parseArg(argv, name, defaultValue = undefined) {
   return index === -1 ? defaultValue : argv[index + 1];
 }
 
-function loadPriorCheckpoint(path, binding) {
+function loadPriorCheckpoint(path, binding, schema) {
   if (!existsSync(path)) return null;
-  const checkpoint = JSON.parse(readFileSync(path, "utf8"));
-  if (checkpoint.schema !== "p42-prizes/indexer-checkpoint/v1") {
+  const checkpoint = readStrictJsonFileSync(path, CHECKPOINT_JSON_LIMITS);
+  if (checkpoint.schema !== schema) {
     throw new Error(`Refusing to overwrite non-checkpoint file ${path}`);
   }
+  if (schema === "p42-prizes/indexer-checkpoint/v2") validateMultiBoardCheckpoint(checkpoint);
   if (stableStringify(checkpoint.manifestBinding) !== stableStringify(binding)) {
     throw new Error(`Existing checkpoint ${path} belongs to a different deployment binding`);
   }
   return checkpoint;
 }
 
-export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = null }) {
+export async function runIndexer({
+  manifestPath,
+  rpcUrl,
+  outPath,
+  archivePath = null,
+  transcriptEndpoints = [],
+  transcriptFetchClient = null,
+}) {
   if (!manifestPath) throw new Error("required: --manifest <path>");
   if (!outPath) throw new Error("required: --out <checkpoint.json>");
   const resolvedManifest = resolve(manifestPath);
   const resolvedOut = resolve(outPath);
-  const manifest = JSON.parse(readFileSync(resolvedManifest, "utf8"));
+  const manifest = readStrictJsonFileSync(resolvedManifest, MANIFEST_JSON_LIMITS);
   const binding = validateManifestEvidence(manifest);
+  const multiBoard = isMultiBoardManifest(manifest);
   const policy = manifest.indexer.finalityPolicy;
   const provider = new ethers.JsonRpcProvider(rpcUrl, manifest.network.chainId, { staticNetwork: true });
   const artifacts = loadContractArtifacts();
-  const contracts = instantiateContracts(provider, manifest, artifacts);
+  const contracts = multiBoard ? null : instantiateContracts(provider, manifest, artifacts);
 
   try {
     const head = await provider.getBlockNumber();
@@ -2263,12 +3817,96 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
     if (toBlock < fromBlock) {
       throw new Error(`finalized block ${toBlock} is before indexer start block ${fromBlock}`);
     }
-    const prior = loadPriorCheckpoint(resolvedOut, binding);
+    const prior = loadPriorCheckpoint(
+      resolvedOut,
+      binding,
+      multiBoard ? "p42-prizes/indexer-checkpoint/v2" : "p42-prizes/indexer-checkpoint/v1",
+    );
     if (prior) {
       const priorBlock = await provider.getBlock(prior.range.toBlock);
       if (!priorBlock || priorBlock.hash.toLowerCase() !== prior.range.toBlockHash.toLowerCase()) {
         console.warn(`prior checkpoint block ${prior.range.toBlock} was reorged; replaying from ${fromBlock}`);
       }
+    }
+
+    if (multiBoard) {
+      const contractsByProblem = manifest.problems.map((problem) => ({
+        problem,
+        contracts: instantiateBoardContracts(provider, manifest, problem, artifacts),
+      }));
+      const { anchor, boards } = await collectMultiBoardFinalizedReconciliation({
+        provider,
+        contractsByProblem,
+        artifacts,
+        manifest,
+        fromBlock,
+        toBlock,
+        policy,
+        onReorg: (error) =>
+          console.warn(`reorg detected (${error.message}); restarting from ${fromBlock}`),
+      });
+      const checkpoint = buildMultiBoardCheckpoint({
+        binding,
+        finalityPolicy: policy,
+        fromBlock,
+        toBlock,
+        toBlockHash: anchor.hash,
+        boards,
+      });
+
+      if (archivePath) {
+        const generation = await archiveMultiBoardGeneration(archivePath, boards, provider, {
+          endpoints: transcriptEndpoints,
+          fetchClient: transcriptFetchClient,
+        });
+        for (const result of generation.results) {
+          const report = checkpoint.boards.find((entry) => entry.problemId === result.problemId);
+          if (!report) throw new Error(`checkpoint omitted board ${result.problemId}`);
+          if (!result.calldata.ok) {
+            report.reconstruction.checks.push({
+              name: "archive.calldata",
+              ok: false,
+              expected: { mismatches: 0 },
+              actual: { mismatches: result.calldata.mismatches.length },
+            });
+          }
+          if (!result.transcripts.ok) {
+            report.reconstruction.checks.push({
+              name: "archive.resolverTranscripts",
+              ok: false,
+              expected: { missingOrUnverified: 0 },
+              actual: { missingOrUnverified: result.transcripts.failures.length || 1 },
+            });
+          }
+        }
+      }
+      if (!archivePath) {
+        failMissingMultiboardTranscriptArchives(checkpoint, boards);
+      }
+      refreshMultiBoardCheckpointReconstruction(checkpoint);
+
+      writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint)}\n`);
+      console.log(`indexed ${boards.length} boards through finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
+      for (const board of checkpoint.boards) {
+        console.log(
+          `  board ${board.problemId} (${board.problemSlug}) ` +
+          `committed=${board.events.counts["submissions.Committed"]} ` +
+          `revealed=${board.events.counts["submissions.Revealed"]} ` +
+          `finalized=${board.events.counts["submissions.Finalized"]} ` +
+          `submissionCount=${board.onchain.submissionCount}`,
+        );
+      }
+      console.log(
+        `reconstruction: ${checkpoint.reconstruction.ok ? "VERIFIED" : "FAILED"} ` +
+        `(${checkpoint.reconstruction.checks.filter((entry) => entry.ok).length}/${checkpoint.reconstruction.checks.length} checks)`,
+      );
+      console.log(`checkpoint: ${resolvedOut}`);
+      if (!checkpoint.reconstruction.ok) {
+        for (const failed of checkpoint.reconstruction.checks.filter((entry) => !entry.ok)) {
+          console.error(`  FAIL ${failed.name}: expected=${stableStringify(failed.expected)} actual=${stableStringify(failed.actual)}`);
+        }
+      }
+      return checkpoint;
     }
 
     const { anchor, scan, replay, snapshot, checks } = await collectFinalizedReconciliation({
@@ -2302,10 +3940,26 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
       const archived = await archiveCalldata(archivePath, reveals, contracts.submissions, provider);
       archiveOk = archived.ok;
     }
-    if (!archiveOk) checkpoint.reconstruction.ok = false;
+    const postedTranscriptCount = scan.events.filter(
+      (event) => event.source === "challenges" && event.eventName === "ResolverTranscriptPosted",
+    ).length;
+    const transcriptArchive = archivePath
+      ? await archiveFinalizedResolverTranscripts(resolve(archivePath, "resolver-transcripts"), scan.events, {
+        endpoints: transcriptEndpoints,
+        fetchClient: transcriptFetchClient,
+      })
+      : { ok: postedTranscriptCount === 0, failures: [] };
+    if (!transcriptArchive.ok) {
+      checkpoint.reconstruction.checks.push({
+        name: "archive.resolverTranscripts",
+        ok: false,
+        expected: { missingOrUnverified: 0 },
+        actual: { missingOrUnverified: transcriptArchive.failures.length || postedTranscriptCount },
+      });
+    }
+    if (!archiveOk || !transcriptArchive.ok) checkpoint.reconstruction.ok = false;
 
-    mkdirSync(dirname(resolvedOut), { recursive: true });
-    writeFileSync(resolvedOut, `${stableStringify(checkpoint, 2)}\n`);
+    writeFileAtomicSync(resolvedOut, `${stableStringify(checkpoint)}\n`);
     console.log(`indexed finalized blocks ${fromBlock}..${toBlock} (${anchor.hash})`);
     console.log(
       `lifecycle committed=${checkpoint.events.counts["submissions.Committed"]} ` +
@@ -2330,12 +3984,24 @@ export async function runIndexer({ manifestPath, rpcUrl, outPath, archivePath = 
   }
 }
 
-async function cli() {
-  const manifestPath = parseArg(process.argv, "manifest");
-  const outPath = parseArg(process.argv, "out");
-  const rpcUrl = parseArg(process.argv, "rpc", "https://sepolia.base.org");
-  const archivePath = parseArg(process.argv, "archive", null);
-  const checkpoint = await runIndexer({ manifestPath, rpcUrl, outPath, archivePath });
+export function configureIndexerTranscripts(argv = process.argv, env = process.env, fetchImpl = fetch) {
+  return {
+    endpoints: configuredTranscriptEndpoints(argv, env),
+    fetchClient: httpTranscriptFetchClient(fetchImpl),
+  };
+}
+
+export async function cli(argv = process.argv, env = process.env) {
+  const manifestPath = parseArg(argv, "manifest");
+  const outPath = parseArg(argv, "out");
+  const rpcUrl = parseArg(argv, "rpc", "https://sepolia.base.org");
+  const archivePath = parseArg(argv, "archive", null);
+  const transcriptConfig = configureIndexerTranscripts(argv, env);
+  const checkpoint = await runIndexer({
+    manifestPath, rpcUrl, outPath, archivePath,
+    transcriptEndpoints: transcriptConfig.endpoints,
+    transcriptFetchClient: transcriptConfig.fetchClient,
+  });
   if (!checkpoint.reconstruction.ok) process.exitCode = 1;
 }
 

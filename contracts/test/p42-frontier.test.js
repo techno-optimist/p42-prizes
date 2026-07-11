@@ -20,12 +20,16 @@ const SEED = 1000n * SCALE; // seed frontier: true best-known score = 1000
 const DA_HASH = ethers.keccak256(ethers.toUtf8Bytes("frontier DA receipt"));
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("frontier permanence receipt"));
 const FUNDING_CAP = ethers.parseEther("100");
-const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
 const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
 
 async function nextEarliestClose() {
   const latest = await ethers.provider.getBlock("latest");
   return BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
+}
+
+async function nextCloseBy() {
+  const latest = await ethers.provider.getBlock("latest");
+  return BigInt(latest.timestamp) + 181n * 24n * 60n * 60n;
 }
 
 async function expectCustomError(action, contract, errorName) {
@@ -67,7 +71,7 @@ async function increaseTime(seconds) {
 }
 
 async function advanceToEffectiveClose(ledger) {
-  const target = await ledger.effectiveEarliestCloseTimestamp();
+  const target = await ledger.closeByTimestamp();
   const latest = await ethers.provider.getBlock("latest");
   if (target > BigInt(latest.timestamp)) await increaseTime(target - BigInt(latest.timestamp));
 }
@@ -83,6 +87,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     // credit, so the fixture arms funding up front. Open-phase suites pass
     // arm: false to exercise the free witness phase.
     arm = true,
+    advanceCompetition = true,
   } = {}) {
     const [owner, treasury, resolver, alice, bob, carol] = await ethers.getSigners();
     const Pool = await ethers.getContractFactory("P42BountyPool");
@@ -92,7 +97,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     const Ledger = await ethers.getContractFactory("P42PayoutLedger");
     const ledger = await Ledger.deploy(
       await pool.getAddress(), owner.address, treasury.address, feeBps,
-      await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+      await nextEarliestClose(), await nextCloseBy()
     );
     await ledger.waitForDeployment();
     await pool.connect(owner).setLedger(await ledger.getAddress());
@@ -135,13 +140,18 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     });
     await fundingRegistry.freeze(1);
     await pool.connect(owner).setRegistry(await fundingRegistry.getAddress(), 1);
+    const Vault = await ethers.getContractFactory("P42RolloverVault");
+    const vault = await Vault.deploy(await fundingRegistry.getAddress(), owner.address);
+    await vault.waitForDeployment();
+    await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     if (arm) {
+      await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
       await submissions.connect(owner).armFunding();
       await pool.connect(owner).setAcceptingFunds(true);
     }
-    await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
+    if (advanceCompetition) await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
-    return { owner, treasury, resolver, alice, bob, carol, pool, ledger, submissions, minBond };
+    return { owner, treasury, resolver, alice, bob, carol, pool, ledger, submissions, vault, minBond };
   }
 
   // Commit + reveal an ABSOLUTE claimed score for `solver`; returns the id.
@@ -742,7 +752,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     const Ledger = await ethers.getContractFactory("P42PayoutLedger");
     const ledger = await Ledger.deploy(
       await pool.getAddress(), owner.address, treasury.address, 0,
-      await nextEarliestClose(), CLOSE_BY_TIMESTAMP
+      await nextEarliestClose(), await nextCloseBy()
     );
     await ledger.waitForDeployment();
     await ledger.connect(owner).setCreditRecorder(recorder.address);
@@ -807,13 +817,24 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
   // ===========================================================================
 
   it("armFunding is owner-only, one-shot, and emits FundingArmed", async function () {
-    const fixture = await deployFixture({ arm: false });
+    const fixture = await deployFixture({ arm: false, advanceCompetition: false });
     const { owner, alice, submissions } = fixture;
     assert.equal(await submissions.fundingArmed(), false);
+    const deployedAt = await submissions.deployedAt();
+    const armNotBefore = await submissions.armNotBefore();
+    assert.equal(armNotBefore, deployedAt + CHALLENGE_WINDOW_SECONDS);
 
     await expectCustomError(submissions.connect(alice).armFunding(), submissions, "P42_NOT_OWNER");
     assert.equal(await submissions.fundingArmed(), false);
 
+    await expectCustomError(
+      submissions.connect(owner).armFunding(),
+      submissions,
+      "P42_OPEN_WITNESS_WINDOW_OPEN"
+    );
+    assert.equal(await submissions.fundingArmed(), false);
+
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     const tx = await submissions.connect(owner).armFunding();
     const receipt = await tx.wait();
     const armed = receipt.logs
@@ -866,6 +887,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     );
 
     // The single arm call opens the deposit path.
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(owner).armFunding();
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
@@ -1079,6 +1101,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     const attack = await commitReveal(fixture, alice, 600n * SCALE);
 
     // Funder arms; pool is funded.
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(owner).armFunding();
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.connect(owner).fund({ value: ethers.parseEther("1") });

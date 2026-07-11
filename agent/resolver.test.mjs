@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { ethers } from "ethers";
 
 import {
   canonicalJson,
+  buildSignedTransactionRecord,
   sha256Canonical,
   verifierImageHashForDigest,
   verifierSourceHashForDigest,
@@ -12,8 +16,11 @@ import {
   buildResolveCallPolicy,
   buildResolverTransportRequest,
   buildResolverVerdictHash,
+  configureResolverPublication,
   expandTranscriptUri,
   resolverEventHashFor,
+  assertResolverActionPaths,
+  assertResolverSignedRecord,
   validateTranscriptUriTemplate,
   verifyResolverTranscript,
 } from "./resolver.mjs";
@@ -229,16 +236,39 @@ test("resolver refuses unresolved/quarantined evidence and grants a solver win o
 });
 
 test("resolver transcript URIs require a durable ar:// or ipfs:// template", () => {
-  const template = "ar://p42-transcripts/{transcript_hash}.json";
+  const template = "ar://{transcript_hash}";
   assert.equal(validateTranscriptUriTemplate(template), template);
   assert.equal(
     expandTranscriptUri(template, SHA("1")),
-    `ar://p42-transcripts/${SHA("1")}.json`,
+    `ar://${SHA("1")}`,
   );
   assert.throws(() => validateTranscriptUriTemplate("file:///tmp/{transcript_hash}.json"), /ar:\/\/ or ipfs:\/\//);
   assert.throws(() => validateTranscriptUriTemplate("https://example/{transcript_hash}"), /ar:\/\/ or ipfs:\/\//);
   assert.throws(() => validateTranscriptUriTemplate("ar://missing-placeholder"), /exactly one/);
   assert.throws(() => validateTranscriptUriTemplate("ipfs://x/{transcript_hash}/{transcript_hash}"), /exactly one/);
+});
+
+test("resolver production configuration requires receipts and trusted retrieval endpoints", () => {
+  const endpoints = ["https://one.example", "https://two.test"];
+  const publisher = { publishTranscript: async () => ({}) };
+  const fetchClient = { fetchTranscript: async () => Buffer.alloc(0) };
+  assert.deepEqual(configureResolverPublication([], {}, { endpoints, publisher, fetchClient }), {
+    endpoints, publisher, fetchClient,
+  });
+  assert.throws(
+    () => configureResolverPublication(["--transcript-uri-template", "ar://{transcript_hash}"], {
+      P42_TRANSCRIPT_ENDPOINTS: endpoints.join(","),
+    }),
+    /URI templates cannot publish transcripts/,
+  );
+  const spool = mkdtempSync(join(tmpdir(), "p42-resolver-receipts-"));
+  const configured = configureResolverPublication(
+    ["--publication-receipts", spool],
+    { P42_TRANSCRIPT_ENDPOINTS: endpoints.join(",") },
+    { fetchClient },
+  );
+  assert.equal(typeof configured.publisher.publishTranscript, "function");
+  assert.deepEqual(configured.endpoints, endpoints);
 });
 
 test("resolver exact-call policy binds the full decision, transcript URI, and instance hashes", () => {
@@ -248,7 +278,7 @@ test("resolver exact-call policy binds the full decision, transcript URI, and in
   const transcriptHash = SHA("7");
   const candidateHash = SHA("8");
   const challengeInstanceHash = HASH("9");
-  const transcriptURI = expandTranscriptUri("ipfs://bafyresolver/{transcript_hash}", transcriptHash);
+  const transcriptURI = "ipfs://bafybeigdyrzt5sfp7udm7hu76uh7y26nf3pte3dr2l7w4qv3q2x4x5b5ha/transcript.json";
   const verdictHash = buildResolverVerdictHash({
     transcriptHash,
     candidateHash,
@@ -347,4 +377,87 @@ test("resolver event identities bind all dispute instance fields", () => {
 test("fixture transcript is canonical JSON for the same bytes its hashes bind", () => {
   const value = transcript();
   assert.equal(JSON.parse(canonicalJson(value)).transcript_hash, value.transcript_hash);
+});
+
+async function resolverRestartFixture() {
+  const actionsPath = mkdtempSync(join(tmpdir(), "p42-resolver-restart-"));
+  const wallet = ethers.Wallet.createRandom();
+  const challengeInterface = new ethers.Interface([
+    "function resolve(uint256,bytes32,bool,bytes32,string,bytes32) payable",
+  ]);
+  const transcriptHash = SHA("7");
+  const challengeInstanceHash = HASH("9");
+  const verdictHash = HASH("8");
+  const policy = buildResolveCallPolicy({
+    challengeInterface, challengeContract: ADDR.challenges, chainId: 31337,
+    problemId: expected.problem_id, submissionId: expected.submission_id,
+    revealInstanceHash: expected.reveal_instance_hash, challengeInstanceHash,
+    challengerWins: true, transcriptHash,
+    transcriptURI: `ar://${"a".repeat(43)}`, verdictHash,
+    candidateHash: SHA("8"), sourceEventHash: SHA("6"),
+    expiresAt: "2000000000", valueWei: 5n,
+  });
+  const eventHash = SHA("5");
+  const prefix = `${eventHash.slice(7)}-${policy.policy_hash.slice(7, 23)}`;
+  const policyPath = join(actionsPath, `${prefix}.policy.json`);
+  const signedPath = join(actionsPath, `${prefix}.signed-tx.json`);
+  writeFileSync(policyPath, `${canonicalJson(policy)}\n`);
+  const action = {
+    event_hash: eventHash, call_policy_hash: policy.policy_hash,
+    call_policy_path: policyPath, signed_tx_path: signedPath, call_policy: policy,
+    submission_id: expected.submission_id, challenge_instance_hash: challengeInstanceHash,
+    transcript_hash: transcriptHash,
+  };
+  const request = buildResolverTransportRequest({ callPolicy: policy, executionMode: "direct-eoa-local-test" });
+  const record = await buildSignedTransactionRecord({
+    wallet,
+    request: { ...request, nonce: 3, gasLimit: 500000n, gasPrice: 1n, chainId: 31337, type: 0 },
+    label: `resolve:${action.submission_id}:${action.challenge_instance_hash}:${action.transcript_hash}`,
+  });
+  const context = {
+    actionsPath, wallet, chainId: 31337,
+    executionMode: { mode: "direct-eoa-local-test" },
+    chal: { interface: challengeInterface, target: ADDR.challenges }, agentWallet: null,
+  };
+  return { action, context, record, policyPath, signedPath };
+}
+
+test("resolver restart uses the complete shared transaction journal validator", async () => {
+  const { action, context, record } = await resolverRestartFixture();
+  assert.equal(assertResolverSignedRecord(record, action, context).hash, record.hash);
+  for (const [field, value, pattern] of [
+    ["chain_id", 1, /chain mismatch/],
+    ["to", ADDR.submissions, /destination mismatch/],
+    ["data_hash", ethers.ZeroHash, /declared calldata hash mismatch/],
+    ["value", "6", /value mismatch/],
+    ["nonce", 4, /nonce mismatch/],
+    ["label", "resolve:conflict", /label binding mismatch/],
+    ["hash", ethers.ZeroHash, /raw transaction hash mismatch/],
+  ]) assert.throws(() => assertResolverSignedRecord({ ...record, [field]: value }, action, context), pattern, field);
+  assert.throws(
+    () => assertResolverSignedRecord(record, { ...action, transaction_hash: ethers.ZeroHash }, context),
+    /hash does not match persisted transaction hash/,
+  );
+  assert.throws(
+    () => assertResolverSignedRecord(record, { ...action, transaction_nonce: 4 }, context),
+    /nonce does not match persisted nonce/,
+  );
+});
+
+test("resolver restart paths are deterministic regular files under actions root", async () => {
+  const { action, context, record, signedPath } = await resolverRestartFixture();
+  writeFileSync(signedPath, `${canonicalJson(record)}\n`);
+  assert.equal(basename(assertResolverActionPaths(action, context, { signedMustExist: true }).signedPath), basename(signedPath));
+  assert.throws(
+    () => assertResolverActionPaths({ ...action, signed_tx_path: join(context.actionsPath, "..", "outside.json") }, context),
+    /deterministic action path/,
+  );
+  const outside = join(tmpdir(), `p42-resolver-outside-${Date.now()}.json`);
+  writeFileSync(outside, "{}\n");
+  rmSync(signedPath);
+  symlinkSync(outside, signedPath);
+  assert.throws(
+    () => assertResolverActionPaths(action, context, { signedMustExist: true }),
+    /non-symlink/,
+  );
 });

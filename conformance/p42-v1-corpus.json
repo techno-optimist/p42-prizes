@@ -1,0 +1,40 @@
+{
+  "format": "p42:v1",
+  "fixtures": [
+    "deployments/base-sepolia/adversarial/transcripts/valid-4.verdict.json",
+    "deployments/base-sepolia/adversarial/transcripts/lying-claim.verdict.json"
+  ],
+  "cases": [
+    {
+      "name": "fixture-valid-4-shape",
+      "report": {
+        "problem_id": "hadamard-mini", "verifier_version": "1.0.0", "verifier_image": "p42/hadamard@sha256:fixture",
+        "solution_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "valid": true,
+        "improvement": "+6/12", "score": "-0/-7", "reason": "", "recomputed_at_commit": "416ba344",
+        "details": {"rows": 4, "nested": {"z": true, "a": null}}
+      }
+    },
+    {
+      "name": "unicode-order-and-escaping",
+      "report": {
+        "problem_id": "astral-\ud83d\ude00", "verifier_version": "v1", "verifier_image": "repo@sha256:digest",
+        "solution_hash": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", "valid": false,
+        "improvement": "-10/-20", "score": "000/999", "reason": "line\n\u00e9", "recomputed_at_commit": "local-dev",
+        "details": {"\ue000": 2, "\ud83d\ude00": 1, "control": "\u0001"}
+      }
+    },
+    {
+      "name": "large-rational",
+      "report": {
+        "problem_id": "p", "verifier_version": "v", "verifier_image": "i",
+        "solution_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "valid": true,
+        "improvement": "123456789012345678901234567890/3", "score": "-5", "reason": "ok", "recomputed_at_commit": "c",
+        "details": {"safe_max": 9007199254740991, "array": [0, "x", false]}
+      }
+    }
+  ],
+  "reject_rationals": ["", " 1/2", "1/2\n", "1/0", "1/2/3", "\u0661/\u0662"],
+  "reject_reports": [
+    {"kind": "extra-field"}, {"kind": "missing-field"}, {"kind": "bad-hash"}, {"kind": "numeric-valid"}
+  ]
+}

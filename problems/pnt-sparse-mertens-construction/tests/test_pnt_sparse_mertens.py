@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
+
+import jsonschema
+import pytest
 
 
 PROBLEM = Path(__file__).resolve().parents[1]
@@ -24,6 +29,16 @@ def run_verify(solution: str | Path) -> tuple[int, dict]:
     )
     assert completed.stdout, completed.stderr
     return completed.returncode, json.loads(completed.stdout)
+
+
+def load_verifier_module():
+    name = "p42_pnt_sparse_verifier_test"
+    spec = importlib.util.spec_from_file_location(name, PROBLEM / "verifier" / "verify.py")
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_chronos_reach_96000_is_the_frontier_not_an_improvement() -> None:
@@ -72,3 +87,22 @@ def test_duplicate_key_fails(tmp_path: Path) -> None:
     assert code != 0
     assert report["valid"] is False
     assert report["reason"] == "DUPLICATE_KEY"
+
+
+def test_decimal_scores_above_one_are_schema_valid_and_parseable() -> None:
+    candidate = {
+        "reach": 96000,
+        "denominator": 1,
+        "printed_decimal": "1.0001000000000000",
+        "support": [{"k": 2, "value": 0}],
+    }
+    schema = json.loads((PROBLEM / "solution.schema.json").read_text(encoding="utf-8"))
+    jsonschema.validate(candidate, schema)
+
+    verifier = load_verifier_module()
+    parsed = verifier.parse_solution(json.dumps(candidate).encode("utf-8"))
+    assert parsed["printed_decimal"] == "1.0001000000000000"
+
+    candidate["printed_decimal"] = "01.0001000000000000"
+    with pytest.raises(verifier.VerifierFailure, match="canonical non-negative decimal"):
+        verifier.parse_solution(json.dumps(candidate).encode("utf-8"))

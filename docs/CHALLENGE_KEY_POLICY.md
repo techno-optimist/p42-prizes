@@ -76,6 +76,37 @@ v1 testnet defaults (consistent with the deploy defaults in
 
 Rules:
 
+- `agent/challenge-envelope.mjs` enforces these defaults in a restart-persistent,
+  lock-protected v2 ledger. Reservations remain in their original UTC-day
+  bucket across rollover; a later finalized receipt converts that same row to a
+  spend in the original bucket. State replacement is fsync + same-directory
+  rename. Missing reservations and legacy/incomplete state fail closed.
+- A reservation and `p42-challenge-action-intent/v1` record are written
+  atomically. Any exception before the signed raw-transaction journal is durable
+  releases the reservation. Once the signed journal path/hash is durably bound
+  to the intent, exceptions preserve the sole pending slot and restart resumes
+  that exact journal instead of signing a replacement.
+- Envelope locks record PID, random 256-bit token, hostname, process start, and
+  lock creation time. Age never authorizes stealing. A lock may be reclaimed
+  only when it belongs to this host and `kill(pid, 0)` proves `ESRCH`; foreign,
+  live, permission-denied, malformed, or incomplete ownership fails closed.
+  Release and reclaim verify the moved token before deletion, so a stale owner
+  cannot remove a successor lock.
+- Limits come only from the signed, hash-bound immutable
+  `p42-challenge-provisioning/v1` artifact. Runtime policy may tighten those
+  values, never raise them. There is no public cap-raising operator flag.
+- Before startup succeeds and before every admission, the operator reconstructs
+  all open challenges for its configured challenge manager from `Challenged`
+  logs and contract storage at one finalized block. Missing, stale, future,
+  behind-finality, duplicate, or incomplete evidence fails closed. Queue rows
+  and local envelope state are never open-cap authority.
+- The current wallet stores one exact policy per `(target, selector)`. Therefore
+  **at most one challenge exact policy may be provisioned/pending at a time**.
+  Three canonical challenges may remain open after their filing policies are
+  consumed, but this source does not claim three simultaneous unconsumed exact
+  `challenge(...)` policies. Raising that limit requires a wallet contract
+  redesign and audit; contracts are intentionally unchanged here.
+
 - If `requiredChallengeBond(disputedEntitlementWei)` > per-challenge max, the
   runner MUST NOT file; it raises an alert for human review instead.
 - Reaching any daily cap disables auto-file until the next UTC day; open
@@ -129,6 +160,34 @@ Rules:
   `max_active_running = 1`. A tripped memory/swap/host-capacity/concurrency guard
   (`runner-plan` -> `wait`) or any burst-drill regression MUST disable auto-file
   until the runner is healthy again — a degraded runner may emit bad candidates.
+  The operator requires a fresh (at most five minutes old, never future-dated)
+  `p42-runner-health/v1` artifact at `--runner-health`; missing, stale,
+  malformed, `wait`, OOM, restart, corruption, or any absent/non-green explicit
+  swap, capacity, or concurrency field disables auto-file fail-closed.
+
+## Bond Recovery
+
+`P42ChallengeManager.claimBond()` is an autonomous zero-value action, but it is
+still exact-policy gated. `agent/challenge-envelope.mjs` exports the operator
+`P42ChallengeManager` lifecycle: verify the session/chain/allowlist and exact
+calldata/scope policy, journal signed raw bytes before broadcast, resume the
+same transaction after restart, and credit `recovered_wei` only after the
+receipt is canonical and final. `recovered_wei` is decoded from exactly one
+positive `BondClaimed(claimant, amount)` event emitted by the configured
+challenge manager, never from the pre-sign claimable snapshot. A disappeared
+or noncanonical receipt becomes `reorged`, including after prior confirmation,
+and recovered accounting rolls back to zero. Because `claimBond()` has its own
+selector it does not overwrite the one pending `challenge(...)` policy.
+
+Provisioning/rehearsal evidence must validate against
+`schemas/challenge-provisioning.schema.json`: exact chain, nonzero challenge
+manager/agent-wallet/operator addresses, default caps, health/restart/deep-reorg
+rehearsals, rehearsal artifact hash, canonical artifact hash, and an EIP-191
+operator signature are all mandatory. Canonical open evidence validates against
+`schemas/canonical-open-evidence.schema.json`.
+The runtime compiles the published Draft 2020-12 provisioning schema with Ajv
+before applying hash, signature, and deployment-binding checks; unknown
+top-level/nested properties and type coercion are rejected.
 
 ## Transcript And Audit
 

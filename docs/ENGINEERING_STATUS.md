@@ -1,15 +1,18 @@
 # Engineering Production Status & Handoff
 
-**Snapshot date: 2026-07-08.** This is the one-page answer to "how production-ready
-is P42, and what's left?" It complements the granular gate docs
-([`GATE_LEDGER.md`](GATE_LEDGER.md) — the canonical gate register,
-[`AUTONOMY.md`](AUTONOMY.md), [`HUMAN_ACTIONS.md`](HUMAN_ACTIONS.md)).
+**Historical snapshot date: 2026-07-08.** This page preserves a handoff-era
+summary of source work and demo evidence. The current answer to "how
+production-ready is P42, and what's left?" is
+[`GATE_LEDGER.md`](GATE_LEDGER.md), the canonical gate register.
 
-> **Engineering-complete ≠ safe for real ETH.** Everything an agent can *build*
-> toward production is built and demonstrated on Base Sepolia. Real value still
-> requires the **irreducible human attestations** (external audit, counsel memo,
-> named entity + signers) and the **Phase-3 research** (trustless resolution,
-> genuine SOLVE). Do **not** accept real ETH until those are closed.
+> **Historical engineering evidence is not current release readiness.** The
+> current source is NO-GO for a canonical Base Sepolia settlement pilot and for
+> real ETH:
+> it has no fresh DA-refactored canonical deployment, current reconciliation,
+> immutable registry images, trusted all-board N-host matrix, deployed runner
+> rehearsal, strict open-witness launch-board evidence, external audit, or legal
+> approval. Treat every "done", "demonstrated", and "live" statement below as
+> historical evidence only unless the current ledger explicitly closes that gate.
 
 > **Post-snapshot updates.** The 2026-07-08 audit
 > ([`AUDIT_2026_07_08.md`](AUDIT_2026_07_08.md)) and its remediation landed
@@ -20,20 +23,20 @@ is P42, and what's left?" It complements the granular gate docs
 > attestation). The canonical BaseScan-verified deployment still predates the
 > DA/F1 refactors; the canonical redeploy remains pending.
 
-## ✅ Done (built, tested, and demonstrated live on Base Sepolia)
+## Historical demos and source scaffolds (not current gate closures)
 
 | Capability | Evidence |
 | --- | --- |
 | Contracts passed an internal agent audit (self-review by the same author identity — **not** an independent/external audit; that is a Gate 2 blocker) + 15 findings fixed | git history; `contracts/` (45 tests) |
 | Red-team attack tests (reentrancy, bond-leverage, front-run) + coverage matrix | `contracts/test/p42-redteam.test.js`, `RED_TEAM_COVERAGE.md` |
-| Deployed to Base Sepolia + reconciled + **BaseScan-verified** | `deployments/base-sepolia/p42-prizes.json` (`sourceVerification: verified`) |
-| Adversarial campaign — 6/6 attacks defended on live bytecode | `deployments/base-sepolia/adversarial/CAMPAIGN.md` |
+| Historical Base Sepolia deployment + reconciliation + **BaseScan verification** | `deployments/base-sepolia/p42-prizes.json` (`sourceVerification: verified`); old bytecode only, predating the DA/frontier refactors, so it is not a current Gate 1 deployment |
+| Historical adversarial campaign — 6/6 attacks defended on old live bytecode | `deployments/base-sepolia/adversarial/CAMPAIGN.md`; useful regression history, not current-release evidence |
 | **Autonomous solver** — point → self-verify → commit → reveal → finalize → claim | `agent/solver.mjs`; `deployments/base-sepolia/demo-run.json` |
 | **Autonomous operator** — watch → re-run → auto-challenge (M2 reward proven) | `agent/operator.mjs`; `op-demo-run.json` |
 | **On-chain-at-reveal DA** — raw solution bytes ride the reveal calldata; contract enforces `sha256(bytes)==commitDaHash` (7 problems ≤ 512 KB); 3 multi-MB certs use an off-chain content-addressed store gated by the same anchor. Arweave demoted to an **optional** mirror | `contracts/src/P42SubmissionManager.sol` (57 tests); **live battle-tested 7/7 on Base Sepolia** — happy path, integrity-gate reverts, adversarial operator via calldata, off-chain mode + tamper-refusal, calldata archive (9/9 reconstruction), 114 KB on-chain reveal: `deployments/base-sepolia/da-battletest.json`. **Caveat:** the 7/7 battle-test ran on **separate demo `SubmissionManager` instances** deployed for the test — **not** the canonical BaseScan-verified deployment above. The verified deployment (commit `3121a1a`) **predates the DA refactor**: its 7-arg constructor has no `onchainDa`/`maxSolutionBytes` and no `sha256(bytes)==commitDaHash` reveal gate. A redeploy + re-verify of the canonical contracts with the DA refactor is pending |
 | **Session-key wallet** — bounded blast radius (allowlist + caps + revoke) | `contracts/src/P42AgentWallet.sol`; `agent-wallet-demo-run.json` |
-| **Container sandbox** — no-net, cgroup mem/PID/CPU, read-only, non-root, fail-closed | `src/p42_prizes/runner_sandbox.py`; **live-validated: all 10 verifiers built + ran correctly in the hardened container** (`verifier-images.json`) |
-| **Self-contained verifier images** — all 10 problems build + run in the sandbox | `Dockerfile.verifier` (fixes the broken per-problem Dockerfiles: bundles `p42_prizes` + `make`, preserves layout); digests in `deployments/base-sepolia/verifier-images.json` |
+| **Container sandbox** — no-net, cgroup mem/PID/CPU, read-only, non-root, fail-closed | `src/p42_prizes/runner_sandbox.py`; historical `verifier-images.json` evidence predates the current canonical image and is not a current launch attestation |
+| **Self-contained verifier images** — canonical source bundles P42 runtime, schemas, problem verifier, and hash-locked dependencies | `Dockerfile.verifier`; every current image still needs a fresh trusted-host build/run, registry publication, and N-host admission evidence |
 | **Governance** — multisig + timelock + guardian (replaces single-EOA owner) | `contracts/src/P42MultisigTimelock.sol`; `governance-demo-run.json` |
 | **On-chain indexer** — reconstruct frontier + payout ledger from events (9/9 vs chain) | `agent/indexer.mjs`; `indexer-state-demo.json` |
 
@@ -41,8 +44,8 @@ is P42, and what's left?" It complements the granular gate docs
 
 | Item | Blocked on |
 | --- | --- |
-| Pinned verifier image **registry digests** (kill `sha256:local-dev`) | Images now build + run in the sandbox (digests recorded); a **registry** (GHCR/Docker Hub creds) to push + get a pullable RepoDigest, then update `problem.yaml` + `admit-ready` |
-| N-host determinism CI (x86 + ARM + 2 glibc identical-hash) | **Real cross-arch evidence demonstrated** — 6 diverse verifiers produce byte-identical canonical `VerdictReport`s on arm64 + amd64 (`deployments/base-sepolia/crossarch-determinism.json`). Remaining: 2 distinct glibc versions, **`workflow`-scope** to automate it in CI, and **attested/independent** hosts (vs the self-attested admission matrix the audit flagged) |
+| Pinned verifier image **registry digests** (kill `sha256:local-dev`) | Rebuild all current canonical images on trusted hosts, then use a **registry** (GHCR/Docker Hub creds) to push + get pullable RepoDigests, update `problem.yaml`, and collect fresh `admit-ready` matrices |
+| N-host determinism CI (x86 + ARM + 2 glibc identical-hash) | Historical partial cross-architecture evidence covers 6 diverse verifiers on arm64 + amd64 (`deployments/base-sepolia/crossarch-determinism.json`). It is not an N-host gate pass: current images, all ten boards, two glibc versions, durable matrix artifacts, and trusted/independent host attestation are still missing. |
 | Continuous operator + indexer as a running service | A **host** to run them (the code is ready; `operator.mjs` has a loop mode) |
 | Independent permanence mirror (funded Arweave) — **defense-in-depth, no longer a launch blocker** | An **Arweave-funded wallet**. DA now rides the chain at reveal (`sha256(bytes)==commitDaHash`), so a permanence receipt is no longer required to launch; `finalize`'s `permanenceHash` is optional. This is worth *adding back* at real-ETH scale (see **When to revisit** below) to move long-horizon availability out of the settlement trust domain |
 | Governance-owned production deploy | Deploy under the timelock + wire via governance (see `GOVERNANCE.md`) |
@@ -89,11 +92,12 @@ funded.
 
 ## Bottom line
 
-The plumbing is done: a live, internally agent-audited (no independent/external
-audit yet — Gate 2), adversarially-tested, publicly-verified,
-**both-sides-autonomous** protocol with real DA, bounded-blast-radius key safety,
-multisig+timelock governance, and a chain-reconstructing indexer. The path to a
-real-ETH pilot is no longer engineering — it is the human/attestation column above
-(Gate 2) plus the research walls (Gate 3). The human boundary is now as thin as it
-can be: fund pools, author problems, run the audit + legal + entity, hold the
-governance keys, and be the dispute-of-last-resort.
+The historical demos show useful source scaffolding: exact verifiers, contract
+tests, bounded session-key logic, a queue design, and agent/indexer prototypes.
+They do not establish a current canonical deployment or a fundable board. The
+remaining path includes both engineering and external gates: rebuild and publish
+current images, collect trusted all-board determinism evidence, deploy and
+reconcile the current contracts, rehearse the runner and resolver on that
+deployment, establish strict open witnesses, then obtain audit, counsel,
+governance, incident, and funding sign-offs. No value-moving action is justified
+until the current `GATE_LEDGER.md` records the applicable gate as closed.

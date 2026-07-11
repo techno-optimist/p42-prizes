@@ -36,6 +36,12 @@ Logarithms are enclosed with `mpmath.iv` at two precisions. The printed score
 is accepted only if it lies below the high-precision interval lower endpoint
 and the next decimal unit is not also certified.
 
+`printed_decimal` is a canonical non-negative decimal: an integer part of
+`0` or a nonzero digit followed by decimal digits, then exactly 16 fractional
+digits. Scores at or above `1` are representable; the finite constraint itself
+uses `10001/10000`, so restricting accepted certificates to `0.x` would
+artificially truncate possible progress.
+
 ## Solution Format
 
 Solutions are canonical JSON:

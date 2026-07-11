@@ -3,6 +3,7 @@
 // Docker/cgroup verifier -> canonical challenge candidate -> bounded tx.
 
 import { ethers } from "ethers";
+import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
   existsSync,
@@ -29,15 +30,36 @@ import {
   queryChunked,
   recoverRevealCalldata,
   resolveOperatorFinality,
-  runRuntimeBridge,
+  runtimePythonExecutable,
   sha256Canonical,
   validateRegistryBinding,
   validateOperatorCursor,
   validateOperatorExecutionMode,
 } from "./lib.mjs";
-import { validateManifestEvidence } from "./indexer.mjs";
+import {
+  manifestProblemContracts,
+  manifestProblemForRegistryId,
+  validateManifestEvidence,
+} from "./indexer.mjs";
 import { getBlob } from "./da-local.mjs";
 import { fetchFromArweave, findTxidByCid } from "./da-arweave.mjs";
+import {
+  assertApprovedJournalPath,
+  assertSignedTransactionRecord,
+} from "./signed-transaction.mjs";
+import {
+  P42ChallengeManager as ChallengeBondOperator,
+  finalizeChallengeSpend,
+  limitsFromProvisioning,
+  releaseChallengeReservation,
+  reserveChallengeSpend,
+  runChallengeActionIntent,
+  validateProvisioningArtifact,
+} from "./challenge-envelope.mjs";
+import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
+
+const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
+const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -68,7 +90,10 @@ const JOB_SPECS = join(RUNTIME, "jobs");
 const RETRY_STATE = join(RUNTIME, "retry-state");
 const ACTIONS = join(RUNTIME, "actions");
 const ALERTS = join(RUNTIME, "ALERTS.log");
-const MAX_BOND = ethers.parseEther(String(arg("max-challenge-bond", "0.01")));
+const ENVELOPE = resolve(arg("challenge-envelope", join(RUNTIME, "challenge-envelope.json")));
+const RUNNER_HEALTH = resolve(arg("runner-health", join(RUNTIME, "runner-health.json")));
+const CHALLENGE_PROVISIONING = resolve(arg("challenge-provisioning", join(RUNTIME, "challenge-provisioning.json")));
+const AUTO_CLAIM_BOND = arg("auto-claim-bond", true) !== "false";
 const MAX_JOBS_PER_SCAN = Number(arg("max-jobs-per-scan", "1"));
 const POLL_MS = Number(arg("poll-ms", "12000"));
 const RESERVE_MEMORY_MB = Number(arg("reserve-memory-mb", "8192"));
@@ -98,13 +123,19 @@ if (!KEY) {
 const abi = (name) => JSON.parse(
   readFileSync(`${REPO_ROOT}/contracts/artifacts/src/${name}.sol/${name}.json`, "utf8"),
 ).abi;
-const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
+const manifest = readStrictJsonFileSync(resolve(MANIFEST), JSON_LIMITS);
+const selectedManifestProblem = Array.isArray(manifest.problems)
+  ? manifestProblemForRegistryId(manifest, REGISTRY_PROBLEM_ID)
+  : null;
+const selectedBoardContracts = selectedManifestProblem
+  ? manifestProblemContracts(manifest, selectedManifestProblem)
+  : manifest.contracts;
 const problem = resolve(PROBLEM);
 const runnerConfig = problemRunnerConfig(problem);
 const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
-const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
-const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
+const subs = new ethers.Contract(selectedBoardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
+const chal = new ethers.Contract(selectedBoardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
 const registry = new ethers.Contract(manifest.contracts.registry.address, abi("P42ProblemRegistry"), wallet);
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const log = (...values) => console.log(...values);
@@ -116,6 +147,9 @@ let finalityConfirmations;
 let reorgOverlapBlocks;
 let executionMode;
 let agentWallet = null;
+let challengeBondOperator = null;
+let challengeProvisioning;
+let challengeLimits;
 let registryProblemId;
 let localProblem;
 let cursorBinding;
@@ -183,7 +217,27 @@ async function revalidateRecordedRegistryBinding(value) {
 }
 
 function bridge(...args) {
-  return runRuntimeBridge(REPO_ROOT, args);
+  const env = { ...process.env, PYTHONPATH: `${REPO_ROOT}/src` };
+  for (const name of Object.keys(env)) {
+    if (/(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD|RPC_URL)/i.test(name)) delete env[name];
+  }
+  const completed = spawnSync(runtimePythonExecutable(env), [`${REPO_ROOT}/agent/runtime_bridge.py`, ...args], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+    env,
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (completed.error) throw completed.error;
+  if (completed.status !== 0) {
+    throw new Error((completed.stderr || completed.stdout || `runtime bridge exited ${completed.status}`).trim());
+  }
+  if (!completed.stdout.trim()) throw new Error("runtime bridge produced no JSON");
+  return parseStrictJsonText(completed.stdout, {
+    maxBytes: 16 * 1024 * 1024,
+    maxDepth: 64,
+    canonicalBytes: true,
+    trailingNewline: "require",
+  });
 }
 
 function readQueue() {
@@ -215,7 +269,40 @@ function writePayloadAtomic(path, bytes) {
 
 function readJsonOrNull(path) {
   if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, "utf8"));
+  return readStrictJsonFileSync(path, JSON_LIMITS);
+}
+
+function runnerHealth() {
+  if (LOCAL_TEST) return { schema_version: "p42-runner-health/v1", observed_at_utc: new Date().toISOString(), oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0, max_active_running: 1, decision: "start", swap_guard: "green", host_capacity: "green", concurrency_guard: "green" };
+  const health = readJsonOrNull(RUNNER_HEALTH);
+  if (!health || health.schema_version !== "p42-runner-health/v1") return null;
+  const observed = Date.parse(health.observed_at_utc);
+  if (!Number.isFinite(observed) || observed > Date.now() || Date.now() - observed > 5 * 60_000) return null;
+  return health;
+}
+
+async function canonicalOpenEvidence() {
+  const latest = await provider.getBlockNumber();
+  const finalizedThrough = latest - finalityConfirmations;
+  if (finalizedThrough < START_BLOCK) throw new Error("canonical open evidence has no finalized range");
+  const events = await queryChunked(chal, chal.filters.Challenged(), START_BLOCK, finalizedThrough);
+  const ids = [...new Set(events.map((event) => event.args.submissionId.toString()))];
+  const openChallenges = [];
+  for (const submissionId of ids) {
+    const [current, instanceHash] = await Promise.all([
+      chal.challenges(BigInt(submissionId), { blockTag: finalizedThrough }),
+      chal.challengeInstanceHashOf(BigInt(submissionId), { blockTag: finalizedThrough }),
+    ]);
+    if (String(current.challenger).toLowerCase() !== ethers.ZeroAddress && current.resolved !== true) {
+      if (!ethers.isHexString(instanceHash, 32) || instanceHash === ethers.ZeroHash) throw new Error("finalized open challenge has no instance hash");
+      openChallenges.push({ submission_id: submissionId, challenge_instance_hash: instanceHash.toLowerCase() });
+    }
+  }
+  return {
+    schema_version: "p42-canonical-open-evidence/v1", chain_id: chainId,
+    challenge_manager: String(chal.target).toLowerCase(), finalized_through_block: finalizedThrough,
+    observed_at_utc: new Date().toISOString(), complete: true, open_challenges: openChallenges,
+  };
 }
 
 function writeJsonAtomic(path, value, mode = 0o600) {
@@ -402,7 +489,7 @@ async function quarantineOrphanedJobs(fromBlock, toBlock, canonical, reason) {
 
 function parseDetailJson(detail) {
   if (typeof detail !== "string" || !detail.trim().startsWith("{")) return {};
-  try { return JSON.parse(detail); }
+  try { return parseStrictJsonText(detail, { maxBytes: 64 * 1024, maxDepth: 32 }); }
   catch { return {}; }
 }
 
@@ -716,7 +803,7 @@ function runWorkerOnce(chainTimestamp) {
 }
 
 function verifyTranscript(path) {
-  const transcript = JSON.parse(readFileSync(path, "utf8"));
+  const transcript = readStrictJsonFileSync(path, IMMUTABLE_JSON_LIMITS);
   const expected = transcript.transcript_hash;
   const unhashed = { ...transcript };
   delete unhashed.transcript_hash;
@@ -748,7 +835,7 @@ function signedActionPath(candidate, callPolicy) {
 
 async function signedActionRecord(candidate, callPolicy, request) {
   const path = signedActionPath(candidate, callPolicy);
-  if (existsSync(path)) return { path, record: JSON.parse(readFileSync(path, "utf8")) };
+  if (existsSync(path)) return { path, record: readStrictJsonFileSync(assertApprovedJournalPath(path, ACTIONS, path), IMMUTABLE_JSON_LIMITS) };
   const record = await buildSignedTransactionRecord({
     wallet,
     request,
@@ -756,6 +843,67 @@ async function signedActionRecord(candidate, callPolicy, request) {
   });
   writeCanonicalAtomic(path, record);
   return { path, record };
+}
+
+function assertOperatorSignedRecord(record, candidate, callPolicy, action = null, detail = null) {
+  const expectedRequest = executionMode.mode === "direct-eoa-local-test"
+    ? exactCallRequestFromPolicy(callPolicy)
+    : {
+      to: executionMode.agentWalletAddress,
+      value: 0n,
+      data: agentWallet.interface.encodeFunctionData("execute", [
+        callPolicy.target,
+        callPolicy.call_value_wei,
+        callPolicy.calldata,
+      ]),
+    };
+  const expectedLabel = `challenge:${candidate.submission_id}:${candidate.candidate_hash}`;
+  const checked = assertSignedTransactionRecord(record, {
+    signer: wallet.address,
+    chainId,
+    ...expectedRequest,
+    hashes: [action?.transaction_hash, detail?.signed_tx_hash],
+    nonce: detail?.signed_tx_nonce,
+    label: expectedLabel,
+  });
+  if (detail) {
+    if (detail.call_policy_hash !== callPolicy.policy_hash
+      || detail.calldata_hash !== callPolicy.calldata_hash
+      || detail.scope_hash !== callPolicy.scope_hash
+      || detail.signed_tx_data_hash !== record.data_hash) {
+      throw new Error("signed transaction journal disagrees with declared policy or journal hashes");
+    }
+  }
+  return checked.record;
+}
+
+function assertPersistedChallengePolicy(candidate, detail) {
+  const reasonHash = ethers.keccak256(
+    ethers.toUtf8Bytes(`p42-challenge-candidate/v1:${candidate.candidate_hash}`),
+  );
+  const expected = buildChallengeCallPolicy({
+    challengeInterface: chal.interface,
+    challengeContract: String(chal.target),
+    chainId,
+    problemId: runnerConfig.problemId,
+    submissionId: BigInt(candidate.submission_id),
+    revealInstanceHash: candidate.reveal_instance_hash,
+    reasonHash,
+    candidateHash: candidate.candidate_hash,
+    sourceEventHash: candidate.source_event_hash,
+    expiresAt: candidate.challenge_ends_at,
+    valueWei: BigInt(detail.bond_wei),
+  });
+  const expectedPath = join(
+    ACTIONS,
+    `${candidate.candidate_hash.slice(7)}-${expected.policy_hash.slice(7, 23)}.json`,
+  );
+  const policyPath = assertApprovedJournalPath(detail.call_policy_path, ACTIONS, expectedPath);
+  const persisted = readStrictJsonFileSync(policyPath, IMMUTABLE_JSON_LIMITS);
+  if (canonicalJson(persisted) !== canonicalJson(expected)) {
+    throw new Error("persisted challenge call policy does not match the candidate binding");
+  }
+  return expected;
 }
 
 async function assertAgentWalletPolicy(callPolicy, bond, latestTimestamp) {
@@ -842,6 +990,12 @@ async function reconcileBroadcast(job) {
   const transcript = verifyTranscript(job.transcript_path);
   if (!transcript.candidate) throw new Error(`action ${job.job_id} has no challenge candidate`);
   const detail = parseDetailJson(action.detail);
+  const callPolicy = assertPersistedChallengePolicy(transcript.candidate, detail);
+  const expectedPath = signedActionPath(transcript.candidate, callPolicy);
+  const journalPath = assertApprovedJournalPath(detail.signed_tx_path, ACTIONS, expectedPath);
+  const signedRecord = assertOperatorSignedRecord(
+    readStrictJsonFileSync(journalPath, IMMUTABLE_JSON_LIMITS), transcript.candidate, callPolicy, action, detail,
+  );
   let receipt = await provider.getTransactionReceipt(action.transaction_hash);
   if (receipt) {
     const canonicalBlock = await provider.getBlock(receipt.blockNumber);
@@ -864,6 +1018,8 @@ async function reconcileBroadcast(job) {
       }
       return true;
     } else {
+      if (receipt.status === 1) finalizeChallengeSpend(ENVELOPE, transcript.candidate.candidate_hash, { finalizedReceipt: { canonical: true, transaction_hash: action.transaction_hash, block_number: receipt.blockNumber, block_hash: receipt.blockHash } });
+      else releaseChallengeReservation(ENVELOPE, transcript.candidate.candidate_hash);
       recordAction(
         job,
         transcript.candidate,
@@ -897,12 +1053,8 @@ async function reconcileBroadcast(job) {
         appendAlert(`SUPERSEDED ${job.job_id}: ${current.reason}`);
         return true;
       }
-      const signed = JSON.parse(readFileSync(detail.signed_tx_path, "utf8"));
-      if (signed.hash.toLowerCase() !== action.transaction_hash.toLowerCase()) {
-        throw new Error(`signed action hash mismatch for ${job.job_id}`);
-      }
       try {
-        pending = await provider.broadcastTransaction(signed.raw_tx);
+        pending = await provider.broadcastTransaction(signedRecord.raw_tx);
       } catch (error) {
         pending = await provider.getTransaction(action.transaction_hash);
         if (!pending) throw error;
@@ -930,6 +1082,8 @@ async function reconcileBroadcast(job) {
     recordAction(job, transcript.candidate, "submitted", action.transaction_hash);
     return true;
   }
+  if (receipt.status === 1) finalizeChallengeSpend(ENVELOPE, transcript.candidate.candidate_hash, { finalizedReceipt: { canonical: true, transaction_hash: action.transaction_hash, block_number: receipt.blockNumber, block_hash: receipt.blockHash } });
+  else releaseChallengeReservation(ENVELOPE, transcript.candidate.candidate_hash);
   recordAction(job, transcript.candidate, receipt.status === 1 ? "confirmed" : "broadcast_reverted", action.transaction_hash);
   return true;
 }
@@ -983,8 +1137,8 @@ async function consumeCandidate(job) {
     return;
   }
   const candidateCap = BigInt(candidate.max_bond_wei || "0");
-  if (candidateCap <= 0n || candidateCap > MAX_BOND) {
-    recordAction(job, candidate, "invalid_spend_cap", null, `candidate cap ${candidateCap} exceeds operator cap ${MAX_BOND}`);
+  if (candidateCap <= 0n || candidateCap > challengeLimits.perChallengeWei) {
+    recordAction(job, candidate, "invalid_spend_cap", null, `candidate cap ${candidateCap} exceeds provisioned cap ${challengeLimits.perChallengeWei}`);
     appendAlert(`REFUSED ${job.job_id}: invalid candidate spend cap ${candidateCap}`);
     return;
   }
@@ -1015,58 +1169,82 @@ async function consumeCandidate(job) {
   }
   const disputed = await subs.disputedEntitlementWei(submissionId);
   const bond = await chal.requiredChallengeBond(disputed);
-  if (bond > candidateCap || bond > MAX_BOND) {
+  if (bond > candidateCap || bond > challengeLimits.perChallengeWei) {
     recordAction(job, candidate, "bond_over_cap", null, `required ${bond}; cap ${candidateCap}`);
     appendAlert(`UNPOLICED ${job.job_id}: bond ${bond} exceeds cap ${candidateCap} (${candidate.candidate_hash})`);
     return;
   }
 
-  const reasonHash = ethers.keccak256(
-    ethers.toUtf8Bytes(`p42-challenge-candidate/v1:${candidate.candidate_hash}`),
-  );
-  const callPolicy = buildChallengeCallPolicy({
-    challengeInterface: chal.interface,
-    challengeContract: String(chal.target),
-    chainId,
-    problemId: runnerConfig.problemId,
-    submissionId,
-    revealInstanceHash: candidate.reveal_instance_hash,
-    reasonHash,
-    candidateHash: candidate.candidate_hash,
-    sourceEventHash: candidate.source_event_hash,
-    expiresAt: candidate.challenge_ends_at,
-    valueWei: bond,
+  try {
+    const openEvidence = await canonicalOpenEvidence();
+    reserveChallengeSpend(ENVELOPE, {
+      id: candidate.candidate_hash,
+      problemId: runnerConfig.problemId,
+      amountWei: bond,
+      provisioning: challengeProvisioning,
+      health: runnerHealth(),
+      canonicalOpenEvidence: openEvidence,
+      canonicalEvidenceExpected: {
+        chainId,
+        challengeManager: String(chal.target),
+        finalizedThroughBlock: openEvidence.finalized_through_block,
+      },
+    });
+  } catch (error) {
+    appendAlert(`AUTO-FILE DISABLED ${job.job_id}: ${error.message}`);
+    return;
+  }
+
+  await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash, async ({ markJournalDurable }) => {
+    const reasonHash = ethers.keccak256(
+      ethers.toUtf8Bytes(`p42-challenge-candidate/v1:${candidate.candidate_hash}`),
+    );
+    const callPolicy = buildChallengeCallPolicy({
+      challengeInterface: chal.interface,
+      challengeContract: String(chal.target),
+      chainId,
+      problemId: runnerConfig.problemId,
+      submissionId,
+      revealInstanceHash: candidate.reveal_instance_hash,
+      reasonHash,
+      candidateHash: candidate.candidate_hash,
+      sourceEventHash: candidate.source_event_hash,
+      expiresAt: candidate.challenge_ends_at,
+      valueWei: bond,
+    });
+    const policyPath = join(
+      ACTIONS,
+      `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.json`,
+    );
+    writeCanonicalAtomic(policyPath, callPolicy);
+    log(`  exact session call policy: ${policyPath} (${callPolicy.policy_hash})`);
+    const request = await buildChallengeTransactionRequest(
+      callPolicy,
+      bond,
+      BigInt(latest.timestamp),
+    );
+    const signed = await signedActionRecord(candidate, callPolicy, request);
+    markJournalDurable({ journalPath: signed.path, signedTransactionHash: signed.record.hash });
+    assertOperatorSignedRecord(signed.record, candidate, callPolicy);
+    const detail = canonicalJson({
+      bond_wei: bond.toString(),
+      call_policy_path: policyPath,
+      call_policy_hash: callPolicy.policy_hash,
+      calldata_hash: callPolicy.calldata_hash,
+      scope_hash: callPolicy.scope_hash,
+      expires_at: callPolicy.expires_at,
+      max_calls: callPolicy.max_calls,
+      execution_mode: executionMode.mode,
+      agent_wallet: executionMode.agentWalletAddress,
+      signed_tx_path: signed.path,
+      signed_tx_hash: signed.record.hash,
+      signed_tx_data_hash: signed.record.data_hash,
+      signed_tx_nonce: signed.record.nonce,
+    });
+    recordAction(job, candidate, "signed", signed.record.hash, detail);
+    log(`  challenge signed for #${submissionId}: ${signed.record.hash} bond=${ethers.formatEther(bond)} ETH`);
+    await reconcileBroadcast({ ...job, action: { status: "signed", transaction_hash: signed.record.hash, detail } });
   });
-  const policyPath = join(
-    ACTIONS,
-    `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.json`,
-  );
-  writeCanonicalAtomic(policyPath, callPolicy);
-  log(`  exact session call policy: ${policyPath} (${callPolicy.policy_hash})`);
-  const request = await buildChallengeTransactionRequest(
-    callPolicy,
-    bond,
-    BigInt(latest.timestamp),
-  );
-  const signed = await signedActionRecord(candidate, callPolicy, request);
-  const detail = canonicalJson({
-    bond_wei: bond.toString(),
-    call_policy_path: policyPath,
-    call_policy_hash: callPolicy.policy_hash,
-    calldata_hash: callPolicy.calldata_hash,
-    scope_hash: callPolicy.scope_hash,
-    expires_at: callPolicy.expires_at,
-    max_calls: callPolicy.max_calls,
-    execution_mode: executionMode.mode,
-    agent_wallet: executionMode.agentWalletAddress,
-    signed_tx_path: signed.path,
-    signed_tx_hash: signed.record.hash,
-    signed_tx_data_hash: signed.record.data_hash,
-    signed_tx_nonce: signed.record.nonce,
-  });
-  recordAction(job, candidate, "signed", signed.record.hash, detail);
-  log(`  challenge signed for #${submissionId}: ${signed.record.hash} bond=${ethers.formatEther(bond)} ETH`);
-  await reconcileBroadcast({ ...job, action: { status: "signed", transaction_hash: signed.record.hash, detail } });
 }
 
 async function consumeCandidates() {
@@ -1121,6 +1299,14 @@ async function scanOnce() {
     break;
   }
   await consumeCandidates();
+  if (challengeBondOperator && AUTO_CLAIM_BOND) {
+    try {
+      const claim = await challengeBondOperator.claimBond();
+      if (claim.status !== "nothing_claimable") log(`  claimBond ${claim.status}: recovered=${claim.recovered_wei} wei`);
+    } catch (error) {
+      appendAlert(`CLAIM BOND REFUSED: ${error.shortMessage || error.message}`);
+    }
+  }
 }
 
 async function main() {
@@ -1150,7 +1336,27 @@ async function main() {
   });
   if (executionMode.mode === "agent-wallet") {
     agentWallet = new ethers.Contract(executionMode.agentWalletAddress, abi("P42AgentWallet"), wallet);
+    challengeBondOperator = new ChallengeBondOperator({
+      provider,
+      wallet,
+      agentWallet,
+      challenge: chal,
+      chainId,
+      journalPath: join(ACTIONS, "claim-bond.signed-tx.json"),
+      confirmations: finalityConfirmations,
+    });
   }
+  challengeProvisioning = validateProvisioningArtifact(
+    readStrictJsonFileSync(CHALLENGE_PROVISIONING, IMMUTABLE_JSON_LIMITS),
+    {
+      chainId,
+      challengeManager: String(chal.target),
+      agentWallet: executionMode.agentWalletAddress,
+      operator: wallet.address,
+    },
+  );
+  challengeLimits = limitsFromProvisioning(challengeProvisioning);
+  await canonicalOpenEvidence();
   // Fail startup before queueing or spending when the finalized registry cannot
   // attest this exact local verifier source/image identity.
   await currentRegistryBinding();
@@ -1168,7 +1374,7 @@ async function main() {
 
   log(`P42 operator ${wallet.address} chain=${chainId} mode=${executionMode.mode}`);
   log(`queue=${QUEUE} cursor=${CURSOR} finality=${finalityConfirmations} overlap=${reorgOverlapBlocks}`);
-  log(`sandbox=docker max_running=1 max_bond=${ethers.formatEther(MAX_BOND)} ETH`);
+  log(`sandbox=docker max_running=1 max_bond=${ethers.formatEther(challengeLimits.perChallengeWei)} ETH`);
   await consumeCandidates();
   if (ONCE) {
     await scanOnce();

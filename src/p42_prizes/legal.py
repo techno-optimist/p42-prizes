@@ -614,7 +614,12 @@ def _validate_signature(
     signature = value.get("signature")
     if not isinstance(signature, str) or SIGNATURE_RE.fullmatch(signature) is None:
         raise error_type(f"{prefix}.signature must be a 64-byte ed25519 signature")
-    message = _attestation_message(schema_version, artifact_hash)
+    message = _attestation_message(
+        schema_version,
+        artifact_hash,
+        expected_role,
+        value["signed_at_utc"],
+    )
     if not _verify_ed25519(public_key, signature, message):
         raise error_type(f"{prefix}.signature is not valid for the canonical attestation hash")
     return value
@@ -899,8 +904,16 @@ def _parse_json_object(value: bytes, prefix: str, error_type: type[ValueError]) 
     return parsed
 
 
-def _attestation_message(schema_version: str, artifact_hash: str) -> bytes:
-    return f"P42-ATTESTATION-V1\n{schema_version}\n{artifact_hash}".encode("ascii")
+def _attestation_message(
+    schema_version: str,
+    artifact_hash: str,
+    signer_role: str,
+    signed_at_utc: str,
+) -> bytes:
+    return (
+        "P42-ATTESTATION-V2\n"
+        f"{schema_version}\n{signer_role}\n{artifact_hash}\n{signed_at_utc}"
+    ).encode("ascii")
 
 
 def _reject_unknown_top_level(

@@ -2,6 +2,10 @@
 
 Consolidated into [`GATE_LEDGER.md`](GATE_LEDGER.md) (the canonical gate register).
 
+Current posture remains NO-GO for canonical Base Sepolia settlement and real
+ETH. Source-level and local evidence does not satisfy external deployment, CI,
+audit, legal, governance, or live-rehearsal gates.
+
 This file historically carried the area-by-area "Current Evidence" table, the
 "Closed In This Pass" change log, and the "Known Production Blockers" list.
 That content now lives in `GATE_LEDGER.md` under "Area Evidence Register",

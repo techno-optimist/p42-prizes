@@ -104,6 +104,14 @@ deployment creates governance-owned contracts and pending operation bundles;
 independent governance signers schedule, confirm, and execute those bundles;
 then a keyless continuation verifies finalized on-chain completion.
 
+For a fresh public prize deployment, the canonical route is
+`P42_DEPLOY_MODE=deploy-multiboard` and the typed procedure in
+[MULTIBOARD_CEREMONY.md](MULTIBOARD_CEREMONY.md). It refuses to broadcast until
+every board passes local `admit-ready` and the resulting admission-matrix digest
+is bound to the registry hash. The environment-variable single-board route
+below remains a legacy rehearsal path only; it is never launch, funding, or
+Gate 1 evidence.
+
 ### Exclusive Manifest Reservation And Recovery
 
 `deploy-base-sepolia.js` exclusively creates a sibling
@@ -128,7 +136,7 @@ recorded transactions and manifest destination before any owner-approved
 recovery action. The reservation is removed only after the exclusive final
 manifest write succeeds.
 
-### 1. Freeze Inputs And Roles
+### 1. Legacy Single-Board Rehearsal Inputs
 
 The deploy command requires all constructor policy to be explicit. No economic
 or DA default is accepted.
@@ -270,7 +278,8 @@ Deployment and setup leave both `fundingArmed=false` and
 `acceptingFunds=false`. Do not add either call to the setup bundle. After the
 seed/admission review, source verification, adversarial campaign,
 reconciliation, and required human gates are complete, owners separately
-review and timelock `submissions.armFunding()`, then
+review and timelock `submissions.armFunding()` no earlier than the manager's
+immutable `armNotBefore` timestamp, then
 `pool.setAcceptingFunds(true)`. Funding occurs only after those later operations
 execute and are independently checked.
 

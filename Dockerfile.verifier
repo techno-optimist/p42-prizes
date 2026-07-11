@@ -1,10 +1,10 @@
 # Canonical, self-contained P42 verifier image.
 #
 # Builds a runnable, pinnable image for one problem's exact verifier. Unlike the
-# per-problem Dockerfiles (which assumed the repo layout and lacked `make`), this
-# bundles the p42_prizes package AND the problem, preserving the `../../src`
-# layout the problem Makefile expects, and installs `make` + the problem's pinned
-# deps. Build from the REPO ROOT:
+# per-problem Dockerfiles (which assumed the repo layout), this bundles the
+# p42_prizes package AND the problem. The sandbox invokes the explicit
+# `problem.yaml` verifier command, so no mutable system package is needed.
+# Build from the REPO ROOT:
 #
 #   docker build -f Dockerfile.verifier --build-arg PROBLEM=hadamard-mini \
 #     -t p42-verifier/hadamard-mini .
@@ -19,36 +19,41 @@
 #   docker pull python:<tag> && docker inspect --format='{{index .RepoDigests 0}}' python:<tag>
 FROM python:3.14.2-slim@sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925
 ARG PROBLEM
+ARG SOURCE_COMMIT
+ARG VERIFIER_SOURCE_SHA256
+ARG VERIFIER_PROBLEM_ID
+ARG VERIFIER_VERSION
+
+# Registry admission binds the pulled image to the exact checkout and verifier
+# package it was built from. The local smoke tool supplies all four values and
+# verifies them after the build; incomplete labels fail the admission gate.
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
+      io.projectforty2.verifier.source-sha256="${VERIFIER_SOURCE_SHA256}" \
+      io.projectforty2.verifier.problem-id="${VERIFIER_PROBLEM_ID}" \
+      io.projectforty2.verifier.version="${VERIFIER_VERSION}"
 
 # Determinism knobs the verifier standard requires.
 ENV PYTHONHASHSEED=0 \
     OMP_NUM_THREADS=1 \
     OPENBLAS_NUM_THREADS=1 \
-    MKL_NUM_THREADS=1
+    MKL_NUM_THREADS=1 \
+    PYTHONPATH=/repo/src
 
-# `make` is the verifier entrypoint; slim images omit it.
-# TODO(F23, needs human): `make` is installed unpinned — `apt-get update` fetches
-# the live Debian archive, so its version can drift between builds even with the
-# digest-pinned base. Full determinism needs snapshot.debian.org sources (e.g.
-# `deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/<TS>/ trixie main`)
-# plus `make=<exact version>`; exact pins go stale as the archive rolls, so this
-# needs an owner to pick and maintain a snapshot timestamp.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends make \
-    && rm -rf /var/lib/apt/lists/*
+# The P42 CLI is part of every verifier invocation. Install its fully
+# hash-locked runtime before copying the source tree it imports from.
+COPY requirements.runtime.lock /repo/requirements.runtime.lock
+RUN pip install --no-cache-dir --require-hashes -r /repo/requirements.runtime.lock
 
 # Preserve the repo-relative layout: the problem Makefile uses PYTHONPATH=../../src,
 # so the problem must sit two levels under /repo with src as a sibling.
 COPY src /repo/src
+COPY schemas /repo/schemas
 COPY problems/${PROBLEM} /repo/problems/${PROBLEM}
 WORKDIR /repo/problems/${PROBLEM}
 
-# Pinned per-problem deps (mpmath for Mertens, etc.); comments-only locks are a no-op.
-# TODO(F23, needs human): the requirements.lock files pin versions but carry no
-# hashes, so `--require-hashes` would fail today (checked: every problems/*/
-# requirements.lock lacks `--hash=`). Regenerate each lock with
-# `pip-compile --generate-hashes` (or `pip hash`), then add `--require-hashes`
-# here so a hijacked PyPI release of a pinned version cannot slip in.
-RUN pip install --no-cache-dir -r requirements.lock
+# Pinned per-problem deps (mpmath for Mertens, etc.). Non-stdlib locks carry
+# every accepted PyPI distribution hash; comments-only locks are a no-op.
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
-CMD ["make", "verify"]
+# The runtime always supplies the manifest-pinned verifier.command explicitly.
+# Leave no image-local Makefile entrypoint that could diverge from that command.

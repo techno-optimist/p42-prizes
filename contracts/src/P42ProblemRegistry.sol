@@ -17,6 +17,7 @@ contract P42ProblemRegistry {
     error P42_ALREADY_FROZEN();
     error P42_NOT_FUNDED();
     error P42_UNKNOWN_PROBLEM();
+    error P42_UNEXPECTED_PROBLEM_ID(uint256 expectedProblemId, uint256 nextProblemId);
 
     struct ProblemConfig {
         bytes32 specHash;
@@ -73,6 +74,25 @@ contract P42ProblemRegistry {
     }
 
     function register(ProblemConfig calldata config) external onlyOwner returns (uint256 problemId) {
+        return _register(config);
+    }
+
+    /// @notice Register only at the deterministic release-plan position.
+    /// @dev A multi-board ceremony uses this rail so a delayed or out-of-order
+    /// governance execution cannot silently assign a board another pool's ID.
+    function registerExpected(ProblemConfig calldata config, uint256 expectedProblemId)
+        external
+        onlyOwner
+        returns (uint256 problemId)
+    {
+        uint256 nextProblemId = problemCount + 1;
+        if (expectedProblemId != nextProblemId) {
+            revert P42_UNEXPECTED_PROBLEM_ID(expectedProblemId, nextProblemId);
+        }
+        return _register(config);
+    }
+
+    function _register(ProblemConfig calldata config) private returns (uint256 problemId) {
         _validateConfig(config);
         problemId = ++problemCount;
         _store(problemId, config, false);

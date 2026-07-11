@@ -40,6 +40,16 @@ challenge or a terminal quarantine. Each retry yields the verifier slot during
 a short durable backoff, so one unavailable submission cannot block later
 eligible jobs.
 
+On DGX, point the bridge at the existing isolated runtime instead of attempting
+a system-wide package install:
+
+```bash
+export P42_RUNTIME_PYTHON=/home/chronos/inference-venv/bin/python3
+```
+
+The optional value must be an absolute interpreter path. Without it the bridge
+uses `python3` from `PATH`.
+
 For on-chain DA, reveal calldata is recovered by scanning the transaction for a
 `reveal(...)` call and matching every decoded argument to the `Revealed` log.
 This handles direct calls, `P42AgentWallet.execute`, and ERC-4337-style nested
@@ -60,7 +70,7 @@ OPERATOR_PRIVATE_KEY=0x... node operator.mjs \
   --registry-problem-id 1 \
   --runtime /var/lib/p42/operator/hadamard-mini \
   --agent-wallet 0x... \
-  --max-challenge-bond 0.05
+  --challenge-provisioning /var/lib/p42/operator/hadamard-mini/challenge-provisioning.json
 ```
 
 `--registry-problem-id` is the immutable on-chain `P42ProblemRegistry` ID for
@@ -93,6 +103,14 @@ Runtime artifacts under `--runtime` are:
   recovery; it never authorizes an on-chain action by itself.
 - `operator-cursor.json`: durable finalized-block cursor plus overlap anchors.
 - `actions/`: exact `p42-session-call-policy/v1` call policies and signed challenge transaction journals.
+- `challenge-envelope.json`: atomic, lock-protected v2 UTC-day history. Pending
+  reservations survive rollover and finalized spends remain charged to their
+  reservation day. This file is not an open-challenge authority.
+- `challenge-provisioning.json`: immutable hash-bound, EIP-191-signed chain,
+  wallet, operator, cap, and rehearsal configuration. Runtime limits may only
+  tighten it.
+- `runner-health.json`: externally produced fresh `p42-runner-health/v1`
+  admission evidence; absent/stale/red health disables auto-file.
 - `ALERTS.log`: quarantines, registry-binding refusals, expired windows, and cap
   refusals.
 
@@ -122,6 +140,23 @@ window. If an anchored block changes or a rescan no longer contains a queued
 job's original `Revealed` source event, the bridge marks that job/action
 `canonical_invalidated` and cancels queued work instead of wedging or replaying
 from genesis.
+
+The wallet currently has one exact-call slot per target/selector. The operator
+therefore permits one pending provisioned `challenge(...)` policy, even though
+up to three already-filed canonical challenges may remain open. Do not provision
+three simultaneous challenge policies with this contract version.
+
+At startup and before every challenge admission, the operator rebuilds a
+complete `p42-canonical-open-evidence/v1` snapshot from finalized challenge
+events and finalized contract storage. It fails closed if the RPC cannot supply
+the full range or any evidence binding is incomplete; queue and local envelope
+rows do not determine the three-open cap.
+
+Each reservation embeds a durable action intent. Pre-journal failures release
+it; after signed raw bytes are journaled, the intent stores the exact journal
+path and transaction hash so restart resumes without consuming another pending
+slot. Lock ownership is token/PID/host-bound and never expires by age; only a
+same-host `ESRCH` owner can be reclaimed.
 
 ## Resolver Path
 
@@ -197,6 +232,7 @@ AGENT_PRIVATE_KEY=0x... node solver.mjs \
   --rpc https://sepolia.base.org \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem ../problems/hadamard-mini \
+  --registry-problem-id 1 \
   --solution ../problems/hadamard-mini/examples/valid-4.json \
   --state /var/lib/p42/solver/hadamard-mini.json
 ```
@@ -207,6 +243,10 @@ is populated and signed first; the raw signed bytes and hash are persisted befor
 broadcast. Re-running the same command resumes it; identity mismatches fail
 closed, and a restart reconciles or rebroadcasts the exact same transaction bytes
 instead of creating a replacement nonce transaction.
+
+`--registry-problem-id` is optional for a legacy one-board manifest and required
+for a multi-board manifest. It selects the only child pool, ledger, submission
+manager, and challenge manager the solver may touch.
 
 The submission id is parsed from the matching `Committed` receipt log. It is
 never inferred from global `submissionCount()`. The lifecycle loop handles:

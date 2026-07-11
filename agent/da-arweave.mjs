@@ -4,11 +4,15 @@
 
 import Arweave from "arweave";
 import { ethers } from "ethers";
+import { parseStrictJsonText } from "./strict-json.mjs";
 
 const DEFAULT_GATEWAYS = ["https://arweave.net", "https://arweave.dev"];
 const DEFAULT_GRAPHQL = "https://arweave.net/graphql";
 const CID_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const TXID_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const MAX_JWK_BYTES = 1024 * 1024;
+const MAX_GRAPHQL_BYTES = 1024 * 1024;
+const MAX_DA_BYTES = 16 * 1024 * 1024;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function assertCid(cid) {
@@ -26,7 +30,11 @@ function configuredWallet(wallet) {
   const encoded = process.env.ARWEAVE_JWK_JSON;
   if (!encoded) throw new Error("set ARWEAVE_JWK_JSON to a funded Arweave mainnet JWK");
   try {
-    const parsed = JSON.parse(encoded);
+    const parsed = parseStrictJsonText(encoded, {
+      label: "ARWEAVE_JWK_JSON",
+      maxBytes: MAX_JWK_BYTES,
+      maxDepth: 32,
+    });
     if (!parsed || typeof parsed !== "object") throw new Error("not an object");
     return parsed;
   } catch (error) {
@@ -51,7 +59,32 @@ async function gatewayBytes(gateway, txid, fetchImpl) {
     headers: { Accept: "application/octet-stream" },
   });
   if (!response.ok) throw new Error(`${gateway} returned HTTP ${response.status}`);
-  return Buffer.from(await response.arrayBuffer());
+  return readBoundedResponse(response, MAX_DA_BYTES, `${gateway} response`);
+}
+
+async function readBoundedResponse(response, maxBytes, label) {
+  const declared = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`${label} exceeds ${maxBytes} bytes`);
+  if (!response.body?.getReader) throw new Error(`${label} has no bounded response stream`);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const chunk = Buffer.from(value);
+      length += chunk.length;
+      if (length > maxBytes) {
+        await reader.cancel();
+        throw new Error(`${label} exceeds ${maxBytes} bytes`);
+      }
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return Buffer.concat(chunks, length);
 }
 
 async function waitForConfirmation(client, txid, {
@@ -170,7 +203,12 @@ export async function findTxidByCid(cid, {
     body: JSON.stringify({ query, variables: { cid } }),
   });
   if (!response.ok) throw new Error(`Arweave GraphQL returned HTTP ${response.status}`);
-  const body = await response.json();
+  const bodyBytes = await readBoundedResponse(response, MAX_GRAPHQL_BYTES, "Arweave GraphQL response");
+  const body = parseStrictJsonText(bodyBytes.toString("utf8"), {
+    label: "Arweave GraphQL response",
+    maxBytes: MAX_GRAPHQL_BYTES,
+    maxDepth: 32,
+  });
   if (body?.errors?.length) throw new Error(`Arweave GraphQL error: ${body.errors[0].message || "unknown"}`);
   const id = body?.data?.transactions?.edges?.[0]?.node?.id;
   return id ? assertTxid(id) : null;

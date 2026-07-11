@@ -122,9 +122,11 @@ contract P42AgentWallet {
         emit CapsSet(perCall, total);
     }
 
-    /// @notice Compatibility helper for selector-only no-argument calls. Any
-    /// call carrying arguments still requires `setCallPolicy` with an exact
-    /// calldata hash before the session key can execute it.
+    /// @notice Compatibility helper for selector-only no-argument calls. A
+    /// selector-zero allowance can authorize a bare empty-calldata transfer,
+    /// but never fallback calldata. A nonzero selector-only call remains
+    /// compatible; calls carrying arguments require `setCallPolicy` with an
+    /// exact calldata hash before the session key can execute them.
     function setAllowed(address target, bytes4 selector, bool ok) external onlyOwner {
         require(target != address(0), "P42_TARGET_ZERO");
         allowed[target][selector] = ok;
@@ -192,7 +194,7 @@ contract P42AgentWallet {
             if (policy.calls >= policy.maxCalls) revert CallPolicyExhausted(policy.maxCalls);
             if (dataHash != policy.calldataHash) revert CalldataHashMismatch(policy.calldataHash, dataHash);
             policy.calls += 1;
-        } else if (data.length > 4) {
+        } else if (selector == bytes4(0) ? data.length != 0 : data.length != 4) {
             revert ExactCalldataPolicyRequired(target, selector);
         }
 

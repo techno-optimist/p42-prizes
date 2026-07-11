@@ -33,7 +33,9 @@ The verifier emits the `VerdictReport` schema in
 
 The logarithmic objective is not treated as a binary floating-point number.
 The verifier encloses it at two interval precisions, requires nesting, and
-accepts only a lower-bound decimal.
+accepts only a lower-bound decimal. Its canonical non-negative decimal grammar
+permits scores above one as well as `0.x`, so the `10001/10000` finite
+constraint cannot become an unreachable formatting ceiling.
 
 ## H3 - No sampling gaps
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -21,6 +21,7 @@ import {
   operatorCursorBinding,
   localProblemRuntimeIdentity,
   recoverRevealCalldata,
+  runtimePythonExecutable,
   resolveOperatorFinality,
   sha256Canonical,
   solverLifecycleDecision,
@@ -31,6 +32,10 @@ import {
   verifierImageHashForDigest,
   verifierSourceHashForDigest,
 } from "./lib.mjs";
+import {
+  assertApprovedJournalPath,
+  assertSignedTransactionRecord,
+} from "./signed-transaction.mjs";
 
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -43,6 +48,28 @@ const submissionInterface = new ethers.Interface([
 const walletInterface = new ethers.Interface([
   "function execute(address target,uint256 value,bytes data) returns (bytes)",
 ]);
+
+test("npm pack installs complete runnable agent binaries", () => {
+  const packDir = mkdtempSync(join(tmpdir(), "p42-pack-"));
+  const installDir = mkdtempSync(join(tmpdir(), "p42-install-"));
+  const tarballName = execFileSync("npm", ["pack", "--pack-destination", packDir], {
+    cwd: HERE, encoding: "utf8",
+  }).trim().split("\n").at(-1);
+  execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", join(packDir, tarballName)], {
+    cwd: installDir, encoding: "utf8",
+  });
+  for (const module of ["transcript-store.mjs", "strict-json.mjs", "signed-transaction.mjs", "solver-manifest.mjs"]) {
+    assert.equal(readFileSync(join(installDir, "node_modules", "p42-agent", module)).length > 0, true, module);
+  }
+  for (const binary of ["p42-resolve", "p42-solve"]) {
+    const result = spawnSync(join(installDir, "node_modules", ".bin", binary), [], { encoding: "utf8" });
+    assert.notEqual(result.status, 126, `${binary} is executable`);
+    assert.notEqual(result.status, 127, `${binary} resolves its packaged modules`);
+    assert.doesNotMatch(result.stderr, /ERR_MODULE_NOT_FOUND/, binary);
+    assert.doesNotMatch(result.stderr, /ENOENT/, binary);
+    assert.match(`${result.stdout}\n${result.stderr}`, /required:|set AGENT_PRIVATE_KEY/, `${binary} reached argument validation`);
+  }
+});
 const entryPointLike = new ethers.Interface([
   "function handle(bytes accountCallData,address beneficiary)",
 ]);
@@ -74,6 +101,19 @@ const RUNTIME_BINDING_ADDRESSES = {
 };
 const RUNTIME_IMAGE = `sha256:${"a".repeat(64)}`;
 const RUNTIME_SOURCE = `sha256:${"b".repeat(64)}`;
+
+test("runtime bridge interpreter selection requires an absolute configured path", () => {
+  assert.equal(runtimePythonExecutable({}), "python3");
+  assert.equal(runtimePythonExecutable({ P42_RUNTIME_PYTHON: "/opt/p42/bin/python3" }), "/opt/p42/bin/python3");
+  assert.throws(
+    () => runtimePythonExecutable({ P42_RUNTIME_PYTHON: "python3" }),
+    /must be an absolute interpreter path/,
+  );
+  assert.throws(
+    () => runtimePythonExecutable({ P42_RUNTIME_PYTHON: " /opt/p42/bin/python3" }),
+    /must be an absolute interpreter path/,
+  );
+});
 
 function runtimeBindingFixture(overrides = {}) {
   return {
@@ -541,6 +581,103 @@ test("signed transaction journal records raw bytes before broadcast", async () =
   assert.equal(record.value, "123");
 });
 
+test("signed transaction journals reject forged raw bytes and every transport binding", async () => {
+  const wallet = ethers.Wallet.createRandom();
+  const other = ethers.Wallet.createRandom();
+  const base = {
+    to: "0x9999999999999999999999999999999999999999",
+    value: 123n,
+    data: "0x1234",
+    nonce: 7,
+    gasLimit: 50000n,
+    gasPrice: 1n,
+    chainId: 31337,
+    type: 0,
+  };
+  const record = await buildSignedTransactionRecord({ wallet, request: base, label: "bound" });
+  const expected = { signer: wallet.address, ...base, hash: record.hash, label: "bound" };
+  assert.equal(assertSignedTransactionRecord(record, expected).hash, record.hash);
+
+  const declaredHash = { ...record, hash: ethers.ZeroHash };
+  assert.throws(() => assertSignedTransactionRecord(declaredHash, expected), /raw transaction hash mismatch/);
+  const declaredData = { ...record, data_hash: ethers.ZeroHash };
+  assert.throws(() => assertSignedTransactionRecord(declaredData, expected), /declared calldata hash mismatch/);
+  const declaredNonce = { ...record, nonce: 8 };
+  assert.throws(() => assertSignedTransactionRecord(declaredNonce, expected), /nonce mismatch/);
+
+  for (const [field, request, signer, pattern] of [
+    ["signer", base, other, /signer mismatch/],
+    ["chain", { ...base, chainId: 1 }, wallet, /chain mismatch/],
+    ["to", { ...base, to: "0x8888888888888888888888888888888888888888" }, wallet, /destination mismatch/],
+    ["value", { ...base, value: 124n }, wallet, /value mismatch/],
+    ["data", { ...base, data: "0xabcd" }, wallet, /calldata mismatch/],
+    ["nonce", { ...base, nonce: 8 }, wallet, /nonce does not match persisted nonce/],
+  ]) {
+    const forged = await buildSignedTransactionRecord({ wallet: signer, request, label: "bound" });
+    assert.throws(() => assertSignedTransactionRecord(forged, { ...expected, hash: forged.hash }), pattern, field);
+  }
+});
+
+test("signed transaction journal paths stay in the approved root and reject symlinks", () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-journals-"));
+  const outside = join(dirname(root), `${Date.now()}-outside.json`);
+  const approved = join(root, "approved.json");
+  const link = join(root, "linked.json");
+  writeFileSync(approved, "{}\n");
+  writeFileSync(outside, "{}\n");
+  symlinkSync(outside, link);
+  assert.equal(assertApprovedJournalPath(approved, root, approved), realpathSync(approved));
+  assert.throws(() => assertApprovedJournalPath(outside, root), /outside the approved/);
+  assert.throws(() => assertApprovedJournalPath(link, root), /non-symlink/);
+  assert.throws(() => assertApprovedJournalPath(approved, root, join(root, "wrong.json")), /derived journal path/);
+});
+
+test("a signed transaction journal remains fully validated after restart", async () => {
+  const wallet = ethers.Wallet.createRandom();
+  const request = {
+    to: "0x7777777777777777777777777777777777777777",
+    value: 9n,
+    data: "0xabcdef",
+    nonce: 3,
+    gasLimit: 50000n,
+    gasPrice: 1n,
+    chainId: 31337,
+    type: 0,
+  };
+  const record = await buildSignedTransactionRecord({ wallet, request, label: "restart" });
+  const root = mkdtempSync(join(tmpdir(), "p42-restart-journal-"));
+  const path = join(root, "restart.json");
+  writeFileSync(path, JSON.stringify(record));
+  const reloaded = JSON.parse(readFileSync(assertApprovedJournalPath(path, root, path), "utf8"));
+  assert.equal(assertSignedTransactionRecord(reloaded, {
+    signer: wallet.address,
+    ...request,
+    hash: record.hash,
+    label: "restart",
+  }).hash, record.hash);
+});
+
+test("signed transaction validation rejects a conflicting redundant detail hash", async () => {
+  const wallet = ethers.Wallet.createRandom();
+  const request = {
+    to: "0x6666666666666666666666666666666666666666",
+    value: 0n,
+    data: "0x1234",
+    nonce: 4,
+    gasLimit: 50000n,
+    gasPrice: 1n,
+    chainId: 31337,
+    type: 0,
+  };
+  const record = await buildSignedTransactionRecord({ wallet, request, label: "conflicting-detail" });
+  assert.throws(() => assertSignedTransactionRecord(record, {
+    signer: wallet.address,
+    ...request,
+    hashes: [record.hash, ethers.ZeroHash],
+    label: "conflicting-detail",
+  }), /hash does not match persisted transaction hash/);
+});
+
 
 test("runtime bridge quarantines orphaned canonical jobs under the queue lock", () => {
   const dir = mkdtempSync(join(tmpdir(), "p42-bridge-"));
@@ -760,4 +897,33 @@ test("operator retries transient calldata retrieval until the canonical deadline
     else process.env.OPERATOR_PRIVATE_KEY = originalKey;
     await new Promise((done) => rpc.close(done));
   }
+});
+
+test("operator commits finalized challenge accounting before terminal queue status", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const terminal = "recordAction(job, transcript.candidate, receipt.status === 1 ? \"confirmed\" : \"broadcast_reverted\"";
+  const occurrences = [...source.matchAll(new RegExp(terminal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))].map((match) => match.index);
+  assert.equal(occurrences.length, 1);
+  const finalBlock = source.slice(source.lastIndexOf("const receiptState = classifyReceiptFinality"), occurrences[0] + terminal.length);
+  assert.ok(finalBlock.indexOf("finalizeChallengeSpend(") < finalBlock.indexOf(terminal));
+  const earlierBlock = source.slice(source.indexOf("} else {", source.indexOf("async function reconcileBroadcast")), source.indexOf("if (!receipt) {", source.indexOf("async function reconcileBroadcast")));
+  assert.ok(earlierBlock.indexOf("finalizeChallengeSpend(") < earlierBlock.indexOf("recordAction("));
+});
+
+test("operator requires canonical newline-terminated runtime bridge output", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const bridgeStart = source.indexOf("function bridge(...args)");
+  const bridgeEnd = source.indexOf("\nfunction readQueue()", bridgeStart);
+  const bridgeSource = source.slice(bridgeStart, bridgeEnd);
+  assert.match(bridgeSource, /canonicalBytes:\s*true/);
+  assert.match(bridgeSource, /trailingNewline:\s*"require"/);
+});
+
+test("operator reservation is guarded until signed journal durability", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const guard = source.indexOf("await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash");
+  const signed = source.indexOf("const signed = await signedActionRecord", guard);
+  const durable = source.indexOf("markJournalDurable({", guard);
+  const terminal = source.indexOf("recordAction(job, candidate, \"signed\"", guard);
+  assert.ok(guard >= 0 && signed > guard && durable > signed && terminal > durable);
 });

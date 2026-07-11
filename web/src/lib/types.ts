@@ -25,8 +25,10 @@ export interface ChainProvenance {
   admissionMatrixHash: string | null;
   deploymentCommit: string | null;
   indexedThroughBlock: number | null;
+  indexedFrontierAtoms?: string | null;
+  checkpointBlock?: number | null;
   reconciliationOk: boolean;
-  source: "static-portal-data" | "deployment-manifest" | "indexer";
+  source: "static-portal-data" | "deployment-manifest" | "indexer" | "indexer-artifacts-v2";
   note: string;
 }
 

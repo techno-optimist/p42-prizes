@@ -13,6 +13,7 @@ interface IP42CreditLedger {
     function voidCredit(address solver, uint256 atoms) external;
     function provisionalEntitlement(address solver, uint256 additionalAtoms) external view returns (uint256);
     function closed() external view returns (bool);
+    function fundingDeadline() external view returns (uint64);
 }
 
 /// @notice Commit/reveal/finalize scaffold for the Phase 1 testnet path.
@@ -23,7 +24,10 @@ contract P42SubmissionManager {
     error P42_PAUSED_NEW_ACTIONS();
     error P42_PAUSED_ALL();
     error P42_NOT_PAUSED_ALL();
+    error P42_PAUSED_ALL_RECOVERY_OPEN(uint64 recoveryAt, uint64 nowAt);
+    error P42_PAUSED_ALL_REARM_OPEN(uint64 rearmAt, uint64 nowAt);
     error P42_FUNDING_ALREADY_ARMED();
+    error P42_OPEN_WITNESS_WINDOW_OPEN(uint64 armNotBefore, uint64 nowAt);
     error P42_VOID_NOT_ADVANCE(int256 prevBestScoreAtoms, int256 claimedScoreAtoms);
     error P42_VOID_NOT_FRONTIER(int256 bestScoreAtoms, int256 claimedScoreAtoms);
     error P42_BAD_ALPHA();
@@ -31,6 +35,7 @@ contract P42SubmissionManager {
     error P42_EMPTY_COMMITMENT();
     error P42_EMPTY_DA_HASH();
     error P42_LEDGER_CLOSED();
+    error P42_SUBMISSION_WINDOW_CLOSED(uint64 fundingDeadline, uint64 nowAt);
     error P42_LEDGER_NOT_CLOSED();
     error P42_COMMIT_NOT_MATURE(uint256 eligibleBlock, uint256 currentBlock);
     error P42_COMMIT_EXPIRED(uint64 expiresAt, uint64 nowAt);
@@ -63,6 +68,14 @@ contract P42SubmissionManager {
     uint64 public constant MIN_COMMIT_AGE_BLOCKS = 1;
     uint64 public constant MAX_CUMULATIVE_DISPUTE_WINDOWS = 3;
     uint64 public constant MAX_CHALLENGE_WINDOW_SECONDS = 30 days;
+    /// @notice A continuous full-pause may not block settlement indefinitely.
+    /// Governance has this fixed interval to investigate and, when needed,
+    /// call voidFinalize before anyone can resume normal settlement.
+    uint64 public constant PAUSED_ALL_RECOVERY_DELAY = 30 days;
+    /// @notice Every credit-bearing finalize remains reversible for this full
+    /// interval before the ledger may snapshot claims. It is deliberately no
+    /// shorter than the permissionless full-pause recovery interval.
+    uint64 public constant CREDIT_FINALIZE_RECOVERY_DELAY = PAUSED_ALL_RECOVERY_DELAY;
 
     /// @notice Hard ceiling on on-chain solution bytes, bounding reveal-tx
     /// calldata gas. Problems whose certificates exceed this (e.g. the
@@ -114,6 +127,7 @@ contract P42SubmissionManager {
     struct FinalizeInfo {
         int256 prevBestScoreAtoms;
         uint256 creditAtoms;
+        uint64 prevCreditRecoveryEndsAt;
     }
 
     struct Submission {
@@ -144,6 +158,12 @@ contract P42SubmissionManager {
     uint16 public immutable alphaBps;
     uint256 public immutable minPostingBondWei;
     uint64 public immutable challengeWindowSeconds;
+    /// @notice Deployment time and the earliest time at which funding may be
+    /// armed. The unpaid phase always lasts at least one full configured
+    /// challenge window, so the public has a protocol-enforced chance to post
+    /// and inspect frontier witnesses before ETH can enter the pool.
+    uint64 public immutable deployedAt;
+    uint64 public immutable armNotBefore;
     /// @notice When true, the reveal tx must carry the raw solution bytes and
     /// the contract enforces sha256(bytes)==commitDaHash on-chain (data
     /// availability rides the chain itself). When false, this problem's
@@ -175,6 +195,17 @@ contract P42SubmissionManager {
     /// governance recovery (`voidFinalize`) can never race a finalize that
     /// would move `bestScoreAtoms` and stale its frontier-equality check.
     bool public pausedAll;
+    /// @notice Earliest wall-clock time at which the current credit stack can
+    /// settle. Exact-inverse voids restore the prior stack deadline.
+    uint64 public creditRecoveryEndsAt;
+    /// @notice Start of the current continuous full-pause episode. Repeated
+    /// pause=true calls cannot refresh it, so they cannot postpone the
+    /// permissionless recovery deadline.
+    uint64 public pausedAllAt;
+    /// @notice Total wall-clock seconds spent in completed full-pause episodes.
+    /// Commit reveal windows run against active protocol time, which excludes
+    /// both this total and the elapsed portion of the current episode.
+    uint64 public totalPausedAllSeconds;
     /// @notice OPEN-WITNESS-PHASE gate. While false (deployment default) the
     /// problem is in the unpaid OPEN phase: witness postings advance the
     /// frontier but record ZERO ledger credit, and the bounty pool refuses
@@ -202,6 +233,7 @@ contract P42SubmissionManager {
 
     mapping(uint256 => Submission) public submissions;
     mapping(uint256 => uint64) public committedBlockOf;
+    mapping(uint256 => uint64) public committedActiveAtOf;
     mapping(uint256 => uint64) public maxDisputeEndsAtOf;
     mapping(uint256 => bool) public paidAtCommit;
     /// @notice Immutable fingerprint of the currently revealed claim. Challenge
@@ -219,6 +251,18 @@ contract P42SubmissionManager {
 
     event NewActionsPaused(bool paused);
     event AllActionsPaused(bool paused);
+    event AllActionsPauseRecovered(address indexed caller, uint64 recoveryAt);
+    event CreditRecoveryWindowAdvanced(
+        uint256 indexed submissionId,
+        uint64 previousEndsAt,
+        uint64 recoveryEndsAt
+    );
+    event CreditRecoveryWindowRestored(
+        uint256 indexed submissionId,
+        uint64 previousEndsAt,
+        uint64 restoredEndsAt
+    );
+    event OpenWitnessWindowConfigured(uint64 deployedAt, uint64 armNotBefore);
     event FundingArmed(uint64 at);
     event FinalizeVoided(
         uint256 indexed submissionId,
@@ -329,6 +373,9 @@ contract P42SubmissionManager {
         alphaBps = alphaBps_;
         minPostingBondWei = minPostingBondWei_;
         challengeWindowSeconds = challengeWindowSeconds_;
+        uint64 deployedAt_ = uint64(block.timestamp);
+        deployedAt = deployedAt_;
+        armNotBefore = deployedAt_ + challengeWindowSeconds_;
         onchainDa = onchainDa_;
         maxSolutionBytes = maxSolutionBytes_;
         if (seedScoreAtoms_ <= MIN_SCORE_ATOMS_BOUND || seedScoreAtoms_ >= MAX_SCORE_ATOMS_BOUND) {
@@ -337,6 +384,7 @@ contract P42SubmissionManager {
         seedScoreAtoms = seedScoreAtoms_;
         minImprovementAtoms = minImprovementAtoms_;
         bestScoreAtoms = seedScoreAtoms_;
+        emit OpenWitnessWindowConfigured(deployedAt_, deployedAt_ + challengeWindowSeconds_);
     }
 
     function setPausedNewActions(bool paused) external onlyOwner {
@@ -348,14 +396,38 @@ contract P42SubmissionManager {
     /// `pausedNewActions`, this also gates reveal() and finalize(), freezing
     /// the frontier so `voidFinalize` operates on a stable `bestScoreAtoms`.
     function setPausedAll(bool paused) external onlyOwner {
-        pausedAll = paused;
-        // On unpause, grant a full fresh challenge window before any expiry can
-        // fire, so a submission frozen out by the recovery is not immediately
-        // expirable (bond-forfeited) the instant it can finally act.
-        if (!paused) {
-            expiryGraceUntil = uint64(block.timestamp) + challengeWindowSeconds;
+        if (paused) {
+            // Keep the first timestamp for this continuous pause episode.
+            // Otherwise a compromised owner could refresh the timer forever.
+            if (!pausedAll) {
+                // Once a full pause is cleared, the protocol must provide a
+                // real settlement interval before a new episode can start.
+                // This also closes the same-block unpause/re-pause cycle.
+                if (block.timestamp < expiryGraceUntil) {
+                    revert P42_PAUSED_ALL_REARM_OPEN(expiryGraceUntil, uint64(block.timestamp));
+                }
+                pausedAll = true;
+                pausedAllAt = uint64(block.timestamp);
+            }
+            emit AllActionsPaused(true);
+            return;
         }
-        emit AllActionsPaused(paused);
+        if (!pausedAll) revert P42_NOT_PAUSED_ALL();
+        _clearPausedAll();
+    }
+
+    /// @notice Permissionlessly ends a continuous full pause after governance
+    /// had a fixed interval to execute its exact-inverse recovery. This only
+    /// clears `pausedAll`; `pausedNewActions` remains untouched, and the
+    /// standard fresh expiry grace protects in-flight submissions.
+    function recoverPausedAll() external {
+        if (!pausedAll) revert P42_NOT_PAUSED_ALL();
+        uint64 recoveryAt = pausedAllAt + PAUSED_ALL_RECOVERY_DELAY;
+        if (block.timestamp < recoveryAt) {
+            revert P42_PAUSED_ALL_RECOVERY_OPEN(recoveryAt, uint64(block.timestamp));
+        }
+        _clearPausedAll();
+        emit AllActionsPauseRecovered(msg.sender, recoveryAt);
     }
 
     /// @notice One-way switch from the unpaid OPEN phase to the PAID phase.
@@ -366,14 +438,16 @@ contract P42SubmissionManager {
     /// open-established frontier and the pool accepts funding — one call is
     /// the single arm authority for both.
     ///
-    /// Timing is the funder's discretion in this pass: the funder is
-    /// economically incentivized to run a real open phase (tightening the
-    /// frontier means not overpaying for already-public results).
-    /// NOTE: an on-chain OPEN_PHASE_MIN_SECONDS gate (require block.timestamp
-    /// >= deployedAt + OPEN_PHASE_MIN_SECONDS) can be added here if arming
-    /// discretion should be constrained protocol-side.
+    /// The unpaid OPEN phase is immutable and lasts at least one full challenge
+    /// window from deployment. This prevents an owner from deploying and
+    /// immediately arming a private paid frontier. A timer does not prove that
+    /// a public witness was posted, so the strict open-witness transcript and
+    /// arm/fund-boundary evidence remain separate launch gates.
     function armFunding() external onlyOwner {
         if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
+        if (block.timestamp < armNotBefore) {
+            revert P42_OPEN_WITNESS_WINDOW_OPEN(armNotBefore, uint64(block.timestamp));
+        }
         fundingArmed = true;
         armedAt = uint64(block.timestamp);
         emit FundingArmed(uint64(block.timestamp));
@@ -399,6 +473,10 @@ contract P42SubmissionManager {
         if (pausedAll) revert P42_PAUSED_ALL();
         if (pausedNewActions) revert P42_PAUSED_NEW_ACTIONS();
         if (ledger.closed()) revert P42_LEDGER_CLOSED();
+        uint64 deadline = ledger.fundingDeadline();
+        if (block.timestamp > deadline) {
+            revert P42_SUBMISSION_WINDOW_CLOSED(deadline, uint64(block.timestamp));
+        }
         if (commitment == bytes32(0)) revert P42_EMPTY_COMMITMENT();
         if (commitDaHash == bytes32(0)) revert P42_EMPTY_DA_HASH();
 
@@ -417,6 +495,7 @@ contract P42SubmissionManager {
         submission.requiredBondWei = required;
         submission.committedAt = uint64(block.timestamp);
         committedBlockOf[submissionId] = uint64(block.number);
+        committedActiveAtOf[submissionId] = activeTimestamp();
         paidAtCommit[submissionId] = isPaidCommit;
         submission.status = SubmissionStatus.Committed;
         openSubmissionCount += 1;
@@ -476,10 +555,7 @@ contract P42SubmissionManager {
         if (msg.sender != submission.solver) revert P42_NOT_SOLVER();
         _requireStatus(submission, SubmissionStatus.Committed);
         _requireCommitMature(submissionId);
-        uint64 commitExpiresAt = submission.committedAt + challengeWindowSeconds;
-        if (block.timestamp >= commitExpiresAt) {
-            revert P42_COMMIT_EXPIRED(commitExpiresAt, uint64(block.timestamp));
-        }
+        _requireCommitOpen(submissionId);
         if (bytes(solutionCid).length == 0) revert P42_EMPTY_SOLUTION_CID();
         // Seed gate (F1): the claimed ABSOLUTE score must strictly beat the
         // IMMUTABLE seed (the starting frontier). We gate on `seedScoreAtoms`,
@@ -612,7 +688,12 @@ contract P42SubmissionManager {
         // and the marginal it was credited (0 for superseded AND open-phase
         // finalizes), so a fraudulent finalize can later be reversed exactly
         // by voidFinalize.
-        finalizeInfo[submissionId] = FinalizeInfo({prevBestScoreAtoms: bestScoreAtoms, creditAtoms: creditAtoms});
+        uint64 previousRecoveryEndsAt = creditRecoveryEndsAt;
+        finalizeInfo[submissionId] = FinalizeInfo({
+            prevBestScoreAtoms: bestScoreAtoms,
+            creditAtoms: creditAtoms,
+            prevCreditRecoveryEndsAt: previousRecoveryEndsAt
+        });
         // Credit-bearing collateral remains live until close fixes the final
         // pool and denominator. Superseded and unpaid witness submissions have
         // no economic claim, so their bonds can be returned immediately.
@@ -624,7 +705,10 @@ contract P42SubmissionManager {
             bestScoreAtoms = claimed;
         }
         if (creditAtoms != 0) {
+            uint64 recoveryEndsAt = uint64(block.timestamp) + CREDIT_FINALIZE_RECOVERY_DELAY;
+            creditRecoveryEndsAt = recoveryEndsAt;
             ledger.recordCredit(solver, creditAtoms);
+            emit CreditRecoveryWindowAdvanced(submissionId, previousRecoveryEndsAt, recoveryEndsAt);
         }
 
         emit Finalized(
@@ -707,8 +791,15 @@ contract P42SubmissionManager {
         submission.status = SubmissionStatus.Voided;
         bestScoreAtoms = restored;
         if (creditAtoms > 0) {
+            uint64 previousRecoveryEndsAt = creditRecoveryEndsAt;
+            creditRecoveryEndsAt = info.prevCreditRecoveryEndsAt;
             ledger.voidCredit(submission.solver, creditAtoms);
             _makeBondClaimable(submissionId, treasury);
+            emit CreditRecoveryWindowRestored(
+                submissionId,
+                previousRecoveryEndsAt,
+                info.prevCreditRecoveryEndsAt
+            );
         } else {
             _makeBondClaimable(submissionId, submission.solver);
         }
@@ -824,15 +915,16 @@ contract P42SubmissionManager {
     }
 
     function expireCommitted(uint256 submissionId) external {
-        // A commit has an immutable reveal deadline. pausedAll prevents a
-        // third party from forfeiting its bond during recovery, but never turns
-        // an expired commitment back into a revealable priority claim.
+        // The reveal deadline is measured in active protocol time: full-pause
+        // intervals are tolled exactly, while a commit already expired when a
+        // pause begins remains expired afterwards.
         if (pausedAll) revert P42_PAUSED_ALL();
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Committed);
-        uint64 expiresAt = submission.committedAt + challengeWindowSeconds;
-        if (block.timestamp < expiresAt) {
-            revert P42_REVEAL_WINDOW_OPEN(expiresAt, uint64(block.timestamp));
+        uint64 activeNow = activeTimestamp();
+        uint64 expiresAt = committedActiveAtOf[submissionId] + challengeWindowSeconds;
+        if (activeNow < expiresAt) {
+            revert P42_REVEAL_WINDOW_OPEN(_wallTimestampForActive(expiresAt, activeNow), uint64(block.timestamp));
         }
         // Post-recovery grace: a full fresh window after any pausedAll unpause.
         if (block.timestamp < expiryGraceUntil) {
@@ -1008,6 +1100,14 @@ contract P42SubmissionManager {
         if (block.number < eligibleBlock) revert P42_COMMIT_NOT_MATURE(eligibleBlock, block.number);
     }
 
+    function _requireCommitOpen(uint256 submissionId) private view {
+        uint64 activeNow = activeTimestamp();
+        uint64 commitExpiresAt = committedActiveAtOf[submissionId] + challengeWindowSeconds;
+        if (activeNow >= commitExpiresAt) {
+            revert P42_COMMIT_EXPIRED(_wallTimestampForActive(commitExpiresAt, activeNow), uint64(block.timestamp));
+        }
+    }
+
     function _revealInstanceHash(uint256 submissionId, Submission storage submission) private view returns (bytes32) {
         return keccak256(
             abi.encode(
@@ -1049,6 +1149,32 @@ contract P42SubmissionManager {
 
     function _decrementOpenSubmission() private {
         if (openSubmissionCount > 0) openSubmissionCount -= 1;
+    }
+
+    function _clearPausedAll() private {
+        totalPausedAllSeconds += uint64(block.timestamp) - pausedAllAt;
+        pausedAll = false;
+        // Grant a full fresh challenge window before any expiry can fire, so a
+        // submission frozen out by recovery is not immediately forfeitable.
+        // The same boundary is a mandatory usable settlement interval: a new
+        // full-pause episode cannot begin before it ends.
+        expiryGraceUntil = uint64(block.timestamp) + challengeWindowSeconds;
+        emit AllActionsPaused(false);
+    }
+
+    /// @notice Protocol time used by commit reveal windows. It advances with
+    /// wall time while unpaused and is frozen for every `pausedAll` interval.
+    function activeTimestamp() public view returns (uint64) {
+        uint256 pausedSeconds = totalPausedAllSeconds;
+        if (pausedAll) pausedSeconds += block.timestamp - pausedAllAt;
+        return uint64(block.timestamp - pausedSeconds);
+    }
+
+    function _wallTimestampForActive(uint64 activeDeadline, uint64 activeNow) private view returns (uint64) {
+        if (activeDeadline >= activeNow) {
+            return uint64(block.timestamp) + activeDeadline - activeNow;
+        }
+        return uint64(block.timestamp) - (activeNow - activeDeadline);
     }
 
     function _boundedRearmDeadline(uint256 submissionId) private view returns (uint64) {

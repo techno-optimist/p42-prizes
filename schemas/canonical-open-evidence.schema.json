@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/canonical-open-evidence-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "chain_id", "challenge_manager", "finalized_through_block", "observed_at_utc", "complete", "open_challenges"],
+  "properties": {
+    "schema_version": { "const": "p42-canonical-open-evidence/v1" },
+    "chain_id": { "type": "integer", "minimum": 1 },
+    "challenge_manager": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+    "finalized_through_block": { "type": "integer", "minimum": 0 },
+    "observed_at_utc": { "type": "string", "format": "date-time" },
+    "complete": { "const": true },
+    "open_challenges": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["submission_id", "challenge_instance_hash"],
+        "properties": {
+          "submission_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+          "challenge_instance_hash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" }
+        }
+      }
+    }
+  }
+}

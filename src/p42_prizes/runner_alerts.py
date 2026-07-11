@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from p42_prizes.runner_worker import RUNNER_TRANSCRIPT_SCHEMA_VERSION
+from p42_prizes.secure_json import read_strict_json_file
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -52,7 +52,11 @@ def build_runner_alerts(
 
 def _load_transcript(path: str) -> dict[str, Any]:
     try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
+        data = read_strict_json_file(
+            path,
+            canonical=True,
+            trailing_newline="require",
+        )
     except Exception as exc:
         raise RunnerAlertError(f"{path}: could not read runner transcript JSON: {exc}") from exc
     if not isinstance(data, dict):

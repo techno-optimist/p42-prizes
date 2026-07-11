@@ -14,6 +14,7 @@ import tempfile
 from typing import Any, Iterable, Mapping
 
 from p42_prizes.problem import load_manifest, repo_root_from_problem
+from p42_prizes.secure_json import read_strict_json_file
 from p42_prizes.runner_sandbox import (
     RunnerSandboxError,
     build_sandbox_command,
@@ -794,7 +795,9 @@ def validate_admission_matrix(matrix: Mapping[str, Any]) -> dict[str, Any]:
 
 def load_evidence_file(path: str | Path) -> dict[str, Any]:
     try:
-        data = strict_json_loads(Path(path).read_bytes())
+        # This loader also serves user-authored trust registries and queue/config
+        # files, so retain strict semantic parsing without requiring canonical bytes.
+        data = read_strict_json_file(path)
     except Exception as exc:
         raise AdmissionError(f"{path}: could not read evidence JSON: {exc}") from exc
     if not isinstance(data, dict):

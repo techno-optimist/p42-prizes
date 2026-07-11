@@ -130,8 +130,15 @@ async function deployFixture({
     minImprovementAtoms: 1n,
   });
   await pool.connect(owner).setRegistry(await registry.getAddress(), 1);
+  const Vault = await ethers.getContractFactory("P42RolloverVault");
+  const vault = await Vault.deploy(await registry.getAddress(), owner.address);
+  await vault.waitForDeployment();
+  await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   if (freeze) await registry.connect(owner).freeze(1);
-  if (arm) await submissions.connect(owner).armFunding();
+  if (arm) {
+    await increaseTime(CHALLENGE_WINDOW + 1n);
+    await submissions.connect(owner).armFunding();
+  }
   if (acceptFunds) await pool.connect(owner).setAcceptingFunds(true);
 
   return {
@@ -147,6 +154,7 @@ async function deployFixture({
     submissions,
     challenges,
     registry,
+    vault,
     earliestClose,
     closeBy,
   };
@@ -219,6 +227,7 @@ async function slashResolverBond(fixture, submissionId, proofHash) {
 describe("P42 2026-07-09 economic and lifecycle audit regressions", function () {
   it("stores commit phase identity for both transaction orders in one block", async function () {
     const preArm = await deployFixture({ arm: false, acceptFunds: false });
+    await increaseTime(CHALLENGE_WINDOW + 1n);
     const preCid = "bafy-phase-before-arm";
     const preSalt = "phase-before-arm";
     const preCommitment = await commitmentFor(preArm.submissions, preArm.owner, preCid, preSalt);
@@ -252,6 +261,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(await preArm.ledger.totalCreditAtoms(), 0n);
 
     const postArm = await deployFixture({ arm: false, acceptFunds: false });
+    await increaseTime(CHALLENGE_WINDOW + 1n);
     const postCid = "bafy-phase-after-arm";
     const postSalt = "phase-after-arm";
     const postCommitment = await commitmentFor(postArm.submissions, postArm.owner, postCid, postSalt);
@@ -363,7 +373,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
       "P42_FUNDING_CAP_EXCEEDED"
     );
 
-    await advanceTo(await fixture.ledger.effectiveEarliestCloseTimestamp());
+    await advanceTo(await fixture.ledger.closeByTimestamp());
     await fixture.ledger.close();
     assert.equal(await fixture.ledger.finalEntitlement(fixture.alice.address), DEFAULT_CAP);
     await fixture.submissions.releaseFinalizedBond(submission.submissionId);
@@ -505,6 +515,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(await fixture.submissions.fundingArmed(), false);
     assert.equal(await fixture.registry.isFrozen(1), false);
 
+    await increaseTime(CHALLENGE_WINDOW + 1n);
     await fixture.submissions.connect(fixture.owner).armFunding();
     await expectCustomError(
       fixture.pool.connect(fixture.owner).setAcceptingFunds(true),
@@ -520,31 +531,36 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(await fixture.pool.everFunded(), true);
     assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), ethers.parseEther("1"));
 
-    await advanceTo(await fixture.ledger.effectiveEarliestCloseTimestamp());
+    await advanceTo(await fixture.ledger.closeByTimestamp());
     await fixture.ledger.close();
     await increaseTime((await fixture.ledger.CLAIM_DEADLINE_SECONDS()) + 1n);
-    await fixture.ledger.sweepResidual();
+    await fixture.pool.connect(fixture.bob).sponsorRefund();
+    assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), forced);
+    assert.equal(await fixture.pool.totalResidualPaid(), 0n);
+    const vaultBeforeForcedRecovery = await ethers.provider.getBalance(await fixture.vault.getAddress());
+    await fixture.pool.connect(fixture.owner).recoverForcedEth(forced);
+    assert.equal(
+      (await ethers.provider.getBalance(await fixture.vault.getAddress())) - vaultBeforeForcedRecovery,
+      forced
+    );
     assert.equal(await ethers.provider.getBalance(await fixture.pool.getAddress()), 0n);
-    assert.equal(await fixture.pool.totalResidualPaid(), ethers.parseEther("1"));
   });
 
-  it("blocks owner-premature close, then allows owner at earliestClose and anyone after closeBy", async function () {
+  it("blocks every caller before closeBy, then permits anyone after closeBy", async function () {
     const ownerClose = await deployFixture();
     await advanceTo(ownerClose.earliestClose);
     await ownerClose.pool.connect(ownerClose.bob).fund({ value: ethers.parseEther("0.1") });
     await expectCustomError(
       ownerClose.ledger.connect(ownerClose.owner).close(),
       ownerClose.ledger,
-      "P42_COMPETITION_WINDOW_OPEN"
+      "P42_CLOSE_BY_NOT_REACHED"
     );
-    const effectiveEarliest = await ownerClose.ledger.effectiveEarliestCloseTimestamp();
-    assert.equal(effectiveEarliest, (await ownerClose.pool.firstFundedAt()) + 30n * 24n * 60n * 60n);
-    await advanceTo(effectiveEarliest);
     await expectCustomError(
       ownerClose.ledger.connect(ownerClose.outsider).close(),
       ownerClose.ledger,
       "P42_CLOSE_BY_NOT_REACHED"
     );
+    await advanceTo(ownerClose.closeBy);
     await ownerClose.ledger.connect(ownerClose.owner).close();
     assert.equal(await ownerClose.ledger.closed(), true);
 

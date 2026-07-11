@@ -44,11 +44,16 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _base_report(*, image: str = "sha256:local-dev", valid: bool = True) -> dict:
+def _base_report(
+    *,
+    image: str = "sha256:local-dev",
+    valid: bool = True,
+    problem_id: str = "hadamard-mini",
+) -> dict:
     return {
         "details": {"checked_pairs": 6, "defect": 0, "violations": []},
         "improvement": "1/1" if valid else "0/1",
-        "problem_id": "hadamard-mini",
+        "problem_id": problem_id,
         "reason": "" if valid else "NOT_STRICT_IMPROVEMENT",
         "recomputed_at_commit": "local-dev",
         "score": "0/1" if valid else "6/1",
@@ -420,7 +425,7 @@ def test_source_hash_normalizes_the_self_referential_image_digest(tmp_path: Path
     assert compute_source_hash(problem) == before
 
 
-def test_admit_ready_accepts_only_exact_signed_image_bound_matrix(tmp_path: Path) -> None:
+def test_admit_ready_rejects_a_demo_fixture_even_with_exact_signed_image_evidence(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     (root / "schemas").mkdir(parents=True)
     shutil.copy(ROOT / "schemas" / "problem.schema.json", root / "schemas" / "problem.schema.json")
@@ -445,14 +450,13 @@ def test_admit_ready_accepts_only_exact_signed_image_bound_matrix(tmp_path: Path
     manifest["verifier"]["image_repository"] = repository
     manifest["verifier"]["admission"] = {"trusted_host_keys": public_keys}
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
-    source_hash = compute_source_hash(problem)
-
     specs = [
         ("x86-a", "x86_64", "2.31"),
         ("x86-b", "x86_64", "2.35"),
         ("arm-a", "aarch64", "2.35"),
         ("arm-b", "aarch64", "2.39"),
     ]
+    source_hash = compute_source_hash(problem)
     evidence = [
         _host_evidence(
             label,
@@ -470,6 +474,31 @@ def test_admit_ready_accepts_only_exact_signed_image_bound_matrix(tmp_path: Path
 
     completed = run_cli("admit-ready", "--problem", str(problem), "--matrix", str(matrix_path))
 
+    assert completed.returncode == 1
+    assert "permanently ineligible for funding" in completed.stderr
+
+    # The same evidence controls remain admissible for a non-demo package when
+    # its synthetic report also follows the manifest's raw-delta semantics.
+    manifest["problem_id"] = "admission-fixture"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    source_hash = compute_source_hash(problem)
+    report = _base_report(image=image, problem_id="admission-fixture")
+    report["improvement"] = "6/1"
+    evidence = [
+        _host_evidence(
+            label,
+            arch,
+            libc,
+            report=report,
+            source_hash=source_hash,
+            image_ref=f"{repository}@{image}",
+            signing_key=signing_keys[index],
+        )
+        for index, (label, arch, libc) in enumerate(specs)
+    ]
+    matrix_path.write_text(canonical_json(build_admission_matrix(evidence)), encoding="utf-8")
+
+    completed = run_cli("admit-ready", "--problem", str(problem), "--matrix", str(matrix_path))
     assert completed.returncode == 0, completed.stderr
     assert "fundable-admission ready" in completed.stdout
 

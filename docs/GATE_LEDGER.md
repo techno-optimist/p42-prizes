@@ -1,13 +1,13 @@
 # Production Gate Ledger
 
-Status date: 2026-07-09.
+Status date: 2026-07-10.
 
 Status: Phase 0 local/testnet-shaped portal. NO-GO for real ETH and NO-GO for
 a canonical Base Sepolia settlement pilot on the current source. Not externally
 audited. Not legally reviewed. No real ETH should be accepted until every Gate 2
 item in this ledger is green.
 
-July 9 snapshot: current source has useful local contract, agent, web, verifier,
+July 10 snapshot: current source has useful local contract, agent, web, verifier,
 and fail-closed runtime coverage, but it does not have a fresh DA-refactored
 canonical deployment, current manifest/reconciliation, live agent wallet run,
 immutable registry images, trusted four-host verifier matrix, or strict
@@ -44,7 +44,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Gate | Current status | Evidence today | Exit criteria |
 | --- | --- | --- | --- |
-| Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, published `.github/workflows/ci.yml`, and a green post-merge [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) for `e152e2de36f0de820b7c5d717080d364605cd1d8` | Repo owner enables GitHub private vulnerability reporting and configures independently verified protected-release enforcement |
+| Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, and published `.github/workflows/ci.yml`. The cited green post-merge [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) covers ancestor `e152e2de36f0de820b7c5d717080d364605cd1d8`, not current source | Obtain a completed required-check run for the current release; repo owner enables GitHub private vulnerability reporting and independently verified protected-release enforcement |
 | Gate 1: Base Sepolia testnet | Open - no current canonical DA-refactored deployment or current reconciliation | Python reference model, portal-local commit/reveal, local DA/permanence evidence validator, DGX/Hermes verifier-runner runbook plus burst-drill validator, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, read-only reconciliation script, and stale historical Base Sepolia evidence for old bytecode | Fresh deployed verified DA-refactored contracts, current testnet addresses, current manifest, current indexer reconciliation, on-chain-at-reveal DA verified on that deployment, live agent wallet/operator run, DGX reveal-watcher dry run, integrated resolver transcript, runner burst report, strict open-witness launch-board evidence, and a fresh adversarial campaign report |
 | Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested admission tooling, immutable-image `admit-ready` scaffold, draft wallet/session policy, opt-in mutation API-key gate, and legal memo validator | External audit, counsel-signed legal memo, KYC/sanctions/ToS approval, immutable registry image digests, collected trusted four-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
@@ -62,19 +62,19 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Per-problem donation pools | Phase 0 only | API/UI expose dedicated `donationWallet` state for all 10 boards, all currently `not-deployed` with no address or transfer action | Deploy and reconcile a bytecode-backed Base Sepolia pool per problem before publishing an address; do not imply mainnet settlement or real-value custody |
 | Local rate limits/idempotency/events | Pass for local pilot | Process-local limiter, local idempotency, hash-chained local events, problem APIs expose local-only chain provenance until a manifest/indexer is attached | Still not production settlement state |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
-| GitHub Actions workflow | Pass for source evidence | `.github/workflows/ci.yml` is published; the post-merge [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) for `e152e2de36f0de820b7c5d717080d364605cd1d8` passed Python verifier/seed, contracts, autonomous-agent, and portal gates | Maintain a completed required-check run for every deploy-relevant release; branch protection and private vulnerability reporting remain separate owner actions |
+| GitHub Actions workflow | Pass for workflow presence; current-release run pending | `.github/workflows/ci.yml` is published. The post-merge [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) passed four lanes for ancestor `e152e2de36f0de820b7c5d717080d364605cd1d8`; it is historical evidence and does not attest current source. The secret-free release-guard unit suite passes locally, but its prepared CI step remains unpublished because this OAuth token lacks `workflow` scope. Authenticated `make verify-render-release` remains separate live deployment evidence | Publish the prepared release-guard CI step with an owner-scoped GitHub session; obtain and retain a completed required-check run for every deploy-relevant release; branch protection and private vulnerability reporting remain separate owner actions |
 | Owner/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
 
 ## Gate 1 Blockers
 
 | Blocker | Required artifact | Owner/attestation |
 | --- | --- | --- |
-| Contract system incomplete | Local Hardhat 3 scaffold now covers problem registry/freezing, escrow pool, payout ledger, one-time credit recorder activation, submission bonds/top-ups, CID-bound commitment helper, commit-time DA hash bound into the on-chain `p42:v1` commitment, reveal, challenge-window-gated finalization, optional finalize-time permanence hash recording, ledger credit recording, close guard for unresolved submissions, abandoned commit/reveal expiry, counter-bond sizing, resolver transcript posting, challenge/resolver outcome hooks, solver-bond return/slash accounting, resolver-bond fraud-window release/slash proof hashing, reorg-bound reveal/challenge instance fingerprints, and invariant/property tests. This is local source evidence only, not a completed audit; it still needs fresh deployment, broader fuzzing/formal review, and external audit | Engineering + external auditor |
-| No current Base Sepolia deployment | Historical only: `deployments/base-sepolia/p42-prizes.json` records an old Base Sepolia deployment (chainId 84532) at commit `3121a1a`, and its committed reconciliation reported `ok=true`. This deployment predates the DA/frontier/open-witness refactors and its manifest/reconciliation are stale/invalid for the current source. It must never count as a deployed Gate 1 pass. Remaining: redeploy and re-verify the current DA-refactored contracts, with current ABI/code pins, operator roles, governance wiring, and a current manifest | Deployer credential owner |
-| Bond/claim/challenge scaffold not deployed or audited | Local tests cover bond sizing, empty-pool/self-fund paths, donation/top-up paths, final-denominator claim caps, escrow until close, close blockers, abandoned commit/reveal expiry, pause-not-claim, CID-bound reveal, reorg-safe challenge-instance binding, challenge-window finalization, counter-bond sizing, challenge lifecycle, transcript-required resolution, challenge-bond routing, solver-bond return/slash, resolver-bond fraud-window release/slash proof hashing, and seeded payout properties. Still needs real deployment, non-owner-trusted slashing policy, broader fuzzing/formal review, and external audit | Engineering + auditor |
+| Contract system incomplete | Local Hardhat 3 source and tests now cover the core registry, escrow, payout, submission, challenge, resolver, bounded permissionless full-pause recovery, sponsor-refund, fee, forced-ETH, and restricted-rollover paths. This is local source evidence only, not a completed audit; it still needs fresh deployment, broader fuzzing/formal review, external audit, deployment-specific pause-recovery rehearsal, and counsel/product approval of the implemented close/refund/rollover policy | Engineering + external auditor |
+| No current Base Sepolia deployment | Historical only: `deployments/base-sepolia/p42-prizes.json` records an old Base Sepolia deployment (chainId 84532) at commit `3121a1a`, and its committed reconciliation reported `ok=true`. This deployment predates the DA/frontier/open-witness refactors and its manifest/reconciliation are stale/invalid for the current source. It must never count as a deployed Gate 1 pass. The source-level v2 multi-board ceremony and reconciliation path is documented in [`MULTIBOARD_CEREMONY.md`](MULTIBOARD_CEREMONY.md), but it is not deployment evidence and sends no funding action. Remaining: redeploy and re-verify the current DA-refactored contracts, with current ABI/code pins, operator roles, governance wiring, and a current manifest | Deployer credential owner |
+| Bond/claim/challenge scaffold not deployed or audited | Local tests cover bond sizing, donation/top-up paths, funding-time recorder binding, final-denominator claims, permissionless bounded pause recovery, fixed permissionless close, sponsor refunds, restricted rollover, forced ETH, challenge lifecycle, transcript-required resolution, bond routing, and seeded payout properties. Still needs real deployment, non-owner-trusted slashing policy, deployment-specific pause/liveness rehearsal, counsel approval of refund/rollover economics, broader fuzzing/formal review, and external audit | Engineering + auditor |
 | No live DA verification on the canonical deployment | DA now rides the reveal calldata bound by `sha256(bytes)==commitDaHash` (anchored off-chain store for the 3 large problems) — see `docs/DATA_AVAILABILITY.md`; Arweave is an optional mirror only, and `p42-prizes da-receipt`/`da-verify` package that optional mirror evidence. Still need the canonical (DA-refactored) redeploy, indexer integration, and operator challenge policing of missing off-chain payloads | Engineering |
 | No current funding/indexer reconciliation | The committed reconciliation is historical evidence against old bytecode only. Current source still needs a deployed runtime, chunked log reads where RPCs cap `eth_getLogs`, complete lifecycle/recovery-event replay, running indexer, real funding deposits, reorg policy, monitoring, portal read integration, and signed ops review | Engineering + ops |
-| No live reveal watcher or agent wallet run | `docs/VERIFIER_RUNNER.md` defines DGX CHRONOS/Hermes as the immediate verification worker and keeps runner output outside the trust root; `p42-prizes runner-plan`, `runner-drain`, `runner-alerts`, and `runner-burst-validate` now give executable queue/OOM admission, FIFO draining, transcript hashing, local agent alert/challenge-candidate generation, reorg quarantine, and reveal-instance-bound call policy. `agent/operator.mjs` has the corresponding finalized-log, pinned-sandbox, exact-policy, raw-transaction, and reorg-reconciliation runtime. Still need one deployed event-to-sandbox-to-transcript-to-challenge rehearsal, durable transcript publication, a committed burst-drill report, bounded challenge-key policy rehearsal, and a current live agent wallet/operator run | Engineering + ops |
+| No live reveal watcher or agent wallet run | `docs/VERIFIER_RUNNER.md` defines DGX CHRONOS/Hermes as the immediate verification worker and keeps runner output outside the trust root. `p42-prizes runner-burst-validate` now requires hash-bound files beneath a secure artifact root, derives queue/transcript/alert/guard claims, and leaves unsigned reports explicitly non-attesting; a trusted runner signature is required for `gate_passed`. `agent/operator.mjs` has the corresponding finalized-log, pinned-sandbox, exact-policy, raw-transaction, and reorg-reconciliation runtime. Still need one deployed event-to-sandbox-to-transcript-to-challenge rehearsal, durable transcript publication, a real signed burst-drill packet, bounded challenge-key policy rehearsal, and a current live agent wallet/operator run | Engineering + ops |
 | Resolver transcript path not deployed/integrated | Local `P42ChallengeManager` requires transcript hash, URI, verdict hash, resolver decision bond, fraud-window-gated release/slash proof hash, and submission outcome hooks. `agent/resolver.mjs` now scans finalized `Challenged` logs, independently validates a canonical Docker runner transcript and both instance fingerprints, journals exact signed calls, and handles receipt reorgs. It does not publish or retrieve the referenced `ar://`/`ipfs://` bytes, and the current exact-calldata wallet requires owner provisioning for each dynamic decision. Deployment, durable publication/retrieval, a reviewed autonomous wallet-policy architecture, signer/rehearsal evidence, and a fraud-proof/equivalent slashing path remain open | Engineering + resolver signers |
 | No fresh adversarial testnet campaign | Historical/stale only: `deployments/base-sepolia/adversarial/` records a campaign against the old deployed bytecode. It is useful regression history, but it is not closure for the refactored release and must not count as a current Gate 1 pass. Remaining: run the full planted-attack campaign on the fresh DA-refactored canonical deployment, include current reconciliation and verifier transcripts, and obtain required reviewer sign-offs plus a live DGX runner-alert bundle | Red team + engineering |
 | No strict open-witness launch boards | `docs/OPEN_WITNESS_SEEDING.md` describes the open-witness mechanism, but no current launch board has a strict public open-witness transcript, current on-chain frontier, arm/fund boundary evidence, or launch-board signoff. No board is fundable until this evidence exists on the current deployment | Engineering + funder/operator |
@@ -86,9 +86,9 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | No external audit | Audit report, remediation PRs, re-test evidence, residual-risk acceptance | External auditor attestation |
 | No legal memo | `docs/LEGAL_COMPLIANCE.md`, `schemas/legal-memo.schema.json`, and `p42-prizes legal-memo-validate` now define the agent-prepared packet; still need a real counsel memo/reference covering bounty/prize, money transmission, KYC/sanctions, tax, ToS/privacy, Coinbase Onramp, custody/non-custody controls, no-token/no-points posture, and international access | Licensed counsel attestation |
 | No trusted four-host verifier evidence | `p42-prizes admit-host` and `p42-prizes admit-matrix` exist and are tested; still need trusted x86 + ARM + two glibc versions all hash-identical on canonical `VerdictReport` fixtures for every funded problem, with host metadata that is not merely self-attested | Verifier reviewers |
-| Immutable image registry not populated | `docs/VERIFIER_IMAGE_REGISTRY.md` defines the registry fields and `p42-prizes admit-ready` rejects placeholder images or matrix/manifest mismatches; still need real reviewed registry image digests recorded in problem metadata, admission matrices, deployment manifests, and portal/indexer provenance | Engineering |
+| Immutable image registry not populated | `docs/VERIFIER_IMAGE_REGISTRY.md` defines the registry fields and `p42-prizes admit-ready` rejects placeholder images or matrix/manifest mismatches. The v2 ceremony now runs that gate before any deployment reservation and binds the validated matrix's canonical digest to its registry hash; still need real reviewed registry image digests and durable matrix artifacts for every board | Engineering |
 | No named custody/governance | Multisig signers, timelock, guardian, recusal policy, key rotation and rehearsal evidence | Governance owner attestation |
-| Wallet/session policy not reviewed or enforced in production | `docs/WALLET_SESSION_POLICY.md` defines solver ownership, session-key scopes, API-key hashing, payload quarantine, and compliance review targets; portal mutable routes can require hashed API keys with `P42_REQUIRE_MUTATION_API_KEY=1`; still needs security/counsel review, production enforcement, distributed limits/logs, and quarantine service | Security + counsel |
+| Wallet/session policy not reviewed or enforced in production | `docs/WALLET_SESSION_POLICY.md` defines solver ownership, session-key scopes, API-key hashing, payload quarantine, and compliance review targets. `schemas/operational-controls.schema.json` and `p42-prizes operational-controls-validate` require eleven release-bound controls with distinct test/output artifacts and trusted owner signatures. No real packet exists yet; production enforcement, distributed services, security review, and counsel approval remain open | Security + counsel |
 | No distributed settlement state | Transactional DB/indexer or chain-first event source; atomic idempotency reserve/commit; alerting | Engineering + ops |
 | No incident drill or bounty | Completed tabletop drill, public status template, live responsible disclosure/bug bounty path | Security owner |
 
@@ -113,6 +113,8 @@ repo-owner authority cannot be replaced by agent execution.
 - [x] Retryable submission/verifier POSTs support local `Idempotency-Key` replay.
 - [x] Local diagnostic event ledger exposes hash-chained commit/reveal/idempotency events.
 - [x] `SECURITY.md` contact and disclosure channel documented.
+- [ ] A required-check CI run passes for the exact current release commit.
+- [ ] Protected-release/branch enforcement is independently verified by the repo owner.
 - [ ] GitHub private vulnerability reporting is enabled by a repo owner.
 
 ### Gate 1: Base Sepolia Testnet
@@ -129,7 +131,7 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] Runner queue/OOM guard rehearsal validates with `p42-prizes runner-burst-validate`.
 - [ ] Invalid-reveal alerts produce agent challenge candidates with a bounded challenge key, spend cap, and revocation path (`docs/CHALLENGE_KEY_POLICY.md`).
 - [x] Challenge, resolver, expiry, and slash calls bind the exact reveal/challenge instance, with stale-transaction regressions in `contracts/test/p42-gate1.test.js`.
-- [x] Source-level resolver runtime validates finalized challenge/transcript bindings and journals/reconciles exact resolver calls (`agent/resolver.mjs`).
+- [x] Source-level resolver runtime validates finalized challenge/transcript bindings and journals/reconciles exact resolver calls (`agent/resolver.mjs`). Local source/test evidence only; this does not attest deployed retrieval, immutable public availability, wallet provisioning, or live resolver operation.
 - [ ] Resolver publishes a complete re-run transcript for every challenged decision, with the on-chain record binding its content and durable availability. The current Phase 0 ABI stores `transcriptHash`, `transcriptURI`, and `verdictHash`; it does not store full transcript bytes on-chain.
 - [ ] Resolver operations prove that each on-chain `transcriptURI` resolves to the bound immutable bytes, and a reviewed policy architecture permits autonomous dynamic resolver calls without widening the session key beyond exact decision calldata.
 - [ ] Fresh testnet adversarial run catches planted verifier exploits on the current DA-refactored canonical deployment. Historical old-bytecode campaign evidence exists in `deployments/base-sepolia/adversarial/CAMPAIGN.md`, but it is stale for this release.
@@ -143,14 +145,14 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] KYC/sanctions and Terms of Service posture approved.
 - [ ] N-host verifier matrix passes for every funded problem.
 - [ ] N-host matrix host metadata (arch/libc/label) is attested, not self-attested and spoofable.
-- [ ] Verifier totality/score fuzzing has run across all 10 launch verifiers, not fixtures only.
-- [ ] Cross-language determinism conformance is proven beyond the reference Python rational-grammar path.
+- [x] Deterministic verifier totality, mutation, score-oracle, and one-atom frontier-transition campaigns run across all 10 launch verifiers (`tests/test_verifier_fuzz_properties.py`). Full independent directed-rounding re-certification of the two largest transcendental fixtures remains external math-review work.
+- [x] Node/Python conformance proves byte-identical canonical `VerdictReport` JSON and hashes beyond rational parsing, with a lossless recursive details domain and adversarial corpus (`conformance/p42-v1.mjs`, `tests/test_p42_v1_node_conformance.py`).
 - [ ] Off-chain-verdict → on-chain-key bridge (trusted resolver/`creditRecorder`) is replaced or bounded; native-ETH-only until then.
 - [ ] Dynamic/on-chain differential testing runs against a live testnet deployment, not local unit tests only.
 - [ ] Verifier image digests are pinned and immutable in registry.
 - [ ] Contracts still native-ETH only: do NOT advertise/accept USDC/ERC-20 bounties until an ERC-20 pool/fee/payout path is implemented and audited.
 - [ ] Protocol fee is capped in-contract at `MAX_FEE_BPS = 250` (2.5%).
-- [ ] Multisig signers, timelock, and emergency guardian are named (current scaffold is a single immutable EOA owner — no proxy/timelock/multisig).
+- [ ] Multisig signers, timelock, and emergency guardian are named and deployed. The v2 source ceremony makes `P42MultisigTimelock` the immutable owner of every new child contract, but no current canonical deployment has those named governance roles or rehearsal evidence.
 - [ ] Production wallet/session policy is reviewed across portal, contracts, and solver agents.
 - [ ] Distributed rate limits, idempotency store, API keys, abuse monitoring, and payload quarantine are live.
 - [ ] Transactional event ledger/indexer can reconstruct portal and on-chain state.
@@ -176,10 +178,10 @@ Evidence" table in `PRODUCTION_READINESS.md`).
 | Portal API | Phase 0 routes with schema validation, raw-byte reveal, local JSON persistence, local diagnostic event ledger, process-local rate limits, local idempotency for retryable verifier/submission POSTs, opt-in hash-based mutation API key gate, no fake challenges | Transactional database/event ledger, distributed rate limits/idempotency, audited auth/session policy |
 | Pool funding | Per-problem Base Sepolia testnet/demo donation-wallet metadata exposed in API/UI; no real settlement or deployed prize-pool claim | Reviewed Base mainnet pool contracts, Coinbase Onramp enablement, treasury controls |
 | Commit-reveal | Local Keccak preimage check, raw `sha256:` content binding, EIP-191 solver ownership signature for non-local commits, local contract commitment helper, and `p42-da-receipt/v1` evidence validator | Deployed on-chain commit; on-chain-at-reveal DA on the canonical deployment (reveal enforces `sha256(bytes) == commitDaHash`; anchored off-chain store for the 3 large problems). A permanence receipt at finalize is optional (mirror only) — see `docs/DATA_AVAILABILITY.md` |
-| Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; `admit-host`/`admit-matrix` enforce typed N-host evidence locally; `admit-ready` rejects placeholder verifier images before funding | Canonical sandbox runner, pinned image digest, collected N-host identical verdict matrix artifacts |
+| Verifier execution | Hadamard fixture only; portal invokes the problem repo verifier on raw bytes with a wall-clock timeout; source runner code requires a fail-closed Docker sandbox for chain-linked jobs, validates pullable immutable image references, and applies aggregate cgroup memory/PID controls; `admit-host`/`admit-matrix` enforce typed N-host evidence locally; `admit-ready` rejects placeholder verifier images before funding | Pullable production image digest, production Linux/DGX sandbox rehearsal, collected N-host identical verdict matrix artifacts |
 | Settlement math | Final-denominator pool simulator, incremental portal credit model, and Hardhat scaffold tests for escrow-until-close, final-denominator claims, reveal/finalize, challenge outcomes, bond return/slash, seeded payout/bond property checks, and ledger credit | Complete deployed contract state machine: commit, reveal, challenge, resolve, close, claim, slash |
-| Challenges | Endpoint returns `501`; local Hardhat challenge scaffold covers counter-bond sizing, one active challenge per submission, open-challenge finalization block, resolver outcome hooks, and challenge-bond routing | Integrated testnet bond escrow, resolver transcript flow, fraud-window/slashing path |
-| Resolver | Local transcript-required resolver scaffold with per-decision bond, fraud-window-gated release, and owner-slash proof hash | Verifiable transcript committee on testnet; non-owner-trusted slashing policy; fraud-proof track before scale |
+| Challenges | Endpoint returns `501`; local Hardhat coverage includes counter-bond sizing, one active challenge per submission, open-challenge finalization block, resolver outcomes, and bond routing. Local agent tests cover the v2 spend envelope, signed immutable provisioning, canonical open-evidence reconstruction, fresh runner-health admission, recoverable action intents, and exact signed-transaction journals | Integrated testnet bond escrow, deployed wallet-policy provisioning, signed provisioning/rehearsal evidence, resolver transcript flow, fraud-window/slashing path |
+| Resolver | Local transcript-required contract scaffold plus a strict agent runtime with trusted retrieval requirements, atomic transcript archive support, restart-safe transaction journals, and reorg reconciliation | Deployed and rehearsed resolver, immutable public publication and independent retrieval, reviewed autonomous wallet-policy provisioning, non-owner-trusted slashing policy, fraud-proof track before scale |
 | Contracts | Local Hardhat 3 scaffold for problem registry/freezing, pool, payout ledger, one-time recorder activation, submission bond checks/top-ups, CID-bound reveal/finalize, DA-bound on-chain commitment, optional finalize permanence-hash recording (the mandatory permanence gate was removed by the on-chain-at-reveal DA refactor), close guards and expiry paths, challenge manager, resolver transcript gate, resolver-bond fraud window/slashing scaffold, bond accounting, seeded property checks, deployment manifest scaffold, and read-only reconciliation script | On-chain-at-reveal DA on the canonical deployment (Arweave is an optional mirror only), production indexer jobs, Base Sepolia redeploy of the DA-refactored contracts, audit, broader fuzz/formal review, timelock/multisig rehearsals |
 | Legal | Spec risk register plus agent-prepared legal memo evidence validator | Counsel-signed memo covering prize/bounty, KYC/sanctions, tax, ToS, Coinbase Onramp, money-transmission risk, and no-token/no-points posture |
 | Operations | This ledger, owner/external-attestation register, wallet/session policy draft, incident/governance/legal docs, incident-drill evidence validator, custody/governance signoff validator, legal-memo validator, runner-burst validator, bug-bounty policy draft, DGX/Hermes verifier-runner runbook, and deployment runbook | Agent-run monitors/deploy rehearsals, runner transcripts, signed custody/governance artifact, signed incident drill, counsel memo, and live disclosure path |
@@ -279,15 +281,18 @@ independent/external audit; that remains an open Gate 2 blocker) surfaced
 coverage gaps that are not yet closed by any evidence artifact. None of these may be marked closed; each is an open Gate 1
 or Gate 2 item.
 
-- **Verifier totality / score fuzzing across all 10 problems.** R4 totality and
-  score correctness have been exercised on fixtures only. There is no
-  fuzzing/property campaign over malformed, adversarial, and boundary inputs for
-  every one of the ten launch verifiers. Open.
-- **Cross-language determinism conformance beyond the rational grammar.** The
-  `p42:v1` rational grammar is finalized, but there is no conformance suite
-  proving that a non-Python re-implementation of a verifier produces byte-
-  identical canonical `VerdictReport`s. Determinism is asserted only for the
-  reference Python path. Open.
+- **Verifier totality / score fuzzing now has local all-ten coverage.** The
+  deterministic campaign covers malformed and nested-duplicate JSON, bounded
+  reads, seeded mutations, independent score oracles, and exact one-atom
+  accept/reject frontier transitions for all ten verifiers. The complete
+  Mertens `K=12000` and PNT 960,000-row directed-rounding certificates are
+  executed but not independently re-certified by a second interval
+  implementation; independent mathematical review remains open.
+- **Cross-language report determinism is implemented locally.** A dependency-
+  free Node implementation and adversarial corpus now match Python's canonical
+  `VerdictReport` bytes and SHA-256 hashes. This proves the wire contract, not a
+  second implementation of every problem-specific scoring algorithm; N-host
+  execution and independent math review remain open.
 - **Host-metadata attestation for the N-host matrix.** Architecture/libc/label
   fields are self-attested and spoofable from one machine (see
   `docs/VERIFIER_IMAGE_REGISTRY.md`). The multi-arch/multi-glibc gate is not
@@ -301,10 +306,20 @@ or Gate 2 item.
   bounties," but the contracts are **native-ETH only** — there is no ERC-20 pool,
   deposit, fee-skim, or payout path implemented or audited. USDC support is a
   target, not a shipped capability. Open.
-- **Dynamic / on-chain differential testing.** Contract evidence is local
-  Hardhat unit/property tests only. There is no dynamic on-chain differential
-  test (deployed-vs-reference state machine, fork/replay, or invariant fuzzing
-  against a live testnet deployment). Open.
+- **Dynamic / on-chain differential testing.** A deterministic local reference
+  state machine now differentially exercises funding gates, mutable credits,
+  close/claim boundaries, fees, refunds, rollover, forced ETH, rollback, and
+  conservation against deployed Hardhat contracts. A deployed-vs-reference
+  campaign against the current live testnet release is still absent. Open.
+- **Full-pause settlement liveness is implemented locally, not proven in a
+  deployment.** Current source has bounded permissionless recovery, active-time
+  tolling, anti-cycle spacing, and adversarial tests. It still needs external
+  audit and a deployment-specific pause/recovery rehearsal before real ETH. Open.
+- **Close/refund/residual economics are implemented locally, not approved.**
+  Current source uses one permissionless fixed close, exact zero-credit sponsor
+  refunds, claim-time fees, restricted rollover, and separate forced-ETH
+  accounting. Product copy, Terms, counsel, audit, and deployed evidence must
+  still converge on this policy before real ETH. Open.
 
 ## Additional Known-Open Operational Blockers
 
@@ -324,11 +339,15 @@ already captured by a gate row or residual gap above. All open.
   add at real-ETH scale, not a launch blocker. For the 3 off-chain-DA
   problems, unavailable-payload policing is an operator challenge, not an
   automatic slash.
-- The runner's untrusted-verifier isolation is process-level only: verifiers
-  run in their own process group with a process-tree kill on timeout and a
-  scrubbed/allowlisted environment, but there is no container/cgroup sandbox
-  and `RLIMIT_AS` is per-process, so a forking verifier can still exceed the
-  aggregate memory bound.
+- The source runner has two untrusted-verifier policies. Chain-linked jobs
+  require the fail-closed Docker policy: it rejects unavailable runtimes and
+  mutable or placeholder images, runs with `--network=none`, read-only
+  filesystem and solution mount, non-root/no-capabilities, and aggregate cgroup
+  memory/PID/CPU caps. Local non-chain runs may still use process-group,
+  allowlisted-environment, and per-process-`RLIMIT_AS` mode, so a forking
+  verifier can exceed that local aggregate memory bound. No production
+  Linux/DGX exercise has yet demonstrated the Docker policy against a pullable
+  pinned verifier image; that remains a Gate 1 runtime-evidence requirement.
 
 ## Closed Evidence History
 
@@ -344,7 +363,7 @@ Historical record of items closed during the Phase 0 hardening passes
 - Duplicate/tie/worse submissions receive zero incremental frontier credit.
 - Challenge route returns `501`, not fake `opened`.
 - Every listed problem exposes a dedicated Base Sepolia donation-pool panel in API/UI, safely disabled until reconciled chain provenance supplies a pool address.
-- Coinbase Onramp session route exists but fails closed until reviewed Base mainnet pools and server credentials are configured.
+- Coinbase Onramp is deliberately unavailable in v1; its route returns an unconditional `503` and performs no provider request.
 - Coinbase Onramp `clientIp` binding can only come from a configured trusted deployment header, not request JSON.
 - Commits and dynamic submissions persist to a local JSON store at `web/data/portal-state.json` instead of module memory.
 - Mutable API routes use controlled JSON parsing and `no-store` responses.
@@ -354,7 +373,7 @@ Historical record of items closed during the Phase 0 hardening passes
 - Problem APIs expose `chainProvenance` with `settlementState: local-only` until a real deployment manifest and reconciliation report are attached.
 - Non-runnable arena-derived problems are locked in portal data.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
-- Local/Render verification covers problem validation, certified-path exactness lint, Python tests, seed verification, web typecheck, web tests, production build, and `npm audit`. GitHub Actions is now published, and the post-merge [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) for `e152e2de36f0de820b7c5d717080d364605cd1d8` passed all four lanes. The current Git OAuth credential still cannot update workflow files; future workflow revisions need a workflow-capable owner credential or the GitHub connector, followed by a new successful `main` run.
+- Local verification covers problem validation, certified-path exactness lint, Python tests, seed verification, contracts, agent, web typecheck/tests/build, and package audits. GitHub Actions is published, but the cited green [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) covers ancestor `e152e2de36f0de820b7c5d717080d364605cd1d8`, not current source. The current Git OAuth credential cannot update workflow files; future workflow revisions need a workflow-capable owner credential or GitHub connector, followed by a successful current-release run.
 - N-host verifier admission now has typed host and matrix artifacts: `p42-prizes admit-host` emits repeated-run host evidence, and `p42-prizes admit-matrix` rejects duplicate hosts, missing x86/ARM coverage, insufficient glibc diversity, or mismatched canonical `VerdictReport` hashes.
 - Immutable verifier-image admission is now executable: `docs/VERIFIER_IMAGE_REGISTRY.md` defines the registry fields, and `p42-prizes admit-ready` rejects `sha256:local-dev` / pending placeholders or N-host matrices whose problem id, verifier version, or verifier image does not match `problem.yaml`.
 - Commit-time DA and finalize-time permanence have a local evidence gate: `docs/DATA_AVAILABILITY.md`, `schemas/da-receipt.schema.json`, `p42-prizes da-receipt`, and `p42-prizes da-verify` bind payload hash, solution CID, solver, salt, commit receipt, Arweave txid, and contract hash anchors. *(Since superseded: DA now rides the reveal calldata bound by `sha256(bytes) == commitDaHash`, and the finalize permanence receipt is optional — the da-receipt flow now documents the optional mirror path; see `docs/DATA_AVAILABILITY.md`.)*
@@ -364,11 +383,12 @@ Historical record of items closed during the Phase 0 hardening passes
 - `docs/WALLET_SESSION_POLICY.md` now drafts the Gate 2 wallet/session, API-key, payload-quarantine, session-key, KYC/sanctions, and Coinbase Onramp posture; the portal has an opt-in hashed mutation API-key gate for mutable routes.
 - `docs/VERIFIER_RUNNER.md` defines DGX CHRONOS/Hermes as the immediate reveal verifier, transcript publisher, and agent-operated alert/auto-challenge candidate while keeping runner output outside the settlement trust root; `p42-prizes runner-plan`, `runner-work-once`, `runner-drain`, `runner-alerts`, and `runner-burst-validate` add local queue/OOM admission, queue leases, FIFO draining, verifier transcripts, tamper-evident alert/challenge-candidate bundles, and burst-drill evidence.
 - The source runner now quarantines a chain/problem-manifest mismatch and rejects a report whose problem id, verifier version, or verifier image differs from the manifest. Sandbox and official local commands bind `P42_VERIFIER_IMAGE` from that manifest; this is source-level regression coverage only, not immutable-image or N-host admission evidence. Locked portal frontier models now start at their packaged manifest baseline rather than a looser historical display value.
-- Gate 1 runner burst/OOM rehearsal evidence now has an executable artifact path: `docs/RUNNER_BURST_DRILL.md`, `schemas/runner-burst.schema.json`, and `p42-prizes runner-burst-validate` require one active verifier, no OOM kills/restarts/queue corruption, explicit low-memory/swap/host-capacity/runner-slot guard cases, transcript-hash validation, invalid-submission alerting, passed regressions, and canonical `burst_hash`.
+- Gate 1 runner burst/OOM rehearsal evidence now has an executable artifact path: `docs/RUNNER_BURST_DRILL.md`, `schemas/runner-burst.schema.json`, and `p42-prizes runner-burst-validate` securely read hash-bound artifacts, derive FIFO/concurrency/transcript/alert/guard claims, reject cross-board/release evidence, and require a trust-registry-backed runner signature before `gate_passed` can be true.
 - Gate 2 incident/bounty evidence now has an executable artifact path: `docs/INCIDENT_DRILL.md`, `docs/BUG_BOUNTY.md`, `schemas/incident-drill.schema.json`, and `p42-prizes incident-drill-validate` define the required tabletop report, invariants, regression evidence, disclosure policy reference, security-owner attestation, and canonical `drill_hash`.
 - Gate 1 adversarial-campaign evidence now has an executable artifact path: `docs/ADVERSARIAL_TESTNET_CAMPAIGN.md`, `schemas/adversarial-campaign.schema.json`, and `p42-prizes adversarial-campaign-validate` require the six red-team scenarios, deployment/reconciliation/transcript references, required invariants, reviewer signoff, passed regressions, and canonical `campaign_hash`.
 - Gate 2 custody/governance evidence now has an executable artifact path: `docs/CUSTODY_GOVERNANCE.md`, `schemas/governance-signoff.schema.json`, and `p42-prizes governance-signoff-validate` require named multisig signers, strict-majority threshold, timelock, guardian limits, custody constraints, key-rotation rehearsal, recusal policy, governance/security-owner attestation, and canonical `governance_hash`.
 - Gate 2 legal/compliance evidence now has an executable artifact path: `docs/LEGAL_COMPLIANCE.md`, `schemas/legal-memo.schema.json`, and `p42-prizes legal-memo-validate` require an agent-prepared packet, counsel memo reference, required legal/compliance finding topics, launch constraints, reviewed document references, residual-risk handling, counsel signature, and canonical `legal_hash`.
+- Gate 2 operational-control evidence now has an executable artifact path: `schemas/operational-controls.schema.json` and `p42-prizes operational-controls-validate` require all eleven wallet/session/abuse controls, exact release/deployment binding, distinct hash-resolved test and output artifacts, and trusted owner signatures. This validates evidence shape and provenance; it does not claim those production services are deployed.
 
 ## Non-Negotiable Stop Conditions
 

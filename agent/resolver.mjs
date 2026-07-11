@@ -7,8 +7,10 @@ import { ethers } from "ethers";
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   renameSync,
   statSync,
@@ -27,7 +29,26 @@ import {
   validateRegistryBinding,
   validateOperatorExecutionMode,
 } from "./lib.mjs";
-import { validateManifestEvidence } from "./indexer.mjs";
+import {
+  manifestProblemContracts,
+  manifestProblemForRegistryId,
+  validateManifestEvidence,
+} from "./indexer.mjs";
+import {
+  configuredTranscriptEndpoints,
+  httpTranscriptFetchClient,
+  parseTranscriptUri,
+  publishAndVerifyTranscript,
+  receiptSpoolPublisher,
+} from "./transcript-store.mjs";
+import {
+  assertApprovedJournalPath,
+  assertSignedTransactionRecord,
+} from "./signed-transaction.mjs";
+import { readStrictJsonFileSync } from "./strict-json.mjs";
+
+const RUNTIME_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
+const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...RUNTIME_JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHA256_RE = /^sha256:[a-f0-9]{64}$/;
@@ -132,6 +153,10 @@ export function validateTranscriptUriTemplate(value) {
   if (/^file:/i.test(template) || template.includes("..")) {
     throw new Error("--transcript-uri-template must not name a file or traversal path");
   }
+  const probe = template.startsWith("ar://")
+    ? template.replace("{transcript_hash}", "a".repeat(43))
+    : template.replace("{transcript_hash}", `b${"a".repeat(58)}`);
+  parseTranscriptUri(probe);
   return template;
 }
 
@@ -175,11 +200,7 @@ function validateVerdictReport(value, label) {
 }
 
 function validateDurableTranscriptURI(value) {
-  const uri = requireString(value, "transcriptURI");
-  if (/\s/.test(uri) || !/^(ar|ipfs):\/\//.test(uri) || /^file:/i.test(uri) || uri.includes("..")) {
-    throw new Error("transcriptURI must be a durable ar:// or ipfs:// URI");
-  }
-  return uri;
+  return parseTranscriptUri(requireString(value, "transcriptURI")).uri;
 }
 
 function validateChainClaim(value, expected) {
@@ -686,7 +707,7 @@ function loadResolverState(context) {
       updated_at_utc: new Date().toISOString(),
     };
   }
-  const state = JSON.parse(readFileSync(context.statePath, "utf8"));
+  const state = readStrictJsonFileSync(context.statePath, RUNTIME_JSON_LIMITS);
   if (state.schema_version !== "p42-resolver-state/v1") throw new Error("unsupported resolver state schema");
   if (canonicalJson(state.binding) !== canonicalJson(context.binding)) {
     throw new Error("resolver state belongs to a different deployment binding");
@@ -704,7 +725,7 @@ function loadCursor(context) {
   if (!existsSync(context.cursorPath)) {
     return buildResolverCursor(context.binding, context.startBlock, [], context.reorgOverlapBlocks);
   }
-  return validateResolverCursor(JSON.parse(readFileSync(context.cursorPath, "utf8")), context.binding);
+  return validateResolverCursor(readStrictJsonFileSync(context.cursorPath, RUNTIME_JSON_LIMITS), context.binding);
 }
 
 async function persistCursor(context, nextBlock) {
@@ -733,11 +754,12 @@ function appendAlert(context, message) {
 }
 
 function readTranscript(path) {
-  const stats = statSync(path);
-  if (!stats.isFile() || stats.size > MAX_TRANSCRIPT_BYTES) {
-    throw new Error(`transcript ${path} is not a regular file within the ${MAX_TRANSCRIPT_BYTES} byte limit`);
-  }
-  return JSON.parse(readFileSync(path, "utf8"));
+  return readStrictJsonFileSync(path, {
+    maxBytes: MAX_TRANSCRIPT_BYTES,
+    maxDepth: 64,
+    canonicalBytes: true,
+    trailingNewline: "require",
+  });
 }
 
 function rawClaimIdentity(transcript) {
@@ -812,7 +834,31 @@ function actionPaths(context, eventHash, policyHash) {
   };
 }
 
+function pathEntryExists(path) {
+  try { lstatSync(path); return true; } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+export function assertResolverActionPaths(action, context, { signedMustExist = false } = {}) {
+  const expected = actionPaths(context, action.event_hash, action.call_policy_hash);
+  if (resolve(action.call_policy_path) !== resolve(expected.policyPath)) {
+    throw new Error("resolver call policy path does not match the deterministic action path");
+  }
+  if (resolve(action.signed_tx_path) !== resolve(expected.signedPath)) {
+    throw new Error("resolver signed transaction path does not match the deterministic action path");
+  }
+  const policyPath = assertApprovedJournalPath(action.call_policy_path, context.actionsPath, expected.policyPath);
+  let signedPath = expected.signedPath;
+  if (signedMustExist || pathEntryExists(action.signed_tx_path)) {
+    signedPath = assertApprovedJournalPath(action.signed_tx_path, context.actionsPath, expected.signedPath);
+  }
+  return { policyPath, signedPath };
+}
+
 function assertActionPolicy(action, context) {
+  const paths = assertResolverActionPaths(action, context);
   const policy = requireObject(action.call_policy, "resolver action call_policy");
   const unsigned = { ...policy };
   const policyHash = unsigned.policy_hash;
@@ -820,7 +866,7 @@ function assertActionPolicy(action, context) {
   if (policyHash !== sha256Canonical(unsigned) || action.call_policy_hash !== policyHash) {
     throw new Error("resolver action call policy self-hash mismatch");
   }
-  if (canonicalJson(JSON.parse(readFileSync(action.call_policy_path, "utf8"))) !== canonicalJson(policy)) {
+  if (canonicalJson(readStrictJsonFileSync(paths.policyPath, IMMUTABLE_JSON_LIMITS)) !== canonicalJson(policy)) {
     throw new Error("resolver action call policy differs from its immutable artifact");
   }
   const decoded = context.chal.interface.decodeFunctionData("resolve", policy.calldata);
@@ -1064,39 +1110,34 @@ async function buildResolveTransactionRequest(context, action, current) {
   return context.wallet.populateTransaction(request);
 }
 
-function assertSignedRecord(record, action, context) {
-  if (record?.schema_version !== "p42-signed-transaction/v1") {
-    throw new Error("signed resolver journal has an unsupported schema");
-  }
-  if (!sameBytes32(ethers.keccak256(record.raw_tx), record.hash)) throw new Error("signed resolver journal raw transaction hash mismatch");
-  const transaction = ethers.Transaction.from(record.raw_tx);
-  if (!sameAddress(transaction.from, context.wallet.address) || !sameAddress(record.signer, context.wallet.address)) {
-    throw new Error("signed resolver journal signer mismatch");
-  }
+export function assertResolverSignedRecord(record, action, context) {
   const expected = buildResolverTransportRequest({
     callPolicy: action.call_policy,
     executionMode: context.executionMode,
     agentWalletInterface: context.agentWallet?.interface,
     agentWalletAddress: context.executionMode.agentWalletAddress,
   });
-  if (!sameAddress(transaction.to, expected.to) || !sameBytes32(ethers.keccak256(transaction.data), ethers.keccak256(expected.data))) {
-    throw new Error("signed resolver journal does not contain the exact resolve call");
-  }
-  if (transaction.value !== BigInt(expected.value) || Number(transaction.chainId) !== context.chainId) {
-    throw new Error("signed resolver journal value or chain mismatch");
-  }
-  return record;
+  const label = `resolve:${action.submission_id}:${action.challenge_instance_hash}:${action.transcript_hash}`;
+  return assertSignedTransactionRecord(record, {
+    signer: context.wallet.address,
+    chainId: context.chainId,
+    to: expected.to,
+    data: expected.data,
+    value: expected.value,
+    nonce: action.transaction_nonce,
+    label,
+    hash: action.transaction_hash,
+  }).record;
 }
 
 async function ensureSignedAction(context, action) {
   assertActionPolicy(action, context);
-  if (existsSync(action.signed_tx_path)) {
-    const record = assertSignedRecord(JSON.parse(readFileSync(action.signed_tx_path, "utf8")), action, context);
-    if (action.transaction_hash && !sameBytes32(action.transaction_hash, record.hash)) {
-      throw new Error("resolver action transaction hash disagrees with its signed journal");
-    }
+  if (pathEntryExists(action.signed_tx_path)) {
+    const paths = assertResolverActionPaths(action, context, { signedMustExist: true });
+    const record = assertResolverSignedRecord(readStrictJsonFileSync(paths.signedPath, IMMUTABLE_JSON_LIMITS), action, context);
     if (!action.transaction_hash || action.status === "prepared") {
       action.transaction_hash = record.hash;
+      action.transaction_nonce = record.nonce;
       action.status = "signed";
       persistState(context);
     }
@@ -1121,8 +1162,9 @@ async function ensureSignedAction(context, action) {
   });
   // The raw bytes land on disk before the mutable action state can say signed.
   writeCanonicalAtomic(action.signed_tx_path, record);
-  assertSignedRecord(record, action, context);
+  assertResolverSignedRecord(record, action, context);
   action.transaction_hash = record.hash;
+  action.transaction_nonce = record.nonce;
   action.status = "signed";
   persistState(context);
   return record;
@@ -1189,6 +1231,7 @@ async function prepareAction(context, event) {
     "invalid_transcript",
     "ambiguous_transcript",
     "awaiting_registry_binding",
+    "awaiting_publication",
   ].includes(existing.status)) {
     return existing;
   }
@@ -1215,7 +1258,36 @@ async function prepareAction(context, event) {
     return context.state.actions[event.event_hash];
   }
   const checked = transcript.checked;
-  const transcriptURI = expandTranscriptUri(context.transcriptUriTemplate, checked.transcript.transcript_hash);
+  let published;
+  try {
+    published = await publishAndVerifyTranscript({
+      transcript: checked.transcript,
+      publisher: context.transcriptPublisher,
+      endpoints: context.transcriptEndpoints,
+      fetchClient: context.transcriptFetchClient,
+    });
+  } catch (error) {
+    published = { status: "awaiting_publication", detail: error.message };
+  }
+  if (published.status !== "published") {
+    const action = {
+      schema_version: "p42-resolver-action/v1",
+      event,
+      event_hash: event.event_hash,
+      status: "awaiting_publication",
+      canonical_status: "canonical",
+      detail: published.detail ?? "a receipt-backed transcript publisher is not configured",
+      transcript_path: transcript.path,
+      transcript_hash: checked.transcript.transcript_hash,
+      artifact_sha256: published.artifact?.artifact_sha256,
+      artifact_length: published.artifact?.length,
+      created_at_utc: existing?.created_at_utc ?? new Date().toISOString(),
+    };
+    context.state.actions[event.event_hash] = action;
+    persistState(context);
+    return action;
+  }
+  const transcriptURI = published.publication.uri;
   const verdictHash = buildResolverVerdictHash({
     transcriptHash: checked.transcript.transcript_hash,
     candidateHash: checked.candidate.candidate_hash,
@@ -1281,6 +1353,9 @@ async function prepareAction(context, event) {
     challenger_wins: checked.challengerWins,
     verdict_hash: verdictHash,
     transcript_uri: transcriptURI,
+    publication: published.publication,
+    artifact_sha256: published.artifact.artifact_sha256,
+    artifact_length: published.artifact.length,
     bond_wei: current.bond.toString(),
     ...event,
     call_policy_path: paths.policyPath,
@@ -1349,7 +1424,7 @@ async function scanOnce(context) {
   }
 }
 
-async function buildContext(argv) {
+export async function buildResolverContext(argv, clients = {}) {
   const manifestPath = arg(argv, "manifest");
   const problemId = arg(argv, "problem-id");
   const registryProblemIdArg = arg(argv, "registry-problem-id");
@@ -1357,27 +1432,26 @@ async function buildContext(argv) {
   const transcriptUriTemplate = arg(argv, "transcript-uri-template");
   const localTest = Boolean(arg(argv, "local-test", false));
   const agentWalletAddress = arg(argv, "agent-wallet", null);
-  if (!manifestPath || !problemId || !registryProblemIdArg || !transcriptsArg || !transcriptUriTemplate) {
-    throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir> --transcript-uri-template <ar://|ipfs://...{transcript_hash}>");
+  if (!manifestPath || !problemId || !registryProblemIdArg || !transcriptsArg) {
+    throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir>");
   }
   const registryProblemId = nonzeroSubmissionId(registryProblemIdArg, "--registry-problem-id");
-  validateTranscriptUriTemplate(transcriptUriTemplate);
+  if (transcriptUriTemplate) validateTranscriptUriTemplate(transcriptUriTemplate);
+  const publicationClients = configureResolverPublication(argv, process.env, clients);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;
   if (!privateKey) throw new Error("set RESOLVER_PRIVATE_KEY to the resolver session key");
-  const manifest = JSON.parse(readFileSync(resolve(manifestPath), "utf8"));
+  const manifest = readStrictJsonFileSync(resolve(manifestPath), RUNTIME_JSON_LIMITS);
   validateManifestEvidence(manifest);
   const provider = new ethers.JsonRpcProvider(arg(argv, "rpc", "https://sepolia.base.org"));
   const wallet = new ethers.Wallet(privateKey, provider);
   const abi = (name) => JSON.parse(
     readFileSync(resolve(HERE, "..", "contracts", "artifacts", "src", `${name}.sol`, `${name}.json`), "utf8"),
   ).abi;
-  const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
-  const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
+  const manifestProblem = manifestProblemForRegistryId(manifest, registryProblemId);
+  const boardContracts = manifestProblemContracts(manifest, manifestProblem);
+  const subs = new ethers.Contract(boardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
+  const chal = new ethers.Contract(boardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
   const registry = new ethers.Contract(manifest.contracts.registry.address, abi("P42ProblemRegistry"), wallet);
-  const manifestProblem = manifest.problems?.find((entry) => String(entry?.problemId) === registryProblemId);
-  if (!manifestProblem) {
-    throw new Error(`--registry-problem-id ${registryProblemId} is absent from the deployment manifest`);
-  }
   if (String(problemId) !== manifestProblem.problemSlug) {
     throw new Error("--problem-id must equal the deployment manifest problemSlug for --registry-problem-id");
   }
@@ -1421,6 +1495,9 @@ async function buildContext(argv) {
     executionMode,
     agentWallet: null,
     transcriptUriTemplate,
+    transcriptPublisher: publicationClients.publisher,
+    transcriptFetchClient: publicationClients.fetchClient,
+    transcriptEndpoints: publicationClients.endpoints,
     transcriptsPath,
     runtime,
     cursorPath: resolve(arg(argv, "cursor", join(runtime, "resolver-cursor.json"))),
@@ -1441,8 +1518,24 @@ async function buildContext(argv) {
   return context;
 }
 
-async function main(argv = process.argv.slice(2)) {
-  const context = await buildContext(argv);
+export function configureResolverPublication(argv = [], env = process.env, clients = {}) {
+  const endpoints = clients.endpoints
+    ? configuredTranscriptEndpoints([], { P42_TRANSCRIPT_ENDPOINTS: clients.endpoints.join(",") })
+    : configuredTranscriptEndpoints(argv, env);
+  const spool = arg(argv, "publication-receipts", env.P42_TRANSCRIPT_RECEIPT_SPOOL);
+  const publisher = clients.publisher ?? (spool ? receiptSpoolPublisher(spool) : null);
+  if (!publisher?.publishTranscript) {
+    throw new Error("configure a receipt-backed publisher or --publication-receipts/P42_TRANSCRIPT_RECEIPT_SPOOL; URI templates cannot publish transcripts");
+  }
+  return {
+    endpoints,
+    publisher,
+    fetchClient: clients.fetchClient ?? httpTranscriptFetchClient(),
+  };
+}
+
+export async function main(argv = process.argv.slice(2), clients = {}) {
+  const context = await buildResolverContext(argv, clients);
   const once = Boolean(arg(argv, "once", false));
   const pollMs = Number(arg(argv, "poll-ms", "12000"));
   if (!Number.isSafeInteger(pollMs) || pollMs < 250) throw new Error("--poll-ms must be an integer of at least 250");
@@ -1467,7 +1560,7 @@ async function main(argv = process.argv.slice(2)) {
   }
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
+const invokedPath = process.argv[1] ? pathToFileURL(realpathSync(resolve(process.argv[1]))).href : null;
 if (invokedPath === import.meta.url) {
   main().catch((error) => {
     console.error("FAILED:", error.shortMessage || error.message);

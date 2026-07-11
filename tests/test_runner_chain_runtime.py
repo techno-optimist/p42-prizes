@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import os
 import subprocess
 
 import jsonschema
@@ -74,6 +75,23 @@ def _assert_self_hash(value: dict, field: str) -> None:
 
 def _runner_memory() -> MemorySnapshot:
     return MemorySnapshot(total_mb=16384, available_mb=16384, swap_used_mb=0)
+
+
+def test_runner_queue_sidecars_do_not_follow_symlinks(tmp_path: Path) -> None:
+    queue = tmp_path / "queue.json"
+    target = tmp_path / "target"
+    target.write_text("do not touch", encoding="utf-8")
+    queue.with_suffix(".json.lock").symlink_to(target)
+    with pytest.raises(OSError):
+        enqueue_runner_job(queue, _job())
+    assert target.read_text(encoding="utf-8") == "do not touch"
+
+    queue.with_suffix(".json.lock").unlink()
+    queue.with_suffix(".json.tmp").symlink_to(target)
+    enqueue_runner_job(queue, _job())
+    assert target.read_text(encoding="utf-8") == "do not touch"
+    assert queue.with_suffix(".json.tmp").is_symlink()
+    assert read_runner_queue(queue)["jobs"][0]["job_id"] == _job()["job_id"]
 
 
 def _verified_verifier(*args, **kwargs) -> dict:

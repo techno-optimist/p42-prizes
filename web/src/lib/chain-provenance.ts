@@ -29,6 +29,8 @@ export function chainProvenanceForProblem(problem: Problem): ChainProvenance {
     admissionMatrixHash: null,
     deploymentCommit: null,
     indexedThroughBlock: null,
+    indexedFrontierAtoms: null,
+    checkpointBlock: null,
     reconciliationOk: false,
     source: "static-portal-data",
     note:

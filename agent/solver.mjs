@@ -16,14 +16,24 @@ import {
   atomsFromImprovement,
   buildSignedTransactionRecord,
   chainScoreAtoms,
+  problemRunnerConfig,
   problemObjective,
   runVerifier,
   sha256Canonical,
   solverLifecycleDecision,
   submissionIdFromCommittedReceipt,
 } from "./lib.mjs";
+import {
+  manifestProblemContracts,
+  manifestProblemForRegistryId,
+} from "./indexer.mjs";
 import { putBlob } from "./da-local.mjs";
 import { uploadToArweave } from "./da-arweave.mjs";
+import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
+import { validateSolverManifest } from "./solver-manifest.mjs";
+import { readStrictJsonFileSync } from "./strict-json.mjs";
+
+const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -37,6 +47,7 @@ const RPC = arg("rpc", "https://sepolia.base.org");
 const MANIFEST = arg("manifest");
 const PROBLEM = arg("problem");
 const SOLUTION = arg("solution");
+const REGISTRY_PROBLEM_ID = arg("registry-problem-id", null);
 const FUND = arg("fund", null);
 const CLOSE = arg("close", false);
 const DA_DIR = arg("da-dir", null);
@@ -51,7 +62,7 @@ const MAX_CONSECUTIVE_ERRORS = Number(arg("max-consecutive-errors", "12"));
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 
 if (!MANIFEST || !PROBLEM || !SOLUTION) {
-  console.error("required: --manifest <path> --problem <dir> --solution <file>");
+  console.error("required: --manifest <path> --problem <dir> --solution <file> [--registry-problem-id <id>]");
   process.exit(2);
 }
 if (!Number.isInteger(MAX_CONSECUTIVE_ERRORS) || MAX_CONSECUTIVE_ERRORS < 1 || POLL_MS < 0) {
@@ -69,14 +80,21 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const abi = (name) => JSON.parse(
   readFileSync(`${REPO_ROOT}/contracts/artifacts/src/${name}.sol/${name}.json`, "utf8"),
 ).abi;
-const manifest = JSON.parse(readFileSync(resolve(MANIFEST), "utf8"));
+const manifest = readStrictJsonFileSync(resolve(MANIFEST), JSON_LIMITS);
+validateSolverManifest(manifest, REGISTRY_PROBLEM_ID);
+const manifestProblem = REGISTRY_PROBLEM_ID
+  ? manifestProblemForRegistryId(manifest, REGISTRY_PROBLEM_ID)
+  : manifest.problems?.[0] ?? null;
+const boardContracts = manifestProblem
+  ? manifestProblemContracts(manifest, manifestProblem)
+  : manifest.contracts;
 const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
 const solver = wallet.address;
-const pool = new ethers.Contract(manifest.contracts.pool.address, abi("P42BountyPool"), wallet);
-const ledger = new ethers.Contract(manifest.contracts.ledger.address, abi("P42PayoutLedger"), wallet);
-const subs = new ethers.Contract(manifest.contracts.submissions.address, abi("P42SubmissionManager"), wallet);
-const chal = new ethers.Contract(manifest.contracts.challenges.address, abi("P42ChallengeManager"), wallet);
+const pool = new ethers.Contract(boardContracts.pool.address, abi("P42BountyPool"), wallet);
+const ledger = new ethers.Contract(boardContracts.ledger.address, abi("P42PayoutLedger"), wallet);
+const subs = new ethers.Contract(boardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
+const chal = new ethers.Contract(boardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
 
 let state;
 let statePath;
@@ -108,7 +126,7 @@ function loadState(identity, defaultPath) {
     persistState();
     return;
   }
-  state = JSON.parse(readFileSync(statePath, "utf8"));
+  state = readStrictJsonFileSync(statePath, JSON_LIMITS);
   if (state.schema_version !== "p42-solver-state/v1") throw new Error(`unsupported solver state: ${statePath}`);
   for (const [key, expected] of Object.entries(identity)) {
     if (state[key] !== expected) throw new Error(`solver state identity mismatch for ${key}: ${state[key]} != ${expected}`);
@@ -122,7 +140,17 @@ function loadState(identity, defaultPath) {
   }
 }
 
-async function receiptFor(transaction) {
+async function receiptFor(transaction, expectedRequest) {
+  const checked = assertSignedTransactionRecord(transaction, {
+    signer: wallet.address,
+    chainId: manifest.network.chainId,
+    to: expectedRequest.to,
+    data: expectedRequest.data ?? "0x",
+    value: expectedRequest.value ?? 0n,
+    hash: transaction.hash,
+    nonce: transaction.nonce,
+    label: transaction.label,
+  });
   const receipt = await provider.getTransactionReceipt(transaction.hash);
   if (receipt) return receipt;
   if (!transaction.raw_tx) {
@@ -134,7 +162,7 @@ async function receiptFor(transaction) {
   let pending = await provider.getTransaction(transaction.hash);
   if (!pending) {
     try {
-      pending = await provider.broadcastTransaction(transaction.raw_tx);
+      pending = await provider.broadcastTransaction(checked.record.raw_tx);
     } catch (error) {
       pending = await provider.getTransaction(transaction.hash);
       if (!pending) throw error;
@@ -154,8 +182,8 @@ async function sendPersistent(label, requestFactory) {
   if (record?.status === "reverted") {
     throw new Error(`${label} previously reverted (${record.hash}); refusing to replace deterministic nonce tx`);
   }
+  const request = await requestFactory();
   if (!record) {
-    const request = await requestFactory();
     record = {
       ...(await buildSignedTransactionRecord({ wallet, request, label })),
       status: "signed",
@@ -165,7 +193,18 @@ async function sendPersistent(label, requestFactory) {
     log(`  ${label}: signed ${record.hash} nonce=${record.nonce}`);
   }
 
-  const receipt = await receiptFor(record);
+  assertSignedTransactionRecord(record, {
+    signer: wallet.address,
+    chainId: manifest.network.chainId,
+    to: request.to,
+    data: request.data ?? "0x",
+    value: request.value ?? 0n,
+    hash: record.hash,
+    nonce: record.nonce,
+    label,
+  });
+
+  const receipt = await receiptFor(record, request);
   if (!receipt || receipt.status !== 1) {
     state.transactions[label] = { ...record, status: "reverted", block_number: receipt?.blockNumber ?? null };
     persistState();
@@ -354,6 +393,10 @@ async function runLifecycle(submissionId, revealArgs) {
 }
 
 async function main() {
+  const runner = problemRunnerConfig(resolve(PROBLEM));
+  if (manifestProblem && runner.problemId !== manifestProblem.problemSlug) {
+    throw new Error("--problem does not match the selected deployment-manifest board");
+  }
   const verdict = runVerifier(resolve(PROBLEM), resolve(SOLUTION), REPO_ROOT);
   if (!verdict.valid && !FORCE) throw new Error("local exact verifier rejected the solution (use --force only for adversarial testing)");
   const objective = problemObjective(resolve(PROBLEM));
@@ -368,6 +411,7 @@ async function main() {
   const onchainDa = await subs.onchainDa();
   const identity = {
     chain_id: Number(network.chainId),
+    registry_problem_id: manifestProblem?.problemId ?? null,
     submission_contract: String(subs.target).toLowerCase(),
     solver: solver.toLowerCase(),
     problem: resolve(PROBLEM),
