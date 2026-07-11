@@ -12,10 +12,18 @@ not a KYC policy, and not permission to enable real ETH.
   unless `P42_ALLOW_DEV_SALT=1` is deliberately set.
 - Mutable portal routes are schema-validated, bounded by request size, locally
   rate-limited, and idempotency-key aware where retries can mutate state.
-- When `P42_REQUIRE_MUTATION_API_KEY=1`, every mutable route requires a P42
-  mutation API key supplied as `X-P42-API-Key` or `Authorization: Bearer ...`.
-  Server configuration stores only hashes in `P42_MUTATION_API_KEY_SHA256S`
-  as comma-separated `sha256:<hex>` values.
+- Production fails closed unless `P42_MUTATION_API_CREDENTIALS_JSON` contains a
+  strict compact JSON array of credential records. Non-canonical whitespace or
+  duplicate JSON keys are rejected. Each record has exactly
+  `hash` (`sha256:<64 lowercase hex>`), a nonempty unique `scopes` array, and an
+  optional canonical UTC `expiresAt`. Plaintext keys are supplied as
+  `X-P42-API-Key` or `Authorization: Bearer ...` and are never stored.
+- Accepted route scopes are `submissions.commit`, `submissions.reveal`,
+  `solutions.verify`, and `challenges.open`. Unknown, empty, duplicate,
+  malformed, or expired policy records fail closed. Duplicate hashes are
+  forbidden, so rotation uses distinct overlapping old/new records without
+  merging authority. The legacy flat `P42_MUTATION_API_KEY_SHA256S` variable is
+  intentionally rejected rather than treated as wildcard access.
 
 Mutable routes covered by the API-key gate:
 
@@ -87,7 +95,8 @@ disabled.
 - Security owner approves this policy against the implemented portal, contracts,
   and solver-agent SDK.
 - Counsel approves KYC/sanctions, tax, Terms, and onramp posture.
-- Production deploy sets `P42_REQUIRE_MUTATION_API_KEY=1` with hashed keys.
+- Production deploy provisions reviewed, scoped, expiring hashes in
+  `P42_MUTATION_API_CREDENTIALS_JSON`; no wildcard credential exists.
 - Distributed rate limits, API audit logs, and payload quarantine are live.
 - Session-key behavior is tested against the deployed Base contracts.
 
