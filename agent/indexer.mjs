@@ -185,6 +185,7 @@ const STATUS_NUMBER = Object.freeze(
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const ZERO_HASH = `0x${"0".repeat(64)}`;
+const REPLAY_EVENT_TRACE = Symbol("p42.replayEventTrace");
 const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
 const VERIFIER_IMAGE_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v1";
@@ -2173,7 +2174,174 @@ export function replayProtocolEvents(events, manifestOrConfig, { coverage = [] }
   }
   validatePairedEvents(state);
   invariant(state.coverage.complete, `historical query coverage incomplete: ${state.coverage.missing.join(", ")}`);
+  Object.defineProperty(state, REPLAY_EVENT_TRACE, {
+    value: [...events].sort(compareEventOrder).map(eventDigestInput),
+    enumerable: false,
+  });
   return state;
+}
+
+function evidenceLogIdentity(event, label, contractAddress) {
+  invariant(event, `open-witness evidence is missing canonical ${label} log`);
+  requireHex(event.transactionHash, 32, `${label}.transactionHash`);
+  requireHex(event.blockHash, 32, `${label}.blockHash`);
+  invariant(Number.isSafeInteger(event.blockNumber), `${label}.blockNumber is missing`);
+  const logIndex = event.index ?? event.logIndex;
+  invariant(Number.isSafeInteger(logIndex), `${label}.logIndex is missing`);
+  return {
+    source: event.source,
+    eventName: event.eventName,
+    contractAddress,
+    blockNumber: event.blockNumber,
+    blockHash: event.blockHash.toLowerCase(),
+    transactionHash: event.transactionHash.toLowerCase(),
+    transactionIndex: event.transactionIndex ?? 0,
+    logIndex,
+  };
+}
+
+function sameEventPosition(left, right) {
+  return compareEventOrder(left, right) < 0;
+}
+
+function requireHistoricalObservation(value, label) {
+  invariant(value && typeof value === "object", `missing historical storage observation ${label}`);
+  invariant(Number.isSafeInteger(value.blockNumber), `${label}.blockNumber is missing`);
+  requireHex(value.blockHash, 32, `${label}.blockHash`);
+  return value;
+}
+
+/**
+ * Project a Gate-1 open-witness proof from an already validated replay.
+ * Inputs are source artifacts/read results only; protocol conclusions are derived here.
+ */
+export function collectOpenWitnessLaunchEvidence({
+  replay,
+  manifest,
+  problemId,
+  submissionId,
+  solutionBytes,
+  transcriptHash,
+  reportHash,
+  historicalStorage,
+  finalizedCheckpoint,
+}) {
+  invariant(replay?.coverage?.complete, "open-witness evidence requires a complete replay");
+  const events = replay[REPLAY_EVENT_TRACE];
+  invariant(Array.isArray(events), "open-witness evidence requires the canonical replay event trace");
+  const id = asBigInt(submissionId, "submissionId").toString();
+  const registryId = asBigInt(problemId, "problemId").toString();
+  const problem = manifestProblemForRegistryId(manifest, registryId);
+  const contracts = manifestProblemContracts(manifest, problem);
+  const submission = replay.submissions[id];
+  invariant(submission, `open-witness submission ${id} is absent from replay`);
+  invariant(submission.status === "Finalized", `open-witness submission ${id} is not a nonvoid canonical finalize`);
+  invariant(submission.paidAtCommit === false, `open-witness submission ${id} was paid at commit`);
+
+  const matching = (source, eventName) => events.filter((event) =>
+    event.source === source && event.eventName === eventName &&
+    (event.args?.submissionId === undefined || asBigInt(event.args.submissionId).toString() === id));
+  const exactlyOne = (source, name) => {
+    const found = matching(source, name);
+    invariant(found.length === 1, `open-witness evidence requires exactly one ${source}.${name} log for submission ${id}`);
+    return found[0];
+  };
+  const commit = exactlyOne("submissions", "Committed");
+  const reveal = exactlyOne("submissions", "Revealed");
+  const finalize = exactlyOne("submissions", "Finalized");
+  invariant(sameEventPosition(commit, reveal) && sameEventPosition(reveal, finalize), "open-witness commit/reveal/finalize ordering is not canonical");
+  invariant(addressKey(getArg(commit, "solver")) === addressKey(submission.solver), "open-witness commit belongs to another submission/board");
+  invariant(addressKey(getArg(reveal, "solver")) === addressKey(submission.solver), "open-witness reveal belongs to another submission/board");
+  invariant(addressKey(getArg(finalize, "solver")) === addressKey(submission.solver), "open-witness finalize belongs to another submission/board");
+
+  const bytes = ethers.getBytes(solutionBytes);
+  const solutionBytesHash = ethers.keccak256(bytes).toLowerCase();
+  invariant(solutionBytesHash === String(getArg(commit, "commitDaHash")).toLowerCase(), "reveal calldata/solution bytes hash does not match commitDaHash");
+  invariant(asBigInt(getArg(reveal, "solutionBytesLength")) === BigInt(bytes.length), "reveal solution byte length mismatch");
+  const prevFrontier = submission.finalizeInfo.prevBestScoreAtoms;
+  const currentFrontier = asBigInt(getArg(finalize, "bestScoreAtoms"));
+  invariant(asBigInt(getArg(finalize, "creditAtoms")) === 0n && submission.finalizeInfo.creditAtoms === 0n, "open-witness finalize has positive credit");
+  invariant(!matching("ledger", "CreditRecorded").some((event) =>
+    addressKey(getArg(event, "solver")) === addressKey(submission.solver)), "open-witness has a CreditRecorded ledger delta");
+
+  const armEvents = events.filter((event) => event.source === "submissions" && event.eventName === "FundingArmed");
+  invariant(armEvents.length === 1, "open-witness evidence requires exactly one FundingArmed log");
+  const arm = armEvents[0];
+  invariant(sameEventPosition(finalize, arm), "FundingArmed must be strictly later than open-witness finalize");
+  invariant(!events.some((event) => event.source === "submissions" && event.eventName === "FinalizeVoided" && asBigInt(event.args.submissionId).toString() === id), "open-witness canonical finalize was voided");
+
+  const beforeArm = requireHistoricalObservation(historicalStorage?.beforeArm, "historicalStorage.beforeArm");
+  const atFinalize = requireHistoricalObservation(historicalStorage?.atFinalize, "historicalStorage.atFinalize");
+  invariant(atFinalize.blockNumber === finalize.blockNumber && atFinalize.blockHash.toLowerCase() === finalize.blockHash.toLowerCase(), "historical finalize storage is not pinned to the canonical finalize block");
+  invariant(beforeArm.blockNumber < arm.blockNumber, "before-arm storage observation is not historical");
+  invariant(asBigInt(beforeArm.poolBalanceWei) === 0n && beforeArm.acceptingFunds === false, "pool was nonzero or accepting funds before arm");
+  invariant(asBigInt(beforeArm.totalCreditAtoms) === 0n && asBigInt(atFinalize.totalCreditAtoms) === 0n, "ledger credit changed before arm");
+  invariant(asBigInt(atFinalize.solverCreditAtoms) === 0n, "solver ledger credit is positive at finalize");
+  invariant(String(atFinalize.submissionStatus) === "Finalized", "historical finalize storage does not prove Finalized status");
+
+  invariant(finalizedCheckpoint?.schema === "p42-prizes/indexer-checkpoint/v2", "finalized evidence requires a v2 checkpoint");
+  invariant(finalizedCheckpoint.reconstruction?.ok === true && finalizedCheckpoint.reconstruction?.complete === true, "finalized evidence checkpoint is not completely reconstructed");
+  invariant(finalizedCheckpoint.boards?.some((board) => board.problemId === registryId && board.reconstruction?.ok === true), "finalized evidence checkpoint does not contain the verified board");
+  const finalized = requireHistoricalObservation({
+    blockNumber: finalizedCheckpoint.range?.toBlock,
+    blockHash: finalizedCheckpoint.range?.toBlockHash,
+  }, "finalizedEvidence");
+  invariant(finalized.blockNumber >= finalize.blockNumber, "finalized evidence block predates finalize");
+
+  const registrations = events.filter((event) => event.source === "registry" && event.eventName === "ProblemRegistered" && asBigInt(event.args.problemId).toString() === registryId);
+  invariant(registrations.length === 1, `registry problem ${registryId} does not have one exact registration tuple`);
+  const registration = registrations[0];
+  const tupleFields = ["specHash", "verifierSourceHash", "verifierImageHash", "admissionMatrixHash", "metadataURI", "pool", "ledger", "submissionManager", "challengeManager", "challengeWindowSeconds", "minImprovementAtoms"];
+  const registryTuple = Object.fromEntries(tupleFields.map((field) => [field, getArg(registration, field)]));
+  const expectedTuple = {
+    specHash: problem.specHash, verifierSourceHash: problem.verifierSourceHash,
+    verifierImageHash: problem.verifierImageHash, admissionMatrixHash: problem.admissionMatrixHash,
+    metadataURI: problem.metadataURI, pool: contracts.pool.address, ledger: contracts.ledger.address,
+    submissionManager: contracts.submissions.address, challengeManager: contracts.challenges.address,
+    challengeWindowSeconds: manifest.parameters.challengeWindowSeconds,
+    minImprovementAtoms: problem.minImprovementAtoms,
+  };
+  invariant(stableStringify(registryTuple).toLowerCase() === stableStringify(expectedTuple).toLowerCase(), "canonical registry tuple does not match selected board deployment");
+  for (const [value, label] of [[transcriptHash, "transcriptHash"], [reportHash, "reportHash"]]) requireHex(value, 32, label);
+
+  return canonicalize({
+    schema: "p42-prizes/open-witness-launch-evidence/v1",
+    releaseBinding: {
+      deploymentCommit: manifest.deploymentCommit,
+      deploymentConfigHash: manifest.deploymentConfigHash,
+      chainId: manifest.network.chainId,
+      problemId: registryId,
+      problemSlug: problem.problemSlug,
+      contracts: { registry: manifest.contracts.registry.address, ...Object.fromEntries(Object.entries(contracts).map(([key, value]) => [key, value.address])) },
+    },
+    artifactBinding: {
+      specHash: problem.specHash,
+      verifierImageHash: problem.verifierImageHash,
+      admissionMatrixHash: problem.admissionMatrixHash,
+      solutionBytesHash,
+      transcriptHash,
+      reportHash,
+    },
+    registryTuple,
+    submission: {
+      submissionId: id, solver: submission.solver, paidAtCommit: false,
+      commitDaHash: submission.commitDaHash, solutionCid: submission.solutionCid,
+      logs: {
+        commit: evidenceLogIdentity(commit, "commit", contracts.submissions.address),
+        reveal: evidenceLogIdentity(reveal, "reveal", contracts.submissions.address),
+        finalize: evidenceLogIdentity(finalize, "finalize", contracts.submissions.address),
+      },
+      frontier: { previousAtoms: prevFrontier, currentAtoms: currentFrontier },
+      creditAtoms: 0n, creditRecorded: false, ledgerDeltaAtoms: 0n,
+      nonvoidCanonicalFinalize: true,
+    },
+    funding: {
+      armedAfterFinalize: true, armLog: evidenceLogIdentity(arm, "funding arm", contracts.submissions.address),
+      poolBalanceBeforeArmWei: 0n, acceptingFundsBeforeArm: false,
+      beforeArmStorageBlock: { blockNumber: beforeArm.blockNumber, blockHash: beforeArm.blockHash },
+    },
+    finalizedEvidence: { blockNumber: finalized.blockNumber, blockHash: finalized.blockHash },
+  });
 }
 
 function check(name, expected, actual) {
@@ -3064,6 +3232,9 @@ export function buildMultiBoardCheckpoint({
       onchain: report.onchain,
       state: report.state,
       reconstruction: report.reconstruction,
+      ...(board.openWitnessLaunchEvidence
+        ? { openWitnessLaunchEvidence: canonicalize(board.openWitnessLaunchEvidence) }
+        : {}),
     };
   });
   const checks = boards.flatMap((board) =>
@@ -3137,6 +3308,21 @@ export function validateMultiBoardCheckpoint(checkpoint) {
       board.reconstruction.complete && board.reconstruction.checks.every((check) => check.ok);
     if (board.reconstruction.ok !== expectedBoardOk) {
       throw new Error(`checkpoint board ${board.problemId} reconstruction.ok must equal its evidence conjunction`);
+    }
+    const evidence = board.openWitnessLaunchEvidence;
+    if (evidence) {
+      if (evidence.releaseBinding.problemId !== board.problemId || evidence.releaseBinding.problemSlug !== board.problemSlug) {
+        throw new Error(`checkpoint board ${board.problemId} open-witness release binding is confused`);
+      }
+      if (evidence.releaseBinding.deploymentCommit !== checkpoint.manifestBinding.deploymentCommit ||
+          String(evidence.releaseBinding.deploymentConfigHash).toLowerCase() !== String(checkpoint.manifestBinding.deploymentConfigHash).toLowerCase() ||
+          evidence.releaseBinding.chainId !== checkpoint.manifestBinding.chainId) {
+        throw new Error(`checkpoint board ${board.problemId} open-witness deployment binding is confused`);
+      }
+      if (evidence.finalizedEvidence.blockNumber !== checkpoint.range.toBlock ||
+          evidence.finalizedEvidence.blockHash.toLowerCase() !== checkpoint.range.toBlockHash.toLowerCase()) {
+        throw new Error(`checkpoint board ${board.problemId} open-witness finalized evidence is not checkpoint-bound`);
+      }
     }
   }
   const expectedComplete = checkpoint.boards.every((board) => board.reconstruction.complete);

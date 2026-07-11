@@ -14,6 +14,7 @@ import {
   buildCheckpoint,
   buildMultiBoardCheckpoint,
   compareReplayToSnapshot,
+  collectOpenWitnessLaunchEvidence,
   configureIndexerTranscripts,
   EVENT_CATALOG,
   failMissingMultiboardTranscriptArchives,
@@ -525,7 +526,96 @@ const POLICY = {
   maxScanRestarts: 2,
 };
 
+function openWitnessFixture() {
+  const solutionBytes = ethers.toUtf8Bytes('{"answer":42}');
+  const { events, tx } = fixtureBuilder();
+  const board = {
+    pool: checkpointContract(11), ledger: checkpointContract(12),
+    submissions: checkpointContract(13), challenges: checkpointContract(14),
+  };
+  const problem = {
+    problemId: "1", problemSlug: "open-board", specHash: hash(1),
+    verifierSourceHash: hash(2), verifierImageHash: hash(3),
+    admissionMatrixHash: hash(4), metadataURI: "ipfs://problem", contracts: board,
+    minImprovementAtoms: "1",
+  };
+  const manifest = {
+    schema: "p42-prizes/deployment-manifest/v2", deploymentCommit: "a".repeat(40),
+    deploymentConfigHash: hash(90), network: { chainId: 84532 },
+    parameters: { challengeWindowSeconds: "10" },
+    contracts: { registry: checkpointContract(2) }, problems: [problem],
+  };
+  tx([["registry", "ProblemRegistered", {
+    problemId: 1n, specHash: problem.specHash, verifierSourceHash: problem.verifierSourceHash,
+    verifierImageHash: problem.verifierImageHash, admissionMatrixHash: problem.admissionMatrixHash,
+    metadataURI: problem.metadataURI, pool: board.pool.address, ledger: board.ledger.address,
+    submissionManager: board.submissions.address, challengeManager: board.challenges.address,
+    challengeWindowSeconds: 10n, minImprovementAtoms: 1n,
+  }]], 10);
+  tx([["submissions", "Committed", {
+    submissionId: 1n, solver: ADDR.solverA, commitment: hash(101),
+    commitDaHash: ethers.keccak256(solutionBytes), bondWei: 1n, poolAtSubmissionWei: 0n,
+    requiredBondWei: 1n, paidAtCommit: false, committedBlock: 2n,
+  }]], 20);
+  tx([["submissions", "Revealed", {
+    submissionId: 1n, solver: ADDR.solverA, solutionCid: "ipfs://solution",
+    improvementAtoms: 100n, claimedScoreAtoms: 900n, challengeEndsAt: 40n,
+    solutionBytesLength: BigInt(solutionBytes.length), revealInstanceHash: hash(601),
+  }]], 30);
+  tx([["submissions", "Finalized", {
+    submissionId: 1n, solver: ADDR.solverA, creditAtoms: 0n,
+    claimedScoreAtoms: 900n, bestScoreAtoms: 900n, permanenceHash: hash(701),
+    poolAtFinalizationWei: 0n,
+  }]], 50);
+  tx([["submissions", "FundingArmed", { at: 60n }]], 60);
+  const replay = replayProtocolEvents(events, { ...CONFIG, seedScoreAtoms: 1000n }, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+  const finalize = events.find((event) => event.eventName === "Finalized");
+  const arm = events.find((event) => event.eventName === "FundingArmed");
+  const args = {
+    replay, manifest, problemId: "1", submissionId: "1", solutionBytes,
+    transcriptHash: hash(801), reportHash: hash(802),
+    historicalStorage: {
+      atFinalize: { blockNumber: finalize.blockNumber, blockHash: finalize.blockHash, totalCreditAtoms: 0n, solverCreditAtoms: 0n, submissionStatus: "Finalized" },
+      beforeArm: { blockNumber: arm.blockNumber - 1, blockHash: hash(999), poolBalanceWei: 0n, acceptingFunds: false, totalCreditAtoms: 0n },
+    },
+    finalizedCheckpoint: {
+      schema: "p42-prizes/indexer-checkpoint/v2",
+      range: { toBlock: arm.blockNumber + 5, toBlockHash: hash(1200) },
+      boards: [{ problemId: "1", reconstruction: { ok: true } }],
+      reconstruction: { ok: true, complete: true },
+    },
+  };
+  return { args, events };
+}
+
 describe("P42 deterministic indexer replay", () => {
+  it("projects deterministic canonical open-witness launch evidence", () => {
+    const { args } = openWitnessFixture();
+    const evidence = collectOpenWitnessLaunchEvidence(args);
+    assert.equal(evidence.submission.paidAtCommit, false);
+    assert.deepEqual(evidence.submission.frontier, { currentAtoms: "900", previousAtoms: "1000" });
+    assert.equal(evidence.submission.creditRecorded, false);
+    assert.equal(evidence.funding.armedAfterFinalize, true);
+    assert.equal(evidence.releaseBinding.problemId, "1");
+    assert.equal(stableStringify(evidence), stableStringify(collectOpenWitnessLaunchEvidence(args)));
+  });
+
+  it("rejects confused, noncanonical, funded, credited, or final-value-only open-witness evidence", () => {
+    const mutate = (fn, pattern) => {
+      const { args } = openWitnessFixture();
+      fn(args);
+      assert.throws(() => collectOpenWitnessLaunchEvidence(args), pattern);
+    };
+    mutate((args) => { args.problemId = "2"; }, /exactly one problem/);
+    mutate((args) => { args.replay.submissions["1"].paidAtCommit = true; }, /paid at commit/);
+    mutate((args) => { args.solutionBytes = ethers.toUtf8Bytes("wrong"); }, /does not match commitDaHash/);
+    mutate((args) => { args.historicalStorage = undefined; }, /missing historical storage/);
+    mutate((args) => { args.historicalStorage.beforeArm.poolBalanceWei = 1n; }, /pool was nonzero/);
+    mutate((args) => { args.historicalStorage.atFinalize.solverCreditAtoms = 1n; }, /solver ledger credit is positive/);
+    mutate((args) => { args.finalizedCheckpoint.reconstruction.ok = false; }, /not completely reconstructed/);
+    mutate((args) => { args.historicalStorage.atFinalize.blockHash = hash(9999); }, /not pinned to the canonical finalize/);
+  });
+
   it("replays rollover allocation codehash pins through set, replacement, zero, partial, and full funding", () => {
     const { events, tx } = fixtureBuilder();
     const pool = address(101);

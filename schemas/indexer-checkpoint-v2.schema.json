@@ -24,6 +24,48 @@
     "integerString": { "type": "string", "pattern": "^-?[0-9]+$" },
     "positiveUintString": { "type": "string", "pattern": "^[1-9][0-9]*$" },
     "problemSlug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
+    "logIdentity": {
+      "type": "object", "additionalProperties": false,
+      "required": ["source", "eventName", "contractAddress", "blockNumber", "blockHash", "transactionHash", "transactionIndex", "logIndex"],
+      "properties": {
+        "source": { "type": "string", "minLength": 1 }, "eventName": { "type": "string", "minLength": 1 },
+        "contractAddress": { "$ref": "#/$defs/address" },
+        "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" },
+        "transactionHash": { "$ref": "#/$defs/bytes32" }, "transactionIndex": { "type": "integer", "minimum": 0 },
+        "logIndex": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "openWitnessLaunchEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "releaseBinding", "artifactBinding", "registryTuple", "submission", "funding", "finalizedEvidence"],
+      "properties": {
+        "schema": { "const": "p42-prizes/open-witness-launch-evidence/v1" },
+        "releaseBinding": { "type": "object" },
+        "artifactBinding": { "type": "object" },
+        "registryTuple": { "type": "object" },
+        "submission": {
+          "type": "object", "additionalProperties": false,
+          "required": ["submissionId", "solver", "paidAtCommit", "commitDaHash", "solutionCid", "logs", "frontier", "creditAtoms", "creditRecorded", "ledgerDeltaAtoms", "nonvoidCanonicalFinalize"],
+          "properties": {
+            "submissionId": { "$ref": "#/$defs/positiveUintString" }, "solver": { "$ref": "#/$defs/address" },
+            "paidAtCommit": { "const": false }, "commitDaHash": { "$ref": "#/$defs/bytes32" }, "solutionCid": { "type": "string", "minLength": 1 },
+            "logs": { "type": "object", "additionalProperties": false, "required": ["commit", "reveal", "finalize"], "properties": { "commit": { "$ref": "#/$defs/logIdentity" }, "reveal": { "$ref": "#/$defs/logIdentity" }, "finalize": { "$ref": "#/$defs/logIdentity" } } },
+            "frontier": { "type": "object", "additionalProperties": false, "required": ["previousAtoms", "currentAtoms"], "properties": { "previousAtoms": { "$ref": "#/$defs/integerString" }, "currentAtoms": { "$ref": "#/$defs/integerString" } } },
+            "creditAtoms": { "const": "0" }, "creditRecorded": { "const": false }, "ledgerDeltaAtoms": { "const": "0" }, "nonvoidCanonicalFinalize": { "const": true }
+          }
+        },
+        "funding": {
+          "type": "object", "additionalProperties": false,
+          "required": ["armedAfterFinalize", "armLog", "poolBalanceBeforeArmWei", "acceptingFundsBeforeArm", "beforeArmStorageBlock"],
+          "properties": {
+            "armedAfterFinalize": { "const": true }, "armLog": { "$ref": "#/$defs/logIdentity" },
+            "poolBalanceBeforeArmWei": { "const": "0" }, "acceptingFundsBeforeArm": { "const": false },
+            "beforeArmStorageBlock": { "type": "object", "additionalProperties": false, "required": ["blockNumber", "blockHash"], "properties": { "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" } } }
+          }
+        },
+        "finalizedEvidence": { "type": "object", "additionalProperties": false, "required": ["blockNumber", "blockHash"], "properties": { "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" } } }
+      }
+    },
     "contractBinding": {
       "type": "object",
       "additionalProperties": false,
@@ -169,7 +211,8 @@
         "events": { "$ref": "#/$defs/events" },
         "onchain": { "$ref": "#/$defs/onchain" },
         "state": { "type": "object" },
-        "reconstruction": { "$ref": "#/$defs/boardReconstruction" }
+        "reconstruction": { "$ref": "#/$defs/boardReconstruction" },
+        "openWitnessLaunchEvidence": { "$ref": "#/$defs/openWitnessLaunchEvidence" }
       }
     }
   }
