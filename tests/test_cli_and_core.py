@@ -261,7 +261,7 @@ def test_admit_ready_rejects_fabricated_legacy_matrix_even_with_matching_digest(
     completed = run_cli("admit-ready", "--problem", str(problem), "--matrix", str(matrix))
 
     assert completed.returncode == 1
-    assert "matrix.schema_version must be p42-admission-matrix/v2" in completed.stderr
+    assert "matrix.schema_version must be p42-admission-matrix/v3" in completed.stderr
 
 
 def test_da_receipt_builds_and_verifies_canonical_evidence(tmp_path: Path) -> None:

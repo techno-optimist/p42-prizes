@@ -197,9 +197,12 @@ and local placeholders such as `sha256:local-dev`. The supplied
 manifest or deploys a contract. The manifest records the digest and
 `verifierImageHashAlgorithm: "keccak256-utf8/v1"` alongside the on-chain hash.
 It also requires a `P42_PROBLEM_SLUG`, semantic `P42_VERIFIER_VERSION`, and
-`P42_VERIFIER_SOURCE_DIGEST` using `p42-source-tree-sha256/v1`: a canonical
-source-tree hash over `src/` and `problems/<slug>/` with the image field
-normalized. `P42_VERIFIER_SOURCE_HASH` must equal
+`P42_VERIFIER_SOURCE_DIGEST` using `p42-source-tree-sha256/v2`: a canonical
+mode- and path-framed digest of the verifier Dockerfile, deny-by-default ignore
+policy, hash-locked runtime dependencies, schemas, shared source, and selected
+problem package. Non-regular or privileged filesystem entries are rejected. It is not merely a digest of the
+old `src/` plus `problems/<slug>/` source trees; the manifest image field is
+still normalized to break the self-reference. `P42_VERIFIER_SOURCE_HASH` must equal
 `keccak256(utf8(P42_VERIFIER_SOURCE_DIGEST))`; the manifest records both
 algorithms and values so an autonomous runtime can reject a locally altered
 problem command or verifier source tree.

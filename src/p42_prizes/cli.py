@@ -749,7 +749,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     source_hash = subparsers.add_parser(
         "source-hash",
-        help="emit the canonical p42-source-tree-sha256/v1 verifier digest",
+        help="emit the canonical p42-source-tree-sha256/v2 verifier build-input digest",
     )
     source_hash.add_argument("--problem", required=True)
     source_hash.set_defaults(func=_cmd_source_hash)

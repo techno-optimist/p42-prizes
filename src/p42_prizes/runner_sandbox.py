@@ -29,6 +29,7 @@ class RunnerSandboxError(ValueError):
 SANDBOX_SOLUTION_PATH = "/sandbox/solution.json"
 # Unprivileged uid:gid inside the container (the conventional `nobody`).
 SANDBOX_USER = "65534:65534"
+SANDBOX_PYTHON_ENTRYPOINT = "/usr/local/bin/python3"
 # Reject placeholder images — a sandbox around an unpinned image is theatre.
 PLACEHOLDER_IMAGES = ("sha256:local-dev", "sha256:pending", "")
 # Only content-addressed image references may execute: a bare digest
@@ -133,6 +134,9 @@ def build_sandbox_command(
         part.format(solution=SANDBOX_SOLUTION_PATH)
         for part in shlex.split(verifier_command_template)
     ]
+    if not inner_command or inner_command[0] != "python3":
+        raise RunnerSandboxError("verifier command must start with the admitted python3 entrypoint")
+    inner_command = inner_command[1:]
     host_path = str(Path(host_solution).resolve())
 
     args = [
@@ -147,6 +151,7 @@ def build_sandbox_command(
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         f"--user={SANDBOX_USER}",
+        f"--entrypoint={SANDBOX_PYTHON_ENTRYPOINT}",
         "-v", f"{host_path}:{SANDBOX_SOLUTION_PATH}:ro",
     ]
     for knob in SANDBOX_DETERMINISM_ENV:

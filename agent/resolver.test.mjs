@@ -51,9 +51,9 @@ const expected = {
 
 function registryBinding() {
   return {
-    schema_version: "p42-registry-binding/v1",
+    schema_version: "p42-registry-binding/v2",
     image_hash_algorithm: "keccak256-utf8/v1",
-    source_digest_algorithm: "p42-source-tree-sha256/v1",
+    source_digest_algorithm: "p42-source-tree-sha256/v2",
     source_hash_algorithm: "keccak256-utf8/v1",
     chain_id: expected.chain_id,
     registry_address: ADDR.registry,

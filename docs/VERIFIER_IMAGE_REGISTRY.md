@@ -22,8 +22,11 @@ A problem may be marked fundable only when all of these match:
   `verifierImageHash`, where
   `verifierImageHash = keccak256(utf8(verifierImageDigest))`.
 - It also records the problem slug, verifier version, and a
-  `p42-source-tree-sha256/v1` `verifierSourceDigest` over the copied verifier
-  source tree. The on-chain `verifierSourceHash` must equal
+  `p42-source-tree-sha256/v2` `verifierSourceDigest` over `Dockerfile.verifier`,
+  `.dockerignore`, the root runtime lock, `schemas/`, `src/`, and the selected
+  problem package. Regular-file mode is framed into the digest; links, special
+  files, hardlinks, privileged modes, duplicates, and excluded secret/cache
+  paths fail closed. The on-chain `verifierSourceHash` must equal
   `keccak256(utf8(verifierSourceDigest))`.
 - A v2 multi-board ceremony first runs `admit-ready` against the local matrix,
   then records `admissionMatrixDigest`, a durable `ipfs://` or `ar://` matrix
@@ -49,8 +52,9 @@ remain blocked by their placeholder image and their wider launch gates.
 | `problem.yaml.verifier.image` | problem repo | Immutable digest, no tags or placeholders |
 | `VerdictReport.verifier_image` | verifier output | Must equal the manifest digest |
 | `admission-matrix.verifier_image` | N-host matrix | Must equal the manifest digest |
+| `evidence[].execution.image_id` | signed admission matrix | Exact platform-specific OCI config/rootfs identity resolved and inspected by that host |
 | `verifierSourceDigest` | deployment manifest | Canonical source-tree digest for the named slug/version; the local command is part of this tree |
-| `ProblemRegistry.verifierSourceHash` | Base deployment manifest | Must equal `keccak256(utf8(verifierSourceDigest))` under `p42-source-tree-sha256/v1` |
+| `ProblemRegistry.verifierSourceHash` | Base deployment manifest | Must equal `keccak256(utf8(verifierSourceDigest))` under `p42-source-tree-sha256/v2` |
 | `ProblemRegistry.verifierImageHash` | Base deployment manifest | Must equal `keccak256(utf8(verifierImageDigest))`; the manifest also records the bare digest and `keccak256-utf8/v1` relation |
 | `admissionMatrixDigest` / `admissionMatrixURI` | v2 deployment manifest | Canonical validated matrix digest plus a durable retrieval locator; the local path is only a deploy-time input |
 | `ProblemRegistry.admissionMatrixHash` | Base deployment manifest | Must equal `keccak256(utf8(admissionMatrixDigest))` under `keccak256-utf8/v1` |
@@ -66,6 +70,25 @@ one profile, requires every signed host field to match that profile, and checks
 the inspected container architecture/OS against the signed host platform. A key
 registered for x86_64/glibc 2.31 therefore cannot be relabeled as ARM/glibc 2.39
 inside an otherwise valid matrix.
+
+The reviewed `problem.yaml` pins `image_repository@verifier.image`, whose OCI
+index digest commits the platform manifests, configs, layers, interpreter, and
+installed dependencies. Every signed host record carries the resolved child
+`image_id`; matrix construction rejects two hosts that resolve different child
+IDs for the same OS/architecture. Different architectures may have different
+child IDs while remaining cryptographically contained by the same approved
+index digest. The image digest is normalized only in the explanatory source
+hash to avoid a source/image fixed point; readiness and the on-chain registry
+bind it separately.
+
+Admission also rejects image-controlled `ENTRYPOINT`/`CMD`, unexpected inherited
+environment, a wrong working directory, or an inherited user. The sandbox
+overrides entrypoint with `/usr/local/bin/python3`, user with `65534:65534`, and
+the determinism environment. Image source comparison streams `/repo` through a
+bounded tar parser rather than unbounded `docker cp` materialization. The
+platform image ID remains the authoritative commitment to the installed Python,
+dependencies, and root filesystem; the v2 source digest explains the reviewed
+build inputs but does not substitute for that resolved image identity.
 
 This closes caller-side metadata rewriting, but it is not hardware remote
 attestation. The owner must independently verify that each profile belongs to

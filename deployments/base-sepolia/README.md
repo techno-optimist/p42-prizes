@@ -41,7 +41,7 @@ digest is synthetic and exists only to exercise this anchor relation; it does
 not identify a published image or make a problem fundable.
 
 The source anchor is separate: `P42_VERIFIER_SOURCE_DIGEST` is the canonical
-`p42-source-tree-sha256/v1` digest of `src/` plus `problems/<slug>/`, with
+`p42-source-tree-sha256/v2` digest of the canonical Dockerfile, `.dockerignore`, root runtime lock, `schemas/`, `src/`, and `problems/<slug>/`, with
 `problem.yaml.verifier.image` normalized to its source sentinel. The ceremony
 records the problem slug and verifier version, and requires
 `P42_VERIFIER_SOURCE_HASH = keccak256(utf8(P42_VERIFIER_SOURCE_DIGEST))`.

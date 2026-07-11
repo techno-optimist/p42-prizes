@@ -29,9 +29,9 @@ export function atomsFromImprovement(improvement) {
 // conservative on the money side. For integer scores the encoding is exact.
 export const SCORE_SCALE = 1_000_000_000_000_000_000n; // 1e18
 export const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
-export const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v1";
+export const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v2";
 export const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
-export const REGISTRY_BINDING_SCHEMA = "p42-registry-binding/v1";
+export const REGISTRY_BINDING_SCHEMA = "p42-registry-binding/v2";
 
 const BARE_SHA256_DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const POSITIVE_DECIMAL_RE = /^[1-9][0-9]*$/;
