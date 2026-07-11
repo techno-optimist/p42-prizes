@@ -142,6 +142,7 @@ def build_sandbox_command(
     args = [
         binary, "run", "--rm",
         "--network=none",
+        "--add-host=host.docker.internal:host-gateway",
         f"--memory={memory_mb}m",
         f"--memory-swap={memory_mb}m",
         f"--pids-limit={pids_limit}",

@@ -66,6 +66,12 @@ verifier payloads still run in the pinned Docker sandbox.
   `no-new-privileges`, a non-root user, and the untrusted solution mounted
   **read-only**. If a container runtime is unavailable the runner **fails closed**
   — it refuses the job rather than executing an untrusted payload on the host.
+  `tests/test_runner_sandbox_live.py` is the executable source/CI enforcement
+  gate: it loads a self-contained hostile fixture into the credential-free
+  digest-pinned Python base image and sends identity,
+  privilege, network, filesystem, PID, memory, and timeout probes through the
+  real worker path. CI must have a reachable Docker daemon; only non-CI
+  developer hosts may skip the live campaign.
   The process-group + env-scrub hardening above is the fallback when
   `sandbox = "none"`. Remaining before real value: build + pin real image digests
   (no `sha256:local-dev`) so the sandbox wraps the attested image, and run the
