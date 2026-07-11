@@ -10,6 +10,7 @@
     "policy_id",
     "valid_from_utc",
     "valid_until_utc",
+    "network",
     "rpc_quorum",
     "rpc_endpoints",
     "release_binding",
@@ -23,6 +24,15 @@
     "policy_id": { "type": "string", "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)+$" },
     "valid_from_utc": { "type": "string", "format": "date-time" },
     "valid_until_utc": { "type": "string", "format": "date-time" },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "chain_id"],
+      "properties": {
+        "name": { "const": "base-sepolia" },
+        "chain_id": { "const": 84532 }
+      }
+    },
     "rpc_quorum": { "const": 2 },
     "rpc_endpoints": {
       "type": "array",
@@ -32,7 +42,7 @@
     },
     "release_binding": { "$ref": "#/$defs/releaseBinding" },
     "finality_confirmations": { "type": "integer", "minimum": 12 },
-    "authority_class": { "const": "p42-open-witness-collector-proof/v1" },
+    "authority_class": { "const": "p42-open-witness-collector-authority/v1" },
     "authority_key_ids": {
       "type": "array",
       "minItems": 1,
@@ -55,12 +65,12 @@
     "releaseBinding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["manifest_path", "manifest_sha256", "git_commit", "configuration_sha256"],
+      "required": ["manifest_path", "manifest_sha256", "git_commit", "deployment_config_hash"],
       "properties": {
         "manifest_path": { "type": "string", "pattern": "^/(?!.*(?:^|/)\\.\\.(?:/|$)).+" },
         "manifest_sha256": { "$ref": "#/$defs/sha256" },
         "git_commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-        "configuration_sha256": { "$ref": "#/$defs/sha256" }
+        "deployment_config_hash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" }
       }
     }
   }

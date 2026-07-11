@@ -737,6 +737,7 @@ describe("P42 deterministic indexer replay", () => {
         return block;
       };
     }, /historical block changed during collection/);
+    await mutate((args) => { args.finalityAnchorBlockNumber = Number.MAX_SAFE_INTEGER; }, /requested finality anchor is not confirmed/);
     await mutate((args) => {
       const original = args.provider.getTransactionReceipt;
       args.provider.getTransactionReceipt = async (txHash) => {

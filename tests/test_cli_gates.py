@@ -94,11 +94,22 @@ def test_production_registry_accepts_only_matching_protected_digest(
     registry["environment"] = "production"
     registry_path = fixture.write_registry(registry)
     registry_hash = sha256_bytes(canonical_json(registry).encode("utf-8"))
-    pin_path = tmp_path / "production-attestation-root.sha256"
-    pin_path.write_text(registry_hash + "\n", encoding="ascii")
-    pin_path.chmod(0o444)
-    monkeypatch.setattr(cli, "_PRODUCTION_TRUST_ROOT", pin_path)
+    monkeypatch.setattr(cli, "_read_production_trust_root", lambda: registry_hash)
     assert cli._load_pinned_trust_registry(str(registry_path), allow_test=False) == registry
+
+
+def test_trust_registry_rejects_duplicate_collector_authority_key_ids(tmp_path: Path) -> None:
+    _, fixture, registry = valid_legal_memo(tmp_path)
+    template = dict(registry["registrations"][0])
+    template.update(
+        attestation_class="p42-open-witness-collector-authority/v1",
+        signer_role="collector-authority",
+        key_id="collector-duplicate",
+    )
+    registry["registrations"].extend([dict(template), dict(template)])
+    registry_path = fixture.write_registry(registry)
+    with pytest.raises(cli.AdmissionError, match="key ids must be unique"):
+        cli._load_pinned_trust_registry(str(registry_path), allow_test=True)
 
 
 @pytest.mark.parametrize("command, builder", ATTESTATION_GATE_CASES)

@@ -15,7 +15,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 OPEN_WITNESS_POLICY_SCHEMA_VERSION = "p42-open-witness-collector-policy/v1"
-OPEN_WITNESS_AUTHORITY_CLASS = "p42-open-witness-collector-proof/v1"
+OPEN_WITNESS_AUTHORITY_CLASS = "p42-open-witness-collector-authority/v1"
 PRODUCTION_POLICY_PATH = Path("/etc/p42/open-witness-collector-policy.json")
 PRODUCTION_POLICY_ROOT = Path("/etc/p42/open-witness-collector-policy.sha256")
 _SCHEMA_PATH = Path(__file__).resolve().parents[2] / "schemas/open-witness-collector-policy.schema.json"
@@ -58,10 +58,11 @@ def validate_open_witness_policy(
             or not parsed.hostname
             or parsed.username is not None
             or parsed.password is not None
+            or parsed.query
             or parsed.fragment
         ):
             raise OpenWitnessPolicyError(
-                "RPC URLs must be credential-free absolute HTTPS URLs without fragments"
+                "RPC URLs must be credential-free absolute HTTPS URLs without queries or fragments"
             )
         canonical_url = url.casefold()
         if canonical_url in urls:

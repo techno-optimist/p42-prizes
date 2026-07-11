@@ -29,6 +29,7 @@ def policy(environment: str = "test") -> dict:
         "policy_id": "open-witness.2026-07",
         "valid_from_utc": "2026-07-10T00:00:00Z",
         "valid_until_utc": "2026-07-11T00:00:00Z",
+        "network": {"name": "base-sepolia", "chain_id": 84532},
         "rpc_quorum": 2,
         "rpc_endpoints": [
             {"identity": "provider-a", "url": "https://a.rpc.example/v1"},
@@ -39,10 +40,10 @@ def policy(environment: str = "test") -> dict:
             "manifest_path": "/etc/p42/deployment-manifest.json",
             "manifest_sha256": "sha256:" + "1" * 64,
             "git_commit": "2" * 40,
-            "configuration_sha256": "sha256:" + "3" * 64,
+            "deployment_config_hash": "0x" + "3" * 64,
         },
         "finality_confirmations": 12,
-        "authority_class": "p42-open-witness-collector-proof/v1",
+        "authority_class": "p42-open-witness-collector-authority/v1",
         "authority_key_ids": ["p42-open-witness-authority-2026-01"],
     }
 
@@ -66,13 +67,14 @@ def test_schema_and_semantics_accept_strict_policy() -> None:
     ("mutation", "message"),
     [
         (lambda p: p.update(rpc_quorum=1), "schema"),
+        (lambda p: p["network"].update(chain_id=8453), "schema"),
         (lambda p: p["rpc_endpoints"].pop(), "schema"),
         (lambda p: p.update(finality_confirmations=11), "schema"),
         (lambda p: p["release_binding"].update(manifest_path="relative.json"), "schema"),
         (lambda p: p["release_binding"].update(manifest_path="/etc/p42/./manifest.json"), "normalized"),
         (lambda p: p["release_binding"].update(manifest_sha256="sha256:BAD"), "schema"),
         (lambda p: p["release_binding"].update(git_commit="main"), "schema"),
-        (lambda p: p["release_binding"].update(configuration_sha256="sha256:" + "A" * 64), "schema"),
+        (lambda p: p["release_binding"].update(deployment_config_hash="0x" + "A" * 64), "schema"),
         (lambda p: p.update(authority_class="caller-selected/v1"), "schema"),
         (lambda p: p.update(authority_key_ids=[]), "schema"),
         (lambda p: p.update(extra=True), "schema"),
@@ -96,7 +98,7 @@ def test_rejects_duplicate_rpc_identities_and_urls() -> None:
         validate_open_witness_policy(value, now_utc=NOW)
 
 
-@pytest.mark.parametrize("url", ["http://rpc.example", "https://user:secret@rpc.example", "https:///missing", "https://rpc.example/#fragment"])
+@pytest.mark.parametrize("url", ["http://rpc.example", "https://user:secret@rpc.example", "https:///missing", "https://rpc.example/?key=secret", "https://rpc.example/#fragment"])
 def test_rejects_bad_or_credentialed_rpc_urls(url: str) -> None:
     value = policy()
     value["rpc_endpoints"][0]["url"] = url

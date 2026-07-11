@@ -2458,6 +2458,7 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
   transcriptHash,
   reportHash,
   provider,
+  finalityAnchorBlockNumber,
 }) {
   invariant(provider && typeof provider === "object", "canonical open-witness collector requires a provider");
   for (const method of ["getNetwork", "getTransaction", "getTransactionReceipt", "getBlock", "getBalance", "call"]) {
@@ -2512,7 +2513,9 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
   invariant(beforeArmBlockNumber >= 0, "funding arm has no historical predecessor block");
   const latestBlock = await provider.getBlock("latest");
   invariant(latestBlock?.hash && Number.isSafeInteger(latestBlock.number), "canonical latest block is unavailable");
-  const anchorBlockNumber = latestBlock.number - manifest.indexer.finalityPolicy.confirmations;
+  const maximumFinalizedAnchor = latestBlock.number - manifest.indexer.finalityPolicy.confirmations;
+  const anchorBlockNumber = finalityAnchorBlockNumber ?? maximumFinalizedAnchor;
+  invariant(Number.isSafeInteger(anchorBlockNumber) && anchorBlockNumber <= maximumFinalizedAnchor, "requested finality anchor is not confirmed by provider");
   invariant(anchorBlockNumber >= arm.blockNumber, "canonical armFunding does not satisfy manifest confirmation policy");
   const [beforeArmBlock, armBlock, finalizeBlock, registrationBlock, anchorBlock] = await Promise.all([
     provider.getBlock(beforeArmBlockNumber),

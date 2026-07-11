@@ -12,6 +12,7 @@
     "indexer.mjs",
     "lib.mjs",
     "operator.mjs",
+    "open-witness-promote.mjs",
     "resolver.mjs",
     "runtime_bridge.py",
     "signed-transaction.mjs",
@@ -22,7 +23,8 @@
   ],
   "bin": {
     "p42-solve": "solver.mjs",
-    "p42-resolve": "resolver.mjs"
+    "p42-resolve": "resolver.mjs",
+    "p42-open-witness-collect": "open-witness-promote.mjs"
   },
   "scripts": {
     "test": "node --test *.test.mjs"
