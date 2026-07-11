@@ -336,6 +336,15 @@ test("production indexer validation recomputes exact-ten release evidence and ru
     const { manifest, slate } = productionManifest(capsule);
     assert.throws(() => validateManifestEvidence(manifest, { ...optionsFor(slate), blockTimestampResolver: ({ entry }) => entry.deploymentBlockTimestamp + 1 }), /trusted deployment block timestamp mismatch/);
   }
+  {
+    const { manifest, slate } = productionManifest(capsule);
+    manifest.status = "governance-setup-complete";
+    Object.assign(manifest.governanceSetup, { status: "complete", completedAt: "2026-07-11T00:00:00.000Z", completionBlock: 100, checks: [{ name: "complete", ok: true }] });
+    manifest.setupTransactions = manifest.setupTransactions.map((operation, index) => ({ ...operation, status: "executed", executedOperationId: operation.operationId, executedOperationClass: operation.operationClass, txHash: `0x${(index + 1).toString(16).padStart(64, "0")}`, blockNumber: 100 }));
+    manifest.problems = manifest.problems.map((problem, index) => ({ ...problem, registrationStatus: "registered-and-frozen", explicitlyFrozen: true, registerTxHash: `0x${(index + 1000).toString(16).padStart(64, "0")}`, registerBlockNumber: 100 }));
+    rebind(manifest);
+    assert.throws(() => validateManifestEvidence(manifest, optionsFor(slate)), /finalityAnchor/, "production completion without anchor must fail schema validation");
+  }
 });
 
 test("fixture validation is test-only and rejects production identity collisions", async () => {

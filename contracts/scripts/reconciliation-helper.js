@@ -16,6 +16,7 @@ import {
 } from "../../agent/indexer.mjs";
 import { readContractsArtifactJson } from "./strict-json-helper.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
+import { collectFinalityAnchor, recheckFinalityAnchor, validateMonotonicFinalityAnchor } from "./finality-anchor.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
 const PRIVATE_FILE_MODE = 0o600;
@@ -84,7 +85,27 @@ export async function loadManifestFromPath(path) {
   }
 }
 
-export async function reconcileWithProvider({ ethers, manifest, outputPath = null }) {
+export function assertReconciliationPublishable(manifest, report, freshAnchor) {
+  if (manifest?.releaseMode !== "production" || manifest?.status !== "governance-setup-complete" || manifest?.governanceSetup?.status !== "complete") {
+    throw new Error("production reconciliation publication requires completed governance setup");
+  }
+  const anchor = manifest.governanceSetup.finalityAnchor;
+  if (!anchor || anchor.schema !== "p42-prizes/base-sepolia-finality-anchor/v1" || anchor.l2?.finalized?.number !== manifest.governanceSetup.completionBlock) {
+    throw new Error("production reconciliation publication requires a valid governance finality anchor");
+  }
+  if (!freshAnchor || report?.range?.toBlock !== freshAnchor.l2?.finalized?.number || String(report?.range?.toBlockHash).toLowerCase() !== String(freshAnchor.l2?.finalized?.hash).toLowerCase()) {
+    throw new Error("reconciliation range is not bound to the fresh finalized anchor");
+  }
+  if (report.range.toBlock < manifest.governanceSetup.completionBlock || report.range.toBlock < anchor.l2.finalized.number) {
+    throw new Error("reconciliation range predates governance finality");
+  }
+  if (report?.reconstruction?.ok !== true || report?.reconstruction?.complete !== true) throw new Error("reconciliation is not globally complete and verified");
+  if (Array.isArray(report.boards) && report.boards.some((board) => board?.reconstruction?.ok !== true || board?.reconstruction?.complete !== true)) {
+    throw new Error("reconciliation has an incomplete or failed board");
+  }
+}
+
+export async function reconcileWithProvider({ ethers, manifest, outputPath = null, finalityEndpoints = null }) {
   const binding = validateManifestEvidence(manifest.data, await loadProductionValidationContext(manifest.data, { provider: ethers.provider }));
   const policy = manifest.data.indexer.finalityPolicy;
   const chain = await ethers.provider.getNetwork();
@@ -97,9 +118,11 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
     );
   }
 
-  const head = await ethers.provider.getBlockNumber();
+  if (manifest.data.releaseMode !== "production") throw new Error("production reconciliation publication requires explicit production release evidence");
+  const finalityAnchor = await collectFinalityAnchor({ endpoints: finalityEndpoints, policy: manifest.data.releaseEvidence?.finalityPolicy });
+  await validateMonotonicFinalityAnchor({ previous: manifest.data.governanceSetup.finalityAnchor, current: finalityAnchor, endpoints: finalityEndpoints });
   const fromBlock = manifest.data.indexer.startBlock;
-  const toBlock = head - policy.confirmations;
+  const toBlock = finalityAnchor.l2.finalized.number;
   if (toBlock < fromBlock) {
     throw new Error(`Finalized block ${toBlock} is before manifest start block ${fromBlock}`);
   }
@@ -173,6 +196,9 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
   };
 
   if (outputPath) {
+    assertReconciliationPublishable(manifest.data, report, finalityAnchor);
+    await recheckFinalityAnchor({ endpoints: finalityEndpoints, policy: manifest.data.releaseEvidence.finalityPolicy, previous: finalityAnchor });
+    report.finalityAnchor = finalityAnchor;
     await writeReconciliationReportAtomic(outputPath, report);
   }
   return report;
