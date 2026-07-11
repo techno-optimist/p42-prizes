@@ -3,6 +3,75 @@
 Status: local admission scaffold. No funded problem has a reviewed immutable
 verifier image yet.
 
+## Bounded Ten-Board Release Tool
+
+`scripts/release_verifier_images.py` is the release ceremony for the exact,
+ordered ten-board slate in `docs/LAUNCH_SLATE.md`. It refuses a dirty tree or a
+symbolic/abbreviated commit and accepts only a canonical lowercase registry
+repository base such as `ghcr.io/projectforty2/verifier-images`. It never edits
+`problem.yaml`; applying reviewed immutable digests remains a separate human
+change with its own review.
+
+The default is a local plan. It computes the ten source hashes and prints the
+canonical plan JSON, but invokes no Docker command, build, registry request, or
+other network operation:
+
+```bash
+PYTHONPATH=src python3 scripts/release_verifier_images.py \
+  --registry-base ghcr.io/projectforty2/verifier-images \
+  --commit "$(git rev-parse HEAD)"
+```
+
+Publication is deliberately explicit and all-ten. It performs one
+`docker buildx build --platform linux/amd64,linux/arm64 --push` per board with
+implicit provenance descriptors disabled, records Buildx's authoritative
+`containerimage.digest`, cryptographically walks the raw registry index through
+each child manifest and config blob, and writes a
+canonical newline-terminated JSON dossier only after every board passes:
+
+```bash
+PYTHONPATH=src python3 scripts/release_verifier_images.py \
+  --registry-base ghcr.io/projectforty2/verifier-images \
+  --commit "$(git rev-parse HEAD)" \
+  --publish --output verifier-image-release.json
+```
+
+The dossier conforms to `schemas/verifier-image-release.schema.json` and binds
+the exact commit, the durable frozen Git-archive digest,
+`p42-source-tree-sha256/v2` source hash, verifier problem ID
+and version, immutable OCI index digest, unique child manifest digest and size,
+and checked config/runtime assumptions for exactly `linux/amd64` and
+`linux/arm64`. `dossier_hash` is SHA-256 of canonical dossier JSON with that
+field omitted. Registry credentials are obtained only through Docker's normal
+credential store/helper; the tool has no username, password, or token option,
+does not put credentials in argv, and suppresses command output on failures.
+Buildx consumes a private, read-only extraction of `git archive <exact-commit>`,
+not the mutable checkout. The tool rejects links, special files, duplicate or
+escaping paths in that archive and rechecks every board hash around each build.
+Raw config blobs are retrieved with the blob-capable `regctl blob get --format
+raw-body` command using the operator's normal registry credential store; they
+are not inferred from an `imagetools` projection.
+
+Before the first push, publish mode durably reserves the exact ten-board plan
+in `<output>.journal.json`. Each board transitions from `planned` to `building`
+before Buildx starts, retains its exact metadata in a private 0700 work
+directory, and reaches `verified` only after registry digest-chain validation.
+Journal updates are canonical, fsynced, generation-hashed, and serialized with
+an OS file lock that is released if the process dies. A restart revalidates
+already verified registry state. If a process died after a push but before
+durable Buildx metadata exists, restart fails closed and never republishes that
+mutable commit tag; explicit operator recovery is required. The final dossier
+binds the completed journal hash and is created privately without overwriting
+an existing dossier.
+
+This dossier is release evidence, not independent-host admission evidence. A
+registry operator with valid push credentials must provision the repository
+and retention/access policy before publication. Those credentials are not in
+this repository and should not be placed in shell history or release files.
+The four independently operated, source-bound host profiles and their signed
+admission matrix remain an external blocker; publishing two-platform images
+does not create those hosts, prove hardware identity, or close Gate 2.
+
 The verifier image digest is part of the P42 trust root. A mutable tag,
 `sha256:local-dev`, `sha256:pending`, or `sha256:pilot` is acceptable for local
 fixtures and locked boards, but it is not admissible for a funded bounty.

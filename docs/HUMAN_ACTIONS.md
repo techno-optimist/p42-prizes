@@ -20,7 +20,7 @@ signature.
 | Gate 2 | Obtain independent mathematical review for every funded problem. | The packet described below binds the statement, reduction, verifier, image, fixtures, literature, and release; a conflict-disclosed external reviewer signs the canonical hash. |
 | Gate 2 | Obtain the legal/compliance memo. | `legal-memo-validate` passes against the production trust registry and resolved local evidence with a real memo, exact Git/chain release binding, independently verified counsel identity/engagement/jurisdiction/license, all findings, and counsel's pre-registered valid signature after evidence creation. |
 | Gate 2 | Review wallet/session, custody, Onramp, sanctions/KYC, tax, Terms/Privacy, and disclosure policy. | Security owner and counsel review the exact hashed policies and release; no approval is inferred from source code. |
-| Gate 2 | Collect immutable verifier image and N-host evidence for every funded problem. | Real registry digests; at least four independently operated source-bound `trusted_hosts` profiles with distinct operator IDs and keys; x86_64 plus ARM/aarch64 and at least two glibc versions; identical canonical reports from the exact immutable image; out-of-band profile verification; and independently checked artifact hashes. |
+| Gate 2 | Publish the immutable verifier images, then collect N-host evidence for every funded problem. The reviewed local ceremony is `scripts/release_verifier_images.py`; it has not pushed any image. | A registry owner provisions immutable retention/access policy and a narrowly scoped write credential outside the repository, runs the exact-commit all-ten ceremony, and independently checks its self-hashed dossier and OCI digest chain. Then collect at least four independently operated source-bound `trusted_hosts` profiles with distinct operator IDs and keys; x86_64 plus ARM/aarch64 and at least two glibc versions; identical canonical reports from each exact immutable image; out-of-band profile verification; and independently checked artifact hashes. `hadamard-mini` remains a non-fundable demo even if its image is published. |
 | Gate 2 | Name governance/custody roles and run the production rehearsal. | `governance-signoff-validate` passes, and every timelock signer, guardian, treasury, and resolver supplies an EIP-712 possession plus explicit risk/role acceptance in `schemas/deployment-role-acceptance.schema.json`. The packet must bind chain ID, exact release/capsule/slate/config/deployment commit, deployed timelock, and the canonical digest of all 43 contracts. Completion records the finalized completion block/timestamp as `acceptanceValidatedAt`; later validation replays signatures at that durable instant rather than wall-clock time. Production governance completion and actionable reconciliation publication fail closed without full verification; fixture use must remain explicit. |
 | Gate 2 | Activate disclosure and complete the incident drill. | Counsel-reviewed policy is actually live, private route/mailbox are externally tested, activation and regression bytes resolve locally with creation/execution times, the exact Git/chain release is drilled, and `incident-drill-validate` passes against the production registry with three required signatures. |
 
@@ -106,6 +106,11 @@ problem requirement.
   source is unaudited/undeployed; no exact-deployment rehearsal or signatures.
 - Incident/disclosure: policy remains draft; private reporting and mailbox are
   unverified; no activation evidence, completed drill, or required signatures.
+- Verifier images: the exact-commit, all-ten OCI release ceremony is implemented,
+  schema-bound, restart-safe, and locally tested, but no image has been pushed
+  and no production release dossier exists. Publication requires a provisioned
+  immutable registry policy and a narrowly scoped registry write credential;
+  independent four-host profiles and matrices remain separately uncollected.
 - Release binding: no current canonical resolved evidence root proves the
   audited, remediated Git source/configuration and captured on-chain runtime
   bytecode for the exact addresses, chain, and block. The checked-in canonical
