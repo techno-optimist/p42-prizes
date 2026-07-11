@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.org/schemas/verifier-image-release.schema.json",
+  "title": "P42 verifier image release dossier",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "published_at_utc", "source_commit", "source_archive_digest", "registry_base", "platforms", "boards", "manifest_mutation", "publication_journal_hash", "dossier_hash"],
+  "properties": {
+    "schema_version": {"const": "p42-verifier-image-release/v1"},
+    "published_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "source_archive_digest": {"$ref": "#/$defs/digest"},
+    "registry_base": {"type": "string", "pattern": "^[a-z0-9.-]+(?::[0-9]{1,5})?/[a-z0-9._/-]+$"},
+    "platforms": {"const": ["linux/amd64", "linux/arm64"]},
+    "manifest_mutation": {"const": "none"},
+    "publication_journal_hash": {"$ref": "#/$defs/digest"},
+    "dossier_hash": {"$ref": "#/$defs/digest"},
+    "boards": {
+      "type": "array", "minItems": 10, "maxItems": 10,
+      "prefixItems": [
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "hadamard-mini"}, "problem_id": {"const": "hadamard-mini"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "erdos-min-overlap"}, "problem_id": {"const": "erdos-min-overlap"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "edges-vs-triangles"}, "problem_id": {"const": "edges-vs-triangles"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "arithmetic-kakeya"}, "problem_id": {"const": "arithmetic-kakeya"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "autoconvolution-c1-upper"}, "problem_id": {"const": "autoconvolution-c1-upper"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "autoconvolution-c2-lower"}, "problem_id": {"const": "autoconvolution-c2-lower"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "signed-autoconvolution-c3-upper"}, "problem_id": {"const": "signed-autoconvolution-c3-upper"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "mertens-lp-ceiling-k12000"}, "problem_id": {"const": "mertens-lp-ceiling-k12000"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "pnt-sparse-mertens-construction"}, "problem_id": {"const": "pnt-sparse-mertens-construction"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "hadamard-668-defect"}, "problem_id": {"const": "hadamard-668-defect"}}}]}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "board": {
+      "type": "object", "additionalProperties": false,
+      "required": ["slug", "problem_id", "version", "source_hash", "repository", "index_digest", "immutable_reference", "platform_manifests"],
+      "properties": {
+        "slug": {"type": "string"}, "problem_id": {"type": "string"}, "version": {"type": "string", "minLength": 1},
+        "source_hash": {"$ref": "#/$defs/digest"}, "repository": {"type": "string"}, "index_digest": {"$ref": "#/$defs/digest"},
+        "immutable_reference": {"type": "string", "pattern": "^[^@]+@sha256:[0-9a-f]{64}$"},
+        "platform_manifests": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "prefixItems": [
+            {"allOf": [{"$ref": "#/$defs/platform"}, {"properties": {"platform": {"const": "linux/amd64"}}}]},
+            {"allOf": [{"$ref": "#/$defs/platform"}, {"properties": {"platform": {"const": "linux/arm64"}}}]}
+          ],
+          "items": false
+        }
+      }
+    },
+    "platform": {
+      "type": "object", "additionalProperties": false,
+      "required": ["platform", "manifest_digest", "manifest_size", "config_digest", "config_size", "layer_count", "labels", "runtime"],
+      "properties": {
+        "platform": {"enum": ["linux/amd64", "linux/arm64"]}, "manifest_digest": {"$ref": "#/$defs/digest"}, "manifest_size": {"type": "integer", "minimum": 1},
+        "config_digest": {"$ref": "#/$defs/digest"}, "config_size": {"type": "integer", "minimum": 1}, "layer_count": {"type": "integer", "minimum": 1},
+        "labels": {
+          "type": "object", "additionalProperties": false,
+          "required": ["org.opencontainers.image.revision", "io.projectforty2.verifier.source-sha256", "io.projectforty2.verifier.source-algorithm", "io.projectforty2.verifier.problem-id", "io.projectforty2.verifier.version"],
+          "properties": {
+            "org.opencontainers.image.revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+            "io.projectforty2.verifier.source-sha256": {"$ref": "#/$defs/digest"},
+            "io.projectforty2.verifier.source-algorithm": {"const": "p42-source-tree-sha256/v2"},
+            "io.projectforty2.verifier.problem-id": {"type": "string"},
+            "io.projectforty2.verifier.version": {"type": "string", "minLength": 1}
+          }
+        },
+        "runtime": {"type": "object", "additionalProperties": false, "required": ["user", "workdir", "entrypoint", "cmd"], "properties": {"user": {"enum": ["inherited-root-overridden-by-runner", "65534", "65534:65534"]}, "workdir": {"type": "string", "pattern": "^/repo/problems/[a-z0-9][a-z0-9-]*$"}, "entrypoint": {"type": "null"}, "cmd": {"const": []}}}
+      }
+    }
+  }
+}
