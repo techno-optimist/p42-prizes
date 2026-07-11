@@ -156,6 +156,8 @@ def _parser() -> argparse.ArgumentParser:
     quarantine.add_argument("--queue", required=True)
     quarantine.add_argument("--job-id", action="append", required=True)
     quarantine.add_argument("--reason", required=True)
+    fence = commands.add_parser("authorization-fence")
+    fence.add_argument("--queue", required=True)
     return parser
 
 
@@ -176,6 +178,12 @@ def main() -> int:
         )
     elif args.command == "quarantine-canonical":
         result = _quarantine_canonical(args.queue, args.job_id, args.reason)
+    elif args.command == "authorization-fence":
+        with locked_runner_queue(Path(args.queue)):
+            print("READY", flush=True)
+            if sys.stdin.buffer.read(1) != b"R":
+                raise ValueError("authorization fence release token missing")
+        return 0
     else:
         policy = RunnerPolicy(
             max_running=1,

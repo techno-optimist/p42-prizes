@@ -11,6 +11,8 @@ import sys
 import jsonschema
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from p42_prizes.admission import compute_source_hash
 from p42_prizes.lint import lint_python_file
@@ -580,6 +582,53 @@ def _runner_plan(path: Path, *, available_mb: int, swap_used_mb: int = 0) -> dic
     schema = json.loads((ROOT / "schemas" / "runner-plan.schema.json").read_text())
     jsonschema.validate(plan, schema)
     return plan
+
+
+def test_runner_health_v2_producer_is_signed_bound_and_atomic(tmp_path: Path) -> None:
+    queue = tmp_path / "runner-queue.json"
+    _write_runner_queue(queue, [{"job_id": "one", "status": "queued", "required_memory_mb": 64}])
+    key = Ed25519PrivateKey.generate()
+    key_path = tmp_path / "health-key.pem"
+    key_path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    key_path.chmod(0o600)
+    output = tmp_path / "private" / "health.json"
+    output.parent.mkdir(mode=0o700)
+    completed = run_cli(
+        "runner-health", "--trusted-root", str(tmp_path), "--queue", str(queue), "--output", str(output), "--signing-key", str(key_path),
+        "--host-id", "dgx", "--boot-id", "boot-1", "--queue-id", "challenge-main", "--chain-id", "84532",
+        "--contract", "0x" + "1" * 40, "--block-number", "100", "--block-hash", "0x" + "2" * 64,
+        "--chain-time", "100", "--sequence", "1", "--oom-kills", "0", "--worker-restarts", "0",
+        "--queue-corruption-events", "0", "--total-memory-mb", "131072", "--available-memory-mb", "64000", "--swap-used-mb", "0",
+    )
+    assert completed.returncode == 0, completed.stderr
+    artifact = json.loads(output.read_text())
+    jsonschema.validate(artifact, json.loads((ROOT / "schemas" / "runner-health-v2.schema.json").read_text()))
+    assert artifact["producer"] == {"host_id": "dgx", "boot_id": "boot-1", "queue_id": "challenge-main"}
+    assert artifact["prior_artifact_hash"] is None and artifact["sequence"] == 1
+    assert output.stat().st_mode & 0o777 == 0o600
+    key.public_key().verify(
+        bytes.fromhex(artifact["signature"]["signature"].removeprefix("ed25519:")),
+        b"P42-RUNNER-HEALTH-V2\0" + bytes.fromhex(artifact["artifact_hash"].removeprefix("sha256:")),
+    )
+    next_output = output.parent / "health-next.json"
+    rebooted = run_cli(
+        "runner-health", "--trusted-root", str(tmp_path), "--queue", str(queue), "--output", str(next_output), "--signing-key", str(key_path),
+        "--host-id", "dgx", "--boot-id", "boot-2", "--boot-transition-reason", "planned reboot", "--queue-id", "challenge-main", "--chain-id", "84532",
+        "--contract", "0x" + "1" * 40, "--block-number", "101", "--block-hash", "0x" + "3" * 64,
+        "--chain-time", "101", "--sequence", "2", "--prior-artifact", str(output), "--oom-kills", "0", "--worker-restarts", "0",
+        "--queue-corruption-events", "0", "--total-memory-mb", "131072", "--available-memory-mb", "64000", "--swap-used-mb", "0",
+    )
+    assert rebooted.returncode == 0, rebooted.stderr
+    transition = json.loads(next_output.read_text())["boot_transition"]
+    assert transition["previous_boot_id"] == "boot-1" and transition["new_boot_id"] == "boot-2"
+
+
+def test_runner_health_rejects_counter_rollback(tmp_path: Path) -> None:
+    prior = tmp_path / "prior.json"
+    prior.write_text(json.dumps({"schema_version":"p42-runner-health/v2", "sequence":1, "artifact_hash":"sha256:" + "0" * 64, "oom_kills":2}), encoding="utf-8")
+    # A malformed predecessor must fail before producing any authorization artifact.
+    result = run_cli("runner-health", "--trusted-root", str(tmp_path), "--queue", str(tmp_path / "missing"), "--output", str(tmp_path / "out"), "--signing-key", str(tmp_path / "key"), "--host-id", "h", "--boot-id", "b", "--queue-id", "q", "--chain-id", "1", "--contract", "0x" + "1"*40, "--block-number", "1", "--block-hash", "0x" + "2"*64, "--chain-time", "1", "--sequence", "2", "--prior-artifact", str(prior), "--oom-kills", "0", "--worker-restarts", "0", "--queue-corruption-events", "0", "--total-memory-mb", "1", "--available-memory-mb", "1", "--swap-used-mb", "0")
+    assert result.returncode == 1 and not (tmp_path / "out").exists()
 
 
 def test_runner_plan_starts_oldest_queued_job_when_memory_is_safe(tmp_path: Path) -> None:

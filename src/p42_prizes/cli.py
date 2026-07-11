@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -52,11 +55,12 @@ from p42_prizes.runner_queue import (
     MemorySnapshot,
     RunnerPolicy,
     RunnerQueueError,
+    build_runner_health_snapshot,
     memory_snapshot_from_proc,
     plan_runner_queue,
 )
 from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
-from p42_prizes.secure_json import read_strict_json_stream
+from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json, read_strict_json_stream
 from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes
 
 
@@ -502,6 +506,217 @@ def _cmd_runner_plan(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_runner_health(args: argparse.Namespace) -> int:
+    """Produce signed, chain-bound authorization evidence; never infer production bindings."""
+    try:
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+        memory = _runner_memory_from_args(args)
+        policy = _runner_policy_from_args(args)
+        _validate_path_below_trusted_root(Path(args.queue), Path(args.trusted_root))
+        queue = build_runner_health_snapshot(
+            args.queue,
+            chain_time=args.chain_time,
+            warning_slack_seconds=args.warning_slack_seconds,
+            critical_slack_seconds=args.critical_slack_seconds,
+            memory=memory,
+            policy=policy,
+        )
+        key_bytes = _read_private_signing_key(Path(args.signing_key), Path(args.trusted_root))
+        private = serialization.load_pem_private_key(key_bytes, password=None)
+        if not isinstance(private, Ed25519PrivateKey):
+            raise RunnerQueueError("runner health signing key must be Ed25519 PKCS8 PEM")
+        public = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+        public_text = "ed25519:" + public.hex()
+        prior_hash = None
+        prior = None
+        if args.sequence > 1:
+            if not args.prior_artifact:
+                raise RunnerQueueError("sequence > 1 requires --prior-artifact")
+            prior = _read_private_json_artifact(Path(args.prior_artifact), Path(args.trusted_root))
+            _enforce_gate_schema(prior, "runner-health-v2.schema.json")
+            if prior.get("schema_version") != "p42-runner-health/v2" or prior.get("sequence") != args.sequence - 1:
+                raise RunnerQueueError("prior health artifact is not the immediate v2 predecessor")
+            prior_hash = prior.get("artifact_hash")
+            if not isinstance(prior_hash, str):
+                raise RunnerQueueError("prior health artifact hash is missing")
+            prior_unsigned = {key: value for key, value in prior.items() if key not in {"artifact_hash", "signature"}}
+            if "sha256:" + hashlib.sha256(canonical_json(prior_unsigned).encode()).hexdigest() != prior_hash:
+                raise RunnerQueueError("prior health artifact hash is invalid")
+            prior_signature = prior.get("signature", {})
+            if prior_signature.get("public_key") != public_text:
+                raise RunnerQueueError("prior health signer changed")
+            try:
+                private.public_key().verify(
+                    bytes.fromhex(prior_signature["signature"].removeprefix("ed25519:")),
+                    b"P42-RUNNER-HEALTH-V2\0" + bytes.fromhex(prior_hash.removeprefix("sha256:")),
+                )
+            except Exception as exc:
+                raise RunnerQueueError("prior health artifact signature is invalid") from exc
+            prior_producer = prior.get("producer", {})
+            if prior_producer.get("host_id") != args.host_id or prior_producer.get("queue_id") != args.queue_id:
+                raise RunnerQueueError("prior health host or queue identity changed")
+            for counter in ("oom_kills", "worker_restarts", "queue_corruption_events"):
+                if getattr(args, counter) < prior.get("counters", {}).get(counter, -1):
+                    raise RunnerQueueError(f"{counter} cannot roll back")
+        elif args.prior_artifact:
+            raise RunnerQueueError("sequence 1 must not have a prior artifact")
+
+        counters = {
+            "oom_kills": args.oom_kills, "worker_restarts": args.worker_restarts,
+            "queue_corruption_events": args.queue_corruption_events,
+        }
+        recovery_authorization = _read_private_json_artifact(Path(args.counter_recovery_authorization), Path(args.trusted_root)) if args.counter_recovery_authorization else None
+        zero_counters = {"oom_kills": 0, "worker_restarts": 0, "queue_corruption_events": 0}
+        if prior is None and counters == zero_counters:
+            counter_acknowledgement = {"generation": 1, "baseline": zero_counters, "acknowledged_block_number": args.block_number, "acknowledged_block_hash": args.block_hash.lower(), "recovery_authorization": None}
+        elif recovery_authorization is not None:
+            counter_acknowledgement = {"generation": recovery_authorization["generation"], "baseline": recovery_authorization["baseline"], "acknowledged_block_number": args.block_number, "acknowledged_block_hash": args.block_hash.lower(), "recovery_authorization": recovery_authorization}
+        elif prior is not None and counters == prior["counter_acknowledgement"]["baseline"]:
+            counter_acknowledgement = prior["counter_acknowledgement"]
+        else:
+            raise RunnerQueueError("nonzero root or counter baseline advancement requires independent recovery authorization")
+
+        boot_transition = None
+        if args.sequence > 1 and prior["producer"]["boot_id"] != args.boot_id:
+            if not args.boot_transition_reason:
+                raise RunnerQueueError("boot change requires --boot-transition-reason")
+            boot_transition = {
+                "previous_boot_id": prior["producer"]["boot_id"], "new_boot_id": args.boot_id,
+                "reason": args.boot_transition_reason, "transition_block_number": args.block_number,
+                "transition_block_hash": args.block_hash.lower(),
+            }
+        elif args.boot_transition_reason:
+            raise RunnerQueueError("boot transition reason is only valid when the boot id changes")
+        unsigned = {
+            "schema_version": "p42-runner-health/v2",
+            "observed_at_utc": datetime.fromtimestamp(args.chain_time, timezone.utc).isoformat().replace("+00:00", "Z"),
+            "sequence": args.sequence,
+            "prior_artifact_hash": prior_hash,
+            "producer": {"host_id": args.host_id, "boot_id": args.boot_id, "queue_id": args.queue_id},
+            "boot_transition": boot_transition,
+            "chain": {
+                "chain_id": args.chain_id, "contract": args.contract.lower(), "block_number": args.block_number,
+                "block_hash": args.block_hash.lower(), "block_time": args.chain_time,
+            },
+            "counters": counters,
+            "counter_acknowledgement": counter_acknowledgement,
+            "queue": queue,
+        }
+        artifact_hash = "sha256:" + hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
+        artifact = {
+            **unsigned,
+            "artifact_hash": artifact_hash,
+            "signature": {
+                "algorithm": "ed25519", "public_key": public_text,
+                "signature": "ed25519:" + private.sign(
+                    b"P42-RUNNER-HEALTH-V2\0" + bytes.fromhex(artifact_hash.removeprefix("sha256:"))
+                ).hex(),
+            },
+        }
+        _enforce_gate_schema(artifact, "runner-health-v2.schema.json")
+        _write_json_atomic_secure(artifact, args.output, Path(args.trusted_root))
+    except (AdmissionError, RunnerQueueError, OSError, ValueError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+def _write_json_atomic_secure(value: Mapping[str, Any], output: str, trusted_root: Path) -> None:
+    path = Path(output)
+    _validate_path_below_trusted_root(path, trusted_root)
+    payload = (canonical_json(dict(value)) + "\n").encode()
+    with _trusted_parent_fd(path, trusted_root) as (parent_fd, name):
+        temporary = f".{name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent_fd)
+        try:
+            with os.fdopen(fd, "wb") as stream:
+                fd = -1; stream.write(payload); stream.flush(); os.fsync(stream.fileno())
+            os.replace(temporary, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd); os.fsync(parent_fd)
+        finally:
+            if fd >= 0: os.close(fd)
+            try: os.unlink(temporary, dir_fd=parent_fd)
+            except FileNotFoundError: pass
+
+
+def _read_private_signing_key(path: Path, trusted_root: Path) -> bytes:
+    with _trusted_parent_fd(path, trusted_root) as (parent_fd, name):
+      descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+      try:
+        opened = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_uid != os.geteuid()
+            or opened.st_mode & 0o077
+        ):
+            raise RunnerQueueError("runner health signing key path is not private and stable")
+        payload = os.read(descriptor, 16 * 1024 + 1)
+        if len(payload) > 16 * 1024 or os.read(descriptor, 1):
+            raise RunnerQueueError("runner health signing key exceeds 16 KiB")
+        return payload
+      finally:
+        os.close(descriptor)
+
+
+def _read_private_json_artifact(path: Path, trusted_root: Path) -> dict[str, Any]:
+    with _trusted_parent_fd(path, trusted_root) as (parent_fd, name):
+      descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent_fd)
+      try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1 or opened.st_uid != os.geteuid() or opened.st_mode & 0o077 or opened.st_size > DEFAULT_MAX_BYTES:
+            raise RunnerQueueError("runner health predecessor path is not private, bounded, and stable")
+        chunks: list[bytes] = []
+        remaining = opened.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk: raise RunnerQueueError("runner health predecessor truncated during read")
+            chunks.append(chunk); remaining -= len(chunk)
+        if os.read(descriptor, 1): raise RunnerQueueError("runner health predecessor grew during read")
+        payload = b"".join(chunks)
+        value = loads_strict_json(payload, max_bytes=DEFAULT_MAX_BYTES)
+        if not isinstance(value, dict) or payload != (canonical_json(value) + "\n").encode():
+            raise RunnerQueueError("runner health predecessor must be canonical JSON with one newline")
+        return value
+      finally:
+        os.close(descriptor)
+
+
+def _validate_path_below_trusted_root(path: Path, trusted_root: Path) -> None:
+    root = trusted_root.resolve(strict=True)
+    absolute = path.absolute()
+    try: relative = absolute.relative_to(root)
+    except ValueError as exc: raise RunnerQueueError(f"runner authorization path escapes trusted root: {path}") from exc
+    if not relative.parts: raise RunnerQueueError("runner authorization path must be below trusted root")
+    descriptor = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        metadata = os.fstat(descriptor)
+        if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022: raise RunnerQueueError("runner trusted root is unsafe")
+        for component in relative.parts[:-1]:
+            child = os.open(component, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=descriptor)
+            os.close(descriptor); descriptor = child; metadata = os.fstat(descriptor)
+            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022: raise RunnerQueueError("runner trusted path ancestor is unsafe")
+    finally: os.close(descriptor)
+
+
+@contextmanager
+def _trusted_parent_fd(path: Path, trusted_root: Path):
+    root = trusted_root.absolute(); target = path.absolute()
+    try: parts = target.relative_to(root).parts
+    except ValueError as exc: raise RunnerQueueError(f"runner authorization path escapes trusted root: {path}") from exc
+    if not parts: raise RunnerQueueError("runner authorization path must be below trusted root")
+    held = [os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))]
+    try:
+        for component in parts[:-1]: held.append(os.open(component, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=held[-1]))
+        for descriptor in held:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022: raise RunnerQueueError("runner trusted path ancestor is unsafe")
+        yield held[-1], parts[-1]
+    finally:
+        for descriptor in reversed(held): os.close(descriptor)
+
+
 def _runner_memory_from_args(args: argparse.Namespace) -> MemorySnapshot:
     if (
         args.total_memory_mb is None
@@ -877,6 +1092,42 @@ def build_parser() -> argparse.ArgumentParser:
     runner_plan.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_plan.add_argument("--now-utc")
     runner_plan.set_defaults(func=_cmd_runner_plan)
+
+    runner_health = subparsers.add_parser(
+        "runner-health", help="emit signed v2 runner authorization evidence",
+    )
+    runner_health.add_argument("--queue", required=True)
+    runner_health.add_argument("--trusted-root", required=True)
+    runner_health.add_argument("--output", required=True)
+    runner_health.add_argument("--signing-key", required=True)
+    runner_health.add_argument("--host-id", required=True)
+    runner_health.add_argument("--boot-id", required=True)
+    runner_health.add_argument("--boot-transition-reason")
+    runner_health.add_argument("--queue-id", required=True)
+    runner_health.add_argument("--chain-id", type=int, required=True)
+    runner_health.add_argument("--contract", required=True)
+    runner_health.add_argument("--block-number", type=int, required=True)
+    runner_health.add_argument("--block-hash", required=True)
+    runner_health.add_argument("--chain-time", type=int, required=True)
+    runner_health.add_argument("--sequence", type=int, required=True)
+    runner_health.add_argument("--prior-artifact")
+    runner_health.add_argument("--oom-kills", type=int, required=True)
+    runner_health.add_argument("--worker-restarts", type=int, required=True)
+    runner_health.add_argument("--queue-corruption-events", type=int, required=True)
+    runner_health.add_argument("--counter-recovery-authorization")
+    runner_health.add_argument("--warning-slack-seconds", type=int, default=3600)
+    runner_health.add_argument("--critical-slack-seconds", type=int, default=900)
+    runner_health.add_argument("--total-memory-mb", type=int)
+    runner_health.add_argument("--available-memory-mb", type=int)
+    runner_health.add_argument("--swap-used-mb", type=int)
+    runner_health.add_argument("--max-running", type=int, default=1)
+    runner_health.add_argument("--reserve-memory-mb", type=int, default=8192)
+    runner_health.add_argument("--max-swap-used-mb", type=int, default=1024)
+    runner_health.add_argument("--memory-safety-factor", type=float, default=2.0)
+    runner_health.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_health.add_argument("--sandbox-pids-limit", type=int, default=256)
+    runner_health.add_argument("--sandbox-cpus", type=float, default=1.0)
+    runner_health.set_defaults(func=_cmd_runner_health)
 
     runner_work = subparsers.add_parser(
         "runner-work-once",

@@ -3,7 +3,7 @@
 // Docker/cgroup verifier -> canonical challenge candidate -> bounded tx.
 
 import { ethers } from "ethers";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync,
   existsSync,
@@ -53,6 +53,8 @@ import {
   limitsFromProvisioning,
   releaseChallengeReservation,
   reserveChallengeSpend,
+  runnerHealthAdmission,
+  runnerHealthFinalSigningAdmission,
   runChallengeActionIntent,
   validateProvisioningArtifact,
 } from "./challenge-envelope.mjs";
@@ -61,6 +63,7 @@ import { verifyRunnerTranscript } from "./runner-transcript.mjs";
 
 const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
+function privateAuthorizationLimits() { return { ...IMMUTABLE_JSON_LIMITS, privateFile: true, trustedRoot: RUNTIME }; }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 function arg(name, def = undefined) {
@@ -93,6 +96,13 @@ const ACTIONS = join(RUNTIME, "actions");
 const ALERTS = join(RUNTIME, "ALERTS.log");
 const ENVELOPE = resolve(arg("challenge-envelope", join(RUNTIME, "challenge-envelope.json")));
 const RUNNER_HEALTH = resolve(arg("runner-health", join(RUNTIME, "runner-health.json")));
+const RUNNER_HEALTH_PRIOR = resolve(arg("runner-health-prior", join(RUNTIME, "runner-health-prior.json")));
+const REQUIRE_HEALTH_V2 = !LOCAL_TEST;
+const RUNNER_HEALTH_PUBLIC_KEY = arg("runner-health-public-key", null);
+const RUNNER_RECOVERY_PUBLIC_KEY = arg("runner-recovery-public-key", null);
+const RUNNER_HOST_ID = arg("runner-host-id", null);
+const RUNNER_BOOT_ID = arg("runner-boot-id", null);
+const RUNNER_QUEUE_ID = arg("runner-queue-id", null);
 const CHALLENGE_PROVISIONING = resolve(arg("challenge-provisioning", join(RUNTIME, "challenge-provisioning.json")));
 const AUTO_CLAIM_BOND = arg("auto-claim-bond", true) !== "false";
 const MAX_JOBS_PER_SCAN = Number(arg("max-jobs-per-scan", "1"));
@@ -113,6 +123,10 @@ if (!/^[1-9][0-9]*$/.test(String(REGISTRY_PROBLEM_ID))) {
 }
 if (!Number.isInteger(MAX_JOBS_PER_SCAN) || MAX_JOBS_PER_SCAN < 1) {
   console.error("--max-jobs-per-scan must be a positive integer");
+  process.exit(2);
+}
+if (!LOCAL_TEST && (!RUNNER_HEALTH_PUBLIC_KEY || !RUNNER_RECOVERY_PUBLIC_KEY || !RUNNER_HOST_ID || !RUNNER_BOOT_ID || !RUNNER_QUEUE_ID)) {
+  console.error("production runner-health v2 requires signer, host, boot, and queue identity bindings");
   process.exit(2);
 }
 const KEY = process.env.OPERATOR_PRIVATE_KEY;
@@ -241,6 +255,22 @@ function bridge(...args) {
   });
 }
 
+async function acquireRunnerAuthorizationFence() {
+  const env = { ...process.env, PYTHONPATH: `${REPO_ROOT}/src` };
+  for (const name of Object.keys(env)) if (/(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD|RPC_URL)/i.test(name)) delete env[name];
+  const child = spawn(runtimePythonExecutable(env), [`${REPO_ROOT}/agent/runtime_bridge.py`, "authorization-fence", "--queue", QUEUE], { cwd: REPO_ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", (chunk) => { stderr += chunk; });
+  await new Promise((resolveReady, rejectReady) => {
+    let stdout = ""; const timeout = setTimeout(() => { child.kill("SIGKILL"); rejectReady(new Error("runner authorization fence timeout")); }, 5000);
+    child.stdout.setEncoding("utf8"); child.stdout.on("data", (chunk) => { stdout += chunk; if (stdout === "READY\n") { clearTimeout(timeout); resolveReady(); } else if (!"READY\n".startsWith(stdout)) { clearTimeout(timeout); child.kill("SIGKILL"); rejectReady(new Error("runner authorization fence emitted invalid readiness")); } });
+    child.once("exit", (code) => { clearTimeout(timeout); rejectReady(new Error(stderr || `runner authorization fence exited ${code}`)); });
+  });
+  let released = false;
+  return () => {
+    if (released) return; released = true; child.stdin.end("R");
+  };
+}
+
 function readQueue() {
   return bridge("read", "--queue", QUEUE);
 }
@@ -274,12 +304,49 @@ function readJsonOrNull(path) {
 }
 
 function runnerHealth() {
-  if (LOCAL_TEST) return { schema_version: "p42-runner-health/v1", observed_at_utc: new Date().toISOString(), oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0, max_active_running: 1, decision: "start", swap_guard: "green", host_capacity: "green", concurrency_guard: "green" };
-  const health = readJsonOrNull(RUNNER_HEALTH);
-  if (!health || health.schema_version !== "p42-runner-health/v1") return null;
+  if (LOCAL_TEST && !REQUIRE_HEALTH_V2) return { schema_version: "p42-runner-health/v1", observed_at_utc: new Date().toISOString(), oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0, max_active_running: 1, decision: "start", swap_guard: "green", host_capacity: "green", concurrency_guard: "green" };
+  const health = existsSync(RUNNER_HEALTH) ? readStrictJsonFileSync(RUNNER_HEALTH, privateAuthorizationLimits()) : null;
+  if (!health || (REQUIRE_HEALTH_V2 && health.schema_version !== "p42-runner-health/v2")) return null;
   const observed = Date.parse(health.observed_at_utc);
   if (!Number.isFinite(observed) || observed > Date.now() || Date.now() - observed > 5 * 60_000) return null;
   return health;
+}
+
+function assertFreshRunnerHealthAuthorization(health, prior = null, highWater = null, reservationBinding = null) {
+  const expected = { public_key: RUNNER_HEALTH_PUBLIC_KEY, recovery_public_key: RUNNER_RECOVERY_PUBLIC_KEY, recovery_cooldown_ms: 86_400_000, host_id: RUNNER_HOST_ID, boot_id: RUNNER_BOOT_ID, queue_id: RUNNER_QUEUE_ID, chain_id: chainId, contract: String(chal.target) };
+  const admission = runnerHealthAdmission(health, { requireV2: REQUIRE_HEALTH_V2, expected, prior, highWater, reservationBinding });
+  if (!admission.allowed) throw new Error(`runner health authorization rejected: ${admission.detail || admission.reason}`);
+  if (health.schema_version === "p42-runner-health/v2") {
+    const queue = existsSync(QUEUE) ? readStrictJsonFileSync(QUEUE, privateAuthorizationLimits()) : null;
+    if (!queue) throw new Error("runner queue is absent during health authorization");
+    const queueHash = `sha256:${ethers.sha256(ethers.toUtf8Bytes(`${canonicalJson(queue)}\n`)).slice(2)}`;
+    if (queueHash !== health.queue.queue_hash) throw new Error("runner queue changed after health authorization");
+  }
+  return health;
+}
+
+async function assertCanonicalRunnerHealthBlock(health, authorizationStartedAt = Date.now()) {
+  if (health?.schema_version !== "p42-runner-health/v2") {
+    if (REQUIRE_HEALTH_V2) throw new Error("runner health v2 is required");
+    return;
+  }
+  const block = await provider.getBlock(health.chain.block_number);
+  const latest = await provider.getBlock("latest");
+  const incident = health.counter_acknowledgement.recovery_authorization?.incident_artifact;
+  const incidentBlock = incident ? await provider.getBlock(incident.block_number) : null;
+  const admission = runnerHealthFinalSigningAdmission(health, { healthBlock: block, latestBlock: latest, incidentBlock, confirmations: finalityConfirmations, authorizationStartedAt });
+  if (!admission.allowed) throw new Error(`runner health final signing evidence rejected: ${admission.detail}`);
+}
+
+async function finalSigningAuthorizationFence(highWater, reservationBinding) {
+  const release = await acquireRunnerAuthorizationFence();
+  try {
+    const health = runnerHealth();
+    const prior = existsSync(RUNNER_HEALTH_PRIOR) ? readStrictJsonFileSync(RUNNER_HEALTH_PRIOR, privateAuthorizationLimits()) : null;
+    assertFreshRunnerHealthAuthorization(health, prior, highWater, reservationBinding);
+    await assertCanonicalRunnerHealthBlock(health);
+    return { health, acquiredAt: Date.now(), release };
+  } catch (error) { release(); throw error; }
 }
 
 async function canonicalOpenEvidence() {
@@ -819,9 +886,12 @@ function signedActionPath(candidate, callPolicy) {
   return join(ACTIONS, `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.signed-tx.json`);
 }
 
-async function signedActionRecord(candidate, callPolicy, request) {
+async function signedActionRecord(candidate, callPolicy, request, authorization = null) {
   const path = signedActionPath(candidate, callPolicy);
   if (existsSync(path)) return { path, record: readStrictJsonFileSync(assertApprovedJournalPath(path, ACTIONS, path), IMMUTABLE_JSON_LIMITS) };
+  if (!authorization || Date.now() - authorization.acquiredAt > 5000) throw new Error("runner signing authorization fence is missing or too old");
+  await assertCanonicalRunnerHealthBlock(authorization.health, authorization.acquiredAt);
+  if (Date.now() - authorization.acquiredAt > 5000) throw new Error("runner signing authorization aged out during canonical recheck");
   const record = await buildSignedTransactionRecord({
     wallet,
     request,
@@ -1161,31 +1231,35 @@ async function consumeCandidate(job) {
     return;
   }
 
+  let health;
+  let priorHealth;
   try {
     const openEvidence = await canonicalOpenEvidence();
+    health = runnerHealth();
+    priorHealth = existsSync(RUNNER_HEALTH_PRIOR) ? readStrictJsonFileSync(RUNNER_HEALTH_PRIOR, privateAuthorizationLimits()) : null;
+    await assertCanonicalRunnerHealthBlock(health);
     reserveChallengeSpend(ENVELOPE, {
       id: candidate.candidate_hash,
       problemId: runnerConfig.problemId,
       amountWei: bond,
       provisioning: challengeProvisioning,
-      health: runnerHealth(),
+      health,
       canonicalOpenEvidence: openEvidence,
       canonicalEvidenceExpected: {
         chainId,
         challengeManager: String(chal.target),
         finalizedThroughBlock: openEvidence.finalized_through_block,
       },
-    });
+    }, { trustedRoot: RUNTIME, requireHealthV2: REQUIRE_HEALTH_V2, expectedHealth: { public_key: RUNNER_HEALTH_PUBLIC_KEY, recovery_public_key: RUNNER_RECOVERY_PUBLIC_KEY, recovery_cooldown_ms: 86_400_000, host_id: RUNNER_HOST_ID, boot_id: RUNNER_BOOT_ID, queue_id: RUNNER_QUEUE_ID, chain_id: chainId, contract: String(chal.target) }, priorHealth });
   } catch (error) {
     appendAlert(`AUTO-FILE DISABLED ${job.job_id}: ${error.message}`);
     return;
   }
 
-  await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash, async ({ markJournalDurable }) => {
-    const reasonHash = ethers.keccak256(
-      ethers.toUtf8Bytes(`p42-challenge-candidate/v1:${candidate.candidate_hash}`),
-    );
-    const callPolicy = buildChallengeCallPolicy({
+  const reasonHash = ethers.keccak256(
+    ethers.toUtf8Bytes(`p42-challenge-candidate/v1:${candidate.candidate_hash}`),
+  );
+  const callPolicy = buildChallengeCallPolicy({
       challengeInterface: chal.interface,
       challengeContract: String(chal.target),
       chainId,
@@ -1197,19 +1271,17 @@ async function consumeCandidate(job) {
       sourceEventHash: candidate.source_event_hash,
       expiresAt: candidate.challenge_ends_at,
       valueWei: bond,
-    });
-    const policyPath = join(
+  });
+  const policyPath = join(
       ACTIONS,
       `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.json`,
-    );
-    writeCanonicalAtomic(policyPath, callPolicy);
+  );
+  writeCanonicalAtomic(policyPath, callPolicy);
+  const request = await buildChallengeTransactionRequest(callPolicy, bond, BigInt(latest.timestamp));
+  let signingAuthorization = null;
+  await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash, async ({ markJournalDurable }) => {
     log(`  exact session call policy: ${policyPath} (${callPolicy.policy_hash})`);
-    const request = await buildChallengeTransactionRequest(
-      callPolicy,
-      bond,
-      BigInt(latest.timestamp),
-    );
-    const signed = await signedActionRecord(candidate, callPolicy, request);
+    const signed = await signedActionRecord(candidate, callPolicy, request, signingAuthorization);
     markJournalDurable({ journalPath: signed.path, signedTransactionHash: signed.record.hash });
     assertOperatorSignedRecord(signed.record, candidate, callPolicy);
     const detail = canonicalJson({
@@ -1230,7 +1302,10 @@ async function consumeCandidate(job) {
     recordAction(job, candidate, "signed", signed.record.hash, detail);
     log(`  challenge signed for #${submissionId}: ${signed.record.hash} bond=${ethers.formatEther(bond)} ETH`);
     await reconcileBroadcast({ ...job, action: { status: "signed", transaction_hash: signed.record.hash, detail } });
-  });
+  }, { trustedRoot: RUNTIME, preflight: async (highWater, reservationBinding) => {
+    signingAuthorization = await finalSigningAuthorizationFence(highWater, reservationBinding);
+    return signingAuthorization.release;
+  } });
 }
 
 async function consumeCandidates() {

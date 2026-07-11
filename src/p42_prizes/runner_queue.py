@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import stat
 import threading
+import time
 from typing import Any, Iterator, Mapping
 
 from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json
@@ -50,10 +51,22 @@ _THREAD_LOCKS_GUARD = threading.Lock()
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 ARCHIVE_SCHEMA_VERSION = "p42-runner-job-archive/v1"
 TOMBSTONE_SCHEMA_VERSION = "p42-runner-job-tombstone/v1"
+HEALTH_SCHEMA_VERSION = "p42-runner-health/v2"
+ARCHIVE_FAULT_SCHEMA_VERSION = "p42-runner-archive-fault/v1"
+ARCHIVE_SCAN_MAX_ENTRIES = 100_000
+ARCHIVE_SCAN_MAX_BYTES = 256 * 1024 * 1024
+ARCHIVE_SCAN_MAX_SECONDS = 5.0
 
 
 class RunnerQueueError(ValueError):
     """Raised when runner queue state or policy input is malformed."""
+
+
+class RunnerArchiveTargetMissing(RunnerQueueError):
+    def __init__(self, archive_count: int, tombstone_count: int):
+        super().__init__("runner archive fault target has not been durably recovered")
+        self.archive_count = archive_count
+        self.tombstone_count = tombstone_count
 
 
 def open_secure_runner_directory(directory: Path) -> int:
@@ -468,6 +481,10 @@ def _archive_paths(queue_path: Path) -> tuple[Path, Path]:
     return root / "records", root / "tombstones"
 
 
+def _archive_fault_path(queue_path: Path) -> Path:
+    return queue_path.parent / f"{queue_path.name}.archive" / "health-fault.json"
+
+
 def _ensure_private_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     metadata = path.lstat()
@@ -548,9 +565,16 @@ def _persist_archived_job(queue_path: Path, job: Mapping[str, Any]) -> None:
     _ensure_private_directory(records.parent)
     archive = {"schema_version": ARCHIVE_SCHEMA_VERSION, "job": dict(job)}
     archive_payload, archive_hash = _artifact_digest(archive)
+    _write_archive_fault(
+        queue_path,
+        "archive_attempt_incomplete",
+        job_id=job["job_id"],
+        source_event_hash=job["source_event_hash"],
+        archive_hash=archive_hash,
+    )
     record_path = records / f"{archive_hash.removeprefix('sha256:')}.json"
     _write_immutable_json(record_path, archive)
-    if record_path.read_bytes() != archive_payload:
+    if _read_private_regular_bytes(record_path) != archive_payload:
         raise RunnerQueueError(f"runner archive record digest collision: {record_path}")
     tombstone = {
         "schema_version": TOMBSTONE_SCHEMA_VERSION,
@@ -563,6 +587,302 @@ def _persist_archived_job(queue_path: Path, job: Mapping[str, Any]) -> None:
     }
     _write_immutable_json(tombstones / f"job-{_safe_key(job['job_id'])}.json", tombstone)
     _write_immutable_json(tombstones / f"event-{_safe_key(job['source_event_hash'])}.json", tombstone)
+    _validate_archive_store(queue_path, expected_fault=_validated_archive_fault(queue_path))
+    _clear_archive_fault(queue_path)
+
+
+def _write_archive_fault(
+    queue_path: Path,
+    reason: str,
+    *,
+    job_id: str | None = None,
+    source_event_hash: str | None = None,
+    archive_hash: str | None = None,
+) -> None:
+    path = _archive_fault_path(queue_path)
+    _ensure_private_directory(path.parent)
+    previous = _validated_archive_fault(queue_path)
+    now = _format_utc(datetime.now(timezone.utc))
+    value = {
+        "schema_version": ARCHIVE_FAULT_SCHEMA_VERSION,
+        "status": "active",
+        "first_observed_at_utc": previous["first_observed_at_utc"] if previous else now,
+        "last_observed_at_utc": now,
+        "event_count": (previous["event_count"] if previous else 0) + 1,
+        "reason": reason,
+        "reason_hash": "sha256:" + hashlib.sha256(reason.encode()).hexdigest(),
+        "recovery_generation": previous["recovery_generation"] if previous else 0,
+        "recovered_at_utc": None,
+        "job_id": job_id,
+        "source_event_hash": source_event_hash,
+        "archive_hash": archive_hash,
+    }
+    _write_mutable_private_json(path, value)
+
+
+def _write_mutable_private_json(path: Path, value: Mapping[str, Any]) -> None:
+    payload, _ = _artifact_digest(value)
+    _ensure_private_directory(path.parent)
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        with os.fdopen(fd, "wb") as output:
+            fd = -1
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        temporary.unlink(missing_ok=True)
+
+
+def _clear_archive_fault(queue_path: Path) -> None:
+    path = _archive_fault_path(queue_path)
+    previous = _validated_archive_fault(queue_path)
+    if previous is None or previous["status"] == "recovered":
+        return
+    recovered = {
+        **previous,
+        "status": "recovered",
+        "recovery_generation": previous["recovery_generation"] + 1,
+        "recovered_at_utc": _format_utc(datetime.now(timezone.utc)),
+    }
+    _write_mutable_private_json(path, recovered)
+
+
+def _validated_archive_fault(queue_path: Path) -> dict[str, Any] | None:
+    path = _archive_fault_path(queue_path)
+    try:
+        payload = _read_private_regular_bytes(path)
+    except RunnerQueueError:
+        if not path.exists():
+            return None
+        raise
+    value = loads_strict_json(payload, max_bytes=DEFAULT_MAX_BYTES)
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"schema_version", "status", "first_observed_at_utc", "last_observed_at_utc", "event_count", "reason", "reason_hash", "recovery_generation", "recovered_at_utc", "job_id", "source_event_hash", "archive_hash"}
+        or value.get("schema_version") != ARCHIVE_FAULT_SCHEMA_VERSION
+        or value.get("status") not in {"active", "recovered"}
+        or not isinstance(value.get("reason"), str)
+        or not value["reason"]
+        or value.get("reason_hash") != "sha256:" + hashlib.sha256(value["reason"].encode()).hexdigest()
+        or not isinstance(value.get("event_count"), int)
+        or value["event_count"] < 1
+        or not isinstance(value.get("recovery_generation"), int)
+        or value["recovery_generation"] < 0
+    ):
+        raise RunnerQueueError("invalid runner archive fault evidence")
+    target_values = (value["job_id"], value["source_event_hash"], value["archive_hash"])
+    if any(item is not None for item in target_values) and (
+        not isinstance(value["job_id"], str)
+        or not value["job_id"]
+        or not _is_sha256(value["source_event_hash"])
+        or not _is_sha256(value["archive_hash"])
+    ):
+        raise RunnerQueueError("invalid runner archive fault target")
+    first = _parse_utc(value.get("first_observed_at_utc"))
+    last = _parse_utc(value.get("last_observed_at_utc"))
+    if last < first:
+        raise RunnerQueueError("runner archive fault history timestamps are reversed")
+    if value["status"] == "recovered":
+        recovered = _parse_utc(value.get("recovered_at_utc"))
+        if recovered < last or value["recovery_generation"] < 1:
+            raise RunnerQueueError("runner archive recovery transition is invalid")
+    elif value.get("recovered_at_utc") is not None:
+        raise RunnerQueueError("active runner archive fault cannot have recovery time")
+    return value
+
+
+def _validate_archive_store(
+    queue_path: Path,
+    *,
+    max_entries: int = ARCHIVE_SCAN_MAX_ENTRIES,
+    max_bytes: int = ARCHIVE_SCAN_MAX_BYTES,
+    max_seconds: float = ARCHIVE_SCAN_MAX_SECONDS,
+    expected_fault: Mapping[str, Any] | None = None,
+) -> tuple[int, int]:
+    """Bounded, no-follow validation of every archive record and dual index."""
+    records, tombstones = _archive_paths(queue_path)
+    if not records.parent.exists():
+        return 0, 0
+    root_fd = records_fd = tombstones_fd = -1
+    try:
+        for directory in (records.parent, records, tombstones):
+            if not directory.exists():
+                raise RunnerQueueError(f"runner archive directory is incomplete: {directory}")
+        root_fd = open_secure_runner_directory(records.parent)
+        records_fd = open_secure_runner_directory(records)
+        tombstones_fd = open_secure_runner_directory(tombstones)
+        budget = {"entries": 0, "bytes": 0, "started": time.monotonic()}
+        archived_jobs: dict[str, tuple[Any, ...]] = {}
+        indexed_hashes: dict[str, int] = {}
+        for name, payload in _scan_archive_directory_at(records_fd, budget, max_entries, max_bytes, max_seconds):
+            digest = "sha256:" + hashlib.sha256(payload).hexdigest()
+            if name != f"{digest.removeprefix('sha256:')}.json":
+                raise RunnerQueueError(f"runner archive record filename mismatch: {name}")
+            value = loads_strict_json(payload, max_bytes=DEFAULT_MAX_BYTES)
+            job = value.get("job") if isinstance(value, dict) else None
+            if not isinstance(value, dict) or set(value) != {"schema_version", "job"} or payload != (canonical_json(value) + "\n").encode() or value.get("schema_version") != ARCHIVE_SCHEMA_VERSION or not isinstance(job, dict) or not _is_archivable(job):
+                raise RunnerQueueError(f"invalid runner archive record: {name}")
+            archived_jobs[digest] = (
+                job.get("job_id"), job.get("source_event_hash"), job.get("status"),
+                job.get("action", {}).get("status"), job.get("challenge_candidate_hash"),
+            )
+            if time.monotonic() - budget["started"] > max_seconds:
+                raise RunnerQueueError("runner archive time validation budget exhausted")
+        for name, payload in _scan_archive_directory_at(tombstones_fd, budget, max_entries, max_bytes, max_seconds):
+            value = loads_strict_json(payload, max_bytes=DEFAULT_MAX_BYTES)
+            if not isinstance(value, dict) or set(value) != {"schema_version", "job_id", "source_event_hash", "terminal_status", "terminal_action_status", "candidate_hash", "archive_hash"} or payload != (canonical_json(value) + "\n").encode() or value.get("schema_version") != TOMBSTONE_SCHEMA_VERSION:
+                raise RunnerQueueError(f"invalid runner tombstone: {name}")
+            prefix = "job" if name.startswith("job-") else "event" if name.startswith("event-") else None
+            key = value.get("job_id") if prefix == "job" else value.get("source_event_hash")
+            if prefix is None or not isinstance(key, str) or name != f"{prefix}-{_safe_key(key)}.json":
+                raise RunnerQueueError(f"runner tombstone filename mismatch: {name}")
+            identity = archived_jobs.get(value.get("archive_hash"))
+            if not identity or (
+                value.get("job_id"), value.get("source_event_hash"), value.get("terminal_status"),
+                value.get("terminal_action_status"), value.get("candidate_hash"),
+            ) != identity:
+                raise RunnerQueueError(f"runner tombstone does not match archive record: {name}")
+            indexed_hashes[value["archive_hash"]] = indexed_hashes.get(value["archive_hash"], 0) + 1
+            if time.monotonic() - budget["started"] > max_seconds:
+                raise RunnerQueueError("runner archive time validation budget exhausted")
+        if any(count != 2 for count in indexed_hashes.values()) or set(indexed_hashes) != set(archived_jobs):
+            raise RunnerQueueError("runner archive records and dual tombstone indexes are inconsistent")
+        if expected_fault and expected_fault.get("archive_hash") is not None:
+            actual = archived_jobs.get(expected_fault.get("archive_hash"))
+            if actual is None or actual[0] != expected_fault.get("job_id") or actual[1] != expected_fault.get("source_event_hash"):
+                raise RunnerArchiveTargetMissing(len(archived_jobs), sum(indexed_hashes.values()))
+        return len(archived_jobs), sum(indexed_hashes.values())
+    finally:
+        for descriptor in (tombstones_fd, records_fd, root_fd):
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def _scan_archive_directory_at(
+    directory_fd: int,
+    budget: dict[str, Any],
+    max_entries: int,
+    max_bytes: int,
+    max_seconds: float,
+) -> Iterator[tuple[str, bytes]]:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    with os.scandir(directory_fd) as entries:
+        for entry in entries:
+            budget["entries"] += 1
+            if budget["entries"] > max_entries or time.monotonic() - budget["started"] > max_seconds:
+                raise RunnerQueueError("runner archive entry/time validation budget exhausted")
+            if not entry.name.endswith(".json") or entry.is_symlink():
+                raise RunnerQueueError(f"unsafe runner archive entry: {entry.name}")
+            descriptor = os.open(entry.name, os.O_RDONLY | nofollow | getattr(os, "O_NONBLOCK", 0), dir_fd=directory_fd)
+            try:
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_nlink != 1 or metadata.st_mode & 0o077:
+                    raise RunnerQueueError(f"runner archive entry is not a private single-link file: {entry.name}")
+                if metadata.st_size > DEFAULT_MAX_BYTES or budget["bytes"] + metadata.st_size > max_bytes:
+                    raise RunnerQueueError("runner archive byte validation budget exhausted")
+                chunks: list[bytes] = []
+                remaining = metadata.st_size
+                while remaining:
+                    if time.monotonic() - budget["started"] > max_seconds:
+                        raise RunnerQueueError("runner archive time validation budget exhausted")
+                    chunk = os.read(descriptor, min(64 * 1024, remaining))
+                    if not chunk:
+                        raise RunnerQueueError(f"runner archive entry truncated during read: {entry.name}")
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                if os.read(descriptor, 1):
+                    raise RunnerQueueError(f"runner archive entry grew during read: {entry.name}")
+                budget["bytes"] += metadata.st_size
+                yield entry.name, b"".join(chunks)
+            finally:
+                os.close(descriptor)
+
+
+def build_runner_health_snapshot(
+    queue_path: str | Path,
+    *,
+    chain_time: int,
+    warning_slack_seconds: int,
+    critical_slack_seconds: int,
+    memory: MemorySnapshot | None = None,
+    policy: RunnerPolicy | None = None,
+) -> dict[str, Any]:
+    """Derive queue and archive metrics from one locked, reconciled snapshot."""
+    if not isinstance(chain_time, int) or isinstance(chain_time, bool) or chain_time < 1:
+        raise RunnerQueueError("chain_time must be a positive Unix timestamp")
+    if not (0 < critical_slack_seconds < warning_slack_seconds):
+        raise RunnerQueueError("slack thresholds must satisfy 0 < critical < warning")
+    queue_file = Path(queue_path)
+    with locked_runner_queue(queue_file) as queue:
+        jobs = _validate_jobs(queue)
+        payload = _encode_queue_for_write(queue)
+        archive_fault_history = _validated_archive_fault(queue_file)
+        archive_fault = archive_fault_history if archive_fault_history and archive_fault_history["status"] == "active" else None
+        try:
+            archive_count, tombstone_count = _validate_archive_store(queue_file, expected_fault=archive_fault)
+            if archive_fault is not None:
+                _clear_archive_fault(queue_file)
+                archive_fault = None
+                archive_fault_history = _validated_archive_fault(queue_file)
+        except Exception as exc:
+            if archive_fault is None:
+                _write_archive_fault(queue_file, f"archive_validation_failed:{type(exc).__name__}")
+                archive_fault = _validated_archive_fault(queue_file)
+                archive_fault_history = archive_fault
+            if isinstance(exc, RunnerArchiveTargetMissing):
+                archive_count, tombstone_count = exc.archive_count, exc.tombstone_count
+            else:
+                archive_count = tombstone_count = 0
+        active = len(jobs)
+        queued = [job for job in jobs if job["status"] == "queued"]
+        deadlines = [deadline for job in jobs if job["status"] in {"queued", "running"} if (deadline := _challenge_deadline(job)) is not None]
+        live = [deadline for deadline in deadlines if deadline > chain_time]
+        expired_count = sum(deadline <= chain_time for deadline in deadlines)
+        minimum_slack = min((deadline - chain_time for deadline in live), default=None)
+        result = {
+            "queue_hash": "sha256:" + hashlib.sha256(payload).hexdigest(),
+            "queue_bytes": len(payload),
+            "canonical_byte_headroom": DEFAULT_MAX_BYTES - QUEUE_WRITE_HEADROOM_BYTES - len(payload),
+            "active_job_count": active,
+            "queued_job_count": len(queued),
+            "ordinary_admission_headroom": max(0, ORDINARY_JOB_ADMISSION_LIMIT - active),
+            "urgent_admission_headroom": max(0, ACTIVE_JOB_ADMISSION_LIMIT - active),
+            "archive_record_count": archive_count,
+            "tombstone_count": tombstone_count,
+            "oldest_queued_age_seconds": _oldest_queued_age_seconds(queued, datetime.fromtimestamp(chain_time, timezone.utc)),
+            "earliest_live_deadline": min(live) if live else None,
+            "minimum_challenge_slack_seconds": minimum_slack,
+            "expired_deadline_critical_count": expired_count,
+            "warning_slack_seconds": warning_slack_seconds,
+            "critical_slack_seconds": critical_slack_seconds,
+            "archive_fault": archive_fault,
+            "archive_fault_history": archive_fault_history,
+        }
+        if memory is not None:
+            plan = plan_runner_queue(
+                queue,
+                memory=memory,
+                policy=policy,
+                now_utc=_format_utc(datetime.fromtimestamp(chain_time, timezone.utc)),
+            )
+            result["runner_plan"] = {
+                "decision": plan["decision"],
+                "max_active_running": plan["policy"]["max_running"],
+                "swap_guard": "green" if memory.swap_used_mb <= plan["policy"]["max_swap_used_mb"] else "red",
+                "host_capacity": "red" if plan["reason"] == "job_exceeds_host_capacity" else "green",
+                "concurrency_guard": "green" if plan["active_running_count"] <= plan["policy"]["max_running"] else "red",
+            }
+        return result
 
 
 def _read_tombstone(path: Path) -> dict[str, Any] | None:
@@ -573,7 +893,7 @@ def _read_tombstone(path: Path) -> dict[str, Any] | None:
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o077:
         raise RunnerQueueError(f"runner tombstone is not a private regular file: {path}")
     try:
-        value = loads_strict_json(path.read_bytes(), max_bytes=DEFAULT_MAX_BYTES)
+        value = loads_strict_json(_read_private_regular_bytes(path), max_bytes=DEFAULT_MAX_BYTES)
     except Exception as exc:
         raise RunnerQueueError(f"corrupt runner tombstone: {path}") from exc
     if not isinstance(value, dict) or value.get("schema_version") != TOMBSTONE_SCHEMA_VERSION:
@@ -598,11 +918,11 @@ def _read_tombstone(path: Path) -> dict[str, Any] | None:
         or not stat.S_ISREG(record_metadata.st_mode)
         or record_metadata.st_uid != os.geteuid()
         or record_metadata.st_mode & 0o077
-        or "sha256:" + hashlib.sha256(record.read_bytes()).hexdigest() != value["archive_hash"]
+        or "sha256:" + hashlib.sha256(_read_private_regular_bytes(record)).hexdigest() != value["archive_hash"]
     ):
         raise RunnerQueueError(f"runner tombstone archive target is missing or corrupt: {path}")
     try:
-        archive = loads_strict_json(record.read_bytes(), max_bytes=DEFAULT_MAX_BYTES)
+        archive = loads_strict_json(_read_private_regular_bytes(record), max_bytes=DEFAULT_MAX_BYTES)
     except Exception as exc:
         raise RunnerQueueError(f"runner tombstone archive target is invalid: {path}") from exc
     archived_job = archive.get("job") if isinstance(archive, dict) else None
