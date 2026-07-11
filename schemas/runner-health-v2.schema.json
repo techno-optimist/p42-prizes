@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/runner-health-v2.json",
+  "title": "P42 Runner Health Authorization v2",
+  "$defs": {
+    "archiveFaultHistory": {"type":"object","additionalProperties":false,"required":["schema_version","status","first_observed_at_utc","last_observed_at_utc","event_count","reason","reason_hash","recovery_generation","recovered_at_utc","job_id","source_event_hash","archive_hash"],"properties":{"schema_version":{"const":"p42-runner-archive-fault/v1"},"status":{"enum":["active","recovered"]},"first_observed_at_utc":{"type":"string","format":"date-time"},"last_observed_at_utc":{"type":"string","format":"date-time"},"event_count":{"type":"integer","minimum":1,"maximum":9007199254740991},"reason":{"type":"string","minLength":1},"reason_hash":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},"recovery_generation":{"type":"integer","minimum":0,"maximum":9007199254740991},"recovered_at_utc":{"type":["string","null"],"format":"date-time"},"job_id":{"type":["string","null"],"minLength":1},"source_event_hash":{"type":["string","null"],"pattern":"^sha256:[a-f0-9]{64}$"},"archive_hash":{"type":["string","null"],"pattern":"^sha256:[a-f0-9]{64}$"}}},
+    "counterRecovery": {"type":"object","additionalProperties":false,"required":["schema_version","generation","prior_counters","current_counters","baseline","remediation_artifact_hash","rehearsal_artifact_hash","incident_artifact","incident_artifact_hash","scope","authorization_hash","signature"],"properties":{"schema_version":{"const":"p42-runner-counter-recovery/v1"},"generation":{"type":"integer","minimum":1,"maximum":9007199254740991},"prior_counters":{"$ref":"#/$defs/counters"},"current_counters":{"$ref":"#/$defs/counters"},"baseline":{"$ref":"#/$defs/counters"},"remediation_artifact_hash":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},"rehearsal_artifact_hash":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},"incident_artifact":{"$ref":"#/$defs/counterIncident"},"incident_artifact_hash":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},"scope":{"type":"object","additionalProperties":false,"required":["health_public_key","host_id","boot_id","queue_id","chain_id","contract","target_sequence","prior_artifact_hash","target_block_number","target_block_hash","acknowledgement_block_number","acknowledgement_block_hash"],"properties":{"health_public_key":{"type":"string","pattern":"^ed25519:[a-f0-9]{64}$"},"host_id":{"type":"string","minLength":1},"boot_id":{"type":"string","minLength":1},"queue_id":{"type":"string","minLength":1},"chain_id":{"type":"integer","minimum":1,"maximum":9007199254740991},"contract":{"type":"string","pattern":"^0x[a-f0-9]{40}$"},"target_sequence":{"type":"integer","minimum":1,"maximum":9007199254740991},"prior_artifact_hash":{"type":["string","null"],"pattern":"^sha256:[a-f0-9]{64}$"},"target_block_number":{"type":"integer","minimum":0,"maximum":9007199254740991},"target_block_hash":{"type":"string","pattern":"^0x[a-f0-9]{64}$"},"acknowledgement_block_number":{"type":"integer","minimum":0,"maximum":9007199254740991},"acknowledgement_block_hash":{"type":"string","pattern":"^0x[a-f0-9]{64}$"}}},"authorization_hash":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},"signature":{"type":"object","additionalProperties":false,"required":["algorithm","public_key","signature"],"properties":{"algorithm":{"const":"ed25519"},"public_key":{"type":"string","pattern":"^ed25519:[a-f0-9]{64}$"},"signature":{"type":"string","pattern":"^ed25519:[a-f0-9]{128}$"}}}}},
+    "counterIncident":{"type":"object","additionalProperties":false,"required":["schema_version","generation","counters","scope","block_number","block_hash","block_time","artifact_hash","signature"],"properties":{"schema_version":{"const":"p42-runner-counter-incident/v1"},"generation":{"type":"integer","minimum":1,"maximum":9007199254740991},"counters":{"$ref":"#/$defs/counters"},"scope":{"type":"object","additionalProperties":false,"required":["health_public_key","host_id","boot_id","queue_id","chain_id","contract"],"properties":{"health_public_key":{"type":"string","pattern":"^ed25519:[a-f0-9]{64}$"},"host_id":{"type":"string","minLength":1},"boot_id":{"type":"string","minLength":1},"queue_id":{"type":"string","minLength":1},"chain_id":{"type":"integer","minimum":1,"maximum":9007199254740991},"contract":{"type":"string","pattern":"^0x[a-f0-9]{40}$"}}},"block_number":{"type":"integer","minimum":0,"maximum":9007199254740991},"block_hash":{"type":"string","pattern":"^0x[a-f0-9]{64}$"},"block_time":{"type":"integer","minimum":1,"maximum":9007199254740991},"artifact_hash":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},"signature":{"type":"object","additionalProperties":false,"required":["algorithm","public_key","signature"],"properties":{"algorithm":{"const":"ed25519"},"public_key":{"type":"string","pattern":"^ed25519:[a-f0-9]{64}$"},"signature":{"type":"string","pattern":"^ed25519:[a-f0-9]{128}$"}}}}},
+    "counters":{"type":"object","additionalProperties":false,"required":["oom_kills","worker_restarts","queue_corruption_events"],"properties":{"oom_kills":{"type":"integer","minimum":0,"maximum":9007199254740991},"worker_restarts":{"type":"integer","minimum":0,"maximum":9007199254740991},"queue_corruption_events":{"type":"integer","minimum":0,"maximum":9007199254740991}}}
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "observed_at_utc", "sequence", "prior_artifact_hash", "producer", "boot_transition", "chain", "counters", "counter_acknowledgement", "queue", "artifact_hash", "signature"],
+  "properties": {
+    "schema_version": { "const": "p42-runner-health/v2" },
+    "observed_at_utc": { "type": "string", "format": "date-time" },
+    "sequence": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+    "prior_artifact_hash": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" },
+    "producer": {
+      "type": "object", "additionalProperties": false, "required": ["host_id", "boot_id", "queue_id"],
+      "properties": { "host_id": {"type":"string","minLength":1}, "boot_id": {"type":"string","minLength":1}, "queue_id": {"type":"string","minLength":1} }
+    },
+    "boot_transition": {
+      "oneOf": [
+        {"type":"null"},
+        {"type":"object","additionalProperties":false,"required":["previous_boot_id","new_boot_id","reason","transition_block_number","transition_block_hash"],"properties":{"previous_boot_id":{"type":"string","minLength":1},"new_boot_id":{"type":"string","minLength":1},"reason":{"type":"string","minLength":1,"maxLength":512},"transition_block_number":{"type":"integer","minimum":0,"maximum":9007199254740991},"transition_block_hash":{"type":"string","pattern":"^0x[a-f0-9]{64}$"}}}
+      ]
+    },
+    "chain": {
+      "type": "object", "additionalProperties": false, "required": ["chain_id", "contract", "block_number", "block_hash", "block_time"],
+      "properties": {
+        "chain_id": {"type":"integer","minimum":1,"maximum":9007199254740991}, "contract": {"type":"string","pattern":"^0x[a-f0-9]{40}$"},
+        "block_number": {"type":"integer","minimum":0,"maximum":9007199254740991}, "block_hash": {"type":"string","pattern":"^0x[a-f0-9]{64}$"},
+        "block_time": {"type":"integer","minimum":1,"maximum":9007199254740991}
+      }
+    },
+    "counters": {
+      "type":"object", "additionalProperties":false, "required":["oom_kills","worker_restarts","queue_corruption_events"],
+      "properties": { "oom_kills":{"type":"integer","minimum":0,"maximum":9007199254740991}, "worker_restarts":{"type":"integer","minimum":0,"maximum":9007199254740991}, "queue_corruption_events":{"type":"integer","minimum":0,"maximum":9007199254740991} }
+    },
+    "counter_acknowledgement": {
+      "type":"object","additionalProperties":false,
+      "required":["generation","baseline","acknowledged_block_number","acknowledged_block_hash","recovery_authorization"],
+      "properties":{"generation":{"type":"integer","minimum":1,"maximum":9007199254740991},"baseline":{"type":"object","additionalProperties":false,"required":["oom_kills","worker_restarts","queue_corruption_events"],"properties":{"oom_kills":{"type":"integer","minimum":0,"maximum":9007199254740991},"worker_restarts":{"type":"integer","minimum":0,"maximum":9007199254740991},"queue_corruption_events":{"type":"integer","minimum":0,"maximum":9007199254740991}}},"acknowledged_block_number":{"type":"integer","minimum":0,"maximum":9007199254740991},"acknowledged_block_hash":{"type":"string","pattern":"^0x[a-f0-9]{64}$"},"recovery_authorization":{"oneOf":[{"type":"null"},{"$ref":"#/$defs/counterRecovery"}]}}
+    },
+    "queue": {
+      "type":"object", "additionalProperties":false,
+      "required":["queue_hash","queue_bytes","canonical_byte_headroom","active_job_count","queued_job_count","ordinary_admission_headroom","urgent_admission_headroom","archive_record_count","tombstone_count","oldest_queued_age_seconds","earliest_live_deadline","minimum_challenge_slack_seconds","expired_deadline_critical_count","warning_slack_seconds","critical_slack_seconds","archive_fault","archive_fault_history","runner_plan"],
+      "properties": {
+        "queue_hash":{"type":"string","pattern":"^sha256:[a-f0-9]{64}$"}, "queue_bytes":{"type":"integer","minimum":1,"maximum":9007199254740991}, "canonical_byte_headroom":{"type":"integer","minimum":0,"maximum":9007199254740991},
+        "active_job_count":{"type":"integer","minimum":0,"maximum":9007199254740991}, "queued_job_count":{"type":"integer","minimum":0,"maximum":9007199254740991}, "ordinary_admission_headroom":{"type":"integer","minimum":0,"maximum":9007199254740991}, "urgent_admission_headroom":{"type":"integer","minimum":0,"maximum":9007199254740991},
+        "archive_record_count":{"type":"integer","minimum":0,"maximum":9007199254740991}, "tombstone_count":{"type":"integer","minimum":0,"maximum":9007199254740991}, "oldest_queued_age_seconds":{"type":["integer","null"],"minimum":0,"maximum":9007199254740991},
+        "earliest_live_deadline":{"type":["integer","null"],"minimum":1,"maximum":9007199254740991}, "minimum_challenge_slack_seconds":{"type":["integer","null"],"minimum":1,"maximum":9007199254740991}, "expired_deadline_critical_count":{"type":"integer","minimum":0,"maximum":9007199254740991},
+        "warning_slack_seconds":{"const":3600}, "critical_slack_seconds":{"const":900},
+        "archive_fault":{"oneOf":[{"type":"null"},{"$ref":"#/$defs/archiveFaultHistory"}]},
+        "archive_fault_history":{"oneOf":[{"type":"null"},{"$ref":"#/$defs/archiveFaultHistory"}]},
+        "runner_plan":{"type":"object","additionalProperties":false,"required":["decision","max_active_running","swap_guard","host_capacity","concurrency_guard"],"properties":{"decision":{"enum":["start","wait"]},"max_active_running":{"type":"integer","minimum":1,"maximum":9007199254740991},"swap_guard":{"enum":["green","red"]},"host_capacity":{"enum":["green","red"]},"concurrency_guard":{"enum":["green","red"]}}}
+      }
+    },
+    "artifact_hash": {"type":"string","pattern":"^sha256:[a-f0-9]{64}$"},
+    "signature": {"type":"object","additionalProperties":false,"required":["algorithm","public_key","signature"],"properties":{"algorithm":{"const":"ed25519"},"public_key":{"type":"string","pattern":"^ed25519:[a-f0-9]{64}$"},"signature":{"type":"string","pattern":"^ed25519:[a-f0-9]{128}$"}}}
+  }
+}

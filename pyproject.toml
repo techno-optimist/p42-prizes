@@ -7,6 +7,7 @@ requires-python = ">=3.11"
 # Bounded ranges so the toolchain is reproducible across machines and CI. Bump
 # the upper bounds deliberately when validating against a new major.
 dependencies = [
+  "cryptography>=45.0,<46",
   "jsonschema>=4.0,<5",
   "PyYAML>=6.0,<7",
 ]

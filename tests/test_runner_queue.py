@@ -5,6 +5,7 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -12,6 +13,7 @@ from p42_prizes.runner_queue import (
     DEFAULT_MAX_JOB_ATTEMPTS,
     MemorySnapshot,
     RunnerQueueError,
+    build_runner_health_snapshot,
     enqueue_runner_job,
     locked_runner_queue,
     plan_runner_queue,
@@ -68,6 +70,97 @@ def _persisted_job(number: int, *, settled: bool = False) -> dict:
 def _enqueue_in_process(args) -> bool:
     queue_path, job = args
     return enqueue_runner_job(queue_path, job)["created"]
+
+
+def test_health_snapshot_has_exact_headroom_and_null_deadline_semantics(tmp_path) -> None:
+    queue_path = tmp_path / "queue.json"
+    enqueue_runner_job(queue_path, _persisted_job(1))
+    health = build_runner_health_snapshot(
+        queue_path, chain_time=100, warning_slack_seconds=60, critical_slack_seconds=30,
+        memory=MEMORY,
+    )
+    assert health["queue_bytes"] + health["canonical_byte_headroom"] == runner_queue.DEFAULT_MAX_BYTES - runner_queue.QUEUE_WRITE_HEADROOM_BYTES
+    assert health["active_job_count"] == health["queued_job_count"] == 1
+    assert health["ordinary_admission_headroom"] == runner_queue.ORDINARY_JOB_ADMISSION_LIMIT - 1
+    assert health["urgent_admission_headroom"] == runner_queue.ACTIVE_JOB_ADMISSION_LIMIT - 1
+    assert health["earliest_live_deadline"] is health["minimum_challenge_slack_seconds"] is None
+
+
+def test_health_snapshot_uses_chain_time_and_counts_expired_deadlines(tmp_path) -> None:
+    queue_path = tmp_path / "queue.json"
+    jobs = [
+        {**_persisted_job(1), "chain_claim": {"challenge_ends_at": "90"}},
+        {**_persisted_job(2), "chain_claim": {"challenge_ends_at": "140"}},
+    ]
+    with locked_runner_queue(queue_path) as queue:
+        queue["jobs"] = jobs
+    health = build_runner_health_snapshot(queue_path, chain_time=100, warning_slack_seconds=60, critical_slack_seconds=30)
+    assert health["expired_deadline_critical_count"] == 1
+    assert health["earliest_live_deadline"] == 140
+    assert health["minimum_challenge_slack_seconds"] == 40
+
+
+def test_archive_validation_fault_is_durable_and_reported(tmp_path) -> None:
+    queue_path = tmp_path / "queue.json"
+    runner_queue._write_archive_fault(queue_path, "injected_failure")
+    snapshot = build_runner_health_snapshot(queue_path, chain_time=100, warning_slack_seconds=60, critical_slack_seconds=30)
+    assert snapshot["archive_fault"]["reason"] == "injected_failure"
+
+
+def test_valid_old_archive_cannot_clear_fault_for_missing_attempt_target(tmp_path) -> None:
+    queue_path = tmp_path / "queue.json"
+    runner_queue._persist_archived_job(queue_path, _persisted_job(1, settled=True))
+    missing = _persisted_job(2, settled=True)
+    archive = {"schema_version": runner_queue.ARCHIVE_SCHEMA_VERSION, "job": missing}
+    _, expected_hash = runner_queue._artifact_digest(archive)
+    runner_queue._write_archive_fault(
+        queue_path, "archive_attempt_incomplete", job_id=missing["job_id"],
+        source_event_hash=missing["source_event_hash"], archive_hash=expected_hash,
+    )
+    snapshot = build_runner_health_snapshot(queue_path, chain_time=100, warning_slack_seconds=60, critical_slack_seconds=30)
+    assert snapshot["archive_record_count"] == 1
+    assert snapshot["archive_fault"]["archive_hash"] == expected_hash
+
+
+def test_archive_scan_is_single_pass_and_rejects_hardlink_and_symlink_paths(tmp_path, monkeypatch) -> None:
+    queue_path = tmp_path / "queue.json"
+    runner_queue._persist_archived_job(queue_path, _persisted_job(1, settled=True))
+    monkeypatch.setattr(runner_queue, "_read_tombstone", lambda *_: pytest.fail("scan must not recursively reread records"))
+    assert runner_queue._validate_archive_store(queue_path) == (1, 2)
+    records, _ = runner_queue._archive_paths(queue_path)
+    record = next(records.iterdir())
+    hardlink = records / "hardlink.json"
+    hardlink.hardlink_to(record)
+    with pytest.raises(RunnerQueueError, match="single-link"):
+        runner_queue._validate_archive_store(queue_path)
+    hardlink.unlink()
+    (records / "symlink.json").symlink_to(record)
+    with pytest.raises(RunnerQueueError, match="unsafe"):
+        runner_queue._validate_archive_store(queue_path)
+
+
+def test_archive_scan_enforces_entry_byte_and_time_budgets_before_success(tmp_path, monkeypatch) -> None:
+    queue_path = tmp_path / "queue.json"
+    runner_queue._persist_archived_job(queue_path, _persisted_job(1, settled=True))
+    with pytest.raises(RunnerQueueError, match="entry/time"):
+        runner_queue._validate_archive_store(queue_path, max_entries=2)
+    with pytest.raises(RunnerQueueError, match="byte"):
+        runner_queue._validate_archive_store(queue_path, max_bytes=1)
+    ticks = iter([0.0, 0.0, 2.0, 2.0])
+    monkeypatch.setattr(runner_queue.time, "monotonic", lambda: next(ticks, 2.0))
+    with pytest.raises(RunnerQueueError, match="time"):
+        runner_queue._validate_archive_store(queue_path, max_seconds=1.0)
+
+
+def test_archive_scan_budget_exhaustion_sets_durable_fault(tmp_path, monkeypatch) -> None:
+    queue_path = tmp_path / "queue.json"
+    records, tombstones = runner_queue._archive_paths(queue_path)
+    runner_queue._ensure_private_directory(records.parent)
+    runner_queue._ensure_private_directory(records)
+    runner_queue._ensure_private_directory(tombstones)
+    (records / "bad.json").write_text("{}\n", encoding="utf-8")
+    snapshot = build_runner_health_snapshot(queue_path, chain_time=100, warning_slack_seconds=60, critical_slack_seconds=30)
+    assert snapshot["archive_fault"] is not None
 
 
 def test_archival_requires_settled_action_disposition(tmp_path, monkeypatch) -> None:
@@ -314,6 +407,23 @@ def test_process_concurrent_enqueue_has_one_canonical_job(tmp_path) -> None:
         results = list(pool.map(_enqueue_in_process, [(queue_path, job)] * 80))
     assert sum(results) == 1
     assert len(json.loads(queue_path.read_text())["jobs"]) == 1
+
+
+def test_runtime_authorization_fence_blocks_queue_mutation_until_release(tmp_path) -> None:
+    queue_path = tmp_path / "queue.json"
+    bridge = Path(__file__).resolve().parents[1] / "agent" / "runtime_bridge.py"
+    process = subprocess.Popen(
+        [sys.executable, str(bridge), "authorization-fence", "--queue", str(queue_path)],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    assert process.stdout.readline() == "READY\n"
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending = pool.submit(enqueue_runner_job, queue_path, _persisted_job(1))
+        with pytest.raises(TimeoutError):
+            pending.result(timeout=0.1)
+        process.stdin.write("R"); process.stdin.flush(); process.stdin.close()
+        assert pending.result(timeout=5)["created"] is True
+    assert process.wait(timeout=5) == 0, process.stderr.read()
 
 
 def test_live_deadline_precedes_expired_backlog_and_ordinary_work() -> None:

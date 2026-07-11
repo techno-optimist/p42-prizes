@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -134,5 +134,36 @@ describe("strict JSON file reader", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("private authorization reads reject permissive files, hardlinks, and unsafe parents", async () => {
+    const root = await mkdtemp(join(tmpdir(), "p42-private-json-"));
+    try {
+      await chmod(root, 0o700);
+      const file = join(root, "health.json");
+      await writeFile(file, "{}\n", { mode: 0o600 });
+      assert.deepEqual(readStrictJsonFileSync(file, { privateFile: true, canonicalBytes: true, trailingNewline: "require" }), {});
+      await chmod(file, 0o644);
+      assert.throws(() => readStrictJsonFileSync(file, { privateFile: true }), /private JSON/);
+      await chmod(file, 0o600);
+      const alias = join(root, "alias.json"); await link(file, alias);
+      assert.throws(() => readStrictJsonFileSync(file, { privateFile: true }), /private JSON/);
+      await rm(alias); await chmod(root, 0o777);
+      assert.throws(() => readStrictJsonFileSync(file, { privateFile: true }), /private JSON/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("trusted-root walks reject unsafe ancestors and remain inode-bound across swaps", async () => {
+    const root = await mkdtemp(join(tmpdir(), "p42-trusted-root-"));
+    try {
+      await chmod(root, 0o700); const middle = join(root, "middle"); const leaf = join(middle, "leaf");
+      await mkdir(middle, { mode: 0o700 }); await mkdir(leaf, { mode: 0o700 });
+      const file = join(leaf, "state.json"); await writeFile(file, "{}\n", { mode: 0o600 });
+      assert.deepEqual(readStrictJsonFileSync(file, { privateFile: true, trustedRoot: root, canonicalBytes: true, trailingNewline: "require" }), {});
+      await chmod(middle, 0o777); assert.throws(() => readStrictJsonFileSync(file, { privateFile: true, trustedRoot: root }), /ancestor/); await chmod(middle, 0o700);
+      const moved = join(root, "moved"); execFileSync("mv", [middle, moved]); await symlink(moved, middle);
+      assert.throws(() => readStrictJsonFileSync(file, { privateFile: true, trustedRoot: root }), /Command failed/);
+      assert.deepEqual(readStrictJsonFileSync(join(moved, "leaf", "state.json"), { privateFile: true, trustedRoot: root }), {});
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

@@ -160,10 +160,30 @@ Rules:
   `max_active_running = 1`. A tripped memory/swap/host-capacity/concurrency guard
   (`runner-plan` -> `wait`) or any burst-drill regression MUST disable auto-file
   until the runner is healthy again — a degraded runner may emit bad candidates.
-  The operator requires a fresh (at most five minutes old, never future-dated)
-  `p42-runner-health/v1` artifact at `--runner-health`; missing, stale,
+  During rollout tooling may still parse v1 outside production. Production
+  requires a fresh (at most five minutes old, never future-dated), signed
+  `p42-runner-health/v2` artifact at `--runner-health`; missing, stale,
   malformed, `wait`, OOM, restart, corruption, or any absent/non-green explicit
-  swap, capacity, or concurrency field disables auto-file fail-closed.
+  swap, capacity, or concurrency field disables auto-file fail-closed. The
+  configured signer, host/boot/queue identity, chain/contract, canonical block,
+  sequence/predecessor, counters, queue hash, headroom algebra, archive health,
+  and deadline slack must all validate. The action-intent lock remains held
+  through asynchronous preflight and signing. During that interval a helper
+  holds the queue's actual `flock`, authorization files are re-read with
+  no-follow/private-path checks, and RPC revalidates block hash/time, finality,
+  and live critical slack. Signing must occur within five seconds of fence
+  acquisition. Production has no v1/false downgrade flag; only isolated
+  direct-EOA local-test mode may consume v1. The private challenge envelope
+  durably fences root replay, forks, sequence gaps, counter rollback, and signed
+  boot transitions before an authorization reaches the signer.
+  A reservation persists the exact health sequence/hash that authorized it.
+  A newer health generation cannot sign that reservation unless an explicit
+  envelope-locked reauthorization atomically advances high-water and rewrites
+  the reservation binding first.
+  Production also pins a recovery-policy public key distinct from the health
+  key. Lifetime incident counters are cleared for admission only relative to a
+  separately signed remediation/rehearsal authorization after its cooldown;
+  the health producer cannot self-authorize recovery.
 
 ## Bond Recovery
 

@@ -153,6 +153,77 @@ the limits. Reserved slots are available only when `challenge_ends_at` is a
 canonical decimal Unix timestamp strictly in the future and no more than six
 hours away; malformed, expired, and distant deadlines receive no priority.
 
+`p42-prizes runner-health` emits `p42-runner-health/v2` authorization evidence
+from one locked, reconciled queue snapshot. It binds the canonical queue hash
+and exact byte/count headroom algebra to the runner host, boot, queue identity,
+Base chain/contract, and one canonical block hash/time. Every artifact is
+Ed25519-signed, sequence-linked to its predecessor, and carries explicit
+non-decreasing host counters. Production generation requires all of those
+inputs; it never infers them from a test fixture or local environment.
+Signatures cover `P42-RUNNER-HEALTH-V2\0 || raw_sha256`, preventing
+cross-protocol reuse. The consumer persists a private atomic high-water
+sequence/hash/counter record: roots cannot replay and competing children of an
+accepted artifact cannot authorize. Reboots do not reset sequence or counters;
+the first new-boot artifact carries a signed old/new boot and canonical-block
+transition.
+
+Archive persistence first durably records an incomplete-attempt fault. The
+fault clears only after a bounded, no-follow scan validates every immutable
+record and both tombstone indexes. Scan count, byte, or wall-time exhaustion,
+partial indexes, unsafe files, or corrupt content therefore survives restart
+as fail-closed evidence. Fault history retains first/last observation, count,
+reason hash, target archive identity, and recovery generation. Recovery is a
+persisted transition included in signed health, never deletion of the sole
+failure record. Health uses canonical chain time for warning/critical
+slack and reports expired live-work deadlines separately; no deadline is
+represented only by the exact `null`/`null` pair.
+
+Production supervisors obtain the canonical block fields from Base RPC and
+invoke the producer with explicit bindings and cumulative host counters:
+
+```bash
+p42-prizes runner-health --queue runtime/runner-queue.json \
+  --output runtime/runner-health.json --signing-key /run/p42/health-ed25519.pem \
+  --host-id chronos-dgx --boot-id "$BOOT_ID" --queue-id base-challenges \
+  --chain-id 8453 --contract "$CHALLENGE_MANAGER" \
+  --block-number "$BLOCK_NUMBER" --block-hash "$BLOCK_HASH" \
+  --chain-time "$BLOCK_TIME" --sequence "$SEQUENCE" \
+  --prior-artifact runtime/runner-health-prior.json \
+  --oom-kills "$OOM_KILLS" --worker-restarts "$WORKER_RESTARTS" \
+  --queue-corruption-events "$QUEUE_CORRUPTION_EVENTS"
+```
+
+Sequence 1 omits `--prior-artifact`; every later sequence requires the exact
+signed predecessor. The supervisor atomically retains that predecessor at the
+operator's `--runner-health-prior` path before publishing the successor.
+Changing `--boot-id` additionally requires `--boot-transition-reason`; host and
+queue identity, global sequence, and cumulative counters remain continuous.
+Lifetime incident counters never reset. A signed counter acknowledgement
+generation records the durable baseline after an investigated recovery;
+authorization requires zero delta above that baseline. Baseline changes must
+advance exactly one generation and bind the current canonical block.
+The ordinary health signer cannot create that acknowledgement. Nonzero roots
+and every baseline advance require a pre-existing recovery envelope signed by
+a separately provisioned Ed25519 authority pinned by the consumer. Its
+`P42-RUNNER-COUNTER-RECOVERY-V1\0 || raw_sha256` signature binds prior/current
+counters, baseline, generation, host/queue/chain scope, health signer,
+content-addressed remediation and rehearsal artifacts, and a completed
+cooldown. Missing, self-signed, replayed, cross-domain, or mismatched recovery
+evidence fails closed.
+Recovery is two-phase. The recovery authority first signs a counter-incident
+artifact bound to generation, counters, exact boot/host/queue/chain scope, and
+a canonical block number/hash/time. At least 24 hours of target canonical chain
+time must elapse before a recovery authorization may reference that incident
+hash. Recovery scope also binds the target health sequence, predecessor hash,
+target and acknowledgement blocks. Durable high-water retains every consumed
+recovery authorization hash, preventing reuse through roots, forks, or
+bootstrap replay.
+
+All production paths are below an explicit trusted root. Key, predecessor,
+health, queue, and envelope access walks every component with held directory
+descriptors and `O_NOFOLLOW`; unsafe permissions, links, ancestor replacement,
+or root escape fail closed.
+
 The local admission check is executable:
 
 ```bash

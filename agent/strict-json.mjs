@@ -1,10 +1,14 @@
-import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
-import { open } from "node:fs/promises";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { dirname, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { lstat, open } from "node:fs/promises";
 
 const DEFAULT_MAX_BYTES = 1024 * 1024;
 const DEFAULT_MAX_DEPTH = 128;
 const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const SECURE_PATH_BRIDGE = fileURLToPath(new URL("./secure_path_bridge.py", import.meta.url));
 
 function optionsWithDefaults(options = {}) {
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
@@ -22,7 +26,34 @@ function optionsWithDefaults(options = {}) {
   if (!new Set(["allow", "require", "forbid"]).has(trailingNewline)) {
     throw new TypeError('trailingNewline must be "allow", "require", or "forbid"');
   }
-  return { maxBytes, maxDepth, canonical: Boolean(canonical), trailingNewline };
+  return { maxBytes, maxDepth, canonical: Boolean(canonical), trailingNewline, privateFile: options.privateFile === true, trustedRoot: options.trustedRoot ? resolve(options.trustedRoot) : null };
+}
+
+function openTrustedPathSync(path, trustedRoot, flags) {
+  const absolute = resolve(path); const root = resolve(trustedRoot); const rel = relative(root, absolute);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) throw new TypeError("private JSON path must be a file below trusted root");
+  const parts = rel.split(sep); const name = parts.pop(); const held = [];
+  try {
+    let fd = openSync(root, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY); held.push(fd); const rootMeta = fstatSync(fd); if (!rootMeta.isDirectory() || rootMeta.uid !== process.getuid() || (rootMeta.mode & 0o022) !== 0) throw new TypeError("trusted root is unsafe");
+    for (const part of parts) { fd = openSync(`/dev/fd/${fd}/${part}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY); held.push(fd); const meta = fstatSync(fd); if (!meta.isDirectory() || meta.uid !== process.getuid() || (meta.mode & 0o022) !== 0) throw new TypeError("trusted path ancestor is unsafe"); }
+    const descriptor = openSync(`/dev/fd/${fd}/${name}`, flags | constants.O_NOFOLLOW);
+    return { descriptor, held };
+  } catch (error) { for (const fd of held.reverse()) closeSync(fd); throw error; }
+}
+
+export function withTrustedParentSync(path, trustedRoot, operation) {
+  const absolute = resolve(path); const root = resolve(trustedRoot); const rel = relative(root, absolute);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) throw new TypeError("path must be a file below trusted root");
+  const parts = rel.split(sep); const name = parts.pop(); const held = [];
+  try {
+    let fd = openSync(root, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY); held.push(fd); const rootMeta = fstatSync(fd); if (!rootMeta.isDirectory() || rootMeta.uid !== process.getuid() || (rootMeta.mode & 0o022) !== 0) throw new TypeError("trusted root is unsafe");
+    for (const part of parts) { fd = openSync(`/dev/fd/${fd}/${part}`, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY); held.push(fd); const meta = fstatSync(fd); if (!meta.isDirectory() || meta.uid !== process.getuid() || (meta.mode & 0o022) !== 0) throw new TypeError("trusted path ancestor is unsafe"); }
+    return operation(`/dev/fd/${fd}`, name);
+  } finally { for (const fd of held.reverse()) closeSync(fd); }
+}
+
+export function writeTrustedFileSync(path, trustedRoot, payload) {
+  execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, "write", "--root", resolve(trustedRoot), "--path", resolve(path)], { input: payload, maxBuffer: 64 * 1024 });
 }
 
 function normalizedDecimal(lexeme) {
@@ -228,9 +259,12 @@ export async function readStrictJsonFile(path, options = {}) {
   if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
     throw new Error("secure JSON file reads require platform O_NOFOLLOW support");
   }
+  const before = normalized.privateFile ? await lstat(path) : null;
+  const parent = normalized.privateFile ? await lstat(dirname(path)) : null;
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await handle.stat();
+    if (normalized.privateFile && (!before.isFile() || before.dev !== stat.dev || before.ino !== stat.ino || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 || !parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o022) !== 0)) throw new TypeError("private JSON path ownership, mode, link, inode, or parent check failed");
     if (!stat.isFile()) throw new TypeError("JSON path must refer to a regular file");
     if (stat.size > normalized.maxBytes) throw new RangeError(`JSON exceeds maxBytes (${normalized.maxBytes})`);
     const chunks = [];
@@ -254,9 +288,17 @@ export function readStrictJsonFileSync(path, options = {}) {
   if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
     throw new Error("secure JSON file reads require platform O_NOFOLLOW support");
   }
-  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  if (normalized.trustedRoot) {
+    const bytes = execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, "read", "--root", normalized.trustedRoot, "--path", resolve(path)], { maxBuffer: normalized.maxBytes + 1 });
+    return parseStrictJsonBytes(bytes, normalized);
+  }
+  const before = normalized.privateFile ? lstatSync(path) : null;
+  const parent = normalized.privateFile ? lstatSync(dirname(path)) : null;
+  const openedPath = normalized.trustedRoot ? openTrustedPathSync(path, normalized.trustedRoot, constants.O_RDONLY | constants.O_NONBLOCK) : null;
+  const fd = openedPath?.descriptor ?? openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = fstatSync(fd);
+    if (normalized.privateFile && (!before.isFile() || before.dev !== stat.dev || before.ino !== stat.ino || stat.nlink !== 1 || stat.uid !== process.getuid() || (stat.mode & 0o077) !== 0 || !parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o022) !== 0)) throw new TypeError("private JSON path ownership, mode, link, inode, or parent check failed");
     if (!stat.isFile()) throw new TypeError("JSON path must refer to a regular file");
     if (stat.size > normalized.maxBytes) throw new RangeError(`JSON exceeds maxBytes (${normalized.maxBytes})`);
     const chunks = [];
@@ -272,5 +314,6 @@ export function readStrictJsonFileSync(path, options = {}) {
     return parseStrictJsonBytes(Buffer.concat(chunks, total), normalized);
   } finally {
     closeSync(fd);
+    if (openedPath) for (const held of openedPath.held.reverse()) closeSync(held);
   }
 }
