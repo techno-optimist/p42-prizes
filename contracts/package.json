@@ -6,7 +6,7 @@
   "description": "Gate 1 Solidity scaffold for P42 Prizes escrow, payout, and submission invariants.",
   "scripts": {
     "build": "hardhat compile",
-    "test": "hardhat test",
+    "test": "hardhat test && node --test capsule-test/release-capsule.test.js",
     "deploy:base-sepolia": "hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
     "reconcile:base-sepolia": "hardhat run scripts/reconcile-base-sepolia.js --network baseSepolia"
   },
