@@ -594,9 +594,6 @@
         "explicitlyFrozen",
         "fundingArmed",
         "acceptingFunds",
-        "openWitnessEvidence",
-        "openWitnessEvidencePassed",
-        "fundingTransactions",
         "registerTxHash",
         "registerBlockNumber",
         "contracts",
@@ -636,15 +633,6 @@
         "explicitlyFrozen": { "type": "boolean" },
         "fundingArmed": { "type": "boolean" },
         "acceptingFunds": { "type": "boolean" },
-        "openWitnessEvidence": {
-          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/openWitnessEvidenceBinding" }]
-        },
-        "openWitnessEvidencePassed": { "type": "boolean" },
-        "fundingTransactions": {
-          "type": "array",
-          "maxItems": 2,
-          "items": { "$ref": "#/$defs/setupOperation" }
-        },
         "registerTxHash": {
           "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/transactionHash" }]
         },
@@ -672,47 +660,8 @@
           "if": { "properties": { "onchainDa": { "const": true } } },
           "then": { "properties": { "maxSolutionBytes": { "$ref": "#/$defs/positiveUintString" } } },
           "else": { "properties": { "maxSolutionBytes": { "const": "0" } } }
-        },
-        {
-          "if": { "properties": { "openWitnessEvidencePassed": { "const": true } } },
-          "then": {
-            "properties": {
-              "openWitnessEvidence": { "$ref": "#/$defs/openWitnessEvidenceBinding" },
-              "fundingTransactions": {
-                "minItems": 2,
-                "maxItems": 2,
-                "prefixItems": [
-                  { "properties": { "label": { "pattern": "/armFunding$" }, "dependsOn": { "maxItems": 0 } } },
-                  { "properties": { "label": { "pattern": "/setAcceptingFunds$" }, "dependsOn": { "minItems": 1, "maxItems": 1 } } }
-                ]
-              }
-            }
-          },
-          "else": {
-            "properties": {
-              "openWitnessEvidence": { "type": "null" },
-              "fundingTransactions": { "maxItems": 0 }
-            }
-          }
         }
       ]
-    },
-    "openWitnessEvidenceBinding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema", "path", "artifactSha256", "adapterHash", "evidenceId", "evidenceHash", "witnessId", "finalizeTxHash", "finalizeBlockNumber"],
-      "properties": {
-        "schema": { "const": "p42-prizes/open-witness-pre-arm-adapter/v1" },
-        "path": { "type": "string", "minLength": 1 },
-        "artifactSha256": { "$ref": "#/$defs/sha256" },
-        "adapterHash": { "$ref": "#/$defs/sha256" },
-        "evidenceId": { "type": "string", "minLength": 3 },
-        "evidenceHash": { "$ref": "#/$defs/sha256" },
-        "witnessId": { "$ref": "#/$defs/sha256" },
-        "finalizeTxHash": { "$ref": "#/$defs/transactionHash" },
-        "finalizeBlockNumber": { "type": "integer", "minimum": 0 }
-      }
-    },
-    "sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+    }
   }
 }

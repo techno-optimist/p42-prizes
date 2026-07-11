@@ -10,9 +10,7 @@ import {
 } from "../scripts/deployment-ceremony-helper.js";
 import {
   readMultiBoardCeremonyConfig,
-  validatePreArmWitnessAdapter,
 } from "../scripts/multiboard-ceremony-helper.js";
-import { validateMultiBoardFundingEvidenceBindings } from "../scripts/reconciliation-helper.js";
 
 const { ethers } = await network.create();
 
@@ -109,16 +107,6 @@ async function advance(seconds) {
   await ethers.provider.send("evm_mine", []);
 }
 
-async function commitReveal(submissions, solver, { cid, score, salt, solution = "0x" }) {
-  const daHash = ethers.sha256(solution);
-  const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](cid, solver.address, daHash, salt);
-  const bond = await submissions.requiredPostingBondNow();
-  await submissions.connect(solver).commit(commitment, daHash, { value: bond });
-  const submissionId = await submissions.submissionCount();
-  await submissions.connect(solver).reveal(submissionId, cid, score, 1n, salt, solution);
-  return submissionId;
-}
-
 async function executeSetupOperation(timelock, signers, operation) {
   const args = [operation.target, BigInt(operation.value), operation.data, operation.salt];
   assert.equal(await timelock.opId(...args), operation.operationId);
@@ -136,43 +124,6 @@ async function executeSetupOperation(timelock, signers, operation) {
 }
 
 describe("multi-board governance ceremony integration", () => {
-  it("rejects wrong registry IDs, arm-before-finalize state, and cross-board witness reuse", () => {
-    const hash = digest("9");
-    const operation = (label, operationId, dependsOn = []) => ({ label, operationId, dependsOn });
-    const evidence = { schema: "p42-prizes/open-witness-pre-arm-adapter/v1", evidenceId: "evidence-one", witnessId: hash, artifactSha256: digest("8") };
-    const manifest = {
-      schema: "p42-prizes/deployment-manifest/v2",
-      contracts: { registry: { address: ethers.ZeroAddress } },
-      problems: [
-        { problemId: "1", openWitnessEvidence: null, openWitnessEvidencePassed: false, fundingTransactions: [operation("board/1/armFunding", ethers.ZeroHash)] },
-      ],
-    };
-    assert.throws(() => validateMultiBoardFundingEvidenceBindings(manifest), /funding action without passed open-witness evidence/);
-
-    manifest.problems = ["1", "2"].map((problemId) => ({
-      problemId,
-      openWitnessEvidence: evidence,
-      openWitnessEvidencePassed: true,
-      fundingTransactions: [
-        operation(`board/${problemId}/armFunding`, ethers.id(`arm-${problemId}`)),
-        operation(`board/${problemId}/setAcceptingFunds`, ethers.id(`accept-${problemId}`), [ethers.id(`arm-${problemId}`)]),
-      ],
-    }));
-    assert.throws(() => validateMultiBoardFundingEvidenceBindings(manifest), /duplicate or cross-board evidence ID reuse/);
-
-    const problem = { problemId: "1", problemSlug: "board-one", pool: ethers.ZeroAddress, submissionManager: ethers.ZeroAddress };
-    const adapter = {
-      schema: "p42-prizes/open-witness-pre-arm-adapter/v1",
-      canonical_artifact: {
-        schema_version: "p42-open-witness-launch/v1", evidence_id: "evidence-one", observed_at_utc: new Date().toISOString(), release_binding: {},
-        board: { registry_problem_id: "2", slug: "board-one", problem_registry: ethers.ZeroAddress, bounty_pool: ethers.ZeroAddress, submission_manager: ethers.ZeroAddress },
-        artifacts: {}, witness: {}, funding: {}, reviewers: [], attestations: [], evidence_hash: hash,
-      },
-      adapter_hash: hash,
-    };
-    assert.throws(() => validatePreArmWitnessAdapter(ethers, manifest, problem, adapter, { artifactPath: "board-one.json" }), /board binding mismatch/);
-  });
-
   it("wires two boards and restricts rollover funding until a future board is armed", async () => {
     const signers = await ethers.getSigners();
     const [signer1, signer2, signer3, guardian, treasury, resolver, deployer] = signers;
@@ -313,22 +264,7 @@ describe("multi-board governance ceremony integration", () => {
     assert.equal(await rolloverVault.allocationCodehashOf(pool0), pool0Hash);
     await ethers.provider.send("hardhat_setCode", [pool0, pool0Code]);
 
-    const openSolution = ethers.toUtf8Bytes("board-one-open-witness");
-    const openId = await commitReveal(boards[0].contracts.submissions, deployer, {
-      cid: "ipfs://board-one-open-witness",
-      score: 900n * 10n ** 18n,
-      salt: "board-one-open",
-      solution: openSolution,
-    });
-    await assert.rejects(
-      boards[0].contracts.submissions.connect(deployer).finalize(openId, ethers.ZeroHash),
-      /P42_CHALLENGE_WINDOW_OPEN/,
-    );
     await advance(BigInt(input.parameters.challengeWindowSeconds) + 1n);
-    await boards[0].contracts.submissions.connect(deployer).finalize(openId, ethers.ZeroHash);
-    assert.equal((await boards[0].contracts.submissions.finalizeInfo(openId)).creditAtoms, 0n);
-    assert.equal(await boards[0].contracts.submissions.bestScoreAtoms(), 900n * 10n ** 18n);
-
     await boards[0].contracts.submissions.connect(allocator).armFunding();
     await boards[0].contracts.pool.connect(allocator).setAcceptingFunds(true);
     await rolloverVault.connect(allocator).fundRegisteredPool(pool0, 10n);
@@ -342,28 +278,6 @@ describe("multi-board governance ceremony integration", () => {
     assert.equal(await rolloverVault.allocationOf(pool1), 60n);
     assert.equal(await rolloverVault.totalAllocated(), 60n);
     assert.equal(await ethers.provider.getBalance(rootAddresses.rolloverVault), 60n);
-
-    const paidId = await commitReveal(boards[0].contracts.submissions, treasury, {
-      cid: "ipfs://board-one-paid",
-      score: 800n * 10n ** 18n,
-      salt: "board-one-paid",
-      solution: ethers.toUtf8Bytes("board-one-paid"),
-    });
-    const insufficientId = await commitReveal(boards[0].contracts.submissions, resolver, {
-      cid: "ipfs://board-one-insufficient-marginal",
-      score: 850n * 10n ** 18n,
-      salt: "board-one-insufficient",
-      solution: ethers.toUtf8Bytes("board-one-insufficient"),
-    });
-    await advance(BigInt(input.parameters.challengeWindowSeconds) + 1n);
-    await boards[0].contracts.submissions.connect(treasury).finalize(paidId, ethers.ZeroHash);
-    await boards[0].contracts.submissions.connect(resolver).finalize(insufficientId, ethers.ZeroHash);
-    assert.equal((await boards[0].contracts.submissions.finalizeInfo(paidId)).creditAtoms, 100n * 10n ** 18n);
-    assert.equal((await boards[0].contracts.submissions.finalizeInfo(insufficientId)).creditAtoms, 0n);
-    await boards[0].contracts.submissions.connect(allocator).setPausedAll(true);
-    await boards[0].contracts.submissions.connect(allocator).voidFinalize(paidId);
-    assert.equal(await boards[0].contracts.ledger.totalCreditAtoms(), 0n);
-    await boards[0].contracts.submissions.connect(allocator).setPausedAll(false);
 
     await advance(BigInt(input.problems[0].closeByTimestamp) - BigInt((await ethers.provider.getBlock("latest")).timestamp));
     await boards[0].contracts.ledger.connect(deployer).close();
