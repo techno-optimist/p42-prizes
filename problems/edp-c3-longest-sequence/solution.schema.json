@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/edp-c3-longest-sequence/solution.schema.json",
+  "x-p42-max-bytes": 2097152,
+  "type": "object",
+  "required": ["signs"],
+  "additionalProperties": false,
+  "properties": {
+    "signs": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000000,
+      "pattern": "^[+-]+$"
+    },
+    "source": { "type": "string" },
+    "claimed_score": { "type": "string" },
+    "claimed_length": { "type": "integer" }
+  }
+}

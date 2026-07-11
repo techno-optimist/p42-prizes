@@ -1,0 +1,4 @@
+{
+  "source": "Boundary: last mark sits exactly on the MAX_MARK cap (1000000); admissible but far above the frontier",
+  "marks": [0, 1, 4, 13, 32, 71, 124, 218, 375, 572, 1000000]
+}

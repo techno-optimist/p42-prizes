@@ -1,0 +1,4 @@
+{
+  "source": "hostile fixture: strictly increasing positive 11-set with a subset-sum collision (1+2 = 3)",
+  "set": [1, 2, 3, 100, 200, 300, 400, 500, 600, 700, 800]
+}

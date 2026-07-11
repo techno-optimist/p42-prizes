@@ -1,0 +1,29 @@
+schema_version: p42-problem/v1
+problem_id: q6-intersecting-hypergraph
+title: Erdos-Lovasz q(6) minimum intersecting 6-uniform family with covering number 6
+status: phase-0-packaging
+objective:
+  direction: minimize
+  score_name: edge_count
+  seed_best: "18/1"
+  optimum: "14/1"  # proven lower bound q(6) >= 3*6-4 (Sivashankar arXiv:2606.24878 Thm 1)
+  min_improvement: "1/1"
+  gauge: "max(0, seed_best - edge_count)"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "python3 verifier/verify.py --solution {solution}"
+  max_compute:
+    # measured: 0.26s end-to-end on the seed witness (worst-case exhaustive
+    # search is ~5ms; python startup dominates); 5s covers cold starts.
+    wall_seconds: 5
+    memory_mb: 128
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: optional-mirror  # DA rides reveal calldata (sha256==commitDaHash); Arweave permanence is an optional mirror, not required (see docs/DATA_AVAILABILITY.md)

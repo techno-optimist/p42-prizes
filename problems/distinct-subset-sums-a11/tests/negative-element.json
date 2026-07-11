@@ -1,0 +1,4 @@
+{
+  "source": "hostile fixture: negative integer in the set",
+  "set": [-5, 433, 510, 550, 570, 581, 587, 590, 592, 593, 594]
+}
