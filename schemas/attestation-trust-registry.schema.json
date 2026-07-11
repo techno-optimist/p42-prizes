@@ -55,7 +55,9 @@
             "p42-incident-drill/v1",
             "p42-adversarial-testnet/v1",
             "p42-operational-controls/v1",
-            "p42-runner-burst/v1"
+            "p42-runner-burst/v1",
+            "p42-open-witness-launch/v1",
+            "p42-open-witness-collector-proof/v1"
           ]
         },
         "signer_role": { "type": "string", "minLength": 2 },
