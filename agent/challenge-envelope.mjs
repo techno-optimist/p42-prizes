@@ -255,7 +255,7 @@ export function runnerHealthAdmission(health, { now = Date.now(), maxAgeMs = 300
         } else if (health.boot_transition !== null) throw new Error("spurious boot transition");
       } else throw new Error("health chain fork, replay, or sequence gap");
     } else if (!prior && health.sequence !== 1 && !permitUnanchoredSequence) throw new Error("health chain must begin at sequence one");
-    const q = health.queue; const byteLimit = 4 * 1024 * 1024 - 64 * 1024;
+    const q = health.queue; const byteLimit = 1024 * 1024 - 64 * 1024;
     if (q.queue_bytes + q.canonical_byte_headroom !== byteLimit || q.ordinary_admission_headroom !== Math.max(0, 896 - q.active_job_count) || q.urgent_admission_headroom !== Math.max(0, 960 - q.active_job_count)) throw new Error("headroom algebra");
     if (q.queued_job_count > q.active_job_count || q.tombstone_count !== q.archive_record_count * 2 || q.warning_slack_seconds !== 3600 || q.critical_slack_seconds !== 900) throw new Error("metric consistency");
     if ((q.earliest_live_deadline === null) !== (q.minimum_challenge_slack_seconds === null) || (q.earliest_live_deadline !== null && q.earliest_live_deadline - health.chain.block_time !== q.minimum_challenge_slack_seconds)) throw new Error("deadline algebra");

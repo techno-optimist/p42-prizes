@@ -70,12 +70,21 @@ function healthV2(overrides = {}) {
     chain: { chain_id: 84532, contract: CHALLENGE.toLowerCase(), block_number: 100, block_hash: `0x${"a".repeat(64)}`, block_time: NOW / 1000 },
     counters: { oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0 },
     counter_acknowledgement: { generation: 1, baseline: { oom_kills: 0, worker_restarts: 0, queue_corruption_events: 0 }, acknowledged_block_number: 100, acknowledged_block_hash: `0x${"a".repeat(64)}`, recovery_authorization: null },
-    queue: { queue_hash: `sha256:${"b".repeat(64)}`, queue_bytes: 100, canonical_byte_headroom: 4 * 1024 * 1024 - 64 * 1024 - 100, active_job_count: 1, queued_job_count: 1, ordinary_admission_headroom: 895, urgent_admission_headroom: 959, archive_record_count: 0, tombstone_count: 0, oldest_queued_age_seconds: 2, earliest_live_deadline: null, minimum_challenge_slack_seconds: null, expired_deadline_critical_count: 0, warning_slack_seconds: 3600, critical_slack_seconds: 900, archive_fault: null, archive_fault_history: null, runner_plan: { decision: "start", max_active_running: 1, swap_guard: "green", host_capacity: "green", concurrency_guard: "green" } },
+    queue: { queue_hash: `sha256:${"b".repeat(64)}`, queue_bytes: 100, canonical_byte_headroom: 1024 * 1024 - 64 * 1024 - 100, active_job_count: 1, queued_job_count: 1, ordinary_admission_headroom: 895, urgent_admission_headroom: 959, archive_record_count: 0, tombstone_count: 0, oldest_queued_age_seconds: 2, earliest_live_deadline: null, minimum_challenge_slack_seconds: null, expired_deadline_critical_count: 0, warning_slack_seconds: 3600, critical_slack_seconds: 900, archive_fault: null, archive_fault_history: null, runner_plan: { decision: "start", max_active_running: 1, swap_guard: "green", host_capacity: "green", concurrency_guard: "green" } },
     ...overrides,
   };
   const unsigned = structuredClone(base); const artifactHash = `sha256:${ethers.sha256(ethers.toUtf8Bytes(canonical(unsigned))).slice(2)}`;
   const message = Buffer.concat([Buffer.from("P42-RUNNER-HEALTH-V2\0"), Buffer.from(artifactHash.slice(7), "hex")]);
   return { ...base, artifact_hash: artifactHash, signature: { algorithm: "ed25519", public_key: healthPublic, signature: `ed25519:${sign(null, message, healthKeys.privateKey).toString("hex")}` } };
+}
+
+function resignHealth(value) {
+  const unsigned = structuredClone(value);
+  delete unsigned.artifact_hash;
+  delete unsigned.signature;
+  const artifactHash = `sha256:${ethers.sha256(ethers.toUtf8Bytes(canonical(unsigned))).slice(2)}`;
+  const message = Buffer.concat([Buffer.from("P42-RUNNER-HEALTH-V2\0"), Buffer.from(artifactHash.slice(7), "hex")]);
+  return { ...unsigned, artifact_hash: artifactHash, signature: { algorithm: "ed25519", public_key: healthPublic, signature: `ed25519:${sign(null, message, healthKeys.privateKey).toString("hex")}` } };
 }
 
 function evidence(open = [], overrides = {}) {
@@ -227,6 +236,9 @@ test("production health v2 verifies signature, bindings, algebra, and downgrade 
     (v) => { v.queue.expired_deadline_critical_count = 1; }, (v) => { v.queue.canonical_byte_headroom += 1; },
     (v) => { v.signature.signature = `ed25519:${"0".repeat(128)}`; },
   ]) { const bad = healthV2(); mutate(bad); assert.equal(runnerHealthAdmission(bad, { now: NOW, requireV2: true, expected }).allowed, false); }
+  const legacyFourMiB = healthV2();
+  legacyFourMiB.queue.canonical_byte_headroom = 4 * 1024 * 1024 - 64 * 1024 - legacyFourMiB.queue.queue_bytes;
+  assert.equal(runnerHealthAdmission(resignHealth(legacyFourMiB), { now: NOW, requireV2: true, expected }).allowed, false);
 });
 
 test("health v2 enforces null deadlines, critical chain slack, and monotonic predecessor", () => {
