@@ -28,6 +28,7 @@ import {
 } from "./transcript-store.mjs";
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
+import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance.mjs";
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
@@ -396,6 +397,7 @@ export function deploymentConfigPayload(manifest) {
     roles: manifest.roles,
     parameters: manifest.parameters,
     contracts: manifest.contracts,
+    roleAcceptances: manifest.roleAcceptances,
     governanceSetup: manifest.governanceSetup,
     setupTransactions: manifest.setupTransactions,
     problems: manifest.problems,
@@ -1110,6 +1112,14 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
       const values = immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: timestamp });
       const expectedRuntimeHash = ethers.keccak256(reconstructExpectedRuntime(artifact, values));
       if (entry.expectedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.runtimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.deployedCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.primaryObservedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.secondaryObservedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase()) throw new Error(`${descriptor.path} reconstructed expected and all observed runtime hashes must match`);
+    }
+    if (manifest.status === "governance-setup-complete") {
+      const setup = manifest.governanceSetup;
+      const completionEvidence = setup.completionBlockEvidence;
+      if (!completionEvidence || completionEvidence.blockNumber !== setup.completionBlock || completionEvidence.timestamp !== setup.completionBlockTimestamp || String(completionEvidence.blockHash).toLowerCase() !== String(setup.completionBlockHash).toLowerCase() || completionEvidence.primaryBlockHash.toLowerCase() !== completionEvidence.blockHash.toLowerCase() || completionEvidence.secondaryBlockHash.toLowerCase() !== completionEvidence.blockHash.toLowerCase() || completionEvidence.primaryOperatorId === completionEvidence.secondaryOperatorId || setup.completionBlock !== setup.finalityAnchor?.l2?.finalized?.number || String(setup.completionBlockHash).toLowerCase() !== String(setup.finalityAnchor?.l2?.finalized?.hash).toLowerCase()) throw new Error("governance completion block evidence is not dual-RPC canonical and finalized");
+      const trustedCompletionTimestamp = blockTimestampResolver({ blockNumber: setup.completionBlock, path: "governanceSetup.completionBlock" });
+      const acceptanceValidatedAt = validateDurableRoleAcceptanceTimestamp(setup, trustedCompletionTimestamp);
+      validateDeploymentRoleAcceptances(ethers, manifest, manifest.roleAcceptances, { validationTime: acceptanceValidatedAt });
     }
   } else if (isMultiBoardManifest(manifest) && manifest.releaseMode === "fixture") {
     if (!allowFixture) throw new Error("fixture manifests are test-only and rejected by default");

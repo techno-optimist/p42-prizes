@@ -869,6 +869,12 @@ describe("deployment ceremony construction", () => {
         blockNumber: 50 + index,
       })),
     };
+    const production = structuredClone(manifest);
+    production.releaseMode = "production";
+    assert.throws(
+      () => completeSetupManifest(production, { ...snapshot, finalityAnchor: { l2: { finalized: { number: snapshot.checkedBlock } } } }),
+      /production governance completion requires deployment role acceptances/,
+    );
     const completed = completeSetupManifest(manifest, snapshot);
     assert.equal(completed.status, "governance-setup-complete");
     assert.deepEqual(completed.problems.map((problem) => problem.registrationStatus), [

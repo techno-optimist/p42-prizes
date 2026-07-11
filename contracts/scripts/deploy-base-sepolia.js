@@ -68,7 +68,7 @@ import {
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
-import { BASE_SEPOLIA_FINALITY_POLICY, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
+import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const CONTRACT_NAMES = Object.freeze({
@@ -1293,16 +1293,21 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
     { operatorId: requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"), url: requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"), provider: secondary },
   ];
   const anchor = await collectFinalityAnchor({ endpoints, policy: manifest.releaseEvidence?.finalityPolicy });
+  const completionBlockEvidence = await collectCanonicalFinalizedBlockEvidence({ endpoints, anchor });
   const checkedBlock = anchor.l2.finalized.number;
   if (checkedBlock < manifest.indexer.startBlock) {
     throw new Error(`Finalized block ${checkedBlock} is before deployment block ${manifest.indexer.startBlock}`);
   }
   const contracts = await readMultiBoardContractSet(ethers, manifest);
   const snapshot = await collectMultiBoardContinuationSnapshot(ethers, manifest, contracts, checkedBlock);
+  snapshot.checkedAt = new Date(completionBlockEvidence.timestamp * 1000).toISOString();
+  snapshot.completionBlockEvidence = completionBlockEvidence;
   try {
     await recheckFinalityAnchor({ endpoints, policy: manifest.releaseEvidence.finalityPolicy, previous: anchor });
     snapshot.finalityAnchor = anchor;
-    const completed = completeSetupManifest(manifest, snapshot);
+    const roleAcceptancePath = requiredEnv("P42_ROLE_ACCEPTANCE_PACKET");
+    const roleAcceptancePacket = await readContractsArtifactJson(roleAcceptancePath);
+    const completed = completeSetupManifest(manifest, snapshot, { ethers, roleAcceptancePacket });
     await writeManifestAtomically(path, completed);
     console.log(`Multi-board governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
   } catch (error) {

@@ -85,6 +85,22 @@ export async function collectFinalityAnchor({ endpoints, policy }) {
   return agreed(await Promise.all(endpoints.map((endpoint) => observation(endpoint, policy))), rpcEvidence);
 }
 
+export async function collectCanonicalFinalizedBlockEvidence({ endpoints, anchor }) {
+  if (!Array.isArray(endpoints) || endpoints.length !== 2 || endpoints[0].provider === endpoints[1].provider) throw new Error("completion block evidence requires two distinct RPC providers");
+  const point = anchor?.l2?.finalized;
+  if (!Number.isSafeInteger(point?.number) || !HASH.test(String(point?.hash))) throw new Error("completion block evidence requires a finalized anchor");
+  const tag = `0x${point.number.toString(16)}`;
+  const rows = await Promise.all(endpoints.map(async (endpoint) => {
+    const value = await endpoint.provider.send("eth_getBlockByNumber", [tag, false]);
+    const parsed = block(value, `${endpoint.operatorId}.completionBlock`);
+    const timestamp = quantity(value.timestamp, `${endpoint.operatorId}.completionBlock.timestamp`);
+    return { operatorId: endpoint.operatorId, ...parsed, timestamp };
+  }));
+  if (rows.some((row) => row.number !== point.number || row.hash !== point.hash.toLowerCase())) throw new Error("completion block is not canonical at the finalized anchor on both RPCs");
+  if (rows[0].timestamp !== rows[1].timestamp) throw new Error("operator-distinct RPCs disagree on completion block timestamp");
+  return { blockNumber: point.number, blockHash: point.hash.toLowerCase(), timestamp: rows[0].timestamp, primaryOperatorId: rows[0].operatorId, secondaryOperatorId: rows[1].operatorId, primaryBlockHash: rows[0].hash, secondaryBlockHash: rows[1].hash };
+}
+
 export async function validateMonotonicFinalityAnchor({ previous, current, endpoints = null }) {
   const dimensions = [["l2.finalized", previous.l2.finalized, current.l2.finalized], ["l2.safe", previous.l2.safe, current.l2.safe], ["l1.origin", previous.l1.origin, current.l1.origin], ["l1.finalized", previous.l1.finalized, current.l1.finalized]];
   for (const [label, before, after] of dimensions) {
