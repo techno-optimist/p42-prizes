@@ -3,6 +3,14 @@ import { ApiError } from "@/lib/api";
 
 const HASH_PREFIX = "sha256:";
 const HASH_RE = /^sha256:[a-f0-9]{64}$/;
+const MAX_POLICY_BYTES = 64 * 1024;
+const MAX_CREDENTIALS = 64;
+const MUTATION_SCOPES = new Set([
+  "challenges.open",
+  "solutions.verify",
+  "submissions.commit",
+  "submissions.reveal",
+]);
 
 export interface MutationPrincipal {
   rateLimitSubject?: string;
@@ -19,30 +27,78 @@ export interface MutationApiCapabilities {
 
 interface MutationApiAuthConfiguration {
   status: MutationApiConfigurationStatus;
-  allowedHashes: string[];
+  credentials: MutationCredential[];
   localOptOut: boolean;
 }
 
-function configuredKeyHashes(): string[] {
-  const raw = process.env.P42_MUTATION_API_KEY_SHA256S ?? "";
-  return raw
-    .split(",")
-    .map((item) => item.trim().toLowerCase())
-    .filter(Boolean);
+interface MutationCredential {
+  hash: string;
+  scopes: string[];
+  expiresAt?: string;
+}
+
+function canonicalExpiry(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) {
+    return false;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function parseCredentialPolicy(): MutationCredential[] | undefined {
+  const raw = process.env.P42_MUTATION_API_CREDENTIALS_JSON;
+  const legacy = process.env.P42_MUTATION_API_KEY_SHA256S;
+  if (legacy !== undefined) return undefined;
+  if (raw === undefined || raw === "") return [];
+  if (Buffer.byteLength(raw, "utf8") > MAX_POLICY_BYTES) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+  if (JSON.stringify(parsed) !== raw) return undefined;
+  if (!Array.isArray(parsed) || parsed.length < 1 || parsed.length > MAX_CREDENTIALS) return undefined;
+  const credentials: MutationCredential[] = [];
+  const seenHashes = new Set<string>();
+  for (const value of parsed) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    const expectedKeys = record.expiresAt === undefined
+      ? ["hash", "scopes"]
+      : ["expiresAt", "hash", "scopes"];
+    if (JSON.stringify(keys) !== JSON.stringify(expectedKeys)) return undefined;
+    if (typeof record.hash !== "string" || !HASH_RE.test(record.hash) || seenHashes.has(record.hash)) {
+      return undefined;
+    }
+    if (!Array.isArray(record.scopes) || record.scopes.length < 1) return undefined;
+    const scopes = record.scopes;
+    if (scopes.some((scope) => typeof scope !== "string" || !MUTATION_SCOPES.has(scope))) return undefined;
+    if (new Set(scopes).size !== scopes.length) return undefined;
+    if (record.expiresAt !== undefined && !canonicalExpiry(record.expiresAt)) return undefined;
+    seenHashes.add(record.hash);
+    credentials.push({
+      hash: record.hash,
+      scopes: [...scopes].sort(),
+      ...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt }),
+    });
+  }
+  return credentials;
 }
 
 function currentMutationApiAuthConfiguration(): MutationApiAuthConfiguration {
-  const allowedHashes = configuredKeyHashes();
+  const credentials = parseCredentialPolicy();
   const localOptOut = process.env.NODE_ENV !== "production"
     && process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS === "1";
 
-  if (allowedHashes.some((hash) => !HASH_RE.test(hash))) {
-    return { status: "misconfigured", allowedHashes, localOptOut };
+  if (credentials === undefined) {
+    return { status: "misconfigured", credentials: [], localOptOut };
   }
-  if (allowedHashes.length === 0) {
-    return { status: "unconfigured", allowedHashes, localOptOut };
+  if (credentials.length === 0) {
+    return { status: "unconfigured", credentials, localOptOut };
   }
-  return { status: "configured", allowedHashes, localOptOut };
+  return { status: "configured", credentials, localOptOut };
 }
 
 // This is deliberately coarse-grained: callers can decide whether to attempt a
@@ -58,7 +114,14 @@ export function mutationApiCapabilities(): MutationApiCapabilities {
     }
     return { status: "unconfigured", available: false, authentication: "unavailable" };
   }
-  return { status: "configured", available: true, authentication: "api-key" };
+  const hasActiveCredential = configuration.credentials.some(
+    (credential) => credential.expiresAt === undefined || Date.parse(credential.expiresAt) > Date.now(),
+  );
+  return {
+    status: "configured",
+    available: hasActiveCredential,
+    authentication: hasActiveCredential ? "api-key" : "unavailable",
+  };
 }
 
 function presentedKey(req: Request): string | undefined {
@@ -81,9 +144,12 @@ function safeEqual(left: string, right: string): boolean {
 }
 
 export function enforceMutationApiKey(req: Request, scope: string): MutationPrincipal {
+  if (!MUTATION_SCOPES.has(scope)) {
+    throw new ApiError("mutation API route scope is invalid", 503);
+  }
   const configuration = currentMutationApiAuthConfiguration();
   if (configuration.status === "misconfigured") {
-    throw new ApiError("mutation API key configuration contains an invalid key hash", 503);
+    throw new ApiError("mutation API credential policy is invalid", 503);
   }
 
   if (configuration.status === "unconfigured") {
@@ -99,8 +165,15 @@ export function enforceMutationApiKey(req: Request, scope: string): MutationPrin
   }
 
   const keyHash = sha256Key(key);
-  if (!configuration.allowedHashes.some((allowed) => safeEqual(allowed, keyHash))) {
+  const matches = configuration.credentials.filter((credential) => safeEqual(credential.hash, keyHash));
+  const credential = matches[0];
+  if (!credential || (credential.expiresAt !== undefined && Date.parse(credential.expiresAt) <= Date.now())) {
     throw new ApiError("invalid P42 mutation API key", 403);
+  }
+  if (!credential.scopes.includes(scope)) {
+    throw new ApiError("P42 mutation API key has insufficient scope", 403, {
+      "WWW-Authenticate": `Bearer realm="p42-prizes", error="insufficient_scope", scope="${scope}"`,
+    });
   }
 
   return {
@@ -111,4 +184,14 @@ export function enforceMutationApiKey(req: Request, scope: string): MutationPrin
 
 export function mutationApiKeyHashForTests(key: string): string {
   return sha256Key(key);
+}
+
+export function mutationApiCredentialPolicyForTests(
+  records: Array<{ key: string; scopes: string[]; expiresAt?: string }>,
+): string {
+  return JSON.stringify(records.map((record) => ({
+    hash: sha256Key(record.key),
+    scopes: record.scopes,
+    ...(record.expiresAt === undefined ? {} : { expiresAt: record.expiresAt }),
+  })));
 }

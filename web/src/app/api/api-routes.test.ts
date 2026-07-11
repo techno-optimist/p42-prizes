@@ -13,7 +13,7 @@ import { GET as problemsGet } from "@/app/api/problems/route";
 import { POST as solutionsPost } from "@/app/api/solutions/route";
 import { POST as commitPost } from "@/app/api/submissions/commit/route";
 import { POST as revealPost } from "@/app/api/submissions/reveal/route";
-import { mutationApiKeyHashForTests } from "@/lib/api-auth";
+import { mutationApiCredentialPolicyForTests, mutationApiKeyHashForTests } from "@/lib/api-auth";
 import { commitAuthorizationMessage, commitHash, sha256SolutionCid } from "@/lib/portal-state";
 import { readPortalState, resetPortalStateForTests } from "@/lib/portal-store";
 import { resetRateLimitsForTests } from "@/lib/rate-limit";
@@ -47,6 +47,8 @@ async function signedCommitFields(problemId = 1) {
 
 describe("mutable API routes", () => {
   beforeEach(() => {
+    delete process.env.P42_MUTATION_API_KEY_SHA256S;
+    delete process.env.P42_MUTATION_API_CREDENTIALS_JSON;
     stateDir = mkdtempSync(path.join(tmpdir(), "p42-api-state-"));
     process.env.P42_PORTAL_STATE_PATH = path.join(stateDir, "state.json");
     resetPortalStateForTests();
@@ -59,6 +61,7 @@ describe("mutable API routes", () => {
     resetRateLimitsForTests();
     delete process.env.P42_PORTAL_STATE_PATH;
     delete process.env.P42_MUTATION_API_KEY_SHA256S;
+    delete process.env.P42_MUTATION_API_CREDENTIALS_JSON;
     delete process.env.P42_ALLOW_UNAUTHENTICATED_MUTATIONS;
     delete process.env.P42_RATE_LIMIT_COMMIT_LIMIT;
     delete process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS;
@@ -87,7 +90,7 @@ describe("mutable API routes", () => {
 
   it("reports misconfigured mutation authentication without exposing its value", async () => {
     const invalidConfiguration = "not-a-valid-sha256-hash";
-    process.env.P42_MUTATION_API_KEY_SHA256S = invalidConfiguration;
+    process.env.P42_MUTATION_API_CREDENTIALS_JSON = invalidConfiguration;
 
     const response = await capabilitiesGet();
     const body = await response.json();
@@ -107,7 +110,10 @@ describe("mutable API routes", () => {
   it("reports configured mutation authentication without exposing keys or hashes", async () => {
     const apiKey = "agent-capability-test-key";
     const apiKeyHash = mutationApiKeyHashForTests(apiKey);
-    process.env.P42_MUTATION_API_KEY_SHA256S = apiKeyHash;
+    process.env.P42_MUTATION_API_CREDENTIALS_JSON = JSON.stringify([{
+      hash: apiKeyHash,
+      scopes: ["submissions.commit"],
+    }]);
 
     const response = await capabilitiesGet();
     const body = await response.json();
@@ -167,7 +173,10 @@ describe("mutable API routes", () => {
   });
 
   it("can require a hashed mutation API key for production mutation routes", async () => {
-    process.env.P42_MUTATION_API_KEY_SHA256S = mutationApiKeyHashForTests("agent-session-key");
+    process.env.P42_MUTATION_API_CREDENTIALS_JSON = mutationApiCredentialPolicyForTests([{
+      key: "agent-session-key",
+      scopes: ["submissions.commit"],
+    }]);
     const signed = await signedCommitFields();
     const body = {
       problem_id: 1,
@@ -194,6 +203,109 @@ describe("mutable API routes", () => {
     expect(accepted.status).toBe(201);
   });
 
+  it("binds a credential to its exact route scopes", async () => {
+    process.env.P42_MUTATION_API_CREDENTIALS_JSON = mutationApiCredentialPolicyForTests([{
+      key: "commit-only-key",
+      scopes: ["submissions.commit"],
+    }]);
+    const signed = await signedCommitFields();
+    const commit = await commitPost(jsonRequest("/api/submissions/commit", {
+      problem_id: 1,
+      agent_name: "ScopedAgent",
+      solver_address: solverAddress,
+      solution_cid: signed.solutionCid,
+      commit_hash: signed.commitHash,
+      solver_signature: signed.solverSignature,
+    }, { authorization: "Bearer commit-only-key" }));
+    expect(commit.status).toBe(201);
+
+    const deniedRequests = [
+      revealPost(new Request("http://localhost/api/submissions/reveal", {
+        method: "POST", headers: { authorization: "Bearer commit-only-key" }, body: "{",
+      })),
+      solutionsPost(new Request("http://localhost/api/solutions", {
+        method: "POST", headers: { authorization: "Bearer commit-only-key" }, body: "{",
+      })),
+      challengePost(new Request("http://localhost/api/challenges", {
+        method: "POST", headers: { authorization: "Bearer commit-only-key" }, body: "{",
+      })),
+    ];
+    for (const response of await Promise.all(deniedRequests)) {
+      expect(response.status).toBe(403);
+      expect(response.headers.get("WWW-Authenticate")).toContain("insufficient_scope");
+      await expect(response.json()).resolves.toMatchObject({
+        error: "P42 mutation API key has insufficient scope",
+      });
+    }
+  });
+
+  it("supports overlapping rotation without merging credential scopes", async () => {
+    process.env.P42_MUTATION_API_CREDENTIALS_JSON = mutationApiCredentialPolicyForTests([
+      { key: "old-commit-key", scopes: ["submissions.commit"] },
+      { key: "new-verifier-key", scopes: ["solutions.verify", "challenges.open"] },
+    ]);
+    const malformed = (path: string, key: string, route: (request: Request) => Promise<Response>) => route(
+      new Request(`http://localhost${path}`, {
+        method: "POST", headers: { authorization: `Bearer ${key}` }, body: "{",
+      }),
+    );
+
+    expect((await malformed("/api/submissions/commit", "old-commit-key", commitPost)).status).toBe(400);
+    expect((await malformed("/api/solutions", "old-commit-key", solutionsPost)).status).toBe(403);
+    expect((await malformed("/api/solutions", "new-verifier-key", solutionsPost)).status).toBe(400);
+    expect((await malformed("/api/challenges", "new-verifier-key", challengePost)).status).toBe(400);
+    expect((await malformed("/api/submissions/commit", "new-verifier-key", commitPost)).status).toBe(403);
+  });
+
+  it("rejects expired credentials before parsing request bodies", async () => {
+    process.env.P42_MUTATION_API_CREDENTIALS_JSON = mutationApiCredentialPolicyForTests([{
+      key: "expired-key",
+      scopes: ["solutions.verify"],
+      expiresAt: "2000-01-01T00:00:00.000Z",
+    }]);
+    const response = await solutionsPost(new Request("http://localhost/api/solutions", {
+      method: "POST", headers: { authorization: "Bearer expired-key" }, body: "{",
+    }));
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ error: "invalid P42 mutation API key" });
+
+    const capabilities = await capabilitiesGet();
+    await expect(capabilities.json()).resolves.toMatchObject({
+      mutations: { status: "configured", available: false, authentication: "unavailable" },
+    });
+  });
+
+  it("makes every malformed or legacy credential policy unavailable", async () => {
+    const hash = mutationApiKeyHashForTests("policy-key");
+    const invalidPolicies = [
+      "[]",
+      JSON.stringify([{ hash, scopes: [] }]),
+      JSON.stringify([{ hash, scopes: ["unknown.scope"] }]),
+      JSON.stringify([{ hash, scopes: ["submissions.commit", "submissions.commit"] }]),
+      JSON.stringify([{ hash, scopes: ["submissions.commit"], extra: true }]),
+      JSON.stringify([{ hash, scopes: ["submissions.commit"], expiresAt: "tomorrow" }]),
+      JSON.stringify([{ hash, scopes: ["submissions.commit"] }, { hash, scopes: ["solutions.verify"] }]),
+      `[{"hash":"${hash}","hash":"${"f".repeat(71)}","scopes":["submissions.commit"]}]`,
+      `[{"hash":"${hash}","scopes":["submissions.commit"],"scopes":["solutions.verify"]}]`,
+      `[{"hash":"${hash}","scopes":["submissions.commit"],"expiresAt":"2099-01-01T00:00:00.000Z","expiresAt":"2098-01-01T00:00:00.000Z"}]`,
+    ];
+    for (const policy of invalidPolicies) {
+      process.env.P42_MUTATION_API_CREDENTIALS_JSON = policy;
+      const response = await commitPost(new Request("http://localhost/api/submissions/commit", {
+        method: "POST", headers: { authorization: "Bearer policy-key" }, body: "{",
+      }));
+      expect(response.status, policy).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({ error: "mutation API credential policy is invalid" });
+    }
+
+    delete process.env.P42_MUTATION_API_CREDENTIALS_JSON;
+    process.env.P42_MUTATION_API_KEY_SHA256S = hash;
+    const legacy = await commitPost(new Request("http://localhost/api/submissions/commit", {
+      method: "POST", headers: { authorization: "Bearer policy-key" }, body: "{",
+    }));
+    expect(legacy.status).toBe(503);
+  });
+
   it("fails closed in production before parsing and ignores the local opt-out", async () => {
     vi.stubEnv("NODE_ENV", "production");
     try {
@@ -205,7 +317,10 @@ describe("mutable API routes", () => {
         error: "mutation API authentication is not configured",
       });
 
-      process.env.P42_MUTATION_API_KEY_SHA256S = mutationApiKeyHashForTests("production-agent-key");
+      process.env.P42_MUTATION_API_CREDENTIALS_JSON = mutationApiCredentialPolicyForTests([{
+        key: "production-agent-key",
+        scopes: ["submissions.commit"],
+      }]);
       const unauthenticated = await commitPost(
         new Request("http://localhost/api/submissions/commit", { method: "POST", body: "{" }),
       );
@@ -214,14 +329,15 @@ describe("mutable API routes", () => {
     } finally {
       vi.unstubAllEnvs();
       delete process.env.P42_MUTATION_API_KEY_SHA256S;
+      delete process.env.P42_MUTATION_API_CREDENTIALS_JSON;
     }
   });
 
   it("rate-limits authenticated API keys in separate principal buckets", async () => {
-    process.env.P42_MUTATION_API_KEY_SHA256S = [
-      mutationApiKeyHashForTests("first-agent-key"),
-      mutationApiKeyHashForTests("second-agent-key"),
-    ].join(",");
+    process.env.P42_MUTATION_API_CREDENTIALS_JSON = mutationApiCredentialPolicyForTests([
+      { key: "first-agent-key", scopes: ["submissions.commit"] },
+      { key: "second-agent-key", scopes: ["submissions.commit"] },
+    ]);
     process.env.P42_RATE_LIMIT_COMMIT_LIMIT = "1";
     process.env.P42_RATE_LIMIT_COMMIT_WINDOW_MS = "60000";
     resetRateLimitsForTests();
@@ -237,7 +353,7 @@ describe("mutable API routes", () => {
   });
 
   it("fails closed when mutation API key enforcement is enabled without valid key hashes", async () => {
-    process.env.P42_MUTATION_API_KEY_SHA256S = "agent-session-key";
+    process.env.P42_MUTATION_API_CREDENTIALS_JSON = "agent-session-key";
 
     const response = await solutionsPost(
       jsonRequest("/api/solutions", {
@@ -249,7 +365,7 @@ describe("mutable API routes", () => {
 
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({
-      error: "mutation API key configuration contains an invalid key hash",
+      error: "mutation API credential policy is invalid",
     });
   });
 

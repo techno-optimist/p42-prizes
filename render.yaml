@@ -17,10 +17,11 @@ services:
         value: /app/data/portal-state.json
       # Production code fails closed automatically. Only a non-production local
       # process can opt out, with P42_ALLOW_UNAUTHENTICATED_MUTATIONS=1.
-      # Comma-separated sha256:<hex> hashes of the accepted mutation API keys.
-      # Operator-provided in the Render dashboard (sync: false); never commit a
-      # real secret here. Enforcement 503s until a valid hash is set.
-      - key: P42_MUTATION_API_KEY_SHA256S
+      # Strict JSON array of {hash, scopes, optional expiresAt} records. Hashes
+      # are sha256:<64 lowercase hex>; plaintext keys never enter Render config.
+      # Operator-provided in the dashboard (sync: false). Enforcement 503s until
+      # a valid scoped policy is set; the legacy flat hash variable is rejected.
+      - key: P42_MUTATION_API_CREDENTIALS_JSON
         sync: false
     disk:
       name: p42-prizes-state
