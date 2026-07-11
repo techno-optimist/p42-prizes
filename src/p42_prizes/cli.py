@@ -46,7 +46,7 @@ from p42_prizes.runner_queue import (
 )
 from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
 from p42_prizes.secure_json import read_strict_json_stream
-from p42_prizes.verdict import canonical_json, parse_rational
+from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes
 
 
 # Gate validators enforce the published schemas' additionalProperties:false, so a
@@ -61,13 +61,32 @@ def _enforce_gate_schema(report: dict, schema_name: str) -> None:
     jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
 
 
-def _load_attestation_inputs(args: argparse.Namespace) -> tuple[dict, Path, ChainReader]:
-    trust_registry = load_evidence_file(args.trust_registry)
+def _load_pinned_trust_registry(path: str, *, allow_test: bool) -> dict:
+    trust_registry = load_evidence_file(path)
     _enforce_gate_schema(trust_registry, "attestation-trust-registry.schema.json")
-    if trust_registry.get("environment") != "production" and not args.allow_test_trust_registry:
+    if trust_registry.get("environment") == "production":
+        expected_registry_hash = os.environ.get("P42_PRODUCTION_TRUST_REGISTRY_SHA256")
+        if expected_registry_hash is None:
+            raise AdmissionError(
+                "production trust requires out-of-band P42_PRODUCTION_TRUST_REGISTRY_SHA256"
+            )
+        actual_registry_hash = sha256_bytes(canonical_json(trust_registry).encode("utf-8"))
+        if expected_registry_hash != actual_registry_hash:
+            raise AdmissionError(
+                "production trust registry does not match P42_PRODUCTION_TRUST_REGISTRY_SHA256"
+            )
+    elif not allow_test:
         raise AdmissionError(
             "test trust registries are rejected by default; use a production root registry or explicitly allow test trust"
         )
+    return trust_registry
+
+
+def _load_attestation_inputs(args: argparse.Namespace) -> tuple[dict, Path, ChainReader]:
+    trust_registry = _load_pinned_trust_registry(
+        args.trust_registry,
+        allow_test=args.allow_test_trust_registry,
+    )
     artifact_root = Path(args.artifact_root).resolve()
     if not artifact_root.is_dir():
         raise AdmissionError("--artifact-root must be an existing directory")
@@ -462,7 +481,10 @@ def _cmd_runner_alerts(args: argparse.Namespace) -> int:
 
 def _cmd_runner_burst_validate(args: argparse.Namespace) -> int:
     try:
-        trust_registry = load_evidence_file(args.trust_registry) if args.trust_registry else None
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
         report = normalize_runner_burst_report(
             load_evidence_file(args.report),
             artifact_root=args.artifact_root,
@@ -771,7 +793,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     runner_burst.add_argument("--report", required=True)
     runner_burst.add_argument("--artifact-root", required=True)
-    runner_burst.add_argument("--trust-registry", help="out-of-band registry required for an attesting signature")
+    runner_burst.add_argument("--trust-registry", required=True)
+    runner_burst.add_argument("--allow-test-trust-registry", action="store_true")
     runner_burst.add_argument("--output")
     runner_burst.set_defaults(func=_cmd_runner_burst_validate)
 

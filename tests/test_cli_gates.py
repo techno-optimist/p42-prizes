@@ -13,14 +13,16 @@ from test_incident import valid_drill_report
 from test_legal import valid_legal_memo
 from test_operational_controls import valid_report as valid_operational_controls
 from test_runner_burst import _fixture as runner_burst_fixture
+from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(*args: str, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT / "src")
+    env.update(env_overrides or {})
     return subprocess.run(
         ["python3", "-m", "p42_prizes.cli", *args],
         cwd=ROOT,
@@ -62,6 +64,51 @@ def run_attestation_cli(command, builder, tmp_path: Path, *, mutate=None):
         )
 
 
+def test_production_registry_requires_out_of_band_digest(tmp_path: Path) -> None:
+    report, fixture, registry = valid_legal_memo(tmp_path)
+    registry["environment"] = "production"
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    registry_path = fixture.write_registry(registry)
+    with fixture.chain_rpc_server() as rpc_url:
+        completed = run_cli(
+            "legal-memo-validate",
+            "--report",
+            str(report_path),
+            "--trust-registry",
+            str(registry_path),
+            "--artifact-root",
+            str(tmp_path),
+            "--chain-rpc-url",
+            rpc_url,
+        )
+    assert completed.returncode == 1
+    assert "P42_PRODUCTION_TRUST_REGISTRY_SHA256" in completed.stderr
+
+
+def test_production_registry_accepts_only_matching_out_of_band_digest(tmp_path: Path) -> None:
+    report, fixture, registry = valid_legal_memo(tmp_path)
+    registry["environment"] = "production"
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    registry_path = fixture.write_registry(registry)
+    registry_hash = sha256_bytes(canonical_json(registry).encode("utf-8"))
+    with fixture.chain_rpc_server() as rpc_url:
+        completed = run_cli(
+            "legal-memo-validate",
+            "--report",
+            str(report_path),
+            "--trust-registry",
+            str(registry_path),
+            "--artifact-root",
+            str(tmp_path),
+            "--chain-rpc-url",
+            rpc_url,
+            env_overrides={"P42_PRODUCTION_TRUST_REGISTRY_SHA256": registry_hash},
+        )
+    assert completed.returncode == 0, completed.stderr
+
+
 @pytest.mark.parametrize("command, builder", ATTESTATION_GATE_CASES)
 def test_gate_validator_accepts_valid_report(command, builder, tmp_path: Path) -> None:
     completed = run_attestation_cli(command, builder, tmp_path)
@@ -83,9 +130,11 @@ def test_gate_validator_rejects_unknown_top_level_key(command, builder, tmp_path
 
 
 def test_runner_burst_validator_accepts_valid_report(tmp_path: Path) -> None:
-    report, _ = runner_burst_fixture(tmp_path)
+    report, support = runner_burst_fixture(tmp_path)
     report_path = tmp_path / "report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
+    registry_path = tmp_path / "runner-registry.json"
+    registry_path.write_text(canonical_json(support["registry"]), encoding="utf-8")
 
     completed = run_cli(
         "runner-burst-validate",
@@ -93,16 +142,21 @@ def test_runner_burst_validator_accepts_valid_report(tmp_path: Path) -> None:
         str(report_path),
         "--artifact-root",
         str(tmp_path),
+        "--trust-registry",
+        str(registry_path),
+        "--allow-test-trust-registry",
     )
 
     assert completed.returncode == 0, completed.stderr
 
 
 def test_runner_burst_validator_rejects_unknown_top_level_key(tmp_path: Path) -> None:
-    report, _ = runner_burst_fixture(tmp_path)
+    report, support = runner_burst_fixture(tmp_path)
     report["unexpected_field"] = "a genuine non-placeholder value"
     report_path = tmp_path / "report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
+    registry_path = tmp_path / "runner-registry.json"
+    registry_path.write_text(canonical_json(support["registry"]), encoding="utf-8")
 
     completed = run_cli(
         "runner-burst-validate",
@@ -110,6 +164,9 @@ def test_runner_burst_validator_rejects_unknown_top_level_key(tmp_path: Path) ->
         str(report_path),
         "--artifact-root",
         str(tmp_path),
+        "--trust-registry",
+        str(registry_path),
+        "--allow-test-trust-registry",
     )
 
     assert completed.returncode == 1
