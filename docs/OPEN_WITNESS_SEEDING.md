@@ -30,8 +30,10 @@ production remains unavailable and fail-closed until the JS indexer/collector
 integrates it. The explicit reader must return:
 
 - canonical, successful commit, reveal, finalize, and `armFunding` receipts;
-- each receipt's transaction hash, block number, current finalized block hash,
-  transaction calldata hash, and canonical decoded-log hash;
+- each receipt's transaction hash, block number, and current finalized block hash;
+- raw hex transaction-input bytes and raw hex receipt-log bytes in the versioned
+  canonical collector-proof encoding; Python decodes and checks phase, target,
+  submission ID, solver, CID, DA hash, score/frontier, event signatures, and args;
 - registry problem ID, board/problem slug, contract addresses, verifier pins,
   witness ID, solution CID/DA hash, and canonical report hash;
 - finalized storage reads for the exact pre/post frontier atoms, submission
@@ -46,6 +48,13 @@ funds, or arming before/at finalization rejects the gate claim. Cached fixture
 data cannot claim a live gate because `canonical` and `finalized` must come from
 the out-of-band reader and all receipt/state fields must resolve live.
 
+The release-bound configuration must identify the exact board and admission
+matrix, declare `objective: minimize`, and pin a positive `min_improvement_atoms`.
+The validator requires `post < pre` and `pre - post >= min_improvement_atoms`.
+Collector observations may be at most 15 minutes old, no more than 60 seconds
+in the future, and every lifecycle receipt must be at least 12 blocks behind the
+finalized head with the same current canonical block hash.
+
 ## Signoff order
 
 After artifacts and chain evidence are complete, an organizationally independent
@@ -53,8 +62,10 @@ reviewer and a distinct engineering owner sign the canonical evidence hash using
 the shared `P42-ATTESTATION-V2` Ed25519 envelope. Both identities, roles, keys,
 and validity windows must already exist in the out-of-band trust registry for
 `p42-open-witness-launch/v1`. Signatures created before evidence completion are
-invalid. Normalization succeeds only after both signatures verify; the packet
-has no caller-authored live-gate flag.
+invalid. Successful normalization emits `evidence_valid: true` and
+`attestation_valid: true`, but always emits `gate_passed: false`. Caller-authored
+`gate_passed: true` is rejected. Test registries and generic readers can never
+elevate the gate; explicit production collector authority is not integrated.
 
 The deployment ceremony has **11 setup operations per board**; evidence binds
 the resulting final addresses and state and must not assume the older count 10.

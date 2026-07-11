@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 from typing import Any, Mapping, Protocol
 
@@ -23,6 +24,10 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 OPEN_WITNESS_SCHEMA_VERSION = "p42-open-witness-launch/v1"
 REVIEWER_ROLES = ("independent-reviewer", "engineering-owner")
+COLLECTOR_PROOF_VERSION = "p42-open-witness-collector-proof/v1"
+MAX_OBSERVATION_AGE = timedelta(minutes=15)
+MAX_FUTURE_SKEW = timedelta(seconds=60)
+MIN_FINALITY_CONFIRMATIONS = 12
 
 
 class OpenWitnessError(ValueError):
@@ -41,6 +46,7 @@ def normalize_open_witness_launch(
     trust_registry: Mapping[str, Any] | None = None,
     artifact_root: str | Path | None = None,
     chain_reader: OpenWitnessChainReader | None = None,
+    now_utc: datetime | None = None,
 ) -> dict[str, Any]:
     if report.get("schema_version") != OPEN_WITNESS_SCHEMA_VERSION:
         raise OpenWitnessError(f"schema_version must be {OPEN_WITNESS_SCHEMA_VERSION}")
@@ -55,16 +61,19 @@ def normalize_open_witness_launch(
         report,
         {
             "schema_version", "evidence_id", "observed_at_utc", "release_binding", "board",
-            "artifacts", "witness", "funding", "reviewers", "attestations", "evidence_hash", "gate_passed",
+            "artifacts", "witness", "funding", "reviewers", "attestations", "evidence_hash",
+            "evidence_valid", "attestation_valid", "gate_passed",
         },
         OpenWitnessError,
     )
     normalized = dict(report)
     supplied_hash = normalized.pop("evidence_hash", None)
     attestations = normalized.pop("attestations", None)
-    supplied_gate = normalized.pop("gate_passed", None)
-    if supplied_gate not in (None, True):
-        raise OpenWitnessError("report.gate_passed may only claim true")
+    supplied_outputs = {key: normalized.pop(key, None) for key in ("evidence_valid", "attestation_valid", "gate_passed")}
+    if supplied_outputs["gate_passed"] is True:
+        raise OpenWitnessError("caller-authored gate_passed=true is forbidden until production collector authority is integrated")
+    if any(value not in (None, False) for value in supplied_outputs.values()):
+        raise OpenWitnessError("derived validity fields must not be caller-authored")
 
     _nonempty(normalized.get("evidence_id"), "report.evidence_id")
     observed_at = _require_utc(normalized.get("observed_at_utc"), "report.observed_at_utc", OpenWitnessError)
@@ -73,21 +82,29 @@ def normalize_open_witness_launch(
     )
     board = _validate_board(normalized.get("board"), release)
     artifacts = _validate_artifacts(normalized.get("artifacts"), context)
-    witness = _validate_witness(normalized.get("witness"), board, artifacts)
+    policy = _validate_board_policy(release, board, artifacts, context)
+    witness = _validate_witness(normalized.get("witness"), board, artifacts, policy)
     funding = _validate_funding(normalized.get("funding"))
     _validate_artifact_bindings(board, artifacts, witness, context)
     reviewers = _validate_reviewers(normalized.get("reviewers"), context)
 
     live = _read_live(chain_reader, release, board, witness)
-    _validate_live_snapshot(live, board, artifacts, witness, funding, observed_at)
+    now = now_utc or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        raise OpenWitnessError("now_utc must be timezone-aware")
+    _validate_live_snapshot(live, board, witness, funding, observed_at, now)
 
     evidence_hash = sha256_bytes(canonical_json(normalized).encode("utf-8"))
-    if supplied_hash is not None and supplied_hash != evidence_hash:
+    if supplied_hash is None:
+        raise OpenWitnessError("report.evidence_hash is required")
+    if supplied_hash != evidence_hash:
         raise OpenWitnessError("evidence_hash does not match canonical unsigned report bytes")
     _validate_attestations(attestations, evidence_hash, reviewers, context, observed_at)
     normalized["attestations"] = [dict(item) for item in attestations]
     normalized["evidence_hash"] = evidence_hash
-    normalized["gate_passed"] = True
+    normalized["evidence_valid"] = True
+    normalized["attestation_valid"] = True
+    normalized["gate_passed"] = False
     return normalized
 
 
@@ -121,15 +138,17 @@ def _validate_artifacts(value: Any, context: Any) -> Mapping[str, Any]:
     return artifacts
 
 
-def _validate_witness(value: Any, board: Mapping[str, Any], artifacts: Mapping[str, Any]) -> Mapping[str, Any]:
+def _validate_witness(value: Any, board: Mapping[str, Any], artifacts: Mapping[str, Any], policy: Mapping[str, Any]) -> Mapping[str, Any]:
     witness = _mapping(value, "report.witness")
     expected = {
         "witness_id", "solution_cid", "da_hash", "verifier_image_hash", "admission_matrix_hash",
         "transcript_hash", "report_hash", "commit_receipt", "reveal_receipt", "finalize_receipt",
-        "pre_frontier_atoms", "post_frontier_atoms", "credit_atoms", "funding_armed_at_commit",
+        "submission_id", "solver", "pre_frontier_atoms", "post_frontier_atoms", "credit_atoms", "funding_armed_at_commit",
     }
     _exact_keys(witness, expected, "report.witness")
     cid = _nonempty(witness.get("solution_cid"), "report.witness.solution_cid")
+    _integer(witness.get("submission_id"), "report.witness.submission_id", minimum=1)
+    _require_address(witness.get("solver"), "report.witness.solver", OpenWitnessError)
     if not cid.startswith("ipfs://"):
         raise OpenWitnessError("report.witness.solution_cid must be an ipfs:// CID")
     hash_fields = {
@@ -147,14 +166,38 @@ def _validate_witness(value: Any, board: Mapping[str, Any], artifacts: Mapping[s
         raise OpenWitnessError("commit, reveal, and finalize receipts must be strictly ordered")
     pre = _integer(witness.get("pre_frontier_atoms"), "report.witness.pre_frontier_atoms")
     post = _integer(witness.get("post_frontier_atoms"), "report.witness.post_frontier_atoms")
-    if pre == post:
-        raise OpenWitnessError("open witness must strictly change the frontier")
+    if policy["objective"] != "minimize":
+        raise OpenWitnessError("Gate 1 open-witness launch currently requires a release-bound minimize objective")
+    if post >= pre or pre - post < policy["min_improvement_atoms"]:
+        raise OpenWitnessError("frontier must decrease by at least release-bound minImprovementAtoms")
     if witness.get("credit_atoms") != 0 or witness.get("funding_armed_at_commit") is not False:
         raise OpenWitnessError("open witness must have zero credit and be committed before funding was armed")
     expected_id = _witness_id(board, cid, receipts[0]["transaction_hash"])
     if witness.get("witness_id") != expected_id:
         raise OpenWitnessError("witness_id is not bound to this board, solution, and commit receipt")
     return witness
+
+
+def _validate_board_policy(release: Mapping[str, Any], board: Mapping[str, Any], artifacts: Mapping[str, Any], context: Any) -> Mapping[str, Any]:
+    configuration = _parse_json_object(
+        _artifact_bytes(context, release["configuration_artifact"]),
+        "report.release_binding.configuration_artifact", OpenWitnessError,
+    )
+    boards = configuration.get("open_witness_boards")
+    if not isinstance(boards, list):
+        raise OpenWitnessError("release-bound configuration must contain open_witness_boards")
+    matches = [item for item in boards if isinstance(item, Mapping) and item.get("registry_problem_id") == board["registry_problem_id"] and item.get("problem_slug") == board["slug"]]
+    if len(matches) != 1:
+        raise OpenWitnessError("release-bound configuration must identify exactly this board")
+    policy = matches[0]
+    if policy.get("admission_matrix_hash") != artifacts["admission_matrix"]["sha256"]:
+        raise OpenWitnessError("release-bound board admission matrix hash does not match evidence")
+    minimum = policy.get("min_improvement_atoms")
+    if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum <= 0:
+        raise OpenWitnessError("release-bound minImprovementAtoms must be a positive integer")
+    if policy.get("objective") not in {"minimize", "maximize"}:
+        raise OpenWitnessError("release-bound objective must be minimize or maximize")
+    return policy
 
 
 def _validate_funding(value: Any) -> Mapping[str, Any]:
@@ -225,27 +268,18 @@ def _read_live(reader: Any, release: Mapping[str, Any], board: Mapping[str, Any]
     return _mapping(live, "chain_reader.open_witness")
 
 
-def _validate_live_snapshot(live: Mapping[str, Any], board: Mapping[str, Any], artifacts: Mapping[str, Any], witness: Mapping[str, Any], funding: Mapping[str, Any], observed_at: datetime) -> None:
-    expected_keys = {
-        "observed_at_utc", "finalized_head", "board", "witness", "funding",
-        "storage_reads", "lifecycle_logs",
-    }
+def _validate_live_snapshot(live: Mapping[str, Any], board: Mapping[str, Any], witness: Mapping[str, Any], funding: Mapping[str, Any], observed_at: datetime, now: datetime) -> None:
+    expected_keys = {"schema_version", "observed_at_utc", "finalized_head", "transactions", "storage_reads"}
     _exact_keys(live, expected_keys, "chain_reader.open_witness")
+    if live.get("schema_version") != COLLECTOR_PROOF_VERSION:
+        raise OpenWitnessError(f"collector proof schema_version must be {COLLECTOR_PROOF_VERSION}")
     live_time = _require_utc(live.get("observed_at_utc"), "chain_reader.open_witness.observed_at_utc", OpenWitnessError)
-    if live_time > observed_at:
-        raise OpenWitnessError("report observation cannot predate the live chain observation")
-    if live.get("board") != dict(board):
-        raise OpenWitnessError("live board state does not exactly match the report board")
-    live_witness = _mapping(live.get("witness"), "chain_reader.open_witness.witness")
-    live_funding = _mapping(live.get("funding"), "chain_reader.open_witness.funding")
-    for field in ("witness_id", "solution_cid", "da_hash", "verifier_image_hash", "admission_matrix_hash", "transcript_hash", "report_hash", "commit_receipt", "reveal_receipt", "finalize_receipt", "pre_frontier_atoms", "post_frontier_atoms", "credit_atoms", "funding_armed_at_commit"):
-        if live_witness.get(field) != witness[field]:
-            raise OpenWitnessError(f"live witness field {field} does not match evidence")
-    if live_witness.get("finalized") is not True or live_witness.get("voided") is not False:
-        raise OpenWitnessError("witness must be canonically finalized and not voided")
-    for field in ("arm_receipt", "paid_credit_atoms_before_arm", "pool_balance_before_arm_wei"):
-        if live_funding.get(field) != funding[field]:
-            raise OpenWitnessError(f"live funding field {field} does not match evidence")
+    if live_time != observed_at:
+        raise OpenWitnessError("report observation must equal the collector proof observation")
+    if live_time > now + MAX_FUTURE_SKEW:
+        raise OpenWitnessError("open-witness observation is in the future")
+    if now - live_time > MAX_OBSERVATION_AGE:
+        raise OpenWitnessError("open-witness observation is stale")
     storage = _mapping(live.get("storage_reads"), "chain_reader.open_witness.storage_reads")
     required_storage = {
         "registry_problem_id": board["registry_problem_id"],
@@ -261,18 +295,33 @@ def _validate_live_snapshot(live: Mapping[str, Any], board: Mapping[str, Any], a
     for field, expected in required_storage.items():
         if storage.get(field) != expected:
             raise OpenWitnessError(f"finalized storage read {field} does not match evidence")
-    logs = _mapping(live.get("lifecycle_logs"), "chain_reader.open_witness.lifecycle_logs")
-    _exact_keys(logs, {"commit", "reveal", "finalize", "arm"}, "chain_reader.open_witness.lifecycle_logs")
-    receipts_by_phase = {
+    transactions = _mapping(live.get("transactions"), "chain_reader.open_witness.transactions")
+    _exact_keys(transactions, {"commit", "reveal", "finalize", "arm"}, "chain_reader.open_witness.transactions")
+    receipts = {
         "commit": witness["commit_receipt"], "reveal": witness["reveal_receipt"],
         "finalize": witness["finalize_receipt"], "arm": funding["arm_receipt"],
     }
-    for phase, receipt in receipts_by_phase.items():
-        phase_logs = logs.get(phase)
-        if not isinstance(phase_logs, list) or not phase_logs:
-            raise OpenWitnessError(f"chain-derived {phase} lifecycle logs are required")
-        if sha256_bytes(canonical_json(phase_logs).encode("utf-8")) != receipt["logs_hash"]:
-            raise OpenWitnessError(f"chain-derived {phase} logs do not match receipt logs_hash")
+    expected_inputs = {
+        "commit": {"phase": "commit", "submission_id": witness["submission_id"], "solver": witness["solver"], "registry_problem_id": board["registry_problem_id"]},
+        "reveal": {"phase": "reveal", "submission_id": witness["submission_id"], "solver": witness["solver"], "solution_cid": witness["solution_cid"], "da_hash": witness["da_hash"], "claimed_score_atoms": witness["post_frontier_atoms"]},
+        "finalize": {"phase": "finalize", "submission_id": witness["submission_id"]},
+        "arm": {"phase": "armFunding"},
+    }
+    expected_events = {
+        "commit": [{"event_signature": "SubmissionCommitted(uint256,address)", "submission_id": witness["submission_id"], "solver": witness["solver"]}],
+        "reveal": [{"event_signature": "SubmissionRevealed(uint256,string,bytes32,int256)", "submission_id": witness["submission_id"], "solution_cid": witness["solution_cid"], "da_hash": witness["da_hash"], "score_atoms": witness["post_frontier_atoms"]}],
+        "finalize": [{"event_signature": "SubmissionFinalized(uint256,uint256,int256)", "submission_id": witness["submission_id"], "credit_atoms": 0, "best_score_atoms": witness["post_frontier_atoms"]}],
+        "arm": [{"event_signature": "FundingArmed()"}],
+    }
+    for phase, receipt in receipts.items():
+        transaction = _mapping(transactions.get(phase), f"chain_reader.open_witness.transactions.{phase}")
+        _exact_keys(transaction, {"transaction_hash", "target", "raw_input", "raw_receipt_logs"}, f"chain_reader.open_witness.transactions.{phase}")
+        if transaction["transaction_hash"] != receipt["transaction_hash"] or str(transaction["target"]).casefold() != board["submission_manager"].casefold():
+            raise OpenWitnessError(f"raw {phase} transaction is not bound to the claimed receipt and target")
+        if _decode_canonical_proof_bytes(transaction["raw_input"], f"raw {phase} input") != expected_inputs[phase]:
+            raise OpenWitnessError(f"raw {phase} transaction input does not decode to the required phase and arguments")
+        if _decode_canonical_proof_bytes(transaction["raw_receipt_logs"], f"raw {phase} receipt logs") != expected_events[phase]:
+            raise OpenWitnessError(f"raw {phase} receipt logs do not decode to required event signatures and arguments")
     finalize = witness["finalize_receipt"]
     arm = funding["arm_receipt"]
     if not _position(finalize) < _position(arm):
@@ -281,12 +330,29 @@ def _validate_live_snapshot(live: Mapping[str, Any], board: Mapping[str, Any], a
     head = _mapping(live.get("finalized_head"), "chain_reader.open_witness.finalized_head")
     head_number = _integer(head.get("block_number"), "chain_reader.open_witness.finalized_head.block_number")
     _hex(head.get("block_hash"), 32, "chain_reader.open_witness.finalized_head.block_hash")
+    head_time = _require_utc(head.get("timestamp_utc"), "chain_reader.open_witness.finalized_head.timestamp_utc", OpenWitnessError)
+    if head_time != live_time:
+        raise OpenWitnessError("finalized head timestamp must equal collector observation")
     block_hashes = _mapping(head.get("canonical_block_hashes"), "chain_reader.open_witness.finalized_head.canonical_block_hashes")
     for receipt in [witness[f"{phase}_receipt"] for phase in ("commit", "reveal", "finalize")] + [arm]:
         if receipt["block_number"] > head_number:
             raise OpenWitnessError("receipt is newer than the finalized chain head")
+        if head_number - receipt["block_number"] < MIN_FINALITY_CONFIRMATIONS:
+            raise OpenWitnessError("receipt does not satisfy the explicit finality confirmation policy")
         if block_hashes.get(str(receipt["block_number"])) != receipt["block_hash"]:
             raise OpenWitnessError("receipt block is stale, reorged, or not finalized canonically")
+
+
+def _decode_canonical_proof_bytes(value: Any, prefix: str) -> Any:
+    raw = _hex(value, None, prefix)
+    try:
+        decoded = bytes.fromhex(raw[2:]).decode("utf-8")
+        parsed = json.loads(decoded)
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise OpenWitnessError(f"{prefix} must be hex-encoded canonical JSON bytes") from exc
+    if decoded != canonical_json(parsed):
+        raise OpenWitnessError(f"{prefix} must use canonical byte encoding")
+    return parsed
 
 
 def _validate_attestations(value: Any, evidence_hash: str, reviewers: Mapping[str, Mapping[str, Any]], context: Any, observed_at: datetime) -> None:
@@ -311,13 +377,11 @@ def _validate_attestations(value: Any, evidence_hash: str, reviewers: Mapping[st
 
 def _receipt(value: Any, prefix: str) -> Mapping[str, Any]:
     receipt = _mapping(value, prefix)
-    _exact_keys(receipt, {"transaction_hash", "block_number", "block_hash", "transaction_index", "status", "calldata_hash", "logs_hash"}, prefix)
+    _exact_keys(receipt, {"transaction_hash", "block_number", "block_hash", "transaction_index", "status"}, prefix)
     _hex(receipt.get("transaction_hash"), 32, f"{prefix}.transaction_hash")
     _hex(receipt.get("block_hash"), 32, f"{prefix}.block_hash")
     _integer(receipt.get("block_number"), f"{prefix}.block_number", minimum=0)
     _integer(receipt.get("transaction_index"), f"{prefix}.transaction_index", minimum=0)
-    _require_sha256(receipt.get("calldata_hash"), f"{prefix}.calldata_hash", OpenWitnessError)
-    _require_sha256(receipt.get("logs_hash"), f"{prefix}.logs_hash", OpenWitnessError)
     if receipt.get("status") != 1:
         raise OpenWitnessError(f"{prefix}.status must be 1")
     return receipt
@@ -364,9 +428,11 @@ def _integer(value: Any, prefix: str, minimum: int | None = None) -> int:
     return value
 
 
-def _hex(value: Any, size: int, prefix: str) -> str:
-    if not isinstance(value, str) or len(value) != 2 + size * 2 or not value.startswith("0x"):
-        raise OpenWitnessError(f"{prefix} must be a {size}-byte hex value")
+def _hex(value: Any, size: int | None, prefix: str) -> str:
+    if not isinstance(value, str) or not value.startswith("0x") or (size is not None and len(value) != 2 + size * 2):
+        raise OpenWitnessError(f"{prefix} must be " + (f"a {size}-byte" if size is not None else "an even-length") + " hex value")
+    if len(value[2:]) % 2:
+        raise OpenWitnessError(f"{prefix} must have an even number of hex digits")
     try:
         bytes.fromhex(value[2:])
     except ValueError as exc:
