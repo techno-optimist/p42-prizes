@@ -328,9 +328,13 @@ or Gate 2 item.
 Operational caveats formerly tracked in `PRODUCTION_READINESS.md` that are not
 already captured by a gate row or residual gap above. All open.
 
-- The current event ledger is local diagnostic evidence only; state mutations
-  take a local advisory file lock and fsync on write, but there is still no
-  shared storage or chain/indexer source of truth for multi-instance
+- The current event ledger is local diagnostic evidence only. Same-host state
+  mutations now use a private identity-bound lock that never evicts a live or
+  unverifiable owner by age, reclaims only a demonstrably dead same-host PID
+  through an identity-checked tombstone, and cannot release a successor lock.
+  Multi-process tests retain all concurrent mutations, and readers recompute
+  event sequence, predecessor, and hash integrity. There is still no shared
+  transactional storage or chain/indexer source of truth for multi-instance
   production.
 - Render can be configured with `P42_PORTAL_STATE_PATH=/app/data/portal-state.json`
   on a persistent disk for demo continuity, but that disk is not settlement

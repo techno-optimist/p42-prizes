@@ -13,10 +13,10 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { ApiError } from "@/lib/api";
+import { withPortalStateFileLock } from "@/lib/portal-lock";
 import type { Submission } from "@/lib/types";
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
-const DEFAULT_STALE_LOCK_MS = 30_000;
 const DEFAULT_STATE_MAX_BYTES = 16 * 1024 * 1024;
 const DEFAULT_COMMIT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_REVEAL_LEASE_MS = 2 * 60 * 1000;
@@ -178,6 +178,28 @@ function portalEventHash(event: Omit<PortalEventRecord, "eventHash">): string {
   return `sha256:${createHash("sha256").update(canonicalJson(event), "utf8").digest("hex")}`;
 }
 
+function validatePortalEventChain(
+  events: PortalEventRecord[],
+  eventOffset: number,
+  anchorHash: string,
+): void {
+  let priorHash = anchorHash;
+  for (const [index, event] of events.entries()) {
+    if (!event || typeof event !== "object" || Array.isArray(event)) {
+      throw new Error("portal event chain contains an invalid record");
+    }
+    const { eventHash, ...withoutHash } = event;
+    if (event.sequence !== eventOffset + index + 1) {
+      throw new Error("portal event chain sequence mismatch");
+    }
+    if (event.prevHash !== priorHash) throw new Error("portal event chain predecessor mismatch");
+    if (!/^sha256:[a-f0-9]{64}$/.test(eventHash) || eventHash !== portalEventHash(withoutHash)) {
+      throw new Error("portal event chain hash mismatch");
+    }
+    priorHash = eventHash;
+  }
+}
+
 export function readPortalState(): PortalStateSnapshot {
   const filePath = portalStatePath();
   if (!existsSync(filePath)) return cloneState(EMPTY_STATE);
@@ -199,16 +221,22 @@ export function readPortalState(): PortalStateSnapshot {
     throw new Error(`portal state collection exceeds configured capacity: ${filePath}`);
   }
   const parsedEvents = Array.isArray(parsed.events) ? parsed.events as PortalEventRecord[] : [];
-  const eventOverflow = Math.max(0, parsedEvents.length - limits.maxEvents);
-  const retainedEvents = eventOverflow > 0 ? parsedEvents.slice(eventOverflow) : parsedEvents;
   const parsedEventOffset = Number.isInteger(parsed.eventOffset) && Number(parsed.eventOffset) >= 0
     ? Number(parsed.eventOffset)
     : 0;
+  const parsedAnchorHash = typeof parsed.eventAnchorHash === "string"
+    ? parsed.eventAnchorHash
+    : "genesis";
+  if ((parsedEventOffset === 0 && parsedAnchorHash !== "genesis")
+    || (parsedEventOffset > 0 && !/^sha256:[a-f0-9]{64}$/.test(parsedAnchorHash))) {
+    throw new Error("portal event chain anchor mismatch");
+  }
+  validatePortalEventChain(parsedEvents, parsedEventOffset, parsedAnchorHash);
+  const eventOverflow = Math.max(0, parsedEvents.length - limits.maxEvents);
+  const retainedEvents = eventOverflow > 0 ? parsedEvents.slice(eventOverflow) : parsedEvents;
   const eventAnchorHash = eventOverflow > 0
     ? parsedEvents[eventOverflow - 1].eventHash
-    : typeof parsed.eventAnchorHash === "string"
-      ? parsed.eventAnchorHash
-      : "genesis";
+    : parsedAnchorHash;
   return cloneState({
     schemaVersion: 1,
     commits: (parsed.commits as Array<Partial<CommitRecord>>).map((commit) => {
@@ -358,10 +386,6 @@ export function writePortalState(state: PortalStateSnapshot): void {
   fsyncDirectory(path.dirname(filePath));
 }
 
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 // A cross-process advisory lock (atomic mkdir) so the read-modify-write in
 // updatePortalState is serialized: without it, two settlements can both read the
 // same frontier, credit the same delta, and race their writes. This is a local
@@ -371,48 +395,10 @@ function withPortalStateLock<T>(operation: () => T): T {
   const filePath = portalStatePath();
   const lockPath = `${filePath}.lock`;
   const lockTimeoutMs = Number(process.env.P42_PORTAL_STATE_LOCK_TIMEOUT_MS ?? DEFAULT_LOCK_TIMEOUT_MS);
-  const staleLockMs = Number(process.env.P42_PORTAL_STATE_STALE_LOCK_MS ?? DEFAULT_STALE_LOCK_MS);
-  const startedAt = Date.now();
   mkdirSync(path.dirname(filePath), { recursive: true });
-
-  for (;;) {
-    try {
-      mkdirSync(lockPath);
-      try {
-        writeFileSync(
-          path.join(lockPath, "owner.json"),
-          `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
-          "utf8",
-        );
-        return operation();
-      } finally {
-        rmSync(lockPath, { recursive: true, force: true });
-      }
-    } catch (error) {
-      const code = (error as { code?: unknown }).code;
-      if (code !== "EEXIST") throw error;
-
-      // Reclaim a lock left behind by a crashed writer.
-      try {
-        const owner = JSON.parse(readFileSync(path.join(lockPath, "owner.json"), "utf8")) as { createdAt?: string };
-        const createdAt = owner.createdAt ? Date.parse(owner.createdAt) : Number.NaN;
-        if (Number.isFinite(createdAt) && Date.now() - createdAt > staleLockMs) {
-          rmSync(lockPath, { recursive: true, force: true });
-          continue;
-        }
-      } catch {
-        if (Date.now() - startedAt > staleLockMs) {
-          rmSync(lockPath, { recursive: true, force: true });
-          continue;
-        }
-      }
-
-      if (Date.now() - startedAt > lockTimeoutMs) {
-        throw new Error("timed out acquiring portal state lock");
-      }
-      sleepSync(25);
-    }
-  }
+  return withPortalStateFileLock(lockPath, () => {
+    return operation();
+  }, { timeoutMs: lockTimeoutMs });
 }
 
 export function updatePortalState(mutator: (state: PortalStateSnapshot) => void): PortalStateSnapshot {
