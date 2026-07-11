@@ -349,11 +349,17 @@ already captured by a gate row or residual gap above. All open.
   require the fail-closed Docker policy: it rejects unavailable runtimes and
   mutable or placeholder images, runs with `--network=none`, read-only
   filesystem and solution mount, non-root/no-capabilities, and aggregate cgroup
-  memory/PID/CPU caps. Local non-chain runs may still use process-group,
+  memory/PID/CPU caps. `tests/test_runner_sandbox_live.py` loads a self-contained
+  hostile fixture into the credential-free digest-pinned Python base image and executes it through the real
+  worker path: UID/GID, zero capabilities, no-new-privileges, network denial,
+  read-only root/solution mounts, bounded writable tmpfs, PID exhaustion,
+  cgroup OOM termination, timeout cleanup, and canonical output. The existing
+  Python CI lane runs this test and fails when Docker is unavailable; only
+  non-CI developer hosts may skip it. Local non-chain runs may still use process-group,
   allowlisted-environment, and per-process-`RLIMIT_AS` mode, so a forking
   verifier can exceed that local aggregate memory bound. No production
-  Linux/DGX exercise has yet demonstrated the Docker policy against a pullable
-  pinned verifier image; that remains a Gate 1 runtime-evidence requirement.
+  DGX exercise has yet demonstrated the policy against an actual released
+  verifier image; that remains a Gate 1 runtime-evidence requirement.
 
 ## Closed Evidence History
 
