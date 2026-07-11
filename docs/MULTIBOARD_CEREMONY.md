@@ -107,7 +107,7 @@ verifier environment. It then writes a
 validator accepts it.
 
 The deployer sends no governance, `armFunding`, or `setAcceptingFunds(true)`
-transaction. It emits exactly ten timelock operations per board:
+transaction. It emits exactly eleven setup timelock operations per board:
 
 1. Pool-to-ledger wiring.
 2. Ledger credit-recorder wiring.
@@ -116,15 +116,53 @@ transaction. It emits exactly ten timelock operations per board:
 5. Expected-ID registry registration.
 6. Pool-to-registry wiring.
 7. Registry freeze.
-8. Ledger pause-target authorization.
-9. Submission-manager pause-target authorization.
-10. Challenge-manager pause-target authorization.
+8. Ledger rollover-destination wiring.
+9. Ledger pause-target authorization.
+10. Submission-manager pause-target authorization.
+11. Challenge-manager pause-target authorization.
 
-For ten boards this is 100 independently confirmed operations. The only
+For ten boards this is 110 independently confirmed setup operations. The only
 supported continuation command is `P42_DEPLOY_MODE=continue`. It checks a
 finalized block and atomically updates the manifest only after it proves every
 runtime hash, owner, governance term, board term, registry pin, registry freeze,
 pause target, funding flag, and primary-or-override operation execution.
+
+Setup completion still leaves every board with `openWitnessEvidence: null`,
+`openWitnessEvidencePassed: false`, and an empty `fundingTransactions` array.
+No funding calldata exists in an initial or setup-complete manifest.
+
+## Pre-Arm Continuation
+
+Funding preparation is a separate continuation:
+
+```bash
+P42_DEPLOY_MODE=continue \
+P42_PREPARE_FUNDING=true \
+P42_OPEN_WITNESS_ADAPTERS=/abs/board-1.json,/abs/board-2.json \
+npm run deploy:base-sepolia
+```
+
+The paths are ordered exactly like `manifest.problems`. There must be one and
+only one artifact per board. The continuation rejects a wrong registry ID,
+slug or contract tuple, duplicate or cross-board witness IDs, duplicate
+evidence IDs, and reuse of the same artifact bytes.
+
+The existing canonical `p42-open-witness-launch/v1` packet requires an
+`arm_receipt`; such a post-arm packet cannot authorize its own arm. The ceremony
+therefore defines the explicit adapter contract
+`p42-prizes/open-witness-pre-arm-adapter/v1`. It contains the canonical packet
+shape, but requires `funding.arm_receipt` to be `null`, zero paid credit, and a
+zero pre-arm pool balance. Its `evidence_hash` uses the canonical unsigned
+packet bytes and `adapter_hash` binds the complete adapted packet. This is an
+adapter boundary, not a JavaScript indexer or a substitute collector: the
+commit, reveal, finalize, artifact hashes, reviewer attestations, and board
+bindings must come from the canonical collector and finalized chain evidence.
+
+Only after all board adapters pass does the manifest bind each artifact path,
+artifact SHA-256, adapter hash, evidence hash, evidence ID, witness ID, and
+finalize receipt. It then constructs exactly two standard timelock operations
+per board. `armFunding` is first; `setAcceptingFunds(true)` depends on that
+operation ID. The continuation prints calldata but sends neither operation.
 
 ## Observation
 

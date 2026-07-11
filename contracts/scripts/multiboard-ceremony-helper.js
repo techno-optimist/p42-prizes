@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { delimiter, resolve } from "node:path";
 
 import {
@@ -12,6 +13,7 @@ import {
 import { readContractsConfigJsonSync } from "./strict-json-helper.js";
 
 export const MULTIBOARD_CEREMONY_SCHEMA = "p42-prizes/multi-board-ceremony/v1";
+export const PRE_ARM_WITNESS_ADAPTER_SCHEMA = "p42-prizes/open-witness-pre-arm-adapter/v1";
 
 const ROOT_KEYS = ["schema", "governance", "roles", "parameters", "problems"];
 const GOVERNANCE_KEYS = ["signers", "threshold", "delaySeconds", "guardian"];
@@ -265,4 +267,120 @@ export function validateMultiBoardDeploymentTimestamps(config, latestBlockTimest
       throw new Error(`multi-board problem ${index + 1} (${problem.problemSlug}): ${error.message}`);
     }
   }
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function sha256(value) {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function exactKeys(value, keys, label) {
+  exactObject(value, keys, label);
+  return value;
+}
+
+function assertSha256(value, label) {
+  if (!/^sha256:[0-9a-f]{64}$/.test(value)) throw new Error(`${label} must be a lowercase sha256 digest`);
+  return value;
+}
+
+function evidencePosition(receipt) {
+  return [receipt.block_number, receipt.transaction_index];
+}
+
+function before(left, right) {
+  return left[0] < right[0] || (left[0] === right[0] && left[1] < right[1]);
+}
+
+function validateReceipt(receipt, label) {
+  exactKeys(receipt, ["transaction_hash", "block_number", "block_hash", "transaction_index", "status", "calldata_hash", "logs_hash"], label);
+  if (!/^0x[0-9a-fA-F]{64}$/.test(receipt.transaction_hash) || !/^0x[0-9a-fA-F]{64}$/.test(receipt.block_hash)) {
+    throw new Error(`${label} transaction and block hashes must be bytes32`);
+  }
+  if (!Number.isSafeInteger(receipt.block_number) || receipt.block_number < 0 || !Number.isSafeInteger(receipt.transaction_index) || receipt.transaction_index < 0 || receipt.status !== 1) {
+    throw new Error(`${label} must identify a successful canonical transaction position`);
+  }
+  assertSha256(receipt.calldata_hash, `${label}.calldata_hash`);
+  assertSha256(receipt.logs_hash, `${label}.logs_hash`);
+  return receipt;
+}
+
+export function validatePreArmWitnessAdapter(ethers, manifest, problem, adapter, { artifactPath, artifactBytes } = {}) {
+  exactKeys(adapter, ["schema", "canonical_artifact", "adapter_hash"], "pre-arm witness adapter");
+  if (adapter.schema !== PRE_ARM_WITNESS_ADAPTER_SCHEMA) throw new Error(`pre-arm witness adapter schema must equal ${PRE_ARM_WITNESS_ADAPTER_SCHEMA}`);
+  const artifact = exactKeys(adapter.canonical_artifact, ["schema_version", "evidence_id", "observed_at_utc", "release_binding", "board", "artifacts", "witness", "funding", "reviewers", "attestations", "evidence_hash"], "canonical_artifact");
+  if (artifact.schema_version !== "p42-open-witness-launch/v1") throw new Error("canonical_artifact must use p42-open-witness-launch/v1 shape");
+  const board = artifact.board;
+  if (String(board.registry_problem_id) !== String(problem.problemId) || board.slug !== problem.problemSlug || !ethers.isAddress(board.problem_registry) || !ethers.isAddress(board.bounty_pool) || !ethers.isAddress(board.submission_manager) || board.problem_registry.toLowerCase() !== manifest.contracts.registry.address.toLowerCase() || board.bounty_pool.toLowerCase() !== problem.pool.toLowerCase() || board.submission_manager.toLowerCase() !== problem.submissionManager.toLowerCase()) {
+    throw new Error(`open-witness evidence board binding mismatch for problem ${problem.problemId}`);
+  }
+  const witness = artifact.witness;
+  const receipts = ["commit", "reveal", "finalize"].map((phase) => validateReceipt(witness[`${phase}_receipt`], `witness.${phase}_receipt`));
+  if (!before(evidencePosition(receipts[0]), evidencePosition(receipts[1])) || !before(evidencePosition(receipts[1]), evidencePosition(receipts[2]))) throw new Error("open-witness commit, reveal, and finalize must be strictly ordered");
+  if (new Set(receipts.map((receipt) => receipt.transaction_hash.toLowerCase())).size !== receipts.length) throw new Error("open-witness transaction receipts must not be reused");
+  if (witness.credit_atoms !== 0 || witness.funding_armed_at_commit !== false || witness.pre_frontier_atoms === witness.post_frontier_atoms) throw new Error("open witness must finalize a frontier change for zero credit before funding is armed");
+  const expectedWitnessId = sha256(canonicalJson({ registry_problem_id: board.registry_problem_id, slug: board.slug, problem_registry: board.problem_registry.toLowerCase(), submission_manager: board.submission_manager.toLowerCase(), solution_cid: witness.solution_cid, commit_transaction_hash: receipts[0].transaction_hash.toLowerCase() }));
+  if (witness.witness_id !== expectedWitnessId) throw new Error("witness.witness_id is not bound to this board, solution, and commit receipt");
+  for (const [field, artifactName] of Object.entries({ da_hash: "solution_payload", verifier_image_hash: "verifier_image", admission_matrix_hash: "admission_matrix", transcript_hash: "canonical_transcript", report_hash: "canonical_report" })) {
+    assertSha256(witness[field], `witness.${field}`);
+    if (witness[field] !== artifact.artifacts?.[artifactName]?.sha256) throw new Error(`witness.${field} does not bind artifacts.${artifactName}`);
+  }
+  if (witness.verifier_image_hash !== problem.verifierImageDigest || witness.admission_matrix_hash !== problem.admissionMatrixDigest) throw new Error("open-witness verifier or admission artifact does not match manifest pins");
+  if (artifact.funding?.arm_receipt !== null || artifact.funding?.paid_credit_atoms_before_arm !== 0 || artifact.funding?.pool_balance_before_arm_wei !== 0) throw new Error("pre-arm adapter requires null arm_receipt and zero pre-arm funding state");
+  const unsigned = { ...artifact };
+  delete unsigned.evidence_hash;
+  delete unsigned.attestations;
+  if (sha256(canonicalJson(unsigned)) !== artifact.evidence_hash) throw new Error("canonical open-witness evidence_hash mismatch");
+  if (!Array.isArray(artifact.attestations) || artifact.attestations.length !== 2 || new Set(artifact.attestations.map((item) => item.signer_role)).size !== 2 || artifact.attestations.some((item) => item.signed_hash !== artifact.evidence_hash)) {
+    throw new Error("canonical open-witness attestations must contain two distinct signatures over evidence_hash");
+  }
+  const expectedAdapterHash = sha256(canonicalJson({ schema: adapter.schema, canonical_artifact: artifact }));
+  if (adapter.adapter_hash !== expectedAdapterHash) throw new Error("pre-arm witness adapter_hash mismatch");
+  const bytes = artifactBytes ?? canonicalJson(adapter);
+  return {
+    schema: adapter.schema,
+    path: requiredString(artifactPath, "open-witness adapter path"),
+    artifactSha256: sha256(bytes),
+    adapterHash: adapter.adapter_hash,
+    evidenceId: requiredString(artifact.evidence_id, "canonical_artifact.evidence_id"),
+    evidenceHash: artifact.evidence_hash,
+    witnessId: assertSha256(witness.witness_id, "witness.witness_id"),
+    finalizeTxHash: receipts[2].transaction_hash,
+    finalizeBlockNumber: receipts[2].block_number,
+  };
+}
+
+export function buildMultiBoardFundingOperations({ ethers, chainId, manifest, adapters, interfaces }) {
+  if (manifest.status !== "governance-setup-complete" || manifest.governanceSetup?.status !== "complete") throw new Error("funding continuation requires completed governance setup");
+  if (!Array.isArray(adapters) || adapters.length !== manifest.problems.length) throw new Error("funding continuation requires exactly one adapter per board");
+  const evidenceIds = new Set();
+  const witnessIds = new Set();
+  const artifactHashes = new Set();
+  const operations = [];
+  for (const [index, problem] of manifest.problems.entries()) {
+    const { adapter, artifactPath, artifactBytes } = adapters[index];
+    const evidence = validatePreArmWitnessAdapter(ethers, manifest, problem, adapter, { artifactPath, artifactBytes });
+    for (const [set, value, label] of [[evidenceIds, evidence.evidenceId, "evidence ID"], [witnessIds, evidence.witnessId, "witness ID"], [artifactHashes, evidence.artifactSha256, "artifact"]]) {
+      if (set.has(value.toLowerCase())) throw new Error(`duplicate or cross-board ${label} reuse`);
+      set.add(value.toLowerCase());
+    }
+    const armData = interfaces.submissions.encodeFunctionData("armFunding");
+    const acceptData = interfaces.pool.encodeFunctionData("setAcceptingFunds", [true]);
+    const appendOperation = (kind, target, data, dependsOn) => {
+      const salt = ethers.keccak256(ethers.solidityPacked(["string", "uint256", "uint256", "string", "bytes32"], ["p42-multiboard-pre-arm/v1", BigInt(chainId), BigInt(problem.problemId), kind, evidence.adapterHash]));
+      const operationId = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [target, 0n, data, salt]));
+      operations.push({ problemId: problem.problemId, sequence: operations.length + 1, label: `board/${problem.problemId}/${kind}`, operationClass: "standard", status: "pending", target, value: "0", data, salt, operationId, dependsOn, requiredConfirmations: manifest.governance.threshold, delaySeconds: manifest.governance.delaySeconds, transactionBuilder: { schedule: { to: manifest.governance.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("schedule", [target, 0n, data, salt]) }, confirm: { to: manifest.governance.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("confirm", [operationId]) }, execute: { to: manifest.governance.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("execute", [target, 0n, data, salt]) } }, overrideFallback: null, executedOperationId: null, executedOperationClass: null, txHash: null, blockNumber: null, evidence });
+      return operationId;
+    };
+    const armOperationId = appendOperation("armFunding", problem.submissionManager, armData, []);
+    appendOperation("setAcceptingFunds", problem.pool, acceptData, [armOperationId]);
+  }
+  return operations;
 }

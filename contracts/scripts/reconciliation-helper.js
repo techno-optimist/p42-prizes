@@ -83,8 +83,39 @@ export async function loadManifestFromPath(path) {
   }
 }
 
+export function validateMultiBoardFundingEvidenceBindings(manifest) {
+  if (!isMultiBoardManifest(manifest)) return manifest;
+  const evidenceIds = new Set();
+  const witnessIds = new Set();
+  const artifactHashes = new Set();
+  for (const problem of manifest.problems) {
+    const evidence = problem.openWitnessEvidence;
+    const transactions = problem.fundingTransactions;
+    if (problem.openWitnessEvidencePassed !== true) {
+      if (evidence !== null || !Array.isArray(transactions) || transactions.length !== 0) {
+        throw new Error(`board ${problem.problemId} has funding action without passed open-witness evidence`);
+      }
+      continue;
+    }
+    if (!evidence || evidence.schema !== "p42-prizes/open-witness-pre-arm-adapter/v1" || !Array.isArray(transactions) || transactions.length !== 2) {
+      throw new Error(`board ${problem.problemId} has incomplete open-witness funding continuation`);
+    }
+    for (const [set, value, label] of [[evidenceIds, evidence.evidenceId, "evidence ID"], [witnessIds, evidence.witnessId, "witness ID"], [artifactHashes, evidence.artifactSha256, "artifact hash"]]) {
+      const key = String(value).toLowerCase();
+      if (set.has(key)) throw new Error(`duplicate or cross-board ${label} reuse`);
+      set.add(key);
+    }
+    const [arm, accept] = transactions;
+    if (!arm.label.endsWith("/armFunding") || arm.dependsOn.length !== 0 || !accept.label.endsWith("/setAcceptingFunds") || accept.dependsOn.length !== 1 || accept.dependsOn[0].toLowerCase() !== arm.operationId.toLowerCase()) {
+      throw new Error(`board ${problem.problemId} funding operations are not armFunding then setAcceptingFunds`);
+    }
+  }
+  return manifest;
+}
+
 export async function reconcileWithProvider({ ethers, manifest, outputPath = null }) {
   const binding = validateManifestEvidence(manifest.data);
+  validateMultiBoardFundingEvidenceBindings(manifest.data);
   const policy = manifest.data.indexer.finalityPolicy;
   const chain = await ethers.provider.getNetwork();
   if (Number(chain.chainId) !== BASE_SEPOLIA_CHAIN_ID) {

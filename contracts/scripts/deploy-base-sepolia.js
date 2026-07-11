@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { network } from "hardhat";
@@ -35,7 +35,9 @@ import {
   validateDeploymentTimestamps
 } from "./deployment-ceremony-helper.js";
 import {
+  buildMultiBoardFundingOperations,
   readMultiBoardCeremonyConfig,
+  PRE_ARM_WITNESS_ADAPTER_SCHEMA,
   validateMultiBoardAdmissionPreflight,
   validateMultiBoardDeploymentTimestamps,
 } from "./multiboard-ceremony-helper.js";
@@ -432,6 +434,9 @@ function multiBoardManifestProblem(problem, deployments) {
     explicitlyFrozen: false,
     fundingArmed: false,
     acceptingFunds: false,
+    openWitnessEvidence: null,
+    openWitnessEvidencePassed: false,
+    fundingTransactions: [],
     registerTxHash: null,
     registerBlockNumber: null,
     contracts,
@@ -1185,6 +1190,7 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
     const completed = completeSetupManifest(manifest, snapshot);
     await writeManifestAtomically(path, completed);
     console.log(`Multi-board governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
+    console.log(`Pre-arm continuation requires one ${PRE_ARM_WITNESS_ADAPTER_SCHEMA} artifact per board; no funding action was constructed.`);
   } catch (error) {
     const pending = manifest.setupTransactions
       .filter((operation) => {
@@ -1205,6 +1211,35 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
     console.log(jsonStringify({ checkedBlock, pendingOperations: pending }));
     throw error;
   }
+}
+
+async function prepareMultiBoardFundingContinuation(ethers, path, manifest) {
+  if (manifest.schema !== MULTIBOARD_MANIFEST_SCHEMA) throw new Error("pre-arm continuation requires a v2 multi-board manifest");
+  const artifactPaths = requiredEnv("P42_OPEN_WITNESS_ADAPTERS").split(",").map((value) => resolve(value.trim()));
+  if (artifactPaths.length !== manifest.problems.length) throw new Error("P42_OPEN_WITNESS_ADAPTERS must name exactly one artifact per board in manifest order");
+  const adapters = await Promise.all(artifactPaths.map(async (artifactPath) => {
+    const adapter = await readContractsArtifactJson(artifactPath);
+    const artifactBytes = await readFile(artifactPath);
+    return { adapter, artifactPath, artifactBytes };
+  }));
+  const interfaces = {};
+  for (const [key, name] of Object.entries({ timelock: CONTRACT_NAMES.timelock, pool: BOARD_CONTRACT_NAMES.pool, submissions: BOARD_CONTRACT_NAMES.submissions })) {
+    interfaces[key] = (await ethers.getContractFactory(name)).interface;
+  }
+  const operations = buildMultiBoardFundingOperations({ ethers, chainId: BASE_SEPOLIA_CHAIN_ID, manifest, adapters, interfaces });
+  const byProblem = new Map(manifest.problems.map((problem) => [problem.problemId, problem]));
+  for (const operation of operations) {
+    const problem = byProblem.get(operation.problemId);
+    if (problem.openWitnessEvidencePassed || problem.fundingTransactions.length !== 0) throw new Error(`board ${problem.problemId} already has a funding continuation`);
+    problem.openWitnessEvidence = operation.evidence;
+    problem.openWitnessEvidencePassed = true;
+    const { evidence: _evidence, problemId: _problemId, ...transaction } = operation;
+    problem.fundingTransactions.push(transaction);
+  }
+  const rebound = bindDeploymentConfigHash(manifest);
+  validateManifestEvidence(rebound);
+  await writeManifestAtomically(path, rebound);
+  console.log(jsonStringify({ status: "pre-arm-ready", boards: rebound.problems.map(({ problemId, openWitnessEvidence, fundingTransactions }) => ({ problemId, openWitnessEvidence, fundingTransactions })) }));
 }
 
 async function continueCeremony(ethers) {
@@ -1231,6 +1266,10 @@ async function continueCeremony(ethers) {
   }
   assertDeploymentConfigHash(manifest);
   if (manifest.schema === MULTIBOARD_MANIFEST_SCHEMA) {
+    if (process.env.P42_PREPARE_FUNDING === "true") {
+      await prepareMultiBoardFundingContinuation(ethers, path, manifest);
+      return;
+    }
     await continueMultiBoardCeremony(ethers, path, manifest);
     return;
   }
