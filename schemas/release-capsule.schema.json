@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/release-capsule.schema.json",
+  "title": "P42 closed production contract release capsule",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "gitCommit", "contracts", "buildInfos", "capsuleDigest"],
+  "properties": {
+    "schema": { "const": "p42-prizes/release-capsule/v1" },
+    "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "capsuleDigest": { "$ref": "#/$defs/digest" },
+    "contracts": { "type": "array", "prefixItems": [{ "$ref": "#/$defs/timelock" }, { "$ref": "#/$defs/rollover" }, { "$ref": "#/$defs/pool" }, { "$ref": "#/$defs/ledger" }, { "$ref": "#/$defs/submissions" }, { "$ref": "#/$defs/challenges" }, { "$ref": "#/$defs/registry" }], "items": false },
+    "buildInfos": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/buildInfo" } }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "hex": { "type": "string", "pattern": "^0x(?:[0-9a-f]{2})*$" },
+    "range": { "type": "object", "additionalProperties": false, "required": ["start", "length"], "properties": { "start": { "type": "integer", "minimum": 0 }, "length": { "type": "integer", "minimum": 1 } } },
+    "binding": { "type": "object", "additionalProperties": false, "required": ["astId", "name", "type", "ranges"], "properties": { "astId": { "type": "string", "pattern": "^[0-9]+$" }, "name": { "type": "string", "minLength": 1 }, "type": { "type": "string", "minLength": 1 }, "ranges": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/range" } } } },
+    "immutableReferences": { "type": "object", "propertyNames": { "pattern": "^[0-9]+$" }, "additionalProperties": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/range" } } },
+    "contract": { "type": "object", "additionalProperties": false, "required": ["name", "sourceName", "buildInfoId", "artifactDigest", "abi", "creationCode", "runtimeTemplate", "immutableReferences", "immutableBindings", "linkReferences", "deployedLinkReferences"], "properties": { "name": { "enum": ["P42MultisigTimelock", "P42RolloverVault", "P42BountyPool", "P42PayoutLedger", "P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"] }, "sourceName": { "type": "string", "pattern": "^src/P42[^/]+\\.sol$" }, "buildInfoId": { "type": "string", "minLength": 1 }, "artifactDigest": { "$ref": "#/$defs/digest" }, "abi": { "type": "array" }, "creationCode": { "$ref": "#/$defs/hex" }, "runtimeTemplate": { "$ref": "#/$defs/hex" }, "immutableReferences": { "$ref": "#/$defs/immutableReferences" }, "immutableBindings": { "type": "array", "items": { "$ref": "#/$defs/binding" } }, "linkReferences": { "type": "object", "maxProperties": 0 }, "deployedLinkReferences": { "type": "object", "maxProperties": 0 } } },
+    "timelock": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42MultisigTimelock" } } }] },
+    "rollover": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42RolloverVault" } } }] },
+    "pool": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42BountyPool" } } }] },
+    "ledger": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42PayoutLedger" } } }] },
+    "submissions": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42SubmissionManager" } } }] },
+    "challenges": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42ChallengeManager" } } }] },
+    "registry": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42ProblemRegistry" } } }] },
+    "buildInfo": { "type": "object", "additionalProperties": false, "required": ["id", "inputDigest", "outputDigest", "compiler", "settings", "input", "output"], "properties": { "id": { "type": "string", "minLength": 1 }, "inputDigest": { "$ref": "#/$defs/digest" }, "outputDigest": { "$ref": "#/$defs/digest" }, "compiler": { "type": "object", "additionalProperties": false, "required": ["version", "longVersion"], "properties": { "version": { "const": "0.8.24" }, "longVersion": { "const": "0.8.24+commit.e11b9ed9" } } }, "settings": { "type": "object", "description": "Exact compiler settings value, closed by canonical digest and equality to input.input.settings." }, "input": { "type": "object", "description": "Canonical opaque Hardhat compiler-input document; duplicate keys are rejected before construction and inputDigest closes the complete value." }, "output": { "type": "object", "description": "Canonical opaque Hardhat compiler-output document including the solc AST; duplicate keys are rejected before construction and outputDigest closes the complete value." } } }
+  }
+}
