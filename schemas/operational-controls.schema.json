@@ -116,15 +116,15 @@
     },
     "control": {
       "type": "object",
-      "required": ["control", "status", "command", "executed_at_utc", "environment", "test_artifact", "output_artifact", "owner", "control_hash", "owner_signature"],
+      "required": ["control", "status", "argv", "executed_at_utc", "environment", "test_artifact", "output_artifact", "owner", "control_hash", "owner_signature"],
       "additionalProperties": false,
       "properties": {
         "control": { "enum": ["mutation_api_auth", "distributed_rate_limit", "distributed_idempotency", "abuse_alerting", "payload_size_limit", "payload_quarantine", "malware_archive_bomb_rejection", "session_expiry", "session_revocation", "chain_contract_problem_scope_binding", "spend_cap_and_forbidden_actions"] },
         "status": { "const": "passed" },
-        "command": {
-          "type": "string",
-          "minLength": 1,
-          "not": { "pattern": "(?:TODO|todo|TBD|tbd|pending|FIXME|fixme|not implemented|fake|dummy|placeholder)" }
+        "argv": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "type": "string", "minLength": 1 }
         },
         "executed_at_utc": { "type": "string", "format": "date-time" },
         "environment": { "$ref": "#/$defs/environment" },

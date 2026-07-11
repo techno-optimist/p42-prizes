@@ -59,10 +59,28 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
                 "contract_addresses": contracts,
                 "problem_id": "erdos-minimum-overlap",
             }
-        command = f"p42-ops-test --control {name} --release {release['git_commit']}"
         executed_at = f"2026-07-08T16:{20 + index:02d}:00Z"
         started_at = f"2026-07-08T16:{19 + index:02d}:00Z"
         execution_id = f"ops-run-{index:02d}-{name}"
+        executable_artifact = fixture.artifact(
+            f"operational-{name}-executable",
+            content=f"#!/bin/sh\nexec python3 evidence/{name}-harness.py \"$@\"\n",
+            created_at_utc=started_at,
+            suffix=".sh",
+        )
+        harness_artifact = fixture.artifact(
+            f"operational-{name}-harness",
+            content=f"# executable test harness for {name}\nprint('run {name}')\n",
+            created_at_utc=started_at,
+            suffix=".py",
+        )
+        argv = [
+            executable_artifact["local_path"],
+            harness_artifact["local_path"],
+            "--control", name,
+            "--release", release["git_commit"],
+        ]
+        command_hash = sha256_bytes(canonical_json({"argv": argv}).encode("utf-8"))
         test_definition = {
             "schema_version": ARTIFACT_ENVELOPE_SCHEMA_VERSION,
             "artifact_type": "test-definition",
@@ -70,13 +88,28 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
             "control": name,
             "release_binding_hash": release_hash,
             "deployment_manifest_hash": release["deployment_manifest"]["sha256"],
-            "command_hash": sha256_bytes(command.encode("utf-8")),
+            "command_hash": command_hash,
+            "argv": argv,
+            "executable_artifact": executable_artifact,
+            "test_harness_artifact": harness_artifact,
             "assertions": [f"{name} rejects the prohibited operation"],
         }
         test_artifact = fixture.artifact(
             f"operational-{name}-test",
             content=test_definition,
             created_at_utc=started_at,
+        )
+        stdout_artifact = fixture.artifact(
+            f"operational-{name}-stdout",
+            content=f"{name}: passed\n",
+            created_at_utc=executed_at,
+            suffix=".log",
+        )
+        stderr_artifact = fixture.artifact(
+            f"operational-{name}-stderr",
+            content=f"{name}: no errors\n",
+            created_at_utc=executed_at,
+            suffix=".log",
         )
         execution_result = {
             "schema_version": ARTIFACT_ENVELOPE_SCHEMA_VERSION,
@@ -86,12 +119,14 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
             "control": name,
             "release_binding_hash": release_hash,
             "deployment_manifest_hash": release["deployment_manifest"]["sha256"],
-            "command_hash": sha256_bytes(command.encode("utf-8")),
+            "command_hash": command_hash,
             "started_at_utc": started_at,
             "completed_at_utc": executed_at,
             "exit_code": 0,
-            "stdout_hash": sha256_bytes(f"{name}: passed\n".encode()),
-            "stderr_hash": sha256_bytes(b""),
+            "stdout_hash": stdout_artifact["sha256"],
+            "stderr_hash": stderr_artifact["sha256"],
+            "stdout_artifact": stdout_artifact,
+            "stderr_artifact": stderr_artifact,
             "observations": [{
                 "name": f"{name} enforcement",
                 "expected": "prohibited operation rejected",
@@ -112,7 +147,7 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
         control = {
             "control": name,
             "status": "passed",
-            "command": command,
+            "argv": argv,
             "executed_at_utc": executed_at,
             "environment": environment,
             "test_artifact": test_artifact,
@@ -196,6 +231,25 @@ def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict
     )
 
 
+def _write_envelope(reference: dict, fixture: AttestationFixture, envelope: dict) -> None:
+    encoded = canonical_json(envelope).encode("utf-8")
+    (fixture.root / reference["local_path"]).write_bytes(encoded)
+    reference["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _resign_execution_result(envelope: dict) -> None:
+    envelope.pop("execution_result_hash", None)
+    envelope.pop("runner_signature", None)
+    attach_signatures(
+        envelope,
+        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        hash_field="execution_result_hash",
+        signatures_field="runner_signature",
+        signers=[(EXECUTION_RUNNER_ROLE, envelope["runner"], RUNNER_SIGNED_AT)],
+        singular=True,
+    )
+
+
 def test_validates_exact_controls_artifacts_release_and_signatures(tmp_path: Path) -> None:
     report, fixture, registry = valid_report(tmp_path)
     schema = json.loads((ROOT / "schemas" / "operational-controls.schema.json").read_text())
@@ -225,7 +279,7 @@ def test_rejects_reused_artifact_path_or_hash(tmp_path: Path, field: str) -> Non
     report, fixture, registry = valid_report(tmp_path)
     report["controls"][1][field] = copy.deepcopy(report["controls"][0]["test_artifact"])
     _resign(report["controls"][1])
-    with pytest.raises(OperationalControlsError, match="distinct and never reused"):
+    with pytest.raises(OperationalControlsError, match="aliases a previously used"):
         normalize(report, fixture, registry)
 
 
@@ -300,13 +354,12 @@ def test_rejects_cross_deployment_or_incomplete_session_evidence(tmp_path: Path,
         normalize(report, fixture, registry)
 
 
-@pytest.mark.parametrize("field", ["status", "command"])
-def test_rejects_failed_status_and_placeholder_command(tmp_path: Path, field: str) -> None:
+def test_rejects_failed_status(tmp_path: Path) -> None:
     report, fixture, registry = valid_report(tmp_path)
     control = report["controls"][0]
-    control[field] = "failed" if field == "status" else "TBD"
+    control["status"] = "failed"
     _resign(control)
-    with pytest.raises(OperationalControlsError, match="must be passed|placeholder"):
+    with pytest.raises(OperationalControlsError, match="must be passed"):
         normalize(report, fixture, registry)
 
 
@@ -408,20 +461,97 @@ def test_report_signature_rejects_packet_relabel_reorder_and_gate_claim_tamperin
         normalize(report, fixture, registry)
 
 
-@pytest.mark.parametrize(
-    "placeholder",
-    [
-        "run-TODO-check", "check_tbd_release", "pending-output", "FIXME command",
-        "not implemented", "fake-run", "dummy command", "placeholder script",
-    ],
-)
-def test_rejects_placeholder_substrings_in_commands(tmp_path: Path, placeholder: str) -> None:
+def test_rejects_basic_display_placeholder(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    report["evidence_id"] = "TBD"
+    with pytest.raises(OperationalControlsError, match="placeholder"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("argv0", ["STUB", "mock-runner"])
+def test_rejects_non_provenance_argv(tmp_path: Path, argv0: str) -> None:
     report, fixture, registry = valid_report(tmp_path)
     control = report["controls"][0]
-    control["command"] = placeholder
+    control["argv"][0] = argv0
     _resign(control)
     _resign_report(report)
-    with pytest.raises(OperationalControlsError, match="placeholder text"):
+    with pytest.raises(OperationalControlsError, match="test-definition|invoke the resolved executable"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("field", ["executable_artifact", "test_harness_artifact"])
+def test_rejects_argv_without_resolved_execution_artifacts(tmp_path: Path, field: str) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    test_ref = control["test_artifact"]
+    envelope = json.loads((fixture.root / test_ref["local_path"]).read_text())
+    del envelope[field]
+    _write_envelope(test_ref, fixture, envelope)
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match=field):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_rejects_missing_stream_artifact_reference(tmp_path: Path, stream: str) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    output_ref = control["output_artifact"]
+    envelope = json.loads((fixture.root / output_ref["local_path"]).read_text())
+    del envelope[f"{stream}_artifact"]
+    _resign_execution_result(envelope)
+    _write_envelope(output_ref, fixture, envelope)
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match=f"{stream}_artifact"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_rejects_stream_bytes_that_do_not_match_result_hash(tmp_path: Path, stream: str) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    output_ref = report["controls"][0]["output_artifact"]
+    envelope = json.loads((fixture.root / output_ref["local_path"]).read_text())
+    stream_ref = envelope[f"{stream}_artifact"]
+    (fixture.root / stream_ref["local_path"]).write_bytes(b"tampered stream bytes")
+    with pytest.raises(OperationalControlsError, match="does not match resolved bytes"):
+        normalize(report, fixture, registry)
+
+
+def test_rejects_cross_kind_artifact_alias_reuse(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    control = report["controls"][0]
+    output_ref = control["output_artifact"]
+    envelope = json.loads((fixture.root / output_ref["local_path"]).read_text())
+    envelope["stderr_artifact"] = copy.deepcopy(envelope["stdout_artifact"])
+    envelope["stderr_hash"] = envelope["stdout_hash"]
+    _resign_execution_result(envelope)
+    _write_envelope(output_ref, fixture, envelope)
+    _resign(control)
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="aliases a previously used"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("collision", ["identity", "public_key"])
+def test_rejects_role_identity_or_public_key_collision(tmp_path: Path, collision: str) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    owner = report["controls"][0]["owner"]
+    signer = report["report_signer"]
+    registration = next(
+        item for item in registry["registrations"]
+        if item["signer_role"] == REPORT_SIGNER_ROLE
+    )
+    if collision == "identity":
+        for field in ("name", "organization", "professional_email"):
+            signer[field] = owner[field]
+            registration["identity"][field] = owner[field]
+    else:
+        signer["public_key"] = owner["public_key"]
+        registration["public_key"] = owner["public_key"]
+    _resign_report(report)
+    with pytest.raises(OperationalControlsError, match="distinct identity fingerprints and public keys"):
         normalize(report, fixture, registry)
 
 
