@@ -39,11 +39,12 @@
       "oneOf": [
         { "type": "null" },
         { "type": "object", "additionalProperties": false,
-          "required": ["mode", "slateDigest", "capsuleDigest", "configDigest", "releaseBindingDigest", "boardSetDigest", "operationPlanDigest", "contractCount", "boardCount", "operationCount"],
+          "required": ["mode", "slateDigest", "capsuleDigest", "configDigest", "releaseBindingDigest", "finalityPolicy", "boardSetDigest", "operationPlanDigest", "contractCount", "boardCount", "operationCount"],
           "properties": {
             "mode": { "const": "production" },
             "slateDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "configDigest": { "$ref": "#/$defs/digest" },
             "releaseBindingDigest": { "$ref": "#/$defs/digest" },
+            "finalityPolicy": { "$ref": "#/$defs/productionFinalityPolicy" },
             "boardSetDigest": { "$ref": "#/$defs/digest" }, "operationPlanDigest": { "$ref": "#/$defs/digest" },
             "contractCount": { "const": 43 }, "boardCount": { "const": 10 }, "operationCount": { "const": 110 }
           }
@@ -159,6 +160,7 @@
             { "type": "integer", "minimum": 0 }
           ]
         },
+        "finalityAnchor": { "$ref": "#/$defs/finalityAnchor" },
         "checks": {
           "type": "array",
           "items": {
@@ -350,6 +352,15 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "releaseMode": { "const": "production" } } },
+          { "properties": { "status": { "const": "governance-setup-complete" } } }
+        ]
+      },
+      "then": { "properties": { "governanceSetup": { "required": ["finalityAnchor"] } } }
     }
   ],
   "$defs": {
@@ -434,6 +445,37 @@
         "maxScanRestarts": { "type": "integer", "minimum": 1 }
       }
     },
+    "productionFinalityPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "chainId", "finalizedTag", "safeTag", "l1EvidenceMethod", "rpcQuorum"],
+      "properties": {
+        "schema": { "const": "p42-prizes/base-sepolia-finality-policy/v1" }, "chainId": { "const": 84532 },
+        "finalizedTag": { "const": "finalized" }, "safeTag": { "const": "safe" },
+        "l1EvidenceMethod": { "const": "optimism_syncStatus" }, "rpcQuorum": { "const": 2 }
+      }
+    },
+    "finalityAnchor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "checkedAt", "l2", "l1", "operators", "rpcEvidence"],
+      "properties": {
+        "schema": { "const": "p42-prizes/base-sepolia-finality-anchor/v1" }, "checkedAt": { "type": "string", "format": "date-time" },
+        "l2": { "type": "object", "additionalProperties": false, "required": ["finalized", "safe"], "properties": { "finalized": { "$ref": "#/$defs/blockAnchor" }, "safe": { "$ref": "#/$defs/blockAnchor" } } },
+        "l1": { "type": "object", "additionalProperties": false, "required": ["origin", "finalized"], "properties": { "origin": { "$ref": "#/$defs/blockAnchor" }, "finalized": { "$ref": "#/$defs/blockAnchor" } } },
+        "operators": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "rpcEvidence": { "$ref": "#/$defs/rpcEvidence" }
+      }
+    },
+    "rpcEvidence": {
+      "type": "object", "additionalProperties": false,
+      "required": ["primaryOperatorId", "secondaryOperatorId", "primaryOrigin", "secondaryOrigin", "primaryHost", "secondaryHost", "primaryEndpointDigest", "secondaryEndpointDigest"],
+      "properties": {
+        "primaryOperatorId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" }, "secondaryOperatorId": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,63}$" },
+        "primaryOrigin": { "type": "string", "format": "uri" }, "secondaryOrigin": { "type": "string", "format": "uri" },
+        "primaryHost": { "type": "string", "minLength": 1 }, "secondaryHost": { "type": "string", "minLength": 1 },
+        "primaryEndpointDigest": { "$ref": "#/$defs/digest" }, "secondaryEndpointDigest": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "blockAnchor": { "type": "object", "additionalProperties": false, "required": ["number", "hash"], "properties": { "number": { "type": "integer", "minimum": 0 }, "hash": { "$ref": "#/$defs/bytes32" } } },
     "contract": {
       "type": "object",
       "additionalProperties": false,

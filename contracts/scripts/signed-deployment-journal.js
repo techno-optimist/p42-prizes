@@ -10,6 +10,36 @@ export const SIGNED_DEPLOYMENT_JOURNAL_SCHEMA = "p42-prizes/signed-deployment-jo
 const STATES = Object.freeze({ planned: 0, signed: 1, broadcast: 2, mined: 3 });
 const MAX_JOURNAL_BYTES = 16 * 1024 * 1024;
 
+export function normalizeTrustedRpcEndpoint(raw, label = "RPC endpoint") {
+  let url;
+  try { url = new URL(raw); } catch { throw new Error(`${label} must be an absolute URL`); }
+  if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") throw new Error(`${label} must use https`);
+  url.hash = "";
+  return Object.freeze({ href: url.href, origin: url.origin.toLowerCase(), host: url.hostname.toLowerCase() });
+}
+
+export function buildTrustedRpcEvidence({ primaryUrl, secondaryUrl, primaryOperatorId, secondaryOperatorId }) {
+  const operator = (value, label) => {
+    const normalized = String(value ?? "").toLowerCase();
+    if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(normalized)) throw new Error(`${label} must be a canonical operator identifier`);
+    return normalized;
+  };
+  const primary = normalizeTrustedRpcEndpoint(primaryUrl, "primary RPC");
+  const secondary = normalizeTrustedRpcEndpoint(secondaryUrl, "secondary RPC");
+  const firstOperator = operator(primaryOperatorId, "primary RPC operator ID");
+  const secondOperator = operator(secondaryOperatorId, "secondary RPC operator ID");
+  if (firstOperator === secondOperator || primary.href === secondary.href || primary.origin === secondary.origin || primary.host === secondary.host) {
+    throw new Error("RPCs must have distinct endpoint URLs, operator IDs, origins, and hosts");
+  }
+  return Object.freeze({
+    primaryOperatorId: firstOperator, secondaryOperatorId: secondOperator,
+    primaryOrigin: primary.origin, secondaryOrigin: secondary.origin,
+    primaryHost: primary.host, secondaryHost: secondary.host,
+    primaryEndpointDigest: `sha256:${createHash("sha256").update(primary.href).digest("hex")}`,
+    secondaryEndpointDigest: `sha256:${createHash("sha256").update(secondary.href).digest("hex")}`,
+  });
+}
+
 function canonical(value) {
   if (typeof value === "bigint") return JSON.stringify(value.toString());
   if (value === null || typeof value !== "object") return JSON.stringify(value);

@@ -243,7 +243,8 @@ The script writes `deployments/base-sepolia/p42-prizes.json` with:
 - explicit economic, close, DA, seed, image, and admission pins
 - deterministic standard/override setup operation IDs and dependencies
 - schedule, confirm, and execute calldata for each operation
-- the indexer's confirmation and reorg finality policy
+- the indexer's operational scan/reorg policy, which is never finality evidence
+- the immutable production Base Sepolia finality policy in release evidence
 
 Its status is `pending-governance-setup`. Every setup operation has
 `status=pending`, `txHash=null`, and `blockNumber=null`; these entries do not
@@ -279,13 +280,18 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   npm run deploy:base-sepolia
 ```
 
-Continuation is read-only on chain. It checks the deployment at the manifest's
-finalized confirmation block, including runtime hashes, immutable owners and
+Continuation is read-only on chain. It requires two operator-distinct RPCs to
+agree on Base Sepolia's canonical `finalized` and `safe` tags and on
+`optimism_syncStatus` finalized L2, L1-origin, and finalized L1 evidence. It
+checks the deployment at that finalized anchor, including runtime hashes, immutable owners and
 constructor config, governance roles, all wiring, exact registry pins,
 explicit freeze, pause targets, and one `Executed` event for every deterministic
 operation ID. If anything is incomplete it prints the remaining transaction
 builders, exits nonzero, and leaves the manifest pending. Only a complete check
-updates transaction evidence and marks `governance-setup-complete`.
+rechecks the anchor immediately before durable publication, then updates
+transaction evidence and marks `governance-setup-complete`. Head-minus-N is
+never called finalized. Missing tags/evidence, disagreement, downgrade, or
+reorg leaves the manifest pending.
 
 Source verification and reconciliation follow this completion step. A manifest
 is not Gate 1 evidence until explorer links and a green reconciliation report

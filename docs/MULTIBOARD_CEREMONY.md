@@ -121,8 +121,11 @@ transaction. It emits exactly ten timelock operations per board:
 10. Challenge-manager pause-target authorization.
 
 For ten boards this is 100 independently confirmed operations. The only
-supported continuation command is `P42_DEPLOY_MODE=continue`. It checks a
-finalized block and atomically updates the manifest only after it proves every
+supported continuation command is `P42_DEPLOY_MODE=continue`. Production
+continuation requires two named, operator-distinct RPCs to agree on canonical
+Base Sepolia `finalized`/`safe` tags and OP Stack L1-origin/finality evidence.
+The immutable policy is release evidence, not mutable indexer confirmations.
+It rechecks the anchor immediately before atomically updating the manifest only after it proves every
 runtime hash, owner, governance term, board term, registry pin, registry freeze,
 pause target, funding flag, and primary-or-override operation execution.
 
@@ -134,7 +137,7 @@ that board's state. A v2 checkpoint contains separate state, event digest, and
 reconstruction result for every registry ID. Calldata archives are separated by
 board ID so repeated submission IDs cannot collide.
 
-No portal, deployment manifest, or donation address may represent a board as
+No portal, deployment manifest, reconciliation publication, or donation address may represent a board as
 fundable until this complete ceremony, source verification, indexer
 reconciliation, and the gate-ledger requirements all exist as current evidence.
 The admission preflight is a source-level prevention control, not a substitute

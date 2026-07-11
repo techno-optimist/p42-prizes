@@ -29,6 +29,7 @@ function reportPath() {
 }
 
 requiredEnv("BASE_SEPOLIA_RPC_URL");
+requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL");
 const manifest = await loadManifestFromPath(manifestPath());
 const connection = await network.create("baseSepolia");
 
@@ -38,6 +39,10 @@ try {
     ethers: connection.ethers,
     manifest,
     outputPath: output,
+    finalityEndpoints: [
+      { operatorId: requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID"), url: requiredEnv("BASE_SEPOLIA_RPC_URL"), provider: connection.ethers.provider },
+      { operatorId: requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"), url: requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"), provider: new connection.ethers.JsonRpcProvider(requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"), 84532, { staticNetwork: true }) },
+    ],
   });
   console.log(`Wrote reconciliation report: ${output}`);
   console.log(

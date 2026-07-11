@@ -427,6 +427,10 @@ export function computeProductionReleaseEvidence(manifest, { productionSlate } =
   if (digest(slateBody) !== slateDigest || canonical(boardIdentities) !== canonical(slateIdentities)) throw new Error("production boards do not match the trusted closed release slate");
   if (manifest.releaseEvidence?.slateDigest !== slateDigest) throw new Error("production releaseEvidence.slateDigest does not match the checked-in slate");
   return {
+    finalityPolicy: {
+      schema: "p42-prizes/base-sepolia-finality-policy/v1", chainId: 84532,
+      finalizedTag: "finalized", safeTag: "safe", l1EvidenceMethod: "optimism_syncStatus", rpcQuorum: 2,
+    },
     boardSetDigest: digest(boardIdentities),
     operationPlanDigest: digest(manifest.setupTransactions.map(({ sequence, label, operationId }) => ({ sequence, label, operationId }))),
     contractCount: 43,
@@ -1083,8 +1087,8 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
     const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
     const expectedBinding = `sha256:${createHash("sha256").update(canonical(bindingPayload)).digest("hex")}`;
     if (evidence.releaseBindingDigest !== expectedBinding) throw new Error("production releaseEvidence.releaseBindingDigest mismatch");
-    for (const field of ["boardSetDigest", "operationPlanDigest", "contractCount", "boardCount", "operationCount"]) {
-      if (evidence[field] !== derived[field]) throw new Error(`production releaseEvidence.${field} mismatch`);
+    for (const field of ["finalityPolicy", "boardSetDigest", "operationPlanDigest", "contractCount", "boardCount", "operationCount"]) {
+      if (stableStringify(evidence[field]) !== stableStringify(derived[field])) throw new Error(`production releaseEvidence.${field} mismatch`);
     }
     const capsule = capsuleResolver(evidence.capsuleDigest);
     validateReleaseCapsule(capsule);

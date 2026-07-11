@@ -1741,6 +1741,10 @@ export function completeSetupManifest(manifest, snapshot) {
   completed.governanceSetup.status = "complete";
   completed.governanceSetup.completedAt = snapshot.checkedAt;
   completed.governanceSetup.completionBlock = snapshot.checkedBlock;
+  if (manifest.releaseMode === "production") {
+    if (!snapshot.finalityAnchor || snapshot.finalityAnchor.l2?.finalized?.number !== snapshot.checkedBlock) throw new Error("production completion requires a matching finalized anchor");
+    completed.governanceSetup.finalityAnchor = snapshot.finalityAnchor;
+  }
   completed.governanceSetup.checks = assessment.checks.map(({ name, ok }) => ({ name, ok }));
   completed.setupTransactions = completed.setupTransactions.map((operation) => {
     const execution = evidence.get(operation.operationId.toLowerCase());

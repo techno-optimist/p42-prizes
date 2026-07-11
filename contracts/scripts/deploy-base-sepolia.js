@@ -60,6 +60,7 @@ import {
 } from "./strict-json-helper.js";
 import {
   buildDeploymentNoncePlan,
+  buildTrustedRpcEvidence,
   persistSignedDeployment,
   readSignedDeploymentJournal,
   reconcileSignedDeployment,
@@ -67,6 +68,7 @@ import {
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
+import { BASE_SEPOLIA_FINALITY_POLICY, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const CONTRACT_NAMES = Object.freeze({
@@ -190,31 +192,11 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
   }
   const secondaryRpcUrl = requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL");
   const primaryRpcUrl = requiredEnv("BASE_SEPOLIA_RPC_URL");
-  const operatorId = (name) => {
-    const value = requiredEnv(name).toLowerCase();
-    if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(value)) throw new Error(`${name} must be a canonical operator identifier`);
-    return value;
-  };
-  const primaryOperatorId = operatorId("P42_PRIMARY_RPC_OPERATOR_ID");
-  const secondaryOperatorId = operatorId("P42_SECONDARY_RPC_OPERATOR_ID");
-  const normalizeRpc = (raw, label) => {
-    const url = new URL(raw);
-    if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") throw new Error(`${label} must use https`);
-    url.hash = "";
-    return { href: url.href, origin: url.origin.toLowerCase(), host: url.hostname.toLowerCase() };
-  };
-  const primaryEndpoint = normalizeRpc(primaryRpcUrl, "primary deployment RPC");
-  const secondaryEndpoint = normalizeRpc(secondaryRpcUrl, "secondary deployment RPC");
-  if (primaryOperatorId === secondaryOperatorId || primaryEndpoint.origin === secondaryEndpoint.origin || primaryEndpoint.host === secondaryEndpoint.host) {
-    throw new Error("deployment RPCs must have distinct operator IDs, origins, and hosts");
-  }
-  const rpcEvidence = {
-    primaryOperatorId, secondaryOperatorId,
-    primaryOrigin: primaryEndpoint.origin, secondaryOrigin: secondaryEndpoint.origin,
-    primaryHost: primaryEndpoint.host, secondaryHost: secondaryEndpoint.host,
-    primaryEndpointDigest: `sha256:${createHash("sha256").update(primaryEndpoint.href).digest("hex")}`,
-    secondaryEndpointDigest: `sha256:${createHash("sha256").update(secondaryEndpoint.href).digest("hex")}`,
-  };
+  const rpcEvidence = buildTrustedRpcEvidence({
+    primaryUrl: primaryRpcUrl, secondaryUrl: secondaryRpcUrl,
+    primaryOperatorId: requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID"),
+    secondaryOperatorId: requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"),
+  });
   const secondaryProvider = new ethers.JsonRpcProvider(secondaryRpcUrl, Number(BASE_SEPOLIA_CHAIN_ID), { staticNetwork: true });
   const secondaryNetwork = await secondaryProvider.getNetwork();
   if (secondaryNetwork.chainId !== BASE_SEPOLIA_CHAIN_ID) throw new Error("secondary deployment RPC chain drift");
@@ -661,6 +643,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     releaseMode,
     releaseEvidence: release ? {
       mode: "production", slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest,
+      finalityPolicy: BASE_SEPOLIA_FINALITY_POLICY,
       configDigest: reservationIdentity.configDigest,
       releaseBindingDigest: productionReleaseBindingDigest({ deploymentCommit, configDigest: reservationIdentity.configDigest, slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest }),
       boardSetDigest: `sha256:${"0".repeat(64)}`, operationPlanDigest: `sha256:${"0".repeat(64)}`,
@@ -1303,14 +1286,22 @@ async function collectContinuationSnapshot(ethers, manifest, contracts, checkedB
 }
 
 async function continueMultiBoardCeremony(ethers, path, manifest) {
-  const head = await ethers.provider.getBlockNumber();
-  const checkedBlock = head - manifest.indexer.finalityPolicy.confirmations;
+  if (manifest.releaseMode !== "production") throw new Error("continuation is fixture-only unless explicit production release evidence is present");
+  const secondary = new ethers.JsonRpcProvider(requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"), Number(BASE_SEPOLIA_CHAIN_ID), { staticNetwork: true });
+  const endpoints = [
+    { operatorId: requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID"), url: requiredEnv("BASE_SEPOLIA_RPC_URL"), provider: ethers.provider },
+    { operatorId: requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"), url: requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"), provider: secondary },
+  ];
+  const anchor = await collectFinalityAnchor({ endpoints, policy: manifest.releaseEvidence?.finalityPolicy });
+  const checkedBlock = anchor.l2.finalized.number;
   if (checkedBlock < manifest.indexer.startBlock) {
     throw new Error(`Finalized block ${checkedBlock} is before deployment block ${manifest.indexer.startBlock}`);
   }
   const contracts = await readMultiBoardContractSet(ethers, manifest);
   const snapshot = await collectMultiBoardContinuationSnapshot(ethers, manifest, contracts, checkedBlock);
   try {
+    await recheckFinalityAnchor({ endpoints, policy: manifest.releaseEvidence.finalityPolicy, previous: anchor });
+    snapshot.finalityAnchor = anchor;
     const completed = completeSetupManifest(manifest, snapshot);
     await writeManifestAtomically(path, completed);
     console.log(`Multi-board governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
@@ -1363,8 +1354,7 @@ async function continueCeremony(ethers) {
     await continueMultiBoardCeremony(ethers, path, manifest);
     return;
   }
-  const head = await ethers.provider.getBlockNumber();
-  const checkedBlock = head - manifest.indexer.finalityPolicy.confirmations;
+  throw new Error("legacy single-board continuation cannot satisfy the finalized-anchor production gate");
   if (checkedBlock < manifest.indexer.startBlock) {
     throw new Error(`Finalized block ${checkedBlock} is before deployment block ${manifest.indexer.startBlock}`);
   }

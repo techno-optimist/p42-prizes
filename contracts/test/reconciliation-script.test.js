@@ -10,7 +10,8 @@ import {
   STALE_BASE_SEPOLIA_RELEASE_GUARDS,
   validateManifestEvidence,
 } from "../../agent/indexer.mjs";
-import { reconcileWithProvider } from "../scripts/reconciliation-helper.js";
+import { assertReconciliationPublishable, reconcileWithProvider } from "../scripts/reconciliation-helper.js";
+import { validateMonotonicFinalityAnchor } from "../scripts/finality-anchor.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../..");
@@ -102,5 +103,41 @@ describe("Base Sepolia reconciliation evidence gate", () => {
     assert.equal(checkpoint.reconstruction.complete, false);
     assert.equal(checkpoint.reconstruction.lifecycleSnapshotComplete, false);
     assert.equal(checkpoint.reconstruction.ok, false);
+  });
+
+  it("refuses publication before finalized governance completion or any failed reconstruction", () => {
+    const anchor = { schema: "p42-prizes/base-sepolia-finality-anchor/v1", l2: { finalized: { number: 100, hash: `0x${"1".repeat(64)}` }, safe: { number: 105, hash: `0x${"2".repeat(64)}` } }, l1: { origin: { number: 80, hash: `0x${"3".repeat(64)}` }, finalized: { number: 90, hash: `0x${"4".repeat(64)}` } } };
+    const manifest = { releaseMode: "production", status: "governance-setup-complete", governanceSetup: { status: "complete", completionBlock: 100, finalityAnchor: anchor } };
+    const report = { range: { toBlock: 100, toBlockHash: anchor.l2.finalized.hash }, reconstruction: { ok: true, complete: true }, boards: [{ reconstruction: { ok: true, complete: true } }] };
+    assert.doesNotThrow(() => assertReconciliationPublishable(manifest, report, anchor));
+    for (const [name, mutate, pattern] of [
+      ["pending manifest", (m) => { m.status = "pending-governance-setup"; }, /completed governance/],
+      ["pending setup", (m) => { m.governanceSetup.status = "pending"; }, /completed governance/],
+      ["missing anchor", (m) => { delete m.governanceSetup.finalityAnchor; }, /valid governance finality anchor/],
+      ["wrong anchor block", (m) => { m.governanceSetup.finalityAnchor.l2.finalized.number = 99; }, /valid governance finality anchor/],
+      ["report before anchor", (_, r) => { r.range.toBlock = 99; }, /fresh finalized anchor/],
+      ["report hash mismatch", (_, r) => { r.range.toBlockHash = `0x${"9".repeat(64)}`; }, /fresh finalized anchor/],
+      ["global failed", (_, r) => { r.reconstruction.ok = false; }, /globally complete/],
+      ["global incomplete", (_, r) => { r.reconstruction.complete = false; }, /globally complete/],
+      ["board failed", (_, r) => { r.boards[0].reconstruction.ok = false; }, /failed board/],
+      ["board incomplete", (_, r) => { r.boards[0].reconstruction.complete = false; }, /failed board/],
+    ]) {
+      const changedManifest = structuredClone(manifest); const changedReport = structuredClone(report);
+      mutate(changedManifest, changedReport);
+      assert.throws(() => assertReconciliationPublishable(changedManifest, changedReport, anchor), pattern, name);
+    }
+  });
+
+  it("rejects fresh reconciliation anchors behind persisted safe or L1 dimensions", async () => {
+    const hash = (digit) => `0x${digit.repeat(64)}`;
+    const persisted = { l2: { finalized: { number: 100, hash: hash("1") }, safe: { number: 105, hash: hash("2") } }, l1: { origin: { number: 80, hash: hash("3") }, finalized: { number: 90, hash: hash("4") } } };
+    for (const [name, mutate, pattern] of [
+      ["safe regression", (a) => { a.l2.safe.number = 104; }, /l2\.safe anchor downgraded/],
+      ["L1 origin regression", (a) => { a.l1.origin.number = 79; }, /l1\.origin anchor downgraded/],
+      ["L1 finalized regression", (a) => { a.l1.finalized.number = 89; }, /l1\.finalized anchor downgraded/],
+    ]) {
+      const fresh = structuredClone(persisted); mutate(fresh);
+      await assert.rejects(() => validateMonotonicFinalityAnchor({ previous: persisted, current: fresh }), pattern, name);
+    }
   });
 });
