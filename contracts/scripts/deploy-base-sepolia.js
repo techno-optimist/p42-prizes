@@ -54,6 +54,7 @@ import {
   reconstructExpectedRuntime,
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
+import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
 import {
   readContractsArtifactJson,
   readContractsConfigJson,
@@ -480,6 +481,7 @@ async function deployCeremony(ethers) {
     sourceVerification: {
       status: "pending",
       requiredExplorer: "https://sepolia.basescan.org",
+      dossierDigest: null,
       contracts: Object.fromEntries(Object.keys(CONTRACT_NAMES).map((key) => [key, null]))
     },
     indexer: {
@@ -689,6 +691,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     sourceVerification: {
       status: "pending",
       requiredExplorer: "https://sepolia.basescan.org",
+      dossierDigest: null,
       contracts: {
         timelock: null,
         registry: null,
@@ -1305,9 +1308,16 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
   try {
     await recheckFinalityAnchor({ endpoints, policy: manifest.releaseEvidence.finalityPolicy, previous: anchor });
     snapshot.finalityAnchor = anchor;
+    const explorerDossier = readExplorerDossierExact(requiredEnv("P42_EXPLORER_DOSSIER_PATH"), requiredEnv("P42_EXPLORER_DOSSIER_SHA256"));
+    const capsule = await readContractsArtifactJson(requiredEnv("P42_RELEASE_CAPSULE"));
+    const trustedOperators = requiredEnv("P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES").split(",");
+    const explorerBoundManifest = { ...manifest, sourceVerification: { ...manifest.sourceVerification, status: "verified", dossierDigest: explorerDossier.dossierDigest } };
+    if (explorerDossier.finalizedAt !== completionBlockEvidence.timestamp) throw new Error("explorer dossier validation instant must equal the finalized governance completion block timestamp");
+    validateExplorerVerificationDossier(explorerDossier, { manifest: explorerBoundManifest, capsule, trustedOperators, now: completionBlockEvidence.timestamp * 1000 });
+    await liveRequeryExplorerVerification({ dossier: explorerDossier, manifest: explorerBoundManifest, capsule, provider: ethers.provider, apiKey: requiredEnv("ETHERSCAN_API_KEY"), trustedOperators, now: completionBlockEvidence.timestamp * 1000 });
     const roleAcceptancePath = requiredEnv("P42_ROLE_ACCEPTANCE_PACKET");
     const roleAcceptancePacket = await readContractsArtifactJson(roleAcceptancePath);
-    const completed = completeSetupManifest(manifest, snapshot, { ethers, roleAcceptancePacket });
+    const completed = completeSetupManifest(explorerBoundManifest, snapshot, { ethers, roleAcceptancePacket });
     await writeManifestAtomically(path, completed);
     console.log(`Multi-board governance setup verified through finalized block ${checkedBlock} and marked complete: ${path}`);
   } catch (error) {

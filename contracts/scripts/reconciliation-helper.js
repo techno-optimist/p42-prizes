@@ -19,6 +19,8 @@ import { readContractsArtifactJson } from "./strict-json-helper.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
 import { collectFinalityAnchor, recheckFinalityAnchor, validateMonotonicFinalityAnchor } from "./finality-anchor.js";
 import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance-helper.js";
+import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
+import { readReleaseBuildJson } from "./release-capsule-helper.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
 const PRIVATE_FILE_MODE = 0o600;
@@ -91,6 +93,7 @@ export function assertReconciliationPublishable(manifest, report, freshAnchor) {
   if (manifest?.releaseMode !== "production" || manifest?.status !== "governance-setup-complete" || manifest?.governanceSetup?.status !== "complete") {
     throw new Error("production reconciliation publication requires completed governance setup");
   }
+  if (manifest.sourceVerification?.status !== "verified" || !/^sha256:[0-9a-f]{64}$/.test(manifest.sourceVerification?.dossierDigest ?? "")) throw new Error("production reconciliation publication requires verified explorer dossier evidence");
   const anchor = manifest.governanceSetup.finalityAnchor;
   if (!anchor || anchor.schema !== "p42-prizes/base-sepolia-finality-anchor/v1" || anchor.l2?.finalized?.number !== manifest.governanceSetup.completionBlock) {
     throw new Error("production reconciliation publication requires a valid governance finality anchor");
@@ -116,7 +119,13 @@ export function assertReconciliationPublishable(manifest, report, freshAnchor) {
 }
 
 export async function reconcileWithProvider({ ethers, manifest, outputPath = null, finalityEndpoints = null }) {
-  const binding = validateManifestEvidence(manifest.data, await loadProductionValidationContext(manifest.data, { provider: ethers.provider }));
+  const validationContext = await loadProductionValidationContext(manifest.data, { provider: ethers.provider });
+  const binding = validateManifestEvidence(manifest.data, validationContext);
+  const explorerDossier = readExplorerDossierExact(process.env.P42_EXPLORER_DOSSIER_PATH, process.env.P42_EXPLORER_DOSSIER_SHA256);
+  const capsule = await readReleaseBuildJson(process.env.P42_RELEASE_CAPSULE);
+  const trustedOperators = String(process.env.P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES ?? "").split(",");
+  validateExplorerVerificationDossier(explorerDossier, { manifest: manifest.data, capsule, trustedOperators });
+  await liveRequeryExplorerVerification({ dossier: explorerDossier, manifest: manifest.data, capsule, provider: ethers.provider, apiKey: process.env.ETHERSCAN_API_KEY, trustedOperators });
   const policy = manifest.data.indexer.finalityPolicy;
   const chain = await ethers.provider.getNetwork();
   if (Number(chain.chainId) !== BASE_SEPOLIA_CHAIN_ID) {

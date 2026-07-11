@@ -140,6 +140,22 @@ board ID so repeated submission IDs cannot collide.
 No portal, deployment manifest, reconciliation publication, or donation address may represent a board as
 fundable until this complete ceremony, source verification, indexer
 reconciliation, and the gate-ledger requirements all exist as current evidence.
+
+Production governance completion also requires the closed explorer-verification
+dossier (`schemas/explorer-verification-dossier.schema.json`). It must cover the
+43 deployment addresses exactly once in canonical manifest order, bind the
+release capsule, compiler input/settings, constructor arguments, and runtime
+hashes, and contain fresh response digests from BaseScan's official API and the
+independent Sourcify path. Operators load it through a no-follow regular-file
+read using `P42_EXPLORER_DOSSIER_PATH`; offline consumers must independently pin
+the exact file bytes with `P42_EXPLORER_DOSSIER_SHA256`. A URL, screenshot, or
+caller-authored `verified` value is not evidence.
+
+The v2 dossier stores each provider's exact bounded raw bytes and is attested by
+two configured verification operators using EIP-712. Completion uses the
+finalized block timestamp as the validation instant, rejects any future fetch
+time or expiry anomaly, and live re-queries Etherscan V2 plus Sourcify V2 before
+the manifest may transition to `governance-setup-complete`.
 The admission preflight is a source-level prevention control, not a substitute
 for independently attested hosts, immutable image publication, external math
 review, audit, legal approval, or a real testnet rehearsal.

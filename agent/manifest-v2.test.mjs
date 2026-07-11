@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -17,7 +18,8 @@ import {
   validatePreBroadcastManifestPlan,
 } from "./indexer.mjs";
 import { validateSolverManifest } from "./solver-manifest.mjs";
-import { createReleaseCapsule, immutableValuesFromConstructor, reconstructExpectedRuntime } from "../contracts/scripts/release-capsule-helper.js";
+import { canonicalDigest, createReleaseCapsule, immutableValuesFromConstructor, reconstructExpectedRuntime } from "../contracts/scripts/release-capsule-helper.js";
+import { createExplorerVerificationDossier, explorerContractEntries, parseEtherscanV2Raw, parseSourcifyV2Raw, readExplorerDossierExact, validateExplorerVerificationDossier } from "../contracts/scripts/explorer-verification-helper.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
@@ -137,6 +139,7 @@ function v2Manifest() {
   manifest.sourceVerification = {
     status: "pending",
     requiredExplorer: manifest.sourceVerification.requiredExplorer,
+    dossierDigest: null,
     contracts: {
       timelock: null,
       registry: null,
@@ -299,7 +302,7 @@ function productionManifest(capsule) {
     if (entry.constructorArgs.length !== types.length) entry.constructorArgs = types.map((type) => type.endsWith("[]") ? [] : type === "address" ? address(1) : type === "bool" ? false : "0");
     const initCodeHash = ethers.keccak256(ethers.concat([artifact.creationCode, ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs)]));
     const runtimeHash = ethers.keccak256(reconstructExpectedRuntime(artifact, immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: timestamp })));
-    Object.assign(entry, { capsuleArtifactDigest: artifact.artifactDigest, initCodeHash, deploymentBlockTimestamp: timestamp, blockTimestampEvidence: { timestamp, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: `0x${"a".repeat(64)}`, secondaryBlockHash: `0x${"a".repeat(64)}` }, runtimeCodeHash: runtimeHash, deployedCodeHash: runtimeHash, expectedRuntimeCodeHash: runtimeHash, primaryObservedRuntimeCodeHash: runtimeHash, secondaryObservedRuntimeCodeHash: runtimeHash });
+    Object.assign(entry, { capsuleArtifactDigest: artifact.artifactDigest, initCodeHash, constructorArgsHash: ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs)), deploymentBlockTimestamp: timestamp, blockTimestampEvidence: { timestamp, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: `0x${"a".repeat(64)}`, secondaryBlockHash: `0x${"a".repeat(64)}` }, runtimeCodeHash: runtimeHash, deployedCodeHash: runtimeHash, expectedRuntimeCodeHash: runtimeHash, primaryObservedRuntimeCodeHash: runtimeHash, secondaryObservedRuntimeCodeHash: runtimeHash });
   };
   Object.values(manifest.contracts).forEach(bindContract);
   manifest.problems.flatMap(({ contracts }) => Object.values(contracts)).forEach(bindContract);
@@ -345,6 +348,56 @@ test("production indexer validation recomputes exact-ten release evidence and ru
     rebind(manifest);
     assert.throws(() => validateManifestEvidence(manifest, optionsFor(slate)), /finalityAnchor/, "production completion without anchor must fail schema validation");
   }
+});
+
+test("explorer dossier verifies all 43 addresses through mocked official and independent APIs", async () => {
+  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40) });
+  const { manifest } = productionManifest(capsule);
+  const artifacts = new Map(capsule.contracts.map((entry) => [entry.name, entry]));
+  const infos = new Map(capsule.buildInfos.map((entry) => [entry.id, entry]));
+  const runtimes = new Map(); const fixtures = new Map();
+  for (const { entry } of explorerContractEntries(manifest)) {
+    const artifact = artifacts.get(entry.name), info = infos.get(artifact.buildInfoId);
+    const runtime = reconstructExpectedRuntime(artifact, immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: entry.deploymentBlockTimestamp }));
+    const types = (artifact.abi.find((item) => item.type === "constructor")?.inputs ?? []).map((input) => input.type);
+    runtimes.set(entry.address.toLowerCase(), runtime);
+    fixtures.set(entry.address.toLowerCase(), {
+      etherscan: { status: "1", message: "OK", result: [{ SourceCode: JSON.stringify({ language: "Solidity", sources: info.input.input.sources, settings: info.settings }), CompilerVersion: `v${info.compiler.longVersion}`, ConstructorArguments: ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs).slice(2), ContractName: artifact.name }] },
+      sourcify: { match: "exact_match", creationMatch: "exact_match", runtimeMatch: "exact_match", chainId: "84532", address: entry.address, verifiedAt: "2026-07-11T12:00:00Z", matchId: "3266227", sources: info.input.input.sources, compilation: { language: "Solidity", compiler: "solc", compilerVersion: `v${info.compiler.longVersion}`, compilerSettings: info.settings, name: artifact.name, fullyQualifiedName: `${artifact.sourceName}:${artifact.name}` }, stdJsonInput: { language: "Solidity", sources: info.input.input.sources, settings: info.settings }, creationBytecode: { recompiledBytecode: artifact.creationCode, onchainBytecode: `${artifact.creationCode}${ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs).slice(2)}`, transformationValues: { constructorArguments: ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs) } }, runtimeBytecode: { recompiledBytecode: runtime, onchainBytecode: runtime, immutableReferences: artifact.immutableReferences } },
+    });
+  }
+  const instant = Date.UTC(2026, 6, 11, 12, 0); const now = () => new Date(instant).toISOString();
+  const fetchImpl = async (url) => { const parsed = new URL(url), addressValue = parsed.pathname.includes("/contract/") ? parsed.pathname.split("/").at(-1) : parsed.searchParams.get("address"); const value = parsed.host === "api.etherscan.io" ? fixtures.get(addressValue.toLowerCase()).etherscan : fixtures.get(addressValue.toLowerCase()).sourcify; const bytes = Buffer.from(JSON.stringify(value)); return { ok: true, status: 200, arrayBuffer: async () => bytes }; };
+  const operators = [ethers.Wallet.createRandom(), ethers.Wallet.createRandom()]; const trustedOperators = operators.map(({ address }) => address);
+  const dossier = await createExplorerVerificationDossier({ manifest, capsule, provider: { getCode: async (contractAddress) => runtimes.get(contractAddress.toLowerCase()) }, fetchImpl, apiKey: "fixture-key", operatorSigners: operators, operatorNonces: [`0x${"1".repeat(64)}`, `0x${"2".repeat(64)}`], finalizedAt: instant / 1000, expiresAt: instant / 1000 + 3600, now });
+  assert.equal(dossier.contracts.length, 43); assert.equal(new Set(dossier.contracts.map(({ address }) => address.toLowerCase())).size, 43);
+  assert.equal(validateExplorerVerificationDossier(dossier, { manifest, capsule, trustedOperators, now: instant + 60_000 }), dossier);
+  const forged = structuredClone(dossier); forged.attestations[0].signature = forged.attestations[1].signature; { const { dossierDigest: _, ...body } = forged; forged.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(forged, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /forged/);
+  const missing = structuredClone(dossier); missing.attestations.pop(); { const { dossierDigest: _, ...body } = missing; missing.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(missing, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /two unique/);
+  const domain = { name: "P42 Explorer Verification", version: "2", chainId: 84532 }; const types = { Verification: [{ name: "evidenceDigest", type: "bytes32" }, { name: "releaseBindingDigest", type: "bytes32" }, { name: "nonce", type: "bytes32" }, { name: "expiresAt", type: "uint64" }, { name: "finalizedAt", type: "uint64" }] };
+  const sign = (wallet, nonce) => wallet.signTypedData(domain, types, { evidenceDigest: `0x${dossier.evidenceDigest.slice(7)}`, releaseBindingDigest: `0x${dossier.releaseBindingDigest.slice(7)}`, nonce, expiresAt: dossier.expiresAt, finalizedAt: dossier.finalizedAt });
+  const twiceA = structuredClone(dossier);
+  const duplicateSignerNonces = [`0x${"3".repeat(64)}`, `0x${"4".repeat(64)}`];
+  twiceA.attestations = await Promise.all(duplicateSignerNonces.map(async (nonce) => ({
+    operator: operators[0].address.toLowerCase(),
+    nonce,
+    signature: await sign(operators[0], nonce),
+  })));
+  { const { dossierDigest: _, ...body } = twiceA; twiceA.dossierDigest = canonicalDigest(body); }
+  assert.throws(() => validateExplorerVerificationDossier(twiceA, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /signer set/);
+  const operatorC = ethers.Wallet.createRandom(); const extra = structuredClone(dossier); extra.attestations[1] = { operator: operatorC.address.toLowerCase(), nonce: `0x${"3".repeat(64)}`, signature: await sign(operatorC, `0x${"3".repeat(64)}`) }; { const { dossierDigest: _, ...body } = extra; extra.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(extra, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /forged/);
+  const reordered = structuredClone(dossier); reordered.operatorRoster.reverse(); { const { dossierDigest: _, ...body } = reordered; reordered.dossierDigest = canonicalDigest(body); } assert.throws(() => validateExplorerVerificationDossier(reordered, { manifest, capsule, trustedOperators, now: instant + 60_000 }), /allowlist mismatch/);
+  assert.throws(() => validateExplorerVerificationDossier(dossier, { manifest, capsule, trustedOperators, now: instant - 60_000, futureSkewMs: 0 }), /future/);
+  const raw = dossier.contracts[0].providers[0]; const arbitrary = { ...raw, responseBase64: Buffer.from(`response:${dossier.contracts[0].address}`).toString("base64") }; arbitrary.responseDigest = `sha256:${createHash("sha256").update(Buffer.from(arbitrary.responseBase64, "base64")).digest("hex")}`; assert.throws(() => parseEtherscanV2Raw(arbitrary, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /JSON|verified/);
+  const selfAuthored = { ...raw, metadata: { status: "verified" } }; assert.throws(() => parseEtherscanV2Raw(selfAuthored, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /keys mismatch/);
+  assert.throws(() => parseEtherscanV2Raw({ ...raw, url: raw.url.replace("api.etherscan.io", "example.com"), host: "example.com" }, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /endpoint shape/);
+  const sourcifyRaw = dossier.contracts[0].providers[1]; const badNested = structuredClone(fixtures.get(dossier.contracts[0].address.toLowerCase()).sourcify); badNested.runtimeBytecode = runtimes.get(dossier.contracts[0].address.toLowerCase()); const badBytes = Buffer.from(JSON.stringify(badNested)); assert.throws(() => parseSourcifyV2Raw({ ...sourcifyRaw, responseBase64: badBytes.toString("base64"), responseDigest: `sha256:${createHash("sha256").update(badBytes).digest("hex")}` }, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /shape/);
+  const invented = structuredClone(fixtures.get(dossier.contracts[0].address.toLowerCase()).sourcify); delete invented.sources; delete invented.stdJsonInput; invented.compilation.sources = { "Invented.sol": { content: "contract Invented {}" } }; const inventedBytes = Buffer.from(JSON.stringify(invented)); assert.throws(() => parseSourcifyV2Raw({ ...sourcifyRaw, responseBase64: inventedBytes.toString("base64"), responseDigest: `sha256:${createHash("sha256").update(inventedBytes).digest("hex")}` }, { now: instant, maxAgeMs: 0, futureSkewMs: 0 }), /shape/);
+
+  const directory = mkdtempSync(resolve(tmpdir(), "p42-explorer-")); const path = resolve(directory, "dossier.json"); const bytes = Buffer.from(`${JSON.stringify(dossier)}\n`); writeFileSync(path, bytes); const exactDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+  assert.equal(readExplorerDossierExact(path, exactDigest).dossierDigest, dossier.dossierDigest);
+  assert.throws(() => readExplorerDossierExact(path, digest("f")), /exact-bytes digest mismatch/);
+  symlinkSync(path, resolve(directory, "linked.json")); assert.throws(() => readExplorerDossierExact(resolve(directory, "linked.json"), exactDigest), /ELOOP|regular file/);
 });
 
 test("fixture validation is test-only and rejects production identity collisions", async () => {

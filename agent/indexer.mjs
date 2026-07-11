@@ -1063,7 +1063,7 @@ function validateExactSetupOperations(manifest) {
   }
 }
 
-export function validateManifestEvidence(manifest, { allowFixture = false, productionSlate, capsuleResolver, blockTimestampResolver } = {}) {
+export function validateManifestEvidence(manifest, { allowFixture = false, productionSlate, capsuleResolver, blockTimestampResolver, explorerDossierResolver } = {}) {
   rejectKnownStaleRelease(manifest);
   validateDeploymentManifestSchema(manifest);
   if (![MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2].includes(manifest?.schema)) {
@@ -1114,6 +1114,9 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
       if (entry.expectedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.runtimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.deployedCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.primaryObservedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.secondaryObservedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase()) throw new Error(`${descriptor.path} reconstructed expected and all observed runtime hashes must match`);
     }
     if (manifest.status === "governance-setup-complete") {
+      if (typeof explorerDossierResolver !== "function" || manifest.sourceVerification?.status !== "verified") throw new Error("completed production manifest requires a trusted verified explorer dossier");
+      const explorerDossier = explorerDossierResolver(manifest.sourceVerification.dossierDigest, { manifest, capsule });
+      if (!explorerDossier || explorerDossier.dossierDigest !== manifest.sourceVerification.dossierDigest) throw new Error("trusted explorer dossier digest mismatch");
       const setup = manifest.governanceSetup;
       const completionEvidence = setup.completionBlockEvidence;
       if (!completionEvidence || completionEvidence.blockNumber !== setup.completionBlock || completionEvidence.timestamp !== setup.completionBlockTimestamp || String(completionEvidence.blockHash).toLowerCase() !== String(setup.completionBlockHash).toLowerCase() || completionEvidence.primaryBlockHash.toLowerCase() !== completionEvidence.blockHash.toLowerCase() || completionEvidence.secondaryBlockHash.toLowerCase() !== completionEvidence.blockHash.toLowerCase() || completionEvidence.primaryOperatorId === completionEvidence.secondaryOperatorId || setup.completionBlock !== setup.finalityAnchor?.l2?.finalized?.number || String(setup.completionBlockHash).toLowerCase() !== String(setup.finalityAnchor?.l2?.finalized?.hash).toLowerCase()) throw new Error("governance completion block evidence is not dual-RPC canonical and finalized");
@@ -1232,6 +1235,7 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
     deploymentConfigHash: computed,
     chainId: manifest.network.chainId,
     startBlock: manifest.indexer.startBlock,
+    explorerDossierDigest: manifest.sourceVerification?.dossierDigest ?? null,
     contracts: sharedContracts,
     ...(isMultiBoardManifest(manifest) ? {
       boards: Object.fromEntries(manifest.problems.map((problem) => [
