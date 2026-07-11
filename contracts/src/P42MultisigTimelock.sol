@@ -5,9 +5,10 @@ pragma solidity ^0.8.24;
 /// Standard operations are delayed and may be cancelled once per calldata
 /// family by the guardian. Recovery-class operations require a higher signer
 /// threshold and a longer delay, and cannot be guardian-vetoed. Governance
-/// recovery calls use the base threshold so the configured signer-loss
-/// tolerance remains executable, but retain the longer override delay. Every
-/// operation expires. A configured pauser may only send a literal `true` pause call.
+/// signer replacement can use the base threshold only with an independent
+/// guardian approval, so the configured signer-loss tolerance remains
+/// executable without letting a base signer quorum seize the override quorum.
+/// Every operation expires. A configured pauser may only send a literal `true` pause call.
 contract P42MultisigTimelock {
     error NotSigner();
     error NotGuardian();
@@ -22,6 +23,8 @@ contract P42MultisigTimelock {
     error NotPending();
     error AlreadyConfirmed();
     error AlreadyCancelConfirmed();
+    error AlreadyRecoveryApproved();
+    error NotSignerRecovery();
     error NotReady(uint64 eta);
     error OpExpired(uint64 expiresAt);
     error NotEnoughConfirmations(uint256 have, uint256 need);
@@ -64,11 +67,13 @@ contract P42MultisigTimelock {
     uint256 public immutable overrideDelay;
     uint256 public immutable operationGracePeriod;
     address public guardian;
+    uint256 public governanceEpoch;
 
     mapping(bytes32 => Op) public ops;
     mapping(bytes32 => mapping(address => bool)) public confirmedBy;
     mapping(bytes32 => mapping(address => bool)) public cancelConfirmedBy;
     mapping(bytes32 => bool) public guardianCancelledFamily;
+    mapping(bytes32 => uint256) public guardianApprovedRecoveryEpoch;
     mapping(address => bool) public isPauser;
     mapping(address => bool) public pauseTargetAllowed;
 
@@ -85,6 +90,7 @@ contract P42MultisigTimelock {
     event OverrideScheduled(bytes32 indexed id, bytes32 indexed family, uint64 eta, uint64 expiresAt);
     event Confirmed(bytes32 indexed id, address indexed signer, uint32 confirmations);
     event CancelConfirmed(bytes32 indexed id, address indexed signer, uint32 confirmations);
+    event SignerRecoveryApproved(bytes32 indexed id, address indexed guardian, uint256 governanceEpoch);
     event Executed(bytes32 indexed id, address indexed target, uint256 value);
     event Cancelled(bytes32 indexed id, address indexed by);
     event Expired(bytes32 indexed id);
@@ -190,6 +196,20 @@ contract P42MultisigTimelock {
         emit Confirmed(id, msg.sender, op.confirmations);
     }
 
+    /// @notice Independently authorizes a base-quorum replacement of one lost
+    /// signer. Other governance mutations always require the full override
+    /// signer threshold.
+    function approveSignerRecovery(address target, bytes calldata data, bytes32 salt) external {
+        if (msg.sender != guardian) revert NotGuardian();
+        bytes32 id = opId(target, 0, data, salt);
+        Op storage op = _pending(id);
+        if (!op.overrideClass || !_isSignerRecovery(target, data)) revert NotSignerRecovery();
+        uint256 approvalEpoch = governanceEpoch + 1;
+        if (guardianApprovedRecoveryEpoch[id] == approvalEpoch) revert AlreadyRecoveryApproved();
+        guardianApprovedRecoveryEpoch[id] = approvalEpoch;
+        emit SignerRecoveryApproved(id, msg.sender, governanceEpoch);
+    }
+
     /// @notice Guardian cancellation is deliberately unavailable for recovery
     /// operations and is one-shot per target+calldata family for standard ops.
     function cancel(bytes32 id) external {
@@ -237,7 +257,7 @@ contract P42MultisigTimelock {
         if (block.timestamp > op.expiresAt) revert OpExpired(op.expiresAt);
         if (block.timestamp < op.eta) revert NotReady(op.eta);
         uint256 have = currentConfirmations(id);
-        uint256 need = op.overrideClass ? _overrideExecutionThreshold(target, data) : threshold;
+        uint256 need = op.overrideClass ? _overrideExecutionThreshold(id, target, data) : threshold;
         if (have < need) revert NotEnoughConfirmations(have, need);
 
         op.state = State.Executed;
@@ -259,6 +279,7 @@ contract P42MultisigTimelock {
         _requireValidThreshold(newThreshold, newCount);
         isSigner[signer] = true;
         signers.push(signer);
+        governanceEpoch += 1;
         if (newThreshold != threshold) {
             threshold = newThreshold;
             emit ThresholdSet(newThreshold, _overrideThreshold(newThreshold, newCount));
@@ -274,6 +295,7 @@ contract P42MultisigTimelock {
         if (newThreshold < minimumMajority) newThreshold = minimumMajority;
         _requireValidThreshold(newThreshold, newCount);
         _removeSignerAt(_signerIndex(signer));
+        governanceEpoch += 1;
         if (newThreshold != threshold) {
             threshold = newThreshold;
             emit ThresholdSet(newThreshold, _overrideThreshold(newThreshold, newCount));
@@ -287,18 +309,21 @@ contract P42MultisigTimelock {
         isSigner[oldSigner] = false;
         isSigner[newSigner] = true;
         signers[index] = newSigner;
+        governanceEpoch += 1;
         emit SignerSwapped(oldSigner, newSigner);
     }
 
     function setThreshold(uint256 threshold_) external onlySelfOverride {
         _requireValidThreshold(threshold_, signers.length);
         threshold = threshold_;
+        governanceEpoch += 1;
         emit ThresholdSet(threshold_, _overrideThreshold(threshold_, signers.length));
     }
 
     function setGuardian(address guardian_) external onlySelfOverride {
         if (guardian_ == address(0)) revert BadGuardian();
         guardian = guardian_;
+        governanceEpoch += 1;
         emit GuardianSet(guardian_);
     }
 
@@ -389,15 +414,19 @@ contract P42MultisigTimelock {
         return thresholdPlusOne > twoThirds ? thresholdPlusOne : twoThirds;
     }
 
-    function _overrideExecutionThreshold(address target, bytes calldata data) private view returns (uint256) {
-        if (target == address(this) && data.length >= 4) {
-            bytes4 selector = bytes4(data[:4]);
-            if (
-                selector == ADD_SIGNER_SELECTOR || selector == REMOVE_SIGNER_SELECTOR
-                    || selector == SWAP_SIGNER_SELECTOR || selector == SET_THRESHOLD_SELECTOR
-                    || selector == SET_GUARDIAN_SELECTOR
-            ) return threshold;
-        }
+    function _overrideExecutionThreshold(bytes32 id, address target, bytes calldata data)
+        private
+        view
+        returns (uint256)
+    {
+        if (
+            _isSignerRecovery(target, data)
+                && guardianApprovedRecoveryEpoch[id] == governanceEpoch + 1
+        ) return threshold;
         return overrideThreshold();
+    }
+
+    function _isSignerRecovery(address target, bytes calldata data) private view returns (bool) {
+        return target == address(this) && data.length >= 4 && bytes4(data[:4]) == SWAP_SIGNER_SELECTOR;
     }
 }

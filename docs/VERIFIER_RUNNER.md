@@ -102,7 +102,18 @@ not memory pressure. Queue, plan, and transcript schemas live at
 - `max_running = 1` until every launch problem has measured peak RSS.
 - FIFO by chain event order, not API arrival order.
 - Every running job has a lease with an expiry timestamp.
-- Stale leases block new starts until a supervisor reaps or marks the job failed.
+- A worker reaps expired leases under the queue lock before selecting work;
+  attempt caps prevent a poison job from cycling forever.
+- The configured lease must exceed the manifest-enforced verifier wall limit by
+  at least 30 seconds. A stable random fencing token and background heartbeat
+  renew that lease throughout preprocessing and verifier execution. Losing the
+  heartbeat kills the verifier process group; a replacement claim receives a
+  different token, so overlapping workers cannot both commit. A separate
+  OS-released execution-slot lock covers preprocessing plus execution, ensuring
+  a replacement worker cannot consume verifier resources until the stale
+  process exits even at the exact lease-expiry boundary. Queue, transcript, and
+  execution-lock roots must be owned by the runner UID and may not be group- or
+  world-writable; opens are pinned to no-follow directory file descriptors.
 - Swap pressure blocks new starts; running verifiers should be killed before the
   box begins sustained swapping.
 - The worker starts a queued job only when
@@ -199,7 +210,11 @@ Additional job fields used by the worker:
 
 When the runner starts a job, it writes `status: "running"` and a lease expiry.
 On completion it writes `status: "succeeded"` or `status: "failed"` plus
-`transcript_path` and `transcript_hash`. Invalid submissions are failed, but the
+`transcript_path` and `transcript_hash`. Transcripts are published atomically as
+fsynced, content-addressed immutable files before the queue lease fence commits
+their exact path/hash. A stale worker can leave an unreferenced artifact but
+cannot overwrite the winning worker's transcript; consumers reject any artifact
+whose self-hash differs from the hash recorded in the queue. Invalid submissions are failed, but the
 transcript still records the reproduced `VerdictReport` and report hash whenever
 the verifier emitted canonical JSON. Low-memory or full-runner decisions return a
 `p42-runner-plan/v1` `wait` response and leave the queue untouched.

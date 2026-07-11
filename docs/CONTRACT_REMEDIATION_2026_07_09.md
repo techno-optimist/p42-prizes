@@ -12,9 +12,10 @@ remain open.
 - Resolver decisions are rejected at or after the active dispute deadline, and
   their full fraud delay must fit inside the immutable cumulative settlement
   horizon.
-- Delayed, non-vetoable signer/threshold/guardian recovery uses the base
-  threshold, preserving the configured signer-loss tolerance. Ordinary
-  override targets retain the higher threshold.
+- Governance mutations require the higher override threshold. A delayed swap
+  of one lost signer may use the base threshold only with independent guardian
+  approval for that exact operation, preventing a base quorum from replacing
+  the remaining honest signer and manufacturing override control.
 - Commits have an immutable reveal expiry. Exact duplicate CIDs are assigned to
   the lowest submission ID that reveals before expiry, so a later copied reveal
   cannot take credit even when it is mined first.

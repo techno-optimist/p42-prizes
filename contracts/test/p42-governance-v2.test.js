@@ -115,8 +115,8 @@ describe("P42 governance v2 invariants", () => {
     assert.equal((await timelock.ops(expiring)).state, 4n);
   });
 
-  it("rotates a lost signer only through a confirmed override operation", async () => {
-    const { a, b, c, d, timelock } = await fixture();
+  it("requires guardian approval when a base quorum rotates a lost signer", async () => {
+    const { a, b, c, d, guardian, timelock } = await fixture();
     const target = await timelock.getAddress();
     const data = timelock.interface.encodeFunctionData("swapSigner", [c.address, d.address]);
     const salt = ethers.id("rotate");
@@ -127,7 +127,71 @@ describe("P42 governance v2 invariants", () => {
     assert.equal(await timelock.overrideThreshold(), 3n);
     // c is the lost key and never schedules or confirms this operation.
     await advance(2n * DELAY + 1n);
+    await expectCustomError(
+      timelock.execute(target, 0, data, salt), timelock, "NotEnoughConfirmations",
+    );
+    await timelock.connect(guardian).approveSignerRecovery(target, data, salt);
     await timelock.execute(target, 0, data, salt);
+    assert.equal(await timelock.isSigner(c.address), false);
+    assert.equal(await timelock.isSigner(d.address), true);
+  });
+
+  it("does not let a base quorum seize the override quorum through signer rotation", async () => {
+    const { a, b, c, d, guardian, outsider, timelock } = await fixture();
+    const target = await timelock.getAddress();
+    const data = timelock.interface.encodeFunctionData("swapSigner", [c.address, d.address]);
+    const salt = ethers.id("hostile-rotation");
+    await timelock.connect(a).scheduleOverride(target, 0, data, salt);
+    const id = await timelock.opId(target, 0, data, salt);
+    await timelock.connect(b).confirm(id);
+    await advance(2n * DELAY + 1n);
+    await expectCustomError(
+      timelock.execute(target, 0, data, salt), timelock, "NotEnoughConfirmations",
+    );
+    await expectCustomError(
+      timelock.connect(outsider).approveSignerRecovery(target, data, salt), timelock, "NotGuardian",
+    );
+    const thresholdData = timelock.interface.encodeFunctionData("setThreshold", [2]);
+    const thresholdSalt = ethers.id("hostile-threshold");
+    await timelock.connect(a).scheduleOverride(target, 0, thresholdData, thresholdSalt);
+    await expectCustomError(
+      timelock.connect(guardian).approveSignerRecovery(target, thresholdData, thresholdSalt),
+      timelock,
+      "NotSignerRecovery",
+    );
+    assert.equal(await timelock.isSigner(c.address), true);
+    assert.equal(await timelock.isSigner(d.address), false);
+  });
+
+  it("invalidates a signer-recovery approval when governance rotates", async () => {
+    const { a, b, c, d, guardian, outsider: nextGuardian, timelock } = await fixture();
+    const target = await timelock.getAddress();
+    const recovery = timelock.interface.encodeFunctionData("swapSigner", [c.address, d.address]);
+    const recoverySalt = ethers.id("stale-guardian-recovery");
+    await timelock.connect(a).scheduleOverride(target, 0, recovery, recoverySalt);
+    const recoveryId = await timelock.opId(target, 0, recovery, recoverySalt);
+    await timelock.connect(b).confirm(recoveryId);
+    await timelock.connect(guardian).approveSignerRecovery(target, recovery, recoverySalt);
+
+    const rotate = timelock.interface.encodeFunctionData("setGuardian", [nextGuardian.address]);
+    const rotateSalt = ethers.id("rotate-before-recovery");
+    await timelock.connect(a).scheduleOverride(target, 0, rotate, rotateSalt);
+    const rotateId = await timelock.opId(target, 0, rotate, rotateSalt);
+    await timelock.connect(b).confirm(rotateId);
+    await timelock.connect(c).confirm(rotateId);
+    await advance(2n * DELAY + 1n);
+    await timelock.execute(target, 0, rotate, rotateSalt);
+
+    await expectCustomError(
+      timelock.execute(target, 0, recovery, recoverySalt), timelock, "NotEnoughConfirmations",
+    );
+    await timelock.connect(nextGuardian).approveSignerRecovery(target, recovery, recoverySalt);
+    await expectCustomError(
+      timelock.connect(nextGuardian).approveSignerRecovery(target, recovery, recoverySalt),
+      timelock,
+      "AlreadyRecoveryApproved",
+    );
+    await timelock.execute(target, 0, recovery, recoverySalt);
     assert.equal(await timelock.isSigner(c.address), false);
     assert.equal(await timelock.isSigner(d.address), true);
   });

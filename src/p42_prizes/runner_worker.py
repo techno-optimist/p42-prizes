@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-import hashlib
+import fcntl
 import json
 import math
 import os
@@ -9,8 +11,10 @@ from pathlib import Path
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
+import threading
 import time
 from typing import Any, Callable, Mapping
 
@@ -34,6 +38,7 @@ from p42_prizes.runner_queue import (
     MemorySnapshot,
     RunnerPolicy,
     locked_runner_queue,
+    open_secure_runner_directory,
     plan_runner_queue,
     reap_stale_leases,
 )
@@ -61,10 +66,36 @@ RETRYABLE_DA_FAILURE_KINDS = frozenset(
 # transiently unavailable submission from monopolizing the single verifier
 # while preserving FIFO priority as soon as the backoff expires.
 RETRY_BACKOFF_SECONDS = 15
+LEASE_RUNTIME_MARGIN_SECONDS = 30
+MAX_STORAGE_RETRIES = 3
 
 
 class RunnerWorkerError(ValueError):
     """Raised when the verifier runner cannot process a queued job safely."""
+
+
+class LeaseHeartbeatError(RunnerWorkerError):
+    """Raised when a worker can no longer prove exclusive queue ownership."""
+
+
+def _load_job_manifest(job: Mapping[str, Any]) -> dict[str, Any]:
+    problem_value = job.get("problem")
+    if not isinstance(problem_value, str) or not problem_value:
+        raise RunnerWorkerError("job.problem must be a non-empty string")
+    try:
+        return load_manifest(Path(problem_value).resolve())
+    except (OSError, TypeError, ValueError) as exc:
+        raise RunnerWorkerError("could not load verifier manifest before leasing") from exc
+
+
+def _minimum_lease_seconds(manifest: Mapping[str, Any]) -> int:
+    try:
+        wall_seconds = manifest["verifier"]["max_compute"]["wall_seconds"]
+    except (KeyError, TypeError) as exc:
+        raise RunnerWorkerError("could not load verifier wall-clock limit before leasing") from exc
+    if not isinstance(wall_seconds, int) or isinstance(wall_seconds, bool) or wall_seconds <= 0:
+        raise RunnerWorkerError("verifier wall-clock limit must be a positive integer")
+    return max(60, wall_seconds + LEASE_RUNTIME_MARGIN_SECONDS)
 
 
 def run_next_job_once(
@@ -82,6 +113,7 @@ def run_next_job_once(
     effective_policy = policy or RunnerPolicy()
     queue_file = Path(queue_path)
     transcript_root = Path(transcript_dir)
+    job_manifest: dict[str, Any] | None = None
 
     with locked_runner_queue(queue_file) as queue:
         # A worker that died mid-job leaves an expired lease behind. Reap it
@@ -95,26 +127,61 @@ def run_next_job_once(
             return plan
         job_id = plan["selected_job_id"]
         job = _find_job(queue, job_id)
+        job_manifest = _load_job_manifest(job)
+        minimum_lease = _minimum_lease_seconds(job_manifest)
+        if lease_seconds < minimum_lease:
+            raise RunnerWorkerError(
+                f"lease_seconds must be at least {minimum_lease} for this verifier runtime"
+            )
         job["status"] = "running"
         job["started_at_utc"] = _format_utc(now)
         job["lease_expires_at_utc"] = _format_utc(now + timedelta(seconds=lease_seconds))
+        job["lease_token"] = "sha256:" + os.urandom(32).hex()
 
     transcript_root.mkdir(parents=True, exist_ok=True)
-    # The exact lease we wrote at claim time is our fencing token (audit F7): if
-    # our lease expires mid-run and another worker reaps + reclaims this job, its
-    # lease_expires_at_utc changes, so we can detect that our result is stale and
-    # must be dropped rather than clobbering the other worker's outcome.
-    claim_lease = job["lease_expires_at_utc"]
+    # A stable random token fences this claim while a heartbeat extends its
+    # expiry through preprocessing and verifier execution. A replacement claim
+    # gets a new token, so this worker can never commit after losing ownership.
+    claim_token = job["lease_token"]
+    heartbeat_stop = threading.Event()
+    heartbeat_failed = threading.Event()
+    heartbeat = threading.Thread(
+        target=_runner_lease_heartbeat,
+        kwargs={
+            "queue_file": queue_file,
+            "job_id": job["job_id"],
+            "lease_token": claim_token,
+            "lease_seconds": lease_seconds,
+            "stop": heartbeat_stop,
+            "failed": heartbeat_failed,
+        },
+        name=f"p42-lease-{_safe_job_id(job['job_id'])}",
+        daemon=True,
+    )
+    heartbeat.start()
+    assert job_manifest is not None
     try:
-        transcript = _run_job(job, transcript_root, policy=effective_policy)
+        with _exclusive_execution_slot(queue_file):
+            transcript = _run_job(
+                job,
+                transcript_root,
+                policy=effective_policy,
+                manifest=job_manifest,
+                lease_failed=heartbeat_failed,
+            )
         run_error = None
-    except RunnerWorkerError as exc:
+        retryable_storage_error = False
+    except (OSError, RunnerWorkerError) as exc:
         # A malformed / un-runnable job (bad problem path, invalid da_evidence,
         # etc.) must fail CLOSED here — not propagate out, crash the drain loop,
         # and leave a live lease wedging the queue for a full lease period
         # (audit F7 minor).
         transcript = None
         run_error = str(exc)
+        retryable_storage_error = isinstance(exc, OSError)
+    finally:
+        heartbeat_stop.set()
+        heartbeat.join(timeout=5)
 
     finished_at = _parse_or_now(None)
     with locked_runner_queue(queue_file) as queue:
@@ -127,14 +194,29 @@ def run_next_job_once(
         if (
             fresh is None
             or fresh.get("status") != "running"
-            or fresh.get("lease_expires_at_utc") != claim_lease
+            or fresh.get("lease_token") != claim_token
         ):
             return {"reason": "lease_lost_result_dropped", "selected_job_id": job["job_id"]}
         if run_error is not None:
-            fresh["status"] = "failed"
-            fresh["failure_reason"] = f"job_run_error: {run_error}"
             fresh["finished_at_utc"] = _format_utc(finished_at)
             fresh.pop("lease_expires_at_utc", None)
+            fresh.pop("lease_token", None)
+            retries = fresh.get("storage_retry_count")
+            retry_count = retries + 1 if isinstance(retries, int) and retries >= 0 else 1
+            if retryable_storage_error and retry_count <= MAX_STORAGE_RETRIES:
+                fresh["status"] = "queued"
+                fresh["storage_retry_count"] = retry_count
+                fresh["last_retry_reason"] = f"transcript_storage_error: {run_error}"
+                fresh["retry_not_before_utc"] = _format_utc(
+                    finished_at + timedelta(seconds=RETRY_BACKOFF_SECONDS)
+                )
+                fresh.pop("failure_reason", None)
+                return {
+                    "reason": "transcript_storage_retry_queued",
+                    "selected_job_id": job["job_id"],
+                }
+            fresh["status"] = "failed"
+            fresh["failure_reason"] = f"job_run_error: {run_error}"
             return {"reason": f"job_run_error: {run_error}", "selected_job_id": job["job_id"]}
         fresh["finished_at_utc"] = _format_utc(finished_at)
         fresh["transcript_path"] = transcript["transcript_path"]
@@ -164,7 +246,73 @@ def run_next_job_once(
             if isinstance(candidate, dict) and isinstance(candidate.get("candidate_hash"), str):
                 fresh["challenge_candidate_hash"] = candidate["candidate_hash"]
         fresh.pop("lease_expires_at_utc", None)
+        fresh.pop("lease_token", None)
     return transcript
+
+
+@contextmanager
+def _exclusive_execution_slot(queue_file: Path):
+    """Serialize all verifier work sharing one durable queue.
+
+    The OS releases this lock when a worker dies. A lease-replacement worker
+    may claim and heartbeat while waiting, but cannot overlap preprocessing or
+    verifier execution with the stale process that still owns the slot.
+    """
+
+    directory_fd = open_secure_runner_directory(queue_file.parent)
+    lock_name = f"{queue_file.name}.execution.lock"
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_name, flags, 0o600, dir_fd=directory_fd)
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise RunnerWorkerError("runner execution lock must be a regular file")
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        current = os.stat(lock_name, dir_fd=directory_fd, follow_symlinks=False)
+        if current.st_dev != metadata.st_dev or current.st_ino != metadata.st_ino:
+            raise RunnerWorkerError("runner execution lock changed during acquisition")
+        yield
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+            os.close(directory_fd)
+
+
+def _runner_lease_heartbeat(
+    *,
+    queue_file: Path,
+    job_id: str,
+    lease_token: str,
+    lease_seconds: int,
+    stop: threading.Event,
+    failed: threading.Event,
+) -> None:
+    interval = max(1.0, min(30.0, lease_seconds / 3))
+    while not stop.wait(interval):
+        try:
+            with locked_runner_queue(queue_file) as queue:
+                fresh = _find_job_or_none(queue, job_id)
+                if (
+                    fresh is None
+                    or fresh.get("status") != "running"
+                    or fresh.get("lease_token") != lease_token
+                ):
+                    failed.set()
+                    return
+                fresh["lease_expires_at_utc"] = _format_utc(
+                    datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+                )
+        except (OSError, ValueError):
+            # Exclusive ownership cannot be proven while the queue store is
+            # unavailable. Cancel the verifier before its lease can overlap a
+            # replacement worker.
+            failed.set()
+            return
 
 
 def drain_runner_queue(
@@ -321,7 +469,14 @@ def _find_job_or_none(queue: Mapping[str, Any], job_id: str | None) -> dict[str,
     return None
 
 
-def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPolicy) -> dict[str, Any]:
+def _run_job(
+    job: Mapping[str, Any],
+    transcript_dir: Path,
+    *,
+    policy: RunnerPolicy,
+    manifest: Mapping[str, Any] | None = None,
+    lease_failed: threading.Event | None = None,
+) -> dict[str, Any]:
     job_id = _require_string(job, "job_id")
     problem = Path(_require_string(job, "problem")).resolve()
     chain_claim = job.get("chain_claim")
@@ -334,6 +489,7 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
             raise RunnerWorkerError(
                 "chain job problem path must match the canonical source checkout for its problem_id"
             )
+    pinned_manifest = copy.deepcopy(manifest) if manifest is not None else load_manifest(problem)
     solution_value = job.get("solution")
     if not isinstance(solution_value, str) or not solution_value:
         if _is_explicit_retryable_da_failure(job.get("da_failure")):
@@ -394,6 +550,8 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
     else:
         if solution is None:
             raise RunnerWorkerError("job.solution is required when DA validation succeeds")
+        if lease_failed is not None and lease_failed.is_set():
+            raise LeaseHeartbeatError("runner lease heartbeat was lost before verifier start")
         verifier = _run_verifier_for_transcript(
             problem,
             solution,
@@ -404,6 +562,8 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
             sandbox_cpus=policy.sandbox_cpus,
             job_id=job_id,
             require_manifest_identity=chain_claim is not None,
+            manifest=pinned_manifest,
+            cancellation_event=lease_failed,
         )
 
     if chain_claim is not None:
@@ -413,6 +573,7 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
             problem=problem,
             verifier=verifier,
             da_result=da_result,
+            manifest=pinned_manifest,
         )
         verifier["chain_claim"] = dict(chain_claim)
         verifier["claim_comparison"] = comparison
@@ -430,10 +591,72 @@ def _run_job(job: Mapping[str, Any], transcript_dir: Path, *, policy: RunnerPoli
         "verifier": verifier,
     }
     transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
-    transcript_path = transcript_dir / f"{_transcript_basename(job_id)}.json"
-    transcript_path.write_text(canonical_json(transcript) + "\n", encoding="utf-8")
+    transcript_path = _publish_transcript(transcript_dir, transcript)
     transcript["transcript_path"] = str(transcript_path)
     return transcript
+
+
+def _publish_transcript(transcript_dir: Path, transcript: Mapping[str, Any]) -> Path:
+    transcript_hash = transcript.get("transcript_hash")
+    if not isinstance(transcript_hash, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", transcript_hash):
+        raise RunnerWorkerError("transcript_hash must be a canonical SHA-256 digest")
+    unhashed = {key: value for key, value in transcript.items() if key != "transcript_hash"}
+    if transcript_hash != sha256_bytes(canonical_json(unhashed).encode("utf-8")):
+        raise RunnerWorkerError("transcript_hash does not match canonical transcript bytes")
+
+    payload = (canonical_json(dict(transcript)) + "\n").encode("utf-8")
+    destination_name = f"{transcript_hash.removeprefix('sha256:')}.json"
+    temporary_name = f".{destination_name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    directory_fd = open_secure_runner_directory(transcript_dir)
+    try:
+        opened_directory = os.fstat(directory_fd)
+        if not stat.S_ISDIR(opened_directory.st_mode):
+            raise RunnerWorkerError("transcript directory must be a real directory")
+        descriptor = os.open(temporary_name, flags, 0o600, dir_fd=directory_fd)
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(payload)
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(
+                temporary_name,
+                destination_name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError:
+            read_flags = os.O_RDONLY
+            if hasattr(os, "O_NOFOLLOW"):
+                read_flags |= os.O_NOFOLLOW
+            try:
+                existing_fd = os.open(destination_name, read_flags, dir_fd=directory_fd)
+            except OSError as exc:
+                raise RunnerWorkerError(
+                    "existing content-addressed transcript is not a readable regular file"
+                ) from exc
+            with os.fdopen(existing_fd, "rb") as existing:
+                metadata = os.fstat(existing.fileno())
+                existing_payload = existing.read(len(payload) + 1)
+            if not stat.S_ISREG(metadata.st_mode) or existing_payload != payload:
+                raise RunnerWorkerError("existing content-addressed transcript does not match its digest")
+        os.fsync(directory_fd)
+        current_directory = os.stat(transcript_dir, follow_symlinks=False)
+        if (
+            current_directory.st_dev != opened_directory.st_dev
+            or current_directory.st_ino != opened_directory.st_ino
+        ):
+            raise RunnerWorkerError("transcript directory changed during publication")
+    finally:
+        try:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        os.close(directory_fd)
+    return transcript_dir / destination_name
 
 
 def _chain_da_result(
@@ -567,10 +790,11 @@ def _adjudicate_chain_claim(
     problem: Path,
     verifier: Mapping[str, Any],
     da_result: Mapping[str, Any] | None,
+    manifest: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     claim = _normalized_chain_claim(chain_claim)
-    manifest = load_manifest(problem)
-    expected_problem_id = manifest.get("problem_id")
+    pinned_manifest = dict(manifest) if manifest is not None else load_manifest(problem)
+    expected_problem_id = pinned_manifest.get("problem_id")
     if not isinstance(expected_problem_id, str) or not expected_problem_id:
         raise RunnerWorkerError("problem.yaml problem_id must be a non-empty string")
     claimed_atoms = int(claim["claimed_score_atoms"])
@@ -615,7 +839,7 @@ def _adjudicate_chain_claim(
     elif verifier.get("valid") is True and isinstance(verifier.get("report"), Mapping):
         report = verifier["report"]
         try:
-            direction = _problem_direction(problem)
+            direction = _problem_direction(pinned_manifest)
             score = report.get("score")
             computed_atoms = _chain_score_atoms(score, direction)
         except (KeyError, TypeError, ValueError) as exc:
@@ -727,8 +951,7 @@ def _manifest_sandbox_image_ref(manifest: Mapping[str, Any]) -> str:
         raise RunnerWorkerError(f"sandbox requires a pullable immutable verifier image: {exc}") from exc
 
 
-def _problem_direction(problem: Path) -> str:
-    manifest = load_manifest(problem)
+def _problem_direction(manifest: Mapping[str, Any]) -> str:
     direction = manifest.get("objective", {}).get("direction")
     if direction not in {"minimize", "maximize"}:
         raise RunnerWorkerError("problem objective.direction must be minimize or maximize")
@@ -812,6 +1035,8 @@ def _run_verifier_for_transcript(
     sandbox_cpus: float = 1.0,
     job_id: str = "job",
     require_manifest_identity: bool = False,
+    manifest: Mapping[str, Any] | None = None,
+    cancellation_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     wall_seconds = 30
@@ -819,11 +1044,11 @@ def _run_verifier_for_transcript(
     verifier_image: str | None = None
     verifier_command: str | None = None
     try:
-        manifest = load_manifest(problem)
-        command_template = manifest["verifier"]["command"]
+        pinned_manifest = copy.deepcopy(manifest) if manifest is not None else load_manifest(problem)
+        command_template = pinned_manifest["verifier"]["command"]
         verifier_command = command_template
-        verifier_image = manifest["verifier"].get("image")
-        wall_seconds = int(manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
+        verifier_image = pinned_manifest["verifier"].get("image")
+        wall_seconds = int(pinned_manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
         if sandbox == "docker":
             # Untrusted payload MUST run in a container; refuse to run it on the
             # host if no runtime is available (fail closed).
@@ -841,7 +1066,7 @@ def _run_verifier_for_transcript(
                 }
             container_name = f"p42-verify-{_safe_job_id(job_id)}"
             command = build_sandbox_command(
-                image=_manifest_sandbox_image_ref(manifest),
+                image=_manifest_sandbox_image_ref(pinned_manifest),
                 host_solution=solution,
                 verifier_command_template=command_template,
                 memory_mb=max(1, int(sandbox_memory_mb)),
@@ -864,7 +1089,22 @@ def _run_verifier_for_transcript(
             env=env,
             wall_seconds=wall_seconds,
             preexec_fn=preexec,
+            cancellation_event=cancellation_event,
         )
+    except LeaseHeartbeatError as exc:
+        if container_name is not None:
+            force_remove_container(container_name)
+        return {
+            "ok": False,
+            "valid": False,
+            "error": str(exc),
+            "retryable": True,
+            "failure_kind": "lease_heartbeat_lost",
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "sandbox": sandbox,
+            "verifier_image": verifier_image,
+            "verifier_command": verifier_command,
+        }
     except subprocess.TimeoutExpired:
         if container_name is not None:
             force_remove_container(container_name)
@@ -941,7 +1181,7 @@ def _run_verifier_for_transcript(
             result["error"] = str(exc)
             return result
         try:
-            validate_report_identity(manifest, report)
+            validate_report_identity(pinned_manifest, report)
         except AdmissionError as exc:
             result["integrity_failure"] = "report_identity_mismatch"
             result["error"] = str(exc)
@@ -972,6 +1212,7 @@ def _run_isolated_verifier(
     env: Mapping[str, str],
     wall_seconds: int,
     preexec_fn: Any,
+    cancellation_event: threading.Event | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an untrusted verifier in its own session/process group.
 
@@ -990,13 +1231,22 @@ def _run_isolated_verifier(
         start_new_session=True,
         preexec_fn=preexec_fn,
     )
-    try:
-        stdout, stderr = process.communicate(timeout=wall_seconds)
-    except subprocess.TimeoutExpired:
-        _kill_process_group(process)
-        # Reap the killed group so no pipe or zombie survives the timeout.
-        process.communicate()
-        raise
+    deadline = time.monotonic() + wall_seconds
+    while True:
+        if cancellation_event is not None and cancellation_event.is_set():
+            _kill_process_group(process)
+            process.communicate()
+            raise LeaseHeartbeatError("runner lease heartbeat was lost during verifier execution")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _kill_process_group(process)
+            process.communicate()
+            raise subprocess.TimeoutExpired(command, wall_seconds)
+        try:
+            stdout, stderr = process.communicate(timeout=min(1.0, remaining))
+            break
+        except subprocess.TimeoutExpired:
+            continue
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
@@ -1039,17 +1289,6 @@ def _looks_like_sandbox_unavailable(stderr_tail: str) -> bool:
 
 def _safe_job_id(job_id: str) -> str:
     return "".join(char if char.isalnum() or char in ("-", "_", ".") else "_" for char in job_id)
-
-
-def _transcript_basename(job_id: str) -> str:
-    """Collision-free transcript filename for an arbitrary job_id.
-
-    _safe_job_id is LOSSY ('a/b' and 'a b' both collapse to 'a_b'), so using it
-    for the filename lets one job's transcript silently overwrite another's.
-    Hash the raw job_id instead; the human-readable id stays inside the
-    transcript's job_id field.
-    """
-    return hashlib.sha256(job_id.encode("utf-8")).hexdigest()
 
 
 def _parse_or_now(value: str | None) -> datetime:

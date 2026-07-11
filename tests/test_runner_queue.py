@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from p42_prizes.runner_queue import (
     DEFAULT_MAX_JOB_ATTEMPTS,
     MemorySnapshot,
+    RunnerQueueError,
+    locked_runner_queue,
     plan_runner_queue,
     reap_stale_leases,
 )
@@ -10,6 +16,15 @@ from p42_prizes.runner_queue import (
 
 MEMORY = MemorySnapshot(total_mb=131072, available_mb=64000, swap_used_mb=0)
 NOW = "2026-07-08T12:00:00Z"
+
+
+def test_locked_queue_rejects_group_or_world_writable_state(tmp_path) -> None:
+    queue_path = tmp_path / "queue.json"
+    queue_path.write_text(json.dumps(_queue([])), encoding="utf-8")
+    queue_path.chmod(0o666)
+    with pytest.raises(RunnerQueueError, match="not group/world-writable"):
+        with locked_runner_queue(queue_path):
+            pytest.fail("permissive queue state must not be accepted")
 
 
 def _queue(jobs: list[dict]) -> dict:

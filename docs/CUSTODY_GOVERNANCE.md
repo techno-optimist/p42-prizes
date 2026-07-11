@@ -57,9 +57,11 @@ signer. Agents may prepare the payload but may not generate human signatures.
   treasury, resolver, and target permissions from an independent RPC.
 - Schedule an ordinary operation; prove threshold and delay enforcement.
 - Exercise an ordinary override; prove its longer delay, higher signer
-  threshold, and lack of guardian veto. Separately lose the configured number
-  of signer keys and prove the surviving base threshold can execute delayed,
-  non-vetoable signer/threshold/guardian recovery without a lost-key signature.
+  threshold, and lack of guardian veto. Separately lose one signer key and
+  prove the surviving base threshold cannot rotate it alone, then prove the
+  independent guardian can approve only that exact delayed signer swap. After
+  restoring the signer set, prove threshold and guardian changes still require
+  the full override quorum.
 - Exercise guardian cancellation twice against the same target/calldata family;
   prove only the allowed cancellation succeeds.
 - Exercise operation expiry and signer-majority self-cancel.

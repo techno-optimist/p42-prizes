@@ -394,33 +394,32 @@ describe("P42 second-pass contract acceptance", () => {
     await timelock.waitForDeployment();
     const target = await timelock.getAddress();
 
-    const lowerThreshold = timelock.interface.encodeFunctionData("setThreshold", [3]);
-    const thresholdSalt = ethers.id("survivors-lower-threshold");
-    await timelock.connect(a).scheduleOverride(target, 0, lowerThreshold, thresholdSalt);
-    const thresholdId = await timelock.opId(target, 0, lowerThreshold, thresholdSalt);
-    await timelock.connect(b).confirm(thresholdId);
-    await timelock.connect(c).confirm(thresholdId);
-    await timelock.connect(d).confirm(thresholdId);
-    // e is unavailable and never signs.
-    await expectCustomError(
-      timelock.execute(target, 0, lowerThreshold, thresholdSalt), timelock, "NotReady",
-    );
-    await increaseTime(2n * delay + 1n);
-    await timelock.execute(target, 0, lowerThreshold, thresholdSalt);
-    assert.equal(await timelock.threshold(), 3n);
-    assert.equal(await timelock.toleratedSignerLoss(), 2n);
-
     const swap = timelock.interface.encodeFunctionData("swapSigner", [e.address, replacement.address]);
     const swapSalt = ethers.id("survivors-swap-lost");
     await timelock.connect(a).scheduleOverride(target, 0, swap, swapSalt);
     const swapId = await timelock.opId(target, 0, swap, swapSalt);
     await timelock.connect(b).confirm(swapId);
     await timelock.connect(c).confirm(swapId);
-    // d and e are now both unavailable and never sign recovery operations.
+    await timelock.connect(d).confirm(swapId);
+    // e is unavailable; the independent guardian authorizes replacing only it.
+    await timelock.connect(guardian).approveSignerRecovery(target, swap, swapSalt);
     await increaseTime(2n * delay + 1n);
     await timelock.execute(target, 0, swap, swapSalt);
     assert.equal(await timelock.isSigner(e.address), false);
     assert.equal(await timelock.isSigner(replacement.address), true);
+
+    const lowerThreshold = timelock.interface.encodeFunctionData("setThreshold", [3]);
+    const thresholdSalt = ethers.id("restored-quorum-lower-threshold");
+    await timelock.connect(a).scheduleOverride(target, 0, lowerThreshold, thresholdSalt);
+    const thresholdId = await timelock.opId(target, 0, lowerThreshold, thresholdSalt);
+    await timelock.connect(b).confirm(thresholdId);
+    await timelock.connect(c).confirm(thresholdId);
+    await timelock.connect(d).confirm(thresholdId);
+    await timelock.connect(replacement).confirm(thresholdId);
+    await increaseTime(2n * delay + 1n);
+    await timelock.execute(target, 0, lowerThreshold, thresholdSalt);
+    assert.equal(await timelock.threshold(), 3n);
+    assert.equal(await timelock.toleratedSignerLoss(), 2n);
 
     const rotateGuardian = timelock.interface.encodeFunctionData("setGuardian", [nextGuardian.address]);
     const guardianSalt = ethers.id("survivors-guardian");
@@ -428,6 +427,7 @@ describe("P42 second-pass contract acceptance", () => {
     const guardianId = await timelock.opId(target, 0, rotateGuardian, guardianSalt);
     await timelock.connect(b).confirm(guardianId);
     await timelock.connect(c).confirm(guardianId);
+    await timelock.connect(d).confirm(guardianId);
     await increaseTime(2n * delay + 1n);
     await timelock.execute(target, 0, rotateGuardian, guardianSalt);
     assert.equal(await timelock.guardian(), nextGuardian.address);
