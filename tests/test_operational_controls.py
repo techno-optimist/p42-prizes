@@ -61,18 +61,19 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
             }
         executed_at = f"2026-07-08T16:{20 + index:02d}:00Z"
         started_at = f"2026-07-08T16:{19 + index:02d}:00Z"
+        dependency_created_at = f"2026-07-08T16:{18 + index:02d}:00Z"
         execution_id = f"ops-run-{index:02d}-{name}"
         executable_artifact = fixture.artifact(
             f"operational-{name}-executable",
             content=f"#!/bin/sh\nexec python3 evidence/{name}-harness.py \"$@\"\n",
-            created_at_utc=started_at,
+            created_at_utc=dependency_created_at,
             suffix=".sh",
         )
         (fixture.root / executable_artifact["local_path"]).chmod(0o755)
         harness_artifact = fixture.artifact(
             f"operational-{name}-harness",
             content=f"# executable test harness for {name}\nprint('run {name}')\n",
-            created_at_utc=started_at,
+            created_at_utc=dependency_created_at,
             suffix=".py",
         )
         argv = [
@@ -499,10 +500,10 @@ def test_rejects_execution_dependency_created_after_start(tmp_path: Path) -> Non
     control = report["controls"][0]
     test_ref = control["test_artifact"]
     envelope = json.loads((fixture.root / test_ref["local_path"]).read_text())
-    envelope["executable_artifact"]["created_at_utc"] = control["executed_at_utc"]
-    _write_envelope(test_ref, fixture, envelope)
     output_ref = control["output_artifact"]
     output_envelope = json.loads((fixture.root / output_ref["local_path"]).read_text())
+    envelope["executable_artifact"]["created_at_utc"] = output_envelope["started_at_utc"]
+    _write_envelope(test_ref, fixture, envelope)
     output_envelope["test_definition_hash"] = test_ref["sha256"]
     _resign_execution_result(output_envelope)
     _write_envelope(output_ref, fixture, output_envelope)

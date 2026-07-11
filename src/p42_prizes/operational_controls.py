@@ -327,7 +327,7 @@ def _validate_control(
             f"{prefix}.test_artifact.{field}.created_at_utc",
             OperationalControlsError,
         )
-        if dependency_created_at > execution_started_at:
+        if dependency_created_at >= execution_started_at:
             raise OperationalControlsError(
                 f"{prefix}.test_artifact.{field} must be created before execution starts"
             )
