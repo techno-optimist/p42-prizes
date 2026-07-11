@@ -25,7 +25,8 @@ request IDs, raw inputs, and artifact hashes.
 
 - verifier unsoundness or nondeterminism;
 - commit/reveal, DA, challenge, resolver, payout, or bond failures;
-- API or agent-wallet/session failures affecting settlement state;
+- API, local persistence concurrency, event-chain integrity, or
+  agent-wallet/session failures affecting settlement state;
 - key, governance, pause, custody, reconciliation, or evidence forgery; and
 - source/deployment mismatch that could support a false launch claim.
 
