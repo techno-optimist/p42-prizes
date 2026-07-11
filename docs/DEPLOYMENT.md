@@ -143,6 +143,9 @@ or DA default is accepted.
 
 ```bash
 BASE_SEPOLIA_RPC_URL=... \
+P42_PRIMARY_RPC_OPERATOR_ID=... \
+P42_SECONDARY_BASE_SEPOLIA_RPC_URL=... \
+P42_SECONDARY_RPC_OPERATOR_ID=... \
 BASE_SEPOLIA_PRIVATE_KEY=... \
 P42_GOVERNANCE_SIGNERS=0xSigner1,0xSigner2,0xSigner3 \
 P42_GOVERNANCE_THRESHOLD=2 \
@@ -179,6 +182,19 @@ P42_MIN_IMPROVEMENT_ATOMS=... \
 P42_DEPLOY_MODE=deploy \
 npm run deploy:base-sepolia
 ```
+
+Deployment requires two independently operated Base Sepolia RPC endpoints. The
+primary and secondary URLs must normalize to different origins and hostnames,
+and `P42_PRIMARY_RPC_OPERATOR_ID` and `P42_SECONDARY_RPC_OPERATOR_ID` must name
+different infrastructure operators. These identities and endpoint digests are
+bound into the immutable signed-transaction journal. Missing, aliased, or
+common-operator evidence fails closed before transaction signing or broadcast.
+
+The deployment reconciliation lock is published only after its private
+candidate directory and owner record are durable. An incomplete legacy live
+lock directory (a `.lock` directory without a valid `owner.json`) is never
+reclaimed automatically. Stop all deployment runners, investigate the host,
+and remove that directory explicitly before retrying.
 
 `P42_GOVERNANCE_SIGNERS` contains public addresses, not private keys. The only
 plaintext key accepted by the command is the single deployer key already used

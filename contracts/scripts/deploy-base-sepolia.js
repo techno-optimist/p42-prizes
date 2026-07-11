@@ -1,4 +1,6 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -44,6 +46,14 @@ import {
   readContractsArtifactJson,
   readContractsConfigJson,
 } from "./strict-json-helper.js";
+import {
+  buildDeploymentNoncePlan,
+  persistSignedDeployment,
+  readSignedDeploymentJournal,
+  reconcileSignedDeployment,
+  reserveDeploymentNoncePlan,
+  signedDeploymentJournalPath,
+} from "./signed-deployment-journal.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const CONTRACT_NAMES = Object.freeze({
@@ -133,48 +143,120 @@ function check(name, actual, expected, comparator = sameValue) {
   };
 }
 
-async function waitForDeployment(contract) {
-  await contract.waitForDeployment();
-  const tx = contract.deploymentTransaction();
-  if (tx === null) throw new Error("Deployment transaction was not available");
-  const receipt = await tx.wait();
-  if (receipt === null) throw new Error(`Deployment receipt was not available for ${tx.hash}`);
-  return {
-    address: await contract.getAddress(),
-    txHash: tx.hash,
-    blockNumber: receipt.blockNumber
-  };
+async function ensureManifestReservation(identity) {
+  if (existsSync(`${identity.manifestPath}.deployment-reservation.json`)) return readManifestOutputReservation(identity);
+  return reserveManifestOutput(identity);
 }
 
-async function deployPinnedContract(ethers, name, args, onProgress = undefined) {
-  const factory = await ethers.getContractFactory(name);
-  const contract = await factory.deploy(...args);
-  const transaction = contract.deploymentTransaction();
-  if (transaction === null) throw new Error("Deployment transaction was not available");
-  const address = await contract.getAddress();
-  if (onProgress) {
-    await onProgress({ name, address, txHash: transaction.hash, state: "broadcast", blockNumber: null });
-  }
-  const deployment = await waitForDeployment(contract);
-  const runtimeCodeHash = ethers.keccak256(await ethers.provider.getCode(deployment.address));
-  const result = {
-    contract,
-    factory,
-    manifest: {
-      name,
-      ...deployment,
-      abiHash: ethers.keccak256(ethers.toUtf8Bytes(factory.interface.formatJson())),
-      runtimeCodeHash,
-      // Retained for the stable indexer/reconciliation binding.
-      deployedCodeHash: runtimeCodeHash,
-      constructorArgsHash: constructorArgsHash(ethers, factory, args),
-      constructorArgs: args
-    }
-  };
-  if (onProgress) {
-    await onProgress({ ...result.manifest, state: "mined" });
+async function materializeDeploymentSteps(ethers, definitions, addresses) {
+  const result = [];
+  for (const definition of definitions) {
+    const factory = await ethers.getContractFactory(definition.name);
+    const args = definition.args(addresses);
+    const unsigned = await factory.getDeployTransaction(...args);
+    result.push({ ...definition, factory, args, unsigned, expectedInitCode: unsigned.data, constructorArgsHash: constructorArgsHash(ethers, factory, args) });
   }
   return result;
+}
+
+async function executeSignedDeploymentPlan(ethers, deployer, output, reservationIdentity, definitions, recordProgress, requiredConfirmations) {
+  const liveNetwork = await ethers.provider.getNetwork();
+  if (liveNetwork.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+    throw new Error(`provider chain drift: expected ${BASE_SEPOLIA_CHAIN_ID}, got ${liveNetwork.chainId}`);
+  }
+  const secondaryRpcUrl = requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL");
+  const primaryRpcUrl = requiredEnv("BASE_SEPOLIA_RPC_URL");
+  const operatorId = (name) => {
+    const value = requiredEnv(name).toLowerCase();
+    if (!/^[a-z0-9][a-z0-9._-]{2,63}$/.test(value)) throw new Error(`${name} must be a canonical operator identifier`);
+    return value;
+  };
+  const primaryOperatorId = operatorId("P42_PRIMARY_RPC_OPERATOR_ID");
+  const secondaryOperatorId = operatorId("P42_SECONDARY_RPC_OPERATOR_ID");
+  const normalizeRpc = (raw, label) => {
+    const url = new URL(raw);
+    if (url.protocol !== "https:" && url.hostname !== "127.0.0.1" && url.hostname !== "localhost") throw new Error(`${label} must use https`);
+    url.hash = "";
+    return { href: url.href, origin: url.origin.toLowerCase(), host: url.hostname.toLowerCase() };
+  };
+  const primaryEndpoint = normalizeRpc(primaryRpcUrl, "primary deployment RPC");
+  const secondaryEndpoint = normalizeRpc(secondaryRpcUrl, "secondary deployment RPC");
+  if (primaryOperatorId === secondaryOperatorId || primaryEndpoint.origin === secondaryEndpoint.origin || primaryEndpoint.host === secondaryEndpoint.host) {
+    throw new Error("deployment RPCs must have distinct operator IDs, origins, and hosts");
+  }
+  const rpcEvidence = {
+    primaryOperatorId, secondaryOperatorId,
+    primaryOrigin: primaryEndpoint.origin, secondaryOrigin: secondaryEndpoint.origin,
+    primaryHost: primaryEndpoint.host, secondaryHost: secondaryEndpoint.host,
+    primaryEndpointDigest: `sha256:${createHash("sha256").update(primaryEndpoint.href).digest("hex")}`,
+    secondaryEndpointDigest: `sha256:${createHash("sha256").update(secondaryEndpoint.href).digest("hex")}`,
+  };
+  const secondaryProvider = new ethers.JsonRpcProvider(secondaryRpcUrl, Number(BASE_SEPOLIA_CHAIN_ID), { staticNetwork: true });
+  const secondaryNetwork = await secondaryProvider.getNetwork();
+  if (secondaryNetwork.chainId !== BASE_SEPOLIA_CHAIN_ID) throw new Error("secondary deployment RPC chain drift");
+  const journalPath = signedDeploymentJournalPath(output);
+  const priorJournal = existsSync(journalPath) ? readSignedDeploymentJournal(journalPath) : null;
+  if (priorJournal && (
+    priorJournal.identityDigest !== reservationIdentity.identityDigest ||
+    priorJournal.chainId !== Number(BASE_SEPOLIA_CHAIN_ID) ||
+    priorJournal.deployer.toLowerCase() !== deployer.address.toLowerCase()
+  )) throw new Error("existing signed deployment journal has chain/account/config drift");
+  const startNonce = priorJournal?.startNonce ?? await ethers.provider.getTransactionCount(deployer.address, "pending");
+  const addresses = Object.fromEntries(definitions.map((definition, index) => [
+    definition.addressKey,
+    ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + index }),
+  ]));
+  const steps = await materializeDeploymentSteps(ethers, definitions, addresses);
+  const expected = buildDeploymentNoncePlan(ethers, {
+    identityDigest: reservationIdentity.identityDigest,
+    network: "baseSepolia",
+    chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+    deployer: deployer.address,
+    rpcEvidence,
+    startNonce,
+    steps: steps.map((step) => ({ name: step.id, constructorArgsHash: step.constructorArgsHash, expectedInitCode: step.expectedInitCode })),
+  });
+  reserveDeploymentNoncePlan(journalPath, expected);
+
+  const deployments = {};
+  for (const [index, definition] of steps.entries()) {
+    let journal = readSignedDeploymentJournal(journalPath);
+    let durable = journal.steps[index];
+    if (durable.state === "planned") {
+      const populated = await deployer.populateTransaction({ ...definition.unsigned, chainId: BASE_SEPOLIA_CHAIN_ID, nonce: durable.nonce });
+      if (Number(populated.nonce) !== durable.nonce || BigInt(populated.chainId) !== BASE_SEPOLIA_CHAIN_ID) throw new Error("signer populated a transaction outside the reserved identity");
+      if (populated.data !== definition.expectedInitCode) throw new Error("populated deployment initcode differs from immutable plan");
+      const raw = await deployer.signTransaction(populated);
+      const decoded = ethers.Transaction.from(raw);
+      if (decoded.from?.toLowerCase() !== deployer.address.toLowerCase() || decoded.nonce !== durable.nonce || decoded.chainId !== BASE_SEPOLIA_CHAIN_ID || decoded.to !== null) {
+        throw new Error("signed deployment transaction identity drift");
+      }
+      journal = persistSignedDeployment(journalPath, expected.planDigest, index, ethers, raw);
+      durable = journal.steps[index];
+    }
+    let reconciliation = await reconcileSignedDeployment({ ethers, provider: ethers.provider, secondaryProvider, journalPath, planDigest: expected.planDigest, index, requiredConfirmations });
+    durable = reconciliation.step;
+    await recordProgress(definition, { name: definition.name, address: durable.address, txHash: durable.expectedHash, state: "broadcast", blockNumber: null });
+    if (reconciliation.state !== "mined") {
+      const receipt = await ethers.provider.waitForTransaction(durable.expectedHash, requiredConfirmations);
+      if (receipt === null) throw new Error(`deployment receipt was not available for ${durable.expectedHash}`);
+      reconciliation = await reconcileSignedDeployment({ ethers, provider: ethers.provider, secondaryProvider, journalPath, planDigest: expected.planDigest, index, allowBroadcast: false, requiredConfirmations });
+    }
+    if (reconciliation.state !== "mined") throw new Error(`deployment transaction did not reconcile as mined: ${durable.expectedHash}`);
+    const code = await ethers.provider.getCode(durable.address);
+    if (code === "0x") throw new Error(`mined deployment has no runtime code at ${durable.address}`);
+    const runtimeCodeHash = ethers.keccak256(code);
+    const manifest = {
+      name: definition.name, address: durable.address, txHash: durable.expectedHash,
+      blockNumber: reconciliation.step.blockNumber,
+      abiHash: ethers.keccak256(ethers.toUtf8Bytes(definition.factory.interface.formatJson())),
+      runtimeCodeHash, deployedCodeHash: runtimeCodeHash,
+      constructorArgsHash: definition.constructorArgsHash, constructorArgs: definition.args,
+    };
+    await recordProgress(definition, { ...manifest, state: "mined" });
+    deployments[definition.id] = { contract: definition.factory.attach(durable.address), factory: definition.factory, manifest };
+  }
+  return { deployments, addresses };
 }
 
 function contractInterfaces(deployments) {
@@ -265,32 +347,20 @@ async function deployCeremony(ethers) {
     chainId: Number(BASE_SEPOLIA_CHAIN_ID),
     deployer: deployer.address,
   }, { trustedRoot: dirname(output), configValue: config });
-  const reservation = await reserveManifestOutput(reservationIdentity);
+  const reservation = await ensureManifestReservation(reservationIdentity);
   const recordDeployment = (key, deployment) => recordManifestOutputDeployment(reservationIdentity, key, deployment);
   console.log(`Reserved deployment manifest destination: ${reservation.path}`);
 
-  const deployments = {};
-  const addresses = {};
-  const timelockArgs = constructorArgsFor("P42MultisigTimelock", config);
-  deployments.timelock = await deployPinnedContract(
-    ethers,
-    "P42MultisigTimelock",
-    timelockArgs,
-    (deployment) => recordDeployment("timelock", deployment),
+  const singleOrder = ["timelock", "registry", "rolloverVault", "pool", "ledger", "submissions", "challenges"];
+  const definitions = singleOrder.map((key) => ({
+    id: key, addressKey: key, name: CONTRACT_NAMES[key],
+    args: (plannedAddresses) => constructorArgsFor(CONTRACT_NAMES[key], config, plannedAddresses),
+  }));
+  const { deployments, addresses } = await executeSignedDeploymentPlan(
+    ethers, deployer, output, reservationIdentity, definitions,
+    (definition, deployment) => recordDeployment(definition.id, deployment),
+    config.finalityPolicy.confirmations,
   );
-  addresses.timelock = deployments.timelock.manifest.address;
-
-  for (const key of ["registry", "rolloverVault", "pool", "ledger", "submissions", "challenges"]) {
-    const name = CONTRACT_NAMES[key];
-    const args = constructorArgsFor(name, config, addresses);
-    deployments[key] = await deployPinnedContract(
-      ethers,
-      name,
-      args,
-      (deployment) => recordDeployment(key, deployment),
-    );
-    addresses[key] = deployments[key].manifest.address;
-  }
   assertTimelockOwnedConstructorArgs(
     addresses.timelock,
     Object.fromEntries(Object.entries(deployments).map(([key, value]) => [key, value.manifest.constructorArgs]))
@@ -468,59 +538,45 @@ async function deployMultiBoardCeremony(ethers) {
     chainId: Number(BASE_SEPOLIA_CHAIN_ID),
     deployer: deployer.address,
   }, { trustedRoot: dirname(output), configBytes: input.bytes });
-  const reservation = await reserveManifestOutput(reservationIdentity);
+  const reservation = await ensureManifestReservation(reservationIdentity);
   console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
 
-  const rootDeployments = {};
-  const rootAddresses = {};
-  const rootConstructorArgs = {};
-  rootConstructorArgs.timelock = constructorArgsFor("P42MultisigTimelock", config);
-  rootDeployments.timelock = await deployPinnedContract(
-    ethers,
-    "P42MultisigTimelock",
-    rootConstructorArgs.timelock,
-    (deployment) => recordManifestOutputDeployment(reservationIdentity, "timelock", deployment),
-  );
-  rootAddresses.timelock = rootDeployments.timelock.manifest.address;
-  rootConstructorArgs.registry = constructorArgsFor("P42ProblemRegistry", config, rootAddresses);
-  rootDeployments.registry = await deployPinnedContract(
-    ethers,
-    "P42ProblemRegistry",
-    rootConstructorArgs.registry,
-    (deployment) => recordManifestOutputDeployment(reservationIdentity, "registry", deployment),
-  );
-  rootAddresses.registry = rootDeployments.registry.manifest.address;
-  rootConstructorArgs.rolloverVault = constructorArgsFor("P42RolloverVault", config, rootAddresses);
-  rootDeployments.rolloverVault = await deployPinnedContract(
-    ethers,
-    "P42RolloverVault",
-    rootConstructorArgs.rolloverVault,
-    (deployment) => recordManifestOutputDeployment(reservationIdentity, "rolloverVault", deployment),
-  );
-  rootAddresses.rolloverVault = rootDeployments.rolloverVault.manifest.address;
-
-  const boards = [];
+  const definitions = ["timelock", "registry", "rolloverVault"].map((key) => ({
+    id: key, addressKey: key, name: CONTRACT_NAMES[key],
+    args: (plannedAddresses) => constructorArgsFor(CONTRACT_NAMES[key], config, plannedAddresses),
+  }));
   for (const problem of config.problems) {
     const boardConfig = boardCeremonyConfig(config, problem);
-    const deployments = {};
-    const addresses = { ...rootAddresses };
-    const constructorArgs = {};
-    for (const [key, name] of Object.entries(BOARD_CONTRACT_NAMES)) {
-      constructorArgs[key] = constructorArgsFor(name, boardConfig, addresses);
-      deployments[key] = await deployPinnedContract(
-        ethers,
-        name,
-        constructorArgs[key],
-        (deployment) => recordManifestOutputBoardDeployment(reservationIdentity, problem.problemId, key, deployment),
-      );
-      addresses[key] = deployments[key].manifest.address;
-    }
-    assertTimelockOwnedConstructorArgs(rootAddresses.timelock, {
-      ...constructorArgs,
-      registry: rootConstructorArgs.registry,
+    for (const [key, name] of Object.entries(BOARD_CONTRACT_NAMES)) definitions.push({
+      id: `board-${problem.problemId}-${key}`, addressKey: `board-${problem.problemId}-${key}`, name,
+      args: (plannedAddresses) => constructorArgsFor(name, boardConfig, {
+        timelock: plannedAddresses.timelock, registry: plannedAddresses.registry,
+        rolloverVault: plannedAddresses.rolloverVault,
+        pool: plannedAddresses[`board-${problem.problemId}-pool`],
+        ledger: plannedAddresses[`board-${problem.problemId}-ledger`],
+        submissions: plannedAddresses[`board-${problem.problemId}-submissions`],
+        challenges: plannedAddresses[`board-${problem.problemId}-challenges`],
+      }),
     });
-    boards.push({ problem, deployments, addresses });
   }
+  const executed = await executeSignedDeploymentPlan(
+    ethers, deployer, output, reservationIdentity, definitions,
+    (definition, deployment) => definition.id.startsWith("board-")
+      ? recordManifestOutputBoardDeployment(reservationIdentity, definition.id.split("-")[1], definition.id.split("-")[2], deployment)
+      : recordManifestOutputDeployment(reservationIdentity, definition.id, deployment),
+    config.finalityPolicy.confirmations,
+  );
+  const rootDeployments = Object.fromEntries(["timelock", "registry", "rolloverVault"].map((key) => [key, executed.deployments[key]]));
+  const rootAddresses = Object.fromEntries(["timelock", "registry", "rolloverVault"].map((key) => [key, executed.addresses[key]]));
+  const boards = config.problems.map((problem) => {
+    const deployments = Object.fromEntries(Object.keys(BOARD_CONTRACT_NAMES).map((key) => [key, executed.deployments[`board-${problem.problemId}-${key}`]]));
+    const addresses = { ...rootAddresses, ...Object.fromEntries(Object.keys(BOARD_CONTRACT_NAMES).map((key) => [key, executed.addresses[`board-${problem.problemId}-${key}`]])) };
+    assertTimelockOwnedConstructorArgs(rootAddresses.timelock, {
+      ...Object.fromEntries(Object.entries(deployments).map(([key, value]) => [key, value.manifest.constructorArgs])),
+      registry: rootDeployments.registry.manifest.constructorArgs,
+    });
+    return { problem, deployments, addresses };
+  });
 
   const setupTransactions = buildMultiBoardSetupOperations({
     ethers,

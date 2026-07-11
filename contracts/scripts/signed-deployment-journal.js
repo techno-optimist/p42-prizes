@@ -1,0 +1,517 @@
+import { createHash, randomUUID } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import { hostname } from "node:os";
+import { Transaction, getCreateAddress, keccak256 } from "ethers";
+import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
+
+export const SIGNED_DEPLOYMENT_JOURNAL_SCHEMA = "p42-prizes/signed-deployment-journal/v1";
+const STATES = Object.freeze({ planned: 0, signed: 1, broadcast: 2, mined: 3 });
+const MAX_JOURNAL_BYTES = 16 * 1024 * 1024;
+
+function canonical(value) {
+  if (typeof value === "bigint") return JSON.stringify(value.toString());
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
+function digest(value) {
+  return `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
+}
+
+function assertHex(value, bytes, label) {
+  if (typeof value !== "string" || !new RegExp(`^0x[0-9a-fA-F]{${bytes * 2}}$`).test(value)) {
+    throw new Error(`${label} is not canonical ${bytes}-byte hex`);
+  }
+}
+
+function durableWrite(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  const temporary = `${path}.tmp-${process.pid}-${randomUUID()}`;
+  let fd;
+  try {
+    fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+    for (let offset = 0; offset < bytes.length;) {
+      const written = writeSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (written <= 0) throw new Error("signed deployment journal write made no progress");
+      offset += written;
+    }
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = undefined;
+    renameSync(temporary, path);
+    const directory = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  } catch (error) {
+    if (fd !== undefined) closeSync(fd);
+    try { unlinkSync(temporary); } catch {}
+    throw error;
+  }
+}
+
+function durableCreate(path, value) {
+  assertTrustedAncestors(path);
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+  let fd;
+  try {
+    fd = openSync(path, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    for (let offset = 0; offset < bytes.length;) offset += writeSync(fd, bytes, offset, bytes.length - offset, offset);
+    fsyncSync(fd);
+    closeSync(fd); fd = undefined;
+    const directory = openSync(dirname(path), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  } catch (error) {
+    if (fd !== undefined) closeSync(fd);
+    throw error;
+  }
+}
+
+function assertTrustedAncestors(path) {
+  const absolute = resolve(path);
+  const root = parse(absolute).root;
+  let current = root;
+  for (const component of dirname(absolute).slice(root.length).split(sep).filter(Boolean)) {
+    current = resolve(current, component);
+    const metadata = lstatSync(current);
+    if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw new Error("signed deployment journal ancestor is not a real directory");
+    if (typeof process.getuid === "function" && metadata.uid !== process.getuid() && metadata.uid !== 0) throw new Error("signed deployment journal ancestor owner mismatch");
+    if ((metadata.mode & 0o002) !== 0 && current !== "/private/tmp" && current !== "/tmp") throw new Error("signed deployment journal ancestor is world-writable");
+  }
+}
+
+function readJournal(path) {
+  assertTrustedAncestors(path);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let record;
+  try {
+    const before = lstatSync(path);
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.nlink !== 1 || before.ino !== metadata.ino || before.dev !== metadata.dev) throw new Error("signed deployment journal inode changed during open");
+    if ((metadata.mode & 0o777) !== 0o600) throw new Error("signed deployment journal must have mode 0600");
+    if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) throw new Error("signed deployment journal owner mismatch");
+    if (metadata.size < 2 || metadata.size > MAX_JOURNAL_BYTES) throw new Error("signed deployment journal size is invalid");
+    const bytes = Buffer.alloc(metadata.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count <= 0) throw new Error("signed deployment journal was truncated during read");
+      offset += count;
+    }
+    const after = lstatSync(path);
+    if (after.ino !== metadata.ino || after.dev !== metadata.dev || after.size !== metadata.size) throw new Error("signed deployment journal changed during read");
+    record = parseStrictJsonBytes(bytes, { maxBytes: MAX_JOURNAL_BYTES, maxDepth: 64, trailingNewline: "require" });
+  } finally { closeSync(fd); }
+  assertJournal(record);
+  return record;
+}
+
+function immutableView(record) {
+  return {
+    schema: record.schema, identityDigest: record.identityDigest, network: record.network,
+    chainId: record.chainId, deployer: record.deployer, rpcEvidence: record.rpcEvidence, startNonce: record.startNonce,
+    transactionCount: record.transactionCount, endNonceExclusive: record.endNonceExclusive,
+    steps: record.steps.map(({ id, name, nonce, address, constructorArgsHash, expectedInitCodeHash }) => ({ id, name, nonce, address, constructorArgsHash, expectedInitCodeHash })),
+  };
+}
+
+function assertJournal(record) {
+  if (record?.schema !== SIGNED_DEPLOYMENT_JOURNAL_SCHEMA || !Array.isArray(record.steps) || record.steps.length < 1) throw new Error("malformed signed deployment journal");
+  if (!Number.isSafeInteger(record.chainId) || !Number.isSafeInteger(record.startNonce) || record.startNonce < 0) throw new Error("malformed signed deployment journal identity");
+  if (record.transactionCount !== record.steps.length || record.endNonceExclusive !== record.startNonce + record.steps.length) throw new Error("signed deployment nonce range is not exact");
+  assertHex(record.deployer, 20, "deployer");
+  if (
+    !record.rpcEvidence || record.rpcEvidence.primaryOperatorId === record.rpcEvidence.secondaryOperatorId ||
+    record.rpcEvidence.primaryOrigin === record.rpcEvidence.secondaryOrigin ||
+    record.rpcEvidence.primaryHost === record.rpcEvidence.secondaryHost ||
+    !/^sha256:[0-9a-f]{64}$/.test(record.rpcEvidence.primaryEndpointDigest ?? "") ||
+    !/^sha256:[0-9a-f]{64}$/.test(record.rpcEvidence.secondaryEndpointDigest ?? "")
+  ) throw new Error("deployment RPC evidence identities are not independent and immutable");
+  for (const [index, step] of record.steps.entries()) {
+    if (step.nonce !== record.startNonce + index || step.id !== `${index}:${step.name}`) throw new Error("signed deployment step identity or nonce drift");
+    assertHex(step.address, 20, "deployment address");
+    assertHex(step.expectedInitCodeHash, 32, "expected initcode hash");
+    if (typeof step.expectedInitCode !== "string" || keccak256(step.expectedInitCode).toLowerCase() !== step.expectedInitCodeHash.toLowerCase()) throw new Error("deployment plan initcode hash mismatch");
+    if (!(step.state in STATES)) throw new Error("invalid signed deployment state");
+    if (STATES[step.state] >= STATES.signed) {
+      if (typeof step.rawTransaction !== "string" || !/^0x[0-9a-f]+$/i.test(step.rawTransaction)) throw new Error("signed step lacks raw transaction bytes");
+      assertHex(step.expectedHash, 32, "expected transaction hash");
+      assertHex(step.initCodeHash, 32, "initcode hash");
+      if (step.expectedHash.toLowerCase() !== keccak256(step.rawTransaction).toLowerCase()) throw new Error("signed transaction raw/hash substitution detected");
+      const transaction = Transaction.from(step.rawTransaction);
+      if (
+        transaction.from?.toLowerCase() !== record.deployer.toLowerCase() || transaction.chainId !== BigInt(record.chainId) ||
+        transaction.nonce !== step.nonce || transaction.to !== null || transaction.value !== 0n ||
+        transaction.data !== step.expectedInitCode || keccak256(transaction.data).toLowerCase() !== step.expectedInitCodeHash.toLowerCase() ||
+        getCreateAddress({ from: transaction.from, nonce: transaction.nonce }).toLowerCase() !== step.address.toLowerCase()
+      ) throw new Error("signed deployment payload identity drift");
+      const payload = {
+        rawHash: step.expectedHash.toLowerCase(), signer: transaction.from.toLowerCase(), chainId: transaction.chainId.toString(),
+        nonce: transaction.nonce, to: null, value: transaction.value.toString(), initCodeHash: step.initCodeHash.toLowerCase(), address: step.address.toLowerCase(),
+      };
+      if (step.signedPayloadDigest !== digest(payload)) throw new Error("signed deployment payload digest mismatch");
+    }
+    if (step.state === "mined" && (!Number.isSafeInteger(step.blockNumber) || step.blockNumber < 0)) throw new Error("mined step lacks block number");
+  }
+  if (record.planDigest !== digest(immutableView(record))) throw new Error("signed deployment plan digest mismatch");
+  return record;
+}
+
+export function signedDeploymentJournalPath(manifestPath) {
+  const absolute = resolve(manifestPath);
+  return join(realpathSync(dirname(absolute)), `${basename(absolute)}.signed-transactions.json`);
+}
+
+export function buildDeploymentNoncePlan(ethers, { identityDigest, network, chainId, deployer, rpcEvidence, startNonce, steps }) {
+  if (!Array.isArray(steps) || steps.length < 1) throw new Error("deployment transaction plan must not be empty");
+  const normalized = steps.map((step, index) => ({
+    id: `${index}:${step.name}`,
+    name: step.name,
+    nonce: startNonce + index,
+    address: ethers.getCreateAddress({ from: deployer, nonce: startNonce + index }),
+    constructorArgsHash: step.constructorArgsHash,
+    expectedInitCode: step.expectedInitCode,
+    expectedInitCodeHash: keccak256(step.expectedInitCode),
+    state: "planned",
+    rawTransaction: null,
+    expectedHash: null,
+    blockNumber: null,
+  }));
+  const record = {
+    schema: SIGNED_DEPLOYMENT_JOURNAL_SCHEMA, identityDigest, network, chainId, deployer, rpcEvidence,
+    startNonce, transactionCount: normalized.length, endNonceExclusive: startNonce + normalized.length,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), generation: 0, steps: normalized,
+  };
+  record.planDigest = digest(immutableView(record));
+  return assertJournal(record);
+}
+
+export function reserveDeploymentNoncePlan(path, expected) {
+  try {
+    const existing = readJournal(path);
+    if (existing.planDigest !== expected.planDigest || canonical(immutableView(existing)) !== canonical(immutableView(expected))) {
+      throw new Error("existing signed deployment journal does not match chain/account/config/nonce plan");
+    }
+    return existing;
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  try { durableCreate(path, expected); }
+  catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+    const winner = readJournal(path);
+    if (winner.planDigest !== expected.planDigest || canonical(immutableView(winner)) !== canonical(immutableView(expected))) throw new Error("concurrent signed deployment reservation conflicts with expected plan");
+  }
+  return readJournal(path);
+}
+
+function transition(path, expectedPlanDigest, index, nextState, patch) {
+  const record = readJournal(path);
+  if (record.planDigest !== expectedPlanDigest) throw new Error("signed deployment plan changed during execution");
+  const step = record.steps[index];
+  if (!step || STATES[nextState] < STATES[step.state]) throw new Error("signed deployment journal transition cannot regress");
+  if (STATES[nextState] > STATES[step.state] + 1) throw new Error("signed deployment journal transition cannot skip a state");
+  if (STATES[nextState] === STATES[step.state]) {
+    for (const [key, value] of Object.entries(patch)) if (canonical(step[key]) !== canonical(value)) throw new Error("signed deployment journal transition conflicts with durable state");
+    return record;
+  }
+  Object.assign(step, patch, { state: nextState });
+  record.generation += 1;
+  record.updatedAt = new Date().toISOString();
+  assertJournal(record);
+  durableWrite(path, record);
+  return readJournal(path);
+}
+
+export function persistSignedDeployment(path, planDigest, index, ethers, rawTransaction) {
+  const expectedHash = ethers.keccak256(rawTransaction);
+  const transaction = Transaction.from(rawTransaction);
+  const initCodeHash = keccak256(transaction.data);
+  const current = readJournal(path);
+  const step = current.steps[index];
+  if (transaction.data !== step.expectedInitCode || initCodeHash.toLowerCase() !== step.expectedInitCodeHash.toLowerCase()) throw new Error("signed transaction initcode differs from immutable deployment plan");
+  const signedPayloadDigest = digest({
+    rawHash: expectedHash.toLowerCase(), signer: transaction.from?.toLowerCase(), chainId: transaction.chainId.toString(),
+    nonce: transaction.nonce, to: transaction.to, value: transaction.value.toString(), initCodeHash: initCodeHash.toLowerCase(), address: step.address.toLowerCase(),
+  });
+  return transition(path, planDigest, index, "signed", { rawTransaction, expectedHash, initCodeHash, signedPayloadDigest });
+}
+
+export function recordDeploymentBroadcast(path, planDigest, index) {
+  return transition(path, planDigest, index, "broadcast", {});
+}
+
+export function recordDeploymentMined(path, planDigest, index, blockNumber) {
+  const current = readJournal(path);
+  if (current.steps[index]?.state === "signed") transition(path, planDigest, index, "broadcast", {});
+  return transition(path, planDigest, index, "mined", { blockNumber });
+}
+
+function bootIdentity() {
+  try { return readSmallSystemFile("/proc/sys/kernel/random/boot_id"); } catch {}
+  try { return execFileSync("sysctl", ["-n", "kern.boottime"], { encoding: "utf8" }).trim(); } catch {}
+  throw new Error("cannot establish host boot identity for deployment lock");
+}
+
+function readSmallSystemFile(path) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.size > 4096) throw new Error("invalid system identity file");
+    // procfs reports zero for many virtual-file sizes. Read through the held
+    // descriptor with a hard ceiling instead of trusting stat.size.
+    const bytes = Buffer.alloc(4097);
+    const count = readSync(fd, bytes, 0, bytes.length, null);
+    if (count === 0 || count > 4096) throw new Error("invalid system identity file");
+    const value = bytes.subarray(0, count).toString("utf8").trim();
+    if (!value) throw new Error("invalid system identity file");
+    return value;
+  } finally { closeSync(fd); }
+}
+
+function processStartIdentity(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const stat = readSmallSystemFile(`/proc/${pid}/stat`);
+    const close = stat.lastIndexOf(")");
+    return `linux:${stat.slice(close + 2).split(" ")[19]}`;
+  } catch {}
+  try {
+    const value = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return value ? `ps:${value}` : null;
+  } catch { return null; }
+}
+
+export function deploymentLockOwnerIdentity(pid = process.pid) {
+  const processStartId = processStartIdentity(pid);
+  if (!processStartId) throw new Error("cannot establish deployment runner process start identity");
+  const identity = { hostname: hostname(), pid, bootId: bootIdentity(), processStartId };
+  if (identity.hostname.length < 1 || identity.bootId.length < 4 || identity.processStartId.length < 4) {
+    throw new Error("deployment runner lock identity is incomplete");
+  }
+  return identity;
+}
+
+function readLock(path) {
+  const directoryMetadata = lstatSync(path);
+  if (!directoryMetadata.isDirectory() || directoryMetadata.isSymbolicLink() || (directoryMetadata.mode & 0o777) !== 0o700) throw new Error("deployment lock directory is unsafe");
+  const ownerPath = join(path, "owner.json");
+  const fd = openSync(ownerPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size < 2 || metadata.size > 4096 || (metadata.mode & 0o777) !== 0o600) throw new Error("deployment lock metadata is unsafe");
+    const bytes = Buffer.alloc(metadata.size);
+    readSync(fd, bytes, 0, bytes.length, 0);
+    return { owner: parseStrictJsonBytes(bytes, { maxBytes: 4096, maxDepth: 8, trailingNewline: "require" }), metadata: directoryMetadata };
+  } finally { closeSync(fd); }
+}
+
+function removeQuarantinedLock(path, expectedToken, expectedMetadata) {
+  const current = lstatSync(path);
+  if (current.ino !== expectedMetadata.ino || current.dev !== expectedMetadata.dev || !current.isDirectory()) throw new Error("quarantined deployment lock inode mismatch");
+  const { owner } = readLock(path);
+  if (owner.token !== expectedToken) throw new Error("quarantined deployment lock ownership token mismatch");
+  unlinkSync(join(path, "owner.json"));
+  rmdirSync(path);
+}
+
+function reclaimDeadLock(lockPath, contender) {
+  let lock;
+  try { lock = readLock(lockPath); }
+  catch (error) {
+    if (error?.code === "ENOENT" && (() => { try { return lstatSync(lockPath).isDirectory(); } catch { return false; } })()) {
+      throw new Error("incomplete live deployment lock requires explicit operator recovery");
+    }
+    throw error;
+  }
+  const { owner, metadata } = lock;
+  if (
+    !owner || typeof owner.hostname !== "string" || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 ||
+    typeof owner.bootId !== "string" || owner.bootId.length < 4 || typeof owner.processStartId !== "string" || owner.processStartId.length < 4 ||
+    typeof owner.createdAt !== "string" || !Number.isFinite(Date.parse(owner.createdAt)) || typeof owner.token !== "string" || owner.token.length < 4
+  ) throw new Error("deployment lock owner identity is malformed; refusing reclaim");
+  if (owner.hostname !== contender.hostname) throw new Error("deployment lock owner is on another host; refusing reclaim");
+  let dead = false;
+  if (owner.bootId !== contender.bootId) dead = true;
+  else {
+    const observedStart = processStartIdentity(owner.pid);
+    if (observedStart === owner.processStartId) throw new Error("another signed deployment runner holds the reconciliation lock");
+    if (observedStart === null || observedStart !== owner.processStartId) dead = true;
+  }
+  if (!dead) throw new Error("deployment lock liveness cannot be proven; refusing reclaim");
+  const current = lstatSync(lockPath);
+  if (current.ino !== metadata.ino || current.dev !== metadata.dev || current.isSymbolicLink()) throw new Error("deployment lock changed during stale-owner validation");
+  const quarantine = `${lockPath}.quarantine-${contender.token}`;
+  renameSync(lockPath, quarantine);
+  removeQuarantinedLock(quarantine, owner.token, metadata);
+  const directory = openSync(dirname(lockPath), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(directory); } finally { closeSync(directory); }
+}
+
+function prepareLockCandidate(lockPath, owner) {
+  const candidate = `${lockPath}.candidate-${owner.token}`;
+  mkdirSync(candidate, { mode: 0o700 });
+  let fd;
+  try {
+    fd = openSync(join(candidate, "owner.json"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    const bytes = Buffer.from(`${JSON.stringify(owner)}\n`);
+    writeSync(fd, bytes);
+    fsyncSync(fd);
+    closeSync(fd); fd = undefined;
+    const candidateFd = openSync(candidate, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(candidateFd); } finally { closeSync(candidateFd); }
+    return candidate;
+  } catch (error) {
+    if (fd !== undefined) closeSync(fd);
+    throw error;
+  }
+}
+
+function discardOwnedCandidate(candidate, token) {
+  try {
+    const { owner, metadata } = readLock(candidate);
+    if (owner.token !== token) throw new Error("deployment lock candidate ownership mismatch");
+    removeQuarantinedLock(candidate, token, metadata);
+  } catch (error) { if (error?.code !== "ENOENT") throw error; }
+}
+
+async function withJournalLock(journalPath, operation, hooks = {}) {
+  const lockPath = `${journalPath}.lock`;
+  assertTrustedAncestors(lockPath);
+  const owner = { ...deploymentLockOwnerIdentity(), createdAt: new Date().toISOString(), token: randomUUID() };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const candidate = prepareLockCandidate(lockPath, owner);
+    if (hooks.afterCandidateDurable) await hooks.afterCandidateDurable(candidate);
+    try {
+      try {
+        lstatSync(lockPath);
+        if (attempt === 0) { reclaimDeadLock(lockPath, owner); discardOwnedCandidate(candidate, owner.token); continue; }
+        throw new Error("another signed deployment runner holds the reconciliation lock");
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      try { renameSync(candidate, lockPath); }
+      catch (error) {
+        if (["EEXIST", "ENOTEMPTY"].includes(error?.code)) throw new Error("another signed deployment runner holds the reconciliation lock");
+        throw error;
+      }
+      const directory = openSync(dirname(lockPath), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try { fsyncSync(directory); } finally { closeSync(directory); }
+      break;
+    } catch (error) {
+      discardOwnedCandidate(candidate, owner.token);
+      throw error;
+    }
+  }
+  try { return await operation(); }
+  finally {
+    const { owner: currentOwner, metadata } = readLock(lockPath);
+    if (currentOwner.token !== owner.token) throw new Error("deployment lock ownership changed before release");
+    const current = lstatSync(lockPath);
+    if (current.ino !== metadata.ino || current.dev !== metadata.dev) throw new Error("deployment lock inode changed before release");
+    const quarantine = `${lockPath}.quarantine-${owner.token}`;
+    renameSync(lockPath, quarantine);
+    removeQuarantinedLock(quarantine, owner.token, metadata);
+    const directory = openSync(dirname(lockPath), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  }
+}
+
+async function canonicalReceipt(provider, step, deployer, receipt, label, blockByNumber = false) {
+  if (
+    receipt.transactionHash?.toLowerCase() !== step.expectedHash.toLowerCase() ||
+    receipt.contractAddress?.toLowerCase() !== step.address.toLowerCase() || !receipt.blockHash
+  ) throw new Error(`${label} receipt identity mismatch`);
+  const transaction = await provider.getTransaction(step.expectedHash);
+  if (!transaction || transaction.hash.toLowerCase() !== step.expectedHash.toLowerCase() || Number(transaction.nonce) !== step.nonce || transaction.from.toLowerCase() !== deployer.toLowerCase() || transaction.to !== null) {
+    throw new Error(`${label} mined transaction identity mismatch`);
+  }
+  const block = await provider.getBlock(blockByNumber ? Number(receipt.blockNumber) : receipt.blockHash);
+  if (!block || block.hash?.toLowerCase() !== receipt.blockHash.toLowerCase() || Number(block.number) !== Number(receipt.blockNumber)) throw new Error(`${label} receipt block is not canonical`);
+  return { transaction, block };
+}
+
+async function reconcileLocked({ provider, secondaryProvider, journalPath, planDigest, index, allowBroadcast, requiredConfirmations = 1 }) {
+  let record = readJournal(journalPath);
+  const pinned = lstatSync(journalPath);
+  const assertPinnedJournal = () => {
+    const current = lstatSync(journalPath);
+    if (current.ino !== pinned.ino || current.dev !== pinned.dev || current.isSymbolicLink()) throw new Error("signed deployment journal pathname changed during reconciliation");
+  };
+  if (record.planDigest !== planDigest) throw new Error("signed deployment plan changed during reconciliation");
+  const step = record.steps[index];
+  if (step.state === "planned") return { state: "planned", step };
+  const receipt = await provider.getTransactionReceipt(step.expectedHash);
+  assertPinnedJournal();
+  if (receipt) {
+    if (!secondaryProvider) throw new Error("secondary independently configured RPC provider is required for mined deployment evidence");
+    if (receipt.status !== 1 && receipt.status !== 1n) throw new Error(`deployment transaction reverted: ${step.expectedHash}`);
+    await canonicalReceipt(provider, step, record.deployer, receipt, "primary");
+    const secondaryReceipt = await secondaryProvider.getTransactionReceipt(step.expectedHash);
+    assertPinnedJournal();
+    if (!secondaryReceipt || (secondaryReceipt.status !== 1 && secondaryReceipt.status !== 1n)) throw new Error("secondary RPC does not corroborate mined deployment");
+    await canonicalReceipt(secondaryProvider, step, record.deployer, secondaryReceipt, "secondary");
+    if (
+      secondaryReceipt.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+      Number(secondaryReceipt.blockNumber) !== Number(receipt.blockNumber) ||
+      secondaryReceipt.contractAddress.toLowerCase() !== receipt.contractAddress.toLowerCase()
+    ) throw new Error("independent RPC providers disagree on deployment receipt");
+    if (!Number.isSafeInteger(requiredConfirmations) || requiredConfirmations < 1) throw new Error("required deployment confirmations must be a positive integer");
+    const [primaryHead, secondaryHead] = await Promise.all([provider.getBlockNumber(), secondaryProvider.getBlockNumber()]);
+    assertPinnedJournal();
+    const finalBlock = Number(receipt.blockNumber) + requiredConfirmations - 1;
+    if (primaryHead < finalBlock || secondaryHead < finalBlock) throw new Error(`deployment lacks ${requiredConfirmations} independently corroborated confirmations`);
+    const [finalPrimaryReceipt, finalSecondaryReceipt] = await Promise.all([
+      provider.getTransactionReceipt(step.expectedHash), secondaryProvider.getTransactionReceipt(step.expectedHash),
+    ]);
+    assertPinnedJournal();
+    if (!finalPrimaryReceipt || !finalSecondaryReceipt) throw new Error("deployment receipt disappeared at finality transition");
+    if ((finalPrimaryReceipt.status !== 1 && finalPrimaryReceipt.status !== 1n) || (finalSecondaryReceipt.status !== 1 && finalSecondaryReceipt.status !== 1n)) {
+      throw new Error("deployment receipt status changed before mined transition");
+    }
+    await canonicalReceipt(provider, step, record.deployer, finalPrimaryReceipt, "final primary", true);
+    await canonicalReceipt(secondaryProvider, step, record.deployer, finalSecondaryReceipt, "final secondary", true);
+    assertPinnedJournal();
+    for (const candidate of [finalPrimaryReceipt, finalSecondaryReceipt]) {
+      if (
+        candidate.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+        Number(candidate.blockNumber) !== Number(receipt.blockNumber) ||
+        candidate.transactionHash.toLowerCase() !== step.expectedHash.toLowerCase() ||
+        candidate.contractAddress.toLowerCase() !== step.address.toLowerCase()
+      ) throw new Error("deployment evidence changed immediately before mined transition");
+    }
+    record = recordDeploymentMined(journalPath, planDigest, index, Number(finalPrimaryReceipt.blockNumber));
+    return { state: "mined", step: record.steps[index], receipt: finalPrimaryReceipt };
+  }
+  const pending = await provider.getTransaction(step.expectedHash);
+  assertPinnedJournal();
+  if (pending) {
+    if (pending.hash.toLowerCase() !== step.expectedHash.toLowerCase() || Number(pending.nonce) !== step.nonce || pending.from.toLowerCase() !== record.deployer.toLowerCase()) {
+      throw new Error("pending transaction identity drift");
+    }
+    if (step.state === "signed") record = recordDeploymentBroadcast(journalPath, planDigest, index);
+    return { state: "pending", step: record.steps[index] };
+  }
+  const latestNonce = await provider.getTransactionCount(record.deployer, "latest");
+  const pendingNonce = await provider.getTransactionCount(record.deployer, "pending");
+  assertPinnedJournal();
+  if (latestNonce > step.nonce || pendingNonce > step.nonce) throw new Error(`nonce drift at ${step.nonce}; refusing replacement transaction`);
+  if (latestNonce < record.startNonce || pendingNonce < record.startNonce) throw new Error("account nonce moved behind reserved deployment range");
+  if (!allowBroadcast) return { state: "absent", step };
+  assertPinnedJournal();
+  const response = await provider.broadcastTransaction(step.rawTransaction);
+  assertPinnedJournal();
+  if (response.hash.toLowerCase() !== step.expectedHash.toLowerCase()) throw new Error("provider returned a different transaction hash");
+  record = recordDeploymentBroadcast(journalPath, planDigest, index);
+  return { state: "broadcast", step: record.steps[index], response };
+}
+
+export async function reconcileSignedDeployment(args) {
+  return withJournalLock(args.journalPath, () => reconcileLocked({ ...args, allowBroadcast: args.allowBroadcast ?? true }), args.lockHooks);
+}
+
+export function readSignedDeploymentJournal(path) {
+  return readJournal(path);
+}
