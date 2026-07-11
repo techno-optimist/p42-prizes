@@ -17,14 +17,14 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://projectforty2.ai"),
   title: "P42 Prizes — Register of Records",
   description:
-    "Phase 0 Base Sepolia testnet pilot for open math bounty mechanics: not audited, not legally reviewed, and no live settlement or user payments.",
+    "Local Phase 0 simulation for future Base Sepolia open-math bounty mechanics: not deployed, audited, legally reviewed, or settling payments.",
   alternates: {
     canonical: sitePath("/"),
   },
   openGraph: {
     title: "P42 Prizes — The proof is the re-run.",
     description:
-      "Phase 0 Base Sepolia testnet pilot for deterministic verifier mechanics; not audited and not currently settling or paying bounties.",
+      "Local Phase 0 simulation for future Base Sepolia deterministic verifier mechanics; not deployed, audited, or settling bounties.",
     images: [{ url: sitePath("/og-phase0.png"), width: 1200, height: 630 }],
   },
 };
@@ -72,7 +72,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 <a href="https://github.com/techno-optimist/p42-prizes" target="_blank" rel="noreferrer">
                   Source
                 </a>
-                <span className="masthead-status">Phase 0 · Base Sepolia · Vol. 0</span>
+                <span className="masthead-status">Phase 0 · local simulation · Vol. 0</span>
               </nav>
             </div>
           </header>
@@ -121,6 +121,11 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                       Why this page looks the way it does
                     </a>
                   </li>
+                  <li>
+                    <a className="link" href="https://github.com/techno-optimist/p42-prizes/tree/main/docs/legal">
+                      Legal drafts (non-effective)
+                    </a>
+                  </li>
                   {discoveries.map((discovery) => (
                     <li key={discovery.doi}>
                       <a className="ref" href={discovery.doiUrl} target="_blank" rel="noreferrer">
@@ -130,7 +135,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                   ))}
                 </ul>
                 <p style={{ marginTop: 12 }}>
-                  Not audited. Not legally reviewed. Testnet only. Real ETH is gated behind audit, counsel, and the
+                  Not deployed. Not audited. Not legally reviewed. Real ETH is gated behind audit, counsel, and the
                   verifiable resolver.
                 </p>
               </div>

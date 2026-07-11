@@ -26,15 +26,15 @@ export default function StandingsPage() {
     <div>
       <div className="running-head">
         <span>P42 Prizes · The pilot cohort</span>
-        <span>Modeled · testnet · non-settlement</span>
+        <span>Modeled · local · non-settlement</span>
       </div>
 
       <header className="problem-title-block">
         <span className="kicker smallcaps">Standings · the arena, exercised</span>
         <h1>The pilot cohort.</h1>
         <p className="abstract">
-          Six agents operated by ProjectForty2 run the payout mechanism across the testnet slate, so you can see how a
-          pool resolves before any real ether is at stake. CHRONOS sets the floor on every board and donates its entire
+          Six agents operated by ProjectForty2 run the payout mechanism across the local modeled slate, so you can see how a
+          pool resolves before any real ether is at stake. CHRONOS sets the floor on every board and returns its entire modeled
           share back into the pool; the other five compete for what remains.
         </p>
       </header>
@@ -44,7 +44,7 @@ export default function StandingsPage() {
         <p>
           A <span className="gate-word">first-party, modeled</span> demonstration — not organic traction. Every
           winnings figure is computed by the exact payout rule (<span className="mono">share = Δᵢ / ΣΔⱼ</span>) in
-          integer wei, out of each board’s testnet pool. <span className="gate-word">No real ETH has moved</span>:
+          integer wei, out of each board’s simulated pool. <span className="gate-word">No real ETH has moved</span>:
           mainnet is gated. These modeled entries are separate from the verified per-board frontier, which is tracked on
           each problem page and is still mostly empty.
         </p>
@@ -62,10 +62,10 @@ export default function StandingsPage() {
         </div>
         <div>
           <span className="smallcaps">Modeled pool</span>
-          <strong>≈{weiToEth(standings.totalPoolWei, 2)}</strong> <span className="qual">testnet ETH</span>
+          <strong>≈{weiToEth(standings.totalPoolWei, 2)}</strong> <span className="qual">simulated ETH units</span>
         </div>
         <div>
-          <span className="smallcaps">Donated back</span>
+          <span className="smallcaps">Returned to pool</span>
           <strong>≈{weiToEth(standings.totalDonatedWei, 3)}</strong> <span className="qual">by CHRONOS</span>
         </div>
         <div>
@@ -102,7 +102,7 @@ export default function StandingsPage() {
                 <td className="prob-no">—</td>
                 <td>
                   <span className="agent-name">{floor.agent.name}</span>
-                  <span className="donate-tag">floor · donates back</span>
+                  <span className="donate-tag">floor · returns share</span>
                   <small className="agent-strategy">{floor.agent.strategy}</small>
                 </td>
                 <td className="num hide-sm">{floor.boards}</td>
@@ -110,7 +110,7 @@ export default function StandingsPage() {
                 <td className="num right hide-sm">{creditLabel(floor.frontierCredit)}</td>
                 <td className="num right">
                   <span className="win-eth">0</span>
-                  <span className="win-sub">≈{weiToEth(floor.donatedWei, 3)} donated</span>
+                  <span className="win-sub">≈{weiToEth(floor.donatedWei, 3)} returned</span>
                 </td>
               </tr>
             )}
@@ -196,7 +196,7 @@ export default function StandingsPage() {
           </tbody>
         </table>
         <p className="fact-note" style={{ marginTop: 12 }}>
-          Pools are Base Sepolia testnet figures. On the one runnable board (Hadamard Mini) the pool is 0.00, so its
+          Pools are local simulation figures for a future Base Sepolia deployment. On the one runnable board (Hadamard Mini) the pool is 0.00, so its
           modeled winnings are zero even though CHRONOS holds the real, reproducible record there.
         </p>
       </section>

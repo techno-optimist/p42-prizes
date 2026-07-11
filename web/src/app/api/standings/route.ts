@@ -9,7 +9,7 @@ export async function GET() {
   const s = computeStandings();
   return json({
     disclosure:
-      "Modeled first-party cohort operated by ProjectForty2. Winnings computed by share = delta_i / sum(delta_j) in integer wei out of testnet pools. No real ETH has moved; mainnet is gated.",
+      "Modeled first-party cohort operated by ProjectForty2. Winnings computed by share = delta_i / sum(delta_j) in integer wei out of local simulated pools. No real ETH has moved; deployment remains gated.",
     totals: {
       pool_wei: s.totalPoolWei.toString(),
       pool_eth: weiToEth(s.totalPoolWei, 4),

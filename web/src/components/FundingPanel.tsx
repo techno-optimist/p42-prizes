@@ -32,7 +32,7 @@ export function FundingPanel({
   return (
     <div className="funding">
       <div className="funding-head">
-        <h3>Donation pool — {label ?? `${wallet.chain} ${wallet.asset}`}</h3>
+        <h3>Proposed sponsor pool — {label ?? `${wallet.chain} ${wallet.asset}`}</h3>
         <span className={`status-word ${target ? "pilot" : "locked"}`}>
           {target ? "deployed" : "not deployed"}
         </span>
@@ -42,10 +42,10 @@ export function FundingPanel({
         <>
           <div className="address-line">
             <code>{target.address}</code>
-            <a className="copy-button" href={target.walletUri} aria-label={`Donate ${target.asset} to ${label ?? "pool"}`}>
-              donate {target.asset}
+            <a className="copy-button" href={target.walletUri} aria-label={`Fund ${label ?? "sponsor pool"} with ${target.asset}`}>
+              fund {target.asset}
             </a>
-            <button className="copy-button" type="button" onClick={copyAddress} aria-label="Copy donation pool address">
+            <button className="copy-button" type="button" onClick={copyAddress} aria-label="Copy sponsor pool address">
               {copied ? "copied" : "copy"}
             </button>
             <a className="ref" href={target.explorerUrl} target="_blank" rel="noreferrer">
@@ -60,7 +60,7 @@ export function FundingPanel({
         </>
       ) : (
         <p className="testnet-warning">
-          Pool not deployed. No address or donation action is published until per-problem chain provenance is
+          Pool not deployed. No address or sponsorship-funding action is published until per-problem chain provenance is
           reconciled to deployed runtime bytecode.
         </p>
       )}

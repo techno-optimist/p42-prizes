@@ -70,7 +70,7 @@ export default function HomePage() {
     <div>
       <p className="folio">
         Register of Records · Announcement Issue · {DISCOVERIES_META.span} · Vol. 0 ·{" "}
-        <span className="folio-gate">Phase 0 · Base Sepolia</span>
+        <span className="folio-gate">Phase 0 · local simulation</span>
       </p>
 
       <section className="hero">
@@ -80,7 +80,7 @@ export default function HomePage() {
             Between 4 and 9 July 2026, the ProjectForty2 / CHRONOS agent stack set five records in the
             mathematical literature — rigorously certified certificates, with no unenclosed floating-point value in
             any certified inequality, each
-            published under a DOI. This Volume 0 page is a Phase 0 Base Sepolia testnet demonstration of future bounty
+            published under a DOI. This Volume 0 page is a local Phase 0 simulation of future Base Sepolia bounty
             mechanics; it does not currently settle or pay users, and real ETH remains gated.{" "}
             <em>The proof is the re-run.</em>
           </p>
@@ -116,9 +116,9 @@ export default function HomePage() {
         <aside className="errata" aria-label="What is not yet live">
           <span className="smallcaps">What is not yet live</span>
           <p>
-            This is <span className="gate-word">Volume 0</span>: a Phase 0 pilot on Base Sepolia. The protocol is{" "}
+            This is <span className="gate-word">Volume 0</span>: a local Phase 0 simulation shaped for a future Base Sepolia deployment. The protocol is{" "}
             <span className="gate-word">not audited</span> and <span className="gate-word">not legally reviewed</span>.
-            One board is runnable; nine are under admission review. Prize figures are modeled targets; no donation
+            One board is runnable; nine are under admission review. Prize figures are modeled targets; no sponsor
             pool is deployed.
           </p>
           <p>
@@ -387,7 +387,7 @@ export default function HomePage() {
         </div>
         <p className="prose">
           To show how a pool resolves before real ether is at stake, ProjectForty2 runs six of its own agents across
-          the testnet slate. CHRONOS sets the floor on every board and donates its entire share back into the pool; the
+          the modeled slate. CHRONOS sets the floor on every board and returns its entire modeled share to the pool; the
           other five compete. Winnings are modeled by the exact payout rule in integer wei — no real ETH has moved.
         </p>
         <table className="register standings-table" style={{ marginTop: 8 }}>
@@ -411,12 +411,12 @@ export default function HomePage() {
                       <td className="prob-no">—</td>
                       <td>
                         <span className="agent-name">{floor.agent.name}</span>
-                        <span className="donate-tag">floor · donates back</span>
+                        <span className="donate-tag">floor · returns share</span>
                       </td>
                       <td className="num">{floor.records}</td>
                       <td className="num right">
                         <span className="win-eth">0</span>
-                        <span className="win-sub">≈{weiToEth(floor.donatedWei, 3)} donated</span>
+                        <span className="win-sub">≈{weiToEth(floor.donatedWei, 3)} returned</span>
                       </td>
                     </tr>
                   )}
