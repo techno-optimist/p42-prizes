@@ -26,10 +26,32 @@ type ProblemManifest = {
   };
 };
 
+type ReleaseGuardBoard = {
+  id: number;
+  slug: string;
+  title: string;
+  status: string;
+  mode: string;
+  direction: string;
+  scoreName: string;
+  currentBest: string;
+  minImprovement: string;
+  bountyEth: string;
+  challengeWindowHours: number;
+  verifierVersion: string;
+};
+
 const repoRoot = resolve(process.cwd(), "..");
 
 function readProblemManifest(repoPath: string): ProblemManifest {
   return parse(readFileSync(join(repoRoot, repoPath, "problem.yaml"), "utf8")) as ProblemManifest;
+}
+
+function releaseGuardBoards(): ReleaseGuardBoard[] {
+  const manifest = JSON.parse(
+    readFileSync(join(repoRoot, "scripts", "release-guard-problems-v1.json"), "utf8"),
+  ) as { boards: ReleaseGuardBoard[] };
+  return manifest.boards;
 }
 
 describe("problem funding wallets", () => {
@@ -163,5 +185,24 @@ describe("problem funding wallets", () => {
         expect(problem.currentBest, `${problem.slug} locked currentBest`).toBe(manifest.objective.seed_best);
       }
     }
+  });
+
+  it("keeps the independent live-release projection synchronized with portal data", () => {
+    const projection = problems.map((problem) => ({
+      id: problem.id,
+      slug: problem.slug,
+      title: problem.title,
+      status: problem.status,
+      mode: problem.mode,
+      direction: problem.direction,
+      scoreName: problem.scoreName,
+      currentBest: problem.currentBest,
+      minImprovement: problem.minImprovement,
+      bountyEth: problem.bountyEth,
+      challengeWindowHours: problem.challengeWindowHours,
+      verifierVersion: problem.verifierVersion,
+    }));
+
+    expect(releaseGuardBoards()).toEqual(projection);
   });
 });
