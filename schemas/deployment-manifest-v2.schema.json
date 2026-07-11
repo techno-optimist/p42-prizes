@@ -207,6 +207,7 @@
       "properties": {
         "status": { "enum": ["pending", "verified"] },
         "requiredExplorer": { "type": "string", "format": "uri" },
+        "dossierDigest": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/digest" }] },
         "contracts": {
           "type": "object",
           "additionalProperties": false,
@@ -229,6 +230,7 @@
           "if": { "properties": { "status": { "const": "verified" } } },
           "then": {
             "properties": {
+              "dossierDigest": { "$ref": "#/$defs/digest" },
               "contracts": {
                 "properties": {
                   "timelock": { "type": "string", "format": "uri" },
@@ -383,6 +385,15 @@
         ]
       },
       "then": { "required": ["roleAcceptances"] }
+    },
+    {
+      "if": {
+        "allOf": [
+          { "properties": { "releaseMode": { "const": "production" } } },
+          { "properties": { "status": { "const": "governance-setup-complete" } } }
+        ]
+      },
+      "then": { "properties": { "sourceVerification": { "properties": { "status": { "const": "verified" }, "dossierDigest": { "$ref": "#/$defs/digest" } } } } }
     }
   ],
   "$defs": {

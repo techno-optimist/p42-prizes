@@ -44,6 +44,42 @@ function readStrictBytesAndJson(path) {
   } finally { closeSync(fd); }
 }
 
+function readExplorerDossierExact(path, expectedDigest) {
+  if (!/^sha256:[0-9a-f]{64}$/.test(expectedDigest ?? "")) throw new Error("explorer dossier requires an exact out-of-band sha256 digest");
+  const file = readStrictBytesAndJson(path);
+  if (sha256(file.bytes) !== expectedDigest) throw new Error("explorer dossier exact-bytes digest mismatch");
+  return file.value;
+}
+
+function explorerRaw(raw, expectedProvider, expectedOrigin, now) { const url = new URL(raw.url); const bytes = Buffer.from(raw.responseBase64, "base64"); const fetched = Date.parse(raw.fetchedAt); if (raw.provider !== expectedProvider || url.origin !== expectedOrigin || raw.host !== url.host || raw.httpStatus !== 200 || !Number.isFinite(fetched) || fetched > now + 30_000 || now - fetched > 86_400_000 || bytes.toString("base64") !== raw.responseBase64 || sha256(bytes) !== raw.responseDigest) throw new Error("explorer raw response framing, endpoint, status, or timestamp is invalid"); return { url, json: parseStrictJsonBytes(bytes, LIMITS) }; }
+function standardInput(sourceCode) { const text = String(sourceCode ?? "").trim(); const bytes = Buffer.from(text.startsWith("{{") && text.endsWith("}}") ? text.slice(1, -1) : text); const input = parseStrictJsonBytes(bytes, LIMITS); if (input.language !== "Solidity" || !input.sources || !input.settings) throw new Error("Etherscan standard-json input is invalid"); return input; }
+
+function validateExplorerDossier(dossier, manifest, capsule, env) {
+  const keys = ["schema", "chainId", "releaseBindingDigest", "capsuleDigest", "deploymentCommit", "finalizedAt", "expiresAt", "contracts", "evidenceDigest", "operatorRoster", "attestations", "dossierDigest"];
+  if (!dossier || Object.keys(dossier).sort().join("\0") !== keys.sort().join("\0") || dossier.schema !== "p42-prizes/explorer-verification-dossier/v2") throw new Error("explorer dossier schema is invalid");
+  const { dossierDigest, ...body } = dossier; const { evidenceDigest, operatorRoster, attestations, ...core } = body;
+  if (sha256(canonical(body)) !== dossierDigest || sha256(canonical(core)) !== evidenceDigest || dossierDigest !== manifest.sourceVerification?.dossierDigest || dossier.chainId !== manifest.network?.chainId || dossier.releaseBindingDigest !== manifest.releaseEvidence?.releaseBindingDigest || dossier.capsuleDigest !== capsule.capsuleDigest || dossier.deploymentCommit !== manifest.deploymentCommit) throw new Error("explorer dossier release binding mismatch");
+  const now = Date.now(); if (dossier.finalizedAt * 1000 > now + 30_000 || dossier.expiresAt <= dossier.finalizedAt || now > dossier.expiresAt * 1000) throw new Error("explorer dossier finalized instant/expiry is invalid or future");
+  const trusted = requiredVerificationOperatorAllowlist(env); if (canonical(trusted) !== canonical(operatorRoster) || !Array.isArray(attestations) || attestations.length !== 2 || new Set(attestations.map((x) => x.nonce)).size !== 2) throw new Error("explorer verification operator roster/attestations mismatch");
+  const domain = { name: "P42 Explorer Verification", version: "2", chainId: dossier.chainId }; const types = { Verification: [{ name: "evidenceDigest", type: "bytes32" }, { name: "releaseBindingDigest", type: "bytes32" }, { name: "nonce", type: "bytes32" }, { name: "expiresAt", type: "uint64" }, { name: "finalizedAt", type: "uint64" }] };
+  const recoveredOperators = [];
+  for (const attestation of attestations) { const value = { evidenceDigest: `0x${evidenceDigest.slice(7)}`, releaseBindingDigest: `0x${dossier.releaseBindingDigest.slice(7)}`, nonce: attestation.nonce, expiresAt: dossier.expiresAt, finalizedAt: dossier.finalizedAt }; const recovered = ethers.verifyTypedData(domain, types, value, attestation.signature).toLowerCase(); if (recovered !== attestation.operator || !trusted.includes(recovered)) throw new Error("forged explorer verification operator signature"); recoveredOperators.push(recovered); }
+  if (new Set(recoveredOperators).size !== 2 || canonical([...recoveredOperators].sort()) !== canonical(operatorRoster)) throw new Error("attestation recovered signer set must exactly equal operator roster");
+  const entries = contractEntries(manifest);
+  if (!Array.isArray(dossier.contracts) || dossier.contracts.length !== 43 || entries.length !== 43 || new Set(dossier.contracts.map((row) => row.address.toLowerCase())).size !== 43) throw new Error("explorer dossier must cover exactly 43 unique contracts");
+  const artifacts = new Map(capsule.contracts.map((entry) => [entry.name, entry])); const infos = new Map(capsule.buildInfos.map((entry) => [entry.id, entry]));
+  dossier.contracts.forEach((row, index) => {
+    const entry = entries[index], artifact = artifacts.get(entry.name), info = infos.get(artifact?.buildInfoId); if (row.address.toLowerCase() !== entry.address.toLowerCase() || row.name !== entry.name || row.buildInfoId !== artifact.buildInfoId || row.capsuleArtifactDigest !== artifact.artifactDigest || !Array.isArray(row.providers) || row.providers.length !== 2) throw new Error(`explorer dossier contract ${index} binding mismatch`);
+    const e = explorerRaw(row.providers[0], "etherscan-v2-official", "https://api.etherscan.io", now), s = explorerRaw(row.providers[1], "sourcify-v2-independent", "https://sourcify.dev", now); if (e.url.pathname !== "/v2/api" || e.url.searchParams.get("chainid") !== "84532" || e.url.searchParams.get("action") !== "getsourcecode" || !/^\/server\/v2\/contract\/84532\//.test(s.url.pathname)) throw new Error("explorer endpoint shape mismatch");
+    const erow = e.json?.result?.[0], input = standardInput(erow?.SourceCode), compilation = s.json?.compilation, sourcifySources = s.json?.stdJsonInput?.sources ?? s.json?.sources, sourcifySettings = s.json?.stdJsonInput?.settings ?? compilation?.compilerSettings, creation = s.json?.creationBytecode?.recompiledBytecode, runtime = s.json?.runtimeBytecode?.onchainBytecode; const types = (artifact.abi.find((item) => item.type === "constructor")?.inputs ?? []).map((item) => item.type); const args = ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs).toLowerCase();
+    if (e.json?.status !== "1" || e.json?.message !== "OK" || String(erow.CompilerVersion).replace(/^v/, "") !== info.compiler.longVersion || `0x${String(erow.ConstructorArguments).replace(/^0x/, "").toLowerCase()}` !== args || sha256(canonical(input.sources)) !== sha256(canonical(info.input.input.sources)) || sha256(canonical(input.settings)) !== sha256(canonical(info.settings)) || !["match", "exact_match"].includes(s.json?.match) || compilation?.language !== "Solidity" || compilation?.compiler !== "solc" || String(compilation?.compilerVersion).replace(/^v/, "") !== info.compiler.longVersion || compilation?.name !== artifact.name || compilation?.fullyQualifiedName !== `${artifact.sourceName}:${artifact.name}` || sha256(canonical(sourcifySources)) !== sha256(canonical(info.input.input.sources)) || sha256(canonical(sourcifySettings)) !== sha256(canonical(info.settings)) || creation?.toLowerCase() !== artifact.creationCode.toLowerCase() || ethers.keccak256(runtime).toLowerCase() !== entry.runtimeCodeHash.toLowerCase()) throw new Error(`explorer dossier contract ${index} raw evidence mismatch`);
+    const chainBytes = Buffer.from(row.chainCode.responseBase64, "base64"); if (sha256(chainBytes) !== row.chainCode.responseDigest || Date.parse(row.chainCode.fetchedAt) > now + 30_000) throw new Error("chain code raw frame invalid or future"); const frame = parseStrictJsonBytes(chainBytes, LIMITS); if (frame.address.toLowerCase() !== entry.address.toLowerCase() || frame.blockTag !== "finalized" || frame.result.toLowerCase() !== runtime.toLowerCase()) throw new Error("chain code/Sourcify mismatch");
+  });
+  return dossier;
+}
+
+function requiredVerificationOperatorAllowlist(env) { const entries = requiredPath(env, "P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES").split(",").map((x) => x.toLowerCase()).sort(); if (entries.length !== 2 || new Set(entries).size !== 2 || entries.some((x) => !/^0x[0-9a-f]{40}$/.test(x))) throw new Error("P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES must contain exactly two distinct addresses"); return entries; }
+
 function dossierTimestamps(manifest, dossier, knownOperators) {
   const expectedKeys = ["schema", "manifestDigest", "deploymentConfigHash", "deploymentCommit", "slateDigest", "capsuleDigest", "blocks"];
   if (!dossier || Object.keys(dossier).sort().join("\0") !== expectedKeys.sort().join("\0") || dossier.schema !== "p42-prizes/production-timestamp-dossier/v1" || !Array.isArray(dossier.blocks)) throw new Error("production timestamp dossier schema is invalid");
@@ -76,7 +112,7 @@ function requiredOperatorAllowlist(env) {
   return new Set(entries);
 }
 
-export function loadProductionValidationContextSync(manifest, { env = process.env, slatePath = null, capsulePath = null, dossierPath = null, dossierDigest = null } = {}) {
+export function loadProductionValidationContextSync(manifest, { env = process.env, slatePath = null, capsulePath = null, dossierPath = null, dossierDigest = null, explorerDossierPath = null, explorerDossierDigest = null } = {}) {
   if (manifest?.releaseMode !== "production") return {};
   const productionSlate = readStrictJsonFileSync(slatePath ?? requiredPath(env, "P42_PRODUCTION_SLATE_PATH"), LIMITS);
   const capsule = readStrictJsonFileSync(capsulePath ?? requiredPath(env, "P42_RELEASE_CAPSULE"), LIMITS);
@@ -87,6 +123,9 @@ export function loadProductionValidationContextSync(manifest, { env = process.en
   if (sha256(dossierFile.bytes) !== expectedDossierDigest) throw new Error("production timestamp dossier exact-bytes digest mismatch");
   const known = requiredOperatorAllowlist(env);
   const timestamps = dossierTimestamps(manifest, dossierFile.value, known);
+  const explorerRequired = manifest.status === "governance-setup-complete" && manifest.sourceVerification?.status === "verified";
+  const explorer = explorerRequired ? readExplorerDossierExact(explorerDossierPath ?? requiredPath(env, "P42_EXPLORER_DOSSIER_PATH"), explorerDossierDigest ?? requiredPath(env, "P42_EXPLORER_DOSSIER_SHA256")) : null;
+  if (explorer) validateExplorerDossier(explorer, manifest, capsule, env);
   return {
     productionSlate,
     capsuleResolver: (digest) => digest === capsule.capsuleDigest ? capsule : null,
@@ -94,6 +133,7 @@ export function loadProductionValidationContextSync(manifest, { env = process.en
       if (!timestamps.has(blockNumber)) throw new Error(`trusted block timestamp is unavailable for deployment block ${blockNumber}`);
       return timestamps.get(blockNumber);
     },
+    explorerDossierResolver: (digest) => explorer?.dossierDigest === digest ? explorer : null,
   };
 }
 
@@ -104,7 +144,10 @@ export async function loadProductionValidationContext(manifest, { env = process.
     : (() => {
         const productionSlate = readStrictJsonFileSync(slatePath ?? requiredPath(env, "P42_PRODUCTION_SLATE_PATH"), LIMITS);
         const capsule = readStrictJsonFileSync(capsulePath ?? requiredPath(env, "P42_RELEASE_CAPSULE"), LIMITS);
-        return { productionSlate, capsuleResolver: (digest) => digest === capsule.capsuleDigest ? capsule : null };
+        const explorerRequired = manifest.status === "governance-setup-complete" && manifest.sourceVerification?.status === "verified";
+        const explorer = explorerRequired ? readExplorerDossierExact(requiredPath(env, "P42_EXPLORER_DOSSIER_PATH"), requiredPath(env, "P42_EXPLORER_DOSSIER_SHA256")) : null;
+        if (explorer) validateExplorerDossier(explorer, manifest, capsule, env);
+        return { productionSlate, capsuleResolver: (digest) => digest === capsule.capsuleDigest ? capsule : null, explorerDossierResolver: (digest) => explorer?.dossierDigest === digest ? explorer : null };
       })();
   if (provider === null) return context;
   const timestamps = new Map();

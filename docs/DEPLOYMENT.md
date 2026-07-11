@@ -340,3 +340,31 @@ Before pushing an Observatory change:
 1. Confirm it only links to or proxies the standalone prize service.
 2. Run `python3 -m py_compile backend/main.py backend/public_dgx_hardening.py`.
 3. Smoke `https://projectforty2.ai/prizes` after Render deploy.
+# Explorer verification gate
+
+Before production governance can be marked complete, generate and validate a
+content-addressed `p42-prizes/explorer-verification-dossier/v2` artifact. The
+gate requires exact one-to-one coverage of all 43 addresses, current BaseScan
+official API evidence, independent Sourcify evidence, and on-chain runtime code
+matching the attested release capsule. Set `P42_EXPLORER_DOSSIER_PATH` and the
+out-of-band exact-byte pin `P42_EXPLORER_DOSSIER_SHA256`; symlinks, stale
+responses, URL-only evidence, duplicate/omitted/relabelled contracts, and
+caller-authored success are rejected. Networked tests are prohibited; API paths
+are exercised with explicit mocks.
+
+The current schema is `p42-prizes/explorer-verification-dossier/v2`. It embeds
+the bounded exact raw response bytes and URL, host, HTTP status, fetch time, and
+SHA-256 for Etherscan V2 at `https://api.etherscan.io/v2/api?chainid=84532` and
+Sourcify V2 at `/server/v2/contract/84532/<address>?fields=all`. Derived metadata
+is never serialized as authority: creation/runtime bytecode, standard-json
+sources/settings, compiler identity, and constructor arguments are reparsed
+from those bytes during every validation. The finalized `eth_getCode` frame is
+stored separately and compared byte-for-byte with Sourcify and the capsule.
+
+Set `P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES` to exactly two distinct
+trusted operator addresses. Both must EIP-712 sign the evidence digest and
+release binding with unique nonces, a finalized validation instant, and expiry.
+Governance completion and reconciliation re-query both services live and fail
+closed before publication. Tests always inject mocked HTTP responses. An
+optional operator-only smoke run may use `ETHERSCAN_API_KEY=<key> npm run
+reconcile:base-sepolia`; it performs live reads and must not be used in CI.

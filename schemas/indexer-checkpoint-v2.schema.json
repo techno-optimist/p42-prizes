@@ -65,6 +65,7 @@
         "deploymentConfigHash": { "$ref": "#/$defs/bytes32" },
         "chainId": { "type": "integer", "minimum": 1 },
         "startBlock": { "type": "integer", "minimum": 0 },
+        "explorerDossierDigest": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }] },
         "contracts": {
           "type": "object",
           "additionalProperties": false,
