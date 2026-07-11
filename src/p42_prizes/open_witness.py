@@ -71,7 +71,7 @@ def normalize_open_witness_launch(
     attestations = normalized.pop("attestations", None)
     supplied_outputs = {key: normalized.pop(key, None) for key in ("evidence_valid", "attestation_valid", "gate_passed")}
     if supplied_outputs["gate_passed"] is True:
-        raise OpenWitnessError("caller-authored gate_passed=true is forbidden until production collector authority is integrated")
+        raise OpenWitnessError("caller-authored gate_passed=true is forbidden; only the production promotion command may set it")
     if any(value not in (None, False) for value in supplied_outputs.values()):
         raise OpenWitnessError("derived validity fields must not be caller-authored")
 

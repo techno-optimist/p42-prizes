@@ -727,7 +727,7 @@ def _cmd_open_witness_promote(args: argparse.Namespace) -> int:
         _enforce_gate_schema(promoted, "open-witness-promotion.schema.json")
     except (
         AdmissionError, OpenWitnessAuthorityError, OpenWitnessPolicyError,
-        jsonschema.ValidationError, OSError, ValueError,
+        jsonschema.ValidationError, KeyError, OSError, TypeError, ValueError,
     ) as exc:
         print(str(exc), file=sys.stderr)
         return 1
