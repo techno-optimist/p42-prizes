@@ -55,6 +55,18 @@ transaction calldata and receipt logs before constructing these summaries.
 Python validates the collector-format contract only; it does not independently
 decode Ethereum ABI bytes, and therefore cannot set `gate_passed`.
 
+The JS collector also performs every evidence-relevant state read itself. It
+issues ABI-bound `eth_call` requests with explicit historical block tags to the
+manifest-selected registry, pool, ledger, and submission manager, and reads the
+pool balance at the same pinned blocks. It checks registry identity, unpaid
+phase, finalized status, finalize credit, predecessor/current frontier, ledger
+credit, funding state, and pre-arm balance directly from decoded RPC results.
+Caller-provided semantic state readers and caller-declared "validated"
+checkpoints are not accepted. Finality is derived from the provider's canonical
+latest block and the manifest confirmation policy. Production therefore
+requires a trusted archive-capable RPC endpoint; unavailable historical state,
+malformed ABI results, insufficient confirmations, or a reorg fails closed.
+
 The release-bound configuration must identify the exact board and admission
 matrix, declare `objective: minimize`, and pin a positive `min_improvement_atoms`.
 The validator requires `post < pre` and `pre - post >= min_improvement_atoms`.

@@ -542,6 +542,7 @@ function openWitnessFixture() {
   const manifest = {
     schema: "p42-prizes/deployment-manifest/v2", deploymentCommit: "a".repeat(40),
     deploymentConfigHash: hash(90), network: { chainId: 84532 },
+    indexer: { startBlock: 1, finalityPolicy: POLICY },
     parameters: { challengeWindowSeconds: "10" },
     contracts: { registry: checkpointContract(2) }, problems: [problem],
   };
@@ -595,9 +596,26 @@ function openWitnessFixture() {
   const registryInterface = new ethers.Interface([
     "event ProblemRegistered(uint256 indexed problemId,bytes32 indexed specHash,bytes32 indexed verifierImageHash,address pool,string metadataURI)",
   ]);
+  const poolStateInterface = new ethers.Interface(["function acceptingFunds() view returns (bool)"]);
+  const ledgerStateInterface = new ethers.Interface([
+    "function totalCreditAtoms() view returns (uint256)",
+    "function creditAtomsOf(address) view returns (uint256)",
+  ]);
+  const submissionStateInterface = new ethers.Interface([
+    "function submissions(uint256) view returns (address solver,bytes32 commitment,bytes32 commitDaHash,uint256 bondWei,uint256 poolAtSubmissionWei,uint256 requiredBondWei,uint256 improvementAtoms,int256 claimedScoreAtoms,string solutionCid,bytes32 permanenceHash,uint64 committedAt,uint64 revealedAt,uint64 challengeEndsAt,uint8 status)",
+    "function paidAtCommit(uint256) view returns (bool)",
+    "function finalizeInfo(uint256) view returns (int256 prevBestScoreAtoms,uint256 creditAtoms,uint64 prevCreditRecoveryEndsAt)",
+    "function bestScoreAtoms() view returns (int256)",
+    "function fundingArmed() view returns (bool)",
+  ]);
+  const registryStateInterface = new ethers.Interface([
+    "function problems(uint256) view returns (bytes32 specHash,bytes32 verifierSourceHash,bytes32 verifierImageHash,bytes32 admissionMatrixHash,string metadataURI,address pool,address ledger,address submissionManager,address challengeManager,uint64 challengeWindowSeconds,uint256 minImprovementAtoms,bool frozen)",
+  ]);
   const revealData = revealInterface.encodeFunctionData("reveal", [1n, "ipfs://solution", 900n, 100n, "salt", solutionBytes]);
   const addresses = { submissions: board.submissions.address, registry: manifest.contracts.registry.address };
   const blocks = new Map(events.map((event) => [event.blockNumber, { number: event.blockNumber, hash: event.blockHash }]));
+  blocks.get(events.find((event) => event.eventName === "FundingArmed").blockNumber).parentHash =
+    blocks.get(events.find((event) => event.eventName === "FundingArmed").blockNumber - 1).hash;
   blocks.set(checkpoint.range.toBlock, { number: checkpoint.range.toBlock, hash: checkpoint.range.toBlockHash });
   const receipts = new Map(events.map((event) => {
     const iface = event.source === "registry" ? registryInterface : revealInterface;
@@ -612,37 +630,67 @@ function openWitnessFixture() {
       }],
     }];
   }));
+  let anchorSubmissionStatus = 4;
   const provider = {
+    armBlockNumber: events.find((event) => event.eventName === "FundingArmed").blockNumber,
+    anchorBlockNumber: checkpoint.range.toBlock,
+    setAnchorSubmissionStatus(status) { anchorSubmissionStatus = status; },
     async getNetwork() { return { chainId: 84532n }; },
-    async getBlock(number) { return blocks.get(Number(number)) ?? null; },
+    async getBlock(number) {
+      if (number === "latest") return { number: checkpoint.range.toBlock + POLICY.confirmations, hash: hash(1300) };
+      return blocks.get(Number(number)) ?? null;
+    },
+    async getBalance(addressValue, blockTag) {
+      assert.equal(addressValue.toLowerCase(), board.pool.address.toLowerCase());
+      assert.equal(Number(blockTag), events.find((event) => event.eventName === "FundingArmed").blockNumber - 1);
+      return 0n;
+    },
+    async call(transaction) {
+      const blockTag = transaction.blockTag;
+      assert.equal(Number.isSafeInteger(blockTag), true);
+      const to = transaction.to.toLowerCase();
+      if (to === board.pool.address.toLowerCase()) {
+        const parsed = poolStateInterface.parseTransaction({ data: transaction.data });
+        return poolStateInterface.encodeFunctionResult(parsed.name, [false]);
+      }
+      if (to === board.ledger.address.toLowerCase()) {
+        const parsed = ledgerStateInterface.parseTransaction({ data: transaction.data });
+        return ledgerStateInterface.encodeFunctionResult(parsed.name, [0n]);
+      }
+      if (to === board.submissions.address.toLowerCase()) {
+        const parsed = submissionStateInterface.parseTransaction({ data: transaction.data });
+        if (parsed.name === "paidAtCommit") return submissionStateInterface.encodeFunctionResult(parsed.name, [false]);
+        if (parsed.name === "finalizeInfo") return submissionStateInterface.encodeFunctionResult(parsed.name, [1000n, 0n, 0n]);
+        if (parsed.name === "bestScoreAtoms") return submissionStateInterface.encodeFunctionResult(parsed.name, [900n]);
+        if (parsed.name === "fundingArmed") return submissionStateInterface.encodeFunctionResult(parsed.name, [false]);
+        return submissionStateInterface.encodeFunctionResult(parsed.name, [
+          replay.submissions["1"].solver, replay.submissions["1"].commitment,
+          replay.submissions["1"].commitDaHash, 0n, 0n, 0n, 100n, 900n,
+          "ipfs://solution", hash(88), 1n, 2n, 3n,
+          blockTag === checkpoint.range.toBlock ? anchorSubmissionStatus : 4,
+        ]);
+      }
+      if (to === manifest.contracts.registry.address.toLowerCase()) {
+        const parsed = registryStateInterface.parseTransaction({ data: transaction.data });
+        return registryStateInterface.encodeFunctionResult(parsed.name, [
+          problem.specHash, problem.verifierSourceHash, problem.verifierImageHash,
+          problem.admissionMatrixHash, problem.metadataURI, board.pool.address,
+          board.ledger.address, board.submissions.address, board.challenges.address,
+          10n, 1n, false,
+        ]);
+      }
+      throw new Error(`unexpected historical call to ${transaction.to} at ${blockTag}`);
+    },
     async getTransactionReceipt(transactionHash) { return receipts.get(transactionHash) ?? null; },
     async getTransaction(transactionHash) {
       if (transactionHash !== events.find((event) => event.eventName === "Revealed").transactionHash) return null;
       return { hash: transactionHash, to: board.submissions.address, data: revealData };
     },
   };
-  const readers = {
-    async readHistoricalState({ phase, blockTag }) {
-      const block = blocks.get(blockTag);
-      if (phase === "beforeArm") return { blockNumber: blockTag, blockHash: block.hash, poolBalanceWei: 0n, acceptingFunds: false, totalCreditAtoms: 0n };
-      if (phase === "atFinalize") return { blockNumber: blockTag, blockHash: block.hash, totalCreditAtoms: 0n, solverCreditAtoms: 0n, submissionStatus: "Finalized" };
-      return {
-        blockNumber: blockTag, blockHash: block.hash,
-        registryTuple: {
-          specHash: problem.specHash, verifierSourceHash: problem.verifierSourceHash,
-          verifierImageHash: problem.verifierImageHash, admissionMatrixHash: problem.admissionMatrixHash,
-          metadataURI: problem.metadataURI, pool: board.pool.address, ledger: board.ledger.address,
-          submissionManager: board.submissions.address, challengeManager: board.challenges.address,
-          challengeWindowSeconds: 10n, minImprovementAtoms: 1n,
-        },
-      };
-    },
-    async readValidatedCheckpoint() { return structuredClone(checkpoint); },
-  };
   const args = {
     replay, manifest, problemId: "1", submissionId: "1",
     transcriptHash: hash(801), reportHash: hash(802),
-    provider, readers,
+    provider,
   };
   return { args, events, receipts };
 }
@@ -666,12 +714,29 @@ describe("P42 deterministic indexer replay", () => {
       await fn(args);
       await assert.rejects(() => collectCanonicalOpenWitnessLaunchEvidence(args), pattern);
     };
-    await mutate((args) => { args.readers = undefined; }, /requires readHistoricalState reader/);
+    await mutate((args) => { args.provider.call = undefined; }, /requires provider\.call reader/);
     await mutate((args) => { args.provider.getNetwork = async () => ({ chainId: 1n }); }, /chainId does not match/);
     await mutate((args) => {
-      const original = args.readers.readHistoricalState;
-      args.readers.readHistoricalState = async (query) => ({ ...(await original(query)), blockHash: hash(9999) });
-    }, /forged or stale block hash/);
+      args.provider.call = async () => "0xdeadbeef";
+    }, /cannot be decoded by the deployed ABI/);
+    await mutate((args) => {
+      const original = args.provider.call;
+      const selector = ethers.id("paidAtCommit(uint256)").slice(0, 10);
+      args.provider.call = async (transaction) => transaction.data.slice(0, 10) === selector
+        ? ethers.AbiCoder.defaultAbiCoder().encode(["bool"], [true])
+        : original(transaction);
+    }, /paid at commit/);
+    await mutate((args) => { args.provider.setAnchorSubmissionStatus(6); }, /no longer has a nonvoid finalized witness/);
+    await mutate((args) => {
+      const original = args.provider.getBlock;
+      const anchorNumber = args.provider.anchorBlockNumber;
+      let reads = 0;
+      args.provider.getBlock = async (number) => {
+        const block = await original(number);
+        if (number === anchorNumber && ++reads > 1) return { ...block, hash: hash(9998) };
+        return block;
+      };
+    }, /historical block changed during collection/);
     await mutate((args) => {
       const original = args.provider.getTransactionReceipt;
       args.provider.getTransactionReceipt = async (txHash) => {
@@ -680,13 +745,9 @@ describe("P42 deterministic indexer replay", () => {
       };
     }, /receipt log disappeared or was replaced/);
     await mutate((args) => {
-      const original = args.readers.readValidatedCheckpoint;
-      args.readers.readValidatedCheckpoint = async () => {
-        const checkpoint = await original();
-        checkpoint.reconstruction.ok = false;
-        return checkpoint;
-      };
-    }, /reconstruction\.ok must equal/);
+      const original = args.provider.getBlock;
+      args.provider.getBlock = async (number) => number === "latest" ? { number: 1, hash: hash(1) } : original(number);
+    }, /confirmation policy/);
   });
 
   it("replays rollover allocation codehash pins through set, replacement, zero, partial, and full funding", () => {

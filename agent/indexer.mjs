@@ -2224,7 +2224,7 @@ function projectOpenWitnessLaunchEvidence({
   transcriptHash,
   reportHash,
   historicalStorage,
-  finalizedCheckpoint,
+  finalizedEvidence,
   observedRegistryTuple,
 }) {
   invariant(replay?.coverage?.complete, "open-witness evidence requires a complete replay");
@@ -2279,13 +2279,16 @@ function projectOpenWitnessLaunchEvidence({
   invariant(asBigInt(beforeArm.totalCreditAtoms) === 0n && asBigInt(atFinalize.totalCreditAtoms) === 0n, "ledger credit changed before arm");
   invariant(asBigInt(atFinalize.solverCreditAtoms) === 0n, "solver ledger credit is positive at finalize");
   invariant(String(atFinalize.submissionStatus) === "Finalized", "historical finalize storage does not prove Finalized status");
+  invariant(atFinalize.paidAtCommit === false, "historical finalize storage says witness was paid at commit");
+  invariant(asBigInt(atFinalize.finalizeCreditAtoms) === 0n, "historical finalize storage has positive credit");
+  invariant(asBigInt(atFinalize.prevBestScoreAtoms) === asBigInt(prevFrontier), "historical finalize frontier predecessor differs from replay");
+  invariant(asBigInt(atFinalize.bestScoreAtoms) === currentFrontier, "historical finalize frontier differs from canonical event");
+  invariant(atFinalize.fundingArmed === false, "funding was already armed at open-witness finalize");
+  invariant(String(atFinalize.anchorSubmissionStatus) === "Finalized", "confirmed chain state no longer has a nonvoid finalized witness");
 
-  invariant(finalizedCheckpoint?.schema === "p42-prizes/indexer-checkpoint/v2", "finalized evidence requires a v2 checkpoint");
-  invariant(finalizedCheckpoint.reconstruction?.ok === true && finalizedCheckpoint.reconstruction?.complete === true, "finalized evidence checkpoint is not completely reconstructed");
-  invariant(finalizedCheckpoint.boards?.some((board) => board.problemId === registryId && board.reconstruction?.ok === true), "finalized evidence checkpoint does not contain the verified board");
   const finalized = requireHistoricalObservation({
-    blockNumber: finalizedCheckpoint.range?.toBlock,
-    blockHash: finalizedCheckpoint.range?.toBlockHash,
+    blockNumber: finalizedEvidence?.blockNumber,
+    blockHash: finalizedEvidence?.blockHash,
   }, "finalizedEvidence");
   invariant(finalized.blockNumber >= finalize.blockNumber, "finalized evidence block predates finalize");
 
@@ -2354,6 +2357,64 @@ function requireReaderFunction(value, label) {
   return value;
 }
 
+async function readContractFunction(provider, contractInterface, address, functionName, args, blockTag, label) {
+  let raw;
+  try {
+    raw = await provider.call({
+      to: address,
+      data: contractInterface.encodeFunctionData(functionName, args),
+      blockTag,
+    });
+  } catch (error) {
+    throw new ReplayError(`${label} historical RPC read failed: ${error?.message ?? String(error)}`);
+  }
+  invariant(typeof raw === "string" && raw.startsWith("0x"), `${label} historical RPC returned malformed data`);
+  try {
+    return contractInterface.decodeFunctionResult(functionName, raw);
+  } catch {
+    throw new ReplayError(`${label} historical RPC result cannot be decoded by the deployed ABI`);
+  }
+}
+
+async function collectHistoricalOpenWitnessState({ provider, artifacts, contracts, registryAddress, registryId, submissionId, solver, beforeArmBlockNumber, finalizeBlockNumber, registrationBlockNumber, anchorBlockNumber }) {
+  const interfaces = Object.fromEntries(
+    ["pool", "ledger", "submissions", "registry"].map((key) => [key, new ethers.Interface(artifacts[key].abi)]),
+  );
+  const read = (key, address, name, args, blockTag, label) =>
+    readContractFunction(provider, interfaces[key], address, name, args, blockTag, label);
+  const [poolBalanceWei, acceptingFunds, beforeTotalCredit, finalizeTotalCredit, solverCredit, submission, anchorSubmission, paidAtCommit, finalizeInfo, bestScoreAtoms, fundingArmed, registryTuple] = await Promise.all([
+    provider.getBalance(contracts.pool.address, beforeArmBlockNumber),
+    read("pool", contracts.pool.address, "acceptingFunds", [], beforeArmBlockNumber, "pool.acceptingFunds"),
+    read("ledger", contracts.ledger.address, "totalCreditAtoms", [], beforeArmBlockNumber, "ledger.totalCreditAtoms before arm"),
+    read("ledger", contracts.ledger.address, "totalCreditAtoms", [], finalizeBlockNumber, "ledger.totalCreditAtoms at finalize"),
+    read("ledger", contracts.ledger.address, "creditAtomsOf", [solver], finalizeBlockNumber, "ledger.creditAtomsOf at finalize"),
+    read("submissions", contracts.submissions.address, "submissions", [submissionId], finalizeBlockNumber, "submissions.submissions at finalize"),
+    read("submissions", contracts.submissions.address, "submissions", [submissionId], anchorBlockNumber, "submissions.submissions at confirmed anchor"),
+    read("submissions", contracts.submissions.address, "paidAtCommit", [submissionId], finalizeBlockNumber, "submissions.paidAtCommit at finalize"),
+    read("submissions", contracts.submissions.address, "finalizeInfo", [submissionId], finalizeBlockNumber, "submissions.finalizeInfo at finalize"),
+    read("submissions", contracts.submissions.address, "bestScoreAtoms", [], finalizeBlockNumber, "submissions.bestScoreAtoms at finalize"),
+    read("submissions", contracts.submissions.address, "fundingArmed", [], finalizeBlockNumber, "submissions.fundingArmed at finalize"),
+    read("registry", registryAddress, "problems", [registryId], registrationBlockNumber, "registry.problems at registration"),
+  ]);
+  const tupleFields = ["specHash", "verifierSourceHash", "verifierImageHash", "admissionMatrixHash", "metadataURI", "pool", "ledger", "submissionManager", "challengeManager", "challengeWindowSeconds", "minImprovementAtoms"];
+  return {
+    beforeArm: {
+      poolBalanceWei, acceptingFunds: acceptingFunds[0], totalCreditAtoms: beforeTotalCredit[0],
+    },
+    atFinalize: {
+      totalCreditAtoms: finalizeTotalCredit[0], solverCreditAtoms: solverCredit[0],
+      submissionStatus: Number(submission.status ?? submission[13]) === 4 ? "Finalized" : String(submission.status ?? submission[13]),
+      anchorSubmissionStatus: Number(anchorSubmission.status ?? anchorSubmission[13]) === 4 ? "Finalized" : String(anchorSubmission.status ?? anchorSubmission[13]),
+      paidAtCommit: paidAtCommit[0], finalizeCreditAtoms: finalizeInfo.creditAtoms ?? finalizeInfo[1],
+      prevBestScoreAtoms: finalizeInfo.prevBestScoreAtoms ?? finalizeInfo[0],
+      bestScoreAtoms: bestScoreAtoms[0], fundingArmed: fundingArmed[0],
+    },
+    registryAtRegistration: {
+      registryTuple: Object.fromEntries(tupleFields.map((field, index) => [field, registryTuple[field] ?? registryTuple[index]])),
+    },
+  };
+}
+
 async function verifyCanonicalEvidenceEvent(provider, event, contractAddress, contractInterface, label) {
   const [receipt, block] = await Promise.all([
     provider.getTransactionReceipt(event.transactionHash),
@@ -2397,14 +2458,11 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
   transcriptHash,
   reportHash,
   provider,
-  readers,
 }) {
   invariant(provider && typeof provider === "object", "canonical open-witness collector requires a provider");
-  for (const method of ["getNetwork", "getTransaction", "getTransactionReceipt", "getBlock"]) {
+  for (const method of ["getNetwork", "getTransaction", "getTransactionReceipt", "getBlock", "getBalance", "call"]) {
     requireReaderFunction(provider[method], `provider.${method}`);
   }
-  const readHistoricalState = requireReaderFunction(readers?.readHistoricalState, "readHistoricalState");
-  const readValidatedCheckpoint = requireReaderFunction(readers?.readValidatedCheckpoint, "readValidatedCheckpoint");
   const network = await provider.getNetwork();
   invariant(Number(network.chainId) === manifest.network.chainId, "canonical collector provider chainId does not match deployment");
 
@@ -2452,32 +2510,42 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
 
   const beforeArmBlockNumber = arm.blockNumber - 1;
   invariant(beforeArmBlockNumber >= 0, "funding arm has no historical predecessor block");
-  const [beforeArmBlock, finalizeBlock, registrationBlock, beforeArm, atFinalize, registryAtRegistration, checkpoint] = await Promise.all([
+  const latestBlock = await provider.getBlock("latest");
+  invariant(latestBlock?.hash && Number.isSafeInteger(latestBlock.number), "canonical latest block is unavailable");
+  const anchorBlockNumber = latestBlock.number - manifest.indexer.finalityPolicy.confirmations;
+  invariant(anchorBlockNumber >= arm.blockNumber, "canonical armFunding does not satisfy manifest confirmation policy");
+  const [beforeArmBlock, armBlock, finalizeBlock, registrationBlock, anchorBlock] = await Promise.all([
     provider.getBlock(beforeArmBlockNumber),
+    provider.getBlock(arm.blockNumber),
     provider.getBlock(finalize.blockNumber),
     provider.getBlock(registration.blockNumber),
-    readHistoricalState({ manifest, problem, submissionId: id, solver: replay.submissions[id]?.solver, blockTag: beforeArmBlockNumber, phase: "beforeArm" }),
-    readHistoricalState({ manifest, problem, submissionId: id, solver: replay.submissions[id]?.solver, blockTag: finalize.blockNumber, phase: "atFinalize" }),
-    readHistoricalState({ manifest, problem, problemId: registryId, blockTag: registration.blockNumber, phase: "registryAtRegistration" }),
-    readValidatedCheckpoint({ manifest, problemId: registryId }),
+    provider.getBlock(anchorBlockNumber),
   ]);
-  invariant(beforeArmBlock?.hash && finalizeBlock?.hash && registrationBlock?.hash, "canonical historical blocks are unavailable");
-  const bindHistorical = (observation, block, number, label) => {
-    requireHistoricalObservation(observation, label);
-    invariant(observation.blockNumber === number, `${label} returned the wrong pinned block`);
-    invariant(String(observation.blockHash).toLowerCase() === String(block.hash).toLowerCase(), `${label} forged or stale block hash`);
-  };
-  bindHistorical(beforeArm, beforeArmBlock, beforeArmBlockNumber, "historicalStorage.beforeArm");
-  bindHistorical(atFinalize, finalizeBlock, finalize.blockNumber, "historicalStorage.atFinalize");
-  bindHistorical(registryAtRegistration, registrationBlock, registration.blockNumber, "historicalStorage.registryAtRegistration");
-  validateMultiBoardCheckpoint(checkpoint);
-  const checkpointBlock = await provider.getBlock(checkpoint.range.toBlock);
-  invariant(checkpointBlock?.hash && String(checkpointBlock.hash).toLowerCase() === String(checkpoint.range.toBlockHash).toLowerCase(), "validated checkpoint anchor is not canonical on provider");
-
+  invariant(beforeArmBlock?.hash && armBlock?.hash && finalizeBlock?.hash && registrationBlock?.hash && anchorBlock?.hash, "canonical historical blocks are unavailable");
+  invariant(String(armBlock.hash).toLowerCase() === String(arm.blockHash).toLowerCase(), "canonical armFunding block changed before collection");
+  invariant(String(armBlock.parentHash).toLowerCase() === String(beforeArmBlock.hash).toLowerCase(), "canonical armFunding parent does not match pre-arm block");
+  const historicalStatePromise = collectHistoricalOpenWitnessState({
+    provider, artifacts, contracts, registryAddress: manifest.contracts.registry.address,
+    registryId, submissionId: id, solver: replay.submissions[id]?.solver,
+    beforeArmBlockNumber, finalizeBlockNumber: finalize.blockNumber,
+    registrationBlockNumber: registration.blockNumber, anchorBlockNumber,
+  });
+  const historicalState = await historicalStatePromise;
+  const rereadBlocks = await Promise.all([
+    provider.getBlock(beforeArmBlockNumber), provider.getBlock(arm.blockNumber), provider.getBlock(finalize.blockNumber),
+    provider.getBlock(registration.blockNumber), provider.getBlock(anchorBlockNumber),
+  ]);
+  for (const [index, original] of [beforeArmBlock, armBlock, finalizeBlock, registrationBlock, anchorBlock].entries()) {
+    invariant(rereadBlocks[index]?.hash && String(rereadBlocks[index].hash).toLowerCase() === String(original.hash).toLowerCase(), "canonical historical block changed during collection");
+  }
+  const beforeArm = { ...historicalState.beforeArm, blockNumber: beforeArmBlockNumber, blockHash: beforeArmBlock.hash };
+  const atFinalize = { ...historicalState.atFinalize, blockNumber: finalize.blockNumber, blockHash: finalizeBlock.hash };
+  const registryAtRegistration = { ...historicalState.registryAtRegistration, blockNumber: registration.blockNumber, blockHash: registrationBlock.hash };
   const projected = projectOpenWitnessLaunchEvidence({
     replay, manifest, problemId: registryId, submissionId: id, solutionBytes,
     transcriptHash, reportHash, historicalStorage: { beforeArm, atFinalize },
-    finalizedCheckpoint: checkpoint, observedRegistryTuple: registryAtRegistration.registryTuple,
+    finalizedEvidence: { blockNumber: anchorBlock.number, blockHash: anchorBlock.hash },
+    observedRegistryTuple: registryAtRegistration.registryTuple,
   });
   return canonicalize({ ...projected, collector_authoritative: true });
 }
