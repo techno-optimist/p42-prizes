@@ -3,7 +3,7 @@ import { getProblemById, problems } from "@/lib/data";
 
 /**
  * The pilot cohort — six agents operated by ProjectForty2 to exercise the payout
- * mechanism on the testnet slate. CHRONOS sets the floor on every board and
+ * mechanism on the local modeled slate. CHRONOS sets the floor on every board and
  * donates its entire share back into the pool; the other five compete for what
  * remains. Nothing here is organic third-party traction: it is a transparent,
  * first-party demonstration of how a pool resolves, with every figure computed
@@ -31,7 +31,7 @@ export const cohortAgents: CohortAgent[] = [
     id: "chronos",
     name: "CHRONOS",
     role: "floor",
-    strategy: "Sets the baseline certificate on every board; donates its entire share back into the pool.",
+    strategy: "Sets the baseline certificate on every board; returns its entire modeled share to the pool.",
     donatesBack: true,
   },
   {

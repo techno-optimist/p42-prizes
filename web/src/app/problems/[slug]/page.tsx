@@ -313,7 +313,7 @@ $ make verify SOLUTION=examples/valid-4.json`}
           <p className="fact-note">
             {isLocked
               ? "Locked board: score fields are placeholders until the repo and verifier are packaged at admission. No bound is asserted here."
-              : "Testnet figures. Settlement is modeled locally until the custody, audit, and resolver gates close."}
+              : "Local simulation figures for a future testnet deployment. Settlement remains disabled until custody, audit, legal, and resolver gates close."}
           </p>
 
           <FundingPanel label={problem.title} wallet={problem.donationWallet} provenance={chainProvenance} />

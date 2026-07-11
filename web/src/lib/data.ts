@@ -35,7 +35,7 @@ export const problems: Problem[] = [
     repoPath: "problems/hadamard-mini",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No Hadamard Mini pool is deployed. Donations stay unavailable until a reconciled bytecode-backed pool is published.",
+      "No Hadamard Mini pool is deployed. Sponsorship funding stays unavailable until a reconciled bytecode-backed pool is published.",
     ),
     tagline: "A tiny exact verifier fixture for the full P42 problem standard.",
     description:
@@ -84,7 +84,7 @@ export const problems: Problem[] = [
     repoPath: "problems/erdos-min-overlap",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No Erdos Min-Overlap pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No Erdos Min-Overlap pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Exact upper-bound witness packaged from the certified Erdos note.",
     description:
@@ -125,7 +125,7 @@ export const problems: Problem[] = [
     repoPath: "problems/edges-vs-triangles",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No Edges vs Triangles pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No Edges vs Triangles pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Rationalized slope-3 arena board with exact row normalization.",
     description:
@@ -171,7 +171,7 @@ export const problems: Problem[] = [
     repoPath: "problems/arithmetic-kakeya",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No Arithmetic Kakeya pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No Arithmetic Kakeya pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Scoped 2x2 forcing certificate with exact rational closure.",
     description:
@@ -210,7 +210,7 @@ export const problems: Problem[] = [
     repoPath: "problems/autoconvolution-c1-upper",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No Autoconvolution C1 pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No Autoconvolution C1 pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Certified large-vector autoconvolution construction from the arena note library.",
     description:
@@ -253,7 +253,7 @@ export const problems: Problem[] = [
     repoPath: "problems/autoconvolution-c2-lower",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No Autoconvolution C2 pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No Autoconvolution C2 pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Large integer witness with exact L1/L2/Linf recomputation.",
     description:
@@ -294,7 +294,7 @@ export const problems: Problem[] = [
     repoPath: "problems/signed-autoconvolution-c3-upper",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No signed Autoconvolution C3 pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No signed Autoconvolution C3 pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Signed dyadic witness with exact full autoconvolution checks.",
     description:
@@ -335,7 +335,7 @@ export const problems: Problem[] = [
     repoPath: "problems/mertens-lp-ceiling-k12000",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No Mertens LP pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No Mertens LP pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Dyadic LP dual certificate with interval-enclosed log residuals.",
     description:
@@ -376,7 +376,7 @@ export const problems: Problem[] = [
     repoPath: "problems/pnt-sparse-mertens-construction",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No sparse Mertens pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No sparse Mertens pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "Construction board split from the LP ceiling proof track.",
     description:
@@ -422,7 +422,7 @@ export const problems: Problem[] = [
     repoPath: "problems/hadamard-668-defect",
     poolAddress: null,
     donationWallet: undeployedBaseSepoliaPool(
-      "No Hadamard 668 pool is deployed. Donations stay unavailable until verifier admission and chain reconciliation.",
+      "No Hadamard 668 pool is deployed. Sponsorship funding stays unavailable until verifier admission and chain reconciliation.",
     ),
     tagline: "The full finite construction board behind the Hadamard Mini pilot.",
     description:
