@@ -10,6 +10,7 @@ from p42_prizes.admission import (
     MIN_GLIBC_VERSIONS,
     MIN_MATRIX_HOSTS,
     REQUIRED_ARCHITECTURES,
+    SOURCE_HASH_ALGORITHM,
     compute_source_hash,
     load_evidence_file,
     ssh_public_key_fingerprint,
@@ -246,7 +247,11 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
         errors.append(f"source identity: could not hash verifier source: {exc}")
     else:
         source = matrix.get("source")
-        if not isinstance(source, dict) or source.get("tree_hash") != expected_source_hash:
+        if (
+            not isinstance(source, dict)
+            or source.get("tree_hash_algorithm") != SOURCE_HASH_ALGORITHM
+            or source.get("tree_hash") != expected_source_hash
+        ):
             errors.append("admission matrix: source.tree_hash does not match the current normalized verifier source")
 
     errors.extend(_validate_report_objective_semantics(manifest, matrix))

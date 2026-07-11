@@ -23,7 +23,7 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "p42-admission-matrix/v2" },
+    "schema_version": { "const": "p42-admission-matrix/v3" },
     "generated_at_utc": { "type": "string", "minLength": 1 },
     "problem_id": { "type": "string", "minLength": 1 },
     "verifier_version": { "type": "string", "minLength": 1 },
@@ -116,10 +116,11 @@
     "rational": { "type": "string", "pattern": "^-?[0-9]+/[1-9][0-9]*$" },
     "source": {
       "type": "object",
-      "required": ["commit", "tree_hash"],
+      "required": ["commit", "tree_hash_algorithm", "tree_hash"],
       "additionalProperties": false,
       "properties": {
         "commit": { "type": "string", "minLength": 1 },
+        "tree_hash_algorithm": { "const": "p42-source-tree-sha256/v2" },
         "tree_hash": { "$ref": "#/$defs/hash" }
       }
     }

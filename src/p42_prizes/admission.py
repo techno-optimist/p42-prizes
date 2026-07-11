@@ -8,9 +8,13 @@ import os
 from pathlib import Path
 import platform
 import re
+import select
 import shlex
+import stat
 import subprocess
+import tarfile
 import tempfile
+import time
 from typing import Any, Iterable, Mapping
 
 from p42_prizes.problem import load_manifest, repo_root_from_problem
@@ -30,14 +34,16 @@ from p42_prizes.verdict import (
 )
 
 
-HOST_SCHEMA_VERSION = "p42-admission-host/v2"
-MATRIX_SCHEMA_VERSION = "p42-admission-matrix/v2"
+HOST_SCHEMA_VERSION = "p42-admission-host/v3"
+MATRIX_SCHEMA_VERSION = "p42-admission-matrix/v3"
 REQUIRED_ARCHITECTURES = ("aarch64", "x86_64")
 MIN_MATRIX_HOSTS = 4
 MIN_GLIBC_VERSIONS = 2
-HOST_SIGNATURE_NAMESPACE = "p42-verifier-admission-v2"
+HOST_SIGNATURE_NAMESPACE = "p42-verifier-admission-v3"
 OCI_REVISION_LABEL = "org.opencontainers.image.revision"
 SOURCE_HASH_LABEL = "io.projectforty2.verifier.source-sha256"
+SOURCE_HASH_ALGORITHM_LABEL = "io.projectforty2.verifier.source-algorithm"
+SOURCE_HASH_ALGORITHM = "p42-source-tree-sha256/v2"
 PROBLEM_ID_LABEL = "io.projectforty2.verifier.problem-id"
 VERIFIER_VERSION_LABEL = "io.projectforty2.verifier.version"
 REPORT_KEYS = (
@@ -58,6 +64,12 @@ PINNED_IMAGE_REF_RE = re.compile(r"^(?P<repository>[^\s@]+)@(?P<digest>sha256:[a
 SOURCE_COMMIT_RE = re.compile(r"^[a-f0-9]{40}$")
 SSH_PUBLIC_KEY_RE = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$")
 SOURCE_IMAGE_SENTINEL = "sha256:runtime-bound"
+MAX_SOURCE_ARCHIVE_BYTES = 64 * 1024 * 1024
+MAX_SOURCE_FILES = 20_000
+MAX_SOURCE_FILE_BYTES = 16 * 1024 * 1024
+MAX_SOURCE_TOTAL_BYTES = 32 * 1024 * 1024
+MAX_SOURCE_PATH_BYTES = 512
+SOURCE_EXTRACTION_TIMEOUT_SECONDS = 60
 
 CERTIFICATION_VERIFIER_ENV = {
     "PYTHONHASHSEED": "0",
@@ -88,6 +100,7 @@ class ImageIdentity:
     image_os: str
     source_commit: str
     source_hash: str
+    source_hash_algorithm: str = SOURCE_HASH_ALGORITHM
 
 
 def _utc_now() -> str:
@@ -137,7 +150,7 @@ def _canonical_source_file(path: Path, manifest_path: Path) -> bytes:
 
 
 def compute_source_hash(problem_dir: str | Path) -> str:
-    """Hash exactly the source trees copied into the verifier image.
+    """Hash the complete canonical verifier build-input bundle.
 
     ``verifier.image`` is normalized because an image cannot embed its own
     digest. The image digest is bound separately in every admission record.
@@ -146,26 +159,62 @@ def compute_source_hash(problem_dir: str | Path) -> str:
     problem = Path(problem_dir).resolve()
     root = repo_root_from_problem(problem)
     manifest_path = problem / "problem.yaml"
-    trees = ((root / "src", Path("src")), (problem, Path("problems") / problem.name))
+    trees = (
+        (root / "src", Path("src")),
+        (root / "schemas", Path("schemas")),
+        (problem, Path("problems") / problem.name),
+    )
     records: list[tuple[str, Path]] = []
+    for name in ("Dockerfile.verifier", ".dockerignore", "requirements.runtime.lock"):
+        path = root / name
+        if not path.is_file() or path.is_symlink():
+            raise AdmissionError(f"verifier source bundle requires a regular {name}")
+        records.append((name, path))
     for tree, prefix in trees:
+        if not tree.is_dir() or tree.is_symlink():
+            raise AdmissionError(f"verifier source bundle requires a real directory: {prefix}")
         for path in tree.rglob("*"):
-            if not path.is_file() or path.is_symlink():
-                continue
             relative = path.relative_to(tree)
-            if "__pycache__" in relative.parts or path.suffix == ".pyc":
+            logical_path = (prefix / relative).as_posix()
+            if _source_path_excluded(relative):
                 continue
-            records.append(((prefix / relative).as_posix(), path))
+            metadata = path.lstat()
+            if stat.S_ISDIR(metadata.st_mode):
+                continue
+            if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
+                raise AdmissionError(f"verifier source bundle rejects non-regular entry: {logical_path}")
+            if metadata.st_nlink != 1:
+                raise AdmissionError(f"verifier source bundle rejects hard-linked entry: {logical_path}")
+            if metadata.st_mode & (stat.S_ISUID | stat.S_ISGID):
+                raise AdmissionError(f"verifier source bundle rejects privileged mode: {logical_path}")
+            records.append((logical_path, path))
 
     digest = hashlib.sha256()
+    domain = SOURCE_HASH_ALGORITHM.encode("ascii")
+    digest.update(len(domain).to_bytes(8, "big"))
+    digest.update(domain)
     for logical_path, path in sorted(records):
         payload = _canonical_source_file(path, manifest_path)
         encoded_path = logical_path.encode("utf-8")
+        mode = b"0755" if path.stat().st_mode & 0o111 else b"0644"
         digest.update(len(encoded_path).to_bytes(8, "big"))
         digest.update(encoded_path)
+        digest.update(len(mode).to_bytes(8, "big"))
+        digest.update(mode)
         digest.update(len(payload).to_bytes(8, "big"))
         digest.update(payload)
     return "sha256:" + digest.hexdigest()
+
+
+def _source_path_excluded(relative: Path) -> bool:
+    return (
+        "__pycache__" in relative.parts
+        or relative.suffix == ".pyc"
+        or relative.name.endswith(".key.json")
+        or relative.name == ".env"
+        or relative.name.startswith(".env.")
+        or relative.suffix == ".pem"
+    )
 
 
 def _git_head(problem: Path) -> str:
@@ -348,10 +397,14 @@ def _inspect_image(problem: Path, image_ref: str, runtime: str) -> ImageIdentity
     labels = config.get("Labels") if isinstance(config, dict) else None
     if not isinstance(labels, dict):
         raise AdmissionError("immutable verifier image has no OCI source labels")
+    _validate_image_config(config, manifest["problem_id"])
 
     expected_source_hash = compute_source_hash(problem)
     extracted_source_hash = _extract_image_source_hash(
-        problem_id=manifest["problem_id"], image_ref=image_ref, runtime=runtime
+        problem_id=manifest["problem_id"],
+        image_ref=image_ref,
+        runtime=runtime,
+        build_policy_path=repo_root_from_problem(problem) / ".dockerignore",
     )
     if extracted_source_hash != expected_source_hash:
         raise AdmissionError("immutable verifier image filesystem source does not match the checkout source")
@@ -361,6 +414,10 @@ def _inspect_image(problem: Path, image_ref: str, runtime: str) -> ImageIdentity
         raise AdmissionError(f"immutable verifier image label {OCI_REVISION_LABEL} must be a full git commit")
     if source_hash != expected_source_hash:
         raise AdmissionError(f"immutable verifier image label {SOURCE_HASH_LABEL} does not match the checkout source")
+    if labels.get(SOURCE_HASH_ALGORITHM_LABEL) != SOURCE_HASH_ALGORITHM:
+        raise AdmissionError(
+            f"immutable verifier image label {SOURCE_HASH_ALGORITHM_LABEL} must be {SOURCE_HASH_ALGORITHM}"
+        )
     if labels.get(PROBLEM_ID_LABEL) != manifest["problem_id"]:
         raise AdmissionError(f"immutable verifier image label {PROBLEM_ID_LABEL} does not match problem.yaml")
     if labels.get(VERIFIER_VERSION_LABEL) != verifier["version"]:
@@ -374,10 +431,52 @@ def _inspect_image(problem: Path, image_ref: str, runtime: str) -> ImageIdentity
         image_os=str(identity.get("Os", "unknown")).lower(),
         source_commit=source_commit,
         source_hash=source_hash,
+        source_hash_algorithm=SOURCE_HASH_ALGORITHM,
     )
 
 
-def _extract_image_source_hash(*, problem_id: str, image_ref: str, runtime: str) -> str:
+def _validate_image_config(config: Mapping[str, Any], problem_id: str) -> None:
+    if config.get("Entrypoint") not in (None, []):
+        raise AdmissionError("immutable verifier image must not define an OCI entrypoint")
+    if config.get("Cmd") not in (None, []):
+        raise AdmissionError("immutable verifier image must not define an OCI default command")
+    if config.get("WorkingDir") != f"/repo/problems/{problem_id}":
+        raise AdmissionError("immutable verifier image working directory does not match the problem package")
+    if config.get("User") not in (None, ""):
+        raise AdmissionError("immutable verifier image must not define an inherited user")
+    environment = config.get("Env")
+    if not isinstance(environment, list) or any(not isinstance(item, str) or "=" not in item for item in environment):
+        raise AdmissionError("immutable verifier image environment is malformed")
+    parsed: dict[str, str] = {}
+    for item in environment:
+        name, value = item.split("=", 1)
+        if name in parsed:
+            raise AdmissionError("immutable verifier image environment contains duplicate names")
+        parsed[name] = value
+    allowed = {
+        "PATH",
+        "LANG",
+        "GPG_KEY",
+        "PYTHON_VERSION",
+        "PYTHON_SHA256",
+        "PYTHONHASHSEED",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "PYTHONPATH",
+    }
+    unexpected = sorted(set(parsed) - allowed)
+    if unexpected:
+        raise AdmissionError(f"immutable verifier image environment contains unexpected names: {', '.join(unexpected)}")
+    expected = {**CERTIFICATION_VERIFIER_ENV, "PYTHONPATH": "/repo/src"}
+    for name, value in expected.items():
+        if parsed.get(name) != value:
+            raise AdmissionError(f"immutable verifier image environment must set {name}={value}")
+
+
+def _extract_image_source_hash(
+    *, problem_id: str, image_ref: str, runtime: str, build_policy_path: Path
+) -> str:
     container_name = f"p42-source-inspect-{os.getpid()}-{os.urandom(6).hex()}"
     created = subprocess.run(
         [runtime, "create", "--name", container_name, image_ref, "true"],
@@ -390,23 +489,131 @@ def _extract_image_source_hash(*, problem_id: str, image_ref: str, runtime: str)
     try:
         with tempfile.TemporaryDirectory(prefix="p42-image-source-") as temporary:
             root = Path(temporary)
-            (root / "problems").mkdir()
-            copies = (
-                ("/repo/src", root / "src"),
-                (f"/repo/problems/{problem_id}", root / "problems" / problem_id),
+            _extract_bounded_source_archive(
+                root=root,
+                problem_id=problem_id,
+                container_name=container_name,
+                runtime=runtime,
             )
-            for source, destination in copies:
-                copied = subprocess.run(
-                    [runtime, "cp", f"{container_name}:{source}", str(destination)],
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                if copied.returncode != 0:
-                    raise AdmissionError(f"could not extract verifier image source path {source}")
+            policy_destination = root / ".dockerignore"
+            if not build_policy_path.is_file() or build_policy_path.is_symlink():
+                raise AdmissionError("reviewed .dockerignore build policy is not a regular file")
+            policy_destination.write_bytes(build_policy_path.read_bytes())
             return compute_source_hash(root / "problems" / problem_id)
     finally:
         force_remove_container(container_name, runtime)
+
+
+class _BoundedArchivePipe:
+    def __init__(self, stream, *, process: subprocess.Popen[bytes]):
+        self.stream = stream
+        self.process = process
+        self.total = 0
+        self.deadline = time.monotonic() + SOURCE_EXTRACTION_TIMEOUT_SECONDS
+
+    def read(self, size: int = -1) -> bytes:
+        if time.monotonic() >= self.deadline:
+            raise AdmissionError("verifier image source archive timed out")
+        timeout = max(0.0, self.deadline - time.monotonic())
+        readable, _, _ = select.select([self.stream], [], [], timeout)
+        if not readable:
+            raise AdmissionError("verifier image source archive timed out")
+        chunk = self.stream.read(size)
+        self.total += len(chunk)
+        if self.total > MAX_SOURCE_ARCHIVE_BYTES:
+            raise AdmissionError("verifier image source archive exceeds byte limit")
+        return chunk
+
+
+def _extract_bounded_source_archive(
+    *, root: Path, problem_id: str, container_name: str, runtime: str
+) -> None:
+    process = subprocess.Popen(
+        [runtime, "cp", f"{container_name}:/repo", "-"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdout is None:
+        process.kill()
+        raise AdmissionError("container runtime did not expose verifier source archive")
+    try:
+        pipe = _BoundedArchivePipe(process.stdout, process=process)
+        _materialize_source_archive(pipe, root=root, problem_id=problem_id)
+        stderr = process.stderr.read(2_001) if process.stderr is not None else b""
+        returncode = process.wait(timeout=5)
+        if returncode != 0:
+            raise AdmissionError(
+                f"could not stream verifier image source archive: {stderr[-2_000:].decode('utf-8', 'replace')}"
+            )
+    except (OSError, subprocess.SubprocessError, tarfile.TarError) as exc:
+        raise AdmissionError(f"could not inspect verifier image source archive: {exc}") from exc
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+
+def _materialize_source_archive(fileobj, *, root: Path, problem_id: str) -> None:
+    selected_total = 0
+    selected_count = 0
+    observed: set[str] = set()
+    with tarfile.open(fileobj=fileobj, mode="r|*") as archive:
+        for member in archive:
+            logical = _source_archive_logical_path(member.name, problem_id)
+            if logical is None:
+                if member.isdir():
+                    continue
+                raise AdmissionError(f"verifier image contains unexpected /repo entry: {member.name}")
+            if len(logical.encode("utf-8")) > MAX_SOURCE_PATH_BYTES:
+                raise AdmissionError("verifier image source path exceeds length limit")
+            if member.isdir():
+                continue
+            if not member.isfile() or member.islnk() or member.issym():
+                raise AdmissionError(f"verifier image source bundle rejects non-regular entry: {logical}")
+            if member.mode & (stat.S_ISUID | stat.S_ISGID):
+                raise AdmissionError(f"verifier image source bundle rejects privileged mode: {logical}")
+            if logical in observed:
+                raise AdmissionError(f"verifier image source bundle contains duplicate path: {logical}")
+            if member.size < 0 or member.size > MAX_SOURCE_FILE_BYTES:
+                raise AdmissionError(f"verifier image source file exceeds size limit: {logical}")
+            selected_count += 1
+            selected_total += member.size
+            if selected_count > MAX_SOURCE_FILES or selected_total > MAX_SOURCE_TOTAL_BYTES:
+                raise AdmissionError("verifier image source bundle exceeds extraction limits")
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise AdmissionError(f"could not read verifier image source file: {logical}")
+            payload = extracted.read(member.size + 1)
+            if len(payload) != member.size:
+                raise AdmissionError(f"verifier image source file was truncated: {logical}")
+            destination = root / logical
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as output:
+                output.write(payload)
+            destination.chmod(0o755 if member.mode & 0o111 else 0o644)
+            observed.add(logical)
+
+
+def _source_archive_logical_path(name: str, problem_id: str) -> str | None:
+    normalized = name.removeprefix("./").lstrip("/")
+    if normalized == "repo":
+        return None
+    if normalized.startswith("repo/"):
+        normalized = normalized[5:]
+    parts = Path(normalized).parts
+    if not parts or any(part in ("", ".", "..") for part in parts):
+        raise AdmissionError(f"verifier image source archive contains unsafe path: {name}")
+    if normalized in ("requirements.runtime.lock",):
+        return normalized
+    if normalized in ("build-inputs/Dockerfile.verifier",):
+        return normalized.removeprefix("build-inputs/")
+    allowed_prefixes = ("src/", "schemas/", f"problems/{problem_id}/")
+    if not normalized.startswith(allowed_prefixes):
+        return None
+    if _source_path_excluded(Path(normalized)):
+        raise AdmissionError(f"verifier image contains excluded source artifact: {normalized}")
+    return normalized
 
 
 def _run_image_verifier_once(
@@ -584,7 +791,11 @@ def generate_host_evidence(
             "image_architecture": image.image_architecture,
             "image_os": image.image_os,
         }
-        source = {"commit": image.source_commit, "tree_hash": image.source_hash}
+        source = {
+            "commit": image.source_commit,
+            "tree_hash_algorithm": image.source_hash_algorithm,
+            "tree_hash": image.source_hash,
+        }
     else:
         if image_ref is not None:
             raise AdmissionError("placeholder verifier packages cannot claim immutable image execution")
@@ -598,7 +809,11 @@ def generate_host_evidence(
             "image_architecture": _normalize_architecture(platform.machine()),
             "image_os": platform.system().lower() or "unknown",
         }
-        source = {"commit": _git_head(problem), "tree_hash": compute_source_hash(problem)}
+        source = {
+            "commit": _git_head(problem),
+            "tree_hash_algorithm": SOURCE_HASH_ALGORITHM,
+            "tree_hash": compute_source_hash(problem),
+        }
 
     first = observed[0]
     for index, run in enumerate(observed, start=1):
@@ -701,6 +916,8 @@ def _validate_host_evidence(evidence: Mapping[str, Any], index: int) -> tuple[di
     if not isinstance(source, dict):
         raise AdmissionError(f"{prefix}.source must be an object")
     _require_string(source, "commit", f"{prefix}.source")
+    if source.get("tree_hash_algorithm") != SOURCE_HASH_ALGORITHM:
+        raise AdmissionError(f"{prefix}.source.tree_hash_algorithm must be {SOURCE_HASH_ALGORITHM}")
     source_hash = _require_string(source, "tree_hash", f"{prefix}.source")
     if not SOLUTION_HASH_RE.fullmatch(source_hash):
         raise AdmissionError(f"{prefix}.source.tree_hash must be sha256:<64 lowercase hex chars>")
@@ -728,6 +945,10 @@ def _validate_host_evidence(evidence: Mapping[str, Any], index: int) -> tuple[di
         raise AdmissionError(f"{prefix}.attestation.type is unsupported")
     if mode == "immutable-container" and not signed:
         raise AdmissionError(f"{prefix}: immutable image execution requires signed host identity")
+    if mode == "immutable-container":
+        image_id = execution.get("image_id")
+        if not isinstance(image_id, str) or not IMMUTABLE_IMAGE_RE.fullmatch(image_id):
+            raise AdmissionError(f"{prefix}.execution.image_id must bind the resolved platform image")
 
     normalized = dict(evidence)
     normalized["host"] = normalized_host
@@ -756,6 +977,18 @@ def build_admission_matrix(
         mismatched = [key for key in common_keys if item[key] != first[key]]
         if mismatched:
             raise AdmissionError(f"evidence[{index}] mismatches matrix key(s): {', '.join(mismatched)}")
+
+    platform_image_ids: dict[tuple[str, str], str] = {}
+    for index, item in enumerate(normalized):
+        if item["execution"]["mode"] != "immutable-container":
+            continue
+        platform = (item["execution"]["image_os"], item["execution"]["image_architecture"])
+        image_id = item["execution"]["image_id"]
+        previous = platform_image_ids.setdefault(platform, image_id)
+        if image_id != previous:
+            raise AdmissionError(
+                f"evidence[{index}] resolved a different image_id for platform {platform[0]}/{platform[1]}"
+            )
 
     architectures = sorted({item["host"]["architecture"] for item in normalized})
     missing_architectures = [arch for arch in REQUIRED_ARCHITECTURES if arch not in architectures]

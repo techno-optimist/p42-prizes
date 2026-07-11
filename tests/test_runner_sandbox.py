@@ -27,7 +27,7 @@ def test_build_sandbox_command_applies_all_hardening(monkeypatch: pytest.MonkeyP
     cmd = build_sandbox_command(
         image=PINNED_IMAGE,
         host_solution="/tmp/sol.json",
-        verifier_command_template="make verify SOLUTION={solution}",
+        verifier_command_template="python3 verifier/verify.py --solution {solution}",
         memory_mb=128,
         pids_limit=64,
         cpus=1.5,
@@ -43,6 +43,7 @@ def test_build_sandbox_command_applies_all_hardening(monkeypatch: pytest.MonkeyP
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
         "--user=65534:65534",   # non-root
+        "--entrypoint=/usr/local/bin/python3",
     ):
         assert flag in cmd, f"missing hardening flag: {flag}"
     # untrusted solution mounted READ-ONLY at the fixed path
@@ -56,7 +57,8 @@ def test_build_sandbox_command_applies_all_hardening(monkeypatch: pytest.MonkeyP
     assert cmd[cmd.index(f"P42_VERIFIER_IMAGE={PINNED_IMAGE}") - 1] == "-e"
     # image, then the verifier command with {solution} resolved to the mount
     assert PINNED_IMAGE in cmd
-    assert f"SOLUTION={SANDBOX_SOLUTION_PATH}" in cmd
+    assert cmd[cmd.index(PINNED_IMAGE) + 1] == "verifier/verify.py"
+    assert SANDBOX_SOLUTION_PATH in cmd
 
 
 def test_rejects_placeholder_image():
@@ -65,7 +67,7 @@ def test_rejects_placeholder_image():
             build_sandbox_command(
                 image=bad,
                 host_solution="/tmp/s",
-                verifier_command_template="make verify SOLUTION={solution}",
+                verifier_command_template="python3 verifier/verify.py --solution {solution}",
                 memory_mb=128,
             )
 
@@ -86,7 +88,7 @@ def test_rejects_mutable_or_malformed_image_reference():
             build_sandbox_command(
                 image=bad,
                 host_solution="/tmp/s",
-                verifier_command_template="v {solution}",
+                verifier_command_template="python3 verifier.py {solution}",
                 memory_mb=128,
             )
 
@@ -95,7 +97,7 @@ def test_accepts_repo_at_digest_image_reference():
     cmd = build_sandbox_command(
         image=f"registry.example.com/p42/verifier@{PINNED_IMAGE}",
         host_solution="/tmp/s",
-        verifier_command_template="v {solution}",
+        verifier_command_template="python3 verifier.py {solution}",
         memory_mb=128,
     )
     assert f"registry.example.com/p42/verifier@{PINNED_IMAGE}" in cmd
@@ -111,9 +113,9 @@ def test_composes_pullable_immutable_manifest_reference_and_rejects_tags():
 
 def test_requires_solution_placeholder_and_valid_limits():
     with pytest.raises(RunnerSandboxError):
-        build_sandbox_command(image=PINNED_IMAGE, host_solution="/tmp/s", verifier_command_template="make verify", memory_mb=128)
+        build_sandbox_command(image=PINNED_IMAGE, host_solution="/tmp/s", verifier_command_template="python3 verifier.py", memory_mb=128)
     with pytest.raises(RunnerSandboxError):
-        build_sandbox_command(image=PINNED_IMAGE, host_solution="/tmp/s", verifier_command_template="v {solution}", memory_mb=0)
+        build_sandbox_command(image=PINNED_IMAGE, host_solution="/tmp/s", verifier_command_template="python3 verifier.py {solution}", memory_mb=0)
 
 
 def test_docker_available_returns_bool_without_raising():

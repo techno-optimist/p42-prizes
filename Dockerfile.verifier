@@ -29,6 +29,7 @@ ARG VERIFIER_VERSION
 # verifies them after the build; incomplete labels fail the admission gate.
 LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}" \
       io.projectforty2.verifier.source-sha256="${VERIFIER_SOURCE_SHA256}" \
+      io.projectforty2.verifier.source-algorithm="p42-source-tree-sha256/v2" \
       io.projectforty2.verifier.problem-id="${VERIFIER_PROBLEM_ID}" \
       io.projectforty2.verifier.version="${VERIFIER_VERSION}"
 
@@ -42,6 +43,7 @@ ENV PYTHONHASHSEED=0 \
 # The P42 CLI is part of every verifier invocation. Install its fully
 # hash-locked runtime before copying the source tree it imports from.
 COPY requirements.runtime.lock /repo/requirements.runtime.lock
+COPY Dockerfile.verifier /repo/build-inputs/Dockerfile.verifier
 RUN pip install --no-cache-dir --require-hashes -r /repo/requirements.runtime.lock
 
 # Preserve the repo-relative layout: the problem Makefile uses PYTHONPATH=../../src,
@@ -57,3 +59,4 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # The runtime always supplies the manifest-pinned verifier.command explicitly.
 # Leave no image-local Makefile entrypoint that could diverge from that command.
+CMD []

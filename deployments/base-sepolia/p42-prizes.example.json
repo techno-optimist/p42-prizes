@@ -785,7 +785,7 @@
       "metadataURI": "ipfs://replace-with-frozen-problem-metadata",
       "specHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
       "verifierSourceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "verifierSourceDigestAlgorithm": "p42-source-tree-sha256/v1",
+      "verifierSourceDigestAlgorithm": "p42-source-tree-sha256/v2",
       "verifierSourceHash": "0x00f3d3e8d256d5ae294a41d7ea455c4aaf6fc010052692d5568e622aaf54ae5d",
       "verifierSourceHashAlgorithm": "keccak256-utf8/v1",
       "verifierImageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -834,5 +834,5 @@
     "indexedThroughBlock": null,
     "reconciliationReport": null
   },
-  "deploymentConfigHash": "0xa39027aa0c0e988650aa1ef67b7a4bafb6ad5bc91fa645069aa3af19d7474853"
+  "deploymentConfigHash": "0xe3bc7e0fb0c89796a9026970d5813bbfb0cda2c55c29cd171ec2d0a2b70debee"
 }

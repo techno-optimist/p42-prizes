@@ -374,7 +374,7 @@
       "description": "Canonical source-tree digest over src/ and problems/<problemSlug>/ with problem.yaml.verifier.image normalized to its source sentinel."
     },
     "verifierSourceDigestAlgorithm": {
-      "const": "p42-source-tree-sha256/v1"
+      "const": "p42-source-tree-sha256/v2"
     },
     "verifierSourceHashAlgorithm": {
       "const": "keccak256-utf8/v1",

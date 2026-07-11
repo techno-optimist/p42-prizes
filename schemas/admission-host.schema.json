@@ -22,7 +22,7 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "p42-admission-host/v2" },
+    "schema_version": { "const": "p42-admission-host/v3" },
     "generated_at_utc": { "type": "string", "minLength": 1 },
     "problem_id": { "type": "string", "minLength": 1 },
     "verifier_version": { "type": "string", "minLength": 1 },
@@ -64,7 +64,7 @@
           "additionalProperties": false,
           "properties": {
             "type": { "const": "ssh-ed25519" },
-            "namespace": { "const": "p42-verifier-admission-v2" },
+            "namespace": { "const": "p42-verifier-admission-v3" },
             "public_key": {
               "type": "string",
               "pattern": "^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$"
@@ -117,10 +117,11 @@
     },
     "source": {
       "type": "object",
-      "required": ["commit", "tree_hash"],
+      "required": ["commit", "tree_hash_algorithm", "tree_hash"],
       "additionalProperties": false,
       "properties": {
         "commit": { "type": "string", "minLength": 1 },
+        "tree_hash_algorithm": { "const": "p42-source-tree-sha256/v2" },
         "tree_hash": { "$ref": "#/$defs/hash" }
       }
     },

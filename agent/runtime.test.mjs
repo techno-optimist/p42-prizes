@@ -117,9 +117,9 @@ test("runtime bridge interpreter selection requires an absolute configured path"
 
 function runtimeBindingFixture(overrides = {}) {
   return {
-    schema_version: "p42-registry-binding/v1",
+    schema_version: "p42-registry-binding/v2",
     image_hash_algorithm: "keccak256-utf8/v1",
-    source_digest_algorithm: "p42-source-tree-sha256/v1",
+    source_digest_algorithm: "p42-source-tree-sha256/v2",
     source_hash_algorithm: "keccak256-utf8/v1",
     chain_id: 84532,
     registry_address: RUNTIME_BINDING_ADDRESSES.registry,
@@ -208,7 +208,7 @@ test("registry binding builder cross-checks every frozen manifest and registry a
     verifierImageHashAlgorithm: "keccak256-utf8/v1",
     verifierImageHash: verifierImageHashForDigest(localProblem.verifier_image),
     verifierSourceDigest: localProblem.verifier_source_digest,
-    verifierSourceDigestAlgorithm: "p42-source-tree-sha256/v1",
+    verifierSourceDigestAlgorithm: "p42-source-tree-sha256/v2",
     verifierSourceHash: verifierSourceHashForDigest(localProblem.verifier_source_digest),
     verifierSourceHashAlgorithm: "keccak256-utf8/v1",
     specHash: `0x${"2".repeat(64)}`,

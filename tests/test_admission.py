@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 
 import jsonschema
 import pytest
@@ -78,7 +80,7 @@ def _host_evidence(
     report_hash = sha256_bytes(canonical_json(report).encode("utf-8"))
     immutable = image_ref is not None
     evidence = {
-        "schema_version": "p42-admission-host/v2",
+        "schema_version": "p42-admission-host/v3",
         "generated_at_utc": "2026-07-09T00:00:00Z",
         "problem_id": report["problem_id"],
         "verifier_version": report["verifier_version"],
@@ -106,6 +108,7 @@ def _host_evidence(
         },
         "source": {
             "commit": "454f44d9c8299568217d34c60d21d784ff4507e4",
+            "tree_hash_algorithm": "p42-source-tree-sha256/v2",
             "tree_hash": source_hash,
         },
         "report": report,
@@ -130,6 +133,12 @@ def _make_signing_key(directory: Path, name: str) -> tuple[Path, str]:
     ).stdout.strip()
     public = " ".join(public_output.split()[:2])
     return key, public
+
+
+def _copy_source_build_inputs(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    for name in ("Dockerfile.verifier", ".dockerignore", "requirements.runtime.lock"):
+        shutil.copy(ROOT / name, root / name)
 
 
 def _complete_matrix_evidence(
@@ -184,7 +193,7 @@ def test_admit_host_cli_emits_repeatable_nonfundable_local_evidence() -> None:
     evidence = json.loads(completed.stdout)
     schema = json.loads((ROOT / "schemas" / "admission-host.schema.json").read_text())
     jsonschema.validate(evidence, schema)
-    assert evidence["schema_version"] == "p42-admission-host/v2"
+    assert evidence["schema_version"] == "p42-admission-host/v3"
     assert evidence["execution"]["mode"] == "checkout-local"
     assert evidence["attestation"]["type"] == "local-untrusted"
     assert evidence["run_hashes"] == [evidence["report_hash"], evidence["report_hash"]]
@@ -229,7 +238,7 @@ def test_build_admission_matrix_accepts_signed_full_n_host_coverage(tmp_path: Pa
 
     schema = json.loads((ROOT / "schemas" / "admission-matrix.schema.json").read_text())
     jsonschema.validate(matrix, schema)
-    assert matrix["schema_version"] == "p42-admission-matrix/v2"
+    assert matrix["schema_version"] == "p42-admission-matrix/v3"
     assert matrix["coverage"]["host_count"] == 4
     assert matrix["coverage"]["signed_host_count"] == 4
     assert matrix["coverage"]["architectures"] == ["aarch64", "x86_64"]
@@ -262,6 +271,21 @@ def test_matrix_rejects_duplicate_host_labels(tmp_path: Path) -> None:
     )
 
     with pytest.raises(AdmissionError, match="duplicate host labels"):
+        build_admission_matrix(evidence)
+
+
+def test_matrix_rejects_different_image_ids_for_the_same_platform(tmp_path: Path) -> None:
+    image = "sha256:" + "a" * 64
+    evidence, _ = _complete_matrix_evidence(tmp_path, image=image)
+    unsigned = {
+        key: value
+        for key, value in evidence[1].items()
+        if key not in ("evidence_hash", "attestation")
+    }
+    unsigned["execution"]["image_id"] = "sha256:" + "9" * 64
+    evidence[1] = _seal_host_evidence(unsigned, tmp_path / "host-1")
+
+    with pytest.raises(AdmissionError, match="different image_id for platform linux/x86_64"):
         build_admission_matrix(evidence)
 
 
@@ -412,6 +436,7 @@ def test_run_verifier_once_uses_the_manifest_image_not_ambient_environment(
 
 def test_source_hash_normalizes_the_self_referential_image_digest(tmp_path: Path) -> None:
     root = tmp_path / "repo"
+    _copy_source_build_inputs(root)
     (root / "schemas").mkdir(parents=True)
     (root / "src").mkdir()
     (root / "schemas" / "problem.schema.json").write_text("{}", encoding="utf-8")
@@ -427,8 +452,97 @@ def test_source_hash_normalizes_the_self_referential_image_digest(tmp_path: Path
     assert compute_source_hash(problem) == before
 
 
+@pytest.mark.parametrize(
+    ("relative", "payload"),
+    [
+        ("Dockerfile.verifier", "# changed build recipe\n"),
+        (".dockerignore", "# changed ignore policy\n"),
+        ("requirements.runtime.lock", "# changed runtime lock\n"),
+        ("schemas/extra.schema.json", "{}\n"),
+        ("src/extra.py", "VALUE = 1\n"),
+        ("problems/hadamard-mini/verifier/extra.py", "VALUE = 1\n"),
+    ],
+)
+def test_source_hash_v2_binds_every_build_input_class(
+    tmp_path: Path, relative: str, payload: str
+) -> None:
+    root = tmp_path / "repo"
+    shutil.copytree(ROOT / "schemas", root / "schemas")
+    shutil.copytree(ROOT / "src", root / "src")
+    shutil.copytree(ROOT / "problems" / "hadamard-mini", root / "problems" / "hadamard-mini")
+    _copy_source_build_inputs(root)
+    problem = root / "problems" / "hadamard-mini"
+    before = compute_source_hash(problem)
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(payload, encoding="utf-8")
+    assert compute_source_hash(problem) != before
+
+
+def test_source_hash_v2_rejects_symlinks_and_hardlinks(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    shutil.copytree(ROOT / "schemas", root / "schemas")
+    shutil.copytree(ROOT / "src", root / "src")
+    shutil.copytree(ROOT / "problems" / "hadamard-mini", root / "problems" / "hadamard-mini")
+    _copy_source_build_inputs(root)
+    problem = root / "problems" / "hadamard-mini"
+    linked = problem / "verifier" / "linked.py"
+    linked.symlink_to("verify.py")
+    with pytest.raises(AdmissionError, match="non-regular entry"):
+        compute_source_hash(problem)
+    linked.unlink()
+    os.link(problem / "verifier" / "verify.py", linked)
+    with pytest.raises(AdmissionError, match="hard-linked entry"):
+        compute_source_hash(problem)
+
+
+def _source_tar(entries: list[tuple[str, bytes, str]]) -> io.BytesIO:
+    output = io.BytesIO()
+    with tarfile.open(fileobj=output, mode="w") as archive:
+        for name, payload, kind in entries:
+            member = tarfile.TarInfo(name)
+            member.mode = 0o644
+            if kind == "symlink":
+                member.type = tarfile.SYMTYPE
+                member.linkname = "/payload/evil.py"
+                archive.addfile(member)
+            else:
+                member.size = len(payload)
+                archive.addfile(member, io.BytesIO(payload))
+    output.seek(0)
+    return output
+
+
+def test_image_source_archive_is_bounded_and_rejects_links(tmp_path: Path, monkeypatch) -> None:
+    valid = _source_tar(
+        [
+            ("repo/build-inputs/Dockerfile.verifier", b"FROM scratch\n", "file"),
+            ("repo/requirements.runtime.lock", b"# lock\n", "file"),
+            ("repo/src/p42_prizes/verdict.py", b"VALUE = 1\n", "file"),
+            ("repo/schemas/problem.schema.json", b"{}\n", "file"),
+            ("repo/problems/hadamard-mini/problem.yaml", b"problem_id: hadamard-mini\n", "file"),
+        ]
+    )
+    admission._materialize_source_archive(valid, root=tmp_path / "valid", problem_id="hadamard-mini")
+    assert (tmp_path / "valid" / "Dockerfile.verifier").read_text() == "FROM scratch\n"
+
+    linked = _source_tar([("repo/src/sitecustomize.py", b"", "symlink")])
+    with pytest.raises(AdmissionError, match="non-regular entry"):
+        admission._materialize_source_archive(linked, root=tmp_path / "linked", problem_id="hadamard-mini")
+
+    bytecode = _source_tar([("repo/src/p42_prizes/__pycache__/verdict.cpython-314.pyc", b"evil", "file")])
+    with pytest.raises(AdmissionError, match="excluded source artifact"):
+        admission._materialize_source_archive(bytecode, root=tmp_path / "bytecode", problem_id="hadamard-mini")
+
+    monkeypatch.setattr(admission, "MAX_SOURCE_FILE_BYTES", 3)
+    oversized = _source_tar([("repo/src/large.py", b"1234", "file")])
+    with pytest.raises(AdmissionError, match="exceeds size limit"):
+        admission._materialize_source_archive(oversized, root=tmp_path / "large", problem_id="hadamard-mini")
+
+
 def test_admit_ready_rejects_a_demo_fixture_even_with_exact_signed_image_evidence(tmp_path: Path) -> None:
     root = tmp_path / "repo"
+    _copy_source_build_inputs(root)
     (root / "schemas").mkdir(parents=True)
     shutil.copy(ROOT / "schemas" / "problem.schema.json", root / "schemas" / "problem.schema.json")
     shutil.copytree(ROOT / "src", root / "src")
@@ -537,6 +651,7 @@ def test_immutable_host_admission_dispatches_every_run_to_exact_image(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "repo"
+    _copy_source_build_inputs(root)
     (root / "schemas").mkdir(parents=True)
     shutil.copy(ROOT / "schemas" / "problem.schema.json", root / "schemas" / "problem.schema.json")
     shutil.copytree(ROOT / "src", root / "src")
@@ -583,6 +698,7 @@ def test_immutable_host_admission_dispatches_every_run_to_exact_image(
     assert observed_refs == [identity.image_ref, identity.image_ref]
     assert evidence["execution"]["mode"] == "immutable-container"
     assert evidence["execution"]["image_ref"] == identity.image_ref
+    assert evidence["source"]["tree_hash_algorithm"] == "p42-source-tree-sha256/v2"
     assert evidence["attestation"]["type"] == "ssh-ed25519"
 
 
@@ -591,6 +707,7 @@ def test_image_inspection_binds_registry_digest_and_source_labels(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root = tmp_path / "repo"
+    _copy_source_build_inputs(root)
     (root / "schemas").mkdir(parents=True)
     shutil.copy(ROOT / "schemas" / "problem.schema.json", root / "schemas" / "problem.schema.json")
     shutil.copytree(ROOT / "src", root / "src")
@@ -610,12 +727,29 @@ def test_image_inspection_binds_registry_digest_and_source_labels(
         {
             "Architecture": "amd64",
             "Config": {
+                "Cmd": None,
+                "Entrypoint": None,
+                "Env": [
+                    "PATH=/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                    "LANG=C.UTF-8",
+                    "GPG_KEY=fixture",
+                    "PYTHON_VERSION=3.14.2",
+                    "PYTHON_SHA256=fixture",
+                    "PYTHONHASHSEED=0",
+                    "OMP_NUM_THREADS=1",
+                    "OPENBLAS_NUM_THREADS=1",
+                    "MKL_NUM_THREADS=1",
+                    "PYTHONPATH=/repo/src",
+                ],
                 "Labels": {
                     "io.projectforty2.verifier.problem-id": "hadamard-mini",
                     "io.projectforty2.verifier.source-sha256": source_hash,
+                    "io.projectforty2.verifier.source-algorithm": "p42-source-tree-sha256/v2",
                     "io.projectforty2.verifier.version": "0.1.1",
                     "org.opencontainers.image.revision": "454f44d9c8299568217d34c60d21d784ff4507e4",
-                }
+                },
+                "User": "",
+                "WorkingDir": "/repo/problems/hadamard-mini",
             },
             "Id": "sha256:" + "b" * 64,
             "Os": "linux",
@@ -646,4 +780,13 @@ def test_image_inspection_binds_registry_digest_and_source_labels(
         lambda **_kwargs: "sha256:" + "d" * 64,
     )
     with pytest.raises(AdmissionError, match="filesystem source does not match"):
+        _inspect_image(problem, image_ref, "docker")
+
+    monkeypatch.setattr(admission, "_extract_image_source_hash", lambda **_kwargs: source_hash)
+    inspection[0]["Config"]["Entrypoint"] = ["/payload/hidden"]
+    with pytest.raises(AdmissionError, match="must not define an OCI entrypoint"):
+        _inspect_image(problem, image_ref, "docker")
+    inspection[0]["Config"]["Entrypoint"] = None
+    inspection[0]["Config"]["Env"].append("LD_PRELOAD=/payload/evil.so")
+    with pytest.raises(AdmissionError, match="unexpected names: LD_PRELOAD"):
         _inspect_image(problem, image_ref, "docker")

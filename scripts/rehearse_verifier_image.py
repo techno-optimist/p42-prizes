@@ -25,6 +25,8 @@ from p42_prizes.admission import (
     OCI_REVISION_LABEL,
     PROBLEM_ID_LABEL,
     SOURCE_HASH_LABEL,
+    SOURCE_HASH_ALGORITHM,
+    SOURCE_HASH_ALGORITHM_LABEL,
     VERIFIER_VERSION_LABEL,
     compute_source_hash,
     validate_report_shape,
@@ -154,6 +156,7 @@ def _image_label_violations(
     expected = {
         OCI_REVISION_LABEL: source_commit,
         SOURCE_HASH_LABEL: source_hash,
+        SOURCE_HASH_ALGORITHM_LABEL: SOURCE_HASH_ALGORITHM,
         PROBLEM_ID_LABEL: problem_id,
         VERIFIER_VERSION_LABEL: verifier_version,
     }
