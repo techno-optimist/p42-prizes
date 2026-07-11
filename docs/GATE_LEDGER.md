@@ -1,6 +1,6 @@
 # Production Gate Ledger
 
-Status date: 2026-07-10.
+Status date: 2026-07-11.
 
 Status: Phase 0 local/testnet-shaped portal. NO-GO for real ETH and NO-GO for
 a canonical Base Sepolia settlement pilot on the current source. Not externally
@@ -44,7 +44,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Gate | Current status | Evidence today | Exit criteria |
 | --- | --- | --- | --- |
-| Gate 0: Public repo / local pilot | Mostly green, two repo-owner actions remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, and published `.github/workflows/ci.yml`. The cited green post-merge [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) covers ancestor `e152e2de36f0de820b7c5d717080d364605cd1d8`, not current source | Obtain a completed required-check run for the current release; repo owner enables GitHub private vulnerability reporting and independently verified protected-release enforcement |
+| Gate 0: Public repo / local pilot | Mostly green; current-release CI passes, two repository-account controls remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, published `.github/workflows/ci.yml`, and green post-merge [`main` run 29138575950](https://github.com/techno-optimist/p42-prizes/actions/runs/29138575950) for release commit `ac6abae58124764d3fbdf951fbee0a6dfc8c7dde` | Upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; repo owner enables private vulnerability reporting through a supported GitHub surface |
 | Gate 1: Base Sepolia testnet | Open - no current canonical DA-refactored deployment or current reconciliation | Python reference model, portal-local commit/reveal, local DA/permanence evidence validator, DGX/Hermes verifier-runner runbook plus burst-drill validator, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, read-only reconciliation script, and stale historical Base Sepolia evidence for old bytecode | Fresh deployed verified DA-refactored contracts, current testnet addresses, current manifest, current indexer reconciliation, on-chain-at-reveal DA verified on that deployment, live agent wallet/operator run, DGX reveal-watcher dry run, integrated resolver transcript, runner burst report, strict open-witness launch-board evidence, and a fresh adversarial campaign report |
 | Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested admission tooling, immutable-image `admit-ready` scaffold, draft wallet/session policy, opt-in mutation API-key gate, and legal memo validator | External audit, counsel-signed legal memo, KYC/sanctions/ToS approval, immutable registry image digests, collected trusted four-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
@@ -62,7 +62,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Per-problem donation pools | Phase 0 only | API/UI expose dedicated `donationWallet` state for all 10 boards, all currently `not-deployed` with no address or transfer action | Deploy and reconcile a bytecode-backed Base Sepolia pool per problem before publishing an address; do not imply mainnet settlement or real-value custody |
 | Local rate limits/idempotency/events | Pass for local pilot | Process-local limiter, local idempotency, hash-chained local events, problem APIs expose local-only chain provenance until a manifest/indexer is attached | Still not production settlement state |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
-| GitHub Actions workflow | Pass for workflow presence; current-release run pending | `.github/workflows/ci.yml` is published. The post-merge [`main` run](https://github.com/techno-optimist/p42-prizes/actions/runs/29069089404) passed four lanes for ancestor `e152e2de36f0de820b7c5d717080d364605cd1d8`; it is historical evidence and does not attest current source. The secret-free release-guard unit suite passes locally, but its prepared CI step remains unpublished because this OAuth token lacks `workflow` scope. Authenticated `make verify-render-release` remains separate live deployment evidence | Publish the prepared release-guard CI step with an owner-scoped GitHub session; obtain and retain a completed required-check run for every deploy-relevant release; branch protection and private vulnerability reporting remain separate owner actions |
+| GitHub Actions workflow | Pass for workflow presence and current-release run | `.github/workflows/ci.yml` is published. Post-merge [`main` run 29138575950](https://github.com/techno-optimist/p42-prizes/actions/runs/29138575950) passed all four lanes for exact release commit `ac6abae58124764d3fbdf951fbee0a6dfc8c7dde`. The Render origin fingerprint changed after that merge and all eight required origin/proxy routes returned byte-identical `200` responses; the authenticated Render metadata guard remains unavailable because the local Render token is expired | Retain a completed required-check run for every deploy-relevant release. GitHub returned `403` for branch protection and rulesets because the current private repository/account tier does not support them; private vulnerability reporting returned `404` through the authenticated API. Those are explicit repo-owner/account blockers |
 | Owner/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
 
 ## Gate 1 Blockers
@@ -113,7 +113,7 @@ repo-owner authority cannot be replaced by agent execution.
 - [x] Retryable submission/verifier POSTs support local `Idempotency-Key` replay.
 - [x] Local diagnostic event ledger exposes hash-chained commit/reveal/idempotency events.
 - [x] `SECURITY.md` contact and disclosure channel documented.
-- [ ] A required-check CI run passes for the exact current release commit.
+- [x] A required-check CI run passes for exact release commit `ac6abae58124764d3fbdf951fbee0a6dfc8c7dde` ([run 29138575950](https://github.com/techno-optimist/p42-prizes/actions/runs/29138575950)).
 - [ ] Protected-release/branch enforcement is independently verified by the repo owner.
 - [ ] GitHub private vulnerability reporting is enabled by a repo owner.
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -59,3 +61,20 @@ def test_every_runtime_and_problem_requirement_has_a_sha256_hash() -> None:
 
         if active_requirement is not None:
             assert hash_count > 0, f"unhashed requirement {active_requirement} in {lock_path}"
+
+
+def test_runtime_lock_is_complete_under_require_hashes(tmp_path: Path) -> None:
+    environment = tmp_path / "runtime-venv"
+    subprocess.run([sys.executable, "-m", "venv", str(environment)], check=True)
+    python = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    completed = subprocess.run(
+        [
+            str(python), "-m", "pip", "install", "--disable-pip-version-check",
+            "--require-hashes", "-r", str(ROOT / "requirements.runtime.lock"),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=180,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
