@@ -699,7 +699,7 @@ describe("P42 deterministic indexer replay", () => {
   it("collects deterministic canonical open-witness launch evidence from readers", async () => {
     const { args } = openWitnessFixture();
     const evidence = await collectCanonicalOpenWitnessLaunchEvidence(args);
-    assert.equal(evidence.collector_authoritative, true);
+    assert.equal(evidence.collector_authoritative, false);
     assert.equal(evidence.submission.paidAtCommit, false);
     assert.deepEqual(evidence.submission.frontier, { currentAtoms: "900", previousAtoms: "1000" });
     assert.equal(evidence.submission.creditRecorded, false);
@@ -1195,6 +1195,12 @@ describe("P42 deterministic indexer replay", () => {
     assert.deepEqual(checkpoint.boards.map((board) => board.problemId), ["1", "2"]);
     assert.equal(checkpoint.reconstruction.ok, true);
     assert.equal(stableStringify(checkpoint), stableStringify(buildMultiBoardCheckpoint(args)));
+    const injectedAuthority = structuredClone(args);
+    injectedAuthority.boards[0].openWitnessLaunchEvidence = { collector_authoritative: true };
+    assert.throws(
+      () => buildMultiBoardCheckpoint(injectedAuthority),
+      /rejects caller-supplied open-witness authority/,
+    );
 
     const withoutArchive = structuredClone(checkpoint);
     failMissingMultiboardTranscriptArchives(withoutArchive, args.boards);

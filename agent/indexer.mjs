@@ -2547,7 +2547,7 @@ export async function collectCanonicalOpenWitnessLaunchEvidence({
     finalizedEvidence: { blockNumber: anchorBlock.number, blockHash: anchorBlock.hash },
     observedRegistryTuple: registryAtRegistration.registryTuple,
   });
-  return canonicalize({ ...projected, collector_authoritative: true });
+  return canonicalize(projected);
 }
 
 function check(name, expected, actual) {
@@ -3420,6 +3420,9 @@ export function buildMultiBoardCheckpoint({
     throw new Error("multi-board checkpoint requires at least one board");
   }
   const boardReports = boards.map((board) => {
+    if (board.openWitnessLaunchEvidence !== undefined) {
+      throw new Error("multi-board checkpoint rejects caller-supplied open-witness authority");
+    }
     const report = buildCheckpoint({
       binding,
       finalityPolicy,
@@ -3438,9 +3441,6 @@ export function buildMultiBoardCheckpoint({
       onchain: report.onchain,
       state: report.state,
       reconstruction: report.reconstruction,
-      ...(board.openWitnessLaunchEvidence
-        ? { openWitnessLaunchEvidence: canonicalize(board.openWitnessLaunchEvidence) }
-        : {}),
     };
   });
   const checks = boards.flatMap((board) =>
@@ -3514,21 +3514,6 @@ export function validateMultiBoardCheckpoint(checkpoint) {
       board.reconstruction.complete && board.reconstruction.checks.every((check) => check.ok);
     if (board.reconstruction.ok !== expectedBoardOk) {
       throw new Error(`checkpoint board ${board.problemId} reconstruction.ok must equal its evidence conjunction`);
-    }
-    const evidence = board.openWitnessLaunchEvidence;
-    if (evidence) {
-      if (evidence.releaseBinding.problemId !== board.problemId || evidence.releaseBinding.problemSlug !== board.problemSlug) {
-        throw new Error(`checkpoint board ${board.problemId} open-witness release binding is confused`);
-      }
-      if (evidence.releaseBinding.deploymentCommit !== checkpoint.manifestBinding.deploymentCommit ||
-          String(evidence.releaseBinding.deploymentConfigHash).toLowerCase() !== String(checkpoint.manifestBinding.deploymentConfigHash).toLowerCase() ||
-          evidence.releaseBinding.chainId !== checkpoint.manifestBinding.chainId) {
-        throw new Error(`checkpoint board ${board.problemId} open-witness deployment binding is confused`);
-      }
-      if (evidence.finalizedEvidence.blockNumber !== checkpoint.range.toBlock ||
-          evidence.finalizedEvidence.blockHash.toLowerCase() !== checkpoint.range.toBlockHash.toLowerCase()) {
-        throw new Error(`checkpoint board ${board.problemId} open-witness finalized evidence is not checkpoint-bound`);
-      }
     }
   }
   const expectedComplete = checkpoint.boards.every((board) => board.reconstruction.complete);

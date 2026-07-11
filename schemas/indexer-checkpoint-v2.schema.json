@@ -35,38 +35,6 @@
         "logIndex": { "type": "integer", "minimum": 0 }
       }
     },
-    "openWitnessLaunchEvidence": {
-      "type": "object", "additionalProperties": false,
-      "required": ["schema", "collector_authoritative", "releaseBinding", "artifactBinding", "registryTuple", "submission", "funding", "finalizedEvidence"],
-      "properties": {
-        "schema": { "const": "p42-prizes/open-witness-launch-evidence/v1" },
-        "collector_authoritative": { "const": true },
-        "releaseBinding": { "type": "object" },
-        "artifactBinding": { "type": "object" },
-        "registryTuple": { "type": "object" },
-        "submission": {
-          "type": "object", "additionalProperties": false,
-          "required": ["submissionId", "solver", "paidAtCommit", "commitDaHash", "solutionCid", "logs", "frontier", "creditAtoms", "creditRecorded", "ledgerDeltaAtoms", "nonvoidCanonicalFinalize"],
-          "properties": {
-            "submissionId": { "$ref": "#/$defs/positiveUintString" }, "solver": { "$ref": "#/$defs/address" },
-            "paidAtCommit": { "const": false }, "commitDaHash": { "$ref": "#/$defs/bytes32" }, "solutionCid": { "type": "string", "minLength": 1 },
-            "logs": { "type": "object", "additionalProperties": false, "required": ["commit", "reveal", "finalize"], "properties": { "commit": { "$ref": "#/$defs/logIdentity" }, "reveal": { "$ref": "#/$defs/logIdentity" }, "finalize": { "$ref": "#/$defs/logIdentity" } } },
-            "frontier": { "type": "object", "additionalProperties": false, "required": ["previousAtoms", "currentAtoms"], "properties": { "previousAtoms": { "$ref": "#/$defs/integerString" }, "currentAtoms": { "$ref": "#/$defs/integerString" } } },
-            "creditAtoms": { "const": "0" }, "creditRecorded": { "const": false }, "ledgerDeltaAtoms": { "const": "0" }, "nonvoidCanonicalFinalize": { "const": true }
-          }
-        },
-        "funding": {
-          "type": "object", "additionalProperties": false,
-          "required": ["armedAfterFinalize", "armLog", "poolBalanceBeforeArmWei", "acceptingFundsBeforeArm", "beforeArmStorageBlock"],
-          "properties": {
-            "armedAfterFinalize": { "const": true }, "armLog": { "$ref": "#/$defs/logIdentity" },
-            "poolBalanceBeforeArmWei": { "const": "0" }, "acceptingFundsBeforeArm": { "const": false },
-            "beforeArmStorageBlock": { "type": "object", "additionalProperties": false, "required": ["blockNumber", "blockHash"], "properties": { "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" } } }
-          }
-        },
-        "finalizedEvidence": { "type": "object", "additionalProperties": false, "required": ["blockNumber", "blockHash"], "properties": { "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" } } }
-      }
-    },
     "contractBinding": {
       "type": "object",
       "additionalProperties": false,
@@ -212,8 +180,7 @@
         "events": { "$ref": "#/$defs/events" },
         "onchain": { "$ref": "#/$defs/onchain" },
         "state": { "type": "object" },
-        "reconstruction": { "$ref": "#/$defs/boardReconstruction" },
-        "openWitnessLaunchEvidence": { "$ref": "#/$defs/openWitnessLaunchEvidence" }
+        "reconstruction": { "$ref": "#/$defs/boardReconstruction" }
       }
     }
   }

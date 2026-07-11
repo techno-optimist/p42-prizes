@@ -66,6 +66,13 @@ checkpoints are not accepted. Finality is derived from the provider's canonical
 latest block and the manifest confirmation policy. Production therefore
 requires a trusted archive-capable RPC endpoint; unavailable historical state,
 malformed ABI results, insufficient confirmations, or a reorg fails closed.
+The dependency-injected collector still emits `collector_authoritative: false`:
+an arbitrary caller can supply a self-consistent synthetic provider, so generic
+library verification cannot establish production RPC trust. Multi-board
+checkpoint construction rejects caller-supplied open-witness evidence rather
+than accepting a self-asserted authority flag. Promotion remains unavailable
+until a production adapter pins the release-manifest digest and RPC trust policy
+outside evidence-caller control.
 
 The release-bound configuration must identify the exact board and admission
 matrix, declare `objective: minimize`, and pin a positive `min_improvement_atoms`.
