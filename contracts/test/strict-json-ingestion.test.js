@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { readManifestOutputReservation } from "../scripts/deployment-ceremony-helper.js";
+import { createDeploymentReservationIdentity, readManifestOutputReservation } from "../scripts/deployment-ceremony-helper.js";
 import { loadManifestFromPath } from "../scripts/reconciliation-helper.js";
 import {
   readContractsArtifactJson,
@@ -94,10 +94,14 @@ describe("contracts strict JSON ingestion", () => {
       );
 
       const output = join(directory, "deployment.json");
+      const identity = createDeploymentReservationIdentity(output, {
+        deploymentCommit: "a".repeat(40), network: "baseSepolia", chainId: 84532,
+        deployer: "0x0000000000000000000000000000000000000007",
+      }, { trustedRoot: directory, configValue: { test: true } });
       const reservation = `${output}.deployment-reservation.json`;
-      await writeFile(reservation, '{"schema":"p42-prizes/deployment-reservation/v1"}');
+      await writeFile(reservation, '{"schema":"p42-prizes/deployment-reservation/v1"}', { mode: 0o600 });
       await assert.rejects(
-        () => readManifestOutputReservation(output),
+        () => readManifestOutputReservation(identity),
         /Could not read deployment reservation.*exactly one LF trailing newline/,
       );
     });

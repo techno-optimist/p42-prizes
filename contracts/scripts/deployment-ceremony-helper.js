@@ -1,10 +1,12 @@
-import { randomUUID } from "node:crypto";
-import { lstat, mkdir, rename, rm, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { lstat, open, rename, rm } from "node:fs/promises";
+import { hostname } from "node:os";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 
 import { computeDeploymentConfigHash, writeFileAtomicSync } from "../../agent/indexer.mjs";
 import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
-import { readContractsArtifactJson } from "./strict-json-helper.js";
+import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
 
 export const MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v1";
 export const MULTIBOARD_MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v2";
@@ -40,6 +42,30 @@ const ALL_CONTRACT_KEYS = ["timelock", "rolloverVault", ...CHILD_CONTRACT_KEYS];
 const PAUSE_TARGET_KEYS = ["ledger", "submissions", "challenges"];
 const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
 const BOARD_DEPLOYMENT_KEYS = new Set(BOARD_CONTRACT_KEYS);
+const RESERVATION_MAX_BYTES = 8 * 1024 * 1024;
+const RESERVATION_KEYS = new Set([
+  "schema",
+  "status",
+  "manifestPath",
+  "reservedAt",
+  "updatedAt",
+  "deploymentCommit",
+  "network",
+  "chainId",
+  "deployer",
+  "configDigest",
+  "identityDigest",
+  "generation",
+  "deployments",
+]);
+const RESERVATION_IDENTITY_KEYS = new Set([
+  "manifestPath", "trustedRoot", "deploymentCommit", "network", "chainId", "deployer", "configDigest", "identityDigest",
+]);
+const DEPLOYMENT_ENTRY_KEYS = new Set([
+  "name", "address", "txHash", "state", "blockNumber", "abiHash", "runtimeCodeHash", "deployedCodeHash",
+  "constructorArgsHash", "constructorArgs",
+]);
+const ARCHIVE_KEYS = new Set([...RESERVATION_KEYS, "manifestPublishedAt", "manifestDigest", "reservationDigest"]);
 
 const PARAM_ENV = Object.freeze({
   alphaBps: "P42_ALPHA_BPS",
@@ -942,105 +968,505 @@ function reservationCollisionError(path) {
   );
 }
 
-function reservationRecord(path, metadata) {
-  const { deploymentCommit, network, chainId, deployer } = metadata;
-  return {
+function canonicalJson(value) {
+  if (typeof value === "bigint") return JSON.stringify(value.toString());
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+}
+
+export function deploymentReservationConfigDigest(config) {
+  let bytes;
+  if (Buffer.isBuffer(config) || config instanceof Uint8Array) {
+    bytes = Buffer.from(config);
+    parseStrictJsonBytes(bytes, { maxBytes: RESERVATION_MAX_BYTES, maxDepth: 128, trailingNewline: "allow" });
+  } else {
+    bytes = Buffer.from(canonicalJson(config), "utf8");
+  }
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function identityDigest(identity) {
+  const bound = {
+    manifestPath: identity.manifestPath,
+    trustedRoot: identity.trustedRoot,
+    deploymentCommit: identity.deploymentCommit,
+    network: identity.network,
+    chainId: identity.chainId,
+    deployer: identity.deployer,
+    configDigest: identity.configDigest,
+  };
+  return `sha256:${createHash("sha256").update(canonicalJson(bound)).digest("hex")}`;
+}
+
+export function createDeploymentReservationIdentity(path, metadata, options = {}) {
+  const manifestPath = resolve(path);
+  const trustedRoot = resolve(options.trustedRoot ?? "");
+  const rel = relative(trustedRoot, manifestPath);
+  if (!options.trustedRoot || !rel || rel === ".." || rel.startsWith(`..${sep}`)) {
+    throw new Error("deployment reservation output must be below an explicit trusted root");
+  }
+  if (metadata.configDigest !== undefined) {
+    throw new Error("deployment reservation configDigest must be derived from configBytes or configValue");
+  }
+  const configSource = options.configBytes ?? options.configValue;
+  if (configSource === undefined) throw new Error("deployment reservation canonical config input is required");
+  const identity = {
+    manifestPath,
+    trustedRoot,
+    deploymentCommit: metadata.deploymentCommit,
+    network: metadata.network,
+    chainId: metadata.chainId,
+    deployer: metadata.deployer,
+    configDigest: deploymentReservationConfigDigest(configSource),
+  };
+  return Object.freeze(assertExpectedIdentity({ ...identity, identityDigest: identityDigest(identity) }));
+}
+
+function assertExpectedIdentity(identity) {
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) {
+    throw new Error("deployment reservation identity object is required");
+  }
+  const keys = Object.keys(identity);
+  if (keys.length !== RESERVATION_IDENTITY_KEYS.size || keys.some((key) => !RESERVATION_IDENTITY_KEYS.has(key))) {
+    throw new Error("deployment reservation identity has unexpected or missing fields");
+  }
+  if (
+    identity.manifestPath !== resolve(identity.manifestPath) ||
+    identity.trustedRoot !== resolve(identity.trustedRoot) ||
+    !relative(identity.trustedRoot, identity.manifestPath) ||
+    relative(identity.trustedRoot, identity.manifestPath) === ".." ||
+    relative(identity.trustedRoot, identity.manifestPath).startsWith(`..${sep}`) ||
+    typeof identity.deploymentCommit !== "string" || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(identity.deploymentCommit) ||
+    typeof identity.network !== "string" || identity.network.length === 0 ||
+    !Number.isSafeInteger(identity.chainId) || identity.chainId <= 0 ||
+    typeof identity.deployer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(identity.deployer) ||
+    typeof identity.configDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(identity.configDigest) ||
+    identity.identityDigest !== identityDigest(identity)
+  ) throw new Error("deployment reservation identity is invalid");
+  return identity;
+}
+
+function reservationRecord(identity) {
+  const now = new Date().toISOString();
+  const record = {
     schema: DEPLOYMENT_RESERVATION_SCHEMA,
     status: "deploying",
-    manifestPath: resolve(path),
-    reservedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    deploymentCommit,
-    network,
-    chainId,
-    deployer,
+    manifestPath: identity.manifestPath,
+    reservedAt: now,
+    updatedAt: now,
+    deploymentCommit: identity.deploymentCommit,
+    network: identity.network,
+    chainId: identity.chainId,
+    deployer: identity.deployer,
+    configDigest: identity.configDigest,
+    identityDigest: identity.identityDigest,
+    generation: 0,
     deployments: {},
+  };
+  return record;
+}
+
+function reservationStorage(overrides = {}) {
+  return {
+    open,
+    lstat,
+    rename,
+    rm,
+    ...overrides,
   };
 }
 
-async function writeReservationAtomic(path, value) {
-  writeFileAtomicSync(path, `${jsonStringify(value)}\n`);
+async function openTrustedParent(identity, storage, targetPath = identity.manifestPath) {
+  assertExpectedIdentity(identity);
+  const rel = relative(identity.trustedRoot, resolve(targetPath));
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error("reservation path escapes trusted root");
+  const parts = rel.split(sep);
+  const name = parts.pop();
+  const held = [];
+  const ancestors = [];
+  try {
+    let ancestorPath = identity.trustedRoot;
+    let handle = await storage.open(ancestorPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+    held.push(handle);
+    ancestors.push({ path: ancestorPath, metadata: await handle.stat() });
+    for (const component of parts) {
+      ancestorPath = join(ancestorPath, component);
+      handle = await storage.open(ancestorPath, fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW);
+      held.push(handle);
+      ancestors.push({ path: ancestorPath, metadata: await handle.stat() });
+    }
+    for (const { metadata } of ancestors) {
+      if (!metadata.isDirectory() || (typeof process.getuid === "function" && metadata.uid !== process.getuid()) || (metadata.mode & 0o022) !== 0) {
+        throw new Error("deployment reservation trusted path ancestor is unsafe");
+      }
+    }
+    const context = { held, ancestors, parent: held.at(-1), name, path: join(ancestorPath, name) };
+    await assertHeldAncestors(context, storage);
+    return context;
+  } catch (error) {
+    for (const handle of held.reverse()) await handle.close();
+    throw error;
+  }
 }
 
-export async function readManifestOutputReservation(path) {
-  const output = resolve(path);
-  const reservationPath = manifestOutputReservationPath(output);
+async function assertHeldAncestors(context, storage) {
+  for (const ancestor of context.ancestors) {
+    const current = await storage.lstat(ancestor.path);
+    if (!current.isDirectory() || current.dev !== ancestor.metadata.dev || current.ino !== ancestor.metadata.ino) {
+      throw new Error("deployment reservation trusted path ancestor was replaced");
+    }
+  }
+}
+
+async function closeTrustedParent(context, storage = reservationStorage()) {
+  let validationError;
+  try {
+    await assertHeldAncestors(context, storage);
+  } catch (error) {
+    validationError = error;
+  }
+  for (const handle of context.held.reverse()) await handle.close();
+  if (validationError) throw validationError;
+}
+
+async function writeAll(handle, bytes) {
+  let offset = 0;
+  while (offset < bytes.length) {
+    const result = await handle.write(bytes, offset, bytes.length - offset, offset);
+    if (!result || !Number.isSafeInteger(result.bytesWritten) || result.bytesWritten <= 0) {
+      throw new Error("deployment reservation write made no progress");
+    }
+    offset += result.bytesWritten;
+  }
+}
+
+async function writePrivateExclusive(path, bytes, storage) {
+  const handle = await storage.open(
+    path,
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    await writeAll(handle, bytes);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function removeAndSync(identity, targetPath, storage) {
+  const context = await openTrustedParent(identity, storage, targetPath);
+  try {
+    await storage.rm(context.path, { force: true });
+    await context.parent.sync();
+  } finally {
+    await closeTrustedParent(context, storage);
+  }
+}
+
+async function syncTrustedParent(identity, targetPath, storage) {
+  const context = await openTrustedParent(identity, storage, targetPath);
+  try {
+    await context.parent.sync();
+  } finally {
+    await closeTrustedParent(context, storage);
+  }
+}
+
+async function assertTrustedVacant(identity, targetPath, storage, message) {
+  const context = await openTrustedParent(identity, storage, targetPath);
+  try {
+    try {
+      await storage.lstat(context.path);
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    throw new Error(message);
+  } finally {
+    await closeTrustedParent(context, storage);
+  }
+}
+
+async function writeReservationAtomic(identity, value, storageOverrides = {}) {
+  const storage = reservationStorage(storageOverrides);
+  const bytes = Buffer.from(`${jsonStringify(value)}\n`, "utf8");
+  if (bytes.length > RESERVATION_MAX_BYTES) throw new Error("deployment reservation exceeds byte limit");
+  const context = await openTrustedParent(identity, storage, manifestOutputReservationPath(identity.manifestPath));
+  const temporaryPath = `${context.path}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    await writePrivateExclusive(temporaryPath, bytes, storage);
+    await storage.rename(temporaryPath, context.path);
+    await context.parent.sync();
+  } catch (error) {
+    try {
+      await storage.rm(temporaryPath, { force: true });
+    } catch {
+      // Preserve the publication error; a private same-directory temp is never authoritative.
+    }
+    throw error;
+  } finally {
+    await closeTrustedParent(context, storage);
+  }
+}
+
+function assertReservationIdentity(record, expected) {
+  assertExpectedIdentity(expected);
+  const keys = Object.keys(record);
+  if (keys.length !== RESERVATION_KEYS.size || keys.some((key) => !RESERVATION_KEYS.has(key))) {
+    throw new Error("reservation record has unexpected or missing fields");
+  }
+  if (
+    record.schema !== DEPLOYMENT_RESERVATION_SCHEMA ||
+    record.status !== "deploying" ||
+    record.manifestPath !== expected.manifestPath ||
+    typeof record.reservedAt !== "string" ||
+    !Number.isFinite(Date.parse(record.reservedAt)) ||
+    typeof record.updatedAt !== "string" ||
+    !Number.isFinite(Date.parse(record.updatedAt)) ||
+    typeof record.deploymentCommit !== "string" ||
+    !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(record.deploymentCommit) ||
+    typeof record.network !== "string" || record.network.length === 0 ||
+    !Number.isSafeInteger(record.chainId) || record.chainId <= 0 ||
+    typeof record.deployer !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(record.deployer) ||
+    typeof record.configDigest !== "string" || !/^sha256:[0-9a-f]{64}$/.test(record.configDigest) ||
+    record.identityDigest !== expected.identityDigest ||
+    !Number.isSafeInteger(record.generation) || record.generation < 0 ||
+    !record.deployments || typeof record.deployments !== "object" || Array.isArray(record.deployments)
+  ) {
+    throw new Error("reservation record identity or schema is invalid");
+  }
+  for (const key of ["manifestPath", "deploymentCommit", "network", "chainId", "deployer", "configDigest", "identityDigest"]) {
+    if (record[key] !== expected[key]) {
+      throw new Error(`deployment reservation immutable identity mismatch: ${key}`);
+    }
+  }
+  validateDeployments(record.deployments);
+}
+
+function validateDeploymentEntry(entry, label) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error(`${label} must be an object`);
+  if (Object.keys(entry).some((key) => !DEPLOYMENT_ENTRY_KEYS.has(key))) throw new Error(`${label} has unexpected fields`);
+  if (!new Set(["broadcast", "mined"]).has(entry.state)) throw new Error(`${label}.state must be broadcast or mined`);
+  if (typeof entry.name !== "string" || entry.name.length === 0 || !/^0x[0-9a-fA-F]{40}$/.test(entry.address) || !/^0x[0-9a-fA-F]{64}$/.test(entry.txHash)) {
+    throw new Error(`${label} identity is malformed`);
+  }
+  if (entry.state === "broadcast" && entry.blockNumber !== null) throw new Error(`${label}.blockNumber must be null while broadcast`);
+  if (entry.state === "mined" && (!Number.isSafeInteger(entry.blockNumber) || entry.blockNumber < 0)) throw new Error(`${label}.blockNumber must be mined`);
+  const minedFields = ["abiHash", "runtimeCodeHash", "deployedCodeHash", "constructorArgsHash", "constructorArgs"];
+  if (entry.state === "broadcast" && minedFields.some((key) => entry[key] !== undefined)) throw new Error(`${label} broadcast entry contains mined evidence`);
+  if (entry.state === "mined") {
+    for (const key of minedFields.slice(0, 4)) {
+      if (!/^0x[0-9a-fA-F]{64}$/.test(entry[key])) throw new Error(`${label}.${key} must be a bytes32 hash`);
+    }
+    if (!Array.isArray(entry.constructorArgs)) throw new Error(`${label}.constructorArgs must be an array`);
+  }
+}
+
+function validateDeployments(deployments) {
+  for (const [key, entry] of Object.entries(deployments)) {
+    if (key === "boards") {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("boards journal is malformed");
+      for (const [problemId, board] of Object.entries(entry)) {
+        if (!/^[1-9][0-9]*$/.test(problemId) || !board || typeof board !== "object" || Array.isArray(board)) throw new Error("board journal is malformed");
+        for (const [boardKey, boardEntry] of Object.entries(board)) {
+          if (!BOARD_DEPLOYMENT_KEYS.has(boardKey)) throw new Error("board deployment key is invalid");
+          validateDeploymentEntry(boardEntry, `boards.${problemId}.${boardKey}`);
+        }
+      }
+    } else {
+      if (!ALL_CONTRACT_KEYS.includes(key)) throw new Error("deployment key is invalid");
+      validateDeploymentEntry(entry, key);
+    }
+  }
+}
+
+function assertPrivateRegularFile(metadata, path) {
+  if (!metadata.isFile()) throw new Error(`Deployment reservation ${path} is not a regular file`);
+  if (metadata.nlink !== 1) throw new Error(`Deployment reservation ${path} must have exactly one link`);
+  if ((metadata.mode & 0o777) !== 0o600) throw new Error(`Deployment reservation ${path} must have mode 0600`);
+  if (typeof process.getuid === "function" && metadata.uid !== process.getuid()) {
+    throw new Error(`Deployment reservation ${path} is not owned by the current user`);
+  }
+  if (metadata.size > RESERVATION_MAX_BYTES) throw new Error(`Deployment reservation ${path} exceeds byte limit`);
+}
+
+async function readSecureJson(identity, targetPath, storage) {
+  const context = await openTrustedParent(identity, storage, targetPath);
+  let handle;
+  try {
+    const before = await storage.lstat(context.path);
+    assertPrivateRegularFile(before, targetPath);
+    handle = await storage.open(context.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    assertPrivateRegularFile(opened, targetPath);
+    if (before.dev !== opened.dev || before.ino !== opened.ino) {
+      throw new Error(`Deployment reservation ${targetPath} changed while opening`);
+    }
+    const bytes = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const result = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (result.bytesRead === 0) throw new Error(`Deployment reservation ${targetPath} was truncated while reading`);
+      offset += result.bytesRead;
+    }
+    const after = await storage.lstat(context.path);
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) {
+      throw new Error(`Deployment reservation ${targetPath} changed while reading`);
+    }
+    return parseStrictJsonBytes(bytes, { maxBytes: RESERVATION_MAX_BYTES, maxDepth: 128, trailingNewline: "require" });
+  } finally {
+    if (handle) await handle.close();
+    await closeTrustedParent(context, storage);
+  }
+}
+
+export async function readManifestOutputReservation(identity, options = {}) {
+  assertExpectedIdentity(identity);
+  const reservationPath = manifestOutputReservationPath(identity.manifestPath);
   let parsed;
   try {
-    parsed = await readContractsArtifactJson(reservationPath);
+    parsed = await readSecureJson(identity, reservationPath, reservationStorage(options.storage));
   } catch (error) {
     if (error?.code === "ENOENT") throw reservationCollisionError(reservationPath);
     throw new Error(`Could not read deployment reservation ${reservationPath}: ${error.message}`);
   }
-  if (
-    !parsed ||
-    parsed.schema !== DEPLOYMENT_RESERVATION_SCHEMA ||
-    parsed.status !== "deploying" ||
-    parsed.manifestPath !== output ||
-    !parsed.deployments ||
-    typeof parsed.deployments !== "object" ||
-    Array.isArray(parsed.deployments)
-  ) {
+  try {
+    assertReservationIdentity(parsed, identity);
+  } catch {
     throw new Error(`Deployment reservation ${reservationPath} is malformed; do not start another ceremony`);
   }
   return { path: reservationPath, record: parsed };
 }
 
-export async function reserveManifestOutput(path, metadata = {}) {
-  const output = resolve(path);
+export async function reserveManifestOutput(identity, options = {}) {
+  assertExpectedIdentity(identity);
+  const output = identity.manifestPath;
   const reservationPath = manifestOutputReservationPath(output);
-  await mkdir(dirname(output), { recursive: true });
-  await assertManifestOutputIsVacant(output);
-  await assertManifestOutputIsVacant(`${output}.deployment-record.json`);
+  const storage = reservationStorage(options.storage);
+  const record = reservationRecord(identity);
+  assertReservationIdentity(record, identity);
+  await assertTrustedVacant(identity, output, storage, `Refusing to overwrite existing deployment manifest: ${output}`);
+  await assertTrustedVacant(identity, `${output}.deployment-record.json`, storage, `Refusing to overwrite existing deployment archive: ${output}.deployment-record.json`);
+  const context = await openTrustedParent(identity, storage, reservationPath);
   try {
-    await writeFile(reservationPath, `${jsonStringify(reservationRecord(output, metadata))}\n`, {
-      encoding: "utf8",
-      mode: 0o600,
-      flag: "wx",
-    });
+    await writePrivateExclusive(context.path, Buffer.from(`${jsonStringify(record)}\n`, "utf8"), storage);
+    await context.parent.sync();
   } catch (error) {
     if (error?.code === "EEXIST") throw reservationCollisionError(reservationPath);
     throw error;
+  } finally {
+    await closeTrustedParent(context, storage);
   }
   try {
     // The second check closes the window between the first vacancy check and
     // our exclusive reservation. A process following this ceremony will see
     // the reservation and never issue a competing deployment transaction.
-    await assertManifestOutputIsVacant(output);
+    await assertTrustedVacant(identity, output, storage, `Refusing to overwrite existing deployment manifest: ${output}`);
   } catch (error) {
-    await rm(reservationPath, { force: true });
+    await removeAndSync(identity, reservationPath, storage);
     throw error;
   }
-  return readManifestOutputReservation(output);
+  return { ...(await readManifestOutputReservation(identity, options)), identity };
 }
 
-export async function recordManifestOutputDeployment(path, key, deployment) {
-  if (typeof key !== "string" || !/^[a-z][a-z0-9_]*$/.test(key)) {
-    throw new Error("deployment reservation key must be a lowercase identifier");
-  }
-  if (!deployment || typeof deployment !== "object") {
-    throw new Error("deployment reservation entry must be an object");
-  }
-  const reservation = await readManifestOutputReservation(path);
-  const existing = reservation.record.deployments[key] ?? {};
-  for (const field of ["address", "txHash"]) {
-    if (existing[field] !== undefined && deployment[field] !== undefined && existing[field] !== deployment[field]) {
-      throw new Error(`deployment reservation ${key}.${field} changed during ceremony`);
+async function withReservationLock(identity, options, operation) {
+  const storage = reservationStorage(options.storage);
+  const lockPath = `${manifestOutputReservationPath(identity.manifestPath)}.lock`;
+  const owner = {
+    schema: "p42-prizes/deployment-reservation-lock/v1",
+    token: randomUUID(),
+    pid: process.pid,
+    hostname: hostname(),
+    createdAt: new Date().toISOString(),
+    identityDigest: identity.identityDigest,
+  };
+  const ownerBytes = Buffer.from(`${JSON.stringify(owner)}\n`, "utf8");
+  let context;
+  for (let attempt = 0; attempt < (options.lockAttempts ?? 200); attempt += 1) {
+    context = await openTrustedParent(identity, storage, lockPath);
+    try {
+      await writePrivateExclusive(context.path, ownerBytes, storage);
+      await context.parent.sync();
+      break;
+    } catch (error) {
+      await closeTrustedParent(context, storage);
+      context = undefined;
+      if (error?.code !== "EEXIST") throw error;
+      let stale = false;
+      try {
+        const existing = await readSecureJson(identity, lockPath, storage);
+        if (
+          existing?.schema !== owner.schema || typeof existing.token !== "string" ||
+          !Number.isSafeInteger(existing.pid) || existing.pid <= 0 || existing.hostname !== owner.hostname ||
+          existing.identityDigest !== identity.identityDigest || !Number.isFinite(Date.parse(existing.createdAt))
+        ) throw new Error("deployment reservation lock record is malformed");
+        try {
+          process.kill(existing.pid, 0);
+        } catch (probeError) {
+          if (probeError?.code === "ESRCH") stale = true;
+          else throw probeError;
+        }
+      } catch (lockError) {
+        if (lockError?.message?.includes("lock record is malformed")) throw lockError;
+        throw new Error(`deployment reservation lock cannot be validated: ${lockError.message}`);
+      }
+      if (stale) {
+        await removeAndSync(identity, lockPath, storage);
+        continue;
+      }
+      if (attempt + 1 >= (options.lockAttempts ?? 200)) throw new Error("deployment reservation lock is busy");
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, options.lockRetryMs ?? 10));
     }
   }
-  const record = {
-    ...reservation.record,
-    updatedAt: new Date().toISOString(),
-    deployments: {
-      ...reservation.record.deployments,
-      [key]: { ...existing, ...deployment },
-    },
-  };
-  await writeReservationAtomic(reservation.path, record);
-  return { path: reservation.path, record };
+  try {
+    return await operation(storage);
+  } finally {
+    try {
+      const current = await readSecureJson(identity, lockPath, storage);
+      if (current.token !== owner.token) throw new Error("deployment reservation lock ownership changed");
+      await storage.rm(context.path);
+      await context.parent.sync();
+    } finally {
+      await closeTrustedParent(context, storage);
+    }
+  }
 }
 
-export async function recordManifestOutputBoardDeployment(path, problemId, key, deployment) {
+function mergeDeployment(record, key, deployment) {
+  validateDeploymentEntry(deployment, key);
+  const existing = record.deployments[key];
+  if (existing) {
+    for (const field of ["name", "address", "txHash"]) {
+      if (existing[field] !== deployment[field]) throw new Error(`deployment reservation ${key}.${field} changed during ceremony`);
+    }
+    if (existing.state === "mined" && deployment.state !== "mined") throw new Error(`deployment reservation ${key} cannot regress from mined`);
+  }
+  return { ...existing, ...deployment };
+}
+
+export async function recordManifestOutputDeployment(identity, key, deployment, options = {}) {
+  assertExpectedIdentity(identity);
+  if (typeof key !== "string" || !/^[a-z][A-Za-z0-9]*$/.test(key)) {
+    throw new Error("deployment reservation key must be a contract identifier");
+  }
+  return withReservationLock(identity, options, async () => {
+    const reservation = await readManifestOutputReservation(identity, options);
+    const record = {
+      ...reservation.record,
+      updatedAt: new Date().toISOString(),
+      generation: reservation.record.generation + 1,
+      deployments: { ...reservation.record.deployments, [key]: mergeDeployment(reservation.record, key, deployment) },
+    };
+    assertReservationIdentity(record, identity);
+    await writeReservationAtomic(identity, record, options.storage);
+    return { path: reservation.path, record, identity };
+  });
+}
+
+export async function recordManifestOutputBoardDeployment(identity, problemId, key, deployment, options = {}) {
+  assertExpectedIdentity(identity);
   const normalizedProblemId = String(problemId);
   if (!/^[1-9][0-9]*$/.test(normalizedProblemId)) {
     throw new Error("board deployment reservation problemId must be a positive integer");
@@ -1048,62 +1474,152 @@ export async function recordManifestOutputBoardDeployment(path, problemId, key, 
   if (!BOARD_DEPLOYMENT_KEYS.has(key)) {
     throw new Error(`board deployment reservation key must be one of ${[...BOARD_DEPLOYMENT_KEYS].join(", ")}`);
   }
-  if (!deployment || typeof deployment !== "object") {
-    throw new Error("board deployment reservation entry must be an object");
-  }
-
-  const reservation = await readManifestOutputReservation(path);
-  const boards = reservation.record.deployments.boards ?? {};
-  if (!boards || typeof boards !== "object" || Array.isArray(boards)) {
-    throw new Error("deployment reservation boards journal is malformed");
-  }
-  const existingBoard = boards[normalizedProblemId] ?? {};
-  if (!existingBoard || typeof existingBoard !== "object" || Array.isArray(existingBoard)) {
-    throw new Error(`deployment reservation board ${normalizedProblemId} journal is malformed`);
-  }
-  const existing = existingBoard[key] ?? {};
-  for (const field of ["address", "txHash"]) {
-    if (existing[field] !== undefined && deployment[field] !== undefined && existing[field] !== deployment[field]) {
-      throw new Error(`board deployment reservation ${normalizedProblemId}.${key}.${field} changed during ceremony`);
-    }
-  }
-  const record = {
-    ...reservation.record,
-    updatedAt: new Date().toISOString(),
-    deployments: {
-      ...reservation.record.deployments,
-      boards: {
-        ...boards,
-        [normalizedProblemId]: {
-          ...existingBoard,
-          [key]: { ...existing, ...deployment },
+  return withReservationLock(identity, options, async () => {
+    const reservation = await readManifestOutputReservation(identity, options);
+    const boards = reservation.record.deployments.boards ?? {};
+    const existingBoard = boards[normalizedProblemId] ?? {};
+    const synthetic = { deployments: { [key]: existingBoard[key] } };
+    const record = {
+      ...reservation.record,
+      updatedAt: new Date().toISOString(),
+      generation: reservation.record.generation + 1,
+      deployments: {
+        ...reservation.record.deployments,
+        boards: {
+          ...boards,
+          [normalizedProblemId]: {
+            ...existingBoard,
+            [key]: mergeDeployment(synthetic, key, deployment),
+          },
         },
       },
-    },
-  };
-  await writeReservationAtomic(reservation.path, record);
-  return { path: reservation.path, record };
+    };
+    assertReservationIdentity(record, identity);
+    await writeReservationAtomic(identity, record, options.storage);
+    return { path: reservation.path, record, identity };
+  });
 }
 
-export async function completeManifestOutputReservation(path) {
-  const output = resolve(path);
-  const reservationPath = manifestOutputReservationPath(output);
-  try {
-    await lstat(output);
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      throw new Error(`Cannot complete deployment reservation before manifest exists: ${output}`);
-    }
-    throw error;
-  }
-  const reservation = await readManifestOutputReservation(output);
-  const archivePath = `${output}.deployment-record.json`;
-  writeFileAtomicSync(archivePath, `${jsonStringify({
-    ...reservation.record,
+function reservationRecordDigest(reservation) {
+  return `sha256:${createHash("sha256").update(`${jsonStringify(reservation)}\n`).digest("hex")}`;
+}
+
+function archiveRecord(reservation, manifestDigest) {
+  return {
+    ...reservation,
     status: "manifest-published",
     manifestPublishedAt: new Date().toISOString(),
-  })}\n`);
-  await rm(reservationPath, { force: true });
+    manifestDigest,
+    reservationDigest: reservationRecordDigest(reservation),
+  };
+}
+
+function validateArchiveRecord(archive, identity, manifestDigest, reservation = undefined) {
+  const keys = Object.keys(archive);
+  if (keys.length !== ARCHIVE_KEYS.size || keys.some((key) => !ARCHIVE_KEYS.has(key))) throw new Error("deployment archive schema is malformed");
+  if (archive.status !== "manifest-published" || !Number.isFinite(Date.parse(archive.manifestPublishedAt))) throw new Error("deployment archive status is malformed");
+  if (archive.manifestDigest !== manifestDigest || !/^sha256:[0-9a-f]{64}$/.test(archive.reservationDigest)) throw new Error("deployment archive digest is malformed");
+  const reservationShape = { ...archive, status: "deploying" };
+  delete reservationShape.manifestPublishedAt;
+  delete reservationShape.manifestDigest;
+  delete reservationShape.reservationDigest;
+  assertReservationIdentity(reservationShape, identity);
+  if (reservation && archive.reservationDigest !== reservationRecordDigest(reservation)) throw new Error("deployment archive reservation digest conflicts");
+}
+
+function validateManifestForCompletion(manifest, identity) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) throw new Error("deployment manifest must be an object");
+  if (!new Set([MANIFEST_SCHEMA, MULTIBOARD_MANIFEST_SCHEMA]).has(manifest.schema)) throw new Error("deployment manifest schema is not deployable");
+  if (manifest.status !== PENDING_SETUP_STATUS) throw new Error("deployment manifest is not pending governance setup");
+  if (manifest.deploymentCommit !== identity.deploymentCommit) throw new Error("deployment manifest commit does not match reservation identity");
+  if (!manifest.network || typeof manifest.network !== "object" || Array.isArray(manifest.network)) throw new Error("deployment manifest network must be an object");
+  if (manifest.network.name !== identity.network) throw new Error("deployment manifest network name does not match reservation identity");
+  if (manifest.network.chainId !== identity.chainId) throw new Error("deployment manifest chainId does not match reservation identity");
+  if (!manifest.roles || typeof manifest.roles !== "object" || Array.isArray(manifest.roles)) throw new Error("deployment manifest roles must be an object");
+  if (String(manifest.roles.deployer).toLowerCase() !== identity.deployer.toLowerCase()) throw new Error("deployment manifest deployer does not match reservation identity");
+  if (!/^0x[0-9a-fA-F]{64}$/.test(String(manifest.deploymentConfigHash))) throw new Error("deployment manifest config binding is missing");
+  assertDeploymentConfigHash(manifest);
+}
+
+async function readSecureBytes(identity, targetPath, storage) {
+  const context = await openTrustedParent(identity, storage, targetPath);
+  let handle;
+  try {
+    const before = await storage.lstat(context.path);
+    assertPrivateRegularFile(before, targetPath);
+    handle = await storage.open(context.path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+    const opened = await handle.stat();
+    assertPrivateRegularFile(opened, targetPath);
+    if (before.dev !== opened.dev || before.ino !== opened.ino) throw new Error(`${targetPath} changed while opening`);
+    const bytes = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, offset);
+      if (bytesRead === 0) throw new Error(`${targetPath} was truncated while reading`);
+      offset += bytesRead;
+    }
+    const after = await storage.lstat(context.path);
+    if (after.dev !== opened.dev || after.ino !== opened.ino || after.size !== opened.size) throw new Error(`${targetPath} changed while reading`);
+    return bytes;
+  } finally {
+    if (handle) await handle.close();
+    await closeTrustedParent(context, storage);
+  }
+}
+
+export async function completeManifestOutputReservation(identity, options = {}) {
+  assertExpectedIdentity(identity);
+  const output = identity.manifestPath;
+  const reservationPath = manifestOutputReservationPath(output);
+  const archivePath = `${output}.deployment-record.json`;
+  return withReservationLock(identity, options, async (storage) => {
+    const manifestBytes = await readSecureBytes(identity, output, storage).catch((error) => {
+      if (error?.code === "ENOENT") throw new Error(`Cannot complete deployment reservation before manifest exists: ${output}`);
+      throw error;
+    });
+    const manifest = parseStrictJsonBytes(manifestBytes, { maxBytes: RESERVATION_MAX_BYTES, maxDepth: 128, trailingNewline: "require" });
+    validateManifestForCompletion(manifest, identity);
+    const manifestDigest = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
+    try {
+      const existing = await readSecureJson(identity, archivePath, storage);
+      let currentReservation;
+      try {
+        currentReservation = await readSecureJson(identity, reservationPath, storage);
+        assertReservationIdentity(currentReservation, identity);
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      try {
+        validateArchiveRecord(existing, identity, manifestDigest, currentReservation);
+      } catch (error) {
+        throw new Error(`existing deployment archive conflicts with completion evidence: ${error.message}`);
+      }
+      await syncTrustedParent(identity, archivePath, storage);
+      await removeAndSync(identity, reservationPath, storage);
+      return { path: archivePath, record: existing, identity };
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    const reservation = await readManifestOutputReservation(identity, options);
+    const archive = archiveRecord(reservation.record, manifestDigest);
+    const archiveBytes = Buffer.from(`${jsonStringify(archive)}\n`, "utf8");
+    const context = await openTrustedParent(identity, storage, archivePath);
+    try {
+      try {
+        await writePrivateExclusive(context.path, archiveBytes, storage);
+        await context.parent.sync();
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        const existing = await readSecureJson(identity, archivePath, storage);
+        validateArchiveRecord(existing, identity, manifestDigest, reservation.record);
+        await syncTrustedParent(identity, archivePath, storage);
+      }
+    } finally {
+      await closeTrustedParent(context, storage);
+    }
+    await removeAndSync(identity, reservationPath, storage);
+    return { path: archivePath, record: archive, identity };
+  });
 }
 
 export function requiredCompletionCheckNames(manifest) {

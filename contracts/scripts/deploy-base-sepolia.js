@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
 import { network } from "hardhat";
@@ -20,6 +20,7 @@ import {
   buildSetupOperations,
   completeManifestOutputReservation,
   completeSetupManifest,
+  createDeploymentReservationIdentity,
   constructorArgsFor,
   constructorArgsHash,
   jsonStringify,
@@ -80,7 +81,7 @@ function multiBoardCeremonyConfigPath() {
 async function readMultiBoardCeremonyInput() {
   const path = multiBoardCeremonyConfigPath();
   try {
-    return { path, value: await readContractsConfigJson(path) };
+    return { path, bytes: await readFile(path), value: await readContractsConfigJson(path) };
   } catch (error) {
     throw new Error(`Unable to parse multi-board ceremony config ${path}: ${error.message}`);
   }
@@ -258,13 +259,14 @@ async function deployCeremony(ethers) {
   assertCleanGitTree(repoRoot);
   const deploymentCommit = gitCommit(repoRoot);
   const output = manifestPath();
-  const reservation = await reserveManifestOutput(output, {
+  const reservationIdentity = createDeploymentReservationIdentity(output, {
     deploymentCommit,
     network: "baseSepolia",
     chainId: Number(BASE_SEPOLIA_CHAIN_ID),
     deployer: deployer.address,
-  });
-  const recordDeployment = (key, deployment) => recordManifestOutputDeployment(output, key, deployment);
+  }, { trustedRoot: dirname(output), configValue: config });
+  const reservation = await reserveManifestOutput(reservationIdentity);
+  const recordDeployment = (key, deployment) => recordManifestOutputDeployment(reservationIdentity, key, deployment);
   console.log(`Reserved deployment manifest destination: ${reservation.path}`);
 
   const deployments = {};
@@ -389,7 +391,7 @@ async function deployCeremony(ethers) {
 
   await mkdir(dirname(output), { recursive: true });
   await writeManifestAtomically(output, manifest);
-  await completeManifestOutputReservation(output);
+  await completeManifestOutputReservation(reservationIdentity);
   console.log(`Wrote pending governance ceremony manifest: ${output}`);
   console.log(`Timelock owner: ${addresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action.`);
@@ -460,14 +462,13 @@ async function deployMultiBoardCeremony(ethers) {
   console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const deploymentCommit = gitCommit(repoRoot);
   const output = manifestPath();
-  const reservation = await reserveManifestOutput(output, {
+  const reservationIdentity = createDeploymentReservationIdentity(output, {
     deploymentCommit,
     network: "baseSepolia",
     chainId: Number(BASE_SEPOLIA_CHAIN_ID),
     deployer: deployer.address,
-    ceremonyConfig: input.path,
-    ceremonySchema: config.schema,
-  });
+  }, { trustedRoot: dirname(output), configBytes: input.bytes });
+  const reservation = await reserveManifestOutput(reservationIdentity);
   console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
 
   const rootDeployments = {};
@@ -478,7 +479,7 @@ async function deployMultiBoardCeremony(ethers) {
     ethers,
     "P42MultisigTimelock",
     rootConstructorArgs.timelock,
-    (deployment) => recordManifestOutputDeployment(output, "timelock", deployment),
+    (deployment) => recordManifestOutputDeployment(reservationIdentity, "timelock", deployment),
   );
   rootAddresses.timelock = rootDeployments.timelock.manifest.address;
   rootConstructorArgs.registry = constructorArgsFor("P42ProblemRegistry", config, rootAddresses);
@@ -486,7 +487,7 @@ async function deployMultiBoardCeremony(ethers) {
     ethers,
     "P42ProblemRegistry",
     rootConstructorArgs.registry,
-    (deployment) => recordManifestOutputDeployment(output, "registry", deployment),
+    (deployment) => recordManifestOutputDeployment(reservationIdentity, "registry", deployment),
   );
   rootAddresses.registry = rootDeployments.registry.manifest.address;
   rootConstructorArgs.rolloverVault = constructorArgsFor("P42RolloverVault", config, rootAddresses);
@@ -494,7 +495,7 @@ async function deployMultiBoardCeremony(ethers) {
     ethers,
     "P42RolloverVault",
     rootConstructorArgs.rolloverVault,
-    (deployment) => recordManifestOutputDeployment(output, "rolloverVault", deployment),
+    (deployment) => recordManifestOutputDeployment(reservationIdentity, "rolloverVault", deployment),
   );
   rootAddresses.rolloverVault = rootDeployments.rolloverVault.manifest.address;
 
@@ -510,7 +511,7 @@ async function deployMultiBoardCeremony(ethers) {
         ethers,
         name,
         constructorArgs[key],
-        (deployment) => recordManifestOutputBoardDeployment(output, problem.problemId, key, deployment),
+        (deployment) => recordManifestOutputBoardDeployment(reservationIdentity, problem.problemId, key, deployment),
       );
       addresses[key] = deployments[key].manifest.address;
     }
@@ -607,7 +608,7 @@ async function deployMultiBoardCeremony(ethers) {
 
   await mkdir(dirname(output), { recursive: true });
   await writeManifestAtomically(output, manifest);
-  await completeManifestOutputReservation(output);
+  await completeManifestOutputReservation(reservationIdentity);
   console.log(`Wrote pending multi-board governance ceremony manifest: ${output}`);
   console.log(`Shared timelock owner: ${rootAddresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action across ${boards.length} boards.`);
@@ -1273,7 +1274,9 @@ if (mode !== "deploy" && mode !== "deploy-multiboard" && mode !== "continue" && 
 }
 
 if (mode === "inspect-reservation") {
-  console.log(jsonStringify((await readManifestOutputReservation(manifestPath())).record));
+  const identityPath = resolve(requiredEnv("P42_RESERVATION_IDENTITY"));
+  const reservationIdentity = await readContractsConfigJson(identityPath);
+  console.log(jsonStringify((await readManifestOutputReservation(reservationIdentity)).record));
 } else {
   requiredEnv("BASE_SEPOLIA_RPC_URL");
   const connection = await network.create("baseSepolia");
