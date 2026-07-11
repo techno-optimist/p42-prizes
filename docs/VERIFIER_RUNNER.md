@@ -133,8 +133,25 @@ not memory pressure. Queue, plan, and transcript schemas live at
   policy against the pinned production image on the production Linux runner.
 - `required_memory_mb` comes from the problem manifest/runtime admission evidence,
   then gets raised to observed peak RSS after dry runs.
-- Queue depth, oldest queued age, active lease, memory headroom, and swap usage
-  are alerting metrics.
+- Queue depth/bytes, archive count, oldest queued age/deadline, active lease,
+  reserved admission/memory headroom, and swap usage are alerting metrics.
+
+The canonical queue admits ordinary work only through 896 active entries and
+deadline-bearing chain work through 960, leaving 64 operational slots plus 64 KiB of
+serialized-state headroom for leases and terminal metadata. When admission
+needs room, only jobs with a candidate-hash-bound terminal operator action
+(`confirmed`, `broadcast_reverted`, `superseded`, `window_expired`,
+`no_action`, `quarantined`, policy/cap refusal, or resolver-observed terminal
+state) are archived. Each immutable content-addressed record and both
+replay tombstones are fsynced before queue removal; archive/tombstone damage
+fails closed. Operators should alert on queue bytes, both admission headrooms,
+oldest deadline, and record/tombstone counts.
+
+Existing `p42-runner-queue/v1` files remain readable without a rewrite even if
+they predate these prospective admission limits. New enqueue mutations enforce
+the limits. Reserved slots are available only when `challenge_ends_at` is a
+canonical decimal Unix timestamp strictly in the future and no more than six
+hours away; malformed, expired, and distant deadlines receive no priority.
 
 The local admission check is executable:
 

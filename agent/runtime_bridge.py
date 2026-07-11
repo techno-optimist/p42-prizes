@@ -44,6 +44,15 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 71
+        and value.startswith("sha256:")
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
 def _quarantine_canonical(queue_path: str, job_ids: list[str], reason: str) -> dict[str, Any]:
     targets = {job_id for job_id in job_ids if job_id}
     if not targets:
@@ -64,13 +73,18 @@ def _quarantine_canonical(queue_path: str, job_ids: list[str], reason: str) -> d
                 job["previous_action"] = previous_action
             candidate_hash = (
                 previous_action.get("candidate_hash")
-                if isinstance(previous_action, dict) and isinstance(previous_action.get("candidate_hash"), str)
+                if isinstance(previous_action, dict) and _is_sha256(previous_action.get("candidate_hash"))
                 else job.get("challenge_candidate_hash")
             )
-            if not isinstance(candidate_hash, str):
+            if not _is_sha256(candidate_hash):
                 candidate_hash = job.get("source_event_hash", "")
-            if not isinstance(candidate_hash, str) or not candidate_hash:
-                candidate_hash = "sha256:" + "0" * 64
+            if not _is_sha256(candidate_hash):
+                raise ValueError(f"canonical quarantine job {job.get('job_id')} has no valid binding hash")
+            # Canonical invalidation may happen before verification has emitted
+            # a challenge candidate. The trusted bridge establishes the same
+            # durable fence used by the terminal action so archival never has
+            # to trust an unbound status or infer a different identity later.
+            job["challenge_candidate_hash"] = candidate_hash
             action: dict[str, Any] = {
                 "candidate_hash": candidate_hash,
                 "status": "canonical_invalidated",
