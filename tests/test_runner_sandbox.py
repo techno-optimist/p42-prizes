@@ -35,6 +35,7 @@ def test_build_sandbox_command_applies_all_hardening(monkeypatch: pytest.MonkeyP
     assert cmd[:3] == ["docker", "run", "--rm"]
     for flag in (
         "--network=none",
+        "--add-host=host.docker.internal:host-gateway",
         "--memory=128m",
         "--memory-swap=128m",   # no swap
         "--pids-limit=64",      # fork-bomb / fork-to-multiply-RLIMIT defence
