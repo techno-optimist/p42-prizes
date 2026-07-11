@@ -31,9 +31,11 @@ integrates it. The explicit reader must return:
 
 - canonical, successful commit, reveal, finalize, and `armFunding` receipts;
 - each receipt's transaction hash, block number, and current finalized block hash;
-- raw hex transaction-input bytes and raw hex receipt-log bytes in the versioned
-  canonical collector-proof encoding; Python decodes and checks phase, target,
-  submission ID, solver, CID, DA hash, score/frontier, event signatures, and args;
+- versioned canonical collector-format transaction and event summaries encoded
+  as hex JSON; Python checks their phase, target, submission ID, solver, CID,
+  DA hash, score/frontier, event signatures, and arguments. These fields retain
+  the schema names `raw_input` and `raw_receipt_logs` for v1 compatibility,
+  but they are not raw Ethereum calldata, topics, or receipt bytes;
 - registry problem ID, board/problem slug, contract addresses, verifier pins,
   witness ID, solution CID/DA hash, and canonical report hash;
 - finalized storage reads for the exact pre/post frontier atoms, submission
@@ -47,6 +49,11 @@ mismatched frontier state, a reused witness, nonzero paid credit, pre-arm pool
 funds, or arming before/at finalization rejects the gate claim. Cached fixture
 data cannot claim a live gate because `canonical` and `finalized` must come from
 the out-of-band reader and all receipt/state fields must resolve live.
+
+The production collector must independently fetch and ABI-decode the actual
+transaction calldata and receipt logs before constructing these summaries.
+Python validates the collector-format contract only; it does not independently
+decode Ethereum ABI bytes, and therefore cannot set `gate_passed`.
 
 The release-bound configuration must identify the exact board and admission
 matrix, declare `objective: minimize`, and pin a positive `min_improvement_atoms`.
