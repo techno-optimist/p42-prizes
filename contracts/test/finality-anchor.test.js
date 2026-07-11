@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { BASE_SEPOLIA_FINALITY_POLICY, collectFinalityAnchor, recheckFinalityAnchor } from "../scripts/finality-anchor.js";
+import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "../scripts/finality-anchor.js";
 
 const hash = (n) => `0x${n.toString(16).padStart(64, "0")}`;
 const point = (n) => ({ number: `0x${n.toString(16)}`, hash: hash(n) });
 const status = (finalized = 100, origin = 80, l1 = 90) => ({ finalized_l2: { ...point(finalized), l1origin: point(origin) }, finalized_l1: point(l1) });
-function provider({ finalized = 100, safe = 105, sync = status(), historicalHashes = {}, missingTag = null } = {}) {
+function provider({ finalized = 100, safe = 105, sync = status(), historicalHashes = {}, blockTimestamp = 1_800_000_000, missingTag = null } = {}) {
   return { async send(method, params) {
     if (method === "eth_chainId") return "0x14a34";
     if (method === "optimism_syncStatus") return sync;
@@ -13,7 +13,7 @@ function provider({ finalized = 100, safe = 105, sync = status(), historicalHash
       if (params[0] === "finalized") return missingTag === "finalized" ? null : point(finalized);
       if (params[0] === "safe") return missingTag === "safe" ? null : point(safe);
       const number = Number(BigInt(params[0]));
-      return { ...point(number), hash: historicalHashes[number] ?? hash(number) };
+      return { ...point(number), hash: historicalHashes[number] ?? hash(number), timestamp: `0x${blockTimestamp.toString(16)}` };
     }
     throw new Error(`unexpected ${method}`);
   } };
@@ -29,6 +29,15 @@ describe("Base Sepolia finalized anchor", () => {
     assert.equal(anchor.l2.finalized.number, 100); assert.equal(anchor.l1.origin.number, 80);
     assert.equal(anchor.rpcEvidence.primaryOrigin, "https://rpc-a.example");
     assert.equal(anchor.rpcEvidence.secondaryHost, "rpc-b.example");
+  });
+  it("binds completion time to the exact finalized block on both RPCs", async () => {
+    const pair = endpoints();
+    const anchor = await collectFinalityAnchor({ endpoints: pair, policy: BASE_SEPOLIA_FINALITY_POLICY });
+    const evidence = await collectCanonicalFinalizedBlockEvidence({ endpoints: pair, anchor });
+    assert.equal(evidence.blockNumber, 100); assert.equal(evidence.blockHash, hash(100)); assert.equal(evidence.timestamp, 1_800_000_000);
+    await assert.rejects(() => collectCanonicalFinalizedBlockEvidence({ endpoints: endpoints(provider({ blockTimestamp: 1_799_999_999 }), provider()), anchor }), /disagree on completion block timestamp/, "primary backdate");
+    await assert.rejects(() => collectCanonicalFinalizedBlockEvidence({ endpoints: endpoints(provider(), provider({ blockTimestamp: 1_800_000_001 })), anchor }), /disagree on completion block timestamp/, "secondary mismatch");
+    await assert.rejects(() => collectCanonicalFinalizedBlockEvidence({ endpoints: endpoints(provider(), provider({ historicalHashes: { 100: hash(999) } })), anchor }), /not canonical at the finalized anchor/, "hash mismatch");
   });
   it("rejects policy mutation and downgrade", async () => {
     await assert.rejects(() => collectFinalityAnchor({ endpoints: endpoints(), policy: { ...BASE_SEPOLIA_FINALITY_POLICY, finalizedTag: "latest" } }), /immutable release policy/);

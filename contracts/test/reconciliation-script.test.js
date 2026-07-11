@@ -107,9 +107,10 @@ describe("Base Sepolia reconciliation evidence gate", () => {
 
   it("refuses publication before finalized governance completion or any failed reconstruction", () => {
     const anchor = { schema: "p42-prizes/base-sepolia-finality-anchor/v1", l2: { finalized: { number: 100, hash: `0x${"1".repeat(64)}` }, safe: { number: 105, hash: `0x${"2".repeat(64)}` } }, l1: { origin: { number: 80, hash: `0x${"3".repeat(64)}` }, finalized: { number: 90, hash: `0x${"4".repeat(64)}` } } };
-    const manifest = { releaseMode: "production", status: "governance-setup-complete", governanceSetup: { status: "complete", completionBlock: 100, finalityAnchor: anchor } };
+    const completionBlockTimestamp = 1_800_000_000;
+    const manifest = { releaseMode: "production", status: "governance-setup-complete", governanceSetup: { status: "complete", completionBlock: 100, completionBlockTimestamp, completionBlockHash: anchor.l2.finalized.hash, acceptanceValidatedAt: new Date(completionBlockTimestamp * 1000).toISOString(), completionBlockEvidence: { blockNumber: 100, blockHash: anchor.l2.finalized.hash, timestamp: completionBlockTimestamp, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: anchor.l2.finalized.hash, secondaryBlockHash: anchor.l2.finalized.hash }, finalityAnchor: anchor }, roleAcceptances: { schema: "p42-prizes/deployment-role-acceptance/v1", contractCount: 43 } };
     const report = { range: { toBlock: 100, toBlockHash: anchor.l2.finalized.hash }, reconstruction: { ok: true, complete: true }, boards: [{ reconstruction: { ok: true, complete: true } }] };
-    assert.doesNotThrow(() => assertReconciliationPublishable(manifest, report, anchor));
+    assert.throws(() => assertReconciliationPublishable(manifest, report, anchor), /durable role acceptance validation timestamp|fully verified deployment role acceptances/);
     for (const [name, mutate, pattern] of [
       ["pending manifest", (m) => { m.status = "pending-governance-setup"; }, /completed governance/],
       ["pending setup", (m) => { m.governanceSetup.status = "pending"; }, /completed governance/],

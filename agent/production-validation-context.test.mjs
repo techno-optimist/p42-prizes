@@ -15,9 +15,10 @@ function fixture() {
   const slatePath = join(root, "slate.json"); const capsulePath = join(root, "capsule.json");
   const capsule = { capsuleDigest: digest("a") }; writeFileSync(slatePath, JSON.stringify({ status: "ready" })); writeFileSync(capsulePath, JSON.stringify(capsule));
   const entry = { name: "P42BountyPool", blockNumber: 42, deploymentBlockTimestamp: 1_800_000_000, blockTimestampEvidence: { timestamp: 1_800_000_000, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: hash("b"), secondaryBlockHash: hash("b") } };
-  const manifest = { releaseMode: "production", deploymentCommit: "c".repeat(40), deploymentConfigHash: hash("d"), releaseEvidence: { slateDigest: digest("e"), capsuleDigest: capsule.capsuleDigest }, contracts: { pool: entry }, problems: [] };
+  const completionEvidence = { blockNumber: 100, blockHash: hash("c"), timestamp: 1_800_000_100, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: hash("c"), secondaryBlockHash: hash("c") };
+  const manifest = { releaseMode: "production", status: "governance-setup-complete", deploymentCommit: "c".repeat(40), deploymentConfigHash: hash("d"), releaseEvidence: { slateDigest: digest("e"), capsuleDigest: capsule.capsuleDigest }, contracts: { pool: entry }, problems: [], governanceSetup: { completionBlock: 100, completionBlockTimestamp: 1_800_000_100, completionBlockHash: hash("c"), completionBlockEvidence: completionEvidence, finalityAnchor: { l2: { finalized: { number: 100, hash: hash("c") } } } } };
   const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
-  const dossier = { schema: "p42-prizes/production-timestamp-dossier/v1", manifestDigest: `sha256:${createHash("sha256").update(canonical(manifest)).digest("hex")}`, deploymentConfigHash: manifest.deploymentConfigHash, deploymentCommit: manifest.deploymentCommit, slateDigest: manifest.releaseEvidence.slateDigest, capsuleDigest: manifest.releaseEvidence.capsuleDigest, blocks: [{ blockNumber: 42, blockHash: hash("b"), timestamp: 1_800_000_000, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b" }] };
+  const dossier = { schema: "p42-prizes/production-timestamp-dossier/v1", manifestDigest: `sha256:${createHash("sha256").update(canonical(manifest)).digest("hex")}`, deploymentConfigHash: manifest.deploymentConfigHash, deploymentCommit: manifest.deploymentCommit, slateDigest: manifest.releaseEvidence.slateDigest, capsuleDigest: manifest.releaseEvidence.capsuleDigest, blocks: [{ blockNumber: 42, blockHash: hash("b"), timestamp: 1_800_000_000, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b" }, { blockNumber: 100, blockHash: hash("c"), timestamp: 1_800_000_100, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b" }] };
   const dossierPath = join(root, "dossier.json"); const dossierBytes = Buffer.from(JSON.stringify(dossier)); writeFileSync(dossierPath, dossierBytes);
   const dossierSha = `sha256:${createHash("sha256").update(dossierBytes).digest("hex")}`;
   return { root, slatePath, capsulePath, dossierPath, dossierSha, dossier, capsule, manifest, env: { P42_PRODUCTION_SLATE_PATH: slatePath, P42_RELEASE_CAPSULE: capsulePath, P42_PRODUCTION_TIMESTAMP_DOSSIER_PATH: dossierPath, P42_PRODUCTION_TIMESTAMP_DOSSIER_SHA256: dossierSha, P42_PRODUCTION_RPC_OPERATOR_IDS: "operator-a,operator-b" } };
@@ -31,6 +32,7 @@ test("production context requires explicit strict trust paths and resolves exact
     assert.deepEqual(context.capsuleResolver(value.capsule.capsuleDigest), value.capsule);
     assert.equal(context.capsuleResolver(digest("c")), null);
     assert.equal(context.blockTimestampResolver({ blockNumber: 42 }), 1_800_000_000);
+    assert.equal(context.blockTimestampResolver({ blockNumber: 100 }), 1_800_000_100);
     assert.throws(() => context.blockTimestampResolver({ blockNumber: 43 }), /unavailable/);
   } finally { rmSync(value.root, { recursive: true, force: true }); }
 });
@@ -79,10 +81,22 @@ test("offline context requires an exact canonical operator allowlist", () => {
 test("online context prefetches provider timestamps and fails missing blocks closed", async () => {
   const value = fixture();
   try {
-    const context = await loadProductionValidationContext(value.manifest, { env: value.env, provider: { getBlock: async (number) => number === 42 ? { timestamp: 1_800_000_000, hash: hash("b") } : null } });
+    const canonicalProvider = { getBlock: async (number) => number === 42 ? { timestamp: 1_800_000_000, hash: hash("b") } : number === 100 ? { timestamp: 1_800_000_100, hash: hash("c") } : null };
+    const context = await loadProductionValidationContext(value.manifest, { env: value.env, provider: canonicalProvider, secondaryProvider: { ...canonicalProvider } });
     assert.equal(context.blockTimestampResolver({ blockNumber: 42 }), 1_800_000_000);
-    await assert.rejects(() => loadProductionValidationContext({ ...value.manifest, contracts: { pool: { ...value.manifest.contracts.pool, blockNumber: 43 } } }, { env: value.env, provider: { getBlock: async () => null } }), /did not return/);
-    await assert.rejects(() => loadProductionValidationContext(value.manifest, { env: value.env, provider: { getBlock: async () => ({ timestamp: 1_800_000_000, hash: hash("f") }) } }), /live canonical block disagrees/);
-    await assert.rejects(() => loadProductionValidationContext(value.manifest, { env: value.env, provider: { getBlock: async () => ({ timestamp: 1_800_000_001, hash: hash("b") }) } }), /live canonical block disagrees/);
+    assert.equal(context.blockTimestampResolver({ blockNumber: 100 }), 1_800_000_100);
+    await assert.rejects(() => loadProductionValidationContext({ ...value.manifest, contracts: { pool: { ...value.manifest.contracts.pool, blockNumber: 43 } } }, { env: value.env, provider: { getBlock: async () => null }, secondaryProvider: { getBlock: async () => null } }), /did not return/);
+    await assert.rejects(() => loadProductionValidationContext(value.manifest, { env: value.env, provider: { getBlock: async (number) => number === 100 ? { timestamp: 1_800_000_099, hash: hash("c") } : canonicalProvider.getBlock(number) }, secondaryProvider: { ...canonicalProvider } }), /configured RPCs disagree/, "primary backdate");
+    await assert.rejects(() => loadProductionValidationContext(value.manifest, { env: value.env, provider: canonicalProvider, secondaryProvider: { getBlock: async (number) => number === 100 ? { timestamp: 1_800_000_101, hash: hash("c") } : canonicalProvider.getBlock(number) } }), /configured RPCs disagree/, "secondary mismatch");
+    await assert.rejects(() => loadProductionValidationContext(value.manifest, { env: value.env, provider: canonicalProvider, secondaryProvider: { getBlock: async (number) => number === 100 ? { timestamp: 1_800_000_100, hash: hash("f") } : canonicalProvider.getBlock(number) } }), /configured RPCs disagree/, "hash mismatch");
+  } finally { rmSync(value.root, { recursive: true, force: true }); }
+});
+
+test("offline dossier must cover the finalized completion block", () => {
+  const value = fixture();
+  try {
+    const dossier = { ...value.dossier, blocks: value.dossier.blocks.filter((row) => row.blockNumber !== 100) };
+    const bytes = Buffer.from(JSON.stringify(dossier)); writeFileSync(value.dossierPath, bytes);
+    assert.throws(() => loadProductionValidationContextSync(value.manifest, { env: { ...value.env, P42_PRODUCTION_TIMESTAMP_DOSSIER_SHA256: `sha256:${createHash("sha256").update(bytes).digest("hex")}` } }), /does not cover completion block/);
   } finally { rmSync(value.root, { recursive: true, force: true }); }
 });

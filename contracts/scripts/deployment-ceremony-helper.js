@@ -7,6 +7,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { computeDeploymentConfigHash, writeFileAtomicSync } from "../../agent/indexer.mjs";
 import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
 import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
+import { validateDeploymentRoleAcceptances } from "./role-acceptance-helper.js";
 
 export const MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v1";
 export const MULTIBOARD_MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v2";
@@ -1727,7 +1728,7 @@ export function assessSetupCompletion(manifest, snapshot) {
   return { complete: checks.every((check) => check.ok === true), checks };
 }
 
-export function completeSetupManifest(manifest, snapshot) {
+export function completeSetupManifest(manifest, snapshot, { ethers, roleAcceptancePacket } = {}) {
   const assessment = assessSetupCompletion(manifest, snapshot);
   if (!assessment.complete) {
     const failed = assessment.checks.filter((check) => !check.ok).map((check) => check.name);
@@ -1737,6 +1738,19 @@ export function completeSetupManifest(manifest, snapshot) {
     snapshot.operations.map((operation) => [operation.operationId.toLowerCase(), operation])
   );
   const completed = structuredClone(manifest);
+  if (manifest.schema === MULTIBOARD_MANIFEST_SCHEMA && manifest.releaseMode === "production") {
+    if (!ethers || !roleAcceptancePacket) throw new Error("production governance completion requires deployment role acceptances");
+    const blockEvidence = snapshot.completionBlockEvidence;
+    const anchorPoint = snapshot.finalityAnchor?.l2?.finalized;
+    if (!blockEvidence || blockEvidence.blockNumber !== snapshot.checkedBlock || blockEvidence.blockNumber !== anchorPoint?.number || String(blockEvidence.blockHash).toLowerCase() !== String(anchorPoint?.hash).toLowerCase() || blockEvidence.primaryBlockHash !== blockEvidence.secondaryBlockHash || blockEvidence.primaryBlockHash !== blockEvidence.blockHash || blockEvidence.primaryOperatorId === blockEvidence.secondaryOperatorId) throw new Error("production completion requires dual-RPC canonical finalized block evidence");
+    const completionBlockTimestamp = blockEvidence.timestamp;
+    if (!Number.isSafeInteger(completionBlockTimestamp) || completionBlockTimestamp < 0 || snapshot.checkedAt !== new Date(completionBlockTimestamp * 1000).toISOString()) throw new Error("production completion requires a canonical finalized block timestamp");
+    completed.roleAcceptances = validateDeploymentRoleAcceptances(ethers, manifest, roleAcceptancePacket, { validationTime: completionBlockTimestamp });
+    completed.governanceSetup.acceptanceValidatedAt = new Date(completionBlockTimestamp * 1000).toISOString();
+    completed.governanceSetup.completionBlockTimestamp = completionBlockTimestamp;
+    completed.governanceSetup.completionBlockHash = blockEvidence.blockHash;
+    completed.governanceSetup.completionBlockEvidence = structuredClone(blockEvidence);
+  }
   completed.status = COMPLETE_SETUP_STATUS;
   completed.governanceSetup.status = "complete";
   completed.governanceSetup.completedAt = snapshot.checkedAt;

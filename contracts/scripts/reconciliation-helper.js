@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { ethers as ethersLibrary } from "ethers";
 import { mkdir, open, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 
@@ -17,6 +18,7 @@ import {
 import { readContractsArtifactJson } from "./strict-json-helper.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
 import { collectFinalityAnchor, recheckFinalityAnchor, validateMonotonicFinalityAnchor } from "./finality-anchor.js";
+import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance-helper.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532;
 const PRIVATE_FILE_MODE = 0o600;
@@ -93,6 +95,8 @@ export function assertReconciliationPublishable(manifest, report, freshAnchor) {
   if (!anchor || anchor.schema !== "p42-prizes/base-sepolia-finality-anchor/v1" || anchor.l2?.finalized?.number !== manifest.governanceSetup.completionBlock) {
     throw new Error("production reconciliation publication requires a valid governance finality anchor");
   }
+  const completionEvidence = manifest.governanceSetup.completionBlockEvidence;
+  if (!completionEvidence || completionEvidence.blockNumber !== manifest.governanceSetup.completionBlock || completionEvidence.timestamp !== manifest.governanceSetup.completionBlockTimestamp || String(completionEvidence.blockHash).toLowerCase() !== String(manifest.governanceSetup.completionBlockHash).toLowerCase() || String(completionEvidence.blockHash).toLowerCase() !== String(anchor.l2.finalized.hash).toLowerCase() || String(completionEvidence.primaryBlockHash).toLowerCase() !== String(completionEvidence.blockHash).toLowerCase() || String(completionEvidence.secondaryBlockHash).toLowerCase() !== String(completionEvidence.blockHash).toLowerCase() || completionEvidence.primaryOperatorId === completionEvidence.secondaryOperatorId) throw new Error("production reconciliation publication requires dual-RPC canonical completion block evidence");
   if (!freshAnchor || report?.range?.toBlock !== freshAnchor.l2?.finalized?.number || String(report?.range?.toBlockHash).toLowerCase() !== String(freshAnchor.l2?.finalized?.hash).toLowerCase()) {
     throw new Error("reconciliation range is not bound to the fresh finalized anchor");
   }
@@ -102,6 +106,12 @@ export function assertReconciliationPublishable(manifest, report, freshAnchor) {
   if (report?.reconstruction?.ok !== true || report?.reconstruction?.complete !== true) throw new Error("reconciliation is not globally complete and verified");
   if (Array.isArray(report.boards) && report.boards.some((board) => board?.reconstruction?.ok !== true || board?.reconstruction?.complete !== true)) {
     throw new Error("reconciliation has an incomplete or failed board");
+  }
+  try {
+    const validationTime = validateDurableRoleAcceptanceTimestamp(manifest.governanceSetup, manifest.governanceSetup.completionBlockTimestamp);
+    validateDeploymentRoleAcceptances(ethersLibrary, manifest, manifest.roleAcceptances, { validationTime });
+  } catch (error) {
+    throw new Error(`production reconciliation publication requires fully verified deployment role acceptances: ${error.message}`);
   }
 }
 
