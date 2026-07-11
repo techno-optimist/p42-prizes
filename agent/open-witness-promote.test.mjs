@@ -10,7 +10,7 @@ import {
   requireRawLaunchEvidence,
   signCollectorQuorum,
   verifyCollectorAuthorityEnvelope,
-} from "./open-witness-promote.mjs";
+} from "./open-witness-authority-core.mjs";
 
 const hash = (value) => `sha256:${String(value).padStart(64, "0")}`;
 const policy = {

@@ -124,7 +124,7 @@ import {
   agreeCollectorEvidence,
   evidenceDigest,
   signCollectorQuorum,
-} from "./agent/open-witness-promote.mjs";
+} from "./agent/open-witness-authority-core.mjs";
 
 const input = JSON.parse(fs.readFileSync(0, "utf8"));
 const policyDigest = evidenceDigest(input.policy);
