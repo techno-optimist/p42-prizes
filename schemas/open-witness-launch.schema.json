@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/open-witness-launch-v1.json",
+  "title": "P42 per-board Gate 1 open-witness launch evidence",
+  "$comment": "Schema validity alone is not a live gate. Production collection is unavailable until an OpenWitnessChainReader is integrated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "evidence_id", "observed_at_utc", "release_binding", "board", "artifacts", "witness", "funding", "reviewers", "attestations", "evidence_hash"],
+  "properties": {
+    "schema_version": {"const": "p42-open-witness-launch/v1"},
+    "evidence_id": {"type": "string", "minLength": 3},
+    "observed_at_utc": {"type": "string", "format": "date-time"},
+    "release_binding": {"$ref": "adversarial-campaign.schema.json#/$defs/releaseBinding"},
+    "board": {
+      "type": "object", "additionalProperties": false,
+      "required": ["registry_problem_id", "slug", "problem_registry", "bounty_pool", "submission_manager"],
+      "properties": {
+        "registry_problem_id": {"type": "string", "minLength": 1},
+        "slug": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "problem_registry": {"$ref": "#/$defs/address"}, "bounty_pool": {"$ref": "#/$defs/address"}, "submission_manager": {"$ref": "#/$defs/address"}
+      }
+    },
+    "artifacts": {
+      "type": "object", "additionalProperties": false,
+      "required": ["verifier_image", "admission_matrix", "solution_payload", "canonical_transcript", "canonical_report"],
+      "properties": {
+        "verifier_image": {"$ref": "#/$defs/artifact"}, "admission_matrix": {"$ref": "#/$defs/artifact"}, "solution_payload": {"$ref": "#/$defs/artifact"}, "canonical_transcript": {"$ref": "#/$defs/artifact"}, "canonical_report": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "witness": {
+      "type": "object", "additionalProperties": false,
+      "required": ["witness_id", "solution_cid", "da_hash", "verifier_image_hash", "admission_matrix_hash", "transcript_hash", "report_hash", "commit_receipt", "reveal_receipt", "finalize_receipt", "pre_frontier_atoms", "post_frontier_atoms", "credit_atoms", "funding_armed_at_commit"],
+      "properties": {
+        "witness_id": {"$ref": "#/$defs/hash"}, "solution_cid": {"type": "string", "pattern": "^ipfs://.+"},
+        "da_hash": {"$ref": "#/$defs/hash"}, "verifier_image_hash": {"$ref": "#/$defs/hash"}, "admission_matrix_hash": {"$ref": "#/$defs/hash"}, "transcript_hash": {"$ref": "#/$defs/hash"}, "report_hash": {"$ref": "#/$defs/hash"},
+        "commit_receipt": {"$ref": "#/$defs/receipt"}, "reveal_receipt": {"$ref": "#/$defs/receipt"}, "finalize_receipt": {"$ref": "#/$defs/receipt"},
+        "pre_frontier_atoms": {"type": "integer"}, "post_frontier_atoms": {"type": "integer"}, "credit_atoms": {"const": 0}, "funding_armed_at_commit": {"const": false}
+      }
+    },
+    "funding": {
+      "type": "object", "additionalProperties": false, "required": ["arm_receipt", "paid_credit_atoms_before_arm", "pool_balance_before_arm_wei"],
+      "properties": {"arm_receipt": {"$ref": "#/$defs/receipt"}, "paid_credit_atoms_before_arm": {"const": 0}, "pool_balance_before_arm_wei": {"const": 0}}
+    },
+    "reviewers": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "object"}},
+    "attestations": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/signature"}},
+    "evidence_hash": {"$ref": "#/$defs/hash"}
+  },
+  "$defs": {
+    "address": {"type": "string", "pattern": "^0x[0-9a-fA-F]{40}$"},
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "artifact": {
+      "type": "object", "additionalProperties": false, "required": ["uri", "local_path", "sha256", "created_at_utc"],
+      "properties": {"uri": {"type": "string", "minLength": 1}, "local_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"}, "sha256": {"$ref": "#/$defs/hash"}, "created_at_utc": {"type": "string", "format": "date-time"}}
+    },
+    "receipt": {
+      "type": "object", "additionalProperties": false,
+      "required": ["transaction_hash", "block_number", "block_hash", "transaction_index", "status", "calldata_hash", "logs_hash"],
+      "properties": {"transaction_hash": {"type": "string", "pattern": "^0x[0-9a-fA-F]{64}$"}, "block_number": {"type": "integer", "minimum": 0}, "block_hash": {"type": "string", "pattern": "^0x[0-9a-fA-F]{64}$"}, "transaction_index": {"type": "integer", "minimum": 0}, "status": {"const": 1}, "calldata_hash": {"$ref": "#/$defs/hash"}, "logs_hash": {"$ref": "#/$defs/hash"}}
+    },
+    "signature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "properties": {"algorithm": {"const": "ed25519"}, "signer_role": {"enum": ["independent-reviewer", "engineering-owner"]}, "public_key": {"type": "string", "pattern": "^ed25519:[0-9a-f]{64}$"}, "signed_hash": {"$ref": "#/$defs/hash"}, "signed_at_utc": {"type": "string", "format": "date-time"}, "signature": {"type": "string", "pattern": "^ed25519:[0-9a-f]{128}$"}}
+    }
+  }
+}
