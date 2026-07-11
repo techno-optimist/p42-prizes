@@ -14,7 +14,7 @@ import {
   buildCheckpoint,
   buildMultiBoardCheckpoint,
   compareReplayToSnapshot,
-  collectOpenWitnessLaunchEvidence,
+  collectCanonicalOpenWitnessLaunchEvidence,
   configureIndexerTranscripts,
   EVENT_CATALOG,
   failMissingMultiboardTranscriptArchives,
@@ -554,7 +554,7 @@ function openWitnessFixture() {
   }]], 10);
   tx([["submissions", "Committed", {
     submissionId: 1n, solver: ADDR.solverA, commitment: hash(101),
-    commitDaHash: ethers.keccak256(solutionBytes), bondWei: 1n, poolAtSubmissionWei: 0n,
+    commitDaHash: ethers.sha256(solutionBytes), bondWei: 1n, poolAtSubmissionWei: 0n,
     requiredBondWei: 1n, paidAtCommit: false, committedBlock: 2n,
   }]], 20);
   tx([["submissions", "Revealed", {
@@ -568,52 +568,125 @@ function openWitnessFixture() {
     poolAtFinalizationWei: 0n,
   }]], 50);
   tx([["submissions", "FundingArmed", { at: 60n }]], 60);
-  const replay = replayProtocolEvents(events, { ...CONFIG, seedScoreAtoms: 1000n }, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+  const config = { ...CONFIG, seedScoreAtoms: 1000n };
+  const replay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
   const finalize = events.find((event) => event.eventName === "Finalized");
   const arm = events.find((event) => event.eventName === "FundingArmed");
-  const args = {
-    replay, manifest, problemId: "1", submissionId: "1", solutionBytes,
-    transcriptHash: hash(801), reportHash: hash(802),
-    historicalStorage: {
-      atFinalize: { blockNumber: finalize.blockNumber, blockHash: finalize.blockHash, totalCreditAtoms: 0n, solverCreditAtoms: 0n, submissionStatus: "Finalized" },
-      beforeArm: { blockNumber: arm.blockNumber - 1, blockHash: hash(999), poolBalanceWei: 0n, acceptingFunds: false, totalCreditAtoms: 0n },
+  const snapshot = snapshotFromReplay(replay);
+  const checks = [];
+  manifest.contracts.timelock = checkpointContract(1);
+  const checkpoint = buildMultiBoardCheckpoint({
+    binding: {
+      deploymentCommit: manifest.deploymentCommit, deploymentConfigHash: manifest.deploymentConfigHash,
+      chainId: manifest.network.chainId, startBlock: 1,
+      contracts: { timelock: manifest.contracts.timelock, registry: manifest.contracts.registry },
+      boards: { "1": board },
     },
-    finalizedCheckpoint: {
-      schema: "p42-prizes/indexer-checkpoint/v2",
-      range: { toBlock: arm.blockNumber + 5, toBlockHash: hash(1200) },
-      boards: [{ problemId: "1", reconstruction: { ok: true } }],
-      reconstruction: { ok: true, complete: true },
+    finalityPolicy: POLICY, fromBlock: 1, toBlock: arm.blockNumber + 5, toBlockHash: hash(1200),
+    boards: [{ problem, scan: { events }, replay, snapshot, checks }],
+  });
+  const revealInterface = new ethers.Interface([
+    "function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)",
+    "event FundingArmed(uint64 at)",
+    "event Committed(uint256 indexed submissionId,address indexed solver,bytes32 indexed commitment,bytes32 commitDaHash,uint256 bondWei,uint256 poolAtSubmissionWei,uint256 requiredBondWei,bool paidAtCommit,uint64 committedBlock)",
+    "event Revealed(uint256 indexed submissionId,address indexed solver,string solutionCid,uint256 improvementAtoms,int256 claimedScoreAtoms,uint64 challengeEndsAt,uint256 solutionBytesLength,bytes32 revealInstanceHash)",
+    "event Finalized(uint256 indexed submissionId,address indexed solver,uint256 creditAtoms,int256 claimedScoreAtoms,int256 bestScoreAtoms,bytes32 permanenceHash,uint256 poolAtFinalizationWei)",
+  ]);
+  const registryInterface = new ethers.Interface([
+    "event ProblemRegistered(uint256 indexed problemId,bytes32 indexed specHash,bytes32 indexed verifierImageHash,address pool,string metadataURI)",
+  ]);
+  const revealData = revealInterface.encodeFunctionData("reveal", [1n, "ipfs://solution", 900n, 100n, "salt", solutionBytes]);
+  const addresses = { submissions: board.submissions.address, registry: manifest.contracts.registry.address };
+  const blocks = new Map(events.map((event) => [event.blockNumber, { number: event.blockNumber, hash: event.blockHash }]));
+  blocks.set(checkpoint.range.toBlock, { number: checkpoint.range.toBlock, hash: checkpoint.range.toBlockHash });
+  const receipts = new Map(events.map((event) => {
+    const iface = event.source === "registry" ? registryInterface : revealInterface;
+    const fragment = iface.getEvent(event.eventName);
+    const encoded = iface.encodeEventLog(fragment, fragment.inputs.map((input) => event.args[input.name]));
+    return [event.transactionHash, {
+      hash: event.transactionHash, blockNumber: event.blockNumber, blockHash: event.blockHash, status: 1,
+      logs: [{
+        address: addresses[event.source] ?? board.submissions.address,
+        index: event.index, blockHash: event.blockHash, transactionHash: event.transactionHash,
+        topics: encoded.topics, data: encoded.data,
+      }],
+    }];
+  }));
+  const provider = {
+    async getNetwork() { return { chainId: 84532n }; },
+    async getBlock(number) { return blocks.get(Number(number)) ?? null; },
+    async getTransactionReceipt(transactionHash) { return receipts.get(transactionHash) ?? null; },
+    async getTransaction(transactionHash) {
+      if (transactionHash !== events.find((event) => event.eventName === "Revealed").transactionHash) return null;
+      return { hash: transactionHash, to: board.submissions.address, data: revealData };
     },
   };
-  return { args, events };
+  const readers = {
+    async readHistoricalState({ phase, blockTag }) {
+      const block = blocks.get(blockTag);
+      if (phase === "beforeArm") return { blockNumber: blockTag, blockHash: block.hash, poolBalanceWei: 0n, acceptingFunds: false, totalCreditAtoms: 0n };
+      if (phase === "atFinalize") return { blockNumber: blockTag, blockHash: block.hash, totalCreditAtoms: 0n, solverCreditAtoms: 0n, submissionStatus: "Finalized" };
+      return {
+        blockNumber: blockTag, blockHash: block.hash,
+        registryTuple: {
+          specHash: problem.specHash, verifierSourceHash: problem.verifierSourceHash,
+          verifierImageHash: problem.verifierImageHash, admissionMatrixHash: problem.admissionMatrixHash,
+          metadataURI: problem.metadataURI, pool: board.pool.address, ledger: board.ledger.address,
+          submissionManager: board.submissions.address, challengeManager: board.challenges.address,
+          challengeWindowSeconds: 10n, minImprovementAtoms: 1n,
+        },
+      };
+    },
+    async readValidatedCheckpoint() { return structuredClone(checkpoint); },
+  };
+  const args = {
+    replay, manifest, problemId: "1", submissionId: "1",
+    transcriptHash: hash(801), reportHash: hash(802),
+    provider, readers,
+  };
+  return { args, events, receipts };
 }
 
 describe("P42 deterministic indexer replay", () => {
-  it("projects deterministic canonical open-witness launch evidence", () => {
+  it("collects deterministic canonical open-witness launch evidence from readers", async () => {
     const { args } = openWitnessFixture();
-    const evidence = collectOpenWitnessLaunchEvidence(args);
+    const evidence = await collectCanonicalOpenWitnessLaunchEvidence(args);
+    assert.equal(evidence.collector_authoritative, true);
     assert.equal(evidence.submission.paidAtCommit, false);
     assert.deepEqual(evidence.submission.frontier, { currentAtoms: "900", previousAtoms: "1000" });
     assert.equal(evidence.submission.creditRecorded, false);
     assert.equal(evidence.funding.armedAfterFinalize, true);
     assert.equal(evidence.releaseBinding.problemId, "1");
-    assert.equal(stableStringify(evidence), stableStringify(collectOpenWitnessLaunchEvidence(args)));
+    assert.equal(stableStringify(evidence), stableStringify(await collectCanonicalOpenWitnessLaunchEvidence(args)));
   });
 
-  it("rejects confused, noncanonical, funded, credited, or final-value-only open-witness evidence", () => {
-    const mutate = (fn, pattern) => {
+  it("rejects missing readers, forged observations, and wrong providers", async () => {
+    const mutate = async (fn, pattern) => {
       const { args } = openWitnessFixture();
-      fn(args);
-      assert.throws(() => collectOpenWitnessLaunchEvidence(args), pattern);
+      await fn(args);
+      await assert.rejects(() => collectCanonicalOpenWitnessLaunchEvidence(args), pattern);
     };
-    mutate((args) => { args.problemId = "2"; }, /exactly one problem/);
-    mutate((args) => { args.replay.submissions["1"].paidAtCommit = true; }, /paid at commit/);
-    mutate((args) => { args.solutionBytes = ethers.toUtf8Bytes("wrong"); }, /does not match commitDaHash/);
-    mutate((args) => { args.historicalStorage = undefined; }, /missing historical storage/);
-    mutate((args) => { args.historicalStorage.beforeArm.poolBalanceWei = 1n; }, /pool was nonzero/);
-    mutate((args) => { args.historicalStorage.atFinalize.solverCreditAtoms = 1n; }, /solver ledger credit is positive/);
-    mutate((args) => { args.finalizedCheckpoint.reconstruction.ok = false; }, /not completely reconstructed/);
-    mutate((args) => { args.historicalStorage.atFinalize.blockHash = hash(9999); }, /not pinned to the canonical finalize/);
+    await mutate((args) => { args.readers = undefined; }, /requires readHistoricalState reader/);
+    await mutate((args) => { args.provider.getNetwork = async () => ({ chainId: 1n }); }, /chainId does not match/);
+    await mutate((args) => {
+      const original = args.readers.readHistoricalState;
+      args.readers.readHistoricalState = async (query) => ({ ...(await original(query)), blockHash: hash(9999) });
+    }, /forged or stale block hash/);
+    await mutate((args) => {
+      const original = args.provider.getTransactionReceipt;
+      args.provider.getTransactionReceipt = async (txHash) => {
+        const receipt = await original(txHash);
+        return receipt ? { ...receipt, logs: [] } : receipt;
+      };
+    }, /receipt log disappeared or was replaced/);
+    await mutate((args) => {
+      const original = args.readers.readValidatedCheckpoint;
+      args.readers.readValidatedCheckpoint = async () => {
+        const checkpoint = await original();
+        checkpoint.reconstruction.ok = false;
+        return checkpoint;
+      };
+    }, /reconstruction\.ok must equal/);
   });
 
   it("replays rollover allocation codehash pins through set, replacement, zero, partial, and full funding", () => {

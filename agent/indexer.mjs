@@ -2,7 +2,7 @@
 // Deterministic, fail-closed P42 event indexer and reconciliation core.
 
 import { ethers } from "ethers";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
@@ -2215,7 +2215,7 @@ function requireHistoricalObservation(value, label) {
  * Project a Gate-1 open-witness proof from an already validated replay.
  * Inputs are source artifacts/read results only; protocol conclusions are derived here.
  */
-export function collectOpenWitnessLaunchEvidence({
+function projectOpenWitnessLaunchEvidence({
   replay,
   manifest,
   problemId,
@@ -2225,6 +2225,7 @@ export function collectOpenWitnessLaunchEvidence({
   reportHash,
   historicalStorage,
   finalizedCheckpoint,
+  observedRegistryTuple,
 }) {
   invariant(replay?.coverage?.complete, "open-witness evidence requires a complete replay");
   const events = replay[REPLAY_EVENT_TRACE];
@@ -2255,7 +2256,7 @@ export function collectOpenWitnessLaunchEvidence({
   invariant(addressKey(getArg(finalize, "solver")) === addressKey(submission.solver), "open-witness finalize belongs to another submission/board");
 
   const bytes = ethers.getBytes(solutionBytes);
-  const solutionBytesHash = ethers.keccak256(bytes).toLowerCase();
+  const solutionBytesHash = `0x${createHash("sha256").update(bytes).digest("hex")}`;
   invariant(solutionBytesHash === String(getArg(commit, "commitDaHash")).toLowerCase(), "reveal calldata/solution bytes hash does not match commitDaHash");
   invariant(asBigInt(getArg(reveal, "solutionBytesLength")) === BigInt(bytes.length), "reveal solution byte length mismatch");
   const prevFrontier = submission.finalizeInfo.prevBestScoreAtoms;
@@ -2292,7 +2293,10 @@ export function collectOpenWitnessLaunchEvidence({
   invariant(registrations.length === 1, `registry problem ${registryId} does not have one exact registration tuple`);
   const registration = registrations[0];
   const tupleFields = ["specHash", "verifierSourceHash", "verifierImageHash", "admissionMatrixHash", "metadataURI", "pool", "ledger", "submissionManager", "challengeManager", "challengeWindowSeconds", "minImprovementAtoms"];
-  const registryTuple = Object.fromEntries(tupleFields.map((field) => [field, getArg(registration, field)]));
+  const registryTuple = Object.fromEntries(tupleFields.map((field) => {
+    invariant(observedRegistryTuple?.[field] !== undefined, `historical registry tuple is missing ${field}`);
+    return [field, observedRegistryTuple[field]];
+  }));
   const expectedTuple = {
     specHash: problem.specHash, verifierSourceHash: problem.verifierSourceHash,
     verifierImageHash: problem.verifierImageHash, admissionMatrixHash: problem.admissionMatrixHash,
@@ -2306,6 +2310,7 @@ export function collectOpenWitnessLaunchEvidence({
 
   return canonicalize({
     schema: "p42-prizes/open-witness-launch-evidence/v1",
+    collector_authoritative: false,
     releaseBinding: {
       deploymentCommit: manifest.deploymentCommit,
       deploymentConfigHash: manifest.deploymentConfigHash,
@@ -2342,6 +2347,139 @@ export function collectOpenWitnessLaunchEvidence({
     },
     finalizedEvidence: { blockNumber: finalized.blockNumber, blockHash: finalized.blockHash },
   });
+}
+
+function requireReaderFunction(value, label) {
+  invariant(typeof value === "function", `canonical open-witness collector requires ${label} reader`);
+  return value;
+}
+
+async function verifyCanonicalEvidenceEvent(provider, event, contractAddress, contractInterface, label) {
+  const [receipt, block] = await Promise.all([
+    provider.getTransactionReceipt(event.transactionHash),
+    provider.getBlock(event.blockNumber),
+  ]);
+  invariant(receipt, `${label} receipt disappeared from provider`);
+  invariant(block?.hash, `${label} canonical block disappeared from provider`);
+  invariant(String(block.hash).toLowerCase() === String(event.blockHash).toLowerCase(), `${label} block hash changed on provider`);
+  invariant(Number(receipt.blockNumber) === event.blockNumber, `${label} receipt moved blocks on provider`);
+  invariant(String(receipt.blockHash).toLowerCase() === String(event.blockHash).toLowerCase(), `${label} receipt block hash changed on provider`);
+  invariant(String(receipt.hash ?? receipt.transactionHash).toLowerCase() === String(event.transactionHash).toLowerCase(), `${label} receipt transaction hash mismatch`);
+  invariant(Number(receipt.status) === 1, `${label} transaction did not succeed`);
+  const logIndex = event.index ?? event.logIndex;
+  const matchingLogs = (receipt.logs ?? []).filter((log) =>
+    Number(log.index ?? log.logIndex) === logIndex &&
+    String(log.address).toLowerCase() === String(contractAddress).toLowerCase() &&
+    String(log.blockHash).toLowerCase() === String(event.blockHash).toLowerCase() &&
+    String(log.transactionHash).toLowerCase() === String(event.transactionHash).toLowerCase());
+  invariant(matchingLogs.length === 1, `${label} canonical receipt log disappeared or was replaced`);
+  let parsed;
+  try {
+    parsed = contractInterface.parseLog(matchingLogs[0]);
+  } catch {
+    throw new ReplayError(`${label} canonical receipt log cannot be decoded by the deployed ABI`);
+  }
+  invariant(parsed?.name === event.eventName, `${label} canonical receipt emitted a different event`);
+  parsed.fragment.inputs.forEach((input, index) => {
+    invariant(
+      stableStringify(parsed.args[index]).toLowerCase() === stableStringify(getArg(event, input.name)).toLowerCase(),
+      `${label} canonical receipt argument ${input.name} differs from replay`,
+    );
+  });
+}
+
+/** Collect authoritative evidence only from independently re-read canonical chain data. */
+export async function collectCanonicalOpenWitnessLaunchEvidence({
+  replay,
+  manifest,
+  problemId,
+  submissionId,
+  transcriptHash,
+  reportHash,
+  provider,
+  readers,
+}) {
+  invariant(provider && typeof provider === "object", "canonical open-witness collector requires a provider");
+  for (const method of ["getNetwork", "getTransaction", "getTransactionReceipt", "getBlock"]) {
+    requireReaderFunction(provider[method], `provider.${method}`);
+  }
+  const readHistoricalState = requireReaderFunction(readers?.readHistoricalState, "readHistoricalState");
+  const readValidatedCheckpoint = requireReaderFunction(readers?.readValidatedCheckpoint, "readValidatedCheckpoint");
+  const network = await provider.getNetwork();
+  invariant(Number(network.chainId) === manifest.network.chainId, "canonical collector provider chainId does not match deployment");
+
+  const events = replay?.[REPLAY_EVENT_TRACE];
+  invariant(Array.isArray(events), "canonical collector requires the replay event trace");
+  const id = asBigInt(submissionId, "submissionId").toString();
+  const registryId = asBigInt(problemId, "problemId").toString();
+  const problem = manifestProblemForRegistryId(manifest, registryId);
+  const contracts = manifestProblemContracts(manifest, problem);
+  const findOne = (source, eventName, predicate = () => true) => {
+    const found = events.filter((event) => event.source === source && event.eventName === eventName && predicate(event));
+    invariant(found.length === 1, `canonical collector requires exactly one ${source}.${eventName} observation`);
+    return found[0];
+  };
+  const forSubmission = (event) => asBigInt(event.args?.submissionId).toString() === id;
+  const commit = findOne("submissions", "Committed", forSubmission);
+  const reveal = findOne("submissions", "Revealed", forSubmission);
+  const finalize = findOne("submissions", "Finalized", forSubmission);
+  const arm = findOne("submissions", "FundingArmed");
+  const registration = findOne("registry", "ProblemRegistered", (event) => asBigInt(event.args?.problemId).toString() === registryId);
+  const artifacts = loadContractArtifacts();
+  const submissionsInterface = new ethers.Interface(artifacts.submissions.abi);
+  const registryInterface = new ethers.Interface(artifacts.registry.abi);
+  await Promise.all([
+    verifyCanonicalEvidenceEvent(provider, commit, contracts.submissions.address, submissionsInterface, "commit"),
+    verifyCanonicalEvidenceEvent(provider, reveal, contracts.submissions.address, submissionsInterface, "reveal"),
+    verifyCanonicalEvidenceEvent(provider, finalize, contracts.submissions.address, submissionsInterface, "finalize"),
+    verifyCanonicalEvidenceEvent(provider, arm, contracts.submissions.address, submissionsInterface, "funding arm"),
+    verifyCanonicalEvidenceEvent(provider, registration, manifest.contracts.registry.address, registryInterface, "registry registration"),
+  ]);
+
+  const revealTransaction = await provider.getTransaction(reveal.transactionHash);
+  invariant(revealTransaction, "canonical reveal transaction disappeared from provider");
+  invariant(String(revealTransaction.hash).toLowerCase() === String(reveal.transactionHash).toLowerCase(), "canonical reveal transaction hash mismatch");
+  invariant(String(revealTransaction.to).toLowerCase() === String(contracts.submissions.address).toLowerCase() || String(revealTransaction.data).length > 10, "canonical reveal transaction has no recoverable calldata");
+  const recovered = recoverRevealCalldata(revealTransaction.data, submissionsInterface, {
+    submissionId: id,
+    solutionCid: getArg(reveal, "solutionCid"),
+    claimedScoreAtoms: getArg(reveal, "claimedScoreAtoms"),
+    improvementAtoms: getArg(reveal, "improvementAtoms"),
+    solutionBytesLength: getArg(reveal, "solutionBytesLength"),
+    commitDaHash: getArg(commit, "commitDaHash"),
+  });
+  const solutionBytes = ethers.getBytes(recovered.solution);
+
+  const beforeArmBlockNumber = arm.blockNumber - 1;
+  invariant(beforeArmBlockNumber >= 0, "funding arm has no historical predecessor block");
+  const [beforeArmBlock, finalizeBlock, registrationBlock, beforeArm, atFinalize, registryAtRegistration, checkpoint] = await Promise.all([
+    provider.getBlock(beforeArmBlockNumber),
+    provider.getBlock(finalize.blockNumber),
+    provider.getBlock(registration.blockNumber),
+    readHistoricalState({ manifest, problem, submissionId: id, solver: replay.submissions[id]?.solver, blockTag: beforeArmBlockNumber, phase: "beforeArm" }),
+    readHistoricalState({ manifest, problem, submissionId: id, solver: replay.submissions[id]?.solver, blockTag: finalize.blockNumber, phase: "atFinalize" }),
+    readHistoricalState({ manifest, problem, problemId: registryId, blockTag: registration.blockNumber, phase: "registryAtRegistration" }),
+    readValidatedCheckpoint({ manifest, problemId: registryId }),
+  ]);
+  invariant(beforeArmBlock?.hash && finalizeBlock?.hash && registrationBlock?.hash, "canonical historical blocks are unavailable");
+  const bindHistorical = (observation, block, number, label) => {
+    requireHistoricalObservation(observation, label);
+    invariant(observation.blockNumber === number, `${label} returned the wrong pinned block`);
+    invariant(String(observation.blockHash).toLowerCase() === String(block.hash).toLowerCase(), `${label} forged or stale block hash`);
+  };
+  bindHistorical(beforeArm, beforeArmBlock, beforeArmBlockNumber, "historicalStorage.beforeArm");
+  bindHistorical(atFinalize, finalizeBlock, finalize.blockNumber, "historicalStorage.atFinalize");
+  bindHistorical(registryAtRegistration, registrationBlock, registration.blockNumber, "historicalStorage.registryAtRegistration");
+  validateMultiBoardCheckpoint(checkpoint);
+  const checkpointBlock = await provider.getBlock(checkpoint.range.toBlock);
+  invariant(checkpointBlock?.hash && String(checkpointBlock.hash).toLowerCase() === String(checkpoint.range.toBlockHash).toLowerCase(), "validated checkpoint anchor is not canonical on provider");
+
+  const projected = projectOpenWitnessLaunchEvidence({
+    replay, manifest, problemId: registryId, submissionId: id, solutionBytes,
+    transcriptHash, reportHash, historicalStorage: { beforeArm, atFinalize },
+    finalizedCheckpoint: checkpoint, observedRegistryTuple: registryAtRegistration.registryTuple,
+  });
+  return canonicalize({ ...projected, collector_authoritative: true });
 }
 
 function check(name, expected, actual) {

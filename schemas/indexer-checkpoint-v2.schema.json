@@ -37,9 +37,10 @@
     },
     "openWitnessLaunchEvidence": {
       "type": "object", "additionalProperties": false,
-      "required": ["schema", "releaseBinding", "artifactBinding", "registryTuple", "submission", "funding", "finalizedEvidence"],
+      "required": ["schema", "collector_authoritative", "releaseBinding", "artifactBinding", "registryTuple", "submission", "funding", "finalizedEvidence"],
       "properties": {
         "schema": { "const": "p42-prizes/open-witness-launch-evidence/v1" },
+        "collector_authoritative": { "const": true },
         "releaseBinding": { "type": "object" },
         "artifactBinding": { "type": "object" },
         "registryTuple": { "type": "object" },
