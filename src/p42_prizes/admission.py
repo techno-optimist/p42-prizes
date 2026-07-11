@@ -649,6 +649,16 @@ def _validate_host_evidence(evidence: Mapping[str, Any], index: int) -> tuple[di
         raise AdmissionError(f"{prefix}.execution.mode is unsupported")
     if execution.get("image_digest") != report["verifier_image"]:
         raise AdmissionError(f"{prefix}.execution.image_digest does not match report.verifier_image")
+    execution_architecture = _normalize_architecture(
+        _require_string(execution, "image_architecture", f"{prefix}.execution")
+    )
+    execution_os = _require_string(execution, "image_os", f"{prefix}.execution").lower()
+    if execution.get("image_architecture") != execution_architecture:
+        raise AdmissionError(f"{prefix}.execution.image_architecture must use its canonical name")
+    if execution.get("image_os") != execution_os:
+        raise AdmissionError(f"{prefix}.execution.image_os must use lowercase canonical form")
+    if execution_architecture != normalized_host["architecture"] or execution_os != normalized_host["os"]:
+        raise AdmissionError(f"{prefix}.execution image platform does not match signed host metadata")
 
     source = evidence.get("source")
     if not isinstance(source, dict):

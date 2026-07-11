@@ -56,27 +56,24 @@ remain blocked by their placeholder image and their wider launch gates.
 | `ProblemRegistry.admissionMatrixHash` | Base deployment manifest | Must equal `keccak256(utf8(admissionMatrixDigest))` under `keccak256-utf8/v1` |
 | Portal `chainProvenance.verifierImageHash` | manifest/indexer | Shows `local-only` until a real deployment/reconciliation exists |
 
-## Known Limitation: Host Metadata Is Self-Attested (Spoofable)
+## Host Identity And Remaining Attestation Boundary
 
-The N-host admission matrix proves that a set of evidence files carry identical
-canonical `VerdictReport` hashes, but the **host metadata in each evidence JSON —
-architecture (x86_64/aarch64), libc name/version, and host label — is currently
-SELF-ATTESTED and not cryptographically verified.** `admit-matrix` enforces its
-coverage rules (distinct labels, x86 + ARM present, at least two glibc versions)
-purely from those declared fields.
+Fundable admission no longer trusts a bare list of host keys. Each of at least
+four source-bound `trusted_hosts` profiles must pre-register a distinct operator
+ID, Ed25519 SSH key, label, architecture, OS, libc name, and libc version.
+`admit-ready` verifies the evidence signature, maps its fingerprint to exactly
+one profile, requires every signed host field to match that profile, and checks
+the inspected container architecture/OS against the signed host platform. A key
+registered for x86_64/glibc 2.31 therefore cannot be relabeled as ARM/glibc 2.39
+inside an otherwise valid matrix.
 
-Consequence: the multi-arch / multi-glibc determinism gate is **spoofable from a
-single machine.** One operator can hand-write four evidence files that claim
-different arch/libc values, run the verifier once, and satisfy the matrix even
-though nothing ran on genuinely diverse hosts. Nothing today binds the evidence
-to attested hardware (remote attestation, a signed CI-runner identity, or an
-independently operated host set).
-
-This is a **gate that must be hardened before any real bounty:** replace
-self-attested metadata with attested or independently-operated host evidence.
-Until then a passing admission matrix is an integrity aid, not proof of
-cross-host determinism, and no Gate 2 verifier item may be treated as closed on
-the strength of it alone.
+This closes caller-side metadata rewriting, but it is not hardware remote
+attestation. The owner must independently verify that each profile belongs to
+the named operator and physical/virtual host before committing the profile; a
+colluding operator can still make a false statement about machinery it controls.
+No Gate 2 verifier item closes until the four profiles are independently
+operated, reviewed out of band, source-bound to the funded release, and the
+immutable image evidence is collected with those exact keys.
 
 ## Current State
 
@@ -88,5 +85,6 @@ the strength of it alone.
   v2 ceremony preflight reject it even with a non-placeholder image.
 - The nine locked launch boards use `sha256:local-dev` placeholders in their
   local verifier packages and cannot be funded.
-- No Gate 2 verifier item is closed until a reviewed immutable digest and
-  collected four-host matrix exist for every funded problem.
+- No Gate 2 verifier item is closed until a reviewed immutable digest, four
+  independently verified source-bound host profiles, and a collected matrix
+  exist for every funded problem.

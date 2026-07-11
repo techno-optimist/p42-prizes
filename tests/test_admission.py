@@ -269,6 +269,7 @@ def test_matrix_rejects_missing_required_architecture() -> None:
     evidence, _ = _complete_matrix_evidence()
     for item in evidence:
         item["host"]["architecture"] = "x86_64"
+        item["execution"]["image_architecture"] = "x86_64"
         item = _seal_host_evidence(
             {key: value for key, value in item.items() if key not in ("evidence_hash", "attestation")},
             None,
@@ -304,6 +305,7 @@ def test_matrix_rejects_insufficient_glibc_diversity() -> None:
 def test_signed_host_tampering_is_rejected(tmp_path: Path) -> None:
     evidence, _ = _complete_matrix_evidence(tmp_path)
     evidence[0]["host"]["architecture"] = "aarch64"
+    evidence[0]["execution"]["image_architecture"] = "aarch64"
     evidence[0]["evidence_hash"] = sha256_bytes(
         canonical_json(
             {key: value for key, value in evidence[0].items() if key not in ("evidence_hash", "attestation")}
@@ -446,16 +448,29 @@ def test_admit_ready_rejects_a_demo_fixture_even_with_exact_signed_image_evidenc
 
     manifest_path = problem / "problem.yaml"
     manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    manifest["verifier"]["image"] = image
-    manifest["verifier"]["image_repository"] = repository
-    manifest["verifier"]["admission"] = {"trusted_host_keys": public_keys}
-    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     specs = [
         ("x86-a", "x86_64", "2.31"),
         ("x86-b", "x86_64", "2.35"),
         ("arm-a", "aarch64", "2.35"),
         ("arm-b", "aarch64", "2.39"),
     ]
+    manifest["verifier"]["image"] = image
+    manifest["verifier"]["image_repository"] = repository
+    manifest["verifier"]["admission"] = {
+        "trusted_hosts": [
+            {
+                "label": label,
+                "operator_id": f"independent-operator-{index}",
+                "public_key": public_keys[index],
+                "architecture": architecture,
+                "os": "linux",
+                "libc_name": "glibc",
+                "libc_version": libc_version,
+            }
+            for index, (label, architecture, libc_version) in enumerate(specs)
+        ]
+    }
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
     source_hash = compute_source_hash(problem)
     evidence = [
         _host_evidence(
@@ -501,6 +516,20 @@ def test_admit_ready_rejects_a_demo_fixture_even_with_exact_signed_image_evidenc
     completed = run_cli("admit-ready", "--problem", str(problem), "--matrix", str(matrix_path))
     assert completed.returncode == 0, completed.stderr
     assert "fundable-admission ready" in completed.stdout
+
+    manifest["verifier"]["admission"]["trusted_hosts"][0]["architecture"] = "aarch64"
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    completed = run_cli("admit-ready", "--problem", str(problem), "--matrix", str(matrix_path))
+    assert completed.returncode == 1
+    assert "host metadata does not match its source-bound trusted host profile" in completed.stderr
+
+    trusted_hosts = manifest["verifier"]["admission"]["trusted_hosts"]
+    trusted_hosts[0]["architecture"] = "x86_64"
+    trusted_hosts[1]["operator_id"] = trusted_hosts[0]["operator_id"]
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")
+    completed = run_cli("admit-ready", "--problem", str(problem), "--matrix", str(matrix_path))
+    assert completed.returncode == 1
+    assert "operator_id values must be distinct" in completed.stderr
 
 
 def test_immutable_host_admission_dispatches_every_run_to_exact_image(

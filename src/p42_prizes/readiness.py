@@ -184,25 +184,48 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
         errors.append(f"problem.yaml:{exc}")
         expected_ref = None
 
-    trusted_keys = admission.get("trusted_host_keys") if isinstance(admission, dict) else None
+    trusted_hosts = admission.get("trusted_hosts") if isinstance(admission, dict) else None
     trusted_fingerprints: set[str] = set()
-    if not isinstance(trusted_keys, list) or len(trusted_keys) < MIN_MATRIX_HOSTS:
+    trusted_profiles: dict[str, dict[str, Any]] = {}
+    if not isinstance(trusted_hosts, list) or len(trusted_hosts) < MIN_MATRIX_HOSTS:
         errors.append(
-            f"problem.yaml:verifier.admission.trusted_host_keys must contain at least {MIN_MATRIX_HOSTS} keys"
+            f"problem.yaml:verifier.admission.trusted_hosts must contain at least {MIN_MATRIX_HOSTS} host profiles"
         )
     else:
-        for index, public_key in enumerate(trusted_keys):
+        labels: set[str] = set()
+        operator_ids: set[str] = set()
+        for index, profile in enumerate(trusted_hosts):
+            prefix = f"problem.yaml:verifier.admission.trusted_hosts[{index}]"
+            if not isinstance(profile, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            public_key = profile.get("public_key")
             if not isinstance(public_key, str):
-                errors.append(f"problem.yaml:verifier.admission.trusted_host_keys[{index}] must be a string")
+                errors.append(f"{prefix}.public_key must be a string")
                 continue
             try:
                 fingerprint = ssh_public_key_fingerprint(public_key)
             except AdmissionError as exc:
-                errors.append(f"problem.yaml:verifier.admission.trusted_host_keys[{index}]: {exc}")
+                errors.append(f"{prefix}.public_key: {exc}")
                 continue
             if fingerprint in trusted_fingerprints:
-                errors.append("problem.yaml:verifier.admission.trusted_host_keys must be distinct")
+                errors.append("problem.yaml:verifier.admission.trusted_hosts public keys must be distinct")
             trusted_fingerprints.add(fingerprint)
+            trusted_profiles[fingerprint] = profile
+            label = profile.get("label")
+            operator_id = profile.get("operator_id")
+            if not isinstance(label, str) or not label:
+                errors.append(f"{prefix}.label must be non-empty")
+            elif label in labels:
+                errors.append("problem.yaml:verifier.admission.trusted_hosts labels must be distinct")
+            else:
+                labels.add(label)
+            if not isinstance(operator_id, str) or not operator_id:
+                errors.append(f"{prefix}.operator_id must be non-empty")
+            elif operator_id in operator_ids:
+                errors.append("problem.yaml:verifier.admission.trusted_hosts operator_id values must be distinct")
+            else:
+                operator_ids.add(operator_id)
 
     try:
         matrix = validate_admission_matrix(load_evidence_file(matrix_path))
@@ -268,6 +291,17 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
             fingerprint = attestation.get("key_fingerprint") if isinstance(attestation, dict) else None
             if not isinstance(fingerprint, str) or fingerprint not in trusted_fingerprints:
                 errors.append(f"admission matrix: evidence[{index}] signer is not trusted by problem.yaml")
+                continue
+            profile = trusted_profiles[fingerprint]
+            host = evidence.get("host")
+            expected_host = {
+                key: profile.get(key)
+                for key in ("label", "architecture", "os", "libc_name", "libc_version")
+            }
+            if not isinstance(host, dict) or any(host.get(key) != value for key, value in expected_host.items()):
+                errors.append(
+                    f"admission matrix: evidence[{index}] host metadata does not match its source-bound trusted host profile"
+                )
             else:
                 observed_fingerprints.add(fingerprint)
         if len(observed_fingerprints) < MIN_MATRIX_HOSTS:

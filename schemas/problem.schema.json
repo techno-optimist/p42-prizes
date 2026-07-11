@@ -34,16 +34,26 @@
         "command": { "type": "string", "minLength": 1 },
         "admission": {
           "type": "object",
-          "required": ["trusted_host_keys"],
+          "required": ["trusted_hosts"],
           "additionalProperties": false,
           "properties": {
-            "trusted_host_keys": {
+            "trusted_hosts": {
               "type": "array",
               "minItems": 4,
               "uniqueItems": true,
               "items": {
-                "type": "string",
-                "pattern": "^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$"
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["label", "operator_id", "public_key", "architecture", "os", "libc_name", "libc_version"],
+                "properties": {
+                  "label": { "type": "string", "minLength": 1 },
+                  "operator_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$" },
+                  "public_key": { "type": "string", "pattern": "^ssh-ed25519 [A-Za-z0-9+/]+={0,2}$" },
+                  "architecture": { "enum": ["aarch64", "x86_64"] },
+                  "os": { "const": "linux" },
+                  "libc_name": { "const": "glibc" },
+                  "libc_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+)?$" }
+                }
               }
             }
           }
