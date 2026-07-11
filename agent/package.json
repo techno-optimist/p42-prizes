@@ -21,6 +21,7 @@
     "solver-manifest.mjs",
     "solver.mjs",
     "strict-json.mjs",
+    "transcript-arweave.mjs",
     "transcript-store.mjs"
   ],
   "bin": {

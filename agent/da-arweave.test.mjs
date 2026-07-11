@@ -5,6 +5,7 @@ import {
   cidOf,
   daHashForTxid,
   findTxidByCid,
+  findTxidsByCid,
   uploadToArweave,
 } from "./da-arweave.mjs";
 
@@ -57,6 +58,22 @@ describe("Arweave permanent DA", () => {
     }
   });
 
+  it("binds the funded JWK to the configured publication owner", async () => {
+    let created = 0;
+    const client = {
+      wallets: { jwkToAddress: async () => "a".repeat(43) },
+      createTransaction: async () => { created += 1; },
+    };
+    await assert.rejects(uploadToArweave(BYTES, {
+      wallet: { kty: "RSA" },
+      expectedOwner: "b".repeat(43),
+      arweaveClient: client,
+      gateways: ["https://one.example", "https://two.example"],
+      maxAttempts: 1,
+    }), /does not match P42_ARWEAVE_OWNER/);
+    assert.equal(created, 0);
+  });
+
   it("strictly parses wallet and bounded GraphQL JSON", async () => {
     const previous = process.env.ARWEAVE_JWK_JSON;
     process.env.ARWEAVE_JWK_JSON = '{"kty":"RSA","kty":"forged"}';
@@ -79,7 +96,11 @@ describe("Arweave permanent DA", () => {
 
   it("requires confirmation and byte-identical retrieval from two gateways", async () => {
     const tags = [];
-    const transaction = { id: TXID, addTag: (name, value) => tags.push([name, value]) };
+    const transaction = {
+      id: TXID,
+      addTag: (name, value) => tags.push([name, value]),
+      toJSON: () => ({ id: TXID, data: BYTES.toString("base64") }),
+    };
     const client = {
       createTransaction: async ({ data }, wallet) => {
         assert.deepEqual(Buffer.from(data), BYTES);
@@ -96,6 +117,7 @@ describe("Arweave permanent DA", () => {
       },
     };
     const seen = [];
+    const lifecycle = [];
     const receipt = await uploadToArweave(BYTES, {
       wallet: { kty: "RSA" },
       arweaveClient: client,
@@ -105,11 +127,13 @@ describe("Arweave permanent DA", () => {
         return response(BYTES);
       },
       maxAttempts: 1,
+      onPosted: async ({ cid, txid }) => lifecycle.push([cid, txid]),
     });
     assert.equal(receipt.cid, cidOf(BYTES));
     assert.equal(receipt.confirmations, 2);
     assert.deepEqual(receipt.replicatedBy, ["one.example", "two.example"]);
     assert.equal(seen.length, 2);
+    assert.deepEqual(lifecycle, [[cidOf(BYTES), TXID]]);
     assert.deepEqual(tags, [
       ["P42-CID", cidOf(BYTES)],
       ["App-Name", "P42-Prizes"],
@@ -117,8 +141,75 @@ describe("Arweave permanent DA", () => {
     ]);
   });
 
+  it("returns multiple CID candidates and bounds a hung GraphQL request", async () => {
+    const cid = cidOf(BYTES);
+    const second = "b".repeat(43);
+    const owner = "w".repeat(43);
+    let request;
+    assert.deepEqual(await findTxidsByCid(cid, {
+      owner,
+      fetchImpl: async (_url, options) => {
+        request = JSON.parse(options.body);
+        return response({
+          data: { transactions: { edges: [{ node: { id: TXID } }, { node: { id: second } }] } },
+        }, { json: true });
+      },
+    }), [TXID, second]);
+    assert.equal(request.variables.owner, owner);
+    assert.match(request.query, /owners: \[\$owner\]/);
+
+    await assert.rejects(findTxidsByCid(cid, {
+      networkTimeoutMs: 5,
+      fetchImpl: async (_url, { signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+      }),
+    }), /timed out/);
+  });
+
+  it("journals signed bytes before POST and resumes the same transaction id", async () => {
+    let prepared;
+    let posts = 0;
+    const transaction = {
+      id: TXID,
+      data: BYTES,
+      owner: "owner-key",
+      addTag: () => {},
+      toJSON: () => ({ id: TXID, owner: "owner-key", data: BYTES.toString("base64") }),
+    };
+    const client = {
+      createTransaction: async () => transaction,
+      transactions: {
+        sign: async () => {},
+        fromRaw: () => transaction,
+        post: async () => {
+          posts += 1;
+          if (posts === 1) throw new Error("response lost after acceptance");
+          return { status: 208 };
+        },
+        getStatus: async () => ({ status: 200, confirmed: { number_of_confirmations: 1 } }),
+      },
+    };
+    const options = {
+      wallet: { kty: "RSA" },
+      arweaveClient: client,
+      gateways: ["https://one.example", "https://two.example"],
+      fetchImpl: async () => response(BYTES),
+      maxAttempts: 1,
+      onPrepared: async (value) => { prepared = value; },
+    };
+    await assert.rejects(uploadToArweave(BYTES, options), /response lost/);
+    assert.equal(prepared.txid, TXID);
+    const resumed = await uploadToArweave(BYTES, { ...options, preparedTransaction: prepared });
+    assert.equal(resumed.txid, TXID);
+    assert.equal(posts, 2);
+  });
+
   it("rejects a mismatched second gateway instead of declaring DA ready", async () => {
-    const transaction = { id: TXID, addTag: () => {} };
+    const transaction = {
+      id: TXID,
+      addTag: () => {},
+      toJSON: () => ({ id: TXID, data: BYTES.toString("base64") }),
+    };
     const client = {
       createTransaction: async () => transaction,
       transactions: {

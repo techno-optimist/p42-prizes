@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import test from "node:test";
@@ -17,11 +17,11 @@ import {
   buildResolverTransportRequest,
   buildResolverVerdictHash,
   configureResolverPublication,
-  expandTranscriptUri,
   resolverEventHashFor,
+  publishResolverTranscript,
   assertResolverActionPaths,
+  assertActionPublication,
   assertResolverSignedRecord,
-  validateTranscriptUriTemplate,
   verifyResolverTranscript,
 } from "./resolver.mjs";
 
@@ -235,19 +235,6 @@ test("resolver refuses unresolved/quarantined evidence and grants a solver win o
   assert.equal(verifyResolverTranscript(solverTranscript, expected).challengerWins, false);
 });
 
-test("resolver transcript URIs require a durable ar:// or ipfs:// template", () => {
-  const template = "ar://{transcript_hash}";
-  assert.equal(validateTranscriptUriTemplate(template), template);
-  assert.equal(
-    expandTranscriptUri(template, SHA("1")),
-    `ar://${SHA("1")}`,
-  );
-  assert.throws(() => validateTranscriptUriTemplate("file:///tmp/{transcript_hash}.json"), /ar:\/\/ or ipfs:\/\//);
-  assert.throws(() => validateTranscriptUriTemplate("https://example/{transcript_hash}"), /ar:\/\/ or ipfs:\/\//);
-  assert.throws(() => validateTranscriptUriTemplate("ar://missing-placeholder"), /exactly one/);
-  assert.throws(() => validateTranscriptUriTemplate("ipfs://x/{transcript_hash}/{transcript_hash}"), /exactly one/);
-});
-
 test("resolver production configuration requires receipts and trusted retrieval endpoints", () => {
   const endpoints = ["https://one.example", "https://two.test"];
   const publisher = { publishTranscript: async () => ({}) };
@@ -269,6 +256,209 @@ test("resolver production configuration requires receipts and trusted retrieval 
   );
   assert.equal(typeof configured.publisher.publishTranscript, "function");
   assert.deepEqual(configured.endpoints, endpoints);
+  const arweave = configureResolverPublication(
+    ["--transcript-store", "arweave"],
+    { P42_TRANSCRIPT_ENDPOINTS: endpoints.join(",") },
+    {
+      fetchClient,
+      arweaveOptions: {
+        owner: "w".repeat(43),
+        findTxidsByCidImpl: async () => ["a".repeat(43)],
+        fetchFromArweaveImpl: async () => Buffer.alloc(0),
+        uploadToArweaveImpl: async () => { throw new Error("must not upload"); },
+      },
+    },
+  );
+  assert.equal(typeof arweave.publisher.publishTranscript, "function");
+  assert.throws(
+    () => configureResolverPublication(
+      ["--transcript-store", "arweave", "--publication-receipts", spool],
+      { P42_TRANSCRIPT_ENDPOINTS: endpoints.join(",") },
+      { fetchClient },
+    ),
+    /exactly one transcript publisher mode/,
+  );
+});
+
+test("resolver journals one publication receipt and re-verifies it after restart", async () => {
+  const value = transcript();
+  const actionsPath = mkdtempSync(join(tmpdir(), "p42-resolver-publication-"));
+  let publishes = 0;
+  let retrievals = 0;
+  const context = {
+    actionsPath,
+    transcriptEndpoints: ["https://one.example", "https://two.test"],
+    transcriptPublisher: {
+      publishTranscript: async (_bytes, metadata) => {
+        publishes += 1;
+        return { uri: `ar://${"p".repeat(43)}`, artifact_sha256: metadata.artifact_sha256, length: metadata.length };
+      },
+    },
+    transcriptFetchClient: {
+      fetchTranscript: async () => {
+        retrievals += 1;
+        return Buffer.from(`${canonicalJson(value)}\n`);
+      },
+    },
+  };
+  const first = await publishResolverTranscript(context, SHA("a"), value);
+  assert.equal(first.status, "published");
+  assert.equal(publishes, 1);
+  assert.equal(retrievals, 2);
+  assert.equal(readdirSync(actionsPath).filter((name) => name.endsWith(".publication-receipt.json")).length, 1);
+
+  context.transcriptPublisher = { publishTranscript: async () => { throw new Error("restart must reuse receipt"); } };
+  const restarted = await publishResolverTranscript(context, SHA("a"), value);
+  assert.equal(restarted.publication.uri, first.publication.uri);
+  assert.equal(publishes, 1);
+  assert.equal(retrievals, 4);
+});
+
+test("resolver recovers a journaled upload after partial gateway replication", async () => {
+  const value = transcript();
+  const actionsPath = mkdtempSync(join(tmpdir(), "p42-resolver-replication-"));
+  let publishes = 0;
+  let replicated = false;
+  const context = {
+    actionsPath,
+    transcriptEndpoints: ["https://one.example", "https://two.test"],
+    transcriptPublisher: {
+      publishTranscript: async (_bytes, metadata) => {
+        publishes += 1;
+        return { uri: `ar://${"r".repeat(43)}`, artifact_sha256: metadata.artifact_sha256, length: metadata.length };
+      },
+    },
+    transcriptFetchClient: {
+      fetchTranscript: async ({ endpoint }) => endpoint.includes("two") && !replicated
+        ? Buffer.from("not replicated\n")
+        : Buffer.from(`${canonicalJson(value)}\n`),
+    },
+  };
+  await assert.rejects(
+    publishResolverTranscript(context, SHA("b"), value),
+    /non-canonical transcript bytes/,
+  );
+  assert.equal(publishes, 1);
+
+  replicated = true;
+  context.transcriptPublisher = { publishTranscript: async () => { throw new Error("must not republish"); } };
+  assert.equal((await publishResolverTranscript(context, SHA("b"), value)).status, "published");
+  assert.equal(publishes, 1);
+});
+
+test("resolver rejects a replaced publication receipt journal", async () => {
+  const value = transcript();
+  const actionsPath = mkdtempSync(join(tmpdir(), "p42-resolver-publication-path-"));
+  const context = {
+    actionsPath,
+    transcriptEndpoints: ["https://one.example", "https://two.test"],
+    transcriptPublisher: {
+      publishTranscript: async (_bytes, metadata) => ({
+        uri: `ar://${"s".repeat(43)}`,
+        artifact_sha256: metadata.artifact_sha256,
+        length: metadata.length,
+      }),
+    },
+    transcriptFetchClient: { fetchTranscript: async () => Buffer.from(`${canonicalJson(value)}\n`) },
+  };
+  const published = await publishResolverTranscript(context, SHA("c"), value);
+  const replacement = join(actionsPath, "attacker.json");
+  writeFileSync(replacement, `${canonicalJson(published.publication.receipt)}\n`);
+  rmSync(published.receiptPath);
+  symlinkSync(replacement, published.receiptPath);
+  await assert.rejects(
+    publishResolverTranscript(context, SHA("c"), value),
+    /regular non-symlink file/,
+  );
+});
+
+test("resolver re-verifies persisted publication evidence once per process before signing", async () => {
+  const value = transcript();
+  const actionsPath = mkdtempSync(join(tmpdir(), "p42-resolver-publication-restart-"));
+  const transcriptPath = join(actionsPath, "transcript.json");
+  writeFileSync(transcriptPath, `${canonicalJson(value)}\n`);
+  let retrievals = 0;
+  let confirmations = 0;
+  const context = {
+    actionsPath,
+    transcriptEndpoints: ["https://one.example", "https://two.test"],
+    transcriptPublisher: {
+      publishTranscript: async (_bytes, metadata) => ({
+        uri: `ar://${"v".repeat(43)}`,
+        artifact_sha256: metadata.artifact_sha256,
+        length: metadata.length,
+      }),
+      confirmReceipt: async () => { confirmations += 1; },
+    },
+    transcriptFetchClient: {
+      fetchTranscript: async () => {
+        retrievals += 1;
+        return Buffer.from(`${canonicalJson(value)}\n`);
+      },
+    },
+  };
+  const published = await publishResolverTranscript(context, SHA("d"), value);
+  assert.equal(confirmations, 1);
+  const action = {
+    event_hash: SHA("d"),
+    transcript_hash: value.transcript_hash,
+    transcript_path: transcriptPath,
+    transcript_uri: published.publication.uri,
+    publication_receipt_path: published.receiptPath,
+    publication: published.publication,
+    artifact_sha256: published.artifact.artifact_sha256,
+    artifact_length: published.artifact.length,
+  };
+  retrievals = 0;
+  await assertActionPublication(context, action);
+  assert.equal(retrievals, 2);
+  assert.equal(confirmations, 2);
+  await assertActionPublication(context, action);
+  assert.equal(retrievals, 2);
+  assert.equal(confirmations, 2);
+
+  const restarted = { ...context, verifiedPublications: new Set() };
+  await assertActionPublication(restarted, action);
+  assert.equal(retrievals, 4);
+  assert.equal(confirmations, 3);
+});
+
+test("concurrent publishers fence on the signed upload journal before POST", async () => {
+  const value = transcript();
+  const actionsPath = mkdtempSync(join(tmpdir(), "p42-resolver-publication-race-"));
+  let entered = 0;
+  let release;
+  const barrier = new Promise((resolve) => { release = resolve; });
+  const context = {
+    actionsPath,
+    transcriptEndpoints: ["https://one.example", "https://two.test"],
+    transcriptPublisher: {
+      publishTranscript: async (_bytes, metadata) => {
+        const ordinal = ++entered;
+        if (entered === 2) release();
+        await barrier;
+        const txid = ordinal === 1 ? "x".repeat(43) : "y".repeat(43);
+        await metadata.onPrepared({
+          schema_version: "p42-arweave-signed-upload/v1",
+          cid: metadata.artifact_sha256,
+          length: metadata.length,
+          txid,
+          transaction: { id: txid },
+        });
+        const receipt = { uri: `ar://${txid}`, artifact_sha256: metadata.artifact_sha256, length: metadata.length };
+        await metadata.onReceipt(receipt);
+        return receipt;
+      },
+    },
+    transcriptFetchClient: { fetchTranscript: async () => Buffer.from(`${canonicalJson(value)}\n`) },
+  };
+  const results = await Promise.allSettled([
+    publishResolverTranscript(context, SHA("e"), value),
+    publishResolverTranscript(context, SHA("e"), value),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  assert.match(results.find((result) => result.status === "rejected").reason.message, /conflicts|EEXIST/);
 });
 
 test("resolver exact-call policy binds the full decision, transcript URI, and instance hashes", () => {

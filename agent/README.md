@@ -169,6 +169,9 @@ instance. A `quarantine` candidate is never converted into an on-chain verdict.
 
 ```bash
 cd agent
+ARWEAVE_JWK_JSON='{"kty":"RSA",...}' \
+P42_ARWEAVE_OWNER='<43-character funded wallet address>' \
+P42_TRANSCRIPT_ENDPOINTS='https://arweave.net,https://arweave.dev' \
 RESOLVER_PRIVATE_KEY=0x... node resolver.mjs \
   --rpc https://sepolia.base.org \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
@@ -177,7 +180,7 @@ RESOLVER_PRIVATE_KEY=0x... node resolver.mjs \
   --transcripts /var/lib/p42/operator/hadamard-mini/transcripts \
   --runtime /var/lib/p42/resolver/hadamard-mini \
   --agent-wallet 0x... \
-  --transcript-uri-template 'ar://p42-resolver/{transcript_hash}.json'
+  --transcript-store arweave
 ```
 
 The runtime scans from the manifest's deployment start block and only processes
@@ -201,21 +204,25 @@ The runtime writes the policy artifact first and fails closed until the wallet
 already exposes that exact policy. Direct EOA execution is only available with
 `--local-test` on local chain IDs `1337` or `31337`.
 
-`--transcript-uri-template` is mandatory and accepts only `ar://` or `ipfs://`
-templates containing exactly one `{transcript_hash}`. It records a durable
-reference but does not publish or retrieve the transcript itself. Before a
-value-bearing resolver is enabled, operations must independently demonstrate
-that each recorded URI resolves to the immutable published bytes. Durable
-publication/retrieval and dynamic owner provisioning of a new wallet call
-policy are current external integration gates, not conditions the runtime can
-truthfully claim to enforce on its own.
+`--transcript-store arweave` content-addresses and uploads the canonical
+transcript bytes. Before uploading it searches Arweave by the artifact SHA-256,
+so a restart after a successful post recovers the existing transaction instead
+of paying for a duplicate. Before POST, the fully signed transaction and its ID
+are durably journaled; a lost response or process crash therefore reposts the
+same transaction bytes instead of creating a second paid upload. The provider
+receipt is validated and durably journaled before retrieval; every retry still fetches byte-identical canonical
+content through two independently operated HTTPS gateways before a resolver
+call policy can be created. `--publication-receipts` remains an offline adapter
+for bytes published by a separately controlled service. A funded Arweave JWK,
+live deployment rehearsal, and dynamic owner provisioning of each wallet call
+policy remain external integration gates.
 
 Resolver state lives under its own `--runtime` directory:
 
 - `resolver-cursor.json`: finalized-block anchors and rescan progress.
 - `resolver-state.json`: event-bound decisions and reconciliation state.
-- `actions/`: immutable exact-call policies and `p42-signed-transaction/v1`
-  raw transaction journals.
+- `actions/`: immutable signed Arweave uploads, publication receipts,
+  exact-call policies, and `p42-signed-transaction/v1` raw transaction journals.
 - `ALERTS.log`: invalid evidence, missing transcripts, policy refusals, and
   reorg observations.
 
