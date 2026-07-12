@@ -139,7 +139,7 @@ describe("exact-ten production release slate", () => {
       const { dossier_hash: _, ...body } = forged; forged.dossier_hash = digest(canonical(body));
       assert.throws(() => validateVerifierImageReleaseDossier(forged, { sourceCommit: slate.sourceCommit, problems, now: Date.parse("2026-07-12T00:00:00Z") }), /timestamp/);
     }
-    for (const registry_base of ["registry..example/p42/verifiers", "registry.example/p42//verifiers", "registry.example/p42/verifiers/"]) {
+    for (const registry_base of ["registry..example/p42/verifiers", "registry.example/p42//verifiers", "registry.example/p42/verifiers/", `r/${"a".repeat(253)}`]) {
       const forged = clone(dossier); forged.registry_base = registry_base;
       forged.boards.forEach((board) => {
         board.repository = `${registry_base}/${board.slug}`;

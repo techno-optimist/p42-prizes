@@ -106,7 +106,7 @@ export function validateVerifierImageReleaseDossier(dossier, { sourceCommit, pro
   root.boards.forEach((entry, index) => {
     const board = exactObject(entry, IMAGE_BOARD_KEYS, `verifier image release board ${index + 1}`);
     const problem = problems?.[index];
-    if (board.slug !== PRODUCTION_LAUNCH_SLUGS[index] || board.repository !== `${root.registry_base}/${board.slug}`) throw new Error(`verifier image release board ${index + 1} canonical identity mismatch`);
+    if (board.slug !== PRODUCTION_LAUNCH_SLUGS[index] || board.repository !== `${root.registry_base}/${board.slug}` || !IMAGE_REPOSITORY_RE.test(board.repository)) throw new Error(`verifier image release board ${index + 1} canonical identity mismatch`);
     if (problem && (board.slug !== problem.problemSlug || board.problem_id !== problem.problemSlug || board.version !== problem.verifierVersion || board.source_hash !== problem.verifierSourceDigest || board.index_digest !== problem.verifierImageDigest)) throw new Error(`verifier image release board ${index + 1} identity mismatch`);
     if (board.slug !== board.problem_id || !DIGEST_RE.test(board.source_hash) || !DIGEST_RE.test(board.index_digest) || PLACEHOLDER_DIGEST_RE.test(board.source_hash) || PLACEHOLDER_DIGEST_RE.test(board.index_digest) || board.immutable_reference !== `${board.repository}@${board.index_digest}`) throw new Error(`verifier image release board ${index + 1} provenance mismatch`);
     if (!Array.isArray(board.platform_manifests) || board.platform_manifests.length !== 2) throw new Error(`verifier image release board ${index + 1} platform matrix is incomplete`);
