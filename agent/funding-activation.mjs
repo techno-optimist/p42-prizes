@@ -45,7 +45,9 @@ function authorizationBytes32(digest) {
 
 function assertReleaseBinding(authorization, manifest, manifestBytesDigest) {
   const binding = authorization.release_binding;
-  if (!binding || binding.network !== manifest.network.name || binding.chain_id !== manifest.network.chainId) {
+  const authorizationNetwork = manifest.network.chainId === 8453 ? "base-mainnet"
+    : manifest.network.chainId === 84532 ? "base-sepolia" : null;
+  if (!binding || binding.network !== authorizationNetwork || binding.chain_id !== manifest.network.chainId) {
     throw new Error("validated authorization network does not match deployment manifest");
   }
   if (binding.git_commit !== manifest.deploymentCommit) {
@@ -231,7 +233,7 @@ export function buildFundingActivationPlan({
   const body = {
     schema: ACTIVATION_PLAN_SCHEMA,
     chainId: manifest.network.chainId,
-    network: manifest.network.name,
+    network: manifest.network.chainId === 8453 ? "base-mainnet" : "base-sepolia",
     deploymentCommit: manifest.deploymentCommit,
     deploymentConfigHash: manifest.deploymentConfigHash,
     manifestBytesDigest,

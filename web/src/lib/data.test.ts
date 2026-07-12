@@ -102,6 +102,9 @@ describe("problem funding wallets", () => {
       problemRegistryId: "1",
       deploymentCommit: "4".repeat(40),
       indexedThroughBlock: 123,
+      fundingAuthorizationDigest: `sha256:${"5".repeat(64)}`,
+      activationCompletionDigest: `sha256:${"6".repeat(64)}`,
+      activationFinalizedBlock: 122,
       reconciliationOk: true,
       source: "indexer" as const,
     };

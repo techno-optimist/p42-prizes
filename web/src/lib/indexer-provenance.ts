@@ -1,7 +1,9 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { createHash, createPublicKey, verify } from "node:crypto";
 import { keccak256, toUtf8Bytes } from "ethers";
 import deploymentSchema from "@/schemas/deployment-manifest-v2.schema.json";
 import checkpointSchema from "@/schemas/indexer-checkpoint-v2.schema.json";
+import completionSchema from "@/schemas/funding-activation-completion.schema.json";
 import type { ChainProvenance, Problem } from "@/lib/types";
 
 const MAX_ARTIFACT_BYTES = 4 * 1024 * 1024;
@@ -16,12 +18,26 @@ type JsonObject = Record<string, unknown>;
 export interface IndexerArtifactPaths {
   deploymentManifestPath: string;
   indexerCheckpointPath: string;
+  indexerCheckpointAttestationPath?: string;
+  launchAuthorizationPath?: string;
+  fundingActivationPlanPath?: string;
+  fundingActivationCompletionPath?: string;
+  trustRegistryPath?: string;
+  trustRegistryDigest?: string;
+  checkpointMaxAgeSeconds?: number;
 }
 
 export interface IndexerProvenanceEnvironment {
   [key: string]: string | undefined;
   P42_DEPLOYMENT_MANIFEST_PATH?: string;
   P42_INDEXER_CHECKPOINT_PATH?: string;
+  P42_INDEXER_CHECKPOINT_ATTESTATION_PATH?: string;
+  P42_LAUNCH_AUTHORIZATION_PATH?: string;
+  P42_FUNDING_ACTIVATION_PLAN_PATH?: string;
+  P42_FUNDING_ACTIVATION_COMPLETION_PATH?: string;
+  P42_ATTESTATION_TRUST_REGISTRY_PATH?: string;
+  P42_ATTESTATION_TRUST_REGISTRY_SHA256?: string;
+  P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS?: string;
 }
 
 function object(value: unknown, label: string): JsonObject {
@@ -106,7 +122,7 @@ function validateSchema(value: unknown, rawSchema: unknown, root: JsonSchema, pa
   if (schema.type === "null" && value !== null) throw new Error(`${path} must be null`);
 }
 
-function readBoundedRegularJson(path: string): unknown {
+function readBoundedRegularJsonWithBytes(path: string): { value: unknown; bytes: Buffer } {
   if (!path || path.includes("\0")) throw new Error("artifact path is invalid");
   const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -119,8 +135,12 @@ function readBoundedRegularJson(path: string): unknown {
         before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
       throw new Error("artifact changed while reading");
     }
-    return JSON.parse(bytes.toString("utf8")) as unknown;
+    return { value: JSON.parse(bytes.toString("utf8")) as unknown, bytes };
   } finally { closeSync(descriptor); }
+}
+
+function readBoundedRegularJson(path: string): unknown {
+  return readBoundedRegularJsonWithBytes(path).value;
 }
 
 function canonicalize(value: unknown): unknown {
@@ -149,6 +169,88 @@ function same(left: unknown, right: unknown): boolean {
   return typeof left === "string" && typeof right === "string"
     ? left.toLowerCase() === right.toLowerCase()
     : left === right;
+}
+
+function sha256Bytes(bytes: Buffer): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function sha256Canonical(value: unknown): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify(canonicalize(value))).digest("hex")}`;
+}
+
+const AUTHORIZER_ROLES = new Set([
+  "production-launch-authority", "independent-security-authority", "governance-authority",
+]);
+const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+
+function verifyLaunchAuthorization(authorization: JsonObject, trustRegistry: JsonObject, pinnedRegistryDigest: string): void {
+  requireBinding(pinnedRegistryDigest === sha256Canonical(trustRegistry));
+  requireBinding(trustRegistry.schema_version === "p42-attestation-trust-registry/v1" && trustRegistry.environment === "production");
+  const { authorization_digest: claimedDigest, authorization_signatures: signaturesValue, ...unsigned } = authorization;
+  const digest = sha256Canonical(unsigned);
+  requireBinding(claimedDigest === digest);
+  const issuedAt = String(authorization.issued_at_utc);
+  requireBinding(Number.isFinite(Date.parse(issuedAt)));
+  const authorizers = authorization.authorizers as JsonObject[];
+  const signatures = signaturesValue as JsonObject[];
+  const registrations = trustRegistry.registrations as JsonObject[];
+  requireBinding(Array.isArray(authorizers) && authorizers.length === 3 && Array.isArray(signatures) && signatures.length === 3);
+  requireBinding(Array.isArray(registrations));
+  const seenRoles = new Set<string>();
+  const seenKeys = new Set<string>();
+  for (const authorizerValue of authorizers) {
+    const authorizer = object(authorizerValue, "authorization authorizer");
+    const role = String(authorizer.role);
+    const publicKey = String(authorizer.public_key);
+    requireBinding(AUTHORIZER_ROLES.has(role) && !seenRoles.has(role) && /^ed25519:[0-9a-f]{64}$/.test(publicKey) && !seenKeys.has(publicKey));
+    seenRoles.add(role); seenKeys.add(publicKey);
+    const signature = signatures.find((entry) => entry.signer_role === role);
+    requireBinding(Boolean(signature) && signature!.algorithm === "ed25519" && signature!.public_key === publicKey
+      && signature!.signed_hash === digest && signature!.signed_at_utc === issuedAt
+      && /^ed25519:[0-9a-f]{128}$/.test(String(signature!.signature)));
+    const trusted = registrations.some((entry) => {
+      if (entry.attestation_class !== authorization.schema_version || entry.signer_role !== role || entry.public_key !== publicKey) return false;
+      const identity = object(entry.identity, "trusted signer identity");
+      const validFrom = Date.parse(String(entry.valid_from_utc));
+      const validUntil = entry.valid_until_utc == null ? Number.POSITIVE_INFINITY : Date.parse(String(entry.valid_until_utc));
+      return identity.name === authorizer.name && identity.organization === authorizer.organization
+        && identity.professional_email === authorizer.professional_email
+        && Number.isFinite(validFrom) && validFrom <= Date.parse(issuedAt) && Date.parse(issuedAt) <= validUntil;
+    });
+    requireBinding(trusted);
+    const rawKey = Buffer.from(publicKey.slice(8), "hex");
+    const key = createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, rawKey]), format: "der", type: "spki" });
+    const message = Buffer.from(`P42-ATTESTATION-V2\n${authorization.schema_version}\n${role}\n${digest}\n${issuedAt}`, "ascii");
+    requireBinding(verify(null, message, key, Buffer.from(String(signature!.signature).slice(8), "hex")));
+  }
+  requireBinding(seenRoles.size === AUTHORIZER_ROLES.size);
+}
+
+function verifyCheckpointAttestation(attestation: JsonObject, checkpointBytes: Buffer, trustRegistry: JsonObject, nowSeconds: number): void {
+  requireBinding(JSON.stringify(Object.keys(attestation).sort()) === JSON.stringify([
+    "checkpointDigest", "publicKey", "schema", "signature", "signedAtUtc", "signerRole",
+  ]));
+  requireBinding(attestation.schema === "p42-indexer-checkpoint-attestation/v1"
+    && attestation.signerRole === "indexer-checkpoint-authority"
+    && attestation.checkpointDigest === sha256Bytes(checkpointBytes));
+  const publicKey = String(attestation.publicKey);
+  const signedAt = String(attestation.signedAtUtc);
+  const signedAtSeconds = Date.parse(signedAt) / 1000;
+  const checkpoint = object(JSON.parse(checkpointBytes.toString("utf8")), "attested checkpoint");
+  const checkpointTimestamp = Number(object(checkpoint.range, "attested checkpoint range").toBlockTimestamp);
+  requireBinding(/^ed25519:[0-9a-f]{64}$/.test(publicKey) && Number.isFinite(signedAtSeconds)
+    && signedAtSeconds >= checkpointTimestamp && signedAtSeconds <= nowSeconds + 30);
+  const trusted = (trustRegistry.registrations as JsonObject[]).some((entry) => {
+    if (entry.attestation_class !== attestation.schema || entry.signer_role !== attestation.signerRole || entry.public_key !== publicKey) return false;
+    const from = Date.parse(String(entry.valid_from_utc)) / 1000;
+    const until = entry.valid_until_utc == null ? Number.POSITIVE_INFINITY : Date.parse(String(entry.valid_until_utc)) / 1000;
+    return Number.isFinite(from) && from <= signedAtSeconds && signedAtSeconds <= until;
+  });
+  requireBinding(trusted && /^ed25519:[0-9a-f]{128}$/.test(String(attestation.signature)));
+  const key = createPublicKey({ key: Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(publicKey.slice(8), "hex")]), format: "der", type: "spki" });
+  const message = Buffer.from(`P42-ATTESTATION-V2\n${attestation.schema}\n${attestation.signerRole}\n${attestation.checkpointDigest}\n${signedAt}`, "ascii");
+  requireBinding(verify(null, message, key, Buffer.from(String(attestation.signature).slice(8), "hex")));
 }
 
 function requireBinding(condition: boolean): void {
@@ -204,7 +306,23 @@ function validateBindings(manifest: JsonObject, checkpoint: JsonObject, problem:
 export function configuredIndexerArtifactPaths(env: IndexerProvenanceEnvironment = process.env): IndexerArtifactPaths | null {
   const deploymentManifestPath = env.P42_DEPLOYMENT_MANIFEST_PATH?.trim();
   const indexerCheckpointPath = env.P42_INDEXER_CHECKPOINT_PATH?.trim();
-  return deploymentManifestPath && indexerCheckpointPath ? { deploymentManifestPath, indexerCheckpointPath } : null;
+  if (!deploymentManifestPath || !indexerCheckpointPath) return null;
+  const launchAuthorizationPath = env.P42_LAUNCH_AUTHORIZATION_PATH?.trim();
+  const indexerCheckpointAttestationPath = env.P42_INDEXER_CHECKPOINT_ATTESTATION_PATH?.trim();
+  const fundingActivationPlanPath = env.P42_FUNDING_ACTIVATION_PLAN_PATH?.trim();
+  const fundingActivationCompletionPath = env.P42_FUNDING_ACTIVATION_COMPLETION_PATH?.trim();
+  const trustRegistryPath = env.P42_ATTESTATION_TRUST_REGISTRY_PATH?.trim();
+  const trustRegistryDigest = env.P42_ATTESTATION_TRUST_REGISTRY_SHA256?.trim();
+  const maxAgeText = env.P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS?.trim();
+  const checkpointMaxAgeSeconds = maxAgeText ? Number(maxAgeText) : null;
+  const funding = [launchAuthorizationPath, fundingActivationPlanPath, fundingActivationCompletionPath, indexerCheckpointAttestationPath, trustRegistryPath, trustRegistryDigest];
+  if (funding.some(Boolean) && (!funding.every(Boolean) || !Number.isSafeInteger(checkpointMaxAgeSeconds) || checkpointMaxAgeSeconds! < 1 || checkpointMaxAgeSeconds! > 300)) return { deploymentManifestPath, indexerCheckpointPath };
+  return funding.every(Boolean) ? {
+    deploymentManifestPath, indexerCheckpointPath,
+    indexerCheckpointAttestationPath,
+    launchAuthorizationPath, fundingActivationPlanPath, fundingActivationCompletionPath,
+    trustRegistryPath, trustRegistryDigest, checkpointMaxAgeSeconds: checkpointMaxAgeSeconds!,
+  } : { deploymentManifestPath, indexerCheckpointPath };
 }
 
 function localOnly(problem: Problem): ChainProvenance {
@@ -215,6 +333,7 @@ function localOnly(problem: Problem): ChainProvenance {
     verifierImageHash: problem.verifierImage.startsWith("sha256:") ? problem.verifierImage : null,
     admissionMatrixHash: null, deploymentCommit: null, indexedThroughBlock: null,
     indexedFrontierAtoms: null, checkpointBlock: null, reconciliationOk: false,
+    fundingAuthorizationDigest: null, activationCompletionDigest: null, activationFinalizedBlock: null,
     source: "static-portal-data",
     note: "Phase 0 portal state only: complete, matching deployment and indexer artifacts are unavailable.",
   };
@@ -249,24 +368,137 @@ function provenanceFromArtifacts(problem: Problem, manifest: JsonObject, checkpo
       indexedThroughBlock: checkpointBlock,
       indexedFrontierAtoms: frontierAtoms,
       checkpointBlock,
+      fundingAuthorizationDigest: null,
+      activationCompletionDigest: null,
+      activationFinalizedBlock: null,
       reconciliationOk: true,
       source: "indexer-artifacts-v2",
       note: "Verified deployment and complete indexer reconstruction evidence. Funding publication remains disabled.",
     };
 }
 
-function readValidatedArtifacts(paths: IndexerArtifactPaths): { manifest: JsonObject; checkpoint: JsonObject } {
-  const manifest = object(readBoundedRegularJson(paths.deploymentManifestPath), "manifest");
-  const checkpoint = object(readBoundedRegularJson(paths.indexerCheckpointPath), "checkpoint");
+export function activatedProvenanceFromArtifacts(
+  problem: Problem,
+  manifest: JsonObject,
+  manifestBytes: Buffer,
+  checkpoint: JsonObject,
+  checkpointBytes: Buffer,
+  authorization: JsonObject,
+  authorizationBytes: Buffer,
+  trustRegistry: JsonObject,
+  trustRegistryDigest: string,
+  checkpointAttestation: JsonObject,
+  plan: JsonObject,
+  completion: JsonObject,
+  checkpointMaxAgeSeconds = 300,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): ChainProvenance {
+  const pending = provenanceFromArtifacts(problem, manifest, checkpoint);
+  requireBinding(manifest.releaseMode === "production" && manifest.status === "governance-setup-complete");
+  requireBinding(authorization.schema_version === "p42-production-launch-authorization/v1" && authorization.status === "authorized");
+  verifyLaunchAuthorization(authorization, trustRegistry, trustRegistryDigest);
+  verifyCheckpointAttestation(checkpointAttestation, checkpointBytes, trustRegistry, nowSeconds);
+  requireBinding(/^sha256:[0-9a-f]{64}$/.test(String(authorization.authorization_digest)));
+  requireBinding(plan.schema === "p42-funding-activation-plan/v1" && completion.schema === "p42-funding-activation-completion/v1");
+  const { planDigest, ...planBody } = plan;
+  const { completionDigest, ...completionBody } = completion;
+  requireBinding(planDigest === sha256Canonical(planBody) && completionDigest === sha256Canonical(completionBody));
+  requireBinding(plan.manifestBytesDigest === sha256Bytes(manifestBytes) && completion.manifestBytesDigest === plan.manifestBytesDigest);
+  const authorizationArtifacts = object(authorization.artifacts, "authorization.artifacts");
+  const manifestRef = object(authorizationArtifacts.deployment_manifest, "authorization deployment manifest reference");
+  requireBinding(manifestRef.sha256 === plan.manifestBytesDigest);
+  requireBinding(plan.authorizationDigest === authorization.authorization_digest && completion.authorizationDigest === authorization.authorization_digest);
+  requireBinding(plan.authorizationBytesDigest === sha256Bytes(authorizationBytes)
+    && completion.authorizationBytesDigest === plan.authorizationBytesDigest);
+  const authorizationExpiry = Date.parse(String(authorization.expires_at_utc)) / 1000;
+  requireBinding(Number.isSafeInteger(authorizationExpiry) && nowSeconds <= authorizationExpiry
+    && authorizationExpiry === plan.authorizationExpiresAt && authorizationExpiry === completion.authorizationExpiresAt);
+  requireBinding(Number.isSafeInteger(completion.finalizedBlockTimestamp)
+    && Number(completion.finalizedBlockTimestamp) <= authorizationExpiry);
+  requireBinding(completion.planDigest === plan.planDigest && completion.chainId === plan.chainId && completion.chainId === object(manifest.network, "manifest.network").chainId);
+  const releaseBinding = object(authorization.release_binding, "authorization.release_binding");
+  requireBinding(releaseBinding.chain_id === completion.chainId && releaseBinding.network === completion.network);
+  requireBinding(completion.deploymentCommit === manifest.deploymentCommit && completion.deploymentConfigHash === manifest.deploymentConfigHash);
+  requireBinding(completion.releaseBindingDigest === object(manifest.releaseEvidence, "manifest.releaseEvidence").releaseBindingDigest);
+  const range = object(checkpoint.range, "checkpoint.range");
+  requireBinding(Number(completion.finalizedBlockNumber) <= Number(range.toBlock));
+  requireBinding(Number.isSafeInteger(range.toBlockTimestamp)
+    && Number(range.toBlockTimestamp) <= nowSeconds + 30
+    && nowSeconds - Number(range.toBlockTimestamp) <= checkpointMaxAgeSeconds);
+
+  const manifestProblems = manifest.problems as JsonObject[];
+  const checkpointBoards = checkpoint.boards as JsonObject[];
+  const completionBoards = completion.boards as JsonObject[];
+  requireBinding(manifestProblems.length === 10 && checkpointBoards.length === 10 && completionBoards.length === 10);
+  const digestHex = `0x${String(authorization.authorization_digest).slice(7)}`;
+  const seen = new Set<string>();
+  for (let row = 0; row < 10; row += 1) {
+    const manifestProblem = object(manifestProblems[row], `manifest problem ${row}`);
+    const board = object(checkpointBoards[row], `checkpoint board ${row}`);
+    const activated = object(completionBoards[row], `activation completion board ${row}`);
+    const id = String(manifestProblem.problemId);
+    requireBinding(!seen.has(id) && board.problemId === id && activated.problemId === id && board.problemSlug === manifestProblem.problemSlug);
+    seen.add(id);
+    const contracts = object(manifestProblem.contracts, `manifest problem ${row} contracts`);
+    const pool = object(contracts.pool, `manifest pool ${row}`);
+    const submissions = object(contracts.submissions, `manifest submissions ${row}`);
+    const onchain = object(board.onchain, `checkpoint board ${row} onchain`);
+    requireBinding(same(activated.pool, pool.address) && same(activated.submissionManager, submissions.address));
+    requireBinding(same(activated.poolRuntimeCodeHash, pool.runtimeCodeHash));
+    requireBinding(activated.fundingArmed === true && activated.acceptingFunds === true);
+    requireBinding(onchain.fundingArmed === true && onchain.poolAcceptingFunds === true);
+    requireBinding(same(activated.authorizedFundingDigest, digestHex) && same(activated.fundingAuthorizationDigest, digestHex));
+    requireBinding(same(onchain.authorizedFundingDigest, digestHex) && same(onchain.fundingAuthorizationDigest, digestHex));
+    requireBinding(String(onchain.fundingAuthorizationExpiresAt) === String(authorizationExpiry)
+      && activated.fundingAuthorizationExpiresAt === authorizationExpiry);
+  }
+  const index = manifestProblems.findIndex((entry) => String(entry.problemId) === String(problem.id) && entry.problemSlug === problem.slug);
+  requireBinding(index >= 0);
+  const manifestProblem = object(manifestProblems[index], "manifest problem");
+  const pool = object(object(manifestProblem.contracts, "manifest problem contracts").pool, "manifest pool");
+  const network = object(manifest.network, "manifest.network");
+  const mainnet = network.chainId === 8453 && network.name === "baseMainnet";
+  const testnet = network.chainId === 84532 && network.name === "baseSepolia";
+  requireBinding(mainnet || testnet);
+  return {
+    ...pending,
+    settlementState: mainnet ? "mainnet-indexed" : "testnet-indexed",
+    chain: mainnet ? "Base" : "Base Sepolia",
+    chainId: network.chainId as number,
+    donationWalletAddress: pool.address as string,
+    poolAddress: pool.address as string,
+    deploymentTransactionHash: pool.txHash as string,
+    fundingAuthorizationDigest: authorization.authorization_digest as string,
+    activationCompletionDigest: completion.completionDigest as string,
+    activationFinalizedBlock: completion.finalizedBlockNumber as number,
+    note: "Funding target is bound to a validated launch authorization and finalized activation checkpoint.",
+  };
+}
+
+function readValidatedArtifacts(paths: IndexerArtifactPaths): { manifest: JsonObject; manifestBytes: Buffer; checkpoint: JsonObject; checkpointBytes: Buffer } {
+  const manifestFile = readBoundedRegularJsonWithBytes(paths.deploymentManifestPath);
+  const manifest = object(manifestFile.value, "manifest");
+  const checkpointFile = readBoundedRegularJsonWithBytes(paths.indexerCheckpointPath);
+  const checkpoint = object(checkpointFile.value, "checkpoint");
   validateSchema(manifest, deploymentSchema, deploymentSchema as JsonSchema, "manifest");
   validateSchema(checkpoint, checkpointSchema, checkpointSchema as JsonSchema, "checkpoint");
-  return { manifest, checkpoint };
+  return { manifest, manifestBytes: manifestFile.bytes, checkpoint, checkpointBytes: checkpointFile.bytes };
 }
 
 export function loadIndexerProvenance(problem: Problem, paths = configuredIndexerArtifactPaths()): ChainProvenance {
   if (!paths) return localOnly(problem);
   try {
-    const { manifest, checkpoint } = readValidatedArtifacts(paths);
+    const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
+    if (paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath && paths.trustRegistryPath && paths.trustRegistryDigest) {
+      const authorizationFile = readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath);
+      const authorization = object(authorizationFile.value, "authorization");
+      const trustRegistry = object(readBoundedRegularJson(paths.trustRegistryPath), "trust registry");
+      const checkpointAttestation = object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath), "checkpoint attestation");
+      const plan = object(readBoundedRegularJson(paths.fundingActivationPlanPath), "activation plan");
+      const completion = object(readBoundedRegularJson(paths.fundingActivationCompletionPath), "activation completion");
+      validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
+      return activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization, authorizationFile.bytes, trustRegistry, paths.trustRegistryDigest, checkpointAttestation, plan, completion, paths.checkpointMaxAgeSeconds);
+    }
     return provenanceFromArtifacts(problem, manifest, checkpoint);
   } catch { return localOnly(problem); }
 }
@@ -278,8 +510,18 @@ export function loadIndexerProvenanceSnapshot(
 ): ReadonlyMap<string, ChainProvenance> {
   if (!paths) return new Map(problems.map((problem) => [problem.slug, localOnly(problem)]));
   try {
-    const { manifest, checkpoint } = readValidatedArtifacts(paths);
-    const entries = problems.map((problem) => [problem.slug, provenanceFromArtifacts(problem, manifest, checkpoint)] as const);
+    const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
+    const hasFunding = paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath && paths.trustRegistryPath && paths.trustRegistryDigest;
+    const authorizationFile = hasFunding ? readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath!) : null;
+    const authorization = authorizationFile ? object(authorizationFile.value, "authorization") : null;
+    const trustRegistry = hasFunding ? object(readBoundedRegularJson(paths.trustRegistryPath!), "trust registry") : null;
+    const checkpointAttestation = hasFunding ? object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath!), "checkpoint attestation") : null;
+    const plan = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationPlanPath!), "activation plan") : null;
+    const completion = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationCompletionPath!), "activation completion") : null;
+    if (completion) validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
+    const entries = problems.map((problem) => [problem.slug, hasFunding
+      ? activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization!, authorizationFile!.bytes, trustRegistry!, paths.trustRegistryDigest!, checkpointAttestation!, plan!, completion!, paths.checkpointMaxAgeSeconds)
+      : provenanceFromArtifacts(problem, manifest, checkpoint)] as const);
     return new Map(entries);
   } catch {
     return new Map(problems.map((problem) => [problem.slug, localOnly(problem)]));

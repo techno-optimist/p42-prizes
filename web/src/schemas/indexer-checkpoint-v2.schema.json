@@ -99,11 +99,12 @@
     "range": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["fromBlock", "toBlock", "toBlockHash"],
+      "required": ["fromBlock", "toBlock", "toBlockHash", "toBlockTimestamp"],
       "properties": {
         "fromBlock": { "type": "integer", "minimum": 0 },
         "toBlock": { "type": "integer", "minimum": 0 },
-        "toBlockHash": { "$ref": "#/$defs/bytes32" }
+        "toBlockHash": { "$ref": "#/$defs/bytes32" },
+        "toBlockTimestamp": { "type": "integer", "minimum": 1 }
       }
     },
     "events": {
@@ -124,12 +125,17 @@
     "onchain": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["submissionCount", "openSubmissionCount", "bestScoreAtoms", "poolFirstFundedAt", "ledgerPausedNewActions", "submissionsPausedNewActions", "submissionsPausedAll", "submissionExpiryGraceUntil", "challengePausedNewActions", "registryProblemCount", "registryFrozen"],
+      "required": ["submissionCount", "openSubmissionCount", "bestScoreAtoms", "poolFirstFundedAt", "poolAcceptingFunds", "fundingArmed", "authorizedFundingDigest", "fundingAuthorizationDigest", "fundingAuthorizationExpiresAt", "ledgerPausedNewActions", "submissionsPausedNewActions", "submissionsPausedAll", "submissionExpiryGraceUntil", "challengePausedNewActions", "registryProblemCount", "registryFrozen"],
       "properties": {
         "submissionCount": { "$ref": "#/$defs/integerString" },
         "openSubmissionCount": { "$ref": "#/$defs/integerString" },
         "bestScoreAtoms": { "$ref": "#/$defs/integerString" },
         "poolFirstFundedAt": { "$ref": "#/$defs/integerString" },
+        "poolAcceptingFunds": { "type": "boolean" },
+        "fundingArmed": { "type": "boolean" },
+        "authorizedFundingDigest": { "$ref": "#/$defs/bytes32" },
+        "fundingAuthorizationDigest": { "$ref": "#/$defs/bytes32" },
+        "fundingAuthorizationExpiresAt": { "$ref": "#/$defs/integerString" },
         "ledgerPausedNewActions": { "type": "boolean" },
         "submissionsPausedNewActions": { "type": "boolean" },
         "submissionsPausedAll": { "type": "boolean" },

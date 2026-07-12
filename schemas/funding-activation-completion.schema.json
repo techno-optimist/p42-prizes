@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/funding-activation-completion.schema.json",
+  "title": "P42 finalized funding activation completion",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "chainId", "network", "planDigest", "manifestBytesDigest", "deploymentCommit", "deploymentConfigHash", "releaseBindingDigest", "authorizationDigest", "authorizationBytesDigest", "authorizationExpiresAt", "finalizedBlockNumber", "finalizedBlockHash", "finalizedBlockTimestamp", "boards", "completionDigest"],
+  "properties": {
+    "schema": { "const": "p42-funding-activation-completion/v1" },
+    "status": { "const": "complete" },
+    "chainId": { "enum": [8453, 84532] },
+    "network": { "enum": ["base-mainnet", "base-sepolia"] },
+    "planDigest": { "$ref": "#/$defs/digest" },
+    "manifestBytesDigest": { "$ref": "#/$defs/digest" },
+    "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "deploymentConfigHash": { "$ref": "#/$defs/bytes32" },
+    "releaseBindingDigest": { "$ref": "#/$defs/digest" },
+    "authorizationDigest": { "$ref": "#/$defs/digest" },
+    "authorizationBytesDigest": { "$ref": "#/$defs/digest" },
+    "authorizationExpiresAt": { "type": "integer", "minimum": 1 },
+    "finalizedBlockNumber": { "type": "integer", "minimum": 0 },
+    "finalizedBlockHash": { "$ref": "#/$defs/bytes32" },
+    "finalizedBlockTimestamp": { "type": "integer", "minimum": 1 },
+    "boards": {
+      "type": "array", "minItems": 10, "maxItems": 10,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["problemId", "submissionManager", "pool", "poolRuntimeCodeHash", "authorizedFundingDigest", "fundingAuthorizationDigest", "fundingAuthorizationExpiresAt", "fundingArmed", "acceptingFunds"],
+        "properties": {
+          "problemId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+          "submissionManager": { "$ref": "#/$defs/address" },
+          "pool": { "$ref": "#/$defs/address" },
+          "poolRuntimeCodeHash": { "$ref": "#/$defs/bytes32" },
+          "authorizedFundingDigest": { "$ref": "#/$defs/bytes32" },
+          "fundingAuthorizationDigest": { "$ref": "#/$defs/bytes32" },
+          "fundingAuthorizationExpiresAt": { "type": "integer", "minimum": 1 },
+          "fundingArmed": { "const": true },
+          "acceptingFunds": { "const": true }
+        }
+      }
+    },
+    "completionDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
+    "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" }
+  }
+}

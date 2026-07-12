@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
@@ -12,10 +12,11 @@ import {
 } from "./funding-activation.mjs";
 import {
   collectFundingActivationSnapshot,
+  buildFundingActivationCompletion,
   nextFundingActivationAction,
   signAndBroadcastActivationAction,
 } from "./funding-activation-executor.mjs";
-import { readStrictJsonFileSync } from "./strict-json.mjs";
+import { readStrictJsonFileSync, writeTrustedFileSync } from "./strict-json.mjs";
 
 const LIMITS = Object.freeze({ maxBytes: 16 * 1024 * 1024, maxDepth: 128, trailingNewline: "require", privateFile: true });
 
@@ -83,6 +84,7 @@ export async function fundingActivationRunMain() {
   const secondaryUrl = requiredEnv("P42_SECONDARY_BASE_RPC_URL");
   const journalRoot = realpathSync(resolve(required("journal-root")));
   const journalPath = resolve(required("journal"));
+  const completionPath = resolve(required("completion-output"));
   assertDistinctRpcUrls(primaryUrl, secondaryUrl);
 
   const plan = readStrictJsonFileSync(resolve(planPath), LIMITS);
@@ -123,6 +125,17 @@ export async function fundingActivationRunMain() {
     availableGovernanceSigners: [...governanceByAddress.keys()],
   });
   if (["complete", "wait", "wait-finality"].includes(action.kind)) {
+    if (action.kind === "complete") {
+      const completion = buildFundingActivationCompletion(plan, snapshot);
+      if (existsSync(completionPath)) {
+        const existing = readStrictJsonFileSync(completionPath, { ...LIMITS, trustedRoot: journalRoot });
+        if (JSON.stringify(existing) !== JSON.stringify(completion)) {
+          throw new Error("existing activation completion conflicts with finalized state");
+        }
+      } else {
+        writeTrustedFileSync(completionPath, journalRoot, Buffer.from(`${JSON.stringify(completion, null, 2)}\n`));
+      }
+    }
     process.stdout.write(`${JSON.stringify({ status: action.kind, wakeAt: action.wakeAt?.toString() ?? null })}\n`);
     return;
   }

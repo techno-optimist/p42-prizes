@@ -27,6 +27,9 @@ export interface ChainProvenance {
   indexedThroughBlock: number | null;
   indexedFrontierAtoms?: string | null;
   checkpointBlock?: number | null;
+  fundingAuthorizationDigest: string | null;
+  activationCompletionDigest: string | null;
+  activationFinalizedBlock: number | null;
   reconciliationOk: boolean;
   source: "static-portal-data" | "deployment-manifest" | "indexer" | "indexer-artifacts-v2";
   note: string;
