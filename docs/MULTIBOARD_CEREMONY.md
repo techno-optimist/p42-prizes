@@ -117,6 +117,56 @@ labels, immutable reference, and runtime identity to match the ceremony. The
 configured `verifierImageDigest` is the published multi-platform
 `boards[].index_digest`.
 
+Prepare the closed release set only with the canonical command from
+the clean frozen checkout:
+
+```bash
+cd contracts
+P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/ceremony.json \
+P42_PRODUCTION_IMAGE_DOSSIER_PATH=../release-evidence/verifier-images.json \
+P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
+P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
+P42_RELEASE_GENERATED_AT=YYYY-MM-DDTHH:MM:SSZ \
+P42_RELEASE_OUTPUT_ROOT=/absolute/path/outside-the-repository \
+npm run release:prepare
+```
+
+The image dossier and all admission matrices must be inside the explicit
+evidence root, which is outside the frozen repository because this evidence is
+generated after the source commit is fixed. The output root must be outside
+both roots. The command force-compiles the seven production contracts, builds
+and independently re-attests the release capsule, derives the exact-ten slate,
+runs every real `admit-ready` check, and rechecks the clean commit before and
+after publication. Capsule and slate files are mode `0444` and content
+addressed. Only the final content-addressed release index declares their pair
+complete; a failed second publication can leave an unreferenced immutable
+artifact but cannot create a complete release. A failed compile, attestation,
+image check, admission check, checkout recheck, or publication produces no
+release index.
+
+Production deployment consumes all three published artifacts and the same
+external evidence root. `P42_PRODUCTION_RELEASE_INDEX_PATH` is mandatory and
+must bind the selected `P42_RELEASE_CAPSULE`, `P42_PRODUCTION_SLATE_PATH`, and
+clean deployment commit exactly. Selecting an orphan capsule or slate without
+its final index fails before broadcast.
+
+```bash
+cd contracts
+P42_DEPLOY_MODE=deploy-multiboard-production \
+P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/ceremony.json \
+P42_PRODUCTION_SLATE_PATH=/absolute/path/out/slates/<digest>.slate.json \
+P42_RELEASE_CAPSULE=/absolute/path/out/capsules/<digest>.json \
+P42_PRODUCTION_RELEASE_INDEX_PATH=/absolute/path/out/releases/<digest>.release.json \
+P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
+P42_DEPLOYMENT_MANIFEST=/absolute/path/private/p42-prizes.json \
+BASE_SEPOLIA_RPC_URL=https://... \
+P42_PRIMARY_RPC_OPERATOR_ID=... \
+P42_SECONDARY_BASE_SEPOLIA_RPC_URL=https://... \
+P42_SECONDARY_RPC_OPERATOR_ID=... \
+BASE_SEPOLIA_PRIVATE_KEY=... \
+npm run deploy:base-sepolia
+```
+
 The deployer sends no governance, `armFunding`, or `setAcceptingFunds(true)`
 transaction. It emits exactly eleven timelock operations per board:
 

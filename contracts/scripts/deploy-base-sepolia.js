@@ -43,6 +43,7 @@ import {
   bindReleaseMode,
   readMultiBoardCeremonyConfig,
   validateProductionReleaseSlate,
+  validateProductionReleaseIndex,
   validateProductionSlatePreflight,
   validateMultiBoardAdmissionPreflight,
   validateMultiBoardDeploymentTimestamps,
@@ -123,12 +124,15 @@ async function readMultiBoardCeremonyInput() {
 async function productionReleaseInputs(repoRoot, deploymentCommit) {
   const slatePath = resolve(requiredEnv("P42_PRODUCTION_SLATE_PATH"));
   const capsulePath = resolve(requiredEnv("P42_RELEASE_CAPSULE"));
-  const [slate, capsule] = await Promise.all([readContractsConfigJson(slatePath), readReleaseBuildJson(capsulePath)]);
+  const indexPath = resolve(requiredEnv("P42_PRODUCTION_RELEASE_INDEX_PATH"));
+  const [slate, capsule, index] = await Promise.all([readContractsConfigJson(slatePath), readReleaseBuildJson(capsulePath), readContractsConfigJson(indexPath)]);
   validateProductionReleaseSlate(slate);
   if (slate.sourceCommit !== deploymentCommit) throw new Error("production slate sourceCommit differs from exact deployment commit");
   validateReleaseCapsule(capsule);
+  validateProductionReleaseIndex(index);
+  if (index.sourceCommit !== deploymentCommit || index.generatedAt !== slate.generatedAt || index.slate.digest !== slate.slateDigest || index.capsule.digest !== capsule.capsuleDigest) throw new Error("production release index does not bind the selected commit, timestamp, slate, and capsule");
   await attestReleaseCapsuleAgainstCheckout(capsule, { repoRoot, expectedGitCommit: deploymentCommit });
-  return { slate, capsule, slatePath, capsulePath };
+  return { slate, capsule, index, slatePath, capsulePath, indexPath };
 }
 
 function gitCommit(repoRoot) {
@@ -573,7 +577,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const release = releaseMode === "production" ? await productionReleaseInputs(repoRoot, deploymentCommit) : null;
   config = bindReleaseMode(config, { releaseMode, slate: release?.slate });
   const admissionPreflight = release
-    ? validateProductionSlatePreflight(ethers, release.slate, config, { repoRoot })
+    ? validateProductionSlatePreflight(ethers, release.slate, config, { repoRoot, evidenceRoot: resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT")) })
     : validateMultiBoardAdmissionPreflight(ethers, config, { repoRoot });
   console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const output = manifestPath();

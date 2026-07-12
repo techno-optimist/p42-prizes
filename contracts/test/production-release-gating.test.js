@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { PRODUCTION_LAUNCH_SLUGS, bindReleaseMode, releaseBoardIdentity, validateProductionReleaseSlate, validateProductionSlatePreflight, validateVerifierImageReleaseDossier } from "../scripts/multiboard-ceremony-helper.js";
+import { PRODUCTION_LAUNCH_SLUGS, bindReleaseMode, createProductionReleaseIndex, createProductionReleaseSlate, publishProductionReleaseIndex, publishProductionReleaseSlate, releaseBoardIdentity, validateProductionReleaseIndex, validateProductionReleaseSlate, validateProductionSlatePreflight, validateVerifierImageReleaseDossier } from "../scripts/multiboard-ceremony-helper.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const fixture = JSON.parse(readFileSync(resolve(ROOT, "contracts/test/fixtures/multiboard-ceremony-10.json"), "utf8"));
@@ -102,19 +102,22 @@ describe("exact-ten production release slate", () => {
   it("preflights only temp status-ready registry, package, and certified matrix evidence", async () => {
     const root = await mkdtemp(join(tmpdir(), "p42-production-slate-"));
     try {
+      const repoRoot = join(root, "repo"); const evidenceRoot = join(root, "evidence");
+      await mkdir(repoRoot); await mkdir(evidenceRoot);
       const slate = syntheticSlate();
       slate.boards.forEach((board) => { board.problemPackageDigest = board.verifierSourceDigest; });
-      await mkdir(join(root, "release"), { recursive: true });
+      await mkdir(join(evidenceRoot, "release"), { recursive: true });
       const registry = imageDossier(slate);
-      const registryBytes = Buffer.from(JSON.stringify(registry));
-      await writeFile(join(root, slate.imageRegistry.path), registryBytes);
+      const registryBytes = Buffer.from(`${canonical(registry)}\n`);
+      await writeFile(join(evidenceRoot, slate.imageRegistry.path), registryBytes);
+      await chmod(join(evidenceRoot, slate.imageRegistry.path), 0o600);
       slate.imageRegistry.digest = `sha256:${createHash("sha256").update(registryBytes).digest("hex")}`;
       for (const board of slate.boards) {
-        await writeFile(join(root, board.admissionMatrixPath), JSON.stringify({ matrix_hash: board.admissionMatrixDigest, problem_id: board.problemSlug, verifier_version: board.verifierVersion, verifier_image: board.verifierImageDigest, source: { tree_hash: board.verifierSourceDigest } }));
+        await writeFile(join(evidenceRoot, board.admissionMatrixPath), JSON.stringify({ matrix_hash: board.admissionMatrixDigest, problem_id: board.problemSlug, verifier_version: board.verifierVersion, verifier_image: board.verifierImageDigest, source: { tree_hash: board.verifierSourceDigest } }));
       }
       const ready = reseal(slate); const config = { problems: ready.boards.map(releaseBoardIdentity) };
-      assert.equal(validateProductionSlatePreflight({}, ready, config, { repoRoot: root, runAdmitReady: () => {} }).length, 10);
-      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot: root, runAdmitReady: ({ matrixPath }) => { if (matrixPath.endsWith("matrix-10.json")) throw new Error("not certified"); } }), /not certified/);
+      assert.equal(validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }).length, 10);
+      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: ({ matrixPath }) => { if (matrixPath.endsWith("matrix-10.json")) throw new Error("not certified"); } }), /not certified/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
@@ -148,5 +151,80 @@ describe("exact-ten production release slate", () => {
       const { dossier_hash: _, ...body } = forged; forged.dossier_hash = digest(canonical(body));
       assert.throws(() => validateVerifierImageReleaseDossier(forged, { sourceCommit: slate.sourceCommit, problems }), /registry|canonical identity/);
     }
+  });
+
+  it("constructs a ready slate only from exact image bytes and ceremony identities", () => {
+    const source = syntheticSlate();
+    const problems = source.boards.map((board) => ({ ...releaseBoardIdentity(board), admissionMatrixPath: board.admissionMatrixPath }));
+    const dossier = imageDossier(source);
+    const bytes = Buffer.from(`${canonical(dossier)}\n`);
+    const slate = createProductionReleaseSlate({
+      generatedAt: "2026-07-11T00:00:01Z",
+      sourceCommit: source.sourceCommit,
+      imageRegistryPath: "release/verifier-images.json",
+      imageRegistryBytes: bytes,
+      imageDossier: dossier,
+      problems,
+      now: Date.parse("2026-07-12T00:00:00Z"),
+    });
+    assert.equal(slate.status, "ready");
+    assert.equal(slate.imageRegistry.digest, `sha256:${createHash("sha256").update(bytes).digest("hex")}`);
+    assert.deepEqual(slate.boards.map(({ problemSlug }) => problemSlug), PRODUCTION_LAUNCH_SLUGS);
+    for (const overrides of [
+      { generatedAt: "2026-07-10T23:59:59Z" },
+      { generatedAt: "2026-07-13T00:00:00Z" },
+      { generatedAt: "2026-07-11T00:00:01.000Z" },
+      { imageRegistryPath: "../escape.json" },
+      { imageRegistryBytes: "not bytes" },
+    ]) assert.throws(() => createProductionReleaseSlate({
+      generatedAt: "2026-07-11T00:00:01Z", sourceCommit: source.sourceCommit,
+      imageRegistryPath: "release/verifier-images.json", imageRegistryBytes: bytes,
+      imageDossier: dossier, problems, now: Date.parse("2026-07-12T00:00:00Z"), ...overrides,
+    }), /generatedAt|path|bytes/);
+  });
+
+  it("publishes the ready slate immutably at its content address", async () => {
+    const source = syntheticSlate();
+    const problems = source.boards.map((board) => ({ ...releaseBoardIdentity(board), admissionMatrixPath: board.admissionMatrixPath }));
+    const dossier = imageDossier(source); const bytes = Buffer.from(`${canonical(dossier)}\n`);
+    const slate = createProductionReleaseSlate({ generatedAt: "2026-07-11T00:00:01Z", sourceCommit: source.sourceCommit, imageRegistryPath: "release/verifier-images.json", imageRegistryBytes: bytes, imageDossier: dossier, problems, now: Date.parse("2026-07-12T00:00:00Z") });
+    const directory = await mkdtemp(join(tmpdir(), "p42-production-slate-publish-"));
+    try {
+      const first = await publishProductionReleaseSlate(slate, directory, { trustedRoot: directory });
+      const second = await publishProductionReleaseSlate(slate, directory, { trustedRoot: directory });
+      assert.deepEqual(first, second);
+      assert.equal((await readFile(first.path, "utf8")), `${canonical(slate)}\n`);
+      const linkedDirectory = join(directory, "linked"); await mkdir(linkedDirectory);
+      const target = join(linkedDirectory, `${slate.slateDigest.slice(7)}.slate.json`);
+      await symlink("missing", target);
+      await assert.rejects(() => publishProductionReleaseSlate(slate, linkedDirectory, { trustedRoot: directory }), /ELOOP|metadata|different bytes|regular/i);
+      const mutationDirectory = join(directory, "mutation"); await mkdir(mutationDirectory);
+      await assert.rejects(() => publishProductionReleaseSlate(slate, mutationDirectory, {
+        trustedRoot: directory,
+        async beforeDirectoryFsync({ target: publishedTarget, bytes: publishedBytes }) {
+          await chmod(publishedTarget, 0o644);
+          const changed = Buffer.from(publishedBytes); changed[0] ^= 1;
+          await writeFile(publishedTarget, changed);
+          await chmod(publishedTarget, 0o444);
+        },
+      }), /bytes changed/);
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("publishes a final index only for an exact capsule/slate pair", async () => {
+    const capsule = { digest: digest("capsule"), uri: `sha256://${digest("capsule").slice(7)}` };
+    const slate = { digest: digest("slate"), uri: `sha256://${digest("slate").slice(7)}` };
+    const index = createProductionReleaseIndex({ sourceCommit: "b".repeat(40), generatedAt: "2026-07-11T00:00:01Z", capsule, slate });
+    assert.equal(validateProductionReleaseIndex(index), index);
+    assert.throws(() => createProductionReleaseIndex({ sourceCommit: "b".repeat(40), generatedAt: "2026-07-11T00:00:01.000Z", capsule, slate }), /noncanonical/);
+    const directory = await mkdtemp(join(tmpdir(), "p42-production-index-publish-"));
+    try {
+      const first = await publishProductionReleaseIndex(index, directory, { trustedRoot: directory });
+      const second = await publishProductionReleaseIndex(index, directory, { trustedRoot: directory });
+      assert.deepEqual(first, second);
+      assert.equal(await readFile(first.path, "utf8"), `${canonical(index)}\n`);
+      const forged = clone(index); forged.slate.digest = digest("substitute");
+      assert.throws(() => validateProductionReleaseIndex(forged), /publication|uri|digest/);
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });
