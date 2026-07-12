@@ -39,3 +39,11 @@ registry retention policy was verified, and this artifact is not an immutable
 image dossier, N-host matrix, or funding/deployment authorization. Publication
 remains blocked on a narrowly scoped registry credential and owner-confirmed
 immutable repository policy.
+
+A separate authenticated Packages API check from the Mac control surface
+returned HTTP 403 and stated that at least `read:packages` is required; the
+active token reported only `gist`, `read:org`, and `repo`. No token value or
+credential material was retained. This confirms that the Mac token cannot list
+the authenticated package inventory and that neither current control surface
+has a discovered publication credential. Anonymous inspection of a public GHCR
+manifest was not tested.
