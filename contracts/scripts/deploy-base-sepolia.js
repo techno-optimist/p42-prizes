@@ -31,7 +31,6 @@ import {
   MULTIBOARD_MANIFEST_SCHEMA,
   PENDING_SETUP_STATUS,
   productionReleaseBindingDigest,
-  inspectManifestOutputReservation,
   readManifestOutputReservation,
   readCeremonyConfig,
   recordManifestOutputBoardDeployment,
@@ -1445,7 +1444,24 @@ if (mode !== "deploy" && mode !== "deploy-multiboard-production" && mode !== "co
 }
 
 if (mode === "inspect-reservation") {
-  console.log(jsonStringify((await inspectManifestOutputReservation(manifestPath())).record));
+  const repoRoot = resolve(process.cwd(), "..");
+  assertCleanGitTree(repoRoot);
+  const deploymentCommit = gitCommit(repoRoot);
+  const input = await readMultiBoardCeremonyInput();
+  const release = await productionReleaseInputs(repoRoot, deploymentCommit);
+  const output = manifestPath();
+  const reservationIdentity = createDeploymentReservationIdentity(output, {
+    deploymentCommit,
+    network: "baseSepolia",
+    chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+    deployer: requiredEnv("P42_EXPECTED_DEPLOYER_ADDRESS"),
+  }, { trustedRoot: dirname(output), configValue: {
+    config: input.value,
+    releaseMode: "production",
+    slateDigest: release.slate.slateDigest,
+    capsuleDigest: release.capsule.capsuleDigest,
+  } });
+  console.log(jsonStringify((await readManifestOutputReservation(reservationIdentity)).record));
 } else {
   requiredEnv("BASE_SEPOLIA_RPC_URL");
   const connection = await network.create("baseSepolia");

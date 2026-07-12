@@ -24,7 +24,6 @@ import {
   completeManifestOutputReservation,
   createDeploymentReservationIdentity,
   deploymentReservationConfigDigest,
-  inspectManifestOutputReservation,
   manifestOutputReservationPath,
   readManifestOutputReservation,
   recordManifestOutputDeployment,
@@ -122,26 +121,6 @@ describe("deployment reservation durable secure storage", () => {
       }
       assert.throws(() => createDeploymentReservationIdentity(output, metadata, { configBytes: CONFIG_BYTES }), /explicit trusted root/);
       assert.throws(() => createDeploymentReservationIdentity(output, metadata, { trustedRoot: directory }), /canonical config input/);
-    });
-  });
-
-  it("recovers and authenticates the inspection identity from the private reservation", async () => {
-    await withDirectory("p42-reservation-inspect-", async (directory) => {
-      const output = join(directory, "deployment.json");
-      const expected = identityFor(output, directory);
-      await reserveManifestOutput(expected);
-
-      const inspected = await inspectManifestOutputReservation(output);
-      assert.deepEqual(inspected.identity, expected);
-      assert.equal(inspected.record.identityDigest, expected.identityDigest);
-      assert.equal(inspected.path, manifestOutputReservationPath(output));
-
-      const tampered = { ...inspected.record, identityDigest: `sha256:${"f".repeat(64)}` };
-      await writeFile(inspected.path, `${JSON.stringify(tampered)}\n`, { mode: 0o600 });
-      await assert.rejects(
-        () => inspectManifestOutputReservation(output),
-        /malformed; do not start another ceremony/,
-      );
     });
   });
 

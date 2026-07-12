@@ -128,12 +128,18 @@ transactions:
 ```bash
 P42_DEPLOY_MODE=inspect-reservation \
 P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
+P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
+P42_MULTIBOARD_CEREMONY_CONFIG=... \
+P42_PRODUCTION_SLATE_PATH=... \
+P42_RELEASE_CAPSULE=... \
 npx hardhat run scripts/deploy-base-sepolia.js
 ```
 
-Inspect mode opens the private sibling reservation without following links,
-reconstructs its immutable identity from the journal, and verifies the identity
-digest before printing it. A malformed, relocated, permissive, linked, or
+Inspect mode independently reconstructs the expected identity from the clean
+frozen checkout, exact ceremony config, release slate, release capsule,
+expected deployer, and manifest path before opening the private sibling
+reservation. It does not trust identity fields recovered from the journal. A
+wrong checkout or input, malformed, relocated, permissive, linked, or
 identity-tampered journal fails closed. Do not remove the reservation to make a
 retry proceed.
 
