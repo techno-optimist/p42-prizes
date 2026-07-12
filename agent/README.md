@@ -294,3 +294,12 @@ different active bounty with `--donate-winnings-to-pool <pool-address>`. The
 solver uses the atomic `donateClaimToPool` path: no award touches the agent
 wallet, the destination sponsorship is attributed to the solver, and a failed
 destination deposit rolls the source claim back.
+
+## Funding activation plan
+
+`p42-funding-activation-plan` is the non-signing production activation
+preflight. It re-runs `production-launch-authorization-validate`, consumes the
+exact validated bytes, and writes a private immutable 30-operation plan for the
+ten launch boards. Treasury authorization, timelock arming, and pool opening
+are separated by global barriers. This command deliberately does not sign or
+broadcast; the durable multi-signer executor remains a launch gate.

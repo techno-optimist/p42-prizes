@@ -11,6 +11,7 @@ interface IP42MockCreditLedger {
 /// full submission stack.
 contract MockFundingArmed {
     bool public fundingArmed;
+    uint64 public fundingAuthorizationExpiresAt = type(uint64).max;
 
     constructor(bool armed) {
         fundingArmed = armed;

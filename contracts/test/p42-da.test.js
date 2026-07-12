@@ -128,7 +128,7 @@ async function deploy(onchainDa, maxSolutionBytes) {
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(CHALLENGE_WINDOW + 1n);
-  await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+  await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
   await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
   await pool.connect(owner).setAcceptingFunds(true);
 

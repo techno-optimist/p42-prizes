@@ -66,6 +66,15 @@ funding paths remain fail-closed.
 Each submission manager requires a separate funding-authorizer transaction to
 register the digest before governance can call `armFunding(bytes32)`. The
 manager rejects a zero, absent, or different digest, stores the consumed digest
-on-chain, and emits both authorization and activation events. The pool can open
-only after that transition. The agent-side transaction consumer remains a
-separate required gate and must invoke the production validator before signing.
+on-chain, and emits both authorization and activation events. Authorization
+also stores the signed packet's expiry. A delayed timelock execution cannot arm
+after that deadline, and a pool cannot begin accepting deposits after it.
+
+`p42-funding-activation-plan` is the first fail-closed consumer stage. It invokes
+the production validator as a bounded argv-only subprocess, binds the exact
+authorization and manifest bytes, pins every target runtime hash, and emits a
+private deterministic exact-ten plan. Its global barriers require all ten
+treasury authorizations before any arm operation and all ten arms before any
+pool-opening operation. The durable multi-signer transaction state machine and
+independent finalized-chain reconciliation remain required before this source
+gate can sign or broadcast production transactions.

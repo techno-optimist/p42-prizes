@@ -10,6 +10,7 @@
     "da-arweave.mjs",
     "da-local.mjs",
     "indexer.mjs",
+    "funding-activation.mjs",
     "lib.mjs",
     "operator.mjs",
     "open-witness-authority-core.mjs",
@@ -30,7 +31,8 @@
   "bin": {
     "p42-solve": "solver.mjs",
     "p42-resolve": "resolver.mjs",
-    "p42-open-witness-collect": "open-witness-promote.mjs"
+    "p42-open-witness-collect": "open-witness-promote.mjs",
+    "p42-funding-activation-plan": "funding-activation.mjs"
   },
   "scripts": {
     "test": "node --test *.test.mjs"

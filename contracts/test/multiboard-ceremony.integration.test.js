@@ -265,7 +265,7 @@ describe("multi-board governance ceremony integration", () => {
     await ethers.provider.send("hardhat_setCode", [pool0, pool0Code]);
 
     await advance(BigInt(input.parameters.challengeWindowSeconds) + 1n);
-    await boards[0].contracts.submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+    await boards[0].contracts.submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
     await boards[0].contracts.submissions.connect(allocator).armFunding("0x" + "42".repeat(32));
     await boards[0].contracts.pool.connect(allocator).setAcceptingFunds(true);
     await rolloverVault.connect(allocator).fundRegisteredPool(pool0, 10n);

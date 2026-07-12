@@ -1566,6 +1566,7 @@ function newReplayState(config, coverage) {
     armedAt: 0n,
     fundingAuthorizationDigest: ZERO_HASH,
     authorizedFundingDigest: ZERO_HASH,
+    fundingAuthorizationExpiresAt: 0n,
     pausedNewActions: false,
     pausedAll: false,
     creditRecoveryEndsAt: 0n,
@@ -1870,7 +1871,9 @@ function replaySubmissionEvent(state, event) {
     case "FundingAuthorized":
       invariant(!state.fundingArmed, "FundingAuthorized observed after FundingArmed");
       state.authorizedFundingDigest = getArg(event, "authorizationDigest");
+      state.fundingAuthorizationExpiresAt = asBigInt(getArg(event, "expiresAt"));
       invariant(String(state.authorizedFundingDigest).toLowerCase() !== ZERO_HASH, "FundingAuthorized digest is zero");
+      invariant(state.fundingAuthorizationExpiresAt > 0n, "FundingAuthorized expiry is zero");
       return;
     case "FundingArmed":
       invariant(!state.fundingArmed, "duplicate FundingArmed event");
@@ -2799,6 +2802,7 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
       snapshot.fundingAuthorizationDigest,
     ),
     check("submissions.authorizedFundingDigest", state.authorizedFundingDigest, snapshot.authorizedFundingDigest),
+    check("submissions.fundingAuthorizationExpiresAt", state.fundingAuthorizationExpiresAt, snapshot.fundingAuthorizationExpiresAt),
     check("submissions.pausedNewActions", state.pausedNewActions, snapshot.submissionsPausedNewActions),
     check("submissions.pausedAll", state.pausedAll, snapshot.pausedAll),
     check("submissions.expiryGraceUntil", state.expiryGraceUntil, snapshot.expiryGraceUntil),
@@ -3135,6 +3139,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     armedAt,
     fundingAuthorizationDigest,
     authorizedFundingDigest,
+    fundingAuthorizationExpiresAt,
     submissionsPausedNewActions,
     pausedAll,
     expiryGraceUntil,
@@ -3147,6 +3152,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     submissions.armedAt(...atBlock),
     submissions.fundingAuthorizationDigest(...atBlock),
     submissions.authorizedFundingDigest(...atBlock),
+    submissions.fundingAuthorizationExpiresAt(...atBlock),
     submissions.pausedNewActions(...atBlock),
     submissions.pausedAll(...atBlock),
     submissions.expiryGraceUntil(...atBlock),
@@ -3161,6 +3167,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     armedAt,
     fundingAuthorizationDigest,
     authorizedFundingDigest,
+    fundingAuthorizationExpiresAt,
     submissionsPausedNewActions,
     pausedAll,
     expiryGraceUntil,

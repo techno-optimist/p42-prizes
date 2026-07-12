@@ -205,7 +205,7 @@ function lifecycleFixture() {
       metadataURI: "ipfs://problem",
     }],
   ]);
-  tx([["submissions", "FundingAuthorized", { authorizationDigest: "0x" + "42".repeat(32), authorizer: address(998) }]], 19);
+  tx([["submissions", "FundingAuthorized", { authorizationDigest: "0x" + "42".repeat(32), authorizer: address(998), expiresAt: 10_000n }]], 19);
   tx([["submissions", "FundingArmed", { at: 20n, authorizationDigest: "0x" + "42".repeat(32) }]], 20);
   tx([
     ["pool", "Funded", { from: ADDR.owner, amount: 100n, newBalance: 100n }],
@@ -448,6 +448,7 @@ function snapshotFromReplay(state) {
     armedAt: state.armedAt,
     fundingAuthorizationDigest: state.fundingAuthorizationDigest,
     authorizedFundingDigest: state.authorizedFundingDigest,
+    fundingAuthorizationExpiresAt: state.fundingAuthorizationExpiresAt,
     submissionsPausedNewActions: state.pausedNewActions,
     pausedAll: state.pausedAll,
     expiryGraceUntil: state.expiryGraceUntil,
@@ -572,7 +573,7 @@ function openWitnessFixture() {
     claimedScoreAtoms: 900n, bestScoreAtoms: 900n, permanenceHash: hash(701),
     poolAtFinalizationWei: 0n,
   }]], 50);
-  tx([["submissions", "FundingAuthorized", { authorizationDigest: "0x" + "42".repeat(32), authorizer: address(998) }]], 59);
+  tx([["submissions", "FundingAuthorized", { authorizationDigest: "0x" + "42".repeat(32), authorizer: address(998), expiresAt: 10_000n }]], 59);
   tx([["submissions", "FundingArmed", { at: 60n, authorizationDigest: "0x" + "42".repeat(32) }]], 60);
   const config = { ...CONFIG, seedScoreAtoms: 1000n };
   const replay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
@@ -594,7 +595,7 @@ function openWitnessFixture() {
   const revealInterface = new ethers.Interface([
     "function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)",
     "event FundingArmed(uint64 at,bytes32 indexed authorizationDigest)",
-    "event FundingAuthorized(bytes32 indexed authorizationDigest,address indexed authorizer)",
+    "event FundingAuthorized(bytes32 indexed authorizationDigest,address indexed authorizer,uint64 expiresAt)",
     "event Committed(uint256 indexed submissionId,address indexed solver,bytes32 indexed commitment,bytes32 commitDaHash,uint256 bondWei,uint256 poolAtSubmissionWei,uint256 requiredBondWei,bool paidAtCommit,uint64 committedBlock)",
     "event Revealed(uint256 indexed submissionId,address indexed solver,string solutionCid,uint256 improvementAtoms,int256 claimedScoreAtoms,uint64 challengeEndsAt,uint256 solutionBytesLength,bytes32 revealInstanceHash)",
     "event Finalized(uint256 indexed submissionId,address indexed solver,uint256 creditAtoms,int256 claimedScoreAtoms,int256 bestScoreAtoms,bytes32 permanenceHash,uint256 poolAtFinalizationWei)",
@@ -615,6 +616,7 @@ function openWitnessFixture() {
     "function fundingArmed() view returns (bool)",
     "function fundingAuthorizationDigest() view returns (bytes32)",
     "function authorizedFundingDigest() view returns (bytes32)",
+    "function fundingAuthorizationExpiresAt() view returns (uint64)",
   ]);
   const registryStateInterface = new ethers.Interface([
     "function problems(uint256) view returns (bytes32 specHash,bytes32 verifierSourceHash,bytes32 verifierImageHash,bytes32 admissionMatrixHash,string metadataURI,address pool,address ledger,address submissionManager,address challengeManager,uint64 challengeWindowSeconds,uint256 minImprovementAtoms,bool frozen)",
@@ -673,6 +675,7 @@ function openWitnessFixture() {
         if (parsed.name === "fundingArmed") return submissionStateInterface.encodeFunctionResult(parsed.name, [false]);
         if (parsed.name === "fundingAuthorizationDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [ZERO_HASH]);
         if (parsed.name === "authorizedFundingDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [ZERO_HASH]);
+        if (parsed.name === "fundingAuthorizationExpiresAt") return submissionStateInterface.encodeFunctionResult(parsed.name, [0n]);
         return submissionStateInterface.encodeFunctionResult(parsed.name, [
           replay.submissions["1"].solver, replay.submissions["1"].commitment,
           replay.submissions["1"].commitDaHash, 0n, 0n, 0n, 100n, 900n,

@@ -90,7 +90,9 @@ each finalized timelock execution event. It refuses to mark the manifest
 Neither mode calls `armFunding(bytes32)` or `setAcceptingFunds(true)`. Funding
 activation requires the nonzero canonical production-launch authorization
 digest. The distinct treasury/funding-authorizer role must register that digest
-before governance can arm it; the manager stores it and emits both transitions.
+and the signed packet's expiry before governance can arm it; the manager stores
+both and emits the transition. Delayed arm or initial pool-open execution after
+the authorization deadline reverts on-chain.
 Those calls remain
 separate reviewed governance operations after source verification,
 reconciliation, and the applicable launch gates. See `docs/DEPLOYMENT.md` for
