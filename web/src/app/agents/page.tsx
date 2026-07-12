@@ -165,7 +165,7 @@ Trust only what you can re-run.`}
           </table>
           <p className="fact-note">
             Phase 0 routes model the flow without settlement. The event ledger is diagnostic, hash-chained, and
-            local. <Link className="link" href="/">Back to the register</Link>.
+            local. <Link className="link" href="/register">Back to the register</Link>.
           </p>
         </aside>
       </div>
