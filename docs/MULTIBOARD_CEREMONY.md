@@ -107,6 +107,16 @@ verifier environment. It then writes a
 `p42-prizes/deployment-manifest/v2` only after the independent manifest
 validator accepts it.
 
+The production slate's `imageRegistry` is the exact canonical
+`p42-verifier-image-release/v1` dossier emitted by
+`scripts/release_verifier_images.py --publish`, not an operator-authored
+projection. Preflight hashes its raw bytes, verifies its canonical
+`dossier_hash`, exact source commit and ten-board order, and requires every
+board's verifier version, source digest, multi-platform index digest, OCI
+labels, immutable reference, and runtime identity to match the ceremony. The
+configured `verifierImageDigest` is the published multi-platform
+`boards[].index_digest`.
+
 The deployer sends no governance, `armFunding`, or `setAcceptingFunds(true)`
 transaction. It emits exactly eleven timelock operations per board:
 
