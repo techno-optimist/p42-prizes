@@ -89,8 +89,15 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /readManifestOutputReservation\(reservationIdentity\)/);
     for (const journal of [
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json",
+      "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json.lock",
       "deployments/base-sepolia/p42-prizes.json.signed-transactions.json",
+      "deployments/base-sepolia/p42-prizes.json.signed-transactions.json.lock",
+      "deployments/base-sepolia/p42-prizes.json.signed-transactions.json.lock.candidate-token",
+      "deployments/base-sepolia/p42-prizes.json.signed-transactions.json.lock.quarantine-token",
       "deployments/base-sepolia/p42-prizes.json.governance-operations.json",
+      "deployments/base-sepolia/p42-prizes.json.governance-operations.json.lock",
+      "deployments/base-sepolia/p42-prizes.json.governance-operations.json.lock.candidate-token",
+      "deployments/base-sepolia/p42-prizes.json.governance-operations.json.lock.quarantine-token",
     ]) {
       assert.doesNotThrow(
         () => execFileSync("git", ["check-ignore", "--quiet", "--no-index", journal], {
