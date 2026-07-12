@@ -160,6 +160,11 @@ describe("strict JSON file reader", () => {
       await mkdir(middle, { mode: 0o700 }); await mkdir(leaf, { mode: 0o700 });
       const file = join(leaf, "state.json"); await writeFile(file, "{}\n", { mode: 0o600 });
       assert.deepEqual(readStrictJsonFileSync(file, { privateFile: true, trustedRoot: root, canonicalBytes: true, trailingNewline: "require" }), {});
+      await chmod(file, 0o444);
+      assert.deepEqual(readStrictJsonFileSync(file, { publicFile: true, trustedRoot: root, canonicalBytes: true, trailingNewline: "require" }), {});
+      await chmod(file, 0o644);
+      assert.throws(() => readStrictJsonFileSync(file, { publicFile: true, trustedRoot: root }), /unsafe/);
+      await chmod(file, 0o600);
       await chmod(middle, 0o777); assert.throws(() => readStrictJsonFileSync(file, { privateFile: true, trustedRoot: root }), /ancestor/); await chmod(middle, 0o700);
       const moved = join(root, "moved"); execFileSync("mv", [middle, moved]); await symlink(moved, middle);
       assert.throws(() => readStrictJsonFileSync(file, { privateFile: true, trustedRoot: root }), /Command failed/);

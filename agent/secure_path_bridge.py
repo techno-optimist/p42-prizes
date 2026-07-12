@@ -7,7 +7,7 @@ from pathlib import Path
 import stat
 import sys
 
-MAX_BYTES = 4 * 1024 * 1024
+MAX_BYTES = 8 * 1024 * 1024
 
 
 def parent_fd(root: str, path: str) -> tuple[list[int], int, str]:
@@ -30,13 +30,14 @@ def parent_fd(root: str, path: str) -> tuple[list[int], int, str]:
     return held, held[-1], parts[-1]
 
 
-def read(root: str, path: str) -> bytes:
+def read(root: str, path: str, *, public_readonly: bool = False) -> bytes:
     held, parent, name = parent_fd(root, path)
     descriptor = -1
     try:
         descriptor = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
         metadata = os.fstat(descriptor)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_nlink != 1 or metadata.st_mode & 0o077 or metadata.st_size > MAX_BYTES:
+        unsafe_mode = metadata.st_mode & (0o222 if public_readonly else 0o077)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_nlink != 1 or unsafe_mode or metadata.st_size > MAX_BYTES:
             raise ValueError("trusted file is unsafe")
         chunks: list[bytes] = []
         remaining = metadata.st_size
@@ -69,9 +70,9 @@ def write(root: str, path: str, payload: bytes) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("command", choices=["read", "write"]); parser.add_argument("--root", required=True); parser.add_argument("--path", required=True)
+    parser = argparse.ArgumentParser(); parser.add_argument("command", choices=["read", "read-public", "write"]); parser.add_argument("--root", required=True); parser.add_argument("--path", required=True)
     args = parser.parse_args()
-    if args.command == "read": sys.stdout.buffer.write(read(args.root, args.path))
+    if args.command in {"read", "read-public"}: sys.stdout.buffer.write(read(args.root, args.path, public_readonly=args.command == "read-public"))
     else: write(args.root, args.path, sys.stdin.buffer.read(MAX_BYTES + 1))
     return 0
 

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -114,10 +114,18 @@ describe("exact-ten production release slate", () => {
       slate.imageRegistry.digest = `sha256:${createHash("sha256").update(registryBytes).digest("hex")}`;
       for (const board of slate.boards) {
         await writeFile(join(evidenceRoot, board.admissionMatrixPath), JSON.stringify({ matrix_hash: board.admissionMatrixDigest, problem_id: board.problemSlug, verifier_version: board.verifierVersion, verifier_image: board.verifierImageDigest, source: { tree_hash: board.verifierSourceDigest } }));
+        await chmod(join(evidenceRoot, board.admissionMatrixPath), 0o600);
       }
       const ready = reseal(slate); const config = { problems: ready.boards.map(releaseBoardIdentity) };
       assert.equal(validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }).length, 10);
       assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: ({ matrixPath }) => { if (matrixPath.endsWith("matrix-10.json")) throw new Error("not certified"); } }), /not certified/);
+      assert.equal(validateProductionSlatePreflight({}, ready, config, {
+        repoRoot, evidenceRoot,
+        runAdmitReady: ({ matrixPath, matrixBytes }) => {
+          assert.ok(matrixBytes.length > 0);
+          if (matrixPath.endsWith("matrix-10.json")) writeFileSync(matrixPath, JSON.stringify({ forged: true }), { mode: 0o600 });
+        },
+      }).length, 10);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

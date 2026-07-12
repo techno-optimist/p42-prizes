@@ -16,7 +16,7 @@ import {
   publishReleaseCapsule,
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
-import { readContractsArtifactJsonWithBytes, readContractsConfigJson } from "./strict-json-helper.js";
+import { readContractsArtifactJsonWithBytes, readContractsConfigJsonWithBytes } from "./strict-json-helper.js";
 
 function checkoutState(repoRoot, run) {
   return {
@@ -52,7 +52,7 @@ export async function prepareProductionRelease({
   outputRoot,
   now = Date.now(),
   run = execFileSync,
-  readConfig = readContractsConfigJson,
+  readConfig = readContractsConfigJsonWithBytes,
   readDossier = readContractsArtifactJsonWithBytes,
   parseCeremony = readMultiBoardCeremonyConfig,
   createCapsule = createReleaseCapsule,
@@ -70,12 +70,13 @@ export async function prepareProductionRelease({
   const output = resolve(outputRoot ?? "");
   if (!repoRoot || !evidenceRoot || !outputRoot || rootsOverlap(root, evidence) || rootsOverlap(root, output) || rootsOverlap(evidence, output)) throw new Error("repository, evidence, and output roots must be explicit and pairwise disjoint");
   const commit = assertCleanCheckout(root, null, run);
+  rootRelativePath(evidence, ceremonyConfigPath, "ceremony config");
   const [ceremonyInput, dossierInput] = await Promise.all([
-    readConfig(resolve(ceremonyConfigPath ?? "")),
+    readConfig(resolve(ceremonyConfigPath ?? ""), { trustedRoot: evidence }),
     readDossier(resolve(imageDossierPath ?? ""), { trustedRoot: evidence }),
   ]);
   const { value: imageDossier, bytes: imageBytes } = dossierInput;
-  const config = parseCeremony(ethers, ceremonyInput, { deployerAddress: expectedDeployer });
+  const config = parseCeremony(ethers, ceremonyInput.value, { deployerAddress: expectedDeployer });
   const imageRegistryPath = rootRelativePath(evidence, imageDossierPath, "image dossier");
   const hardhat = join(root, "contracts", "node_modules", ".bin", "hardhat");
   run(hardhat, ["compile", "--force"], { cwd: join(root, "contracts"), encoding: "utf8", stdio: "pipe" });

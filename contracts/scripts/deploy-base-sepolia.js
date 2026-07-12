@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 
 import { network } from "hardhat";
 import {
@@ -58,6 +58,7 @@ import {
 import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
 import {
   readContractsArtifactJson,
+  readContractsArtifactJsonTrustedPublic,
   readContractsConfigJson,
 } from "./strict-json-helper.js";
 import {
@@ -122,10 +123,20 @@ async function readMultiBoardCeremonyInput() {
 }
 
 async function productionReleaseInputs(repoRoot, deploymentCommit) {
-  const slatePath = resolve(requiredEnv("P42_PRODUCTION_SLATE_PATH"));
-  const capsulePath = resolve(requiredEnv("P42_RELEASE_CAPSULE"));
-  const indexPath = resolve(requiredEnv("P42_PRODUCTION_RELEASE_INDEX_PATH"));
-  const [slate, capsule, index] = await Promise.all([readContractsConfigJson(slatePath), readReleaseBuildJson(capsulePath), readContractsConfigJson(indexPath)]);
+  const outputRoot = resolve(requiredEnv("P42_RELEASE_OUTPUT_ROOT"));
+  const withinOutput = (name) => {
+    const path = resolve(requiredEnv(name)); const rel = relative(outputRoot, path);
+    if (!rel || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error(`${name} must be below P42_RELEASE_OUTPUT_ROOT`);
+    return path;
+  };
+  const slatePath = withinOutput("P42_PRODUCTION_SLATE_PATH");
+  const capsulePath = withinOutput("P42_RELEASE_CAPSULE");
+  const indexPath = withinOutput("P42_PRODUCTION_RELEASE_INDEX_PATH");
+  const [slate, capsule, index] = await Promise.all([
+    readContractsArtifactJsonTrustedPublic(slatePath, outputRoot),
+    readContractsArtifactJsonTrustedPublic(capsulePath, outputRoot),
+    readContractsArtifactJsonTrustedPublic(indexPath, outputRoot),
+  ]);
   validateProductionReleaseSlate(slate);
   if (slate.sourceCommit !== deploymentCommit) throw new Error("production slate sourceCommit differs from exact deployment commit");
   validateReleaseCapsule(capsule);

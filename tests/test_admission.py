@@ -33,7 +33,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT / "src")
     return subprocess.run(
@@ -41,6 +41,7 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
         cwd=ROOT,
         env=env,
         text=True,
+        input=input_text,
         capture_output=True,
         check=False,
     )
@@ -630,6 +631,11 @@ def test_admit_ready_rejects_a_demo_fixture_even_with_exact_signed_image_evidenc
     completed = run_cli("admit-ready", "--problem", str(problem), "--matrix", str(matrix_path))
     assert completed.returncode == 0, completed.stderr
     assert "fundable-admission ready" in completed.stdout
+    stdin_completed = run_cli(
+        "admit-ready", "--problem", str(problem), "--matrix-stdin",
+        input_text=matrix_path.read_text(encoding="utf-8"),
+    )
+    assert stdin_completed.returncode == 0, stdin_completed.stderr
 
     manifest["verifier"]["admission"]["trusted_hosts"][0]["architecture"] = "aarch64"
     manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False), encoding="utf-8")

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/production-release-index.schema.json",
+  "title": "P42 completed production release-set index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "sourceCommit", "generatedAt", "capsule", "slate", "indexDigest"],
+  "properties": {
+    "schema": { "const": "p42-prizes/production-release-index/v1" },
+    "sourceCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "capsule": { "$ref": "#/$defs/reference" },
+    "slate": { "$ref": "#/$defs/reference" },
+    "indexDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "uri"],
+      "properties": {
+        "digest": { "$ref": "#/$defs/digest" },
+        "uri": { "type": "string", "pattern": "^sha256://[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

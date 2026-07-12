@@ -8,6 +8,7 @@
     "build": "hardhat compile",
     "test": "hardhat test && node --test capsule-test/release-capsule.test.js",
     "release:prepare": "hardhat run scripts/prepare-production-release.js",
+    "release:verify": "hardhat run scripts/verify-production-release.js",
     "deploy:base-sepolia": "hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
     "reconcile:base-sepolia": "hardhat run scripts/reconcile-base-sepolia.js --network baseSepolia"
   },

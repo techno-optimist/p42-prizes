@@ -382,7 +382,17 @@ def _cmd_admit_matrix(args: argparse.Namespace) -> int:
 
 
 def _cmd_admit_ready(args: argparse.Namespace) -> int:
-    errors = validate_fundable_admission(args.problem, args.matrix)
+    matrix = args.matrix
+    if args.matrix_stdin:
+        try:
+            matrix = read_strict_json_stream(sys.stdin.buffer, max_bytes=DEFAULT_MAX_BYTES)
+        except Exception as exc:
+            print(f"stdin admission matrix: {exc}", file=sys.stderr)
+            return 1
+        if not isinstance(matrix, dict):
+            print("stdin admission matrix must be an object", file=sys.stderr)
+            return 1
+    errors = validate_fundable_admission(args.problem, matrix)
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
@@ -1023,7 +1033,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="check a problem manifest plus N-host matrix before funding/admission",
     )
     admit_ready.add_argument("--problem", required=True)
-    admit_ready.add_argument("--matrix", required=True)
+    admit_ready_matrix = admit_ready.add_mutually_exclusive_group(required=True)
+    admit_ready_matrix.add_argument("--matrix")
+    admit_ready_matrix.add_argument("--matrix-stdin", action="store_true")
     admit_ready.set_defaults(func=_cmd_admit_ready)
 
     seed_check = subparsers.add_parser(
