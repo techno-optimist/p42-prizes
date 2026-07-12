@@ -72,6 +72,55 @@ const VERIFIER_IMAGE_DIGEST = `sha256:${"a".repeat(64)}`;
 const VERIFIER_SOURCE_DIGEST = `sha256:${"b".repeat(64)}`;
 const ADMISSION_MATRIX_DIGEST = `sha256:${"c".repeat(64)}`;
 
+describe("production deployment runbook command contract", () => {
+  it("documents the exact executable multi-board production mode", () => {
+    const executable = readFileSync(
+      resolve(REPO_ROOT, "contracts/scripts/deploy-base-sepolia.js"),
+      "utf8",
+    );
+    const runbooks = ["docs/DEPLOYMENT.md", "docs/MULTIBOARD_CEREMONY.md"].map((path) => ({
+      path,
+      body: readFileSync(resolve(REPO_ROOT, path), "utf8"),
+    }));
+
+    assert.match(executable, /mode === "deploy-multiboard-production"/);
+    for (const runbook of runbooks) {
+      assert.match(
+        runbook.body,
+        /P42_DEPLOY_MODE=deploy-multiboard-production/,
+        `${runbook.path} must name the executable production mode`,
+      );
+      assert.doesNotMatch(
+        runbook.body,
+        /P42_DEPLOY_MODE=deploy-multiboard(?!-production)/,
+        `${runbook.path} must not advertise the rejected legacy alias`,
+      );
+    }
+
+    const deploymentRunbook = runbooks.find(({ path }) => path === "docs/DEPLOYMENT.md").body;
+    for (const requiredInput of [
+      "P42_RESERVATION_IDENTITY",
+      "P42_SECONDARY_BASE_SEPOLIA_RPC_URL",
+      "P42_SECONDARY_RPC_OPERATOR_ID",
+      "P42_EXPLORER_DOSSIER_PATH",
+      "P42_EXPLORER_DOSSIER_SHA256",
+      "P42_RELEASE_CAPSULE",
+      "P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES",
+      "P42_ROLE_ACCEPTANCE_PACKET",
+      "ETHERSCAN_API_KEY",
+    ]) {
+      assert.match(deploymentRunbook, new RegExp(requiredInput));
+    }
+
+    const deploymentReadme = readFileSync(
+      resolve(REPO_ROOT, "deployments/base-sepolia/README.md"),
+      "utf8",
+    );
+    assert.match(deploymentReadme, /43-contract, timelock-owned, exact-ten/);
+    assert.doesNotMatch(deploymentReadme, /deployer is the immutable owner/i);
+  });
+});
+
 function readExampleManifest() {
   return JSON.parse(
     readFileSync(resolve(REPO_ROOT, "deployments/base-sepolia/p42-prizes.example.json"), "utf8")
