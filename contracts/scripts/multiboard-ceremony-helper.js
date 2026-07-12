@@ -16,11 +16,28 @@ import { readContractsConfigJsonSync } from "./strict-json-helper.js";
 export const MULTIBOARD_CEREMONY_SCHEMA = "p42-prizes/multi-board-ceremony/v1";
 export const PRODUCTION_RELEASE_SLATE_SCHEMA = "p42-prizes/production-release-slate/v1";
 export const RELEASE_MODES = Object.freeze({ PRODUCTION: "production", FIXTURE: "fixture" });
+export const PRODUCTION_LAUNCH_SLUGS = Object.freeze([
+  "hadamard-mini",
+  "erdos-min-overlap",
+  "edges-vs-triangles",
+  "arithmetic-kakeya",
+  "autoconvolution-c1-upper",
+  "autoconvolution-c2-lower",
+  "signed-autoconvolution-c3-upper",
+  "mertens-lp-ceiling-k12000",
+  "pnt-sparse-mertens-construction",
+  "hadamard-668-defect",
+]);
 
 const RELEASE_IDENTITY_KEYS = ["problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"];
 const RELEASE_BOARD_KEYS = ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest"];
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const PLACEHOLDER_DIGEST_RE = /^sha256:([0-9a-f])\1{63}$/;
+const IMAGE_REPOSITORY_RE = /^(?=.{1,255}$)(?:localhost|[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?)\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/;
+const IMAGE_RELEASE_KEYS = ["schema_version", "published_at_utc", "source_commit", "source_archive_digest", "registry_base", "platforms", "boards", "manifest_mutation", "publication_journal_hash", "dossier_hash"];
+const IMAGE_BOARD_KEYS = ["slug", "problem_id", "version", "source_hash", "repository", "index_digest", "immutable_reference", "platform_manifests"];
+const IMAGE_PLATFORM_KEYS = ["platform", "manifest_digest", "manifest_size", "config_digest", "config_size", "layer_count", "labels", "runtime"];
+const IMAGE_LABEL_KEYS = ["org.opencontainers.image.revision", "io.projectforty2.verifier.source-sha256", "io.projectforty2.verifier.source-algorithm", "io.projectforty2.verifier.problem-id", "io.projectforty2.verifier.version"];
 
 function canonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -76,6 +93,38 @@ export function validateProductionReleaseSlate(slate, problems) {
   return root;
 }
 
+export function validateVerifierImageReleaseDossier(dossier, { sourceCommit, problems, now = Date.now() } = {}) {
+  const root = exactObject(dossier, IMAGE_RELEASE_KEYS, "verifier image release dossier");
+  if (root.schema_version !== "p42-verifier-image-release/v1") throw new Error("verifier image release dossier schema is invalid");
+  const publishedAt = Date.parse(root.published_at_utc);
+  const canonicalPublishedAt = Number.isFinite(publishedAt) ? new Date(publishedAt).toISOString().replace(".000Z", "Z") : null;
+  if (!Number.isFinite(now) || !Number.isFinite(publishedAt) || canonicalPublishedAt !== root.published_at_utc || publishedAt > now) throw new Error("verifier image release timestamp is invalid or future-dated");
+  if (!/^[0-9a-f]{40}$/.test(root.source_commit) || (sourceCommit !== undefined && root.source_commit !== sourceCommit)) throw new Error("verifier image release source commit mismatch");
+  for (const field of ["source_archive_digest", "publication_journal_hash", "dossier_hash"]) if (!DIGEST_RE.test(root[field]) || PLACEHOLDER_DIGEST_RE.test(root[field])) throw new Error(`verifier image release ${field} is invalid`);
+  if (!IMAGE_REPOSITORY_RE.test(root.registry_base) || canonical(root.platforms) !== canonical(["linux/amd64", "linux/arm64"]) || root.manifest_mutation !== "none") throw new Error("verifier image release registry/platform policy mismatch");
+  if (!Array.isArray(root.boards) || root.boards.length !== 10) throw new Error("verifier image release must contain exactly 10 boards");
+  root.boards.forEach((entry, index) => {
+    const board = exactObject(entry, IMAGE_BOARD_KEYS, `verifier image release board ${index + 1}`);
+    const problem = problems?.[index];
+    if (board.slug !== PRODUCTION_LAUNCH_SLUGS[index] || board.repository !== `${root.registry_base}/${board.slug}` || !IMAGE_REPOSITORY_RE.test(board.repository)) throw new Error(`verifier image release board ${index + 1} canonical identity mismatch`);
+    if (problem && (board.slug !== problem.problemSlug || board.problem_id !== problem.problemSlug || board.version !== problem.verifierVersion || board.source_hash !== problem.verifierSourceDigest || board.index_digest !== problem.verifierImageDigest)) throw new Error(`verifier image release board ${index + 1} identity mismatch`);
+    if (board.slug !== board.problem_id || !DIGEST_RE.test(board.source_hash) || !DIGEST_RE.test(board.index_digest) || PLACEHOLDER_DIGEST_RE.test(board.source_hash) || PLACEHOLDER_DIGEST_RE.test(board.index_digest) || board.immutable_reference !== `${board.repository}@${board.index_digest}`) throw new Error(`verifier image release board ${index + 1} provenance mismatch`);
+    if (!Array.isArray(board.platform_manifests) || board.platform_manifests.length !== 2) throw new Error(`verifier image release board ${index + 1} platform matrix is incomplete`);
+    board.platform_manifests.forEach((entryPlatform, platformIndex) => {
+      const platform = exactObject(entryPlatform, IMAGE_PLATFORM_KEYS, `verifier image release board ${index + 1} platform ${platformIndex + 1}`);
+      const expectedPlatform = root.platforms[platformIndex];
+      if (platform.platform !== expectedPlatform || !DIGEST_RE.test(platform.manifest_digest) || !DIGEST_RE.test(platform.config_digest) || !Number.isSafeInteger(platform.manifest_size) || platform.manifest_size < 1 || !Number.isSafeInteger(platform.config_size) || platform.config_size < 1 || !Number.isSafeInteger(platform.layer_count) || platform.layer_count < 1) throw new Error(`verifier image release board ${index + 1} platform evidence is invalid`);
+      const labels = exactObject(platform.labels, IMAGE_LABEL_KEYS, `verifier image release board ${index + 1} labels`);
+      if (labels["org.opencontainers.image.revision"] !== root.source_commit || labels["io.projectforty2.verifier.source-sha256"] !== board.source_hash || labels["io.projectforty2.verifier.source-algorithm"] !== "p42-source-tree-sha256/v2" || labels["io.projectforty2.verifier.problem-id"] !== board.problem_id || labels["io.projectforty2.verifier.version"] !== board.version) throw new Error(`verifier image release board ${index + 1} labels mismatch`);
+      const runtime = exactObject(platform.runtime, ["user", "workdir", "entrypoint", "cmd"], `verifier image release board ${index + 1} runtime`);
+      if (!new Set(["inherited-root-overridden-by-runner", "65534", "65534:65534"]).has(runtime.user) || runtime.workdir !== `/repo/problems/${board.slug}` || runtime.entrypoint !== null || canonical(runtime.cmd) !== "[]") throw new Error(`verifier image release board ${index + 1} runtime mismatch`);
+    });
+  });
+  const { dossier_hash: claimed, ...body } = root;
+  if (sha256Canonical(body) !== claimed) throw new Error("verifier image release dossier hash mismatch");
+  return root;
+}
+
 function resolveWithin(root, relativePath, label) {
   const path = resolve(root, relativePath);
   if (path !== root && !path.startsWith(`${root}/`)) throw new Error(`${label} escapes repository root`);
@@ -95,9 +144,11 @@ export function validateProductionSlatePreflight(ethers, slate, config, {
   const registryPath = resolveWithin(root, slate.imageRegistry.path, "image registry path");
   const registryBytes = readBytes(registryPath);
   if (`sha256:${createHash("sha256").update(registryBytes).digest("hex")}` !== slate.imageRegistry.digest) throw new Error("immutable image registry digest mismatch");
-  const registry = readJson(registryPath);
-  if (registry.status !== "ready" || !Array.isArray(registry.images)) throw new Error("immutable image registry must be status-ready");
-  const images = new Map(registry.images.map((entry) => [entry.problemSlug, entry.verifierImageDigest]));
+  const registry = validateVerifierImageReleaseDossier(readJson(registryPath), {
+    sourceCommit: slate.sourceCommit,
+    problems: config.problems,
+  });
+  const images = new Map(registry.boards.map((entry) => [entry.slug, entry.index_digest]));
   return slate.boards.map((board, index) => {
     const problemPath = resolveWithin(root, board.problemPath, `board ${index + 1} problemPath`);
     const matrixPath = resolveWithin(root, board.admissionMatrixPath, `board ${index + 1} admissionMatrixPath`);
