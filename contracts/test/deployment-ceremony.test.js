@@ -145,6 +145,7 @@ describe("production deployment runbook command contract", () => {
     const ceremonyRunbook = runbooks.find(({ path }) => path === "docs/MULTIBOARD_CEREMONY.md").body;
     for (const requiredInput of [
       "P42_PRODUCTION_RELEASE_INDEX_PATH", "P42_RELEASE_EVIDENCE_ROOT",
+      "P42_RELEASE_OUTPUT_ROOT",
       "P42_PRIMARY_RPC_OPERATOR_ID", "P42_SECONDARY_BASE_SEPOLIA_RPC_URL",
       "P42_SECONDARY_RPC_OPERATOR_ID",
     ]) assert.match(ceremonyRunbook, new RegExp(requiredInput));

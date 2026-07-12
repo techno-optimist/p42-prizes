@@ -27,7 +27,7 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
       }
       events.push("force-compile"); return "compiled\n";
     },
-    readConfig: async () => ({ ceremony: true }),
+    readConfig: async () => ({ value: { ceremony: true }, bytes: Buffer.from("{}") }),
     readDossier: async () => ({ value: { dossier: true }, bytes: Buffer.from("image-bytes\n") }),
     parseCeremony() { events.push("parse-ceremony"); return { problems: Array(10).fill({}) }; },
     async createCapsule() { events.push("create-capsule"); return { capsuleDigest: `sha256:${"b".repeat(64)}` }; },
@@ -44,7 +44,7 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
 
 function argumentsFor(paths, overrides = {}) {
   return {
-    ethers: {}, repoRoot: paths.repoRoot, ceremonyConfigPath: join(paths.repoRoot, "ceremony.json"),
+    ethers: {}, repoRoot: paths.repoRoot, ceremonyConfigPath: join(paths.evidenceRoot, "ceremony.json"),
     imageDossierPath: paths.imagePath, evidenceRoot: paths.evidenceRoot, expectedDeployer: `0x${"1".repeat(40)}`,
     generatedAt: "2026-07-12T00:00:00Z", outputRoot: paths.outputRoot, ...overrides,
   };

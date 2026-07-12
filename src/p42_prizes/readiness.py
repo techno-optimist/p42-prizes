@@ -155,7 +155,7 @@ def _validate_report_objective_semantics(
     return errors
 
 
-def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path) -> list[str]:
+def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path | Mapping[str, Any]) -> list[str]:
     problem = Path(problem_dir).resolve()
     errors = validate_problem(problem)
     try:
@@ -229,7 +229,8 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
                 operator_ids.add(operator_id)
 
     try:
-        matrix = validate_admission_matrix(load_evidence_file(matrix_path))
+        raw_matrix = dict(matrix_path) if isinstance(matrix_path, Mapping) else load_evidence_file(matrix_path)
+        matrix = validate_admission_matrix(raw_matrix)
     except AdmissionError as exc:
         errors.append(f"admission matrix: {exc}")
         return errors

@@ -12,7 +12,7 @@ import {
   readCeremonyConfig,
   validateDeploymentTimestamps,
 } from "./deployment-ceremony-helper.js";
-import { readContractsArtifactJsonSyncWithBytes, readContractsConfigJsonSync } from "./strict-json-helper.js";
+import { readContractsArtifactJsonSyncWithBytes, readContractsConfigJsonSync, readContractsConfigJsonSyncWithBytes } from "./strict-json-helper.js";
 
 export const MULTIBOARD_CEREMONY_SCHEMA = "p42-prizes/multi-board-ceremony/v1";
 export const PRODUCTION_RELEASE_SLATE_SCHEMA = "p42-prizes/production-release-slate/v1";
@@ -321,7 +321,7 @@ export function validateProductionSlatePreflight(ethers, slate, config, {
   evidenceRoot = repoRoot,
   pythonExecutable = process.env.P42_ADMISSION_PYTHON ?? process.env.P42_RUNTIME_PYTHON ?? "python3",
   runAdmitReady = runAdmitReadyCommand,
-  readJson = loadAdmissionMatrix,
+  readMatrixSnapshot = readContractsConfigJsonSyncWithBytes,
   readDossier = readContractsArtifactJsonSyncWithBytes,
 } = {}) {
   validateProductionReleaseSlate(slate, config.problems);
@@ -340,8 +340,8 @@ export function validateProductionSlatePreflight(ethers, slate, config, {
   return slate.boards.map((board, index) => {
     const problemPath = resolveWithin(root, board.problemPath, `board ${index + 1} problemPath`);
     const matrixPath = resolveWithin(evidence, board.admissionMatrixPath, `board ${index + 1} admissionMatrixPath`);
-    runAdmitReady({ repoRoot: root, problemPath, matrixPath, pythonExecutable });
-    const matrix = readJson(matrixPath);
+    const { bytes: matrixBytes, value: matrix } = readMatrixSnapshot(matrixPath, { trustedRoot: evidence });
+    runAdmitReady({ repoRoot: root, problemPath, matrixPath, matrixBytes, pythonExecutable });
     if (matrix.matrix_hash !== board.admissionMatrixDigest || matrix.problem_id !== board.problemSlug || matrix.verifier_version !== board.verifierVersion || matrix.verifier_image !== board.verifierImageDigest) throw new Error(`production board ${index + 1} admission matrix identity mismatch`);
     if (matrix.source?.tree_hash !== board.verifierSourceDigest || board.problemPackageDigest !== board.verifierSourceDigest) throw new Error(`production board ${index + 1} package/source provenance mismatch`);
     if (images.get(board.problemSlug) !== board.verifierImageDigest) throw new Error(`production board ${index + 1} immutable image registry mismatch`);
@@ -521,16 +521,17 @@ export function readMultiBoardCeremonyConfig(ethers, value, { deployerAddress } 
   };
 }
 
-function runAdmitReadyCommand({ repoRoot, problemPath, matrixPath, pythonExecutable }) {
+function runAdmitReadyCommand({ repoRoot, problemPath, matrixPath, matrixBytes, pythonExecutable }) {
   const sourcePath = resolve(repoRoot, "src");
   const inheritedPythonPath = process.env.PYTHONPATH;
   execFileSync(
     pythonExecutable,
-    ["-m", "p42_prizes.cli", "admit-ready", "--problem", problemPath, "--matrix", matrixPath],
+    ["-m", "p42_prizes.cli", "admit-ready", "--problem", problemPath, ...(matrixBytes ? ["--matrix-stdin"] : ["--matrix", matrixPath])],
     {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: "pipe",
+      input: matrixBytes,
       env: {
         ...process.env,
         PYTHONPATH: inheritedPythonPath ? `${sourcePath}${delimiter}${inheritedPythonPath}` : sourcePath,

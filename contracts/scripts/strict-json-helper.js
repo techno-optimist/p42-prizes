@@ -21,8 +21,16 @@ export function readContractsConfigJson(path) {
   return readStrictJsonFile(path, CONFIG_LIMITS);
 }
 
+export function readContractsConfigJsonWithBytes(path, options = {}) {
+  return readStrictJsonFileWithBytes(path, { ...CONFIG_LIMITS, ...options });
+}
+
 export function readContractsConfigJsonSync(path) {
   return readStrictJsonFileSync(path, CONFIG_LIMITS);
+}
+
+export function readContractsConfigJsonSyncWithBytes(path, options = {}) {
+  return readStrictJsonFileSyncWithBytes(path, { ...CONFIG_LIMITS, ...options });
 }
 
 export function readContractsArtifactJson(path) {
@@ -31,6 +39,10 @@ export function readContractsArtifactJson(path) {
 
 export function readContractsArtifactJsonWithBytes(path, options = {}) {
   return readStrictJsonFileWithBytes(path, { ...ARTIFACT_LIMITS, ...options });
+}
+
+export function readContractsArtifactJsonTrustedPublic(path, trustedRoot) {
+  return readStrictJsonFile(path, { ...ARTIFACT_LIMITS, trustedRoot, publicFile: true });
 }
 
 export function readContractsArtifactJsonSyncWithBytes(path, options = {}) {

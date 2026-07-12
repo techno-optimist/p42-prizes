@@ -134,6 +134,7 @@ P42_PRODUCTION_SLATE_PATH=... \
 P42_RELEASE_CAPSULE=... \
 P42_PRODUCTION_RELEASE_INDEX_PATH=... \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
+P42_RELEASE_OUTPUT_ROOT=/absolute/path/release-output \
 npx hardhat run scripts/deploy-base-sepolia.js
 ```
 

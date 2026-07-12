@@ -133,7 +133,8 @@ npm run release:prepare
 
 The image dossier and all admission matrices must be inside the explicit
 evidence root, which is outside the frozen repository because this evidence is
-generated after the source commit is fixed. The output root must be outside
+generated after the source commit is fixed. The ceremony config is evidence too
+and must be beneath that same root. The output root must be outside
 both roots. The command force-compiles the seven production contracts, builds
 and independently re-attests the release capsule, derives the exact-ten slate,
 runs every real `admit-ready` check, and rechecks the clean commit before and
@@ -143,6 +144,29 @@ complete; a failed second publication can leave an unreferenced immutable
 artifact but cannot create a complete release. A failed compile, attestation,
 image check, admission check, checkout recheck, or publication produces no
 release index.
+
+An independent reviewer verifies the complete release set offline, without a
+private key or RPC endpoint, from a separate clean checkout of the exact commit:
+
+```bash
+cd contracts
+P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/release-evidence/ceremony.json \
+P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
+P42_RELEASE_OUTPUT_ROOT=/absolute/path/release-output \
+P42_RELEASE_CAPSULE=/absolute/path/release-output/capsules/<digest>.json \
+P42_PRODUCTION_SLATE_PATH=/absolute/path/release-output/slates/<digest>.slate.json \
+P42_PRODUCTION_RELEASE_INDEX_PATH=/absolute/path/release-output/releases/<digest>.release.json \
+P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
+npm run release:verify
+```
+
+This force-rebuilds and re-attests the capsule, verifies the final index binds
+the exact commit/timestamp/capsule/slate tuple, reruns all ten real
+`admit-ready` checks, and emits a
+`p42-prizes/production-release-verification/v1` report. The command has no
+deployer key, sends no transaction, and does not make an unattested release
+fundable. The report self-hashes its complete body and binds the canonical
+ceremony configuration digest in addition to every release and matrix digest.
 
 Production deployment consumes all three published artifacts and the same
 external evidence root. `P42_PRODUCTION_RELEASE_INDEX_PATH` is mandatory and
@@ -158,6 +182,7 @@ P42_PRODUCTION_SLATE_PATH=/absolute/path/out/slates/<digest>.slate.json \
 P42_RELEASE_CAPSULE=/absolute/path/out/capsules/<digest>.json \
 P42_PRODUCTION_RELEASE_INDEX_PATH=/absolute/path/out/releases/<digest>.release.json \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
+P42_RELEASE_OUTPUT_ROOT=/absolute/path/out \
 P42_DEPLOYMENT_MANIFEST=/absolute/path/private/p42-prizes.json \
 BASE_SEPOLIA_RPC_URL=https://... \
 P42_PRIMARY_RPC_OPERATOR_ID=... \

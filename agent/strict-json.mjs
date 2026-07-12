@@ -26,7 +26,7 @@ function optionsWithDefaults(options = {}) {
   if (!new Set(["allow", "require", "forbid"]).has(trailingNewline)) {
     throw new TypeError('trailingNewline must be "allow", "require", or "forbid"');
   }
-  return { maxBytes, maxDepth, canonical: Boolean(canonical), trailingNewline, privateFile: options.privateFile === true, trustedRoot: options.trustedRoot ? resolve(options.trustedRoot) : null };
+  return { maxBytes, maxDepth, canonical: Boolean(canonical), trailingNewline, privateFile: options.privateFile === true, publicFile: options.publicFile === true, trustedRoot: options.trustedRoot ? resolve(options.trustedRoot) : null };
 }
 
 function openTrustedPathSync(path, trustedRoot, flags) {
@@ -260,7 +260,7 @@ export async function readStrictJsonFileWithBytes(path, options = {}) {
     throw new Error("secure JSON file reads require platform O_NOFOLLOW support");
   }
   if (normalized.trustedRoot) {
-    const bytes = execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, "read", "--root", normalized.trustedRoot, "--path", resolve(path)], { maxBuffer: normalized.maxBytes + 1 });
+    const bytes = execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, normalized.publicFile ? "read-public" : "read", "--root", normalized.trustedRoot, "--path", resolve(path)], { maxBuffer: normalized.maxBytes + 1 });
     return { bytes, value: parseStrictJsonBytes(bytes, normalized) };
   }
   const before = normalized.privateFile ? await lstat(path) : null;
@@ -298,7 +298,7 @@ export function readStrictJsonFileSyncWithBytes(path, options = {}) {
     throw new Error("secure JSON file reads require platform O_NOFOLLOW support");
   }
   if (normalized.trustedRoot) {
-    const bytes = execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, "read", "--root", normalized.trustedRoot, "--path", resolve(path)], { maxBuffer: normalized.maxBytes + 1 });
+    const bytes = execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, normalized.publicFile ? "read-public" : "read", "--root", normalized.trustedRoot, "--path", resolve(path)], { maxBuffer: normalized.maxBytes + 1 });
     return { bytes, value: parseStrictJsonBytes(bytes, normalized) };
   }
   const before = normalized.privateFile ? lstatSync(path) : null;
