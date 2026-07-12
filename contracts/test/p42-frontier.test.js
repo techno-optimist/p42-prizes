@@ -120,7 +120,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
     // Funding gate wiring: the pool refuses deposits until the submission
-    // manager is wired AND armFunding() has flipped it to the PAID phase.
+    // manager is wired AND armFunding(digest) has flipped it to the PAID phase.
     await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
     const Registry = await ethers.getContractFactory("P42ProblemRegistry");
     const fundingRegistry = await Registry.deploy(owner.address);
@@ -146,7 +146,8 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     if (arm) {
       await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-      await submissions.connect(owner).armFunding();
+      await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+      await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
       await pool.connect(owner).setAcceptingFunds(true);
     }
     if (advanceCompetition) await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
@@ -298,6 +299,14 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
       ),
       submissions,
       "P42_SCORE_ATOMS_OUT_OF_RANGE"
+    );
+    await assert.rejects(
+      Submissions.deploy(
+        await fixture.pool.getAddress(), await fixture.ledger.getAddress(),
+        owner.address, owner.address, 200n, fixture.minBond,
+        CHALLENGE_WINDOW_SECONDS, false, 0, 1000n * SCALE, 1n
+      ),
+      /P42_FUNDING_AUTHORITIES_NOT_DISTINCT/
     );
   });
 
@@ -810,7 +819,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
   // human attestation). During the unpaid OPEN phase anyone posts witnesses
   // for free — each verified strict improvement advances bestScoreAtoms but
   // records ZERO credit, establishing the true public frontier on-chain by
-  // construction. armFunding() (owner, one-shot) then opens the PAID phase:
+  // construction. armFunding(digest) (owner, one-shot) then opens the PAID phase:
   // the pool accepts ETH and finalized improvements earn the marginal over
   // the open-established frontier. One call is the single arm authority for
   // both credit and deposits.
@@ -818,24 +827,37 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
   it("armFunding is owner-only, one-shot, and emits FundingArmed", async function () {
     const fixture = await deployFixture({ arm: false, advanceCompetition: false });
-    const { owner, alice, submissions } = fixture;
+    const { owner, treasury, alice, submissions } = fixture;
     assert.equal(await submissions.fundingArmed(), false);
     const deployedAt = await submissions.deployedAt();
     const armNotBefore = await submissions.armNotBefore();
     assert.equal(armNotBefore, deployedAt + CHALLENGE_WINDOW_SECONDS);
 
-    await expectCustomError(submissions.connect(alice).armFunding(), submissions, "P42_NOT_OWNER");
+    await expectCustomError(submissions.connect(alice).armFunding("0x" + "42".repeat(32)), submissions, "P42_NOT_OWNER");
     assert.equal(await submissions.fundingArmed(), false);
+    await expectCustomError(submissions.connect(alice).authorizeFunding("0x" + "42".repeat(32)), submissions, "P42_NOT_FUNDING_AUTHORIZER");
+    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
 
     await expectCustomError(
-      submissions.connect(owner).armFunding(),
+      submissions.connect(owner).armFunding("0x" + "42".repeat(32)),
       submissions,
       "P42_OPEN_WITNESS_WINDOW_OPEN"
     );
     assert.equal(await submissions.fundingArmed(), false);
 
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    const tx = await submissions.connect(owner).armFunding();
+    await expectCustomError(
+      submissions.connect(owner).armFunding("0x" + "00".repeat(32)),
+      submissions,
+      "P42_FUNDING_AUTHORIZATION_ZERO"
+    );
+    const authorizationDigest = "0x" + "42".repeat(32);
+    await expectCustomError(
+      submissions.connect(owner).armFunding("0x" + "43".repeat(32)),
+      submissions,
+      "P42_FUNDING_AUTHORIZATION_MISMATCH"
+    );
+    const tx = await submissions.connect(owner).armFunding(authorizationDigest);
     const receipt = await tx.wait();
     const armed = receipt.logs
       .map((log) => {
@@ -849,10 +871,12 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.ok(armed, "FundingArmed event present");
     // NB: positional access — `args.at` hits ethers' Result.prototype.at.
     assert.ok(armed.args[0] > 0n);
+    assert.equal(armed.args.authorizationDigest, authorizationDigest);
     assert.equal(await submissions.fundingArmed(), true);
+    assert.equal(await submissions.fundingAuthorizationDigest(), authorizationDigest);
 
     // One-way: arming twice is refused, so the phase switch cannot be replayed.
-    await expectCustomError(submissions.connect(owner).armFunding(), submissions, "P42_FUNDING_ALREADY_ARMED");
+    await expectCustomError(submissions.connect(owner).armFunding("0x" + "42".repeat(32)), submissions, "P42_FUNDING_ALREADY_ARMED");
   });
 
   it("the pool refuses deposits (fund and receive) until armFunding — no ETH strandable in the open phase", async function () {
@@ -888,7 +912,8 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // The single arm call opens the deposit path.
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await submissions.connect(owner).armFunding();
+    await submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
     await alice.sendTransaction({ to: await pool.getAddress(), value: ethers.parseEther("0.5") });
@@ -934,7 +959,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
   it("after armFunding a paid submission earns the marginal over the OPEN-established frontier, not the seed-relative distance", async function () {
     const fixture = await deployFixture({ arm: false, feeBps: 0 });
-    const { owner, alice, bob, carol, pool, ledger, submissions } = fixture;
+    const { owner, treasury, alice, bob, carol, pool, ledger, submissions } = fixture;
 
     // Open phase establishes the true public frontier: 1000 -> 600 -> 500.
     const a = await commitReveal(fixture, alice, 600n * SCALE);
@@ -947,7 +972,8 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await ledger.totalCreditAtoms(), 0n);
 
     // The funder arms: pool accepts ETH, finalize starts crediting.
-    await submissions.connect(owner).armFunding();
+    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("5") });
 
@@ -1029,7 +1055,8 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await submissions.bestScoreAtoms(), 450n * SCALE);
 
     // ...and after arming, paid work earns the marginal over that frontier.
-    await submissions.connect(owner).armFunding();
+    await submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
     const paid = await commitReveal(fixture, alice, 400n * SCALE);
@@ -1094,7 +1121,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
   // -------------------------------------------------------------------------
   it("does not pay a pre-arm (open-phase) commit even if its finalize is withheld across armFunding", async function () {
     const fixture = await deployFixture({ arm: false }); // start in the OPEN (unpaid) phase
-    const { owner, alice, bob, pool, ledger, submissions } = fixture;
+    const { owner, treasury, alice, bob, pool, ledger, submissions } = fixture;
 
     // Alice commits + reveals a strong score DURING the open phase (for free),
     // but does NOT finalize — she waits to straddle the arm.
@@ -1102,7 +1129,8 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // Funder arms; pool is funded.
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await submissions.connect(owner).armFunding();
+    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.connect(owner).fund({ value: ethers.parseEther("1") });
 

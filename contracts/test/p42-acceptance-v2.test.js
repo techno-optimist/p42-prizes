@@ -131,7 +131,8 @@ async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10"
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(WINDOW + 1n);
-  await submissions.connect(owner).armFunding();
+  await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+  await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
   await pool.connect(owner).setAcceptingFunds(true);
   if (fund > 0n) await pool.fund({ value: fund });
 

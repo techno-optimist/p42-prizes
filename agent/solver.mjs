@@ -50,6 +50,7 @@ const SOLUTION = arg("solution");
 const REGISTRY_PROBLEM_ID = arg("registry-problem-id", null);
 const FUND = arg("fund", null);
 const CLOSE = arg("close", false);
+const DONATE_WINNINGS_TO_POOL = arg("donate-winnings-to-pool", null);
 const DA_DIR = arg("da-dir", null);
 const ARWEAVE = arg("arweave", false);
 const FORCE = arg("force", false);
@@ -67,6 +68,10 @@ if (!MANIFEST || !PROBLEM || !SOLUTION) {
 }
 if (!Number.isInteger(MAX_CONSECUTIVE_ERRORS) || MAX_CONSECUTIVE_ERRORS < 1 || POLL_MS < 0) {
   console.error("--max-consecutive-errors must be positive and --poll-ms must be non-negative");
+  process.exit(2);
+}
+if (DONATE_WINNINGS_TO_POOL !== null && !ethers.isAddress(DONATE_WINNINGS_TO_POOL)) {
+  console.error("--donate-winnings-to-pool must be a valid P42 pool address");
   process.exit(2);
 }
 const KEY = process.env.AGENT_PRIVATE_KEY;
@@ -88,6 +93,18 @@ const manifestProblem = REGISTRY_PROBLEM_ID
 const boardContracts = manifestProblem
   ? manifestProblemContracts(manifest, manifestProblem)
   : manifest.contracts;
+const donationDestination = DONATE_WINNINGS_TO_POOL === null
+  ? null
+  : ethers.getAddress(DONATE_WINNINGS_TO_POOL);
+if (donationDestination !== null) {
+  const registeredPools = new Set((manifest.problems ?? []).map((problem) =>
+    ethers.getAddress(manifestProblemContracts(manifest, problem).pool.address)
+  ));
+  if (!registeredPools.has(donationDestination)) {
+    console.error("--donate-winnings-to-pool must name a pool in the validated deployment manifest");
+    process.exit(2);
+  }
+}
 const provider = new ethers.JsonRpcProvider(RPC);
 const wallet = new ethers.Wallet(KEY, provider);
 const solver = wallet.address;
@@ -357,8 +374,17 @@ async function runLifecycle(submissionId, revealArgs) {
       } else if (decision.action === "wait_close") {
         await sleep(Math.max(250, POLL_MS));
       } else if (decision.action === "claim_payout") {
-        const label = `pool.claim:${decision.valueWei}`;
-        await sendPersistent(label, () => pool.claim.populateTransaction());
+        if (donationDestination !== null) {
+          const destination = donationDestination;
+          if (destination === ethers.getAddress(await pool.getAddress())) {
+            throw new Error("winnings destination must be a different active pool");
+          }
+          const label = `pool.donateClaimToPool:${destination}:${decision.valueWei}`;
+          await sendPersistent(label, () => pool.donateClaimToPool.populateTransaction(destination));
+        } else {
+          const label = `pool.claim:${decision.valueWei}`;
+          await sendPersistent(label, () => pool.claim.populateTransaction());
+        }
       } else if (decision.action === "done") {
         state.phase = snapshot.status === 4 ? "complete" : "terminated";
         state.completed_at_utc = new Date().toISOString();

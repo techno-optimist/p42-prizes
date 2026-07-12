@@ -144,7 +144,7 @@ def collector_proof_from_quorum(report: Mapping[str, Any], quorum: Mapping[str, 
         "commit": [{"event_signature": "SubmissionCommitted(uint256,address)", "submission_id": witness["submission_id"], "solver": witness["solver"]}],
         "reveal": [{"event_signature": "SubmissionRevealed(uint256,string,bytes32,int256)", "submission_id": witness["submission_id"], "solution_cid": witness["solution_cid"], "da_hash": witness["da_hash"], "score_atoms": witness["post_frontier_atoms"]}],
         "finalize": [{"event_signature": "SubmissionFinalized(uint256,uint256,int256)", "submission_id": witness["submission_id"], "credit_atoms": 0, "best_score_atoms": witness["post_frontier_atoms"]}],
-        "arm": [{"event_signature": "FundingArmed()"}],
+        "arm": [{"event_signature": "FundingArmed(uint64,bytes32)"}],
     }
     chain_material = evidence["chainMaterial"]
     transactions = {

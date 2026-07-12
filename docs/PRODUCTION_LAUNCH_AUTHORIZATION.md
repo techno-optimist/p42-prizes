@@ -62,3 +62,10 @@ The source validator does not itself authorize money. Before this gate can pass:
 
 Until those consumers are deployed and a real packet validates, all mainnet
 funding paths remain fail-closed.
+
+Each submission manager requires a separate funding-authorizer transaction to
+register the digest before governance can call `armFunding(bytes32)`. The
+manager rejects a zero, absent, or different digest, stores the consumed digest
+on-chain, and emits both authorization and activation events. The pool can open
+only after that transition. The agent-side transaction consumer remains a
+separate required gate and must invoke the production validator before signing.

@@ -137,7 +137,8 @@ async function deployFixture({
   if (freeze) await registry.connect(owner).freeze(1);
   if (arm) {
     await increaseTime(CHALLENGE_WINDOW + 1n);
-    await submissions.connect(owner).armFunding();
+    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
   }
   if (acceptFunds) await pool.connect(owner).setAcceptingFunds(true);
 
@@ -232,6 +233,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     const preSalt = "phase-before-arm";
     const preCommitment = await commitmentFor(preArm.submissions, preArm.owner, preCid, preSalt);
     const preNonce = await preArm.owner.getNonce();
+    await preArm.submissions.connect(preArm.treasury).authorizeFunding("0x" + "42".repeat(32));
     let preCommitTx;
     let preArmTx;
 
@@ -242,7 +244,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
         nonce: preNonce,
         gasLimit: 1_000_000n,
       });
-      preArmTx = await preArm.submissions.connect(preArm.owner).armFunding({
+      preArmTx = await preArm.submissions.connect(preArm.owner).armFunding("0x" + "42".repeat(32), {
         nonce: preNonce + 1,
         gasLimit: 1_000_000n,
       });
@@ -270,9 +272,10 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     let postArmTx;
     let postCommitTx;
 
+    await postArm.submissions.connect(postArm.treasury).authorizeFunding("0x" + "42".repeat(32));
     await ethers.provider.send("evm_setAutomine", [false]);
     try {
-      postArmTx = await postArm.submissions.connect(postArm.owner).armFunding({
+      postArmTx = await postArm.submissions.connect(postArm.owner).armFunding("0x" + "42".repeat(32), {
         nonce: postNonce,
         gasLimit: 1_000_000n,
       });
@@ -516,7 +519,8 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(await fixture.registry.isFrozen(1), false);
 
     await increaseTime(CHALLENGE_WINDOW + 1n);
-    await fixture.submissions.connect(fixture.owner).armFunding();
+    await fixture.submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32));
+    await fixture.submissions.connect(fixture.owner).armFunding("0x" + "42".repeat(32));
     await expectCustomError(
       fixture.pool.connect(fixture.owner).setAcceptingFunds(true),
       fixture.pool,

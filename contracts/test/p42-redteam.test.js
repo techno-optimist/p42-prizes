@@ -159,7 +159,10 @@ async function deployFixture({
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-  if (activateRecorder) await submissions.connect(owner).armFunding();
+  if (activateRecorder) {
+    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
+  }
   await pool.connect(owner).setAcceptingFunds(true);
   await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 

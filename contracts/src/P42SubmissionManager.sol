@@ -27,6 +27,9 @@ contract P42SubmissionManager {
     error P42_PAUSED_ALL_RECOVERY_OPEN(uint64 recoveryAt, uint64 nowAt);
     error P42_PAUSED_ALL_REARM_OPEN(uint64 rearmAt, uint64 nowAt);
     error P42_FUNDING_ALREADY_ARMED();
+    error P42_FUNDING_AUTHORIZATION_ZERO();
+    error P42_NOT_FUNDING_AUTHORIZER();
+    error P42_FUNDING_AUTHORIZATION_MISMATCH(bytes32 expected, bytes32 actual);
     error P42_OPEN_WITNESS_WINDOW_OPEN(uint64 armNotBefore, uint64 nowAt);
     error P42_VOID_NOT_ADVANCE(int256 prevBestScoreAtoms, int256 claimedScoreAtoms);
     error P42_VOID_NOT_FRONTIER(int256 bestScoreAtoms, int256 claimedScoreAtoms);
@@ -153,6 +156,7 @@ contract P42SubmissionManager {
 
     address public immutable owner;
     address public immutable treasury;
+    address public immutable fundingAuthorizer;
     IP42PoolBalance public immutable pool;
     IP42CreditLedger public immutable ledger;
     uint16 public immutable alphaBps;
@@ -218,6 +222,10 @@ contract P42SubmissionManager {
     /// Economic phase identity is stored directly in paidAtCommit and never
     /// inferred from timestamp ordering.
     uint64 public armedAt;
+    /// @notice Canonical production-launch authorization digest consumed by
+    /// the one-way OPEN-to-PAID transition.
+    bytes32 public fundingAuthorizationDigest;
+    bytes32 public authorizedFundingDigest;
     /// @notice After a `pausedAll` recovery ends, no submission may be expired
     /// (bond forfeited) until a full fresh challenge window has passed, so an
     /// honest in-flight commit/reveal frozen by the recovery always gets a real
@@ -263,7 +271,8 @@ contract P42SubmissionManager {
         uint64 restoredEndsAt
     );
     event OpenWitnessWindowConfigured(uint64 deployedAt, uint64 armNotBefore);
-    event FundingArmed(uint64 at);
+    event FundingArmed(uint64 at, bytes32 indexed authorizationDigest);
+    event FundingAuthorized(bytes32 indexed authorizationDigest, address indexed authorizer);
     event FinalizeVoided(
         uint256 indexed submissionId,
         address indexed solver,
@@ -355,6 +364,7 @@ contract P42SubmissionManager {
         require(ledger_ != address(0), "P42_LEDGER_ZERO");
         require(owner_ != address(0), "P42_OWNER_ZERO");
         require(treasury_ != address(0), "P42_TREASURY_ZERO");
+        require(owner_ != treasury_, "P42_FUNDING_AUTHORITIES_NOT_DISTINCT");
         if (alphaBps_ > MAX_ALPHA_BPS) revert P42_BAD_ALPHA();
         if (challengeWindowSeconds_ == 0 || challengeWindowSeconds_ > MAX_CHALLENGE_WINDOW_SECONDS) {
             revert P42_BAD_WINDOW();
@@ -370,6 +380,7 @@ contract P42SubmissionManager {
         ledger = IP42CreditLedger(ledger_);
         owner = owner_;
         treasury = treasury_;
+        fundingAuthorizer = treasury_;
         alphaBps = alphaBps_;
         minPostingBondWei = minPostingBondWei_;
         challengeWindowSeconds = challengeWindowSeconds_;
@@ -443,14 +454,27 @@ contract P42SubmissionManager {
     /// immediately arming a private paid frontier. A timer does not prove that
     /// a public witness was posted, so the strict open-witness transcript and
     /// arm/fund-boundary evidence remain separate launch gates.
-    function armFunding() external onlyOwner {
+    function authorizeFunding(bytes32 authorizationDigest) external {
+        if (msg.sender != fundingAuthorizer) revert P42_NOT_FUNDING_AUTHORIZER();
+        if (authorizationDigest == bytes32(0)) revert P42_FUNDING_AUTHORIZATION_ZERO();
         if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
+        authorizedFundingDigest = authorizationDigest;
+        emit FundingAuthorized(authorizationDigest, msg.sender);
+    }
+
+    function armFunding(bytes32 authorizationDigest) external onlyOwner {
+        if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
+        if (authorizationDigest == bytes32(0)) revert P42_FUNDING_AUTHORIZATION_ZERO();
+        if (authorizationDigest != authorizedFundingDigest) {
+            revert P42_FUNDING_AUTHORIZATION_MISMATCH(authorizedFundingDigest, authorizationDigest);
+        }
         if (block.timestamp < armNotBefore) {
             revert P42_OPEN_WITNESS_WINDOW_OPEN(armNotBefore, uint64(block.timestamp));
         }
         fundingArmed = true;
         armedAt = uint64(block.timestamp);
-        emit FundingArmed(uint64(block.timestamp));
+        fundingAuthorizationDigest = authorizationDigest;
+        emit FundingArmed(uint64(block.timestamp), authorizationDigest);
     }
 
     function setChallengeManager(address challengeManager_) external onlyOwner {

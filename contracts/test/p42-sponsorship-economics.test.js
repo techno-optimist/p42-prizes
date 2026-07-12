@@ -44,7 +44,13 @@ async function advanceTo(timestamp) {
   }
 }
 
-async function deployFixture({ feeBps = 250, rejectingTreasury = false, configureRollover = true } = {}) {
+async function deployFixture({
+  feeBps = 250,
+  rejectingTreasury = false,
+  configureRollover = true,
+  registry: sharedRegistry = null,
+  problemId = 1,
+} = {}) {
   const [owner, treasury, alice, bob, recipient, outsider] = await ethers.getSigners();
   const latest = await ethers.provider.getBlock("latest");
   const earliestClose = BigInt(latest.timestamp) + 31n * DAY;
@@ -54,10 +60,13 @@ async function deployFixture({ feeBps = 250, rejectingTreasury = false, configur
   const pool = await Pool.deploy(owner.address, FUNDING_CAP);
   await pool.waitForDeployment();
 
-  const Registry = await ethers.getContractFactory("MockProblemRegistry");
-  const registry = await Registry.deploy();
-  await registry.waitForDeployment();
-  await registry.setProblem(1, await pool.getAddress(), true);
+  let registry = sharedRegistry;
+  if (registry === null) {
+    const Registry = await ethers.getContractFactory("MockProblemRegistry");
+    registry = await Registry.deploy();
+    await registry.waitForDeployment();
+  }
+  await registry.setProblem(problemId, await pool.getAddress(), true);
 
   const Vault = await ethers.getContractFactory("P42RolloverVault");
   const vault = await Vault.deploy(await registry.getAddress(), owner.address);
@@ -77,7 +86,7 @@ async function deployFixture({ feeBps = 250, rejectingTreasury = false, configur
   );
   await ledger.waitForDeployment();
   await pool.setLedger(await ledger.getAddress());
-  await pool.setRegistry(await registry.getAddress(), 1);
+  await pool.setRegistry(await registry.getAddress(), problemId);
   if (configureRollover) await ledger.setRolloverDestination(await vault.getAddress());
 
   const Manager = await ethers.getContractFactory("MockFundingArmed");
@@ -251,6 +260,50 @@ describe("P42 sponsorship economics", function () {
     assert.equal(await fixture.pool.totalFeePaid(), fee);
     assert.equal(await fixture.pool.funded(), 0n);
     await expectCustomError(fixture.ledger.sweepFee(), fixture.ledger, "P42_FEE_CLAIM_ONLY");
+  });
+
+  it("lets a crowned solver atomically donate matured winnings to another active pool", async function () {
+    const source = await deployFixture();
+    const funding = ethers.parseEther("10");
+    await source.pool.connect(source.alice).fund({ value: funding });
+    await source.manager.recordCredit(await source.ledger.getAddress(), source.bob.address, 1);
+    await advanceTo(source.closeBy);
+    await source.ledger.close();
+
+    const destination = await deployFixture({ registry: source.registry, problemId: 2 });
+    const fee = funding * 250n / 10_000n;
+    const donated = funding - fee;
+    await source.pool.connect(source.bob).donateClaimToPool(await destination.pool.getAddress());
+
+    assert.equal(await source.ledger.claimable(source.bob.address), 0n);
+    assert.equal(await source.pool.totalWinningsDonated(), donated);
+    assert.equal(await source.pool.totalClaimed(), donated);
+    assert.equal(await source.pool.accruedFeeBalance(), fee);
+    assert.equal(await destination.pool.funded(), donated);
+    assert.equal(await destination.pool.sponsorshipOf(source.bob.address), donated);
+    await expectCustomError(
+      source.pool.connect(source.bob).donateClaimToPool(await destination.pool.getAddress()),
+      source.pool,
+      "P42_NOTHING_TO_CLAIM"
+    );
+  });
+
+  it("rejects a cross-registry donation pool without consuming the solver claim", async function () {
+    const source = await deployFixture();
+    const funding = ethers.parseEther("10");
+    await source.pool.connect(source.alice).fund({ value: funding });
+    await source.manager.recordCredit(await source.ledger.getAddress(), source.bob.address, 1);
+    await advanceTo(source.closeBy);
+    await source.ledger.close();
+
+    const impostor = await deployFixture();
+    await expectCustomError(
+      source.pool.connect(source.bob).donateClaimToPool(await impostor.pool.getAddress()),
+      source.pool,
+      "P42_INVALID_DONATION_POOL"
+    );
+    assert.equal(await source.ledger.claimable(source.bob.address), funding);
+    assert.equal(await source.pool.totalWinningsDonated(), 0n);
   });
 
   it("does not let a rejecting treasury veto a solver and permits treasury redirection", async function () {

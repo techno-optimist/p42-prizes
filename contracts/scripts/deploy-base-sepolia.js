@@ -900,6 +900,7 @@ async function collectMultiBoardContinuationSnapshot(ethers, manifest, contractS
       await submissions.pool(atBlock),
       await submissions.ledger(atBlock),
       await submissions.treasury(atBlock),
+      await submissions.fundingAuthorizer(atBlock),
       await submissions.alphaBps(atBlock),
       await submissions.minPostingBondWei(atBlock),
       await submissions.challengeWindowSeconds(atBlock),
@@ -914,13 +915,14 @@ async function collectMultiBoardContinuationSnapshot(ethers, manifest, contractS
         sameAddress(submissionConfig[0], problem.contracts.pool.address) &&
         sameAddress(submissionConfig[1], problem.contracts.ledger.address) &&
         sameAddress(submissionConfig[2], manifest.roles.treasury) &&
-        sameValue(submissionConfig[3], parameters.alphaBps) &&
-        sameValue(submissionConfig[4], parameters.minPostingBondWei) &&
-        sameValue(submissionConfig[5], parameters.challengeWindowSeconds) &&
-        submissionConfig[6] === problem.onchainDa &&
-        sameValue(submissionConfig[7], problem.maxSolutionBytes) &&
-        sameValue(submissionConfig[8], problem.seedScoreAtoms) &&
-        sameValue(submissionConfig[9], problem.minImprovementAtoms),
+        sameAddress(submissionConfig[3], manifest.roles.treasury) &&
+        sameValue(submissionConfig[4], parameters.alphaBps) &&
+        sameValue(submissionConfig[5], parameters.minPostingBondWei) &&
+        sameValue(submissionConfig[6], parameters.challengeWindowSeconds) &&
+        submissionConfig[7] === problem.onchainDa &&
+        sameValue(submissionConfig[8], problem.maxSolutionBytes) &&
+        sameValue(submissionConfig[9], problem.seedScoreAtoms) &&
+        sameValue(submissionConfig[10], problem.minImprovementAtoms),
       actual: submissionConfig.map(String),
     });
     const challengeConfig = [
@@ -1123,6 +1125,7 @@ async function collectContinuationSnapshot(ethers, manifest, contracts, checkedB
     await contracts.submissions.pool(atBlock),
     await contracts.submissions.ledger(atBlock),
     await contracts.submissions.treasury(atBlock),
+    await contracts.submissions.fundingAuthorizer(atBlock),
     await contracts.submissions.alphaBps(atBlock),
     await contracts.submissions.minPostingBondWei(atBlock),
     await contracts.submissions.challengeWindowSeconds(atBlock),
@@ -1137,13 +1140,14 @@ async function collectContinuationSnapshot(ethers, manifest, contracts, checkedB
       sameAddress(submissionConfig[0], manifest.contracts.pool.address) &&
       sameAddress(submissionConfig[1], manifest.contracts.ledger.address) &&
       sameAddress(submissionConfig[2], manifest.roles.treasury) &&
-      sameValue(submissionConfig[3], manifest.parameters.alphaBps) &&
-      sameValue(submissionConfig[4], manifest.parameters.minPostingBondWei) &&
-      sameValue(submissionConfig[5], manifest.parameters.challengeWindowSeconds) &&
-      submissionConfig[6] === manifest.parameters.onchainDa &&
-      sameValue(submissionConfig[7], manifest.parameters.maxSolutionBytes) &&
-      sameValue(submissionConfig[8], manifest.problems[0].seedScoreAtoms) &&
-      sameValue(submissionConfig[9], manifest.problems[0].minImprovementAtoms),
+      sameAddress(submissionConfig[3], manifest.roles.treasury) &&
+      sameValue(submissionConfig[4], manifest.parameters.alphaBps) &&
+      sameValue(submissionConfig[5], manifest.parameters.minPostingBondWei) &&
+      sameValue(submissionConfig[6], manifest.parameters.challengeWindowSeconds) &&
+      submissionConfig[7] === manifest.parameters.onchainDa &&
+      sameValue(submissionConfig[8], manifest.parameters.maxSolutionBytes) &&
+      sameValue(submissionConfig[9], manifest.problems[0].seedScoreAtoms) &&
+      sameValue(submissionConfig[10], manifest.problems[0].minImprovementAtoms),
     actual: submissionConfig.map(String)
   });
   const challengeConfig = [

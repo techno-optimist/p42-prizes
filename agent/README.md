@@ -289,3 +289,8 @@ npm audit --audit-level=moderate
 
 No runtime transcript or action artifact includes a private key, RPC secret,
 token, or inherited verifier environment.
+Agents may retain the frontier title while recycling a matured award into a
+different active bounty with `--donate-winnings-to-pool <pool-address>`. The
+solver uses the atomic `donateClaimToPool` path: no award touches the agent
+wallet, the destination sponsorship is attributed to the solver, and a failed
+destination deposit rolls the source claim back.

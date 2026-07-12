@@ -205,7 +205,8 @@ function lifecycleFixture() {
       metadataURI: "ipfs://problem",
     }],
   ]);
-  tx([["submissions", "FundingArmed", { at: 20n }]], 20);
+  tx([["submissions", "FundingAuthorized", { authorizationDigest: "0x" + "42".repeat(32), authorizer: address(998) }]], 19);
+  tx([["submissions", "FundingArmed", { at: 20n, authorizationDigest: "0x" + "42".repeat(32) }]], 20);
   tx([
     ["pool", "Funded", { from: ADDR.owner, amount: 100n, newBalance: 100n }],
     ["pool", "SponsorshipFunded", {
@@ -445,6 +446,8 @@ function snapshotFromReplay(state) {
     bestScoreAtoms: state.bestScoreAtoms,
     fundingArmed: state.fundingArmed,
     armedAt: state.armedAt,
+    fundingAuthorizationDigest: state.fundingAuthorizationDigest,
+    authorizedFundingDigest: state.authorizedFundingDigest,
     submissionsPausedNewActions: state.pausedNewActions,
     pausedAll: state.pausedAll,
     expiryGraceUntil: state.expiryGraceUntil,
@@ -457,6 +460,7 @@ function snapshotFromReplay(state) {
       problemId: state.pool.problemId,
       totalFunded: state.pool.totalFunded,
       totalClaimed: state.pool.totalClaimed,
+      totalWinningsDonated: state.pool.totalWinningsDonated,
       totalGrossClaimed: state.pool.totalGrossClaimed,
       totalFeeAccrued: state.pool.totalFeeAccrued,
       totalFeePaid: state.pool.totalFeePaid,
@@ -568,7 +572,8 @@ function openWitnessFixture() {
     claimedScoreAtoms: 900n, bestScoreAtoms: 900n, permanenceHash: hash(701),
     poolAtFinalizationWei: 0n,
   }]], 50);
-  tx([["submissions", "FundingArmed", { at: 60n }]], 60);
+  tx([["submissions", "FundingAuthorized", { authorizationDigest: "0x" + "42".repeat(32), authorizer: address(998) }]], 59);
+  tx([["submissions", "FundingArmed", { at: 60n, authorizationDigest: "0x" + "42".repeat(32) }]], 60);
   const config = { ...CONFIG, seedScoreAtoms: 1000n };
   const replay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
   const finalize = events.find((event) => event.eventName === "Finalized");
@@ -588,7 +593,8 @@ function openWitnessFixture() {
   });
   const revealInterface = new ethers.Interface([
     "function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)",
-    "event FundingArmed(uint64 at)",
+    "event FundingArmed(uint64 at,bytes32 indexed authorizationDigest)",
+    "event FundingAuthorized(bytes32 indexed authorizationDigest,address indexed authorizer)",
     "event Committed(uint256 indexed submissionId,address indexed solver,bytes32 indexed commitment,bytes32 commitDaHash,uint256 bondWei,uint256 poolAtSubmissionWei,uint256 requiredBondWei,bool paidAtCommit,uint64 committedBlock)",
     "event Revealed(uint256 indexed submissionId,address indexed solver,string solutionCid,uint256 improvementAtoms,int256 claimedScoreAtoms,uint64 challengeEndsAt,uint256 solutionBytesLength,bytes32 revealInstanceHash)",
     "event Finalized(uint256 indexed submissionId,address indexed solver,uint256 creditAtoms,int256 claimedScoreAtoms,int256 bestScoreAtoms,bytes32 permanenceHash,uint256 poolAtFinalizationWei)",
@@ -607,6 +613,8 @@ function openWitnessFixture() {
     "function finalizeInfo(uint256) view returns (int256 prevBestScoreAtoms,uint256 creditAtoms,uint64 prevCreditRecoveryEndsAt)",
     "function bestScoreAtoms() view returns (int256)",
     "function fundingArmed() view returns (bool)",
+    "function fundingAuthorizationDigest() view returns (bytes32)",
+    "function authorizedFundingDigest() view returns (bytes32)",
   ]);
   const registryStateInterface = new ethers.Interface([
     "function problems(uint256) view returns (bytes32 specHash,bytes32 verifierSourceHash,bytes32 verifierImageHash,bytes32 admissionMatrixHash,string metadataURI,address pool,address ledger,address submissionManager,address challengeManager,uint64 challengeWindowSeconds,uint256 minImprovementAtoms,bool frozen)",
@@ -663,6 +671,8 @@ function openWitnessFixture() {
         if (parsed.name === "finalizeInfo") return submissionStateInterface.encodeFunctionResult(parsed.name, [1000n, 0n, 0n]);
         if (parsed.name === "bestScoreAtoms") return submissionStateInterface.encodeFunctionResult(parsed.name, [900n]);
         if (parsed.name === "fundingArmed") return submissionStateInterface.encodeFunctionResult(parsed.name, [false]);
+        if (parsed.name === "fundingAuthorizationDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [ZERO_HASH]);
+        if (parsed.name === "authorizedFundingDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [ZERO_HASH]);
         return submissionStateInterface.encodeFunctionResult(parsed.name, [
           replay.submissions["1"].solver, replay.submissions["1"].commitment,
           replay.submissions["1"].commitDaHash, 0n, 0n, 0n, 100n, 900n,
@@ -863,7 +873,7 @@ describe("P42 deterministic indexer replay", () => {
     assert.equal(replay.ledger.pausedNewActions, true);
     assert.equal(replay.pausedNewActions, true);
     assert.equal(replay.challengePausedNewActions, true);
-    assert.equal(replay.expiryGraceUntil, 50n);
+    assert.equal(replay.expiryGraceUntil, 60n);
     assert.equal(replay.pool.firstFundedAt, 25n);
     assert.equal(replay.pool.sponsorshipOf[ADDR.owner], 100n);
     assert.equal(replay.registry.problems["1"].frozen, true);

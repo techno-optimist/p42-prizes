@@ -6,7 +6,11 @@ red-team invariants that must hold before Base Sepolia.
 
 ## What Exists
 
-- `P42BountyPool`: per-problem ETH escrow with pull-based `claim()`.
+- `P42BountyPool`: per-problem ETH escrow with pull-based `claim()` and atomic
+  reinvestment of a matured solver award into another active, frozen,
+  same-registry P42 pool. Reinvestment preserves the solver's frontier record
+  and attributes the destination sponsorship to that solver; it never reopens
+  the already-settled source pool.
 - `P42ProblemRegistry`: spec/verifier/admission metadata anchor with component
   addresses; metadata can be repaired only before funding, and any pool funding
   automatically freezes the problem.
@@ -83,7 +87,11 @@ governance, child ownership, wiring, registry hashes/freeze, pause targets, and
 each finalized timelock execution event. It refuses to mark the manifest
 `governance-setup-complete` if any check or transaction evidence is missing.
 
-Neither mode calls `armFunding()` or `setAcceptingFunds(true)`. Those remain
+Neither mode calls `armFunding(bytes32)` or `setAcceptingFunds(true)`. Funding
+activation requires the nonzero canonical production-launch authorization
+digest. The distinct treasury/funding-authorizer role must register that digest
+before governance can arm it; the manager stores it and emits both transitions.
+Those calls remain
 separate reviewed governance operations after source verification,
 reconciliation, and the applicable launch gates. See `docs/DEPLOYMENT.md` for
 the full environment and owner ceremony.
