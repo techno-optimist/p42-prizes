@@ -3,6 +3,7 @@ import { BoundSpecimen, DiscoveryEntry, ROMAN, finalNumeral } from "@/components
 import { MathBlock } from "@/components/Math";
 import { PayoutSplit, type PayoutSlice } from "@/components/PayoutSplit";
 import { Plate } from "@/components/Plate";
+import { DeepTimeSigil } from "@/components/DeepTime";
 import { problems } from "@/lib/data";
 import { discoveries, DISCOVERIES_META } from "@/lib/discoveries";
 import { allSubmissions } from "@/lib/portal-state";
@@ -73,8 +74,9 @@ export default function HomePage() {
         <span className="folio-gate">Phase 0 · local simulation</span>
       </p>
 
-      <section className="hero">
+      <section className="hero artifact-header">
         <div>
+          <DeepTimeSigil kind="record" label="The record is a tool" />
           <h1 className="display">The machine went first.</h1>
           <p className="standfirst">
             Between 4 and 9 July 2026, the ProjectForty2 / CHRONOS agent stack set five records in the
