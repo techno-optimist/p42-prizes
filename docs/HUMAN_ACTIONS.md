@@ -112,6 +112,17 @@ problem requirement.
   production release dossier exists. Publication requires a provisioned
   immutable registry policy and a narrowly scoped registry write credential;
   independent four-host profiles and matrices remain separately uncollected.
+  The 2026-07-12 credential check found no registry environment-variable names
+  or Docker credential-store registry keys on DGX. The active Mac GitHub token
+  exposes only `gist`, `read:org`, and `repo`; GitHub Packages returned HTTP 403
+  with `You need at least read:packages scope to list packages.` It therefore
+  cannot list the authenticated package inventory or publish GHCR packages;
+  anonymous inspection of a public manifest was not tested. The owner must provision DGX's normal
+  Docker credential store/helper with a narrowly scoped GHCR credential that
+  has package read/write access, verify the target namespace and immutable
+  retention/deletion policy out of band, and keep the secret out of argv,
+  shell history, repository files, and evidence artifacts. A broader repository
+  token is not a substitute for this package-scoped handoff.
 - Release binding: no current canonical resolved evidence root proves the
   audited, remediated Git source/configuration and captured on-chain runtime
   bytecode for the exact addresses, chain, and block. The checked-in canonical
