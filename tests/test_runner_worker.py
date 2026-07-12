@@ -81,6 +81,23 @@ def test_verifier_subprocess_does_not_inherit_host_secrets(tmp_path: Path, monke
     assert "SUPER_SECRET_VALUE" not in repr(result)
 
 
+@pytest.mark.parametrize("descriptor,stream", [(1, "stdout"), (2, "stderr")])
+def test_verifier_output_flood_fails_with_typed_bounded_error(
+    tmp_path: Path, descriptor: int, stream: str
+) -> None:
+    verifier_body = f"import os\nwhile True: os.write({descriptor}, b'x' * 65536)\n"
+    problem, solution = _write_problem(
+        tmp_path, verifier_name="flood.py", verifier_body=verifier_body, wall_seconds=10
+    )
+
+    result = _run_verifier_for_transcript(problem, solution, child_address_space_limit_mb=256)
+
+    assert result["ok"] is False
+    assert result["valid"] is False
+    assert result["failure_kind"] == "verifier_output_limit_exceeded"
+    assert result["output_stream"] == stream
+
+
 def test_noncanonical_report_is_never_marked_valid(tmp_path: Path) -> None:
     # The verifier claims valid=true but emits NON-canonical JSON (indented).
     # The rejection must leave valid=False so transcript, job status, and loop

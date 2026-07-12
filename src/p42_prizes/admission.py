@@ -18,6 +18,7 @@ import time
 from typing import Any, Iterable, Mapping
 
 from p42_prizes.problem import load_manifest, repo_root_from_problem
+from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
 from p42_prizes.secure_json import read_strict_json_file
 from p42_prizes.runner_sandbox import (
     RunnerSandboxError,
@@ -637,13 +638,15 @@ def _run_image_verifier_once(
         binary=runtime,
     )
     try:
-        completed = subprocess.run(
+        completed = run_bounded_process(
             command,
-            text=True,
-            capture_output=True,
-            check=False,
+            cwd=problem,
+            env=dict(os.environ),
             timeout=wall_seconds,
         )
+    except OutputLimitExceeded as exc:
+        force_remove_container(container_name, runtime)
+        raise AdmissionError(str(exc)) from exc
     except subprocess.TimeoutExpired as exc:
         force_remove_container(container_name, runtime)
         raise AdmissionError(f"immutable verifier image timed out after {wall_seconds}s") from exc

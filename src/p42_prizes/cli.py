@@ -742,6 +742,10 @@ def _runner_memory_from_args(args: argparse.Namespace) -> MemorySnapshot:
 
 
 def _runner_policy_from_args(args: argparse.Namespace) -> RunnerPolicy:
+    if args.sandbox == "none" and not args.allow_unsafe_local_fixture:
+        raise RunnerQueueError(
+            "sandbox=none is unsafe fixture-only execution; pass --allow-unsafe-local-fixture explicitly"
+        )
     return RunnerPolicy(
         max_running=args.max_running,
         reserve_memory_mb=args.reserve_memory_mb,
@@ -1099,7 +1103,8 @@ def build_parser() -> argparse.ArgumentParser:
     runner_plan.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_plan.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_plan.add_argument("--memory-safety-factor", type=float, default=2.0)
-    runner_plan.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_plan.add_argument("--sandbox", choices=["none", "docker"], default="docker")
+    runner_plan.add_argument("--allow-unsafe-local-fixture", action="store_true")
     runner_plan.add_argument("--sandbox-pids-limit", type=int, default=256)
     runner_plan.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_plan.add_argument("--now-utc")
@@ -1136,7 +1141,8 @@ def build_parser() -> argparse.ArgumentParser:
     runner_health.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_health.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_health.add_argument("--memory-safety-factor", type=float, default=2.0)
-    runner_health.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_health.add_argument("--sandbox", choices=["none", "docker"], default="docker")
+    runner_health.add_argument("--allow-unsafe-local-fixture", action="store_true")
     runner_health.add_argument("--sandbox-pids-limit", type=int, default=256)
     runner_health.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_health.set_defaults(func=_cmd_runner_health)
@@ -1155,7 +1161,8 @@ def build_parser() -> argparse.ArgumentParser:
     runner_work.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_work.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_work.add_argument("--memory-safety-factor", type=float, default=2.0)
-    runner_work.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_work.add_argument("--sandbox", choices=["none", "docker"], default="docker")
+    runner_work.add_argument("--allow-unsafe-local-fixture", action="store_true")
     runner_work.add_argument("--sandbox-pids-limit", type=int, default=256)
     runner_work.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_work.add_argument("--now-utc")
@@ -1178,7 +1185,8 @@ def build_parser() -> argparse.ArgumentParser:
     runner_drain.add_argument("--reserve-memory-mb", type=int, default=8192)
     runner_drain.add_argument("--max-swap-used-mb", type=int, default=1024)
     runner_drain.add_argument("--memory-safety-factor", type=float, default=2.0)
-    runner_drain.add_argument("--sandbox", choices=["none", "docker"], default="none")
+    runner_drain.add_argument("--sandbox", choices=["none", "docker"], default="docker")
+    runner_drain.add_argument("--allow-unsafe-local-fixture", action="store_true")
     runner_drain.add_argument("--sandbox-pids-limit", type=int, default=256)
     runner_drain.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_drain.set_defaults(func=_cmd_runner_drain)

@@ -333,21 +333,23 @@ with a `p42-runner-loop/v1` summary. If the oldest queued job does not fit, can
 never fit the host, swap is above threshold, a runner slot is already occupied,
 or a stale lease needs supervisor action, it records a `wait` event and sleeps
 before trying again. This is the burst behavior we want: many submissions create
-queue depth and latency, not simultaneous verifier processes. For local
-`sandbox = "none"` runs, serialization plus the per-process `RLIMIT_AS` guard
-sharply reduces box-level OOM pressure but does not fully eliminate it (a single
-forking verifier can still exceed the aggregate bound — see the OOM guard
-limitation above). Chain-linked verifier jobs instead require
+queue depth and latency, not simultaneous verifier processes. Host
+`sandbox = "none"` execution is available only through the explicit
+`--allow-unsafe-local-fixture` test-fixture opt-in. Serialization plus the
+per-process `RLIMIT_AS` guard reduces box-level OOM pressure, but this mode is
+not a security boundary: a verifier can fork, call `setsid()`, escape the worker
+process group, and exceed the aggregate bound. Chain-linked verifier jobs require
 `policy.sandbox = "docker"` and use the source-level aggregate cgroup memory and
 PID caps. A production Linux/DGX rehearsal against a pullable pinned image is
 still required to demonstrate that policy in the actual worker environment. Use
 `--max-jobs` for a bounded batch and `--max-iterations` for rehearsals.
 
-The standalone CLI defaults to `--sandbox none` only for local fixture work.
-Every chain-linked or production-like invocation must pass `--sandbox docker`
-(and may narrow `--sandbox-pids-limit` or `--sandbox-cpus`); the plan records
-those exact controls so queued-work evidence cannot silently describe a
-different execution policy.
+Every runner CLI command defaults to `--sandbox docker`. Operators may narrow
+`--sandbox-pids-limit` or `--sandbox-cpus`; the plan records those exact controls
+so queued-work evidence cannot silently describe a different execution policy.
+`--sandbox none` is rejected unless paired with
+`--allow-unsafe-local-fixture`, and must never be used for untrusted,
+chain-linked, or production-like verifier execution.
 
 Transcripts include `resource_limits.required_memory_mb`,
 `resource_limits.child_address_space_limit_mb`, and whether the address-space
@@ -355,6 +357,25 @@ guard was supported on that host. A transcript whose verifier error says it
 exceeded the memory limit before emitting `VerdictReport` is a failed
 submission/run, not a runner outage, as long as the worker stays healthy and
 the queue continues draining.
+
+### Bounded Verifier Output
+
+Verifier stdout and stderr are hostile input to the coordinator, not harmless
+logs. Both runner execution and immutable-image host admission use the shared
+bounded process primitive: stdout is capped at 1 MiB and stderr at 256 KiB.
+The two pipes are drained concurrently into fixed-size buffers. Crossing either
+limit kills the complete process group, discards rather than retains subsequent
+bytes, reaps the process, and returns
+`failure_kind=verifier_output_limit_exceeded`. Chain-linked jobs quarantine this
+failure; they do not automatically challenge from an unavailable verdict.
+
+Monitoring continues until the direct process has exited *and* both pipes have
+reached EOF. The original session-leader PID is retained as the process-group
+ID, so a verifier cannot fork a flooding or silent descendant, exit its leader,
+and escape output, timeout, cancellation, or lease-loss cleanup. Live Docker
+coverage exercises stdout, stderr, child-process, and exited-leader floods and
+verifies container removal. These host-side byte caps are independent of the
+container cgroup memory/PID controls.
 
 
 ## Base Sepolia Manifest Guard

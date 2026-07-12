@@ -167,6 +167,24 @@ def main() -> None:
         })
     elif mode == "timeout":
         time.sleep(30)
+    elif mode == "stdout_flood":
+        while True:
+            os.write(1, b"x" * 65536)
+    elif mode == "stderr_flood":
+        while True:
+            os.write(2, b"x" * 65536)
+    elif mode == "child_output_flood":
+        pid = os.fork()
+        if pid == 0:
+            while True:
+                os.write(1, b"x" * 65536)
+        os.waitpid(pid, 0)
+    elif mode == "orphan_output_flood":
+        pid = os.fork()
+        if pid == 0:
+            while True:
+                os.write(1, b"x" * 65536)
+        os._exit(0)
     else:
         raise ValueError("unknown hostile sandbox mode")
 

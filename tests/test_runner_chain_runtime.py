@@ -157,6 +157,23 @@ def test_chain_claim_report_payload_hash_mismatch_is_quarantined() -> None:
     assert candidate["reason_code"] == "report_solution_hash_mismatch"
 
 
+def test_verifier_output_limit_is_quarantined_not_auto_challenged() -> None:
+    _, candidate = _adjudicate_chain_claim(
+        {"source_event_hash": SOURCE_HASH},
+        _claim(),
+        problem=PROBLEM,
+        verifier={
+            "ok": False,
+            "valid": False,
+            "failure_kind": "verifier_output_limit_exceeded",
+            "output_stream": "stdout",
+        },
+        da_result={"ok": True},
+    )
+    assert candidate["action"] == "quarantine"
+    assert candidate["reason_code"] == "verifier_output_limit_exceeded"
+
+
 def test_chain_job_refuses_a_noncanonical_problem_path(tmp_path: Path) -> None:
     forged_problem = tmp_path / "problems" / "hadamard-mini"
     forged_problem.mkdir(parents=True)
@@ -483,6 +500,23 @@ def test_exact_score_underclaim_becomes_challenge_candidate(
 def test_chain_job_refuses_host_policy(tmp_path: Path) -> None:
     with pytest.raises(RunnerWorkerError, match="require policy.sandbox=docker"):
         _run_job(_job(), tmp_path, policy=RunnerPolicy(sandbox="none"))
+
+
+def test_recovered_chain_da_job_still_refuses_host_policy(tmp_path: Path) -> None:
+    recovered = tmp_path / "recovered-solution.json"
+    recovered.write_bytes(SOLUTION.read_bytes())
+    job = _job(
+        solution=None,
+        da_failure={
+            "kind": "calldata_unavailable",
+            "error": "RPC transaction lookup returned no calldata",
+            "retryable": True,
+        },
+        retry_solution_path=str(recovered),
+    )
+
+    with pytest.raises(RunnerWorkerError, match="require policy.sandbox=docker"):
+        _run_job(job, tmp_path, policy=RunnerPolicy(sandbox="none"))
 
 
 def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: Path) -> None:

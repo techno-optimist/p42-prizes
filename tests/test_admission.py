@@ -28,6 +28,7 @@ from p42_prizes.admission import (
     validate_admission_matrix,
 )
 from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
+from p42_prizes.bounded_process import OutputLimitExceeded
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -706,6 +707,31 @@ def test_immutable_host_admission_dispatches_every_run_to_exact_image(
     assert evidence["execution"]["image_ref"] == identity.image_ref
     assert evidence["source"]["tree_hash_algorithm"] == "p42-source-tree-sha256/v2"
     assert evidence["attestation"]["type"] == "ssh-ed25519"
+
+
+def test_immutable_host_admission_rejects_output_flood_and_cleans_container(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "repo"
+    _copy_source_build_inputs(root)
+    (root / "schemas").mkdir(parents=True)
+    shutil.copy(ROOT / "schemas" / "problem.schema.json", root / "schemas" / "problem.schema.json")
+    problem = root / "problems" / "hadamard-mini"
+    shutil.copytree(ROOT / "problems" / "hadamard-mini", problem)
+    solution = problem / "examples" / "valid-4.json"
+    image = "sha256:" + "a" * 64
+    identity = ImageIdentity(
+        image_ref=f"ghcr.io/example/hadamard-mini@{image}", image_digest=image,
+        image_id="sha256:" + "b" * 64, image_architecture="x86_64", image_os="linux",
+        source_commit="4" * 40, source_hash="sha256:" + "c" * 64,
+    )
+    removed: list[tuple[str, str]] = []
+    monkeypatch.setattr(admission, "run_bounded_process", lambda *_args, **_kwargs: (_ for _ in ()).throw(OutputLimitExceeded("stdout", 1024)))
+    monkeypatch.setattr(admission, "force_remove_container", lambda name, runtime: removed.append((name, runtime)))
+
+    with pytest.raises(AdmissionError, match="stdout exceeded 1024 byte limit"):
+        admission._run_image_verifier_once(problem, solution, identity, "docker", 7)
+    assert removed == [(f"p42-admission-{os.getpid()}-7", "docker")]
 
 
 def test_image_inspection_binds_registry_digest_and_source_labels(
