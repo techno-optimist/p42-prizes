@@ -1,9 +1,8 @@
 import Link from "next/link";
-import { BoundSpecimen, DiscoveryEntry, ROMAN, finalNumeral } from "@/components/DiscoveryEntry";
+import { BoundSpecimen, finalNumeral } from "@/components/DiscoveryEntry";
 import { MathBlock } from "@/components/Math";
 import { PayoutSplit, type PayoutSlice } from "@/components/PayoutSplit";
 import { Plate } from "@/components/Plate";
-import { DeepTimeSigil } from "@/components/DeepTime";
 import { problems } from "@/lib/data";
 import { discoveries, DISCOVERIES_META } from "@/lib/discoveries";
 import { allSubmissions } from "@/lib/portal-state";
@@ -74,12 +73,11 @@ export default function HomePage() {
         <span className="folio-gate">Phase 0 · local simulation</span>
       </p>
 
-      <section className="hero artifact-header">
+      <section className="hero">
         <div>
-          <DeepTimeSigil kind="record" label="The record is a tool" />
           <h1 className="display">The machine went first.</h1>
           <p className="standfirst">
-            Between 4 and 9 July 2026, the ProjectForty2 / CHRONOS agent stack set five records in the
+            Between 4 and 12 July 2026, the ProjectForty2 / CHRONOS agent stack set six records in the
             mathematical literature — rigorously certified certificates, with no unenclosed floating-point value in
             any certified inequality, each
             published under a DOI. This Volume 0 page is a local Phase 0 simulation of future Base Sepolia bounty
@@ -110,7 +108,7 @@ export default function HomePage() {
               Inspect the runnable pilot
             </Link>
             <Link className="link" href="/discoveries">
-              The First Five — our discoveries →
+              The First Six — our discoveries →
             </Link>
           </div>
         </div>
@@ -156,45 +154,6 @@ export default function HomePage() {
           <strong>ETH</strong> <span className="qual">ERC-20 not supported</span>
         </div>
       </div>
-
-      <section className="section first-four" id="first-four" aria-labelledby="first-four-title">
-        <div className="scotch-rule" aria-hidden="true" />
-        <div className="section-head">
-          <div>
-            <p className="kicker">
-              <span className="section-no">§0</span>Front matter · the record before the protocol
-            </p>
-            <h2 className="first-four-title" id="first-four-title">
-              The First Five.
-            </h2>
-          </div>
-          <Link className="link" href="/discoveries">
-            Full apparatus →
-          </Link>
-        </div>
-        <p className="prose first-four-intro">
-          Before opening this register to anyone else, the agent stack put five records of its own into the
-          literature — {DISCOVERIES_META.invariant}. Each is a DOI’d note with a public repository, cited here
-          at the claimed-elsewhere tier: follow a DOI, clone the repo, re-run the certificate.
-        </p>
-
-        {discoveries.map((discovery, index) => (
-          <DiscoveryEntry key={discovery.slug} discovery={discovery} numeral={ROMAN[index]} />
-        ))}
-
-        <div className="exercise">
-          <p>
-            <strong>Exercise</strong> (open to anyone). <em>Improve any inequality above. The referee is a
-            program; the certificate is public; payment is proportional to frontier moved.</em>
-          </p>
-        </div>
-        <p className="fifth-line">The race is on for the 6th.</p>
-        <p className="first-four-close-action">
-          <a className="button" href="#register">
-            Enter the register
-          </a>
-        </p>
-      </section>
 
       <section className="section" id="register">
         <div className="section-head">
@@ -482,21 +441,14 @@ export default function HomePage() {
             <span className="smallcaps">Claimed elsewhere — and checkable now</span>
             <ul>
               <li>
-                Five DOI’d exact-certificate notes — the records set in §0:{" "}
-                {discoveries.map((discovery, index) => (
-                  <span key={discovery.doi}>
-                    {index > 0 && ", "}
-                    <a className="ref" href={discovery.doiUrl} target="_blank" rel="noreferrer">
-                      {discovery.doi}
-                    </a>
-                  </span>
-                ))}
+                Six DOI-backed exact-certificate notes, maintained in the dedicated{" "}
+                <Link className="link" href="/discoveries">Discoveries archive</Link>.
               </li>
               <li>Arena competition results taken with exact-rational certificates</li>
             </ul>
             <p className="tier-note">
-              Work outside this repository. The five DOIs resolve today — follow one, clone the repo, re-run
-              the certificate. Nothing here promotes them to “proven here.”
+              Work outside this repository. The six DOIs resolve today — follow one, clone the repo, re-run the
+              certificate. Nothing here promotes them to “proven here.”
             </p>
           </div>
         </div>

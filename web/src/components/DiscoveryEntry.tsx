@@ -6,7 +6,7 @@ import { MathBlock } from "@/components/Math";
 import { getProblemBySlug } from "@/lib/data";
 import type { Discovery, DiscoveryResult } from "@/lib/discoveries";
 
-export const ROMAN = ["I", "II", "III", "IV", "V"] as const;
+export const ROMAN = ["I", "II", "III", "IV", "V", "VI"] as const;
 
 /** thin-space grouping of a decimal's digits in blocks of five —
  *  the mathematical-table convention. Display only; never computed with. */
@@ -126,6 +126,10 @@ const NO_PRIOR_ANNOTATION: Record<string, string> = {
  * twice. Absent slug ⇒ every result charts. */
 const CHART_ONLY: Record<string, string[]> = {
   "antipodal-kissing": ["antipodal kissing, ℝ¹¹", "antipodal kissing, ℝ¹²"],
+  // This record contributes a second, provably non-isometric construction at
+  // the same cardinality plus a structural lower bound. Neither is a move
+  // from a comparable prior numeral, so a positional chart would mislead.
+  "second-antipodal-840": [],
 };
 
 /* Real prior numerals for a FrontierMove Δ on results that carry no divergent-

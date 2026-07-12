@@ -11,7 +11,6 @@ import "./globals.css";
 import { HadamardEasterEgg } from "@/components/HadamardEasterEgg";
 import { DeepTimeColophon } from "@/components/DeepTime";
 import { Mark } from "@/components/Mark";
-import { discoveries } from "@/lib/discoveries";
 import { sitePath } from "@/lib/site-paths";
 
 export const metadata: Metadata = {
@@ -130,13 +129,9 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                       Legal drafts (non-effective)
                     </a>
                   </li>
-                  {discoveries.map((discovery) => (
-                    <li key={discovery.doi}>
-                      <a className="ref" href={discovery.doiUrl} target="_blank" rel="noreferrer">
-                        doi:{discovery.doi}
-                      </a>
-                    </li>
-                  ))}
+                  <li>
+                    <Link className="link" href="/discoveries">The six certified discoveries</Link>
+                  </li>
                 </ul>
                 <p style={{ marginTop: 12 }}>
                   Not deployed. Not audited. Not legally reviewed. Real ETH is gated behind audit, counsel, and the

@@ -233,6 +233,12 @@ a {
   text-decoration: none;
 }
 
+:where(a, button, input, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--record);
+  outline-offset: 4px;
+  border-radius: 1px;
+}
+
 button,
 input,
 textarea {
@@ -2069,7 +2075,7 @@ h3 {
   color: var(--ink-soft);
 }
 
-/* ---------- the first four — discoveries ---------- */
+/* ---------- discoveries archive ---------- */
 
 /* display tier (see --display): typographic scale is the only boldness */
 
@@ -2166,31 +2172,6 @@ h3 {
   font-size: 13.5px;
   color: var(--muted);
   max-width: 70ch;
-}
-
-/* scotch rule: 2px over hairline — the one double rule on the site */
-
-.scotch-rule {
-  height: 6px;
-  border-top: 2px solid var(--ink);
-  border-bottom: 1px solid var(--rule);
-}
-
-.first-four .section-head {
-  border-bottom: 0;
-  padding-bottom: 0;
-  margin-top: 18px;
-  margin-bottom: 8px;
-}
-
-.first-four-title {
-  font-size: clamp(30px, 3.6vw, 40px);
-  font-weight: 600;
-  line-height: 1.08;
-}
-
-.first-four-intro {
-  margin-bottom: 6px;
 }
 
 /* discovery entries: scaled-up bibliography records */
@@ -2816,18 +2797,6 @@ h3 {
   color: var(--ink);
 }
 
-.fifth-line {
-  margin-top: 22px;
-  font-size: 25px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: var(--ink);
-}
-
-.first-four-close-action {
-  margin-top: 20px;
-}
-
 /* /discoveries page */
 
 .disc-page-head {
@@ -2997,9 +2966,6 @@ h3 {
     grid-template-columns: 86px minmax(0, 1fr);
   }
 
-  .fifth-line {
-    font-size: 22px;
-  }
 }
 
 @media (max-width: 540px) {
@@ -3285,7 +3251,6 @@ h3 {
 .disc-page-head.artifact-header { padding-right: clamp(0px, 19vw, 220px); }
 .problem-title-block.artifact-header > .deep-sigil,
 .disc-page-head.artifact-header > .deep-sigil { position: absolute; right: 16px; top: 26px; opacity: .86; }
-.hero.artifact-header .deep-sigil { position: absolute; right: calc(34% + 30px); top: 42px; width: 126px; opacity: .44; }
 
 .deep-prologue { position: relative; display: grid; grid-template-columns: .72fr 1.05fr; gap: clamp(45px, 8vw, 120px); padding: 140px max(24px, calc((100vw - 1140px)/2)); background: var(--paper); border-bottom: 1px solid var(--rule); overflow: hidden; }
 .deep-prologue-number { align-self: start; position: sticky; top: 120px; }
@@ -3348,9 +3313,9 @@ h3 {
 .tally > div:hover::after { width: 100%; }
 
 @media (max-width: 800px) {
-  .problem-title-block.artifact-header,.disc-page-head.artifact-header { padding-right: 0; padding-top: 205px; }
-  .problem-title-block.artifact-header > .deep-sigil,.disc-page-head.artifact-header > .deep-sigil { left: 0; right: auto; top: 12px; width: 135px; }
-  .hero.artifact-header .deep-sigil { display: none; }
+  .problem-title-block.artifact-header,.disc-page-head.artifact-header { padding-right: 0; padding-top: 160px; }
+  .problem-title-block.artifact-header > .deep-sigil,.disc-page-head.artifact-header > .deep-sigil { left: 0; right: auto; top: 18px; width: 110px; }
+  .disc-page-head.artifact-header { padding-top: 180px; }
   .deep-prologue { grid-template-columns: 1fr; gap: 34px; padding: 90px 22px; }
   .deep-prologue-number { position: static; }
   .deep-prologue-number span { font-size: clamp(62px, 20vw, 105px); overflow-wrap: anywhere; }
@@ -3378,6 +3343,13 @@ h3 {
   .deep-prologue-number span { font-size: 60px; letter-spacing: -.065em; }
   .deep-time-head h2 { font-size: 42px; }
   .deep-time-vow { font-size: 28px; }
-  .problem-title-block.artifact-header,.disc-page-head.artifact-header { padding-top: 190px; }
-  .problem-title-block.artifact-header > .deep-sigil,.disc-page-head.artifact-header > .deep-sigil { width: 125px; }
+  .problem-title-block.artifact-header,.disc-page-head.artifact-header { padding-top: 145px; }
+  .problem-title-block.artifact-header > .deep-sigil,.disc-page-head.artifact-header > .deep-sigil { width: 98px; }
+  .disc-page-head.artifact-header { padding-top: 165px; }
+}
+
+@media (min-width: 801px) and (max-width: 900px) {
+  .problem-title-block.artifact-header,.disc-page-head.artifact-header { padding-right: 0; padding-top: 160px; }
+  .problem-title-block.artifact-header > .deep-sigil,.disc-page-head.artifact-header > .deep-sigil { left: 0; right: auto; top: 18px; width: 110px; }
+  .disc-page-head.artifact-header { padding-top: 180px; }
 }
