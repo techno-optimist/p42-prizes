@@ -1,7 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { delimiter, resolve } from "node:path";
+import { constants } from "node:fs";
+import { link, lstat, open, unlink } from "node:fs/promises";
+import { basename, delimiter, join, relative, resolve, sep } from "node:path";
 
 import {
   ADMISSION_MATRIX_HASH_ALGORITHM,
@@ -11,10 +12,11 @@ import {
   readCeremonyConfig,
   validateDeploymentTimestamps,
 } from "./deployment-ceremony-helper.js";
-import { readContractsConfigJsonSync } from "./strict-json-helper.js";
+import { readContractsArtifactJsonSyncWithBytes, readContractsConfigJsonSync } from "./strict-json-helper.js";
 
 export const MULTIBOARD_CEREMONY_SCHEMA = "p42-prizes/multi-board-ceremony/v1";
 export const PRODUCTION_RELEASE_SLATE_SCHEMA = "p42-prizes/production-release-slate/v1";
+export const PRODUCTION_RELEASE_INDEX_SCHEMA = "p42-prizes/production-release-index/v1";
 export const RELEASE_MODES = Object.freeze({ PRODUCTION: "production", FIXTURE: "fixture" });
 export const PRODUCTION_LAUNCH_SLUGS = Object.freeze([
   "hadamard-mini",
@@ -125,33 +127,219 @@ export function validateVerifierImageReleaseDossier(dossier, { sourceCommit, pro
   return root;
 }
 
+export function createProductionReleaseSlate({
+  generatedAt,
+  sourceCommit,
+  imageRegistryPath,
+  imageRegistryBytes,
+  imageDossier,
+  problems,
+  now = Date.now(),
+} = {}) {
+  if (!/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/.test(imageRegistryPath ?? "")) throw new Error("production image dossier path must be repository-relative");
+  if (!(Buffer.isBuffer(imageRegistryBytes) || imageRegistryBytes instanceof Uint8Array)) throw new Error("production image dossier exact bytes are required");
+  const dossier = validateVerifierImageReleaseDossier(imageDossier, { sourceCommit, problems, now });
+  const generatedAtMs = Date.parse(generatedAt);
+  const canonicalGeneratedAt = Number.isFinite(generatedAtMs) ? new Date(generatedAtMs).toISOString().replace(".000Z", "Z") : null;
+  if (!Number.isFinite(generatedAtMs) || canonicalGeneratedAt !== generatedAt || generatedAtMs < Date.parse(dossier.published_at_utc) || generatedAtMs > now) throw new Error("production slate generatedAt is invalid, future-dated, or predates image publication");
+  const body = {
+    schema: PRODUCTION_RELEASE_SLATE_SCHEMA,
+    mode: RELEASE_MODES.PRODUCTION,
+    status: "ready",
+    generatedAt,
+    sourceCommit,
+    imageRegistry: {
+      path: imageRegistryPath,
+      digest: `sha256:${createHash("sha256").update(imageRegistryBytes).digest("hex")}`,
+    },
+    boards: problems.map((problem, index) => ({
+      problemId: String(index + 1),
+      problemSlug: problem.problemSlug,
+      problemPath: `problems/${problem.problemSlug}`,
+      problemPackageDigest: problem.verifierSourceDigest,
+      verifierVersion: problem.verifierVersion,
+      specHash: problem.specHash,
+      verifierSourceDigest: problem.verifierSourceDigest,
+      verifierImageDigest: problem.verifierImageDigest,
+      admissionMatrixPath: problem.admissionMatrixPath,
+      admissionMatrixDigest: problem.admissionMatrixDigest,
+    })),
+  };
+  const slate = { ...body, slateDigest: sha256Canonical(body) };
+  return validateProductionReleaseSlate(slate, problems);
+}
+
+export async function publishProductionReleaseSlate(slate, directory, {
+  trustedRoot,
+  storage = { open, link, lstat, unlink },
+  beforeDirectoryFsync,
+} = {}) {
+  validateProductionReleaseSlate(slate);
+  const root = resolve(trustedRoot ?? "");
+  const publicationDirectory = resolve(directory);
+  const rel = relative(root, publicationDirectory);
+  if (!trustedRoot || (rel && (rel === ".." || rel.startsWith(`..${sep}`)))) throw new Error("slate publication directory must be within an explicit trusted root");
+  const held = [];
+  for (const path of [root, ...(rel ? rel.split(sep).map((_, index, parts) => join(root, ...parts.slice(0, index + 1))) : [])]) {
+    const handle = await storage.open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const metadata = await handle.stat();
+    if (!metadata.isDirectory() || (typeof process.getuid === "function" && metadata.uid !== process.getuid()) || (metadata.mode & 0o022) !== 0) throw new Error("slate publication trusted parent is unsafe");
+    held.push({ path, handle, metadata });
+  }
+  const target = join(publicationDirectory, `${slate.slateDigest.slice("sha256:".length)}.slate.json`);
+  const temporary = join(publicationDirectory, `.${basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  const bytes = Buffer.from(`${canonical(slate)}\n`);
+  const assertParentsHeld = async () => {
+    for (const entry of held) {
+      const current = await storage.lstat(entry.path);
+      if (!current.isDirectory() || current.dev !== entry.metadata.dev || current.ino !== entry.metadata.ino) throw new Error("slate publication trusted parent was replaced");
+    }
+  };
+  let temporaryHandle;
+  let targetHandle;
+  try {
+    temporaryHandle = await storage.open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o444);
+    await temporaryHandle.writeFile(bytes); await temporaryHandle.sync(); await temporaryHandle.close(); temporaryHandle = undefined;
+    await assertParentsHeld();
+    try { await storage.link(temporary, target); } catch (error) { if (error.code !== "EEXIST") throw error; }
+    await storage.unlink(temporary);
+    const before = await storage.lstat(target);
+    targetHandle = await storage.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await targetHandle.stat();
+    if (!before.isFile() || !opened.isFile() || before.dev !== opened.dev || before.ino !== opened.ino || opened.nlink !== 1 || opened.size !== bytes.length || (opened.mode & 0o777) !== 0o444 || (typeof process.getuid === "function" && opened.uid !== process.getuid())) throw new Error("published slate target metadata is unsafe");
+    const stored = Buffer.alloc(opened.size);
+    let offset = 0;
+    while (offset < stored.length) {
+      const { bytesRead } = await targetHandle.read(stored, offset, stored.length - offset, offset);
+      if (bytesRead === 0) throw new Error("published slate target was truncated");
+      offset += bytesRead;
+    }
+    if (!stored.equals(bytes)) throw new Error("content-addressed slate path contains different bytes");
+    await assertParentsHeld();
+    if (beforeDirectoryFsync) await beforeDirectoryFsync({ target, bytes });
+    await held.at(-1).handle.sync();
+    const finalMetadata = await storage.lstat(target);
+    if (finalMetadata.dev !== opened.dev || finalMetadata.ino !== opened.ino || finalMetadata.size !== opened.size || finalMetadata.nlink !== 1 || (finalMetadata.mode & 0o777) !== 0o444) throw new Error("published slate target changed before durable return");
+    const finalStored = Buffer.alloc(opened.size);
+    let finalOffset = 0;
+    while (finalOffset < finalStored.length) {
+      const { bytesRead } = await targetHandle.read(finalStored, finalOffset, finalStored.length - finalOffset, finalOffset);
+      if (bytesRead === 0) throw new Error("published slate target was truncated during final descriptor read");
+      finalOffset += bytesRead;
+    }
+    if (!finalStored.equals(bytes)) throw new Error("published slate target bytes changed before durable return");
+  } finally {
+    if (temporaryHandle) await temporaryHandle.close();
+    if (targetHandle) await targetHandle.close();
+    try { await storage.unlink(temporary); } catch {}
+    for (const entry of held.reverse()) await entry.handle.close();
+  }
+  return { digest: slate.slateDigest, uri: `sha256://${slate.slateDigest.slice(7)}`, path: target };
+}
+
+export function createProductionReleaseIndex({ sourceCommit, generatedAt, capsule, slate } = {}) {
+  const generatedAtMs = Date.parse(generatedAt);
+  const canonicalGeneratedAt = Number.isFinite(generatedAtMs) ? new Date(generatedAtMs).toISOString().replace(".000Z", "Z") : null;
+  if (!/^[0-9a-f]{40}$/.test(sourceCommit ?? "") || canonicalGeneratedAt !== generatedAt) throw new Error("release index provenance is invalid or noncanonical");
+  for (const [label, publication] of [["capsule", capsule], ["slate", slate]]) {
+    if (!publication || !DIGEST_RE.test(publication.digest ?? "") || publication.uri !== `sha256://${publication.digest.slice(7)}`) throw new Error(`release index ${label} publication is invalid`);
+  }
+  const body = {
+    schema: PRODUCTION_RELEASE_INDEX_SCHEMA,
+    sourceCommit,
+    generatedAt,
+    capsule: { digest: capsule.digest, uri: capsule.uri },
+    slate: { digest: slate.digest, uri: slate.uri },
+  };
+  return { ...body, indexDigest: sha256Canonical(body) };
+}
+
+export function validateProductionReleaseIndex(index) {
+  exactObject(index, ["schema", "sourceCommit", "generatedAt", "capsule", "slate", "indexDigest"], "production release index");
+  if (index.schema !== PRODUCTION_RELEASE_INDEX_SCHEMA) throw new Error("production release index schema is invalid");
+  const expected = createProductionReleaseIndex(index);
+  if (expected.indexDigest !== index.indexDigest) throw new Error("production release index digest mismatch");
+  return index;
+}
+
+export async function publishProductionReleaseIndex(index, directory, {
+  trustedRoot,
+  storage = { open, link, lstat, unlink },
+} = {}) {
+  validateProductionReleaseIndex(index);
+  const root = resolve(trustedRoot ?? "");
+  const publicationDirectory = resolve(directory);
+  const rel = relative(root, publicationDirectory);
+  if (!trustedRoot || (rel && (rel === ".." || rel.startsWith(`..${sep}`)))) throw new Error("release index publication directory must be within an explicit trusted root");
+  const held = [];
+  for (const path of [root, ...(rel ? rel.split(sep).map((_, i, parts) => join(root, ...parts.slice(0, i + 1))) : [])]) {
+    const handle = await storage.open(path, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    const metadata = await handle.stat();
+    if (!metadata.isDirectory() || (typeof process.getuid === "function" && metadata.uid !== process.getuid()) || (metadata.mode & 0o022) !== 0) throw new Error("release index publication trusted parent is unsafe");
+    held.push({ path, handle, metadata });
+  }
+  const target = join(publicationDirectory, `${index.indexDigest.slice(7)}.release.json`);
+  const temporary = join(publicationDirectory, `.${basename(target)}.${process.pid}.${Date.now()}.tmp`);
+  const bytes = Buffer.from(`${canonical(index)}\n`);
+  let temporaryHandle; let targetHandle;
+  try {
+    temporaryHandle = await storage.open(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o444);
+    await temporaryHandle.writeFile(bytes); await temporaryHandle.sync(); await temporaryHandle.close(); temporaryHandle = undefined;
+    try { await storage.link(temporary, target); } catch (error) { if (error.code !== "EEXIST") throw error; }
+    await storage.unlink(temporary);
+    const before = await storage.lstat(target);
+    targetHandle = await storage.open(target, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const opened = await targetHandle.stat();
+    if (!before.isFile() || !opened.isFile() || before.dev !== opened.dev || before.ino !== opened.ino || opened.nlink !== 1 || opened.size !== bytes.length || (opened.mode & 0o777) !== 0o444 || (typeof process.getuid === "function" && opened.uid !== process.getuid())) throw new Error("published release index target metadata is unsafe");
+    const stored = Buffer.alloc(opened.size); let offset = 0;
+    while (offset < stored.length) { const { bytesRead } = await targetHandle.read(stored, offset, stored.length - offset, offset); if (bytesRead === 0) throw new Error("published release index target was truncated"); offset += bytesRead; }
+    if (!stored.equals(bytes)) throw new Error("content-addressed release index path contains different bytes");
+    for (const entry of held) { const current = await storage.lstat(entry.path); if (!current.isDirectory() || current.dev !== entry.metadata.dev || current.ino !== entry.metadata.ino) throw new Error("release index publication trusted parent was replaced"); }
+    await held.at(-1).handle.sync();
+    const finalMetadata = await storage.lstat(target);
+    if (finalMetadata.dev !== opened.dev || finalMetadata.ino !== opened.ino || finalMetadata.size !== opened.size || finalMetadata.nlink !== 1 || (finalMetadata.mode & 0o777) !== 0o444) throw new Error("published release index target changed before durable return");
+    const finalStored = Buffer.alloc(opened.size); offset = 0;
+    while (offset < finalStored.length) { const { bytesRead } = await targetHandle.read(finalStored, offset, finalStored.length - offset, offset); if (bytesRead === 0) throw new Error("published release index target was truncated during final descriptor read"); offset += bytesRead; }
+    if (!finalStored.equals(bytes)) throw new Error("published release index target bytes changed before durable return");
+  } finally {
+    if (temporaryHandle) await temporaryHandle.close();
+    if (targetHandle) await targetHandle.close();
+    try { await storage.unlink(temporary); } catch {}
+    for (const entry of held.reverse()) await entry.handle.close();
+  }
+  return { digest: index.indexDigest, uri: `sha256://${index.indexDigest.slice(7)}`, path: target };
+}
+
 function resolveWithin(root, relativePath, label) {
   const path = resolve(root, relativePath);
-  if (path !== root && !path.startsWith(`${root}/`)) throw new Error(`${label} escapes repository root`);
+  if (path !== root && !path.startsWith(`${root}${sep}`)) throw new Error(`${label} escapes trusted root`);
   return path;
 }
 
 export function validateProductionSlatePreflight(ethers, slate, config, {
   repoRoot,
+  evidenceRoot = repoRoot,
   pythonExecutable = process.env.P42_ADMISSION_PYTHON ?? process.env.P42_RUNTIME_PYTHON ?? "python3",
   runAdmitReady = runAdmitReadyCommand,
   readJson = loadAdmissionMatrix,
-  readBytes = readFileSync,
+  readDossier = readContractsArtifactJsonSyncWithBytes,
 } = {}) {
   validateProductionReleaseSlate(slate, config.problems);
   const root = resolve(repoRoot ?? "");
   if (!repoRoot) throw new Error("production slate preflight requires an explicit repository root");
-  const registryPath = resolveWithin(root, slate.imageRegistry.path, "image registry path");
-  const registryBytes = readBytes(registryPath);
+  const evidence = resolve(evidenceRoot ?? "");
+  if (!evidenceRoot) throw new Error("production slate preflight requires an explicit evidence root");
+  const registryPath = resolveWithin(evidence, slate.imageRegistry.path, "image registry path");
+  const { bytes: registryBytes, value: registryValue } = readDossier(registryPath, { trustedRoot: evidence });
   if (`sha256:${createHash("sha256").update(registryBytes).digest("hex")}` !== slate.imageRegistry.digest) throw new Error("immutable image registry digest mismatch");
-  const registry = validateVerifierImageReleaseDossier(readJson(registryPath), {
+  const registry = validateVerifierImageReleaseDossier(registryValue, {
     sourceCommit: slate.sourceCommit,
     problems: config.problems,
   });
   const images = new Map(registry.boards.map((entry) => [entry.slug, entry.index_digest]));
   return slate.boards.map((board, index) => {
     const problemPath = resolveWithin(root, board.problemPath, `board ${index + 1} problemPath`);
-    const matrixPath = resolveWithin(root, board.admissionMatrixPath, `board ${index + 1} admissionMatrixPath`);
+    const matrixPath = resolveWithin(evidence, board.admissionMatrixPath, `board ${index + 1} admissionMatrixPath`);
     runAdmitReady({ repoRoot: root, problemPath, matrixPath, pythonExecutable });
     const matrix = readJson(matrixPath);
     if (matrix.matrix_hash !== board.admissionMatrixDigest || matrix.problem_id !== board.problemSlug || matrix.verifier_version !== board.verifierVersion || matrix.verifier_image !== board.verifierImageDigest) throw new Error(`production board ${index + 1} admission matrix identity mismatch`);

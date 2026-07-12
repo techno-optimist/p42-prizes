@@ -254,10 +254,14 @@ export function parseStrictJsonBytes(bytes, options = {}) {
   return parseStrictJsonText(text, normalized);
 }
 
-export async function readStrictJsonFile(path, options = {}) {
+export async function readStrictJsonFileWithBytes(path, options = {}) {
   const normalized = optionsWithDefaults(options);
   if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
     throw new Error("secure JSON file reads require platform O_NOFOLLOW support");
+  }
+  if (normalized.trustedRoot) {
+    const bytes = execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, "read", "--root", normalized.trustedRoot, "--path", resolve(path)], { maxBuffer: normalized.maxBytes + 1 });
+    return { bytes, value: parseStrictJsonBytes(bytes, normalized) };
   }
   const before = normalized.privateFile ? await lstat(path) : null;
   const parent = normalized.privateFile ? await lstat(dirname(path)) : null;
@@ -277,20 +281,25 @@ export async function readStrictJsonFile(path, options = {}) {
       if (total > normalized.maxBytes) throw new RangeError(`JSON exceeds maxBytes (${normalized.maxBytes})`);
       chunks.push(chunk.subarray(0, bytesRead));
     }
-    return parseStrictJsonBytes(Buffer.concat(chunks, total), normalized);
+    const bytes = Buffer.concat(chunks, total);
+    return { bytes, value: parseStrictJsonBytes(bytes, normalized) };
   } finally {
     await handle.close();
   }
 }
 
-export function readStrictJsonFileSync(path, options = {}) {
+export async function readStrictJsonFile(path, options = {}) {
+  return (await readStrictJsonFileWithBytes(path, options)).value;
+}
+
+export function readStrictJsonFileSyncWithBytes(path, options = {}) {
   const normalized = optionsWithDefaults(options);
   if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
     throw new Error("secure JSON file reads require platform O_NOFOLLOW support");
   }
   if (normalized.trustedRoot) {
     const bytes = execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, "read", "--root", normalized.trustedRoot, "--path", resolve(path)], { maxBuffer: normalized.maxBytes + 1 });
-    return parseStrictJsonBytes(bytes, normalized);
+    return { bytes, value: parseStrictJsonBytes(bytes, normalized) };
   }
   const before = normalized.privateFile ? lstatSync(path) : null;
   const parent = normalized.privateFile ? lstatSync(dirname(path)) : null;
@@ -311,9 +320,14 @@ export function readStrictJsonFileSync(path, options = {}) {
       if (total > normalized.maxBytes) throw new RangeError(`JSON exceeds maxBytes (${normalized.maxBytes})`);
       chunks.push(chunk.subarray(0, bytesRead));
     }
-    return parseStrictJsonBytes(Buffer.concat(chunks, total), normalized);
+    const bytes = Buffer.concat(chunks, total);
+    return { bytes, value: parseStrictJsonBytes(bytes, normalized) };
   } finally {
     closeSync(fd);
     if (openedPath) for (const held of openedPath.held.reverse()) closeSync(held);
   }
+}
+
+export function readStrictJsonFileSync(path, options = {}) {
+  return readStrictJsonFileSyncWithBytes(path, options).value;
 }

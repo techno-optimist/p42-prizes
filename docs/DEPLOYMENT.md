@@ -132,6 +132,8 @@ P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
 P42_MULTIBOARD_CEREMONY_CONFIG=... \
 P42_PRODUCTION_SLATE_PATH=... \
 P42_RELEASE_CAPSULE=... \
+P42_PRODUCTION_RELEASE_INDEX_PATH=... \
+P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 npx hardhat run scripts/deploy-base-sepolia.js
 ```
 

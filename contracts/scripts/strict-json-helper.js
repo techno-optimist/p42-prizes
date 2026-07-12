@@ -1,6 +1,8 @@
 import {
   readStrictJsonFile,
+  readStrictJsonFileWithBytes,
   readStrictJsonFileSync,
+  readStrictJsonFileSyncWithBytes,
 } from "../../agent/strict-json.mjs";
 
 const CONFIG_LIMITS = Object.freeze({
@@ -25,4 +27,12 @@ export function readContractsConfigJsonSync(path) {
 
 export function readContractsArtifactJson(path) {
   return readStrictJsonFile(path, ARTIFACT_LIMITS);
+}
+
+export function readContractsArtifactJsonWithBytes(path, options = {}) {
+  return readStrictJsonFileWithBytes(path, { ...ARTIFACT_LIMITS, ...options });
+}
+
+export function readContractsArtifactJsonSyncWithBytes(path, options = {}) {
+  return readStrictJsonFileSyncWithBytes(path, { ...ARTIFACT_LIMITS, ...options });
 }
