@@ -166,7 +166,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     if (activateRecorder && !mockRecorder) {
-      await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+      await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
       await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     }
     if (activateRecorder || mockRecorder) await pool.connect(owner).setAcceptingFunds(true);

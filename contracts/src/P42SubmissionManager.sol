@@ -28,6 +28,7 @@ contract P42SubmissionManager {
     error P42_PAUSED_ALL_REARM_OPEN(uint64 rearmAt, uint64 nowAt);
     error P42_FUNDING_ALREADY_ARMED();
     error P42_FUNDING_AUTHORIZATION_ZERO();
+    error P42_FUNDING_AUTHORIZATION_EXPIRED(uint64 expiresAt, uint64 nowAt);
     error P42_NOT_FUNDING_AUTHORIZER();
     error P42_FUNDING_AUTHORIZATION_MISMATCH(bytes32 expected, bytes32 actual);
     error P42_OPEN_WITNESS_WINDOW_OPEN(uint64 armNotBefore, uint64 nowAt);
@@ -226,6 +227,7 @@ contract P42SubmissionManager {
     /// the one-way OPEN-to-PAID transition.
     bytes32 public fundingAuthorizationDigest;
     bytes32 public authorizedFundingDigest;
+    uint64 public fundingAuthorizationExpiresAt;
     /// @notice After a `pausedAll` recovery ends, no submission may be expired
     /// (bond forfeited) until a full fresh challenge window has passed, so an
     /// honest in-flight commit/reveal frozen by the recovery always gets a real
@@ -272,7 +274,7 @@ contract P42SubmissionManager {
     );
     event OpenWitnessWindowConfigured(uint64 deployedAt, uint64 armNotBefore);
     event FundingArmed(uint64 at, bytes32 indexed authorizationDigest);
-    event FundingAuthorized(bytes32 indexed authorizationDigest, address indexed authorizer);
+    event FundingAuthorized(bytes32 indexed authorizationDigest, address indexed authorizer, uint64 expiresAt);
     event FinalizeVoided(
         uint256 indexed submissionId,
         address indexed solver,
@@ -454,12 +456,16 @@ contract P42SubmissionManager {
     /// immediately arming a private paid frontier. A timer does not prove that
     /// a public witness was posted, so the strict open-witness transcript and
     /// arm/fund-boundary evidence remain separate launch gates.
-    function authorizeFunding(bytes32 authorizationDigest) external {
+    function authorizeFunding(bytes32 authorizationDigest, uint64 expiresAt) external {
         if (msg.sender != fundingAuthorizer) revert P42_NOT_FUNDING_AUTHORIZER();
         if (authorizationDigest == bytes32(0)) revert P42_FUNDING_AUTHORIZATION_ZERO();
         if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
+        if (block.timestamp > expiresAt) {
+            revert P42_FUNDING_AUTHORIZATION_EXPIRED(expiresAt, uint64(block.timestamp));
+        }
         authorizedFundingDigest = authorizationDigest;
-        emit FundingAuthorized(authorizationDigest, msg.sender);
+        fundingAuthorizationExpiresAt = expiresAt;
+        emit FundingAuthorized(authorizationDigest, msg.sender, expiresAt);
     }
 
     function armFunding(bytes32 authorizationDigest) external onlyOwner {
@@ -467,6 +473,10 @@ contract P42SubmissionManager {
         if (authorizationDigest == bytes32(0)) revert P42_FUNDING_AUTHORIZATION_ZERO();
         if (authorizationDigest != authorizedFundingDigest) {
             revert P42_FUNDING_AUTHORIZATION_MISMATCH(authorizedFundingDigest, authorizationDigest);
+        }
+        uint64 expiresAt = fundingAuthorizationExpiresAt;
+        if (block.timestamp > expiresAt) {
+            revert P42_FUNDING_AUTHORIZATION_EXPIRED(expiresAt, uint64(block.timestamp));
         }
         if (block.timestamp < armNotBefore) {
             revert P42_OPEN_WITNESS_WINDOW_OPEN(armNotBefore, uint64(block.timestamp));

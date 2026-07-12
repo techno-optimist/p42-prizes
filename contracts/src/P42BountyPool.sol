@@ -15,6 +15,7 @@ interface IP42PayoutLedger {
 
 interface ISubmissionManagerArmed {
     function fundingArmed() external view returns (bool);
+    function fundingAuthorizationExpiresAt() external view returns (uint64);
 }
 
 interface IP42DonationPool {
@@ -41,6 +42,7 @@ contract P42BountyPool {
     error P42_REGISTRY_NOT_SET();
     error P42_BAD_PROBLEM_BINDING();
     error P42_FUNDING_NOT_ARMED();
+    error P42_FUNDING_AUTHORIZATION_EXPIRED(uint64 expiresAt, uint64 nowAt);
     error P42_ROLLOVER_DESTINATION_NOT_SET();
     error P42_CREDIT_RECORDER_MISMATCH(address creditRecorder, address submissionManager);
     error P42_NOT_ACCEPTING_FUNDS();
@@ -201,6 +203,10 @@ contract P42BountyPool {
             if (recorder != manager) revert P42_CREDIT_RECORDER_MISMATCH(recorder, manager);
             if (manager == address(0) || !ISubmissionManagerArmed(manager).fundingArmed()) {
                 revert P42_FUNDING_NOT_ARMED();
+            }
+            uint64 authorizationExpiresAt = ISubmissionManagerArmed(manager).fundingAuthorizationExpiresAt();
+            if (block.timestamp > authorizationExpiresAt) {
+                revert P42_FUNDING_AUTHORIZATION_EXPIRED(authorizationExpiresAt, uint64(block.timestamp));
             }
         }
         acceptingFunds = accepting;

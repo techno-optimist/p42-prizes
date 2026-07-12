@@ -146,7 +146,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     if (arm) {
       await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-      await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+      await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
       await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
       await pool.connect(owner).setAcceptingFunds(true);
     }
@@ -835,8 +835,8 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     await expectCustomError(submissions.connect(alice).armFunding("0x" + "42".repeat(32)), submissions, "P42_NOT_OWNER");
     assert.equal(await submissions.fundingArmed(), false);
-    await expectCustomError(submissions.connect(alice).authorizeFunding("0x" + "42".repeat(32)), submissions, "P42_NOT_FUNDING_AUTHORIZER");
-    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+    await expectCustomError(submissions.connect(alice).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n), submissions, "P42_NOT_FUNDING_AUTHORIZER");
+    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
 
     await expectCustomError(
       submissions.connect(owner).armFunding("0x" + "42".repeat(32)),
@@ -879,6 +879,32 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await expectCustomError(submissions.connect(owner).armFunding("0x" + "42".repeat(32)), submissions, "P42_FUNDING_ALREADY_ARMED");
   });
 
+  it("cannot arm or open deposits after the launch authorization expires", async function () {
+    const lateArm = await deployFixture({ arm: false, advanceCompetition: false });
+    const lateArmBlock = await ethers.provider.getBlock("latest");
+    const lateArmExpiry = BigInt(lateArmBlock.timestamp) + CHALLENGE_WINDOW_SECONDS;
+    await lateArm.submissions.connect(lateArm.treasury).authorizeFunding("0x" + "42".repeat(32), lateArmExpiry);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await expectCustomError(
+      lateArm.submissions.connect(lateArm.owner).armFunding("0x" + "42".repeat(32)),
+      lateArm.submissions,
+      "P42_FUNDING_AUTHORIZATION_EXPIRED"
+    );
+
+    const lateOpen = await deployFixture({ arm: false, advanceCompetition: false });
+    const lateOpenBlock = await ethers.provider.getBlock("latest");
+    const lateOpenExpiry = BigInt(lateOpenBlock.timestamp) + CHALLENGE_WINDOW_SECONDS + 10n;
+    await lateOpen.submissions.connect(lateOpen.treasury).authorizeFunding("0x" + "42".repeat(32), lateOpenExpiry);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await lateOpen.submissions.connect(lateOpen.owner).armFunding("0x" + "42".repeat(32));
+    await increaseTime(10n);
+    await expectCustomError(
+      lateOpen.pool.connect(lateOpen.owner).setAcceptingFunds(true),
+      lateOpen.pool,
+      "P42_FUNDING_AUTHORIZATION_EXPIRED"
+    );
+  });
+
   it("the pool refuses deposits (fund and receive) until armFunding — no ETH strandable in the open phase", async function () {
     const fixture = await deployFixture({ arm: false });
     const { owner, alice, pool, submissions } = fixture;
@@ -912,7 +938,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // The single arm call opens the deposit path.
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
@@ -972,7 +998,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await ledger.totalCreditAtoms(), 0n);
 
     // The funder arms: pool accepts ETH, finalize starts crediting.
-    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("5") });
@@ -1055,7 +1081,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await submissions.bestScoreAtoms(), 450n * SCALE);
 
     // ...and after arming, paid work earns the marginal over that frontier.
-    await submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
@@ -1129,7 +1155,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // Funder arms; pool is funded.
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32));
+    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.connect(owner).fund({ value: ethers.parseEther("1") });

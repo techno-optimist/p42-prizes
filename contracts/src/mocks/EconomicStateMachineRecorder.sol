@@ -9,6 +9,7 @@ interface IEconomicStateMachineLedger {
 /// @notice Test-only credit recorder with explicit close-guard controls.
 contract EconomicStateMachineRecorder {
     bool public fundingArmed = true;
+    uint64 public fundingAuthorizationExpiresAt = type(uint64).max;
     bool public pausedAll;
     uint64 public creditRecoveryEndsAt;
     uint256 public openSubmissionCount;
