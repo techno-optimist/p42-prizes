@@ -303,3 +303,19 @@ exact validated bytes, and writes a private immutable 30-operation plan for the
 ten launch boards. Treasury authorization, timelock arming, and pool opening
 are separated by global barriers. This command deliberately does not sign or
 broadcast; the durable multi-signer executor remains a launch gate.
+
+`p42-funding-activate` is the restart-safe one-transaction executor for that
+plan. Each run reads two independent RPCs at one common finalized block,
+revalidates target bytecode and all ten protocol states, and chooses at most one
+authorize, schedule, confirm, or execute transaction. Every new signature is
+preceded by a fresh production-authorization validation and chain-time checks;
+the raw transaction is durably journaled before broadcast. A mined receipt does
+not advance a barrier until both RPCs observe the resulting state as finalized.
+
+RPC endpoints come from `P42_PRIMARY_BASE_RPC_URL` and
+`P42_SECONDARY_BASE_RPC_URL`; both must be credential-free root HTTPS endpoints
+on different hosts. The current key adapter reads
+`P42_FUNDING_TREASURY_PRIVATE_KEY` and
+`P42_FUNDING_GOVERNANCE_PRIVATE_KEYS`. Production use still requires reviewed
+independent signer custody rather than colocating authority keys merely because
+the adapter supports it.

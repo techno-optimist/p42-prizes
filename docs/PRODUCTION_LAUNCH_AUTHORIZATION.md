@@ -75,6 +75,13 @@ the production validator as a bounded argv-only subprocess, binds the exact
 authorization and manifest bytes, pins every target runtime hash, and emits a
 private deterministic exact-ten plan. Its global barriers require all ten
 treasury authorizations before any arm operation and all ten arms before any
-pool-opening operation. The durable multi-signer transaction state machine and
-independent finalized-chain reconciliation remain required before this source
-gate can sign or broadcast production transactions.
+pool-opening operation.
+
+`p42-funding-activate` consumes that immutable plan one transaction per run. It
+reconstructs protocol state from two RPCs at one common finalized block, reruns
+the production validator before every new signature, checks chain-derived time
+both before and after validation, journals raw signed bytes before broadcast,
+and advances only after both RPCs observe the prior transition as finalized.
+The source state machine does not close the production gate by itself: a
+current-deployment rehearsal, independent signer custody review, retained
+finalized activation evidence, and a real authorization packet remain required.

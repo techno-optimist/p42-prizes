@@ -19,7 +19,10 @@ function manifest() {
     deploymentCommit: "a".repeat(40),
     deploymentConfigHash: `0x${"b".repeat(64)}`,
     roles: { treasury: address(2) },
-    governance: { signers: [address(3), address(4), address(5)], threshold: 2 },
+    governance: {
+      signers: [address(3), address(4), address(5)], threshold: "2",
+      delaySeconds: "3600", operationGracePeriodSeconds: "604800",
+    },
     contracts: { timelock: { address: address(1), runtimeCodeHash: `0x${"1".repeat(64)}` } },
     releaseEvidence: {
       releaseBindingDigest: hash("1"), capsuleDigest: hash("2"), slateDigest: hash("3"), releaseIndexDigest: hash("4"),
@@ -87,6 +90,7 @@ test("activation rejects release substitution and incomplete topology", () => {
 
 test("validator invocation is argv-only, bounded, and rejects nonzero exit", () => {
   let observed;
+  process.env.P42_FUNDING_TREASURY_PRIVATE_KEY = `0x${"7".repeat(64)}`;
   const fake = (executable, args, options) => {
     observed = { executable, args, options };
     return { status: 1, stdout: Buffer.alloc(0), stderr: Buffer.from("rejected") };
@@ -104,6 +108,12 @@ test("validator invocation is argv-only, bounded, and rejects nonzero exit", () 
   assert.equal(observed.options.maxBuffer, 32 * 1024 * 1024);
   assert.equal(observed.options.timeout, 15 * 60 * 1000);
   assert.equal(observed.options.killSignal, "SIGKILL");
+  assert.equal(observed.options.env.P42_FUNDING_TREASURY_PRIVATE_KEY, undefined);
+  assert.deepEqual(
+    Object.keys(observed.options.env).filter((name) => name !== "PYTHONPATH").sort(),
+    ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"].filter((name) => process.env[name] !== undefined).sort(),
+  );
+  delete process.env.P42_FUNDING_TREASURY_PRIVATE_KEY;
   assert.ok(observed.args.includes("production-launch-authorization-validate"));
 });
 
