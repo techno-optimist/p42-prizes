@@ -56,6 +56,8 @@
             "p42-adversarial-testnet/v1",
             "p42-operational-controls/v1",
             "p42-runner-burst/v1",
+            "p42-math-review/v1",
+            "p42-production-launch-authorization/v1",
             "p42-open-witness-launch/v1",
             "p42-open-witness-collector-authority/v1"
           ]

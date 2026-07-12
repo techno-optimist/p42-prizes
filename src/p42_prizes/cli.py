@@ -33,6 +33,10 @@ from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_eviden
 from p42_prizes.governance import GovernanceSignoffError, normalize_governance_signoff
 from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
 from p42_prizes.legal import ChainReader, LegalMemoError, normalize_legal_memo
+from p42_prizes.launch_authorization import (
+    LaunchAuthorizationError,
+    normalize_launch_authorization,
+)
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.operational_controls import (
@@ -916,6 +920,38 @@ def _cmd_operational_controls_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_production_launch_authorization_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        if trust_registry.get("environment") != "production":
+            raise LaunchAuthorizationError(
+                "production launch authorization never accepts a test trust registry"
+            )
+        now_utc = (
+            datetime.fromisoformat(args.now_utc.replace("Z", "+00:00"))
+            if args.now_utc
+            else None
+        )
+        report = normalize_launch_authorization(
+            load_evidence_file(args.authorization),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+            now_utc=now_utc,
+        )
+        _enforce_gate_schema(report, "production-launch-authorization.schema.json")
+    except (
+        AdmissionError,
+        LaunchAuthorizationError,
+        jsonschema.ValidationError,
+        ValueError,
+    ) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
 def _cmd_open_witness_promote(args: argparse.Namespace) -> int:
     try:
         report = load_evidence_file(args.report)
@@ -1265,6 +1301,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_attestation_validation_args(operational_controls)
     operational_controls.add_argument("--output")
     operational_controls.set_defaults(func=_cmd_operational_controls_validate)
+
+    launch_authorization = subparsers.add_parser(
+        "production-launch-authorization-validate",
+        help="compose every production gate into one release-bound funding authorization",
+    )
+    launch_authorization.add_argument("--authorization", required=True)
+    _add_attestation_validation_args(launch_authorization)
+    launch_authorization.add_argument("--now-utc")
+    launch_authorization.add_argument("--output")
+    launch_authorization.set_defaults(
+        func=_cmd_production_launch_authorization_validate
+    )
 
     open_witness_promote = subparsers.add_parser(
         "open-witness-promote",
