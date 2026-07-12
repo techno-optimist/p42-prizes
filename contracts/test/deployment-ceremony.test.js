@@ -91,6 +91,7 @@ describe("production deployment runbook command contract", () => {
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json",
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json.lock",
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json.tmp-123-token",
+      "deployments/base-sepolia/p42-prizes.json.deployment-record.json",
       "deployments/base-sepolia/p42-prizes.json.signed-transactions.json",
       "deployments/base-sepolia/p42-prizes.json.signed-transactions.json.lock",
       "deployments/base-sepolia/p42-prizes.json.signed-transactions.json.lock.candidate-token",

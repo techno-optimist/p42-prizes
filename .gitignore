@@ -24,6 +24,7 @@ deployer-testnet.key.json
 *.deployment-reservation.json
 *.deployment-reservation.json.lock*
 *.deployment-reservation.json.tmp-*
+*.deployment-record.json
 *.signed-transactions.json
 *.signed-transactions.json.lock*
 *.signed-transactions.json.tmp-*
