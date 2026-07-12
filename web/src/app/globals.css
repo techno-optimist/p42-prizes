@@ -3047,3 +3047,218 @@ h3 {
     text-indent: 0;
   }
 }
+
+/* Journey is an editorial experience, so its phone layout is composed rather
+   than merely collapsed. Keep these overrides last: the shared portal media
+   queries above should not be allowed to re-expand its type or spacing. */
+@media (max-width: 800px) {
+  .masthead-inner {
+    padding: 11px 0 9px;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .masthead-line {
+    width: 100%;
+    flex-wrap: nowrap;
+    gap: 19px;
+    overflow-x: auto;
+    padding: 7px 0 2px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .masthead-line::-webkit-scrollbar { display: none; }
+  .masthead-line a { flex: 0 0 auto; }
+  .masthead-status { display: none; }
+
+  .journey h2 {
+    font-size: clamp(35px, 10.4vw, 52px);
+    line-height: 1.01;
+    letter-spacing: -.04em;
+    text-wrap: balance;
+  }
+
+  .journey-hero {
+    min-height: auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .journey-hero-art {
+    order: 0;
+    width: 100%;
+    min-height: 0;
+    height: clamp(280px, 82vw, 390px);
+  }
+
+  .journey-hero-art img {
+    object-position: 28% center;
+  }
+
+  .journey-hero-art figcaption {
+    left: 16px;
+    right: auto;
+    bottom: 13px;
+    max-width: calc(100% - 32px);
+  }
+
+  .journey-hero-copy {
+    order: 1;
+    width: 100%;
+    margin-top: 0;
+    padding: 45px 24px 64px;
+    background: #e9e1d1;
+  }
+
+  .journey-hero h1 {
+    font-size: clamp(72px, 23vw, 108px);
+    line-height: .82;
+    margin: 20px 0 32px;
+  }
+
+  .journey-deck {
+    max-width: 32rem;
+    font-size: clamp(19px, 5.4vw, 23px);
+    line-height: 1.42;
+  }
+
+  .journey-opening {
+    width: min(100% - 40px, 650px);
+    padding: 88px 0 105px;
+    font-size: 19px;
+  }
+
+  .journey-dropcap {
+    font-size: clamp(30px, 8.5vw, 40px);
+  }
+
+  .journey-dropcap::first-letter {
+    font-size: 3.7em;
+  }
+
+  .journey-chapter {
+    width: min(100% - 40px, 700px);
+    padding: 82px 0;
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .journey-chapter-no { font-size: 11px; }
+  .journey-copy { font-size: 18px; }
+  .journey-copy .math-block { overflow-x: auto; overflow-y: hidden; font-size: 13px; padding-bottom: 7px; }
+
+  .journey-law,
+  .protocol-name {
+    grid-column: 2;
+    margin: 16px 0 0;
+  }
+
+  .journey-law {
+    font-size: clamp(39px, 12vw, 58px);
+  }
+
+  .certificate-theorem {
+    width: calc(100% - 28px);
+    margin-bottom: 90px;
+    padding: 34px 20px;
+    gap: 24px;
+  }
+
+  .certificate-theorem p { font-size: 16px; }
+  .certificate-equations { min-width: 0; }
+  .certificate-equations .math-block { overflow-x: auto; overflow-y: hidden; font-size: 14px; padding-bottom: 8px; }
+  .exact-arrow { font-size: 9px; display: flex; justify-content: center; align-items: center; }
+  .exact-arrow span { margin: 0 7px; }
+
+  .packing-section {
+    padding: 82px 14px;
+  }
+
+  .packing-intro { margin: 0 10px 38px; }
+  .packing-intro p { font-size: 17px; }
+  .packing-controls button { padding: 15px 14px; font-size: 15px; }
+  .packing-controls button span { margin-right: 10px; }
+  .packing-stage { min-height: 0; }
+  .packing-stage svg { padding: 9px; max-height: 92vw; }
+  .packing-readout { padding: 28px 20px 32px; }
+  .packing-readout strong { font-size: 25px; }
+
+  .journey-image-break {
+    height: clamp(300px, 84vw, 480px);
+  }
+
+  .journey-image-break img { object-position: center; }
+  .journey-image-break figcaption { left: 14px; right: auto; bottom: 12px; max-width: calc(100% - 28px); }
+
+  .honest-negative {
+    width: calc(100% - 40px);
+    padding: 88px 0 100px;
+  }
+
+  .negative-number { font-size: clamp(96px, 31vw, 150px); }
+  .honest-negative p { font-size: 18px; }
+
+  .ecosystem-statement {
+    padding: 96px 22px;
+    font-size: clamp(31px, 9vw, 45px);
+  }
+
+  .verifier-section {
+    width: calc(100% - 40px);
+    padding: 96px 0;
+  }
+
+  .verifier-copy pre { overflow-x: auto; white-space: pre; }
+  .verifier-switch { min-width: 0; }
+  .verifier-input,
+  .verifier-output { padding: 22px 18px; }
+
+  .protocol-name {
+    font-size: clamp(67px, 21vw, 100px);
+    line-height: .75;
+    padding: 20px 0;
+  }
+
+  .protocol-steps {
+    width: calc(100% - 40px);
+    padding: 70px 0 100px;
+    gap: 0;
+  }
+
+  .protocol-steps > div { padding: 22px 12px 34px; }
+  .protocol-steps h3 { margin-top: 26px; font-size: 21px; }
+
+  .journey-finale {
+    padding: 96px 22px 110px;
+  }
+
+  .finale-line {
+    margin-bottom: 72px;
+    font-size: clamp(34px, 10vw, 50px);
+  }
+
+  .closing-turn { padding: 38px 0; }
+  .closing-turn > span { font-size: clamp(38px, 11vw, 54px); }
+  .closing-turn p { font-size: 18px; }
+  .hand-sand-lines { margin: 30px 0 60px; }
+  .hand-sand-lines span { font-size: 19px; line-height: 1.35; }
+  .journey-actions { align-items: flex-start; flex-direction: column; gap: 18px; }
+}
+
+@media (max-width: 430px) {
+  .page { width: min(1140px, calc(100vw - 28px)); }
+  .masthead-inner { width: calc(100vw - 28px); }
+  .brand-name { font-size: 20px; }
+  .brand-mark-button { width: 30px; height: 30px; }
+  .journey-hero h1 { font-size: clamp(68px, 22vw, 94px); }
+  .journey-scroll { margin-top: 22px; }
+  .packing-controls { grid-template-columns: 1fr; }
+  .packing-controls button { border-right: 0; border-bottom: 1px solid rgba(238,232,220,.18); }
+  .protocol-steps { grid-template-columns: 1fr; }
+  .protocol-steps > div { border-right: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .journey-reveal { opacity: 1; transform: none; }
+}
