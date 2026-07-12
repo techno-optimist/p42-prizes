@@ -3568,7 +3568,7 @@ function publicReplayState(state) {
   return canonicalize(output);
 }
 
-export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, toBlockHash, events, replay, snapshot, checks }) {
+export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, toBlockHash, toBlockTimestamp, events, replay, snapshot, checks }) {
   const eventDigest = ethers.keccak256(
     ethers.toUtf8Bytes(stableStringify(events.map(eventDigestInput)))
   );
@@ -3602,7 +3602,7 @@ export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, t
     schema: "p42-prizes/indexer-checkpoint/v1",
     manifestBinding: binding,
     finalityPolicy,
-    range: { fromBlock, toBlock, toBlockHash },
+    range: { fromBlock, toBlock, toBlockHash, toBlockTimestamp },
     events: {
       digest: eventDigest,
       total: events.length,
@@ -3614,6 +3614,11 @@ export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, t
       openSubmissionCount: snapshot.openSubmissionCount,
       bestScoreAtoms: snapshot.bestScoreAtoms,
       poolFirstFundedAt: snapshot.pool?.firstFundedAt,
+      poolAcceptingFunds: snapshot.pool?.acceptingFunds,
+      fundingArmed: snapshot.fundingArmed,
+      authorizedFundingDigest: snapshot.authorizedFundingDigest,
+      fundingAuthorizationDigest: snapshot.fundingAuthorizationDigest,
+      fundingAuthorizationExpiresAt: snapshot.fundingAuthorizationExpiresAt,
       ledgerPausedNewActions: snapshot.ledger?.pausedNewActions,
       submissionsPausedNewActions: snapshot.submissionsPausedNewActions,
       submissionsPausedAll: snapshot.pausedAll,
@@ -3635,6 +3640,7 @@ export function buildMultiBoardCheckpoint({
   fromBlock,
   toBlock,
   toBlockHash,
+  toBlockTimestamp,
   boards,
 }) {
   if (!Array.isArray(boards) || boards.length === 0) {
@@ -3650,6 +3656,7 @@ export function buildMultiBoardCheckpoint({
       fromBlock,
       toBlock,
       toBlockHash,
+      toBlockTimestamp,
       events: board.scan.events,
       replay: board.replay,
       snapshot: board.snapshot,
@@ -3676,7 +3683,7 @@ export function buildMultiBoardCheckpoint({
     schema: "p42-prizes/indexer-checkpoint/v2",
     manifestBinding: binding,
     finalityPolicy,
-    range: { fromBlock, toBlock, toBlockHash },
+    range: { fromBlock, toBlock, toBlockHash, toBlockTimestamp },
     boards: boardReports,
     reconstruction: { ok, complete, checks },
   });
@@ -4072,6 +4079,7 @@ export async function runIndexer({
         fromBlock,
         toBlock,
         toBlockHash: anchor.hash,
+        toBlockTimestamp: anchor.timestamp,
         boards,
       });
 
@@ -4147,6 +4155,7 @@ export async function runIndexer({
       fromBlock,
       toBlock,
       toBlockHash: anchor.hash,
+      toBlockTimestamp: anchor.timestamp,
       events: scan.events,
       replay,
       snapshot,

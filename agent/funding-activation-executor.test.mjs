@@ -7,6 +7,7 @@ import { ethers } from "ethers";
 
 import {
   activationRequest,
+  buildFundingActivationCompletion,
   collectFundingActivationSnapshot,
   nextFundingActivationAction,
   signAndBroadcastActivationAction,
@@ -22,6 +23,7 @@ function plan() {
   const governanceSigners = [address(2), address(3), address(4)];
   const timelock = address(5);
   const operations = [];
+  const runtimeCodeHash = `0x${"6".repeat(64)}`;
   const boards = Array.from({ length: 10 }, (_, index) => ({
     problemId: index + 1,
     submissions: address(100 + index * 2),
@@ -29,7 +31,7 @@ function plan() {
   }));
   for (const board of boards) operations.push({
     sequence: operations.length + 1, authority: "treasury", label: `board.${board.problemId}.authorizeFunding`,
-    problemId: board.problemId, to: board.submissions, value: "0", data: `0x${"1".repeat(8)}${"a".repeat(64)}`,
+    problemId: board.problemId, to: board.submissions, expectedRuntimeCodeHash: runtimeCodeHash, value: "0", data: `0x${"1".repeat(8)}${"a".repeat(64)}`,
   });
   const authorizationLabels = operations.map((row) => row.label);
   for (const board of boards) {
@@ -39,6 +41,7 @@ function plan() {
     operations.push({
       sequence: operations.length + 1, authority: "governance", label, problemId: board.problemId,
       to: board.submissions, value: "0", data, salt,
+      expectedRuntimeCodeHash: runtimeCodeHash,
       operationId: ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [board.submissions, 0n, data, salt])),
       dependsOn: authorizationLabels,
     });
@@ -51,13 +54,17 @@ function plan() {
     operations.push({
       sequence: operations.length + 1, authority: "governance", label, problemId: board.problemId,
       to: board.pool, value: "0", data, salt,
+      expectedRuntimeCodeHash: runtimeCodeHash,
       operationId: ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [board.pool, 0n, data, salt])),
       dependsOn: armLabels,
     });
   }
   return {
     schema: "p42-funding-activation-plan/v1", planDigest: `sha256:${"b".repeat(64)}`,
-    chainId: 84532, boardCount: 10, authorizationDigest: digest,
+    chainId: 84532, network: "base-sepolia", boardCount: 10, authorizationDigest: digest,
+    manifestBytesDigest: `sha256:${"c".repeat(64)}`, deploymentCommit: "d".repeat(40),
+    authorizationBytesDigest: `sha256:${"7".repeat(64)}`,
+    deploymentConfigHash: `0x${"e".repeat(64)}`, releaseBindingDigest: `sha256:${"f".repeat(64)}`,
     authorizationExpiresAt: 2_000_000_000, treasury, timelock,
     governanceSigners, governanceThreshold: 2, governanceDelaySeconds: 3600,
     operations,
@@ -265,4 +272,27 @@ test("expiry during transaction population is rejected before raw signing", asyn
       : BigInt(inputPlan.authorizationExpiresAt) + 1n),
   }), /expired during transaction population/);
   assert.equal(signed, false);
+});
+
+test("completion artifact binds only the exact finalized all-open state", () => {
+  const inputPlan = plan();
+  const state = snapshot(inputPlan);
+  for (const board of state.boards) {
+    board.authorizedFundingDigest = chainDigest;
+    board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+    board.fundingArmed = true;
+    board.fundingAuthorizationDigest = chainDigest;
+    board.acceptingFunds = true;
+  }
+  for (const operation of inputPlan.operations.slice(10)) {
+    state.timelockOperations[operation.operationId.toLowerCase()].state = 2;
+  }
+  state.blockNumber = 42;
+  state.blockHash = `0x${"4".repeat(64)}`;
+  const completion = buildFundingActivationCompletion(inputPlan, state);
+  assert.equal(completion.status, "complete");
+  assert.equal(completion.boards.length, 10);
+  assert.match(completion.completionDigest, /^sha256:[0-9a-f]{64}$/);
+  state.boards[0].acceptingFunds = false;
+  assert.throws(() => buildFundingActivationCompletion(inputPlan, state), /requires every finalized board/);
 });

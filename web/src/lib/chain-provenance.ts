@@ -31,6 +31,9 @@ export function chainProvenanceForProblem(problem: Problem): ChainProvenance {
     indexedThroughBlock: null,
     indexedFrontierAtoms: null,
     checkpointBlock: null,
+    fundingAuthorizationDigest: null,
+    activationCompletionDigest: null,
+    activationFinalizedBlock: null,
     reconciliationOk: false,
     source: "static-portal-data",
     note:
@@ -71,6 +74,9 @@ export function validatedDonationTarget(provenance: ChainProvenance): DonationTa
   if (!provenance.registryAddress || !ADDRESS.test(provenance.registryAddress) || !provenance.problemRegistryId) return null;
   if (!provenance.deploymentCommit || !COMMIT.test(provenance.deploymentCommit)) return null;
   if (provenance.indexedThroughBlock === null || provenance.indexedThroughBlock < 0) return null;
+  if (!provenance.fundingAuthorizationDigest || !/^sha256:[0-9a-f]{64}$/.test(provenance.fundingAuthorizationDigest)) return null;
+  if (!provenance.activationCompletionDigest || !/^sha256:[0-9a-f]{64}$/.test(provenance.activationCompletionDigest)) return null;
+  if (provenance.activationFinalizedBlock === null || provenance.activationFinalizedBlock > provenance.indexedThroughBlock) return null;
 
   const explorerBase = provenance.chain === "Base"
     ? "https://basescan.org"

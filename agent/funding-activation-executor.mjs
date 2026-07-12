@@ -1,6 +1,7 @@
 import { ethers } from "ethers";
 import { existsSync, realpathSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
+import { createHash } from "node:crypto";
 
 import { reconcileSignedTransaction } from "./lib.mjs";
 import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
@@ -8,6 +9,7 @@ import { readStrictJsonFileSync, writeTrustedFileSync } from "./strict-json.mjs"
 import { acquireEnvelopeLock, releaseEnvelopeLock } from "./challenge-envelope.mjs";
 
 export const ACTIVATION_JOURNAL_SCHEMA = "p42-funding-activation-journal/v1";
+export const ACTIVATION_COMPLETION_SCHEMA = "p42-funding-activation-completion/v1";
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const JOURNAL_LIMITS = Object.freeze({
   maxBytes: 16 * 1024 * 1024,
@@ -48,6 +50,10 @@ function comparable(value) {
     return Object.fromEntries(Object.keys(value).sort().map((key) => [key, comparable(value[key])]));
   }
   return value;
+}
+
+function sha256Canonical(value) {
+  return `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
 }
 
 async function readCall(provider, to, iface, functionName, args, blockTag) {
@@ -144,6 +150,52 @@ export async function collectFundingActivationSnapshot(planValue, primaryProvide
     throw new Error("activation RPCs disagree on finalized protocol state");
   }
   return primary;
+}
+
+export function buildFundingActivationCompletion(planValue, snapshot) {
+  const plan = assertPlan(planValue);
+  const action = nextFundingActivationAction(plan, snapshot);
+  if (action.kind !== "complete") throw new Error("activation completion requires every finalized board to accept funds");
+  if (!Number.isSafeInteger(snapshot.blockNumber) || snapshot.blockNumber < 0
+      || !/^0x[0-9a-fA-F]{64}$/.test(snapshot.blockHash ?? "")
+      || snapshot.now > BigInt(plan.authorizationExpiresAt)) {
+    throw new Error("activation completion finalized anchor is invalid or late");
+  }
+  const groups = operationGroups(plan);
+  const body = {
+    schema: ACTIVATION_COMPLETION_SCHEMA,
+    status: "complete",
+    chainId: plan.chainId,
+    network: plan.network,
+    planDigest: plan.planDigest,
+    manifestBytesDigest: plan.manifestBytesDigest,
+    deploymentCommit: plan.deploymentCommit,
+    deploymentConfigHash: plan.deploymentConfigHash,
+    releaseBindingDigest: plan.releaseBindingDigest,
+    authorizationDigest: plan.authorizationDigest,
+    authorizationBytesDigest: plan.authorizationBytesDigest,
+    authorizationExpiresAt: plan.authorizationExpiresAt,
+    finalizedBlockNumber: snapshot.blockNumber,
+    finalizedBlockHash: snapshot.blockHash,
+    finalizedBlockTimestamp: Number(snapshot.now),
+    boards: snapshot.boards.map((board) => {
+      const authorize = groups.authorize.find((operation) => String(operation.problemId) === String(board.problemId));
+      const open = groups.open.find((operation) => String(operation.problemId) === String(board.problemId));
+      if (!authorize || !open) throw new Error(`activation completion cannot bind board ${board.problemId}`);
+      return {
+        problemId: String(board.problemId),
+        submissionManager: authorize.to,
+        pool: open.to,
+        poolRuntimeCodeHash: open.expectedRuntimeCodeHash,
+        authorizedFundingDigest: board.authorizedFundingDigest,
+        fundingAuthorizationDigest: board.fundingAuthorizationDigest,
+        fundingAuthorizationExpiresAt: Number(board.fundingAuthorizationExpiresAt),
+        fundingArmed: board.fundingArmed,
+        acceptingFunds: board.acceptingFunds,
+      };
+    }),
+  };
+  return Object.freeze({ ...body, completionDigest: sha256Canonical(body) });
 }
 
 function expectedDigest(plan) {

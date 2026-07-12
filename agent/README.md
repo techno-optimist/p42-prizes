@@ -295,6 +295,23 @@ solver uses the atomic `donateClaimToPool` path: no award touches the agent
 wallet, the destination sponsorship is attributed to the solver, and a failed
 destination deposit rolls the source claim back.
 
+The indexer operator signs each exact checkpoint generation before portal
+publication. Register its Ed25519 public key out of band for attestation class
+`p42-indexer-checkpoint-attestation/v1` and role
+`indexer-checkpoint-authority`, then run:
+
+```bash
+P42_INDEXER_ATTESTATION_PRIVATE_KEY=<32-byte-lowercase-hex-seed> \
+  p42-indexer-checkpoint-attest \
+  --trusted-root /srv/p42 \
+  --checkpoint /srv/p42/indexer-checkpoint.json \
+  --output /srv/p42/indexer-checkpoint-attestation.json
+```
+
+The private seed stays on the indexer host. The portal consumes only the
+detached signature, exact checkpoint bytes, and separately pinned production
+trust registry.
+
 ## Funding activation plan
 
 `p42-funding-activation-plan` is the non-signing production activation

@@ -589,7 +589,7 @@ function openWitnessFixture() {
       contracts: { timelock: manifest.contracts.timelock, registry: manifest.contracts.registry },
       boards: { "1": board },
     },
-    finalityPolicy: POLICY, fromBlock: 1, toBlock: arm.blockNumber + 5, toBlockHash: hash(1200),
+    finalityPolicy: POLICY, fromBlock: 1, toBlock: arm.blockNumber + 5, toBlockHash: hash(1200), toBlockTimestamp: 1_000,
     boards: [{ problem, scan: { events }, replay, snapshot, checks }],
   });
   const revealInterface = new ethers.Interface([
@@ -1141,6 +1141,7 @@ describe("P42 deterministic indexer replay", () => {
       fromBlock: 1,
       toBlock: 21,
       toBlockHash: hash(1021),
+      toBlockTimestamp: 1_000,
       events,
       replay,
       snapshot,
@@ -1194,6 +1195,7 @@ describe("P42 deterministic indexer replay", () => {
       fromBlock: 1,
       toBlock: 21,
       toBlockHash: hash(1021),
+      toBlockTimestamp: 1_000,
       boards: [
         {
           problem: { problemId: "1", problemSlug: "hadamard-mini" },

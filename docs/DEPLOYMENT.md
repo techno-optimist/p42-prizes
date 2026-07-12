@@ -35,6 +35,29 @@ NEXT_PUBLIC_BASE_PATH=/prizes
 P42_PORTAL_STATE_PATH=/app/data/portal-state.json
 ```
 
+Donation addresses remain hidden unless one immutable artifact generation is
+fully configured. Mount the files read-only and set all of the following; a
+missing, partial, stale, or mismatched set falls back to read-only portal data:
+
+```bash
+P42_DEPLOYMENT_MANIFEST_PATH=/app/release/deployment-manifest.json
+P42_INDEXER_CHECKPOINT_PATH=/app/release/indexer-checkpoint.json
+P42_INDEXER_CHECKPOINT_ATTESTATION_PATH=/app/release/indexer-checkpoint-attestation.json
+P42_LAUNCH_AUTHORIZATION_PATH=/app/release/launch-authorization.json
+P42_FUNDING_ACTIVATION_PLAN_PATH=/app/release/funding-activation-plan.json
+P42_FUNDING_ACTIVATION_COMPLETION_PATH=/app/release/funding-activation-completion.json
+P42_ATTESTATION_TRUST_REGISTRY_PATH=/app/release/production-trust-registry.json
+P42_ATTESTATION_TRUST_REGISTRY_SHA256=sha256:<canonical-registry-digest>
+P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS=300
+```
+
+`P42_ATTESTATION_TRUST_REGISTRY_SHA256` is an out-of-band secret/configuration
+pin, not a value copied from the registry artifact. The portal recomputes the
+authorization digest, verifies all three Ed25519 launch-authority signatures
+and the exact checkpoint bytes against that pinned production registry, and then requires every one of the ten
+activated pools to agree with the fresh finalized indexer checkpoint before it
+publishes any funding target.
+
 Disk:
 
 ```bash

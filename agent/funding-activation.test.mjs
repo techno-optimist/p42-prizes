@@ -15,7 +15,7 @@ function manifest() {
     schema: "p42-prizes/deployment-manifest/v2",
     releaseMode: "production",
     status: "governance-setup-complete",
-    network: { name: "base-sepolia", chainId: 84532 },
+    network: { name: "baseSepolia", chainId: 84532 },
     deploymentCommit: "a".repeat(40),
     deploymentConfigHash: `0x${"b".repeat(64)}`,
     roles: { treasury: address(2) },
