@@ -328,7 +328,8 @@ Deployment and setup leave both `fundingArmed=false` and
 `acceptingFunds=false`. Do not add either call to the setup bundle. After the
 seed/admission review, source verification, adversarial campaign,
 reconciliation, and required human gates are complete, owners separately
-review and timelock `submissions.armFunding()` no earlier than the manager's
+review and timelock `submissions.armFunding(authorizationDigest)` no earlier
+than the manager's
 immutable `armNotBefore` timestamp, then
 `pool.setAcceptingFunds(true)`. Funding occurs only after those later operations
 execute and are independently checked.

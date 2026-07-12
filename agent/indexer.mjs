@@ -81,7 +81,7 @@ function immutableValuesFromConstructor(contract, constructorArgs, { blockTimest
   const names = new Set(contract.immutableBindings.map(({ name }) => name)); const values = {};
   inputs.forEach((input, index) => { const name = input.name.replace(/_$/, ""); if (names.has(name)) values[name] = constructorArgs[index]; });
   if (contract.name === "P42MultisigTimelock") { const delay = BigInt(constructorArgs[inputs.findIndex(({ name }) => name === "delaySeconds_")]); values.delay = delay; values.overrideDelay = delay * 2n; values.operationGracePeriod = 604800n; }
-  if (contract.name === "P42SubmissionManager") { if (!Number.isSafeInteger(blockTimestamp)) throw new Error("trusted deployment block timestamp is required"); values.deployedAt = blockTimestamp; values.armNotBefore = BigInt(blockTimestamp) + BigInt(constructorArgs[inputs.findIndex(({ name }) => name === "challengeWindowSeconds_")]); }
+  if (contract.name === "P42SubmissionManager") { if (!Number.isSafeInteger(blockTimestamp)) throw new Error("trusted deployment block timestamp is required"); values.deployedAt = blockTimestamp; values.armNotBefore = BigInt(blockTimestamp) + BigInt(constructorArgs[inputs.findIndex(({ name }) => name === "challengeWindowSeconds_")]); values.fundingAuthorizer = constructorArgs[inputs.findIndex(({ name }) => name === "treasury_")]; }
   return values;
 }
 
@@ -154,6 +154,7 @@ export const EVENT_CATALOG = Object.freeze({
     "Claimed",
     "ClaimedTo",
     "SolverClaimSettled",
+    "WinningsDonated",
     "SponsorRefunded",
     "FeeAccrued",
     "FeeClaimed",
@@ -177,6 +178,7 @@ export const EVENT_CATALOG = Object.freeze({
     "AllActionsPaused",
     "AllActionsPauseRecovered",
     "FundingArmed",
+    "FundingAuthorized",
     "FinalizeVoided",
     "CreditRecoveryWindowAdvanced",
     "CreditRecoveryWindowRestored",
@@ -1530,6 +1532,7 @@ function newReplayState(config, coverage) {
       accountedBalance: 0n,
       totalFunded: 0n,
       totalClaimed: 0n,
+      totalWinningsDonated: 0n,
       totalGrossClaimed: 0n,
       totalFeeAccrued: 0n,
       totalFeePaid: 0n,
@@ -1561,6 +1564,8 @@ function newReplayState(config, coverage) {
     bestScoreAtoms: config.seedScoreAtoms,
     fundingArmed: false,
     armedAt: 0n,
+    fundingAuthorizationDigest: ZERO_HASH,
+    authorizedFundingDigest: ZERO_HASH,
     pausedNewActions: false,
     pausedAll: false,
     creditRecoveryEndsAt: 0n,
@@ -1704,6 +1709,14 @@ function replayPoolEvent(state, event) {
     }
     case "ClaimedTo":
       break;
+    case "WinningsDonated": {
+      const amount = asBigInt(getArg(event, "donatedAmount"));
+      invariant(state.pool.accountedBalance >= amount, "pool accounted balance underflow on winnings donation");
+      state.pool.accountedBalance -= amount;
+      state.pool.totalClaimed += amount;
+      state.pool.totalWinningsDonated += amount;
+      break;
+    }
     case "SolverClaimSettled": {
       const paired = state.claimConsumptionByTx[txKey(event)] ?? {};
       paired.pool = {
@@ -1854,10 +1867,24 @@ function replaySubmissionEvent(state, event) {
           asBigInt(event.blockTimestamp) + state.config.challengeWindowSeconds;
       }
       return;
+    case "FundingAuthorized":
+      invariant(!state.fundingArmed, "FundingAuthorized observed after FundingArmed");
+      state.authorizedFundingDigest = getArg(event, "authorizationDigest");
+      invariant(String(state.authorizedFundingDigest).toLowerCase() !== ZERO_HASH, "FundingAuthorized digest is zero");
+      return;
     case "FundingArmed":
       invariant(!state.fundingArmed, "duplicate FundingArmed event");
       state.fundingArmed = true;
       state.armedAt = asBigInt(getArg(event, "at"));
+      state.fundingAuthorizationDigest = getArg(event, "authorizationDigest");
+      invariant(
+        String(state.fundingAuthorizationDigest).toLowerCase() !== ZERO_HASH,
+        "FundingArmed authorization digest is zero",
+      );
+      invariant(
+        String(state.fundingAuthorizationDigest).toLowerCase() === String(state.authorizedFundingDigest).toLowerCase(),
+        "FundingArmed digest does not match FundingAuthorized",
+      );
       return;
     case "ChallengeManagerSet":
       state.challengeManager = getArg(event, "challengeManager");
@@ -2766,6 +2793,12 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("submissions.bestScoreAtoms", state.bestScoreAtoms, snapshot.bestScoreAtoms),
     check("submissions.fundingArmed", state.fundingArmed, snapshot.fundingArmed),
     check("submissions.armedAt", state.armedAt, snapshot.armedAt),
+    check(
+      "submissions.fundingAuthorizationDigest",
+      state.fundingAuthorizationDigest,
+      snapshot.fundingAuthorizationDigest,
+    ),
+    check("submissions.authorizedFundingDigest", state.authorizedFundingDigest, snapshot.authorizedFundingDigest),
     check("submissions.pausedNewActions", state.pausedNewActions, snapshot.submissionsPausedNewActions),
     check("submissions.pausedAll", state.pausedAll, snapshot.pausedAll),
     check("submissions.expiryGraceUntil", state.expiryGraceUntil, snapshot.expiryGraceUntil),
@@ -2777,6 +2810,7 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("pool.problemId", state.pool.problemId, snapshot.pool.problemId),
     check("pool.totalFunded", state.pool.totalFunded, snapshot.pool.totalFunded),
     check("pool.totalClaimed", state.pool.totalClaimed, snapshot.pool.totalClaimed),
+    check("pool.totalWinningsDonated", state.pool.totalWinningsDonated, snapshot.pool.totalWinningsDonated),
     check("pool.totalGrossClaimed", state.pool.totalGrossClaimed, snapshot.pool.totalGrossClaimed),
     check("pool.totalFeeAccrued", state.pool.totalFeeAccrued, snapshot.pool.totalFeeAccrued),
     check("pool.totalFeePaid", state.pool.totalFeePaid, snapshot.pool.totalFeePaid),
@@ -3099,6 +3133,8 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     bestScoreAtoms,
     fundingArmed,
     armedAt,
+    fundingAuthorizationDigest,
+    authorizedFundingDigest,
     submissionsPausedNewActions,
     pausedAll,
     expiryGraceUntil,
@@ -3109,6 +3145,8 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     submissions.bestScoreAtoms(...atBlock),
     submissions.fundingArmed(...atBlock),
     submissions.armedAt(...atBlock),
+    submissions.fundingAuthorizationDigest(...atBlock),
+    submissions.authorizedFundingDigest(...atBlock),
     submissions.pausedNewActions(...atBlock),
     submissions.pausedAll(...atBlock),
     submissions.expiryGraceUntil(...atBlock),
@@ -3121,6 +3159,8 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     bestScoreAtoms,
     fundingArmed,
     armedAt,
+    fundingAuthorizationDigest,
+    authorizedFundingDigest,
     submissionsPausedNewActions,
     pausedAll,
     expiryGraceUntil,
@@ -3133,6 +3173,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       problemId: await pool.problemId(...atBlock),
       totalFunded: await pool.totalFunded(...atBlock),
       totalClaimed: await pool.totalClaimed(...atBlock),
+      totalWinningsDonated: await pool.totalWinningsDonated(...atBlock),
       totalGrossClaimed: await pool.totalGrossClaimed(...atBlock),
       totalFeeAccrued: await pool.totalFeeAccrued(...atBlock),
       totalFeePaid: await pool.totalFeePaid(...atBlock),
@@ -3314,6 +3355,7 @@ export async function collectRuntimeConfigChecks(contracts, manifest, blockTag =
   await add("ledger.creditRecorder", manifest.contracts.submissions.address, ledger.creditRecorder(...atBlock));
   await add("submissions.owner", manifest.roles.owner, submissions.owner(...atBlock));
   await add("submissions.treasury", manifest.roles.treasury, submissions.treasury(...atBlock));
+  await add("submissions.fundingAuthorizer", manifest.roles.treasury, submissions.fundingAuthorizer(...atBlock));
   await add("submissions.pool", manifest.contracts.pool.address, submissions.pool(...atBlock));
   await add("submissions.ledger", manifest.contracts.ledger.address, submissions.ledger(...atBlock));
   await add("submissions.alphaBps", asBigInt(parameters.alphaBps), submissions.alphaBps(...atBlock));

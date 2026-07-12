@@ -31,7 +31,7 @@ const IMMUTABLE_SEMANTICS = Object.freeze({
   P42RolloverVault: Object.freeze([]),
   P42BountyPool: Object.freeze(["owner", "fundingCap"]),
   P42PayoutLedger: Object.freeze(["owner", "pool", "treasury", "feeBps", "earliestCloseTimestamp", "closeByTimestamp"]),
-  P42SubmissionManager: Object.freeze(["owner", "treasury", "pool", "ledger", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "deployedAt", "armNotBefore", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"]),
+  P42SubmissionManager: Object.freeze(["owner", "treasury", "fundingAuthorizer", "pool", "ledger", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "deployedAt", "armNotBefore", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"]),
   P42ChallengeManager: Object.freeze(["owner", "resolver", "treasury", "submissionManager", "challengeWindowSeconds", "betaBps", "rerunCostMultiplierBps", "minCounterBondWei", "rerunCostWei", "resolverDecisionBondWei", "resolverFraudWindowSeconds"]),
   P42ProblemRegistry: Object.freeze(["owner"]),
 });
@@ -286,6 +286,8 @@ export function immutableValuesFromConstructor(contract, constructorArgs, { bloc
     values.deployedAt = blockTimestamp;
     const windowIndex = constructor.inputs.findIndex(({ name }) => name === "challengeWindowSeconds_");
     values.armNotBefore = BigInt(blockTimestamp) + BigInt(constructorArgs[windowIndex]);
+    const treasuryIndex = constructor.inputs.findIndex(({ name }) => name === "treasury_");
+    values.fundingAuthorizer = constructorArgs[treasuryIndex];
   }
   return values;
 }

@@ -127,7 +127,7 @@ def _support(tmp_path: Path) -> tuple[dict, AttestationFixture, dict, FixtureOpe
         "commit": [{"event_signature": "SubmissionCommitted(uint256,address)", "submission_id": 42, "solver": witness["solver"]}],
         "reveal": [{"event_signature": "SubmissionRevealed(uint256,string,bytes32,int256)", "submission_id": 42, "solution_cid": cid, "da_hash": witness["da_hash"], "score_atoms": 900}],
         "finalize": [{"event_signature": "SubmissionFinalized(uint256,uint256,int256)", "submission_id": 42, "credit_atoms": 0, "best_score_atoms": 900}],
-        "arm": [{"event_signature": "FundingArmed()"}],
+        "arm": [{"event_signature": "FundingArmed(uint64,bytes32)"}],
     }
     snapshot = {
         "schema_version": "p42-open-witness-collector-proof/v1",

@@ -17,6 +17,13 @@ interface ISubmissionManagerArmed {
     function fundingArmed() external view returns (bool);
 }
 
+interface IP42DonationPool {
+    function fundFor(address sponsor) external payable;
+    function registry() external view returns (address);
+    function problemId() external view returns (uint256);
+    function acceptingFunds() external view returns (bool);
+}
+
 interface IP42ProblemFreezeRegistry {
     function explicitlyFrozen(uint256 problemId) external view returns (bool);
     function problemPool(uint256 problemId) external view returns (address);
@@ -42,6 +49,7 @@ contract P42BountyPool {
     error P42_FUNDING_CAP_EXCEEDED(uint256 cap, uint256 attemptedTotal);
     error P42_NOTHING_TO_CLAIM();
     error P42_RECIPIENT_ZERO();
+    error P42_INVALID_DONATION_POOL();
     error P42_POOL_CLOSED();
     error P42_ACCOUNTING_UNDERFLOW(uint256 available, uint256 requested);
     error P42_TRANSFER_FAILED();
@@ -65,8 +73,9 @@ contract P42BountyPool {
     /// @notice Legitimate, accounted ETH only. Forced ETH is never included.
     uint256 public accountedBalance;
     uint256 public totalFunded;
-    /// @notice Net ETH delivered to solvers after their individual claim fees.
+    /// @notice Net ETH paid or directed by solvers after individual claim fees.
     uint256 public totalClaimed;
+    uint256 public totalWinningsDonated;
     uint256 public totalGrossClaimed;
     uint256 public totalFeeAccrued;
     uint256 public totalFeePaid;
@@ -107,6 +116,13 @@ contract P42BountyPool {
         address indexed recipient,
         uint256 grossAmount,
         uint256 solverPayment,
+        uint256 feeAmount
+    );
+    event WinningsDonated(
+        address indexed solver,
+        address indexed destinationPool,
+        uint256 grossAmount,
+        uint256 donatedAmount,
         uint256 feeAmount
     );
     event FeePaid(address indexed to, uint256 amount);
@@ -195,6 +211,11 @@ contract P42BountyPool {
         _fund(msg.sender);
     }
 
+    function fundFor(address sponsor) external payable {
+        if (sponsor == address(0)) revert P42_RECIPIENT_ZERO();
+        _fund(sponsor);
+    }
+
     function funded() external view returns (uint256) {
         return accountedBalance;
     }
@@ -216,6 +237,43 @@ contract P42BountyPool {
     function claimTo(address payable recipient) external nonReentrant {
         if (recipient == address(0)) revert P42_RECIPIENT_ZERO();
         _claimTo(msg.sender, recipient);
+    }
+
+    /// @notice Consume the caller's matured award and atomically sponsor a
+    /// different active P42 pool while retaining solver attribution.
+    function donateClaimToPool(address destinationPool) external nonReentrant {
+        if (destinationPool == address(0) || destinationPool == address(this)) {
+            revert P42_INVALID_DONATION_POOL();
+        }
+        address registry_ = registry;
+        if (registry_ == address(0)) revert P42_REGISTRY_NOT_SET();
+        IP42DonationPool destination = IP42DonationPool(destinationPool);
+        uint256 destinationProblemId = destination.problemId();
+        if (
+            destination.registry() != registry_ || destinationProblemId == 0
+                || IP42ProblemFreezeRegistry(registry_).problemPool(destinationProblemId) != destinationPool
+                || !IP42ProblemFreezeRegistry(registry_).explicitlyFrozen(destinationProblemId)
+                || !destination.acceptingFunds()
+        ) {
+            revert P42_INVALID_DONATION_POOL();
+        }
+        address ledger_ = ledger;
+        if (ledger_ == address(0)) revert P42_LEDGER_NOT_SET();
+        (uint256 grossAmount, uint256 feeAmount) = IP42PayoutLedger(ledger_).consumeClaim(msg.sender);
+        if (grossAmount == 0) revert P42_NOTHING_TO_CLAIM();
+        uint256 donatedAmount = grossAmount - feeAmount;
+        _debitAccounted(donatedAmount);
+        totalGrossClaimed += grossAmount;
+        totalClaimed += donatedAmount;
+        totalWinningsDonated += donatedAmount;
+        totalFeeAccrued += feeAmount;
+        accruedFeeBalance += feeAmount;
+        if (donatedAmount != 0) {
+            destination.fundFor{value: donatedAmount}(msg.sender);
+        }
+        if (feeAmount != 0) emit FeeAccrued(msg.sender, feeAmount, accruedFeeBalance);
+        emit WinningsDonated(msg.sender, destinationPool, grossAmount, donatedAmount, feeAmount);
+        emit SolverClaimSettled(msg.sender, destinationPool, grossAmount, donatedAmount, feeAmount);
     }
 
     function sponsorRefund() external nonReentrant {
