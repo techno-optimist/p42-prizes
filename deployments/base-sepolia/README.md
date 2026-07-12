@@ -11,24 +11,10 @@ deployments. A real deployment must commit `p42-prizes.json` with:
 - indexer start block and latest reconciliation report pointer
 - source verification status and explorer links
 
-Generate it from `contracts/`:
-
-```bash
-BASE_SEPOLIA_RPC_URL=... \
-BASE_SEPOLIA_PRIVATE_KEY=... \
-P42_TREASURY_ADDRESS=0x... \
-P42_RESOLVER_ADDRESS=0x... \
-P42_PROBLEM_SLUG=hadamard-mini \
-P42_VERIFIER_VERSION=0.1.1 \
-P42_PROBLEM_SPEC_HASH=0x... \
-P42_VERIFIER_SOURCE_DIGEST=sha256:<64-lowercase-hex> \
-P42_VERIFIER_SOURCE_HASH=0x... \
-P42_VERIFIER_IMAGE_DIGEST=sha256:<64-lowercase-hex> \
-P42_VERIFIER_IMAGE_HASH=0x... \
-P42_ADMISSION_MATRIX_HASH=0x... \
-P42_METADATA_URI=ipfs://... \
-npm run deploy:base-sepolia
-```
+The only production procedure is the 43-contract, timelock-owned, exact-ten
+ceremony in [`docs/MULTIBOARD_CEREMONY.md`](../../docs/MULTIBOARD_CEREMONY.md)
+and [`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md). Do not use the legacy
+single-board environment flow as Gate 1 evidence.
 
 Fresh ceremonies require `P42_VERIFIER_IMAGE_DIGEST` to be the bare canonical
 `sha256:<64 lowercase hex>` digest, not a registry reference, tag, or
@@ -50,15 +36,17 @@ Optional parameter overrides include `P42_RESOLVER_DECISION_BOND_WEI` and
 `P42_RESOLVER_FRAUD_WINDOW_SECONDS`; the example manifest uses a 24-hour
 resolver-bond fraud window.
 
-The deployer is the immutable owner in the current scaffold. Real ETH remains
-blocked until the governance/multisig design replaces that testnet shortcut and
-the manifest points at verified source plus an indexer reconciliation report.
+The deployed `P42MultisigTimelock` is the immutable owner of every child in the
+production path. The deployer must be role-separated from guardian, treasury,
+and resolver, and it receives no child ownership.
 
 After deployment, generate a read-only reconciliation report:
 
-```bash
-BASE_SEPOLIA_RPC_URL=... npm run reconcile:base-sepolia
-```
+Reconciliation requires the completed production manifest, two independently
+operated RPCs, the release capsule, a hash-pinned explorer dossier, trusted
+explorer-verification operators, and an Etherscan API key. Use the complete
+command in [`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md); a primary-RPC-only
+invocation is intentionally rejected.
 
 The default output is
 `deployments/base-sepolia/reconciliation/latest.json`. It reconstructs event

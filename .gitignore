@@ -19,6 +19,20 @@ contracts/cache/
 *.key.json
 deployer-testnet.key.json
 
+# Private crash-recovery journals. Strict readers validate these directly;
+# they must not make the frozen source checkout appear dirty during recovery.
+*.deployment-reservation.json
+*.deployment-reservation.json.lock*
+*.deployment-reservation.json.tmp-*
+*.deployment-record.json
+*.signed-transactions.json
+*.signed-transactions.json.lock*
+*.signed-transactions.json.tmp-*
+*.governance-operations.json
+*.governance-operations.json.lock*
+*.governance-operations.json.tmp-*
+deployments/base-sepolia/.p42-prizes.json.*.tmp
+
 # Agent runtime output (transcripts, local DA blobs, archives) — not source.
 agent/transcripts/
 agent/transcripts-*/

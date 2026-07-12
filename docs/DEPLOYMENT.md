@@ -105,7 +105,7 @@ independent governance signers schedule, confirm, and execute those bundles;
 then a keyless continuation verifies finalized on-chain completion.
 
 For a fresh public prize deployment, the canonical route is
-`P42_DEPLOY_MODE=deploy-multiboard` and the typed procedure in
+`P42_DEPLOY_MODE=deploy-multiboard-production` and the typed procedure in
 [MULTIBOARD_CEREMONY.md](MULTIBOARD_CEREMONY.md). It refuses to broadcast until
 every board passes local `admit-ready` and the resulting admission-matrix digest
 is bound to the registry hash. The environment-variable single-board route
@@ -128,8 +128,20 @@ transactions:
 ```bash
 P42_DEPLOY_MODE=inspect-reservation \
 P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
+P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
+P42_MULTIBOARD_CEREMONY_CONFIG=... \
+P42_PRODUCTION_SLATE_PATH=... \
+P42_RELEASE_CAPSULE=... \
 npx hardhat run scripts/deploy-base-sepolia.js
 ```
+
+Inspect mode independently reconstructs the expected identity from the clean
+frozen checkout, exact ceremony config, release slate, release capsule,
+expected deployer, and manifest path before opening the private sibling
+reservation. It does not trust identity fields recovered from the journal. A
+wrong checkout or input, malformed, relocated, permissive, linked, or
+identity-tampered journal fails closed. Do not remove the reservation to make a
+retry proceed.
 
 The script intentionally never clears an incomplete reservation. Reconcile the
 recorded transactions and manifest destination before any owner-approved
@@ -276,6 +288,16 @@ Run continuation without a private key:
 ```bash
 env -u BASE_SEPOLIA_PRIVATE_KEY \
   BASE_SEPOLIA_RPC_URL=... \
+  P42_PRIMARY_RPC_OPERATOR_ID=... \
+  P42_SECONDARY_BASE_SEPOLIA_RPC_URL=... \
+  P42_SECONDARY_RPC_OPERATOR_ID=... \
+  P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
+  P42_EXPLORER_DOSSIER_PATH=... \
+  P42_EXPLORER_DOSSIER_SHA256=sha256:... \
+  P42_RELEASE_CAPSULE=... \
+  P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES=0x...,0x... \
+  P42_ROLE_ACCEPTANCE_PACKET=... \
+  ETHERSCAN_API_KEY=... \
   P42_DEPLOY_MODE=continue \
   npm run deploy:base-sepolia
 ```

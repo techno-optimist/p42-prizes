@@ -30,7 +30,7 @@ operation tries to register a different ID.
 
 ## Typed Input
 
-`P42_DEPLOY_MODE=deploy-multiboard` reads a strict JSON file named by
+`P42_DEPLOY_MODE=deploy-multiboard-production` reads a strict JSON file named by
 `P42_MULTIBOARD_CEREMONY_CONFIG`. Its root shape is:
 
 ```json
