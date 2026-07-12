@@ -9,7 +9,10 @@ import { readStrictJsonFile } from "../../agent/strict-json.mjs";
 export const RELEASE_CAPSULE_SCHEMA = "p42-prizes/release-capsule/v1";
 export const PRODUCTION_CONTRACTS = Object.freeze([
   "P42MultisigTimelock",
+  "P42ChallengeManagerFactory",
+  "P42SubmissionManagerFactory",
   "P42RolloverVault",
+  "P42ResolverQuorum",
   "P42BountyPool",
   "P42PayoutLedger",
   "P42SubmissionManager",
@@ -28,7 +31,10 @@ const STRICT_JSON = Object.freeze({ maxBytes: 8 * 1024 * 1024, maxDepth: 256, tr
 
 const IMMUTABLE_SEMANTICS = Object.freeze({
   P42MultisigTimelock: Object.freeze(["delay", "overrideDelay", "operationGracePeriod"]),
+  P42ChallengeManagerFactory: Object.freeze([]),
+  P42SubmissionManagerFactory: Object.freeze([]),
   P42RolloverVault: Object.freeze([]),
+  P42ResolverQuorum: Object.freeze(["owner", "expectedTreasury", "expectedDecisionBondWei", "managerFactory", "threshold"]),
   P42BountyPool: Object.freeze(["owner", "fundingCap"]),
   P42PayoutLedger: Object.freeze(["owner", "pool", "treasury", "feeBps", "earliestCloseTimestamp", "closeByTimestamp"]),
   P42SubmissionManager: Object.freeze(["owner", "treasury", "fundingAuthorizer", "pool", "ledger", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "deployedAt", "armNotBefore", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"]),
@@ -201,7 +207,7 @@ function validateRanges(contract) {
 export function validateReleaseCapsule(capsule) {
   exactKeys(capsule, ["schema", "gitCommit", "contracts", "buildInfos", "capsuleDigest"], "release capsule");
   if (capsule.schema !== RELEASE_CAPSULE_SCHEMA || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !DIGEST_RE.test(capsule.capsuleDigest)) throw new Error("invalid release capsule identity");
-  if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CONTRACTS.join("\0")) throw new Error("release capsule must contain exactly the seven production contracts in canonical order");
+  if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CONTRACTS.join("\0")) throw new Error("release capsule must contain exactly the ten production contracts in canonical order");
   const infos = new Map(capsule.buildInfos.map((info) => [info.id, info]));
   if (infos.size !== capsule.buildInfos.length) throw new Error("duplicate build-info identity");
   for (const info of capsule.buildInfos) {

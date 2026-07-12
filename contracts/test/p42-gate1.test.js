@@ -274,7 +274,7 @@ describe("P42 Gate 1 contract scaffold", function () {
   }
 
   async function slashResolverBond(fixture, submissionId, proofHash) {
-    return fixture.challenges.connect(fixture.owner).slashResolverBond(
+    return fixture.challenges.connect(fixture.resolver).slashResolverBond(
       submissionId,
       await fixture.challenges.challengeInstanceHashOf(submissionId),
       proofHash,
@@ -858,7 +858,7 @@ describe("P42 Gate 1 contract scaffold", function () {
       "P42_CHALLENGE_INSTANCE_MISMATCH",
     );
     await expectCustomError(
-      challenges.connect(owner).slashResolverBond(
+      challenges.connect(resolver).slashResolverBond(
         submissionId,
         staleChallengeInstanceHash,
         ethers.id("stale-proof"),
@@ -951,6 +951,15 @@ describe("P42 Gate 1 contract scaffold", function () {
       "P42_EMPTY_FRAUD_PROOF_HASH"
     );
     const slashProof = ethers.keccak256(ethers.toUtf8Bytes("resolver transcript fraud proof"));
+    await expectCustomError(
+      challenges.connect(owner).slashResolverBond(
+        submissionId,
+        await challenges.challengeInstanceHashOf(submissionId),
+        slashProof,
+      ),
+      challenges,
+      "P42_NOT_RESOLVER",
+    );
     await slashResolverBond(fixture, submissionId, slashProof);
     const slashed = await challenges.resolverBonds(submissionId);
     assert.equal(slashed.amountWei, 0n);

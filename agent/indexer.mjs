@@ -32,7 +32,18 @@ import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimesta
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
-const PRODUCTION_CAPSULE_CONTRACTS = ["P42MultisigTimelock", "P42RolloverVault", "P42BountyPool", "P42PayoutLedger", "P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"];
+const PRODUCTION_CAPSULE_CONTRACTS = [
+  "P42MultisigTimelock",
+  "P42ChallengeManagerFactory",
+  "P42SubmissionManagerFactory",
+  "P42RolloverVault",
+  "P42ResolverQuorum",
+  "P42BountyPool",
+  "P42PayoutLedger",
+  "P42SubmissionManager",
+  "P42ChallengeManager",
+  "P42ProblemRegistry",
+];
 
 function capsuleCanonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -1542,6 +1553,8 @@ function newReplayState(config, coverage) {
       totalForcedEthRecovered: 0n,
       totalResidualPaid: 0n,
       sponsorshipOf: {},
+      sponsorshipFundings: [],
+      winningsDonations: [],
     },
     ledger: {
       pausedNewActions: false,
@@ -1692,9 +1705,17 @@ function replayPoolEvent(state, event) {
       break;
     }
     case "SponsorshipFunded": {
+      const payer = addressKey(getArg(event, "payer"));
       const sponsor = getArg(event, "sponsor");
+      const amount = asBigInt(getArg(event, "amount"));
       const principal = asBigInt(getArg(event, "sponsorPrincipal"));
       state.pool.sponsorshipOf[addressKey(sponsor)] = principal;
+      state.pool.sponsorshipFundings.push({
+        transactionHash: txKey(event),
+        payer,
+        sponsor: addressKey(sponsor),
+        amount,
+      });
       invariant(
         asBigInt(getArg(event, "accountedBalance")) === state.pool.accountedBalance,
         "SponsorshipFunded accounted balance does not match Funded"
@@ -1711,18 +1732,37 @@ function replayPoolEvent(state, event) {
     case "ClaimedTo":
       break;
     case "WinningsDonated": {
+      const solver = addressKey(getArg(event, "solver"));
+      const destinationPool = addressKey(getArg(event, "destinationPool"));
+      const grossAmount = asBigInt(getArg(event, "grossAmount"));
       const amount = asBigInt(getArg(event, "donatedAmount"));
+      const feeAmount = asBigInt(getArg(event, "feeAmount"));
+      invariant(grossAmount === amount + feeAmount, "winnings donation gross does not equal donated plus fee");
       invariant(state.pool.accountedBalance >= amount, "pool accounted balance underflow on winnings donation");
       state.pool.accountedBalance -= amount;
       state.pool.totalClaimed += amount;
       state.pool.totalWinningsDonated += amount;
+      state.pool.winningsDonations.push({
+        transactionHash: txKey(event),
+        solver,
+        destinationPool,
+        grossAmount,
+        donatedAmount: amount,
+        feeAmount,
+      });
+      const paired = state.claimConsumptionByTx[txKey(event)] ?? {};
+      invariant(!paired.donation, `WinningsDonated duplicated in ${txKey(event)}`);
+      paired.donation = { solver, destinationPool, grossAmount, solverPayment: amount, feeAmount };
+      state.claimConsumptionByTx[txKey(event)] = paired;
       break;
     }
     case "SolverClaimSettled": {
       const paired = state.claimConsumptionByTx[txKey(event)] ?? {};
       paired.pool = {
         solver: addressKey(getArg(event, "solver")),
+        recipient: addressKey(getArg(event, "recipient")),
         grossAmount: asBigInt(getArg(event, "grossAmount")),
+        solverPayment: asBigInt(getArg(event, "solverPayment")),
         feeAmount: asBigInt(getArg(event, "feeAmount")),
       };
       state.pool.totalGrossClaimed += paired.pool.grossAmount;
@@ -2318,6 +2358,16 @@ function validatePairedEvents(state) {
         claim.pool.feeAmount === claim.ledger.feeAmount,
       `claim event pair mismatch in ${transactionHash}`
     );
+    if (claim.donation) {
+      invariant(
+        claim.donation.solver === claim.pool.solver &&
+          claim.donation.destinationPool === claim.pool.recipient &&
+          claim.donation.grossAmount === claim.pool.grossAmount &&
+          claim.donation.solverPayment === claim.pool.solverPayment &&
+          claim.donation.feeAmount === claim.pool.feeAmount,
+        `winnings donation settlement mismatch in ${transactionHash}`,
+      );
+    }
   }
   for (const [transactionHash, forced] of Object.entries(state.forcedRecoveryByTx)) {
     invariant(forced.recovered && forced.swept, `forced ETH event pair incomplete in ${transactionHash}`);
@@ -3671,6 +3721,7 @@ export function buildMultiBoardCheckpoint({
       reconstruction: report.reconstruction,
     };
   });
+  attachCrossPoolDonationProvenance(boardReports, binding);
   const checks = boards.flatMap((board) =>
     board.checks.map((check) => ({
       ...check,
@@ -3688,6 +3739,63 @@ export function buildMultiBoardCheckpoint({
     reconstruction: { ok, complete, checks },
   });
   return refreshMultiBoardCheckpointReconstruction(checkpoint);
+}
+
+function poolAddressForBoard(binding, problemId) {
+  const address = binding.boards?.[problemId]?.pool?.address;
+  invariant(address, `checkpoint board ${problemId} is missing its pool binding`);
+  return addressKey(address);
+}
+
+function matchingDestinationSponsorships(boardReports, binding, donation) {
+  const destinationBoard = boardReports.find(
+    (board) => poolAddressForBoard(binding, board.problemId) === donation.destinationPool,
+  );
+  if (!destinationBoard) return [];
+  return (destinationBoard.state.pool.sponsorshipFundings ?? []).filter((funding) =>
+    funding.transactionHash === donation.transactionHash &&
+    funding.payer === donation.sourcePool &&
+    funding.sponsor === donation.solver &&
+    funding.amount === donation.donatedAmount
+  );
+}
+
+function attachCrossPoolDonationProvenance(boardReports, binding) {
+  for (const board of boardReports) {
+    const sourcePool = poolAddressForBoard(binding, board.problemId);
+    board.state.pool.winningsDonations = (board.state.pool.winningsDonations ?? []).map((donation) => {
+      const complete = { ...donation, sourcePool };
+      const matches = matchingDestinationSponsorships(boardReports, binding, complete);
+      invariant(matches.length === 1, `winnings donation ${donation.transactionHash} requires exactly one matching destination SponsorshipFunded event`);
+      return { ...complete, destinationSponsorship: matches[0] };
+    });
+  }
+}
+
+function validateCrossPoolDonationProvenance(boardReports, binding) {
+  const poolAddresses = new Map(
+    boardReports.map((board) => [poolAddressForBoard(binding, board.problemId), board]),
+  );
+  for (const board of boardReports) {
+    const sourcePool = poolAddressForBoard(binding, board.problemId);
+    for (const donation of board.state.pool.winningsDonations ?? []) {
+      invariant(donation.sourcePool === sourcePool, `winnings donation ${donation.transactionHash} source pool mismatch`);
+      invariant(BigInt(donation.grossAmount) === BigInt(donation.donatedAmount) + BigInt(donation.feeAmount), `winnings donation ${donation.transactionHash} amount decomposition mismatch`);
+      const destinationBoard = poolAddresses.get(donation.destinationPool);
+      invariant(destinationBoard, `winnings donation ${donation.transactionHash} destination pool is not a checkpoint board`);
+      const matches = (destinationBoard.state.pool.sponsorshipFundings ?? []).filter((funding) =>
+        funding.transactionHash === donation.transactionHash &&
+        funding.payer === sourcePool &&
+        funding.sponsor === donation.solver &&
+        funding.amount === donation.donatedAmount
+      );
+      invariant(matches.length === 1, `winnings donation ${donation.transactionHash} requires exactly one matching destination SponsorshipFunded event`);
+      invariant(
+        stableStringify(donation.destinationSponsorship) === stableStringify(matches[0]),
+        `winnings donation ${donation.transactionHash} retained destination sponsorship mismatch`,
+      );
+    }
+  }
 }
 
 function prefixedMultiBoardChecks(boards) {
@@ -3737,6 +3845,7 @@ export function validateMultiBoardCheckpoint(checkpoint) {
   if (stableStringify(boardIds) !== stableStringify(orderedBindingIds)) {
     throw new Error("checkpoint.boards must be ordered exactly as manifestBinding.boards registry ids");
   }
+  validateCrossPoolDonationProvenance(checkpoint.boards, checkpoint.manifestBinding);
   for (const board of checkpoint.boards) {
     const expectedBoardOk =
       board.reconstruction.complete && board.reconstruction.checks.every((check) => check.ok);

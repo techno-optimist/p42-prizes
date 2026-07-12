@@ -112,6 +112,31 @@ const pool = new ethers.Contract(boardContracts.pool.address, abi("P42BountyPool
 const ledger = new ethers.Contract(boardContracts.ledger.address, abi("P42PayoutLedger"), wallet);
 const subs = new ethers.Contract(boardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
 const chal = new ethers.Contract(boardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
+const donationPool = donationDestination === null
+  ? null
+  : new ethers.Contract(donationDestination, abi("P42BountyPool"), wallet);
+const DONATION_FALLBACK_WINDOW_SECONDS = 24n * 60n * 60n;
+
+async function donationDestinationReady(valueWei, now) {
+  if (donationPool === null) return false;
+  const [accepting, funded, cap, destinationLedgerAddress, destinationManagerAddress] = await Promise.all([
+    donationPool.acceptingFunds(),
+    donationPool.funded(),
+    donationPool.fundingCap(),
+    donationPool.ledger(),
+    donationPool.submissionManager(),
+  ]);
+  if (!accepting || funded + valueWei > cap) return false;
+  const destinationLedger = new ethers.Contract(destinationLedgerAddress, abi("P42PayoutLedger"), provider);
+  const destinationManager = new ethers.Contract(destinationManagerAddress, abi("P42SubmissionManager"), provider);
+  const [closed, fundingDeadline, armed, authorizationExpiresAt] = await Promise.all([
+    destinationLedger.closed(),
+    destinationLedger.fundingDeadline(),
+    destinationManager.fundingArmed(),
+    destinationManager.fundingAuthorizationExpiresAt(),
+  ]);
+  return !closed && armed && now <= fundingDeadline && now <= authorizationExpiresAt;
+}
 
 let state;
 let statePath;
@@ -379,8 +404,35 @@ async function runLifecycle(submissionId, revealArgs) {
           if (destination === ethers.getAddress(await pool.getAddress())) {
             throw new Error("winnings destination must be a different active pool");
           }
-          const label = `pool.donateClaimToPool:${destination}:${decision.valueWei}`;
-          await sendPersistent(label, () => pool.donateClaimToPool.populateTransaction(destination));
+          const now = snapshot.now;
+          const claimDeadline = BigInt(await ledger.claimDeadline());
+          const feeBps = BigInt(await ledger.feeBps());
+          const donationValueWei = decision.valueWei - (decision.valueWei * feeBps / 10_000n);
+          let destinationReady = false;
+          try {
+            destinationReady = await donationDestinationReady(donationValueWei, now);
+          } catch {
+            destinationReady = false;
+          }
+          if (destinationReady) {
+            const label = `pool.donateClaimToPool:${destination}:${decision.valueWei}`;
+            await sendPersistent(label, () => pool.donateClaimToPool.populateTransaction(destination));
+          } else if (claimDeadline !== 0n && now + DONATION_FALLBACK_WINDOW_SECONDS >= claimDeadline) {
+            state.donation_fallback = {
+              at_utc: new Date().toISOString(),
+              destination,
+              reason: "destination unavailable inside claim-deadline safety window",
+            };
+            persistState();
+            const label = `pool.claim:donation-fallback:${decision.valueWei}`;
+            await sendPersistent(label, () => pool.claim.populateTransaction());
+          } else {
+            state.phase = "waiting_for_donation_destination";
+            state.donation_wait = { at_utc: new Date().toISOString(), destination, claimDeadline: claimDeadline.toString() };
+            persistState();
+            await sleep(Math.max(1000, POLL_MS));
+            continue;
+          }
         } else {
           const label = `pool.claim:${decision.valueWei}`;
           await sendPersistent(label, () => pool.claim.populateTransaction());

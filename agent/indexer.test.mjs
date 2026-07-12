@@ -883,6 +883,39 @@ describe("P42 deterministic indexer replay", () => {
     assert.deepEqual(checks.filter((entry) => !entry.ok), []);
   });
 
+  it("retains winnings donation fields and binds them to source settlement in the same tx", () => {
+    const events = lifecycleFixture();
+    const transactionHash = hash(77_001);
+    const common = {
+      blockNumber: 500,
+      blockHash: hash(77_000),
+      transactionHash,
+      transactionIndex: 0,
+      blockTimestamp: 5_000n,
+    };
+    events.push(
+      { ...common, source: "ledger", eventName: "ClaimConsumed", index: 0, args: { solver: ADDR.solverA, grossAmount: 100n, feeAmount: 10n } },
+      { ...common, source: "pool", eventName: "WinningsDonated", index: 1, args: { solver: ADDR.solverA, destinationPool: address(21), grossAmount: 100n, donatedAmount: 90n, feeAmount: 10n } },
+      { ...common, source: "pool", eventName: "SolverClaimSettled", index: 2, args: { solver: ADDR.solverA, recipient: address(21), grossAmount: 100n, solverPayment: 90n, feeAmount: 10n } },
+    );
+    const replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    assert.deepEqual(replay.pool.winningsDonations[0], {
+      transactionHash,
+      solver: ADDR.solverA,
+      destinationPool: address(21),
+      grossAmount: 100n,
+      donatedAmount: 90n,
+      feeAmount: 10n,
+    });
+
+    const mismatched = structuredClone(events);
+    mismatched.at(-1).args.solverPayment = 89n;
+    assert.throws(
+      () => replayProtocolEvents(mismatched, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+      /winnings donation settlement mismatch/,
+    );
+  });
+
   it("requires forced recovery and caller-aware sweep events in the same transaction", () => {
     const events = lifecycleFixture();
     events.push({
@@ -1249,6 +1282,66 @@ describe("P42 deterministic indexer replay", () => {
     assert.throws(
       () => validateMultiBoardCheckpoint(alteredAggregateCheck),
       /checks must contain every board check in deterministic order/,
+    );
+
+    const donationArgs = structuredClone(args);
+    donationArgs.boards[0].replay = structuredClone(args.boards[0].replay);
+    donationArgs.boards[1].replay = structuredClone(args.boards[1].replay);
+    const donationTx = hash(88_001);
+    donationArgs.boards[0].replay.pool.winningsDonations.push({
+      transactionHash: donationTx,
+      solver: ADDR.solverA,
+      destinationPool: address(21),
+      grossAmount: 100n,
+      donatedAmount: 90n,
+      feeAmount: 10n,
+    });
+    donationArgs.boards[1].replay.pool.sponsorshipFundings.push({
+      transactionHash: donationTx,
+      payer: address(11),
+      sponsor: ADDR.solverA,
+      amount: 90n,
+    });
+    const donationCheckpoint = buildMultiBoardCheckpoint(donationArgs);
+    const retained = donationCheckpoint.boards[0].state.pool.winningsDonations[0];
+    assert.deepEqual(retained, {
+      transactionHash: donationTx,
+      solver: ADDR.solverA,
+      sourcePool: address(11),
+      destinationPool: address(21),
+      grossAmount: "100",
+      donatedAmount: "90",
+      feeAmount: "10",
+      destinationSponsorship: {
+        transactionHash: donationTx,
+        payer: address(11),
+        sponsor: ADDR.solverA,
+        amount: "90",
+      },
+    });
+
+    for (const [field, value] of [
+      ["payer", address(999)],
+      ["sponsor", ADDR.solverB],
+      ["amount", "89"],
+      ["transactionHash", hash(88_002)],
+    ]) {
+      const tampered = structuredClone(donationCheckpoint);
+      const funding = tampered.boards[1].state.pool.sponsorshipFundings.find(
+        (entry) => entry.transactionHash === donationTx,
+      );
+      funding[field] = value;
+      assert.throws(
+        () => validateMultiBoardCheckpoint(tampered),
+        /requires exactly one matching destination SponsorshipFunded event/,
+      );
+    }
+
+    const missingDestinationEvidence = structuredClone(donationArgs);
+    missingDestinationEvidence.boards[1].replay.pool.sponsorshipFundings = [];
+    assert.throws(
+      () => buildMultiBoardCheckpoint(missingDestinationEvidence),
+      /requires exactly one matching destination SponsorshipFunded event/,
     );
   });
 });

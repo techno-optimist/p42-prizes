@@ -293,7 +293,11 @@ Agents may retain the frontier title while recycling a matured award into a
 different active bounty with `--donate-winnings-to-pool <pool-address>`. The
 solver uses the atomic `donateClaimToPool` path: no award touches the agent
 wallet, the destination sponsorship is attributed to the solver, and a failed
-destination deposit rolls the source claim back.
+destination deposit rolls the source claim back. The agent preflights the
+destination's armed, open, cap, and deadline state. If it remains unavailable,
+the agent waits without consuming its retry budget, then takes the ordinary
+payout during the final 24 hours before the source claim deadline so a stale
+donation target cannot destroy the award.
 
 The indexer operator signs each exact checkpoint generation before portal
 publication. Register its Ed25519 public key out of band for attestation class

@@ -42,7 +42,7 @@ function constructorArgs(contract) {
 }
 
 describe("closed immutable release capsule", () => {
-  it("binds exactly the seven production artifacts to exact compiler inputs and outputs", async () => {
+  it("binds exactly the ten production artifacts to exact compiler inputs and outputs", async () => {
     const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
     assert.deepEqual(capsule.contracts.map(({ name }) => name), PRODUCTION_CONTRACTS);
     assert.equal(validateReleaseCapsule(capsule), capsule);
