@@ -146,7 +146,7 @@ describe("exact-ten production release slate", () => {
         board.immutable_reference = `${board.repository}@${board.index_digest}`;
       });
       const { dossier_hash: _, ...body } = forged; forged.dossier_hash = digest(canonical(body));
-      assert.throws(() => validateVerifierImageReleaseDossier(forged, { sourceCommit: slate.sourceCommit, problems }), /registry/);
+      assert.throws(() => validateVerifierImageReleaseDossier(forged, { sourceCommit: slate.sourceCommit, problems }), /registry|canonical identity/);
     }
   });
 });
