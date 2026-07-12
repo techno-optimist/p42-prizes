@@ -83,9 +83,15 @@ export function runProductionAuthorizationValidator({
     "--chain-rpc-url", chainRpcUrl,
   ];
   if (nowUtc !== null) args.push("--now-utc", nowUtc);
+  const validatorEnv = Object.fromEntries(
+    ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"]
+      .filter((name) => typeof process.env[name] === "string")
+      .map((name) => [name, process.env[name]]),
+  );
+  validatorEnv.PYTHONPATH = resolve(root, "src");
   const result = spawn(executable, args, {
     cwd: root,
-    env: { ...process.env, PYTHONPATH: resolve(root, "src") },
+    env: validatorEnv,
     encoding: null,
     maxBuffer: LIMITS.maxBytes,
     timeout: 15 * 60 * 1000,
@@ -131,6 +137,14 @@ export function buildFundingActivationPlan({
     throw new Error("funding activation requires validator-produced authorization bytes");
   }
   assertReleaseBinding(authorization, manifest, manifestBytesDigest);
+  const governanceNumbers = [
+    Number(manifest.governance.threshold),
+    Number(manifest.governance.delaySeconds),
+    Number(manifest.governance.operationGracePeriodSeconds),
+  ];
+  if (governanceNumbers.some((value) => !Number.isSafeInteger(value) || value < 1)) {
+    throw new Error("funding activation requires bounded positive governance timing and threshold values");
+  }
   const digest = authorizationBytes32(authorization.authorization_digest);
   const expiresAt = Math.floor(Date.parse(authorization.expires_at_utc) / 1000);
   if (!Number.isSafeInteger(expiresAt) || expiresAt < 1) throw new Error("validated authorization expiry is invalid");
@@ -231,6 +245,10 @@ export function buildFundingActivationPlan({
     timelock: ethers.getAddress(manifest.contracts.timelock.address),
     timelockRuntimeCodeHash: manifest.contracts.timelock.runtimeCodeHash,
     treasury: ethers.getAddress(manifest.roles.treasury),
+    governanceSigners: manifest.governance.signers.map(ethers.getAddress),
+    governanceThreshold: governanceNumbers[0],
+    governanceDelaySeconds: governanceNumbers[1],
+    governanceOperationGraceSeconds: governanceNumbers[2],
     boardCount: 10,
     operations,
   };
