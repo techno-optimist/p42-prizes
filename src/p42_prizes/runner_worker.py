@@ -10,7 +10,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import signal
 import stat
 import subprocess
 import sys
@@ -24,6 +23,12 @@ from p42_prizes.admission import (
     load_evidence_file,
     validate_report_identity,
     validate_report_shape,
+)
+from p42_prizes.bounded_process import (
+    OutputLimitExceeded,
+    ProcessCancelled,
+    kill_process_group,
+    run_bounded_process,
 )
 from p42_prizes.runner_sandbox import (
     RunnerSandboxError,
@@ -501,7 +506,7 @@ def _run_job(
     )
     if chain_claim is None and solution is None:
         raise RunnerWorkerError("job.solution must be a non-empty string")
-    if chain_claim is not None and policy.sandbox != "docker" and job.get("da_failure") is None:
+    if chain_claim is not None and policy.sandbox != "docker":
         raise RunnerWorkerError(
             "chain verifier jobs require policy.sandbox=docker; refusing host execution"
         )
@@ -832,6 +837,9 @@ def _adjudicate_chain_claim(
     elif verifier.get("retryable") is True:
         action = "retry"
         reason_code = str(verifier.get("failure_kind") or "verifier_unavailable")
+    elif verifier.get("failure_kind") == "verifier_output_limit_exceeded":
+        action = "quarantine"
+        reason_code = "verifier_output_limit_exceeded"
     elif isinstance(verifier.get("report"), Mapping) and verifier["report"].get("valid") is False:
         action = "challenge"
         reason_code = "verifier_rejected"
@@ -1105,6 +1113,20 @@ def _run_verifier_for_transcript(
             "verifier_image": verifier_image,
             "verifier_command": verifier_command,
         }
+    except OutputLimitExceeded as exc:
+        if container_name is not None:
+            force_remove_container(container_name)
+        return {
+            "ok": False,
+            "valid": False,
+            "error": str(exc),
+            "failure_kind": "verifier_output_limit_exceeded",
+            "output_stream": exc.stream,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "sandbox": sandbox,
+            "verifier_image": verifier_image,
+            "verifier_command": verifier_command,
+        }
     except subprocess.TimeoutExpired:
         if container_name is not None:
             force_remove_container(container_name)
@@ -1221,41 +1243,17 @@ def _run_isolated_verifier(
     would orphan. Raises subprocess.TimeoutExpired on wall-clock overrun, which
     the caller surfaces as the existing typed timeout error.
     """
-    process = subprocess.Popen(
-        command,
-        cwd=str(cwd),
-        env=dict(env),
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-        preexec_fn=preexec_fn,
-    )
-    deadline = time.monotonic() + wall_seconds
-    while True:
-        if cancellation_event is not None and cancellation_event.is_set():
-            _kill_process_group(process)
-            process.communicate()
-            raise LeaseHeartbeatError("runner lease heartbeat was lost during verifier execution")
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            _kill_process_group(process)
-            process.communicate()
-            raise subprocess.TimeoutExpired(command, wall_seconds)
-        try:
-            stdout, stderr = process.communicate(timeout=min(1.0, remaining))
-            break
-        except subprocess.TimeoutExpired:
-            continue
-    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    try:
+        return run_bounded_process(
+            command, cwd=cwd, env=env, timeout=wall_seconds,
+            preexec_fn=preexec_fn, cancellation_event=cancellation_event,
+        )
+    except ProcessCancelled as exc:
+        raise LeaseHeartbeatError("runner lease heartbeat was lost during verifier execution") from exc
 
 
 def _kill_process_group(process: subprocess.Popen) -> None:
-    try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except (ProcessLookupError, PermissionError, OSError):
-        # Fall back to killing the direct child if the group is already gone.
-        process.kill()
+    kill_process_group(process)
 
 
 def _no_stdout_error(returncode: int, stderr_tail: str) -> str:

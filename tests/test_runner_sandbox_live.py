@@ -188,8 +188,33 @@ def test_live_docker_sandbox_enforces_hostile_boundaries(sandbox_workdir: Path) 
             capture_output=True,
         )
         assert inspect.returncode != 0, "timed-out verifier container was not removed"
+
+        for flood_mode, expected_stream in (
+            ("stdout_flood", "stdout"),
+            ("stderr_flood", "stderr"),
+            ("child_output_flood", "stdout"),
+        ):
+            flooded = run_mode(sandbox_workdir, image_repository, digest, flood_mode)
+            assert flooded["ok"] is False
+            assert flooded["valid"] is False
+            assert flooded["failure_kind"] == "verifier_output_limit_exceeded"
+            assert flooded["output_stream"] == expected_stream
+            inspect = subprocess.run(
+                ["docker", "container", "inspect", f"p42-verify-sandbox-live-{flood_mode}"],
+                check=False, text=True, capture_output=True,
+            )
+            assert inspect.returncode != 0, f"{flood_mode} container was not removed"
+
+        orphan = run_mode(sandbox_workdir, image_repository, digest, "orphan_output_flood")
+        assert orphan["ok"] is False
+        assert orphan["valid"] is False
+        inspect = subprocess.run(
+            ["docker", "container", "inspect", "p42-verify-sandbox-live-orphan_output_flood"],
+            check=False, text=True, capture_output=True,
+        )
+        assert inspect.returncode != 0, "orphan-output container was not removed"
     finally:
-        for mode in ("probe", "pids", "memory_limit", "memory", "timeout"):
+        for mode in ("probe", "pids", "memory_limit", "memory", "timeout", "stdout_flood", "stderr_flood", "child_output_flood", "orphan_output_flood"):
             subprocess.run(
                 ["docker", "container", "rm", "-f", f"p42-verify-sandbox-live-{mode}"],
                 check=False,

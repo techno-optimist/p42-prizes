@@ -355,11 +355,20 @@ already captured by a gate row or residual gap above. All open.
   read-only root/solution mounts, bounded writable tmpfs, PID exhaustion,
   cgroup OOM termination, timeout cleanup, and canonical output. The existing
   Python CI lane runs this test and fails when Docker is unavailable; only
-  non-CI developer hosts may skip it. Local non-chain runs may still use process-group,
-  allowlisted-environment, and per-process-`RLIMIT_AS` mode, so a forking
-  verifier can exceed that local aggregate memory bound. No production
+  non-CI developer hosts may skip it. Host execution now requires the explicit
+  `--allow-unsafe-local-fixture` opt-in and is not a containment boundary: a
+  verifier can fork and call `setsid()` to escape process-group cleanup despite
+  the allowlisted environment and per-process `RLIMIT_AS` guard. No production
   DGX exercise has yet demonstrated the policy against an actual released
   verifier image; that remains a Gate 1 runtime-evidence requirement.
+- Verifier output is now bounded outside the container cgroup as well: the
+  shared runner/admission subprocess primitive concurrently caps stdout at
+  1 MiB and stderr at 256 KiB, kills and reaps the full process group on flood,
+  timeout, cancellation, or lease loss, and keeps monitoring inherited pipes
+  after the direct leader exits. Unit and live Docker regressions cover stdout,
+  stderr, child, and exited-leader floods. Output-limit failures are typed and
+  quarantined rather than converted into automatic challenge evidence. A real
+  released-image DGX exercise remains open.
 
 ## Closed Evidence History
 
