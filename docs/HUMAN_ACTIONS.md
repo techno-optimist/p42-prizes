@@ -107,8 +107,9 @@ problem requirement.
 - Incident/disclosure: policy remains draft; private reporting and mailbox are
   unverified; no activation evidence, completed drill, or required signatures.
 - Verifier images: the exact-commit, all-ten OCI release ceremony is implemented,
-  schema-bound, restart-safe, and locally tested, but no image has been pushed
-  and no production release dossier exists. Publication requires a provisioned
+  schema-bound, restart-safe, locally tested, and plan-rehearsed on DGX for all
+  ten boards and both target platforms, but no image has been pushed and no
+  production release dossier exists. Publication requires a provisioned
   immutable registry policy and a narrowly scoped registry write credential;
   independent four-host profiles and matrices remain separately uncollected.
 - Release binding: no current canonical resolved evidence root proves the
