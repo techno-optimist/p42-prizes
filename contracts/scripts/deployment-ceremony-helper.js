@@ -1350,6 +1350,50 @@ export async function readManifestOutputReservation(identity, options = {}) {
   return { path: reservationPath, record: parsed };
 }
 
+export async function inspectManifestOutputReservation(path, options = {}) {
+  const manifestPath = resolve(path);
+  const trustedRoot = dirname(manifestPath);
+  const probeIdentity = createDeploymentReservationIdentity(
+    manifestPath,
+    {
+      deploymentCommit: "0".repeat(40),
+      network: "reservation-inspection",
+      chainId: 1,
+      deployer: `0x${"0".repeat(40)}`,
+    },
+    { trustedRoot, configValue: { mode: "reservation-inspection" } },
+  );
+  const reservationPath = manifestOutputReservationPath(manifestPath);
+  let parsed;
+  try {
+    parsed = await readSecureJson(
+      probeIdentity,
+      reservationPath,
+      reservationStorage(options.storage),
+    );
+  } catch (error) {
+    if (error?.code === "ENOENT") throw reservationCollisionError(reservationPath);
+    throw new Error(`Could not inspect deployment reservation ${reservationPath}: ${error.message}`);
+  }
+  const identity = {
+    manifestPath,
+    trustedRoot,
+    deploymentCommit: parsed?.deploymentCommit,
+    network: parsed?.network,
+    chainId: parsed?.chainId,
+    deployer: parsed?.deployer,
+    configDigest: parsed?.configDigest,
+    identityDigest: parsed?.identityDigest,
+  };
+  try {
+    assertExpectedIdentity(identity);
+    assertReservationIdentity(parsed, identity);
+  } catch {
+    throw new Error(`Deployment reservation ${reservationPath} is malformed; do not start another ceremony`);
+  }
+  return { path: reservationPath, record: parsed, identity: Object.freeze(identity) };
+}
+
 export async function reserveManifestOutput(identity, options = {}) {
   assertExpectedIdentity(identity);
   const output = identity.manifestPath;

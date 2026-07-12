@@ -127,16 +127,15 @@ transactions:
 
 ```bash
 P42_DEPLOY_MODE=inspect-reservation \
-P42_RESERVATION_IDENTITY=../deployments/base-sepolia/p42-prizes.reservation-identity.json \
+P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
 npx hardhat run scripts/deploy-base-sepolia.js
 ```
 
-`P42_RESERVATION_IDENTITY` must contain the exact private ceremony identity
-derived from the original manifest path, release/config bytes, commit, chain,
-and deployer. The current deploy command does not persist that identity as an
-operator artifact, so production deployment remains blocked until the recovery
-identity is durably retained and tested. Do not reconstruct it by hand after a
-failed ceremony and do not remove the reservation to make a retry proceed.
+Inspect mode opens the private sibling reservation without following links,
+reconstructs its immutable identity from the journal, and verifies the identity
+digest before printing it. A malformed, relocated, permissive, linked, or
+identity-tampered journal fails closed. Do not remove the reservation to make a
+retry proceed.
 
 The script intentionally never clears an incomplete reservation. Reconcile the
 recorded transactions and manifest destination before any owner-approved

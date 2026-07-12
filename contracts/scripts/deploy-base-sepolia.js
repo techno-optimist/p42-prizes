@@ -31,6 +31,7 @@ import {
   MULTIBOARD_MANIFEST_SCHEMA,
   PENDING_SETUP_STATUS,
   productionReleaseBindingDigest,
+  inspectManifestOutputReservation,
   readManifestOutputReservation,
   readCeremonyConfig,
   recordManifestOutputBoardDeployment,
@@ -1444,9 +1445,7 @@ if (mode !== "deploy" && mode !== "deploy-multiboard-production" && mode !== "co
 }
 
 if (mode === "inspect-reservation") {
-  const identityPath = resolve(requiredEnv("P42_RESERVATION_IDENTITY"));
-  const reservationIdentity = await readContractsConfigJson(identityPath);
-  console.log(jsonStringify((await readManifestOutputReservation(reservationIdentity)).record));
+  console.log(jsonStringify((await inspectManifestOutputReservation(manifestPath())).record));
 } else {
   requiredEnv("BASE_SEPOLIA_RPC_URL");
   const connection = await network.create("baseSepolia");

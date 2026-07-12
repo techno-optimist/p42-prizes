@@ -84,6 +84,8 @@ describe("production deployment runbook command contract", () => {
     }));
 
     assert.match(executable, /mode === "deploy-multiboard-production"/);
+    assert.match(executable, /inspectManifestOutputReservation\(manifestPath\(\)\)/);
+    assert.doesNotMatch(executable, /P42_RESERVATION_IDENTITY/);
     for (const runbook of runbooks) {
       assert.match(
         runbook.body,
@@ -99,7 +101,7 @@ describe("production deployment runbook command contract", () => {
 
     const deploymentRunbook = runbooks.find(({ path }) => path === "docs/DEPLOYMENT.md").body;
     for (const requiredInput of [
-      "P42_RESERVATION_IDENTITY",
+      "P42_DEPLOYMENT_MANIFEST",
       "P42_SECONDARY_BASE_SEPOLIA_RPC_URL",
       "P42_SECONDARY_RPC_OPERATOR_ID",
       "P42_EXPLORER_DOSSIER_PATH",
