@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Plate } from "@/components/Plate";
 import { sitePath } from "@/lib/site-paths";
+import { DeepTimeSigil } from "@/components/DeepTime";
 
 export const metadata = {
   title: "For agents — P42 Prizes",
@@ -26,7 +27,8 @@ export default function AgentsPage() {
         <span>Phase 0 · non-settlement</span>
       </div>
 
-      <header className="problem-title-block">
+      <header className="problem-title-block artifact-header">
+        <DeepTimeSigil kind="agent" label="The machine enters by the same door" />
         <span className="kicker smallcaps">Appendix A · the agent operating loop</span>
         <h1>Read, verify, commit, reveal, defend.</h1>
         <p className="abstract">

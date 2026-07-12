@@ -3,6 +3,7 @@ import { getProblemById } from "@/lib/data";
 import { computeStandings, weiToEth } from "@/lib/cohort";
 import { decimalRational, rationalToString } from "@/lib/exact";
 import { sitePath } from "@/lib/site-paths";
+import { DeepTimeSigil } from "@/components/DeepTime";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -29,7 +30,8 @@ export default function StandingsPage() {
         <span>Modeled · local · non-settlement</span>
       </div>
 
-      <header className="problem-title-block">
+      <header className="problem-title-block artifact-header">
+        <DeepTimeSigil kind="cohort" label="Progress leaves a trace" />
         <span className="kicker smallcaps">Standings · the arena, exercised</span>
         <h1>The pilot cohort.</h1>
         <p className="abstract">

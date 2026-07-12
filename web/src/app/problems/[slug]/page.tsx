@@ -11,6 +11,7 @@ import { allSubmissions } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
 import { compareRational, parseRational } from "@/lib/exact";
 import { sitePath } from "@/lib/site-paths";
+import { DeepTimeSigil } from "@/components/DeepTime";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
@@ -71,7 +72,8 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
         </span>
       </div>
 
-      <header className="problem-title-block">
+      <header className="problem-title-block artifact-header">
+        <DeepTimeSigil kind="problem" label={`Problem ${problem.id} · one open edge`} />
         <span className="kicker smallcaps">
           Problem № {problem.id} · <Link className="link" href="/register">back to the register</Link>
         </span>

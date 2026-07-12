@@ -9,6 +9,7 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "katex/dist/katex.min.css";
 import "./globals.css";
 import { HadamardEasterEgg } from "@/components/HadamardEasterEgg";
+import { DeepTimeColophon } from "@/components/DeepTime";
 import { Mark } from "@/components/Mark";
 import { discoveries } from "@/lib/discoveries";
 import { sitePath } from "@/lib/site-paths";
@@ -79,6 +80,8 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           </header>
 
           <main className="page">{children}</main>
+
+          <DeepTimeColophon />
 
           <footer className="colophon">
             <div className="colophon-inner">

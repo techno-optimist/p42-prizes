@@ -3262,3 +3262,122 @@ h3 {
 @media (prefers-reduced-motion: reduce) {
   .journey-reveal { opacity: 1; transform: none; }
 }
+
+/* ---------- Deep time — one visual grammar across the whole protocol ---------- */
+
+.artifact-header { position: relative; isolation: isolate; }
+.artifact-header > :not(.deep-sigil) { position: relative; z-index: 1; }
+.deep-sigil { width: 170px; color: var(--ink); pointer-events: none; user-select: none; }
+.deep-sigil svg { width: 100%; height: auto; display: block; overflow: visible; }
+.deep-sigil > span { display: block; margin-top: 5px; color: var(--muted); font: 9px/1.35 var(--mono); letter-spacing: .12em; text-align: center; text-transform: uppercase; }
+.deep-sigil-orbit { fill: none; stroke: currentColor; stroke-width: .7; opacity: .22; stroke-dasharray: 2 5; transform-origin: 90px 90px; animation: deep-orbit 28s linear infinite; }
+.deep-sigil-orbit.orbit-inner { opacity: .13; stroke-dasharray: 1 4; animation-direction: reverse; animation-duration: 19s; }
+.deep-sigil-stone { fill: color-mix(in srgb, var(--ink) 7%, transparent); stroke: currentColor; stroke-width: 1.1; opacity: .62; transform-origin: 90px 90px; animation: deep-breathe 7s ease-in-out infinite; }
+.deep-sigil-point { fill: var(--record); animation: deep-pulse 3.2s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
+.deep-sigil-proof { fill: none; stroke: var(--record); stroke-width: 4; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 80; animation: deep-proof 7s ease-in-out infinite; }
+.deep-sigil-axis { fill: none; stroke: currentColor; stroke-width: .45; opacity: .12; }
+@keyframes deep-orbit { to { transform: rotate(360deg); } }
+@keyframes deep-breathe { 0%,100% { transform: scale(.96) rotate(-2deg); } 50% { transform: scale(1.025) rotate(1deg); } }
+@keyframes deep-pulse { 0%,100% { opacity: .24; transform: scale(.7); } 48% { opacity: 1; transform: scale(1); } }
+@keyframes deep-proof { 0%,28% { stroke-dashoffset: 80; opacity: 0; } 42%,75% { stroke-dashoffset: 0; opacity: 1; } 88%,100% { opacity: 0; } }
+
+.problem-title-block.artifact-header,
+.disc-page-head.artifact-header { padding-right: clamp(0px, 19vw, 220px); }
+.problem-title-block.artifact-header > .deep-sigil,
+.disc-page-head.artifact-header > .deep-sigil { position: absolute; right: 16px; top: 26px; opacity: .86; }
+.hero.artifact-header .deep-sigil { position: absolute; right: calc(34% + 30px); top: 42px; width: 126px; opacity: .44; }
+
+.deep-prologue { position: relative; display: grid; grid-template-columns: .72fr 1.05fr; gap: clamp(45px, 8vw, 120px); padding: 140px max(24px, calc((100vw - 1140px)/2)); background: var(--paper); border-bottom: 1px solid var(--rule); overflow: hidden; }
+.deep-prologue-number { align-self: start; position: sticky; top: 120px; }
+.deep-prologue-number span { display: block; color: var(--record); font-size: clamp(64px, 10vw, 142px); line-height: .75; letter-spacing: -.08em; font-variant-numeric: lining-nums; }
+.deep-prologue-number small { display: block; margin-top: 22px; color: var(--muted); font: 11px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+.deep-prologue-copy { font-size: clamp(22px, 2.5vw, 31px); line-height: 1.5; }
+.deep-prologue-copy p:first-child { margin-top: 0; }
+.deep-prologue-art { grid-column: 1 / -1; margin-top: 40px; }
+.deep-prologue-art svg { width: 100%; display: block; overflow: visible; }
+.prologue-thread { fill: none; stroke: var(--record); stroke-width: 1.4; stroke-dasharray: 8 8; animation: prologue-flow 20s linear infinite; }
+.prologue-stone { fill: color-mix(in srgb, var(--ink) 11%, transparent); stroke: var(--ink); stroke-width: 2; transform-origin: 80px 115px; animation: deep-breathe 8s ease-in-out infinite; }
+.prologue-tallies path,.prologue-geometry *,.prologue-certificate * { fill: none; stroke: var(--ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.prologue-geometry circle:first-child { stroke-dasharray: 4 5; animation: deep-orbit 24s linear infinite; transform-origin: 326px 91px; }
+.prologue-certificate path { stroke: var(--record); }
+@keyframes prologue-flow { to { stroke-dashoffset: -160; } }
+
+.deep-time-colophon { position: relative; z-index: 1; padding: clamp(95px, 12vw, 170px) max(24px, calc((100vw - 1140px)/2)); background: #1a1814; color: #ece6d9; overflow: hidden; }
+.deep-time-colophon::before { content: ""; position: absolute; inset: 0; opacity: .12; pointer-events: none; background-image: radial-gradient(circle at 20% 30%, #fff 0 1px, transparent 1.5px), radial-gradient(circle at 80% 65%, #fff 0 1px, transparent 1.5px); background-size: 43px 43px, 67px 67px; mask-image: linear-gradient(to bottom, transparent, #000 20%, #000 80%, transparent); }
+.deep-time-head { position: relative; max-width: 830px; }
+.deep-time-head h2 { margin: 12px 0 25px; font-size: clamp(43px, 6.5vw, 82px); font-weight: 500; line-height: .98; letter-spacing: -.045em; }
+.deep-time-head > p:last-child { max-width: 680px; color: #b9b1a2; font-size: 20px; }
+.deep-time-line { position: relative; display: grid; grid-template-columns: repeat(5, 1fr); margin-top: 95px; }
+.deep-time-line::before { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 1px; background: linear-gradient(90deg, #756c5c, var(--record)); transform-origin: left; animation: time-draw 3.5s ease-out both; }
+.deep-time-line article { position: relative; padding: 40px 24px 0 0; opacity: 0; transform: translateY(12px); animation: epoch-rise .7s calc(.8s + var(--epoch) * .25s) forwards; }
+.deep-time-line i { position: absolute; top: 2px; left: 0; width: 13px; height: 13px; border: 2px solid #1a1814; border-radius: 50%; background: color-mix(in srgb, var(--record) calc(24% + var(--epoch) * 15%), #7e7565); box-shadow: 0 0 0 1px #8d8475; }
+.deep-time-line time { color: #9f9788; font: 10px var(--mono); letter-spacing: .06em; }
+.deep-time-line h3 { margin: 12px 0 8px; color: #f1ecdf; font-size: 25px; font-weight: 500; }
+.deep-time-line p { margin: 0; color: #a9a192; font-size: 15px; line-height: 1.5; }
+.deep-time-vow { position: relative; margin: 100px 0 0; padding-top: 30px; border-top: 1px solid rgba(236,230,217,.18); color: #e27760; font-size: clamp(25px, 3.5vw, 43px); font-style: italic; }
+@keyframes time-draw { from { transform: scaleX(0); } }
+@keyframes epoch-rise { to { opacity: 1; transform: none; } }
+
+/* Operational pages: make exact records feel handled, weighed, and sealed. */
+.running-head { position: relative; margin-top: 22px; padding: 10px 0; border-block: 1px solid var(--rule-faint); }
+.running-head::after { content: ""; position: absolute; left: 0; bottom: -1px; width: 42px; height: 1px; background: var(--record); }
+.problem-title-block h1,.disc-page-head h1 { text-wrap: balance; }
+.section-head h2 { text-wrap: balance; }
+.section { scroll-margin-top: 110px; }
+.statement { position: relative; overflow: hidden; }
+.statement::before { content: "EXACT"; position: absolute; right: 12px; top: 8px; color: var(--record); opacity: .45; font: 8px var(--mono); letter-spacing: .18em; }
+.plate { position: relative; overflow: hidden; box-shadow: 0 20px 55px rgba(12,10,8,.08); }
+.plate::after { content: ""; position: absolute; inset: -80% -40%; pointer-events: none; background: linear-gradient(105deg, transparent 42%, rgba(255,255,255,.045) 49%, transparent 56%); transform: translateX(-45%); animation: plate-light 12s ease-in-out infinite; }
+@keyframes plate-light { 0%,72%,100% { transform: translateX(-45%); } 86% { transform: translateX(45%); } }
+.register tbody tr { transition: background .2s ease, transform .2s ease; }
+.register tbody tr:hover { background: color-mix(in srgb, var(--record) 4%, transparent); }
+.register tbody tr:hover .prob-no { color: var(--record); }
+.prob-title,.agent-name { transition: color .2s ease; }
+.register a:hover .prob-title { color: var(--record); }
+.loop-steps { counter-reset: deep-loop; }
+.loop-steps li { position: relative; }
+.loop-steps li::after { content: ""; position: absolute; left: 15px; top: 43px; bottom: -18px; width: 1px; background: linear-gradient(var(--record), var(--rule)); opacity: .35; }
+.loop-steps li:last-child::after { display: none; }
+.empty-record { position: relative; background: repeating-linear-gradient(135deg, transparent 0 16px, var(--rule-faint) 16px 17px); }
+.discovery { transition: background .25s ease; }
+.discovery:hover { background: color-mix(in srgb, var(--seal) 3%, transparent); }
+.disc-numeral { transition: color .2s ease, transform .2s ease; }
+.discovery:hover .disc-numeral { color: var(--record); transform: translateX(3px); }
+.tally > div { position: relative; overflow: hidden; }
+.tally > div::after { content: ""; position: absolute; left: 0; bottom: 0; width: 0; height: 2px; background: var(--record); transition: width .4s ease; }
+.tally > div:hover::after { width: 100%; }
+
+@media (max-width: 800px) {
+  .problem-title-block.artifact-header,.disc-page-head.artifact-header { padding-right: 0; padding-top: 205px; }
+  .problem-title-block.artifact-header > .deep-sigil,.disc-page-head.artifact-header > .deep-sigil { left: 0; right: auto; top: 12px; width: 135px; }
+  .hero.artifact-header .deep-sigil { display: none; }
+  .deep-prologue { grid-template-columns: 1fr; gap: 34px; padding: 90px 22px; }
+  .deep-prologue-number { position: static; }
+  .deep-prologue-number span { font-size: clamp(62px, 20vw, 105px); overflow-wrap: anywhere; }
+  .deep-prologue-copy { font-size: 20px; }
+  .deep-prologue-art { margin-top: 12px; overflow-x: auto; }
+  .deep-prologue-art svg { width: 680px; max-width: none; }
+  .deep-time-colophon { padding: 95px 22px; }
+  .deep-time-head > p:last-child { font-size: 18px; }
+  .deep-time-line { grid-template-columns: 1fr; margin-top: 65px; padding-left: 24px; gap: 0; }
+  .deep-time-line::before { left: 5px; right: auto; top: 0; bottom: 0; width: 1px; height: auto; transform-origin: top; animation-name: time-draw-y; background: linear-gradient(#756c5c, var(--record)); }
+  .deep-time-line article { padding: 0 0 46px 25px; }
+  .deep-time-line i { left: -25px; top: 4px; }
+  .deep-time-vow { margin-top: 55px; }
+  @keyframes time-draw-y { from { transform: scaleY(0); } }
+  .register { font-size: 14px; }
+  .register td,.register th { padding-block: 12px; }
+  table.register { display: block; width: 100%; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
+  table.register thead,table.register tbody { display: table; min-width: 610px; width: 100%; }
+  .statement { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
+  .statement .math-block { min-width: 500px; padding-inline: 12px; }
+  .discovery .math-block,.disc-bound-grid { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+}
+
+@media (max-width: 430px) {
+  .deep-prologue-number span { font-size: 60px; letter-spacing: -.065em; }
+  .deep-time-head h2 { font-size: 42px; }
+  .deep-time-vow { font-size: 28px; }
+  .problem-title-block.artifact-header,.disc-page-head.artifact-header { padding-top: 190px; }
+  .problem-title-block.artifact-header > .deep-sigil,.disc-page-head.artifact-header > .deep-sigil { width: 125px; }
+}

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { MathBlock, MathInline } from "@/components/Math";
 import { PackingLab, Reveal, VerifierSwitch } from "@/components/ProtocolJourney";
+import { DeepTimePrologue } from "@/components/DeepTime";
 import { sitePath } from "@/lib/site-paths";
 
 export const metadata: Metadata = {
@@ -17,6 +18,8 @@ export default function FromHandToSandPage() {
       <div className="journey-hero-copy"><p className="kicker">The origin of the protocol · July 2026</p><h1>Journey</h1><p className="journey-deck">Machines can now produce frontier mathematics. The harder question is whether anyone can trust what they produce. This is the story of the records, failures, exploits, and exact certificates that became P42.</p><a className="journey-scroll" href="#invitation">Enter the story <span>↓</span></a></div>
       <figure className="journey-hero-art"><img src={sitePath("/story/hero-hand-to-sand.webp")} alt="A hand holding a prize check dissolves into grains that form an exact geometric structure."/><figcaption>The pocket check becomes a protocol.</figcaption></figure>
     </header>
+
+    <DeepTimePrologue />
 
     <section className="journey-opening" id="invitation"><p className="journey-dropcap">Paul Erdős used to carry his prizes in his pocket.</p><p>He wandered between universities with a suitcase, posed a problem, and attached a number to it—payable from his own wallet to whoever solved it. No committee. No gatekeeper. The proof was the settlement rule.</p><p>The money was never the point. The <em>protocol</em> was the point: a trust layer between an open problem and anyone, anywhere, audacious enough to attack it.</p><aside className="journey-margin-note">Erdős died in 1996. His problems outlived him. The protocol waited.</aside></section>
 
