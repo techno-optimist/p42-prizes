@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -86,6 +87,19 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /mode === "deploy-multiboard-production"/);
     assert.match(executable, /P42_EXPECTED_DEPLOYER_ADDRESS/);
     assert.match(executable, /readManifestOutputReservation\(reservationIdentity\)/);
+    for (const journal of [
+      "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json",
+      "deployments/base-sepolia/p42-prizes.json.signed-transactions.json",
+      "deployments/base-sepolia/p42-prizes.json.governance-operations.json",
+    ]) {
+      assert.doesNotThrow(
+        () => execFileSync("git", ["check-ignore", "--quiet", "--no-index", journal], {
+          cwd: REPO_ROOT,
+          stdio: "ignore",
+        }),
+        `${journal} must not invalidate the frozen-checkout recovery path`,
+      );
+    }
     for (const runbook of runbooks) {
       assert.match(
         runbook.body,
