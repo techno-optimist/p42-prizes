@@ -55,10 +55,10 @@ function releaseGuardBoards(): ReleaseGuardBoard[] {
 }
 
 describe("problem funding wallets", () => {
-  it("lists the ten-board Phase 0 launch slate", () => {
-    expect(problems).toHaveLength(10);
-    expect(new Set(problems.map((problem) => problem.id))).toHaveProperty("size", 10);
-    expect(new Set(problems.map((problem) => problem.slug))).toHaveProperty("size", 10);
+  it("lists the fifteen-board Phase 0 launch slate", () => {
+    expect(problems).toHaveLength(15);
+    expect(new Set(problems.map((problem) => problem.id))).toHaveProperty("size", 15);
+    expect(new Set(problems.map((problem) => problem.slug))).toHaveProperty("size", 15);
   });
 
   it("publishes no donation address before a per-problem pool is deployed", () => {
