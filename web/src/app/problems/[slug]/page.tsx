@@ -73,7 +73,7 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
 
       <header className="problem-title-block">
         <span className="kicker smallcaps">
-          Problem № {problem.id} · <Link className="link" href="/">back to the register</Link>
+          Problem № {problem.id} · <Link className="link" href="/register">back to the register</Link>
         </span>
         <h1>{problem.title}</h1>
         <div className="communicated">

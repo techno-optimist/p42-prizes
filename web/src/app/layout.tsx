@@ -64,7 +64,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 </Link>
               </div>
               <nav className="masthead-line" aria-label="Primary navigation">
-                <Link href="/">Problems</Link>
+                <Link href="/register">Problems</Link>
                 <Link href="/discoveries">Discoveries</Link>
                 <Link href="/journey">Journey</Link>
                 <Link href="/standings">Standings</Link>
