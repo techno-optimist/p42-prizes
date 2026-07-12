@@ -51,6 +51,7 @@ def run_bounded_process(
     cancellation_event: threading.Event | None = None,
     stdout_limit: int = MAX_VERIFIER_STDOUT_BYTES,
     stderr_limit: int = MAX_VERIFIER_STDERR_BYTES,
+    pass_fds: tuple[int, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     if timeout <= 0 or stdout_limit < 1 or stderr_limit < 1:
         raise ValueError("bounded process timeout and output limits must be positive")
@@ -62,6 +63,7 @@ def run_bounded_process(
         stderr=subprocess.PIPE,
         start_new_session=True,
         preexec_fn=preexec_fn,
+        pass_fds=pass_fds,
     )
     assert process.stdout is not None and process.stderr is not None
     buffers = {"stdout": bytearray(), "stderr": bytearray()}

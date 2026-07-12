@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.org/schemas/production-launch-authorization.schema.json",
+  "title": "P42 Production Launch Authorization",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "issued_at_utc",
+    "expires_at_utc",
+    "network",
+    "chain_id",
+    "funding_mode",
+    "release_binding",
+    "artifacts",
+    "problem_reviews",
+    "authorizers",
+    "authorization_digest",
+    "authorization_signatures"
+  ],
+  "properties": {
+    "schema_version": { "const": "p42-production-launch-authorization/v1" },
+    "status": { "const": "authorized" },
+    "issued_at_utc": { "type": "string", "format": "date-time" },
+    "expires_at_utc": { "type": "string", "format": "date-time" },
+    "network": { "enum": ["base-sepolia", "base-mainnet"] },
+    "chain_id": { "type": "integer", "enum": [84532, 8453] },
+    "funding_mode": { "enum": ["testnet-only", "real-eth"] },
+    "release_binding": {
+      "$ref": "https://p42.xyz/schemas/legal-memo-v1.json#/$defs/releaseBinding"
+    },
+    "artifacts": { "$ref": "#/$defs/artifacts" },
+    "problem_reviews": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": { "$ref": "#/$defs/problemReview" }
+    },
+    "authorizers": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/authorizer" } },
+    "authorization_digest": { "$ref": "#/$defs/hash" },
+    "authorization_signatures": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/signature" } }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "network": { "const": "base-sepolia" } }, "required": ["network"] },
+      "then": {
+        "properties": {
+          "chain_id": { "const": 84532 },
+          "funding_mode": { "const": "testnet-only" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "network": { "const": "base-mainnet" } }, "required": ["network"] },
+      "then": {
+        "properties": {
+          "chain_id": { "const": 8453 },
+          "funding_mode": { "const": "real-eth" }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "artifact": {
+      "$ref": "https://p42.xyz/schemas/legal-memo-v1.json#/$defs/artifact"
+    },
+    "authorizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "enum": ["production-launch-authority", "independent-security-authority", "governance-authority"] },
+        "public_key": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "enum": ["production-launch-authority", "independent-security-authority", "governance-authority"] },
+        "public_key": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "legal_memo",
+        "governance_signoff",
+        "incident_drill",
+        "adversarial_campaign",
+        "operational_controls",
+        "production_release_verification",
+        "release_capsule",
+        "deployment_manifest",
+        "explorer_dossier",
+        "explorer_operator_policy"
+      ],
+      "properties": {
+        "legal_memo": { "$ref": "#/$defs/artifact" },
+        "governance_signoff": { "$ref": "#/$defs/artifact" },
+        "incident_drill": { "$ref": "#/$defs/artifact" },
+        "adversarial_campaign": { "$ref": "#/$defs/artifact" },
+        "operational_controls": { "$ref": "#/$defs/artifact" },
+        "production_release_verification": { "$ref": "#/$defs/artifact" },
+        "release_capsule": { "$ref": "#/$defs/artifact" },
+        "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "explorer_dossier": { "$ref": "#/$defs/artifact" },
+        "explorer_operator_policy": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "problemReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "problem_id",
+        "problem_slug",
+        "verifier_image_digest",
+        "admission_matrix_digest",
+        "math_review_artifact",
+        "review_status",
+        "review_hash"
+      ],
+      "properties": {
+        "problem_id": { "type": "string", "minLength": 1 },
+        "problem_slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "verifier_image_digest": { "$ref": "#/$defs/hash" },
+        "admission_matrix_digest": { "$ref": "#/$defs/hash" },
+        "math_review_artifact": { "$ref": "#/$defs/artifact" },
+        "review_status": { "const": "approved" },
+        "review_hash": { "$ref": "#/$defs/hash" }
+      }
+    }
+  }
+}

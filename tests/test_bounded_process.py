@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 
 import pytest
@@ -123,3 +124,23 @@ def test_success_returns_exact_utf8_streams(tmp_path: Path) -> None:
     assert completed.returncode == 0
     assert completed.stdout == "ok\n"
     assert completed.stderr == "note\n"
+
+
+def test_trusted_helper_can_read_an_inherited_snapshot_descriptor(tmp_path: Path) -> None:
+    with tempfile.TemporaryFile() as snapshot:
+        snapshot.write(b"pinned-snapshot")
+        snapshot.flush()
+        snapshot.seek(0)
+        completed = run_bounded_process(
+            [
+                sys.executable,
+                "-c",
+                "import os,sys; sys.stdout.buffer.write(os.read(int(sys.argv[1]), 64))",
+                str(snapshot.fileno()),
+            ],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=5,
+            pass_fds=(snapshot.fileno(),),
+        )
+    assert completed.stdout == "pinned-snapshot"
