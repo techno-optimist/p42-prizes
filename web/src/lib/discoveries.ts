@@ -1,5 +1,5 @@
 /*
- * The discoveries — the four DOI'd, exact-certificate results the ProjectForty2
+ * The discoveries — the DOI-backed, exact-certificate results the ProjectForty2
  * / CHRONOS agent stack produced before opening the protocol. This is the
  * credibility spearhead: real, published mathematics a forger cannot fake.
  *
@@ -13,6 +13,7 @@
  *   - doi.org/10.5281/zenodo.21227361  (minimum autocorrelation)
  *   - doi.org/10.5281/zenodo.21221207  (Mertens-type LP ceilings)
  *   - doi.org/10.5281/zenodo.21194862  (three autoconvolution inequalities)
+ *   - doi.org/10.5281/zenodo.21318881  (new antipodal 840 configuration)
  */
 
 export interface DiscoveryResult {
@@ -52,8 +53,8 @@ export interface Discovery {
 }
 
 export const DISCOVERIES_META = {
-  count: 5,
-  span: "4–9 July 2026",
+  count: 6,
+  span: "4–12 July 2026",
   author: "Kevin Russell",
   lab: "ProjectForty2 · CHRONOS agent",
   // The shared property every result has and no forger can counterfeit.
@@ -221,6 +222,40 @@ export const discoveries: Discovery[] = [
         prior: "1355 (Leijenhorst & de Laat, 2024)",
         significance:
           "First exact-certificate improvement of the antipodal kissing bound in ℝ¹², beating Leijenhorst & de Laat (2024).",
+      },
+    ],
+    boardSlugs: [],
+  },
+  {
+    slug: "second-antipodal-840",
+    constant: "a new 420-line antipodal kissing configuration in ℝ¹²",
+    paperTitle: "A new 420-line antipodal kissing configuration in R^12 — machine verification",
+    doi: "10.5281/zenodo.21318881",
+    doiUrl: "https://doi.org/10.5281/zenodo.21318881",
+    date: "2026-07-12",
+    repoUrl: "https://github.com/techno-optimist/second-antipodal-840/tree/v1.1",
+    method:
+      "Minimal raw line certificates; stdlib-only exact checkers recompute all norms, 87,990 pairwise Gram constraints, the exact histogram, rotation invariants, and the U₁₁ witnesses without stored counts or verdicts.",
+    headline:
+      "A second 840-point antipodal kissing configuration in ℝ¹², proven non-isometric to the known modular construction.",
+    results: [
+      {
+        symbol: "60° lines, ℝ¹²",
+        tex: "N_{60}(12) \\ge 420 \\text{ lines} \\;\\Longleftrightarrow\\; 840 \\text{ antipodal points}",
+        bound: "≥ 420 lines / 840 antipodal points",
+        direction: "lower",
+        prior: "known modular 420-line construction",
+        significance:
+          "A distinct exact 420-line witness; its pairwise |cos| multiset proves it is non-isometric to the known modular construction.",
+      },
+      {
+        symbol: "α(U₁₁)",
+        tex: "\\alpha(U_{11}) \\ge 98",
+        bound: "α(U₁₁) ≥ 98",
+        direction: "lower",
+        prior: "Problem 26 asked whether α(U₁₁) ≤ 96",
+        significance:
+          "Six explicit witnesses answer the published open problem in the negative. The lower bound 98 is exactly certified; the separate solver-reported upper side 144 is deliberately not promoted here.",
       },
     ],
     boardSlugs: [],
