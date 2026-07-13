@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { link, lstat, open, unlink } from "node:fs/promises";
 import { basename, delimiter, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import Ajv2020 from "ajv/dist/2020.js";
+import addFormats from "ajv-formats";
 
 import {
   ADMISSION_MATRIX_HASH_ALGORITHM,
@@ -18,18 +22,34 @@ export const MULTIBOARD_CEREMONY_SCHEMA = "p42-prizes/multi-board-ceremony/v1";
 export const PRODUCTION_RELEASE_SLATE_SCHEMA = "p42-prizes/production-release-slate/v1";
 export const PRODUCTION_RELEASE_INDEX_SCHEMA = "p42-prizes/production-release-index/v1";
 export const RELEASE_MODES = Object.freeze({ PRODUCTION: "production", FIXTURE: "fixture" });
-export const PRODUCTION_LAUNCH_SLUGS = Object.freeze([
-  "hadamard-mini",
-  "erdos-min-overlap",
-  "edges-vs-triangles",
-  "arithmetic-kakeya",
-  "autoconvolution-c1-upper",
-  "autoconvolution-c2-lower",
-  "signed-autoconvolution-c3-upper",
-  "mertens-lp-ceiling-k12000",
-  "pnt-sparse-mertens-construction",
-  "hadamard-668-defect",
-]);
+const PRODUCTION_BOARD_SET_PATH = fileURLToPath(new URL("../../protocol/production-board-set-v1.json", import.meta.url));
+const productionBoardSet = readContractsConfigJsonSync(PRODUCTION_BOARD_SET_PATH);
+if (
+  Object.keys(productionBoardSet ?? {}).sort().join(",") !== "boards,evidence,schema,status"
+  || productionBoardSet?.schema !== "p42-prizes/production-board-set/v1"
+  || productionBoardSet?.status !== "frozen-source-cohort"
+  || !Array.isArray(productionBoardSet?.boards)
+  || productionBoardSet.boards.length !== 10
+  || new Set(productionBoardSet.boards).size !== 10
+  || productionBoardSet.boards.some((slug) => typeof slug !== "string" || !/^[a-z0-9][a-z0-9-]*$/.test(slug))
+) throw new Error("canonical production board set is invalid");
+const evidenceRef = productionBoardSet.evidence;
+if (Object.keys(evidenceRef ?? {}).sort().join(",") !== "path,schema_path,schema_sha256,sha256" || evidenceRef.path !== "docs/provenance/production-board-evidence-v1.json" || evidenceRef.schema_path !== "schemas/production-board-evidence.schema.json") throw new Error("canonical production board evidence reference is invalid");
+const evidencePath = fileURLToPath(new URL(`../../${evidenceRef.path}`, import.meta.url));
+const evidenceSchemaPath = fileURLToPath(new URL(`../../${evidenceRef.schema_path}`, import.meta.url));
+const { bytes: productionEvidenceBytes, value: productionEvidence } = readContractsConfigJsonSyncWithBytes(evidencePath);
+const { bytes: productionEvidenceSchemaBytes, value: productionEvidenceSchema } = readContractsConfigJsonSyncWithBytes(evidenceSchemaPath);
+if (`sha256:${createHash("sha256").update(productionEvidenceBytes).digest("hex")}` !== evidenceRef.sha256 || `sha256:${createHash("sha256").update(productionEvidenceSchemaBytes).digest("hex")}` !== evidenceRef.schema_sha256) throw new Error("canonical production board evidence digest mismatch");
+const productionEvidenceValidator = new Ajv2020({ allErrors: true, strict: true, strictRequired: false });
+addFormats(productionEvidenceValidator);
+const validateProductionEvidenceSchema = productionEvidenceValidator.compile(productionEvidenceSchema);
+export function validateProductionBoardEvidence(evidence) {
+  if (!validateProductionEvidenceSchema(evidence)) throw new Error("canonical production board evidence fails schema validation");
+  return evidence;
+}
+validateProductionBoardEvidence(productionEvidence);
+if (productionEvidence?.schema !== "p42-prizes/production-board-evidence/v1" || canonical(productionEvidence?.boards?.map((board) => board?.slug)) !== canonical([productionBoardSet.boards[0], productionBoardSet.boards[6]])) throw new Error("canonical production board evidence identity mismatch");
+export const PRODUCTION_LAUNCH_SLUGS = Object.freeze([...productionBoardSet.boards]);
 
 const RELEASE_IDENTITY_KEYS = ["problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"];
 const RELEASE_BOARD_KEYS = ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest"];

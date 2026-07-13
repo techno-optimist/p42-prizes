@@ -1,6 +1,6 @@
 {
   "schema_version": "p42-prizes-release-guard-problems-v1",
-  "projection_sha256": "sha256:bc963e01b85c89909ddcc530907bb487b2a3c528253f29a53487725868fc1809",
+  "projection_sha256": "sha256:af3b704d102318edce6d963fa4104e6751c038513ba6b5f47f3b5bb31f5fc565",
   "phase0": {
     "donationWallet": {
       "chain": "Base Sepolia",
@@ -30,18 +30,18 @@
   },
   "boards": [
     {
-      "id": 1,
-      "slug": "hadamard-mini",
-      "title": "Hadamard Mini",
-      "status": "pilot",
+      "id": 11,
+      "slug": "q6-intersecting-hypergraph",
+      "title": "q(6) Intersecting Hypergraph",
+      "status": "locked",
       "mode": "construction",
       "direction": "minimize",
-      "scoreName": "defect",
-      "currentBest": "0/1",
-      "minImprovement": "1/6",
+      "scoreName": "edge count",
+      "currentBest": "18/1",
+      "minImprovement": "1/1",
       "bountyEth": "0.00",
       "challengeWindowHours": 72,
-      "verifierVersion": "0.1.1"
+      "verifierVersion": "0.1.0"
     },
     {
       "id": 2,
@@ -114,18 +114,18 @@
       "verifierVersion": "0.1.1"
     },
     {
-      "id": 7,
-      "slug": "signed-autoconvolution-c3-upper",
-      "title": "Signed Autoconvolution C3 Upper",
+      "id": 12,
+      "slug": "distinct-subset-sums-a11",
+      "title": "Distinct Subset Sums a(11)",
       "status": "locked",
       "mode": "construction",
       "direction": "minimize",
-      "scoreName": "C3 upper bound",
-      "currentBest": "3/2",
-      "minImprovement": "1/1000000000000",
-      "bountyEth": "0.50",
+      "scoreName": "max element",
+      "currentBest": "594/1",
+      "minImprovement": "1/1",
+      "bountyEth": "0.00",
       "challengeWindowHours": 72,
-      "verifierVersion": "0.1.2"
+      "verifierVersion": "0.1.0"
     },
     {
       "id": 8,

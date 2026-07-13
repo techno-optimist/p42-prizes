@@ -298,8 +298,8 @@ function validateBindings(manifest: JsonObject, checkpoint: JsonObject, problem:
     const bound = object(object(binding.contracts, "binding.contracts")[key], `binding.contracts.${key}`);
     requireBinding(same(bound.address, deployed.address) && same(bound.deployedCodeHash, deployed.deployedCodeHash) && same(bound.abiHash, deployed.abiHash));
   }
-  const matchIndex = problems.findIndex((entry) => entry.problemSlug === problem.slug && String(entry.problemId) === String(problem.id));
-  requireBinding(matchIndex >= 0);
+  const matchIndex = problems.findIndex((entry) => entry.problemSlug === problem.slug);
+  requireBinding(matchIndex >= 0 && String(problems[matchIndex].problemId) === String(matchIndex + 1));
   return { board: boards[matchIndex], manifestProblem: problems[matchIndex] };
 }
 
@@ -452,8 +452,8 @@ export function activatedProvenanceFromArtifacts(
     requireBinding(String(onchain.fundingAuthorizationExpiresAt) === String(authorizationExpiry)
       && activated.fundingAuthorizationExpiresAt === authorizationExpiry);
   }
-  const index = manifestProblems.findIndex((entry) => String(entry.problemId) === String(problem.id) && entry.problemSlug === problem.slug);
-  requireBinding(index >= 0);
+  const index = manifestProblems.findIndex((entry) => entry.problemSlug === problem.slug);
+  requireBinding(index >= 0 && String(manifestProblems[index].problemId) === String(index + 1));
   const manifestProblem = object(manifestProblems[index], "manifest problem");
   const pool = object(object(manifestProblem.contracts, "manifest problem contracts").pool, "manifest pool");
   const network = object(manifest.network, "manifest.network");

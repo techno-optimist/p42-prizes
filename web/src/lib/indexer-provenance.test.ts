@@ -159,7 +159,7 @@ describe("indexer provenance v2", () => {
     const templateBoard = base.checkpoint.boards[0];
     const manifestProblems = launchProblems.map((portalProblem, index) => {
       const item = clone(templateProblem);
-      item.problemId = String(portalProblem.id); item.problemSlug = portalProblem.slug;
+      item.problemId = String(index + 1); item.problemSlug = portalProblem.slug;
       for (const [offset, key] of boardKeys.entries()) {
         const address = `0x${(1000 + index * 4 + offset).toString(16).padStart(40, "0")}`;
         item.contracts[key].address = address;
@@ -168,6 +168,9 @@ describe("indexer provenance v2", () => {
       item.submissionManager = item.contracts.submissions.address; item.challengeManager = item.contracts.challenges.address;
       return item;
     });
+    expect(manifestProblems.map((item) => item.problemId)).toEqual(Array.from({ length: 10 }, (_, index) => String(index + 1)));
+    expect(manifestProblems[0].problemSlug).toBe("q6-intersecting-hypergraph");
+    expect(manifestProblems[6].problemSlug).toBe("distinct-subset-sums-a11");
     base.manifest.releaseMode = "production"; base.manifest.status = "governance-setup-complete";
     base.manifest.releaseEvidence = { releaseBindingDigest: digest("1") };
     base.manifest.problems = manifestProblems;
@@ -221,9 +224,11 @@ describe("indexer provenance v2", () => {
     const checkpointDigest = `sha256:${createHash("sha256").update(checkpointBytes).digest("hex")}`;
     const checkpointMessage = Buffer.from(`P42-ATTESTATION-V2\np42-indexer-checkpoint-attestation/v1\nindexer-checkpoint-authority\n${checkpointDigest}\n${checkpointSignedAt}`, "ascii");
     const checkpointAttestation = { schema: "p42-indexer-checkpoint-attestation/v1", signerRole: "indexer-checkpoint-authority", publicKey: checkpointPublicKey, checkpointDigest, signedAtUtc: checkpointSignedAt, signature: `ed25519:${sign(null, checkpointMessage, checkpointSigner.privateKey).toString("hex")}` };
-    const result = activatedProvenanceFromArtifacts(problems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion);
+    const result = activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion);
     expect(result).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[0].pool, fundingAuthorizationDigest: authorizationDigest, activationFinalizedBlock: 99 });
+    const subsetSums = activatedProvenanceFromArtifacts(launchProblems[6], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion);
+    expect(subsetSums).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[6].pool, problemRegistryId: "7" });
     base.checkpoint.boards[0].onchain.fundingAuthorizationDigest = hash("9");
-    expect(() => activatedProvenanceFromArtifacts(problems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion)).toThrow();
+    expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion)).toThrow();
   });
 });

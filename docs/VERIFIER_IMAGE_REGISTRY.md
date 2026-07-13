@@ -6,7 +6,9 @@ verifier image yet.
 ## Bounded Ten-Board Release Tool
 
 `scripts/release_verifier_images.py` is the release ceremony for the exact,
-ordered ten-board slate in `docs/LAUNCH_SLATE.md`. It refuses a dirty tree or a
+ordered ten-board slate in `protocol/production-board-set-v1.json`. The release
+script and contract ceremony both load that authority, while schema and portal
+copies are checked against it in CI. It refuses a dirty tree or a
 symbolic/abbreviated commit and accepts only a canonical lowercase registry
 repository base such as `ghcr.io/projectforty2/verifier-images`. It never edits
 `problem.yaml`; applying reviewed immutable digests remains a separate human
@@ -109,10 +111,11 @@ PYTHONPATH=src python3 -m p42_prizes.cli admit-ready \
   --matrix admission-matrix.json
 ```
 
-`admit-ready` permanently rejects the `hadamard-mini` Phase 0 demo fixture,
-even if a caller supplies an immutable image and otherwise valid host matrix.
-Its bundled witness already solves the toy instance. Other Phase 0 packages
-remain blocked by their placeholder image and their wider launch gates.
+`admit-ready` permanently rejects the `hadamard-mini` Phase 0 demo fixture and
+the current signed C3 package, even if a caller supplies an immutable image and
+otherwise valid host matrix. Neither appears in the frozen production cohort.
+The ten selected packages remain blocked by placeholder images and their wider
+launch gates.
 
 ## Registry Fields
 
@@ -172,11 +175,12 @@ immutable image evidence is collected with those exact keys.
 - `deployments/base-sepolia/p42-prizes.example.json` is
   `example-not-deployed`; its all-`a` digest/hash pair is synthetic anchor test
   data, not a published verifier image or funding evidence.
-- `hadamard-mini` uses `sha256:local-dev` and is runnable only as a pilot
-  fixture. It is permanently ineligible for funding; `admit-ready` and the
-  v2 ceremony preflight reject it even with a non-placeholder image.
-- The nine locked launch boards use `sha256:local-dev` placeholders in their
-  local verifier packages and cannot be funded.
+- `hadamard-mini` and signed C3 remain visible research fixtures outside the
+  production cohort and are permanently rejected by current admission policy.
+- All ten frozen-cohort boards use `sha256:local-dev` placeholders and cannot
+  be funded. The two newest cohort entries have source and seed records in
+  `docs/provenance/production-board-evidence-v1.json`, with independent math
+  and legal review explicitly pending.
 - No Gate 2 verifier item is closed until a reviewed immutable digest, four
   independently verified source-bound host profiles, and a collected matrix
   exist for every funded problem.

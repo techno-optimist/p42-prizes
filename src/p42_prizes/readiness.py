@@ -45,6 +45,17 @@ FUNDING_ADMISSION_BLOCKS = {
 }
 
 
+def _validate_admission_report_purpose(matrix: Mapping[str, Any]) -> list[str]:
+    """Accept a strict winner or an exact, structurally sound frontier baseline."""
+
+    if matrix.get("report_valid") is False and matrix.get("report_reason") != "NOT_STRICT_IMPROVEMENT":
+        return [
+            "admission matrix: non-winning baseline is not a structurally certified frontier fixture "
+            f"(reason={matrix.get('report_reason')!r})"
+        ]
+    return []
+
+
 def _validate_report_objective_semantics(
     manifest: Mapping[str, Any], matrix: Mapping[str, Any]
 ) -> list[str]:
@@ -256,11 +267,10 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
             errors.append("admission matrix: source.tree_hash does not match the current normalized verifier source")
 
     errors.extend(_validate_report_objective_semantics(manifest, matrix))
-    if matrix.get("report_valid") is not True:
-        errors.append(
-            "admission matrix: admitted report is not a certified strict witness "
-            f"(reason={matrix.get('report_reason')!r})"
-        )
+    # Admission certifies deterministic verifier execution, not possession of a
+    # winning submission before a prize can open. A non-winning baseline
+    # is admissible only when the verifier classified it as structurally sound.
+    errors.extend(_validate_admission_report_purpose(matrix))
 
     coverage = matrix.get("coverage")
     if not isinstance(coverage, dict):

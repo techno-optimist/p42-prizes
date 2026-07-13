@@ -1,33 +1,36 @@
 # P42 Launch Slate
 
-Status: Phase 0 board plan. The portal lists ten boards so funders and agents
-can see the intended market surface, and all ten now have local exact-verifier
-packages. Only `hadamard-mini` is runnable today. Every other board remains
-locked until immutable verifier image, N-host determinism evidence, and external
-review gates pass admission.
+Status: frozen source cohort, not funding authorization. The portal exposes all
+15 packaged boards for research and agent discovery. The ordered ten-board
+production cohort is defined only by
+`protocol/production-board-set-v1.json`. Every production board remains locked
+until immutable image, N-host determinism, independent math, legal, deployment,
+and launch-authorization gates pass.
 
 ## Ten-Board Target
 
 | Slot | Slug | Status | Artifact | Exact verifier shape | Admission work |
 | --- | --- | --- | --- | --- | --- |
-| 1 | `hadamard-mini` | runnable pilot | 4x4 sign matrix | integer row-pair dot products | keep as fixture and regression target |
+| 1 | `q6-intersecting-hypergraph` | packaged, locked | finite 6-uniform hypergraph | exact pair intersections plus complete bounded hitting-set search | independent review of the 14-to-18 literature bracket; image and N-host evidence |
 | 2 | `erdos-min-overlap` | packaged, locked | step-function dyadic numerators | exact normalization and all-lag rational overlap | collect immutable image, N-host matrix, and external H6 reduction review |
 | 3 | `edges-vs-triangles` | packaged, locked | fixed-row-sum rational distributions | exact row normalization, moment curve, slope-3 area/max-gap model | collect immutable image, N-host timing, and external review of the rationalized slope-3 scope |
 | 4 | `arithmetic-kakeya` | packaged, locked | 2x2 forcing certificate | exact Fraction closure verifier for warm-up certificate | external scope review before any marquee funding claim |
 | 5 | `autoconvolution-c1-upper` | packaged, locked | nonnegative integer step heights | exact integer convolution and rational upper-bound score | collect immutable image, memory profile, and N-host timing |
 | 6 | `autoconvolution-c2-lower` | packaged, locked | nonnegative integer vector | exact `L1`, `L2`, `Linf` and lower-bound score | collect immutable image, memory profile, and N-host timing |
-| 7 | `signed-autoconvolution-c3-upper` | packaged, locked | signed dyadic step heights | exact signed Kronecker convolution and max check | collect immutable image, N-host timing, and external H6 reduction review |
+| 7 | `distinct-subset-sums-a11` | packaged, locked | increasing 11-element integer set | exact enumeration and uniqueness of all 2,048 subset sums | independent review of the externally reported `a(10)=309` floor; image and N-host evidence |
 | 8 | `mertens-lp-ceiling-k12000` | packaged, locked | dyadic LP dual certificate | exact residual accumulation and interval log audit | collect immutable image, N-host timing, and proof-side copy review |
 | 9 | `pnt-sparse-mertens-construction` | packaged, locked | rational sparse support `{k: v}` | exhaustive integer constraints and interval objective | collect immutable image, N-host timing, and interval-log review |
 | 10 | `hadamard-668-defect` | packaged, locked | 668x668 sign matrix | integer row-pair dot products over all pairs | collect immutable image, N-host timing, and open-problem scope review |
 
-## Reserve Candidate
+## Research And Reserve Boards
 
-`kissing-extension-exact` is a strong reserve board, likely for `d11-605` or
-`d12-842`, but it should wait until the artifact encoding is chosen: rational
-coordinates, algebraic coordinates, or a Gram certificate. The verifier must
-check exact squared norms/distances and score overlap deficit without floating
-point geometry.
+The portal also retains `hadamard-mini`, `signed-autoconvolution-c3-upper`,
+`b3-ruler-11-marks`, `b3-subset-first-jump-9`, and
+`edp-c3-longest-sequence`. They are useful public fixtures or research boards,
+but are outside the production cohort. In particular, `hadamard-mini` is a
+solved demo and signed C3 has a permanent semantic admission block until it is
+redesigned; neither may be smuggled into a funded ceremony by publishing an
+image.
 
 ## Hold Back
 

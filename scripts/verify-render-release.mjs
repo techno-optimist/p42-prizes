@@ -379,7 +379,7 @@ function validateProblems(payload, route) {
     slugs.add(problem.slug);
   }
 
-  const liveBoards = payload.map(boardProjection).sort((left, right) => left.id - right.id);
+  const liveBoards = payload.map(boardProjection);
   if (!isDeepStrictEqual(liveBoards, manifest.boards)) {
     describe(
       route,

@@ -8,7 +8,7 @@ import {
   publishedDonationTarget,
   validatedDonationTarget,
 } from "@/lib/chain-provenance";
-import { launchProblems, problems } from "@/lib/data";
+import { launchProblems, problems, productionBoardSlugs } from "@/lib/data";
 import { parseRational } from "@/lib/exact";
 import type { DonationWallet } from "@/lib/types";
 
@@ -59,6 +59,14 @@ describe("problem funding wallets", () => {
     expect(problems).toHaveLength(15);
     expect(new Set(problems.map((problem) => problem.id))).toHaveProperty("size", 15);
     expect(new Set(problems.map((problem) => problem.slug))).toHaveProperty("size", 15);
+  });
+
+  it("matches the frozen ten-board production authority in exact order", () => {
+    const authority = JSON.parse(
+      readFileSync(join(repoRoot, "protocol", "production-board-set-v1.json"), "utf8"),
+    ) as { boards: string[] };
+    expect(productionBoardSlugs).toEqual(authority.boards);
+    expect(launchProblems.map((problem) => problem.slug)).toEqual(authority.boards);
   });
 
   it("publishes no donation address before a per-problem pool is deployed", () => {

@@ -1,0 +1,59 @@
+{
+  "schema": "p42-prizes/production-board-evidence/v1",
+  "reviewed_at": "2026-07-12",
+  "scope": "source and local witness provenance for the two boards entering the frozen source cohort; not independent mathematical, legal, licensing, image, determinism, or funding approval",
+  "boards": [
+    {
+      "slug": "q6-intersecting-hypergraph",
+      "seed": {
+        "path": "problems/q6-intersecting-hypergraph/tests/seed-pg25.json",
+        "sha256": "4c0e38ba9e174fe95c78de0acc2fa216ade92a52ba41b88ee010fbf7a61092ce",
+        "score": "18/1"
+      },
+      "sources": [
+        {
+          "role": "upper-bound construction and projective subcase",
+          "url": "https://arxiv.org/abs/2011.04444v1",
+          "doi": "10.48550/arXiv.2011.04444",
+          "version": "v1",
+          "pdf_sha256": "ad0e08063eb9d6047348287a34db867ac31259666c07ca6dbb3a1d1031100638"
+        },
+        {
+          "role": "general lower bound q(6) >= 14",
+          "url": "https://arxiv.org/abs/2606.24878v1",
+          "doi": "10.48550/arXiv.2606.24878",
+          "version": "v1",
+          "pdf_sha256": "e009f2890fa69d0be5b8f24f0edbb4bd42d748638f3edc74901da7e2944c3912"
+        }
+      ],
+      "claim_scope": "The verifier certifies a finite 6-uniform intersecting hypergraph with covering number 6. The 18-edge seed is locally exhaustively checked. The literature supplies an upper witness and lower bound, not an exact value for general q(6).",
+      "funding_review": "PENDING_INDEPENDENT_MATH_AND_LEGAL_REVIEW"
+    },
+    {
+      "slug": "distinct-subset-sums-a11",
+      "seed": {
+        "path": "problems/distinct-subset-sums-a11/tests/conway-guy-594.json",
+        "sha256": "5081fe54d10220c1ad2862fd872b3cf5dffe14184bb9f52a9e517ad4a5a26768",
+        "score": "594/1"
+      },
+      "sources": [
+        {
+          "role": "current sequence values, exact a(10), and a(11) upper witness",
+          "url": "https://github.com/oeis/oeisdata/blob/362fc976ad1cd272dd778a735e3725b5d156f555/seq/A276/A276661.seq",
+          "commit": "362fc976ad1cd272dd778a735e3725b5d156f555",
+          "source_sha256": "7fe9af970f3d9c4a8715982fedff71fc511c8d51c06bd4236e161be1896e24c5",
+          "license": "CC-BY-SA-4.0",
+          "license_note": "The pinned OEIS internal-format entry is linked, not redistributed. Legal review remains required."
+        },
+        {
+          "role": "exhaustive computation supporting a(10)=309",
+          "url": "https://github.com/pwdyson/erdos_1/tree/1ad07e9d68df6bced24ac367765f2efb3e67a748",
+          "commit": "1ad07e9d68df6bced24ac367765f2efb3e67a748",
+          "license": "GPL-3.0"
+        }
+      ],
+      "claim_scope": "The verifier enumerates all 2048 subset sums of the submitted 11-set. The lower bound 310 follows from prefix inheritance and the externally reported exact value a(10)=309; it is metadata, not an acceptance shortcut.",
+      "funding_review": "PENDING_INDEPENDENT_MATH_AND_LEGAL_REVIEW"
+    }
+  ]
+}

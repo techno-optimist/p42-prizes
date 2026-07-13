@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from p42_prizes.readiness import (
+    _validate_admission_report_purpose,
     _validate_report_objective_semantics,
     validate_fundable_admission,
 )
@@ -86,6 +87,22 @@ def test_objective_semantics_accept_consistent_below_threshold_status() -> None:
     )
 
     assert errors == []
+
+
+def test_admission_accepts_frontier_baseline_without_requiring_a_prize_winner() -> None:
+    assert _validate_admission_report_purpose({
+        "report_valid": False,
+        "report_reason": "NOT_STRICT_IMPROVEMENT",
+    }) == []
+
+
+@pytest.mark.parametrize("reason", ["MALFORMED", "CONSTRAINT_VIOLATED", "INTERNAL_ERROR", ""])
+def test_admission_rejects_non_winning_reports_that_are_not_structural_baselines(reason: str) -> None:
+    errors = _validate_admission_report_purpose({
+        "report_valid": False,
+        "report_reason": reason,
+    })
+    assert any("not a structurally certified frontier fixture" in error for error in errors)
 
 
 def test_objective_semantics_reject_forged_report_improvement() -> None:
