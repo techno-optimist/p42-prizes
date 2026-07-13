@@ -55,6 +55,9 @@ def _write_problem(
         ),
         encoding="utf-8",
     )
+    (problem / "solution.schema.json").write_text(
+        '{"type":"object","x-p42-max-bytes":4096}\n', encoding="utf-8"
+    )
     (verifier / verifier_name).write_text(verifier_body, encoding="utf-8")
     solution = problem / "solution.json"
     solution.write_text("{}", encoding="utf-8")

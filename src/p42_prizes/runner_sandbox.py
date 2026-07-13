@@ -91,19 +91,35 @@ def docker_available(binary: str = "docker") -> bool:
 
 
 class _SandboxSolutionStage(AbstractContextManager[Path]):
-    def __init__(self, host_solution: str | Path) -> None:
+    def __init__(self, host_solution: str | Path, max_bytes: int) -> None:
         self.source = Path(host_solution)
+        self.max_bytes = max_bytes
         self.temporary: tempfile.TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> Path:
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         if not nofollow:
             raise RunnerSandboxError("sandbox solution staging requires platform O_NOFOLLOW support")
-        source_fd = os.open(self.source, os.O_RDONLY | nofollow)
+        if not isinstance(self.max_bytes, int) or isinstance(self.max_bytes, bool) or self.max_bytes < 1:
+            raise RunnerSandboxError("sandbox solution max_bytes must be a positive integer")
+        source_fd = os.open(self.source, os.O_RDONLY | os.O_NONBLOCK | nofollow)
         try:
             source_metadata = os.fstat(source_fd)
             if not stat.S_ISREG(source_metadata.st_mode):
                 raise RunnerSandboxError("sandbox solution source must be a regular file")
+            if source_metadata.st_size > self.max_bytes:
+                raise RunnerSandboxError(
+                    f"sandbox solution exceeds admitted byte limit ({self.max_bytes})"
+                )
+            parent_metadata = self.source.parent.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(parent_metadata.st_mode)
+                or parent_metadata.st_uid != os.geteuid()
+                or parent_metadata.st_mode & 0o022
+            ):
+                raise RunnerSandboxError(
+                    "sandbox solution parent must be owned by the runner UID and not group/world-writable"
+                )
             # Keep the staging path beside the source. Docker Desktop only
             # exposes configured host roots to its VM; the source is already in
             # one, while the platform temp directory may not be.
@@ -115,19 +131,43 @@ class _SandboxSolutionStage(AbstractContextManager[Path]):
             staged = root / "solution.json"
             target_fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
             try:
+                copied = 0
                 while chunk := os.read(source_fd, 1024 * 1024):
+                    copied += len(chunk)
+                    if copied > self.max_bytes:
+                        raise RunnerSandboxError(
+                            f"sandbox solution exceeds admitted byte limit ({self.max_bytes})"
+                        )
                     view = memoryview(chunk)
                     while view:
                         written = os.write(target_fd, view)
                         if written <= 0:
                             raise OSError("short write while staging sandbox solution")
                         view = view[written:]
+                after = os.fstat(source_fd)
+                if (
+                    after.st_dev != source_metadata.st_dev
+                    or after.st_ino != source_metadata.st_ino
+                    or after.st_size != source_metadata.st_size
+                    or after.st_mtime_ns != source_metadata.st_mtime_ns
+                    or copied != after.st_size
+                ):
+                    raise RunnerSandboxError("sandbox solution changed while it was being staged")
                 os.fsync(target_fd)
+                os.fchmod(target_fd, 0o444)
+                target_metadata = os.fstat(target_fd)
             finally:
                 os.close(target_fd)
-            os.chmod(staged, 0o444)
+            staged_metadata = staged.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(staged_metadata.st_mode)
+                or staged_metadata.st_dev != target_metadata.st_dev
+                or staged_metadata.st_ino != target_metadata.st_ino
+                or staged_metadata.st_size != copied
+            ):
+                raise RunnerSandboxError("sandbox solution staging file changed before execution")
             return staged
-        except Exception:
+        except BaseException:
             if self.temporary is not None:
                 self.temporary.cleanup()
                 self.temporary = None
@@ -142,7 +182,9 @@ class _SandboxSolutionStage(AbstractContextManager[Path]):
         return False
 
 
-def stage_sandbox_solution(host_solution: str | Path) -> AbstractContextManager[Path]:
+def stage_sandbox_solution(
+    host_solution: str | Path, *, max_bytes: int
+) -> AbstractContextManager[Path]:
     """Stage an immutable, container-readable copy without weakening the source.
 
     Runner payloads normally live below roots created with ``umask 077``. A
@@ -151,7 +193,7 @@ def stage_sandbox_solution(host_solution: str | Path) -> AbstractContextManager[
     copy below a private directory for the lifetime of ``docker run``.
     """
 
-    return _SandboxSolutionStage(host_solution)
+    return _SandboxSolutionStage(host_solution, max_bytes)
 
 
 def build_sandbox_command(

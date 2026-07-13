@@ -103,6 +103,7 @@ def run_mode(
         sandbox_cpus=1.0,
         job_id=f"sandbox-live-{mode}",
         manifest=manifest(repository, digest, wall_seconds=wall_seconds),
+        solution_max_bytes=1024 * 1024,
     )
 
 

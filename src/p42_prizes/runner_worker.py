@@ -1045,6 +1045,7 @@ def _run_verifier_for_transcript(
     job_id: str = "job",
     require_manifest_identity: bool = False,
     manifest: Mapping[str, Any] | None = None,
+    solution_max_bytes: int | None = None,
     cancellation_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
@@ -1058,7 +1059,18 @@ def _run_verifier_for_transcript(
         verifier_command = command_template
         verifier_image = pinned_manifest["verifier"].get("image")
         wall_seconds = int(pinned_manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
-        solution_context = stage_sandbox_solution(solution) if sandbox == "docker" else nullcontext(solution)
+        solution_context = (
+            stage_sandbox_solution(
+                solution,
+                max_bytes=(
+                    solution_max_bytes
+                    if solution_max_bytes is not None
+                    else _solution_byte_limit(problem)
+                ),
+            )
+            if sandbox == "docker"
+            else nullcontext(solution)
+        )
         with solution_context as executable_solution:
             if sandbox == "docker":
                 # Untrusted payload MUST run in a container; refuse to run it on the
@@ -1228,6 +1240,17 @@ def _run_verifier_for_transcript(
     else:
         result["error"] = f"verifier returned non-zero exit code {completed.returncode}"
     return result
+
+
+def _solution_byte_limit(problem: Path) -> int:
+    try:
+        schema = read_strict_json_file(problem / "solution.schema.json")
+    except (OSError, ValueError) as exc:
+        raise RunnerWorkerError("could not load admitted solution byte limit") from exc
+    value = schema.get("x-p42-max-bytes") if isinstance(schema, Mapping) else None
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise RunnerWorkerError("solution.schema.json x-p42-max-bytes must be a positive integer")
+    return value
 
 
 def _run_isolated_verifier(
