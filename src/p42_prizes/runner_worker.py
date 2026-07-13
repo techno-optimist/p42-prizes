@@ -1059,6 +1059,18 @@ def _run_verifier_for_transcript(
         verifier_command = command_template
         verifier_image = pinned_manifest["verifier"].get("image")
         wall_seconds = int(pinned_manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
+        if sandbox == "docker" and not docker_available():
+            return {
+                "ok": False,
+                "valid": False,
+                "error": "sandbox=docker requested but no container runtime is available; refusing to run an untrusted payload on the host",
+                "retryable": True,
+                "failure_kind": "sandbox_unavailable",
+                "elapsed_ms": int((time.monotonic() - started) * 1000),
+                "sandbox": sandbox,
+                "verifier_image": verifier_image,
+                "verifier_command": verifier_command,
+            }
         solution_context = (
             stage_sandbox_solution(
                 solution,
@@ -1073,20 +1085,6 @@ def _run_verifier_for_transcript(
         )
         with solution_context as executable_solution:
             if sandbox == "docker":
-                # Untrusted payload MUST run in a container; refuse to run it on the
-                # host if no runtime is available (fail closed).
-                if not docker_available():
-                    return {
-                        "ok": False,
-                        "valid": False,
-                        "error": "sandbox=docker requested but no container runtime is available; refusing to run an untrusted payload on the host",
-                        "retryable": True,
-                        "failure_kind": "sandbox_unavailable",
-                        "elapsed_ms": int((time.monotonic() - started) * 1000),
-                        "sandbox": sandbox,
-                        "verifier_image": verifier_image,
-                        "verifier_command": verifier_command,
-                    }
                 container_name = f"p42-verify-{_safe_job_id(job_id)}"
                 command = build_sandbox_command(
                     image=_manifest_sandbox_image_ref(pinned_manifest),

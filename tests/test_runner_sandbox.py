@@ -130,7 +130,9 @@ def test_stage_sandbox_solution_preserves_private_source(tmp_path: Path):
     source.write_bytes(b'{"answer":42}\n')
     source.chmod(0o600)
 
-    with stage_sandbox_solution(source, max_bytes=1024) as staged:
+    with stage_sandbox_solution(
+        source, max_bytes=1024, staging_root=tmp_path / "staging"
+    ) as staged:
         assert staged.read_bytes() == source.read_bytes()
         assert staged.stat().st_mode & 0o777 == 0o444
         assert staged.parent.stat().st_mode & 0o777 == 0o700
@@ -145,19 +147,25 @@ def test_stage_sandbox_solution_rejects_unsafe_or_oversized_sources(tmp_path: Pa
     oversized.write_bytes(b"x" * 17)
     oversized.chmod(0o600)
     with pytest.raises(RunnerSandboxError, match="admitted byte limit"):
-        with stage_sandbox_solution(oversized, max_bytes=16):
+        with stage_sandbox_solution(
+            oversized, max_bytes=16, staging_root=tmp_path / "staging"
+        ):
             pass
 
     symlink = tmp_path / "symlink.json"
     symlink.symlink_to(oversized)
     with pytest.raises(OSError):
-        with stage_sandbox_solution(symlink, max_bytes=32):
+        with stage_sandbox_solution(
+            symlink, max_bytes=32, staging_root=tmp_path / "staging"
+        ):
             pass
 
     fifo = tmp_path / "fifo.json"
     os.mkfifo(fifo, 0o600)
     with pytest.raises(RunnerSandboxError, match="regular file"):
-        with stage_sandbox_solution(fifo, max_bytes=32):
+        with stage_sandbox_solution(
+            fifo, max_bytes=32, staging_root=tmp_path / "staging"
+        ):
             pass
 
 

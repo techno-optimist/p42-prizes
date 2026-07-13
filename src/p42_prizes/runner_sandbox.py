@@ -91,9 +91,19 @@ def docker_available(binary: str = "docker") -> bool:
 
 
 class _SandboxSolutionStage(AbstractContextManager[Path]):
-    def __init__(self, host_solution: str | Path, max_bytes: int) -> None:
+    def __init__(
+        self,
+        host_solution: str | Path,
+        max_bytes: int,
+        staging_root: str | Path | None,
+    ) -> None:
         self.source = Path(host_solution)
         self.max_bytes = max_bytes
+        self.staging_root = (
+            Path(staging_root)
+            if staging_root is not None
+            else Path.home() / ".p42-runner" / "sandbox-staging"
+        )
         self.temporary: tempfile.TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> Path:
@@ -111,20 +121,21 @@ class _SandboxSolutionStage(AbstractContextManager[Path]):
                 raise RunnerSandboxError(
                     f"sandbox solution exceeds admitted byte limit ({self.max_bytes})"
                 )
-            parent_metadata = self.source.parent.stat(follow_symlinks=False)
+            self.staging_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+            parent_metadata = self.staging_root.stat(follow_symlinks=False)
             if (
                 not stat.S_ISDIR(parent_metadata.st_mode)
                 or parent_metadata.st_uid != os.geteuid()
-                or parent_metadata.st_mode & 0o022
+                or parent_metadata.st_mode & 0o077
             ):
                 raise RunnerSandboxError(
-                    "sandbox solution parent must be owned by the runner UID and not group/world-writable"
+                    "sandbox staging root must be owned by the runner UID and private"
                 )
-            # Keep the staging path beside the source. Docker Desktop only
-            # exposes configured host roots to its VM; the source is already in
-            # one, while the platform temp directory may not be.
+            # Keep the staging path below the runner's home. Docker Desktop
+            # exposes the home directory to its VM, and the private fixed root
+            # prevents another host user from replacing a staged pathname.
             self.temporary = tempfile.TemporaryDirectory(
-                prefix=".p42-sandbox-solution-", dir=self.source.parent
+                prefix="solution-", dir=self.staging_root
             )
             root = Path(self.temporary.name)
             os.chmod(root, 0o700)
@@ -183,7 +194,10 @@ class _SandboxSolutionStage(AbstractContextManager[Path]):
 
 
 def stage_sandbox_solution(
-    host_solution: str | Path, *, max_bytes: int
+    host_solution: str | Path,
+    *,
+    max_bytes: int,
+    staging_root: str | Path | None = None,
 ) -> AbstractContextManager[Path]:
     """Stage an immutable, container-readable copy without weakening the source.
 
@@ -193,7 +207,7 @@ def stage_sandbox_solution(
     copy below a private directory for the lifetime of ``docker run``.
     """
 
-    return _SandboxSolutionStage(host_solution, max_bytes)
+    return _SandboxSolutionStage(host_solution, max_bytes, staging_root)
 
 
 def build_sandbox_command(
