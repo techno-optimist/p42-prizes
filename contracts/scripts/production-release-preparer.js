@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { keccak256 } from "ethers";
 
 import {
   createProductionReleaseSlate,
@@ -17,6 +18,8 @@ import {
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
 import { readContractsArtifactJsonWithBytes, readContractsConfigJsonWithBytes } from "./strict-json-helper.js";
+
+export const INACTIVE_OBJECTIVE_VERIFIER_RUNTIME_CODEHASH = "0x0309c52f57440cb15f805f5a180c726fc46ac4a73df7bb8ba5d541436d042f76";
 
 function checkoutState(repoRoot, run) {
   return {
@@ -39,6 +42,23 @@ function rootRelativePath(root, path, label) {
 
 function rootsOverlap(left, right) {
   return left === right || left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`);
+}
+
+export function assertProductionObjectiveVerifierArtifact(artifact) {
+  if (!artifact || typeof artifact !== "object" || Array.isArray(artifact)) {
+    throw new Error("objective verifier artifact must be an object");
+  }
+  if (artifact.contractName !== "P42SP1VerifierGateway" || artifact.sourceName !== "src/P42SP1VerifierGateway.sol") {
+    throw new Error("production objective verifier artifact must be the P42SP1VerifierGateway");
+  }
+  if (typeof artifact.deployedBytecode !== "string" || !/^0x[0-9a-f]+$/.test(artifact.deployedBytecode)
+      || artifact.deployedBytecode === "0x") {
+    throw new Error("production objective verifier artifact has malformed deployed bytecode");
+  }
+  if (keccak256(artifact.deployedBytecode) !== INACTIVE_OBJECTIVE_VERIFIER_RUNTIME_CODEHASH) {
+    throw new Error("production objective verifier artifact is not the pinned inactive gateway runtime");
+  }
+  return artifact;
 }
 
 export async function prepareProductionRelease({
@@ -79,12 +99,21 @@ export async function prepareProductionRelease({
     readDossier(resolve(objectiveVerifierArtifactPath ?? ""), { trustedRoot: evidence }),
   ]);
   const { value: imageDossier, bytes: imageBytes } = dossierInput;
+  assertProductionObjectiveVerifierArtifact(objectiveVerifierInput.value);
   const config = parseCeremony(ethers, ceremonyInput.value, { deployerAddress: expectedDeployer });
   const imageRegistryPath = rootRelativePath(evidence, imageDossierPath, "image dossier");
   const objectiveVerifierArtifactRelativePath = rootRelativePath(evidence, objectiveVerifierArtifactPath, "objective verifier artifact");
   const hardhat = join(root, "contracts", "node_modules", ".bin", "hardhat");
   run(hardhat, ["compile", "--force"], { cwd: join(root, "contracts"), encoding: "utf8", stdio: "pipe" });
   assertCleanCheckout(root, commit, run);
+  const builtObjectiveVerifierInput = await readDossier(
+    join(root, "contracts", "artifacts", "src", "P42SP1VerifierGateway.sol", "P42SP1VerifierGateway.json"),
+    { trustedRoot: root },
+  );
+  assertProductionObjectiveVerifierArtifact(builtObjectiveVerifierInput.value);
+  if (!Buffer.from(objectiveVerifierInput.bytes).equals(Buffer.from(builtObjectiveVerifierInput.bytes))) {
+    throw new Error("objective verifier artifact is not the exact force-built release artifact");
+  }
   const capsule = await createCapsule({ contractsRoot: join(root, "contracts"), gitCommit: commit });
   validateCapsule(capsule);
   await attestCapsule(capsule, { repoRoot: root, expectedGitCommit: commit, run });

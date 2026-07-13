@@ -7,7 +7,13 @@ interface IP42ObjectiveBindingFactory {
     function objectiveBindingOf(address manager)
         external
         view
-        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId);
+        returns (
+            address registry,
+            uint256 problemId,
+            bytes32 packageHash,
+            bytes32 guestElfSha256,
+            bytes32 programVKey
+        );
 }
 
 interface IP42SubmissionChallengeHook {
@@ -599,7 +605,7 @@ contract P42ChallengeManager {
         );
         contextHash = keccak256(
             abi.encode(
-                "P42_OBJECTIVE_CHALLENGE_CONTEXT_V1",
+                "P42_OBJECTIVE_CHALLENGE_CONTEXT_V2",
                 block.chainid,
                 address(this),
                 address(submissionManager),
@@ -614,14 +620,26 @@ contract P42ChallengeManager {
     function objectiveBinding()
         public
         view
-        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId)
+        returns (
+            address registry,
+            uint256 problemId,
+            bytes32 packageHash,
+            bytes32 guestElfSha256,
+            bytes32 programVKey
+        )
     {
         return IP42ObjectiveBindingFactory(factory).objectiveBindingOf(address(this));
     }
 
     function _objectiveBindingContext() private view returns (bytes32) {
-        (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId) = objectiveBinding();
-        return keccak256(abi.encode(registry, problemId, packageHash, programId));
+        (
+            address registry,
+            uint256 problemId,
+            bytes32 packageHash,
+            bytes32 guestElfSha256,
+            bytes32 programVKey
+        ) = objectiveBinding();
+        return keccak256(abi.encode(registry, problemId, packageHash, guestElfSha256, programVKey));
     }
 
     function claimBond() external nonReentrant {

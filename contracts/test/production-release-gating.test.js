@@ -25,13 +25,14 @@ const objectiveVerifierInput = {
 };
 const reseal = (slate) => { const { slateDigest: _, ...body } = slate; return { ...body, slateDigest: digest(canonical(body)) }; };
 const syntheticSlate = () => reseal({
-  schema: "p42-prizes/production-release-slate/v1", mode: "production", status: "ready",
+  schema: "p42-prizes/production-release-slate/v2", mode: "production", status: "ready",
   generatedAt: "2026-07-11T00:00:00.000Z", sourceCommit: "b".repeat(40),
   imageRegistry: { path: "release/image-registry.json", digest: digest("registry") },
   objectiveVerifier: {
     artifactPath: objectiveVerifierInput.objectiveVerifierArtifactPath,
     artifactDigest: `sha256:${createHash("sha256").update(objectiveVerifierArtifactBytes).digest("hex")}`,
     runtimeCodehash: objectiveVerifierRuntimeCodehash,
+    proofsActive: false,
   },
   boards: Array.from({ length: 10 }, (_, index) => ({
     problemId: String(index + 1), problemSlug: PRODUCTION_LAUNCH_SLUGS[index],
@@ -39,9 +40,10 @@ const syntheticSlate = () => reseal({
     verifierVersion: "1.0.0", specHash: `0x${createHash("sha256").update(`spec-${index}`).digest("hex")}`,
     verifierSourceDigest: digest(`source-${index}`), verifierImageDigest: digest(`image-${index}`),
     admissionMatrixPath: `release/matrix-${index + 1}.json`, admissionMatrixDigest: digest(`matrix-${index}`),
-    objectiveProgramPath: `release/objective-program-${index + 1}.bin`,
-    objectiveProgramDigest: digest(`objective-program-bytes-${index}`),
-    objectiveProgramId: keccak256(toUtf8Bytes(`objective-program-bytes-${index}`)),
+    objectiveGuestElfPath: `release/objective-program-${index + 1}.bin`,
+    objectiveGuestElfDigest: digest(`objective-program-bytes-${index}`),
+    objectiveGuestElfSha256: `0x${digest(`objective-program-bytes-${index}`).slice("sha256:".length)}`,
+    objectiveProgramVKey: keccak256(toUtf8Bytes(`objective-program-bytes-${index}`)),
   })),
 });
 const clone = structuredClone;
@@ -109,6 +111,12 @@ describe("exact-ten production release slate", () => {
     assert.throws(() => bindReleaseMode({ problems: fixtureProblems }, { releaseMode: "production", slate }), /closed release slate/);
   });
 
+  it("rejects an active objective verifier in the current production slate version", () => {
+    const slate = syntheticSlate();
+    slate.objectiveVerifier.proofsActive = true;
+    assert.throws(() => validateProductionReleaseSlate(reseal(slate)), /objective verifier artifact is placeholder, active, or invalid/);
+  });
+
   for (const count of [0, 1, 9, 11]) it(`rejects production cardinality ${count}`, () => {
     const slate = syntheticSlate(); const problems = slate.boards.slice(0, count).map(releaseBoardIdentity);
     if (count === 11) problems.push({ ...problems[9], problemId: "11" });
@@ -152,14 +160,14 @@ describe("exact-ten production release slate", () => {
         await writeFile(join(evidenceRoot, board.admissionMatrixPath), JSON.stringify({ matrix_hash: board.admissionMatrixDigest, problem_id: board.problemSlug, verifier_version: board.verifierVersion, verifier_image: board.verifierImageDigest, source: { tree_hash: board.verifierSourceDigest } }));
         await chmod(join(evidenceRoot, board.admissionMatrixPath), 0o600);
         const programBytes = Buffer.from(`objective-program-bytes-${Number(board.problemId) - 1}`);
-        await writeFile(join(evidenceRoot, board.objectiveProgramPath), programBytes);
-        await chmod(join(evidenceRoot, board.objectiveProgramPath), 0o600);
+        await writeFile(join(evidenceRoot, board.objectiveGuestElfPath), programBytes);
+        await chmod(join(evidenceRoot, board.objectiveGuestElfPath), 0o600);
       }
       const ready = reseal(slate); const config = { roles: { objectiveVerifierCodehash: objectiveVerifierRuntimeCodehash }, problems: ready.boards.map(releaseBoardIdentity) };
       assert.equal(validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }).length, 10);
-      await writeFile(join(evidenceRoot, ready.boards[0].objectiveProgramPath), "substituted-program");
-      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }), /objective program digest mismatch/);
-      await writeFile(join(evidenceRoot, ready.boards[0].objectiveProgramPath), "objective-program-bytes-0");
+      await writeFile(join(evidenceRoot, ready.boards[0].objectiveGuestElfPath), "substituted-program");
+      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }), /guest ELF digest mismatch/);
+      await writeFile(join(evidenceRoot, ready.boards[0].objectiveGuestElfPath), "objective-program-bytes-0");
       await writeFile(join(evidenceRoot, ready.objectiveVerifier.artifactPath), '{"deployedBytecode":"0x6001"}\n');
       assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }), /objective verifier artifact digest mismatch/);
       const unrelatedGatewayBytes = Buffer.from('{"deployedBytecode":"0x6001"}\n');
@@ -168,10 +176,13 @@ describe("exact-ten production release slate", () => {
       assert.throws(() => validateProductionSlatePreflight({}, reseal(unrelatedGatewaySlate), config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }), /runtime codehash is not derived/);
       await writeFile(join(evidenceRoot, ready.objectiveVerifier.artifactPath), objectiveVerifierArtifactBytes);
       const unrelatedProgramSlate = structuredClone(ready);
-      unrelatedProgramSlate.boards[0].objectiveProgramId = keccak256(toUtf8Bytes("unrelated-program-id"));
+      unrelatedProgramSlate.boards[0].objectiveProgramVKey = keccak256(toUtf8Bytes("unrelated-program-id"));
       const unrelatedProgramConfig = structuredClone(config);
-      unrelatedProgramConfig.problems[0].objectiveProgramId = unrelatedProgramSlate.boards[0].objectiveProgramId;
-      assert.throws(() => validateProductionSlatePreflight({}, reseal(unrelatedProgramSlate), unrelatedProgramConfig, { repoRoot, evidenceRoot, runAdmitReady: () => {} }), /program ID is not keccak256/);
+      unrelatedProgramConfig.problems[0].objectiveProgramVKey = unrelatedProgramSlate.boards[0].objectiveProgramVKey;
+      assert.equal(
+        validateProductionSlatePreflight({}, reseal(unrelatedProgramSlate), unrelatedProgramConfig, { repoRoot, evidenceRoot, runAdmitReady: () => {} }).length,
+        10,
+      );
       assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: ({ matrixPath }) => { if (matrixPath.endsWith("matrix-10.json")) throw new Error("not certified"); } }), /not certified/);
       assert.equal(validateProductionSlatePreflight({}, ready, config, {
         repoRoot, evidenceRoot,

@@ -4,7 +4,7 @@
   "title": "P42 offline production release verification report",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "status", "sourceCommit", "generatedAt", "capsuleDigest", "slateDigest", "releaseIndexDigest", "ceremonyConfigDigest", "admittedBoards", "verificationReportDigest"],
+  "required": ["schema", "status", "sourceCommit", "generatedAt", "capsuleDigest", "slateDigest", "releaseIndexDigest", "ceremonyConfigDigest", "objectiveProofsActive", "admittedBoards", "verificationReportDigest"],
   "properties": {
     "schema": { "const": "p42-prizes/production-release-verification/v1" },
     "status": { "const": "verified" },
@@ -14,6 +14,7 @@
     "slateDigest": { "$ref": "#/$defs/digest" },
     "releaseIndexDigest": { "$ref": "#/$defs/digest" },
     "ceremonyConfigDigest": { "$ref": "#/$defs/digest" },
+    "objectiveProofsActive": { "type": "boolean" },
     "verificationReportDigest": { "$ref": "#/$defs/digest" },
     "admittedBoards": {
       "type": "array",

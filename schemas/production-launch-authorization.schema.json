@@ -105,8 +105,10 @@
         "adversarial_campaign",
         "operational_controls",
         "production_release_verification",
+        "production_release_slate",
         "release_capsule",
         "deployment_manifest",
+        "reconciliation_report",
         "explorer_dossier",
         "explorer_operator_policy"
       ],
@@ -117,8 +119,10 @@
         "adversarial_campaign": { "$ref": "#/$defs/artifact" },
         "operational_controls": { "$ref": "#/$defs/artifact" },
         "production_release_verification": { "$ref": "#/$defs/artifact" },
+        "production_release_slate": { "$ref": "#/$defs/artifact" },
         "release_capsule": { "$ref": "#/$defs/artifact" },
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
+        "reconciliation_report": { "$ref": "#/$defs/artifact" },
         "explorer_dossier": { "$ref": "#/$defs/artifact" },
         "explorer_operator_policy": { "$ref": "#/$defs/artifact" }
       }

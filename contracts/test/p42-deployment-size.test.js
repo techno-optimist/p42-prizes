@@ -12,6 +12,7 @@ const PRODUCTION_CONTRACTS = [
   ["P42PayoutLedger", "artifacts/src/P42PayoutLedger.sol/P42PayoutLedger.json"],
   ["P42ProblemRegistry", "artifacts/src/P42ProblemRegistry.sol/P42ProblemRegistry.json"],
   ["P42RolloverVault", "artifacts/src/P42RolloverVault.sol/P42RolloverVault.json"],
+  ["P42SP1VerifierGateway", "artifacts/src/P42SP1VerifierGateway.sol/P42SP1VerifierGateway.json"],
   ["P42ResolverQuorum", "artifacts/src/P42ResolverQuorum.sol/P42ResolverQuorum.json"],
   ["P42SubmissionManager", "artifacts/src/P42SubmissionManager.sol/P42SubmissionManager.json"],
   ["P42SubmissionManagerFactory", "artifacts/src/P42SubmissionManagerFactory.sol/P42SubmissionManagerFactory.json"],

@@ -1,12 +1,22 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { prepareProductionRelease, requiredReleaseEnvironment } from "../scripts/production-release-preparer.js";
+import {
+  assertProductionObjectiveVerifierArtifact,
+  prepareProductionRelease,
+  requiredReleaseEnvironment,
+} from "../scripts/production-release-preparer.js";
 
 const COMMIT = "a".repeat(40);
+const OBJECTIVE_ARTIFACT = JSON.parse(readFileSync(
+  new URL("../artifacts/src/P42SP1VerifierGateway.sol/P42SP1VerifierGateway.json", import.meta.url),
+  "utf8",
+));
+const OBJECTIVE_ARTIFACT_BYTES = Buffer.from(`${JSON.stringify(OBJECTIVE_ARTIFACT)}\n`);
 
 async function fixture(operation) {
   const parent = await mkdtemp(join(tmpdir(), "p42-release-prepare-"));
@@ -14,11 +24,11 @@ async function fixture(operation) {
   await mkdir(join(repoRoot, "contracts", "node_modules", ".bin"), { recursive: true });
   const imagePath = join(evidenceRoot, "release", "images.json"); await mkdir(join(evidenceRoot, "release"), { recursive: true }); await writeFile(imagePath, "image-bytes\n");
   const objectiveVerifierPath = join(evidenceRoot, "release", "objective-verifier.json");
-  await writeFile(objectiveVerifierPath, '{"deployedBytecode":"0x6000"}\n');
+  await writeFile(objectiveVerifierPath, `${JSON.stringify(OBJECTIVE_ARTIFACT)}\n`);
   try { await operation({ repoRoot, outputRoot, evidenceRoot, imagePath, objectiveVerifierPath }); } finally { await rm(parent, { recursive: true, force: true }); }
 }
 
-function dependencies(events, { preflightError, publishSlateError, dirtyAtStatusCall } = {}) {
+function dependencies(events, { preflightError, publishSlateError, dirtyAtStatusCall, builtArtifactMismatch = false } = {}) {
   let statusCalls = 0;
   return {
     run(program, args) {
@@ -30,9 +40,14 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
       events.push("force-compile"); return "compiled\n";
     },
     readConfig: async () => ({ value: { ceremony: true }, bytes: Buffer.from("{}") }),
-    readDossier: async (path) => path.endsWith("objective-verifier.json")
-      ? ({ value: { deployedBytecode: "0x6000" }, bytes: Buffer.from('{"deployedBytecode":"0x6000"}\n') })
-      : ({ value: { dossier: true }, bytes: Buffer.from("image-bytes\n") }),
+    readDossier: async (path) => {
+      if (path.endsWith("objective-verifier.json")) return { value: OBJECTIVE_ARTIFACT, bytes: OBJECTIVE_ARTIFACT_BYTES };
+      if (path.endsWith("P42SP1VerifierGateway.json")) return {
+        value: OBJECTIVE_ARTIFACT,
+        bytes: builtArtifactMismatch ? Buffer.from("substituted-artifact\n") : OBJECTIVE_ARTIFACT_BYTES,
+      };
+      return { value: { dossier: true }, bytes: Buffer.from("image-bytes\n") };
+    },
     parseCeremony() { events.push("parse-ceremony"); return { roles: { objectiveVerifierCodehash: `0x${"1".repeat(64)}` }, problems: Array(10).fill({}) }; },
     async createCapsule() { events.push("create-capsule"); return { capsuleDigest: `sha256:${"b".repeat(64)}` }; },
     validateCapsule() { events.push("validate-capsule"); },
@@ -40,7 +55,7 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
     createSlate(args) {
       events.push("create-slate");
       assert.equal(args.objectiveVerifierArtifactPath, "release/objective-verifier.json");
-      assert.deepEqual(args.objectiveVerifierArtifact, { deployedBytecode: "0x6000" });
+      assert.deepEqual(args.objectiveVerifierArtifact, OBJECTIVE_ARTIFACT);
       assert.ok(Buffer.isBuffer(args.objectiveVerifierArtifactBytes));
       return { slateDigest: `sha256:${"c".repeat(64)}` };
     },
@@ -62,6 +77,17 @@ function argumentsFor(paths, overrides = {}) {
 }
 
 describe("production release preparation", () => {
+  it("accepts only the immutable SP1 gateway artifact for production release", () => {
+    assert.equal(assertProductionObjectiveVerifierArtifact(OBJECTIVE_ARTIFACT), OBJECTIVE_ARTIFACT);
+    for (const artifact of [
+      null,
+      { ...OBJECTIVE_ARTIFACT, contractName: "MockObjectiveVerifierGateway" },
+      { ...OBJECTIVE_ARTIFACT, sourceName: "src/mocks/MockObjectiveVerifierGateway.sol" },
+      { ...OBJECTIVE_ARTIFACT, deployedBytecode: "0x" },
+      { ...OBJECTIVE_ARTIFACT, deployedBytecode: "0xABCD" },
+    ]) assert.throws(() => assertProductionObjectiveVerifierArtifact(artifact), /objective verifier artifact/);
+  });
+
   it("publishes only after force-build, attestation, full preflight, and clean recheck", async () => fixture(async (paths) => {
     const events = []; const result = await prepareProductionRelease({ ...argumentsFor(paths), ...dependencies(events) });
     assert.deepEqual(events, ["parse-ceremony", "force-compile", "create-capsule", "validate-capsule", "attest-capsule", "create-slate", "preflight-slate", "publish-capsule", "publish-slate", "create-index", "publish-index"]);
@@ -73,6 +99,16 @@ describe("production release preparation", () => {
     await assert.rejects(() => prepareProductionRelease({ ...argumentsFor(paths), ...dependencies(events, { preflightError: new Error("board 10 not admitted") }) }), /board 10 not admitted/);
     assert.equal(events.includes("publish-capsule"), false); assert.equal(events.includes("publish-slate"), false);
     assert.equal(events.includes("publish-index"), false);
+  }));
+
+  it("rejects an evidence artifact that differs from the exact force-built gateway", async () => fixture(async (paths) => {
+    const events = [];
+    await assert.rejects(
+      () => prepareProductionRelease({ ...argumentsFor(paths), ...dependencies(events, { builtArtifactMismatch: true }) }),
+      /exact force-built release artifact/,
+    );
+    assert.equal(events.includes("create-capsule"), false);
+    assert.equal(events.includes("publish-capsule"), false);
   }));
 
   it("publishes nothing when the checkout changes during preparation", async () => fixture(async (paths) => {

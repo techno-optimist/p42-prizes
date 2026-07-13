@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema", "mode", "status", "generatedAt", "sourceCommit", "imageRegistry", "objectiveVerifier", "boards", "slateDigest"],
   "properties": {
-    "schema": { "const": "p42-prizes/production-release-slate/v1" },
+    "schema": { "const": "p42-prizes/production-release-slate/v2" },
     "mode": { "const": "production" },
     "status": { "const": "ready" },
     "generatedAt": { "type": "string", "format": "date-time" },
@@ -18,18 +18,19 @@
     },
     "objectiveVerifier": {
       "type": "object", "additionalProperties": false,
-      "required": ["artifactPath", "artifactDigest", "runtimeCodehash"],
+      "required": ["artifactPath", "artifactDigest", "runtimeCodehash", "proofsActive"],
       "properties": {
         "artifactPath": { "$ref": "#/$defs/repoPath" },
         "artifactDigest": { "$ref": "#/$defs/digest" },
-        "runtimeCodehash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "not": { "pattern": "^0x([0-9a-f])\\1{63}$" }, "description": "keccak256 of deployedBytecode in the exact bound gateway artifact." }
+        "runtimeCodehash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "not": { "pattern": "^0x([0-9a-f])\\1{63}$" }, "description": "keccak256 of deployedBytecode in the exact bound gateway artifact." },
+        "proofsActive": { "const": false, "description": "Fail-closed until a P42-owned exact-32-byte SP1 guest and genuine proof vector are released." }
       }
     },
     "boards": {
       "type": "array", "minItems": 10, "maxItems": 10,
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest", "objectiveProgramPath", "objectiveProgramDigest", "objectiveProgramId"],
+        "required": ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest", "objectiveGuestElfPath", "objectiveGuestElfDigest", "objectiveGuestElfSha256", "objectiveProgramVKey"],
         "properties": {
           "problemId": { "type": "string", "pattern": "^(?:[1-9]|10)$" },
           "problemSlug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
@@ -41,9 +42,10 @@
           "verifierImageDigest": { "$ref": "#/$defs/digest" },
           "admissionMatrixPath": { "$ref": "#/$defs/repoPath" },
           "admissionMatrixDigest": { "$ref": "#/$defs/digest" },
-          "objectiveProgramPath": { "$ref": "#/$defs/repoPath" },
-          "objectiveProgramDigest": { "$ref": "#/$defs/digest" },
-          "objectiveProgramId": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "description": "keccak256 of the exact bytes at objectiveProgramPath." }
+          "objectiveGuestElfPath": { "$ref": "#/$defs/repoPath" },
+          "objectiveGuestElfDigest": { "$ref": "#/$defs/digest" },
+          "objectiveGuestElfSha256": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "description": "The bytes32 payload of objectiveGuestElfDigest, bound on-chain." },
+          "objectiveProgramVKey": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "description": "SP1VerifyingKey::bytes32() derived from the exact guest ELF under the pinned toolchain; never an ELF hash." }
         }
       }
     },

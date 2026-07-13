@@ -46,7 +46,7 @@
             "releaseBindingDigest": { "$ref": "#/$defs/digest" },
             "finalityPolicy": { "$ref": "#/$defs/productionFinalityPolicy" },
             "boardSetDigest": { "$ref": "#/$defs/digest" }, "operationPlanDigest": { "$ref": "#/$defs/digest" },
-            "contractCount": { "const": 46 }, "boardCount": { "const": 10 }, "operationCount": { "const": 110 }
+            "contractCount": { "const": 47 }, "boardCount": { "const": 10 }, "operationCount": { "const": 110 }
           }
         }
       ]
@@ -138,13 +138,14 @@
     "contracts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum"],
+      "required": ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier", "resolverQuorum"],
       "properties": {
         "timelock": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42MultisigTimelock" } } }] },
         "registry": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42ProblemRegistry" } } }] },
         "rolloverVault": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42RolloverVault" } } }] },
         "submissionManagerFactory": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42SubmissionManagerFactory" } } }] },
         "challengeManagerFactory": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42ChallengeManagerFactory" } } }] },
+        "objectiveVerifier": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42SP1VerifierGateway" } } }] },
         "resolverQuorum": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42ResolverQuorum" } } }] }
       }
     },
@@ -216,13 +217,14 @@
         "contracts": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["timelock", "registry", "rolloverVault", "boards"],
+          "required": ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier", "resolverQuorum", "boards"],
           "properties": {
             "timelock": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "registry": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "rolloverVault": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "submissionManagerFactory": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "challengeManagerFactory": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
+            "objectiveVerifier": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "resolverQuorum": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "boards": {
               "type": "array",
@@ -246,6 +248,7 @@
                   "rolloverVault": { "type": "string", "format": "uri" },
                   "submissionManagerFactory": { "type": "string", "format": "uri" },
                   "challengeManagerFactory": { "type": "string", "format": "uri" },
+                  "objectiveVerifier": { "type": "string", "format": "uri" },
                   "resolverQuorum": { "type": "string", "format": "uri" },
                   "boards": {
                     "items": {
@@ -427,7 +430,7 @@
           "sourceVerification": {
             "properties": {
               "contracts": {
-                "required": ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum", "boards"],
+                "required": ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier", "resolverQuorum", "boards"],
                 "properties": {
                   "boards": { "minItems": 10, "maxItems": 10 }
                 }
@@ -462,7 +465,7 @@
         "chainId": { "const": 84532 },
         "releaseBindingDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "slateDigest": { "$ref": "#/$defs/digest" }, "configDigest": { "$ref": "#/$defs/digest" },
         "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-        "timelock": { "$ref": "#/$defs/address" }, "topologyDigest": { "$ref": "#/$defs/digest" }, "contractCount": { "const": 46 },
+        "timelock": { "$ref": "#/$defs/address" }, "topologyDigest": { "$ref": "#/$defs/digest" }, "contractCount": { "const": 47 },
         "expiresAt": { "type": "integer", "minimum": 1 },
         "acceptances": {
           "type": "array", "minItems": 4,
@@ -470,7 +473,7 @@
             "type": "object", "additionalProperties": false,
             "required": ["role", "address", "nonce", "riskAccepted", "roleAccepted", "signature"],
             "properties": {
-              "role": { "enum": ["timelock-signer", "guardian", "treasury", "resolver"] }, "address": { "$ref": "#/$defs/address" }, "nonce": { "$ref": "#/$defs/bytes32" },
+              "role": { "enum": ["timelock-signer", "guardian", "treasury", "resolver-quorum-signer"] }, "address": { "$ref": "#/$defs/address" }, "nonce": { "$ref": "#/$defs/bytes32" },
               "riskAccepted": { "const": true }, "roleAccepted": { "const": true }, "signature": { "type": "string", "pattern": "^0x[0-9a-fA-F]{130}$" }
             }
           }
@@ -799,9 +802,10 @@
         "admissionMatrixHashAlgorithm",
         "admissionMatrixHash",
         "admissionMatrixURI",
-        "objectiveProgramPath",
-        "objectiveProgramDigest",
-        "objectiveProgramId",
+        "objectiveGuestElfPath",
+        "objectiveGuestElfDigest",
+        "objectiveGuestElfSha256",
+        "objectiveProgramVKey",
         "objectivePackageHash",
         "immutablePins",
         "minImprovementAtoms",
@@ -842,9 +846,10 @@
         "admissionMatrixHashAlgorithm": { "$ref": "#/$defs/admissionMatrixHashAlgorithm" },
         "admissionMatrixHash": { "$ref": "#/$defs/bytes32" },
         "admissionMatrixURI": { "$ref": "#/$defs/durableAdmissionMatrixURI" },
-        "objectiveProgramPath": { "$ref": "#/$defs/repoPath" },
-        "objectiveProgramDigest": { "$ref": "#/$defs/digest" },
-        "objectiveProgramId": { "$ref": "#/$defs/bytes32" },
+        "objectiveGuestElfPath": { "$ref": "#/$defs/repoPath" },
+        "objectiveGuestElfDigest": { "$ref": "#/$defs/digest" },
+        "objectiveGuestElfSha256": { "$ref": "#/$defs/bytes32" },
+        "objectiveProgramVKey": { "$ref": "#/$defs/bytes32" },
         "objectivePackageHash": { "$ref": "#/$defs/bytes32" },
         "immutablePins": { "const": true },
         "minImprovementAtoms": { "$ref": "#/$defs/positiveUintString" },

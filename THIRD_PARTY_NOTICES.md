@@ -1,5 +1,14 @@
 # Third-party notices
 
+## SP1 verifier interface
+
+`contracts/src/P42SP1VerifierGateway.sol` interoperates with the SP1 verifier
+interface published by Succinct Labs at
+<https://github.com/succinctlabs/sp1-contracts>. The production release must
+pin the exact SP1 release, verifier address, and runtime code hash.
+
+SP1 contracts are licensed under the MIT License. Copyright Succinct Labs.
+
 ## Erdős Frontier Atlas
 
 This product includes a snapshot from

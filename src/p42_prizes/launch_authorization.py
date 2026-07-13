@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from typing import Any, Callable, Mapping
 
+import jsonschema
+
 from p42_prizes.adversarial import normalize_adversarial_campaign_report
 from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
 from p42_prizes.governance import normalize_governance_signoff
@@ -55,6 +57,7 @@ CANONICAL_SHARED_CONTRACTS = (
     ("rolloverVault", "P42RolloverVault"),
     ("submissionManagerFactory", "P42SubmissionManagerFactory"),
     ("challengeManagerFactory", "P42ChallengeManagerFactory"),
+    ("objectiveVerifier", "P42SP1VerifierGateway"),
     ("resolverQuorum", "P42ResolverQuorum"),
 )
 CANONICAL_BOARD_CONTRACTS = (
@@ -66,6 +69,7 @@ CANONICAL_BOARD_CONTRACTS = (
 FACTORY_PROVENANCE_FIELDS = {
     "factoryAddress", "transactionHash", "eventTopic", "salt", "configurationHash", "configurationReadCalldata", "createdAddress",
 }
+_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
 
 
 class LaunchAuthorizationError(ValueError):
@@ -127,7 +131,7 @@ def normalize_launch_authorization(
         raise LaunchAuthorizationError("release_binding network does not match authorization")
 
     artifacts = authorization.get("artifacts")
-    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "release_capsule", "deployment_manifest", "explorer_dossier", "explorer_operator_policy"}
+    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "production_release_slate", "release_capsule", "deployment_manifest", "reconciliation_report", "explorer_dossier", "explorer_operator_policy"}
     if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
     normalized_gate_hashes: dict[str, str] = {}
@@ -158,8 +162,20 @@ def normalize_launch_authorization(
         context,
     )
     _validate_release_report(release_report, release_binding)
+    release_slate = _read_json_artifact(
+        artifacts["production_release_slate"],
+        "authorization.artifacts.production_release_slate",
+        context,
+    )
+    _validate_release_slate_for_launch(release_slate, release_report)
     manifest = _read_json_artifact(artifacts["deployment_manifest"], "authorization.artifacts.deployment_manifest", context)
     _validate_deployment_manifest(manifest, release_report, network)
+    reconciliation = _read_json_artifact(
+        artifacts["reconciliation_report"],
+        "authorization.artifacts.reconciliation_report",
+        context,
+    )
+    _validate_reconciliation_report(reconciliation, manifest)
     capsule = _read_json_artifact(artifacts["release_capsule"], "authorization.artifacts.release_capsule", context)
     dossier = _read_json_artifact(artifacts["explorer_dossier"], "authorization.artifacts.explorer_dossier", context)
     operator_policy = _read_json_artifact(artifacts["explorer_operator_policy"], "authorization.artifacts.explorer_operator_policy", context)
@@ -240,12 +256,14 @@ def _read_json_artifact(value: Any, prefix: str, context: AttestationValidationC
 def _validate_release_report(report: Mapping[str, Any], release_binding: Mapping[str, Any]) -> None:
     expected_keys = {
         "schema", "status", "sourceCommit", "generatedAt", "capsuleDigest", "slateDigest",
-        "releaseIndexDigest", "ceremonyConfigDigest", "admittedBoards", "verificationReportDigest",
+        "releaseIndexDigest", "ceremonyConfigDigest", "objectiveProofsActive", "admittedBoards", "verificationReportDigest",
     }
     if set(report) != expected_keys:
         raise LaunchAuthorizationError("production release verification has unexpected or missing fields")
     if report.get("schema") != "p42-prizes/production-release-verification/v1" or report.get("status") != "verified":
         raise LaunchAuthorizationError("production release verification is not verified v1 evidence")
+    if report.get("objectiveProofsActive") is not True:
+        raise LaunchAuthorizationError("production release cannot authorize funding while objective proofs are inactive")
     unsigned = {key: value for key, value in report.items() if key != "verificationReportDigest"}
     if report.get("verificationReportDigest") != sha256_bytes(canonical_json(unsigned).encode("utf-8")):
         raise LaunchAuthorizationError("production release verification digest is not canonical")
@@ -260,6 +278,16 @@ def _validate_release_report(report: Mapping[str, Any], release_binding: Mapping
         raise LaunchAuthorizationError("production release verification board identities are not canonical")
     if [row.get("problemId") for row in boards] != [str(index) for index in range(1, 11)]:
         raise LaunchAuthorizationError("production release verification boards must use canonical order")
+    raise LaunchAuthorizationError(
+        "active objective proofs require a future independently validated release-verification schema"
+    )
+
+
+def _validate_release_slate_for_launch(slate: Mapping[str, Any], report: Mapping[str, Any]) -> None:
+    del slate, report
+    raise LaunchAuthorizationError(
+        "no active production release slate schema is implemented; funding remains fail-closed"
+    )
 
 
 def _validate_deployment_manifest(manifest: Mapping[str, Any], release_report: Mapping[str, Any], network: str) -> None:
@@ -282,8 +310,8 @@ def _validate_deployment_manifest(manifest: Mapping[str, Any], release_report: M
     ):
         if release_evidence.get(manifest_key) != release_report.get(report_key):
             raise LaunchAuthorizationError(f"deployment {manifest_key} does not match verified release")
-    if release_evidence.get("contractCount") != 46 or release_evidence.get("boardCount") != 10:
-        raise LaunchAuthorizationError("deployment release evidence must bind canonical 46-contract topology")
+    if release_evidence.get("contractCount") != 47 or release_evidence.get("boardCount") != 10:
+        raise LaunchAuthorizationError("deployment release evidence must bind canonical 47-contract topology")
     _canonical_contract_entries(manifest)
 
 
@@ -300,10 +328,103 @@ def _flatten_contract_addresses(value: Any) -> set[str]:
     return addresses
 
 
+def _validate_reconciliation_report(report: Mapping[str, Any], manifest: Mapping[str, Any]) -> None:
+    expected_keys = {
+        "schema", "manifestBinding", "finalityPolicy", "range", "boards",
+        "reconstruction", "manifestPath", "contracts", "finalityAnchor",
+    }
+    if set(report) != expected_keys or report.get("schema") != "p42-prizes/reconciliation-report/v3":
+        raise LaunchAuthorizationError("production reconciliation report must be multi-board v3")
+    checkpoint = {
+        key: report[key]
+        for key in ("manifestBinding", "finalityPolicy", "range", "boards", "reconstruction")
+    }
+    checkpoint["schema"] = "p42-prizes/indexer-checkpoint/v2"
+    try:
+        schema = json.loads((_SCHEMA_DIR / "indexer-checkpoint-v2.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator(schema).validate(checkpoint)
+    except (OSError, ValueError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"production reconciliation checkpoint is invalid: {exc}") from exc
+
+    def contract_binding(entry: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "address": entry.get("address"),
+            "deployedCodeHash": entry.get("deployedCodeHash"),
+            "abiHash": entry.get("abiHash"),
+        }
+
+    shared = manifest.get("contracts", {})
+    problems = manifest.get("problems", [])
+    indexer = manifest.get("indexer", {})
+    expected_binding = {
+        "deploymentCommit": str(manifest.get("deploymentCommit", "")).lower(),
+        "deploymentConfigHash": manifest.get("deploymentConfigHash"),
+        "chainId": manifest.get("network", {}).get("chainId"),
+        "startBlock": indexer.get("startBlock"),
+        "explorerDossierDigest": manifest.get("sourceVerification", {}).get("dossierDigest"),
+        "contracts": {
+            key: contract_binding(shared.get(key, {}))
+            for key, _name in CANONICAL_SHARED_CONTRACTS
+        },
+        "boards": {
+            str(problem.get("problemId")): {
+                key: contract_binding(problem.get("contracts", {}).get(key, {}))
+                for key, *_rest in CANONICAL_BOARD_CONTRACTS
+            }
+            for problem in problems
+        },
+    }
+    if canonical_json(report["manifestBinding"]) != canonical_json(expected_binding):
+        raise LaunchAuthorizationError("production reconciliation report does not exactly bind the completed deployment")
+
+    expected_contracts = {
+        "timelock": shared.get("timelock", {}).get("address"),
+        "registry": shared.get("registry", {}).get("address"),
+        "rolloverVault": shared.get("rolloverVault", {}).get("address"),
+        "boards": {
+            str(problem.get("problemId")): {
+                key: problem.get("contracts", {}).get(key, {}).get("address")
+                for key, *_rest in CANONICAL_BOARD_CONTRACTS
+            }
+            for problem in problems
+        },
+    }
+    if canonical_json(report["contracts"]) != canonical_json(expected_contracts):
+        raise LaunchAuthorizationError("production reconciliation contract map does not match the deployment manifest")
+
+    boards = report["boards"]
+    if len(boards) != 10 or any(
+        board.get("problemId") != str(index)
+        or board.get("problemSlug") != problems[index - 1].get("problemSlug")
+        or board.get("events", {}).get("lifecycleCountsComplete") is not True
+        or not board.get("state")
+        or board.get("reconstruction", {}).get("lifecycleSnapshotComplete") is not True
+        or not board.get("reconstruction", {}).get("checks")
+        or any(check.get("ok") is not True for check in board["reconstruction"]["checks"])
+        for index, board in enumerate(boards, start=1)
+    ):
+        raise LaunchAuthorizationError("production reconciliation lacks complete exact-ten lifecycle evidence")
+
+    finality = report["finalityAnchor"]
+    finalized = finality.get("l2", {}).get("finalized", {}) if isinstance(finality, Mapping) else {}
+    range_value = report["range"]
+    governance = manifest.get("governanceSetup", {})
+    if (
+        finality.get("schema") != "p42-prizes/base-sepolia-finality-anchor/v1"
+        or len(finality.get("operators", [])) != 2
+        or len(set(finality.get("operators", []))) != 2
+        or finalized.get("number") != range_value.get("toBlock")
+        or str(finalized.get("hash", "")).casefold() != str(range_value.get("toBlockHash", "")).casefold()
+        or range_value.get("fromBlock") != indexer.get("startBlock")
+        or range_value.get("toBlock", -1) < governance.get("completionBlock", 0)
+    ):
+        raise LaunchAuthorizationError("production reconciliation lacks an exact fresh finalized range anchor")
+
+
 def _canonical_contract_entries(manifest: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any], str | None]]:
     contracts = manifest.get("contracts")
     if not isinstance(contracts, Mapping) or set(contracts) != {key for key, _ in CANONICAL_SHARED_CONTRACTS}:
-        raise LaunchAuthorizationError("deployment manifest shared contracts are not canonical ordered-46 topology")
+        raise LaunchAuthorizationError("deployment manifest shared contracts are not canonical ordered-47 topology")
     entries: list[tuple[str, Mapping[str, Any], str | None]] = []
     for key, name in CANONICAL_SHARED_CONTRACTS:
         entries.append((f"contracts.{key}", _validate_contract_entry(contracts[key], name, False), None))
@@ -323,8 +444,8 @@ def _canonical_contract_entries(manifest: Mapping[str, Any]) -> list[tuple[str, 
                 raise LaunchAuthorizationError(f"deployment problem {index} {key} factory binding mismatch")
             entries.append((f"problems[{index - 1}].contracts.{key}", row, factory_key))
     addresses = [str(row["address"]).casefold() for _, row, _ in entries]
-    if len(entries) != 46 or len(set(addresses)) != 46:
-        raise LaunchAuthorizationError("deployment manifest must bind canonical ordered 46 unique contract addresses")
+    if len(entries) != 47 or len(set(addresses)) != 47:
+        raise LaunchAuthorizationError("deployment manifest must bind canonical ordered 47 unique contract addresses")
     return entries
 
 
@@ -370,8 +491,8 @@ def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str
         raise LaunchAuthorizationError("explorer dossier does not match deployment release evidence")
     deployed = _canonical_contract_entries(manifest)
     dossier_contracts = dossier.get("contracts")
-    if not isinstance(dossier_contracts, list) or len(dossier_contracts) != 46:
-        raise LaunchAuthorizationError("explorer dossier must cover canonical ordered 46 contracts")
+    if not isinstance(dossier_contracts, list) or len(dossier_contracts) != 47:
+        raise LaunchAuthorizationError("explorer dossier must cover canonical ordered 47 contracts")
     for index, ((path, contract, _factory_key), row) in enumerate(zip(deployed, dossier_contracts, strict=True)):
         if not isinstance(row, Mapping) or row.get("path") != path or row.get("name") != contract["name"] or str(row.get("address", "")).casefold() != str(contract["address"]).casefold():
             raise LaunchAuthorizationError(f"explorer dossier contract {index} order or identity mismatch")

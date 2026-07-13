@@ -9,6 +9,7 @@
     "challenge-envelope.mjs",
     "canonical-topology.mjs",
     "canonical-topology-v1.json",
+    "external-dependencies-v1.json",
     "schemas/",
     "checkpoint-attest.mjs",
     "da-arweave.mjs",
@@ -48,7 +49,7 @@
   "scripts": {
     "sync:schemas": "node scripts/sync-package-schemas.mjs",
     "prepack": "npm run sync:schemas",
-    "test": "node --test *.test.mjs"
+    "test": "NODE_OPTIONS=--max-old-space-size=4096 node --test --test-concurrency=2 *.test.mjs"
   },
   "dependencies": {
     "ajv": "8.20.0",

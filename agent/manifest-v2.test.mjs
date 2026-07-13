@@ -74,9 +74,10 @@ function v2Manifest() {
   first.admissionMatrixHashAlgorithm = "keccak256-utf8/v1";
   first.admissionMatrixHash = digestHash(firstMatrix);
   first.admissionMatrixURI = "ipfs://p42-admission-matrix-first";
-  first.objectiveProgramPath = "release/objective-program-1.bin";
-  first.objectiveProgramDigest = sha("objective-program-1");
-  first.objectiveProgramId = ethers.id("objective-program-1");
+  first.objectiveGuestElfPath = "release/objective-program-1.bin";
+  first.objectiveGuestElfDigest = sha("objective-program-1");
+  first.objectiveGuestElfSha256 = `0x${first.objectiveGuestElfDigest.slice("sha256:".length)}`;
+  first.objectiveProgramVKey = ethers.id("objective-program-1");
   first.objectivePackageHash = ethers.id("objective-package-1");
   first.certifiedObjective = {
     seedBest: "1000",
@@ -92,8 +93,9 @@ function v2Manifest() {
   second.problemId = "2";
   second.problemSlug = "hadamard-second";
   second.metadataURI = "ipfs://p42-problem-metadata-second";
-  second.objectiveProgramPath = "release/objective-program-2.bin";
-  second.objectiveProgramDigest = sha("objective-program-2");
+  second.objectiveGuestElfPath = "release/objective-program-2.bin";
+  second.objectiveGuestElfDigest = sha("objective-program-2");
+  second.objectiveGuestElfSha256 = `0x${second.objectiveGuestElfDigest.slice("sha256:".length)}`;
   second.verifierSourceDigest = secondSource;
   second.verifierSourceHash = digestHash(secondSource);
   second.verifierImageDigest = secondImage;
@@ -101,7 +103,7 @@ function v2Manifest() {
   second.admissionMatrixDigest = secondMatrix;
   second.admissionMatrixHash = digestHash(secondMatrix);
   second.admissionMatrixURI = "ar://p42-admission-matrix-second";
-  second.objectiveProgramId = ethers.id("objective-program-2");
+  second.objectiveProgramVKey = ethers.id("objective-program-2");
   second.objectivePackageHash = ethers.id("objective-package-2");
   second.contracts = secondContracts;
   second.pool = secondContracts.pool.address;
@@ -126,6 +128,14 @@ function v2Manifest() {
     },
     submissionManagerFactory: { ...deepCopy(manifest.contracts.registry), name: "P42SubmissionManagerFactory", address: address(0x41), constructorArgs: [] },
     challengeManagerFactory: { ...deepCopy(manifest.contracts.registry), name: "P42ChallengeManagerFactory", address: address(0x42), constructorArgs: [] },
+    objectiveVerifier: {
+      ...deepCopy(manifest.contracts.registry),
+      name: "P42SP1VerifierGateway",
+      address: manifest.roles.objectiveVerifier,
+      constructorArgs: [],
+      runtimeCodeHash: manifest.roles.objectiveVerifierCodehash,
+      deployedCodeHash: manifest.roles.objectiveVerifierCodehash,
+    },
     resolverQuorum: { ...deepCopy(manifest.contracts.registry), name: "P42ResolverQuorum", address: address(0x43) },
   };
   manifest.parameters = {
@@ -147,9 +157,10 @@ function v2Manifest() {
     problem.problemId = String(problemId);
     problem.problemSlug = `hadamard-${problemId}`;
     problem.metadataURI = `ipfs://p42-problem-metadata-${problemId}`;
-    problem.objectiveProgramPath = `release/objective-program-${problemId}.bin`;
-    problem.objectiveProgramDigest = sha(`objective-program-${problemId}`);
-    problem.objectiveProgramId = ethers.id(`objective-program-${problemId}`);
+    problem.objectiveGuestElfPath = `release/objective-program-${problemId}.bin`;
+    problem.objectiveGuestElfDigest = sha(`objective-program-${problemId}`);
+    problem.objectiveGuestElfSha256 = `0x${problem.objectiveGuestElfDigest.slice("sha256:".length)}`;
+    problem.objectiveProgramVKey = ethers.id(`objective-program-${problemId}`);
     problem.objectivePackageHash = ethers.id(`objective-package-${problemId}`);
     problem.contracts = contracts;
     problem.pool = contracts.pool.address;
@@ -177,6 +188,7 @@ function v2Manifest() {
       rolloverVault: null,
       submissionManagerFactory: null,
       challengeManagerFactory: null,
+      objectiveVerifier: null,
       resolverQuorum: null,
       boards: manifest.problems.map(({ problemId }) => ({ problemId, pool: null, ledger: null, submissions: null, challenges: null })),
     },
@@ -207,9 +219,9 @@ function rebind(manifest) {
 function bindObjectivePackages(manifest) {
   for (const problem of manifest.problems) {
     problem.objectivePackageHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-      ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
+      ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
       [
-        "P42_OBJECTIVE_PACKAGE_V1",
+        "P42_OBJECTIVE_PACKAGE_V2",
         BigInt(manifest.network.chainId),
         manifest.contracts.registry.address,
         BigInt(problem.problemId),
@@ -217,7 +229,8 @@ function bindObjectivePackages(manifest) {
         problem.verifierSourceHash,
         problem.verifierImageHash,
         problem.admissionMatrixHash,
-        problem.objectiveProgramId,
+        problem.objectiveGuestElfSha256,
+        problem.objectiveProgramVKey,
       ],
     ));
   }
@@ -323,14 +336,23 @@ test("v2 deployment manifests fail closed on board identity, topology, and DA dr
 
 function productionManifest(capsule) {
   const manifest = v2Manifest();
+  const gatewayArtifact = capsule.contracts.find(({ name }) => name === "P42SP1VerifierGateway");
+  const gatewayRuntimeCodehash = ethers.keccak256(reconstructExpectedRuntime(
+    gatewayArtifact,
+    immutableValuesFromConstructor(gatewayArtifact, [], { blockTimestamp: 1_800_000_000 }),
+  ));
+  manifest.roles.objectiveVerifierCodehash = gatewayRuntimeCodehash;
+  manifest.contracts.objectiveVerifier.runtimeCodeHash = gatewayRuntimeCodehash;
+  manifest.contracts.objectiveVerifier.deployedCodeHash = gatewayRuntimeCodehash;
   const slateIdentities = Array.from({ length: 10 }, (_, index) => ({
     problemId: String(index + 1), problemSlug: `certified-${index + 1}`, verifierVersion: "1.0.0",
     specHash: `0x${createHash("sha256").update(`spec-${index}`).digest("hex")}`,
     verifierSourceDigest: sha(`source-${index}`), verifierImageDigest: sha(`image-${index}`), admissionMatrixDigest: sha(`matrix-${index}`),
-    objectiveProgramPath: `program-${index}.bin`, objectiveProgramDigest: sha(`objective-program-bytes-${index}`),
-    objectiveProgramId: `0x${createHash("sha256").update(`objective-program-${index}`).digest("hex")}`,
+    objectiveGuestElfPath: `program-${index}.bin`, objectiveGuestElfDigest: sha(`objective-program-bytes-${index}`),
+    objectiveGuestElfSha256: `0x${sha(`objective-program-bytes-${index}`).slice("sha256:".length)}`,
+    objectiveProgramVKey: `0x${createHash("sha256").update(`objective-program-${index}`).digest("hex")}`,
   }));
-  const slateBody = { schema: "p42-prizes/production-release-slate/v1", mode: "production", status: "ready", generatedAt: "2026-07-11T00:00:00.000Z", sourceCommit: manifest.deploymentCommit, imageRegistry: { path: "registry.json", digest: digest("f") }, objectiveVerifier: { artifactPath: "objective-verifier.json", artifactDigest: sha("objective-verifier-artifact"), runtimeCodehash: manifest.roles.objectiveVerifierCodehash }, boards: slateIdentities.map((identity, index) => ({ ...identity, problemPath: `problems/${identity.problemSlug}`, problemPackageDigest: identity.verifierSourceDigest, admissionMatrixPath: `matrix-${index}.json` })) };
+  const slateBody = { schema: "p42-prizes/production-release-slate/v2", mode: "production", status: "ready", generatedAt: "2026-07-11T00:00:00.000Z", sourceCommit: manifest.deploymentCommit, imageRegistry: { path: "registry.json", digest: digest("f") }, objectiveVerifier: { artifactPath: "objective-verifier.json", artifactDigest: sha("objective-verifier-artifact"), runtimeCodehash: manifest.roles.objectiveVerifierCodehash, proofsActive: false }, boards: slateIdentities.map((identity, index) => ({ ...identity, problemPath: `problems/${identity.problemSlug}`, problemPackageDigest: identity.verifierSourceDigest, admissionMatrixPath: `matrix-${index}.json` })) };
   const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
   const slate = { ...slateBody, slateDigest: `sha256:${createHash("sha256").update(canonical(slateBody)).digest("hex")}` };
   const template = deepCopy(manifest.problems[0]);
@@ -388,7 +410,7 @@ function productionManifest(capsule) {
   manifest.sourceVerification.contracts.boards = manifest.problems.map(({ problemId }) => ({ problemId, pool: null, ledger: null, submissions: null, challenges: null }));
   bindObjectivePackages(manifest);
   manifest.releaseMode = "production";
-  manifest.releaseEvidence = { mode: "production", slateDigest: slate.slateDigest, capsuleDigest: capsule.capsuleDigest, configDigest: digest("b"), boardSetDigest: digest("0"), operationPlanDigest: digest("0"), contractCount: 46, boardCount: 10, operationCount: 110 };
+  manifest.releaseEvidence = { mode: "production", slateDigest: slate.slateDigest, capsuleDigest: capsule.capsuleDigest, configDigest: digest("b"), boardSetDigest: digest("0"), operationPlanDigest: digest("0"), contractCount: 47, boardCount: 10, operationCount: 110 };
   manifest.releaseEvidence.releaseBindingDigest = `sha256:${createHash("sha256").update(JSON.stringify({ capsuleDigest: manifest.releaseEvidence.capsuleDigest, configDigest: manifest.releaseEvidence.configDigest, deploymentCommit: manifest.deploymentCommit, slateDigest: manifest.releaseEvidence.slateDigest })).digest("hex")}`;
   Object.assign(manifest.releaseEvidence, computeProductionReleaseEvidence(manifest, { productionSlate: slate }));
   return { manifest: rebind(manifest), slate };
@@ -402,6 +424,14 @@ test("production indexer validation recomputes exact-ten release evidence and ru
     assert.doesNotThrow(() => validateManifestEvidence(manifest, optionsFor(slate)));
     assert.throws(() => validateManifestEvidence(manifest, { productionSlate: slate }), /requires trusted capsule and block-timestamp resolvers/);
     assert.throws(() => validateManifestEvidence(manifest, { ...optionsFor(slate), capsuleResolver: () => null }), /trusted release capsule/);
+    const activeSlate = deepCopy(slate);
+    activeSlate.objectiveVerifier.proofsActive = true;
+    const { slateDigest: _oldDigest, ...activeBody } = activeSlate;
+    activeSlate.slateDigest = canonicalDigest(activeBody);
+    assert.throws(
+      () => validateManifestEvidence(manifest, optionsFor(activeSlate)),
+      /inactive-proof status-ready v2 slate/,
+    );
   }
   for (const [name, mutate, pattern] of [
     ["release hash", (m) => { m.releaseEvidence.boardSetDigest = digest("0"); }, /boardSetDigest mismatch/],
@@ -415,8 +445,8 @@ test("production indexer validation recomputes exact-ten release evidence and ru
     assert.throws(() => validateManifestEvidence(changed, optionsFor(slate)), pattern, name);
   }
   for (const [name, mutate] of [
-    ["objective program ID", (m) => { m.problems[0].objectiveProgramId = ethers.id("substituted-objective-program"); }],
-    ["objective program digest", (m) => { m.problems[0].objectiveProgramDigest = sha("substituted-objective-program-bytes"); }],
+    ["objective program ID", (m) => { m.problems[0].objectiveProgramVKey = ethers.id("substituted-objective-program"); }],
+    ["objective program digest", (m) => { m.problems[0].objectiveGuestElfDigest = sha("substituted-objective-program-bytes"); }],
     ["objective verifier runtime", (m) => { m.roles.objectiveVerifierCodehash = ethers.id("substituted-objective-verifier-runtime"); }],
   ]) {
     const { manifest: changed, slate } = productionManifest(capsule); mutate(changed); rebind(changed);
@@ -437,7 +467,7 @@ test("production indexer validation recomputes exact-ten release evidence and ru
   }
 });
 
-test("explorer dossier verifies the canonical ordered 46 with factory-child provenance", async () => {
+test("explorer dossier verifies the canonical ordered 47 with factory-child provenance", async () => {
   const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40) });
   const { manifest } = productionManifest(capsule);
   const artifacts = new Map(capsule.contracts.map((entry) => [entry.name, entry]));
@@ -474,8 +504,8 @@ test("explorer dossier verifies the canonical ordered 46 with factory-child prov
     call: async ({ to, data }) => byConfigurationCall.get(`${to.toLowerCase()}:${data.toLowerCase()}`),
   };
   const dossier = await createExplorerVerificationDossier({ manifest, capsule, provider, fetchImpl, apiKey: "fixture-key", operatorSigners: operators, operatorNonces: [`0x${"1".repeat(64)}`, `0x${"2".repeat(64)}`], finalizedAt: instant / 1000, expiresAt: instant / 1000 + 3600, now });
-  assert.equal(dossier.contracts.length, 46); assert.equal(new Set(dossier.contracts.map(({ address }) => address.toLowerCase())).size, 46);
-  assert.deepEqual(dossier.contracts.slice(0, 6).map(({ path }) => path), ["contracts.timelock", "contracts.registry", "contracts.rolloverVault", "contracts.submissionManagerFactory", "contracts.challengeManagerFactory", "contracts.resolverQuorum"]);
+  assert.equal(dossier.contracts.length, 47); assert.equal(new Set(dossier.contracts.map(({ address }) => address.toLowerCase())).size, 47);
+  assert.deepEqual(dossier.contracts.slice(0, 7).map(({ path }) => path), ["contracts.timelock", "contracts.registry", "contracts.rolloverVault", "contracts.submissionManagerFactory", "contracts.challengeManagerFactory", "contracts.objectiveVerifier", "contracts.resolverQuorum"]);
   assert.equal(dossier.contracts.filter(({ deployment }) => deployment.kind === "factory-call-create2").length, 20);
   const child = dossier.contracts.find(({ deployment }) => deployment.kind === "factory-call-create2");
   assert.equal(child.deployment.createdAddress.toLowerCase(), child.address.toLowerCase());

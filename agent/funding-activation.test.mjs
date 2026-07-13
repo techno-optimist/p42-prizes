@@ -29,7 +29,8 @@ function manifest() {
       rolloverVault: { address: address(7) },
       submissionManagerFactory: { address: address(8) },
       challengeManagerFactory: { address: address(9) },
-      resolverQuorum: { address: address(10) },
+      objectiveVerifier: { address: address(10) },
+      resolverQuorum: { address: address(11) },
     },
     releaseEvidence: {
       releaseBindingDigest: hash("1"), capsuleDigest: hash("2"), slateDigest: hash("3"), releaseIndexDigest: hash("4"),
@@ -99,6 +100,7 @@ test("activation rejects a legacy 43-contract authorization path", () => {
   const deployment = manifest();
   delete deployment.contracts.submissionManagerFactory;
   delete deployment.contracts.challengeManagerFactory;
+  delete deployment.contracts.objectiveVerifier;
   delete deployment.contracts.resolverQuorum;
   let historicalValidatorCalled = false;
   assert.throws(() => buildFundingActivationPlan({
@@ -106,7 +108,7 @@ test("activation rejects a legacy 43-contract authorization path", () => {
     manifestBytesDigest: hash("e"),
     validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") },
     manifestValidator: () => { historicalValidatorCalled = true; },
-  }), /exact six ordered shared contracts/);
+  }), /exact seven ordered shared contracts/);
   assert.equal(historicalValidatorCalled, false);
 });
 

@@ -69,10 +69,15 @@
         "contracts": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["timelock", "registry"],
+          "required": ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier", "resolverQuorum"],
           "properties": {
             "timelock": { "$ref": "#/$defs/contractBinding" },
-            "registry": { "$ref": "#/$defs/contractBinding" }
+            "registry": { "$ref": "#/$defs/contractBinding" },
+            "rolloverVault": { "$ref": "#/$defs/contractBinding" },
+            "submissionManagerFactory": { "$ref": "#/$defs/contractBinding" },
+            "challengeManagerFactory": { "$ref": "#/$defs/contractBinding" },
+            "objectiveVerifier": { "$ref": "#/$defs/contractBinding" },
+            "resolverQuorum": { "$ref": "#/$defs/contractBinding" }
           }
         },
         "boards": {

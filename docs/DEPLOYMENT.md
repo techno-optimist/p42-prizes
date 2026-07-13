@@ -393,7 +393,7 @@ Before pushing an Observatory change:
 
 Before production governance can be marked complete, generate and validate a
 content-addressed `p42-prizes/explorer-verification-dossier/v2` artifact. The
-gate requires exact one-to-one coverage of all 46 addresses, current BaseScan
+gate requires exact one-to-one coverage of all 47 addresses, current BaseScan
 official API evidence, independent Sourcify evidence, and on-chain runtime code
 matching the attested release capsule. Set `P42_EXPLORER_DOSSIER_PATH` and the
 out-of-band exact-byte pin `P42_EXPLORER_DOSSIER_SHA256`; symlinks, stale
@@ -401,7 +401,7 @@ responses, URL-only evidence, duplicate/omitted/relabelled contracts, and
 caller-authored success are rejected. Networked tests are prohibited; API paths
 are exercised with explicit mocks.
 
-The deployment script now materializes the canonical 46-address topology: six
+The deployment script now materializes the canonical 47-address topology: seven
 shared roots, direct pool/ledger deployments, and twenty factory CREATE2
 manager children. The dossier binds each factory child to its transaction
 receipt, indexed deployment event, recomputed CREATE2 address, and historical

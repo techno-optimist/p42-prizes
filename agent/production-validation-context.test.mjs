@@ -18,8 +18,8 @@ function fixture() {
   const address = (value) => `0x${value.toString(16).padStart(40, "0")}`;
   const topology = canonicalTopologyDescriptors();
   const entries = topology.map(({ name }, index) => ({ address: address(index + 1), name, blockNumber: 42, deploymentBlockTimestamp: 1_800_000_000, blockTimestampEvidence: { timestamp: 1_800_000_000, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: hash("b"), secondaryBlockHash: hash("b") } }));
-  const contracts = Object.fromEntries(topology.slice(0, 6).map(({ key }, index) => [key, entries[index]]));
-  const problems = Array.from({ length: 10 }, (_, index) => ({ problemId: index + 1, contracts: Object.fromEntries(topology.slice(6 + index * 4, 10 + index * 4).map(({ key }, offset) => [key, entries[6 + index * 4 + offset]])) }));
+  const contracts = Object.fromEntries(topology.slice(0, 7).map(({ key }, index) => [key, entries[index]]));
+  const problems = Array.from({ length: 10 }, (_, index) => ({ problemId: index + 1, contracts: Object.fromEntries(topology.slice(7 + index * 4, 11 + index * 4).map(({ key }, offset) => [key, entries[7 + index * 4 + offset]])) }));
   const completionEvidence = { blockNumber: 100, blockHash: hash("c"), timestamp: 1_800_000_100, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: hash("c"), secondaryBlockHash: hash("c") };
   const manifest = { releaseMode: "production", status: "governance-setup-complete", deploymentCommit: "c".repeat(40), deploymentConfigHash: hash("d"), releaseEvidence: { slateDigest: digest("e"), capsuleDigest: capsule.capsuleDigest }, contracts, problems, governanceSetup: { completionBlock: 100, completionBlockTimestamp: 1_800_000_100, completionBlockHash: hash("c"), completionBlockEvidence: completionEvidence, finalityAnchor: { l2: { finalized: { number: 100, hash: hash("c") } } } } };
   const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;

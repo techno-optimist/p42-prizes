@@ -23,12 +23,12 @@ export const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
 export const VERIFIER_SOURCE_HASH_RELATION = "keccak256(utf8(verifierSourceDigest))";
 export const ADMISSION_MATRIX_HASH_ALGORITHM = "keccak256-utf8/v1";
 export const ADMISSION_MATRIX_HASH_RELATION = "keccak256(utf8(admissionMatrixDigest))";
-const CHALLENGE_MANAGER_PARAMETERS_TYPE = "tuple(address owner,address resolver,address treasury,address submissionManager,uint64 challengeWindowSeconds,uint16 betaBps,uint256 minCounterBondWei,uint256 rerunCostWei,uint16 rerunCostMultiplierBps,uint256 resolverDecisionBondWei,uint64 resolverFraudWindowSeconds,address problemRegistry,uint256 problemId,bytes32 objectivePackageHash,bytes32 objectiveProgramId)";
+const CHALLENGE_MANAGER_PARAMETERS_TYPE = "tuple(address owner,address resolver,address treasury,address submissionManager,uint64 challengeWindowSeconds,uint16 betaBps,uint256 minCounterBondWei,uint256 rerunCostWei,uint16 rerunCostMultiplierBps,uint256 resolverDecisionBondWei,uint64 resolverFraudWindowSeconds,address problemRegistry,uint256 problemId,bytes32 objectivePackageHash,bytes32 objectiveGuestElfSha256,bytes32 objectiveProgramVKey)";
 
 export function challengeManagerEffectiveSalt(ethers, requestedSalt, submissionManagerFactory, parameters) {
   return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
     ["string", "bytes32", "address", CHALLENGE_MANAGER_PARAMETERS_TYPE],
-    ["P42_CHALLENGE_MANAGER_CREATE2_V2", requestedSalt, submissionManagerFactory, parameters],
+    ["P42_CHALLENGE_MANAGER_CREATE2_V3", requestedSalt, submissionManagerFactory, parameters],
   ));
 }
 
@@ -460,20 +460,21 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
     seedScoreAtoms: signedValue(env, "P42_SEED_SCORE_ATOMS"),
     minImprovementAtoms: uintValue(env, "P42_MIN_IMPROVEMENT_ATOMS")
   };
-  problem.objectiveProgramId = nonzeroHash(
+  problem.objectiveProgramVKey = nonzeroHash(
     ethers,
-    "P42_OBJECTIVE_PROGRAM_ID",
-    required(env, "P42_OBJECTIVE_PROGRAM_ID"),
+    "P42_OBJECTIVE_PROGRAM_VKEY",
+    required(env, "P42_OBJECTIVE_PROGRAM_VKEY"),
   );
-  problem.objectiveProgramPath = required(env, "P42_OBJECTIVE_PROGRAM_PATH");
-  problem.objectiveProgramDigest = required(env, "P42_OBJECTIVE_PROGRAM_DIGEST");
-  if (!/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/.test(problem.objectiveProgramPath)) {
-    throw new Error("P42_OBJECTIVE_PROGRAM_PATH must be repository-relative");
+  problem.objectiveGuestElfPath = required(env, "P42_OBJECTIVE_GUEST_ELF_PATH");
+  problem.objectiveGuestElfDigest = required(env, "P42_OBJECTIVE_GUEST_ELF_DIGEST");
+  if (!/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/.test(problem.objectiveGuestElfPath)) {
+    throw new Error("P42_OBJECTIVE_GUEST_ELF_PATH must be repository-relative");
   }
-  if (!/^sha256:[0-9a-f]{64}$/.test(problem.objectiveProgramDigest)
-      || /^sha256:([0-9a-f])\1{63}$/.test(problem.objectiveProgramDigest)) {
-    throw new Error("P42_OBJECTIVE_PROGRAM_DIGEST must be a non-placeholder sha256 digest");
+  if (!/^sha256:[0-9a-f]{64}$/.test(problem.objectiveGuestElfDigest)
+      || /^sha256:([0-9a-f])\1{63}$/.test(problem.objectiveGuestElfDigest)) {
+    throw new Error("P42_OBJECTIVE_GUEST_ELF_DIGEST must be a non-placeholder sha256 digest");
   }
+  problem.objectiveGuestElfSha256 = `0x${problem.objectiveGuestElfDigest.slice("sha256:".length)}`;
   if (problem.minImprovementAtoms === 0n) {
     throw new Error("P42_MIN_IMPROVEMENT_ATOMS must be positive");
   }

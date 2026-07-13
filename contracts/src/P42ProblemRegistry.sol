@@ -10,7 +10,13 @@ interface IP42ObjectiveBoundManager {
     function objectiveBinding()
         external
         view
-        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId);
+        returns (
+            address registry,
+            uint256 problemId,
+            bytes32 packageHash,
+            bytes32 guestElfSha256,
+            bytes32 programVKey
+        );
 }
 
 /// @notice Catalog and metadata anchor for Phase 1 problems.
@@ -204,10 +210,17 @@ contract P42ProblemRegistry {
         (bool factoryRead, bytes memory factoryResult) =
             config.challengeManager.staticcall(abi.encodeCall(IP42ObjectiveBoundManager.factory, ()));
         if (factoryRead && factoryResult.length == 32 && abi.decode(factoryResult, (address)).code.length != 0) {
-            (address registry, uint256 boundProblemId, bytes32 packageHash, bytes32 programId) =
+            (
+                address registry,
+                uint256 boundProblemId,
+                bytes32 packageHash,
+                bytes32 guestElfSha256,
+                bytes32 programVKey
+            ) =
                 IP42ObjectiveBoundManager(config.challengeManager).objectiveBinding();
             if (
-                registry != address(this) || boundProblemId != problemId || programId == bytes32(0)
+                registry != address(this) || boundProblemId != problemId
+                    || guestElfSha256 == bytes32(0) || programVKey == bytes32(0)
                     || packageHash
                         != _objectivePackageHash(
                             problemId,
@@ -215,7 +228,8 @@ contract P42ProblemRegistry {
                             config.verifierSourceHash,
                             config.verifierImageHash,
                             config.admissionMatrixHash,
-                            programId
+                            guestElfSha256,
+                            programVKey
                         )
             ) revert P42_ZERO_HASH();
         }
@@ -227,11 +241,12 @@ contract P42ProblemRegistry {
         bytes32 verifierSourceHash,
         bytes32 verifierImageHash,
         bytes32 admissionMatrixHash,
-        bytes32 objectiveProgramId
+        bytes32 objectiveGuestElfSha256,
+        bytes32 objectiveProgramVKey
     ) private view returns (bytes32) {
         return keccak256(
             abi.encode(
-                "P42_OBJECTIVE_PACKAGE_V1",
+                "P42_OBJECTIVE_PACKAGE_V2",
                 block.chainid,
                 address(this),
                 problemId,
@@ -239,7 +254,8 @@ contract P42ProblemRegistry {
                 verifierSourceHash,
                 verifierImageHash,
                 admissionMatrixHash,
-                objectiveProgramId
+                objectiveGuestElfSha256,
+                objectiveProgramVKey
             )
         );
     }

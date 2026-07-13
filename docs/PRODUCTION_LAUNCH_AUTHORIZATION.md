@@ -2,9 +2,14 @@
 
 P42 does not infer permission to expose a funding address from a wallet flag,
 successful deployment, or a collection of unrelated green reports. Production
-funding requires one `p42-production-launch-authorization/v1` artifact whose
-canonical digest binds the exact release, deployment, external gate evidence,
-and all ten launch problems.
+funding will require a versioned production-launch authorization whose canonical
+digest binds the exact release, deployment, external gate evidence, and all ten
+launch problems. The checked-in `p42-production-launch-authorization/v1`
+validator is permanently fail-closed for funding: release-verification v1 and
+release-slate v2 describe only the current inactive gateway. Activation requires
+new closed release-verification, active-slate, and launch-authorization schema
+versions plus their independent validators; boolean-flipping a v1/v2 artifact
+can never authorize money.
 
 ## Required Evidence
 
@@ -15,21 +20,25 @@ The authorization references exact bytes beneath an immutable artifact root for:
 - incident-response drill;
 - adversarial testnet campaign;
 - wallet/session and abuse-control evidence;
-- independently verified production release;
-- completed canonical 46-contract deployment manifest;
-- current canonical 46-contract explorer verification dossier (target); and
+- independently verified production release and its exact closed slate;
+- completed canonical 47-contract deployment manifest;
+- current complete v3 reconciliation report bound to that manifest and its
+  finalized anchor;
+- current canonical 47-contract explorer verification dossier (target); and
 - ten independent signed math reviews bound to each deployed verifier image and
   admission matrix.
 
 Every existing gate normalizer is re-run. Declared report hashes are not trusted.
 Every gate must carry the identical release binding, and every problem review
 must agree with both the frozen release and deployed verifier pins. The
-authorization cannot outlive its explorer evidence.
+authorization cannot outlive its explorer evidence. V1 rejects both the current
+`objectiveProofsActive=false` release and any fabricated v1 report that flips the
+flag to true. The current inactive gateway therefore cannot authorize funding.
 
 The final digest requires three distinct registered Ed25519 signatures: the
 production launch authority, an independent security authority, and the
 governance authority. The authorization and funding-activation planner both
-require the exact ordered six shared and forty per-board identities. No one
+require the exact ordered seven shared and forty per-board identities. No one
 launch key can splice green reports onto a different topology.
 
 ## Validation
