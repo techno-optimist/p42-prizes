@@ -16,7 +16,7 @@
     "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "timelock": { "$ref": "#/$defs/address" },
     "topologyDigest": { "$ref": "#/$defs/digest" },
-    "contractCount": { "const": 43 },
+    "contractCount": { "const": 46 },
     "expiresAt": { "type": "integer", "minimum": 1 },
     "acceptances": { "type": "array", "minItems": 4, "items": { "$ref": "#/$defs/acceptance" } },
     "packetDigest": { "$ref": "#/$defs/digest" }

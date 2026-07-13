@@ -49,10 +49,30 @@ test("production plan assertion rejects the legacy 43-contract plan", () => {
 
 test("production deployer checks topology before reading the pending nonce", () => {
   const source = readFileSync(new URL("../contracts/scripts/deploy-base-sepolia.js", import.meta.url), "utf8");
-  const preflightStart = source.indexOf("async function preflightMultiBoardDeploymentPlan");
-  const topologyGuard = source.indexOf("assertCanonicalDeploymentPlan(plannedDefinitions", preflightStart);
-  const nonceRead = source.indexOf('deployer.getNonce("pending")', preflightStart);
+  const preflightStart = source.indexOf("async function deployMultiBoardCeremony");
+  const topologyGuard = source.indexOf("assertCanonicalDeploymentPlan(canonicalManifestDefinitions", preflightStart);
+  const nonceRead = source.indexOf('getTransactionCount(deployer.address, "pending")', preflightStart);
   assert.ok(preflightStart >= 0 && topologyGuard > preflightStart && nonceRead > topologyGuard);
+});
+
+test("packaged canonical topology projection is byte-identical to protocol authority", () => {
+  assert.equal(
+    readFileSync(new URL("./canonical-topology-v1.json", import.meta.url), "utf8"),
+    readFileSync(new URL("../protocol/canonical-topology-v1.json", import.meta.url), "utf8"),
+  );
+  for (const name of [
+    "challenge-provisioning.schema.json",
+    "deployment-manifest.schema.json",
+    "deployment-manifest-v2.schema.json",
+    "indexer-checkpoint-v2.schema.json",
+    "runner-health-v2.schema.json",
+  ]) {
+    assert.equal(
+      readFileSync(new URL(`./schemas/${name}`, import.meta.url), "utf8"),
+      readFileSync(new URL(`../schemas/${name}`, import.meta.url), "utf8"),
+      name,
+    );
+  }
 });
 
 test("operational source does not introduce another literal 43-contract authority", () => {

@@ -22,6 +22,64 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def canonical_topology_manifest() -> dict:
+    address_index = 1
+
+    def address() -> str:
+        nonlocal address_index
+        value = "0x" + f"{address_index:040x}"
+        address_index += 1
+        return value
+
+    shared = {
+        key: {"name": name, "address": address()}
+        for key, name in launch_module.CANONICAL_SHARED_CONTRACTS
+    }
+    problems = []
+    for problem_id in range(1, 11):
+        contracts = {}
+        for key, name, kind, factory_key in launch_module.CANONICAL_BOARD_CONTRACTS:
+            row = {"name": name, "address": address()}
+            if factory_key is not None:
+                row["txHash"] = "0x" + f"{problem_id:064x}"
+                row["factoryCreation"] = {
+                    "factoryAddress": shared[factory_key]["address"],
+                    "transactionHash": row["txHash"],
+                    "eventTopic": "0x" + f"{200 + problem_id:064x}",
+                    "salt": "0x" + f"{problem_id:064x}",
+                    "configurationHash": "0x" + f"{100 + problem_id:064x}",
+                    "configurationReadCalldata": "0x1234",
+                    "createdAddress": row["address"],
+                }
+            contracts[key] = row
+        problems.append({"problemId": str(problem_id), "contracts": contracts})
+    return {"contracts": shared, "problems": problems}
+
+
+def test_launch_authorization_requires_canonical_ordered_46_topology() -> None:
+    manifest = canonical_topology_manifest()
+    entries = launch_module._canonical_contract_entries(manifest)
+    assert len(entries) == 46
+    assert [path for path, _row, _factory in entries[:6]] == [
+        f"contracts.{key}" for key, _name in launch_module.CANONICAL_SHARED_CONTRACTS
+    ]
+
+    legacy = {"contracts": {f"contract-{index}": {"address": "0x" + f"{index:040x}"} for index in range(43)}, "problems": [{}] * 10}
+    with pytest.raises(LaunchAuthorizationError, match="shared contracts"):
+        launch_module._canonical_contract_entries(legacy)
+
+    manifest["problems"][0]["problemId"] = "2"
+    with pytest.raises(LaunchAuthorizationError, match="canonical exact-ten order"):
+        launch_module._canonical_contract_entries(manifest)
+
+
+def test_launch_authorization_requires_factory_provenance() -> None:
+    manifest = canonical_topology_manifest()
+    del manifest["problems"][0]["contracts"]["submissions"]["factoryCreation"]["salt"]
+    with pytest.raises(LaunchAuthorizationError, match="complete factory provenance"):
+        launch_module._canonical_contract_entries(manifest)
+
+
 def test_launch_authorization_schema_is_valid_draft_2020_12() -> None:
     schema = json.loads(
         (ROOT / "schemas" / "production-launch-authorization.schema.json").read_text()
@@ -241,20 +299,50 @@ def test_composed_authorization_binds_release_deployment_and_gate_bytes(
     artifacts["release_capsule"] = fixture.artifact(
         "release-capsule", content={"schema": "test-capsule"}
     )
-    addresses = {f"contract-{index}": "0x" + f"{index:040x}" for index in range(1, 44)}
+    next_address = iter("0x" + f"{index:040x}" for index in range(1, 47))
+
+    def direct_contract(name: str) -> dict:
+        return {"name": name, "address": next(next_address)}
+
+    shared_contracts = {
+        key: direct_contract(name)
+        for key, name in launch_module.CANONICAL_SHARED_CONTRACTS
+    }
+    manifest_problems = []
+    for problem_index in range(1, 11):
+        board_contracts = {}
+        for key, name, kind, factory_key in launch_module.CANONICAL_BOARD_CONTRACTS:
+            row = {"name": name, "address": next(next_address)}
+            if factory_key is not None:
+                row["txHash"] = "0x" + f"{problem_index * 2 + (key == 'challenges'):064x}"
+                row["blockNumber"] = 100 + problem_index
+                row["initCodeHash"] = "0x" + f"{400 + problem_index:064x}"
+                row["factoryCreation"] = {
+                    "factoryAddress": shared_contracts[factory_key]["address"],
+                    "transactionHash": row["txHash"],
+                    "eventTopic": "0x" + f"{300 + problem_index:064x}",
+                    "salt": "0x" + f"{100 + problem_index:064x}",
+                    "configurationHash": "0x" + f"{200 + problem_index:064x}",
+                    "configurationReadCalldata": "0x1234",
+                    "createdAddress": row["address"],
+                }
+            board_contracts[key] = row
+        manifest_problems.append({"problemId": str(problem_index), "contracts": board_contracts})
     manifest = {
         "schema": "p42-prizes/deployment-manifest/v2",
         "status": "governance-setup-complete",
         "releaseMode": "production",
         "deploymentCommit": release_binding["git_commit"],
         "network": {"name": "baseSepolia", "chainId": 84532},
-        "contracts": addresses,
-        "problems": [{} for _ in range(10)],
+        "contracts": shared_contracts,
+        "problems": manifest_problems,
         "releaseEvidence": {
             "capsuleDigest": release_report["capsuleDigest"],
             "slateDigest": release_report["slateDigest"],
             "configDigest": release_report["ceremonyConfigDigest"],
             "releaseBindingDigest": "sha256:" + "9" * 64,
+            "contractCount": 46,
+            "boardCount": 10,
         },
         "sourceVerification": {"dossierDigest": "sha256:" + "b" * 64},
     }
@@ -267,7 +355,42 @@ def test_composed_authorization_binds_release_deployment_and_gate_bytes(
         "finalizedAt": 1783500000,
         "expiresAt": 1784000000,
         "contracts": [
-            {"address": address_value} for address_value in addresses.values()
+            {
+                "path": path,
+                "name": contract["name"],
+                "address": contract["address"],
+                "deployment": (
+                    {"kind": "direct-create"}
+                    if _factory_key is None
+                    else {
+                        "kind": "factory-call-create2",
+                        "factoryAddress": contract["factoryCreation"]["factoryAddress"],
+                        "transactionHash": contract["factoryCreation"]["transactionHash"],
+                        "eventTopic": contract["factoryCreation"]["eventTopic"],
+                        "salt": contract["factoryCreation"]["salt"],
+                        "configurationHash": contract["factoryCreation"]["configurationHash"],
+                        "configurationReadCalldata": contract["factoryCreation"]["configurationReadCalldata"],
+                        "createdAddress": contract["address"],
+                        "initCodeHash": contract["initCodeHash"],
+                        "receipt": {
+                            "status": 1,
+                            "blockNumber": contract["blockNumber"],
+                            "blockHash": "0x" + "a" * 64,
+                            "transactionIndex": 0,
+                            "logIndex": 0,
+                            "logAddress": contract["factoryCreation"]["factoryAddress"],
+                            "topics": [
+                                contract["factoryCreation"]["eventTopic"],
+                                "0x" + "0" * 24 + contract["address"][2:].lower(),
+                                contract["factoryCreation"]["salt"],
+                            ],
+                            "data": "0x",
+                            "configurationResult": contract["factoryCreation"]["configurationHash"],
+                        },
+                    }
+                ),
+            }
+            for path, contract, _factory_key in launch_module._canonical_contract_entries(manifest)
         ],
     }
     dossier = {

@@ -46,7 +46,7 @@
             "releaseBindingDigest": { "$ref": "#/$defs/digest" },
             "finalityPolicy": { "$ref": "#/$defs/productionFinalityPolicy" },
             "boardSetDigest": { "$ref": "#/$defs/digest" }, "operationPlanDigest": { "$ref": "#/$defs/digest" },
-            "contractCount": { "const": 43 }, "boardCount": { "const": 10 }, "operationCount": { "const": 110 }
+            "contractCount": { "const": 46 }, "boardCount": { "const": 10 }, "operationCount": { "const": 110 }
           }
         }
       ]
@@ -136,11 +136,14 @@
     "contracts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["timelock", "registry", "rolloverVault"],
+      "required": ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum"],
       "properties": {
-        "timelock": { "$ref": "#/$defs/contract" },
-        "registry": { "$ref": "#/$defs/contract" },
-        "rolloverVault": { "$ref": "#/$defs/contract" }
+        "timelock": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42MultisigTimelock" } } }] },
+        "registry": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42ProblemRegistry" } } }] },
+        "rolloverVault": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42RolloverVault" } } }] },
+        "submissionManagerFactory": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42SubmissionManagerFactory" } } }] },
+        "challengeManagerFactory": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42ChallengeManagerFactory" } } }] },
+        "resolverQuorum": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42ResolverQuorum" } } }] }
       }
     },
     "governanceSetup": {
@@ -216,6 +219,9 @@
             "timelock": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "registry": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "rolloverVault": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
+            "submissionManagerFactory": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
+            "challengeManagerFactory": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
+            "resolverQuorum": { "oneOf": [{ "type": "null" }, { "type": "string", "format": "uri" }] },
             "boards": {
               "type": "array",
               "minItems": 1,
@@ -236,6 +242,9 @@
                   "timelock": { "type": "string", "format": "uri" },
                   "registry": { "type": "string", "format": "uri" },
                   "rolloverVault": { "type": "string", "format": "uri" },
+                  "submissionManagerFactory": { "type": "string", "format": "uri" },
+                  "challengeManagerFactory": { "type": "string", "format": "uri" },
+                  "resolverQuorum": { "type": "string", "format": "uri" },
                   "boards": {
                     "items": {
                       "properties": {
@@ -394,6 +403,37 @@
         ]
       },
       "then": { "properties": { "sourceVerification": { "properties": { "status": { "const": "verified" }, "dossierDigest": { "$ref": "#/$defs/digest" } } } } }
+    },
+    {
+      "if": { "properties": { "releaseMode": { "const": "production" } }, "required": ["releaseMode"] },
+      "then": {
+        "properties": {
+          "problems": {
+            "minItems": 10,
+            "maxItems": 10,
+            "items": {
+              "properties": {
+                "contracts": {
+                  "properties": {
+                    "submissions": { "$ref": "#/$defs/factoryContract" },
+                    "challenges": { "$ref": "#/$defs/factoryContract" }
+                  }
+                }
+              }
+            }
+          },
+          "sourceVerification": {
+            "properties": {
+              "contracts": {
+                "required": ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum", "boards"],
+                "properties": {
+                  "boards": { "minItems": 10, "maxItems": 10 }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -419,7 +459,7 @@
         "chainId": { "const": 84532 },
         "releaseBindingDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "slateDigest": { "$ref": "#/$defs/digest" }, "configDigest": { "$ref": "#/$defs/digest" },
         "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
-        "timelock": { "$ref": "#/$defs/address" }, "topologyDigest": { "$ref": "#/$defs/digest" }, "contractCount": { "const": 43 },
+        "timelock": { "$ref": "#/$defs/address" }, "topologyDigest": { "$ref": "#/$defs/digest" }, "contractCount": { "const": 46 },
         "expiresAt": { "type": "integer", "minimum": 1 },
         "acceptances": {
           "type": "array", "minItems": 4,
@@ -584,8 +624,38 @@
         "initCodeHash": { "$ref": "#/$defs/bytes32" },
         "expectedRuntimeCodeHash": { "$ref": "#/$defs/bytes32" },
         "primaryObservedRuntimeCodeHash": { "$ref": "#/$defs/bytes32" },
-        "secondaryObservedRuntimeCodeHash": { "$ref": "#/$defs/bytes32" }
+        "secondaryObservedRuntimeCodeHash": { "$ref": "#/$defs/bytes32" },
+        "factoryCreation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["factoryAddress", "transactionHash", "eventTopic", "salt", "configurationHash", "configurationReadCalldata", "createdAddress"],
+          "properties": {
+            "factoryAddress": { "$ref": "#/$defs/address" },
+            "transactionHash": { "$ref": "#/$defs/transactionHash" },
+            "eventTopic": { "$ref": "#/$defs/bytes32" },
+            "salt": { "$ref": "#/$defs/bytes32" },
+            "configurationHash": { "$ref": "#/$defs/bytes32" },
+            "configurationReadCalldata": { "$ref": "#/$defs/calldata" },
+            "createdAddress": { "$ref": "#/$defs/address" }
+          }
+        }
       }
+    },
+    "directContract": {
+      "allOf": [
+        { "$ref": "#/$defs/contract" },
+        {
+          "properties": {
+            "factoryCreation": false
+          }
+        }
+      ]
+    },
+    "factoryContract": {
+      "allOf": [
+        { "$ref": "#/$defs/contract" },
+        { "required": ["factoryCreation"] }
+      ]
     },
     "boardSourceVerification": {
       "type": "object",
@@ -789,10 +859,10 @@
           "additionalProperties": false,
           "required": ["pool", "ledger", "submissions", "challenges"],
           "properties": {
-            "pool": { "$ref": "#/$defs/contract" },
-            "ledger": { "$ref": "#/$defs/contract" },
-            "submissions": { "$ref": "#/$defs/contract" },
-            "challenges": { "$ref": "#/$defs/contract" }
+          "pool": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42BountyPool" } } }] },
+          "ledger": { "allOf": [{ "$ref": "#/$defs/directContract" }, { "properties": { "name": { "const": "P42PayoutLedger" } } }] },
+          "submissions": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42SubmissionManager" } } }] },
+          "challenges": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42ChallengeManager" } } }] }
           }
         },
         "pool": { "$ref": "#/$defs/address" },

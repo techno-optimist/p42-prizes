@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/challenge-provisioning-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "chain_id", "challenge_manager", "agent_wallet", "operator", "per_challenge_wei", "per_problem_day_wei", "global_day_wei", "max_canonical_open", "max_pending_provisioned", "rehearsal", "artifact_hash", "signature"],
+  "properties": {
+    "schema_version": { "const": "p42-challenge-provisioning/v1" },
+    "chain_id": { "type": "integer", "minimum": 1 },
+    "challenge_manager": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+    "agent_wallet": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+    "operator": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+    "per_challenge_wei": { "const": "50000000000000000" },
+    "per_problem_day_wei": { "const": "100000000000000000" },
+    "global_day_wei": { "const": "300000000000000000" },
+    "max_canonical_open": { "const": 3 },
+    "max_pending_provisioned": { "const": 1 },
+    "rehearsal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["health_gate_verified", "restart_recovery_verified", "deep_reorg_verified", "artifact_hash"],
+      "properties": {
+        "health_gate_verified": { "const": true },
+        "restart_recovery_verified": { "const": true },
+        "deep_reorg_verified": { "const": true },
+        "artifact_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "artifact_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "signature": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scheme", "signer", "signature"],
+      "properties": {
+        "scheme": { "const": "eip191" },
+        "signer": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+        "signature": { "type": "string", "pattern": "^0x[0-9a-fA-F]{130}$" }
+      }
+    }
+  }
+}

@@ -401,11 +401,12 @@ responses, URL-only evidence, duplicate/omitted/relabelled contracts, and
 caller-authored success are rejected. Networked tests are prohibited; API paths
 are exercised with explicit mocks.
 
-The 46-address dossier is a target contract, not evidence that the current
-deployment script can produce it. Until the canonical factory/quorum ceremony
-is implemented, `deploy-base-sepolia.js` rejects its own legacy 43-contract
-plan before nonce lookup. Existing 43-address schemas and validators remain
-historical/rehearsal consumers and cannot authorize production.
+The deployment script now materializes the canonical 46-address topology: six
+shared roots, direct pool/ledger deployments, and twenty factory CREATE2
+manager children. The dossier binds each factory child to its transaction
+receipt, indexed deployment event, recomputed CREATE2 address, and historical
+configuration getter at the receipt block. This is source evidence only until
+the ceremony is run against Base Sepolia and independently reviewed.
 
 The current schema is `p42-prizes/explorer-verification-dossier/v2`. It embeds
 the bounded exact raw response bytes and URL, host, HTTP status, fetch time, and

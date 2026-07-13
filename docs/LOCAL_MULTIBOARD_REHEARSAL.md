@@ -16,8 +16,8 @@ same strict `p42-prizes/multi-board-ceremony/v1` shape as the Base Sepolia
 input. Its hashes and URIs are explicitly local test anchors, not release
 evidence and not deployable production values.
 
-The test deploys one timelock, one registry, one rollover vault, and four child
-contracts per board (43 contracts total). It derives all 110 governance setup
+The test deploys the six canonical shared contracts and four contracts per
+board (46 contracts total). It derives all 110 governance setup
 operations through the production helper and reserves their complete ordered
 identity in a private, no-follow journal before the first schedule. Journal
 generations use file fsync, atomic same-directory rename, and parent-directory

@@ -3,11 +3,12 @@ import { execFileSync } from "node:child_process";
 import { closeSync, constants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { hostname } from "node:os";
-import { Transaction, getCreateAddress, keccak256 } from "ethers";
+import { Transaction, getCreateAddress, getCreate2Address, keccak256, zeroPadValue } from "ethers";
 import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
 
 export const SIGNED_DEPLOYMENT_JOURNAL_SCHEMA = "p42-prizes/signed-deployment-journal/v1";
 const STATES = Object.freeze({ planned: 0, signed: 1, broadcast: 2, mined: 3 });
+const STEP_KINDS = Object.freeze({ "direct-create": true, "factory-call-create2": true });
 const MAX_JOURNAL_BYTES = 16 * 1024 * 1024;
 
 export function normalizeTrustedRpcEndpoint(raw, label = "RPC endpoint") {
@@ -143,7 +144,10 @@ function immutableView(record) {
     schema: record.schema, identityDigest: record.identityDigest, network: record.network,
     chainId: record.chainId, deployer: record.deployer, rpcEvidence: record.rpcEvidence, startNonce: record.startNonce,
     transactionCount: record.transactionCount, endNonceExclusive: record.endNonceExclusive,
-    steps: record.steps.map(({ id, name, nonce, address, constructorArgsHash, expectedInitCodeHash }) => ({ id, name, nonce, address, constructorArgsHash, expectedInitCodeHash })),
+    steps: record.steps.map(({ id, name, kind, nonce, address, constructorArgsHash, expectedInitCodeHash, expectedTo, expectedCalldataHash, expectedValue, factoryAddress, salt, configurationHash, configurationReadCalldata, deploymentEventTopic }) => ({
+      id, name, kind, nonce, address, constructorArgsHash, expectedInitCodeHash, expectedTo, expectedCalldataHash,
+      expectedValue, factoryAddress, salt, configurationHash, configurationReadCalldata, deploymentEventTopic,
+    })),
   };
 }
 
@@ -161,25 +165,44 @@ function assertJournal(record) {
   ) throw new Error("deployment RPC evidence identities are not independent and immutable");
   for (const [index, step] of record.steps.entries()) {
     if (step.nonce !== record.startNonce + index || step.id !== `${index}:${step.name}`) throw new Error("signed deployment step identity or nonce drift");
+    if (!(step.kind in STEP_KINDS)) throw new Error("signed deployment step kind is not closed");
     assertHex(step.address, 20, "deployment address");
+    assertHex(step.constructorArgsHash, 32, "constructor args hash");
     assertHex(step.expectedInitCodeHash, 32, "expected initcode hash");
     if (typeof step.expectedInitCode !== "string" || keccak256(step.expectedInitCode).toLowerCase() !== step.expectedInitCodeHash.toLowerCase()) throw new Error("deployment plan initcode hash mismatch");
+    assertHex(step.expectedCalldataHash, 32, "expected calldata hash");
+    if (typeof step.expectedCalldata !== "string" || keccak256(step.expectedCalldata).toLowerCase() !== step.expectedCalldataHash.toLowerCase()) throw new Error("deployment plan calldata hash mismatch");
+    if (!/^(0|[1-9][0-9]*)$/.test(step.expectedValue ?? "")) throw new Error("deployment plan value is not canonical");
+    if (step.kind === "direct-create") {
+      if (step.expectedTo !== null || step.factoryAddress !== null || step.salt !== null || step.configurationHash !== null || step.configurationReadCalldata !== null || step.deploymentEventTopic !== null || step.expectedCalldata !== step.expectedInitCode) throw new Error("direct CREATE deployment kind drift");
+      if (getCreateAddress({ from: record.deployer, nonce: step.nonce }).toLowerCase() !== step.address.toLowerCase()) throw new Error("direct CREATE predicted address drift");
+    } else {
+      assertHex(step.expectedTo, 20, "factory transaction target");
+      assertHex(step.factoryAddress, 20, "pinned factory");
+      assertHex(step.salt, 32, "CREATE2 salt");
+      assertHex(step.configurationHash, 32, "CREATE2 configuration hash");
+      if (typeof step.configurationReadCalldata !== "string" || !/^0x[0-9a-fA-F]{8,}$/.test(step.configurationReadCalldata) || step.configurationReadCalldata.length % 2 !== 0) throw new Error("CREATE2 configuration read calldata is not canonical");
+      assertHex(step.deploymentEventTopic, 32, "factory deployment event topic");
+      if (step.expectedTo.toLowerCase() !== step.factoryAddress.toLowerCase()) throw new Error("factory transaction target differs from pinned factory");
+      if (getCreate2Address(step.factoryAddress, step.salt, step.expectedInitCodeHash).toLowerCase() !== step.address.toLowerCase()) throw new Error("CREATE2 predicted address drift");
+    }
     if (!(step.state in STATES)) throw new Error("invalid signed deployment state");
     if (STATES[step.state] >= STATES.signed) {
       if (typeof step.rawTransaction !== "string" || !/^0x[0-9a-f]+$/i.test(step.rawTransaction)) throw new Error("signed step lacks raw transaction bytes");
       assertHex(step.expectedHash, 32, "expected transaction hash");
-      assertHex(step.initCodeHash, 32, "initcode hash");
+      assertHex(step.calldataHash, 32, "calldata hash");
       if (step.expectedHash.toLowerCase() !== keccak256(step.rawTransaction).toLowerCase()) throw new Error("signed transaction raw/hash substitution detected");
       const transaction = Transaction.from(step.rawTransaction);
       if (
         transaction.from?.toLowerCase() !== record.deployer.toLowerCase() || transaction.chainId !== BigInt(record.chainId) ||
-        transaction.nonce !== step.nonce || transaction.to !== null || transaction.value !== 0n ||
-        transaction.data !== step.expectedInitCode || keccak256(transaction.data).toLowerCase() !== step.expectedInitCodeHash.toLowerCase() ||
-        getCreateAddress({ from: transaction.from, nonce: transaction.nonce }).toLowerCase() !== step.address.toLowerCase()
+        transaction.nonce !== step.nonce || (transaction.to?.toLowerCase() ?? null) !== (step.expectedTo?.toLowerCase() ?? null) ||
+        transaction.value.toString() !== step.expectedValue || transaction.data !== step.expectedCalldata ||
+        keccak256(transaction.data).toLowerCase() !== step.expectedCalldataHash.toLowerCase()
       ) throw new Error("signed deployment payload identity drift");
       const payload = {
         rawHash: step.expectedHash.toLowerCase(), signer: transaction.from.toLowerCase(), chainId: transaction.chainId.toString(),
-        nonce: transaction.nonce, to: null, value: transaction.value.toString(), initCodeHash: step.initCodeHash.toLowerCase(), address: step.address.toLowerCase(),
+        nonce: transaction.nonce, to: transaction.to?.toLowerCase() ?? null, value: transaction.value.toString(),
+        calldataHash: step.calldataHash.toLowerCase(), address: step.address.toLowerCase(), kind: step.kind,
       };
       if (step.signedPayloadDigest !== digest(payload)) throw new Error("signed deployment payload digest mismatch");
     }
@@ -196,19 +219,28 @@ export function signedDeploymentJournalPath(manifestPath) {
 
 export function buildDeploymentNoncePlan(ethers, { identityDigest, network, chainId, deployer, rpcEvidence, startNonce, steps }) {
   if (!Array.isArray(steps) || steps.length < 1) throw new Error("deployment transaction plan must not be empty");
-  const normalized = steps.map((step, index) => ({
-    id: `${index}:${step.name}`,
-    name: step.name,
-    nonce: startNonce + index,
-    address: ethers.getCreateAddress({ from: deployer, nonce: startNonce + index }),
-    constructorArgsHash: step.constructorArgsHash,
-    expectedInitCode: step.expectedInitCode,
-    expectedInitCodeHash: keccak256(step.expectedInitCode),
-    state: "planned",
-    rawTransaction: null,
-    expectedHash: null,
-    blockNumber: null,
-  }));
+  const normalized = steps.map((step, index) => {
+    const kind = step.kind ?? "direct-create";
+    if (!(kind in STEP_KINDS)) throw new Error("deployment transaction plan contains an unknown step kind");
+    const nonce = startNonce + index;
+    const expectedInitCodeHash = keccak256(step.expectedInitCode);
+    const factoryAddress = kind === "factory-call-create2" ? ethers.getAddress(step.factoryAddress) : null;
+    const salt = kind === "factory-call-create2" ? step.salt : null;
+    const address = kind === "direct-create"
+      ? ethers.getCreateAddress({ from: deployer, nonce })
+      : ethers.getCreate2Address(factoryAddress, salt, expectedInitCodeHash);
+    const expectedCalldata = kind === "direct-create" ? step.expectedInitCode : step.expectedCalldata;
+    return {
+      id: `${index}:${step.name}`, name: step.name, kind, nonce, address,
+      constructorArgsHash: step.constructorArgsHash, expectedInitCode: step.expectedInitCode, expectedInitCodeHash,
+      expectedTo: factoryAddress, expectedCalldata, expectedCalldataHash: keccak256(expectedCalldata),
+      expectedValue: String(step.expectedValue ?? 0), factoryAddress, salt,
+      configurationHash: kind === "factory-call-create2" ? step.configurationHash : null,
+      configurationReadCalldata: kind === "factory-call-create2" ? step.configurationReadCalldata : null,
+      deploymentEventTopic: kind === "factory-call-create2" ? step.deploymentEventTopic : null,
+      state: "planned", rawTransaction: null, expectedHash: null, blockNumber: null,
+    };
+  });
   const record = {
     schema: SIGNED_DEPLOYMENT_JOURNAL_SCHEMA, identityDigest, network, chainId, deployer, rpcEvidence,
     startNonce, transactionCount: normalized.length, endNonceExclusive: startNonce + normalized.length,
@@ -258,15 +290,16 @@ function transition(path, expectedPlanDigest, index, nextState, patch) {
 export function persistSignedDeployment(path, planDigest, index, ethers, rawTransaction) {
   const expectedHash = ethers.keccak256(rawTransaction);
   const transaction = Transaction.from(rawTransaction);
-  const initCodeHash = keccak256(transaction.data);
+  const calldataHash = keccak256(transaction.data);
   const current = readJournal(path);
   const step = current.steps[index];
-  if (transaction.data !== step.expectedInitCode || initCodeHash.toLowerCase() !== step.expectedInitCodeHash.toLowerCase()) throw new Error("signed transaction initcode differs from immutable deployment plan");
+  if (transaction.data !== step.expectedCalldata || calldataHash.toLowerCase() !== step.expectedCalldataHash.toLowerCase()) throw new Error("signed transaction calldata differs from immutable deployment plan");
   const signedPayloadDigest = digest({
     rawHash: expectedHash.toLowerCase(), signer: transaction.from?.toLowerCase(), chainId: transaction.chainId.toString(),
-    nonce: transaction.nonce, to: transaction.to, value: transaction.value.toString(), initCodeHash: initCodeHash.toLowerCase(), address: step.address.toLowerCase(),
+    nonce: transaction.nonce, to: transaction.to?.toLowerCase() ?? null, value: transaction.value.toString(),
+    calldataHash: calldataHash.toLowerCase(), address: step.address.toLowerCase(), kind: step.kind,
   });
-  return transition(path, planDigest, index, "signed", { rawTransaction, expectedHash, initCodeHash, signedPayloadDigest });
+  return transition(path, planDigest, index, "signed", { rawTransaction, expectedHash, calldataHash, signedPayloadDigest });
 }
 
 export function recordDeploymentBroadcast(path, planDigest, index) {
@@ -450,13 +483,28 @@ export async function withDurableJournalLock(journalPath, operation, hooks = {})
 }
 
 async function canonicalReceipt(provider, step, deployer, receipt, label, blockByNumber = false) {
-  if (
-    receipt.transactionHash?.toLowerCase() !== step.expectedHash.toLowerCase() ||
-    receipt.contractAddress?.toLowerCase() !== step.address.toLowerCase() || !receipt.blockHash
-  ) throw new Error(`${label} receipt identity mismatch`);
+  const receiptAddress = receipt.contractAddress?.toLowerCase() ?? null;
+  if (receipt.transactionHash?.toLowerCase() !== step.expectedHash.toLowerCase() || !receipt.blockHash ||
+      (step.kind === "direct-create" ? receiptAddress !== step.address.toLowerCase() : receiptAddress !== null)) throw new Error(`${label} receipt identity mismatch`);
   const transaction = await provider.getTransaction(step.expectedHash);
-  if (!transaction || transaction.hash.toLowerCase() !== step.expectedHash.toLowerCase() || Number(transaction.nonce) !== step.nonce || transaction.from.toLowerCase() !== deployer.toLowerCase() || transaction.to !== null) {
+  if (!transaction || transaction.hash.toLowerCase() !== step.expectedHash.toLowerCase() || Number(transaction.nonce) !== step.nonce || transaction.from.toLowerCase() !== deployer.toLowerCase() ||
+      (transaction.to?.toLowerCase() ?? null) !== (step.expectedTo?.toLowerCase() ?? null) || transaction.data !== step.expectedCalldata || BigInt(transaction.value ?? 0).toString() !== step.expectedValue) {
     throw new Error(`${label} mined transaction identity mismatch`);
+  }
+  if (step.kind === "factory-call-create2") {
+    const addressTopic = zeroPadValue(step.address, 32).toLowerCase();
+    const matching = (receipt.logs ?? []).filter((log) => log.address?.toLowerCase() === step.factoryAddress.toLowerCase()
+      && log.topics?.length === 3 && log.topics[0]?.toLowerCase() === step.deploymentEventTopic.toLowerCase()
+      && log.topics[1]?.toLowerCase() === addressTopic && log.topics[2]?.toLowerCase() === step.salt.toLowerCase()
+      && (log.data ?? "0x") === "0x");
+    if (matching.length !== 1) throw new Error(`${label} receipt lacks the exact factory deployment event`);
+    const code = await provider.getCode(step.address, Number(receipt.blockNumber));
+    if (code === "0x") throw new Error(`${label} receipt lacks runtime at the predicted CREATE2 address`);
+    const configuration = await provider.call({ to: step.factoryAddress, data: step.configurationReadCalldata }, Number(receipt.blockNumber));
+    const expectedConfiguration = zeroPadValue(step.configurationHash, 32).toLowerCase();
+    if (typeof configuration !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(configuration) || configuration.toLowerCase() !== expectedConfiguration) {
+      throw new Error(`${label} factory configuration hash mismatch at the receipt block`);
+    }
   }
   const block = await provider.getBlock(blockByNumber ? Number(receipt.blockNumber) : receipt.blockHash);
   if (!block || block.hash?.toLowerCase() !== receipt.blockHash.toLowerCase() || Number(block.number) !== Number(receipt.blockNumber)) throw new Error(`${label} receipt block is not canonical`);
@@ -486,7 +534,7 @@ async function reconcileLocked({ provider, secondaryProvider, journalPath, planD
     if (
       secondaryReceipt.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
       Number(secondaryReceipt.blockNumber) !== Number(receipt.blockNumber) ||
-      secondaryReceipt.contractAddress.toLowerCase() !== receipt.contractAddress.toLowerCase()
+      (secondaryReceipt.contractAddress?.toLowerCase() ?? null) !== (receipt.contractAddress?.toLowerCase() ?? null)
     ) throw new Error("independent RPC providers disagree on deployment receipt");
     if (!Number.isSafeInteger(requiredConfirmations) || requiredConfirmations < 1) throw new Error("required deployment confirmations must be a positive integer");
     const [primaryHead, secondaryHead] = await Promise.all([provider.getBlockNumber(), secondaryProvider.getBlockNumber()]);
@@ -509,7 +557,8 @@ async function reconcileLocked({ provider, secondaryProvider, journalPath, planD
         candidate.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase() ||
         Number(candidate.blockNumber) !== Number(receipt.blockNumber) ||
         candidate.transactionHash.toLowerCase() !== step.expectedHash.toLowerCase() ||
-        candidate.contractAddress.toLowerCase() !== step.address.toLowerCase()
+        (step.kind === "direct-create" && candidate.contractAddress?.toLowerCase() !== step.address.toLowerCase()) ||
+        (step.kind === "factory-call-create2" && candidate.contractAddress !== null)
       ) throw new Error("deployment evidence changed immediately before mined transition");
     }
     record = recordDeploymentMined(journalPath, planDigest, index, Number(finalPrimaryReceipt.blockNumber));

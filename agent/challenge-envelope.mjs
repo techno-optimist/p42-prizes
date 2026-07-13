@@ -20,7 +20,7 @@ let validateRunnerHealthV2Schema;
 
 function provisioningSchemaValidator() {
   if (!validateProvisioningSchema) {
-    const schema = readStrictJsonFileSync(new URL("../schemas/challenge-provisioning.schema.json", import.meta.url), JSON_LIMITS);
+    const schema = readStrictJsonFileSync(new URL("./schemas/challenge-provisioning.schema.json", import.meta.url), JSON_LIMITS);
     validateProvisioningSchema = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
   }
   return validateProvisioningSchema;
@@ -28,7 +28,7 @@ function provisioningSchemaValidator() {
 
 function runnerHealthV2SchemaValidator() {
   if (!validateRunnerHealthV2Schema) {
-    const schema = readStrictJsonFileSync(new URL("../schemas/runner-health-v2.schema.json", import.meta.url), JSON_LIMITS);
+    const schema = readStrictJsonFileSync(new URL("./schemas/runner-health-v2.schema.json", import.meta.url), JSON_LIMITS);
     const ajv = new Ajv2020({ allErrors: true, strict: true });
     ajv.addFormat("date-time", { type: "string", validate: (value) => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(value) && Number.isFinite(Date.parse(value)) });
     validateRunnerHealthV2Schema = ajv.compile(schema);

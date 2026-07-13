@@ -7,6 +7,8 @@ import { canonicalDigest, validateReleaseCapsule } from "./release-capsule-helpe
 export const EXPLORER_DOSSIER_SCHEMA = "p42-prizes/explorer-verification-dossier/v2";
 export const ETHERSCAN_V2_URL = "https://api.etherscan.io/v2/api";
 export const SOURCIFY_V2_ORIGIN = "https://sourcify.dev";
+const CANONICAL_SHARED = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum"];
+const CANONICAL_PER_BOARD = ["pool", "ledger", "submissions", "challenges"];
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const sha256 = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 const canonical = (v) => v === null || typeof v !== "object" ? JSON.stringify(v) : Array.isArray(v) ? `[${v.map(canonical).join(",")}]` : `{${Object.keys(v).sort().map((k) => `${JSON.stringify(k)}:${canonical(v[k])}`).join(",")}}`;
@@ -15,7 +17,75 @@ const digestBytes32 = (digest) => `0x${digest.slice(7)}`;
 const iso = (value, label, now, maxAgeMs, futureSkewMs) => { const time = Date.parse(value); if (!Number.isFinite(time) || time > now + futureSkewMs || now - time > maxAgeMs) throw new Error(`${label} is stale or in the future`); return time; };
 
 export function explorerContractEntries(manifest) {
-  return [...["timelock", "registry", "rolloverVault"].map((key) => ({ path: `contracts.${key}`, entry: manifest.contracts?.[key] })), ...(manifest.problems ?? []).flatMap((problem, i) => ["pool", "ledger", "submissions", "challenges"].map((key) => ({ path: `problems[${i}].contracts.${key}`, entry: problem.contracts?.[key] })))];
+  return [
+    ...CANONICAL_SHARED.map((key) => ({ path: `contracts.${key}`, key, entry: manifest.contracts?.[key], creationKind: "direct-create" })),
+    ...(manifest.problems ?? []).flatMap((problem, i) => CANONICAL_PER_BOARD.map((key) => ({
+      path: `problems[${i}].contracts.${key}`,
+      key,
+      entry: problem.contracts?.[key],
+      creationKind: ["submissions", "challenges"].includes(key) ? "factory-call-create2" : "direct-create",
+      factoryKey: key === "submissions" ? "submissionManagerFactory" : key === "challenges" ? "challengeManagerFactory" : null,
+    }))),
+  ];
+}
+
+function factoryCreationProvenance(descriptor, manifest) {
+  const { entry, factoryKey, path } = descriptor;
+  const source = entry.factoryCreation ?? {};
+  const provenance = {
+    kind: "factory-call-create2",
+    factoryAddress: source.factoryAddress,
+    transactionHash: source.transactionHash ?? source.txHash ?? entry.txHash,
+    eventTopic: source.eventTopic ?? source.deploymentEventTopic,
+    salt: source.salt,
+    configurationHash: source.configurationHash,
+    configurationReadCalldata: source.configurationReadCalldata,
+    createdAddress: source.createdAddress ?? entry.address,
+  };
+  exact(provenance, ["kind", "factoryAddress", "transactionHash", "eventTopic", "salt", "configurationHash", "configurationReadCalldata", "createdAddress"], `${path} factory creation provenance`);
+  const expectedFactory = manifest.contracts?.[factoryKey]?.address;
+  for (const [key, pattern] of [["factoryAddress", /^0x[0-9a-fA-F]{40}$/], ["transactionHash", /^0x[0-9a-fA-F]{64}$/], ["eventTopic", /^0x[0-9a-fA-F]{64}$/], ["salt", /^0x[0-9a-fA-F]{64}$/], ["configurationHash", /^0x[0-9a-fA-F]{64}$/], ["configurationReadCalldata", /^0x(?:[0-9a-fA-F]{2})+$/], ["createdAddress", /^0x[0-9a-fA-F]{40}$/]]) if (!pattern.test(provenance[key] ?? "")) throw new Error(`${path} factory creation ${key} is invalid`);
+  if (provenance.factoryAddress.toLowerCase() !== expectedFactory?.toLowerCase() || provenance.createdAddress.toLowerCase() !== entry.address?.toLowerCase() || provenance.transactionHash.toLowerCase() !== entry.txHash?.toLowerCase()) throw new Error(`${path} factory creation address/transaction binding mismatch`);
+  return provenance;
+}
+
+function initCodeHash(wanted) {
+  return ethers.keccak256(ethers.concat([wanted.creationCode, wanted.constructorArgs]));
+}
+
+function validateFactoryDeploymentEvidence(evidence, descriptor, manifest, wanted) {
+  const provenance = factoryCreationProvenance(descriptor, manifest); const { entry, path } = descriptor;
+  exact(evidence, ["kind", "factoryAddress", "transactionHash", "eventTopic", "salt", "configurationHash", "configurationReadCalldata", "createdAddress", "initCodeHash", "receipt"], `${path} factory deployment evidence`);
+  const expectedInitCodeHash = initCodeHash(wanted);
+  const expectedAddress = ethers.getCreate2Address(provenance.factoryAddress, provenance.salt, expectedInitCodeHash);
+  if (canonical(Object.fromEntries(Object.keys(provenance).map((key) => [key, evidence[key]]))) !== canonical(provenance)
+      || evidence.initCodeHash.toLowerCase() !== expectedInitCodeHash.toLowerCase()
+      || entry.initCodeHash?.toLowerCase() !== expectedInitCodeHash.toLowerCase()
+      || expectedAddress.toLowerCase() !== provenance.createdAddress.toLowerCase()) throw new Error(`${path} factory CREATE2 binding mismatch`);
+  exact(evidence.receipt, ["status", "blockNumber", "blockHash", "transactionIndex", "logIndex", "logAddress", "topics", "data", "configurationResult"], `${path} factory receipt`);
+  const receipt = evidence.receipt;
+  const expectedTopics = [provenance.eventTopic, ethers.zeroPadValue(provenance.createdAddress, 32), provenance.salt].map((value) => value.toLowerCase());
+  if (receipt.status !== 1 || receipt.blockNumber !== entry.blockNumber || !/^0x[0-9a-fA-F]{64}$/.test(receipt.blockHash ?? "")
+      || !Number.isSafeInteger(receipt.transactionIndex) || receipt.transactionIndex < 0 || !Number.isSafeInteger(receipt.logIndex) || receipt.logIndex < 0
+      || receipt.logAddress?.toLowerCase() !== provenance.factoryAddress.toLowerCase() || canonical(receipt.topics?.map((value) => value.toLowerCase())) !== canonical(expectedTopics)
+      || receipt.data !== "0x" || receipt.configurationResult?.toLowerCase() !== provenance.configurationHash.toLowerCase()) throw new Error(`${path} factory receipt/event/configuration binding mismatch`);
+  return evidence;
+}
+
+async function deploymentEvidence(descriptor, manifest, provider, wanted) {
+  if (descriptor.creationKind === "direct-create") return { kind: "direct-create" };
+  const provenance = factoryCreationProvenance(descriptor, manifest); const { entry, path } = descriptor;
+  const receipt = await provider.getTransactionReceipt(provenance.transactionHash);
+  if (!receipt) throw new Error(`${path} factory transaction receipt is unavailable`);
+  const block = await provider.getBlock(receipt.blockNumber);
+  if (!block || block.hash?.toLowerCase() !== receipt.blockHash?.toLowerCase()) throw new Error(`${path} factory receipt block is not canonical`);
+  const expectedTopics = [provenance.eventTopic, ethers.zeroPadValue(provenance.createdAddress, 32), provenance.salt].map((value) => value.toLowerCase());
+  const logs = (receipt.logs ?? []).filter((log) => log.address?.toLowerCase() === provenance.factoryAddress.toLowerCase()
+    && canonical(log.topics?.map((value) => value.toLowerCase())) === canonical(expectedTopics) && log.data === "0x");
+  if (logs.length !== 1) throw new Error(`${path} factory receipt must contain exactly one canonical deployment event`);
+  const configurationResult = await provider.call({ to: provenance.factoryAddress, data: provenance.configurationReadCalldata }, receipt.blockNumber);
+  const evidence = { ...provenance, initCodeHash: initCodeHash(wanted), receipt: { status: Number(receipt.status), blockNumber: receipt.blockNumber, blockHash: receipt.blockHash, transactionIndex: receipt.index, logIndex: logs[0].index, logAddress: logs[0].address, topics: logs[0].topics, data: logs[0].data, configurationResult } };
+  return validateFactoryDeploymentEvidence(evidence, descriptor, manifest, wanted);
 }
 
 function decodeRaw(observation, label, { now, maxAgeMs, futureSkewMs }) {
@@ -48,8 +118,9 @@ export function parseSourcifyV2Raw(observation, options) {
   if (observation.provider !== "sourcify-v2-independent" || url.origin !== SOURCIFY_V2_ORIGIN || !/^\/server\/v2\/contract\/84532\/0x[0-9a-fA-F]{40}$/.test(url.pathname) || url.searchParams.get("fields") !== "all") throw new Error("wrong Sourcify V2 endpoint shape");
   const compilation = json?.compilation; const creation = json?.creationBytecode; const runtime = json?.runtimeBytecode; const sources = json?.stdJsonInput?.sources ?? json?.sources; const settings = json?.stdJsonInput?.settings ?? compilation?.compilerSettings;
   const creationHex = creation?.recompiledBytecode ?? creation?.onchainBytecode; const runtimeHex = runtime?.onchainBytecode ?? runtime?.recompiledBytecode;
-  if (observation.httpStatus !== 200 || !["match", "exact_match"].includes(json?.match) || !["match", "exact_match"].includes(json?.creationMatch) || !["match", "exact_match"].includes(json?.runtimeMatch) || json.chainId !== "84532" || String(json.address).toLowerCase() !== url.pathname.split("/").at(-1).toLowerCase() || compilation?.language !== "Solidity" || compilation?.compiler !== "solc" || !compilation?.compilerVersion || typeof compilation?.name !== "string" || typeof compilation?.fullyQualifiedName !== "string" || !sources || !settings || !/^0x(?:[0-9a-fA-F]{2})+$/.test(creationHex ?? "") || !/^0x(?:[0-9a-fA-F]{2})+$/.test(runtimeHex ?? "")) throw new Error("Sourcify V2 response shape or match is invalid");
-  return { sources, settings, compilerVersion: String(compilation.compilerVersion).replace(/^v/, ""), name: compilation.name, fullyQualifiedName: compilation.fullyQualifiedName, creationBytecode: creationHex.toLowerCase(), runtimeBytecode: runtimeHex.toLowerCase() };
+  const creationValid = creationHex === undefined || (/^0x(?:[0-9a-fA-F]{2})+$/.test(creationHex) && ["match", "exact_match"].includes(json?.creationMatch));
+  if (observation.httpStatus !== 200 || !["match", "exact_match"].includes(json?.match) || !["match", "exact_match"].includes(json?.runtimeMatch) || json.chainId !== "84532" || String(json.address).toLowerCase() !== url.pathname.split("/").at(-1).toLowerCase() || compilation?.language !== "Solidity" || compilation?.compiler !== "solc" || !compilation?.compilerVersion || typeof compilation?.name !== "string" || typeof compilation?.fullyQualifiedName !== "string" || !sources || !settings || !creationValid || !/^0x(?:[0-9a-fA-F]{2})+$/.test(runtimeHex ?? "")) throw new Error("Sourcify V2 response shape or match is invalid");
+  return { sources, settings, compilerVersion: String(compilation.compilerVersion).replace(/^v/, ""), name: compilation.name, fullyQualifiedName: compilation.fullyQualifiedName, creationBytecode: creationHex?.toLowerCase() ?? null, runtimeBytecode: runtimeHex.toLowerCase() };
 }
 
 function expected(artifact, info, entry) {
@@ -57,13 +128,13 @@ function expected(artifact, info, entry) {
   return { sourceDigest: canonicalDigest(info.input.input.sources), settingsDigest: canonicalDigest(info.settings), compilerVersion: info.compiler.longVersion, name: artifact.name, fullyQualifiedName: `${artifact.sourceName}:${artifact.name}`, constructorArgs: args.toLowerCase(), creationCode: artifact.creationCode.toLowerCase(), runtimeHash: entry.runtimeCodeHash.toLowerCase() };
 }
 
-function compareParsed({ etherscan, sourcify, chainRuntime }, wanted, label) {
+function compareParsed({ etherscan, sourcify, chainRuntime }, wanted, label, creationKind) {
   for (const [name, parsed] of [["Etherscan", etherscan], ["Sourcify", sourcify]]) {
     if (canonicalDigest(parsed.sources) !== wanted.sourceDigest || canonicalDigest(parsed.settings) !== wanted.settingsDigest || parsed.compilerVersion !== wanted.compilerVersion) throw new Error(`${label} ${name} source/compiler/settings mismatch`);
   }
-  if (etherscan.constructorArgs !== wanted.constructorArgs) throw new Error(`${label} Etherscan constructor arguments mismatch`);
   if (sourcify.name !== wanted.name || sourcify.fullyQualifiedName !== wanted.fullyQualifiedName) throw new Error(`${label} Sourcify contract identity mismatch`);
-  if (sourcify.creationBytecode !== wanted.creationCode) throw new Error(`${label} Sourcify creation bytecode mismatch`);
+  if (creationKind === "direct-create" && etherscan.constructorArgs !== wanted.constructorArgs) throw new Error(`${label} Etherscan constructor arguments mismatch`);
+  if (creationKind === "direct-create" && sourcify.creationBytecode !== wanted.creationCode) throw new Error(`${label} Sourcify creation bytecode mismatch`);
   if (ethers.keccak256(sourcify.runtimeBytecode).toLowerCase() !== wanted.runtimeHash || ethers.keccak256(chainRuntime).toLowerCase() !== wanted.runtimeHash || sourcify.runtimeBytecode !== chainRuntime.toLowerCase()) throw new Error(`${label} Sourcify/on-chain runtime mismatch`);
 }
 
@@ -84,16 +155,16 @@ const TYPES = { Verification: [{ name: "evidenceDigest", type: "bytes32" }, { na
 function attestationValue(dossier, attestation) { return { evidenceDigest: digestBytes32(dossier.evidenceDigest), releaseBindingDigest: digestBytes32(dossier.releaseBindingDigest), nonce: attestation.nonce, expiresAt: dossier.expiresAt, finalizedAt: dossier.finalizedAt }; }
 
 export async function createExplorerVerificationDossier({ manifest, capsule, provider, fetchImpl, apiKey, operatorSigners, operatorNonces, finalizedAt, expiresAt, now = () => new Date().toISOString() }) {
-  validateReleaseCapsule(capsule); const entries = explorerContractEntries(manifest); if (entries.length !== 43 || new Set(entries.map(({ entry }) => entry.address.toLowerCase())).size !== 43) throw new Error("explorer verification requires exactly 43 unique addresses");
+  validateReleaseCapsule(capsule); const entries = explorerContractEntries(manifest); if (entries.length !== 46 || new Set(entries.map(({ entry }) => entry?.address?.toLowerCase())).size !== 46) throw new Error("explorer verification requires canonical ordered 46 unique addresses");
   if (!Number.isSafeInteger(finalizedAt) || !Number.isSafeInteger(expiresAt) || expiresAt <= finalizedAt) throw new Error("canonical finalized validation instant/expiry required");
   if (!Array.isArray(operatorSigners) || operatorSigners.length !== 2 || new Set(operatorSigners.map((s) => s.address.toLowerCase())).size !== 2 || !Array.isArray(operatorNonces) || operatorNonces.length !== 2) throw new Error("two distinct verification operators and nonces are required");
   const artifacts = new Map(capsule.contracts.map((x) => [x.name, x])), infos = new Map(capsule.buildInfos.map((x) => [x.id, x])); const contracts = [];
-  for (const { path, entry } of entries) {
+  for (const descriptor of entries) { const { path, entry, creationKind } = descriptor;
     const artifact = artifacts.get(entry.name), info = infos.get(artifact?.buildInfoId), wanted = expected(artifact, info, entry); const fetchedAt = now();
     const [etherscanRaw, sourcifyRaw] = await queryOfficialSources({ fetchImpl, apiKey, chainId: manifest.network.chainId, address: entry.address, fetchedAt });
     const runtime = (await provider.getCode(entry.address, "finalized")).toLowerCase(); const chainFrame = Buffer.from(canonical({ method: "eth_getCode", blockTag: "finalized", address: entry.address, result: runtime }));
-    compareParsed({ etherscan: parseEtherscanV2Raw(etherscanRaw, { now: Date.parse(fetchedAt), maxAgeMs: 0, futureSkewMs: 0 }), sourcify: parseSourcifyV2Raw(sourcifyRaw, { now: Date.parse(fetchedAt), maxAgeMs: 0, futureSkewMs: 0 }), chainRuntime: runtime }, wanted, path);
-    contracts.push({ path, name: entry.name, address: entry.address, capsuleArtifactDigest: artifact.artifactDigest, buildInfoId: artifact.buildInfoId, providers: [etherscanRaw, sourcifyRaw], chainCode: { fetchedAt, blockTag: "finalized", responseDigest: sha256(chainFrame), responseBase64: chainFrame.toString("base64") } });
+    compareParsed({ etherscan: parseEtherscanV2Raw(etherscanRaw, { now: Date.parse(fetchedAt), maxAgeMs: 0, futureSkewMs: 0 }), sourcify: parseSourcifyV2Raw(sourcifyRaw, { now: Date.parse(fetchedAt), maxAgeMs: 0, futureSkewMs: 0 }), chainRuntime: runtime }, wanted, path, creationKind);
+    contracts.push({ path, name: entry.name, address: entry.address, capsuleArtifactDigest: artifact.artifactDigest, buildInfoId: artifact.buildInfoId, deployment: await deploymentEvidence(descriptor, manifest, provider, wanted), providers: [etherscanRaw, sourcifyRaw], chainCode: { fetchedAt, blockTag: "finalized", responseDigest: sha256(chainFrame), responseBase64: chainFrame.toString("base64") } });
   }
   const core = { schema: EXPLORER_DOSSIER_SCHEMA, chainId: manifest.network.chainId, releaseBindingDigest: manifest.releaseEvidence.releaseBindingDigest, capsuleDigest: capsule.capsuleDigest, deploymentCommit: manifest.deploymentCommit, finalizedAt, expiresAt, contracts }; const evidenceDigest = canonicalDigest(core);
   const unsigned = { ...core, evidenceDigest, operatorRoster: operatorSigners.map((s) => s.address.toLowerCase()).sort(), attestations: [] };
@@ -111,15 +182,15 @@ export function validateExplorerVerificationDossier(dossier, { manifest, capsule
   const recoveredOperators = [];
   for (const attestation of attestations) { exact(attestation, ["operator", "nonce", "signature"], "operator attestation"); const recovered = ethers.verifyTypedData({ ...DOMAIN, chainId: dossier.chainId }, TYPES, attestationValue(dossier, attestation), attestation.signature).toLowerCase(); if (recovered !== attestation.operator || !allow.includes(recovered)) throw new Error("forged verification operator attestation"); recoveredOperators.push(recovered); }
   if (new Set(recoveredOperators).size !== 2 || canonical([...recoveredOperators].sort()) !== canonical(operatorRoster)) throw new Error("attestation recovered signer set must exactly equal operator roster");
-  const expectedEntries = explorerContractEntries(manifest), artifacts = new Map(capsule.contracts.map((x) => [x.name, x])), infos = new Map(capsule.buildInfos.map((x) => [x.id, x])); if (dossier.contracts.length !== 43 || expectedEntries.length !== 43) throw new Error("explorer dossier must cover exactly 43 contracts"); const seen = new Set();
-  dossier.contracts.forEach((row, i) => { exact(row, ["path", "name", "address", "capsuleArtifactDigest", "buildInfoId", "providers", "chainCode"], `contract ${i}`); const descriptor = expectedEntries[i], entry = descriptor.entry, artifact = artifacts.get(entry.name), info = infos.get(artifact?.buildInfoId); if (row.path !== descriptor.path || row.name !== entry.name || row.address.toLowerCase() !== entry.address.toLowerCase() || seen.has(row.address.toLowerCase()) || row.capsuleArtifactDigest !== artifact.artifactDigest || row.buildInfoId !== artifact.buildInfoId) throw new Error(`contract ${i} duplicate/relabel/binding mismatch`); seen.add(row.address.toLowerCase());
-    if (!Array.isArray(row.providers) || row.providers.length !== 2) throw new Error(`${row.path} provider coverage mismatch`); const etherscan = parseEtherscanV2Raw(row.providers[0], { now, maxAgeMs, futureSkewMs }), sourcify = parseSourcifyV2Raw(row.providers[1], { now, maxAgeMs, futureSkewMs }); exact(row.chainCode, ["fetchedAt", "blockTag", "responseDigest", "responseBase64"], `${row.path} chain code`); iso(row.chainCode.fetchedAt, `${row.path}.chainCode.fetchedAt`, now, maxAgeMs, futureSkewMs); const bytes = Buffer.from(row.chainCode.responseBase64, "base64"); if (row.chainCode.blockTag !== "finalized" || bytes.toString("base64") !== row.chainCode.responseBase64 || sha256(bytes) !== row.chainCode.responseDigest) throw new Error(`${row.path} chain-code framing mismatch`); const frame = parseStrictJsonBytes(bytes, { maxBytes: MAX_RESPONSE_BYTES, maxDepth: 16, trailingNewline: "allow" }); exact(frame, ["method", "blockTag", "address", "result"], `${row.path} chain frame`); if (frame.method !== "eth_getCode" || frame.blockTag !== "finalized" || frame.address.toLowerCase() !== row.address.toLowerCase()) throw new Error(`${row.path} chain frame binding mismatch`); compareParsed({ etherscan, sourcify, chainRuntime: frame.result }, expected(artifact, info, entry), row.path);
+  const expectedEntries = explorerContractEntries(manifest), artifacts = new Map(capsule.contracts.map((x) => [x.name, x])), infos = new Map(capsule.buildInfos.map((x) => [x.id, x])); if (dossier.contracts.length !== 46 || expectedEntries.length !== 46) throw new Error("explorer dossier must cover canonical ordered 46 contracts"); const seen = new Set();
+  dossier.contracts.forEach((row, i) => { exact(row, ["path", "name", "address", "capsuleArtifactDigest", "buildInfoId", "deployment", "providers", "chainCode"], `contract ${i}`); const descriptor = expectedEntries[i], entry = descriptor.entry, artifact = artifacts.get(entry.name), info = infos.get(artifact?.buildInfoId), wanted = expected(artifact, info, entry); if (row.path !== descriptor.path || row.name !== entry.name || row.address.toLowerCase() !== entry.address.toLowerCase() || seen.has(row.address.toLowerCase()) || row.capsuleArtifactDigest !== artifact.artifactDigest || row.buildInfoId !== artifact.buildInfoId) throw new Error(`contract ${i} duplicate/relabel/deployment binding mismatch`); if (descriptor.creationKind === "direct-create") exact(row.deployment, ["kind"], `${row.path} direct deployment`); else validateFactoryDeploymentEvidence(row.deployment, descriptor, manifest, wanted); seen.add(row.address.toLowerCase());
+    if (!Array.isArray(row.providers) || row.providers.length !== 2) throw new Error(`${row.path} provider coverage mismatch`); const etherscan = parseEtherscanV2Raw(row.providers[0], { now, maxAgeMs, futureSkewMs }), sourcify = parseSourcifyV2Raw(row.providers[1], { now, maxAgeMs, futureSkewMs }); exact(row.chainCode, ["fetchedAt", "blockTag", "responseDigest", "responseBase64"], `${row.path} chain code`); iso(row.chainCode.fetchedAt, `${row.path}.chainCode.fetchedAt`, now, maxAgeMs, futureSkewMs); const bytes = Buffer.from(row.chainCode.responseBase64, "base64"); if (row.chainCode.blockTag !== "finalized" || bytes.toString("base64") !== row.chainCode.responseBase64 || sha256(bytes) !== row.chainCode.responseDigest) throw new Error(`${row.path} chain-code framing mismatch`); const frame = parseStrictJsonBytes(bytes, { maxBytes: MAX_RESPONSE_BYTES, maxDepth: 16, trailingNewline: "allow" }); exact(frame, ["method", "blockTag", "address", "result"], `${row.path} chain frame`); if (frame.method !== "eth_getCode" || frame.blockTag !== "finalized" || frame.address.toLowerCase() !== row.address.toLowerCase()) throw new Error(`${row.path} chain frame binding mismatch`); compareParsed({ etherscan, sourcify, chainRuntime: frame.result }, expected(artifact, info, entry), row.path, descriptor.creationKind);
   }); return dossier;
 }
 
 export async function liveRequeryExplorerVerification({ dossier, manifest, capsule, provider, fetchImpl, apiKey, trustedOperators, now = Date.now() }) {
   validateExplorerVerificationDossier(dossier, { manifest, capsule, trustedOperators, now });
-  for (const descriptor of explorerContractEntries(manifest)) { const row = dossier.contracts.find((x) => x.address.toLowerCase() === descriptor.entry.address.toLowerCase()); const fetchedAt = new Date(now).toISOString(); const [e, s] = await queryOfficialSources({ fetchImpl, apiKey, chainId: manifest.network.chainId, address: descriptor.entry.address, fetchedAt }); const runtime = await provider.getCode(descriptor.entry.address, "finalized"); const artifact = capsule.contracts.find((x) => x.name === descriptor.entry.name), info = capsule.buildInfos.find((x) => x.id === artifact.buildInfoId); compareParsed({ etherscan: parseEtherscanV2Raw(e, { now, maxAgeMs: 0, futureSkewMs: 0 }), sourcify: parseSourcifyV2Raw(s, { now, maxAgeMs: 0, futureSkewMs: 0 }), chainRuntime: runtime }, expected(artifact, info, descriptor.entry), row.path); }
+  for (const descriptor of explorerContractEntries(manifest)) { const row = dossier.contracts.find((x) => x.address.toLowerCase() === descriptor.entry.address.toLowerCase()); const fetchedAt = new Date(now).toISOString(); const [e, s] = await queryOfficialSources({ fetchImpl, apiKey, chainId: manifest.network.chainId, address: descriptor.entry.address, fetchedAt }); const runtime = await provider.getCode(descriptor.entry.address, "finalized"); const artifact = capsule.contracts.find((x) => x.name === descriptor.entry.name), info = capsule.buildInfos.find((x) => x.id === artifact.buildInfoId), wanted = expected(artifact, info, descriptor.entry); compareParsed({ etherscan: parseEtherscanV2Raw(e, { now, maxAgeMs: 0, futureSkewMs: 0 }), sourcify: parseSourcifyV2Raw(s, { now, maxAgeMs: 0, futureSkewMs: 0 }), chainRuntime: runtime }, wanted, row.path, descriptor.creationKind); if (descriptor.creationKind === "factory-call-create2" && canonical(await deploymentEvidence(descriptor, manifest, provider, wanted)) !== canonical(row.deployment)) throw new Error(`${row.path} live factory receipt/configuration evidence changed`); }
   return true;
 }
 

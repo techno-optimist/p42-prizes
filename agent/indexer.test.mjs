@@ -17,6 +17,8 @@ import {
   collectCanonicalOpenWitnessLaunchEvidence,
   configureIndexerTranscripts,
   EVENT_CATALOG,
+  BOARD_CONTRACT_KEYS,
+  SHARED_CONTRACT_KEYS,
   failMissingMultiboardTranscriptArchives,
   loadContractArtifacts,
   queryHistoricalLogs,
@@ -27,6 +29,13 @@ import {
   stableStringify,
   validateMultiBoardCheckpoint,
 } from "./indexer.mjs";
+import { CANONICAL_BOARD_CONTRACTS, CANONICAL_SHARED_CONTRACTS } from "./canonical-topology.mjs";
+
+it("derives operational topology keys and artifacts from the canonical 46-contract authority", () => {
+  assert.deepEqual(SHARED_CONTRACT_KEYS, CANONICAL_SHARED_CONTRACTS.map(({ key }) => key));
+  assert.deepEqual(BOARD_CONTRACT_KEYS, CANONICAL_BOARD_CONTRACTS.map(({ key }) => key));
+  assert.deepEqual(Object.keys(loadContractArtifacts()), [...SHARED_CONTRACT_KEYS, ...BOARD_CONTRACT_KEYS]);
+});
 
 it("archives exact finalized resolver transcript bytes and fails hash mismatches", async () => {
   const body = { schema_version: "p42-runner-transcript/v1", evidence: "fixture" };

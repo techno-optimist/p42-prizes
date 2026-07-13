@@ -98,7 +98,7 @@ async function executePending(timelock, signers, operations, journalPath, { cras
 }
 
 describe("exact ten-board local ceremony rehearsal", { timeout: 240_000 }, function () {
-  it("logically replays its journal and reconciles 43 contracts and 110 operations without funding", async function () {
+  it("logically replays ten board stacks and 110 governance operations without funding", async function () {
     const input = JSON.parse(await readFile(FIXTURE, "utf8"));
     const signers = await ethers.getSigners();
     const [signer1, signer2, signer3, guardian, treasury, resolver, deployer] = signers;

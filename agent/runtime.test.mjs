@@ -69,6 +69,16 @@ test("npm pack installs complete runnable agent binaries", () => {
     assert.doesNotMatch(result.stderr, /ENOENT/, binary);
     assert.match(`${result.stdout}\n${result.stderr}`, /required:|set AGENT_PRIVATE_KEY/, `${binary} reached argument validation`);
   }
+  const installedIndexer = pathToFileURL(join(installDir, "node_modules", "p42-agent", "indexer.mjs")).href;
+  const schemaProbe = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const { validateManifestEvidence } = await import(${JSON.stringify(installedIndexer)});
+    try { validateManifestEvidence({ schema: "p42-prizes/deployment-manifest/v2" }, { allowFixture: true }); }
+    catch (error) { console.error(error.message); process.exit(error.code === "ENOENT" ? 91 : 0); }
+    process.exit(92);
+  `], { encoding: "utf8" });
+  assert.equal(schemaProbe.status, 0, schemaProbe.stderr);
+  assert.doesNotMatch(schemaProbe.stderr, /ENOENT|ERR_MODULE_NOT_FOUND/);
+  assert.match(schemaProbe.stderr, /Manifest missing|schema validation/);
 });
 const entryPointLike = new ethers.Interface([
   "function handle(bytes accountCallData,address beneficiary)",

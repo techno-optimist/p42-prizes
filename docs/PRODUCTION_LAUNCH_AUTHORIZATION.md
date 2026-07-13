@@ -16,9 +16,7 @@ The authorization references exact bytes beneath an immutable artifact root for:
 - adversarial testnet campaign;
 - wallet/session and abuse-control evidence;
 - independently verified production release;
-- completed canonical 46-contract deployment manifest (target; the current
-  authorization schema still describes historical 43-contract rehearsal
-  evidence and cannot authorize funding);
+- completed canonical 46-contract deployment manifest;
 - current canonical 46-contract explorer verification dossier (target); and
 - ten independent signed math reviews bound to each deployed verifier image and
   admission matrix.
@@ -30,12 +28,9 @@ authorization cannot outlive its explorer evidence.
 
 The final digest requires three distinct registered Ed25519 signatures: the
 production launch authority, an independent security authority, and the
-governance authority. This is the explicit bridge from the legacy single-board
-gate bindings to the exact 46-contract deployment. Until the authorization
-schema is migrated, the funding-activation planner independently rejects any
-manifest without the exact six shared and forty per-board identities, so a
-legacy 43-contract authorization cannot move value. No one launch key can splice
-green reports onto a different topology.
+governance authority. The authorization and funding-activation planner both
+require the exact ordered six shared and forty per-board identities. No one
+launch key can splice green reports onto a different topology.
 
 ## Validation
 

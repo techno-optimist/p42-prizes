@@ -27,6 +27,9 @@ function manifest() {
     timelock: deployment("P42MultisigTimelock", wallets[0].address, 1),
     registry: deployment("P42ProblemRegistry", "0x0000000000000000000000000000000000000102", 2),
     rolloverVault: deployment("P42RolloverVault", "0x0000000000000000000000000000000000000103", 3),
+    submissionManagerFactory: deployment("P42SubmissionManagerFactory", "0x0000000000000000000000000000000000000104", 4),
+    challengeManagerFactory: deployment("P42ChallengeManagerFactory", "0x0000000000000000000000000000000000000105", 5),
+    resolverQuorum: deployment("P42ResolverQuorum", "0x0000000000000000000000000000000000000106", 6),
   };
   return {
     schema: "p42-prizes/deployment-manifest/v2",
@@ -39,10 +42,11 @@ function manifest() {
     releaseEvidence: { releaseBindingDigest: digest("1"), capsuleDigest: digest("2"), slateDigest: digest("3"), configDigest: digest("4") },
     problems: Array.from({ length: 10 }, (_, index) => {
       const problemId = String(index + 1);
-      const base = 4 + index * 4;
+      const base = 7 + index * 4;
+      const names = { pool: "P42BountyPool", ledger: "P42PayoutLedger", submissions: "P42SubmissionManager", challenges: "P42ChallengeManager" };
       return {
         problemId,
-        contracts: Object.fromEntries(["pool", "ledger", "submissions", "challenges"].map((key, offset) => [key, deployment(`P42${key}`, `0x${(1000 + base + offset).toString(16).padStart(40, "0")}`, base + offset)])),
+        contracts: Object.fromEntries(["pool", "ledger", "submissions", "challenges"].map((key, offset) => [key, deployment(names[key], `0x${(1000 + base + offset).toString(16).padStart(40, "0")}`, base + offset)])),
       };
     }),
   };
@@ -60,7 +64,7 @@ async function signedPacket(source = manifest(), overrides = {}) {
     deploymentCommit: source.deploymentCommit,
     timelock: source.contracts.timelock.address,
     topologyDigest: deploymentTopologyDigest(source),
-    contractCount: 43,
+    contractCount: 46,
     expiresAt: 2_000_000_000,
     acceptances: expectedRoleAcceptances(ethers, source).map((entry, index) => ({ ...entry, nonce: `0x${(index + 1).toString(16).padStart(64, "0")}`, riskAccepted: true, roleAccepted: true, signature: "" })),
     ...overrides,
@@ -74,7 +78,7 @@ async function signedPacket(source = manifest(), overrides = {}) {
 }
 
 describe("deployment role acceptance", () => {
-  it("verifies possession and explicit acceptance for the canonical 43-contract deployment", async () => {
+  it("verifies possession and explicit acceptance for the canonical 46-contract deployment", async () => {
     const source = manifest();
     const packet = await signedPacket(source);
     assert.equal(deploymentTopologyDigest(source), packet.topologyDigest);

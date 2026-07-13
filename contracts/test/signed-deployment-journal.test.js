@@ -43,10 +43,36 @@ async function signedFixture(directory, count = 2) {
   return { wallet, path, plan, raw };
 }
 
-function providerFor({ transaction = null, receipt = null, block = null, latest = 17, pending = 17, onBroadcast = undefined } = {}) {
+async function factorySignedFixture(directory) {
+  const wallet = ethers.Wallet.createRandom();
+  const factory = ethers.Wallet.createRandom().address;
+  const salt = ethers.id("factory-mismatch-salt");
+  const configurationHash = ethers.id("factory-mismatch-config");
+  const eventTopic = ethers.id("CanonicalManagerDeployed(address,bytes32)");
+  const path = signedDeploymentJournalPath(join(directory, "factory-manifest.json"));
+  const plan = buildDeploymentNoncePlan(ethers, {
+    identityDigest: `sha256:${"a".repeat(64)}`, network: "baseSepolia", chainId: 84532, deployer: wallet.address, startNonce: 17,
+    rpcEvidence: { primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryOrigin: "https://rpc-a.example", secondaryOrigin: "https://rpc-b.example", primaryHost: "rpc-a.example", secondaryHost: "rpc-b.example", primaryEndpointDigest: `sha256:${"1".repeat(64)}`, secondaryEndpointDigest: `sha256:${"2".repeat(64)}` },
+    steps: [{ name: "challenge", kind: "factory-call-create2", constructorArgsHash: ethers.id("args"), expectedInitCode: "0x6000", factoryAddress: factory, salt, configurationHash, configurationReadCalldata: "0x123456780000000000000000000000000000000000000000000000000000000000000000", deploymentEventTopic: eventTopic, expectedCalldata: "0x1234" }],
+  });
+  reserveDeploymentNoncePlan(path, plan);
+  const raw = await wallet.signTransaction({ chainId: 84532, nonce: 17, gasLimit: 100000, gasPrice: 1, to: factory, data: "0x1234" });
+  persistSignedDeployment(path, plan.planDigest, 0, ethers, raw);
+  const step = readSignedDeploymentJournal(path).steps[0];
+  const hash = ethers.keccak256(raw);
+  const block = { number: 5, hash: `0x${"d".repeat(64)}` };
+  const transaction = { hash, nonce: 17, from: wallet.address, to: factory, data: "0x1234", value: 0n };
+  const receipt = { status: 1, blockNumber: 5, blockHash: block.hash, transactionHash: hash, contractAddress: null, logs: [{ address: factory, topics: [eventTopic, ethers.zeroPadValue(step.address, 32), salt], data: "0x" }] };
+  const provider = (overrides = {}) => providerFor({ receipt, transaction, block, latest: 18, pending: 18, callResult: configurationHash, ...overrides });
+  return { path, plan, receipt, transaction, block, configurationHash, provider };
+}
+
+function providerFor({ transaction = null, receipt = null, block = null, latest = 17, pending = 17, onBroadcast = undefined, code = "0x6000", callResult = null } = {}) {
   return {
     async getTransactionReceipt() { return receipt; },
-    async getTransaction() { return transaction; },
+    async getTransaction() { return transaction === null ? null : { data: "0x6000", value: 0n, ...transaction }; },
+    async getCode() { return code; },
+    async call() { return callResult; },
     async getBlock() { return block; },
     async getBlockNumber() { return block?.number ?? 999; },
     async getTransactionCount(_address, tag) { return tag === "latest" ? latest : pending; },
@@ -63,6 +89,114 @@ function writeCrashLock(path, owner) {
 }
 
 describe("signed deployment journal fail-closed recovery", () => {
+  it("binds a closed factory-call CREATE2 identity and requires its exact event and runtime", async () => {
+    await fixture(async (directory) => {
+      const wallet = ethers.Wallet.createRandom();
+      const factory = ethers.Wallet.createRandom().address;
+      const salt = ethers.id("board-1-submissions");
+      const initCode = "0x6000";
+      const calldata = "0x12345678";
+      const eventTopic = ethers.id("CanonicalSubmissionManagerDeployed(address,bytes32)");
+      const path = signedDeploymentJournalPath(join(directory, "manifest.json"));
+      const plan = buildDeploymentNoncePlan(ethers, {
+        identityDigest: `sha256:${"a".repeat(64)}`, network: "baseSepolia", chainId: 84532,
+        deployer: wallet.address, startNonce: 17,
+        rpcEvidence: {
+          primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b",
+          primaryOrigin: "https://rpc-a.example", secondaryOrigin: "https://rpc-b.example",
+          primaryHost: "rpc-a.example", secondaryHost: "rpc-b.example",
+          primaryEndpointDigest: `sha256:${"1".repeat(64)}`, secondaryEndpointDigest: `sha256:${"2".repeat(64)}`,
+        },
+        steps: [{
+          name: "submission-1", kind: "factory-call-create2", constructorArgsHash: ethers.id("args"),
+          expectedInitCode: initCode, factoryAddress: factory, salt, configurationHash: ethers.id("config"),
+          deploymentEventTopic: eventTopic, expectedCalldata: calldata, expectedValue: 0,
+          configurationReadCalldata: "0x123456780000000000000000000000000000000000000000000000000000000000000000",
+        }],
+      });
+      assert.equal(plan.steps[0].address, ethers.getCreate2Address(factory, salt, ethers.keccak256(initCode)));
+      reserveDeploymentNoncePlan(path, plan);
+      const raw = await wallet.signTransaction({ chainId: 84532, nonce: 17, gasLimit: 100000, gasPrice: 1, to: factory, data: calldata, value: 0 });
+      persistSignedDeployment(path, plan.planDigest, 0, ethers, raw);
+      const step = readSignedDeploymentJournal(path).steps[0];
+      const hash = ethers.keccak256(raw);
+      const blockHash = `0x${"b".repeat(64)}`;
+      const tx = { hash, nonce: 17, from: wallet.address, to: factory, data: calldata, value: 0n };
+      const receipt = {
+        status: 1, blockNumber: 99, blockHash, transactionHash: hash, contractAddress: null,
+        logs: [{ address: factory, topics: [eventTopic, ethers.zeroPadValue(step.address, 32), salt], data: "0x" }],
+      };
+      const provider = providerFor({ receipt, transaction: tx, block: { number: 99, hash: blockHash }, latest: 18, pending: 18, callResult: ethers.id("config") });
+      const mined = await reconcileSignedDeployment({ provider, secondaryProvider: provider, journalPath: path, planDigest: plan.planDigest, index: 0 });
+      assert.equal(mined.state, "mined");
+
+      const tampered = structuredClone(plan);
+      tampered.steps[0].configurationHash = ethers.id("other-config");
+      assert.throws(() => reserveDeploymentNoncePlan(path, tampered), /does not match|plan digest/);
+    });
+  });
+
+  it("rejects factory-call receipts with a wrong event, missing runtime, or direct target drift", async () => {
+    await fixture(async (directory) => {
+      const wallet = ethers.Wallet.createRandom();
+      const factory = ethers.Wallet.createRandom().address;
+      const salt = ethers.id("salt");
+      const eventTopic = ethers.id("CanonicalManagerDeployed(address,bytes32)");
+      const path = signedDeploymentJournalPath(join(directory, "manifest.json"));
+      const base = {
+        identityDigest: `sha256:${"a".repeat(64)}`, network: "baseSepolia", chainId: 84532, deployer: wallet.address, startNonce: 17,
+        rpcEvidence: { primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryOrigin: "https://rpc-a.example", secondaryOrigin: "https://rpc-b.example", primaryHost: "rpc-a.example", secondaryHost: "rpc-b.example", primaryEndpointDigest: `sha256:${"1".repeat(64)}`, secondaryEndpointDigest: `sha256:${"2".repeat(64)}` },
+        steps: [{ name: "challenge-1", kind: "factory-call-create2", constructorArgsHash: ethers.id("args"), expectedInitCode: "0x6000", factoryAddress: factory, salt, configurationHash: ethers.id("config"), configurationReadCalldata: "0x123456780000000000000000000000000000000000000000000000000000000000000000", deploymentEventTopic: eventTopic, expectedCalldata: "0x1234" }],
+      };
+      const plan = buildDeploymentNoncePlan(ethers, base);
+      reserveDeploymentNoncePlan(path, plan);
+      const raw = await wallet.signTransaction({ chainId: 84532, nonce: 17, gasLimit: 100000, gasPrice: 1, to: factory, data: "0x1234" });
+      persistSignedDeployment(path, plan.planDigest, 0, ethers, raw);
+      const step = readSignedDeploymentJournal(path).steps[0];
+      const hash = ethers.keccak256(raw);
+      const receipt = { status: 1, blockNumber: 5, blockHash: `0x${"c".repeat(64)}`, transactionHash: hash, contractAddress: null, logs: [] };
+      const tx = { hash, nonce: 17, from: wallet.address, to: factory, data: "0x1234", value: 0n };
+      const provider = providerFor({ receipt, transaction: tx, block: { number: 5, hash: receipt.blockHash }, latest: 18, pending: 18, callResult: ethers.id("config") });
+      await assert.rejects(() => reconcileSignedDeployment({ provider, secondaryProvider: provider, journalPath: path, planDigest: plan.planDigest, index: 0 }), /exact factory deployment event/);
+      receipt.logs = [{ address: factory, topics: [eventTopic, ethers.zeroPadValue(step.address, 32), salt], data: "0x" }];
+      provider.getCode = async () => "0x";
+      await assert.rejects(() => reconcileSignedDeployment({ provider, secondaryProvider: provider, journalPath: path, planDigest: plan.planDigest, index: 0 }), /lacks runtime/);
+      const wrongTargetRaw = await wallet.signTransaction({ chainId: 84532, nonce: 17, gasLimit: 100000, gasPrice: 1, to: ethers.Wallet.createRandom().address, data: "0x1234" });
+      assert.throws(() => persistSignedDeployment(path, plan.planDigest, 0, ethers, wrongTargetRaw), /payload identity drift|immutable deployment plan|conflicts with durable state/);
+    });
+  });
+
+  it("fails closed when independent RPCs disagree on factory event, code, or configuration", async () => {
+    for (const mismatch of ["event", "code", "configuration"]) {
+      await fixture(async (directory) => {
+        const context = await factorySignedFixture(directory);
+        const primary = context.provider();
+        let secondary;
+        if (mismatch === "event") secondary = context.provider({ receipt: { ...context.receipt, logs: [] } });
+        if (mismatch === "code") secondary = context.provider({ code: "0x" });
+        if (mismatch === "configuration") secondary = context.provider({ callResult: ethers.id("wrong-config") });
+        await assert.rejects(
+          () => reconcileSignedDeployment({ provider: primary, secondaryProvider: secondary, journalPath: context.path, planDigest: context.plan.planDigest, index: 0 }),
+          /exact factory deployment event|lacks runtime|configuration hash mismatch/,
+        );
+      });
+    }
+  });
+
+  it("fails closed when factory evidence changes on the final reread", async () => {
+    await fixture(async (directory) => {
+      const context = await factorySignedFixture(directory);
+      const primary = context.provider();
+      const secondary = context.provider();
+      let calls = 0;
+      secondary.call = async () => (++calls === 1 ? context.configurationHash : ethers.id("changed-at-final-reread"));
+      await assert.rejects(
+        () => reconcileSignedDeployment({ provider: primary, secondaryProvider: secondary, journalPath: context.path, planDigest: context.plan.planDigest, index: 0 }),
+        /final secondary factory configuration hash mismatch/,
+      );
+    });
+  });
+
   it("durably reserves the exact nonce range and deterministic identities before signing", async () => {
     await fixture(async (directory) => {
       const { path, plan } = await signedFixture(directory, 3);
@@ -152,7 +286,7 @@ describe("signed deployment journal fail-closed recovery", () => {
     await fixture(async (directory) => {
       const { wallet, path, plan } = await signedFixture(directory);
       const wrongRaw = await wallet.signTransaction({ chainId: 84532, nonce: 17, gasLimit: 100000, gasPrice: 1, data: "0x6001" });
-      assert.throws(() => persistSignedDeployment(path, plan.planDigest, 0, ethers, wrongRaw), /initcode differs from immutable/);
+      assert.throws(() => persistSignedDeployment(path, plan.planDigest, 0, ethers, wrongRaw), /calldata differs from immutable/);
       const record = JSON.parse(readFileSync(path, "utf8"));
       record.steps[0].expectedInitCode = "0x6001";
       writeFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });

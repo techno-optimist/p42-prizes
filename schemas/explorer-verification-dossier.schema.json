@@ -8,7 +8,7 @@
     "schema": { "const": "p42-prizes/explorer-verification-dossier/v2" }, "chainId": { "const": 84532 },
     "releaseBindingDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "finalizedAt": { "type": "integer", "minimum": 1 }, "expiresAt": { "type": "integer", "minimum": 1 },
-    "contracts": { "type": "array", "minItems": 43, "maxItems": 43, "items": { "$ref": "#/$defs/contract" } },
+    "contracts": { "type": "array", "minItems": 46, "maxItems": 46, "items": { "$ref": "#/$defs/contract" } },
     "evidenceDigest": { "$ref": "#/$defs/digest" },
     "operatorRoster": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
     "attestations": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/attestation" } },
@@ -21,9 +21,18 @@
       "httpStatus": { "type": "integer", "minimum": 100, "maximum": 599 }, "fetchedAt": { "type": "string", "format": "date-time" }, "responseDigest": { "$ref": "#/$defs/digest" }, "responseBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$", "maxLength": 11184812 }
     } },
     "chainCode": { "type": "object", "additionalProperties": false, "required": ["fetchedAt", "blockTag", "responseDigest", "responseBase64"], "properties": { "fetchedAt": { "type": "string", "format": "date-time" }, "blockTag": { "const": "finalized" }, "responseDigest": { "$ref": "#/$defs/digest" }, "responseBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$" } } },
-    "contract": { "type": "object", "additionalProperties": false, "required": ["path", "name", "address", "capsuleArtifactDigest", "buildInfoId", "providers", "chainCode"], "properties": {
+    "deployment": { "oneOf": [
+      { "type": "object", "additionalProperties": false, "required": ["kind"], "properties": { "kind": { "const": "direct-create" } } },
+      { "type": "object", "additionalProperties": false, "required": ["kind", "factoryAddress", "transactionHash", "eventTopic", "salt", "configurationHash", "configurationReadCalldata", "createdAddress", "initCodeHash", "receipt"], "properties": {
+        "kind": { "const": "factory-call-create2" }, "factoryAddress": { "$ref": "#/$defs/address" }, "transactionHash": { "$ref": "#/$defs/bytes32" }, "eventTopic": { "$ref": "#/$defs/bytes32" }, "salt": { "$ref": "#/$defs/bytes32" }, "configurationHash": { "$ref": "#/$defs/bytes32" }, "configurationReadCalldata": { "type": "string", "pattern": "^0x(?:[0-9a-fA-F]{2})+$" }, "createdAddress": { "$ref": "#/$defs/address" }, "initCodeHash": { "$ref": "#/$defs/bytes32" }, "receipt": { "$ref": "#/$defs/factoryReceipt" }
+      } }
+    ] },
+    "factoryReceipt": { "type": "object", "additionalProperties": false, "required": ["status", "blockNumber", "blockHash", "transactionIndex", "logIndex", "logAddress", "topics", "data", "configurationResult"], "properties": {
+      "status": { "const": 1 }, "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" }, "transactionIndex": { "type": "integer", "minimum": 0 }, "logIndex": { "type": "integer", "minimum": 0 }, "logAddress": { "$ref": "#/$defs/address" }, "topics": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/bytes32" } }, "data": { "const": "0x" }, "configurationResult": { "$ref": "#/$defs/bytes32" }
+    } },
+    "contract": { "type": "object", "additionalProperties": false, "required": ["path", "name", "address", "capsuleArtifactDigest", "buildInfoId", "deployment", "providers", "chainCode"], "properties": {
       "path": { "type": "string", "minLength": 1 }, "name": { "type": "string", "pattern": "^P42" }, "address": { "$ref": "#/$defs/address" }, "capsuleArtifactDigest": { "$ref": "#/$defs/digest" }, "buildInfoId": { "type": "string", "minLength": 1 },
-      "providers": { "type": "array", "prefixItems": [{ "$ref": "#/$defs/raw" }, { "$ref": "#/$defs/raw" }], "items": false }, "chainCode": { "$ref": "#/$defs/chainCode" }
+      "deployment": { "$ref": "#/$defs/deployment" }, "providers": { "type": "array", "minItems": 2, "maxItems": 2, "prefixItems": [{ "$ref": "#/$defs/raw" }, { "$ref": "#/$defs/raw" }], "items": false }, "chainCode": { "$ref": "#/$defs/chainCode" }
     } },
     "attestation": { "type": "object", "additionalProperties": false, "required": ["operator", "nonce", "signature"], "properties": { "operator": { "$ref": "#/$defs/address" }, "nonce": { "$ref": "#/$defs/bytes32" }, "signature": { "type": "string", "pattern": "^0x[0-9a-fA-F]{130}$" } } }
   }
