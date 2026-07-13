@@ -53,6 +53,13 @@ describe("Erdős frontier atlas", () => {
     const meta = getAtlasMeta();
     expect(meta.facets.boardability).toEqual({ READY: 13, HEAVY: 14, NONE: 24 });
     expect(meta.facets.p42).toEqual({ true: 6, false: 45 });
+    expect(meta.survey).toEqual({ triaged: 95, deep_audited: 51 });
+    expect(meta.queue).toEqual({
+      ready_interfaces: 13,
+      p42_packages: 6,
+      recommended_unpacked: 0,
+      reserve_unpacked: 7,
+    });
     expect(meta.provenance.commit).toBe("0901734c487ab1e51ddc772ab45b08b42c86fc2c");
     expect(meta.provenance.sha256).toBe("cd1222e90a31d53c5d58549322eb211cfb9e5478d75e9230031141fdad940864");
     expect(getAtlasEntry(67)?.frontier?.summary).toContain("130,000");

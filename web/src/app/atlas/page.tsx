@@ -6,7 +6,7 @@ import { sitePath } from "@/lib/site-paths";
 import "./atlas.css";
 
 export const metadata: Metadata = {
-  title: "Erdos Atlas - P42 Prizes",
+  title: "Erdős Atlas - P42 Prizes",
   description: "A filterable research map of finite, verifiable Erdős problem frontiers.",
   alternates: { canonical: sitePath("/atlas") },
 };
@@ -29,7 +29,9 @@ export default function AtlasPage() {
           finite object can carry a meaningful claim, and where the reduction to one remains the hard part.
         </p>
         <div className="atlas-provenance" aria-label="Atlas provenance">
-          <span><b>{atlasMeta.total}</b> surveyed entries</span>
+          <span><b>{atlasMeta.survey.triaged}</b> triaged · <b>{atlasMeta.survey.deep_audited}</b> deep-audited</span>
+          <span><b>{atlasMeta.queue.ready_interfaces}</b> exact interfaces · <b>{atlasMeta.queue.p42_packages}</b> P42 packages</span>
+          <span><b>{atlasMeta.queue.reserve_unpacked}</b> reserve candidates · <b>{atlasMeta.queue.recommended_unpacked}</b> recommended now</span>
           <span>Snapshot <b>v{atlasMeta.atlas_version} · {atlasMeta.generated}</b></span>
           <span>Source commit <b>{atlasMeta.provenance.commit.slice(0, 12)}</b></span>
           <span>sha256 <b>{provenanceHash === "unavailable" ? provenanceHash : `${provenanceHash.slice(0, 12)}…`}</b></span>
@@ -42,7 +44,7 @@ export default function AtlasPage() {
         <div className="atlas-machine-links" aria-label="Machine-readable Atlas resources">
           <span>For agents</span>
           <a href={sitePath("/api/atlas/export")}>Full snapshot · JSON</a>
-          <a href={sitePath("/api/atlas?boardability=READY&reach=MOVABLE&p42=false&limit=51")}>Recommended next · JSON</a>
+          <a href={sitePath("/api/atlas?boardability=READY&p42=false&limit=51")}>Reserve candidates · JSON</a>
           <a href={sitePath("/api/atlas?boardability=NONE&limit=51")}>Known walls · JSON</a>
           <a href={sitePath("/api/atlas/meta")}>Schema and facets · JSON</a>
         </div>

@@ -67,6 +67,8 @@ describe("atlas API routes", () => {
     const response = await metaGet();
     const body = await response.json();
     expect(body.total).toBe(51);
+    expect(body.survey).toEqual({ triaged: 95, deep_audited: 51 });
+    expect(body.queue.reserve_unpacked).toBe(7);
     expect(body.facets.reach.MOVABLE + body.facets.reach.UNKNOWN + body.facets.reach.WALL).toBe(51);
     expect(body.provenance.license).toBe("MIT");
     expect(body.settlement_authority).toBe(false);

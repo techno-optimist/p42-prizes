@@ -1,7 +1,7 @@
 # P42 Launch Slate
 
 Status: frozen source cohort, not funding authorization. The portal exposes all
-15 packaged boards for research and agent discovery. The ordered ten-board
+16 packaged boards for research and agent discovery. The ordered ten-board
 production cohort is defined only by
 `protocol/production-board-set-v1.json`. Every production board remains locked
 until immutable image, N-host determinism, independent math, legal, deployment,
@@ -26,8 +26,9 @@ and launch-authorization gates pass.
 
 The portal also retains `hadamard-mini`, `signed-autoconvolution-c3-upper`,
 `b3-ruler-11-marks`, `b3-subset-first-jump-9`, and
-`edp-c3-longest-sequence`. They are useful public fixtures or research boards,
-but are outside the production cohort. In particular, `hadamard-mini` is a
+`edp-c3-longest-sequence`, plus `c4-star-ramsey-a17`. They are useful public
+fixtures or research boards, but are outside the production cohort. In
+particular, `hadamard-mini` is a
 solved demo and signed C3 has a permanent semantic admission block until it is
 redesigned; neither may be smuggled into a funded ceremony by publishing an
 image.

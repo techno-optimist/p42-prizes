@@ -36,6 +36,7 @@ const snapshot = snapshotJson as unknown as {
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 51;
 const CURSOR_PREFIX = "atlas-v1:";
+const TRIAGED_PROBLEMS = 95;
 
 export class AtlasQueryError extends Error {}
 
@@ -222,12 +223,22 @@ function countBy<T extends string>(values: readonly T[], select: (entry: AtlasEn
 
 export function getAtlasMeta(): AtlasMeta {
   const p42Count = atlasEntries.filter((entry) => entry.p42_slug).length;
+  const readyEntries = atlasEntries.filter((entry) => entry.board_class === "READY");
+  const recommendedUnpacked = readyEntries.filter((entry) => entry.beatable === "MOVABLE" && !entry.p42_slug).length;
+  const reserveUnpacked = readyEntries.filter((entry) => !entry.p42_slug).length;
   return {
     snapshot_schema: snapshot.snapshot_schema,
     atlas_version: snapshot.atlas_version,
     generated: snapshot.generated,
     source: snapshot.source,
     total: atlasEntries.length,
+    survey: { triaged: TRIAGED_PROBLEMS, deep_audited: atlasEntries.length },
+    queue: {
+      ready_interfaces: readyEntries.length,
+      p42_packages: p42Count,
+      recommended_unpacked: recommendedUnpacked,
+      reserve_unpacked: reserveUnpacked,
+    },
     facets: {
       boardability: countBy(ATLAS_BOARDABILITIES, (entry) => entry.board_class),
       reach: countBy(ATLAS_REACHES, (entry) => entry.beatable),
