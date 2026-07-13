@@ -205,7 +205,41 @@ packet for the exact EIP-712 `Decision`, including the current signer epoch,
 transcript URI/content bindings, manager, challenge instance, beneficiary,
 nonce, and expiry.
 
-Each independent signer policy service validates that packet and writes one
+`resolver-signer.mjs` is the fail-closed independent signer policy service. It
+requires a separately generated private Docker-runner transcript, retrieves the
+published transcript byte-for-byte from two independently operated gateways,
+validates the frozen manifest/registry binding through two independent RPCs,
+requires those RPCs to agree on one finalized block and complete signable state,
+and recomputes the exact verdict hash. It then repeats the finalized state check,
+fsyncs an anti-equivocation authorization keyed by chain, quorum, manager, and
+challenge instance, and only then invokes the signer key. Distinct transcript
+envelopes are permitted only when their exact report, candidate, chain claim,
+registry binding, and outcome agree.
+
+```bash
+cd agent
+P42_RESOLVER_SIGNER_PRIVATE_KEY=0x... \
+P42_TRANSCRIPT_ENDPOINTS='https://gateway-one.example,https://gateway-two.example' \
+node resolver-signer.mjs \
+  --rpc https://independent-rpc-one.example \
+  --rpc https://independent-rpc-two.example \
+  --manifest ../deployments/base-sepolia/p42-prizes-v2.json \
+  --registry-problem-id 1 \
+  --packet /var/lib/p42/resolver/actions/decision.quorum-decision.json \
+  --local-transcript /var/lib/p42/signer-1/transcripts/local-rerun.json \
+  --signature-root /var/lib/p42/resolver-quorum-signatures
+```
+
+The local transcript must be produced by this signer's own isolated runner from
+independently retrieved solution bytes and the immutable manifest-bound image;
+copying the relay's transcript is not an independent rerun. The service rejects
+non-production manifests, a mutable/stale registry binding, gateway or RPC
+disagreement, stale epochs, replaced challenge instances, pending/expired
+decisions, rerun disagreement, and conflicting retries. Production key custody
+still requires the named HSM or equivalent non-exportable signer integration and
+rehearsal; the environment-key adapter is testnet plumbing, not a custody claim.
+
+Each accepted signer policy writes one
 self-hashed `p42-resolver-quorum-signature/v1` artifact beneath
 `<--quorum-signatures>/<decision_digest>/`. The relay recovers every signer,
 quarantines malformed/duplicate/nonmember artifacts without letting one bad
@@ -216,11 +250,9 @@ The quorum contract supplies the resolver decision bond from its collective
 stake. The legacy direct `P42ChallengeManager.resolve(...)` path exists only
 under `--local-test` on chain IDs `1337` or `31337`.
 
-Signature artifacts are transport records, not evidence that a verdict was
-independently checked. Production signer services must separately re-run and
-validate the immutable transcript before signing; signer identities, policy
-implementations, key custody, and a deployed multi-signer rehearsal remain
-launch gates.
+Signature artifacts remain transport records rather than external attestations.
+Signer identities, independent hosts/runners, HSM custody, objective verifier
+fraud proofs, and a deployed multi-signer rehearsal remain launch gates.
 
 One chain-and-quorum lock under the required shared `--coordination-root`
 serializes state reload, decision reservation, transaction population,

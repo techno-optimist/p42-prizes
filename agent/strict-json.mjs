@@ -56,6 +56,17 @@ export function writeTrustedFileSync(path, trustedRoot, payload) {
   execFileSync(process.env.P42_RUNTIME_PYTHON || "python3", [SECURE_PATH_BRIDGE, "write", "--root", resolve(trustedRoot), "--path", resolve(path)], { input: payload, maxBuffer: 64 * 1024 });
 }
 
+export function writeTrustedFileExclusiveSync(path, trustedRoot, payload) {
+  const result = execFileSync(
+    process.env.P42_RUNTIME_PYTHON || "python3",
+    [SECURE_PATH_BRIDGE, "write-exclusive", "--root", resolve(trustedRoot), "--path", resolve(path)],
+    { input: payload, maxBuffer: 64 * 1024, encoding: "utf8" },
+  ).trim();
+  if (result === "CREATED") return true;
+  if (result === "EXISTS") return false;
+  throw new Error("trusted exclusive write returned an invalid status");
+}
+
 function normalizedDecimal(lexeme) {
   let text = lexeme;
   let negative = false;
