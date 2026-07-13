@@ -46,6 +46,7 @@ contract P42ChallengeManager {
     error P42_REVEAL_INSTANCE_MISMATCH(bytes32 expected, bytes32 actual);
     error P42_EMPTY_CHALLENGE_INSTANCE_HASH();
     error P42_CHALLENGE_INSTANCE_MISMATCH(bytes32 expected, bytes32 actual);
+    error P42_RESOLVER_BENEFICIARY_ZERO();
     error P42_TRANSFER_FAILED();
 
     uint16 public constant MAX_BETA_BPS = 10_000;
@@ -96,6 +97,7 @@ contract P42ChallengeManager {
     /// branch being applied to a different challenge for the same submission.
     mapping(uint256 => bytes32) public challengeInstanceHashOf;
     mapping(uint256 => ResolverBond) public resolverBonds;
+    mapping(uint256 => address) public resolverBondBeneficiaryOf;
     mapping(address => uint256) public claimableBondWei;
 
     event NewActionsPaused(bool paused);
@@ -114,6 +116,7 @@ contract P42ChallengeManager {
         bytes32 transcriptHash,
         string transcriptURI,
         bytes32 verdictHash,
+        address resolverBondBeneficiary,
         uint256 resolverBondWei,
         uint64 resolverBondReleaseAt,
         bool challengerWins,
@@ -296,6 +299,47 @@ contract P42ChallengeManager {
         string calldata transcriptURI,
         bytes32 verdictHash
     ) external payable onlyResolver {
+        _resolve(
+            submissionId,
+            expectedChallengeInstanceHash,
+            challengerWins,
+            transcriptHash,
+            transcriptURI,
+            verdictHash,
+            msg.sender
+        );
+    }
+
+    function resolveFor(
+        uint256 submissionId,
+        bytes32 expectedChallengeInstanceHash,
+        bool challengerWins,
+        bytes32 transcriptHash,
+        string calldata transcriptURI,
+        bytes32 verdictHash,
+        address resolverBondBeneficiary
+    ) external payable onlyResolver {
+        if (resolverBondBeneficiary == address(0)) revert P42_RESOLVER_BENEFICIARY_ZERO();
+        _resolve(
+            submissionId,
+            expectedChallengeInstanceHash,
+            challengerWins,
+            transcriptHash,
+            transcriptURI,
+            verdictHash,
+            resolverBondBeneficiary
+        );
+    }
+
+    function _resolve(
+        uint256 submissionId,
+        bytes32 expectedChallengeInstanceHash,
+        bool challengerWins,
+        bytes32 transcriptHash,
+        string calldata transcriptURI,
+        bytes32 verdictHash,
+        address resolverBondBeneficiary
+    ) private {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
         _requireChallengeInstance(submissionId, expectedChallengeInstanceHash);
@@ -321,6 +365,7 @@ contract P42ChallengeManager {
             releaseAt: resolverBondReleaseAt,
             slashProofHash: bytes32(0)
         });
+        resolverBondBeneficiaryOf[submissionId] = resolverBondBeneficiary;
 
         _emitResolverTranscriptPosted(submissionId, resolverBondReleaseAt);
     }
@@ -356,7 +401,10 @@ contract P42ChallengeManager {
         } else {
             claimableBondWei[treasury] += challengeBond;
         }
-        claimableBondWei[resolver] += resolverBond;
+        address resolverBondBeneficiary = resolverBondBeneficiaryOf[submissionId];
+        if (resolverBondBeneficiary == address(0)) revert P42_RESOLVER_BENEFICIARY_ZERO();
+        delete resolverBondBeneficiaryOf[submissionId];
+        claimableBondWei[resolverBondBeneficiary] += resolverBond;
 
         // On a challenger win the rejected solver's forfeited posting bond is
         // routed to the challenger. On a solver win, rearming is bounded by the
@@ -370,7 +418,7 @@ contract P42ChallengeManager {
             delete challenges[submissionId];
         }
 
-        emit ResolverBondReleased(submissionId, resolver, resolverBond, expectedChallengeInstanceHash);
+        emit ResolverBondReleased(submissionId, resolverBondBeneficiary, resolverBond, expectedChallengeInstanceHash);
         emit Resolved(submissionId, challengerWins, expectedChallengeInstanceHash);
     }
 
@@ -416,7 +464,7 @@ contract P42ChallengeManager {
 
     function slashResolverBond(uint256 submissionId, bytes32 expectedChallengeInstanceHash, bytes32 proofHash)
         external
-        onlyOwner
+        onlyResolver
     {
         Challenge storage current = challenges[submissionId];
         if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
@@ -432,6 +480,7 @@ contract P42ChallengeManager {
 
         decisionBond.amountWei = 0;
         decisionBond.slashProofHash = proofHash;
+        delete resolverBondBeneficiaryOf[submissionId];
         claimableBondWei[treasury] += amount;
         address challenger = current.challenger;
         uint256 challengeBond = current.challengeBondWei;
@@ -484,6 +533,7 @@ contract P42ChallengeManager {
             current.transcriptHash,
             current.transcriptURI,
             current.verdictHash,
+            resolverBondBeneficiaryOf[submissionId],
             resolverBonds[submissionId].amountWei,
             releaseAt,
             current.challengerWins,

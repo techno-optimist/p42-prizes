@@ -218,7 +218,7 @@ async function expireChallenge(fixture, submissionId) {
 }
 
 async function slashResolverBond(fixture, submissionId, proofHash) {
-  return fixture.challenges.connect(fixture.owner).slashResolverBond(
+  return fixture.challenges.connect(fixture.resolver).slashResolverBond(
     submissionId,
     await fixture.challenges.challengeInstanceHashOf(submissionId),
     proofHash,
