@@ -87,6 +87,9 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /mode === "deploy-multiboard-production"/);
     assert.match(executable, /P42_EXPECTED_DEPLOYER_ADDRESS/);
     assert.match(executable, /readManifestOutputReservation\(reservationIdentity\)/);
+    assert.match(executable, /factoryCreation:\s*\{/);
+    assert.match(executable, /transactionHash:\s*durable\.expectedHash/);
+    assert.match(executable, /createdAddress:\s*durable\.address/);
     for (const journal of [
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json",
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json.lock",

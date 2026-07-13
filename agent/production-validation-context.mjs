@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { ethers } from "ethers";
 import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
+import { CANONICAL_CONTRACT_COUNT, assertCanonicalManifestTopology, canonicalTopologyDescriptors } from "./canonical-topology.mjs";
 
 const LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 256, trailingNewline: "allow" });
 
@@ -12,10 +13,10 @@ function requiredPath(env, name) {
 }
 
 function contractEntries(manifest) {
-  return [
-    ...Object.values(manifest.contracts ?? {}),
-    ...(manifest.problems ?? []).flatMap((problem) => Object.values(problem.contracts ?? {})),
-  ];
+  assertCanonicalManifestTopology(manifest);
+  return canonicalTopologyDescriptors().map(({ key, problemId, scope }) => (
+    scope === "shared" ? manifest.contracts[key] : manifest.problems[problemId - 1].contracts[key]
+  ));
 }
 
 function completionEvidence(manifest) {
@@ -66,7 +67,7 @@ function validateExplorerDossier(dossier, manifest, capsule, env) {
   for (const attestation of attestations) { const value = { evidenceDigest: `0x${evidenceDigest.slice(7)}`, releaseBindingDigest: `0x${dossier.releaseBindingDigest.slice(7)}`, nonce: attestation.nonce, expiresAt: dossier.expiresAt, finalizedAt: dossier.finalizedAt }; const recovered = ethers.verifyTypedData(domain, types, value, attestation.signature).toLowerCase(); if (recovered !== attestation.operator || !trusted.includes(recovered)) throw new Error("forged explorer verification operator signature"); recoveredOperators.push(recovered); }
   if (new Set(recoveredOperators).size !== 2 || canonical([...recoveredOperators].sort()) !== canonical(operatorRoster)) throw new Error("attestation recovered signer set must exactly equal operator roster");
   const entries = contractEntries(manifest);
-  if (!Array.isArray(dossier.contracts) || dossier.contracts.length !== 43 || entries.length !== 43 || new Set(dossier.contracts.map((row) => row.address.toLowerCase())).size !== 43) throw new Error("explorer dossier must cover exactly 43 unique contracts");
+  if (!Array.isArray(dossier.contracts) || dossier.contracts.length !== CANONICAL_CONTRACT_COUNT || entries.length !== CANONICAL_CONTRACT_COUNT || new Set(dossier.contracts.map((row) => row.address.toLowerCase())).size !== CANONICAL_CONTRACT_COUNT) throw new Error(`explorer dossier must cover exactly ${CANONICAL_CONTRACT_COUNT} unique contracts`);
   const artifacts = new Map(capsule.contracts.map((entry) => [entry.name, entry])); const infos = new Map(capsule.buildInfos.map((entry) => [entry.id, entry]));
   dossier.contracts.forEach((row, index) => {
     const entry = entries[index], artifact = artifacts.get(entry.name), info = infos.get(artifact?.buildInfoId); if (row.address.toLowerCase() !== entry.address.toLowerCase() || row.name !== entry.name || row.buildInfoId !== artifact.buildInfoId || row.capsuleArtifactDigest !== artifact.artifactDigest || !Array.isArray(row.providers) || row.providers.length !== 2) throw new Error(`explorer dossier contract ${index} binding mismatch`);

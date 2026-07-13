@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 
-import { network } from "hardhat";
+import { artifacts, network } from "hardhat";
 import {
   computeProductionReleaseEvidence,
   validateManifestEvidence,
@@ -82,6 +82,7 @@ import {
 } from "./governance-operation-journal.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
+const PINNED_SUBMISSION_FACTORY_RUNTIME_HASH = "0xf704e1641a6f1712793a30639f3b4c3412b51909d38d2a56ec3b01d3e34d4d2a";
 const CONTRACT_NAMES = Object.freeze({
   timelock: "P42MultisigTimelock",
   rolloverVault: "P42RolloverVault",
@@ -89,7 +90,10 @@ const CONTRACT_NAMES = Object.freeze({
   ledger: "P42PayoutLedger",
   submissions: "P42SubmissionManager",
   challenges: "P42ChallengeManager",
-  registry: "P42ProblemRegistry"
+  registry: "P42ProblemRegistry",
+  submissionManagerFactory: "P42SubmissionManagerFactory",
+  challengeManagerFactory: "P42ChallengeManagerFactory",
+  resolverQuorum: "P42ResolverQuorum",
 });
 const BOARD_CONTRACT_NAMES = Object.freeze({
   pool: "P42BountyPool",
@@ -203,13 +207,45 @@ async function materializeDeploymentSteps(ethers, definitions, addresses) {
   for (const definition of definitions) {
     const factory = await ethers.getContractFactory(definition.name);
     const args = definition.args(addresses);
-    const unsigned = await factory.getDeployTransaction(...args);
-    result.push({ ...definition, factory, args, unsigned, expectedInitCode: unsigned.data, constructorArgsHash: constructorArgsHash(ethers, factory, args) });
+    const deployRequest = await factory.getDeployTransaction(...args);
+    if ((definition.kind ?? "direct-create") === "direct-create") {
+      result.push({ ...definition, kind: "direct-create", factory, args, unsigned: deployRequest, expectedInitCode: deployRequest.data, constructorArgsHash: constructorArgsHash(ethers, factory, args) });
+      continue;
+    }
+    const factoryContract = await ethers.getContractFactory(definition.factoryName);
+    const factoryAddress = addresses[definition.factoryAddressKey];
+    const salt = definition.salt;
+    const parameters = definition.parameters(args);
+    const expectedCalldata = factoryContract.interface.encodeFunctionData(definition.factoryMethod, definition.factoryCallArgs({ salt, parameters, addresses }));
+    const configurationReadCalldata = factoryContract.interface.encodeFunctionData(definition.configurationGetter, [addresses[definition.addressKey]]);
+    result.push({
+      ...definition, kind: "factory-call-create2", factory, args, expectedInitCode: deployRequest.data,
+      constructorArgsHash: constructorArgsHash(ethers, factory, args), factoryAddress, salt,
+      configurationHash: definition.configurationHash({ ethers, parameters, addresses, factoryInterface: factoryContract.interface }),
+      configurationReadCalldata,
+      deploymentEventTopic: factoryContract.interface.getEvent(definition.factoryEvent).topicHash,
+      expectedCalldata, unsigned: { to: factoryAddress, data: expectedCalldata, value: 0n },
+    });
   }
   return result;
 }
 
-async function executeSignedDeploymentPlan(ethers, deployer, output, reservationIdentity, definitions, recordProgress, requiredConfirmations, releaseCapsule = null) {
+async function materializeExecutablePlan(ethers, deployer, startNonce, definitions) {
+  const addresses = {};
+  for (const [index, definition] of definitions.entries()) {
+    if ((definition.kind ?? "direct-create") === "direct-create") addresses[definition.addressKey] = ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + index });
+  }
+  for (const definition of definitions) {
+    if (definition.kind !== "factory-call-create2") continue;
+    const targetFactory = await ethers.getContractFactory(definition.name);
+    const args = definition.args(addresses);
+    const initCode = (await targetFactory.getDeployTransaction(...args)).data;
+    addresses[definition.addressKey] = ethers.getCreate2Address(addresses[definition.factoryAddressKey], definition.salt, ethers.keccak256(initCode));
+  }
+  return { startNonce, definitions, addresses, steps: await materializeDeploymentSteps(ethers, definitions, addresses) };
+}
+
+async function executeSignedDeploymentPlan(ethers, deployer, output, reservationIdentity, definitions, recordProgress, requiredConfirmations, releaseCapsule = null, preflightPlan = null) {
   const liveNetwork = await ethers.provider.getNetwork();
   if (liveNetwork.chainId !== BASE_SEPOLIA_CHAIN_ID) {
     throw new Error(`provider chain drift: expected ${BASE_SEPOLIA_CHAIN_ID}, got ${liveNetwork.chainId}`);
@@ -231,12 +267,11 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
     priorJournal.chainId !== Number(BASE_SEPOLIA_CHAIN_ID) ||
     priorJournal.deployer.toLowerCase() !== deployer.address.toLowerCase()
   )) throw new Error("existing signed deployment journal has chain/account/config drift");
-  const startNonce = priorJournal?.startNonce ?? await ethers.provider.getTransactionCount(deployer.address, "pending");
-  const addresses = Object.fromEntries(definitions.map((definition, index) => [
-    definition.addressKey,
-    ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + index }),
-  ]));
-  const steps = await materializeDeploymentSteps(ethers, definitions, addresses);
+  const livePendingNonce = await ethers.provider.getTransactionCount(deployer.address, "pending");
+  const startNonce = priorJournal?.startNonce ?? preflightPlan?.startNonce ?? livePendingNonce;
+  if (preflightPlan && (preflightPlan.definitions !== definitions || preflightPlan.startNonce !== startNonce || (!priorJournal && livePendingNonce !== startNonce))) throw new Error("executable deployment preflight identity drift before reservation/signing");
+  const materialized = preflightPlan ?? await materializeExecutablePlan(ethers, deployer, startNonce, definitions);
+  const { addresses, steps } = materialized;
   const capsuleContracts = releaseCapsule ? new Map(releaseCapsule.contracts.map((contract) => [contract.name, contract])) : null;
   if (capsuleContracts) for (const step of steps) {
     const artifact = capsuleContracts.get(step.name);
@@ -249,7 +284,14 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
     deployer: deployer.address,
     rpcEvidence,
     startNonce,
-    steps: steps.map((step) => ({ name: step.id, constructorArgsHash: step.constructorArgsHash, expectedInitCode: step.expectedInitCode })),
+    steps: steps.map((step) => ({
+      name: step.id, kind: step.kind, constructorArgsHash: step.constructorArgsHash, expectedInitCode: step.expectedInitCode,
+      ...(step.kind === "factory-call-create2" ? {
+        factoryAddress: step.factoryAddress, salt: step.salt, configurationHash: step.configurationHash,
+        configurationReadCalldata: step.configurationReadCalldata,
+        deploymentEventTopic: step.deploymentEventTopic, expectedCalldata: step.expectedCalldata, expectedValue: 0,
+      } : {}),
+    })),
   });
   reserveDeploymentNoncePlan(journalPath, expected);
 
@@ -260,10 +302,10 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
     if (durable.state === "planned") {
       const populated = await deployer.populateTransaction({ ...definition.unsigned, chainId: BASE_SEPOLIA_CHAIN_ID, nonce: durable.nonce });
       if (Number(populated.nonce) !== durable.nonce || BigInt(populated.chainId) !== BASE_SEPOLIA_CHAIN_ID) throw new Error("signer populated a transaction outside the reserved identity");
-      if (populated.data !== definition.expectedInitCode) throw new Error("populated deployment initcode differs from immutable plan");
+      if (populated.data !== durable.expectedCalldata || (populated.to?.toLowerCase() ?? null) !== (durable.expectedTo?.toLowerCase() ?? null) || BigInt(populated.value ?? 0).toString() !== durable.expectedValue) throw new Error("populated deployment transaction differs from immutable plan");
       const raw = await deployer.signTransaction(populated);
       const decoded = ethers.Transaction.from(raw);
-      if (decoded.from?.toLowerCase() !== deployer.address.toLowerCase() || decoded.nonce !== durable.nonce || decoded.chainId !== BASE_SEPOLIA_CHAIN_ID || decoded.to !== null) {
+      if (decoded.from?.toLowerCase() !== deployer.address.toLowerCase() || decoded.nonce !== durable.nonce || decoded.chainId !== BASE_SEPOLIA_CHAIN_ID || (decoded.to?.toLowerCase() ?? null) !== (durable.expectedTo?.toLowerCase() ?? null)) {
         throw new Error("signed deployment transaction identity drift");
       }
       journal = persistSignedDeployment(journalPath, expected.planDigest, index, ethers, raw);
@@ -302,6 +344,16 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
       abiHash: ethers.keccak256(ethers.toUtf8Bytes(definition.factory.interface.formatJson())),
       runtimeCodeHash, deployedCodeHash: runtimeCodeHash,
       constructorArgsHash: definition.constructorArgsHash, constructorArgs: definition.args,
+      ...(definition.kind === "factory-call-create2" ? { factoryCreation: {
+        factoryAddress: definition.factoryAddress,
+        transactionHash: durable.expectedHash,
+        eventTopic: definition.deploymentEventTopic,
+        salt: definition.salt,
+        configurationHash: definition.configurationHash,
+        configurationReadCalldata: definition.configurationReadCalldata,
+        createdAddress: durable.address,
+      },
+      } : {}),
       ...(capsuleContracts ? {
         capsuleArtifactDigest, initCodeHash: ethers.keccak256(definition.expectedInitCode), expectedRuntimeCodeHash,
         primaryObservedRuntimeCodeHash, secondaryObservedRuntimeCodeHash,
@@ -329,7 +381,8 @@ async function preflightSingleDeploymentPlan(ethers, deployer, config) {
     ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + index }),
   ]));
   const interfaces = {};
-  for (const [key, name] of Object.entries(CONTRACT_NAMES)) {
+  for (const key of order) {
+    const name = CONTRACT_NAMES[key];
     const factory = await ethers.getContractFactory(name);
     interfaces[key] = factory.interface;
     constructorArgsFor(name, config, addresses);
@@ -346,47 +399,33 @@ async function preflightSingleDeploymentPlan(ethers, deployer, config) {
   if (operations.length !== plan.expectedOperations) throw new Error("pre-broadcast v1 operation plan is incomplete");
 }
 
-async function preflightMultiBoardDeploymentPlan(ethers, deployer, config) {
-  const plannedDefinitions = ["timelock", "registry", "rolloverVault"].map((key) => ({ id: key, name: CONTRACT_NAMES[key] }));
-  for (const problem of config.problems) {
-    for (const [key, name] of Object.entries(BOARD_CONTRACT_NAMES)) {
-      plannedDefinitions.push({ id: `board-${problem.problemId}-${key}`, name });
-    }
-  }
-  assertCanonicalDeploymentPlan(plannedDefinitions, config.problems.length);
-  const startNonce = await deployer.getNonce("pending");
-  const rootAddresses = {
-    timelock: ethers.getCreateAddress({ from: deployer.address, nonce: startNonce }),
-    registry: ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + 1 }),
-    rolloverVault: ethers.getCreateAddress({ from: deployer.address, nonce: startNonce + 2 }),
-  };
-  const boards = config.problems.map((problem, index) => {
-    const offset = startNonce + 3 + index * Object.keys(BOARD_CONTRACT_NAMES).length;
-    const addresses = { ...rootAddresses };
-    Object.keys(BOARD_CONTRACT_NAMES).forEach((key, childIndex) => {
-      addresses[key] = ethers.getCreateAddress({ from: deployer.address, nonce: offset + childIndex });
-    });
-    const boardConfig = boardCeremonyConfig(config, problem);
-    for (const [key, name] of Object.entries(BOARD_CONTRACT_NAMES)) constructorArgsFor(name, boardConfig, addresses);
-    return { problem, addresses };
-  });
-  const interfaces = {};
-  for (const [key, name] of Object.entries({
-    timelock: CONTRACT_NAMES.timelock,
-    registry: CONTRACT_NAMES.registry,
-    ...BOARD_CONTRACT_NAMES,
-  })) interfaces[key] = (await ethers.getContractFactory(name)).interface;
-  const operations = buildMultiBoardSetupOperations({
-    ethers,
-    chainId: BASE_SEPOLIA_CHAIN_ID,
-    timelockAddress: rootAddresses.timelock,
-    registryAddress: rootAddresses.registry,
-    config,
-    boards,
-    interfaces,
-  });
-  const plan = validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
-  if (operations.length !== plan.expectedOperations) throw new Error("pre-broadcast v2 operation plan is incomplete");
+function factoryConfigurationHash(ethers, factoryInterface, method, parameters, prefixHash = null) {
+  const inputs = factoryInterface.getFunction(method).inputs;
+  const tupleType = inputs[inputs.length - 1].format("sighash");
+  const types = prefixHash === null ? [tupleType] : ["bytes32", tupleType];
+  const values = prefixHash === null ? [parameters] : [prefixHash, parameters];
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(types, values));
+}
+
+function assertMultiBoardExecutionDependencyOrder(definitions, config) {
+  const expected = [
+    "timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory",
+    ...config.problems.flatMap((problem) => [`board-${problem.problemId}-pool`, `board-${problem.problemId}-ledger`]),
+    ...config.problems.map((problem) => `board-${problem.problemId}-submissions`),
+    ...config.problems.map((problem) => `board-${problem.problemId}-challenges`),
+    "resolverQuorum",
+  ];
+  const actual = definitions.map(({ id }) => id);
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("multi-board executable dependency order drift");
+}
+
+async function assertPinnedSubmissionFactoryRuntime(ethers) {
+  const [submissionArtifact, challengeArtifact] = await Promise.all([
+    artifacts.readArtifact(CONTRACT_NAMES.submissionManagerFactory), artifacts.readArtifact(CONTRACT_NAMES.challengeManagerFactory),
+  ]);
+  const compiledHash = ethers.keccak256(submissionArtifact.deployedBytecode);
+  if (compiledHash.toLowerCase() !== PINNED_SUBMISSION_FACTORY_RUNTIME_HASH) throw new Error("compiled submission factory runtime hash differs from challenge factory pin");
+  if (!challengeArtifact.deployedBytecode.toLowerCase().includes(PINNED_SUBMISSION_FACTORY_RUNTIME_HASH.slice(2))) throw new Error("compiled challenge factory runtime does not contain its submission factory hash pin");
 }
 
 async function deployCeremony(ethers) {
@@ -586,7 +625,6 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const input = await readMultiBoardCeremonyInput();
   let config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
   validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
-  await preflightMultiBoardDeploymentPlan(ethers, deployer, config);
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
   validateMultiBoardDeploymentTimestamps(config, latest.timestamp);
@@ -600,37 +638,110 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     : validateMultiBoardAdmissionPreflight(ethers, config, { repoRoot });
   console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const output = manifestPath();
-  const reservationIdentity = createDeploymentReservationIdentity(output, {
-    deploymentCommit,
-    network: "baseSepolia",
-    chainId: Number(BASE_SEPOLIA_CHAIN_ID),
-    deployer: deployer.address,
-  }, { trustedRoot: dirname(output), configValue: {
-    config: input.value, releaseMode, slateDigest: release?.slate.slateDigest ?? null,
-    capsuleDigest: release?.capsule.capsuleDigest ?? null,
-  } });
-  const reservation = await ensureManifestReservation(reservationIdentity);
-  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
 
-  const definitions = ["timelock", "registry", "rolloverVault"].map((key) => ({
+  const directRoots = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory"].map((key) => ({
     id: key, addressKey: key, name: CONTRACT_NAMES[key],
-    args: (plannedAddresses) => constructorArgsFor(CONTRACT_NAMES[key], config, plannedAddresses),
+    args: (plannedAddresses) => key.endsWith("Factory") ? [] : constructorArgsFor(CONTRACT_NAMES[key], config, plannedAddresses),
   }));
+  const poolAndLedgerDefinitions = [];
+  const submissionDefinitions = [];
+  const challengeDefinitions = [];
   for (const problem of config.problems) {
     const boardConfig = boardCeremonyConfig(config, problem);
-    for (const [key, name] of Object.entries(BOARD_CONTRACT_NAMES)) definitions.push({
+    const boardAddressView = (plannedAddresses) => ({
+      timelock: plannedAddresses.timelock, registry: plannedAddresses.registry,
+      rolloverVault: plannedAddresses.rolloverVault,
+      pool: plannedAddresses[`board-${problem.problemId}-pool`],
+      ledger: plannedAddresses[`board-${problem.problemId}-ledger`],
+      submissions: plannedAddresses[`board-${problem.problemId}-submissions`],
+      challenges: plannedAddresses[`board-${problem.problemId}-challenges`],
+    });
+    for (const [key, name] of Object.entries({ pool: BOARD_CONTRACT_NAMES.pool, ledger: BOARD_CONTRACT_NAMES.ledger })) poolAndLedgerDefinitions.push({
       id: `board-${problem.problemId}-${key}`, addressKey: `board-${problem.problemId}-${key}`, name,
-      args: (plannedAddresses) => constructorArgsFor(name, boardConfig, {
-        timelock: plannedAddresses.timelock, registry: plannedAddresses.registry,
-        rolloverVault: plannedAddresses.rolloverVault,
-        pool: plannedAddresses[`board-${problem.problemId}-pool`],
-        ledger: plannedAddresses[`board-${problem.problemId}-ledger`],
-        submissions: plannedAddresses[`board-${problem.problemId}-submissions`],
-        challenges: plannedAddresses[`board-${problem.problemId}-challenges`],
-      }),
+      args: (plannedAddresses) => constructorArgsFor(name, boardConfig, boardAddressView(plannedAddresses)),
+    });
+    const submissionId = `board-${problem.problemId}-submissions`;
+    const submissionSalt = ethers.keccak256(ethers.toUtf8Bytes(`p42-prizes/base-sepolia/${submissionId}`));
+    submissionDefinitions.push({
+      id: submissionId, addressKey: submissionId, name: BOARD_CONTRACT_NAMES.submissions, kind: "factory-call-create2",
+      factoryName: CONTRACT_NAMES.submissionManagerFactory, factoryAddressKey: "submissionManagerFactory",
+      factoryMethod: "deploySubmissionManager", factoryEvent: "CanonicalSubmissionManagerDeployed", salt: submissionSalt,
+      configurationGetter: "configurationHashOf",
+      args: (plannedAddresses) => constructorArgsFor(BOARD_CONTRACT_NAMES.submissions, boardConfig, boardAddressView(plannedAddresses)),
+      parameters: (args) => args,
+      factoryCallArgs: ({ salt, parameters }) => [salt, parameters],
+      configurationHash: ({ ethers: runtimeEthers, parameters, factoryInterface }) => factoryConfigurationHash(runtimeEthers, factoryInterface, "deploySubmissionManager", parameters),
+    });
+    const challengeId = `board-${problem.problemId}-challenges`;
+    const challengeSalt = ethers.keccak256(ethers.toUtf8Bytes(`p42-prizes/base-sepolia/${challengeId}`));
+    challengeDefinitions.push({
+      id: challengeId, addressKey: challengeId, name: BOARD_CONTRACT_NAMES.challenges, kind: "factory-call-create2",
+      factoryName: CONTRACT_NAMES.challengeManagerFactory, factoryAddressKey: "challengeManagerFactory",
+      factoryMethod: "deployManager", factoryEvent: "CanonicalManagerDeployed", salt: challengeSalt,
+      configurationGetter: "pairConfigurationHashOf",
+      args: (plannedAddresses) => {
+        const args = constructorArgsFor(BOARD_CONTRACT_NAMES.challenges, boardConfig, boardAddressView(plannedAddresses));
+        args[1] = plannedAddresses.resolverQuorum;
+        return args;
+      },
+      parameters: (args) => args,
+      factoryCallArgs: ({ salt, parameters, addresses: plannedAddresses }) => [salt, plannedAddresses.submissionManagerFactory, parameters],
+      configurationHash: ({ ethers: runtimeEthers, parameters, addresses: plannedAddresses, factoryInterface }) => {
+        const submission = submissionDefinitions.find((entry) => entry.id === submissionId);
+        const submissionParameters = submission.args(plannedAddresses);
+        const submissionHash = factoryConfigurationHash(runtimeEthers, submissionFactoryInterface, "deploySubmissionManager", submissionParameters);
+        return factoryConfigurationHash(runtimeEthers, factoryInterface, "deployManager", parameters, submissionHash);
+      },
     });
   }
-  assertCanonicalDeploymentPlan(definitions, config.problems.length);
+  const submissionFactoryInterface = (await ethers.getContractFactory(CONTRACT_NAMES.submissionManagerFactory)).interface;
+  const resolverQuorum = {
+    id: "resolverQuorum", addressKey: "resolverQuorum", name: CONTRACT_NAMES.resolverQuorum,
+    args: (plannedAddresses) => [
+      plannedAddresses.timelock, config.roles.treasury, config.parameters.resolverDecisionBondWei,
+      plannedAddresses.challengeManagerFactory, config.governance.signers, config.governance.threshold,
+      config.problems.map((problem) => plannedAddresses[`board-${problem.problemId}-challenges`]),
+    ],
+  };
+  const definitions = [...directRoots, ...poolAndLedgerDefinitions, ...submissionDefinitions, ...challengeDefinitions, resolverQuorum];
+  const canonicalManifestDefinitions = [
+    ...directRoots, resolverQuorum,
+    ...config.problems.flatMap((problem) => [
+      ...poolAndLedgerDefinitions.filter((entry) => entry.id.startsWith(`board-${problem.problemId}-`)),
+      submissionDefinitions.find((entry) => entry.id === `board-${problem.problemId}-submissions`),
+      challengeDefinitions.find((entry) => entry.id === `board-${problem.problemId}-challenges`),
+    ]),
+  ];
+  assertCanonicalDeploymentPlan(canonicalManifestDefinitions, config.problems.length);
+  assertMultiBoardExecutionDependencyOrder(definitions, config);
+  const canonicalMembers = [...canonicalManifestDefinitions].map(({ id, name }) => `${id}:${name}`).sort();
+  const executableMembers = [...definitions].map(({ id, name }) => `${id}:${name}`).sort();
+  if (JSON.stringify(canonicalMembers) !== JSON.stringify(executableMembers)) throw new Error("canonical manifest and executable deployment membership differ");
+  await assertPinnedSubmissionFactoryRuntime(ethers);
+  const existingJournalPath = signedDeploymentJournalPath(output);
+  const existingJournal = existsSync(existingJournalPath) ? readSignedDeploymentJournal(existingJournalPath) : null;
+  if (existingJournal && (existingJournal.chainId !== Number(BASE_SEPOLIA_CHAIN_ID) || existingJournal.deployer.toLowerCase() !== deployer.address.toLowerCase())) throw new Error("existing signed deployment journal has chain/account drift before preflight");
+  const preflightStartNonce = existingJournal?.startNonce ?? await ethers.provider.getTransactionCount(deployer.address, "pending");
+  const executablePreflight = await materializeExecutablePlan(ethers, deployer, preflightStartNonce, definitions);
+  if (executablePreflight.steps.length !== 46 || executablePreflight.steps.some((step) => !step.expectedInitCode || !step.unsigned?.data)) throw new Error("multi-board executable preflight did not materialize all 46 initcode/calldata payloads");
+  const preflightBoards = config.problems.map((problem) => ({
+    problem,
+    addresses: {
+      timelock: executablePreflight.addresses.timelock, registry: executablePreflight.addresses.registry,
+      rolloverVault: executablePreflight.addresses.rolloverVault,
+      ...Object.fromEntries(Object.keys(BOARD_CONTRACT_NAMES).map((key) => [key, executablePreflight.addresses[`board-${problem.problemId}-${key}`]])),
+    },
+  }));
+  const preflightInterfaces = Object.fromEntries(await Promise.all(Object.entries({ timelock: CONTRACT_NAMES.timelock, registry: CONTRACT_NAMES.registry, ...BOARD_CONTRACT_NAMES }).map(async ([key, name]) => [key, (await ethers.getContractFactory(name)).interface])));
+  const preflightOperations = buildMultiBoardSetupOperations({ ethers, chainId: BASE_SEPOLIA_CHAIN_ID, timelockAddress: executablePreflight.addresses.timelock, registryAddress: executablePreflight.addresses.registry, config, boards: preflightBoards, interfaces: preflightInterfaces });
+  const operationPlan = validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
+  if (preflightOperations.length !== operationPlan.expectedOperations) throw new Error("pre-broadcast v2 operation plan is incomplete");
+
+  const reservationIdentity = createDeploymentReservationIdentity(output, {
+    deploymentCommit, network: "baseSepolia", chainId: Number(BASE_SEPOLIA_CHAIN_ID), deployer: deployer.address,
+  }, { trustedRoot: dirname(output), configValue: { config: input.value, releaseMode, slateDigest: release?.slate.slateDigest ?? null, capsuleDigest: release?.capsule.capsuleDigest ?? null } });
+  const reservation = await ensureManifestReservation(reservationIdentity);
+  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
   const executed = await executeSignedDeploymentPlan(
     ethers, deployer, output, reservationIdentity, definitions,
     (definition, deployment) => definition.id.startsWith("board-")
@@ -638,9 +749,11 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       : recordManifestOutputDeployment(reservationIdentity, definition.id, deployment),
     config.finalityPolicy.confirmations,
     release?.capsule ?? null,
+    executablePreflight,
   );
-  const rootDeployments = Object.fromEntries(["timelock", "registry", "rolloverVault"].map((key) => [key, executed.deployments[key]]));
-  const rootAddresses = Object.fromEntries(["timelock", "registry", "rolloverVault"].map((key) => [key, executed.addresses[key]]));
+  const sharedKeys = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum"];
+  const rootDeployments = Object.fromEntries(sharedKeys.map((key) => [key, executed.deployments[key]]));
+  const rootAddresses = Object.fromEntries(sharedKeys.map((key) => [key, executed.addresses[key]]));
   const boards = config.problems.map((problem) => {
     const deployments = Object.fromEntries(Object.keys(BOARD_CONTRACT_NAMES).map((key) => [key, executed.deployments[`board-${problem.problemId}-${key}`]]));
     const addresses = { ...rootAddresses, ...Object.fromEntries(Object.keys(BOARD_CONTRACT_NAMES).map((key) => [key, executed.addresses[`board-${problem.problemId}-${key}`]])) };
@@ -702,7 +815,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       deployer: deployer.address,
       owner: rootAddresses.timelock,
       treasury: config.roles.treasury,
-      resolver: config.roles.resolver,
+      resolver: rootAddresses.resolverQuorum,
       guardian: config.governance.guardian,
     },
     parameters: config.parameters,
@@ -710,6 +823,9 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       timelock: rootDeployments.timelock.manifest,
       registry: rootDeployments.registry.manifest,
       rolloverVault: rootDeployments.rolloverVault.manifest,
+      submissionManagerFactory: rootDeployments.submissionManagerFactory.manifest,
+      challengeManagerFactory: rootDeployments.challengeManagerFactory.manifest,
+      resolverQuorum: rootDeployments.resolverQuorum.manifest,
     },
     governanceSetup: {
       status: "pending",
@@ -727,6 +843,9 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
         timelock: null,
         registry: null,
         rolloverVault: null,
+        submissionManagerFactory: null,
+        challengeManagerFactory: null,
+        resolverQuorum: null,
         boards: boards.map(({ problem }) => ({
           problemId: String(problem.problemId),
           pool: null,

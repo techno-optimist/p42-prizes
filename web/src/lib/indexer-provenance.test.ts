@@ -38,15 +38,21 @@ function artifacts() {
   base.schema = "p42-prizes/deployment-manifest/v2";
   base.releaseMode = "fixture";
   base.releaseEvidence = null;
+  const sharedFixture = (entry: Record<string, any>, name: string, addressSuffix: string) => ({
+    ...clone(entry), name, address: `0x${addressSuffix.padStart(40, "0")}`,
+  });
   base.contracts = {
     timelock: base.contracts.timelock,
     registry: base.contracts.registry,
-    rolloverVault: { ...clone(base.contracts.registry), name: "P42RolloverVault" },
+    rolloverVault: sharedFixture(base.contracts.registry, "P42RolloverVault", "f1"),
+    submissionManagerFactory: sharedFixture(base.contracts.registry, "P42SubmissionManagerFactory", "f2"),
+    challengeManagerFactory: sharedFixture(base.contracts.registry, "P42ChallengeManagerFactory", "f3"),
+    resolverQuorum: sharedFixture(base.contracts.registry, "P42ResolverQuorum", "f4"),
   };
   const allowedParameters = ["alphaBps", "betaBps", "challengeWindowSeconds", "feeBps", "minCounterBondWei", "minPostingBondWei", "rerunCostMultiplierBps", "rerunCostWei", "resolverDecisionBondWei", "resolverFraudWindowSeconds"];
   base.parameters = Object.fromEntries(allowedParameters.map((key) => [key, base.parameters[key]]));
   base.problems = [problem];
-  base.sourceVerification.contracts = { timelock: null, registry: null, rolloverVault: null, boards: [{ problemId: "1", pool: null, ledger: null, submissions: null, challenges: null }] };
+  base.sourceVerification.contracts = { timelock: null, registry: null, rolloverVault: null, submissionManagerFactory: null, challengeManagerFactory: null, resolverQuorum: null, boards: [{ problemId: "1", pool: null, ledger: null, submissions: null, challenges: null }] };
   base.indexer.indexedThroughBlock = 100;
   base.deploymentConfigHash = computePortalDeploymentConfigHash(base);
   const contractBinding = (entry: Record<string, any>) => ({ address: entry.address, deployedCodeHash: entry.deployedCodeHash, abiHash: entry.abiHash });

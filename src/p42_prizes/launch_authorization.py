@@ -49,6 +49,23 @@ GATE_HASH_FIELDS = {
     "adversarial_campaign": "campaign_hash",
     "operational_controls": "operational_controls_hash",
 }
+CANONICAL_SHARED_CONTRACTS = (
+    ("timelock", "P42MultisigTimelock"),
+    ("registry", "P42ProblemRegistry"),
+    ("rolloverVault", "P42RolloverVault"),
+    ("submissionManagerFactory", "P42SubmissionManagerFactory"),
+    ("challengeManagerFactory", "P42ChallengeManagerFactory"),
+    ("resolverQuorum", "P42ResolverQuorum"),
+)
+CANONICAL_BOARD_CONTRACTS = (
+    ("pool", "P42BountyPool", "direct-create", None),
+    ("ledger", "P42PayoutLedger", "direct-create", None),
+    ("submissions", "P42SubmissionManager", "factory-call-create2", "submissionManagerFactory"),
+    ("challenges", "P42ChallengeManager", "factory-call-create2", "challengeManagerFactory"),
+)
+FACTORY_PROVENANCE_FIELDS = {
+    "factoryAddress", "transactionHash", "eventTopic", "salt", "configurationHash", "configurationReadCalldata", "createdAddress",
+}
 
 
 class LaunchAuthorizationError(ValueError):
@@ -265,12 +282,9 @@ def _validate_deployment_manifest(manifest: Mapping[str, Any], release_report: M
     ):
         if release_evidence.get(manifest_key) != release_report.get(report_key):
             raise LaunchAuthorizationError(f"deployment {manifest_key} does not match verified release")
-    contracts = manifest.get("contracts")
-    problems = manifest.get("problems")
-    if not isinstance(contracts, Mapping) or len(_flatten_contract_addresses(contracts)) != 43:
-        raise LaunchAuthorizationError("deployment manifest must bind exactly 43 contract addresses")
-    if not isinstance(problems, list) or len(problems) != 10:
-        raise LaunchAuthorizationError("deployment manifest must bind exactly ten problems")
+    if release_evidence.get("contractCount") != 46 or release_evidence.get("boardCount") != 10:
+        raise LaunchAuthorizationError("deployment release evidence must bind canonical 46-contract topology")
+    _canonical_contract_entries(manifest)
 
 
 def _flatten_contract_addresses(value: Any) -> set[str]:
@@ -284,6 +298,53 @@ def _flatten_contract_addresses(value: Any) -> set[str]:
     elif isinstance(value, str) and value.startswith("0x") and len(value) == 42:
         addresses.add(value.casefold())
     return addresses
+
+
+def _canonical_contract_entries(manifest: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any], str | None]]:
+    contracts = manifest.get("contracts")
+    if not isinstance(contracts, Mapping) or set(contracts) != {key for key, _ in CANONICAL_SHARED_CONTRACTS}:
+        raise LaunchAuthorizationError("deployment manifest shared contracts are not canonical ordered-46 topology")
+    entries: list[tuple[str, Mapping[str, Any], str | None]] = []
+    for key, name in CANONICAL_SHARED_CONTRACTS:
+        entries.append((f"contracts.{key}", _validate_contract_entry(contracts[key], name, False), None))
+    problems = manifest.get("problems")
+    if not isinstance(problems, list) or len(problems) != 10:
+        raise LaunchAuthorizationError("deployment manifest must bind exactly ten problems")
+    for index, problem in enumerate(problems, start=1):
+        if not isinstance(problem, Mapping) or problem.get("problemId") != str(index):
+            raise LaunchAuthorizationError("deployment problems must use canonical exact-ten order")
+        board_contracts = problem.get("contracts")
+        if not isinstance(board_contracts, Mapping) or set(board_contracts) != {key for key, *_ in CANONICAL_BOARD_CONTRACTS}:
+            raise LaunchAuthorizationError(f"deployment problem {index} contract set is not canonical")
+        for key, name, kind, factory_key in CANONICAL_BOARD_CONTRACTS:
+            row = _validate_contract_entry(board_contracts[key], name, factory_key is not None)
+            provenance = row.get("factoryCreation") if factory_key is not None else None
+            if factory_key is not None and str(provenance["factoryAddress"]).casefold() != str(contracts[factory_key]["address"]).casefold():
+                raise LaunchAuthorizationError(f"deployment problem {index} {key} factory binding mismatch")
+            entries.append((f"problems[{index - 1}].contracts.{key}", row, factory_key))
+    addresses = [str(row["address"]).casefold() for _, row, _ in entries]
+    if len(entries) != 46 or len(set(addresses)) != 46:
+        raise LaunchAuthorizationError("deployment manifest must bind canonical ordered 46 unique contract addresses")
+    return entries
+
+
+def _validate_contract_entry(value: Any, expected_name: str, factory_created: bool) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping) or value.get("name") != expected_name:
+        raise LaunchAuthorizationError(f"deployment contract identity must be {expected_name}")
+    address = value.get("address")
+    if not isinstance(address, str) or len(address) != 42 or not address.startswith("0x"):
+        raise LaunchAuthorizationError(f"deployment contract {expected_name} address is invalid")
+    provenance = value.get("factoryCreation")
+    if factory_created and (not isinstance(provenance, Mapping) or set(provenance) != FACTORY_PROVENANCE_FIELDS):
+        raise LaunchAuthorizationError(f"deployment contract {expected_name} lacks complete factory provenance")
+    if not factory_created and provenance is not None:
+        raise LaunchAuthorizationError(f"direct deployment {expected_name} must not carry factory provenance")
+    if factory_created and (
+        str(provenance.get("transactionHash", "")).casefold() != str(value.get("txHash", "")).casefold()
+        or str(provenance.get("createdAddress", "")).casefold() != address.casefold()
+    ):
+        raise LaunchAuthorizationError(f"deployment contract {expected_name} factory transaction/address binding mismatch")
+    return value
 
 
 def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str, Any], expires: datetime) -> None:
@@ -307,16 +368,46 @@ def _validate_explorer_dossier(dossier: Mapping[str, Any], manifest: Mapping[str
     release_evidence = manifest.get("releaseEvidence", {})
     if dossier.get("releaseBindingDigest") != release_evidence.get("releaseBindingDigest") or dossier.get("capsuleDigest") != release_evidence.get("capsuleDigest"):
         raise LaunchAuthorizationError("explorer dossier does not match deployment release evidence")
-    if not isinstance(dossier.get("contracts"), list) or len(dossier["contracts"]) != 43:
-        raise LaunchAuthorizationError("explorer dossier must cover exactly 43 contracts")
-    deployed_addresses = _flatten_contract_addresses(manifest.get("contracts"))
-    dossier_addresses = {
-        str(row.get("address", "")).casefold()
-        for row in dossier["contracts"]
-        if isinstance(row, Mapping)
-    }
-    if len(dossier_addresses) != 43 or dossier_addresses != deployed_addresses:
-        raise LaunchAuthorizationError("explorer dossier contract identities do not match deployment")
+    deployed = _canonical_contract_entries(manifest)
+    dossier_contracts = dossier.get("contracts")
+    if not isinstance(dossier_contracts, list) or len(dossier_contracts) != 46:
+        raise LaunchAuthorizationError("explorer dossier must cover canonical ordered 46 contracts")
+    for index, ((path, contract, _factory_key), row) in enumerate(zip(deployed, dossier_contracts, strict=True)):
+        if not isinstance(row, Mapping) or row.get("path") != path or row.get("name") != contract["name"] or str(row.get("address", "")).casefold() != str(contract["address"]).casefold():
+            raise LaunchAuthorizationError(f"explorer dossier contract {index} order or identity mismatch")
+        deployment = row.get("deployment")
+        expected_kind = "factory-call-create2" if _factory_key is not None else "direct-create"
+        if not isinstance(deployment, Mapping) or deployment.get("kind") != expected_kind:
+            raise LaunchAuthorizationError(f"explorer dossier contract {index} deployment kind mismatch")
+        if _factory_key is not None:
+            provenance = contract["factoryCreation"]
+            expected = {
+                "kind": "factory-call-create2", "factoryAddress": provenance["factoryAddress"],
+                "transactionHash": provenance["transactionHash"], "eventTopic": provenance["eventTopic"],
+                "salt": provenance["salt"], "configurationHash": provenance["configurationHash"],
+                "configurationReadCalldata": provenance["configurationReadCalldata"],
+                "createdAddress": contract["address"],
+            }
+            if {key: deployment.get(key) for key in expected} != expected:
+                raise LaunchAuthorizationError(f"explorer dossier contract {index} factory provenance mismatch")
+            receipt = deployment.get("receipt")
+            expected_topics = [
+                provenance["eventTopic"],
+                "0x" + "0" * 24 + str(contract["address"])[2:].lower(),
+                provenance["salt"],
+            ]
+            if (
+                not isinstance(receipt, Mapping)
+                or receipt.get("status") != 1
+                or receipt.get("blockNumber") != contract.get("blockNumber")
+                or str(receipt.get("logAddress", "")).casefold() != str(provenance["factoryAddress"]).casefold()
+                or [str(topic).casefold() for topic in receipt.get("topics", [])] != [topic.casefold() for topic in expected_topics]
+                or receipt.get("data") != "0x"
+                or str(receipt.get("configurationResult", "")).casefold() != str(provenance["configurationHash"]).casefold()
+            ):
+                raise LaunchAuthorizationError(f"explorer dossier contract {index} receipt/event/configuration mismatch")
+        elif set(deployment) != {"kind"}:
+            raise LaunchAuthorizationError(f"explorer dossier direct contract {index} has unexpected provenance")
     dossier_expiry = datetime.fromtimestamp(dossier.get("expiresAt", 0), timezone.utc)
     if dossier_expiry < expires:
         raise LaunchAuthorizationError("authorization cannot outlive explorer verification evidence")

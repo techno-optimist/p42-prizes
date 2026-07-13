@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { CANONICAL_CONTRACT_COUNT, assertCanonicalManifestTopology, canonicalTopologyDescriptors } from "./canonical-topology.mjs";
 
 export const ROLE_ACCEPTANCE_SCHEMA = "p42-prizes/deployment-role-acceptance/v1";
 export const ROLE_ACCEPTANCE_POLICY_VERSION = "p42-governance-role-policy/v1";
@@ -52,25 +53,11 @@ function exactObject(value, keys, label) {
 }
 
 function contractTopology(manifest) {
-  if (!Array.isArray(manifest?.problems) || manifest.problems.length !== 10) throw new Error("role acceptance requires exactly 10 boards");
-  const entries = ["timelock", "registry", "rolloverVault"].map((key) => ({
-    path: `contracts.${key}`,
-    name: manifest.contracts?.[key]?.name,
-    address: manifest.contracts?.[key]?.address,
-    runtimeCodeHash: manifest.contracts?.[key]?.runtimeCodeHash,
-  }));
-  manifest.problems.forEach((problem, index) => {
-    if (String(problem.problemId) !== String(index + 1)) throw new Error("role acceptance topology requires canonical board order");
-    for (const key of ["pool", "ledger", "submissions", "challenges"]) {
-      entries.push({
-        path: `problems.${problem.problemId}.contracts.${key}`,
-        name: problem.contracts?.[key]?.name,
-        address: problem.contracts?.[key]?.address,
-        runtimeCodeHash: problem.contracts?.[key]?.runtimeCodeHash,
-      });
-    }
+  assertCanonicalManifestTopology(manifest);
+  const entries = canonicalTopologyDescriptors().map(({ path, key, problemId, scope }) => {
+    const contract = scope === "shared" ? manifest.contracts[key] : manifest.problems[problemId - 1].contracts[key];
+    return { path, name: contract?.name, address: contract?.address, runtimeCodeHash: contract?.runtimeCodeHash };
   });
-  if (entries.length !== 43) throw new Error("role acceptance topology must contain exactly 43 contracts");
   for (const [index, entry] of entries.entries()) {
     if (typeof entry.name !== "string" || typeof entry.address !== "string" || typeof entry.runtimeCodeHash !== "string") {
       throw new Error(`role acceptance topology entry ${index} is incomplete`);
@@ -131,7 +118,7 @@ export function validateDeploymentRoleAcceptances(ethers, manifest, packet, { va
   if (manifest.releaseMode !== "production") throw new Error("role acceptance verification is production-only; fixtures must be explicit");
   if (root.schema !== ROLE_ACCEPTANCE_SCHEMA || root.policyVersion !== ROLE_ACCEPTANCE_POLICY_VERSION) throw new Error("role acceptance schema or policy version mismatch");
   const evidence = manifest.releaseEvidence ?? {};
-  const bindings = { chainId: manifest.network.chainId, releaseBindingDigest: evidence.releaseBindingDigest, capsuleDigest: evidence.capsuleDigest, slateDigest: evidence.slateDigest, configDigest: evidence.configDigest, deploymentCommit: manifest.deploymentCommit, timelock: manifest.contracts.timelock.address, topologyDigest: deploymentTopologyDigest(manifest), contractCount: 43 };
+  const bindings = { chainId: manifest.network.chainId, releaseBindingDigest: evidence.releaseBindingDigest, capsuleDigest: evidence.capsuleDigest, slateDigest: evidence.slateDigest, configDigest: evidence.configDigest, deploymentCommit: manifest.deploymentCommit, timelock: manifest.contracts.timelock.address, topologyDigest: deploymentTopologyDigest(manifest), contractCount: CANONICAL_CONTRACT_COUNT };
   for (const [field, expected] of Object.entries(bindings)) {
     const actual = field === "timelock" ? ethers.getAddress(root[field]) : root[field];
     const normalizedExpected = field === "timelock" ? ethers.getAddress(expected) : expected;

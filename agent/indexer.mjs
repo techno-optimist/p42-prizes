@@ -29,6 +29,13 @@ import {
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
 import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance.mjs";
+import {
+  CANONICAL_BOARD_CONTRACTS,
+  CANONICAL_CONTRACT_COUNT,
+  CANONICAL_SHARED_CONTRACTS,
+  assertCanonicalManifestTopology,
+  canonicalTopologyDescriptors,
+} from "./canonical-topology.mjs";
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
@@ -98,6 +105,7 @@ function immutableValuesFromConstructor(contract, constructorArgs, { blockTimest
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..");
+const SCHEMA_ROOT = resolve(HERE, "schemas");
 export const MANIFEST_SCHEMA_V1 = "p42-prizes/deployment-manifest/v1";
 export const MANIFEST_SCHEMA_V2 = "p42-prizes/deployment-manifest/v2";
 export const PRODUCTION_RELEASE_MODE = "production";
@@ -105,14 +113,14 @@ let deploymentManifestSchemas;
 let multiboardCheckpointSchema;
 function manifestSchemas() {
   deploymentManifestSchemas ??= Object.freeze({
-    [MANIFEST_SCHEMA_V1]: JSON.parse(readFileSync(`${REPO_ROOT}/schemas/deployment-manifest.schema.json`, "utf8")),
-    [MANIFEST_SCHEMA_V2]: JSON.parse(readFileSync(`${REPO_ROOT}/schemas/deployment-manifest-v2.schema.json`, "utf8")),
+    [MANIFEST_SCHEMA_V1]: JSON.parse(readFileSync(`${SCHEMA_ROOT}/deployment-manifest.schema.json`, "utf8")),
+    [MANIFEST_SCHEMA_V2]: JSON.parse(readFileSync(`${SCHEMA_ROOT}/deployment-manifest-v2.schema.json`, "utf8")),
   });
   return deploymentManifestSchemas;
 }
 function checkpointSchema() {
   multiboardCheckpointSchema ??= JSON.parse(
-    readFileSync(`${REPO_ROOT}/schemas/indexer-checkpoint-v2.schema.json`, "utf8"),
+    readFileSync(`${SCHEMA_ROOT}/indexer-checkpoint-v2.schema.json`, "utf8"),
   );
   return multiboardCheckpointSchema;
 }
@@ -137,8 +145,8 @@ const DEFAULT_ATOMIC_FILE_OPERATIONS = Object.freeze({
 });
 
 export const CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges", "registry"];
-export const BOARD_CONTRACT_KEYS = ["pool", "ledger", "submissions", "challenges"];
-export const SHARED_CONTRACT_KEYS = ["timelock", "registry", "rolloverVault"];
+export const BOARD_CONTRACT_KEYS = Object.freeze(CANONICAL_BOARD_CONTRACTS.map(({ key }) => key));
+export const SHARED_CONTRACT_KEYS = Object.freeze(CANONICAL_SHARED_CONTRACTS.map(({ key }) => key));
 const EVIDENCE_CONTRACT_KEYS = ["timelock", "rolloverVault", ...CONTRACT_KEYS];
 const BOARD_SETUP_LABEL_SUFFIXES = Object.freeze([
   "pool.setLedger",
@@ -448,7 +456,7 @@ export function computeProductionReleaseEvidence(manifest, { productionSlate } =
     },
     boardSetDigest: digest(boardIdentities),
     operationPlanDigest: digest(manifest.setupTransactions.map(({ sequence, label, operationId }) => ({ sequence, label, operationId }))),
-    contractCount: 43,
+    contractCount: CANONICAL_CONTRACT_COUNT,
     boardCount: 10,
     operationCount: 110,
   };
@@ -791,22 +799,17 @@ function boardReplayConfig(manifest, problem) {
 
 function manifestContractEvidenceEntries(manifest) {
   if (isMultiBoardManifest(manifest)) {
-    return [
-      ...SHARED_CONTRACT_KEYS.map((key) => ({
-        key,
-        entry: manifest.contracts?.[key],
-        path: `contracts.${key}`,
-      })),
-      ...(manifest.problems ?? []).flatMap((problem, index) =>
-        BOARD_CONTRACT_KEYS.map((key) => ({
-          key,
-          entry: problem?.contracts?.[key],
-          path: `problems[${index}].contracts.${key}`,
-          problem,
-          index,
-        }))
-      ),
-    ];
+    return canonicalTopologyDescriptors().map((descriptor) => {
+      const index = descriptor.problemId === undefined ? undefined : descriptor.problemId - 1;
+      const problem = index === undefined ? undefined : manifest.problems?.[index];
+      return {
+        ...descriptor,
+        entry: descriptor.scope === "shared" ? manifest.contracts?.[descriptor.key] : problem?.contracts?.[descriptor.key],
+        path: descriptor.scope === "shared" ? descriptor.path : `problems[${index}].contracts.${descriptor.key}`,
+        problem,
+        index,
+      };
+    });
   }
   return EVIDENCE_CONTRACT_KEYS.map((key) => ({
     key,
@@ -891,6 +894,7 @@ function validateContractEvidenceEntry({ key, entry, path, manifest }) {
 }
 
 function validateMultiBoardTopology(manifest) {
+  if (manifest.releaseMode === PRODUCTION_RELEASE_MODE) assertCanonicalManifestTopology(manifest);
   const expectedOperationCount = manifest.problems.length * BOARD_SETUP_LABEL_SUFFIXES.length;
   if (manifest.setupTransactions.length !== expectedOperationCount) {
     throw new Error(
@@ -3064,11 +3068,15 @@ const CONTRACT_NAMES = Object.freeze({
   submissions: "P42SubmissionManager",
   challenges: "P42ChallengeManager",
   registry: "P42ProblemRegistry",
+  submissionManagerFactory: "P42SubmissionManagerFactory",
+  challengeManagerFactory: "P42ChallengeManagerFactory",
+  resolverQuorum: "P42ResolverQuorum",
 });
 
 export function loadContractArtifacts() {
   return Object.fromEntries(
-    EVIDENCE_CONTRACT_KEYS.map((key) => [key, { name: CONTRACT_NAMES[key], abi: artifactAbi(CONTRACT_NAMES[key]) }])
+    [...new Set([...SHARED_CONTRACT_KEYS, ...BOARD_CONTRACT_KEYS])]
+      .map((key) => [key, { name: CONTRACT_NAMES[key], abi: artifactAbi(CONTRACT_NAMES[key]) }])
   );
 }
 
@@ -3094,6 +3102,42 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
     const codeHash = ethers.keccak256(code);
     if (codeHash.toLowerCase() !== entry.deployedCodeHash.toLowerCase()) {
       throw new Error(`${path} runtime code hash ${codeHash} != manifest ${entry.deployedCodeHash}`);
+    }
+  }
+  if (isMultiBoardManifest(manifest) && manifest.releaseMode === PRODUCTION_RELEASE_MODE) {
+    const shared = manifest.contracts;
+    const submissionFactory = new ethers.Contract(shared.submissionManagerFactory.address, artifacts.submissionManagerFactory.abi, provider);
+    const challengeFactory = new ethers.Contract(shared.challengeManagerFactory.address, artifacts.challengeManagerFactory.abi, provider);
+    const quorum = new ethers.Contract(shared.resolverQuorum.address, artifacts.resolverQuorum.abi, provider);
+    const submissionFactoryCodeHash = await challengeFactory.CANONICAL_SUBMISSION_MANAGER_FACTORY_CODEHASH({ blockTag: toBlock });
+    if (submissionFactoryCodeHash.toLowerCase() !== shared.submissionManagerFactory.runtimeCodeHash.toLowerCase()) {
+      throw new Error("challenge-manager factory pinned submission-manager factory codehash does not match canonical runtime evidence");
+    }
+    const challengeFactoryCodeHash = await quorum.CANONICAL_MANAGER_FACTORY_CODEHASH({ blockTag: toBlock });
+    if (challengeFactoryCodeHash.toLowerCase() !== shared.challengeManagerFactory.runtimeCodeHash.toLowerCase()) {
+      throw new Error("resolver quorum pinned challenge-manager factory codehash does not match canonical runtime evidence");
+    }
+    if (ethers.getAddress(await quorum.managerFactory({ blockTag: toBlock })) !== ethers.getAddress(shared.challengeManagerFactory.address)) {
+      throw new Error("resolver quorum manager factory does not match canonical deployment evidence");
+    }
+    if (await quorum.managersFrozen({ blockTag: toBlock }) !== true) throw new Error("resolver quorum manager set is not frozen");
+    if (Number(await quorum.managerCount({ blockTag: toBlock })) !== manifest.problems.length) throw new Error("resolver quorum manager count does not match canonical board set");
+    for (const [index, problem] of manifest.problems.entries()) {
+      const submission = ethers.getAddress(problem.contracts.submissions.address);
+      const manager = ethers.getAddress(problem.contracts.challenges.address);
+      const [canonicalSubmission, submissionConfigurationHash, canonicalManager, pairConfigurationHash] = await Promise.all([
+        submissionFactory.isCanonicalSubmissionManager(submission, { blockTag: toBlock }),
+        submissionFactory.configurationHashOf(submission, { blockTag: toBlock }),
+        challengeFactory.isCanonicalManager(manager, { blockTag: toBlock }),
+        challengeFactory.pairConfigurationHashOf(manager, { blockTag: toBlock }),
+      ]);
+      if (!canonicalSubmission || submissionConfigurationHash === ZERO_HASH || !canonicalManager || pairConfigurationHash === ZERO_HASH) {
+        throw new Error(`factory configuration evidence is missing for board ${index + 1}`);
+      }
+      if (ethers.getAddress(await quorum.managerAt(index, { blockTag: toBlock })) !== manager
+          || await quorum.isManager(manager, { blockTag: toBlock }) !== true) {
+        throw new Error(`resolver quorum frozen manager set mismatch at board ${index + 1}`);
+      }
     }
   }
   return binding;

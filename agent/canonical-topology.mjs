@@ -1,6 +1,15 @@
-import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 
-const source = JSON.parse(readFileSync(new URL("../protocol/canonical-topology-v1.json", import.meta.url), "utf8"));
+const EXPECTED_TOPOLOGY_SHA256 = "a61a56f238e387eb1873464c5a8459eeb7e7757ecddf9afa734f6293bd7a4a1f";
+const protocolUrl = new URL("../protocol/canonical-topology-v1.json", import.meta.url);
+const packagedUrl = new URL("./canonical-topology-v1.json", import.meta.url);
+const sourceUrl = existsSync(protocolUrl) ? protocolUrl : packagedUrl;
+const sourceBytes = readFileSync(sourceUrl);
+if (createHash("sha256").update(sourceBytes).digest("hex") !== EXPECTED_TOPOLOGY_SHA256) {
+  throw new Error("canonical topology authority digest mismatch");
+}
+const source = JSON.parse(sourceBytes.toString("utf8"));
 if (source.schema !== "p42-prizes/canonical-contract-topology/v1") throw new Error("canonical topology schema mismatch");
 if (!Number.isInteger(source.boardCount) || source.boardCount <= 0) throw new Error("canonical topology board count is invalid");
 for (const [label, rows] of [["shared", source.shared], ["perBoard", source.perBoard]]) {
@@ -26,7 +35,7 @@ export function canonicalTopologyDescriptors(boardCount = CANONICAL_BOARD_COUNT)
     ...Array.from({ length: boardCount }, (_, index) => index + 1).flatMap((problemId) => (
       CANONICAL_BOARD_CONTRACTS.map(({ key, name }) => ({
         id: `board-${problemId}-${key}`,
-        path: `problems.${problemId}.contracts.${key}`,
+        path: `problems[${problemId - 1}].contracts.${key}`,
         key,
         name,
         problemId,
