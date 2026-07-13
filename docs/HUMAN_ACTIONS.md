@@ -10,7 +10,7 @@ signature.
 | Gate | Open action | Exact evidence required |
 | --- | --- | --- |
 | All external gates | Provision the owner-controlled production attestation trust registry and pin its canonical digest out of band. The built-in production registry intentionally contains no signer registrations. | Registry conforming to `schemas/attestation-trust-registry.schema.json`, maintained separately from attestation packets, with pre-registered attestation class, role, identity, Ed25519 key, and validity window for every real signer. The owner mounts its independently verified digest at `/etc/p42/production-attestation-root.sha256` as a no-follow, non-writable regular file and records custody, rotation, revocation, and distribution-path verification. A caller-authored `environment: production` label or environment variable alone is rejected. |
-| Gate 0 | Maintain CI evidence. The reviewed workflow is published, and post-merge [`main` run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082) for exact release `a97b824cbb50c7b4ef1421bc5057c60879397300` passed the Python verifier/seed, contract, autonomous-agent, and portal lanes. | Each deploy-relevant release has a completed required-check run against its exact `main` commit. This does not replace protected-release enforcement or private-vulnerability reporting. |
+| Gate 0 | Maintain CI evidence. The reviewed workflow is published, and post-merge [`main` run 29234182256](https://github.com/techno-optimist/p42-prizes/actions/runs/29234182256) for exact release `ca3b3de7b812334d9704797a821d607006dc5ecb` passed the Python verifier/seed, contract, autonomous-agent, and portal lanes. | Each deploy-relevant release has a completed required-check run against its exact `main` commit. This does not replace protected-release enforcement or private-vulnerability reporting. |
 | Gate 0 | Decide how protected releases will be enforced. Both branch-protection and rulesets APIs returned HTTP 403: `Upgrade to GitHub Pro or make this repository public to enable this feature` because `p42-prizes` is private. | Repo owner makes an explicit subscription/publicity decision: upgrade the applicable GitHub plan or make the repository public, then configure and independently verify required reviews/checks. The source-control gate remains open until enforcement is visible. |
 | Gate 0 | Enable and test private vulnerability reporting. The authenticated GitHub API returned `404` for both inspection and enablement on the current private repository; no enabled state can be claimed. | Repo owner uses a supported GitHub security-settings surface, records that private reporting is enabled, and proves a non-owner test reaches maintainers through the advisory route. |
 | Gate 1 | Deploy the remediated frozen release under intended testnet roles. The prior canonical Base Sepolia manifest predates current source, is machine-rejected as stale, and does not attest it. | New manifest and explorer verification bind the frozen commit, chain ID, all addresses, constructor/wiring/config values, source hashes, and runtime-bytecode hashes; reconciliation runs from deployment genesis. |
@@ -89,8 +89,8 @@ problem requirement.
 ## Exact Blockers At This Snapshot
 
 - Source control: the CI workflow is published and post-merge
-  [`main` run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082)
-  for exact release `a97b824cbb50c7b4ef1421bc5057c60879397300` passed all four required
+  [`main` run 29234182256](https://github.com/techno-optimist/p42-prizes/actions/runs/29234182256)
+  for exact release `ca3b3de7b812334d9704797a821d607006dc5ecb` passed all four required
   lanes. Branch protection and rulesets remain blocked by the private-repository
   GitHub plan until the owner upgrades or goes public; private vulnerability
   reporting is also still unverified.

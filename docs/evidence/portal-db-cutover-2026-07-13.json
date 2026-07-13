@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "p42-portal-db-cutover/v1",
+  "createdAt": "2026-07-13T08:07:19.741Z",
+  "sourceCommit": "ca3b3de7b812334d9704797a821d607006dc5ecb",
+  "render": {
+    "serviceId": "srv-d96pokeq1p3s73foqk60",
+    "deployId": "dep-d9a9od647okc73ejhsv0",
+    "databaseId": "dpg-d9a94kpkh4rs73d91nfg-a",
+    "region": "oregon",
+    "plan": "basic_256mb",
+    "postgresVersion": "18.4 (Debian 18.4-1.pgdg12+1)",
+    "databaseRequired": true
+  },
+  "initialState": {
+    "source": "empty authority; no portal-state.json existed on the live service disk",
+    "importSha256": "sha256:76f9e2cffb314d0feff3f789a37d300cd886167917b51ae4c3943e39fb855637",
+    "revision": "0",
+    "stateSha256": "sha256:e6bd5874a9e48bb56da2438ffadd4e05d8bed10c2649ce8d8da3689bc7af6bce"
+  },
+  "migrationIntegration": {
+    "status": "passed",
+    "cases": [
+      "fresh-idempotent",
+      "missing-primary-key",
+      "unexpected-unique",
+      "wrong-expiry-index",
+      "fresh-failure-rolls-back"
+    ]
+  },
+  "concurrencyRehearsal": {
+    "status": "passed",
+    "concurrentStateConnections": 2,
+    "blockingVerified": true,
+    "concurrentRateIncrements": 8,
+    "probeCleanupVerified": true
+  },
+  "liveChecks": [
+    {
+      "url": "https://p42-prizes.onrender.com/prizes/api/standings",
+      "status": 200
+    },
+    {
+      "url": "https://projectforty2.ai/prizes/api/standings",
+      "status": 200
+    },
+    {
+      "url": "https://projectforty2.ai/prizes/api/capabilities",
+      "status": 200
+    },
+    {
+      "url": "https://projectforty2.ai/prizes/atlas",
+      "status": 200
+    }
+  ]
+}
