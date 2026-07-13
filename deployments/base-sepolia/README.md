@@ -11,10 +11,13 @@ deployments. A real deployment must commit `p42-prizes.json` with:
 - indexer start block and latest reconciliation report pointer
 - source verification status and explorer links
 
-The only production procedure is the 43-contract, timelock-owned, exact-ten
+The production target is the 46-contract, timelock-owned, exact-ten
 ceremony in [`docs/MULTIBOARD_CEREMONY.md`](../../docs/MULTIBOARD_CEREMONY.md)
 and [`docs/DEPLOYMENT.md`](../../docs/DEPLOYMENT.md). Do not use the legacy
-single-board environment flow as Gate 1 evidence.
+single-board environment flow as Gate 1 evidence. The current deployer still
+materializes the historical 43-contract plan and now refuses that plan before
+nonce reservation or broadcast; no production deployment is possible until
+factory/CREATE2 manager deployment and the resolver quorum are integrated.
 
 Fresh ceremonies require `P42_VERIFIER_IMAGE_DIGEST` to be the bare canonical
 `sha256:<64 lowercase hex>` digest, not a registry reference, tag, or

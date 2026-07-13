@@ -23,7 +23,14 @@ function manifest() {
       signers: [address(3), address(4), address(5)], threshold: "2",
       delaySeconds: "3600", operationGracePeriodSeconds: "604800",
     },
-    contracts: { timelock: { address: address(1), runtimeCodeHash: `0x${"1".repeat(64)}` } },
+    contracts: {
+      timelock: { address: address(1), runtimeCodeHash: `0x${"1".repeat(64)}` },
+      registry: { address: address(6) },
+      rolloverVault: { address: address(7) },
+      submissionManagerFactory: { address: address(8) },
+      challengeManagerFactory: { address: address(9) },
+      resolverQuorum: { address: address(10) },
+    },
     releaseEvidence: {
       releaseBindingDigest: hash("1"), capsuleDigest: hash("2"), slateDigest: hash("3"), releaseIndexDigest: hash("4"),
     },
@@ -86,6 +93,21 @@ test("activation rejects release substitution and incomplete topology", () => {
   assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, manifestValidator: () => ({}) }), /git_commit/);
   deployment.problems.pop();
   assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") }, manifestValidator: () => ({}) }), /exactly ten/);
+});
+
+test("activation rejects a legacy 43-contract authorization path", () => {
+  const deployment = manifest();
+  delete deployment.contracts.submissionManagerFactory;
+  delete deployment.contracts.challengeManagerFactory;
+  delete deployment.contracts.resolverQuorum;
+  let historicalValidatorCalled = false;
+  assert.throws(() => buildFundingActivationPlan({
+    manifest: deployment,
+    manifestBytesDigest: hash("e"),
+    validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") },
+    manifestValidator: () => { historicalValidatorCalled = true; },
+  }), /exact six ordered shared contracts/);
+  assert.equal(historicalValidatorCalled, false);
 });
 
 test("validator invocation is argv-only, bounded, and rejects nonzero exit", () => {
