@@ -16,6 +16,7 @@ back to executing an untrusted payload on the host.
 from __future__ import annotations
 
 from contextlib import AbstractContextManager
+import hashlib
 import os
 import re
 import shlex
@@ -96,6 +97,7 @@ class _SandboxSolutionStage(AbstractContextManager[Path]):
         host_solution: str | Path,
         max_bytes: int,
         staging_root: str | Path | None,
+        expected_sha256: str | None,
     ) -> None:
         self.source = Path(host_solution)
         self.max_bytes = max_bytes
@@ -104,6 +106,7 @@ class _SandboxSolutionStage(AbstractContextManager[Path]):
             if staging_root is not None
             else Path.home() / ".p42-runner" / "sandbox-staging"
         )
+        self.expected_sha256 = expected_sha256
         self.temporary: tempfile.TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> Path:
@@ -143,12 +146,14 @@ class _SandboxSolutionStage(AbstractContextManager[Path]):
             target_fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
             try:
                 copied = 0
+                digest = hashlib.sha256()
                 while chunk := os.read(source_fd, 1024 * 1024):
                     copied += len(chunk)
                     if copied > self.max_bytes:
                         raise RunnerSandboxError(
                             f"sandbox solution exceeds admitted byte limit ({self.max_bytes})"
                         )
+                    digest.update(chunk)
                     view = memoryview(chunk)
                     while view:
                         written = os.write(target_fd, view)
@@ -164,6 +169,11 @@ class _SandboxSolutionStage(AbstractContextManager[Path]):
                     or copied != after.st_size
                 ):
                     raise RunnerSandboxError("sandbox solution changed while it was being staged")
+                staged_sha256 = "sha256:" + digest.hexdigest()
+                if self.expected_sha256 is not None and staged_sha256 != self.expected_sha256:
+                    raise RunnerSandboxError(
+                        "staged sandbox solution does not match the authorized payload hash"
+                    )
                 os.fsync(target_fd)
                 os.fchmod(target_fd, 0o444)
                 target_metadata = os.fstat(target_fd)
@@ -198,6 +208,7 @@ def stage_sandbox_solution(
     *,
     max_bytes: int,
     staging_root: str | Path | None = None,
+    expected_sha256: str | None = None,
 ) -> AbstractContextManager[Path]:
     """Stage an immutable, container-readable copy without weakening the source.
 
@@ -207,7 +218,9 @@ def stage_sandbox_solution(
     copy below a private directory for the lifetime of ``docker run``.
     """
 
-    return _SandboxSolutionStage(host_solution, max_bytes, staging_root)
+    return _SandboxSolutionStage(
+        host_solution, max_bytes, staging_root, expected_sha256
+    )
 
 
 def build_sandbox_command(

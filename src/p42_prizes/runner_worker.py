@@ -569,6 +569,12 @@ def _run_job(
             job_id=job_id,
             require_manifest_identity=chain_claim is not None,
             manifest=pinned_manifest,
+            expected_solution_hash=(
+                da_result.get("expected_hash")
+                if isinstance(da_result, Mapping)
+                and isinstance(da_result.get("expected_hash"), str)
+                else None
+            ),
             cancellation_event=lease_failed,
         )
 
@@ -1046,6 +1052,7 @@ def _run_verifier_for_transcript(
     require_manifest_identity: bool = False,
     manifest: Mapping[str, Any] | None = None,
     solution_max_bytes: int | None = None,
+    expected_solution_hash: str | None = None,
     cancellation_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
@@ -1079,6 +1086,7 @@ def _run_verifier_for_transcript(
                     if solution_max_bytes is not None
                     else _solution_byte_limit(problem)
                 ),
+                expected_sha256=expected_solution_hash,
             )
             if sandbox == "docker"
             else nullcontext(solution)

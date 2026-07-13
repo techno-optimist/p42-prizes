@@ -169,6 +169,20 @@ def test_stage_sandbox_solution_rejects_unsafe_or_oversized_sources(tmp_path: Pa
             pass
 
 
+def test_stage_sandbox_solution_binds_authorized_hash(tmp_path: Path):
+    source = tmp_path / "solution.json"
+    source.write_bytes(b'{"answer":42}\n')
+    source.chmod(0o600)
+    with pytest.raises(RunnerSandboxError, match="authorized payload hash"):
+        with stage_sandbox_solution(
+            source,
+            max_bytes=1024,
+            staging_root=tmp_path / "staging",
+            expected_sha256="sha256:" + "0" * 64,
+        ):
+            pass
+
+
 def test_sandbox_docker_fails_closed_when_no_runtime():
     # The whole point: if a container runtime is unavailable, the runner must
     # REFUSE to run the untrusted payload rather than fall back to the host.
