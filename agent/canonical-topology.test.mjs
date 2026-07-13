@@ -11,21 +11,21 @@ import {
   canonicalTopologyDescriptors,
 } from "./canonical-topology.mjs";
 
-test("canonical topology has six shared roots and four contracts for each exact-ten board", () => {
+test("canonical topology has seven shared roots and four contracts for each exact-ten board", () => {
   const rows = canonicalTopologyDescriptors();
   assert.equal(CANONICAL_BOARD_COUNT, 10);
-  assert.equal(CANONICAL_SHARED_CONTRACTS.length, 6);
+  assert.equal(CANONICAL_SHARED_CONTRACTS.length, 7);
   assert.equal(CANONICAL_BOARD_CONTRACTS.length, 4);
-  assert.equal(CANONICAL_CONTRACT_COUNT, 46);
-  assert.equal(rows.length, 46);
-  assert.equal(new Set(rows.map(({ id }) => id)).size, 46);
-  assert.deepEqual(rows.slice(0, 6).map(({ id }) => id), [
-    "timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum",
+  assert.equal(CANONICAL_CONTRACT_COUNT, 47);
+  assert.equal(rows.length, 47);
+  assert.equal(new Set(rows.map(({ id }) => id)).size, 47);
+  assert.deepEqual(rows.slice(0, 7).map(({ id }) => id), [
+    "timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier", "resolverQuorum",
   ]);
   assert.equal(rows.at(-1).id, "board-10-challenges");
 });
 
-test("canonical manifest guard rejects the legacy three-shared topology", () => {
+test("canonical manifest guard rejects an incomplete shared topology", () => {
   const address = (value) => `0x${value.toString(16).padStart(40, "0")}`;
   const canonical = {
     contracts: Object.fromEntries(CANONICAL_SHARED_CONTRACTS.map(({ key }, index) => [key, { address: address(index + 1) }])),
@@ -35,16 +35,16 @@ test("canonical manifest guard rejects the legacy three-shared topology", () => 
     })),
   };
   assert.doesNotThrow(() => assertCanonicalManifestTopology(canonical));
-  delete canonical.contracts.resolverQuorum;
-  assert.throws(() => assertCanonicalManifestTopology(canonical), /exact six ordered shared contracts/);
+  delete canonical.contracts.objectiveVerifier;
+  assert.throws(() => assertCanonicalManifestTopology(canonical), /exact seven ordered shared contracts/);
 });
 
 test("production plan assertion rejects the legacy 43-contract plan", () => {
   const canonical = canonicalTopologyDescriptors();
   assert.doesNotThrow(() => assertCanonicalDeploymentPlan(canonical));
   assert.throws(() => assertCanonicalDeploymentPlan(canonical.filter(({ id }) => ![
-    "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum",
-  ].includes(id))), /missing=submissionManagerFactory,challengeManagerFactory,resolverQuorum/);
+    "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier", "resolverQuorum",
+  ].includes(id))), /missing=submissionManagerFactory,challengeManagerFactory,objectiveVerifier,resolverQuorum/);
 });
 
 test("production deployer checks topology before reading the pending nonce", () => {

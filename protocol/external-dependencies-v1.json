@@ -1,0 +1,29 @@
+{
+  "schema": "p42-prizes/external-contract-dependencies/v1",
+  "dependencies": [
+    {
+      "name": "SP1VerifierGroth16V6_1_0",
+      "repository": "https://github.com/succinctlabs/sp1-contracts",
+      "releaseTag": "v6.1.0",
+      "commit": "2ac5ecbbe473421a963d67e55f182e9a36576f7c",
+      "license": "MIT",
+      "interfaceSignature": "verifyProof(bytes32,bytes,bytes)",
+      "interfaceSelector": "0x41493c60",
+      "runtimeCodehash": "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd",
+      "deployments": [
+        {
+          "chainId": "8453",
+          "address": "0xb69f2584cbcf99a58c4e7002e8b89af54a6f4e2",
+          "descriptorPath": "contracts/deployments/8453.json",
+          "descriptorDigest": "sha256:986dfd4176ac17f151021daea8f1bbabae845aa39604cd87db4dfacff62071fd"
+        },
+        {
+          "chainId": "84532",
+          "address": "0xb69f2584cbcf99a58c4e7002e8b89af54a6f4e2",
+          "descriptorPath": "contracts/deployments/84532.json",
+          "descriptorDigest": "sha256:604df423679e8f09cc24aaf14e50039e95e0671a24d7db30afaead4f2709ac8b"
+        }
+      ]
+    }
+  ]
+}

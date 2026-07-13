@@ -8,7 +8,7 @@
     "schema": { "const": "p42-prizes/explorer-verification-dossier/v2" }, "chainId": { "const": 84532 },
     "releaseBindingDigest": { "$ref": "#/$defs/digest" }, "capsuleDigest": { "$ref": "#/$defs/digest" }, "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "finalizedAt": { "type": "integer", "minimum": 1 }, "expiresAt": { "type": "integer", "minimum": 1 },
-    "contracts": { "type": "array", "minItems": 46, "maxItems": 46, "items": { "$ref": "#/$defs/contract" } },
+    "contracts": { "type": "array", "minItems": 47, "maxItems": 47, "items": { "$ref": "#/$defs/contract" } },
     "evidenceDigest": { "$ref": "#/$defs/digest" },
     "operatorRoster": { "type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": { "$ref": "#/$defs/address" } },
     "attestations": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/attestation" } },

@@ -56,11 +56,11 @@ def canonical_topology_manifest() -> dict:
     return {"contracts": shared, "problems": problems}
 
 
-def test_launch_authorization_requires_canonical_ordered_46_topology() -> None:
+def test_launch_authorization_requires_canonical_ordered_47_topology() -> None:
     manifest = canonical_topology_manifest()
     entries = launch_module._canonical_contract_entries(manifest)
-    assert len(entries) == 46
-    assert [path for path, _row, _factory in entries[:6]] == [
+    assert len(entries) == 47
+    assert [path for path, _row, _factory in entries[:7]] == [
         f"contracts.{key}" for key, _name in launch_module.CANONICAL_SHARED_CONTRACTS
     ]
 
@@ -85,6 +85,70 @@ def test_launch_authorization_schema_is_valid_draft_2020_12() -> None:
         (ROOT / "schemas" / "production-launch-authorization.schema.json").read_text()
     )
     jsonschema.Draft202012Validator.check_schema(schema)
+
+
+def test_launch_authorization_rejects_inactive_objective_proofs() -> None:
+    release_binding = {"git_commit": "a" * 40}
+    report = {
+        "schema": "p42-prizes/production-release-verification/v1",
+        "status": "verified",
+        "sourceCommit": release_binding["git_commit"],
+        "generatedAt": "2026-07-08T16:00:00Z",
+        "capsuleDigest": "sha256:" + "b" * 64,
+        "slateDigest": "sha256:" + "c" * 64,
+        "releaseIndexDigest": "sha256:" + "d" * 64,
+        "ceremonyConfigDigest": "sha256:" + "e" * 64,
+        "objectiveProofsActive": False,
+        "admittedBoards": [],
+    }
+    report["verificationReportDigest"] = sha256_bytes(canonical_json(report).encode())
+    with pytest.raises(LaunchAuthorizationError, match="objective proofs are inactive"):
+        launch_module._validate_release_report(report, release_binding)
+
+
+def test_launch_authorization_rejects_self_asserted_active_v1_report() -> None:
+    release_binding = {"git_commit": "a" * 40}
+    report = {
+        "schema": "p42-prizes/production-release-verification/v1",
+        "status": "verified",
+        "sourceCommit": release_binding["git_commit"],
+        "generatedAt": "2026-07-08T16:00:00Z",
+        "capsuleDigest": "sha256:" + "b" * 64,
+        "slateDigest": "sha256:" + "c" * 64,
+        "releaseIndexDigest": "sha256:" + "d" * 64,
+        "ceremonyConfigDigest": "sha256:" + "e" * 64,
+        "objectiveProofsActive": True,
+        "admittedBoards": [
+            {
+                "problemId": str(index),
+                "problemSlug": f"problem-{index}",
+                "matrixDigest": "sha256:" + f"{index:064x}",
+            }
+            for index in range(1, 11)
+        ],
+    }
+    report["verificationReportDigest"] = sha256_bytes(canonical_json(report).encode())
+    with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
+        launch_module._validate_release_report(report, release_binding)
+
+
+def test_reconciliation_rejects_boolean_only_completion_claim() -> None:
+    report = {
+        "schema": "p42-prizes/reconciliation-report/v3",
+        "manifestBinding": {"deploymentCommit": "a" * 40},
+        "finalityPolicy": {},
+        "range": {"toBlock": 200},
+        "boards": [
+            {"problemId": str(index), "reconstruction": {"ok": True, "complete": True}}
+            for index in range(1, 11)
+        ],
+        "reconstruction": {"ok": True, "complete": True},
+        "manifestPath": "manifest.json",
+        "contracts": {},
+        "finalityAnchor": {"l2": {"finalized": {"number": 200}}},
+    }
+    with pytest.raises(LaunchAuthorizationError, match="checkpoint is invalid"):
+        launch_module._validate_reconciliation_report(report, {})
 
 
 def test_math_review_requires_a_registered_independent_signature(tmp_path: Path) -> None:
@@ -225,7 +289,7 @@ def test_composed_authorization_rejects_future_validity_window(tmp_path: Path) -
         )
 
 
-def test_composed_authorization_binds_release_deployment_and_gate_bytes(
+def test_composed_authorization_fails_closed_until_active_release_schema_exists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fixture = AttestationFixture(tmp_path)
@@ -288,18 +352,29 @@ def test_composed_authorization_binds_release_deployment_and_gate_bytes(
         "slateDigest": "sha256:" + "d" * 64,
         "releaseIndexDigest": "sha256:" + "e" * 64,
         "ceremonyConfigDigest": "sha256:" + "f" * 64,
+        "objectiveProofsActive": True,
         "admittedBoards": boards,
     }
+    release_slate = {
+        "schema": "p42-prizes/production-release-slate/v3",
+        "sourceCommit": release_binding["git_commit"],
+        "objectiveVerifier": {"proofsActive": True},
+    }
+    release_slate["slateDigest"] = sha256_bytes(canonical_json(release_slate).encode())
+    release_report["slateDigest"] = release_slate["slateDigest"]
     release_report["verificationReportDigest"] = sha256_bytes(
-        canonical_json(release_report).encode()
+        canonical_json({key: value for key, value in release_report.items() if key != "verificationReportDigest"}).encode()
     )
     artifacts["production_release_verification"] = fixture.artifact(
         "release-verification", content=release_report
     )
+    artifacts["production_release_slate"] = fixture.artifact(
+        "release-slate", content=release_slate
+    )
     artifacts["release_capsule"] = fixture.artifact(
         "release-capsule", content={"schema": "test-capsule"}
     )
-    next_address = iter("0x" + f"{index:040x}" for index in range(1, 47))
+    next_address = iter("0x" + f"{index:040x}" for index in range(1, 48))
 
     def direct_contract(name: str) -> dict:
         return {"name": name, "address": next(next_address)}
@@ -333,6 +408,7 @@ def test_composed_authorization_binds_release_deployment_and_gate_bytes(
         "status": "governance-setup-complete",
         "releaseMode": "production",
         "deploymentCommit": release_binding["git_commit"],
+        "deploymentConfigHash": "0x" + "7" * 64,
         "network": {"name": "baseSepolia", "chainId": 84532},
         "contracts": shared_contracts,
         "problems": manifest_problems,
@@ -341,7 +417,7 @@ def test_composed_authorization_binds_release_deployment_and_gate_bytes(
             "slateDigest": release_report["slateDigest"],
             "configDigest": release_report["ceremonyConfigDigest"],
             "releaseBindingDigest": "sha256:" + "9" * 64,
-            "contractCount": 46,
+            "contractCount": 47,
             "boardCount": 10,
         },
         "sourceVerification": {"dossierDigest": "sha256:" + "b" * 64},
@@ -402,6 +478,24 @@ def test_composed_authorization_binds_release_deployment_and_gate_bytes(
     dossier["dossierDigest"] = sha256_bytes(canonical_json(dossier).encode())
     manifest["sourceVerification"]["dossierDigest"] = dossier["dossierDigest"]
     artifacts["deployment_manifest"] = fixture.artifact("manifest", content=manifest)
+    reconciliation = {
+        "schema": "p42-prizes/reconciliation-report/v3",
+        "manifestBinding": {
+            "deploymentCommit": manifest["deploymentCommit"],
+            "deploymentConfigHash": manifest["deploymentConfigHash"],
+            "chainId": manifest["network"]["chainId"],
+        },
+        "range": {"toBlock": 200},
+        "finalityAnchor": {"l2": {"finalized": {"number": 200}}},
+        "reconstruction": {"ok": True, "complete": True},
+        "boards": [
+            {"problemId": str(index), "reconstruction": {"ok": True, "complete": True}}
+            for index in range(1, 11)
+        ],
+    }
+    artifacts["reconciliation_report"] = fixture.artifact(
+        "reconciliation", content=reconciliation
+    )
     artifacts["explorer_dossier"] = fixture.artifact("dossier", content=dossier)
     artifacts["explorer_operator_policy"] = fixture.artifact(
         "explorer-operator-policy",
@@ -434,17 +528,7 @@ def test_composed_authorization_binds_release_deployment_and_gate_bytes(
         signers=authorization_signers,
     )
 
-    normalized = normalize_launch_authorization(
-        authorization,
-        trust_registry=registry,
-        artifact_root=tmp_path,
-        chain_reader=None,
-        now_utc=datetime(2026, 7, 8, 18, tzinfo=timezone.utc),
-    )
-    assert normalized["authorization_digest"] == authorization["authorization_digest"]
-
-    (tmp_path / artifacts["deployment_manifest"]["local_path"]).write_text("{}")
-    with pytest.raises(LaunchAuthorizationError, match="sha256 does not match resolved bytes"):
+    with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
         normalize_launch_authorization(
             authorization,
             trust_registry=registry,

@@ -7,6 +7,7 @@
     { "key": "rolloverVault", "name": "P42RolloverVault" },
     { "key": "submissionManagerFactory", "name": "P42SubmissionManagerFactory" },
     { "key": "challengeManagerFactory", "name": "P42ChallengeManagerFactory" },
+    { "key": "objectiveVerifier", "name": "P42SP1VerifierGateway" },
     { "key": "resolverQuorum", "name": "P42ResolverQuorum" }
   ],
   "perBoard": [

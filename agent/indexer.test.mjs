@@ -31,7 +31,7 @@ import {
 } from "./indexer.mjs";
 import { CANONICAL_BOARD_CONTRACTS, CANONICAL_SHARED_CONTRACTS } from "./canonical-topology.mjs";
 
-it("derives operational topology keys and artifacts from the canonical 46-contract authority", () => {
+it("derives operational topology keys and artifacts from the canonical 47-contract authority", () => {
   assert.deepEqual(SHARED_CONTRACT_KEYS, CANONICAL_SHARED_CONTRACTS.map(({ key }) => key));
   assert.deepEqual(BOARD_CONTRACT_KEYS, CANONICAL_BOARD_CONTRACTS.map(({ key }) => key));
   assert.deepEqual(Object.keys(loadContractArtifacts()), [...SHARED_CONTRACT_KEYS, ...BOARD_CONTRACT_KEYS]);
@@ -168,6 +168,18 @@ function checkpointContract(number) {
     address: address(number),
     deployedCodeHash: hash(number + 1000),
     abiHash: hash(number + 2000),
+  };
+}
+
+function checkpointSharedContracts() {
+  return {
+    timelock: checkpointContract(1),
+    registry: checkpointContract(2),
+    rolloverVault: checkpointContract(3),
+    submissionManagerFactory: checkpointContract(4),
+    challengeManagerFactory: checkpointContract(5),
+    objectiveVerifier: checkpointContract(6),
+    resolverQuorum: checkpointContract(7),
   };
 }
 
@@ -597,7 +609,7 @@ function openWitnessFixture() {
     binding: {
       deploymentCommit: manifest.deploymentCommit, deploymentConfigHash: manifest.deploymentConfigHash,
       chainId: manifest.network.chainId, startBlock: 1,
-      contracts: { timelock: manifest.contracts.timelock, registry: manifest.contracts.registry },
+      contracts: checkpointSharedContracts(),
       boards: { "1": board },
     },
     finalityPolicy: POLICY, fromBlock: 1, toBlock: arm.blockNumber + 5, toBlockHash: hash(1200), toBlockTimestamp: 1_000,
@@ -1252,10 +1264,7 @@ describe("P42 deterministic indexer replay", () => {
         deploymentConfigHash: hash(99),
         chainId: 84532,
         startBlock: 1,
-        contracts: {
-          timelock: checkpointContract(1),
-          registry: checkpointContract(2),
-        },
+        contracts: checkpointSharedContracts(),
         boards: {
           "1": {
             pool: checkpointContract(11),
@@ -1322,6 +1331,20 @@ describe("P42 deterministic indexer replay", () => {
     assert.throws(
       () => validateMultiBoardCheckpoint(falseAggregate),
       /reconstruction\.ok must equal the conjunction of board evidence states/,
+    );
+
+    const missingLifecycleCount = structuredClone(checkpoint);
+    delete missingLifecycleCount.boards[0].events.counts[REQUIRED_LIFECYCLE_COVERAGE[0]];
+    assert.throws(
+      () => validateMultiBoardCheckpoint(missingLifecycleCount),
+      /exact event catalog/,
+    );
+
+    const falseDerivedCompleteness = structuredClone(checkpoint);
+    falseDerivedCompleteness.boards[0].events.lifecycleCountsComplete = false;
+    assert.throws(
+      () => validateMultiBoardCheckpoint(falseDerivedCompleteness),
+      /derived lifecycle completeness/,
     );
 
     const alteredAggregateCheck = structuredClone(checkpoint);

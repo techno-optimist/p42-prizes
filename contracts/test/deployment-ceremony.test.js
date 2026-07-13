@@ -91,6 +91,9 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /factoryCreation:\s*\{/);
     assert.match(executable, /transactionHash:\s*durable\.expectedHash/);
     assert.match(executable, /createdAddress:\s*durable\.address/);
+    assert.match(executable, /primaryOperatorId:\s*rpcEvidence\.primary\.operatorId/);
+    assert.match(executable, /secondaryOperatorId:\s*rpcEvidence\.secondary\.operatorId/);
+    assert.doesNotMatch(executable, /blockTimestampEvidence:\s*\{[^}]*\bprimaryOperatorId\s*,/s);
     for (const journal of [
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json",
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json.lock",
@@ -158,8 +161,8 @@ describe("production deployment runbook command contract", () => {
       resolve(REPO_ROOT, "deployments/base-sepolia/README.md"),
       "utf8",
     );
-    assert.match(deploymentReadme, /46-contract, timelock-owned, exact-ten/);
-    assert.match(deploymentReadme, /refuses that plan before\s+nonce reservation or broadcast/);
+    assert.match(deploymentReadme, /47-contract, timelock-owned, exact-ten/);
+    assert.match(deploymentReadme, /refuses any topology drift before\s+nonce reservation or broadcast/);
     assert.doesNotMatch(deploymentReadme, /deployer is the immutable owner/i);
   });
 });
@@ -206,9 +209,9 @@ function validEnv() {
     P42_METADATA_URI: "ipfs://p42-problem-metadata",
     P42_SEED_SCORE_ATOMS: "1000000000000000000000",
     P42_MIN_IMPROVEMENT_ATOMS: "1",
-    P42_OBJECTIVE_PROGRAM_PATH: "release/objective-program.bin",
-    P42_OBJECTIVE_PROGRAM_DIGEST: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-    P42_OBJECTIVE_PROGRAM_ID: `0x${"9".repeat(64)}`,
+    P42_OBJECTIVE_GUEST_ELF_PATH: "release/objective-program.bin",
+    P42_OBJECTIVE_GUEST_ELF_DIGEST: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    P42_OBJECTIVE_PROGRAM_VKEY: `0x${"9".repeat(64)}`,
   };
 }
 
@@ -250,9 +253,10 @@ function multiBoardInput() {
     metadataURI: env.P42_METADATA_URI,
     seedScoreAtoms: env.P42_SEED_SCORE_ATOMS,
     minImprovementAtoms: env.P42_MIN_IMPROVEMENT_ATOMS,
-    objectiveProgramPath: env.P42_OBJECTIVE_PROGRAM_PATH,
-    objectiveProgramDigest: env.P42_OBJECTIVE_PROGRAM_DIGEST,
-    objectiveProgramId: env.P42_OBJECTIVE_PROGRAM_ID,
+    objectiveGuestElfPath: env.P42_OBJECTIVE_GUEST_ELF_PATH,
+    objectiveGuestElfDigest: env.P42_OBJECTIVE_GUEST_ELF_DIGEST,
+    objectiveGuestElfSha256: `0x${env.P42_OBJECTIVE_GUEST_ELF_DIGEST.slice("sha256:".length)}`,
+    objectiveProgramVKey: env.P42_OBJECTIVE_PROGRAM_VKEY,
     onchainDa: true,
     certifiedObjective: {
       seedBest: "1000",
@@ -271,8 +275,6 @@ function multiBoardInput() {
     roles: {
       treasury: env.P42_TREASURY_ADDRESS,
       resolver: env.P42_RESOLVER_ADDRESS,
-      objectiveVerifier: env.P42_OBJECTIVE_VERIFIER_ADDRESS,
-      objectiveVerifierCodehash: env.P42_OBJECTIVE_VERIFIER_CODEHASH,
     },
     parameters: {
       alphaBps: env.P42_ALPHA_BPS,

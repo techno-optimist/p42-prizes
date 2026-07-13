@@ -14,6 +14,7 @@ import {
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
 import { readContractsArtifactJsonTrustedPublic, readContractsConfigJsonWithBytes } from "./strict-json-helper.js";
+import { INACTIVE_OBJECTIVE_VERIFIER_RUNTIME_CODEHASH } from "./production-release-preparer.js";
 
 function checkoutState(repoRoot, run) {
   return {
@@ -39,6 +40,23 @@ function requireWithin(root, path, label) {
   return absolute;
 }
 
+export function assertObjectiveVerifierCapsuleBinding(ethers, capsule, slate, artifact) {
+  const gateway = capsule?.contracts?.find(({ name }) => name === "P42SP1VerifierGateway");
+  if (!gateway) throw new Error("release capsule does not contain the production SP1 gateway");
+  if (
+    artifact?.contractName !== "P42SP1VerifierGateway"
+      || artifact?.sourceName !== "src/P42SP1VerifierGateway.sol"
+      || canonicalDigest(artifact) !== gateway.artifactDigest
+      || artifact.deployedBytecode !== gateway.runtimeTemplate
+      || ethers.keccak256(gateway.runtimeTemplate) !== slate?.objectiveVerifier?.runtimeCodehash
+      || slate?.objectiveVerifier?.proofsActive !== false
+      || slate?.objectiveVerifier?.runtimeCodehash !== INACTIVE_OBJECTIVE_VERIFIER_RUNTIME_CODEHASH
+  ) {
+    throw new Error("production slate objective verifier is not the exact capsule-bound SP1 gateway");
+  }
+  return gateway;
+}
+
 export async function verifyProductionRelease({
   ethers,
   repoRoot,
@@ -59,6 +77,7 @@ export async function verifyProductionRelease({
   validateIndex = validateProductionReleaseIndex,
   attestCapsule = attestReleaseCapsuleAgainstCheckout,
   preflightSlate = validateProductionSlatePreflight,
+  assertObjectiveVerifierBinding = assertObjectiveVerifierCapsuleBinding,
 } = {}) {
   const root = resolve(repoRoot ?? "");
   const evidence = resolve(evidenceRoot ?? "");
@@ -81,6 +100,13 @@ export async function verifyProductionRelease({
   validateIndex(index);
   if (capsule.gitCommit !== commit || slate.sourceCommit !== commit || index.sourceCommit !== commit || index.generatedAt !== slate.generatedAt || index.capsule.digest !== capsule.capsuleDigest || index.slate.digest !== slate.slateDigest) throw new Error("release index does not bind the exact checkout, timestamp, capsule, and slate");
   await attestCapsule(capsule, { repoRoot: root, expectedGitCommit: commit, run });
+  const objectiveVerifierArtifactPath = requireWithin(
+    evidence,
+    resolve(evidence, slate.objectiveVerifier.artifactPath),
+    "objective verifier artifact",
+  );
+  const objectiveVerifierArtifact = await readArtifact(objectiveVerifierArtifactPath, evidence);
+  assertObjectiveVerifierBinding(ethers, capsule, slate, objectiveVerifierArtifact);
   const boards = preflightSlate(ethers, slate, config, { repoRoot: root, evidenceRoot: evidence });
   if (!Array.isArray(boards) || boards.length !== 10) throw new Error("offline release verification requires exactly ten admitted boards");
   assertCleanCheckout(root, commit, run);
@@ -93,6 +119,7 @@ export async function verifyProductionRelease({
     slateDigest: slate.slateDigest,
     releaseIndexDigest: index.indexDigest,
     ceremonyConfigDigest: `sha256:${createHash("sha256").update(ceremonyInput.bytes).digest("hex")}`,
+    objectiveProofsActive: slate.objectiveVerifier.proofsActive,
     admittedBoards: boards.map(({ problemId, problemSlug, matrixDigest }) => ({ problemId, problemSlug, matrixDigest })),
   };
   return { ...report, verificationReportDigest: canonicalDigest(report) };

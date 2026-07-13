@@ -47,7 +47,8 @@ contract P42ChallengeManagerFactory {
         address problemRegistry;
         uint256 problemId;
         bytes32 objectivePackageHash;
-        bytes32 objectiveProgramId;
+        bytes32 objectiveGuestElfSha256;
+        bytes32 objectiveProgramVKey;
     }
 
     error P42_FACTORY_MANAGER_EXISTS();
@@ -62,7 +63,8 @@ contract P42ChallengeManagerFactory {
     mapping(address => address) public objectiveRegistryOf;
     mapping(address => uint256) public objectiveProblemIdOf;
     mapping(address => bytes32) public objectivePackageHashOf;
-    mapping(address => bytes32) public objectiveProgramIdOf;
+    mapping(address => bytes32) public objectiveGuestElfSha256Of;
+    mapping(address => bytes32) public objectiveProgramVKeyOf;
 
     event CanonicalManagerDeployed(address indexed manager, bytes32 indexed salt);
     event ObjectiveBindingRecorded(
@@ -70,7 +72,8 @@ contract P42ChallengeManagerFactory {
         address indexed registry,
         uint256 indexed problemId,
         bytes32 packageHash,
-        bytes32 programId
+        bytes32 guestElfSha256,
+        bytes32 programVKey
     );
 
     function effectiveSalt(bytes32 requestedSalt, address submissionManagerFactory, Parameters calldata parameters)
@@ -80,7 +83,7 @@ contract P42ChallengeManagerFactory {
     {
         return keccak256(
             abi.encode(
-                "P42_CHALLENGE_MANAGER_CREATE2_V2",
+                "P42_CHALLENGE_MANAGER_CREATE2_V3",
                 requestedSalt,
                 submissionManagerFactory,
                 parameters
@@ -102,7 +105,9 @@ contract P42ChallengeManagerFactory {
         _requireCanonicalTopology(parameters, submissionConfigurationHash);
         if (
             parameters.problemRegistry == address(0) || parameters.problemId == 0
-                || parameters.objectivePackageHash == bytes32(0) || parameters.objectiveProgramId == bytes32(0)
+                || parameters.objectivePackageHash == bytes32(0)
+                || parameters.objectiveGuestElfSha256 == bytes32(0)
+                || parameters.objectiveProgramVKey == bytes32(0)
         ) revert P42_FACTORY_BAD_SUBMISSION_CONFIGURATION();
         bytes32 boundSalt = effectiveSalt(salt, submissionManagerFactory, parameters);
         manager = address(new P42ChallengeManager{salt: boundSalt}(
@@ -126,28 +131,37 @@ contract P42ChallengeManagerFactory {
         objectiveRegistryOf[manager] = parameters.problemRegistry;
         objectiveProblemIdOf[manager] = parameters.problemId;
         objectivePackageHashOf[manager] = parameters.objectivePackageHash;
-        objectiveProgramIdOf[manager] = parameters.objectiveProgramId;
+        objectiveGuestElfSha256Of[manager] = parameters.objectiveGuestElfSha256;
+        objectiveProgramVKeyOf[manager] = parameters.objectiveProgramVKey;
         emit CanonicalManagerDeployed(manager, boundSalt);
         emit ObjectiveBindingRecorded(
             manager,
             parameters.problemRegistry,
             parameters.problemId,
             parameters.objectivePackageHash,
-            parameters.objectiveProgramId
+            parameters.objectiveGuestElfSha256,
+            parameters.objectiveProgramVKey
         );
     }
 
     function objectiveBindingOf(address manager)
         external
         view
-        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId)
+        returns (
+            address registry,
+            uint256 problemId,
+            bytes32 packageHash,
+            bytes32 guestElfSha256,
+            bytes32 programVKey
+        )
     {
         if (!isCanonicalManager[manager]) revert P42_FACTORY_BAD_SUBMISSION_MANAGER();
         return (
             objectiveRegistryOf[manager],
             objectiveProblemIdOf[manager],
             objectivePackageHashOf[manager],
-            objectiveProgramIdOf[manager]
+            objectiveGuestElfSha256Of[manager],
+            objectiveProgramVKeyOf[manager]
         );
     }
 

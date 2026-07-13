@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { requiredReleaseVerificationEnvironment, verifyProductionRelease } from "../scripts/production-release-verifier.js";
+import {
+  assertObjectiveVerifierCapsuleBinding,
+  requiredReleaseVerificationEnvironment,
+  verifyProductionRelease,
+} from "../scripts/production-release-verifier.js";
+import { canonicalDigest } from "../scripts/release-capsule-helper.js";
+import { keccak256 } from "ethers";
 
 const COMMIT = "a".repeat(40);
 const CAPSULE = `sha256:${"b".repeat(64)}`;
@@ -33,7 +40,12 @@ function args(paths, overrides = {}) {
 function dependencies(events, { dirtyAtStatusCall, indexCapsuleDigest = CAPSULE, boardCount = 10 } = {}) {
   let statusCalls = 0;
   const capsule = { gitCommit: COMMIT, capsuleDigest: CAPSULE };
-  const slate = { sourceCommit: COMMIT, generatedAt: "2026-07-12T00:00:00Z", slateDigest: SLATE };
+  const slate = {
+    sourceCommit: COMMIT,
+    generatedAt: "2026-07-12T00:00:00Z",
+    objectiveVerifier: { artifactPath: "release/objective-verifier.json", proofsActive: false },
+    slateDigest: SLATE,
+  };
   const index = { sourceCommit: COMMIT, generatedAt: slate.generatedAt, capsule: { digest: indexCapsuleDigest }, slate: { digest: SLATE }, indexDigest: INDEX };
   return {
     run(_program, command) {
@@ -49,6 +61,7 @@ function dependencies(events, { dirtyAtStatusCall, indexCapsuleDigest = CAPSULE,
     validateSlate() { events.push("validate-slate"); },
     validateIndex() { events.push("validate-index"); },
     async attestCapsule() { events.push("attest-capsule"); },
+    assertObjectiveVerifierBinding() { events.push("bind-objective-verifier"); },
     preflightSlate() {
       events.push("preflight-slate");
       return Array.from({ length: boardCount }, (_, index) => ({ problemId: String(index + 1), problemSlug: `board-${index + 1}`, matrixDigest: `sha256:${String(index).padStart(64, "0")}` }));
@@ -60,13 +73,46 @@ describe("offline production release verification", () => {
   it("re-attests and admits the exact indexed release without deployment credentials", async () => fixture(async (paths) => {
     const events = [];
     const report = await verifyProductionRelease({ ...args(paths), ...dependencies(events) });
-    assert.deepEqual(events, ["parse-ceremony", "validate-capsule", "validate-slate", "validate-index", "attest-capsule", "preflight-slate"]);
+    assert.deepEqual(events, ["parse-ceremony", "validate-capsule", "validate-slate", "validate-index", "attest-capsule", "bind-objective-verifier", "preflight-slate"]);
     assert.equal(report.status, "verified");
     assert.equal(report.releaseIndexDigest, INDEX);
     assert.match(report.ceremonyConfigDigest, /^sha256:[0-9a-f]{64}$/);
     assert.match(report.verificationReportDigest, /^sha256:[0-9a-f]{64}$/);
+    assert.equal(report.objectiveProofsActive, false);
     assert.equal(report.admittedBoards.length, 10);
   }));
+
+  it("binds the slate gateway to the exact closed capsule artifact", () => {
+    const artifact = JSON.parse(readFileSync(
+      new URL("../artifacts/src/P42SP1VerifierGateway.sol/P42SP1VerifierGateway.json", import.meta.url),
+      "utf8",
+    ));
+    const gateway = {
+      name: "P42SP1VerifierGateway",
+      artifactDigest: canonicalDigest(artifact),
+      runtimeTemplate: artifact.deployedBytecode,
+    };
+    const slate = { objectiveVerifier: { runtimeCodehash: keccak256(artifact.deployedBytecode), proofsActive: false } };
+    const ethers = { keccak256 };
+    assert.equal(assertObjectiveVerifierCapsuleBinding(ethers, { contracts: [gateway] }, slate, artifact), gateway);
+    assert.throws(
+      () => assertObjectiveVerifierCapsuleBinding(ethers, { contracts: [gateway] }, slate, { ...artifact, contractName: "ForgedGateway" }),
+      /exact capsule-bound/,
+    );
+    assert.throws(
+      () => assertObjectiveVerifierCapsuleBinding(ethers, { contracts: [] }, slate, artifact),
+      /does not contain/,
+    );
+    assert.throws(
+      () => assertObjectiveVerifierCapsuleBinding(
+        ethers,
+        { contracts: [gateway] },
+        { objectiveVerifier: { ...slate.objectiveVerifier, proofsActive: true } },
+        artifact,
+      ),
+      /exact capsule-bound/,
+    );
+  });
 
   it("rejects a substituted pair, incomplete admission, and checkout mutation", async () => fixture(async (paths) => {
     await assert.rejects(() => verifyProductionRelease({ ...args(paths), ...dependencies([], { indexCapsuleDigest: `sha256:${"e".repeat(64)}` }) }), /does not bind/);

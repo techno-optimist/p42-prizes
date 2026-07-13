@@ -35,9 +35,10 @@ function artifacts() {
   problem.admissionMatrixHash = hash("a");
   problem.admissionMatrixURI = "ipfs://admission-matrix";
   problem.certifiedObjective = { seedBest: "1", direction: "minimize", minImprovement: "1" };
-  problem.objectiveProgramId = hash("d");
-  problem.objectiveProgramPath = "release/objective-program.bin";
-  problem.objectiveProgramDigest = `sha256:${createHash("sha256").update("objective-program").digest("hex")}`;
+  problem.objectiveProgramVKey = hash("d");
+  problem.objectiveGuestElfPath = "release/objective-program.bin";
+  problem.objectiveGuestElfDigest = `sha256:${createHash("sha256").update("objective-program").digest("hex")}`;
+  problem.objectiveGuestElfSha256 = `0x${problem.objectiveGuestElfDigest.slice("sha256:".length)}`;
   problem.objectivePackageHash = hash("e");
   base.schema = "p42-prizes/deployment-manifest/v2";
   base.roles.objectiveVerifier = `0x${"44".repeat(20)}`;
@@ -53,12 +54,18 @@ function artifacts() {
     rolloverVault: sharedFixture(base.contracts.registry, "P42RolloverVault", "f1"),
     submissionManagerFactory: sharedFixture(base.contracts.registry, "P42SubmissionManagerFactory", "f2"),
     challengeManagerFactory: sharedFixture(base.contracts.registry, "P42ChallengeManagerFactory", "f3"),
+    objectiveVerifier: {
+      ...sharedFixture(base.contracts.registry, "P42SP1VerifierGateway", "44".repeat(20)),
+      runtimeCodeHash: base.roles.objectiveVerifierCodehash,
+      deployedCodeHash: base.roles.objectiveVerifierCodehash,
+      constructorArgs: [],
+    },
     resolverQuorum: sharedFixture(base.contracts.registry, "P42ResolverQuorum", "f4"),
   };
   const allowedParameters = ["alphaBps", "betaBps", "challengeWindowSeconds", "feeBps", "minCounterBondWei", "minPostingBondWei", "rerunCostMultiplierBps", "rerunCostWei", "resolverDecisionBondWei", "resolverFraudWindowSeconds"];
   base.parameters = Object.fromEntries(allowedParameters.map((key) => [key, base.parameters[key]]));
   base.problems = [problem];
-  base.sourceVerification.contracts = { timelock: null, registry: null, rolloverVault: null, submissionManagerFactory: null, challengeManagerFactory: null, resolverQuorum: null, boards: [{ problemId: "1", pool: null, ledger: null, submissions: null, challenges: null }] };
+  base.sourceVerification.contracts = { timelock: null, registry: null, rolloverVault: null, submissionManagerFactory: null, challengeManagerFactory: null, objectiveVerifier: null, resolverQuorum: null, boards: [{ problemId: "1", pool: null, ledger: null, submissions: null, challenges: null }] };
   base.indexer.indexedThroughBlock = 100;
   base.deploymentConfigHash = computePortalDeploymentConfigHash(base);
   const contractBinding = (entry: Record<string, any>) => ({ address: entry.address, deployedCodeHash: entry.deployedCodeHash, abiHash: entry.abiHash });
@@ -68,7 +75,9 @@ function artifacts() {
     manifestBinding: {
       deploymentCommit: base.deploymentCommit.toLowerCase(), deploymentConfigHash: base.deploymentConfigHash,
       chainId: 84532, startBlock: base.indexer.startBlock,
-      contracts: { timelock: contractBinding(base.contracts.timelock), registry: contractBinding(base.contracts.registry) },
+      contracts: Object.fromEntries(
+        Object.keys(base.contracts).map((key) => [key, contractBinding(base.contracts[key])]),
+      ),
       boards: { "1": Object.fromEntries(boardKeys.map((key) => [key, contractBinding(problem.contracts[key])])) },
     },
     finalityPolicy: clone(base.indexer.finalityPolicy),

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 
-const EXPECTED_TOPOLOGY_SHA256 = "a61a56f238e387eb1873464c5a8459eeb7e7757ecddf9afa734f6293bd7a4a1f";
+const EXPECTED_TOPOLOGY_SHA256 = "da65af31893048996fcd89532b1c680fe4e98bbb397dc54210a2660f7b9ede18";
 const protocolUrl = new URL("../protocol/canonical-topology-v1.json", import.meta.url);
 const packagedUrl = new URL("./canonical-topology-v1.json", import.meta.url);
 const sourceUrl = existsSync(protocolUrl) ? protocolUrl : packagedUrl;
@@ -26,7 +26,7 @@ export const CANONICAL_BOARD_CONTRACTS = Object.freeze(source.perBoard.map(Objec
 export const CANONICAL_CONTRACT_COUNT = CANONICAL_SHARED_CONTRACTS.length
   + CANONICAL_BOARD_COUNT * CANONICAL_BOARD_CONTRACTS.length;
 
-if (CANONICAL_CONTRACT_COUNT !== 46) throw new Error("canonical topology must contain exactly 46 contracts");
+if (CANONICAL_CONTRACT_COUNT !== 47) throw new Error("canonical topology must contain exactly 47 contracts");
 
 export function canonicalTopologyDescriptors(boardCount = CANONICAL_BOARD_COUNT) {
   if (boardCount !== CANONICAL_BOARD_COUNT) throw new Error(`canonical topology requires exactly ${CANONICAL_BOARD_COUNT} boards`);
@@ -70,7 +70,7 @@ export function assertCanonicalManifestTopology(manifest) {
   const sharedKeys = Object.keys(manifest?.contracts ?? {});
   const expectedSharedKeys = CANONICAL_SHARED_CONTRACTS.map(({ key }) => key);
   if (JSON.stringify(sharedKeys) !== JSON.stringify(expectedSharedKeys)) {
-    throw new Error("canonical manifest topology requires the exact six ordered shared contracts");
+    throw new Error("canonical manifest topology requires the exact seven ordered shared contracts");
   }
   const addresses = [];
   for (const [index, problem] of problems.entries()) {

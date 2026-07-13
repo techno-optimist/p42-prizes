@@ -3,15 +3,17 @@ import { execFileSync } from "node:child_process";
 import { constants } from "node:fs";
 import { link, lstat, open, unlink } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { readStrictJsonFile } from "../../agent/strict-json.mjs";
+import { readStrictJsonFile, readStrictJsonFileSync } from "../../agent/strict-json.mjs";
 
-export const RELEASE_CAPSULE_SCHEMA = "p42-prizes/release-capsule/v1";
+export const RELEASE_CAPSULE_SCHEMA = "p42-prizes/release-capsule/v2";
 export const PRODUCTION_CONTRACTS = Object.freeze([
   "P42MultisigTimelock",
   "P42ChallengeManagerFactory",
   "P42SubmissionManagerFactory",
   "P42RolloverVault",
+  "P42SP1VerifierGateway",
   "P42ResolverQuorum",
   "P42BountyPool",
   "P42PayoutLedger",
@@ -19,6 +21,9 @@ export const PRODUCTION_CONTRACTS = Object.freeze([
   "P42ChallengeManager",
   "P42ProblemRegistry",
 ]);
+const EXTERNAL_DEPENDENCIES_PATH = fileURLToPath(new URL("../../protocol/external-dependencies-v1.json", import.meta.url));
+const externalDependencyPolicy = readStrictJsonFileSync(EXTERNAL_DEPENDENCIES_PATH, { maxBytes: 64 * 1024, maxDepth: 16 });
+export const PRODUCTION_EXTERNAL_DEPENDENCIES = Object.freeze(structuredClone(externalDependencyPolicy.dependencies));
 
 const HEX_RE = /^0x(?:[0-9a-f]{2})*$/;
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
@@ -34,6 +39,7 @@ const IMMUTABLE_SEMANTICS = Object.freeze({
   P42ChallengeManagerFactory: Object.freeze([]),
   P42SubmissionManagerFactory: Object.freeze([]),
   P42RolloverVault: Object.freeze([]),
+  P42SP1VerifierGateway: Object.freeze([]),
   P42ResolverQuorum: Object.freeze(["owner", "expectedTreasury", "expectedDecisionBondWei", "managerFactory", "objectiveVerifier", "objectiveVerifierCodehash"]),
   P42BountyPool: Object.freeze(["owner", "fundingCap"]),
   P42PayoutLedger: Object.freeze(["owner", "pool", "treasury", "feeBps", "earliestCloseTimestamp", "closeByTimestamp"]),
@@ -179,7 +185,13 @@ export async function createReleaseCapsule({ contractsRoot = process.cwd(), gitC
     if (prior && (prior.inputDigest !== record.inputDigest || prior.outputDigest !== record.outputDigest)) throw new Error(`conflicting build-info ${artifact.buildInfoId}`);
     buildInfos.set(artifact.buildInfoId, record);
   }
-  const body = { schema: RELEASE_CAPSULE_SCHEMA, gitCommit, contracts: entries, buildInfos: [...buildInfos.values()].sort((a, b) => a.id.localeCompare(b.id)) };
+  const body = {
+    schema: RELEASE_CAPSULE_SCHEMA,
+    gitCommit,
+    contracts: entries,
+    externalDependencies: structuredClone(PRODUCTION_EXTERNAL_DEPENDENCIES),
+    buildInfos: [...buildInfos.values()].sort((a, b) => a.id.localeCompare(b.id)),
+  };
   return { ...body, capsuleDigest: canonicalDigest(body) };
 }
 
@@ -205,9 +217,10 @@ function validateRanges(contract) {
 }
 
 export function validateReleaseCapsule(capsule) {
-  exactKeys(capsule, ["schema", "gitCommit", "contracts", "buildInfos", "capsuleDigest"], "release capsule");
+  exactKeys(capsule, ["schema", "gitCommit", "contracts", "externalDependencies", "buildInfos", "capsuleDigest"], "release capsule");
   if (capsule.schema !== RELEASE_CAPSULE_SCHEMA || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !DIGEST_RE.test(capsule.capsuleDigest)) throw new Error("invalid release capsule identity");
-  if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CONTRACTS.join("\0")) throw new Error("release capsule must contain exactly the ten production contracts in canonical order");
+  if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CONTRACTS.join("\0")) throw new Error("release capsule must contain exactly the eleven production artifacts in canonical order");
+  if (canonical(capsule.externalDependencies) !== canonical(PRODUCTION_EXTERNAL_DEPENDENCIES)) throw new Error("release capsule external dependency policy mismatch");
   const infos = new Map(capsule.buildInfos.map((info) => [info.id, info]));
   if (infos.size !== capsule.buildInfos.length) throw new Error("duplicate build-info identity");
   for (const info of capsule.buildInfos) {

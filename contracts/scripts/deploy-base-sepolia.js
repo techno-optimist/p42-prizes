@@ -57,6 +57,7 @@ import {
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
 import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
+import { assertObjectiveVerifierCapsuleBinding } from "./production-release-verifier.js";
 import {
   readContractsArtifactJson,
   readContractsArtifactJsonTrustedPublic,
@@ -94,6 +95,7 @@ const CONTRACT_NAMES = Object.freeze({
   registry: "P42ProblemRegistry",
   submissionManagerFactory: "P42SubmissionManagerFactory",
   challengeManagerFactory: "P42ChallengeManagerFactory",
+  objectiveVerifier: "P42SP1VerifierGateway",
   resolverQuorum: "P42ResolverQuorum",
 });
 const BOARD_CONTRACT_NAMES = Object.freeze({
@@ -105,11 +107,11 @@ const BOARD_CONTRACT_NAMES = Object.freeze({
 
 function objectivePackageHash(ethers, registryAddress, problem) {
   return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-    ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
+    ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
     [
-      "P42_OBJECTIVE_PACKAGE_V1", BASE_SEPOLIA_CHAIN_ID, registryAddress, BigInt(problem.problemId),
+      "P42_OBJECTIVE_PACKAGE_V2", BASE_SEPOLIA_CHAIN_ID, registryAddress, BigInt(problem.problemId),
       problem.specHash, problem.verifierSourceHash, problem.verifierImageHash,
-      problem.admissionMatrixHash, problem.objectiveProgramId,
+      problem.admissionMatrixHash, problem.objectiveGuestElfSha256, problem.objectiveProgramVKey,
     ],
   ));
 }
@@ -139,7 +141,7 @@ async function readMultiBoardCeremonyInput() {
   }
 }
 
-async function productionReleaseInputs(repoRoot, deploymentCommit) {
+async function productionReleaseInputs(ethers, repoRoot, deploymentCommit) {
   const outputRoot = resolve(requiredEnv("P42_RELEASE_OUTPUT_ROOT"));
   const withinOutput = (name) => {
     const path = resolve(requiredEnv(name)); const rel = relative(outputRoot, path);
@@ -160,6 +162,14 @@ async function productionReleaseInputs(repoRoot, deploymentCommit) {
   validateProductionReleaseIndex(index);
   if (index.sourceCommit !== deploymentCommit || index.generatedAt !== slate.generatedAt || index.slate.digest !== slate.slateDigest || index.capsule.digest !== capsule.capsuleDigest) throw new Error("production release index does not bind the selected commit, timestamp, slate, and capsule");
   await attestReleaseCapsuleAgainstCheckout(capsule, { repoRoot, expectedGitCommit: deploymentCommit });
+  const evidenceRoot = resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT"));
+  const objectiveVerifierArtifactPath = resolve(evidenceRoot, slate.objectiveVerifier.artifactPath);
+  const objectiveVerifierRelative = relative(evidenceRoot, objectiveVerifierArtifactPath);
+  if (!objectiveVerifierRelative || objectiveVerifierRelative === ".." || objectiveVerifierRelative.startsWith(`..${sep}`)) {
+    throw new Error("production objective verifier artifact must remain below P42_RELEASE_EVIDENCE_ROOT");
+  }
+  const objectiveVerifierArtifact = await readContractsArtifactJsonTrustedPublic(objectiveVerifierArtifactPath, evidenceRoot);
+  assertObjectiveVerifierCapsuleBinding(ethers, capsule, slate, objectiveVerifierArtifact);
   return { slate, capsule, index, slatePath, capsulePath, indexPath };
 }
 
@@ -378,7 +388,13 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
         capsuleArtifactDigest, initCodeHash: ethers.keccak256(definition.expectedInitCode), expectedRuntimeCodeHash,
         primaryObservedRuntimeCodeHash, secondaryObservedRuntimeCodeHash,
         deploymentBlockTimestamp: receiptBlock.timestamp,
-        blockTimestampEvidence: { timestamp: receiptBlock.timestamp, primaryOperatorId, secondaryOperatorId, primaryBlockHash: receiptBlock.hash, secondaryBlockHash: secondaryReceiptBlock.hash },
+        blockTimestampEvidence: {
+          timestamp: receiptBlock.timestamp,
+          primaryOperatorId: rpcEvidence.primary.operatorId,
+          secondaryOperatorId: rpcEvidence.secondary.operatorId,
+          primaryBlockHash: receiptBlock.hash,
+          secondaryBlockHash: secondaryReceiptBlock.hash,
+        },
       } : {}),
     };
     await recordProgress(definition, { ...manifest, state: "mined" });
@@ -429,7 +445,7 @@ function factoryConfigurationHash(ethers, factoryInterface, method, parameters, 
 
 function assertMultiBoardExecutionDependencyOrder(definitions, config) {
   const expected = [
-    "timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory",
+    "timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier",
     ...config.problems.flatMap((problem) => [`board-${problem.problemId}-pool`, `board-${problem.problemId}-ledger`]),
     ...config.problems.map((problem) => `board-${problem.problemId}-submissions`),
     ...config.problems.map((problem) => `board-${problem.problemId}-challenges`),
@@ -616,9 +632,10 @@ function multiBoardManifestProblem(ethers, registryAddress, problem, deployments
     admissionMatrixHashAlgorithm: problem.admissionMatrixHashAlgorithm,
     admissionMatrixHash: problem.admissionMatrixHash,
     admissionMatrixURI: problem.admissionMatrixURI,
-    objectiveProgramPath: problem.objectiveProgramPath,
-    objectiveProgramDigest: problem.objectiveProgramDigest,
-    objectiveProgramId: problem.objectiveProgramId,
+    objectiveGuestElfPath: problem.objectiveGuestElfPath,
+    objectiveGuestElfDigest: problem.objectiveGuestElfDigest,
+    objectiveGuestElfSha256: problem.objectiveGuestElfSha256,
+    objectiveProgramVKey: problem.objectiveProgramVKey,
     objectivePackageHash: objectivePackageHash(ethers, registryAddress, problem),
     immutablePins: true,
     minImprovementAtoms: problem.minImprovementAtoms.toString(),
@@ -650,11 +667,6 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
 
   const input = await readMultiBoardCeremonyInput();
   let config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
-  const objectiveVerifierCode = await ethers.provider.getCode(config.roles.objectiveVerifier);
-  if (
-    objectiveVerifierCode === "0x"
-      || ethers.keccak256(objectiveVerifierCode).toLowerCase() !== config.roles.objectiveVerifierCodehash.toLowerCase()
-  ) throw new Error("objective verifier runtime does not match the ceremony codehash pin");
   validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
@@ -662,7 +674,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const repoRoot = resolve(process.cwd(), "..");
   assertCleanGitTree(repoRoot);
   const deploymentCommit = gitCommit(repoRoot);
-  const release = releaseMode === "production" ? await productionReleaseInputs(repoRoot, deploymentCommit) : null;
+  const release = releaseMode === "production" ? await productionReleaseInputs(ethers, repoRoot, deploymentCommit) : null;
   config = bindReleaseMode(config, { releaseMode, slate: release?.slate });
   const admissionPreflight = release
     ? validateProductionSlatePreflight(ethers, release.slate, config, { repoRoot, evidenceRoot: resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT")) })
@@ -670,9 +682,11 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const output = manifestPath();
 
-  const directRoots = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory"].map((key) => ({
+  const directRoots = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier"].map((key) => ({
     id: key, addressKey: key, name: CONTRACT_NAMES[key],
-    args: (plannedAddresses) => key.endsWith("Factory") ? [] : constructorArgsFor(CONTRACT_NAMES[key], config, plannedAddresses),
+    args: (plannedAddresses) => (key.endsWith("Factory") || key === "objectiveVerifier")
+      ? []
+      : constructorArgsFor(CONTRACT_NAMES[key], config, plannedAddresses),
   }));
   const poolAndLedgerDefinitions = [];
   const submissionDefinitions = [];
@@ -722,7 +736,8 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
         resolverFraudWindowSeconds: args[10], problemRegistry: plannedAddresses.registry,
         problemId: BigInt(problem.problemId),
         objectivePackageHash: objectivePackageHash(ethers, plannedAddresses.registry, problem),
-        objectiveProgramId: problem.objectiveProgramId,
+        objectiveGuestElfSha256: problem.objectiveGuestElfSha256,
+        objectiveProgramVKey: problem.objectiveProgramVKey,
       }),
       effectiveSalt: ({ ethers: runtimeEthers, requestedSalt, parameters, addresses: plannedAddresses }) =>
         challengeManagerEffectiveSalt(runtimeEthers, requestedSalt, plannedAddresses.submissionManagerFactory, parameters),
@@ -736,14 +751,16 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     });
   }
   const submissionFactoryInterface = (await ethers.getContractFactory(CONTRACT_NAMES.submissionManagerFactory)).interface;
+  const objectiveVerifierArtifact = await artifacts.readArtifact(CONTRACT_NAMES.objectiveVerifier);
+  const objectiveVerifierRuntimeCodehash = ethers.keccak256(objectiveVerifierArtifact.deployedBytecode);
   const resolverQuorum = {
     id: "resolverQuorum", addressKey: "resolverQuorum", name: CONTRACT_NAMES.resolverQuorum,
     args: (plannedAddresses) => [
       plannedAddresses.timelock, config.roles.treasury, config.parameters.resolverDecisionBondWei,
       plannedAddresses.challengeManagerFactory, config.governance.signers, config.governance.threshold,
       config.problems.map((problem) => plannedAddresses[`board-${problem.problemId}-challenges`]),
-      config.roles.objectiveVerifier,
-      config.roles.objectiveVerifierCodehash,
+      plannedAddresses.objectiveVerifier,
+      objectiveVerifierRuntimeCodehash,
     ],
   };
   const definitions = [...directRoots, ...poolAndLedgerDefinitions, ...submissionDefinitions, ...challengeDefinitions, resolverQuorum];
@@ -766,7 +783,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   if (existingJournal && (existingJournal.chainId !== Number(BASE_SEPOLIA_CHAIN_ID) || existingJournal.deployer.toLowerCase() !== deployer.address.toLowerCase())) throw new Error("existing signed deployment journal has chain/account drift before preflight");
   const preflightStartNonce = existingJournal?.startNonce ?? await ethers.provider.getTransactionCount(deployer.address, "pending");
   const executablePreflight = await materializeExecutablePlan(ethers, deployer, preflightStartNonce, definitions);
-  if (executablePreflight.steps.length !== 46 || executablePreflight.steps.some((step) => !step.expectedInitCode || !step.unsigned?.data)) throw new Error("multi-board executable preflight did not materialize all 46 initcode/calldata payloads");
+  if (executablePreflight.steps.length !== 47 || executablePreflight.steps.some((step) => !step.expectedInitCode || !step.unsigned?.data)) throw new Error("multi-board executable preflight did not materialize all 47 initcode/calldata payloads");
   const preflightBoards = config.problems.map((problem) => ({
     problem,
     addresses: {
@@ -794,7 +811,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     release?.capsule ?? null,
     executablePreflight,
   );
-  const sharedKeys = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "resolverQuorum"];
+  const sharedKeys = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier", "resolverQuorum"];
   const rootDeployments = Object.fromEntries(sharedKeys.map((key) => [key, executed.deployments[key]]));
   const rootAddresses = Object.fromEntries(sharedKeys.map((key) => [key, executed.addresses[key]]));
   const boards = config.problems.map((problem) => {
@@ -836,7 +853,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       configDigest: reservationIdentity.configDigest,
       releaseBindingDigest: productionReleaseBindingDigest({ deploymentCommit, configDigest: reservationIdentity.configDigest, slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest }),
       boardSetDigest: `sha256:${"0".repeat(64)}`, operationPlanDigest: `sha256:${"0".repeat(64)}`,
-      contractCount: 46, boardCount: 10, operationCount: 110,
+      contractCount: 47, boardCount: 10, operationCount: 110,
     } : null,
     network: {
       name: "baseSepolia",
@@ -859,8 +876,8 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       owner: rootAddresses.timelock,
       treasury: config.roles.treasury,
       resolver: rootAddresses.resolverQuorum,
-      objectiveVerifier: config.roles.objectiveVerifier,
-      objectiveVerifierCodehash: config.roles.objectiveVerifierCodehash,
+      objectiveVerifier: rootAddresses.objectiveVerifier,
+      objectiveVerifierCodehash: rootDeployments.objectiveVerifier.manifest.runtimeCodeHash,
       guardian: config.governance.guardian,
     },
     parameters: config.parameters,
@@ -870,6 +887,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       rolloverVault: rootDeployments.rolloverVault.manifest,
       submissionManagerFactory: rootDeployments.submissionManagerFactory.manifest,
       challengeManagerFactory: rootDeployments.challengeManagerFactory.manifest,
+      objectiveVerifier: rootDeployments.objectiveVerifier.manifest,
       resolverQuorum: rootDeployments.resolverQuorum.manifest,
     },
     governanceSetup: {
@@ -892,6 +910,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
         rolloverVault: null,
         submissionManagerFactory: null,
         challengeManagerFactory: null,
+        objectiveVerifier: null,
         resolverQuorum: null,
         boards: boards.map(({ problem }) => ({
           problemId: String(problem.problemId),
@@ -1057,11 +1076,17 @@ async function collectMultiBoardContinuationSnapshot(ethers, manifest, contractS
     checks.push(check(`objective.${prefix}.registry`, objectiveBinding[0], manifest.contracts.registry.address, sameAddress));
     checks.push(check(`objective.${prefix}.problemId`, objectiveBinding[1], problem.problemId));
     checks.push(check(`objective.${prefix}.packageHash`, objectiveBinding[2], problem.objectivePackageHash));
-    checks.push(check(`objective.${prefix}.programId`, objectiveBinding[3], problem.objectiveProgramId));
+    checks.push(check(`objective.${prefix}.guestElfSha256`, objectiveBinding[3], problem.objectiveGuestElfSha256));
+    checks.push(check(`objective.${prefix}.programVKey`, objectiveBinding[4], problem.objectiveProgramVKey));
+    checks.push(check(
+      `objective.${prefix}.guestElfSha256.quorum`,
+      await resolverQuorum.objectiveGuestElfSha256Of(problem.contracts.challenges.address, atBlock),
+      problem.objectiveGuestElfSha256,
+    ));
     checks.push(check(
       `objective.${prefix}.quorumProgramId`,
-      await resolverQuorum.objectiveProgramIdOf(problem.contracts.challenges.address, atBlock),
-      problem.objectiveProgramId,
+      await resolverQuorum.objectiveProgramVKeyOf(problem.contracts.challenges.address, atBlock),
+      problem.objectiveProgramVKey,
     ));
     for (const [key, deployment] of Object.entries(problem.contracts)) {
       const runtimeHash = ethers.keccak256(await ethers.provider.getCode(deployment.address, checkedBlock));

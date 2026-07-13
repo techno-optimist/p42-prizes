@@ -12,7 +12,7 @@ const ROLE_ORDER = new Map([
   ["timelock-signer", 0],
   ["guardian", 1],
   ["treasury", 2],
-  ["resolver", 3],
+  ["resolver-quorum-signer", 3],
 ]);
 
 export const ROLE_ACCEPTANCE_TYPES = Object.freeze({
@@ -75,7 +75,7 @@ export function expectedRoleAcceptances(ethers, manifest) {
     ...(manifest.governance?.signers ?? []).map((address) => ({ role: "timelock-signer", address })),
     { role: "guardian", address: manifest.governance?.guardian },
     { role: "treasury", address: manifest.roles?.treasury },
-    { role: "resolver", address: manifest.roles?.resolver },
+    ...(manifest.governance?.signers ?? []).map((address) => ({ role: "resolver-quorum-signer", address })),
   ].map((entry) => ({ ...entry, address: ethers.getAddress(entry.address) }));
   const seen = new Set();
   return values.sort((a, b) => ROLE_ORDER.get(a.role) - ROLE_ORDER.get(b.role) || a.address.toLowerCase().localeCompare(b.address.toLowerCase())).map((entry) => {

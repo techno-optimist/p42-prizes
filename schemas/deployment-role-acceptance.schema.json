@@ -16,7 +16,7 @@
     "deploymentCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "timelock": { "$ref": "#/$defs/address" },
     "topologyDigest": { "$ref": "#/$defs/digest" },
-    "contractCount": { "const": 46 },
+    "contractCount": { "const": 47 },
     "expiresAt": { "type": "integer", "minimum": 1 },
     "acceptances": { "type": "array", "minItems": 4, "items": { "$ref": "#/$defs/acceptance" } },
     "packetDigest": { "$ref": "#/$defs/digest" }
@@ -29,7 +29,7 @@
       "additionalProperties": false,
       "required": ["role", "address", "nonce", "riskAccepted", "roleAccepted", "signature"],
       "properties": {
-        "role": { "enum": ["timelock-signer", "guardian", "treasury", "resolver"] },
+        "role": { "enum": ["timelock-signer", "guardian", "treasury", "resolver-quorum-signer"] },
         "address": { "$ref": "#/$defs/address" },
         "nonce": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
         "riskAccepted": { "const": true },

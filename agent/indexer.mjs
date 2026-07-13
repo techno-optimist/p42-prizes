@@ -39,11 +39,19 @@ import {
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
+const EXPECTED_EXTERNAL_DEPENDENCIES_SHA256 = "157af4e5831ba4084136fba0f9cf838bfbeaa7dcde4f36b95b8f6b94b13b774f";
+const externalDependenciesUrl = new URL("./external-dependencies-v1.json", import.meta.url);
+const externalDependenciesBytes = readFileSync(externalDependenciesUrl);
+if (createHash("sha256").update(externalDependenciesBytes).digest("hex") !== EXPECTED_EXTERNAL_DEPENDENCIES_SHA256) {
+  throw new Error("external contract dependency authority digest mismatch");
+}
+const PRODUCTION_EXTERNAL_DEPENDENCIES = JSON.parse(externalDependenciesBytes.toString("utf8")).dependencies;
 const PRODUCTION_CAPSULE_CONTRACTS = [
   "P42MultisigTimelock",
   "P42ChallengeManagerFactory",
   "P42SubmissionManagerFactory",
   "P42RolloverVault",
+  "P42SP1VerifierGateway",
   "P42ResolverQuorum",
   "P42BountyPool",
   "P42PayoutLedger",
@@ -60,9 +68,10 @@ function capsuleCanonical(value) {
 
 function capsuleDigest(value) { return `sha256:${createHash("sha256").update(capsuleCanonical(value)).digest("hex")}`; }
 
-function validateReleaseCapsule(capsule) {
-  if (!capsule || capsule.schema !== "p42-prizes/release-capsule/v1" || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !Array.isArray(capsule.contracts) || !Array.isArray(capsule.buildInfos)) throw new Error("trusted release capsule is malformed");
+export function validateReleaseCapsule(capsule) {
+  if (!capsule || capsule.schema !== "p42-prizes/release-capsule/v2" || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !Array.isArray(capsule.contracts) || !Array.isArray(capsule.externalDependencies) || !Array.isArray(capsule.buildInfos)) throw new Error("trusted release capsule is malformed");
   if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CAPSULE_CONTRACTS.join("\0")) throw new Error("trusted release capsule contract set is incomplete or reordered");
+  if (capsuleCanonical(capsule.externalDependencies) !== capsuleCanonical(PRODUCTION_EXTERNAL_DEPENDENCIES)) throw new Error("trusted release capsule external dependency policy mismatch");
   const infos = new Set(capsule.buildInfos.map(({ id }) => id));
   if (infos.size !== capsule.buildInfos.length) throw new Error("trusted release capsule has duplicate build-info identities");
   for (const contract of capsule.contracts) {
@@ -439,9 +448,10 @@ export function computeProductionReleaseEvidence(manifest, { productionSlate } =
     problemId: String(problem.problemId), problemSlug: problem.problemSlug, verifierVersion: problem.verifierVersion,
     specHash: problem.specHash, verifierSourceDigest: problem.verifierSourceDigest,
     verifierImageDigest: problem.verifierImageDigest, admissionMatrixDigest: problem.admissionMatrixDigest,
-    objectiveProgramPath: problem.objectiveProgramPath,
-    objectiveProgramDigest: problem.objectiveProgramDigest,
-    objectiveProgramId: problem.objectiveProgramId,
+    objectiveGuestElfPath: problem.objectiveGuestElfPath,
+    objectiveGuestElfDigest: problem.objectiveGuestElfDigest,
+    objectiveGuestElfSha256: problem.objectiveGuestElfSha256,
+    objectiveProgramVKey: problem.objectiveProgramVKey,
   }));
   boardIdentities.forEach((board, index) => {
     if (board.problemId !== String(index + 1)) throw new Error(`production board ${index + 1} is not in exact registry order`);
@@ -449,12 +459,15 @@ export function computeProductionReleaseEvidence(manifest, { productionSlate } =
   const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
   const digest = (value) => `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
   const slate = productionSlate;
-  if (!slate || slate.status !== "ready" || !Array.isArray(slate.boards)) throw new Error("production validation requires a trusted status-ready slate");
+  if (!slate || slate.schema !== "p42-prizes/production-release-slate/v2" || slate.mode !== "production"
+      || slate.status !== "ready" || slate.objectiveVerifier?.proofsActive !== false || !Array.isArray(slate.boards)) {
+    throw new Error("production validation requires a trusted inactive-proof status-ready v2 slate");
+  }
   const { slateDigest, ...slateBody } = slate;
   const slateIdentities = slate.boards.map((board) => Object.fromEntries([
     "problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest",
-    "verifierImageDigest", "admissionMatrixDigest", "objectiveProgramPath",
-    "objectiveProgramDigest", "objectiveProgramId",
+    "verifierImageDigest", "admissionMatrixDigest", "objectiveGuestElfPath",
+    "objectiveGuestElfDigest", "objectiveGuestElfSha256", "objectiveProgramVKey",
   ].map((field) => [field, board[field]])));
   if (digest(slateBody) !== slateDigest || canonical(boardIdentities) !== canonical(slateIdentities)) throw new Error("production boards do not match the trusted closed release slate");
   if (manifest.roles?.objectiveVerifierCodehash?.toLowerCase() !== slate.objectiveVerifier?.runtimeCodehash?.toLowerCase()) {
@@ -1203,9 +1216,9 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
     }
     if (isMultiBoardManifest(manifest) && manifest.releaseMode === PRODUCTION_RELEASE_MODE) {
       const expectedObjectivePackageHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-        ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
+        ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
         [
-          "P42_OBJECTIVE_PACKAGE_V1",
+          "P42_OBJECTIVE_PACKAGE_V2",
           BigInt(manifest.network.chainId),
           manifest.contracts.registry.address,
           BigInt(problem.problemId),
@@ -1213,7 +1226,8 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
           problem.verifierSourceHash,
           problem.verifierImageHash,
           problem.admissionMatrixHash,
-          problem.objectiveProgramId,
+          problem.objectiveGuestElfSha256,
+          problem.objectiveProgramVKey,
         ],
       ));
       if (problem.objectivePackageHash.toLowerCase() !== expectedObjectivePackageHash.toLowerCase()) {
@@ -3152,6 +3166,7 @@ const CONTRACT_NAMES = Object.freeze({
   registry: "P42ProblemRegistry",
   submissionManagerFactory: "P42SubmissionManagerFactory",
   challengeManagerFactory: "P42ChallengeManagerFactory",
+  objectiveVerifier: "P42SP1VerifierGateway",
   resolverQuorum: "P42ResolverQuorum",
 });
 
@@ -3191,7 +3206,11 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
     const submissionFactory = new ethers.Contract(shared.submissionManagerFactory.address, artifacts.submissionManagerFactory.abi, provider);
     const challengeFactory = new ethers.Contract(shared.challengeManagerFactory.address, artifacts.challengeManagerFactory.abi, provider);
     const quorum = new ethers.Contract(shared.resolverQuorum.address, artifacts.resolverQuorum.abi, provider);
-    const objectiveVerifierCode = await provider.getCode(manifest.roles.objectiveVerifier, toBlock);
+    if (ethers.getAddress(manifest.roles.objectiveVerifier) !== ethers.getAddress(shared.objectiveVerifier.address)
+        || manifest.roles.objectiveVerifierCodehash.toLowerCase() !== shared.objectiveVerifier.runtimeCodeHash.toLowerCase()) {
+      throw new Error("objective verifier role projection does not match canonical deployment evidence");
+    }
+    const objectiveVerifierCode = await provider.getCode(shared.objectiveVerifier.address, toBlock);
     if (objectiveVerifierCode === "0x") throw new Error("objective verifier has no runtime code at the canonical block");
     const observedObjectiveVerifierCodehash = ethers.keccak256(objectiveVerifierCode);
     if (observedObjectiveVerifierCodehash.toLowerCase() !== manifest.roles.objectiveVerifierCodehash.toLowerCase()) {
@@ -3208,8 +3227,8 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
     if (ethers.getAddress(await quorum.managerFactory({ blockTag: toBlock })) !== ethers.getAddress(shared.challengeManagerFactory.address)) {
       throw new Error("resolver quorum manager factory does not match canonical deployment evidence");
     }
-    if (ethers.getAddress(await quorum.objectiveVerifier({ blockTag: toBlock })) !== ethers.getAddress(manifest.roles.objectiveVerifier)
-        || (await quorum.objectiveVerifierCodehash({ blockTag: toBlock })).toLowerCase() !== manifest.roles.objectiveVerifierCodehash.toLowerCase()) {
+    if (ethers.getAddress(await quorum.objectiveVerifier({ blockTag: toBlock })) !== ethers.getAddress(shared.objectiveVerifier.address)
+        || (await quorum.objectiveVerifierCodehash({ blockTag: toBlock })).toLowerCase() !== shared.objectiveVerifier.runtimeCodeHash.toLowerCase()) {
       throw new Error("resolver quorum objective verifier binding does not match canonical deployment evidence");
     }
     if (await quorum.managersFrozen({ blockTag: toBlock }) !== true) throw new Error("resolver quorum manager set is not frozen");
@@ -3225,8 +3244,10 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
         objectiveRegistry,
         objectiveProblemId,
         objectivePackageHash,
-        objectiveProgramId,
-        quorumProgramId,
+        objectiveGuestElfSha256,
+        objectiveProgramVKey,
+        quorumGuestElfSha256,
+        quorumProgramVKey,
       ] = await Promise.all([
         submissionFactory.isCanonicalSubmissionManager(submission, { blockTag: toBlock }),
         submissionFactory.configurationHashOf(submission, { blockTag: toBlock }),
@@ -3235,8 +3256,10 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
         challengeFactory.objectiveRegistryOf(manager, { blockTag: toBlock }),
         challengeFactory.objectiveProblemIdOf(manager, { blockTag: toBlock }),
         challengeFactory.objectivePackageHashOf(manager, { blockTag: toBlock }),
-        challengeFactory.objectiveProgramIdOf(manager, { blockTag: toBlock }),
-        quorum.objectiveProgramIdOf(manager, { blockTag: toBlock }),
+        challengeFactory.objectiveGuestElfSha256Of(manager, { blockTag: toBlock }),
+        challengeFactory.objectiveProgramVKeyOf(manager, { blockTag: toBlock }),
+        quorum.objectiveGuestElfSha256Of(manager, { blockTag: toBlock }),
+        quorum.objectiveProgramVKeyOf(manager, { blockTag: toBlock }),
       ]);
       if (!canonicalSubmission || submissionConfigurationHash === ZERO_HASH || !canonicalManager || pairConfigurationHash === ZERO_HASH) {
         throw new Error(`factory configuration evidence is missing for board ${index + 1}`);
@@ -3248,8 +3271,10 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
       if (ethers.getAddress(objectiveRegistry) !== ethers.getAddress(shared.registry.address)
           || objectiveProblemId !== BigInt(problem.problemId)
           || objectivePackageHash.toLowerCase() !== problem.objectivePackageHash.toLowerCase()
-          || objectiveProgramId.toLowerCase() !== problem.objectiveProgramId.toLowerCase()
-          || quorumProgramId.toLowerCase() !== problem.objectiveProgramId.toLowerCase()) {
+          || objectiveGuestElfSha256.toLowerCase() !== problem.objectiveGuestElfSha256.toLowerCase()
+          || objectiveProgramVKey.toLowerCase() !== problem.objectiveProgramVKey.toLowerCase()
+          || quorumGuestElfSha256.toLowerCase() !== problem.objectiveGuestElfSha256.toLowerCase()
+          || quorumProgramVKey.toLowerCase() !== problem.objectiveProgramVKey.toLowerCase()) {
         throw new Error(`objective verifier binding mismatch at board ${index + 1}`);
       }
     }
@@ -4018,6 +4043,18 @@ export function validateMultiBoardCheckpoint(checkpoint) {
   }
   validateCrossPoolDonationProvenance(checkpoint.boards, checkpoint.manifestBinding);
   for (const board of checkpoint.boards) {
+    const countKeys = Object.keys(board.events.counts).sort();
+    const expectedCountKeys = [...REQUIRED_LIFECYCLE_COVERAGE].sort();
+    if (stableStringify(countKeys) !== stableStringify(expectedCountKeys)) {
+      throw new Error(`checkpoint board ${board.problemId} lifecycle counts must cover the exact event catalog`);
+    }
+    const derivedComplete =
+      board.events.lifecycleCountsComplete === true
+      && board.reconstruction.lifecycleSnapshotComplete === true
+      && board.state?.coverage?.complete === true;
+    if (board.reconstruction.complete !== derivedComplete) {
+      throw new Error(`checkpoint board ${board.problemId} reconstruction.complete must equal derived lifecycle completeness`);
+    }
     const expectedBoardOk =
       board.reconstruction.complete && board.reconstruction.checks.every((check) => check.ok);
     if (board.reconstruction.ok !== expectedBoardOk) {

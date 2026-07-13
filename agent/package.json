@@ -9,6 +9,7 @@
     "challenge-envelope.mjs",
     "canonical-topology.mjs",
     "canonical-topology-v1.json",
+    "external-dependencies-v1.json",
     "schemas/",
     "checkpoint-attest.mjs",
     "da-arweave.mjs",

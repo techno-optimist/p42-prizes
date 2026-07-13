@@ -17,20 +17,19 @@ problem:
 - Per board: `P42BountyPool`, `P42PayoutLedger`,
   `P42SubmissionManager`, and `P42ChallengeManager`.
 
-The canonical topology is six shared contracts plus four contracts per board,
-for 46 contracts across ten boards. Every board receives its own funding
+The canonical topology is seven shared contracts plus four contracts per board,
+for 47 contracts across ten boards. Every board receives its own funding
 cap, data-availability mode and byte cap, close window, seed score, minimum
 improvement, certified objective, source-tree anchor, image anchor, and
 admission-matrix digest, durable matrix URI, and derived on-chain matrix
 anchor. Global governance and dispute economics are shared only where the
 manifest says they are shared.
 
-**Current implementation boundary.** The production deployer still constructs
-the historical three-shared-plus-forty-board plan. It must fail before reading
-the pending nonce, reserving addresses, signing a journal, or broadcasting any
-transaction. The canonical guard is intentionally removed only after the two
-manager factories, their CREATE2 provenance, and the resolver quorum are all
-materialized and every downstream evidence consumer has migrated to 46.
+**Current implementation boundary.** The production deployer constructs the
+seven shared roots, including the capsule-attested objective-verifier gateway,
+plus forty board contracts. It must fail before reading the pending nonce,
+reserving addresses, signing a journal, or broadcasting if that exact topology
+or any downstream evidence consumer has drifted.
 
 Registry IDs are not operator-selected. Board array position `n` is required to
 use registry ID `n`, and `registerExpected` reverts if an out-of-order timelock
@@ -249,7 +248,7 @@ reconciliation, and the gate-ledger requirements all exist as current evidence.
 
 Production governance completion also requires the closed explorer-verification
 dossier (`schemas/explorer-verification-dossier.schema.json`). It must cover the
-46 deployment addresses exactly once in canonical manifest order, bind the
+47 deployment addresses exactly once in canonical manifest order, bind the
 release capsule, compiler input/settings, constructor arguments, and runtime
 hashes, and contain fresh response digests from BaseScan's official API and the
 independent Sourcify path. Operators load it through a no-follow regular-file

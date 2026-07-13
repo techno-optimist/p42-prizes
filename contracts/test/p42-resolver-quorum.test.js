@@ -84,11 +84,11 @@ async function setNextTimestamp(timestamp) {
 
 function objectivePackageHash(registry, problemId, binding) {
   return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-    ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
+    ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
     [
-      "P42_OBJECTIVE_PACKAGE_V1", 31337n, registry, BigInt(problemId), binding.specHash,
+      "P42_OBJECTIVE_PACKAGE_V2", 31337n, registry, BigInt(problemId), binding.specHash,
       binding.verifierSourceHash, binding.verifierImageHash, binding.admissionMatrixHash,
-      binding.objectiveProgramId,
+      binding.objectiveGuestElfSha256, binding.objectiveProgramVKey,
     ],
   ));
 }
@@ -157,7 +157,8 @@ async function deployFixture(options = {}) {
       verifierSourceHash: ethers.id(`p42-source-${i}`),
       verifierImageHash: ethers.id(`p42-image-${i}`),
       admissionMatrixHash: ethers.id(`p42-admission-${i}`),
-      objectiveProgramId: ethers.id(`p42-objective-program-${i}`),
+      objectiveGuestElfSha256: ethers.sha256(ethers.toUtf8Bytes(`p42-objective-guest-${i}`)),
+      objectiveProgramVKey: ethers.id(`p42-objective-program-${i}`),
     };
     objectiveBindings.push(objectiveBinding);
     const tx = await factory.deployManager(
@@ -171,7 +172,8 @@ async function deployFixture(options = {}) {
         resolverFraudWindowSeconds: FRAUD_WINDOW,
         problemRegistry: await registry.getAddress(), problemId: i + 1,
         objectivePackageHash: objectivePackageHash(await registry.getAddress(), i + 1, objectiveBinding),
-        objectiveProgramId: objectiveBinding.objectiveProgramId,
+        objectiveGuestElfSha256: objectiveBinding.objectiveGuestElfSha256,
+        objectiveProgramVKey: objectiveBinding.objectiveProgramVKey,
       },
     );
     const receipt = await tx.wait();
@@ -261,13 +263,14 @@ async function objectiveProofFor(fixture, { correctedChallengerWins, proofBenefi
   const managerAddress = await manager.getAddress();
   const challengeInstanceHash = await manager.challengeInstanceHashOf(fixture.submissionId);
   const [contextHash] = await manager.objectiveProofContext(fixture.submissionId, challengeInstanceHash);
-  const programId = await fixture.quorum.objectiveProgramIdOf(managerAddress);
+  const guestElfSha256 = await fixture.quorum.objectiveGuestElfSha256Of(managerAddress);
+  const programVKey = await fixture.quorum.objectiveProgramVKeyOf(managerAddress);
   const chainId = (await ethers.provider.getNetwork()).chainId;
   const journalDigest = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-    ["string", "uint256", "address", "address", "bytes32", "bytes32", "bool", "address"],
+    ["string", "uint256", "address", "address", "bytes32", "bytes32", "bytes32", "bool", "address"],
     [
-      "P42_OBJECTIVE_VERDICT_JOURNAL_V1", chainId, await fixture.quorum.getAddress(), managerAddress,
-      programId, contextHash, correctedChallengerWins, proofBeneficiary,
+      "P42_OBJECTIVE_VERDICT_JOURNAL_V2", chainId, await fixture.quorum.getAddress(), managerAddress,
+      guestElfSha256, programVKey, contextHash, correctedChallengerWins, proofBeneficiary,
     ],
   ));
   return {
@@ -278,7 +281,7 @@ async function objectiveProofFor(fixture, { correctedChallengerWins, proofBenefi
       correctedChallengerWins,
       proofBeneficiary,
     },
-    proof: ethers.AbiCoder.defaultAbiCoder().encode(["bytes32", "bytes32"], [programId, journalDigest]),
+    proof: ethers.AbiCoder.defaultAbiCoder().encode(["bytes32", "bytes32"], [programVKey, journalDigest]),
     journalDigest,
   };
 }
@@ -386,12 +389,14 @@ describe("P42ResolverQuorum", function () {
       resolverFraudWindowSeconds: FRAUD_WINDOW,
       problemRegistry: await fixture.registry.getAddress(), problemId: 1,
       objectivePackageHash: (await manager.objectiveBinding())[2],
-      objectiveProgramId: fixture.objectiveBindings[0].objectiveProgramId,
+      objectiveGuestElfSha256: fixture.objectiveBindings[0].objectiveGuestElfSha256,
+      objectiveProgramVKey: fixture.objectiveBindings[0].objectiveProgramVKey,
     };
     const substituted = {
       ...canonical,
       objectivePackageHash: ethers.id("attacker-package"),
-      objectiveProgramId: ethers.id("attacker-program"),
+      objectiveGuestElfSha256: ethers.id("attacker-guest"),
+      objectiveProgramVKey: ethers.id("attacker-program"),
     };
     const canonicalSalt = await fixture.factory.effectiveSalt(
       requestedSalt, await fixture.submissionFactory.getAddress(), canonical,
@@ -436,7 +441,8 @@ describe("P42ResolverQuorum", function () {
           resolverFraudWindowSeconds: FRAUD_WINDOW,
           problemRegistry: await fixture.registry.getAddress(), problemId: 11,
           objectivePackageHash: ethers.id("spoof-objective-package"),
-          objectiveProgramId: OBJECTIVE_PROGRAM,
+          objectiveGuestElfSha256: ethers.id("spoof-objective-guest"),
+          objectiveProgramVKey: OBJECTIVE_PROGRAM,
         },
       ),
       fixture.factory,
@@ -472,7 +478,8 @@ describe("P42ResolverQuorum", function () {
           resolverFraudWindowSeconds: FRAUD_WINDOW,
           problemRegistry: await fixture.registry.getAddress(), problemId: 11,
           objectivePackageHash: ethers.id("wrong-governance-objective-package"),
-          objectiveProgramId: OBJECTIVE_PROGRAM,
+          objectiveGuestElfSha256: ethers.id("wrong-governance-objective-guest"),
+          objectiveProgramVKey: OBJECTIVE_PROGRAM,
         },
       ),
       fixture.factory,

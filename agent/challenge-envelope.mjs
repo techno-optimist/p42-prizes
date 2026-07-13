@@ -124,15 +124,16 @@ export function acquireEnvelopeLock(lockPath, { timeoutMs = 5000, now = Date.now
       host: hostname(), process_started_at_utc: new Date(Date.now() - Math.floor(process.uptime() * 1000)).toISOString(),
       lock_created_at_utc: new Date(now()).toISOString(),
     };
-    let created = false;
+    const stagedPath = `${lockPath}.acquire.${owner.token}`;
     try {
-      mkdirSync(lockPath, { mode: 0o700 }); created = true;
-      writeLockOwner(join(lockPath, "owner.json"), owner);
+      mkdirSync(stagedPath, { mode: 0o700 });
+      writeLockOwner(join(stagedPath, "owner.json"), owner);
+      renameSync(stagedPath, lockPath);
       return owner;
     }
     catch (error) {
-      if (created) { rmSync(lockPath, { recursive: true, force: true }); throw error; }
-      if (error.code !== "EEXIST") throw error;
+      rmSync(stagedPath, { recursive: true, force: true });
+      if (error.code !== "EEXIST" && error.code !== "ENOTEMPTY") throw error;
       let observed;
       try { observed = readLockOwner(lockPath); }
       catch (readError) {

@@ -6,6 +6,7 @@ import { describe, it } from "node:test";
 
 import {
   PRODUCTION_CONTRACTS,
+  PRODUCTION_EXTERNAL_DEPENDENCIES,
   assertRuntimeMatches,
   attestReleaseCapsuleAgainstCheckout,
   canonicalDigest,
@@ -49,14 +50,38 @@ describe("closed immutable release capsule", () => {
     assert.deepEqual(names, PRODUCTION_CONTRACTS);
     assert.deepEqual(schema.$defs.contract.properties.name.enum, PRODUCTION_CONTRACTS);
     assert.equal(schema.properties.contracts.items, false);
+    assert.equal(schema.properties.externalDependencies.items, false);
   });
 
-  it("binds exactly the ten production artifacts to exact compiler inputs and outputs", async () => {
+  it("binds exactly the eleven production artifacts to exact compiler inputs and outputs", async () => {
     const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
     assert.deepEqual(capsule.contracts.map(({ name }) => name), PRODUCTION_CONTRACTS);
+    assert.deepEqual(capsule.externalDependencies, PRODUCTION_EXTERNAL_DEPENDENCIES);
     assert.equal(validateReleaseCapsule(capsule), capsule);
     assert.ok(capsule.contracts.every(({ linkReferences, deployedLinkReferences }) => !Object.keys(linkReferences).length && !Object.keys(deployedLinkReferences).length));
     assert.ok(capsule.contracts.flatMap(({ immutableBindings }) => immutableBindings).every(({ astId, name }) => /^\d+$/.test(astId) && name));
+  });
+
+  it("rejects every mutation of the pinned upstream SP1 dependency", async () => {
+    const original = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const paths = [
+      ["releaseTag", "v6.1.1"],
+      ["commit", "f".repeat(40)],
+      ["interfaceSelector", "0x00000000"],
+      ["runtimeCodehash", `0x${"f".repeat(64)}`],
+    ];
+    for (const [field, value] of paths) {
+      const changed = clone(original);
+      changed.externalDependencies[0][field] = value;
+      reseal(changed);
+      assert.throws(() => validateReleaseCapsule(changed), /external dependency/);
+    }
+    for (const index of [0, 1]) {
+      const changed = clone(original);
+      changed.externalDependencies[0].deployments[index].descriptorDigest = `sha256:${"f".repeat(64)}`;
+      reseal(changed);
+      assert.throws(() => validateReleaseCapsule(changed), /external dependency/);
+    }
   });
 
   it("rejects one-byte artifact/runtime and build-info mutations, wrong build-info, and compiler drift", async () => {
