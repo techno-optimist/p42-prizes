@@ -6,6 +6,7 @@ import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readSy
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ethers } from "ethers";
+import { assertCanonicalManifestTopology } from "./canonical-topology.mjs";
 
 import { manifestProblemContracts } from "./indexer.mjs";
 import { readStrictJsonFileSync, parseStrictJsonBytes } from "./strict-json.mjs";
@@ -124,6 +125,7 @@ export function buildFundingActivationPlan({
   manifestValidator = validateSolverManifest,
   validationContext = null,
 }) {
+  assertCanonicalManifestTopology(manifest);
   manifestValidator(manifest, manifest.problems?.[0]?.problemId ?? null, validationContext);
   if (manifest.releaseMode !== "production" || manifest.status !== "governance-setup-complete") {
     throw new Error("funding activation requires a completed production deployment manifest");

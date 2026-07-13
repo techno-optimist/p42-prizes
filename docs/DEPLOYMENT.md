@@ -393,13 +393,19 @@ Before pushing an Observatory change:
 
 Before production governance can be marked complete, generate and validate a
 content-addressed `p42-prizes/explorer-verification-dossier/v2` artifact. The
-gate requires exact one-to-one coverage of all 43 addresses, current BaseScan
+gate requires exact one-to-one coverage of all 46 addresses, current BaseScan
 official API evidence, independent Sourcify evidence, and on-chain runtime code
 matching the attested release capsule. Set `P42_EXPLORER_DOSSIER_PATH` and the
 out-of-band exact-byte pin `P42_EXPLORER_DOSSIER_SHA256`; symlinks, stale
 responses, URL-only evidence, duplicate/omitted/relabelled contracts, and
 caller-authored success are rejected. Networked tests are prohibited; API paths
 are exercised with explicit mocks.
+
+The 46-address dossier is a target contract, not evidence that the current
+deployment script can produce it. Until the canonical factory/quorum ceremony
+is implemented, `deploy-base-sepolia.js` rejects its own legacy 43-contract
+plan before nonce lookup. Existing 43-address schemas and validators remain
+historical/rehearsal consumers and cannot authorize production.
 
 The current schema is `p42-prizes/explorer-verification-dossier/v2`. It embeds
 the bounded exact raw response bytes and URL, host, HTTP status, fetch time, and

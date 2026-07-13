@@ -154,7 +154,8 @@ describe("production deployment runbook command contract", () => {
       resolve(REPO_ROOT, "deployments/base-sepolia/README.md"),
       "utf8",
     );
-    assert.match(deploymentReadme, /43-contract, timelock-owned, exact-ten/);
+    assert.match(deploymentReadme, /46-contract, timelock-owned, exact-ten/);
+    assert.match(deploymentReadme, /refuses that plan before\s+nonce reservation or broadcast/);
     assert.doesNotMatch(deploymentReadme, /deployer is the immutable owner/i);
   });
 });

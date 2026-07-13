@@ -71,6 +71,7 @@ import {
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
+import { assertCanonicalDeploymentPlan } from "../../agent/canonical-topology.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
 import {
   buildGovernanceOperationJournal,
@@ -346,6 +347,13 @@ async function preflightSingleDeploymentPlan(ethers, deployer, config) {
 }
 
 async function preflightMultiBoardDeploymentPlan(ethers, deployer, config) {
+  const plannedDefinitions = ["timelock", "registry", "rolloverVault"].map((key) => ({ id: key, name: CONTRACT_NAMES[key] }));
+  for (const problem of config.problems) {
+    for (const [key, name] of Object.entries(BOARD_CONTRACT_NAMES)) {
+      plannedDefinitions.push({ id: `board-${problem.problemId}-${key}`, name });
+    }
+  }
+  assertCanonicalDeploymentPlan(plannedDefinitions, config.problems.length);
   const startNonce = await deployer.getNonce("pending");
   const rootAddresses = {
     timelock: ethers.getCreateAddress({ from: deployer.address, nonce: startNonce }),
@@ -622,6 +630,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       }),
     });
   }
+  assertCanonicalDeploymentPlan(definitions, config.problems.length);
   const executed = await executeSignedDeploymentPlan(
     ethers, deployer, output, reservationIdentity, definitions,
     (definition, deployment) => definition.id.startsWith("board-")
@@ -671,7 +680,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       configDigest: reservationIdentity.configDigest,
       releaseBindingDigest: productionReleaseBindingDigest({ deploymentCommit, configDigest: reservationIdentity.configDigest, slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest }),
       boardSetDigest: `sha256:${"0".repeat(64)}`, operationPlanDigest: `sha256:${"0".repeat(64)}`,
-      contractCount: 43, boardCount: 10, operationCount: 110,
+      contractCount: 46, boardCount: 10, operationCount: 110,
     } : null,
     network: {
       name: "baseSepolia",
