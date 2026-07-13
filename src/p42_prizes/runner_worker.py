@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timedelta, timezone
 import fcntl
 import json
@@ -36,6 +36,7 @@ from p42_prizes.runner_sandbox import (
     compose_immutable_image_ref,
     docker_available,
     force_remove_container,
+    stage_sandbox_solution,
 )
 from p42_prizes.da import DaEvidenceError, validate_da_evidence
 from p42_prizes.problem import load_manifest
@@ -1057,48 +1058,50 @@ def _run_verifier_for_transcript(
         verifier_command = command_template
         verifier_image = pinned_manifest["verifier"].get("image")
         wall_seconds = int(pinned_manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
-        if sandbox == "docker":
-            # Untrusted payload MUST run in a container; refuse to run it on the
-            # host if no runtime is available (fail closed).
-            if not docker_available():
-                return {
-                    "ok": False,
-                    "valid": False,
-                    "error": "sandbox=docker requested but no container runtime is available; refusing to run an untrusted payload on the host",
-                    "retryable": True,
-                    "failure_kind": "sandbox_unavailable",
-                    "elapsed_ms": int((time.monotonic() - started) * 1000),
-                    "sandbox": sandbox,
-                    "verifier_image": verifier_image,
-                    "verifier_command": verifier_command,
-                }
-            container_name = f"p42-verify-{_safe_job_id(job_id)}"
-            command = build_sandbox_command(
-                image=_manifest_sandbox_image_ref(pinned_manifest),
-                host_solution=solution,
-                verifier_command_template=command_template,
-                memory_mb=max(1, int(sandbox_memory_mb)),
-                pids_limit=sandbox_pids_limit,
-                cpus=sandbox_cpus,
-                container_name=container_name,
+        solution_context = stage_sandbox_solution(solution) if sandbox == "docker" else nullcontext(solution)
+        with solution_context as executable_solution:
+            if sandbox == "docker":
+                # Untrusted payload MUST run in a container; refuse to run it on the
+                # host if no runtime is available (fail closed).
+                if not docker_available():
+                    return {
+                        "ok": False,
+                        "valid": False,
+                        "error": "sandbox=docker requested but no container runtime is available; refusing to run an untrusted payload on the host",
+                        "retryable": True,
+                        "failure_kind": "sandbox_unavailable",
+                        "elapsed_ms": int((time.monotonic() - started) * 1000),
+                        "sandbox": sandbox,
+                        "verifier_image": verifier_image,
+                        "verifier_command": verifier_command,
+                    }
+                container_name = f"p42-verify-{_safe_job_id(job_id)}"
+                command = build_sandbox_command(
+                    image=_manifest_sandbox_image_ref(pinned_manifest),
+                    host_solution=executable_solution,
+                    verifier_command_template=command_template,
+                    memory_mb=max(1, int(sandbox_memory_mb)),
+                    pids_limit=sandbox_pids_limit,
+                    cpus=sandbox_cpus,
+                    container_name=container_name,
+                )
+                # The container is --network=none and self-contained; the host process
+                # here is only the `docker run` client. Memory is enforced by the
+                # container cgroup, so no host RLIMIT_AS preexec.
+                env = {"PATH": os.environ.get("PATH", os.defpath)}
+                preexec = None
+            else:
+                command = [part.format(solution=str(executable_solution)) for part in shlex.split(command_template)]
+                env = build_verifier_env(problem)
+                preexec = _memory_limit_preexec(child_address_space_limit_mb)
+            completed = _run_isolated_verifier(
+                command,
+                cwd=problem,
+                env=env,
+                wall_seconds=wall_seconds,
+                preexec_fn=preexec,
+                cancellation_event=cancellation_event,
             )
-            # The container is --network=none and self-contained; the host process
-            # here is only the `docker run` client. Memory is enforced by the
-            # container cgroup, so no host RLIMIT_AS preexec.
-            env = {"PATH": os.environ.get("PATH", os.defpath)}
-            preexec = None
-        else:
-            command = [part.format(solution=str(solution)) for part in shlex.split(command_template)]
-            env = build_verifier_env(problem)
-            preexec = _memory_limit_preexec(child_address_space_limit_mb)
-        completed = _run_isolated_verifier(
-            command,
-            cwd=problem,
-            env=env,
-            wall_seconds=wall_seconds,
-            preexec_fn=preexec,
-            cancellation_event=cancellation_event,
-        )
     except LeaseHeartbeatError as exc:
         if container_name is not None:
             force_remove_container(container_name)

@@ -12,6 +12,7 @@ from p42_prizes.runner_sandbox import (
     build_sandbox_command,
     compose_immutable_image_ref,
     docker_available,
+    stage_sandbox_solution,
 )
 from p42_prizes.runner_worker import _run_verifier_for_transcript
 
@@ -121,6 +122,21 @@ def test_requires_solution_placeholder_and_valid_limits():
 
 def test_docker_available_returns_bool_without_raising():
     assert isinstance(docker_available(), bool)
+
+
+def test_stage_sandbox_solution_preserves_private_source(tmp_path: Path):
+    source = tmp_path / "solution.json"
+    source.write_bytes(b'{"answer":42}\n')
+    source.chmod(0o600)
+
+    with stage_sandbox_solution(source) as staged:
+        assert staged.read_bytes() == source.read_bytes()
+        assert staged.stat().st_mode & 0o777 == 0o444
+        assert staged.parent.stat().st_mode & 0o777 == 0o700
+        staged_path = staged
+
+    assert source.stat().st_mode & 0o777 == 0o600
+    assert not staged_path.exists()
 
 
 def test_sandbox_docker_fails_closed_when_no_runtime():
