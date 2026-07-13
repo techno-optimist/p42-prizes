@@ -36,11 +36,16 @@ export function AtlasDossier({ entry: value }: { entry: unknown }) {
         <DossierSection no="02" title="Finite object" value={read(entry, "finite_object")} />
         <DossierSection no="03" title="Verifier" value={read(entry, "verifier")} />
         <DossierSection no="04" title="Attack lane" value={read(entry, "attack")} />
-        <DossierSection no="05" title="Wall and campaign notes" value={read(entry, "campaign_finding", "wall_reason", "beatable_reason")} />
+        <DossierSection no="05" title="Routing verdict" value={read(entry, "verdict")} />
+        <DossierSection no="06" title="Why this verifier class" value={read(entry, "board_class_reason")} />
+        <DossierSection no="07" title="Why pursue or stop" value={read(entry, "beatable_reason", "wall_reason")} />
+        <DossierSection no="08" title="Prior campaign findings" value={read(entry, "campaign_finding")} />
       </main>
       <aside className="atlas-dossier-aside" aria-label="Dossier references and scope">
         <section><h2>Citations</h2>{citations.length ? <ol className="atlas-citations">{citations.map((citation, index) => <Citation key={index} citation={citation} />)}</ol> : <p>No bibliography was recorded for this entry in the snapshot.</p>}</section>
-        <section><h2>Scope note</h2><p>This dossier is a research-routing assessment. It does not assert that the problem is solved, that a proposed finite check proves the original statement, or that a P42 prize board has been admitted.</p></section>
+        <section><h2>Research scores</h2><p>Verifier fit: {words(read(entry, "fit_score"), "unscored")}/10<br />Mathematical impact: {words(read(entry, "impact_score"), "unscored")}/10</p></section>
+        <section><h2>Impact rationale</h2><p>{words(read(entry, "impact_reason"))}</p></section>
+        <section><h2>Scope note</h2><p>This dossier is a research-routing assessment. READY means an exact finite verifier is plausible; it is not a compute recommendation. Only READY + MOVABLE entries enter the recommended queue. No label asserts that the problem is solved, that a finite check proves the original statement, or that a P42 prize board has been admitted.</p></section>
         {join !== undefined && <section className="atlas-join"><h2>P42 join</h2><Join value={join} /></section>}
       </aside>
     </div>

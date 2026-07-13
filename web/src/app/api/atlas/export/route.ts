@@ -7,7 +7,7 @@ export async function GET() {
 
   return new Response(`${payload}\n`, {
     headers: {
-      "cache-control": "public, max-age=31536000, immutable",
+      "cache-control": "public, max-age=0, must-revalidate",
       "content-disposition": 'attachment; filename="p42-erdos-atlas-v1.json"',
       "content-type": "application/json; charset=utf-8",
       etag: `"sha256-${digest}"`,

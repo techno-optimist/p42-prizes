@@ -42,7 +42,7 @@ export default function AtlasPage() {
         <div className="atlas-machine-links" aria-label="Machine-readable Atlas resources">
           <span>For agents</span>
           <a href={sitePath("/api/atlas/export")}>Full snapshot · JSON</a>
-          <a href={sitePath("/api/atlas?boardability=READY&p42=false&limit=51")}>Unpackaged candidates · JSON</a>
+          <a href={sitePath("/api/atlas?boardability=READY&reach=MOVABLE&p42=false&limit=51")}>Recommended next · JSON</a>
           <a href={sitePath("/api/atlas?boardability=NONE&limit=51")}>Known walls · JSON</a>
           <a href={sitePath("/api/atlas/meta")}>Schema and facets · JSON</a>
         </div>

@@ -119,6 +119,8 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
       && (packageState === "all" || row.packaged === (packageState === "packaged"));
   }), [board, deferredQuery, lane, packageState, reach, rows]);
 
+  const recommended = rows.filter((row) => row.boardability === "READY" && row.reach === "MOVABLE" && !row.packaged);
+
   const clear = () => {
     setQuery("");
     router.replace(pathname, { scroll: false });
@@ -136,7 +138,7 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
 
       <nav className="atlas-routes" aria-label="Atlas routing views">
         <RouteButton label="All surveyed" count={rows.length} active={board === "all" && packageState === "all"} onClick={() => updateUrl({ boardability: "all", package: "all" })} />
-        <RouteButton label="Board candidates" count={rows.filter((row) => row.boardability === "READY" && !row.packaged).length} active={board === "READY" && packageState === "unpackaged"} onClick={() => updateUrl({ boardability: "READY", package: "unpackaged" })} />
+        <RouteButton label="Recommended next" count={recommended.length} active={board === "READY" && reach === "MOVABLE" && packageState === "unpackaged"} onClick={() => updateUrl({ boardability: "READY", reach: "MOVABLE", package: "unpackaged" })} />
         <RouteButton label="Heavy verification" count={rows.filter((row) => row.boardability === "HEAVY").length} active={board === "HEAVY"} onClick={() => updateUrl({ boardability: "HEAVY", package: "all" })} />
         <RouteButton label="Known walls" count={rows.filter((row) => row.boardability === "NONE").length} active={board === "NONE"} onClick={() => updateUrl({ boardability: "NONE", package: "all" })} />
         <RouteButton label="P42 packages" count={rows.filter((row) => row.packaged).length} active={packageState === "packaged"} onClick={() => updateUrl({ boardability: "all", package: "packaged" })} />
@@ -172,7 +174,8 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
           <g>
             {filtered.map((row) => (
               <Link key={row.id} href={`/atlas/${encodeURIComponent(row.id)}`} aria-label={`Erdős ${row.number}: ${row.title}. Verifier fit ${Math.round(row.fit)}, impact ${Math.round(row.impact)}.`}>
-                <circle className={selected === row.id ? "is-selected" : ""} cx={row.plotX} cy={row.plotY} r={selected === row.id ? 10 : 7} tabIndex={0} onMouseEnter={() => setSelected(row.id)} onMouseLeave={() => setSelected(null)} onFocus={() => setSelected(row.id)} onBlur={() => setSelected(null)} />
+                <circle className="atlas-map-hit" cx={row.plotX} cy={row.plotY} r="18" aria-hidden="true" />
+                <circle className={selected === row.id ? "atlas-map-dot is-selected" : "atlas-map-dot"} cx={row.plotX} cy={row.plotY} r={selected === row.id ? 10 : 7} onMouseEnter={() => setSelected(row.id)} onMouseLeave={() => setSelected(null)} onFocus={() => setSelected(row.id)} onBlur={() => setSelected(null)} />
               </Link>
             ))}
           </g>
