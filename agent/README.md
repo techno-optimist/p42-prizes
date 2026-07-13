@@ -251,8 +251,11 @@ stake. The legacy direct `P42ChallengeManager.resolve(...)` path exists only
 under `--local-test` on chain IDs `1337` or `31337`.
 
 Signature artifacts remain transport records rather than external attestations.
-Signer identities, independent hosts/runners, HSM custody, objective verifier
-fraud proofs, and a deployed multi-signer rehearsal remain launch gates.
+Signer identities, independent hosts/runners, HSM custody, independently
+reviewed per-board proof programs, an audited immutable verifier gateway, and a
+deployed multi-signer/fraud-proof rehearsal remain launch gates. The source-level
+trust boundary and settlement semantics are specified in
+`docs/OBJECTIVE_FRAUD_PROOFS.md`.
 
 One chain-and-quorum lock under the required shared `--coordination-root`
 serializes state reload, decision reservation, transaction population,

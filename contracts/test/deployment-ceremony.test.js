@@ -61,6 +61,7 @@ const ADDRESSES = Object.freeze({
   treasury: "0x0000000000000000000000000000000000000005",
   resolver: "0x0000000000000000000000000000000000000006",
   deployer: "0x0000000000000000000000000000000000000007",
+  objectiveVerifier: "0x0000000000000000000000000000000000000008",
   timelock: "0x0000000000000000000000000000000000000010",
   pool: "0x0000000000000000000000000000000000000011",
   ledger: "0x0000000000000000000000000000000000000012",
@@ -177,6 +178,8 @@ function validEnv() {
     P42_GUARDIAN_ADDRESS: ADDRESSES.guardian,
     P42_TREASURY_ADDRESS: ADDRESSES.treasury,
     P42_RESOLVER_ADDRESS: ADDRESSES.resolver,
+    P42_OBJECTIVE_VERIFIER_ADDRESS: ADDRESSES.objectiveVerifier,
+    P42_OBJECTIVE_VERIFIER_CODEHASH: `0x${"8".repeat(64)}`,
     P42_ALPHA_BPS: "200",
     P42_BETA_BPS: "500",
     P42_CHALLENGE_WINDOW_SECONDS: "259200",
@@ -202,7 +205,10 @@ function validEnv() {
     P42_ADMISSION_MATRIX_HASH: `0x${"4".repeat(64)}`,
     P42_METADATA_URI: "ipfs://p42-problem-metadata",
     P42_SEED_SCORE_ATOMS: "1000000000000000000000",
-    P42_MIN_IMPROVEMENT_ATOMS: "1"
+    P42_MIN_IMPROVEMENT_ATOMS: "1",
+    P42_OBJECTIVE_PROGRAM_PATH: "release/objective-program.bin",
+    P42_OBJECTIVE_PROGRAM_DIGEST: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    P42_OBJECTIVE_PROGRAM_ID: `0x${"9".repeat(64)}`,
   };
 }
 
@@ -244,6 +250,9 @@ function multiBoardInput() {
     metadataURI: env.P42_METADATA_URI,
     seedScoreAtoms: env.P42_SEED_SCORE_ATOMS,
     minImprovementAtoms: env.P42_MIN_IMPROVEMENT_ATOMS,
+    objectiveProgramPath: env.P42_OBJECTIVE_PROGRAM_PATH,
+    objectiveProgramDigest: env.P42_OBJECTIVE_PROGRAM_DIGEST,
+    objectiveProgramId: env.P42_OBJECTIVE_PROGRAM_ID,
     onchainDa: true,
     certifiedObjective: {
       seedBest: "1000",
@@ -262,6 +271,8 @@ function multiBoardInput() {
     roles: {
       treasury: env.P42_TREASURY_ADDRESS,
       resolver: env.P42_RESOLVER_ADDRESS,
+      objectiveVerifier: env.P42_OBJECTIVE_VERIFIER_ADDRESS,
+      objectiveVerifierCodehash: env.P42_OBJECTIVE_VERIFIER_CODEHASH,
     },
     parameters: {
       alphaBps: env.P42_ALPHA_BPS,
@@ -965,6 +976,12 @@ describe("deployment ceremony construction", () => {
     assert.throws(
       () => completeSetupManifest(production, { ...snapshot, finalityAnchor: { l2: { finalized: { number: snapshot.checkedBlock } } } }),
       /production governance completion requires deployment role acceptances/,
+    );
+    const objectiveMismatch = structuredClone(snapshot);
+    objectiveMismatch.checks.find((check) => check.name === "objective.board/1.programId").ok = false;
+    assert.throws(
+      () => completeSetupManifest(manifest, objectiveMismatch),
+      /governance setup is incomplete/,
     );
     const completed = completeSetupManifest(manifest, snapshot);
     assert.equal(completed.status, "governance-setup-complete");

@@ -5,6 +5,14 @@ interface IP42RegisteredPool {
     function everFunded() external view returns (bool);
 }
 
+interface IP42ObjectiveBoundManager {
+    function factory() external view returns (address);
+    function objectiveBinding()
+        external
+        view
+        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId);
+}
+
 /// @notice Catalog and metadata anchor for Phase 1 problems.
 /// Problem metadata is editable while unfunded, then immutable as soon as the
 /// pool receives funds or the owner explicitly freezes it.
@@ -93,8 +101,9 @@ contract P42ProblemRegistry {
     }
 
     function _register(ProblemConfig calldata config) private returns (uint256 problemId) {
-        _validateConfig(config);
-        problemId = ++problemCount;
+        problemId = problemCount + 1;
+        _validateConfig(problemId, config);
+        problemCount = problemId;
         _store(problemId, config, false);
         emit ProblemRegistered(problemId, config.specHash, config.verifierImageHash, config.pool, config.metadataURI);
     }
@@ -102,7 +111,7 @@ contract P42ProblemRegistry {
     function updateBeforeFunding(uint256 problemId, ProblemConfig calldata config) external onlyOwner {
         _requireExisting(problemId);
         if (isFrozen(problemId)) revert P42_ALREADY_FROZEN();
-        _validateConfig(config);
+        _validateConfig(problemId, config);
         _store(problemId, config, false);
         emit ProblemUpdated(problemId, config.specHash, config.verifierImageHash);
     }
@@ -170,7 +179,7 @@ contract P42ProblemRegistry {
         problem.frozen = frozen;
     }
 
-    function _validateConfig(ProblemConfig calldata config) private pure {
+    function _validateConfig(uint256 problemId, ProblemConfig calldata config) private view {
         if (
             config.specHash == bytes32(0)
                 || config.verifierSourceHash == bytes32(0)
@@ -189,6 +198,50 @@ contract P42ProblemRegistry {
             revert P42_ZERO_ADDRESS();
         }
         if (config.challengeWindowSeconds == 0) revert P42_BAD_WINDOW();
+        // Canonical factory deployments must bind the exact registry package to
+        // their objective proof program. Direct managers remain available for
+        // local scaffolds, but cannot enter the resolver quorum's canonical set.
+        (bool factoryRead, bytes memory factoryResult) =
+            config.challengeManager.staticcall(abi.encodeCall(IP42ObjectiveBoundManager.factory, ()));
+        if (factoryRead && factoryResult.length == 32 && abi.decode(factoryResult, (address)).code.length != 0) {
+            (address registry, uint256 boundProblemId, bytes32 packageHash, bytes32 programId) =
+                IP42ObjectiveBoundManager(config.challengeManager).objectiveBinding();
+            if (
+                registry != address(this) || boundProblemId != problemId || programId == bytes32(0)
+                    || packageHash
+                        != _objectivePackageHash(
+                            problemId,
+                            config.specHash,
+                            config.verifierSourceHash,
+                            config.verifierImageHash,
+                            config.admissionMatrixHash,
+                            programId
+                        )
+            ) revert P42_ZERO_HASH();
+        }
+    }
+
+    function _objectivePackageHash(
+        uint256 problemId,
+        bytes32 specHash,
+        bytes32 verifierSourceHash,
+        bytes32 verifierImageHash,
+        bytes32 admissionMatrixHash,
+        bytes32 objectiveProgramId
+    ) private view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                "P42_OBJECTIVE_PACKAGE_V1",
+                block.chainid,
+                address(this),
+                problemId,
+                specHash,
+                verifierSourceHash,
+                verifierImageHash,
+                admissionMatrixHash,
+                objectiveProgramId
+            )
+        );
     }
 
     function _requireExisting(uint256 problemId) private view returns (Problem storage problem) {

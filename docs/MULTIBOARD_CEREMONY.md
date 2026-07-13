@@ -132,6 +132,7 @@ the clean frozen checkout:
 cd contracts
 P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/ceremony.json \
 P42_PRODUCTION_IMAGE_DOSSIER_PATH=../release-evidence/verifier-images.json \
+P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH=../release-evidence/objective-verifier.json \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
 P42_RELEASE_GENERATED_AT=YYYY-MM-DDTHH:MM:SSZ \
@@ -139,14 +140,17 @@ P42_RELEASE_OUTPUT_ROOT=/absolute/path/outside-the-repository \
 npm run release:prepare
 ```
 
-The image dossier and all admission matrices must be inside the explicit
+The image dossier, objective-verifier artifact, all ten exact objective-program
+files, and all admission matrices must be inside the explicit
 evidence root, which is outside the frozen repository because this evidence is
 generated after the source commit is fixed. The ceremony config is evidence too
 and must be beneath that same root. The output root must be outside
-both roots. The command force-compiles the seven production contracts, builds
+both roots. The command force-compiles the canonical production contracts, builds
 and independently re-attests the release capsule, derives the exact-ten slate,
 runs every real `admit-ready` check, and rechecks the clean commit before and
-after publication. Capsule and slate files are mode `0444` and content
+after publication. The gateway runtime codehash is derived from the artifact's
+`deployedBytecode`; every program ID is derived as `keccak256(exact program
+bytes)`. Capsule and slate files are mode `0444` and content
 addressed. Only the final content-addressed release index declares their pair
 complete; a failed second publication can leave an unreferenced immutable
 artifact but cannot create a complete release. A failed compile, attestation,

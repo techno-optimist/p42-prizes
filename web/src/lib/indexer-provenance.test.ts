@@ -35,7 +35,13 @@ function artifacts() {
   problem.admissionMatrixHash = hash("a");
   problem.admissionMatrixURI = "ipfs://admission-matrix";
   problem.certifiedObjective = { seedBest: "1", direction: "minimize", minImprovement: "1" };
+  problem.objectiveProgramId = hash("d");
+  problem.objectiveProgramPath = "release/objective-program.bin";
+  problem.objectiveProgramDigest = `sha256:${createHash("sha256").update("objective-program").digest("hex")}`;
+  problem.objectivePackageHash = hash("e");
   base.schema = "p42-prizes/deployment-manifest/v2";
+  base.roles.objectiveVerifier = `0x${"44".repeat(20)}`;
+  base.roles.objectiveVerifierCodehash = hash("f");
   base.releaseMode = "fixture";
   base.releaseEvidence = null;
   const sharedFixture = (entry: Record<string, any>, name: string, addressSuffix: string) => ({

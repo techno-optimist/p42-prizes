@@ -44,6 +44,9 @@ function fixtureProblem({ id, slug, seed, onchainDa }) {
     metadataURI: `ipfs://${slug}`,
     seedScoreAtoms: (BigInt(seed) * 10n ** 18n).toString(),
     minImprovementAtoms: "1",
+    objectiveProgramPath: `release-evidence/${slug}/objective-program.bin`,
+    objectiveProgramDigest: `sha256:${ethers.sha256(ethers.toUtf8Bytes(`objective-program-bytes-${slug}`)).slice(2)}`,
+    objectiveProgramId: ethers.id(`objective-program-${slug}`),
     onchainDa,
     certifiedObjective: {
       seedBest: String(seed),
@@ -126,7 +129,7 @@ async function executeSetupOperation(timelock, signers, operation) {
 describe("multi-board governance ceremony integration", () => {
   it("wires two boards and restricts rollover funding until a future board is armed", async () => {
     const signers = await ethers.getSigners();
-    const [signer1, signer2, signer3, guardian, treasury, resolver, deployer] = signers;
+    const [signer1, signer2, signer3, guardian, treasury, resolver, deployer, objectiveVerifier] = signers;
     const input = {
       schema: "p42-prizes/multi-board-ceremony/v1",
       governance: {
@@ -135,7 +138,12 @@ describe("multi-board governance ceremony integration", () => {
         delaySeconds: "1",
         guardian: guardian.address,
       },
-      roles: { treasury: treasury.address, resolver: resolver.address },
+      roles: {
+        treasury: treasury.address,
+        resolver: resolver.address,
+        objectiveVerifier: objectiveVerifier.address,
+        objectiveVerifierCodehash: ethers.id("fixture-objective-verifier-codehash"),
+      },
       parameters: {
         alphaBps: "200",
         betaBps: "500",

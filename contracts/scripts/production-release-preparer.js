@@ -46,6 +46,7 @@ export async function prepareProductionRelease({
   repoRoot,
   ceremonyConfigPath,
   imageDossierPath,
+  objectiveVerifierArtifactPath,
   evidenceRoot,
   expectedDeployer,
   generatedAt,
@@ -71,13 +72,16 @@ export async function prepareProductionRelease({
   if (!repoRoot || !evidenceRoot || !outputRoot || rootsOverlap(root, evidence) || rootsOverlap(root, output) || rootsOverlap(evidence, output)) throw new Error("repository, evidence, and output roots must be explicit and pairwise disjoint");
   const commit = assertCleanCheckout(root, null, run);
   rootRelativePath(evidence, ceremonyConfigPath, "ceremony config");
-  const [ceremonyInput, dossierInput] = await Promise.all([
+  rootRelativePath(evidence, objectiveVerifierArtifactPath, "objective verifier artifact");
+  const [ceremonyInput, dossierInput, objectiveVerifierInput] = await Promise.all([
     readConfig(resolve(ceremonyConfigPath ?? ""), { trustedRoot: evidence }),
     readDossier(resolve(imageDossierPath ?? ""), { trustedRoot: evidence }),
+    readDossier(resolve(objectiveVerifierArtifactPath ?? ""), { trustedRoot: evidence }),
   ]);
   const { value: imageDossier, bytes: imageBytes } = dossierInput;
   const config = parseCeremony(ethers, ceremonyInput.value, { deployerAddress: expectedDeployer });
   const imageRegistryPath = rootRelativePath(evidence, imageDossierPath, "image dossier");
+  const objectiveVerifierArtifactRelativePath = rootRelativePath(evidence, objectiveVerifierArtifactPath, "objective verifier artifact");
   const hardhat = join(root, "contracts", "node_modules", ".bin", "hardhat");
   run(hardhat, ["compile", "--force"], { cwd: join(root, "contracts"), encoding: "utf8", stdio: "pipe" });
   assertCleanCheckout(root, commit, run);
@@ -86,7 +90,11 @@ export async function prepareProductionRelease({
   await attestCapsule(capsule, { repoRoot: root, expectedGitCommit: commit, run });
   const slate = createSlate({
     generatedAt, sourceCommit: commit, imageRegistryPath, imageRegistryBytes: imageBytes,
-    imageDossier, problems: config.problems, now,
+    imageDossier,
+    objectiveVerifierArtifactPath: objectiveVerifierArtifactRelativePath,
+    objectiveVerifierArtifactBytes: objectiveVerifierInput.bytes,
+    objectiveVerifierArtifact: objectiveVerifierInput.value,
+    problems: config.problems, now,
   });
   preflightSlate(ethers, slate, config, { repoRoot: root, evidenceRoot: evidence });
   assertCleanCheckout(root, commit, run);
@@ -109,6 +117,7 @@ export function requiredReleaseEnvironment(env = process.env) {
   const required = [
     "P42_MULTIBOARD_CEREMONY_CONFIG",
     "P42_PRODUCTION_IMAGE_DOSSIER_PATH",
+    "P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH",
     "P42_RELEASE_EVIDENCE_ROOT",
     "P42_EXPECTED_DEPLOYER_ADDRESS",
     "P42_RELEASE_GENERATED_AT",

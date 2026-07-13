@@ -222,8 +222,10 @@ export const EVENT_CATALOG = Object.freeze({
     "ChallengeExpired",
     "ResolverBondReleased",
     "ResolverBondSlashed",
+    "ObjectiveFraudProven",
     "BondClaimed",
   ],
+  resolverQuorum: ["ObjectiveFraudProven"],
   registry: ["ProblemRegistered", "ProblemUpdated", "ProblemFrozen"],
   rolloverVault: [
     "RolloverReceived",
@@ -437,6 +439,9 @@ export function computeProductionReleaseEvidence(manifest, { productionSlate } =
     problemId: String(problem.problemId), problemSlug: problem.problemSlug, verifierVersion: problem.verifierVersion,
     specHash: problem.specHash, verifierSourceDigest: problem.verifierSourceDigest,
     verifierImageDigest: problem.verifierImageDigest, admissionMatrixDigest: problem.admissionMatrixDigest,
+    objectiveProgramPath: problem.objectiveProgramPath,
+    objectiveProgramDigest: problem.objectiveProgramDigest,
+    objectiveProgramId: problem.objectiveProgramId,
   }));
   boardIdentities.forEach((board, index) => {
     if (board.problemId !== String(index + 1)) throw new Error(`production board ${index + 1} is not in exact registry order`);
@@ -446,8 +451,15 @@ export function computeProductionReleaseEvidence(manifest, { productionSlate } =
   const slate = productionSlate;
   if (!slate || slate.status !== "ready" || !Array.isArray(slate.boards)) throw new Error("production validation requires a trusted status-ready slate");
   const { slateDigest, ...slateBody } = slate;
-  const slateIdentities = slate.boards.map((board) => Object.fromEntries(["problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"].map((field) => [field, board[field]])));
+  const slateIdentities = slate.boards.map((board) => Object.fromEntries([
+    "problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest",
+    "verifierImageDigest", "admissionMatrixDigest", "objectiveProgramPath",
+    "objectiveProgramDigest", "objectiveProgramId",
+  ].map((field) => [field, board[field]])));
   if (digest(slateBody) !== slateDigest || canonical(boardIdentities) !== canonical(slateIdentities)) throw new Error("production boards do not match the trusted closed release slate");
+  if (manifest.roles?.objectiveVerifierCodehash?.toLowerCase() !== slate.objectiveVerifier?.runtimeCodehash?.toLowerCase()) {
+    throw new Error("production objective verifier does not match the trusted closed release slate");
+  }
   if (manifest.releaseEvidence?.slateDigest !== slateDigest) throw new Error("production releaseEvidence.slateDigest does not match the checked-in slate");
   return {
     finalityPolicy: {
@@ -790,6 +802,7 @@ function boardReplayConfig(manifest, problem) {
     minImprovementAtoms: problem.minImprovementAtoms,
     challengeWindowSeconds: view.parameters.challengeWindowSeconds,
     treasury: view.roles.treasury,
+    challengeManager: problem.contracts.challenges.address,
     problemCount: manifest.problems.length,
     fundingCapWei: view.parameters.fundingCapWei,
     earliestCloseTimestamp: view.parameters.earliestCloseTimestamp,
@@ -1188,6 +1201,25 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
     if (problem.seedScoreAtoms === undefined) {
       throw new Error(`Manifest missing problems[${index}].seedScoreAtoms; frontier seed is not bound`);
     }
+    if (isMultiBoardManifest(manifest) && manifest.releaseMode === PRODUCTION_RELEASE_MODE) {
+      const expectedObjectivePackageHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+        ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
+        [
+          "P42_OBJECTIVE_PACKAGE_V1",
+          BigInt(manifest.network.chainId),
+          manifest.contracts.registry.address,
+          BigInt(problem.problemId),
+          problem.specHash,
+          problem.verifierSourceHash,
+          problem.verifierImageHash,
+          problem.admissionMatrixHash,
+          problem.objectiveProgramId,
+        ],
+      ));
+      if (problem.objectivePackageHash.toLowerCase() !== expectedObjectivePackageHash.toLowerCase()) {
+        throw new Error(`problems[${index}].objectivePackageHash does not bind the canonical verifier package`);
+      }
+    }
   }
   validateExactSetupOperations(manifest);
 
@@ -1496,6 +1528,8 @@ function replayConfig(manifestOrConfig) {
         "challengeWindowSeconds"
       ),
       treasury: manifestOrConfig.roles.treasury,
+      challengeManager: manifestOrConfig.problems[0].contracts?.challenges?.address
+        ?? manifestOrConfig.contracts?.challenges?.address,
       problemCount: manifestOrConfig.problems.length,
       fundingCapWei: asBigInt(manifestOrConfig.parameters.fundingCapWei, "fundingCapWei"),
       earliestCloseTimestamp: asBigInt(
@@ -1513,6 +1547,7 @@ function replayConfig(manifestOrConfig) {
       "challengeWindowSeconds"
     ),
     treasury: manifestOrConfig.treasury,
+    challengeManager: manifestOrConfig.challengeManager,
     problemCount: Number(manifestOrConfig.problemCount ?? 1),
     fundingCapWei: manifestOrConfig.fundingCapWei === undefined
       ? undefined
@@ -1610,6 +1645,7 @@ function newReplayState(config, coverage) {
     },
     pendingExpiredChallengeTxs: new Set(),
     pendingSubmissionResolutionByTx: {},
+    pendingObjectiveProofByTx: {},
     recoveryByTx: {},
     claimConsumptionByTx: {},
     forcedRecoveryByTx: {},
@@ -2261,7 +2297,34 @@ function replayChallengeEvent(state, event) {
       invariant(bond && bond.amountWei === amount, `resolver bond slash mismatch for ${id}`);
       bond.amountWei = 0n;
       bond.slashProofHash = getArg(event, "proofHash");
-      increment(state.challengeClaimableBondWei, getArg(event, "treasury"), amount);
+      increment(state.challengeClaimableBondWei, getArg(event, "beneficiary"), amount);
+      return;
+    }
+    case "ObjectiveFraudProven": {
+      requireChallengeInstance(state, id, event);
+      const challenge = state.challenges[id];
+      const correctedChallengerWins = asBoolean(getArg(event, "correctedChallengerWins"));
+      const proofHash = requireNonzeroBytes32(getArg(event, "proofHash"), `objective proof ${id}`);
+      const bond = state.resolverBonds[id];
+      const hook = state.pendingSubmissionResolutionByTx[txKey(event)];
+      invariant(challenge?.decisionPending, `objective proof missing pending decision for ${id}`);
+      invariant(challenge.challengerWins !== correctedChallengerWins, `objective proof ${id} is not contradictory`);
+      invariant(hook?.id === id && hook.challengerWins === correctedChallengerWins, `objective proof ${id} missing corrected submission hook`);
+      invariant(bond?.amountWei === 0n && bond.slashProofHash === proofHash, `objective proof ${id} missing resolver slash`);
+      state.pendingObjectiveProofByTx[txKey(event)] = {
+        id,
+        proofHash,
+        correctedChallengerWins,
+        proofBeneficiary: addressKey(getArg(event, "proofBeneficiary")),
+        challengeInstanceHash: getArg(event, "challengeInstanceHash"),
+        quorumJournalSeen: false,
+      };
+      if (!correctedChallengerWins) {
+        const submission = state.submissions[id];
+        invariant(submission?.status === "Revealed", `objective solver win ${id} did not restore reveal`);
+        submission.challengeEndsAt = asBigInt(event.blockTimestamp);
+        submission.objectiveClearedRevealInstanceHash = submission.revealInstanceHash;
+      }
       return;
     }
     case "BondClaimed":
@@ -2273,6 +2336,20 @@ function replayChallengeEvent(state, event) {
       );
       return;
   }
+}
+
+function replayResolverQuorumEvent(state, event) {
+  if (event.eventName !== "ObjectiveFraudProven") return;
+  const pending = state.pendingObjectiveProofByTx[txKey(event)];
+  invariant(pending, "quorum objective journal has no matching manager proof in the same transaction");
+  invariant(addressKey(getArg(event, "manager")) === addressKey(state.config.challengeManager), "quorum objective journal manager mismatch");
+  invariant(asBigInt(getArg(event, "submissionId")).toString() === pending.id, "quorum objective journal submission mismatch");
+  invariant(String(getArg(event, "challengeInstanceHash")).toLowerCase() === String(pending.challengeInstanceHash).toLowerCase(), "quorum objective journal challenge mismatch");
+  invariant(String(getArg(event, "proofHash")).toLowerCase() === String(pending.proofHash).toLowerCase(), "quorum objective journal proof mismatch");
+  invariant(asBoolean(getArg(event, "correctedChallengerWins")) === pending.correctedChallengerWins, "quorum objective journal outcome mismatch");
+  invariant(addressKey(getArg(event, "proofBeneficiary")) === pending.proofBeneficiary, "quorum objective journal beneficiary mismatch");
+  requireNonzeroBytes32(getArg(event, "journalDigest"), "quorum objective journal digest");
+  pending.quorumJournalSeen = true;
 }
 
 function replayRegistryEvent(state, event) {
@@ -2340,6 +2417,9 @@ function replayRolloverVaultEvent(state, event) {
 }
 
 function validatePairedEvents(state) {
+  for (const [transactionHash, proof] of Object.entries(state.pendingObjectiveProofByTx)) {
+    invariant(proof.quorumJournalSeen, `objective proof missing quorum public journal in ${transactionHash}`);
+  }
   for (const [transactionHash, recovery] of Object.entries(state.recoveryByTx)) {
     const finalized = recovery.finalizeVoided;
     invariant(finalized, `CreditVoided without FinalizeVoided in ${transactionHash}`);
@@ -2398,6 +2478,7 @@ export function replayProtocolEvents(events, manifestOrConfig, { coverage = [] }
     else if (event.source === "ledger") replayLedgerEvent(state, event);
     else if (event.source === "submissions") replaySubmissionEvent(state, event);
     else if (event.source === "challenges") replayChallengeEvent(state, event);
+    else if (event.source === "resolverQuorum") replayResolverQuorumEvent(state, event);
     else if (event.source === "registry") replayRegistryEvent(state, event);
     else if (event.source === "rolloverVault") replayRolloverVaultEvent(state, event);
   }
@@ -2836,6 +2917,7 @@ function expectedSubmissionForComparison(submission) {
     revealInstanceHash: submission.revealInstanceHash,
     challengeEndsAt: submission.challengeEndsAt,
     maxDisputeEndsAt: submission.maxDisputeEndsAt,
+    objectiveClearedRevealInstanceHash: submission.objectiveClearedRevealInstanceHash ?? ZERO_HASH,
     status: STATUS_NUMBER[submission.status],
   };
 }
@@ -3109,6 +3191,12 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
     const submissionFactory = new ethers.Contract(shared.submissionManagerFactory.address, artifacts.submissionManagerFactory.abi, provider);
     const challengeFactory = new ethers.Contract(shared.challengeManagerFactory.address, artifacts.challengeManagerFactory.abi, provider);
     const quorum = new ethers.Contract(shared.resolverQuorum.address, artifacts.resolverQuorum.abi, provider);
+    const objectiveVerifierCode = await provider.getCode(manifest.roles.objectiveVerifier, toBlock);
+    if (objectiveVerifierCode === "0x") throw new Error("objective verifier has no runtime code at the canonical block");
+    const observedObjectiveVerifierCodehash = ethers.keccak256(objectiveVerifierCode);
+    if (observedObjectiveVerifierCodehash.toLowerCase() !== manifest.roles.objectiveVerifierCodehash.toLowerCase()) {
+      throw new Error("objective verifier runtime codehash does not match deployment evidence");
+    }
     const submissionFactoryCodeHash = await challengeFactory.CANONICAL_SUBMISSION_MANAGER_FACTORY_CODEHASH({ blockTag: toBlock });
     if (submissionFactoryCodeHash.toLowerCase() !== shared.submissionManagerFactory.runtimeCodeHash.toLowerCase()) {
       throw new Error("challenge-manager factory pinned submission-manager factory codehash does not match canonical runtime evidence");
@@ -3120,16 +3208,35 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
     if (ethers.getAddress(await quorum.managerFactory({ blockTag: toBlock })) !== ethers.getAddress(shared.challengeManagerFactory.address)) {
       throw new Error("resolver quorum manager factory does not match canonical deployment evidence");
     }
+    if (ethers.getAddress(await quorum.objectiveVerifier({ blockTag: toBlock })) !== ethers.getAddress(manifest.roles.objectiveVerifier)
+        || (await quorum.objectiveVerifierCodehash({ blockTag: toBlock })).toLowerCase() !== manifest.roles.objectiveVerifierCodehash.toLowerCase()) {
+      throw new Error("resolver quorum objective verifier binding does not match canonical deployment evidence");
+    }
     if (await quorum.managersFrozen({ blockTag: toBlock }) !== true) throw new Error("resolver quorum manager set is not frozen");
     if (Number(await quorum.managerCount({ blockTag: toBlock })) !== manifest.problems.length) throw new Error("resolver quorum manager count does not match canonical board set");
     for (const [index, problem] of manifest.problems.entries()) {
       const submission = ethers.getAddress(problem.contracts.submissions.address);
       const manager = ethers.getAddress(problem.contracts.challenges.address);
-      const [canonicalSubmission, submissionConfigurationHash, canonicalManager, pairConfigurationHash] = await Promise.all([
+      const [
+        canonicalSubmission,
+        submissionConfigurationHash,
+        canonicalManager,
+        pairConfigurationHash,
+        objectiveRegistry,
+        objectiveProblemId,
+        objectivePackageHash,
+        objectiveProgramId,
+        quorumProgramId,
+      ] = await Promise.all([
         submissionFactory.isCanonicalSubmissionManager(submission, { blockTag: toBlock }),
         submissionFactory.configurationHashOf(submission, { blockTag: toBlock }),
         challengeFactory.isCanonicalManager(manager, { blockTag: toBlock }),
         challengeFactory.pairConfigurationHashOf(manager, { blockTag: toBlock }),
+        challengeFactory.objectiveRegistryOf(manager, { blockTag: toBlock }),
+        challengeFactory.objectiveProblemIdOf(manager, { blockTag: toBlock }),
+        challengeFactory.objectivePackageHashOf(manager, { blockTag: toBlock }),
+        challengeFactory.objectiveProgramIdOf(manager, { blockTag: toBlock }),
+        quorum.objectiveProgramIdOf(manager, { blockTag: toBlock }),
       ]);
       if (!canonicalSubmission || submissionConfigurationHash === ZERO_HASH || !canonicalManager || pairConfigurationHash === ZERO_HASH) {
         throw new Error(`factory configuration evidence is missing for board ${index + 1}`);
@@ -3137,6 +3244,13 @@ export async function verifyRuntimeIdentity(provider, manifest, artifacts, toBlo
       if (ethers.getAddress(await quorum.managerAt(index, { blockTag: toBlock })) !== manager
           || await quorum.isManager(manager, { blockTag: toBlock }) !== true) {
         throw new Error(`resolver quorum frozen manager set mismatch at board ${index + 1}`);
+      }
+      if (ethers.getAddress(objectiveRegistry) !== ethers.getAddress(shared.registry.address)
+          || objectiveProblemId !== BigInt(problem.problemId)
+          || objectivePackageHash.toLowerCase() !== problem.objectivePackageHash.toLowerCase()
+          || objectiveProgramId.toLowerCase() !== problem.objectiveProgramId.toLowerCase()
+          || quorumProgramId.toLowerCase() !== problem.objectiveProgramId.toLowerCase()) {
+        throw new Error(`objective verifier binding mismatch at board ${index + 1}`);
       }
     }
   }
@@ -3165,6 +3279,11 @@ export function instantiateBoardContracts(provider, manifest, problem, artifacts
     rolloverVault: new ethers.Contract(
       manifest.contracts.rolloverVault.address,
       artifacts.rolloverVault.abi,
+      provider,
+    ),
+    resolverQuorum: new ethers.Contract(
+      manifest.contracts.resolverQuorum.address,
+      artifacts.resolverQuorum.abi,
       provider,
     ),
     ...Object.fromEntries(
@@ -3336,6 +3455,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       paidAtCommit: await submissions.paidAtCommit(id, ...atBlock),
       revealInstanceHash: await submissions.revealInstanceHashOf(id, ...atBlock),
       maxDisputeEndsAt: await submissions.maxDisputeEndsAtOf(id, ...atBlock),
+      objectiveClearedRevealInstanceHash: await submissions.objectiveClearedRevealInstanceHashOf(id, ...atBlock),
     };
     const info = await submissions.finalizeInfo(id, ...atBlock);
     snapshot.finalizeInfo[key] = {
@@ -3572,15 +3692,19 @@ export async function collectMultiBoardFinalizedReconciliation({
     try {
       await verifyRuntimeIdentity(provider, manifest, artifacts, toBlock);
       const sharedContracts = contractsByProblem[0]?.contracts;
-      if (!sharedContracts?.registry || !sharedContracts?.rolloverVault) {
-        throw new Error("multi-board reconciliation is missing shared registry/vault contracts");
+      if (!sharedContracts?.registry || !sharedContracts?.rolloverVault || !sharedContracts?.resolverQuorum) {
+        throw new Error("multi-board reconciliation is missing shared registry/vault/quorum contracts");
       }
       const sharedScan = await scanEventCatalog(
-        { registry: sharedContracts.registry, rolloverVault: sharedContracts.rolloverVault },
+        {
+          registry: sharedContracts.registry,
+          rolloverVault: sharedContracts.rolloverVault,
+          resolverQuorum: sharedContracts.resolverQuorum,
+        },
         fromBlock,
         toBlock,
         policy,
-        { sources: ["registry", "rolloverVault"] },
+        { sources: ["registry", "rolloverVault", "resolverQuorum"] },
       );
       const boards = [];
       // Run board evidence serially. Each board has its own submission state,
@@ -3593,9 +3717,12 @@ export async function collectMultiBoardFinalizedReconciliation({
           policy,
           { sources: BOARD_CONTRACT_KEYS },
         );
+        const boardSharedEvents = sharedScan.events.filter((event) =>
+          event.source !== "resolverQuorum"
+            || addressKey(getArg(event, "manager")) === addressKey(entry.problem.contracts.challenges.address));
         const scan = {
           coverage: [...sharedScan.coverage, ...boardScan.coverage],
-          events: [...sharedScan.events, ...boardScan.events].sort(compareEventOrder),
+          events: [...boardSharedEvents, ...boardScan.events].sort(compareEventOrder),
         };
         await hydrateEventTimestamps(scan.events, provider, policy);
         const replay = replayProtocolEvents(scan.events, boardReplayConfig(manifest, entry.problem), {

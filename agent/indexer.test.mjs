@@ -141,6 +141,7 @@ const CONFIG = {
   minImprovementAtoms: 1n,
   challengeWindowSeconds: 10n,
   treasury: ADDR.treasury,
+  challengeManager: ADDR.challenges,
   problemCount: 1,
 };
 
@@ -418,6 +419,7 @@ function snapshotFromReplay(state) {
       revealInstanceHash: entry.revealInstanceHash,
       challengeEndsAt: entry.challengeEndsAt,
       maxDisputeEndsAt: entry.maxDisputeEndsAt,
+      objectiveClearedRevealInstanceHash: entry.objectiveClearedRevealInstanceHash ?? ZERO_HASH,
       status: STATUS[entry.status],
     };
     finalizeInfo[id] = entry.finalizeInfo;
@@ -1030,6 +1032,42 @@ describe("P42 deterministic indexer replay", () => {
     assert.equal(replay.challenges["2"].decisionPending, true);
     assert.equal(replay.challenges["2"].challengerWins, true);
     assert.deepEqual(checks.filter((entry) => !entry.ok), []);
+  });
+
+  it("replays an objective proof that permanently clears a solver reveal", () => {
+    const events = lifecycleFixture();
+    const transcriptIndex = events.findIndex((event) => event.eventName === "ResolverTranscriptPosted");
+    events.splice(transcriptIndex + 1);
+    const transactionHash = hash(88_001);
+    const common = {
+      blockNumber: 131,
+      blockHash: hash(88_000),
+      transactionHash,
+      transactionIndex: 0,
+      blockTimestamp: 140n,
+    };
+    const proofHash = hash(88_002);
+    events.push(
+      { ...common, source: "submissions", eventName: "SubmissionChallengeResolved", index: 0, args: { submissionId: 2n, challengerWins: false } },
+      { ...common, source: "challenges", eventName: "ResolverBondSlashed", index: 1, args: { submissionId: 2n, beneficiary: ADDR.owner, amount: 5n, proofHash, challengeInstanceHash: hash(702) } },
+      { ...common, source: "challenges", eventName: "ObjectiveFraudProven", index: 2, args: { submissionId: 2n, proofBeneficiary: ADDR.owner, proofHash, correctedChallengerWins: false, resolverBondRewardWei: 5n, challengeInstanceHash: hash(702) } },
+      { ...common, source: "challenges", eventName: "Resolved", index: 3, args: { submissionId: 2n, challengerWins: false, challengeInstanceHash: hash(702) } },
+      { ...common, source: "resolverQuorum", eventName: "ObjectiveFraudProven", index: 4, args: { manager: ADDR.challenges, submissionId: 2n, challengeInstanceHash: hash(702), proofHash, journalDigest: hash(88_003), correctedChallengerWins: false, proofBeneficiary: ADDR.owner } },
+    );
+
+    const replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    const snapshot = snapshotFromReplay(replay);
+    const checks = compareReplayToSnapshot(replay, snapshot, CONFIG);
+    assert.equal(replay.submissions["2"].status, "Revealed");
+    assert.equal(replay.submissions["2"].challengeEndsAt, 140n);
+    assert.equal(replay.submissions["2"].objectiveClearedRevealInstanceHash, hash(602));
+    assert.equal(replay.challengeClaimableBondWei[ADDR.owner], 5n);
+    assert.equal(replay.challengeClaimableBondWei[ADDR.treasury], 20n);
+    assert.deepEqual(checks.filter((entry) => !entry.ok), []);
+    assert.throws(
+      () => replayProtocolEvents(events.slice(0, -1), CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+      /missing quorum public journal/,
+    );
   });
 
   it("chunks with overlap, retries, and deduplicates canonical logs", async () => {

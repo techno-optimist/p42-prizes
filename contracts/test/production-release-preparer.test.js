@@ -13,7 +13,9 @@ async function fixture(operation) {
   const repoRoot = join(parent, "repo"); const outputRoot = join(parent, "output"); const evidenceRoot = join(parent, "evidence");
   await mkdir(join(repoRoot, "contracts", "node_modules", ".bin"), { recursive: true });
   const imagePath = join(evidenceRoot, "release", "images.json"); await mkdir(join(evidenceRoot, "release"), { recursive: true }); await writeFile(imagePath, "image-bytes\n");
-  try { await operation({ repoRoot, outputRoot, evidenceRoot, imagePath }); } finally { await rm(parent, { recursive: true, force: true }); }
+  const objectiveVerifierPath = join(evidenceRoot, "release", "objective-verifier.json");
+  await writeFile(objectiveVerifierPath, '{"deployedBytecode":"0x6000"}\n');
+  try { await operation({ repoRoot, outputRoot, evidenceRoot, imagePath, objectiveVerifierPath }); } finally { await rm(parent, { recursive: true, force: true }); }
 }
 
 function dependencies(events, { preflightError, publishSlateError, dirtyAtStatusCall } = {}) {
@@ -28,12 +30,20 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
       events.push("force-compile"); return "compiled\n";
     },
     readConfig: async () => ({ value: { ceremony: true }, bytes: Buffer.from("{}") }),
-    readDossier: async () => ({ value: { dossier: true }, bytes: Buffer.from("image-bytes\n") }),
-    parseCeremony() { events.push("parse-ceremony"); return { problems: Array(10).fill({}) }; },
+    readDossier: async (path) => path.endsWith("objective-verifier.json")
+      ? ({ value: { deployedBytecode: "0x6000" }, bytes: Buffer.from('{"deployedBytecode":"0x6000"}\n') })
+      : ({ value: { dossier: true }, bytes: Buffer.from("image-bytes\n") }),
+    parseCeremony() { events.push("parse-ceremony"); return { roles: { objectiveVerifierCodehash: `0x${"1".repeat(64)}` }, problems: Array(10).fill({}) }; },
     async createCapsule() { events.push("create-capsule"); return { capsuleDigest: `sha256:${"b".repeat(64)}` }; },
     validateCapsule() { events.push("validate-capsule"); },
     async attestCapsule() { events.push("attest-capsule"); },
-    createSlate() { events.push("create-slate"); return { slateDigest: `sha256:${"c".repeat(64)}` }; },
+    createSlate(args) {
+      events.push("create-slate");
+      assert.equal(args.objectiveVerifierArtifactPath, "release/objective-verifier.json");
+      assert.deepEqual(args.objectiveVerifierArtifact, { deployedBytecode: "0x6000" });
+      assert.ok(Buffer.isBuffer(args.objectiveVerifierArtifactBytes));
+      return { slateDigest: `sha256:${"c".repeat(64)}` };
+    },
     preflightSlate() { events.push("preflight-slate"); if (preflightError) throw preflightError; },
     async publishCapsule() { events.push("publish-capsule"); return { digest: `sha256:${"b".repeat(64)}`, uri: `sha256://${"b".repeat(64)}`, path: "capsule" }; },
     async publishSlate() { events.push("publish-slate"); if (publishSlateError) throw publishSlateError; return { digest: `sha256:${"c".repeat(64)}`, uri: `sha256://${"c".repeat(64)}`, path: "slate" }; },
@@ -45,7 +55,8 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
 function argumentsFor(paths, overrides = {}) {
   return {
     ethers: {}, repoRoot: paths.repoRoot, ceremonyConfigPath: join(paths.evidenceRoot, "ceremony.json"),
-    imageDossierPath: paths.imagePath, evidenceRoot: paths.evidenceRoot, expectedDeployer: `0x${"1".repeat(40)}`,
+    imageDossierPath: paths.imagePath, objectiveVerifierArtifactPath: paths.objectiveVerifierPath,
+    evidenceRoot: paths.evidenceRoot, expectedDeployer: `0x${"1".repeat(40)}`,
     generatedAt: "2026-07-12T00:00:00Z", outputRoot: paths.outputRoot, ...overrides,
   };
 }
@@ -81,6 +92,7 @@ describe("production release preparation", () => {
   it("requires every explicit operator input", () => {
     const complete = {
       P42_MULTIBOARD_CEREMONY_CONFIG: "ceremony.json", P42_PRODUCTION_IMAGE_DOSSIER_PATH: "images.json",
+      P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH: "objective-verifier.json",
       P42_RELEASE_EVIDENCE_ROOT: "/tmp/evidence",
       P42_EXPECTED_DEPLOYER_ADDRESS: `0x${"1".repeat(40)}`, P42_RELEASE_GENERATED_AT: "2026-07-12T00:00:00Z",
       P42_RELEASE_OUTPUT_ROOT: "/tmp/release",

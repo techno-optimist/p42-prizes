@@ -4,7 +4,7 @@
   "title": "P42 exact-ten production release slate",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "mode", "status", "generatedAt", "sourceCommit", "imageRegistry", "boards", "slateDigest"],
+  "required": ["schema", "mode", "status", "generatedAt", "sourceCommit", "imageRegistry", "objectiveVerifier", "boards", "slateDigest"],
   "properties": {
     "schema": { "const": "p42-prizes/production-release-slate/v1" },
     "mode": { "const": "production" },
@@ -16,11 +16,20 @@
       "required": ["path", "digest"],
       "properties": { "path": { "$ref": "#/$defs/repoPath" }, "digest": { "$ref": "#/$defs/digest" } }
     },
+    "objectiveVerifier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifactPath", "artifactDigest", "runtimeCodehash"],
+      "properties": {
+        "artifactPath": { "$ref": "#/$defs/repoPath" },
+        "artifactDigest": { "$ref": "#/$defs/digest" },
+        "runtimeCodehash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "not": { "pattern": "^0x([0-9a-f])\\1{63}$" }, "description": "keccak256 of deployedBytecode in the exact bound gateway artifact." }
+      }
+    },
     "boards": {
       "type": "array", "minItems": 10, "maxItems": 10,
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest"],
+        "required": ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest", "objectiveProgramPath", "objectiveProgramDigest", "objectiveProgramId"],
         "properties": {
           "problemId": { "type": "string", "pattern": "^(?:[1-9]|10)$" },
           "problemSlug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
@@ -31,7 +40,10 @@
           "verifierSourceDigest": { "$ref": "#/$defs/digest" },
           "verifierImageDigest": { "$ref": "#/$defs/digest" },
           "admissionMatrixPath": { "$ref": "#/$defs/repoPath" },
-          "admissionMatrixDigest": { "$ref": "#/$defs/digest" }
+          "admissionMatrixDigest": { "$ref": "#/$defs/digest" },
+          "objectiveProgramPath": { "$ref": "#/$defs/repoPath" },
+          "objectiveProgramDigest": { "$ref": "#/$defs/digest" },
+          "objectiveProgramId": { "type": "string", "pattern": "^0x[0-9a-f]{64}$", "description": "keccak256 of the exact bytes at objectiveProgramPath." }
         }
       }
     },

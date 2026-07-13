@@ -54,6 +54,7 @@ contract P42SubmissionManager {
     error P42_NOT_STRICT_IMPROVEMENT(int256 bestScoreAtoms, int256 claimedScoreAtoms);
     error P42_SCORE_ATOMS_OUT_OF_RANGE(int256 scoreAtoms);
     error P42_CHALLENGE_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
+    error P42_OBJECTIVE_CHALLENGE_ALREADY_CLEARED();
     error P42_CHALLENGE_WINDOW_CLOSED(uint64 endsAt, uint64 nowAt);
     error P42_REVEAL_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_PERMANENCE_GRACE_OPEN(uint64 endsAt, uint64 nowAt);
@@ -252,6 +253,7 @@ contract P42SubmissionManager {
     /// calls bind this value so a raw transaction signed before a reorg cannot
     /// be replayed against a replacement reveal with the same submission id.
     mapping(uint256 => bytes32) public revealInstanceHashOf;
+    mapping(uint256 => bytes32) public objectiveClearedRevealInstanceHashOf;
     mapping(uint256 => bytes32) public solutionCidHashOf;
     mapping(bytes32 => uint256) public prioritySubmissionOf;
     mapping(address => uint256) public claimableBondWei;
@@ -871,6 +873,9 @@ contract P42SubmissionManager {
     function markChallenged(uint256 submissionId) external onlyChallengeManager {
         Submission storage submission = _requireSubmission(submissionId);
         _requireStatus(submission, SubmissionStatus.Revealed);
+        if (objectiveClearedRevealInstanceHashOf[submissionId] == revealInstanceHashOf[submissionId]) {
+            revert P42_OBJECTIVE_CHALLENGE_ALREADY_CLEARED();
+        }
         if (block.timestamp >= submission.challengeEndsAt) {
             revert P42_CHALLENGE_WINDOW_CLOSED(submission.challengeEndsAt, uint64(block.timestamp));
         }
@@ -938,6 +943,40 @@ contract P42SubmissionManager {
         revealedSubmissionCount += 1;
         submission.challengeEndsAt = _boundedRearmDeadline(submissionId);
         emit SubmissionChallengeCancelled(submissionId, submission.challengeEndsAt);
+    }
+
+    /// @notice Applies a cryptographically proven challenge outcome. A proved
+    /// solver win clears this reveal instance permanently and makes it eligible
+    /// for ordinary frontier finalization without another committee challenge.
+    function resolveObjectiveChallenge(uint256 submissionId, bool challengerWins, address beneficiary)
+        external
+        onlyChallengeManager
+    {
+        Submission storage submission = _requireSubmission(submissionId);
+        _requireStatus(submission, SubmissionStatus.Challenged);
+        challengedSubmissionCount -= 1;
+        if (challengerWins) {
+            submission.status = SubmissionStatus.Rejected;
+            require(beneficiary != address(0), "P42_BENEFICIARY_ZERO");
+            _makeBondClaimable(submissionId, beneficiary);
+            _decrementOpenSubmission();
+        } else {
+            bytes32 solutionCidHash = solutionCidHashOf[submissionId];
+            uint256 priorityId = prioritySubmissionOf[solutionCidHash];
+            if (priorityId != submissionId) {
+                submission.status = SubmissionStatus.Rejected;
+                _makeBondClaimable(submissionId, submission.solver);
+                _decrementOpenSubmission();
+                emit DuplicateSubmissionRejected(solutionCidHash, submissionId, priorityId);
+                emit SubmissionChallengeResolved(submissionId, false);
+                return;
+            }
+            submission.status = SubmissionStatus.Revealed;
+            revealedSubmissionCount += 1;
+            objectiveClearedRevealInstanceHashOf[submissionId] = revealInstanceHashOf[submissionId];
+            submission.challengeEndsAt = uint64(block.timestamp);
+        }
+        emit SubmissionChallengeResolved(submissionId, challengerWins);
     }
 
     function maxDisputeDeadline(uint256 submissionId) external view returns (uint64) {

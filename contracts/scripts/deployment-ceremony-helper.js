@@ -23,6 +23,14 @@ export const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";
 export const VERIFIER_SOURCE_HASH_RELATION = "keccak256(utf8(verifierSourceDigest))";
 export const ADMISSION_MATRIX_HASH_ALGORITHM = "keccak256-utf8/v1";
 export const ADMISSION_MATRIX_HASH_RELATION = "keccak256(utf8(admissionMatrixDigest))";
+const CHALLENGE_MANAGER_PARAMETERS_TYPE = "tuple(address owner,address resolver,address treasury,address submissionManager,uint64 challengeWindowSeconds,uint16 betaBps,uint256 minCounterBondWei,uint256 rerunCostWei,uint16 rerunCostMultiplierBps,uint256 resolverDecisionBondWei,uint64 resolverFraudWindowSeconds,address problemRegistry,uint256 problemId,bytes32 objectivePackageHash,bytes32 objectiveProgramId)";
+
+export function challengeManagerEffectiveSalt(ethers, requestedSalt, submissionManagerFactory, parameters) {
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+    ["string", "bytes32", "address", CHALLENGE_MANAGER_PARAMETERS_TYPE],
+    ["P42_CHALLENGE_MANAGER_CREATE2_V2", requestedSalt, submissionManagerFactory, parameters],
+  ));
+}
 
 export const DEFAULT_FINALITY_POLICY = Object.freeze({
   mode: "confirmations",
@@ -333,11 +341,22 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
   const guardian = address(ethers, "P42_GUARDIAN_ADDRESS", required(env, "P42_GUARDIAN_ADDRESS"));
   const treasury = address(ethers, "P42_TREASURY_ADDRESS", required(env, "P42_TREASURY_ADDRESS"));
   const resolver = address(ethers, "P42_RESOLVER_ADDRESS", required(env, "P42_RESOLVER_ADDRESS"));
+  const objectiveVerifier = address(
+    ethers,
+    "P42_OBJECTIVE_VERIFIER_ADDRESS",
+    required(env, "P42_OBJECTIVE_VERIFIER_ADDRESS"),
+  );
+  const objectiveVerifierCodehash = nonzeroHash(
+    ethers,
+    "P42_OBJECTIVE_VERIFIER_CODEHASH",
+    required(env, "P42_OBJECTIVE_VERIFIER_CODEHASH"),
+  );
   assertDistinct("governance and operational role separation", [
     ...signers.map((value, index) => [`signer[${index}]`, value]),
     ["guardian", guardian],
     ["treasury", treasury],
-    ["resolver", resolver]
+    ["resolver", resolver],
+    ["objectiveVerifier", objectiveVerifier]
   ]);
   if (deployerAddress !== undefined) {
     const deployer = address(ethers, "deployer", deployerAddress);
@@ -345,7 +364,8 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
       ["deployer", deployer],
       ["guardian", guardian],
       ["treasury", treasury],
-      ["resolver", resolver]
+      ["resolver", resolver],
+      ["objectiveVerifier", objectiveVerifier]
     ]);
   }
 
@@ -440,6 +460,20 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
     seedScoreAtoms: signedValue(env, "P42_SEED_SCORE_ATOMS"),
     minImprovementAtoms: uintValue(env, "P42_MIN_IMPROVEMENT_ATOMS")
   };
+  problem.objectiveProgramId = nonzeroHash(
+    ethers,
+    "P42_OBJECTIVE_PROGRAM_ID",
+    required(env, "P42_OBJECTIVE_PROGRAM_ID"),
+  );
+  problem.objectiveProgramPath = required(env, "P42_OBJECTIVE_PROGRAM_PATH");
+  problem.objectiveProgramDigest = required(env, "P42_OBJECTIVE_PROGRAM_DIGEST");
+  if (!/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/.test(problem.objectiveProgramPath)) {
+    throw new Error("P42_OBJECTIVE_PROGRAM_PATH must be repository-relative");
+  }
+  if (!/^sha256:[0-9a-f]{64}$/.test(problem.objectiveProgramDigest)
+      || /^sha256:([0-9a-f])\1{63}$/.test(problem.objectiveProgramDigest)) {
+    throw new Error("P42_OBJECTIVE_PROGRAM_DIGEST must be a non-placeholder sha256 digest");
+  }
   if (problem.minImprovementAtoms === 0n) {
     throw new Error("P42_MIN_IMPROVEMENT_ATOMS must be positive");
   }
@@ -501,7 +535,7 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
       operationGracePeriodSeconds: OPERATION_GRACE_PERIOD_SECONDS,
       guardian
     },
-    roles: { treasury, resolver },
+    roles: { treasury, resolver, objectiveVerifier, objectiveVerifierCodehash },
     parameters,
     problem,
     finalityPolicy: { ...DEFAULT_FINALITY_POLICY }
@@ -1639,6 +1673,11 @@ export function requiredCompletionCheckNames(manifest) {
       return [
         ...BOARD_CONTRACT_KEYS.map((key) => `runtime.${prefix}.${key}`),
         ...BOARD_CONTRACT_KEYS.map((key) => `owner.${prefix}.${key}`),
+        `objective.${prefix}.registry`,
+        `objective.${prefix}.problemId`,
+        `objective.${prefix}.packageHash`,
+        `objective.${prefix}.programId`,
+        `objective.${prefix}.quorumProgramId`,
         `config.${prefix}.pool`,
         `config.${prefix}.ledger`,
         `config.${prefix}.submissions`,
@@ -1657,10 +1696,11 @@ export function requiredCompletionCheckNames(manifest) {
       ];
     });
     return [
-      "runtime.timelock",
-      "runtime.registry",
-      "runtime.rolloverVault",
+      ...Object.keys(manifest.contracts ?? {}).map((key) => `runtime.${key}`),
       "owner.registry",
+      "objectiveVerifier.quorum",
+      "objectiveVerifier.codehash.quorum",
+      "objectiveVerifier.codehash.runtime",
       "governance.signers",
       "governance.threshold",
       "governance.delay",

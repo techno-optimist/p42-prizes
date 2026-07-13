@@ -44,6 +44,10 @@ contract P42ChallengeManagerFactory {
         uint16 rerunCostMultiplierBps;
         uint256 resolverDecisionBondWei;
         uint64 resolverFraudWindowSeconds;
+        address problemRegistry;
+        uint256 problemId;
+        bytes32 objectivePackageHash;
+        bytes32 objectiveProgramId;
     }
 
     error P42_FACTORY_MANAGER_EXISTS();
@@ -51,12 +55,38 @@ contract P42ChallengeManagerFactory {
     error P42_FACTORY_BAD_SUBMISSION_CONFIGURATION();
 
     bytes32 public constant CANONICAL_SUBMISSION_MANAGER_FACTORY_CODEHASH =
-        0xf704e1641a6f1712793a30639f3b4c3412b51909d38d2a56ec3b01d3e34d4d2a;
+        0xab7765c44ddced5da5d4d85645c6e1a4215ad6ebddea55f34e75dd194da82eac;
 
     mapping(address => bool) public isCanonicalManager;
     mapping(address => bytes32) public pairConfigurationHashOf;
+    mapping(address => address) public objectiveRegistryOf;
+    mapping(address => uint256) public objectiveProblemIdOf;
+    mapping(address => bytes32) public objectivePackageHashOf;
+    mapping(address => bytes32) public objectiveProgramIdOf;
 
     event CanonicalManagerDeployed(address indexed manager, bytes32 indexed salt);
+    event ObjectiveBindingRecorded(
+        address indexed manager,
+        address indexed registry,
+        uint256 indexed problemId,
+        bytes32 packageHash,
+        bytes32 programId
+    );
+
+    function effectiveSalt(bytes32 requestedSalt, address submissionManagerFactory, Parameters calldata parameters)
+        public
+        pure
+        returns (bytes32)
+    {
+        return keccak256(
+            abi.encode(
+                "P42_CHALLENGE_MANAGER_CREATE2_V2",
+                requestedSalt,
+                submissionManagerFactory,
+                parameters
+            )
+        );
+    }
 
     function deployManager(bytes32 salt, address submissionManagerFactory, Parameters calldata parameters)
         external
@@ -70,7 +100,12 @@ contract P42ChallengeManagerFactory {
         bytes32 submissionConfigurationHash = IP42CanonicalSubmissionManagerFactory(submissionManagerFactory)
             .configurationHashOf(parameters.submissionManager);
         _requireCanonicalTopology(parameters, submissionConfigurationHash);
-        manager = address(new P42ChallengeManager{salt: salt}(
+        if (
+            parameters.problemRegistry == address(0) || parameters.problemId == 0
+                || parameters.objectivePackageHash == bytes32(0) || parameters.objectiveProgramId == bytes32(0)
+        ) revert P42_FACTORY_BAD_SUBMISSION_CONFIGURATION();
+        bytes32 boundSalt = effectiveSalt(salt, submissionManagerFactory, parameters);
+        manager = address(new P42ChallengeManager{salt: boundSalt}(
             parameters.owner,
             parameters.resolver,
             parameters.treasury,
@@ -88,7 +123,32 @@ contract P42ChallengeManagerFactory {
         pairConfigurationHashOf[manager] = keccak256(
             abi.encode(submissionConfigurationHash, parameters)
         );
-        emit CanonicalManagerDeployed(manager, salt);
+        objectiveRegistryOf[manager] = parameters.problemRegistry;
+        objectiveProblemIdOf[manager] = parameters.problemId;
+        objectivePackageHashOf[manager] = parameters.objectivePackageHash;
+        objectiveProgramIdOf[manager] = parameters.objectiveProgramId;
+        emit CanonicalManagerDeployed(manager, boundSalt);
+        emit ObjectiveBindingRecorded(
+            manager,
+            parameters.problemRegistry,
+            parameters.problemId,
+            parameters.objectivePackageHash,
+            parameters.objectiveProgramId
+        );
+    }
+
+    function objectiveBindingOf(address manager)
+        external
+        view
+        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId)
+    {
+        if (!isCanonicalManager[manager]) revert P42_FACTORY_BAD_SUBMISSION_MANAGER();
+        return (
+            objectiveRegistryOf[manager],
+            objectiveProblemIdOf[manager],
+            objectivePackageHashOf[manager],
+            objectiveProgramIdOf[manager]
+        );
     }
 
     function _requireCanonicalTopology(Parameters calldata parameters, bytes32 submissionConfigurationHash)
