@@ -86,8 +86,8 @@ export const PROBE_ROUTES = Object.freeze([
     kind: "html",
     origins: Object.freeze(["render", "public"]),
     markers: Object.freeze([
-      "The machine went first.",
-      "Register of Records",
+      "Machines can now produce frontier mathematics.",
+      "It needs a settlement layer for truth.",
       "Phase 0",
     ]),
   }),

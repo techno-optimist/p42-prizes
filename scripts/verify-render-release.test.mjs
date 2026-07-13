@@ -187,7 +187,7 @@ test("probeUrls retains the standalone and proxied prize paths", () => {
 });
 
 test("page probes require stable identity markers", () => {
-  const home = "<html><title>Register of Records</title><h1>The machine went first.</h1><p>Phase 0</p></html>";
+  const home = "<html><h1>Machines can now produce frontier mathematics.</h1><p>It needs a settlement layer for truth.</p><p>Phase 0</p></html>";
   assert.equal(validateProbeBody("home", home, contentTypes.html), home);
   assert.throws(
     () => validateProbeBody("home", "<html><h1>Unrelated healthy page</h1></html>", contentTypes.html),
