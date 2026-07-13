@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "p42-source-release-evidence/v1",
+  "createdAt": "2026-07-13T10:55:06Z",
+  "sourceCommit": "3a3ee37bb90f98fbdf3c5366a74d24fb4823638e",
+  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/82",
+  "ci": {
+    "workflow": "CI",
+    "event": "push",
+    "branch": "main",
+    "runId": 29243704647,
+    "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/29243704647",
+    "conclusion": "success",
+    "requiredJobs": {
+      "Python verifier gates": "success",
+      "Contract gates": "success",
+      "Autonomous agent gates": "success",
+      "Portal gates": "success"
+    }
+  },
+  "render": {
+    "serviceId": "srv-d96pokeq1p3s73foqk60",
+    "deployId": "dep-d9ac2a58nd3s73dbli10",
+    "status": "live",
+    "trigger": "new_commit",
+    "runtimeCommit": "3a3ee37bb90f98fbdf3c5366a74d24fb4823638e",
+    "liveCommit": "3a3ee37bb90f98fbdf3c5366a74d24fb4823638e"
+  },
+  "releaseGuard": {
+    "command": "make verify-render-release",
+    "status": "passed",
+    "boardProjection": "sha256:af3b704d102318edce6d963fa4104e6751c038513ba6b5f47f3b5bb31f5fc565",
+    "healthyRoutes": 8,
+    "requiredRoutes": 8
+  },
+  "targetedChecks": {
+    "status": "passed",
+    "publicBase": "https://projectforty2.ai/prizes",
+    "routes": [
+      "/atlas",
+      "/atlas/86",
+      "/problems/hypercube-q7-c4-free",
+      "/api/atlas/meta",
+      "/api/atlas/86",
+      "/api/atlas/preflight",
+      "/api/problems/hypercube-q7-c4-free"
+    ],
+    "assertions": [
+      "atlas has 51 entries, 7 P42 packages, and 6 unpacked reserve entries",
+      "Erdos problem 86 links to the locked hypercube-q7-c4-free board",
+      "problem 86 compute preflight fails closed with REVIEW_UNKNOWN_REACH",
+      "the Q7 board has no deployed donation address and remains local-only"
+    ]
+  }
+}
