@@ -44,7 +44,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Gate | Current status | Evidence today | Exit criteria |
 | --- | --- | --- | --- |
-| Gate 0: Public repo / local pilot | Mostly green; latest merged source-release CI passes, two repository-account controls remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, published `.github/workflows/ci.yml`, and green post-merge [`main` run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082) for source release `a97b824cbb50c7b4ef1421bc5057c60879397300` | Retain a successful push run for each newly merged source release; upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; repo owner enables private vulnerability reporting through a supported GitHub surface |
+| Gate 0: Public repo / local pilot | Mostly green; latest merged source-release CI passes, two repository-account controls remain | Local verifier, web/API tests, fail-closed challenge/onramp, live fail-closed PostgreSQL authority, security policy text, published `.github/workflows/ci.yml`, and green post-merge [`main` run 29234182256](https://github.com/techno-optimist/p42-prizes/actions/runs/29234182256) for source release `ca3b3de7b812334d9704797a821d607006dc5ecb` | Retain a successful push run for each newly merged source release; upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; repo owner enables private vulnerability reporting through a supported GitHub surface |
 | Gate 1: Base Sepolia testnet | Open - no current canonical DA-refactored deployment or current reconciliation | Python reference model, portal-local commit/reveal, local DA/permanence evidence validator, DGX/Hermes verifier-runner runbook plus burst-drill validator, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, read-only reconciliation script, and stale historical Base Sepolia evidence for old bytecode | Fresh deployed verified DA-refactored contracts, current testnet addresses, current manifest, current indexer reconciliation, on-chain-at-reveal DA verified on that deployment, live agent wallet/operator run, DGX reveal-watcher dry run, integrated resolver transcript, runner burst report, strict open-witness launch-board evidence, and a fresh adversarial campaign report |
 | Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested admission tooling, immutable-image `admit-ready` scaffold, draft wallet/session policy, opt-in mutation API-key gate, and legal memo validator | External audit, counsel-signed legal memo, KYC/sanctions/ToS approval, immutable registry image digests, collected trusted four-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
@@ -61,9 +61,9 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Challenge/onramp fail closed | Pass | `501` challenge route; Base Sepolia wallet onramp `409` | None |
 | Per-problem donation pools | Phase 0 only | API/UI expose dedicated `donationWallet` state for all 10 boards, all currently `not-deployed` with no address or transfer action | Deploy and reconcile a bytecode-backed Base Sepolia pool per problem before publishing an address; do not imply mainnet settlement or real-value custody |
 | Solver winnings reinvestment | Source-complete, deployment pending | A solver may atomically direct a matured award into another active pool in the same frozen canonical registry. The source claim rolls back on any destination failure, the destination sponsorship remains attributed to the solver, and frontier/title records are unchanged. The autonomous agent accepts only manifest-bound destinations, preflights armed/open/cap/deadline state, waits without exhausting its retry budget, and falls back to an ordinary claim during the final 24 hours before expiry rather than destroy an award. Multi-board checkpoints bind the source settlement to the destination sponsorship by transaction, solver, both pools, gross award, fee, and net amount. Economically this is recycled sponsorship, including the destination's ordinary zero-credit refund policy, rather than an irrevocable charitable gift | Deploy, externally audit, reconcile, and expose only authorization-bound production destinations |
-| Portal state/rate limits/idempotency/events | Shared-store source complete; live cutover pending | `web/src/lib/portal-store.ts` uses a PostgreSQL singleton transaction with `SELECT ... FOR UPDATE`; idempotency shares that transaction boundary; rate limits use an atomic upsert; configured-database errors never fall back to disk. `web/migrations/`, the checksum-guarded one-shot importer, `docs/PORTAL_DATABASE.md`, and datastore tests define the cutover | Provision Render PostgreSQL, import with recorded checksum, run a multi-connection rehearsal, configure production, and retain reconciliation evidence. Until then the live service remains local-pilot state |
+| Portal state/rate limits/idempotency/events | Pass for the live portal authority | Render PostgreSQL 18 is live in the portal's Oregon private network with `P42_PORTAL_DATABASE_REQUIRED=1`. The checksum-bound empty authority is at revision 0 because no prior live state file existed. The exact deployed source passed fresh/idempotent and malformed-schema integration cases plus direct `pg_blocking_pids()` lock attribution, two concurrent state connections, eight atomic rate increments, verified cleanup, and origin/proxy route checks; see `docs/evidence/portal-db-cutover-2026-07-13.json` | Keep migrations fail-closed, retain database monitoring/backups, and rerun `npm run db:migration-integration` plus `npm run db:rehearse` after datastore or runtime changes |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
-| GitHub Actions workflow | Pass for workflow presence and latest merged source-release run | `.github/workflows/ci.yml` is published. Post-merge [`main` run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082) passed all four lanes for exact source release `a97b824cbb50c7b4ef1421bc5057c60879397300`. Direct checks returned `200` and release-specific activation provenance fields at both the Render origin and public proxy. The authenticated Render metadata guard remains unavailable because the local Render token is expired | Retain a completed push run for every newly merged source release. The immutable Node-24 action-pin update is prepared locally at `1d1332f` but this OAuth token cannot publish workflow changes without `workflow` scope. GitHub returned `403` for branch protection/rulesets and `404` for private vulnerability reporting; those are explicit repo-owner/account blockers |
+| GitHub Actions workflow | Pass for workflow presence and latest merged source-release run | `.github/workflows/ci.yml` is published. Post-merge [`main` run 29234182256](https://github.com/techno-optimist/p42-prizes/actions/runs/29234182256) passed all four lanes for exact source release `ca3b3de7b812334d9704797a821d607006dc5ecb`. Direct checks returned `200` at the Render origin and public proxy after the database-required deploy. The authenticated Render connector also binds live deploy `dep-d9a9od647okc73ejhsv0` to that commit | Retain a completed push run for every newly merged source release. GitHub returned `403` for branch protection/rulesets and `404` for private vulnerability reporting; those are explicit repo-owner/account blockers |
 | Owner/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
 
 ## Gate 1 Blockers
@@ -117,7 +117,7 @@ repo-owner authority cannot be replaced by agent execution.
 - [x] Local diagnostic event ledger exposes hash-chained commit/reveal/idempotency events.
 - [x] A fail-closed PostgreSQL adapter, transactional shared idempotency/event state, atomic distributed rate limiter, migration, checksum-guarded one-shot importer, and cutover/rollback runbook exist in source.
 - [x] `SECURITY.md` contact and disclosure channel documented.
-- [x] A required-check CI run passes for exact merged source release `a97b824cbb50c7b4ef1421bc5057c60879397300` ([run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082)); each later source merge must earn its own successful push run before release.
+- [x] A required-check CI run passes for exact merged source release `ca3b3de7b812334d9704797a821d607006dc5ecb` ([run 29234182256](https://github.com/techno-optimist/p42-prizes/actions/runs/29234182256)); each later source merge must earn its own successful push run before release.
 - [ ] Protected-release/branch enforcement is independently verified by the repo owner.
 - [ ] GitHub private vulnerability reporting is enabled by a repo owner.
 
@@ -192,7 +192,7 @@ Evidence" table in `PRODUCTION_READINESS.md`).
 
 ## Verifier Admission Ledger
 
-The portal contains 15 packaged boards. The frozen production cohort is the
+The portal contains 16 packaged boards. The frozen production cohort is the
 ordered ten in `protocol/production-board-set-v1.json`; board visibility is not
 funding eligibility. Latest math/verifier audit:
 `docs/MATH_VERIFIER_AUDIT_2026_07_08.md`.
@@ -215,9 +215,10 @@ funding eligibility. Latest math/verifier audit:
 ## Current Verification Commands
 
 These are the local verification commands to run while hardening the release;
-they are not all current Gate 1/2 closure evidence. As of the July 9 audit,
-`make verify-seed` is not release-green across all ten boards and must not be
-used as a funding readiness claim until the launch-board artifacts are refreshed.
+they are not all current Gate 1/2 closure evidence. As of July 13,
+`make verify-seed` passes all 16 packaged boards. That verifies the configured
+fixtures only; it does not replace strict open-witness admission, immutable
+images, the trusted host matrix, or independent mathematical review.
 
 ```bash
 make validate
