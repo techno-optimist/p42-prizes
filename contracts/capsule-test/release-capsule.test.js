@@ -42,6 +42,15 @@ function constructorArgs(contract) {
 }
 
 describe("closed immutable release capsule", () => {
+  it("keeps the published schema closed over the canonical production artifact order", async () => {
+    const schema = JSON.parse(await readFile(resolve(contractsRoot, "../schemas/release-capsule.schema.json"), "utf8"));
+    const refs = schema.properties.contracts.prefixItems.map((entry) => entry.$ref);
+    const names = refs.map((ref) => schema.$defs[ref.split("/").at(-1)].allOf[1].properties.name.const);
+    assert.deepEqual(names, PRODUCTION_CONTRACTS);
+    assert.deepEqual(schema.$defs.contract.properties.name.enum, PRODUCTION_CONTRACTS);
+    assert.equal(schema.properties.contracts.items, false);
+  });
+
   it("binds exactly the ten production artifacts to exact compiler inputs and outputs", async () => {
     const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
     assert.deepEqual(capsule.contracts.map(({ name }) => name), PRODUCTION_CONTRACTS);

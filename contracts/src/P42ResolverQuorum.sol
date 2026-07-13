@@ -41,9 +41,14 @@ contract P42ResolverQuorum {
     error BadOwner();
     error BadSigner();
     error BadThreshold();
+    error UnknownSignerEpoch();
+    error StaleSignerEpoch();
+    error RotationCooldownActive();
     error BadManager();
     error WrongManagerCount(uint256 have, uint256 required);
     error Paused();
+    error PauseAlreadyActive();
+    error PauseCooldownActive();
     error BadDecisionBinding();
     error DecisionExpired();
     error NonceAlreadyUsed();
@@ -61,10 +66,13 @@ contract P42ResolverQuorum {
     uint256 public constant REQUIRED_MANAGER_COUNT = 10;
     // Set from the independently compiled P42ChallengeManagerFactory runtime.
     bytes32 public constant CANONICAL_MANAGER_FACTORY_CODEHASH =
-        0x468890f9c4f21572abeb6ac7c9c7f7aac0c1cbc3d07b52228b3854005cd3ab1e;
+        0x114a9fdaa20276d35be105f2984df29b21c53923663dc3f0fca8e7ac7959c7ec;
     bytes32 public constant DECISION_TYPEHASH = keccak256(
-        "Decision(uint256 chainId,address adapter,address manager,uint256 submissionId,bytes32 challengeInstanceHash,bool challengerWins,bytes32 transcriptHash,bytes32 transcriptURIHash,bytes32 verdictHash,address bondBeneficiary,uint256 nonce,uint64 expiry)"
+        "Decision(uint256 chainId,address adapter,address manager,uint256 submissionId,bytes32 challengeInstanceHash,bool challengerWins,bytes32 transcriptHash,bytes32 transcriptURIHash,bytes32 verdictHash,address bondBeneficiary,uint256 nonce,uint64 expiry,uint64 signerEpoch)"
     );
+    uint64 public constant PAUSE_DURATION = 24 hours;
+    uint64 public constant PAUSE_COOLDOWN = 24 hours;
+    uint64 public constant SIGNER_ROTATION_COOLDOWN = 7 days;
     bytes32 private constant DOMAIN_TYPEHASH =
         keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 private constant NAME_HASH = keccak256("P42ResolverQuorum");
@@ -86,25 +94,33 @@ contract P42ResolverQuorum {
         address bondBeneficiary;
         uint256 nonce;
         uint64 expiry;
+        uint64 signerEpoch;
     }
 
     address public immutable owner;
     address public immutable expectedTreasury;
     uint256 public immutable expectedDecisionBondWei;
     address public immutable managerFactory;
-    uint256 public immutable threshold;
+    uint256 public threshold;
+    uint64 public signerEpoch;
     address[] private _signers;
     mapping(address => bool) public isSigner;
+    mapping(uint64 => address[]) private _epochSigners;
+    mapping(uint64 => mapping(address => bool)) private _isEpochSigner;
+    mapping(uint64 => uint256) public epochThreshold;
     mapping(address => bool) public isManager;
     address[] private _managers;
     bool public constant managersFrozen = true;
-    bool public paused;
+    uint64 public pauseUntil;
+    uint64 public pauseCooldownUntil;
+    uint64 public nextSignerRotationAt;
 
     mapping(address => mapping(uint256 => bool)) public nonceUsed;
     mapping(address => mapping(bytes32 => bool)) public challengeDecided;
     mapping(bytes32 => bool) public equivocationProven;
 
-    event PauseSet(bool paused);
+    event PauseSet(bool paused, uint64 pauseUntil, uint64 cooldownUntil);
+    event SignerSetRotated(uint64 indexed signerEpoch, uint256 threshold, address[] signers);
     event DecisionForwarded(
         address indexed manager,
         uint256 indexed submissionId,
@@ -150,13 +166,8 @@ contract P42ResolverQuorum {
                 || managerFactory_.codehash != CANONICAL_MANAGER_FACTORY_CODEHASH
         ) revert BadManager();
         managerFactory = managerFactory_;
-        threshold = threshold_;
-        for (uint256 i; i < signers_.length; ++i) {
-            address signer = signers_[i];
-            if (signer == address(0) || isSigner[signer]) revert BadSigner();
-            isSigner[signer] = true;
-            _signers.push(signer);
-        }
+        _installSignerSet(1, signers_, threshold_);
+        nextSignerRotationAt = uint64(block.timestamp) + SIGNER_ROTATION_COOLDOWN;
         if (managers_.length != REQUIRED_MANAGER_COUNT) {
             revert WrongManagerCount(managers_.length, REQUIRED_MANAGER_COUNT);
         }
@@ -181,6 +192,18 @@ contract P42ResolverQuorum {
 
     function signerAt(uint256 index) external view returns (address) {
         return _signers[index];
+    }
+
+    function epochSignerCount(uint64 epoch) external view returns (uint256) {
+        return _epochSigners[epoch].length;
+    }
+
+    function epochSignerAt(uint64 epoch, uint256 index) external view returns (address) {
+        return _epochSigners[epoch][index];
+    }
+
+    function isEpochSigner(uint64 epoch, address signer) external view returns (bool) {
+        return _isEpochSigner[epoch][signer];
     }
 
     function managerCount() external view returns (uint256) {
@@ -209,9 +232,46 @@ contract P42ResolverQuorum {
         _managers.push(manager);
     }
 
+    function rotateSigners(address[] calldata signers_, uint256 threshold_) external onlyOwner {
+        if (block.timestamp < nextSignerRotationAt) revert RotationCooldownActive();
+        uint64 nextEpoch = signerEpoch + 1;
+        _installSignerSet(nextEpoch, signers_, threshold_);
+        nextSignerRotationAt = uint64(block.timestamp) + SIGNER_ROTATION_COOLDOWN;
+    }
+
+    function _installSignerSet(uint64 epoch, address[] memory signers_, uint256 threshold_) private {
+        if (signers_.length < 3 || signers_.length > 5) revert BadSigner();
+        if (threshold_ <= signers_.length / 2 || threshold_ > signers_.length) revert BadThreshold();
+        for (uint256 i; i < _signers.length; ++i) isSigner[_signers[i]] = false;
+        delete _signers;
+        for (uint256 i; i < signers_.length; ++i) {
+            address signer = signers_[i];
+            if (signer == address(0) || _isEpochSigner[epoch][signer]) revert BadSigner();
+            isSigner[signer] = true;
+            _isEpochSigner[epoch][signer] = true;
+            _signers.push(signer);
+            _epochSigners[epoch].push(signer);
+        }
+        signerEpoch = epoch;
+        threshold = threshold_;
+        epochThreshold[epoch] = threshold_;
+        emit SignerSetRotated(epoch, threshold_, signers_);
+    }
+
+    function paused() public view returns (bool) {
+        return block.timestamp < pauseUntil;
+    }
+
     function setPaused(bool paused_) external onlyOwner {
-        paused = paused_;
-        emit PauseSet(paused_);
+        if (paused_) {
+            if (paused()) revert PauseAlreadyActive();
+            if (block.timestamp < pauseCooldownUntil) revert PauseCooldownActive();
+            pauseUntil = uint64(block.timestamp) + PAUSE_DURATION;
+            pauseCooldownUntil = pauseUntil + PAUSE_COOLDOWN;
+        } else {
+            pauseUntil = uint64(block.timestamp);
+        }
+        emit PauseSet(paused_, pauseUntil, pauseCooldownUntil);
     }
 
     function domainSeparator() public view returns (bytes32) {
@@ -233,7 +293,8 @@ contract P42ResolverQuorum {
                 decision.verdictHash,
                 decision.bondBeneficiary,
                 decision.nonce,
-                decision.expiry
+                decision.expiry,
+                decision.signerEpoch
             )
         );
     }
@@ -246,7 +307,7 @@ contract P42ResolverQuorum {
         external
         payable
     {
-        if (paused) revert Paused();
+        if (paused()) revert Paused();
         _requireDecisionBinding(decision, true);
         if (msg.value != 0) revert UnexpectedValue();
         if (keccak256(bytes(transcriptURI)) != decision.transcriptURIHash) revert TranscriptURIMismatch();
@@ -254,7 +315,7 @@ contract P42ResolverQuorum {
         if (challengeDecided[decision.manager][decision.challengeInstanceHash]) revert ChallengeAlreadyDecided();
 
         bytes32 digest = decisionDigest(decision);
-        _requireQuorum(digest, signatures);
+        _requireQuorum(decision.signerEpoch, digest, signatures);
         // Effects precede the manager call; a manager revert atomically restores them.
         nonceUsed[decision.manager][decision.nonce] = true;
         challengeDecided[decision.manager][decision.challengeInstanceHash] = true;
@@ -305,6 +366,7 @@ contract P42ResolverQuorum {
         if (
             first.manager != second.manager || first.submissionId != second.submissionId
                 || first.challengeInstanceHash != second.challengeInstanceHash
+                || first.signerEpoch != second.signerEpoch
         ) revert NotEquivocation();
 
         bytes32 firstStructHash = decisionStructHash(first);
@@ -312,8 +374,8 @@ contract P42ResolverQuorum {
         if (firstStructHash == secondStructHash || _decisionContentHash(first) == _decisionContentHash(second)) {
             revert NotEquivocation();
         }
-        _requireQuorum(decisionDigest(first), firstSignatures);
-        _requireQuorum(decisionDigest(second), secondSignatures);
+        _requireQuorum(first.signerEpoch, decisionDigest(first), firstSignatures);
+        _requireQuorum(second.signerEpoch, decisionDigest(second), secondSignatures);
 
         (bytes32 low, bytes32 high) = firstStructHash < secondStructHash
             ? (firstStructHash, secondStructHash)
@@ -342,8 +404,9 @@ contract P42ResolverQuorum {
                 || decision.manager == address(0) || decision.submissionId == 0
                 || decision.challengeInstanceHash == bytes32(0) || decision.transcriptHash == bytes32(0)
                 || decision.transcriptURIHash == bytes32(0) || decision.verdictHash == bytes32(0)
-                || decision.bondBeneficiary != address(this)
+                || decision.bondBeneficiary != address(this) || epochThreshold[decision.signerEpoch] == 0
         ) revert BadDecisionBinding();
+        if (enforceExpiry && decision.signerEpoch != signerEpoch) revert StaleSignerEpoch();
         if (enforceExpiry && block.timestamp > decision.expiry) revert DecisionExpired();
     }
 
@@ -364,18 +427,20 @@ contract P42ResolverQuorum {
         );
     }
 
-    function _requireQuorum(bytes32 digest, bytes[] calldata signatures) private view {
-        if (signatures.length < threshold) revert InsufficientSignatures(signatures.length, threshold);
+    function _requireQuorum(uint64 epoch, bytes32 digest, bytes[] calldata signatures) private view {
+        uint256 required = epochThreshold[epoch];
+        if (required == 0) revert UnknownSignerEpoch();
+        if (signatures.length < required) revert InsufficientSignatures(signatures.length, required);
         address previous;
         uint256 valid;
         for (uint256 i; i < signatures.length; ++i) {
             address recovered = _recover(digest, signatures[i]);
             if (recovered <= previous) revert SignersNotStrictlySorted();
             previous = recovered;
-            if (!isSigner[recovered]) revert BadSignature();
+            if (!_isEpochSigner[epoch][recovered]) revert BadSignature();
             ++valid;
         }
-        if (valid < threshold) revert InsufficientSignatures(valid, threshold);
+        if (valid < required) revert InsufficientSignatures(valid, required);
     }
 
     function _recover(bytes32 digest, bytes calldata signature) private pure returns (address recovered) {

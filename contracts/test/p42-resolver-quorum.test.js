@@ -25,6 +25,7 @@ const DECISION_TYPES = {
     { name: "bondBeneficiary", type: "address" },
     { name: "nonce", type: "uint256" },
     { name: "expiry", type: "uint64" },
+    { name: "signerEpoch", type: "uint64" },
   ],
 };
 
@@ -59,6 +60,15 @@ async function expectCustomError(action, contract, errorName) {
 
 async function latestTimestamp() {
   return BigInt((await ethers.provider.getBlock("latest")).timestamp);
+}
+
+async function mineAt(timestamp) {
+  await ethers.provider.send("evm_setNextBlockTimestamp", [Number(timestamp)]);
+  await ethers.provider.send("evm_mine", []);
+}
+
+async function setNextTimestamp(timestamp) {
+  await ethers.provider.send("evm_setNextBlockTimestamp", [Number(timestamp)]);
 }
 
 async function deployFixture(options = {}) {
@@ -144,6 +154,7 @@ async function deployFixture(options = {}) {
   );
   await quorum.waitForDeployment();
   assert.equal(await quorum.getAddress(), predictedQuorum);
+  if (options.rotationReady) await mineAt(await quorum.nextSignerRotationAt());
 
   const solutionCid = "ipfs://resolver-quorum-solution";
   const salt = "resolver-quorum-salt";
@@ -180,6 +191,7 @@ async function decisionFor(fixture, overrides = {}) {
     bondBeneficiary: overrides.bondBeneficiary ?? await fixture.quorum.getAddress(),
     nonce: overrides.nonce ?? 1n,
     expiry: overrides.expiry ?? (await latestTimestamp()) + 3_600n,
+    signerEpoch: overrides.signerEpoch ?? await fixture.quorum.signerEpoch(),
     ...overrides.fields,
   };
   return { decision, transcriptURI };
@@ -396,5 +408,165 @@ describe("P42ResolverQuorum", function () {
       fixture.quorum.proveEquivocation(first.decision, firstSignatures, second.decision, secondSignatures),
       fixture.quorum, "EquivocationAlreadyProven",
     );
+  });
+
+  it("rotates strict-majority signer sets monotonically and rejects stale-epoch execution", async function () {
+    const fixture = await deployFixture();
+    const old = await decisionFor(fixture, { nonce: 21n });
+    const oldSignatures = await signaturesFor(fixture, old.decision);
+
+    await expectCustomError(
+      fixture.quorum.connect(fixture.outsider).rotateSigners(
+        [fixture.signerC.address, fixture.beneficiary.address, fixture.outsider.address], 2,
+      ),
+      fixture.quorum,
+      "NotOwner",
+    );
+    await expectCustomError(
+      fixture.quorum.connect(fixture.owner).rotateSigners(
+        [fixture.signerC.address, fixture.beneficiary.address, fixture.outsider.address], 1,
+      ),
+      fixture.quorum,
+      "RotationCooldownActive",
+    );
+    const firstRotationAt = await fixture.quorum.nextSignerRotationAt();
+    assert.equal(firstRotationAt - await latestTimestamp() <= await fixture.quorum.SIGNER_ROTATION_COOLDOWN(), true);
+    await setNextTimestamp(firstRotationAt - 1n);
+    await expectCustomError(
+      fixture.quorum.connect(fixture.owner).rotateSigners(
+        [fixture.signerC.address, fixture.beneficiary.address, fixture.outsider.address], 2,
+      ),
+      fixture.quorum,
+      "RotationCooldownActive",
+    );
+    await setNextTimestamp(firstRotationAt);
+    await expectCustomError(
+      fixture.quorum.connect(fixture.owner).rotateSigners(
+        [fixture.signerC.address, fixture.beneficiary.address, fixture.outsider.address], 1,
+      ),
+      fixture.quorum,
+      "BadThreshold",
+    );
+    await fixture.quorum.connect(fixture.owner).rotateSigners(
+      [fixture.signerC.address, fixture.beneficiary.address, fixture.outsider.address], 2,
+    );
+
+    const secondRotationAt = await fixture.quorum.nextSignerRotationAt();
+    assert.equal(secondRotationAt, BigInt((await ethers.provider.getBlock("latest")).timestamp) + 7n * 24n * 60n * 60n);
+    await setNextTimestamp(secondRotationAt - 1n);
+    await expectCustomError(
+      fixture.quorum.connect(fixture.owner).rotateSigners(
+        [fixture.signerA.address, fixture.signerB.address, fixture.signerC.address], 2,
+      ),
+      fixture.quorum,
+      "RotationCooldownActive",
+    );
+    await setNextTimestamp(secondRotationAt);
+    await fixture.quorum.connect(fixture.owner).rotateSigners(
+      [fixture.signerA.address, fixture.signerB.address, fixture.signerC.address], 2,
+    );
+
+    assert.equal(await fixture.quorum.signerEpoch(), 3n);
+    assert.equal(await fixture.quorum.threshold(), 2n);
+    assert.equal(await fixture.quorum.epochThreshold(1), 2n);
+    assert.equal(await fixture.quorum.epochThreshold(2), 2n);
+    assert.equal(await fixture.quorum.epochSignerCount(1), 3n);
+    assert.equal(await fixture.quorum.isEpochSigner(1, fixture.signerA.address), true);
+    assert.equal(await fixture.quorum.isEpochSigner(2, fixture.signerA.address), false);
+    assert.equal(await fixture.quorum.isSigner(fixture.signerA.address), true);
+    assert.equal(await fixture.quorum.isSigner(fixture.outsider.address), false);
+
+    await expectCustomError(
+      fixture.quorum.resolve(old.decision, old.transcriptURI, oldSignatures), fixture.quorum, "StaleSignerEpoch",
+    );
+  });
+
+  it("retains historical signer epochs for same-epoch proofs after rotation", async function () {
+    const fixture = await deployFixture({ rotationReady: true });
+    await fixture.quorum.connect(fixture.signerA).fundStake({ value: RESOLVER_BOND });
+    const first = await decisionFor(fixture, { nonce: 31n, challengerWins: true });
+    const second = await decisionFor(fixture, {
+      nonce: 32n,
+      challengerWins: false,
+      verdictHash: ethers.id("same-epoch conflicting verdict"),
+    });
+    const firstSignatures = await signaturesFor(fixture, first.decision);
+    const secondSignatures = await signaturesFor(fixture, second.decision);
+    await fixture.quorum.resolve(first.decision, first.transcriptURI, firstSignatures);
+
+    await fixture.quorum.connect(fixture.owner).rotateSigners(
+      [fixture.signerC.address, fixture.beneficiary.address, fixture.outsider.address], 2,
+    );
+    await fixture.quorum.proveEquivocation(
+      first.decision, firstSignatures, second.decision, secondSignatures,
+    );
+    const bond = await fixture.managers[0].resolverBonds(fixture.submissionId);
+    assert.equal(bond.amountWei, 0n);
+    assert.notEqual(bond.slashProofHash, ethers.ZeroHash);
+  });
+
+  it("does not slash validly signed conflicts from different signer epochs", async function () {
+    const fixture = await deployFixture({ rotationReady: true });
+    await fixture.quorum.connect(fixture.signerA).fundStake({ value: RESOLVER_BOND });
+    const first = await decisionFor(fixture, { nonce: 41n, challengerWins: true });
+    const firstSignatures = await signaturesFor(fixture, first.decision);
+    await fixture.quorum.resolve(first.decision, first.transcriptURI, firstSignatures);
+
+    await fixture.quorum.connect(fixture.owner).rotateSigners(
+      [fixture.signerC.address, fixture.beneficiary.address, fixture.outsider.address], 2,
+    );
+    const second = await decisionFor(fixture, {
+      nonce: 42n,
+      challengerWins: false,
+      verdictHash: ethers.id("cross-epoch conflicting verdict"),
+    });
+    const secondSignatures = await signaturesFor(
+      fixture, second.decision, [fixture.signerC, fixture.beneficiary],
+    );
+    await expectCustomError(
+      fixture.quorum.proveEquivocation(
+        first.decision, firstSignatures, second.decision, secondSignatures,
+      ),
+      fixture.quorum,
+      "NotEquivocation",
+    );
+    const bond = await fixture.managers[0].resolverBonds(fixture.submissionId);
+    assert.equal(bond.amountWei, RESOLVER_BOND);
+    assert.equal(bond.slashProofHash, ethers.ZeroHash);
+  });
+
+  it("bounds pauses, auto-expires them, and prevents extension or continuous repause", async function () {
+    const fixture = await deployFixture();
+    const { decision, transcriptURI } = await decisionFor(fixture, {
+      expiry: (await latestTimestamp()) + 3n * 24n * 60n * 60n,
+    });
+    const signatures = await signaturesFor(fixture, decision);
+    await fixture.quorum.connect(fixture.signerA).fundStake({ value: RESOLVER_BOND });
+
+    await expectCustomError(
+      fixture.quorum.connect(fixture.outsider).setPaused(true), fixture.quorum, "NotOwner",
+    );
+    await fixture.quorum.connect(fixture.owner).setPaused(true);
+    const pauseUntil = await fixture.quorum.pauseUntil();
+    assert.equal(await fixture.quorum.paused(), true);
+    await expectCustomError(
+      fixture.quorum.connect(fixture.owner).setPaused(true), fixture.quorum, "PauseAlreadyActive",
+    );
+    await expectCustomError(
+      fixture.quorum.resolve(decision, transcriptURI, signatures), fixture.quorum, "Paused",
+    );
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [Number(pauseUntil)]);
+    await ethers.provider.send("evm_mine", []);
+    assert.equal(await fixture.quorum.paused(), false);
+    await expectCustomError(
+      fixture.quorum.connect(fixture.owner).setPaused(true), fixture.quorum, "PauseCooldownActive",
+    );
+    await fixture.quorum.resolve(decision, transcriptURI, signatures);
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [Number(await fixture.quorum.pauseCooldownUntil())]);
+    await ethers.provider.send("evm_mine", []);
+    await fixture.quorum.connect(fixture.owner).setPaused(true);
+    assert.equal(await fixture.quorum.paused(), true);
   });
 });

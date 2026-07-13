@@ -905,6 +905,118 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     );
   });
 
+  it("keeps an authorization immutable through exact expiry, then permits replacement", async function () {
+    const fixture = await deployFixture({ arm: false, advanceCompetition: false });
+    const { owner, treasury, submissions } = fixture;
+    const originalDigest = "0x" + "42".repeat(32);
+    const replacementDigest = "0x" + "43".repeat(32);
+    const latest = await ethers.provider.getBlock("latest");
+    const expiresAt = BigInt(latest.timestamp) + CHALLENGE_WINDOW_SECONDS;
+
+    await submissions.connect(treasury).authorizeFunding(originalDigest, expiresAt);
+    await expectCustomError(
+      submissions.connect(treasury).authorizeFunding(replacementDigest, expiresAt + 1n),
+      submissions,
+      "P42_FUNDING_AUTHORIZATION_ACTIVE"
+    );
+    assert.equal(await submissions.authorizedFundingDigest(), originalDigest);
+    assert.equal(await submissions.fundingAuthorizationExpiresAt(), expiresAt);
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [Number(expiresAt)]);
+    await expectCustomError(
+      submissions.connect(treasury).authorizeFunding(replacementDigest, expiresAt + 1n),
+      submissions,
+      "P42_FUNDING_AUTHORIZATION_ACTIVE"
+    );
+    assert.equal(await submissions.authorizedFundingDigest(), originalDigest);
+
+    const replacementExpiresAt = expiresAt + CHALLENGE_WINDOW_SECONDS;
+    await ethers.provider.send("evm_setNextBlockTimestamp", [Number(expiresAt + 1n)]);
+    await submissions.connect(treasury).authorizeFunding(replacementDigest, replacementExpiresAt);
+    assert.equal(await submissions.authorizedFundingDigest(), replacementDigest);
+    assert.equal(await submissions.fundingAuthorizationExpiresAt(), replacementExpiresAt);
+
+    await submissions.connect(owner).armFunding(replacementDigest);
+    assert.equal(await submissions.fundingArmed(), true);
+    assert.equal(await submissions.fundingAuthorizationDigest(), replacementDigest);
+  });
+
+  it("requires owner and exact digest to cancel an active funding authorization", async function () {
+    const fixture = await deployFixture({ arm: false, advanceCompetition: false });
+    const { owner, treasury, alice, submissions } = fixture;
+    const authorizationDigest = "0x" + "42".repeat(32);
+    const wrongDigest = "0x" + "43".repeat(32);
+    const expiresAt = 2n ** 64n - 1n;
+
+    await submissions.connect(treasury).authorizeFunding(authorizationDigest, expiresAt);
+    await expectCustomError(
+      submissions.connect(owner).cancelFundingAuthorization(wrongDigest),
+      submissions,
+      "P42_FUNDING_AUTHORIZATION_MISMATCH"
+    );
+    await expectCustomError(
+      submissions.connect(alice).cancelFundingAuthorization(authorizationDigest),
+      submissions,
+      "P42_NOT_OWNER"
+    );
+    assert.equal(await submissions.authorizedFundingDigest(), authorizationDigest);
+    assert.equal(await submissions.fundingAuthorizationExpiresAt(), expiresAt);
+  });
+
+  it("owner can cancel a max-expiry authorization so treasury can replace it", async function () {
+    const fixture = await deployFixture({ arm: false, advanceCompetition: false });
+    const { owner, treasury, submissions } = fixture;
+    const typoDigest = "0x" + "42".repeat(32);
+    const replacementDigest = "0x" + "43".repeat(32);
+    const maxExpiry = 2n ** 64n - 1n;
+
+    await submissions.connect(treasury).authorizeFunding(typoDigest, maxExpiry);
+    await expectCustomError(
+      submissions.connect(treasury).authorizeFunding(replacementDigest, maxExpiry),
+      submissions,
+      "P42_FUNDING_AUTHORIZATION_ACTIVE"
+    );
+
+    const tx = await submissions.connect(owner).cancelFundingAuthorization(typoDigest);
+    const receipt = await tx.wait();
+    const cancelled = receipt.logs
+      .map((log) => {
+        try {
+          return submissions.interface.parseLog(log);
+        } catch {
+          return null;
+        }
+      })
+      .find((parsed) => parsed && parsed.name === "FundingAuthorizationCancelled");
+    assert.ok(cancelled, "FundingAuthorizationCancelled event present");
+    assert.equal(cancelled.args.authorizationDigest, typoDigest);
+    assert.equal(cancelled.args.canceller, owner.address);
+    assert.equal(cancelled.args.expiresAt, maxExpiry);
+    assert.equal(await submissions.authorizedFundingDigest(), ethers.ZeroHash);
+    assert.equal(await submissions.fundingAuthorizationExpiresAt(), 0n);
+
+    await submissions.connect(treasury).authorizeFunding(replacementDigest, maxExpiry);
+    assert.equal(await submissions.authorizedFundingDigest(), replacementDigest);
+    assert.equal(await submissions.fundingAuthorizationExpiresAt(), maxExpiry);
+  });
+
+  it("rejects funding authorization cancellation after arming", async function () {
+    const fixture = await deployFixture({ arm: false, advanceCompetition: false });
+    const { owner, treasury, submissions } = fixture;
+    const authorizationDigest = "0x" + "42".repeat(32);
+
+    await submissions.connect(treasury).authorizeFunding(authorizationDigest, 2n ** 64n - 1n);
+    await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
+    await submissions.connect(owner).armFunding(authorizationDigest);
+    await expectCustomError(
+      submissions.connect(owner).cancelFundingAuthorization(authorizationDigest),
+      submissions,
+      "P42_FUNDING_ALREADY_ARMED"
+    );
+    assert.equal(await submissions.authorizedFundingDigest(), authorizationDigest);
+    assert.equal(await submissions.fundingAuthorizationDigest(), authorizationDigest);
+  });
+
   it("the pool refuses deposits (fund and receive) until armFunding — no ETH strandable in the open phase", async function () {
     const fixture = await deployFixture({ arm: false });
     const { owner, alice, pool, submissions } = fixture;
