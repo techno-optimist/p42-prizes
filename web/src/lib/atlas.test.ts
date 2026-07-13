@@ -53,9 +53,14 @@ describe("Erdős frontier atlas", () => {
     const meta = getAtlasMeta();
     expect(meta.facets.boardability).toEqual({ READY: 13, HEAVY: 14, NONE: 24 });
     expect(meta.facets.p42).toEqual({ true: 5, false: 46 });
-    expect(meta.provenance.commit).toBe("fdc4dade0e6464ab2569d686645052cc8479cb05");
-    expect(meta.provenance.sha256).toBe("f544a5734647b7038b68c4919cba8afa28d93db600e5da8f1e6048c867e7a89c");
+    expect(meta.provenance.commit).toBe("bd82a0ab34ffe4c33dffba0c402d54b61a5a0103");
+    expect(meta.provenance.sha256).toBe("dd9d4bfebf6c99a086c9378df648bfd8c969873e08b428e1ad43e9204d68becd");
     expect(getAtlasEntry(67)?.frontier?.summary).toContain("130,000");
+    expect(getAtlasEntry(552)).toMatchObject({
+      frontier: { summary: expect.stringContaining("a(12..16)") },
+      evidence: { status: "verified", digest: "sha256:6fad85db5cc5925f5a5894446c56720433065652fecb284a1340262a70a914d3" },
+      compute: { schema: "p42-atlas-compute-v1", coverage: expect.any(Array) },
+    });
     expect(getAtlasEntry(21)?.lane).toBe("exact-backtracking");
   });
 

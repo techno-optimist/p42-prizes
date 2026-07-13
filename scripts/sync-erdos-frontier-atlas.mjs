@@ -6,9 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const UPSTREAM_REPOSITORY = "https://github.com/techno-optimist/erdos-frontier-atlas";
-export const UPSTREAM_COMMIT = "fdc4dade0e6464ab2569d686645052cc8479cb05";
+export const UPSTREAM_COMMIT = "bd82a0ab34ffe4c33dffba0c402d54b61a5a0103";
 export const UPSTREAM_PATH = "atlas/problems.json";
-export const UPSTREAM_SHA256 = "f544a5734647b7038b68c4919cba8afa28d93db600e5da8f1e6048c867e7a89c";
+export const UPSTREAM_SHA256 = "dd9d4bfebf6c99a086c9378df648bfd8c969873e08b428e1ad43e9204d68becd";
 export const UPSTREAM_RAW_URL = `https://raw.githubusercontent.com/techno-optimist/erdos-frontier-atlas/${UPSTREAM_COMMIT}/${UPSTREAM_PATH}`;
 
 const outputPath = fileURLToPath(
@@ -34,6 +34,48 @@ export function buildSnapshot(sourceBytes) {
   }
   if (source.counts?.total !== source.problems.length) {
     throw new Error("upstream declared count does not match its entries");
+  }
+  if (source.atlas_version !== "0.2.0" || source.generated !== "2026-07-13") {
+    throw new Error("upstream Atlas release identity changed without review");
+  }
+  const erdos552 = source.problems.find((problem) => problem.id === 552);
+  if (erdos552?.evidence?.digest !== "sha256:6fad85db5cc5925f5a5894446c56720433065652fecb284a1340262a70a914d3") {
+    throw new Error("Erdős 552 certificate digest is missing or changed");
+  }
+  const coverage = erdos552?.compute?.coverage;
+  if (erdos552?.compute?.schema !== "p42-atlas-compute-v1" || !Array.isArray(coverage)
+      || !coverage.some((record) => record.axis === "n" && record.start === 12 && record.end === 16 && record.status === "CERTIFIED")
+      || !coverage.some((record) => record.axis === "n" && record.start === 17 && record.end === 17 && record.status === "UNKNOWN"
+        && record.result.includes("Lower endpoint m=21 certified"))) {
+    throw new Error("Erdős 552 structured compute coverage is missing or changed");
+  }
+  for (const problem of source.problems) {
+    const records = problem.compute?.coverage;
+    if (!Array.isArray(records)) continue;
+    const byAxis = new Map();
+    for (const record of records) {
+      if (typeof record?.axis !== "string" || !Number.isSafeInteger(record.start)
+          || !Number.isSafeInteger(record.end) || record.start > record.end) {
+        throw new Error(`Erdős ${problem.id} has malformed compute coverage`);
+      }
+      if (record.where !== undefined && (typeof record.where !== "object" || record.where === null
+          || Array.isArray(record.where) || Object.keys(record.where).length === 0
+          || Object.values(record.where).some((value) => value !== null && typeof value !== "string"
+            && typeof value !== "boolean" && !Number.isSafeInteger(value)))) {
+        throw new Error(`Erdős ${problem.id} has malformed compute coverage constraints`);
+      }
+      const axisRecords = byAxis.get(record.axis) ?? [];
+      axisRecords.push(record);
+      byAxis.set(record.axis, axisRecords);
+    }
+    for (const [axis, axisRecords] of byAxis) {
+      axisRecords.sort((left, right) => left.start - right.start || left.end - right.end);
+      for (let index = 1; index < axisRecords.length; index += 1) {
+        if (axisRecords[index].start <= axisRecords[index - 1].end) {
+          throw new Error(`Erdős ${problem.id} has overlapping compute coverage on ${axis}`);
+        }
+      }
+    }
   }
 
   return {

@@ -61,15 +61,17 @@ export interface AtlasEntrySource {
   p42_slug?: string | null;
   erdos_url: string;
   links: AtlasLinks;
+  evidence?: unknown;
+  compute?: unknown;
 }
 
 export interface AtlasEntry extends Omit<AtlasEntrySource, "frontier"> {
   frontier?: AtlasFrontier;
   /** Join hint only. This is never evidence of funding, eligibility, or settlement state. */
   p42_slug?: string;
-  /** Reserved for explicit future source data. Never inferred from prose. */
+  /** Explicit upstream evidence only. Never inferred from prose. */
   evidence?: unknown;
-  /** Reserved for explicit future source data. Never inferred from prose. */
+  /** Explicit upstream compute coverage only. Never inferred from prose. */
   compute?: unknown;
 }
 
