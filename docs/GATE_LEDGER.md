@@ -1,6 +1,6 @@
 # Production Gate Ledger
 
-Status date: 2026-07-12.
+Status date: 2026-07-13.
 
 Status: Phase 0 local/testnet-shaped portal. NO-GO for real ETH and NO-GO for
 a canonical Base Sepolia settlement pilot on the current source. Not externally
@@ -44,7 +44,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 
 | Gate | Current status | Evidence today | Exit criteria |
 | --- | --- | --- | --- |
-| Gate 0: Public repo / local pilot | Mostly green; latest merged source-release CI passes, two repository-account controls remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, published `.github/workflows/ci.yml`, and green post-merge [`main` run 29202286767](https://github.com/techno-optimist/p42-prizes/actions/runs/29202286767) for source release `142300ad013b285bcceffbcf3ba527352b43f4ec` | Retain a successful push run for each newly merged source release; upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; repo owner enables private vulnerability reporting through a supported GitHub surface |
+| Gate 0: Public repo / local pilot | Mostly green; latest merged source-release CI passes, two repository-account controls remain | Local verifier, web/API tests, fail-closed challenge/onramp, security policy text, published `.github/workflows/ci.yml`, and green post-merge [`main` run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082) for source release `a97b824cbb50c7b4ef1421bc5057c60879397300` | Retain a successful push run for each newly merged source release; upgrade the private repository/account tier or make the repository public so protected branch/ruleset enforcement is available; repo owner enables private vulnerability reporting through a supported GitHub surface |
 | Gate 1: Base Sepolia testnet | Open - no current canonical DA-refactored deployment or current reconciliation | Python reference model, portal-local commit/reveal, local DA/permanence evidence validator, DGX/Hermes verifier-runner runbook plus burst-drill validator, local Hardhat contract scaffold tests for registry/pool/payout/submission/challenge/resolver invariants plus seeded payout/bond property checks, Base Sepolia deployment-manifest scaffold, read-only reconciliation script, and stale historical Base Sepolia evidence for old bytecode | Fresh deployed verified DA-refactored contracts, current testnet addresses, current manifest, current indexer reconciliation, on-chain-at-reveal DA verified on that deployment, live agent wallet/operator run, DGX reveal-watcher dry run, integrated resolver transcript, runner burst report, strict open-witness launch-board evidence, and a fresh adversarial campaign report |
 | Gate 2: Real ETH pilot | Blocked | Conservative copy, gate docs, tested admission tooling, immutable-image `admit-ready` scaffold, draft wallet/session policy, opt-in mutation API-key gate, and legal memo validator | External audit, counsel-signed legal memo, KYC/sanctions/ToS approval, immutable registry image digests, collected trusted four-host verifier matrix, named multisig/guardian, distributed state/abuse controls, incident drill, bug bounty |
 | Gate 3: Scale | Blocked by Gate 1/2 | Spec only | Fraud-proof/equivalent verifier execution proof, independent monitoring, censorship fallback, incident-free caps review |
@@ -63,7 +63,7 @@ no known unfixed critical/high risk, no unresolved audit finding, and no value-m
 | Solver winnings reinvestment | Source-complete, deployment pending | A solver may atomically direct a matured award into another active pool in the same frozen canonical registry. The source claim rolls back on any destination failure, the destination sponsorship remains attributed to the solver, and frontier/title records are unchanged. The autonomous agent accepts only manifest-bound destinations, preflights armed/open/cap/deadline state, waits without exhausting its retry budget, and falls back to an ordinary claim during the final 24 hours before expiry rather than destroy an award. Multi-board checkpoints bind the source settlement to the destination sponsorship by transaction, solver, both pools, gross award, fee, and net amount. Economically this is recycled sponsorship, including the destination's ordinary zero-credit refund policy, rather than an irrevocable charitable gift | Deploy, externally audit, reconcile, and expose only authorization-bound production destinations |
 | Local rate limits/idempotency/events | Pass for local pilot | Process-local limiter, local idempotency, hash-chained local events, problem APIs expose local-only chain provenance until a manifest/indexer is attached | Still not production settlement state |
 | Security disclosure text | Pass in repo | `SECURITY.md` | Repo owner must enable GitHub private vulnerability reporting |
-| GitHub Actions workflow | Pass for workflow presence and latest merged source-release run | `.github/workflows/ci.yml` is published. Post-merge [`main` run 29212681237](https://github.com/techno-optimist/p42-prizes/actions/runs/29212681237) passed all four lanes for exact source release `205a7bd67472e5ecb02f17f3c0b9e76cbb0e87fb`. Direct checks returned `200` and release-specific activation provenance fields at both the Render origin and public proxy. The authenticated Render metadata guard remains unavailable because the local Render token is expired | Retain a completed push run for every newly merged source release. The immutable Node-24 action-pin update is prepared locally at `1d1332f` but this OAuth token cannot publish workflow changes without `workflow` scope. GitHub returned `403` for branch protection/rulesets and `404` for private vulnerability reporting; those are explicit repo-owner/account blockers |
+| GitHub Actions workflow | Pass for workflow presence and latest merged source-release run | `.github/workflows/ci.yml` is published. Post-merge [`main` run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082) passed all four lanes for exact source release `a97b824cbb50c7b4ef1421bc5057c60879397300`. Direct checks returned `200` and release-specific activation provenance fields at both the Render origin and public proxy. The authenticated Render metadata guard remains unavailable because the local Render token is expired | Retain a completed push run for every newly merged source release. The immutable Node-24 action-pin update is prepared locally at `1d1332f` but this OAuth token cannot publish workflow changes without `workflow` scope. GitHub returned `403` for branch protection/rulesets and `404` for private vulnerability reporting; those are explicit repo-owner/account blockers |
 | Owner/external action register | Pass in repo | `docs/HUMAN_ACTIONS.md` | Keep updated whenever a credential, owner setting, audit, legal, governance, or deployment action blocks a gate |
 
 ## Gate 1 Blockers
@@ -115,7 +115,7 @@ repo-owner authority cannot be replaced by agent execution.
 - [x] Retryable submission/verifier POSTs support local `Idempotency-Key` replay.
 - [x] Local diagnostic event ledger exposes hash-chained commit/reveal/idempotency events.
 - [x] `SECURITY.md` contact and disclosure channel documented.
-- [x] A required-check CI run passes for exact merged source release `142300ad013b285bcceffbcf3ba527352b43f4ec` ([run 29202286767](https://github.com/techno-optimist/p42-prizes/actions/runs/29202286767)); each later source merge must earn its own successful push run before release.
+- [x] A required-check CI run passes for exact merged source release `a97b824cbb50c7b4ef1421bc5057c60879397300` ([run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082)); each later source merge must earn its own successful push run before release.
 - [ ] Protected-release/branch enforcement is independently verified by the repo owner.
 - [ ] GitHub private vulnerability reporting is enabled by a repo owner.
 
@@ -123,9 +123,9 @@ repo-owner authority cannot be replaced by agent execution.
 
 - [ ] Current DA-refactored `ProblemRegistry`, pool, submission, challenge, and payout contracts are deployed to Base Sepolia. Historical old-bytecode deployment exists in `deployments/base-sepolia/p42-prizes.json`, but it is stale and not a Gate 1 pass.
 - [ ] Current contract addresses and source verification are recorded in a fresh manifest. Historical BaseScan verification exists for old bytecode only.
-- [ ] Posting bond scales to `alpha * pool_at_submission`.
-- [ ] `claim()` pays `min(vested, final_entitlement)` and cannot be paused.
-- [ ] Commit binds the `commitDaHash` content anchor (`sha256` of the raw solution bytes) on-chain at commit time.
+- [x] Current source prices pre-arm commits from `alpha * pool_at_submission` and paid-phase commits from `alpha * immutable funding_cap`, preventing an empty-pool commit from buying leverage before authorized funding arrives; `contracts/test/p42-redteam.test.js` exercises the paid-phase cap path. Canonical deployment evidence remains open.
+- [x] Current source makes `claim()` pay at most final entitlement and leaves claims outside the new-action pause; canonical deployment evidence remains open.
+- [x] Current source binds the `commitDaHash` content anchor (`sha256` of the raw solution bytes) at commit time; canonical deployment evidence remains open.
 - [ ] `p42-prizes da-verify` passes for finalized testnet submissions and matches the contract `commit_da_hash` anchor (`permanence_hash` is an optional mirror-receipt field, not a gate).
 - [ ] Funding deposits are indexed and reconciled against problem pool balances.
 - [ ] Reveal enforces `sha256(bytes) == commitDaHash` on the canonical deployment (on-chain-DA problems carry the bytes in reveal calldata; the 3 large problems use the anchored off-chain store). *Superseded criterion:* "finalize requires permanence receipt" — `finalize`'s `permanenceHash` is now optional; see `docs/DATA_AVAILABILITY.md`.
@@ -152,8 +152,8 @@ repo-owner authority cannot be replaced by agent execution.
 - [ ] Off-chain-verdict → on-chain-key bridge (trusted resolver/`creditRecorder`) is replaced or bounded; native-ETH-only until then.
 - [ ] Dynamic/on-chain differential testing runs against a live testnet deployment, not local unit tests only.
 - [ ] Verifier image digests are pinned and immutable in registry.
-- [ ] Contracts still native-ETH only: do NOT advertise/accept USDC/ERC-20 bounties until an ERC-20 pool/fee/payout path is implemented and audited.
-- [ ] Protocol fee is capped in-contract at `MAX_FEE_BPS = 250` (2.5%).
+- [x] Contracts and public copy are native-ETH only; USDC/ERC-20 is explicitly unsupported and must not be advertised or accepted until a separate pool/fee/payout path is implemented and audited (`tests/test_public_capabilities.py`).
+- [x] Current source caps the protocol fee in-contract at `MAX_FEE_BPS = 250` (2.5%); `contracts/test/p42-properties.test.js` exercises the boundary. Canonical deployment evidence remains open.
 - [ ] Multisig signers, timelock, and emergency guardian are named and deployed. The v2 source ceremony makes `P42MultisigTimelock` the immutable owner of every new child contract, but no current canonical deployment has those named governance roles or rehearsal evidence.
 - [ ] Production wallet/session policy is reviewed across portal, contracts, and solver agents.
 - [ ] Distributed rate limits, idempotency store, API keys, abuse monitoring, and payload quarantine are live.
@@ -306,10 +306,11 @@ or Gate 2 item.
   on-chain frontier/credit write through a privileged key, with no fraud-proof
   or verifiable-execution bridge yet. This is the core trust concession and a
   hard real-ETH blocker (mirrors risk-register rows 4 and 13). Open.
-- **ERC-20 / USDC handling.** The README and BUILD spec advertise "ETH/USDC
-  bounties," but the contracts are **native-ETH only** — there is no ERC-20 pool,
-  deposit, fee-skim, or payout path implemented or audited. USDC support is a
-  target, not a shipped capability. Open.
+- **ERC-20 / USDC handling.** Public and canonical build copy now state that v1
+  is **native-ETH only**. There is no ERC-20 pool, deposit, fee-skim, or payout
+  path implemented or audited, and the capability regression rejects copy that
+  presents USDC/ERC-20 as shipped. Implementing another asset remains a future,
+  separately audited scope; accepting or advertising it today is forbidden.
 - **Dynamic / on-chain differential testing.** A deterministic local reference
   state machine now differentially exercises funding gates, mutable credits,
   close/claim boundaries, fees, refunds, rollover, forced ETH, rollback, and
@@ -396,7 +397,7 @@ Historical record of items closed during the Phase 0 hardening passes
 - Problem APIs expose `chainProvenance` with `settlementState: local-only` until a real deployment manifest and reconciliation report are attached.
 - Non-runnable arena-derived problems are locked in portal data.
 - Next.js powered-by header is disabled and baseline browser security headers are set.
-- Local verification covers problem validation, certified-path exactness lint, Python tests, seed verification, contracts, agent, web typecheck/tests/build, and package audits. GitHub Actions is published; [`main` run 29202286767](https://github.com/techno-optimist/p42-prizes/actions/runs/29202286767) passed all four lanes for source release `142300ad013b285bcceffbcf3ba527352b43f4ec`. The current Git OAuth credential still cannot revise workflow files; future workflow changes need a workflow-capable owner credential or GitHub connector.
+- Local verification covers problem validation, certified-path exactness lint, Python tests, seed verification, contracts, agent, web typecheck/tests/build, and package audits. GitHub Actions is published; [`main` run 29216377082](https://github.com/techno-optimist/p42-prizes/actions/runs/29216377082) passed all four lanes for source release `a97b824cbb50c7b4ef1421bc5057c60879397300`. The current Git OAuth credential still cannot revise workflow files; future workflow changes need a workflow-capable owner credential or GitHub connector.
 - Governance setup continuation now has a release/config/timelock-bound durable operation journal. Production continuation remains observation-only, consumes the dual-RPC finalized anchor, records primary or deterministic override execution evidence, and reuses the fenced dead-owner-reclaiming journal lock. The 43-contract/110-operation local rehearsal recovers a mined-before-journaled execution and still proves every funding gate false. This is source/rehearsal evidence, not a deployed Gate 1 pass.
 - N-host verifier admission now has typed host and matrix artifacts: `p42-prizes admit-host` emits repeated-run host evidence, and `p42-prizes admit-matrix` rejects duplicate hosts, missing x86/ARM coverage, insufficient glibc diversity, or mismatched canonical `VerdictReport` hashes.
 - Immutable verifier-image admission is now executable: `docs/VERIFIER_IMAGE_REGISTRY.md` defines the registry fields, and `p42-prizes admit-ready` rejects `sha256:local-dev` / pending placeholders or N-host matrices whose problem id, verifier version, or verifier image does not match `problem.yaml`.
