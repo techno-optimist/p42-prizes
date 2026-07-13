@@ -8,8 +8,13 @@ import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
 import { readStrictJsonFileSync, writeTrustedFileSync } from "./strict-json.mjs";
 import { acquireEnvelopeLock, releaseEnvelopeLock } from "./challenge-envelope.mjs";
 
-export const ACTIVATION_JOURNAL_SCHEMA = "p42-funding-activation-journal/v1";
+export const ACTIVATION_JOURNAL_SCHEMA = "p42-funding-activation-journal/v2";
+const LEGACY_ACTIVATION_JOURNAL_SCHEMA = "p42-funding-activation-journal/v1";
+export const ACTIVATION_SIGNING_REQUEST_SCHEMA = "p42-funding-activation-signing-request/v2";
+const LEGACY_ACTIVATION_SIGNING_REQUEST_SCHEMA = "p42-funding-activation-signing-request/v1";
 export const ACTIVATION_COMPLETION_SCHEMA = "p42-funding-activation-completion/v1";
+export const ACTIVATION_NONCE_EVIDENCE_SCHEMA = "p42-funding-activation-nonce-evidence/v1";
+const ACTIVATION_SIGNING_REQUEST_TTL_SECONDS = 15 * 60;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const JOURNAL_LIMITS = Object.freeze({
   maxBytes: 16 * 1024 * 1024,
@@ -39,6 +44,10 @@ function canonical(value) {
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
 }
 
+function semanticConfirmations(confirmations) {
+  return Object.fromEntries(Object.entries(confirmations ?? {}).filter(([, signers]) => signers.length > 0));
+}
+
 function sameHex(left, right) {
   return String(left).toLowerCase() === String(right).toLowerCase();
 }
@@ -54,6 +63,11 @@ function comparable(value) {
 
 function sha256Canonical(value) {
   return `sha256:${createHash("sha256").update(canonical(value)).digest("hex")}`;
+}
+
+async function signerAddress(signer) {
+  const value = typeof signer?.getAddress === "function" ? await signer.getAddress() : signer?.address;
+  return ethers.getAddress(value);
 }
 
 async function readCall(provider, to, iface, functionName, args, blockTag) {
@@ -152,6 +166,57 @@ export async function collectFundingActivationSnapshot(planValue, primaryProvide
   return primary;
 }
 
+export async function collectActivationNonceEvidence(primaryProvider, secondaryProvider, signerValue) {
+  if (!primaryProvider || !secondaryProvider || primaryProvider === secondaryProvider) {
+    throw new Error("activation nonce evidence requires two independent RPC providers");
+  }
+  const signer = ethers.getAddress(signerValue);
+  const [primaryFinalized, secondaryFinalized, primaryLatest, secondaryLatest] = await Promise.all([
+    primaryProvider.getBlock("finalized"), secondaryProvider.getBlock("finalized"),
+    primaryProvider.getBlock("latest"), secondaryProvider.getBlock("latest"),
+  ]);
+  if (!primaryFinalized || !secondaryFinalized || !primaryLatest || !secondaryLatest) {
+    throw new Error("activation nonce evidence block anchors are unavailable");
+  }
+  const finalizedBlockNumber = Math.min(primaryFinalized.number, secondaryFinalized.number);
+  const currentBlockNumber = Math.min(primaryLatest.number, secondaryLatest.number);
+  const [primaryFinalizedBlock, secondaryFinalizedBlock, primaryCurrentBlock, secondaryCurrentBlock] = await Promise.all([
+    primaryProvider.getBlock(finalizedBlockNumber), secondaryProvider.getBlock(finalizedBlockNumber),
+    primaryProvider.getBlock(currentBlockNumber), secondaryProvider.getBlock(currentBlockNumber),
+  ]);
+  for (const [left, right, label] of [
+    [primaryFinalizedBlock, secondaryFinalizedBlock, "finalized"],
+    [primaryCurrentBlock, secondaryCurrentBlock, "current"],
+  ]) {
+    if (!left || !right || !sameHex(left.hash, right.hash) || left.timestamp !== right.timestamp) {
+      throw new Error(`activation RPCs disagree on the ${label} nonce anchor`);
+    }
+  }
+  const [primaryFinalizedNonce, secondaryFinalizedNonce, primaryCurrentNonce, secondaryCurrentNonce] = await Promise.all([
+    primaryProvider.getTransactionCount(signer, finalizedBlockNumber),
+    secondaryProvider.getTransactionCount(signer, finalizedBlockNumber),
+    primaryProvider.getTransactionCount(signer, "pending"),
+    secondaryProvider.getTransactionCount(signer, "pending"),
+  ]);
+  if (primaryFinalizedNonce !== secondaryFinalizedNonce || primaryCurrentNonce !== secondaryCurrentNonce) {
+    throw new Error("activation RPCs disagree on the signer nonce");
+  }
+  if (!Number.isSafeInteger(primaryFinalizedNonce) || !Number.isSafeInteger(primaryCurrentNonce)
+      || primaryFinalizedNonce < 0 || primaryCurrentNonce < primaryFinalizedNonce) {
+    throw new Error("activation nonce evidence is invalid or regresses below finalized state");
+  }
+  return Object.freeze({
+    schema: ACTIVATION_NONCE_EVIDENCE_SCHEMA,
+    signer: signer.toLowerCase(),
+    finalizedBlockNumber,
+    finalizedBlockHash: primaryFinalizedBlock.hash.toLowerCase(),
+    finalizedNonce: primaryFinalizedNonce,
+    currentBlockNumber,
+    currentBlockHash: primaryCurrentBlock.hash.toLowerCase(),
+    currentNonce: primaryCurrentNonce,
+  });
+}
+
 export function buildFundingActivationCompletion(planValue, snapshot) {
   const plan = assertPlan(planValue);
   const action = nextFundingActivationAction(plan, snapshot);
@@ -239,21 +304,21 @@ function nextTimelockAction(plan, snapshot, operation, availableSigners) {
     if (snapshot.now + BigInt(plan.governanceDelaySeconds) > BigInt(plan.authorizationExpiresAt)) {
       throw new Error(`authorization expires before ${operation.label} can become executable`);
     }
-    if (availableSigners.length === 0) throw new Error("no governance signer is available to schedule activation");
+    if (availableSigners.length === 0) return { kind: "wait-signers", operation };
     return { kind: "schedule", operation, signer: availableSigners[0] };
   }
   if (state.state === 1) {
     const confirmed = new Set(state.confirmedBy.map((address) => ethers.getAddress(address)));
     if (confirmed.size < plan.governanceThreshold) {
       const signer = availableSigners.find((address) => !confirmed.has(address));
-      if (!signer) throw new Error(`no available signer can complete ${operation.label} quorum`);
+      if (!signer) return { kind: "wait-signers", operation };
       return { kind: "confirm", operation, signer };
     }
     if (snapshot.now < BigInt(state.eta)) return { kind: "wait", operation, wakeAt: BigInt(state.eta) };
     if (snapshot.now > BigInt(plan.authorizationExpiresAt)) {
       throw new Error(`authorization expired before ${operation.label} execution`);
     }
-    if (availableSigners.length === 0) throw new Error("no governance signer is available to execute activation");
+    if (availableSigners.length === 0) return { kind: "wait-signers", operation };
     return { kind: "execute", operation, signer: availableSigners[0] };
   }
   return null;
@@ -364,18 +429,150 @@ function initialJournal(plan) {
     authorizationExpiresAt: plan.authorizationExpiresAt,
     chainId: plan.chainId,
     generation: 0,
+    signingRequests: {},
     transactions: {},
+    finalizedState: null,
+  };
+}
+
+function activationActionCandidates(plan, label) {
+  const candidates = [];
+  for (const operation of plan.operations) {
+    if (operation.authority === "treasury") {
+      const action = { kind: "authorize", operation, signer: plan.treasury };
+      if (journalLabel(action) === label) candidates.push(action);
+      continue;
+    }
+    if (operation.authority !== "governance") continue;
+    for (const kind of ["schedule", "confirm", "execute"]) {
+      for (const signer of plan.governanceSigners) {
+        const action = { kind, operation, signer };
+        if (journalLabel(action) === label) candidates.push(action);
+      }
+    }
+  }
+  return candidates;
+}
+
+function assertLegacyTransactionStatus(record, label) {
+  if (!new Set(["signed", "broadcast", "mined"]).has(record?.status)) {
+    throw new Error(`legacy activation transaction ${label} has an invalid status`);
+  }
+  const expectedKeys = [
+    "chain_id", "data_hash", "hash", "label", "nonce", "raw_tx", "schema_version", "signed_at_utc", "signer", "status", "to", "value",
+  ];
+  if (record.status === "broadcast") expectedKeys.push("broadcastAtUtc");
+  if (record.status === "mined") {
+    expectedKeys.push("blockHash", "blockNumber");
+    if (Object.hasOwn(record, "broadcastAtUtc")) expectedKeys.push("broadcastAtUtc");
+  }
+  if (canonical(Object.keys(record).sort()) !== canonical(expectedKeys.sort())
+      || typeof record.signed_at_utc !== "string" || !Number.isFinite(Date.parse(record.signed_at_utc))) {
+    throw new Error(`legacy activation transaction ${label} has an invalid record envelope`);
+  }
+  if (Object.hasOwn(record, "broadcastAtUtc")
+      && (typeof record.broadcastAtUtc !== "string" || !Number.isFinite(Date.parse(record.broadcastAtUtc)))) {
+    throw new Error(`legacy activation transaction ${label} has invalid broadcast metadata`);
+  }
+  if (record.status === "mined"
+      && (!Number.isSafeInteger(record.blockNumber) || record.blockNumber < 0
+        || !/^0x[0-9a-fA-F]{64}$/.test(record.blockHash ?? ""))) {
+    throw new Error(`legacy activation transaction ${label} has invalid mined metadata`);
+  }
+}
+
+function signingRequestFromLegacyRecord(plan, action, record, requestGeneration) {
+  const transaction = ethers.Transaction.from(record.raw_tx);
+  const request = {
+    schema: ACTIVATION_SIGNING_REQUEST_SCHEMA,
+    planDigest: plan.planDigest,
+    label: record.label,
+    signer: ethers.getAddress(record.signer).toLowerCase(),
+    chainId: plan.chainId,
+    authorizationExpiresAt: plan.authorizationExpiresAt,
+    unsignedTransaction: transaction.unsignedSerialized,
+    unsignedHash: transaction.unsignedHash,
+    nonce: transaction.nonce,
+    to: transaction.to?.toLowerCase() ?? null,
+    value: transaction.value.toString(),
+    dataHash: ethers.keccak256(transaction.data),
+    createdAtUtc: record.signed_at_utc,
+    generatedAt: Math.floor(Date.parse(record.signed_at_utc) / 1000),
+    requestExpiresAt: plan.authorizationExpiresAt,
+    requestGeneration,
+    nonceEvidence: null,
+    migratedSignedRequest: true,
+  };
+  assertSigningRequest(request, { plan, action, allowLegacyMigration: true });
+  return request;
+}
+
+function migrateLegacyJournal(value, plan) {
+  const expectedKeys = [
+    "authorizationDigest", "authorizationExpiresAt", "chainId", "generation", "planDigest", "schema", "transactions",
+  ];
+  if (canonical(Object.keys(value).sort()) !== canonical(expectedKeys)
+      || value.planDigest !== plan.planDigest || value.authorizationDigest !== plan.authorizationDigest
+      || value.authorizationExpiresAt !== plan.authorizationExpiresAt || value.chainId !== plan.chainId
+      || !Number.isSafeInteger(value.generation) || value.generation < 0
+      || !value.transactions || typeof value.transactions !== "object" || Array.isArray(value.transactions)) {
+    throw new Error("legacy activation journal identity is invalid");
+  }
+
+  const signingRequests = {};
+  const transactions = {};
+  const requestGeneration = value.generation + 1;
+  for (const label of Object.keys(value.transactions).sort()) {
+    const record = value.transactions[label];
+    assertLegacyTransactionStatus(record, label);
+    const matches = [];
+    for (const action of activationActionCandidates(plan, label)) {
+      const request = activationRequest(plan, action);
+      try {
+        assertSignedTransactionRecord(record, {
+          signer: action.signer, chainId: plan.chainId, to: request.to,
+          value: request.value, data: request.data, nonce: record.nonce, hash: record.hash, label,
+        });
+        matches.push(action);
+      } catch {
+        // A legacy record migrates only when its signed bytes select one exact plan action.
+      }
+    }
+    if (matches.length === 0) {
+      throw new Error(`legacy activation transaction ${label} is tampered or has no exact plan binding`);
+    }
+    if (matches.length !== 1) {
+      throw new Error(`legacy activation transaction ${label} has an ambiguous plan binding`);
+    }
+    signingRequests[label] = signingRequestFromLegacyRecord(plan, matches[0], record, requestGeneration);
+    transactions[label] = record;
+  }
+  return {
+    schema: ACTIVATION_JOURNAL_SCHEMA,
+    planDigest: value.planDigest,
+    authorizationDigest: value.authorizationDigest,
+    authorizationExpiresAt: value.authorizationExpiresAt,
+    chainId: value.chainId,
+    generation: requestGeneration,
+    signingRequests,
+    transactions,
+    finalizedState: null,
   };
 }
 
 function readJournal(path, root, plan) {
   if (!existsSync(path)) return initialJournal(plan);
   try {
-    const value = readStrictJsonFileSync(path, { ...JOURNAL_LIMITS, trustedRoot: root });
+    let value = readStrictJsonFileSync(path, { ...JOURNAL_LIMITS, trustedRoot: root });
+    if (value?.schema === LEGACY_ACTIVATION_JOURNAL_SCHEMA) {
+      value = migrateLegacyJournal(value, plan);
+      persistJournal(path, root, value);
+    }
     if (value.schema !== ACTIVATION_JOURNAL_SCHEMA || value.planDigest !== plan.planDigest
         || value.authorizationDigest !== plan.authorizationDigest
         || value.authorizationExpiresAt !== plan.authorizationExpiresAt || value.chainId !== plan.chainId
         || !Number.isSafeInteger(value.generation) || value.generation < 0
+        || !value.signingRequests || typeof value.signingRequests !== "object"
         || !value.transactions || typeof value.transactions !== "object") {
       throw new Error("activation journal identity is invalid");
     }
@@ -390,25 +587,22 @@ function persistJournal(path, root, journal) {
   writeTrustedFileSync(path, root, Buffer.from(`${JSON.stringify(journal, null, 2)}\n`));
 }
 
-async function buildActivationSignedRecord({ wallet, request, label, chainId, currentTimestamp, expiresAt }) {
-  if (!wallet.signingKey || typeof wallet.signingKey.sign !== "function") {
-    throw new Error("activation signer must expose a local synchronous signing key");
+async function buildActivationSignedRecord({ wallet, signingRequest, currentTimestamp, expiresAt }) {
+  if (!wallet || typeof wallet.signTransaction !== "function") {
+    throw new Error("activation signer must expose asynchronous signTransaction");
   }
-  const populated = wallet.provider
-    ? await wallet.populateTransaction({ ...request, chainId })
-    : { from: wallet.address, ...request, chainId };
   if (BigInt(await currentTimestamp()) > BigInt(expiresAt)) {
     throw new Error("authorization expired during transaction population");
   }
-  const signable = { ...populated };
-  delete signable.from;
-  const transaction = ethers.Transaction.from(signable);
-  transaction.signature = wallet.signingKey.sign(transaction.unsignedHash);
-  const rawTx = transaction.serialized;
+  const rawTx = await wallet.signTransaction(ethers.Transaction.from(signingRequest.unsignedTransaction));
+  if (BigInt(await currentTimestamp()) > BigInt(expiresAt)) {
+    throw new Error("activation signing request expired while signing");
+  }
+  const transaction = ethers.Transaction.from(rawTx);
   return {
     schema_version: "p42-signed-transaction/v1",
-    label,
-    signer: ethers.getAddress(wallet.address).toLowerCase(),
+    label: signingRequest.label,
+    signer: (await signerAddress(wallet)).toLowerCase(),
     hash: ethers.keccak256(rawTx),
     raw_tx: rawTx,
     chain_id: Number(transaction.chainId),
@@ -417,67 +611,335 @@ async function buildActivationSignedRecord({ wallet, request, label, chainId, cu
     value: transaction.value.toString(),
     data_hash: ethers.keccak256(transaction.data),
     signed_at_utc: new Date().toISOString(),
+    activation_request_generation: signingRequest.requestGeneration,
+    activation_request_expires_at: signingRequest.requestExpiresAt,
+    activation_request_unsigned_hash: signingRequest.unsignedHash,
   };
 }
 
-export async function signAndBroadcastActivationAction({
-  plan,
-  action,
-  wallet,
-  journalPath,
-  journalRoot,
-  revalidate,
-  transactionReconciler = reconcileSignedTransaction,
-  currentTimestamp,
-}) {
-  if (typeof currentTimestamp !== "function") throw new Error("activation signing requires dual-RPC current time");
+function assertSignedRequestBinding(record, signingRequest) {
+  if (record.activation_request_generation !== signingRequest.requestGeneration
+      || record.activation_request_expires_at !== signingRequest.requestExpiresAt
+      || !sameHex(record.activation_request_unsigned_hash, signingRequest.unsignedHash)) {
+    throw new Error("external activation artifact does not bind the current signing request generation and expiry");
+  }
+}
+
+function assertNonceEvidence(value, signer) {
+  if (value?.schema !== ACTIVATION_NONCE_EVIDENCE_SCHEMA
+      || ethers.getAddress(value.signer) !== ethers.getAddress(signer)
+      || !Number.isSafeInteger(value.finalizedBlockNumber) || value.finalizedBlockNumber < 0
+      || !Number.isSafeInteger(value.currentBlockNumber) || value.currentBlockNumber < value.finalizedBlockNumber
+      || !/^0x[0-9a-fA-F]{64}$/.test(value.finalizedBlockHash ?? "")
+      || !/^0x[0-9a-fA-F]{64}$/.test(value.currentBlockHash ?? "")
+      || !Number.isSafeInteger(value.finalizedNonce) || value.finalizedNonce < 0
+      || !Number.isSafeInteger(value.currentNonce) || value.currentNonce < value.finalizedNonce) {
+    throw new Error("activation signing request nonce evidence is invalid");
+  }
+  return value;
+}
+
+function assertSigningRequest(value, { plan, action, allowLegacyMigration = false }) {
+  const request = activationRequest(plan, action);
+  const label = journalLabel(action);
+  if (value?.schema !== ACTIVATION_SIGNING_REQUEST_SCHEMA || value.planDigest !== plan.planDigest
+      || value.label !== label || ethers.getAddress(value.signer) !== ethers.getAddress(action.signer)
+      || Number(value.chainId) !== plan.chainId || Number(value.authorizationExpiresAt) !== plan.authorizationExpiresAt
+      || !ethers.isHexString(value.unsignedTransaction)
+      || !Number.isSafeInteger(value.generatedAt) || value.generatedAt < 0
+      || !Number.isSafeInteger(value.requestExpiresAt) || value.requestExpiresAt < value.generatedAt
+      || value.requestExpiresAt > plan.authorizationExpiresAt
+      || !Number.isSafeInteger(value.requestGeneration) || value.requestGeneration < 1) {
+    throw new Error("activation signing request identity is invalid");
+  }
+  if (value.nonceEvidence === null) {
+    if (!allowLegacyMigration || value.migratedSignedRequest !== true) {
+      throw new Error("activation signing request lacks dual-RPC nonce evidence");
+    }
+  } else {
+    const evidence = assertNonceEvidence(value.nonceEvidence, action.signer);
+    if (evidence.currentNonce !== value.nonce) {
+      throw new Error("activation signing request nonce differs from its evidence");
+    }
+  }
+  const transaction = ethers.Transaction.from(value.unsignedTransaction);
+  if (transaction.signature || transaction.from || transaction.unsignedHash !== value.unsignedHash
+      || Number(transaction.chainId) !== plan.chainId || transaction.to?.toLowerCase() !== request.to.toLowerCase()
+      || transaction.value !== request.value || !sameHex(transaction.data, request.data)
+      || transaction.nonce !== value.nonce || ethers.keccak256(transaction.data) !== value.dataHash) {
+    throw new Error("activation signing request transaction binding is invalid");
+  }
+  return transaction;
+}
+
+function assertLegacySigningRequest(value, { plan, action }) {
+  const request = activationRequest(plan, action);
+  if (value?.schema !== LEGACY_ACTIVATION_SIGNING_REQUEST_SCHEMA
+      || value.planDigest !== plan.planDigest || value.label !== journalLabel(action)
+      || ethers.getAddress(value.signer) !== ethers.getAddress(action.signer)
+      || Number(value.chainId) !== plan.chainId
+      || Number(value.authorizationExpiresAt) !== plan.authorizationExpiresAt
+      || typeof value.createdAtUtc !== "string" || !Number.isFinite(Date.parse(value.createdAtUtc))
+      || !ethers.isHexString(value.unsignedTransaction)) {
+    throw new Error("legacy activation signing request identity is invalid");
+  }
+  const transaction = ethers.Transaction.from(value.unsignedTransaction);
+  if (transaction.signature || transaction.from || transaction.unsignedHash !== value.unsignedHash
+      || Number(transaction.chainId) !== plan.chainId || transaction.to?.toLowerCase() !== request.to.toLowerCase()
+      || transaction.value !== request.value || !sameHex(transaction.data, request.data)
+      || transaction.nonce !== value.nonce || ethers.keccak256(transaction.data) !== value.dataHash) {
+    throw new Error("legacy activation signing request transaction binding is invalid");
+  }
+  return transaction;
+}
+
+async function buildActivationSigningRequest({ plan, action, signer, currentTimestamp, nonceEvidence, requestGeneration }) {
+  if (!signer || typeof signer.populateTransaction !== "function"
+      || await signerAddress(signer) !== ethers.getAddress(action.signer)) {
+    throw new Error("activation transaction populator does not match selected signer");
+  }
+  const request = activationRequest(plan, action);
+  const evidence = assertNonceEvidence(await nonceEvidence(action.signer), action.signer);
+  const beforePopulation = Number(await currentTimestamp());
+  if (!Number.isSafeInteger(beforePopulation) || beforePopulation > plan.authorizationExpiresAt) {
+    throw new Error("authorization expired during transaction population");
+  }
+  const populated = await signer.populateTransaction({
+    ...request, chainId: plan.chainId, nonce: evidence.currentNonce,
+  });
+  const generatedAt = Number(await currentTimestamp());
+  if (!Number.isSafeInteger(generatedAt) || generatedAt > plan.authorizationExpiresAt) {
+    throw new Error("authorization expired during transaction population");
+  }
+  const signable = { ...populated };
+  delete signable.from;
+  const transaction = ethers.Transaction.from(signable);
+  const value = {
+    schema: ACTIVATION_SIGNING_REQUEST_SCHEMA,
+    planDigest: plan.planDigest,
+    label: journalLabel(action),
+    signer: ethers.getAddress(action.signer).toLowerCase(),
+    chainId: plan.chainId,
+    authorizationExpiresAt: plan.authorizationExpiresAt,
+    unsignedTransaction: transaction.unsignedSerialized,
+    unsignedHash: transaction.unsignedHash,
+    nonce: transaction.nonce,
+    to: transaction.to?.toLowerCase() ?? null,
+    value: transaction.value.toString(),
+    dataHash: ethers.keccak256(transaction.data),
+    createdAtUtc: new Date().toISOString(),
+    generatedAt,
+    requestExpiresAt: Math.min(plan.authorizationExpiresAt, generatedAt + ACTIVATION_SIGNING_REQUEST_TTL_SECONDS),
+    requestGeneration,
+    nonceEvidence: evidence,
+  };
+  assertSigningRequest(value, { plan, action });
+  return value;
+}
+
+async function assertFreshPlanAndTime(plan, revalidate, currentTimestamp) {
+  if (BigInt(await currentTimestamp()) > BigInt(plan.authorizationExpiresAt)) {
+    throw new Error("refusing to prepare an activation transaction after authorization expiry");
+  }
+  const fresh = await revalidate();
+  if (fresh.planDigest !== plan.planDigest || canonical(fresh) !== canonical(plan)) {
+    throw new Error("activation plan changed during pre-sign validation");
+  }
+  if (BigInt(await currentTimestamp()) > BigInt(plan.authorizationExpiresAt)) {
+    throw new Error("authorization expired during pre-sign validation");
+  }
+}
+
+function journalPaths(journalPath, journalRoot) {
   const journalRootPath = realpathSync(resolve(journalRoot));
   const journalAbsolute = resolve(journalPath);
   const journalRelative = relative(journalRootPath, journalAbsolute);
   if (!journalRelative || journalRelative === ".." || journalRelative.startsWith(`..${sep}`)) {
     throw new Error("activation journal path is outside its trusted root");
   }
-  const lockPath = `${journalPath}.lock`;
-  const lockOwner = acquireEnvelopeLock(lockPath, { timeoutMs: 30_000 });
+  return { journalRootPath, journalAbsolute, lockPath: `${journalAbsolute}.lock` };
+}
+
+export async function prepareActivationSigningRequest({
+  plan, action, signer, journalPath, journalRoot, revalidate, currentTimestamp, nonceEvidence,
+}) {
+  if (typeof currentTimestamp !== "function") throw new Error("activation signing requires dual-RPC current time");
+  if (typeof nonceEvidence !== "function") throw new Error("activation signing requires dual-RPC nonce evidence");
+  assertPlan(plan);
+  const paths = journalPaths(journalPath, journalRoot);
+  const lockOwner = acquireEnvelopeLock(paths.lockPath, { timeoutMs: 30_000 });
+  try {
+    const journal = readJournal(paths.journalAbsolute, paths.journalRootPath, plan);
+    const label = journalLabel(action);
+    let request = journal.signingRequests[label];
+    const record = journal.transactions[label];
+    if (request?.schema === LEGACY_ACTIVATION_SIGNING_REQUEST_SCHEMA) {
+      assertLegacySigningRequest(request, { plan, action });
+      if (record) {
+        const expected = activationRequest(plan, action);
+        assertSignedTransactionRecord(record, {
+          signer: action.signer, chainId: plan.chainId, to: expected.to,
+          value: expected.value, data: expected.data, nonce: request.nonce, label,
+        });
+        const requestGeneration = journal.generation + 1;
+        request = signingRequestFromLegacyRecord(plan, action, record, requestGeneration);
+        journal.signingRequests[label] = request;
+        journal.generation = requestGeneration;
+        persistJournal(paths.journalAbsolute, paths.journalRootPath, journal);
+      } else {
+        request = null;
+      }
+    }
+    if (request) assertSigningRequest(request, { plan, action, allowLegacyMigration: Boolean(record) });
+    if (request && !record) {
+      const current = assertNonceEvidence(await nonceEvidence(action.signer), action.signer);
+      const now = Number(await currentTimestamp());
+      if (request.requestGeneration !== journal.generation || request.nonce !== current.currentNonce
+          || now > request.requestExpiresAt) {
+        request = null;
+      }
+    }
+    if (!request) {
+      if (record) throw new Error("activation signed record cannot lose or regenerate its signing request");
+      await assertFreshPlanAndTime(plan, revalidate, currentTimestamp);
+      const requestGeneration = journal.generation + 1;
+      request = await buildActivationSigningRequest({
+        plan, action, signer, currentTimestamp, nonceEvidence, requestGeneration,
+      });
+      journal.signingRequests[label] = request;
+      journal.generation = requestGeneration;
+      persistJournal(paths.journalAbsolute, paths.journalRootPath, journal);
+    }
+    assertSigningRequest(request, { plan, action, allowLegacyMigration: Boolean(record) });
+    return request;
+  } finally {
+    releaseEnvelopeLock(paths.lockPath, lockOwner);
+  }
+}
+
+export function reconcileFundingActivationConfirmations({ plan, snapshot, journalPath, journalRoot }) {
+  assertPlan(plan);
+  if (!Number.isSafeInteger(snapshot?.blockNumber) || snapshot.blockNumber < 0
+      || !/^0x[0-9a-fA-F]{64}$/.test(snapshot.blockHash ?? "")
+      || snapshot.chainId !== plan.chainId || snapshot.planDigest !== plan.planDigest) {
+    throw new Error("activation confirmation reconciliation requires a finalized anchor");
+  }
+  const expectedOperationIds = plan.operations.slice(10).map((operation) => operation.operationId.toLowerCase()).sort();
+  const observedOperationIds = Object.keys(snapshot.timelockOperations ?? {}).map((value) => value.toLowerCase()).sort();
+  if (canonical(expectedOperationIds) !== canonical(observedOperationIds)) {
+    throw new Error("activation finalized confirmations do not cover the exact operation set");
+  }
+  const governance = new Set(plan.governanceSigners.map(ethers.getAddress));
+  const paths = journalPaths(journalPath, journalRoot);
+  const lockOwner = acquireEnvelopeLock(paths.lockPath, { timeoutMs: 30_000 });
+  try {
+    const journal = readJournal(paths.journalAbsolute, paths.journalRootPath, plan);
+    if (journal.finalizedState?.blockNumber > snapshot.blockNumber) return journal.finalizedState;
+    if (journal.finalizedState?.blockNumber === snapshot.blockNumber
+        && !sameHex(journal.finalizedState.blockHash, snapshot.blockHash)) {
+      throw new Error("activation finalized confirmation anchor conflicts with journal");
+    }
+    const confirmations = Object.fromEntries(Object.entries(snapshot.timelockOperations)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([operationId, state]) => {
+        const signers = state.confirmedBy.map(ethers.getAddress).sort();
+        if (new Set(signers).size !== signers.length || signers.some((signer) => !governance.has(signer))) {
+          throw new Error("activation finalized confirmations contain an invalid signer set");
+        }
+        return [operationId.toLowerCase(), signers];
+      }));
+    const finalizedState = { blockNumber: snapshot.blockNumber, blockHash: snapshot.blockHash, confirmations };
+    if (canonical(journal.finalizedState) !== canonical(finalizedState)) {
+      const confirmationsChanged = canonical(semanticConfirmations(journal.finalizedState?.confirmations))
+        !== canonical(semanticConfirmations(confirmations));
+      journal.finalizedState = finalizedState;
+      if (confirmationsChanged) journal.generation += 1;
+      persistJournal(paths.journalAbsolute, paths.journalRootPath, journal);
+    }
+    return finalizedState;
+  } finally {
+    releaseEnvelopeLock(paths.lockPath, lockOwner);
+  }
+}
+
+export async function signAndBroadcastActivationAction({
+  plan,
+  action,
+  wallet = null,
+  provider = wallet?.provider,
+  signedRecord = null,
+  journalPath,
+  journalRoot,
+  revalidate,
+  transactionReconciler = reconcileSignedTransaction,
+  currentTimestamp,
+  nonceEvidence,
+}) {
+  if (typeof currentTimestamp !== "function") throw new Error("activation signing requires dual-RPC current time");
+  if (typeof nonceEvidence !== "function") throw new Error("activation signing requires dual-RPC nonce evidence");
+  const paths = journalPaths(journalPath, journalRoot);
+  const lockOwner = acquireEnvelopeLock(paths.lockPath, { timeoutMs: 30_000 });
   try {
   assertPlan(plan);
-  if (ethers.getAddress(wallet.address) !== ethers.getAddress(action.signer)) {
+  if (wallet && await signerAddress(wallet) !== ethers.getAddress(action.signer)) {
     throw new Error("activation wallet does not match selected signer");
   }
   const request = activationRequest(plan, action);
   const label = journalLabel(action);
-  const journal = readJournal(journalPath, journalRoot, plan);
+  const journal = readJournal(paths.journalAbsolute, paths.journalRootPath, plan);
   let record = journal.transactions[label];
+  if (record && signedRecord) {
+    const signingRequest = journal.signingRequests[label];
+    if (!signingRequest) throw new Error("activation journal transaction lacks its signing request");
+    assertSignedTransactionRecord(signedRecord, {
+      signer: action.signer, chainId: plan.chainId, to: request.to,
+      value: request.value, data: request.data, nonce: signingRequest.nonce, label,
+    });
+    if (!signingRequest.migratedSignedRequest) {
+      assertSignedRequestBinding(signedRecord, signingRequest);
+    }
+    if (!sameHex(record.hash, signedRecord.hash)) {
+      throw new Error("external activation artifact conflicts with the journaled transaction");
+    }
+  }
   if (!record) {
-    if (BigInt(await currentTimestamp()) > BigInt(plan.authorizationExpiresAt)) {
-      throw new Error("refusing to sign an activation transaction after authorization expiry");
+    await assertFreshPlanAndTime(plan, revalidate, currentTimestamp);
+    const signingRequest = journal.signingRequests[label];
+    if (!signingRequest) throw new Error("activation action must have a persisted signing request before signing or import");
+    assertSigningRequest(signingRequest, { plan, action });
+    if (signingRequest.requestGeneration !== journal.generation) {
+      throw new Error("activation signing request is not bound to the current journal generation");
     }
-    const fresh = await revalidate();
-    if (fresh.planDigest !== plan.planDigest || canonical(fresh) !== canonical(plan)) {
-      throw new Error("activation plan changed during pre-sign validation");
+    const current = assertNonceEvidence(await nonceEvidence(action.signer), action.signer);
+    if (signingRequest.nonce !== current.currentNonce) {
+      throw new Error("activation signing request nonce is stale; regenerate it before signing or import");
     }
-    if (BigInt(await currentTimestamp()) > BigInt(plan.authorizationExpiresAt)) {
-      throw new Error("authorization expired during pre-sign validation");
+    if (BigInt(await currentTimestamp()) > BigInt(signingRequest.requestExpiresAt)) {
+      throw new Error("activation signing request expired before signing or import");
     }
-    record = {
-      ...(await buildActivationSignedRecord({
-        wallet, request, label, chainId: plan.chainId, currentTimestamp,
-        expiresAt: plan.authorizationExpiresAt,
-      })),
-      status: "signed",
-    };
+    const imported = signedRecord ?? (wallet ? await buildActivationSignedRecord({
+      wallet, signingRequest, currentTimestamp, expiresAt: signingRequest.requestExpiresAt,
+    }) : null);
+    if (!imported) throw new Error("activation action requires a signer or externally signed transaction artifact");
+    assertSignedRequestBinding(imported, signingRequest);
+    record = { ...imported, status: "signed" };
+    assertSignedTransactionRecord(record, {
+      signer: action.signer, chainId: plan.chainId, to: request.to,
+      value: request.value, data: request.data, nonce: signingRequest.nonce, label,
+    });
     journal.transactions[label] = record;
     journal.generation += 1;
-    persistJournal(journalPath, journalRoot, journal);
+    persistJournal(paths.journalAbsolute, paths.journalRootPath, journal);
   }
   assertSignedTransactionRecord(record, {
-    signer: wallet.address, chainId: plan.chainId, to: request.to,
+    signer: action.signer, chainId: plan.chainId, to: request.to,
     value: request.value, data: request.data, nonce: record.nonce, hash: record.hash, label,
   });
   if (BigInt(await currentTimestamp()) > BigInt(plan.authorizationExpiresAt)) {
     throw new Error("refusing to broadcast an activation transaction after authorization expiry");
   }
-  const reconciled = await transactionReconciler(wallet.provider, record);
+  if (!provider) throw new Error("activation broadcast requires a provider");
+  const reconciled = await transactionReconciler(provider, record);
   const receipt = reconciled.receipt ?? null;
   if (receipt && receipt.status !== 1) throw new Error(`activation transaction ${label} reverted`);
   journal.transactions[label] = receipt ? {
@@ -486,9 +948,9 @@ export async function signAndBroadcastActivationAction({
     ...record, status: "broadcast", broadcastAtUtc: new Date().toISOString(),
   };
   journal.generation += 1;
-  persistJournal(journalPath, journalRoot, journal);
+  persistJournal(paths.journalAbsolute, paths.journalRootPath, journal);
   return { label, status: receipt ? "mined" : "broadcast", receipt, transactionHash: record.hash };
   } finally {
-    releaseEnvelopeLock(lockPath, lockOwner);
+    releaseEnvelopeLock(paths.lockPath, lockOwner);
   }
 }

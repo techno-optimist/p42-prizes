@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { chmodSync, mkdtempSync, realpathSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ethers } from "ethers";
@@ -8,8 +8,11 @@ import { ethers } from "ethers";
 import {
   activationRequest,
   buildFundingActivationCompletion,
+  collectActivationNonceEvidence,
   collectFundingActivationSnapshot,
   nextFundingActivationAction,
+  prepareActivationSigningRequest,
+  reconcileFundingActivationConfirmations,
   signAndBroadcastActivationAction,
 } from "./funding-activation-executor.mjs";
 
@@ -17,6 +20,19 @@ const digest = `sha256:${"a".repeat(64)}`;
 const chainDigest = `0x${"a".repeat(64)}`;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const address = (value) => ethers.getAddress(`0x${value.toString(16).padStart(40, "0")}`);
+
+function nonceEvidence(currentNonce = 0, finalizedNonce = currentNonce) {
+  return async (signer) => ({
+    schema: "p42-funding-activation-nonce-evidence/v1",
+    signer: ethers.getAddress(signer).toLowerCase(),
+    finalizedBlockNumber: 40,
+    finalizedBlockHash: `0x${"4".repeat(64)}`,
+    finalizedNonce,
+    currentBlockNumber: 50,
+    currentBlockHash: `0x${"5".repeat(64)}`,
+    currentNonce,
+  });
+}
 
 function plan() {
   const treasury = address(1);
@@ -89,6 +105,121 @@ function snapshot(inputPlan) {
   };
 }
 
+async function legacyTransaction(inputPlan, action, signer, nonce, status) {
+  const request = activationRequest(inputPlan, action);
+  const rawTx = await signer.signTransaction({
+    ...request, nonce, gasLimit: 100_000n, gasPrice: 1n,
+  });
+  const transaction = ethers.Transaction.from(rawTx);
+  const record = {
+    schema_version: "p42-signed-transaction/v1",
+    label: `${action.operation.label}.${action.kind}.${signer.address.toLowerCase()}`,
+    signer: signer.address.toLowerCase(), hash: ethers.keccak256(rawTx), raw_tx: rawTx,
+    chain_id: inputPlan.chainId, nonce: transaction.nonce, to: transaction.to.toLowerCase(),
+    value: transaction.value.toString(), data_hash: ethers.keccak256(transaction.data),
+    signed_at_utc: "2026-07-12T12:00:00.000Z", status,
+  };
+  if (status === "broadcast") record.broadcastAtUtc = "2026-07-12T12:01:00.000Z";
+  if (status === "mined") {
+    record.blockNumber = 123;
+    record.blockHash = `0x${"8".repeat(64)}`;
+  }
+  return record;
+}
+
+function writeLegacyJournal(root, inputPlan, transactions) {
+  const journalPath = join(root, "journal.json");
+  writeFileSync(journalPath, `${JSON.stringify({
+    schema: "p42-funding-activation-journal/v1",
+    planDigest: inputPlan.planDigest,
+    authorizationDigest: inputPlan.authorizationDigest,
+    authorizationExpiresAt: inputPlan.authorizationExpiresAt,
+    chainId: inputPlan.chainId,
+    generation: 7,
+    transactions,
+  }, null, 2)}\n`, { mode: 0o600 });
+  return journalPath;
+}
+
+test("v1 journals migrate signed, broadcast, and mined records into exact v2 signing requests", async () => {
+  const inputPlan = plan();
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address;
+  const transactions = {};
+  const actions = inputPlan.operations.slice(0, 3).map((operation) => ({
+    kind: "authorize", operation, signer: signer.address,
+  }));
+  for (const [index, status] of ["signed", "broadcast", "mined"].entries()) {
+    const record = await legacyTransaction(inputPlan, actions[index], signer, index, status);
+    transactions[record.label] = record;
+  }
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-migrate-")));
+  chmodSync(root, 0o700);
+  const journalPath = writeLegacyJournal(root, inputPlan, transactions);
+
+  const request = await prepareActivationSigningRequest({
+    plan: inputPlan, action: actions[0], signer: null, journalRoot: root, journalPath,
+    revalidate: async () => { throw new Error("migration must not create a new request"); },
+    currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(0),
+  });
+
+  const migrated = JSON.parse(readFileSync(journalPath, "utf8"));
+  assert.equal(migrated.schema, "p42-funding-activation-journal/v2");
+  assert.equal(migrated.generation, 8);
+  assert.deepEqual(migrated.transactions, transactions);
+  assert.equal(Object.keys(migrated.signingRequests).length, 3);
+  assert.equal(request.createdAtUtc, transactions[request.label].signed_at_utc);
+  for (const action of actions) {
+    const label = `${action.operation.label}.${action.kind}.${signer.address.toLowerCase()}`;
+    const transaction = ethers.Transaction.from(transactions[label].raw_tx);
+    assert.equal(migrated.signingRequests[label].unsignedTransaction, transaction.unsignedSerialized);
+    assert.equal(migrated.signingRequests[label].unsignedHash, transaction.unsignedHash);
+  }
+  assert.equal(statSync(journalPath).mode & 0o777, 0o600);
+});
+
+test("v1 journal migration rejects tampered transaction records without rewriting", async () => {
+  const inputPlan = plan();
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address;
+  const action = { kind: "authorize", operation: inputPlan.operations[0], signer: signer.address };
+  const record = await legacyTransaction(inputPlan, action, signer, 0, "broadcast");
+  record.data_hash = `0x${"f".repeat(64)}`;
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-migrate-tamper-")));
+  chmodSync(root, 0o700);
+  const journalPath = writeLegacyJournal(root, inputPlan, { [record.label]: record });
+  const before = readFileSync(journalPath);
+
+  await assert.rejects(() => prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: null, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(0),
+  }), /tampered or has no exact plan binding/);
+  assert.deepEqual(readFileSync(journalPath), before);
+});
+
+test("v1 journal migration rejects ambiguous plan bindings without rewriting", async () => {
+  const inputPlan = plan();
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address;
+  const operation = inputPlan.operations[0];
+  inputPlan.operations[1] = { ...operation, sequence: 2 };
+  const action = { kind: "authorize", operation, signer: signer.address };
+  const record = await legacyTransaction(inputPlan, action, signer, 0, "mined");
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-migrate-ambiguous-")));
+  chmodSync(root, 0o700);
+  const journalPath = writeLegacyJournal(root, inputPlan, { [record.label]: record });
+  const before = readFileSync(journalPath);
+
+  await assert.rejects(() => prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: null, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(0),
+  }), /ambiguous plan binding/);
+  assert.deepEqual(readFileSync(journalPath), before);
+});
+
 test("executor enforces global authorize and arm barriers", () => {
   const inputPlan = plan();
   const state = snapshot(inputPlan);
@@ -142,9 +273,8 @@ test("signing revalidates the exact plan and journals raw bytes before broadcast
   const action = nextFundingActivationAction(inputPlan, state);
   const signer = ethers.Wallet.createRandom();
   const wallet = {
-    address: signer.address,
+    getAddress: async () => signer.address,
     provider: {},
-    signingKey: signer.signingKey,
     populateTransaction: async (request) => ({ ...request, nonce: 0, gasLimit: 100_000n, gasPrice: 1n }),
     signTransaction: (request) => signer.signTransaction(request),
   };
@@ -152,11 +282,19 @@ test("signing revalidates the exact plan and journals raw bytes before broadcast
   action.signer = signer.address;
   const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-executor-")));
   chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  const signingRequest = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: wallet, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(0),
+  });
+  assert.match(signingRequest.unsignedHash, /^0x[0-9a-f]{64}$/);
   let observedRecord;
   const receipt = await signAndBroadcastActivationAction({
     plan: inputPlan, action, wallet, journalRoot: root,
-    journalPath: join(root, "journal.json"), revalidate: async () => inputPlan,
+    journalPath, revalidate: async () => inputPlan,
     currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(0),
     transactionReconciler: async (_provider, record) => {
       observedRecord = record;
       return { status: "receipt", receipt: { status: 1, blockNumber: 9, blockHash: `0x${"9".repeat(64)}` } };
@@ -165,6 +303,338 @@ test("signing revalidates the exact plan and journals raw bytes before broadcast
   assert.equal(receipt.receipt.status, 1);
   assert.ok(observedRecord.raw_tx.startsWith("0x"));
   assert.equal(ethers.Transaction.from(observedRecord.raw_tx).to, activationRequest(inputPlan, action).to);
+  assert.equal("address" in wallet, false);
+  assert.equal("signingKey" in wallet, false);
+});
+
+test("an externally signed request is imported and broadcast without any local key", async () => {
+  const inputPlan = plan();
+  const action = nextFundingActivationAction(inputPlan, snapshot(inputPlan));
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address; action.signer = signer.address;
+  const populator = {
+    address: signer.address,
+    populateTransaction: async (request) => ({ ...request, nonce: 7, gasLimit: 100_000n, gasPrice: 1n }),
+  };
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-external-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  const request = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: populator, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(7),
+  });
+  const rawTx = await signer.signTransaction(ethers.Transaction.from(request.unsignedTransaction));
+  const transaction = ethers.Transaction.from(rawTx);
+  const signedRecord = {
+    schema_version: "p42-signed-transaction/v1", label: request.label,
+    signer: signer.address.toLowerCase(), hash: ethers.keccak256(rawTx), raw_tx: rawTx,
+    chain_id: inputPlan.chainId, nonce: transaction.nonce, to: transaction.to.toLowerCase(),
+    value: transaction.value.toString(), data_hash: ethers.keccak256(transaction.data),
+    signed_at_utc: new Date().toISOString(),
+    activation_request_generation: request.requestGeneration,
+    activation_request_expires_at: request.requestExpiresAt,
+    activation_request_unsigned_hash: request.unsignedHash,
+  };
+  let observedProvider;
+  const provider = {};
+  const result = await signAndBroadcastActivationAction({
+    plan: inputPlan, action, provider, signedRecord, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(7),
+    transactionReconciler: async (candidate, record) => {
+      observedProvider = candidate;
+      assert.equal(record.hash, signedRecord.hash);
+      return { status: "pending", transaction: {} };
+    },
+  });
+  assert.equal(observedProvider, provider);
+  assert.equal(result.status, "broadcast");
+});
+
+test("stale unsigned requests regenerate at the dual-RPC current nonce", async () => {
+  const inputPlan = plan();
+  const action = nextFundingActivationAction(inputPlan, snapshot(inputPlan));
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address; action.signer = signer.address;
+  const populator = {
+    address: signer.address,
+    populateTransaction: async (request) => ({ ...request, gasLimit: 100_000n, gasPrice: 1n }),
+  };
+  let currentNonce = 4;
+  const evidence = (candidate) => nonceEvidence(currentNonce)(candidate);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-stale-request-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  const first = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: populator, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: evidence,
+  });
+  currentNonce = 5;
+  const second = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: populator, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_010n,
+    nonceEvidence: evidence,
+  });
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  assert.equal(first.nonce, 4);
+  assert.equal(second.nonce, 5);
+  assert.equal(second.requestGeneration, first.requestGeneration + 1);
+  assert.notEqual(second.unsignedHash, first.unsignedHash);
+  assert.deepEqual(journal.transactions, {});
+  assert.equal(journal.generation, second.requestGeneration);
+});
+
+test("restart migrates a signed v2 journal request from signing-request v1 without changing bytes", async () => {
+  const inputPlan = plan();
+  const action = nextFundingActivationAction(inputPlan, snapshot(inputPlan));
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address; action.signer = signer.address;
+  const populator = {
+    address: signer.address,
+    populateTransaction: async (request) => ({ ...request, gasLimit: 100_000n, gasPrice: 1n }),
+  };
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-v2-request-migrate-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  const request = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: populator, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(6),
+  });
+  const rawTx = await signer.signTransaction(ethers.Transaction.from(request.unsignedTransaction));
+  const transaction = ethers.Transaction.from(rawTx);
+  const record = {
+    schema_version: "p42-signed-transaction/v1", label: request.label,
+    signer: signer.address.toLowerCase(), hash: ethers.keccak256(rawTx), raw_tx: rawTx,
+    chain_id: inputPlan.chainId, nonce: transaction.nonce, to: transaction.to.toLowerCase(),
+    value: transaction.value.toString(), data_hash: ethers.keccak256(transaction.data),
+    signed_at_utc: new Date().toISOString(), status: "signed",
+  };
+  const legacyRequest = { ...request, schema: "p42-funding-activation-signing-request/v1" };
+  for (const key of ["generatedAt", "requestExpiresAt", "requestGeneration", "nonceEvidence"]) {
+    delete legacyRequest[key];
+  }
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  journal.signingRequests[request.label] = legacyRequest;
+  journal.transactions[request.label] = record;
+  writeFileSync(journalPath, `${JSON.stringify(journal, null, 2)}\n`, { mode: 0o600 });
+
+  const migrated = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: null, journalRoot: root, journalPath,
+    revalidate: async () => { throw new Error("signed restart must not repopulate"); },
+    currentTimestamp: async () => 1_900_000_010n,
+    nonceEvidence: async () => { throw new Error("signed restart must not refresh nonce"); },
+  });
+  assert.equal(migrated.schema, "p42-funding-activation-signing-request/v2");
+  assert.equal(migrated.unsignedHash, request.unsignedHash);
+  assert.equal(migrated.requestGeneration, 2);
+  assert.equal(migrated.migratedSignedRequest, true);
+});
+
+test("a stale external signature cannot consume or replace unrelated signer nonce activity", async () => {
+  const inputPlan = plan();
+  const action = nextFundingActivationAction(inputPlan, snapshot(inputPlan));
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address; action.signer = signer.address;
+  const populator = {
+    address: signer.address,
+    populateTransaction: async (request) => ({ ...request, gasLimit: 100_000n, gasPrice: 1n }),
+  };
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-stale-import-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  const request = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: populator, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(7),
+  });
+  const rawTx = await signer.signTransaction(ethers.Transaction.from(request.unsignedTransaction));
+  const transaction = ethers.Transaction.from(rawTx);
+  const signedRecord = {
+    schema_version: "p42-signed-transaction/v1", label: request.label,
+    signer: signer.address.toLowerCase(), hash: ethers.keccak256(rawTx), raw_tx: rawTx,
+    chain_id: inputPlan.chainId, nonce: transaction.nonce, to: transaction.to.toLowerCase(),
+    value: transaction.value.toString(), data_hash: ethers.keccak256(transaction.data),
+    signed_at_utc: new Date().toISOString(),
+    activation_request_generation: request.requestGeneration,
+    activation_request_expires_at: request.requestExpiresAt,
+    activation_request_unsigned_hash: request.unsignedHash,
+  };
+  await assert.rejects(() => signAndBroadcastActivationAction({
+    plan: inputPlan, action, provider: {}, signedRecord, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_010n,
+    nonceEvidence: nonceEvidence(8),
+  }), /nonce is stale/);
+  assert.deepEqual(JSON.parse(readFileSync(journalPath, "utf8")).transactions, {});
+
+  const regenerated = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: populator, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_010n,
+    nonceEvidence: nonceEvidence(8),
+  });
+  assert.equal(regenerated.nonce, 8);
+  assert.equal(regenerated.requestGeneration, request.requestGeneration + 1);
+});
+
+test("external signatures bind the current semantic journal generation", async () => {
+  const inputPlan = plan();
+  const action = nextFundingActivationAction(inputPlan, snapshot(inputPlan));
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address; action.signer = signer.address;
+  const populator = {
+    address: signer.address,
+    populateTransaction: async (request) => ({ ...request, gasLimit: 100_000n, gasPrice: 1n }),
+  };
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-generation-import-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  const request = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: populator, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(3),
+  });
+  const state = snapshot(inputPlan);
+  state.blockNumber = 51; state.blockHash = `0x${"6".repeat(64)}`;
+  state.timelockOperations[inputPlan.operations[10].operationId.toLowerCase()].confirmedBy = [inputPlan.governanceSigners[0]];
+  reconcileFundingActivationConfirmations({ plan: inputPlan, snapshot: state, journalRoot: root, journalPath });
+  const rawTx = await signer.signTransaction(ethers.Transaction.from(request.unsignedTransaction));
+  const transaction = ethers.Transaction.from(rawTx);
+  const signedRecord = {
+    schema_version: "p42-signed-transaction/v1", label: request.label,
+    signer: signer.address.toLowerCase(), hash: ethers.keccak256(rawTx), raw_tx: rawTx,
+    chain_id: inputPlan.chainId, nonce: transaction.nonce, to: transaction.to.toLowerCase(),
+    value: transaction.value.toString(), data_hash: ethers.keccak256(transaction.data),
+    signed_at_utc: new Date().toISOString(),
+    activation_request_generation: request.requestGeneration,
+    activation_request_expires_at: request.requestExpiresAt,
+    activation_request_unsigned_hash: request.unsignedHash,
+  };
+  await assert.rejects(() => signAndBroadcastActivationAction({
+    plan: inputPlan, action, provider: {}, signedRecord, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_010n,
+    nonceEvidence: nonceEvidence(3),
+  }), /current journal generation/);
+});
+
+test("later finalized anchors with unchanged confirmations preserve an external signing request", async () => {
+  const inputPlan = plan();
+  const action = nextFundingActivationAction(inputPlan, snapshot(inputPlan));
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address; action.signer = signer.address;
+  const populator = {
+    address: signer.address,
+    populateTransaction: async (request) => ({ ...request, gasLimit: 100_000n, gasPrice: 1n }),
+  };
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-anchor-import-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  const state = snapshot(inputPlan);
+  const operationId = inputPlan.operations[10].operationId.toLowerCase();
+  state.timelockOperations[operationId].confirmedBy = [inputPlan.governanceSigners[0]];
+  state.blockNumber = 50; state.blockHash = `0x${"5".repeat(64)}`;
+  reconcileFundingActivationConfirmations({ plan: inputPlan, snapshot: state, journalRoot: root, journalPath });
+  const request = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: populator, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(3),
+  });
+  const generation = JSON.parse(readFileSync(journalPath, "utf8")).generation;
+
+  state.blockNumber = 51; state.blockHash = `0x${"6".repeat(64)}`;
+  reconcileFundingActivationConfirmations({ plan: inputPlan, snapshot: state, journalRoot: root, journalPath });
+  const afterProgression = JSON.parse(readFileSync(journalPath, "utf8"));
+  assert.equal(afterProgression.finalizedState.blockNumber, 51);
+  assert.equal(afterProgression.generation, generation);
+
+  const rawTx = await signer.signTransaction(ethers.Transaction.from(request.unsignedTransaction));
+  const transaction = ethers.Transaction.from(rawTx);
+  const signedRecord = {
+    schema_version: "p42-signed-transaction/v1", label: request.label,
+    signer: signer.address.toLowerCase(), hash: ethers.keccak256(rawTx), raw_tx: rawTx,
+    chain_id: inputPlan.chainId, nonce: transaction.nonce, to: transaction.to.toLowerCase(),
+    value: transaction.value.toString(), data_hash: ethers.keccak256(transaction.data),
+    signed_at_utc: new Date().toISOString(),
+    activation_request_generation: request.requestGeneration,
+    activation_request_expires_at: request.requestExpiresAt,
+    activation_request_unsigned_hash: request.unsignedHash,
+  };
+  const result = await signAndBroadcastActivationAction({
+    plan: inputPlan, action, provider: {}, signedRecord, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_010n,
+    nonceEvidence: nonceEvidence(3),
+    transactionReconciler: async () => ({ status: "pending", transaction: {} }),
+  });
+  assert.equal(result.status, "broadcast");
+});
+
+test("signed journal records fence their request against nonce regeneration", async () => {
+  const inputPlan = plan();
+  const action = nextFundingActivationAction(inputPlan, snapshot(inputPlan));
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address; action.signer = signer.address;
+  const wallet = {
+    address: signer.address, provider: {},
+    populateTransaction: async (request) => ({ ...request, gasLimit: 100_000n, gasPrice: 1n }),
+    signTransaction: (request) => signer.signTransaction(request),
+  };
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-signed-fence-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  const request = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: wallet, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(2),
+  });
+  await signAndBroadcastActivationAction({
+    plan: inputPlan, action, wallet, provider: {}, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(2),
+    transactionReconciler: async () => ({ status: "pending", transaction: {} }),
+  });
+  const before = readFileSync(journalPath);
+  const retained = await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: wallet, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_100n,
+    nonceEvidence: nonceEvidence(3),
+  });
+  assert.equal(retained.unsignedHash, request.unsignedHash);
+  assert.deepEqual(readFileSync(journalPath), before);
+});
+
+test("one governance signer waits after its confirmation instead of requiring quorum keys", () => {
+  const inputPlan = plan();
+  const state = snapshot(inputPlan);
+  for (const board of state.boards) {
+    board.authorizedFundingDigest = chainDigest;
+    board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+  }
+  const operation = inputPlan.operations[10];
+  const operationState = state.timelockOperations[operation.operationId.toLowerCase()];
+  operationState.state = 1;
+  operationState.confirmedBy = [inputPlan.governanceSigners[0]];
+  const action = nextFundingActivationAction(inputPlan, state, {
+    availableGovernanceSigners: [inputPlan.governanceSigners[0]],
+  });
+  assert.equal(action.kind, "wait-signers");
+});
+
+test("finalized governance confirmations persist monotonically in the shared journal", () => {
+  const inputPlan = plan();
+  const state = snapshot(inputPlan);
+  state.blockNumber = 50; state.blockHash = `0x${"5".repeat(64)}`;
+  const operation = inputPlan.operations[10];
+  state.timelockOperations[operation.operationId.toLowerCase()].confirmedBy = [inputPlan.governanceSigners[0]];
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-confirmations-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  reconcileFundingActivationConfirmations({ plan: inputPlan, snapshot: state, journalRoot: root, journalPath });
+  const journal = JSON.parse(readFileSync(journalPath, "utf8"));
+  assert.deepEqual(journal.finalizedState.confirmations[operation.operationId.toLowerCase()], [inputPlan.governanceSigners[0]]);
+  state.blockNumber = 49; state.blockHash = `0x${"4".repeat(64)}`;
+  const retained = reconcileFundingActivationConfirmations({ plan: inputPlan, snapshot: state, journalRoot: root, journalPath });
+  assert.equal(retained.blockNumber, 50);
 });
 
 test("dual-RPC snapshot uses one common finalized block and rejects disagreement", async () => {
@@ -203,6 +673,28 @@ test("dual-RPC snapshot uses one common finalized block and rejects disagreement
   await assert.rejects(() => collectFundingActivationSnapshot(inputPlan, provider(), provider(1_900_000_001)), /disagree/);
 });
 
+test("dual-RPC nonce evidence binds finalized and pending current nonces", async () => {
+  const signer = address(77);
+  const provider = (pendingNonce = 9) => ({
+    getBlock: async (tag) => {
+      const number = tag === "finalized" ? 40 : tag === "latest" ? 50 : Number(tag);
+      return {
+        number,
+        hash: `0x${(number === 40 ? "4" : "5").repeat(64)}`,
+        timestamp: number === 40 ? 1_899_999_000 : 1_900_000_000,
+      };
+    },
+    getTransactionCount: async (_address, tag) => tag === "pending" ? pendingNonce : 7,
+  });
+  const evidence = await collectActivationNonceEvidence(provider(), provider(), signer);
+  assert.equal(evidence.finalizedNonce, 7);
+  assert.equal(evidence.currentNonce, 9);
+  await assert.rejects(
+    () => collectActivationNonceEvidence(provider(9), provider(10), signer),
+    /disagree on the signer nonce/,
+  );
+});
+
 test("expired chain time is rejected before any signature is created", async () => {
   const inputPlan = plan();
   const state = snapshot(inputPlan);
@@ -223,6 +715,7 @@ test("expired chain time is rejected before any signature is created", async () 
     plan: inputPlan, action, wallet, journalRoot: root, journalPath: join(root, "journal.json"),
     revalidate: async () => inputPlan,
     currentTimestamp: async () => BigInt(inputPlan.authorizationExpiresAt) + 1n,
+    nonceEvidence: nonceEvidence(0),
   }), /before authorization expiry|after authorization expiry/);
   assert.equal(signed, false);
 });
@@ -247,6 +740,7 @@ test("expiry during validator execution is rejected before signing", async () =>
     currentTimestamp: async () => (++timeReads === 1
       ? BigInt(inputPlan.authorizationExpiresAt) - 1n
       : BigInt(inputPlan.authorizationExpiresAt) + 1n),
+    nonceEvidence: nonceEvidence(0),
   }), /expired during pre-sign/);
   assert.equal(signed, false);
 });
@@ -259,17 +753,19 @@ test("expiry during transaction population is rejected before raw signing", asyn
   let signed = false; let timeReads = 0;
   const wallet = {
     address: signer.address, provider: {},
-    signingKey: { sign: (value) => { signed = true; return signer.signingKey.sign(value); } },
     populateTransaction: async (request) => ({ ...request, nonce: 0, gasLimit: 100_000n, gasPrice: 1n }),
+    signTransaction: async (request) => { signed = true; return signer.signTransaction(request); },
   };
   const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-populate-")));
   chmodSync(root, 0o700);
-  await assert.rejects(() => signAndBroadcastActivationAction({
+  await assert.rejects(() => prepareActivationSigningRequest({
     plan: inputPlan, action, wallet, journalRoot: root, journalPath: join(root, "journal.json"),
+    signer: wallet,
     revalidate: async () => inputPlan,
     currentTimestamp: async () => (++timeReads < 3
       ? BigInt(inputPlan.authorizationExpiresAt) - 1n
       : BigInt(inputPlan.authorizationExpiresAt) + 1n),
+    nonceEvidence: nonceEvidence(0),
   }), /expired during transaction population/);
   assert.equal(signed, false);
 });

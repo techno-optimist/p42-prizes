@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -751,7 +751,7 @@ test("runtime bridge binds pre-verification canonical quarantine to the source e
 });
 
 
-test("operator retries transient calldata retrieval until the canonical deadline", async () => {
+test("operator retries reveal payloads and creates idempotent generation-bound re-challenge jobs", async (t) => {
   const directory = mkdtempSync(join(tmpdir(), "p42-operator-retry-"));
   const submissions = "0x1111111111111111111111111111111111111111";
   const challenges = "0x2222222222222222222222222222222222222222";
@@ -873,9 +873,17 @@ test("operator retries transient calldata retrieval until the canonical deadline
   try {
     const operatorUrl = `${pathToFileURL(join(HERE, "operator.mjs")).href}?retry-test=${Date.now()}`;
     const {
+      broadcastTransactionNonblocking,
+      buildChallengeExpiredBackfillMarker,
+      buildRechallengeGenerationEvent,
+      challengeExpiredBackfillNeeded,
       isExplicitRetryableDaFailure,
       recoverPayload,
+      recordWalletNonceSignedLocked,
+      reserveWalletNonceLocked,
       retryableJobIsEligible,
+      walletNonceBroadcastDecisionLocked,
+      withWalletActionLock,
     } = await import(operatorUrl);
     const event = {
       transactionHash,
@@ -929,6 +937,197 @@ test("operator retries transient calldata retrieval until the canonical deadline
     const second = await recoverPayload(event, submission);
     assert.equal(second.daFailure, undefined);
     assert.deepEqual(Buffer.from(second.blob), Buffer.from(bytes));
+
+    const revealInstanceHash = `0x${"7".repeat(64)}`;
+    const revealEvent = {
+      blockNumber: 10,
+      blockHash: `0x${"1".repeat(64)}`,
+      transactionHash,
+      transactionIndex: 1,
+      index: 2,
+      args: {
+        submissionId: 7n,
+        solver: sender,
+        solutionCid: cid,
+        claimedScoreAtoms: 0n,
+        improvementAtoms: 0n,
+        solutionBytesLength: BigInt(bytes.length),
+        revealInstanceHash,
+        challengeEndsAt: 120n,
+      },
+    };
+    const expirationEvent = {
+      blockNumber: 20,
+      blockHash: `0x${"2".repeat(64)}`,
+      transactionHash: `0x${"b".repeat(64)}`,
+      transactionIndex: 3,
+      index: 4,
+      args: {
+        submissionId: 7n,
+        challengeInstanceHash: `0x${"8".repeat(64)}`,
+      },
+    };
+    const generation = buildRechallengeGenerationEvent({
+      chainId: 31337,
+      problemId: "hadamard-mini",
+      submissionContract: submissions,
+      challengeContract: challenges,
+      expirationEvent,
+      revealEvent,
+      submission: { status: 2n, challengeEndsAt: 240n },
+      revealInstanceHash,
+      expirationBlock: { timestamp: 200 },
+    });
+    assert.equal(generation.args.challengeEndsAt, 240n);
+    assert.equal(generation.transactionHash, expirationEvent.transactionHash);
+    assert.equal(generation.rechallengeGeneration.reveal_transaction_hash, transactionHash);
+    assert.equal(
+      generation.rechallengeGeneration.binding.generation_event.challenge_instance_hash,
+      expirationEvent.args.challengeInstanceHash,
+    );
+
+    const nextGeneration = buildRechallengeGenerationEvent({
+      chainId: 31337,
+      problemId: "hadamard-mini",
+      submissionContract: submissions,
+      challengeContract: challenges,
+      expirationEvent: {
+        ...expirationEvent,
+        blockNumber: 30,
+        blockHash: `0x${"3".repeat(64)}`,
+        transactionHash: `0x${"c".repeat(64)}`,
+        args: { ...expirationEvent.args, challengeInstanceHash: `0x${"9".repeat(64)}` },
+      },
+      revealEvent,
+      submission: { status: 2n, challengeEndsAt: 340n },
+      revealInstanceHash,
+      expirationBlock: { timestamp: 300 },
+    });
+    assert.notEqual(
+      generation.rechallengeGeneration.source_event_hash,
+      nextGeneration.rechallengeGeneration.source_event_hash,
+    );
+
+    const queuePath = join(directory, "rechallenge-queue.json");
+    const revealJobPath = join(directory, "reveal-job.json");
+    const generationJobPath = join(directory, "generation-job.json");
+    const originalSourceHash = sha256Canonical({ kind: "Revealed", transactionHash });
+    writeFileSync(revealJobPath, `${canonicalJson({
+      job_id: "reveal:7",
+      status: "queued",
+      required_memory_mb: 128,
+      source_event_hash: originalSourceHash,
+    })}\n`, "utf8");
+    writeFileSync(generationJobPath, `${canonicalJson({
+      job_id: "rechallenge:7:1",
+      status: "queued",
+      required_memory_mb: 128,
+      source_event_hash: generation.rechallengeGeneration.source_event_hash,
+    })}\n`, "utf8");
+    const enqueue = (jobPath) => JSON.parse(execFileSync("python3", [
+      join(REPO_ROOT, "agent", "runtime_bridge.py"),
+      "enqueue", "--queue", queuePath, "--job", jobPath,
+    ], { cwd: REPO_ROOT, encoding: "utf8" }));
+    assert.equal(enqueue(revealJobPath).created, true);
+    assert.equal(enqueue(generationJobPath).created, true);
+    assert.equal(enqueue(generationJobPath).created, false);
+    const queued = JSON.parse(readFileSync(queuePath, "utf8")).jobs;
+    assert.deepEqual(queued.map((job) => job.job_id), ["reveal:7", "rechallenge:7:1"]);
+
+    await t.test("never-mined broadcasts return without awaiting pending.wait", async () => {
+      let waited = false;
+      const pending = { wait: () => { waited = true; return new Promise(() => {}); } };
+      const result = await broadcastTransactionNonblocking({
+        rpcProvider: {
+          getTransaction: async () => null,
+          broadcastTransaction: async () => pending,
+        },
+        transactionHash,
+        rawTransaction: "0x1234",
+      });
+      assert.equal(result, pending);
+      assert.equal(waited, false);
+    });
+
+    await t.test("restart recovers the signed nonce and refuses an unrelated replacement", async () => {
+      const coordinationRoot = join(directory, "restart-coordination");
+      mkdirSync(coordinationRoot, { recursive: true, mode: 0o700 });
+      const signingWallet = ethers.Wallet.createRandom();
+      const actionId = "restart-action";
+      const nonceProvider = (finalized, pending) => ({
+        getTransactionCount: async (_signer, tag) => tag === "finalized" ? finalized : pending,
+        getTransaction: async () => null,
+      });
+      const initial = await withWalletActionLock({ coordinationRoot, boundChainId: 31337, signer: signingWallet.address }, () => (
+        reserveWalletNonceLocked({
+          rpcProvider: nonceProvider(4, 4), coordinationRoot, boundChainId: 31337,
+          signer: signingWallet.address, actionId,
+        })
+      ));
+      assert.equal(initial.nonce, 4);
+      const signedRecord = await buildSignedTransactionRecord({
+        wallet: signingWallet,
+        label: actionId,
+        request: {
+          to: "0x9999999999999999999999999999999999999999",
+          value: 1n,
+          nonce: initial.nonce,
+          gasLimit: 21000n,
+          gasPrice: 1n,
+          chainId: 31337,
+          type: 0,
+        },
+      });
+      await withWalletActionLock({ coordinationRoot, boundChainId: 31337, signer: signingWallet.address }, async () => {
+        recordWalletNonceSignedLocked({
+          coordinationRoot, boundChainId: 31337, signer: signingWallet.address, actionId, signedRecord,
+        });
+      });
+
+      const recovered = await withWalletActionLock({ coordinationRoot, boundChainId: 31337, signer: signingWallet.address }, () => (
+        reserveWalletNonceLocked({
+          rpcProvider: nonceProvider(4, 4), coordinationRoot, boundChainId: 31337,
+          signer: signingWallet.address, actionId, existingSignedRecord: signedRecord,
+        })
+      ));
+      assert.equal(recovered.recovered, true);
+      assert.equal(recovered.nonce, 4);
+
+      const decision = await withWalletActionLock({ coordinationRoot, boundChainId: 31337, signer: signingWallet.address }, () => (
+        walletNonceBroadcastDecisionLocked({
+          rpcProvider: nonceProvider(5, 5), coordinationRoot, boundChainId: 31337,
+          signer: signingWallet.address, actionId, signedRecord,
+        })
+      ));
+      assert.equal(decision.broadcast, false);
+      assert.equal(decision.known, false);
+      assert.match(decision.reason, /refusing replacement transaction/);
+    });
+
+    await t.test("upgraded cursor performs one identity-bound ChallengeExpired backfill", () => {
+      const binding = {
+        schema_version: "p42-challenge-expired-backfill-binding/v1",
+        cursor_binding_hash: sha256Canonical({ legacy_cursor_next_block: 500 }),
+        chain_id: 31337,
+        challenge_contract: challenges,
+        start_block: 10,
+      };
+      assert.equal(challengeExpiredBackfillNeeded(null, binding), true);
+      const marker = buildChallengeExpiredBackfillMarker({ binding, throughBlock: 499 });
+      assert.equal(challengeExpiredBackfillNeeded(marker, binding), false);
+      assert.throws(() => challengeExpiredBackfillNeeded(marker, {
+        ...binding,
+        challenge_contract: "0x3333333333333333333333333333333333333333",
+      }), /identity mismatch/);
+      assert.throws(() => challengeExpiredBackfillNeeded({ ...marker, through_block: 500 }, binding), /hash mismatch/);
+      const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+      const backfill = source.indexOf("async function backfillChallengeExpiredOnce");
+      const historicalStart = source.indexOf("START_BLOCK,", backfill);
+      const historicalEnd = source.indexOf("safeLatest,", historicalStart);
+      const ingest = source.indexOf("await ingestReveal(event)", historicalEnd);
+      const markComplete = source.indexOf("writeJsonAtomic(CHALLENGE_EXPIRED_BACKFILL", ingest);
+      assert.ok(backfill >= 0 && historicalStart > backfill && historicalEnd > historicalStart && ingest > historicalEnd && markComplete > ingest);
+    });
   } finally {
     process.argv = originalArgv;
     if (originalKey === undefined) delete process.env.OPERATOR_PRIVATE_KEY;
@@ -939,11 +1138,10 @@ test("operator retries transient calldata retrieval until the canonical deadline
 
 test("operator commits finalized challenge accounting before terminal queue status", () => {
   const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
-  const terminal = "recordAction(job, transcript.candidate, receipt.status === 1 ? \"confirmed\" : \"broadcast_reverted\"";
-  const occurrences = [...source.matchAll(new RegExp(terminal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))].map((match) => match.index);
-  assert.equal(occurrences.length, 1);
-  const finalBlock = source.slice(source.lastIndexOf("const receiptState = classifyReceiptFinality"), occurrences[0] + terminal.length);
-  assert.ok(finalBlock.indexOf("finalizeChallengeSpend(") < finalBlock.indexOf(terminal));
+  const terminal = source.indexOf('receipt.status === 1 ? "confirmed" : "broadcast_reverted"');
+  assert.ok(terminal >= 0);
+  const finalBlock = source.slice(source.lastIndexOf("const receiptState = classifyReceiptFinality", terminal), terminal);
+  assert.ok(finalBlock.indexOf("finalizeChallengeSpend(") >= 0);
   const earlierBlock = source.slice(source.indexOf("} else {", source.indexOf("async function reconcileBroadcast")), source.indexOf("if (!receipt) {", source.indexOf("async function reconcileBroadcast")));
   assert.ok(earlierBlock.indexOf("finalizeChallengeSpend(") < earlierBlock.indexOf("recordAction("));
 });
@@ -964,4 +1162,144 @@ test("operator reservation is guarded until signed journal durability", () => {
   const durable = source.indexOf("markJournalDurable({", guard);
   const terminal = source.indexOf("recordAction(job, candidate, \"signed\"", guard);
   assert.ok(guard >= 0 && signed > guard && durable > signed && terminal > durable);
+});
+
+test("shared allocator fences two board runtimes across fresh and stale RPC pending views", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "p42-wallet-action-lock-"));
+  const coordinationRoot = join(directory, "coordination");
+  const startPath = join(directory, "start");
+  const workerPath = join(directory, "worker.mjs");
+  const manifestPath = join(directory, "manifest.json");
+  const signer = ethers.Wallet.createRandom();
+  mkdirSync(coordinationRoot, { recursive: true, mode: 0o700 });
+  for (const contractName of ["P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"]) {
+    const artifactPath = join(directory, "contracts", "artifacts", "src", `${contractName}.sol`, `${contractName}.json`);
+    mkdirSync(dirname(artifactPath), { recursive: true });
+    writeFileSync(artifactPath, JSON.stringify({ abi: [] }), "utf8");
+  }
+  writeFileSync(manifestPath, JSON.stringify({
+    contracts: {
+      submissions: { address: "0x1111111111111111111111111111111111111111" },
+      challenges: { address: "0x2222222222222222222222222222222222222222" },
+      registry: { address: "0x3333333333333333333333333333333333333333" },
+    },
+  }), "utf8");
+  writeFileSync(workerPath, `
+    import { existsSync, writeFileSync } from "node:fs";
+    import { setTimeout as delay } from "node:timers/promises";
+    const [operatorUrl, libUrl, ethersUrl, coordinationRoot, startPath, resultPath, submissionId, pendingNonce, privateKey, manifestPath, problemPath, repoRoot, runtimeRoot] = process.argv.slice(2);
+    const { Wallet } = await import(ethersUrl);
+    process.argv = [
+      process.execPath,
+      "/not-the-operator-entrypoint",
+      "--manifest", manifestPath,
+      "--problem", problemPath,
+      "--registry-problem-id", "1",
+      "--repo-root", repoRoot,
+      "--runtime", runtimeRoot,
+      "--local-test",
+    ];
+    process.env.OPERATOR_PRIVATE_KEY = privateKey;
+    const { recordWalletNonceSignedLocked, reserveWalletNonceLocked, withWalletActionLock } = await import(operatorUrl);
+    const { buildSignedTransactionRecord } = await import(libUrl);
+    const wallet = new Wallet(privateKey);
+    writeFileSync(resultPath + ".ready", "ready\\n");
+    while (!existsSync(startPath)) await delay(10);
+    await withWalletActionLock({ coordinationRoot, boundChainId: 31337, signer: wallet.address }, async () => {
+      const rpcProvider = { getTransactionCount: async (_signer, tag) => tag === "finalized" ? 3 : Number(pendingNonce) };
+      const independentRpc = { getTransactionCount: async (_signer, tag) => tag === "finalized" ? 3 : 7 };
+      const actionId = "board:" + submissionId;
+      const allocation = await reserveWalletNonceLocked({ rpcProvider, rpcProviders: [rpcProvider, independentRpc], coordinationRoot, boundChainId: 31337, signer: wallet.address, actionId });
+      await delay(100);
+      const signedRecord = await buildSignedTransactionRecord({ wallet, label: actionId, request: {
+        to: "0x9999999999999999999999999999999999999999",
+        value: BigInt(submissionId),
+        nonce: allocation.nonce,
+        gasLimit: 21000n,
+        gasPrice: 1n,
+        chainId: 31337,
+        type: 0,
+      }});
+      recordWalletNonceSignedLocked({ coordinationRoot, boundChainId: 31337, signer: wallet.address, actionId, signedRecord });
+      writeFileSync(resultPath, JSON.stringify({ submission_id: submissionId, nonce: allocation.nonce, raw_tx: signedRecord.raw_tx }) + "\\n");
+    });
+  `, "utf8");
+
+  const operatorUrl = `${pathToFileURL(join(HERE, "operator.mjs")).href}?wallet-lock-test=${Date.now()}`;
+  const libUrl = pathToFileURL(join(HERE, "lib.mjs")).href;
+  const ethersUrl = import.meta.resolve("ethers");
+  const runWorker = (submissionId, pendingNonce) => new Promise((resolveWorker, rejectWorker) => {
+    const resultPath = join(directory, `submission-${submissionId}.json`);
+    const child = spawn(process.execPath, [
+      workerPath,
+      operatorUrl,
+      libUrl,
+      ethersUrl,
+      coordinationRoot,
+      startPath,
+      resultPath,
+      String(submissionId),
+      String(pendingNonce),
+      signer.privateKey,
+      manifestPath,
+      join(REPO_ROOT, "problems", "hadamard-mini"),
+      directory,
+      join(directory, `board-${submissionId}-runtime`),
+    ], { cwd: HERE, stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.once("error", rejectWorker);
+    child.once("exit", (code) => {
+      if (code !== 0) rejectWorker(new Error(stderr || `wallet lock worker exited ${code}`));
+      else resolveWorker(JSON.parse(readFileSync(resultPath, "utf8")));
+    });
+  });
+
+  const workers = [runWorker(101, 7), runWorker(202, 3)];
+  const readyPaths = [101, 202].map((submissionId) => join(directory, `submission-${submissionId}.json.ready`));
+  const readyDeadline = Date.now() + 5000;
+  while (!readyPaths.every((path) => existsSync(path))) {
+    if (Date.now() >= readyDeadline) throw new Error("wallet lock workers did not reach the concurrency barrier");
+    await new Promise((done) => setTimeout(done, 10));
+  }
+  writeFileSync(startPath, "start\n", "utf8");
+  const records = await Promise.all(workers);
+  assert.deepEqual(records.map((record) => record.submission_id).sort(), ["101", "202"]);
+  assert.deepEqual(records.map((record) => record.nonce).sort((a, b) => a - b), [7, 8]);
+  assert.equal(new Set(records.map((record) => record.raw_tx)).size, 2);
+  const allocatorFiles = (await import("node:fs")).readdirSync(coordinationRoot)
+    .filter((name) => name.endsWith(".nonce-allocator.json"));
+  assert.equal(allocatorFiles.length, 1);
+  const allocator = JSON.parse(readFileSync(join(coordinationRoot, allocatorFiles[0]), "utf8"));
+  assert.equal(allocator.binding.chain_id, 31337);
+  assert.equal(allocator.binding.signer, signer.address.toLowerCase());
+  assert.equal(allocator.next_nonce, 9);
+  assert.deepEqual(allocator.allocations.map((allocation) => allocation.state), ["signed", "signed"]);
+});
+
+test("operator serializes all challenge generations for one submission before signing", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const lock = source.indexOf('schema_version: "p42-submission-challenge-lock/v1"');
+  const acquire = source.indexOf("acquireEnvelopeLock(candidateLockPath", lock);
+  const reread = source.indexOf("const durableJob = readQueue().jobs.find", acquire);
+  const liveState = source.indexOf("const submission = await subs.submissions(submissionId)", reread);
+  const sign = source.indexOf("await runChallengeActionIntent(ENVELOPE", liveState);
+  const release = source.indexOf("releaseEnvelopeLock(candidateLockPath", sign);
+  assert.ok(lock >= 0 && acquire > lock && reread > acquire && liveState > reread && sign > liveState && release > sign);
+});
+
+test("operator releases the wallet lock after a nonblocking broadcast handoff", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const walletLock = source.indexOf("await withOperatorWalletActionLock(async () =>");
+  const allocate = source.indexOf("const nonceAllocation = await reserveWalletNonceLocked", walletLock);
+  const populate = source.indexOf("const populatedRequest = await buildChallengeTransactionRequest", allocate);
+  const explicitNonce = source.indexOf("nonce: nonceAllocation.nonce", populate);
+  const journal = source.indexOf("const signed = await signedActionRecord", explicitNonce);
+  const durable = source.indexOf("markJournalDurable({", journal);
+  const broadcast = source.indexOf("await reconcileBroadcast({", durable);
+  const release = source.indexOf("\n  });", broadcast);
+  assert.ok(walletLock >= 0 && allocate > walletLock && populate > allocate && explicitNonce > populate
+    && journal > explicitNonce && durable > journal && broadcast > durable && release > broadcast);
+  assert.doesNotMatch(source, /pending\.wait\s*\(/);
 });
