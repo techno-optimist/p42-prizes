@@ -6,9 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const UPSTREAM_REPOSITORY = "https://github.com/techno-optimist/erdos-frontier-atlas";
-export const UPSTREAM_COMMIT = "7435d8f35114d3dcb9831961656ca9613378bb1e";
+export const UPSTREAM_COMMIT = "fdc4dade0e6464ab2569d686645052cc8479cb05";
 export const UPSTREAM_PATH = "atlas/problems.json";
-export const UPSTREAM_SHA256 = "ab05558b69d14348fb9bafd153d036ce6b9a51560e9ef57c71c2a5ab67574bde";
+export const UPSTREAM_SHA256 = "f544a5734647b7038b68c4919cba8afa28d93db600e5da8f1e6048c867e7a89c";
 export const UPSTREAM_RAW_URL = `https://raw.githubusercontent.com/techno-optimist/erdos-frontier-atlas/${UPSTREAM_COMMIT}/${UPSTREAM_PATH}`;
 
 const outputPath = fileURLToPath(

@@ -7,6 +7,6 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
   const entry = getAtlasEntry(Number(rawId));
   if (!entry) return json({ error: "Atlas entry not found" }, { status: 404 });
   return json(entry, {
-    headers: { "Cache-Control": "public, max-age=300, s-maxage=86400, immutable" },
+    headers: { "Cache-Control": "public, max-age=60, s-maxage=300, must-revalidate" },
   });
 }

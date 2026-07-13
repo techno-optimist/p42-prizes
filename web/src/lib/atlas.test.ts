@@ -31,7 +31,7 @@ describe("Erdős frontier atlas", () => {
 
   it("filters, sorts, and paginates deterministically", () => {
     const first = listAtlasEntries({ boardability: "READY", sort: "fit", limit: 3 });
-    expect(first.total).toBe(17);
+    expect(first.total).toBe(13);
     expect(first.items).toHaveLength(3);
     expect(first.next_cursor).toEqual(expect.any(String));
     expect(first.items[0].fit_score).toBeGreaterThanOrEqual(first.items[1].fit_score);
@@ -51,10 +51,10 @@ describe("Erdős frontier atlas", () => {
 
   it("reports exact facets and pinned provenance", () => {
     const meta = getAtlasMeta();
-    expect(meta.facets.boardability).toEqual({ READY: 17, HEAVY: 11, NONE: 23 });
+    expect(meta.facets.boardability).toEqual({ READY: 13, HEAVY: 14, NONE: 24 });
     expect(meta.facets.p42).toEqual({ true: 5, false: 46 });
-    expect(meta.provenance.commit).toBe("7435d8f35114d3dcb9831961656ca9613378bb1e");
-    expect(meta.provenance.sha256).toBe("ab05558b69d14348fb9bafd153d036ce6b9a51560e9ef57c71c2a5ab67574bde");
+    expect(meta.provenance.commit).toBe("fdc4dade0e6464ab2569d686645052cc8479cb05");
+    expect(meta.provenance.sha256).toBe("f544a5734647b7038b68c4919cba8afa28d93db600e5da8f1e6048c867e7a89c");
     expect(getAtlasEntry(67)?.frontier?.summary).toContain("130,000");
     expect(getAtlasEntry(21)?.lane).toBe("exact-backtracking");
   });
@@ -74,5 +74,11 @@ describe("Erdős frontier atlas", () => {
   it("searches source text case-insensitively", () => {
     const result = listAtlasEntries({ q: "distinct subset sums", limit: 51 });
     expect(result.items.some(({ id }) => id === 1)).toBe(true);
+  });
+
+  it("recommends only movable, unpackaged entries", () => {
+    const result = listAtlasEntries({ boardability: "READY", reach: "MOVABLE", p42: false, limit: 51 });
+    expect(result.items.map(({ id }) => id)).toEqual([552]);
+    expect(result.items.every(({ beatable, p42_slug }) => beatable === "MOVABLE" && p42_slug === undefined)).toBe(true);
   });
 });

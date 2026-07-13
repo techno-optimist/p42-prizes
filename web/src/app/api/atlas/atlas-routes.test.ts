@@ -6,7 +6,7 @@ import { GET as listGet } from "@/app/api/atlas/route";
 import { GET as exportGet } from "@/app/api/atlas/export/route";
 
 describe("atlas API routes", () => {
-  it("exports the complete immutable snapshot with a reproducible digest", async () => {
+  it("exports the complete revalidated snapshot with a reproducible digest", async () => {
     const first = await exportGet();
     const second = await exportGet();
     const body = await first.text();
@@ -14,19 +14,19 @@ describe("atlas API routes", () => {
 
     expect(parsed.entries).toHaveLength(51);
     expect(parsed.meta.total).toBe(51);
-    expect(first.headers.get("cache-control")).toContain("immutable");
+    expect(first.headers.get("cache-control")).toBe("public, max-age=0, must-revalidate");
     expect(first.headers.get("content-disposition")).toContain("p42-erdos-atlas-v1.json");
     expect(first.headers.get("x-content-sha256")).toMatch(/^[a-f0-9]{64}$/);
     expect(second.headers.get("x-content-sha256")).toBe(first.headers.get("x-content-sha256"));
   });
 
-  it("serves a filtered list with immutable snapshot caching", async () => {
+  it("serves a filtered list with bounded revalidation", async () => {
     const response = await listGet(new Request("http://localhost/api/atlas?boardability=HEAVY&limit=2"));
     const body = await response.json();
     expect(response.status).toBe(200);
-    expect(body.total).toBe(11);
+    expect(body.total).toBe(14);
     expect(body.items).toHaveLength(2);
-    expect(response.headers.get("cache-control")).toContain("immutable");
+    expect(response.headers.get("cache-control")).toBe("public, max-age=60, s-maxage=300, must-revalidate");
   });
 
   it("returns 400 for invalid list filters", async () => {
