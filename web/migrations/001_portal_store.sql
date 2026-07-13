@@ -35,6 +35,7 @@ DECLARE
   rate_column_count integer;
   rate_total_columns integer;
   rate_constraints text[];
+  rate_expiry_index_valid boolean;
 BEGIN
   SELECT count(*) INTO portal_total_columns
   FROM information_schema.columns
@@ -66,11 +67,37 @@ BEGIN
   FROM information_schema.columns
   WHERE table_schema = current_schema() AND table_name = 'p42_rate_limit_bucket';
   SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid)) INTO portal_constraints
-  FROM pg_constraint WHERE conrelid = 'p42_portal_state'::regclass;
+  FROM pg_constraint
+  WHERE conrelid = 'p42_portal_state'::regclass
+    AND contype IN ('c', 'p');
   SELECT array_agg(pg_get_constraintdef(oid) ORDER BY pg_get_constraintdef(oid)) INTO rate_constraints
-  FROM pg_constraint WHERE conrelid = 'p42_rate_limit_bucket'::regclass;
+  FROM pg_constraint
+  WHERE conrelid = 'p42_rate_limit_bucket'::regclass
+    AND contype IN ('c', 'p');
+  SELECT EXISTS (
+    SELECT 1
+    FROM pg_class index_class
+    JOIN pg_index index_meta ON index_meta.indexrelid = index_class.oid
+    JOIN pg_am access_method ON access_method.oid = index_class.relam
+    WHERE index_class.oid = to_regclass('p42_rate_limit_bucket_expiry_idx')
+      AND index_meta.indrelid = 'p42_rate_limit_bucket'::regclass
+      AND access_method.amname = 'btree'
+      AND index_meta.indisvalid
+      AND index_meta.indisready
+      AND index_meta.indpred IS NULL
+      AND index_meta.indexprs IS NULL
+      AND index_meta.indnkeyatts = 1
+      AND index_meta.indnatts = 1
+      AND (
+        SELECT array_agg(attribute.attname ORDER BY key_column.ordinality)
+        FROM unnest(index_meta.indkey::smallint[]) WITH ORDINALITY AS key_column(attnum, ordinality)
+        JOIN pg_attribute attribute
+          ON attribute.attrelid = index_meta.indrelid
+         AND attribute.attnum = key_column.attnum
+      ) = ARRAY['expires_at']::name[]
+  ) INTO rate_expiry_index_valid;
   IF portal_column_count <> 7 OR portal_total_columns <> 7
-    OR portal_constraints <> ARRAY[
+    OR portal_constraints IS DISTINCT FROM ARRAY[
       'CHECK ((import_sha256 ~ ''^sha256:[0-9a-f]{64}$''::text))',
       'CHECK ((revision >= 0))',
       'CHECK ((schema_version = 1))',
@@ -78,10 +105,16 @@ BEGIN
       'PRIMARY KEY (singleton)'
     ]::text[]
     OR rate_column_count <> 4 OR rate_total_columns <> 4
-    OR rate_constraints <> ARRAY[
+    OR rate_constraints IS DISTINCT FROM ARRAY[
       'CHECK ((count > 0))',
       'PRIMARY KEY (policy_id, subject)'
     ]::text[]
+    OR EXISTS (
+      SELECT 1 FROM pg_constraint
+      WHERE conrelid IN ('p42_portal_state'::regclass, 'p42_rate_limit_bucket'::regclass)
+        AND contype NOT IN ('c', 'p', 'n')
+    )
+    OR NOT rate_expiry_index_valid
     OR NOT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_schema = current_schema() AND table_name = 'p42_portal_state'

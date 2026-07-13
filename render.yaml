@@ -6,7 +6,7 @@ services:
     runtime: node
     rootDir: ./web
     buildCommand: npm ci && npm run build:prizes
-    startCommand: npm run start:prizes
+    startCommand: npm run db:migrate && npm run start:prizes
     plan: starter
     region: oregon
     healthCheckPath: /prizes
@@ -15,6 +15,12 @@ services:
         value: /prizes
       - key: P42_PORTAL_STATE_PATH
         value: /app/data/portal-state.json
+      # Operator-provided Render internal PostgreSQL URL. Startup runs the
+      # idempotent migration and refuses to start if the schema is not ready.
+      - key: P42_PORTAL_DATABASE_URL
+        sync: false
+      - key: P42_PORTAL_DATABASE_REQUIRED
+        value: "1"
       # Production code fails closed automatically. Only a non-production local
       # process can opt out, with P42_ALLOW_UNAUTHENTICATED_MUTATIONS=1.
       # Strict JSON array of {hash, scopes, optional expiresAt} records. Hashes
