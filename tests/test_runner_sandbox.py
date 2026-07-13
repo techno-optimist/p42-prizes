@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from p42_prizes.runner_sandbox import (
     build_sandbox_command,
     compose_immutable_image_ref,
     docker_available,
+    stage_sandbox_solution,
 )
 from p42_prizes.runner_worker import _run_verifier_for_transcript
 
@@ -121,6 +123,64 @@ def test_requires_solution_placeholder_and_valid_limits():
 
 def test_docker_available_returns_bool_without_raising():
     assert isinstance(docker_available(), bool)
+
+
+def test_stage_sandbox_solution_preserves_private_source(tmp_path: Path):
+    source = tmp_path / "solution.json"
+    source.write_bytes(b'{"answer":42}\n')
+    source.chmod(0o600)
+
+    with stage_sandbox_solution(
+        source, max_bytes=1024, staging_root=tmp_path / "staging"
+    ) as staged:
+        assert staged.read_bytes() == source.read_bytes()
+        assert staged.stat().st_mode & 0o777 == 0o444
+        assert staged.parent.stat().st_mode & 0o777 == 0o700
+        staged_path = staged
+
+    assert source.stat().st_mode & 0o777 == 0o600
+    assert not staged_path.exists()
+
+
+def test_stage_sandbox_solution_rejects_unsafe_or_oversized_sources(tmp_path: Path):
+    oversized = tmp_path / "oversized.json"
+    oversized.write_bytes(b"x" * 17)
+    oversized.chmod(0o600)
+    with pytest.raises(RunnerSandboxError, match="admitted byte limit"):
+        with stage_sandbox_solution(
+            oversized, max_bytes=16, staging_root=tmp_path / "staging"
+        ):
+            pass
+
+    symlink = tmp_path / "symlink.json"
+    symlink.symlink_to(oversized)
+    with pytest.raises(OSError):
+        with stage_sandbox_solution(
+            symlink, max_bytes=32, staging_root=tmp_path / "staging"
+        ):
+            pass
+
+    fifo = tmp_path / "fifo.json"
+    os.mkfifo(fifo, 0o600)
+    with pytest.raises(RunnerSandboxError, match="regular file"):
+        with stage_sandbox_solution(
+            fifo, max_bytes=32, staging_root=tmp_path / "staging"
+        ):
+            pass
+
+
+def test_stage_sandbox_solution_binds_authorized_hash(tmp_path: Path):
+    source = tmp_path / "solution.json"
+    source.write_bytes(b'{"answer":42}\n')
+    source.chmod(0o600)
+    with pytest.raises(RunnerSandboxError, match="authorized payload hash"):
+        with stage_sandbox_solution(
+            source,
+            max_bytes=1024,
+            staging_root=tmp_path / "staging",
+            expected_sha256="sha256:" + "0" * 64,
+        ):
+            pass
 
 
 def test_sandbox_docker_fails_closed_when_no_runtime():

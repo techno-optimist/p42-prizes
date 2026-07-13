@@ -15,9 +15,14 @@ back to executing an untrusted payload on the host.
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
+import hashlib
+import os
 import re
 import shlex
+import stat
 import subprocess
+import tempfile
 from pathlib import Path
 
 
@@ -84,6 +89,138 @@ def docker_available(binary: str = "docker") -> bool:
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+class _SandboxSolutionStage(AbstractContextManager[Path]):
+    def __init__(
+        self,
+        host_solution: str | Path,
+        max_bytes: int,
+        staging_root: str | Path | None,
+        expected_sha256: str | None,
+    ) -> None:
+        self.source = Path(host_solution)
+        self.max_bytes = max_bytes
+        self.staging_root = (
+            Path(staging_root)
+            if staging_root is not None
+            else Path.home() / ".p42-runner" / "sandbox-staging"
+        )
+        self.expected_sha256 = expected_sha256
+        self.temporary: tempfile.TemporaryDirectory[str] | None = None
+
+    def __enter__(self) -> Path:
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        if not nofollow:
+            raise RunnerSandboxError("sandbox solution staging requires platform O_NOFOLLOW support")
+        if not isinstance(self.max_bytes, int) or isinstance(self.max_bytes, bool) or self.max_bytes < 1:
+            raise RunnerSandboxError("sandbox solution max_bytes must be a positive integer")
+        source_fd = os.open(self.source, os.O_RDONLY | os.O_NONBLOCK | nofollow)
+        try:
+            source_metadata = os.fstat(source_fd)
+            if not stat.S_ISREG(source_metadata.st_mode):
+                raise RunnerSandboxError("sandbox solution source must be a regular file")
+            if source_metadata.st_size > self.max_bytes:
+                raise RunnerSandboxError(
+                    f"sandbox solution exceeds admitted byte limit ({self.max_bytes})"
+                )
+            self.staging_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+            parent_metadata = self.staging_root.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(parent_metadata.st_mode)
+                or parent_metadata.st_uid != os.geteuid()
+                or parent_metadata.st_mode & 0o077
+            ):
+                raise RunnerSandboxError(
+                    "sandbox staging root must be owned by the runner UID and private"
+                )
+            # Keep the staging path below the runner's home. Docker Desktop
+            # exposes the home directory to its VM, and the private fixed root
+            # prevents another host user from replacing a staged pathname.
+            self.temporary = tempfile.TemporaryDirectory(
+                prefix="solution-", dir=self.staging_root
+            )
+            root = Path(self.temporary.name)
+            os.chmod(root, 0o700)
+            staged = root / "solution.json"
+            target_fd = os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o400)
+            try:
+                copied = 0
+                digest = hashlib.sha256()
+                while chunk := os.read(source_fd, 1024 * 1024):
+                    copied += len(chunk)
+                    if copied > self.max_bytes:
+                        raise RunnerSandboxError(
+                            f"sandbox solution exceeds admitted byte limit ({self.max_bytes})"
+                        )
+                    digest.update(chunk)
+                    view = memoryview(chunk)
+                    while view:
+                        written = os.write(target_fd, view)
+                        if written <= 0:
+                            raise OSError("short write while staging sandbox solution")
+                        view = view[written:]
+                after = os.fstat(source_fd)
+                if (
+                    after.st_dev != source_metadata.st_dev
+                    or after.st_ino != source_metadata.st_ino
+                    or after.st_size != source_metadata.st_size
+                    or after.st_mtime_ns != source_metadata.st_mtime_ns
+                    or copied != after.st_size
+                ):
+                    raise RunnerSandboxError("sandbox solution changed while it was being staged")
+                staged_sha256 = "sha256:" + digest.hexdigest()
+                if self.expected_sha256 is not None and staged_sha256 != self.expected_sha256:
+                    raise RunnerSandboxError(
+                        "staged sandbox solution does not match the authorized payload hash"
+                    )
+                os.fsync(target_fd)
+                os.fchmod(target_fd, 0o444)
+                target_metadata = os.fstat(target_fd)
+            finally:
+                os.close(target_fd)
+            staged_metadata = staged.stat(follow_symlinks=False)
+            if (
+                not stat.S_ISREG(staged_metadata.st_mode)
+                or staged_metadata.st_dev != target_metadata.st_dev
+                or staged_metadata.st_ino != target_metadata.st_ino
+                or staged_metadata.st_size != copied
+            ):
+                raise RunnerSandboxError("sandbox solution staging file changed before execution")
+            return staged
+        except BaseException:
+            if self.temporary is not None:
+                self.temporary.cleanup()
+                self.temporary = None
+            raise
+        finally:
+            os.close(source_fd)
+
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        if self.temporary is not None:
+            self.temporary.cleanup()
+            self.temporary = None
+        return False
+
+
+def stage_sandbox_solution(
+    host_solution: str | Path,
+    *,
+    max_bytes: int,
+    staging_root: str | Path | None = None,
+    expected_sha256: str | None = None,
+) -> AbstractContextManager[Path]:
+    """Stage an immutable, container-readable copy without weakening the source.
+
+    Runner payloads normally live below roots created with ``umask 077``. A
+    non-root container cannot read a direct bind mount of such a ``0600`` file.
+    Keep the source private and unchanged, and expose only an ephemeral ``0444``
+    copy below a private directory for the lifetime of ``docker run``.
+    """
+
+    return _SandboxSolutionStage(
+        host_solution, max_bytes, staging_root, expected_sha256
+    )
 
 
 def build_sandbox_command(
