@@ -9,9 +9,14 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   const numericId = Number(id);
   const entry = Number.isInteger(numericId) ? getAtlasEntry(numericId) as unknown as Record<string, unknown> | undefined : undefined;
   if (!entry) return { title: "Atlas entry not found - P42 Prizes" };
+  const frontier = entry.frontier;
+  const frontierSummary = frontier && typeof frontier === "object" && "summary" in frontier
+    ? String(frontier.summary)
+    : undefined;
+  const description = frontierSummary ?? String(entry.statement ?? "Research dossier in the P42 Erdős Atlas.");
   return {
     title: `${String(entry.title ?? entry.name ?? `Erdős ${id}`)} - Erdős Atlas`,
-    description: String(entry.summary ?? entry.frontier ?? "Research dossier in the P42 Erdős Atlas."),
+    description,
   };
 }
 

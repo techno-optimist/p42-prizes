@@ -35,6 +35,16 @@ describe("atlas API routes", () => {
     await expect(response.json()).resolves.toEqual({ error: "limit must be between 1 and 51" });
   });
 
+  it("rejects unknown and repeated query parameters", async () => {
+    const unknown = await listGet(new Request("http://localhost/api/atlas?nonce=cache-bust"));
+    expect(unknown.status).toBe(400);
+    await expect(unknown.json()).resolves.toEqual({ error: "unknown query parameter: nonce" });
+
+    const repeated = await listGet(new Request("http://localhost/api/atlas?limit=1&limit=2"));
+    expect(repeated.status).toBe(400);
+    await expect(repeated.json()).resolves.toEqual({ error: "limit may only be supplied once" });
+  });
+
   it("serves detail only for numeric Erdős ids", async () => {
     const found = await detailGet(new Request("http://localhost/api/atlas/21"), {
       params: Promise.resolve({ id: "21" }),

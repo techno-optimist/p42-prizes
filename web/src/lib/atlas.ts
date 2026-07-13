@@ -39,6 +39,29 @@ const CURSOR_PREFIX = "atlas-v1:";
 
 export class AtlasQueryError extends Error {}
 
+function assertSnapshot(): void {
+  if (snapshot.snapshot_schema !== "p42-erdos-frontier-atlas-v1") throw new Error("invalid Atlas snapshot schema");
+  if (!Array.isArray(snapshot.problems) || snapshot.problems.length !== 51) throw new Error("invalid Atlas entry count");
+  const ids = new Set<number>();
+  for (const entry of snapshot.problems) {
+    if (!Number.isInteger(entry.id) || ids.has(entry.id)) throw new Error("Atlas ids must be unique integers");
+    ids.add(entry.id);
+    if (!entry.title || !entry.statement || !entry.finite_object || !entry.verifier) throw new Error(`Atlas entry ${entry.id} is incomplete`);
+    if (!ATLAS_BOARDABILITIES.includes(entry.board_class) || !ATLAS_REACHES.includes(entry.beatable) || !ATLAS_LANES.includes(entry.lane)) {
+      throw new Error(`Atlas entry ${entry.id} has an invalid classification`);
+    }
+    if (!Number.isInteger(entry.fit_score) || entry.fit_score < 0 || entry.fit_score > 10 || !Number.isInteger(entry.impact_score) || entry.impact_score < 0 || entry.impact_score > 10) {
+      throw new Error(`Atlas entry ${entry.id} has an invalid score`);
+    }
+    if (entry.erdos_url !== `https://www.erdosproblems.com/${entry.id}`) throw new Error(`Atlas entry ${entry.id} has an invalid source URL`);
+    if (entry.frontier && typeof entry.frontier === "object" && (!entry.frontier.value || !entry.frontier.holder || !Number.isInteger(entry.frontier.year))) {
+      throw new Error(`Atlas entry ${entry.id} has an invalid structured frontier`);
+    }
+  }
+}
+
+assertSnapshot();
+
 export function normalizeFrontier(frontier: AtlasEntrySource["frontier"]): AtlasFrontier | undefined {
   if (frontier == null) return undefined;
   if (typeof frontier === "string") {
@@ -98,7 +121,11 @@ function parseLimit(value: string | null): number | undefined {
 }
 
 export function parseAtlasListQuery(params: URLSearchParams): AtlasListQuery {
-  for (const name of ["q", "boardability", "reach", "lane", "p42", "sort", "limit", "cursor"]) {
+  const allowed = new Set(["q", "boardability", "reach", "lane", "p42", "sort", "limit", "cursor"]);
+  for (const name of params.keys()) {
+    if (!allowed.has(name)) throw new AtlasQueryError(`unknown query parameter: ${name}`);
+  }
+  for (const name of allowed) {
     if (params.getAll(name).length > 1) throw new AtlasQueryError(`${name} may only be supplied once`);
   }
   const q = params.get("q")?.trim();
