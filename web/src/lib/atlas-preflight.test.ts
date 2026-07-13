@@ -104,7 +104,7 @@ describe("Atlas compute preflight decisions", () => {
     expect(expired.snapshot).toMatchObject({
       generated: "2026-07-13",
       max_age_days: 7,
-      provenance: { commit: "bd82a0ab34ffe4c33dffba0c402d54b61a5a0103" },
+      provenance: { commit: "0901734c487ab1e51ddc772ab45b08b42c86fc2c" },
     });
     expect(expired.snapshot.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
@@ -189,19 +189,28 @@ describe("Atlas compute preflight decisions", () => {
       reason_code: "REVIEW_PARTIAL_COVERAGE",
       go: false,
     });
-    expect(result.coverage_matches).toHaveLength(2);
-    expect(result.coverage_matches).toEqual(expect.arrayContaining([
+    expect(result.coverage_matches).toEqual([
       expect.objectContaining({ axis: "n", start: 12, end: 16, status: "CERTIFIED" }),
-      expect.objectContaining({ axis: "n", start: 17, end: 17, status: "UNKNOWN" }),
-    ]));
+    ]);
   });
 
-  it("surfaces the bounded unknown campaign at the open n=17 cell", () => {
-    expect(computeAtlasPreflight({ problem_id: 552, parameter_region: { n: 17 } }, FRESH_NOW)).toMatchObject({
+  it("distinguishes the certified and open n=17 compound cells", () => {
+    expect(computeAtlasPreflight({ problem_id: 552, parameter_region: { n: 17, m: 21 } }, FRESH_NOW)).toMatchObject({
+      decision: "STOP",
+      reason_code: "CERTIFIED_REGION",
+      go: false,
+      coverage_matches: [{ axis: "m", start: 21, end: 21, status: "CERTIFIED", where: { n: 17 } }],
+    });
+    expect(computeAtlasPreflight({ problem_id: 552, parameter_region: { n: 17, m: 22 } }, FRESH_NOW)).toMatchObject({
       decision: "REVIEW",
       reason_code: "REVIEW_UNKNOWN_COVERAGE",
       go: false,
-      coverage_matches: [{ axis: "n", start: 17, end: 17, status: "UNKNOWN" }],
+      coverage_matches: [{ axis: "m", start: 22, end: 22, status: "UNKNOWN", where: { n: 17 } }],
+    });
+    expect(computeAtlasPreflight({ problem_id: 552, parameter_region: { n: 17 } }, FRESH_NOW)).toMatchObject({
+      decision: "REVIEW",
+      reason_code: "REVIEW_NO_CAMPAIGN_REGISTRY",
+      coverage_matches: [],
     });
   });
 });

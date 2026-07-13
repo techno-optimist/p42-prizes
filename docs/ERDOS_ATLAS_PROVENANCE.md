@@ -7,9 +7,9 @@ network requests for atlas data.
 ## Pinned source
 
 - Repository: <https://github.com/techno-optimist/erdos-frontier-atlas>
-- Commit: `bd82a0ab34ffe4c33dffba0c402d54b61a5a0103`
+- Commit: `0901734c487ab1e51ddc772ab45b08b42c86fc2c`
 - Source path: `atlas/problems.json`
-- Source SHA-256: `dd9d4bfebf6c99a086c9378df648bfd8c969873e08b428e1ad43e9204d68becd`
+- Source SHA-256: `cd1222e90a31d53c5d58549322eb211cfb9e5478d75e9230031141fdad940864`
 - License: MIT
 - Attribution: Copyright (c) 2026 Kevin Russell
 - Snapshot size: 51 entries
