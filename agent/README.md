@@ -65,10 +65,12 @@ terminal, while an RPC outage or temporary transaction absence is retried.
 cd agent
 OPERATOR_PRIVATE_KEY=0x... node operator.mjs \
   --rpc https://sepolia.base.org \
+  --nonce-rpc-secondary https://independent-base-sepolia.example \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem ../problems/hadamard-mini \
   --registry-problem-id 1 \
   --runtime /var/lib/p42/operator/hadamard-mini \
+  --coordination-root /var/lib/p42/operator-coordination \
   --agent-wallet 0x... \
   --challenge-provisioning /var/lib/p42/operator/hadamard-mini/challenge-provisioning.json
 ```
@@ -92,6 +94,14 @@ commit. It never creates an ephemeral key or treats temporary devnet data as
 permanent availability.
 Production execution is Linux-only unless all memory inputs are supplied to the
 bridge explicitly; the default memory guard reads `/proc/meminfo`.
+Every board process using the same operator/session key must use the same
+private `--coordination-root`. Chain-and-wallet nonce locks and
+chain/manager/submission locks live there, so transaction population and
+nonblocking rebroadcast cannot race across board-specific runtimes.
+Production also requires `--nonce-rpc-secondary` on a different host. The
+durable allocator uses the maximum finalized/pending nonce observed by both
+RPCs before reserving an explicit nonce, so one stale provider cannot create a
+conflicting immutable transaction.
 
 Runtime artifacts under `--runtime` are:
 
@@ -179,6 +189,8 @@ RESOLVER_PRIVATE_KEY=0x... node resolver.mjs \
   --registry-problem-id 1 \
   --transcripts /var/lib/p42/operator/hadamard-mini/transcripts \
   --runtime /var/lib/p42/resolver/hadamard-mini \
+  --coordination-root /var/lib/p42/resolver-coordination \
+  --quorum-signatures /var/lib/p42/resolver-quorum-signatures \
   --agent-wallet 0x... \
   --transcript-store arweave
 ```
@@ -186,20 +198,50 @@ RESOLVER_PRIVATE_KEY=0x... node resolver.mjs \
 The runtime scans from the manifest's deployment start block and only processes
 events beyond the configured finality depth. Before signing, it re-checks the
 live resolver role, submission state, challenger, reason hash, dispute deadline,
-reveal fingerprint, and challenge fingerprint. Its exact call is
-`resolve(submissionId, challengeInstanceHash, challengerWins,
-transcriptHashBytes32, transcriptURI, verdictHash)` with the live
-`resolverDecisionBondWei`; `verdictHash` is a domain-separated commitment to
-the candidate, transcript, decision, and both instance hashes.
+reveal fingerprint, and challenge fingerprint. In production, that resolver
+role must be the manifest's `P42ResolverQuorum`, not the runtime key or agent
+wallet. The runtime writes a self-hashed `p42-resolver-quorum-decision/v1`
+packet for the exact EIP-712 `Decision`, including the current signer epoch,
+transcript URI/content bindings, manager, challenge instance, beneficiary,
+nonce, and expiry.
+
+Each independent signer policy service validates that packet and writes one
+self-hashed `p42-resolver-quorum-signature/v1` artifact beneath
+`<--quorum-signatures>/<decision_digest>/`. The relay recovers every signer,
+quarantines malformed/duplicate/nonmember artifacts without letting one bad
+file suppress a valid threshold, sorts valid signatures by signer address, and
+rejects a stale epoch. Its exact production call is
+`P42ResolverQuorum.resolve(decision, transcriptURI, signatures)` with zero ETH.
+The quorum contract supplies the resolver decision bond from its collective
+stake. The legacy direct `P42ChallengeManager.resolve(...)` path exists only
+under `--local-test` on chain IDs `1337` or `31337`.
+
+Signature artifacts are transport records, not evidence that a verdict was
+independently checked. Production signer services must separately re-run and
+validate the immutable transcript before signing; signer identities, policy
+implementations, key custody, and a deployed multi-signer rehearsal remain
+launch gates.
+
+One chain-and-quorum lock under the required shared `--coordination-root`
+serializes state reload, decision reservation, transaction population,
+journaling, and broadcast across all ten board runtimes. Every canonical quorum
+decision reserves one live resolver bond until it is mined, superseded, or
+orphaned; later decisions wait when collective stake minus durable reservations
+cannot cover another bond. This prevents concurrent disputes from promising
+the same quorum stake more than once.
+
+Signer artifacts use the exact filename `<lowercase-signer-address>.json` in
+the decision-digest directory. The runtime reads only the 3-5 addresses exposed
+by the packet's on-chain signer epoch; unrelated spool files are ignored.
 
 The resolver requires the same `--registry-problem-id` as the operator. It
 rejects a transcript unless its typed registry binding names that frozen board,
 matches the manifest's source/image anchors and contract wiring, and still
 matches both the historical finalized observation and live registry state.
 
-Production mode requires `--agent-wallet`: the contract's resolver role must be
-that wallet, and its session key, chain, expiry, spend caps, allowlist, unused
-one-call exact-calldata policy, calldata hash, and scope hash must all match.
+Production mode requires `--agent-wallet`: its session key, chain, expiry,
+spend caps, allowlist, unused one-call exact-calldata policy, calldata hash, and
+scope hash must all match the quorum relay call.
 The runtime writes the policy artifact first and fails closed until the wallet
 already exposes that exact policy. Direct EOA execution is only available with
 `--local-test` on local chain IDs `1337` or `31337`.
@@ -222,7 +264,8 @@ Resolver state lives under its own `--runtime` directory:
 - `resolver-cursor.json`: finalized-block anchors and rescan progress.
 - `resolver-state.json`: event-bound decisions and reconciliation state.
 - `actions/`: immutable signed Arweave uploads, publication receipts,
-  exact-call policies, and `p42-signed-transaction/v1` raw transaction journals.
+  EIP-712 decision packets, exact-call policies, and
+  `p42-signed-transaction/v1` raw transaction journals.
 - `ALERTS.log`: invalid evidence, missing transcripts, policy refusals, and
   reorg observations.
 
@@ -328,15 +371,54 @@ broadcast; the durable multi-signer executor remains a launch gate.
 `p42-funding-activate` is the restart-safe one-transaction executor for that
 plan. Each run reads two independent RPCs at one common finalized block,
 revalidates target bytecode and all ten protocol states, and chooses at most one
-authorize, schedule, confirm, or execute transaction. Every new signature is
-preceded by a fresh production-authorization validation and chain-time checks;
-the raw transaction is durably journaled before broadcast. A mined receipt does
+authorize, schedule, confirm, or execute transaction. Finalized per-operation
+confirmations and exact unsigned requests are persisted in the locked activation
+journal. Every request records its journal generation, a 15-minute chain-time
+expiry, and matching finalized/current signer nonces from both RPCs. Every new
+request and imported signature is preceded by a fresh production-authorization
+validation, chain-time check, and dual-RPC nonce check. A mined receipt does
 not advance a barrier until both RPCs observe the resulting state as finalized.
 
 RPC endpoints come from `P42_PRIMARY_BASE_RPC_URL` and
 `P42_SECONDARY_BASE_RPC_URL`; both must be credential-free root HTTPS endpoints
-on different hosts. The current key adapter reads
-`P42_FUNDING_TREASURY_PRIVATE_KEY` and
-`P42_FUNDING_GOVERNANCE_PRIVATE_KEYS`. Production use still requires reviewed
-independent signer custody rather than colocating authority keys merely because
-the adapter supports it.
+on different hosts. A process may hold at most one local key in
+`P42_FUNDING_SIGNER_PRIVATE_KEY`. The legacy treasury and plural governance key
+variables are rejected, so no activation host is required or permitted to
+aggregate quorum raw keys.
+
+For external, remote, or HSM-backed signing, run without a private key and name
+the one signer assigned to that process:
+
+```bash
+p42-funding-activate <common-arguments> \
+  --signer 0xSigner \
+  --signing-request-output /srv/p42/actions/funding-signing-request.json
+```
+
+The command returns `awaiting-signature`. Sign the exact `unsignedTransaction`
+from the `p42-funding-activation-signing-request/v2` artifact and return a
+`p42-signed-transaction/v1` record that also copies
+`requestGeneration`, `requestExpiresAt`, and `unsignedHash` into
+`activation_request_generation`, `activation_request_expires_at`, and
+`activation_request_unsigned_hash`. The coordinator imports and broadcasts it
+with the same durable journal:
+
+```bash
+p42-funding-activate <common-arguments> \
+  --signed-transaction /srv/p42/actions/funding-signed-transaction.json
+```
+
+Each governance signer repeats this independently after finalized chain state
+selects it. A signer that already confirmed reports `wait-signers`; it never
+needs access to another signer's key or artifact.
+
+If unrelated signer activity advances the dual-RPC current nonce, an unsigned
+request is invalidated and regenerated under the journal lock. Regeneration is
+forbidden after any signed record exists for that action. Imports must match the
+current journal generation and nonce, so an old remote signature cannot replace
+or collide with unrelated signer activity.
+
+On first restart, a legacy `p42-funding-activation-journal/v1` is migrated only
+when every signed, broadcast, or mined raw transaction selects exactly one plan
+action and reconstructs one exact unsigned request. Tampered, unbound, or
+ambiguous records leave the v1 bytes untouched and stop activation.

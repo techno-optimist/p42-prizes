@@ -13,17 +13,25 @@ import {
   verifierSourceHashForDigest,
 } from "./lib.mjs";
 import {
+  buildQuorumResolveCallPolicy,
   buildResolveCallPolicy,
   buildResolverTransportRequest,
   buildResolverVerdictHash,
   configureResolverPublication,
   resolverEventHashFor,
   publishResolverTranscript,
+  reservedResolverStakeWei,
+  resolverCoordinationPaths,
+  sharedReservedStakeWei,
   assertResolverActionPaths,
   assertActionPublication,
   assertResolverSignedRecord,
   verifyResolverTranscript,
 } from "./resolver.mjs";
+import {
+  buildResolverQuorumDecisionPacket,
+  buildResolverQuorumSignatureArtifact,
+} from "./resolver-quorum.mjs";
 
 const ADDR = {
   submissions: "0x1111111111111111111111111111111111111111",
@@ -541,6 +549,50 @@ test("resolver exact-call policy binds the full decision, transcript URI, and in
   assert.notEqual(verdictHash, solverVerdict);
 });
 
+test("production resolver policy relays an exact current-epoch quorum decision with zero value", async () => {
+  const quorumInterface = new ethers.Interface([
+    "function resolve((uint256 chainId,address adapter,address manager,uint256 submissionId,bytes32 challengeInstanceHash,bool challengerWins,bytes32 transcriptHash,bytes32 transcriptURIHash,bytes32 verdictHash,address bondBeneficiary,uint256 nonce,uint64 expiry,uint64 signerEpoch) decision,string transcriptURI,bytes[] signatures) payable",
+  ]);
+  const adapter = "0x7777777777777777777777777777777777777777";
+  const packet = buildResolverQuorumDecisionPacket({
+    chainId: expected.chain_id,
+    adapter,
+    manager: ADDR.challenges,
+    submissionId: expected.submission_id,
+    challengeInstanceHash: HASH("9"),
+    challengerWins: true,
+    transcriptHash: HASH("7"),
+    transcriptURI: "ipfs://canonical-quorum-transcript",
+    verdictHash: HASH("8"),
+    expiry: "2000000000",
+    signerEpoch: "4",
+  });
+  const signers = [ethers.Wallet.createRandom(), ethers.Wallet.createRandom()];
+  const signatures = (await Promise.all(signers.map((signer) => buildResolverQuorumSignatureArtifact(packet, signer))))
+    .sort((left, right) => left.signer.localeCompare(right.signer))
+    .map(({ signature }) => signature);
+  const policy = buildQuorumResolveCallPolicy({
+    quorumInterface,
+    packet,
+    signatures,
+    problemId: expected.problem_id,
+    revealInstanceHash: expected.reveal_instance_hash,
+    candidateHash: SHA("8"),
+    sourceEventHash: SHA("6"),
+  });
+  const decoded = quorumInterface.decodeFunctionData("resolve", policy.calldata);
+  assert.equal(decoded[0].adapter.toLowerCase(), adapter);
+  assert.equal(decoded[0].manager.toLowerCase(), ADDR.challenges);
+  assert.equal(decoded[0].submissionId, 17n);
+  assert.equal(decoded[1], packet.transcript_uri);
+  assert.deepEqual([...decoded[2]], signatures);
+  assert.equal(policy.target, adapter);
+  assert.equal(policy.call_value_wei, "0");
+  assert.equal(policy.required_per_call_value_cap_wei, "0");
+  assert.equal(policy.decision_digest, packet.decision_digest);
+  assert.match(policy.scope, /resolver-quorum-relay/);
+});
+
 test("resolver event identities bind all dispute instance fields", () => {
   const event = {
     blockNumber: 123,
@@ -562,6 +614,44 @@ test("resolver event identities bind all dispute instance fields", () => {
   const first = resolverEventHashFor(event, context);
   event.args.challengeInstanceHash = HASH("5");
   assert.notEqual(first, resolverEventHashFor(event, context));
+});
+
+test("resolver stake reservations cover all unmined canonical quorum decisions", () => {
+  const actions = {
+    first: {
+      event_hash: SHA("1"), transport: "quorum", canonical_status: "canonical",
+      status: "awaiting_quorum_signatures", bond_wei: "50",
+    },
+    second: {
+      event_hash: SHA("2"), transport: "quorum", canonical_status: "canonical",
+      status: "broadcast", bond_wei: "75",
+    },
+    mined: {
+      event_hash: SHA("3"), transport: "quorum", canonical_status: "canonical",
+      status: "submitted", bond_wei: "100",
+    },
+    orphaned: {
+      event_hash: SHA("4"), transport: "quorum", canonical_status: "orphaned_reorg",
+      status: "orphaned_reorg", bond_wei: "200",
+    },
+  };
+  assert.equal(reservedResolverStakeWei(actions), 125n);
+  assert.equal(reservedResolverStakeWei(actions, SHA("1")), 75n);
+});
+
+test("resolver coordination identity is shared across board runtimes", () => {
+  const root = "/var/lib/p42/resolver-coordination";
+  const quorumAddress = "0x7777777777777777777777777777777777777777";
+  const first = resolverCoordinationPaths({ coordinationRoot: root, chainId: 84532, quorumAddress });
+  const second = resolverCoordinationPaths({ coordinationRoot: root, chainId: 84532, quorumAddress });
+  assert.deepEqual(first, second);
+  assert.match(first.lockPath, /84532-777777/);
+  const context = { quorumReservations: { reservations: {
+    [SHA("1")]: { event_hash: SHA("1"), phase: "reserved", bond_wei: "50" },
+    [SHA("2")]: { event_hash: SHA("2"), phase: "onchain", bond_wei: "75" },
+  } } };
+  assert.equal(sharedReservedStakeWei(context), 50n);
+  assert.equal(sharedReservedStakeWei(context, SHA("1")), 0n);
 });
 
 test("fixture transcript is canonical JSON for the same bytes its hashes bind", () => {

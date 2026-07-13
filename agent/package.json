@@ -24,6 +24,7 @@
     "production-validation-context.mjs",
     "role-acceptance.mjs",
     "resolver.mjs",
+    "resolver-quorum.mjs",
     "runner-transcript.mjs",
     "runtime_bridge.py",
     "secure_path_bridge.py",

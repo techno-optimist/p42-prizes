@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
+import {
+  buildQuorumResolveCallPolicy,
+} from "../../agent/resolver.mjs";
+import {
+  buildResolverQuorumDecisionPacket,
+  buildResolverQuorumSignatureArtifact,
+  collectResolverQuorumSignatures,
+} from "../../agent/resolver-quorum.mjs";
 
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW = 72n * 60n * 60n;
@@ -10,6 +18,7 @@ const MANAGER_COUNT = 10;
 const RESOLVER_BOND = ethers.parseEther("0.005");
 const CHALLENGE_BOND = ethers.parseEther("0.03");
 const DA_HASH = ethers.id("resolver-quorum-da");
+const SHA = (digit) => `sha256:${digit.repeat(64)}`;
 
 const DECISION_TYPES = {
   Decision: [
@@ -351,6 +360,67 @@ describe("P42ResolverQuorum", function () {
     assert.equal(await fixture.managers[0].resolverBondBeneficiaryOf(fixture.submissionId), ethers.ZeroAddress);
     await fixture.quorum.connect(fixture.outsider).reclaimStake(await fixture.managers[0].getAddress());
     assert.equal(await ethers.provider.getBalance(await fixture.quorum.getAddress()), RESOLVER_BOND * 2n);
+  });
+
+  it("executes the production agent quorum packet, independent signatures, and zero-value relay end to end", async function () {
+    const fixture = await deployFixture();
+    await fixture.quorum.connect(fixture.signerA).fundStake({ value: RESOLVER_BOND });
+    const source = await decisionFor(fixture, { nonce: 901n });
+    const packet = buildResolverQuorumDecisionPacket({
+      chainId: source.decision.chainId,
+      adapter: source.decision.adapter,
+      manager: source.decision.manager,
+      submissionId: source.decision.submissionId,
+      challengeInstanceHash: source.decision.challengeInstanceHash,
+      challengerWins: source.decision.challengerWins,
+      transcriptHash: source.decision.transcriptHash,
+      transcriptURI: source.transcriptURI,
+      verdictHash: source.decision.verdictHash,
+      nonce: source.decision.nonce,
+      expiry: source.decision.expiry,
+      signerEpoch: source.decision.signerEpoch,
+    });
+    const artifacts = await Promise.all([
+      buildResolverQuorumSignatureArtifact(packet, fixture.signerB),
+      buildResolverQuorumSignatureArtifact(packet, fixture.signerA),
+    ]);
+    const collected = await collectResolverQuorumSignatures({
+      packet,
+      artifacts,
+      quorum: fixture.quorum,
+    });
+    assert.equal(collected.ready, true);
+    assert.deepEqual(collected.signers, [...collected.signers].sort());
+    const policy = buildQuorumResolveCallPolicy({
+      quorumInterface: fixture.quorum.interface,
+      packet,
+      signatures: collected.signatures,
+      problemId: "fixture-board",
+      revealInstanceHash: await fixture.submissions.revealInstanceHashOf(fixture.submissionId),
+      candidateHash: SHA("a"),
+      sourceEventHash: SHA("b"),
+    });
+    const replay = buildQuorumResolveCallPolicy({
+      quorumInterface: fixture.quorum.interface,
+      packet,
+      signatures: collected.signatures,
+      problemId: "fixture-board",
+      revealInstanceHash: await fixture.submissions.revealInstanceHashOf(fixture.submissionId),
+      candidateHash: SHA("a"),
+      sourceEventHash: SHA("b"),
+    });
+    assert.equal(policy.policy_hash, replay.policy_hash);
+    assert.equal(policy.call_value_wei, "0");
+    await fixture.relayer.sendTransaction({ to: policy.target, data: policy.calldata, value: 0n });
+    const challenge = await fixture.managers[0].challenges(fixture.submissionId);
+    assert.equal(challenge.decisionPending, true);
+    assert.equal(challenge.challengerWins, true);
+    assert.equal(challenge.transcriptHash, source.decision.transcriptHash);
+    assert.equal(await fixture.quorum.nonceUsed(source.decision.manager, 901n), true);
+    assert.equal(
+      await fixture.quorum.challengeDecided(source.decision.manager, source.decision.challengeInstanceHash),
+      true,
+    );
   });
 
   it("rejects undersigned, unsorted, expired, URI-forged, and cross-manager decisions", async function () {

@@ -50,6 +50,12 @@ import {
   verifyPublicationReceipt,
 } from "./transcript-store.mjs";
 import { arweaveTranscriptPublisher } from "./transcript-arweave.mjs";
+import { acquireEnvelopeLock, releaseEnvelopeLock } from "./challenge-envelope.mjs";
+import {
+  buildResolverQuorumDecisionPacket,
+  collectResolverQuorumSignatures,
+  validateResolverQuorumDecisionPacket,
+} from "./resolver-quorum.mjs";
 import {
   assertApprovedJournalPath,
   assertSignedTransactionRecord,
@@ -527,6 +533,85 @@ export function buildResolveCallPolicy({
   return policy;
 }
 
+export function buildQuorumResolveCallPolicy({
+  quorumInterface,
+  packet,
+  signatures,
+  problemId,
+  revealInstanceHash,
+  candidateHash,
+  sourceEventHash,
+}) {
+  const checked = validateResolverQuorumDecisionPacket(packet);
+  if (!Array.isArray(signatures) || signatures.length === 0) {
+    throw new Error("resolver quorum signatures must be a non-empty array");
+  }
+  const decision = checked.decision;
+  const target = normalizedAddress(decision.adapter, "resolver quorum adapter");
+  const calldata = quorumInterface.encodeFunctionData("resolve", [
+    decision,
+    checked.transcript_uri,
+    signatures,
+  ]);
+  const selector = quorumInterface.getFunction("resolve").selector;
+  requireString(problemId, "problemId");
+  normalizedBytes32(revealInstanceHash, "revealInstanceHash");
+  sha256ToBytes32(candidateHash, "candidateHash");
+  sha256ToBytes32(sourceEventHash, "sourceEventHash");
+  const scope = [
+    "p42:resolver-quorum-relay:v1",
+    `chain:${decision.chainId}`,
+    `adapter:${target}`,
+    `manager:${decision.manager}`,
+    `problem:${problemId}`,
+    `submission:${decision.submissionId}`,
+    `reveal:${String(revealInstanceHash).toLowerCase()}`,
+    `challenge:${decision.challengeInstanceHash}`,
+    `transcript:${decision.transcriptHash}`,
+    `candidate:${candidateHash}`,
+    `event:${sourceEventHash}`,
+    `decision_digest:${checked.decision_digest}`,
+    `epoch:${decision.signerEpoch}`,
+  ].join("|");
+  const policy = {
+    schema_version: "p42-session-call-policy/v1",
+    target,
+    selector,
+    allowed: true,
+    chain_id: Number(decision.chainId),
+    expires_at: decision.expiry,
+    max_calls: 1,
+    calldata,
+    calldata_hash: ethers.keccak256(calldata),
+    scope,
+    scope_hash: ethers.id(scope),
+    call_value_wei: "0",
+    required_per_call_value_cap_wei: "0",
+    candidate_hash: candidateHash,
+    decision_digest: checked.decision_digest,
+    signer_epoch: decision.signerEpoch,
+    set_call_policy: {
+      function: "setCallPolicy(address,bytes4,bool,uint256,uint64,uint32,bytes32,bytes32)",
+      arguments: [
+        target,
+        selector,
+        true,
+        decision.chainId,
+        decision.expiry,
+        1,
+        ethers.keccak256(calldata),
+        ethers.id(scope),
+      ],
+    },
+    execute: {
+      function: "execute(address,uint256,bytes)",
+      arguments: [target, "0", calldata],
+    },
+  };
+  policy.policy_hash = sha256Canonical(policy);
+  return policy;
+}
+
 // The resolver policy binds the inner ChallengeManager call. In production the
 // session key signs an outer P42AgentWallet.execute transaction, so its journal
 // must validate those outer bytes rather than accidentally comparing them to a
@@ -669,15 +754,33 @@ function writeCanonicalAtomic(path, value, mode = 0o600) {
     if (readFileSync(path, "utf8") !== text) throw new Error(`immutable runtime artifact changed: ${path}`);
     return;
   }
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, text, { encoding: "utf8", mode, flag: "wx" });
-  renameSync(temporary, path);
+  writeFsyncedRename(path, text, mode, true);
 }
 
 function writeMutableAtomic(path, value, mode = 0o600) {
-  const temporary = `${path}.${process.pid}.tmp`;
-  writeFileSync(temporary, `${canonicalJson(value)}\n`, { encoding: "utf8", mode, flag: "w" });
-  renameSync(temporary, path);
+  writeFsyncedRename(path, `${canonicalJson(value)}\n`, mode, false);
+}
+
+function writeFsyncedRename(path, text, mode, immutable) {
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  let descriptor;
+  try {
+    descriptor = openSync(temporary, "wx", mode);
+    writeFileSync(descriptor, text, { encoding: "utf8" });
+    fsyncSync(descriptor);
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+  try {
+    if (immutable && existsSync(path)) throw new Error(`immutable runtime artifact changed during publication: ${path}`);
+    renameSync(temporary, path);
+    const directory = openSync(dirname(path), "r");
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  } finally {
+    try { unlinkSync(temporary); } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+  }
 }
 
 function loadResolverState(context) {
@@ -814,6 +917,180 @@ function actionPaths(context, eventHash, policyHash) {
     policyPath: join(context.actionsPath, `${prefix}.policy.json`),
     signedPath: join(context.actionsPath, `${prefix}.signed-tx.json`),
   };
+}
+
+function quorumDecisionPath(context, eventHash, decisionDigest) {
+  if (!SHA256_RE.test(String(eventHash)) || !ethers.isHexString(decisionDigest, 32)) {
+    throw new Error("quorum decision journal identity is invalid");
+  }
+  return join(context.actionsPath, `${eventHash.slice(7)}-${String(decisionDigest).slice(2)}.quorum-decision.json`);
+}
+
+function quorumSignatureDirectory(context, decisionDigest) {
+  if (!context.quorumSignatureRoot || !ethers.isHexString(decisionDigest, 32)) {
+    throw new Error("resolver quorum signature root is not configured");
+  }
+  return join(context.quorumSignatureRoot, String(decisionDigest).slice(2).toLowerCase());
+}
+
+function readQuorumSignatureArtifacts(context, decisionDigest, epochSigners) {
+  const directory = quorumSignatureDirectory(context, decisionDigest);
+  if (!pathEntryExists(directory)) return { artifacts: [], rejected: [] };
+  const metadata = lstatSync(directory);
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+    throw new Error("resolver quorum signature decision path must be a non-symlink directory");
+  }
+  const artifacts = [];
+  const rejected = [];
+  for (const signer of epochSigners) {
+    const name = `${String(signer).toLowerCase()}.json`;
+    const path = join(directory, name);
+    try {
+      const file = lstatSync(path);
+      if (!file.isFile() || file.isSymbolicLink()) {
+        rejected.push({ file: name, reason: "expected signer artifact is not a regular file" });
+        continue;
+      }
+      artifacts.push(readStrictJsonFileSync(path, {
+        maxBytes: 16 * 1024,
+        maxDepth: 16,
+        canonicalBytes: true,
+        trailingNewline: "require",
+      }));
+    } catch (error) {
+      if (error?.code !== "ENOENT") rejected.push({ file: name, reason: error.message });
+    }
+  }
+  return { artifacts, rejected };
+}
+
+export function reservedResolverStakeWei(actions, excludeEventHash = null) {
+  let total = 0n;
+  for (const action of Object.values(actions ?? {})) {
+    if (action?.event_hash === excludeEventHash || action?.transport !== "quorum"
+        || action?.canonical_status !== "canonical" || TERMINAL_ACTIONS.has(action.status)
+        || action.status === "submitted" || !DECIMAL_RE.test(String(action.bond_wei ?? ""))) {
+      continue;
+    }
+    total += BigInt(action.bond_wei);
+  }
+  return total;
+}
+
+const QUORUM_RESERVATIONS_SCHEMA = "p42-resolver-quorum-reservations/v1";
+
+function emptyQuorumReservations(context) {
+  return {
+    schema_version: QUORUM_RESERVATIONS_SCHEMA,
+    chain_id: context.chainId,
+    quorum: String(context.quorum.target).toLowerCase(),
+    reservations: {},
+  };
+}
+
+function loadQuorumReservations(context) {
+  if (!existsSync(context.quorumReservationPath)) return emptyQuorumReservations(context);
+  const ledger = readStrictJsonFileSync(context.quorumReservationPath, {
+    ...RUNTIME_JSON_LIMITS,
+    canonicalBytes: true,
+    trailingNewline: "require",
+  });
+  if (ledger.schema_version !== QUORUM_RESERVATIONS_SCHEMA
+      || Number(ledger.chain_id) !== context.chainId
+      || !sameAddress(ledger.quorum, context.quorum.target)) {
+    throw new Error("resolver quorum reservation ledger binding mismatch");
+  }
+  requireObject(ledger.reservations, "resolver quorum reservations");
+  for (const [eventHash, entry] of Object.entries(ledger.reservations)) {
+    if (!SHA256_RE.test(eventHash) || entry.event_hash !== eventHash
+        || !DECIMAL_RE.test(String(entry.bond_wei))
+        || !["reserved", "onchain"].includes(entry.phase)
+        || typeof entry.state_path !== "string" || !entry.state_path) {
+      throw new Error("resolver quorum reservation entry is invalid");
+    }
+  }
+  return ledger;
+}
+
+function persistQuorumReservations(context) {
+  writeMutableAtomic(context.quorumReservationPath, context.quorumReservations);
+}
+
+export function sharedReservedStakeWei(context, excludeEventHash = null) {
+  let total = 0n;
+  for (const entry of Object.values(context.quorumReservations?.reservations ?? {})) {
+    if (entry.event_hash !== excludeEventHash && entry.phase === "reserved") total += BigInt(entry.bond_wei);
+  }
+  return total;
+}
+
+export function resolverCoordinationPaths({ coordinationRoot, chainId: boundChainId, quorumAddress }) {
+  if (!Number.isSafeInteger(boundChainId) || boundChainId <= 0 || !ethers.isAddress(quorumAddress)) {
+    throw new Error("resolver coordination identity is invalid");
+  }
+  const identity = `${boundChainId}-${String(quorumAddress).slice(2).toLowerCase()}`;
+  return {
+    lockPath: join(resolve(coordinationRoot), `resolver-${identity}.lock`),
+    reservationPath: join(resolve(coordinationRoot), `resolver-${identity}.reservations.json`),
+  };
+}
+
+function reserveSharedQuorumStake(context, action) {
+  const eventHash = action.event_hash;
+  const existing = context.quorumReservations.reservations[eventHash];
+  if (existing) {
+    if (existing.bond_wei !== action.bond_wei || resolve(existing.state_path) !== context.statePath) {
+      throw new Error("resolver quorum reservation conflicts with persisted action");
+    }
+    return;
+  }
+  context.quorumReservations.reservations[eventHash] = {
+    event_hash: eventHash,
+    bond_wei: action.bond_wei,
+    phase: "reserved",
+    state_path: context.statePath,
+  };
+  persistQuorumReservations(context);
+}
+
+function syncSharedQuorumReservation(context, action) {
+  if (action.transport !== "quorum") return;
+  const entry = context.quorumReservations.reservations[action.event_hash];
+  if (!entry) return;
+  const terminal = TERMINAL_ACTIONS.has(action.status) || action.canonical_status === "orphaned_reorg";
+  if (terminal || action.status === "confirmed" || action.status === "broadcast_reverted") {
+    delete context.quorumReservations.reservations[action.event_hash];
+  } else {
+    entry.phase = action.status === "submitted" ? "onchain" : "reserved";
+  }
+  persistQuorumReservations(context);
+}
+
+function reconcileSharedQuorumReservations(context) {
+  let changed = false;
+  for (const [eventHash, entry] of Object.entries(context.quorumReservations.reservations)) {
+    let action = null;
+    try {
+      const metadata = lstatSync(entry.state_path);
+      if (metadata.isFile() && !metadata.isSymbolicLink()) {
+        const state = readStrictJsonFileSync(entry.state_path, RUNTIME_JSON_LIMITS);
+        action = state?.actions?.[eventHash] ?? null;
+      }
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    if (!action || TERMINAL_ACTIONS.has(action.status) || action.canonical_status === "orphaned_reorg") {
+      delete context.quorumReservations.reservations[eventHash];
+      changed = true;
+      continue;
+    }
+    const phase = action.status === "submitted" ? "onchain" : "reserved";
+    if (entry.phase !== phase) {
+      entry.phase = phase;
+      changed = true;
+    }
+  }
+  if (changed) persistQuorumReservations(context);
 }
 
 function publicationReceiptPath(context, eventHash, transcriptHash) {
@@ -990,20 +1267,48 @@ function assertActionPolicy(action, context) {
   if (canonicalJson(readStrictJsonFileSync(paths.policyPath, IMMUTABLE_JSON_LIMITS)) !== canonicalJson(policy)) {
     throw new Error("resolver action call policy differs from its immutable artifact");
   }
-  const decoded = context.chal.interface.decodeFunctionData("resolve", policy.calldata);
-  const [submissionId, challengeInstanceHash, challengerWins, transcriptHash, transcriptURI, verdictHash] = decoded;
-  if (
-    BigInt(submissionId).toString() !== action.submission_id
-    || !sameBytes32(challengeInstanceHash, action.challenge_instance_hash)
-    || Boolean(challengerWins) !== Boolean(action.challenger_wins)
-    || !sameBytes32(transcriptHash, action.transcript_hash_bytes32)
-    || transcriptURI !== action.transcript_uri
-    || !sameBytes32(verdictHash, action.verdict_hash)
-    || !sameAddress(policy.target, context.chal.target)
-    || BigInt(policy.call_value_wei) !== BigInt(action.bond_wei)
-    || BigInt(policy.expires_at) !== BigInt(action.dispute_ends_at)
-  ) {
-    throw new Error("resolver action call policy is not bound to its persisted decision");
+  if (action.transport === "quorum") {
+    const packet = validateResolverQuorumDecisionPacket(action.quorum_decision);
+    const [decision, transcriptURI, signatures] = context.quorum.interface.decodeFunctionData("resolve", policy.calldata);
+    if (
+      BigInt(decision.chainId).toString() !== packet.decision.chainId
+      || !sameAddress(decision.adapter, packet.decision.adapter)
+      || !sameAddress(decision.manager, packet.decision.manager)
+      || BigInt(decision.submissionId).toString() !== packet.decision.submissionId
+      || !sameBytes32(decision.challengeInstanceHash, packet.decision.challengeInstanceHash)
+      || Boolean(decision.challengerWins) !== packet.decision.challengerWins
+      || !sameBytes32(decision.transcriptHash, packet.decision.transcriptHash)
+      || !sameBytes32(decision.transcriptURIHash, packet.decision.transcriptURIHash)
+      || !sameBytes32(decision.verdictHash, packet.decision.verdictHash)
+      || !sameAddress(decision.bondBeneficiary, packet.decision.bondBeneficiary)
+      || BigInt(decision.nonce).toString() !== packet.decision.nonce
+      || BigInt(decision.expiry).toString() !== packet.decision.expiry
+      || BigInt(decision.signerEpoch).toString() !== packet.decision.signerEpoch
+      || transcriptURI !== packet.transcript_uri
+      || signatures.length < action.quorum_threshold
+      || packet.decision_digest !== action.quorum_decision_digest
+      || !sameAddress(policy.target, context.quorum.target)
+      || BigInt(policy.call_value_wei) !== 0n
+      || BigInt(policy.expires_at) !== BigInt(action.dispute_ends_at)
+    ) {
+      throw new Error("resolver quorum call policy is not bound to its persisted decision");
+    }
+  } else {
+    const decoded = context.chal.interface.decodeFunctionData("resolve", policy.calldata);
+    const [submissionId, challengeInstanceHash, challengerWins, transcriptHash, transcriptURI, verdictHash] = decoded;
+    if (
+      BigInt(submissionId).toString() !== action.submission_id
+      || !sameBytes32(challengeInstanceHash, action.challenge_instance_hash)
+      || Boolean(challengerWins) !== Boolean(action.challenger_wins)
+      || !sameBytes32(transcriptHash, action.transcript_hash_bytes32)
+      || transcriptURI !== action.transcript_uri
+      || !sameBytes32(verdictHash, action.verdict_hash)
+      || !sameAddress(policy.target, context.chal.target)
+      || BigInt(policy.call_value_wei) !== BigInt(action.bond_wei)
+      || BigInt(policy.expires_at) !== BigInt(action.dispute_ends_at)
+    ) {
+      throw new Error("resolver action call policy is not bound to its persisted decision");
+    }
   }
   return policy;
 }
@@ -1114,11 +1419,14 @@ async function currentChallenge(context, action) {
     context.provider.getBlock("latest"),
     context.chal.resolverDecisionBondWei(),
   ]);
-  const expectedResolver = context.executionMode.mode === "agent-wallet"
-    ? context.executionMode.agentWalletAddress
+  const usesQuorum = context.executionMode.mode !== "direct-eoa-local-test";
+  const expectedResolver = usesQuorum
+    ? String(context.quorum?.target ?? "").toLowerCase()
     : context.wallet.address.toLowerCase();
   if (!sameAddress(resolverAddress, expectedResolver)) {
-    return { ok: false, terminal: true, reason: "challenge contract resolver role does not match this runtime execution address" };
+    return { ok: false, terminal: true, reason: usesQuorum
+      ? "challenge contract resolver role does not match the canonical resolver quorum"
+      : "challenge contract resolver role does not match this local-test runtime address" };
   }
   if (Number(submission.status) !== 3) return { ok: false, terminal: true, reason: `submission status is ${submission.status}` };
   if (!sameAddress(challenge.challenger, action.challenger)) {
@@ -1166,10 +1474,39 @@ async function currentChallenge(context, action) {
   if (manifestBond === undefined || BigInt(manifestBond) !== BigInt(bond)) {
     return { ok: false, terminal: true, reason: "manifest resolver decision bond does not match live contract" };
   }
+  if (usesQuorum) {
+    const [isManager, paused, signerEpoch, threshold, stake] = await Promise.all([
+      context.quorum.isManager(context.chal.target),
+      context.quorum.paused(),
+      context.quorum.signerEpoch(),
+      context.quorum.threshold(),
+      context.provider.getBalance(context.quorum.target),
+    ]);
+    if (isManager !== true) return { ok: false, terminal: true, reason: "challenge manager is not registered in resolver quorum" };
+    if (paused === true) return { ok: false, status: "awaiting_quorum_unpause", reason: "resolver quorum is paused" };
+    if (BigInt(signerEpoch) < 1n || BigInt(threshold) < 1n) {
+      return { ok: false, terminal: true, reason: "resolver quorum signer state is invalid" };
+    }
+    const reservedStake = sharedReservedStakeWei(context, action.event_hash);
+    if (BigInt(stake) < BigInt(bond) + reservedStake) {
+      return {
+        ok: false,
+        status: "awaiting_quorum_stake",
+        reason: `resolver quorum unreserved stake is below one decision bond (${stake} live, ${reservedStake} reserved)`,
+      };
+    }
+    return {
+      ok: true,
+      latestTimestamp: BigInt(latest.timestamp),
+      bond: BigInt(bond),
+      signerEpoch: BigInt(signerEpoch),
+      threshold: BigInt(threshold),
+    };
+  }
   return { ok: true, latestTimestamp: BigInt(latest.timestamp), bond: BigInt(bond) };
 }
 
-async function assertAgentWalletPolicy(context, callPolicy, bond, latestTimestamp) {
+async function assertAgentWalletPolicy(context, callPolicy, callValue, latestTimestamp) {
   const [
     sessionKey,
     sessionChainId,
@@ -1195,8 +1532,8 @@ async function assertAgentWalletPolicy(context, callPolicy, bond, latestTimestam
   if (Number(sessionChainId) !== context.chainId) throw new Error("P42AgentWallet session chain mismatch");
   if (revoked) throw new Error("P42AgentWallet session key is revoked");
   if (BigInt(sessionExpiresAt) <= latestTimestamp) throw new Error("P42AgentWallet session is expired");
-  if (BigInt(perCallCap) < bond) throw new Error("P42AgentWallet per-call cap is below the resolver decision bond");
-  if (BigInt(spentWei) + bond > BigInt(totalCap)) throw new Error("P42AgentWallet total spend cap is exhausted");
+  if (BigInt(perCallCap) < callValue) throw new Error("P42AgentWallet per-call cap is below the resolver call value");
+  if (BigInt(spentWei) + callValue > BigInt(totalCap)) throw new Error("P42AgentWallet total spend cap is exhausted");
   if (allowed !== true) throw new Error("P42AgentWallet target/selector is not allowlisted");
   if (policy.configured !== true) throw new Error("P42AgentWallet exact calldata policy is missing");
   if (Number(policy.chainId) !== context.chainId) throw new Error("P42AgentWallet call policy chain mismatch");
@@ -1226,8 +1563,9 @@ async function buildResolveTransactionRequest(context, action, current) {
     await context.provider.call({ ...request, from: context.wallet.address });
     return context.wallet.populateTransaction(request);
   }
-  await assertAgentWalletPolicy(context, callPolicy, current.bond, current.latestTimestamp);
-  await context.agentWallet.execute.staticCall(callPolicy.target, current.bond, callPolicy.calldata);
+  const callValue = BigInt(callPolicy.call_value_wei);
+  await assertAgentWalletPolicy(context, callPolicy, callValue, current.latestTimestamp);
+  await context.agentWallet.execute.staticCall(callPolicy.target, callValue, callPolicy.calldata);
   return context.wallet.populateTransaction(request);
 }
 
@@ -1251,6 +1589,108 @@ export function assertResolverSignedRecord(record, action, context) {
   }).record;
 }
 
+async function hydrateQuorumAction(context, action) {
+  await assertActionPublication(context, action);
+  const expectedPath = quorumDecisionPath(context, action.event_hash, action.quorum_decision_digest);
+  if (resolve(action.quorum_decision_path) !== resolve(expectedPath)) {
+    throw new Error("resolver quorum decision path does not match its deterministic journal path");
+  }
+  const packet = validateResolverQuorumDecisionPacket(
+    readStrictJsonFileSync(
+      assertApprovedJournalPath(action.quorum_decision_path, context.actionsPath, expectedPath),
+      IMMUTABLE_JSON_LIMITS,
+    ),
+  );
+  if (
+    packet.packet_hash !== action.quorum_decision_packet_hash
+    || packet.decision_digest !== action.quorum_decision_digest
+    || canonicalJson(packet) !== canonicalJson(action.quorum_decision)
+    || packet.decision.manager !== String(context.chal.target).toLowerCase()
+    || packet.decision.submissionId !== action.submission_id
+    || packet.decision.challengeInstanceHash !== action.challenge_instance_hash
+    || packet.decision.transcriptHash !== action.transcript_hash_bytes32
+    || packet.decision.verdictHash !== action.verdict_hash
+    || packet.transcript_uri !== action.transcript_uri
+    || packet.decision.expiry !== action.dispute_ends_at
+  ) {
+    throw new Error("resolver quorum decision packet is not bound to its persisted action");
+  }
+  const current = await currentChallenge(context, action);
+  if (!current.ok) {
+    action.status = current.status ?? "superseded";
+    action.detail = current.reason;
+    persistState(context);
+    syncSharedQuorumReservation(context, action);
+    return false;
+  }
+  if (BigInt(packet.decision.signerEpoch) !== current.signerEpoch) {
+    action.status = "awaiting_quorum_epoch_refresh";
+    action.detail = "resolver quorum signer epoch rotated before threshold signatures were collected";
+    persistState(context);
+    return false;
+  }
+  let collected;
+  try {
+    const signerCount = Number(await context.quorum.epochSignerCount(current.signerEpoch));
+    if (!Number.isSafeInteger(signerCount) || signerCount < 3 || signerCount > 5) {
+      throw new Error("resolver quorum epoch signer count is outside 3..5");
+    }
+    const epochSigners = await Promise.all(
+      Array.from({ length: signerCount }, (_, index) => context.quorum.epochSignerAt(current.signerEpoch, index)),
+    );
+    const read = readQuorumSignatureArtifacts(context, packet.decision_digest, epochSigners);
+    collected = await collectResolverQuorumSignatures({
+      packet,
+      artifacts: read.artifacts,
+      quorum: context.quorum,
+    });
+    collected.rejected = [...read.rejected, ...collected.rejected];
+  } catch (error) {
+    action.status = "invalid_quorum_signatures";
+    action.detail = error.message;
+    persistState(context);
+    appendAlert(context, `INVALID QUORUM SIGNATURES ${action.event_hash}: ${error.message}`);
+    return false;
+  }
+  if (collected.rejected.length > 0) {
+    const reasons = collected.rejected.map((entry) => entry.reason).join("; ").slice(0, 2048);
+    const rejectionHash = sha256Canonical(collected.rejected);
+    if (action.quorum_rejection_hash !== rejectionHash) {
+      appendAlert(context, `QUARANTINED QUORUM SIGNATURES ${action.event_hash}: ${reasons}`);
+      action.quorum_rejection_hash = rejectionHash;
+    }
+  }
+  if (!collected.ready) {
+    action.status = "awaiting_quorum_signatures";
+    action.detail = `collected ${collected.signatures.length} of ${collected.threshold} current-epoch signatures`;
+    persistState(context);
+    return false;
+  }
+  const callPolicy = buildQuorumResolveCallPolicy({
+    quorumInterface: context.quorum.interface,
+    packet,
+    signatures: collected.signatures,
+    problemId: context.problemId,
+    revealInstanceHash: action.reveal_instance_hash,
+    candidateHash: action.candidate_hash,
+    sourceEventHash: action.event_hash,
+  });
+  const paths = actionPaths(context, action.event_hash, callPolicy.policy_hash);
+  writeCanonicalAtomic(paths.policyPath, callPolicy);
+  Object.assign(action, {
+    status: "prepared",
+    detail: `current-epoch quorum reached with ${collected.signatures.length} signatures`,
+    quorum_threshold: collected.threshold,
+    quorum_signers: collected.signers,
+    call_policy_path: paths.policyPath,
+    call_policy_hash: callPolicy.policy_hash,
+    call_policy: callPolicy,
+    signed_tx_path: paths.signedPath,
+  });
+  persistState(context);
+  return true;
+}
+
 async function ensureSignedAction(context, action) {
   await assertActionPublication(context, action);
   assertActionPolicy(action, context);
@@ -1271,6 +1711,7 @@ async function ensureSignedAction(context, action) {
     action.status = current.status ?? "superseded";
     action.detail = current.reason;
     persistState(context);
+    syncSharedQuorumReservation(context, action);
     if (action.status === "awaiting_registry_binding" && previousStatus !== "awaiting_registry_binding") {
       appendAlert(context, `REGISTRY BINDING REFUSED ${action.event_hash}: ${current.reason}`);
     }
@@ -1293,7 +1734,11 @@ async function ensureSignedAction(context, action) {
 }
 
 async function reconcileAction(context, action) {
-  if (TERMINAL_ACTIONS.has(action.status) || action.canonical_status === "orphaned_reorg" || !action.call_policy) return;
+  if (TERMINAL_ACTIONS.has(action.status) || action.canonical_status === "orphaned_reorg") return;
+  if (action.transport === "quorum" && !action.call_policy) {
+    if (!await hydrateQuorumAction(context, action)) return;
+  }
+  if (!action.call_policy) return;
   const record = await ensureSignedAction(context, action);
   if (!record) return;
   let receipt = await context.provider.getTransactionReceipt(record.hash);
@@ -1310,17 +1755,20 @@ async function reconcileAction(context, action) {
       action.status = "reorged";
       action.detail = "receipt block is no longer canonical";
       persistState(context);
+      syncSharedQuorumReservation(context, action);
       appendAlert(context, `REORGED RESOLUTION ${action.event_hash}: receipt block is no longer canonical`);
       receipt = null;
     } else if (receiptState === "submitted") {
       action.status = "submitted";
       action.detail = `receipt in canonical block ${receipt.blockNumber}, awaiting finality`;
       persistState(context);
+      syncSharedQuorumReservation(context, action);
       return;
     } else {
       action.status = receipt.status === 1 ? "confirmed" : "broadcast_reverted";
       action.detail = `canonical receipt status ${receipt.status}`;
       persistState(context);
+      syncSharedQuorumReservation(context, action);
       return;
     }
   }
@@ -1331,6 +1779,7 @@ async function reconcileAction(context, action) {
       action.status = current.status ?? "superseded";
       action.detail = current.reason;
       persistState(context);
+      syncSharedQuorumReservation(context, action);
       if (action.status !== "onchain_observed") appendAlert(context, `SUPPRESSED RESOLUTION ${action.event_hash}: ${current.reason}`);
       return;
     }
@@ -1344,6 +1793,7 @@ async function reconcileAction(context, action) {
   action.status = "broadcast";
   action.detail = "raw signed resolve transaction is pending or was rebroadcast";
   persistState(context);
+  syncSharedQuorumReservation(context, action);
 }
 
 async function prepareAction(context, event) {
@@ -1354,6 +1804,9 @@ async function prepareAction(context, event) {
     "ambiguous_transcript",
     "awaiting_registry_binding",
     "awaiting_publication",
+    "awaiting_quorum_epoch_refresh",
+    "awaiting_quorum_stake",
+    "awaiting_quorum_unpause",
   ].includes(existing.status)) {
     return existing;
   }
@@ -1438,25 +1891,6 @@ async function prepareAction(context, event) {
     }
     return action;
   }
-  const callPolicy = buildResolveCallPolicy({
-    challengeInterface: context.chal.interface,
-    challengeContract: String(context.chal.target),
-    chainId: context.chainId,
-    problemId: context.problemId,
-    submissionId: event.submission_id,
-    revealInstanceHash: event.reveal_instance_hash,
-    challengeInstanceHash: event.challenge_instance_hash,
-    challengerWins: checked.challengerWins,
-    transcriptHash: checked.transcript.transcript_hash,
-    transcriptURI,
-    verdictHash,
-    candidateHash: checked.candidate.candidate_hash,
-    sourceEventHash: event.event_hash,
-    expiresAt: event.dispute_ends_at,
-    valueWei: current.bond,
-  });
-  const paths = actionPaths(context, event.event_hash, callPolicy.policy_hash);
-  writeCanonicalAtomic(paths.policyPath, callPolicy);
   const action = {
     schema_version: "p42-resolver-action/v1",
     event,
@@ -1479,11 +1913,62 @@ async function prepareAction(context, event) {
     artifact_length: published.artifact.length,
     bond_wei: current.bond.toString(),
     ...event,
-    call_policy_path: paths.policyPath,
-    call_policy_hash: callPolicy.policy_hash,
-    call_policy: callPolicy,
-    signed_tx_path: paths.signedPath,
   };
+  if (context.executionMode.mode === "direct-eoa-local-test") {
+    const callPolicy = buildResolveCallPolicy({
+      challengeInterface: context.chal.interface,
+      challengeContract: String(context.chal.target),
+      chainId: context.chainId,
+      problemId: context.problemId,
+      submissionId: event.submission_id,
+      revealInstanceHash: event.reveal_instance_hash,
+      challengeInstanceHash: event.challenge_instance_hash,
+      challengerWins: checked.challengerWins,
+      transcriptHash: checked.transcript.transcript_hash,
+      transcriptURI,
+      verdictHash,
+      candidateHash: checked.candidate.candidate_hash,
+      sourceEventHash: event.event_hash,
+      expiresAt: event.dispute_ends_at,
+      valueWei: current.bond,
+    });
+    const paths = actionPaths(context, event.event_hash, callPolicy.policy_hash);
+    writeCanonicalAtomic(paths.policyPath, callPolicy);
+    Object.assign(action, {
+      transport: "direct-local-test",
+      call_policy_path: paths.policyPath,
+      call_policy_hash: callPolicy.policy_hash,
+      call_policy: callPolicy,
+      signed_tx_path: paths.signedPath,
+    });
+  } else {
+    const packet = buildResolverQuorumDecisionPacket({
+      chainId: context.chainId,
+      adapter: String(context.quorum.target),
+      manager: String(context.chal.target),
+      submissionId: event.submission_id,
+      challengeInstanceHash: event.challenge_instance_hash,
+      challengerWins: checked.challengerWins,
+      transcriptHash: checked.transcriptHashBytes32,
+      transcriptURI,
+      verdictHash,
+      expiry: event.dispute_ends_at,
+      signerEpoch: current.signerEpoch,
+    });
+    const decisionPath = quorumDecisionPath(context, event.event_hash, packet.decision_digest);
+    writeCanonicalAtomic(decisionPath, packet);
+    Object.assign(action, {
+      transport: "quorum",
+      status: "awaiting_quorum_signatures",
+      detail: `awaiting ${current.threshold} independently produced current-epoch signatures`,
+      quorum_decision_path: decisionPath,
+      quorum_decision_packet_hash: packet.packet_hash,
+      quorum_decision_digest: packet.decision_digest,
+      quorum_decision: packet,
+      quorum_signature_directory: quorumSignatureDirectory(context, packet.decision_digest),
+    });
+    reserveSharedQuorumStake(context, action);
+  }
   context.state.actions[event.event_hash] = action;
   persistState(context);
   return action;
@@ -1498,11 +1983,12 @@ function markOrphanedActions(context, fromBlock, toBlock, eventHashes) {
     action.canonical_status = "orphaned_reorg";
     action.status = "orphaned_reorg";
     action.detail = "finalized Challenged event disappeared from a canonical rescan";
+    syncSharedQuorumReservation(context, action);
     appendAlert(context, `ORPHANED RESOLUTION ${action.event_hash}: challenged event disappeared on rescan`);
   }
 }
 
-async function scanOnce(context) {
+async function scanOnceUnlocked(context) {
   const mismatch = await cursorAnchorMismatch(context);
   if (mismatch !== null) {
     appendAlert(context, `REORG detected at resolver anchor ${mismatch}; rewinding finalized scan`);
@@ -1545,6 +2031,21 @@ async function scanOnce(context) {
   }
 }
 
+async function scanOnce(context) {
+  const lockOwner = acquireEnvelopeLock(context.runtimeLockPath, { timeoutMs: 30_000 });
+  try {
+    if (context.quorum) {
+      context.quorumReservations = loadQuorumReservations(context);
+      reconcileSharedQuorumReservations(context);
+    }
+    context.cursor = loadCursor(context);
+    context.state = loadResolverState(context);
+    await scanOnceUnlocked(context);
+  } finally {
+    releaseEnvelopeLock(context.runtimeLockPath, lockOwner);
+  }
+}
+
 export async function buildResolverContext(argv, clients = {}) {
   const manifestPath = arg(argv, "manifest");
   const problemId = arg(argv, "problem-id");
@@ -1553,12 +2054,20 @@ export async function buildResolverContext(argv, clients = {}) {
   const transcriptUriTemplate = arg(argv, "transcript-uri-template");
   const localTest = Boolean(arg(argv, "local-test", false));
   const agentWalletAddress = arg(argv, "agent-wallet", null);
+  const quorumSignaturesArg = arg(argv, "quorum-signatures", null);
+  const coordinationRootArg = arg(argv, "coordination-root", null);
   if (!manifestPath || !problemId || !registryProblemIdArg || !transcriptsArg) {
     throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir>");
   }
   const registryProblemId = nonzeroSubmissionId(registryProblemIdArg, "--registry-problem-id");
   if (transcriptUriTemplate) {
     throw new Error("--transcript-uri-template was removed; use --transcript-store arweave or --publication-receipts");
+  }
+  if (!localTest && !quorumSignaturesArg) {
+    throw new Error("production resolver requires --quorum-signatures <directory>");
+  }
+  if (!localTest && !coordinationRootArg) {
+    throw new Error("production resolver requires one shared --coordination-root for all boards");
   }
   const publicationClients = configureResolverPublication(argv, process.env, clients);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;
@@ -1575,6 +2084,11 @@ export async function buildResolverContext(argv, clients = {}) {
   const subs = new ethers.Contract(boardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
   const chal = new ethers.Contract(boardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
   const registry = new ethers.Contract(manifest.contracts.registry.address, abi("P42ProblemRegistry"), wallet);
+  const quorum = localTest ? null : new ethers.Contract(
+    manifest.contracts.resolverQuorum.address,
+    abi("P42ResolverQuorum"),
+    wallet,
+  );
   if (String(problemId) !== manifestProblem.problemSlug) {
     throw new Error("--problem-id must equal the deployment manifest problemSlug for --registry-problem-id");
   }
@@ -1597,6 +2111,7 @@ export async function buildResolverContext(argv, clients = {}) {
     operatorAddress: wallet.address,
   });
   const runtime = resolve(arg(argv, "runtime", join(HERE, "runtime", "resolver", String(problemId))));
+  const coordinationRoot = resolve(coordinationRootArg ?? runtime);
   const transcriptsPath = resolve(transcriptsArg);
   if (!existsSync(transcriptsPath) || !statSync(transcriptsPath).isDirectory()) {
     throw new Error(`--transcripts must name an existing directory: ${transcriptsPath}`);
@@ -1608,6 +2123,7 @@ export async function buildResolverContext(argv, clients = {}) {
     subs,
     chal,
     registry,
+    quorum,
     chainId,
     problemId: String(problemId),
     registryProblemId,
@@ -1625,12 +2141,33 @@ export async function buildResolverContext(argv, clients = {}) {
     cursorPath: resolve(arg(argv, "cursor", join(runtime, "resolver-cursor.json"))),
     statePath: resolve(arg(argv, "state", join(runtime, "resolver-state.json"))),
     actionsPath: join(runtime, "actions"),
+    quorumSignatureRoot: quorumSignaturesArg ? resolve(quorumSignaturesArg) : null,
+    coordinationRoot,
     alertPath: join(runtime, "ALERTS.log"),
   };
+  if (quorum) {
+    const coordination = resolverCoordinationPaths({
+      coordinationRoot,
+      chainId,
+      quorumAddress: String(quorum.target),
+    });
+    context.runtimeLockPath = coordination.lockPath;
+    context.quorumReservationPath = coordination.reservationPath;
+  } else {
+    context.runtimeLockPath = join(coordinationRoot, `resolver-${chainId}-local.lock`);
+    context.quorumReservationPath = null;
+  }
   if (!Number.isSafeInteger(context.startBlock) || context.startBlock !== Number(manifest.indexer.startBlock)) {
     throw new Error("--from-block must equal manifest.indexer.startBlock so active challenges cannot be skipped");
   }
-  for (const path of [runtime, context.actionsPath]) mkdirSync(path, { recursive: true, mode: 0o700 });
+  for (const path of [runtime, context.actionsPath, context.quorumSignatureRoot, coordinationRoot].filter(Boolean)) {
+    mkdirSync(path, { recursive: true, mode: 0o700 });
+  }
+  const coordinationMetadata = lstatSync(coordinationRoot);
+  if (!coordinationMetadata.isDirectory() || coordinationMetadata.isSymbolicLink()
+      || (coordinationMetadata.mode & 0o077) !== 0) {
+    throw new Error("resolver coordination root must be a private non-symlink directory");
+  }
   context.binding = resolverBinding(context);
   context.cursor = loadCursor(context);
   context.state = loadResolverState(context);

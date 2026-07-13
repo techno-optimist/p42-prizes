@@ -6,8 +6,12 @@ import { ethers } from "ethers";
 import { spawn, spawnSync } from "node:child_process";
 import {
   appendFileSync,
+  closeSync,
   existsSync,
+  fsyncSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   renameSync,
   writeFileSync,
@@ -49,9 +53,11 @@ import {
 } from "./signed-transaction.mjs";
 import {
   P42ChallengeManager as ChallengeBondOperator,
+  acquireEnvelopeLock,
   finalizeChallengeSpend,
   limitsFromProvisioning,
   releaseChallengeReservation,
+  releaseEnvelopeLock,
   reserveChallengeSpend,
   runnerHealthAdmission,
   runnerHealthFinalSigningAdmission,
@@ -75,6 +81,7 @@ function arg(name, def = undefined) {
 }
 
 const RPC = arg("rpc", "https://sepolia.base.org");
+const NONCE_RPC_SECONDARY = arg("nonce-rpc-secondary", null);
 const MANIFEST = arg("manifest");
 const PROBLEM = arg("problem");
 const REGISTRY_PROBLEM_ID = arg("registry-problem-id");
@@ -87,6 +94,8 @@ const CONFIRMATIONS_ARG = arg("confirmations", null);
 const REORG_OVERLAP_ARG = arg("reorg-overlap-blocks", null);
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 const RUNTIME = resolve(arg("runtime", join(HERE, "runtime")));
+const COORDINATION_ROOT_ARG = arg("coordination-root", null);
+const COORDINATION_ROOT = resolve(COORDINATION_ROOT_ARG ?? join(RUNTIME, "coordination"));
 const CURSOR = resolve(arg("cursor", join(RUNTIME, "operator-cursor.json")));
 const QUEUE = resolve(arg("queue", join(RUNTIME, "runner-queue.json")));
 const TRANSCRIPTS = resolve(arg("transcripts", join(RUNTIME, "transcripts")));
@@ -94,6 +103,7 @@ const INPUTS = join(RUNTIME, "inputs");
 const JOB_SPECS = join(RUNTIME, "jobs");
 const RETRY_STATE = join(RUNTIME, "retry-state");
 const ACTIONS = join(RUNTIME, "actions");
+const CHALLENGE_EXPIRED_BACKFILL = join(RUNTIME, "challenge-expired-backfill.json");
 const ALERTS = join(RUNTIME, "ALERTS.log");
 const ENVELOPE = resolve(arg("challenge-envelope", join(RUNTIME, "challenge-envelope.json")));
 const RUNNER_HEALTH = resolve(arg("runner-health", join(RUNTIME, "runner-health.json")));
@@ -130,6 +140,18 @@ if (!LOCAL_TEST && (!RUNNER_HEALTH_PUBLIC_KEY || !RUNNER_RECOVERY_PUBLIC_KEY || 
   console.error("production runner-health v2 requires signer, host, boot, and queue identity bindings");
   process.exit(2);
 }
+if (!LOCAL_TEST && !COORDINATION_ROOT_ARG) {
+  console.error("production operator requires --coordination-root shared by every runtime using this chain and signer");
+  process.exit(2);
+}
+if (!LOCAL_TEST && !NONCE_RPC_SECONDARY) {
+  console.error("production operator requires --nonce-rpc-secondary from an independent RPC host");
+  process.exit(2);
+}
+if (NONCE_RPC_SECONDARY && new URL(NONCE_RPC_SECONDARY).host === new URL(RPC).host) {
+  console.error("primary and secondary nonce RPCs must use different hosts");
+  process.exit(2);
+}
 const KEY = process.env.OPERATOR_PRIVATE_KEY;
 if (!KEY) {
   console.error("set OPERATOR_PRIVATE_KEY (use only a funded, revoked-capable operator/session key)");
@@ -149,6 +171,8 @@ const selectedBoardContracts = selectedManifestProblem
 const problem = resolve(PROBLEM);
 const runnerConfig = problemRunnerConfig(problem);
 const provider = new ethers.JsonRpcProvider(RPC);
+const secondaryNonceProvider = NONCE_RPC_SECONDARY ? new ethers.JsonRpcProvider(NONCE_RPC_SECONDARY) : null;
+const nonceProviders = secondaryNonceProvider ? [provider, secondaryNonceProvider] : [provider];
 const wallet = new ethers.Wallet(KEY, provider);
 const subs = new ethers.Contract(selectedBoardContracts.submissions.address, abi("P42SubmissionManager"), wallet);
 const chal = new ethers.Contract(selectedBoardContracts.challenges.address, abi("P42ChallengeManager"), wallet);
@@ -157,6 +181,12 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 const log = (...values) => console.log(...values);
 
 for (const path of [RUNTIME, TRANSCRIPTS, INPUTS, JOB_SPECS, RETRY_STATE, ACTIONS]) mkdirSync(path, { recursive: true });
+mkdirSync(COORDINATION_ROOT, { recursive: true, mode: 0o700 });
+const coordinationMetadata = lstatSync(COORDINATION_ROOT);
+if (!coordinationMetadata.isDirectory() || coordinationMetadata.isSymbolicLink()
+    || (coordinationMetadata.mode & 0o077) !== 0) {
+  throw new Error("operator coordination root must be a private non-symlink directory");
+}
 const START_BLOCK = Number(arg("from-block", manifest.indexer?.startBlock ?? 0));
 let chainId;
 let finalityConfirmations;
@@ -454,6 +484,7 @@ export function retryableJobIsEligible(job, latestTimestamp, nowMs = Date.now())
 }
 
 function sourceEventHashFor(event, submission) {
+  if (event.rechallengeGeneration) return event.rechallengeGeneration.source_event_hash;
   return sha256Canonical({
     schema_version: "p42-reveal-event/v1",
     chain_id: chainId,
@@ -478,6 +509,95 @@ function sourceEventHashFor(event, submission) {
   });
 }
 
+function logIdentity(event) {
+  return {
+    block_number: event.blockNumber,
+    block_hash: String(event.blockHash).toLowerCase(),
+    transaction_hash: String(event.transactionHash).toLowerCase(),
+    transaction_index: Number(event.transactionIndex ?? 0),
+    log_index: Number(event.index ?? event.logIndex),
+  };
+}
+
+export function buildRechallengeGenerationEvent({
+  chainId: boundChainId,
+  problemId,
+  submissionContract,
+  challengeContract,
+  expirationEvent,
+  revealEvent,
+  submission,
+  revealInstanceHash,
+  expirationBlock,
+}) {
+  const submissionId = expirationEvent.args.submissionId.toString();
+  if (revealEvent.args.submissionId.toString() !== submissionId) {
+    throw new Error("rechallenge generation reveal submission mismatch");
+  }
+  const revealHash = String(revealInstanceHash).toLowerCase();
+  if (!ethers.isHexString(revealHash, 32) || revealHash === ethers.ZeroHash) {
+    throw new Error("rechallenge generation has an invalid reveal instance hash");
+  }
+  if (String(revealEvent.args.revealInstanceHash).toLowerCase() !== revealHash) {
+    throw new Error("rechallenge generation reveal instance mismatch");
+  }
+  if (Number(submission.status) !== 2) {
+    throw new Error(`rechallenge generation submission status is ${submission.status}`);
+  }
+  const challengeEndsAt = BigInt(submission.challengeEndsAt);
+  if (challengeEndsAt <= BigInt(expirationBlock.timestamp)) {
+    throw new Error("rechallenge generation has no fresh challenge window");
+  }
+  const expiredChallengeInstanceHash = String(expirationEvent.args.challengeInstanceHash).toLowerCase();
+  if (!ethers.isHexString(expiredChallengeInstanceHash, 32) || expiredChallengeInstanceHash === ethers.ZeroHash) {
+    throw new Error("rechallenge generation has an invalid expired challenge instance hash");
+  }
+  const revealSource = {
+    ...logIdentity(revealEvent),
+    reveal_instance_hash: revealHash,
+  };
+  const generationBinding = {
+    schema_version: "p42-rechallenge-generation/v1",
+    chain_id: Number(boundChainId),
+    problem_id: problemId,
+    submission_contract: String(submissionContract).toLowerCase(),
+    challenge_contract: String(challengeContract).toLowerCase(),
+    submission_id: submissionId,
+    generation_event: {
+      event_name: "ChallengeExpired",
+      ...logIdentity(expirationEvent),
+      challenge_instance_hash: expiredChallengeInstanceHash,
+    },
+    reveal_source: revealSource,
+    challenge_ends_at: challengeEndsAt.toString(),
+  };
+  const sourceEventHash = sha256Canonical(generationBinding);
+  return {
+    ...revealEvent,
+    blockNumber: expirationEvent.blockNumber,
+    blockHash: expirationEvent.blockHash,
+    transactionHash: expirationEvent.transactionHash,
+    transactionIndex: expirationEvent.transactionIndex ?? 0,
+    index: expirationEvent.index ?? expirationEvent.logIndex,
+    logIndex: expirationEvent.index ?? expirationEvent.logIndex,
+    args: {
+      submissionId: revealEvent.args.submissionId,
+      solver: revealEvent.args.solver,
+      solutionCid: revealEvent.args.solutionCid,
+      improvementAtoms: revealEvent.args.improvementAtoms,
+      claimedScoreAtoms: revealEvent.args.claimedScoreAtoms,
+      challengeEndsAt,
+      solutionBytesLength: revealEvent.args.solutionBytesLength,
+      revealInstanceHash: revealEvent.args.revealInstanceHash,
+    },
+    rechallengeGeneration: {
+      binding: generationBinding,
+      source_event_hash: sourceEventHash,
+      reveal_transaction_hash: revealEvent.transactionHash,
+    },
+  };
+}
+
 async function canonicalRevealRecords(events) {
   const byJobId = new Map();
   const bySourceHash = new Set();
@@ -490,6 +610,46 @@ async function canonicalRevealRecords(events) {
   return { byJobId, bySourceHash };
 }
 
+async function canonicalRechallengeRecords(events) {
+  const records = [];
+  for (const expirationEvent of events) {
+    const submissionId = expirationEvent.args.submissionId;
+    const [submission, revealInstanceHash, expirationBlock, revealEvents] = await Promise.all([
+      subs.submissions(submissionId, { blockTag: expirationEvent.blockNumber }),
+      subs.revealInstanceHashOf(submissionId, { blockTag: expirationEvent.blockNumber }),
+      provider.getBlock(expirationEvent.blockNumber),
+      queryChunked(subs, subs.filters.Revealed(submissionId), START_BLOCK, expirationEvent.blockNumber),
+    ]);
+    if (!expirationBlock?.hash
+      || expirationBlock.hash.toLowerCase() !== String(expirationEvent.blockHash).toLowerCase()) {
+      throw new Error(`expired challenge #${submissionId} moved during canonical reconstruction`);
+    }
+    blockCache.set(expirationEvent.blockNumber, expirationBlock);
+    if (Number(submission.status) !== 2 || BigInt(submission.challengeEndsAt) <= BigInt(expirationBlock.timestamp)) {
+      continue;
+    }
+    const revealHash = String(revealInstanceHash).toLowerCase();
+    const matching = revealEvents.filter(
+      (event) => String(event.args.revealInstanceHash).toLowerCase() === revealHash,
+    );
+    if (matching.length !== 1) {
+      throw new Error(`expired challenge #${submissionId} has ${matching.length} canonical reveal sources`);
+    }
+    records.push(buildRechallengeGenerationEvent({
+      chainId,
+      problemId: runnerConfig.problemId,
+      submissionContract: String(subs.target),
+      challengeContract: String(chal.target),
+      expirationEvent,
+      revealEvent: matching[0],
+      submission,
+      revealInstanceHash,
+      expirationBlock,
+    }));
+  }
+  return records;
+}
+
 function loadOperatorCursor() {
   const existing = readJsonOrNull(CURSOR);
   if (existing) return validateOperatorCursor(existing, cursorBinding);
@@ -499,6 +659,75 @@ function loadOperatorCursor() {
     anchors: [],
     overlapBlocks: reorgOverlapBlocks,
   });
+}
+
+function challengeExpiredBackfillBinding() {
+  return {
+    schema_version: "p42-challenge-expired-backfill-binding/v1",
+    cursor_binding_hash: sha256Canonical(cursorBinding),
+    chain_id: chainId,
+    challenge_contract: String(chal.target).toLowerCase(),
+    start_block: START_BLOCK,
+  };
+}
+
+export function buildChallengeExpiredBackfillMarker({ binding, throughBlock }) {
+  if (!binding || binding.schema_version !== "p42-challenge-expired-backfill-binding/v1") {
+    throw new Error("challenge-expired backfill binding is invalid");
+  }
+  if (!Number.isSafeInteger(throughBlock) || throughBlock < Number(binding.start_block)) {
+    throw new Error("challenge-expired backfill through block is invalid");
+  }
+  const marker = {
+    schema_version: "p42-challenge-expired-backfill/v1",
+    binding,
+    through_block: throughBlock,
+  };
+  return { ...marker, marker_hash: sha256Canonical(marker) };
+}
+
+export function validateChallengeExpiredBackfillMarker(marker, expectedBinding) {
+  if (!marker || marker.schema_version !== "p42-challenge-expired-backfill/v1") {
+    throw new Error("challenge-expired backfill marker schema is invalid");
+  }
+  if (canonicalJson(marker.binding) !== canonicalJson(expectedBinding)) {
+    throw new Error("challenge-expired backfill marker identity mismatch");
+  }
+  if (!Number.isSafeInteger(marker.through_block) || marker.through_block < Number(expectedBinding.start_block)) {
+    throw new Error("challenge-expired backfill marker range is invalid");
+  }
+  const { marker_hash: markerHash, ...unsigned } = marker;
+  if (markerHash !== sha256Canonical(unsigned)) {
+    throw new Error("challenge-expired backfill marker hash mismatch");
+  }
+  return marker;
+}
+
+export function challengeExpiredBackfillNeeded(marker, expectedBinding) {
+  if (marker === null) return true;
+  validateChallengeExpiredBackfillMarker(marker, expectedBinding);
+  return false;
+}
+
+async function backfillChallengeExpiredOnce(safeLatest) {
+  const binding = challengeExpiredBackfillBinding();
+  const existing = readJsonOrNull(CHALLENGE_EXPIRED_BACKFILL);
+  if (!challengeExpiredBackfillNeeded(existing, binding)) return false;
+  if (safeLatest < START_BLOCK) return false;
+  const expirationEvents = await queryChunked(
+    chal,
+    chal.filters.ChallengeExpired(),
+    START_BLOCK,
+    safeLatest,
+  );
+  const rechallengeEvents = await canonicalRechallengeRecords(expirationEvents);
+  for (const event of rechallengeEvents) await ingestReveal(event);
+  writeJsonAtomic(CHALLENGE_EXPIRED_BACKFILL, buildChallengeExpiredBackfillMarker({
+    binding,
+    throughBlock: safeLatest,
+  }));
+  log(`  ChallengeExpired backfill complete: ${START_BLOCK}..${safeLatest}`);
+  return true;
 }
 
 async function cursorAnchorMismatch(cursor) {
@@ -685,7 +914,7 @@ export async function recoverPayload(event, submission) {
 
 function retryEventFromClaim(claim) {
   return {
-    transactionHash: claim.transaction_hash,
+    transactionHash: claim.reveal_transaction_hash ?? claim.transaction_hash,
     args: {
       submissionId: BigInt(claim.submission_id),
       solutionCid: claim.solution_cid,
@@ -775,7 +1004,10 @@ async function ingestReveal(event) {
   }
 
   const block = await blockFor(event.blockNumber);
-  const payload = await recoverPayload(event, submission);
+  const payloadEvent = event.rechallengeGeneration
+    ? { ...event, transactionHash: event.rechallengeGeneration.reveal_transaction_hash }
+    : event;
+  const payload = await recoverPayload(payloadEvent, submission);
   const onchainDa = Number(event.args.solutionBytesLength ?? 0n) > 0;
   const expectedHash = `sha256:${submission.commitDaHash.slice(2).toLowerCase()}`;
   let solutionPath;
@@ -821,6 +1053,10 @@ async function ingestReveal(event) {
     transaction_from: payload.transactionFrom?.toLowerCase() ?? null,
     transaction_to: payload.transactionTo?.toLowerCase() ?? null,
   };
+  if (event.rechallengeGeneration) {
+    chainClaim.rechallenge_generation = event.rechallengeGeneration.binding;
+    chainClaim.reveal_transaction_hash = event.rechallengeGeneration.reveal_transaction_hash.toLowerCase();
+  }
   const job = {
     job_id: jobId,
     status: "queued",
@@ -885,6 +1121,290 @@ function recordAction(job, candidate, status, transactionHash = null, detail = n
 
 function signedActionPath(candidate, callPolicy) {
   return join(ACTIONS, `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.signed-tx.json`);
+}
+
+function walletNonceActionId(candidate, callPolicy) {
+  return sha256Canonical({
+    schema_version: "p42-wallet-nonce-action/v1",
+    candidate_hash: candidate.candidate_hash,
+    call_policy_hash: callPolicy.policy_hash,
+  });
+}
+
+export function walletActionLockPath({ coordinationRoot, boundChainId, signer }) {
+  if (!Number.isSafeInteger(boundChainId) || boundChainId <= 0) {
+    throw new Error("wallet action lock chain id must be a positive safe integer");
+  }
+  const lockId = sha256Canonical({
+    schema_version: "p42-wallet-action-lock/v1",
+    chain_id: boundChainId,
+    signer: ethers.getAddress(signer).toLowerCase(),
+  });
+  if (!coordinationRoot) throw new Error("wallet action lock coordination root is required");
+  return join(resolve(coordinationRoot), `${lockId.slice(7)}.wallet.lock`);
+}
+
+export function walletNonceAllocatorPath({ coordinationRoot, boundChainId, signer }) {
+  return walletActionLockPath({ coordinationRoot, boundChainId, signer }).replace(/\.wallet\.lock$/, ".nonce-allocator.json");
+}
+
+function walletNonceBinding(boundChainId, signer) {
+  return {
+    schema_version: "p42-wallet-nonce-binding/v1",
+    chain_id: boundChainId,
+    signer: ethers.getAddress(signer).toLowerCase(),
+  };
+}
+
+function durableReplaceCanonical(path, value) {
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const fd = openSync(temporary, "wx", 0o600);
+  try {
+    writeFileSync(fd, `${canonicalJson(value)}\n`);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  renameSync(temporary, path);
+  const directoryFd = openSync(dirname(path), "r");
+  try { fsyncSync(directoryFd); } finally { closeSync(directoryFd); }
+}
+
+function validateWalletNonceAllocator(journal, binding) {
+  if (!journal || journal.schema_version !== "p42-wallet-nonce-allocator/v1") {
+    throw new Error("wallet nonce allocator journal schema is invalid");
+  }
+  if (canonicalJson(journal.binding) !== canonicalJson(binding)) {
+    throw new Error("wallet nonce allocator journal chain or signer binding mismatch");
+  }
+  if (!Number.isSafeInteger(journal.next_nonce) || journal.next_nonce < 0
+      || !Number.isSafeInteger(journal.observed_finalized_nonce) || journal.observed_finalized_nonce < 0
+      || !Number.isSafeInteger(journal.observed_pending_nonce) || journal.observed_pending_nonce < 0
+      || !Array.isArray(journal.allocations)) {
+    throw new Error("wallet nonce allocator journal counters are invalid");
+  }
+  const nonces = new Set();
+  for (const allocation of journal.allocations) {
+    if (typeof allocation.action_id !== "string" || allocation.action_id.length < 1
+        || !Number.isSafeInteger(allocation.nonce) || allocation.nonce < 0
+        || !["reserved", "signed", "broadcast", "fenced"].includes(allocation.state)
+        || (allocation.transaction_hash !== null && !ethers.isHexString(allocation.transaction_hash, 32))) {
+      throw new Error("wallet nonce allocator allocation is invalid");
+    }
+    if (nonces.has(allocation.nonce)) throw new Error("wallet nonce allocator reused a nonce");
+    nonces.add(allocation.nonce);
+  }
+  const floor = journal.allocations.reduce((highest, allocation) => Math.max(highest, allocation.nonce + 1), 0);
+  if (journal.next_nonce < floor || journal.observed_pending_nonce < journal.observed_finalized_nonce) {
+    throw new Error("wallet nonce allocator journal regressed");
+  }
+  return journal;
+}
+
+function readWalletNonceAllocator(path, binding) {
+  if (!existsSync(path)) return {
+    schema_version: "p42-wallet-nonce-allocator/v1",
+    binding,
+    next_nonce: 0,
+    observed_finalized_nonce: 0,
+    observed_pending_nonce: 0,
+    allocations: [],
+  };
+  return validateWalletNonceAllocator(
+    readStrictJsonFileSync(path, { ...IMMUTABLE_JSON_LIMITS, privateFile: true, trustedRoot: dirname(path) }),
+    binding,
+  );
+}
+
+async function walletNonceObservation(rpcProviders, signer) {
+  if (!Array.isArray(rpcProviders) || rpcProviders.length < 1) throw new Error("wallet nonce RPC set is empty");
+  const observations = await Promise.all(rpcProviders.map(async (rpcProvider) => {
+    const [finalizedNonce, pendingNonce] = await Promise.all([
+      rpcProvider.getTransactionCount(signer, "finalized"),
+      rpcProvider.getTransactionCount(signer, "pending"),
+    ]);
+    return { finalizedNonce, pendingNonce };
+  }));
+  const finalizedNonce = Math.max(...observations.map((value) => value.finalizedNonce));
+  const pendingNonce = Math.max(...observations.map((value) => value.pendingNonce));
+  if (!Number.isSafeInteger(finalizedNonce) || finalizedNonce < 0
+      || !Number.isSafeInteger(pendingNonce) || pendingNonce < finalizedNonce) {
+    throw new Error("RPC returned invalid finalized or pending wallet nonce evidence");
+  }
+  return { finalizedNonce, pendingNonce };
+}
+
+function persistWalletNonceObservation(journal, observation) {
+  journal.observed_finalized_nonce = Math.max(journal.observed_finalized_nonce, observation.finalizedNonce);
+  journal.observed_pending_nonce = Math.max(
+    journal.observed_pending_nonce,
+    journal.observed_finalized_nonce,
+    observation.pendingNonce,
+  );
+}
+
+function assertAllocatorSignedRecord(record, binding) {
+  if (!record || record.schema_version !== "p42-signed-transaction/v1" || !ethers.isHexString(record.raw_tx)) {
+    throw new Error("wallet nonce allocator signed record is invalid");
+  }
+  const transaction = ethers.Transaction.from(record.raw_tx);
+  if (!transaction.from || transaction.from.toLowerCase() !== binding.signer
+      || Number(transaction.chainId) !== binding.chain_id
+      || transaction.nonce !== Number(record.nonce)
+      || ethers.keccak256(record.raw_tx).toLowerCase() !== String(record.hash).toLowerCase()) {
+    throw new Error("wallet nonce allocator signed record identity mismatch");
+  }
+  return transaction;
+}
+
+export async function reserveWalletNonceLocked({
+  rpcProvider, rpcProviders = null, coordinationRoot, boundChainId, signer, actionId, existingSignedRecord = null,
+}) {
+  if (typeof actionId !== "string" || actionId.length < 1) throw new Error("wallet nonce allocation action id is required");
+  const binding = walletNonceBinding(boundChainId, signer);
+  const path = walletNonceAllocatorPath({ coordinationRoot, boundChainId, signer });
+  const journal = readWalletNonceAllocator(path, binding);
+  const observation = await walletNonceObservation(rpcProviders ?? [rpcProvider], binding.signer);
+  persistWalletNonceObservation(journal, observation);
+
+  if (existingSignedRecord) {
+    const transaction = assertAllocatorSignedRecord(existingSignedRecord, binding);
+    const conflicting = journal.allocations.find(
+      (allocation) => allocation.nonce === transaction.nonce && allocation.action_id !== actionId,
+    );
+    if (conflicting) throw new Error(`wallet nonce ${transaction.nonce} belongs to another action`);
+    let allocation = journal.allocations.find(
+      (candidate) => candidate.action_id === actionId && candidate.nonce === transaction.nonce,
+    );
+    if (!allocation) {
+      allocation = { action_id: actionId, nonce: transaction.nonce, state: "signed", transaction_hash: existingSignedRecord.hash.toLowerCase() };
+      journal.allocations.push(allocation);
+    } else if (allocation.transaction_hash && allocation.transaction_hash !== existingSignedRecord.hash.toLowerCase()) {
+      throw new Error("wallet nonce allocation is bound to a different signed transaction");
+    } else {
+      allocation.transaction_hash = existingSignedRecord.hash.toLowerCase();
+      if (allocation.state === "reserved") allocation.state = "signed";
+    }
+    journal.next_nonce = Math.max(journal.next_nonce, transaction.nonce + 1);
+    durableReplaceCanonical(path, validateWalletNonceAllocator(journal, binding));
+    return { path, nonce: transaction.nonce, recovered: true };
+  }
+
+  const prior = [...journal.allocations].reverse().find(
+    (allocation) => allocation.action_id === actionId && allocation.state === "reserved",
+  );
+  if (prior && prior.nonce >= observation.finalizedNonce && prior.nonce >= observation.pendingNonce) {
+    durableReplaceCanonical(path, validateWalletNonceAllocator(journal, binding));
+    return { path, nonce: prior.nonce, recovered: true };
+  }
+  if (prior) prior.state = "fenced";
+  const nonce = Math.max(journal.next_nonce, observation.finalizedNonce, observation.pendingNonce);
+  journal.allocations.push({ action_id: actionId, nonce, state: "reserved", transaction_hash: null });
+  journal.next_nonce = nonce + 1;
+  durableReplaceCanonical(path, validateWalletNonceAllocator(journal, binding));
+  return { path, nonce, recovered: false };
+}
+
+export function recordWalletNonceSignedLocked({ coordinationRoot, boundChainId, signer, actionId, signedRecord }) {
+  const binding = walletNonceBinding(boundChainId, signer);
+  const transaction = assertAllocatorSignedRecord(signedRecord, binding);
+  const path = walletNonceAllocatorPath({ coordinationRoot, boundChainId, signer });
+  const journal = readWalletNonceAllocator(path, binding);
+  const allocation = journal.allocations.find(
+    (candidate) => candidate.action_id === actionId && candidate.nonce === transaction.nonce,
+  );
+  if (!allocation || allocation.state === "fenced") throw new Error("signed transaction lacks an active durable wallet nonce reservation");
+  if (allocation.transaction_hash && allocation.transaction_hash !== signedRecord.hash.toLowerCase()) {
+    throw new Error("wallet nonce reservation already names another transaction");
+  }
+  allocation.transaction_hash = signedRecord.hash.toLowerCase();
+  allocation.state = allocation.state === "broadcast" ? "broadcast" : "signed";
+  durableReplaceCanonical(path, validateWalletNonceAllocator(journal, binding));
+  return { path, nonce: transaction.nonce };
+}
+
+export function recordWalletNonceBroadcastLocked(args) {
+  const signed = recordWalletNonceSignedLocked(args);
+  const binding = walletNonceBinding(args.boundChainId, args.signer);
+  const path = walletNonceAllocatorPath(args);
+  const journal = readWalletNonceAllocator(path, binding);
+  const allocation = journal.allocations.find(
+    (candidate) => candidate.action_id === args.actionId && candidate.nonce === signed.nonce,
+  );
+  allocation.state = "broadcast";
+  durableReplaceCanonical(path, validateWalletNonceAllocator(journal, binding));
+  return signed;
+}
+
+export async function walletNonceBroadcastDecisionLocked({
+  rpcProvider, rpcProviders = null, coordinationRoot, boundChainId, signer, actionId, signedRecord,
+}) {
+  recordWalletNonceSignedLocked({ coordinationRoot, boundChainId, signer, actionId, signedRecord });
+  const binding = walletNonceBinding(boundChainId, signer);
+  const transaction = assertAllocatorSignedRecord(signedRecord, binding);
+  const path = walletNonceAllocatorPath({ coordinationRoot, boundChainId, signer });
+  const journal = readWalletNonceAllocator(path, binding);
+  const allocation = journal.allocations.find(
+    (candidate) => candidate.action_id === actionId && candidate.nonce === transaction.nonce,
+  );
+  const known = await rpcProvider.getTransaction(signedRecord.hash);
+  if (known) {
+    if (String(known.hash).toLowerCase() !== signedRecord.hash.toLowerCase()
+        || Number(known.nonce) !== transaction.nonce
+        || String(known.from).toLowerCase() !== binding.signer) {
+      throw new Error("RPC transaction identity disagrees with wallet nonce allocation");
+    }
+    allocation.state = "broadcast";
+    durableReplaceCanonical(path, validateWalletNonceAllocator(journal, binding));
+    return { broadcast: false, known: true, nonce: transaction.nonce, transaction: known };
+  }
+  const observation = await walletNonceObservation(rpcProviders ?? [rpcProvider], binding.signer);
+  persistWalletNonceObservation(journal, observation);
+  if (observation.finalizedNonce > transaction.nonce || observation.pendingNonce > transaction.nonce) {
+    allocation.state = "fenced";
+    durableReplaceCanonical(path, validateWalletNonceAllocator(journal, binding));
+    return {
+      broadcast: false,
+      known: false,
+      nonce: transaction.nonce,
+      reason: `chain nonce advanced beyond allocated nonce ${transaction.nonce}; refusing replacement transaction`,
+    };
+  }
+  durableReplaceCanonical(path, validateWalletNonceAllocator(journal, binding));
+  return { broadcast: true, known: false, nonce: transaction.nonce };
+}
+
+export async function withWalletActionLock({ coordinationRoot, boundChainId, signer, timeoutMs = 30_000 }, operation) {
+  if (typeof operation !== "function") throw new Error("wallet action lock operation is required");
+  const lockPath = walletActionLockPath({ coordinationRoot, boundChainId, signer });
+  const owner = acquireEnvelopeLock(lockPath, { timeoutMs });
+  try {
+    return await operation();
+  } finally {
+    releaseEnvelopeLock(lockPath, owner);
+  }
+}
+
+function withOperatorWalletActionLock(operation) {
+  return withWalletActionLock({
+    coordinationRoot: COORDINATION_ROOT,
+    boundChainId: chainId,
+    signer: wallet.address,
+  }, operation);
+}
+
+export function submissionActionLockPath({ coordinationRoot, boundChainId, challengeContract, submissionId }) {
+  if (!coordinationRoot) throw new Error("submission action lock coordination root is required");
+  if (!Number.isSafeInteger(boundChainId) || boundChainId <= 0) {
+    throw new Error("submission action lock chain id must be a positive safe integer");
+  }
+  const lockId = sha256Canonical({
+    schema_version: "p42-submission-challenge-lock/v1",
+    chain_id: boundChainId,
+    challenge_contract: ethers.getAddress(challengeContract).toLowerCase(),
+    submission_id: BigInt(submissionId).toString(),
+  });
+  return join(resolve(coordinationRoot), `${lockId.slice(7)}.submission.lock`);
 }
 
 async function signedActionRecord(candidate, callPolicy, request, authorization = null) {
@@ -1039,6 +1559,18 @@ async function candidateStillChallengeable(candidate) {
   return { ok: true };
 }
 
+export async function broadcastTransactionNonblocking({ rpcProvider, transactionHash, rawTransaction }) {
+  let pending = await rpcProvider.getTransaction(transactionHash);
+  if (pending) return pending;
+  try {
+    pending = await rpcProvider.broadcastTransaction(rawTransaction);
+  } catch (error) {
+    pending = await rpcProvider.getTransaction(transactionHash);
+    if (!pending) throw error;
+  }
+  return pending;
+}
+
 async function reconcileBroadcast(job) {
   const action = job.action;
   if (!action || !action.transaction_hash) return false;
@@ -1053,6 +1585,17 @@ async function reconcileBroadcast(job) {
   const signedRecord = assertOperatorSignedRecord(
     readStrictJsonFileSync(journalPath, IMMUTABLE_JSON_LIMITS), transcript.candidate, callPolicy, action, detail,
   );
+  const nonceActionId = detail.wallet_nonce_action_id
+    ?? walletNonceActionId(transcript.candidate, callPolicy);
+  await reserveWalletNonceLocked({
+    rpcProvider: provider,
+    rpcProviders: nonceProviders,
+    coordinationRoot: COORDINATION_ROOT,
+    boundChainId: chainId,
+    signer: wallet.address,
+    actionId: nonceActionId,
+    existingSignedRecord: signedRecord,
+  });
   let receipt = await provider.getTransactionReceipt(action.transaction_hash);
   if (receipt) {
     const canonicalBlock = await provider.getBlock(receipt.blockNumber);
@@ -1088,6 +1631,15 @@ async function reconcileBroadcast(job) {
   }
   if (!receipt) {
     let pending = await provider.getTransaction(action.transaction_hash);
+    if (pending) {
+      recordWalletNonceBroadcastLocked({
+        coordinationRoot: COORDINATION_ROOT,
+        boundChainId: chainId,
+        signer: wallet.address,
+        actionId: nonceActionId,
+        signedRecord,
+      });
+    }
     if (!pending) {
       if (!detail.signed_tx_path) {
         throw new Error(`signed action ${action.transaction_hash} lacks signed_tx_path`);
@@ -1110,46 +1662,51 @@ async function reconcileBroadcast(job) {
         appendAlert(`SUPERSEDED ${job.job_id}: ${current.reason}`);
         return true;
       }
-      try {
-        pending = await provider.broadcastTransaction(signedRecord.raw_tx);
-      } catch (error) {
-        pending = await provider.getTransaction(action.transaction_hash);
-        if (!pending) throw error;
+      const nonceDecision = await walletNonceBroadcastDecisionLocked({
+        rpcProvider: provider,
+        rpcProviders: nonceProviders,
+        coordinationRoot: COORDINATION_ROOT,
+        boundChainId: chainId,
+        signer: wallet.address,
+        actionId: nonceActionId,
+        signedRecord,
+      });
+      if (!nonceDecision.broadcast) {
+        if (nonceDecision.known) pending = nonceDecision.transaction;
+        else {
+          recordAction(job, transcript.candidate, "superseded", action.transaction_hash, nonceDecision.reason);
+          appendAlert(`NONCE FENCED ${job.job_id}: ${nonceDecision.reason}`);
+          return true;
+        }
+      } else {
+        pending = await broadcastTransactionNonblocking({
+          rpcProvider: provider,
+          transactionHash: action.transaction_hash,
+          rawTransaction: signedRecord.raw_tx,
+        });
+        recordWalletNonceBroadcastLocked({
+          coordinationRoot: COORDINATION_ROOT,
+          boundChainId: chainId,
+          signer: wallet.address,
+          actionId: nonceActionId,
+          signedRecord,
+        });
       }
     }
     if (action.status !== "broadcast") {
       recordAction(job, transcript.candidate, "broadcast", action.transaction_hash);
     }
-    receipt = await pending.wait();
-  }
-  const canonicalBlock = await provider.getBlock(receipt.blockNumber);
-  const receiptState = classifyReceiptFinality({
-    receiptBlockNumber: receipt.blockNumber,
-    receiptBlockHash: receipt.blockHash,
-    canonicalBlockHash: canonicalBlock?.hash,
-    latestBlockNumber: await provider.getBlockNumber(),
-    confirmations: finalityConfirmations,
-  });
-  if (receiptState === "reorged") {
-    recordAction(job, transcript.candidate, "reorged", action.transaction_hash);
-    appendAlert(`REORGED CHALLENGE ${job.job_id}: freshly mined receipt is not canonical`);
+    // Receipt reconciliation is deliberately polling-only. A transaction may
+    // remain pending forever, so no wallet or submission lock may await mining.
     return true;
   }
-  if (receiptState === "submitted") {
-    recordAction(job, transcript.candidate, "submitted", action.transaction_hash);
-    return true;
-  }
-  if (receipt.status === 1) finalizeChallengeSpend(ENVELOPE, transcript.candidate.candidate_hash, { finalizedReceipt: { canonical: true, transaction_hash: action.transaction_hash, block_number: receipt.blockNumber, block_hash: receipt.blockHash } });
-  else releaseChallengeReservation(ENVELOPE, transcript.candidate.candidate_hash);
-  recordAction(job, transcript.candidate, receipt.status === 1 ? "confirmed" : "broadcast_reverted", action.transaction_hash);
-  return true;
 }
 
 async function consumeCandidate(job) {
   if (job.canonical_status === "orphaned_reorg") return;
   if (!job.transcript_path) return;
   if (job.action) {
-    await reconcileBroadcast(job);
+    await withOperatorWalletActionLock(() => reconcileBroadcast(job));
     return;
   }
   let checked;
@@ -1185,6 +1742,20 @@ async function consumeCandidate(job) {
   if (candidate.source_event_hash !== job.source_event_hash) {
     throw new Error(`candidate source event mismatch for ${job.job_id}`);
   }
+  const candidateLockPath = submissionActionLockPath({
+    coordinationRoot: COORDINATION_ROOT,
+    boundChainId: chainId,
+    challengeContract: String(chal.target),
+    submissionId: candidate.submission_id,
+  });
+  const candidateLockOwner = acquireEnvelopeLock(candidateLockPath, { timeoutMs: 30_000 });
+  try {
+    const durableJob = readQueue().jobs.find((entry) => entry.job_id === job.job_id);
+    if (!durableJob) throw new Error(`candidate job disappeared before consumption: ${job.job_id}`);
+    if (durableJob.action) {
+      await withOperatorWalletActionLock(() => reconcileBroadcast(durableJob));
+      return;
+    }
   try {
     await revalidateRecordedRegistryBinding(checked.transcript.verifier?.chain_claim?.registry_binding);
   } catch (error) {
@@ -1278,35 +1849,64 @@ async function consumeCandidate(job) {
       `${candidate.candidate_hash.slice(7)}-${callPolicy.policy_hash.slice(7, 23)}.json`,
   );
   writeCanonicalAtomic(policyPath, callPolicy);
-  const request = await buildChallengeTransactionRequest(callPolicy, bond, BigInt(latest.timestamp));
   let signingAuthorization = null;
-  await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash, async ({ markJournalDurable }) => {
-    log(`  exact session call policy: ${policyPath} (${callPolicy.policy_hash})`);
-    const signed = await signedActionRecord(candidate, callPolicy, request, signingAuthorization);
-    markJournalDurable({ journalPath: signed.path, signedTransactionHash: signed.record.hash });
-    assertOperatorSignedRecord(signed.record, candidate, callPolicy);
-    const detail = canonicalJson({
-      bond_wei: bond.toString(),
-      call_policy_path: policyPath,
-      call_policy_hash: callPolicy.policy_hash,
-      calldata_hash: callPolicy.calldata_hash,
-      scope_hash: callPolicy.scope_hash,
-      expires_at: callPolicy.expires_at,
-      max_calls: callPolicy.max_calls,
-      execution_mode: executionMode.mode,
-      agent_wallet: executionMode.agentWalletAddress,
-      signed_tx_path: signed.path,
-      signed_tx_hash: signed.record.hash,
-      signed_tx_data_hash: signed.record.data_hash,
-      signed_tx_nonce: signed.record.nonce,
-    });
-    recordAction(job, candidate, "signed", signed.record.hash, detail);
-    log(`  challenge signed for #${submissionId}: ${signed.record.hash} bond=${ethers.formatEther(bond)} ETH`);
-    await reconcileBroadcast({ ...job, action: { status: "signed", transaction_hash: signed.record.hash, detail } });
-  }, { trustedRoot: RUNTIME, preflight: async (highWater, reservationBinding) => {
-    signingAuthorization = await finalSigningAuthorizationFence(highWater, reservationBinding);
-    return signingAuthorization.release;
-  } });
+  await withOperatorWalletActionLock(async () => {
+    await runChallengeActionIntent(ENVELOPE, candidate.candidate_hash, async ({ markJournalDurable }) => {
+      log(`  exact session call policy: ${policyPath} (${callPolicy.policy_hash})`);
+      const nonceActionId = walletNonceActionId(candidate, callPolicy);
+      const existingSignedPath = signedActionPath(candidate, callPolicy);
+      const existingSignedRecord = existsSync(existingSignedPath)
+        ? readStrictJsonFileSync(assertApprovedJournalPath(existingSignedPath, ACTIONS, existingSignedPath), IMMUTABLE_JSON_LIMITS)
+        : null;
+      const nonceAllocation = await reserveWalletNonceLocked({
+        rpcProvider: provider,
+        rpcProviders: nonceProviders,
+        coordinationRoot: COORDINATION_ROOT,
+        boundChainId: chainId,
+        signer: wallet.address,
+        actionId: nonceActionId,
+        existingSignedRecord,
+      });
+      const populatedRequest = await buildChallengeTransactionRequest(callPolicy, bond, BigInt(latest.timestamp));
+      const request = { ...populatedRequest, nonce: nonceAllocation.nonce };
+      const signed = await signedActionRecord(candidate, callPolicy, request, signingAuthorization);
+      recordWalletNonceSignedLocked({
+        coordinationRoot: COORDINATION_ROOT,
+        boundChainId: chainId,
+        signer: wallet.address,
+        actionId: nonceActionId,
+        signedRecord: signed.record,
+      });
+      markJournalDurable({ journalPath: signed.path, signedTransactionHash: signed.record.hash });
+      assertOperatorSignedRecord(signed.record, candidate, callPolicy);
+      const detail = canonicalJson({
+        bond_wei: bond.toString(),
+        call_policy_path: policyPath,
+        call_policy_hash: callPolicy.policy_hash,
+        calldata_hash: callPolicy.calldata_hash,
+        scope_hash: callPolicy.scope_hash,
+        expires_at: callPolicy.expires_at,
+        max_calls: callPolicy.max_calls,
+        execution_mode: executionMode.mode,
+        agent_wallet: executionMode.agentWalletAddress,
+        signed_tx_path: signed.path,
+        signed_tx_hash: signed.record.hash,
+        signed_tx_data_hash: signed.record.data_hash,
+        signed_tx_nonce: signed.record.nonce,
+        wallet_nonce_action_id: nonceActionId,
+        wallet_nonce_allocator_path: nonceAllocation.path,
+      });
+      recordAction(job, candidate, "signed", signed.record.hash, detail);
+      log(`  challenge signed for #${submissionId}: ${signed.record.hash} bond=${ethers.formatEther(bond)} ETH`);
+      await reconcileBroadcast({ ...job, action: { status: "signed", transaction_hash: signed.record.hash, detail } });
+    }, { trustedRoot: RUNTIME, preflight: async (highWater, reservationBinding) => {
+      signingAuthorization = await finalSigningAuthorizationFence(highWater, reservationBinding);
+      return signingAuthorization.release;
+    } });
+  });
+  } finally {
+    releaseEnvelopeLock(candidateLockPath, candidateLockOwner);
+  }
 }
 
 async function consumeCandidates() {
@@ -1319,9 +1919,11 @@ async function scanOnce() {
   const latestBlock = await provider.getBlock(latest);
   if (!latestBlock) throw new Error(`latest block ${latest} is unavailable`);
   const safeLatest = Math.max(0, latest - finalityConfirmations);
+  await backfillChallengeExpiredOnce(safeLatest);
   const mismatch = await cursorAnchorMismatch(cursorState);
   if (mismatch !== null) {
     appendAlert(`REORG detected at anchored block ${mismatch}; rescanning overlap from durable cursor`);
+    blockCache.clear();
     cursorState = buildOperatorCursor({
       binding: cursorBinding,
       nextBlock: mismatch,
@@ -1338,15 +1940,26 @@ async function scanOnce() {
     overlapBlocks: reorgOverlapBlocks,
   });
   if (range) {
-    const events = await queryChunked(subs, subs.filters.Revealed(), range.fromBlock, range.toBlock);
-    const canonical = await canonicalRevealRecords(events);
+    const [events, expirationEvents] = await Promise.all([
+      queryChunked(subs, subs.filters.Revealed(), range.fromBlock, range.toBlock),
+      queryChunked(chal, chal.filters.ChallengeExpired(), range.fromBlock, range.toBlock),
+    ]);
+    const [canonical, rechallengeEvents] = await Promise.all([
+      canonicalRevealRecords(events),
+      canonicalRechallengeRecords(expirationEvents),
+    ]);
+    for (const event of rechallengeEvents) {
+      canonical.byJobId.set(eventJobId(event), event.rechallengeGeneration.source_event_hash);
+      canonical.bySourceHash.add(event.rechallengeGeneration.source_event_hash);
+    }
     await quarantineOrphanedJobs(
       range.fromBlock,
       range.toBlock,
       canonical,
-      `canonical rescan ${range.fromBlock}..${range.toBlock} did not contain the original Revealed source event`,
+      `canonical rescan ${range.fromBlock}..${range.toBlock} did not contain the job's source event`,
     );
     for (const event of events) await ingestReveal(event);
+    for (const event of rechallengeEvents) await ingestReveal(event);
     await persistCursor(range.toBlock + 1);
   }
 
@@ -1374,6 +1987,12 @@ async function scanOnce() {
 async function main() {
   const network = await provider.getNetwork();
   chainId = Number(network.chainId);
+  if (secondaryNonceProvider) {
+    const secondaryNetwork = await secondaryNonceProvider.getNetwork();
+    if (Number(secondaryNetwork.chainId) !== chainId) {
+      throw new Error("secondary nonce RPC chain does not match the primary RPC");
+    }
+  }
   validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
   if (Number(manifest.network.chainId) !== chainId) {
     throw new Error(`manifest chain ${manifest.network.chainId} does not match RPC chain ${chainId}`);

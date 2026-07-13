@@ -12,8 +12,11 @@ import {
 } from "./funding-activation.mjs";
 import {
   collectFundingActivationSnapshot,
+  collectActivationNonceEvidence,
   buildFundingActivationCompletion,
   nextFundingActivationAction,
+  prepareActivationSigningRequest,
+  reconcileFundingActivationConfirmations,
   signAndBroadcastActivationAction,
 } from "./funding-activation-executor.mjs";
 import { readStrictJsonFileSync, writeTrustedFileSync } from "./strict-json.mjs";
@@ -38,13 +41,11 @@ function requiredEnv(name) {
   return value;
 }
 
-function privateKeys(name) {
+function optionalPrivateKey(name) {
   const raw = process.env[name];
-  if (typeof raw !== "string" || raw === "") throw new Error(`${name} is required`);
-  return raw.split(",").map((value) => {
-    if (!/^0x[0-9a-fA-F]{64}$/.test(value)) throw new Error(`${name} contains an invalid private key`);
-    return value;
-  });
+  if (raw === undefined || raw === "") return null;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(raw)) throw new Error(`${name} is not one private key`);
+  return raw;
 }
 
 function assertDistinctRpcUrls(primaryUrl, secondaryUrl) {
@@ -90,22 +91,28 @@ export async function fundingActivationRunMain() {
   const plan = readStrictJsonFileSync(resolve(planPath), LIMITS);
   const primary = new ethers.JsonRpcProvider(primaryUrl, plan.chainId, { staticNetwork: true });
   const secondary = new ethers.JsonRpcProvider(secondaryUrl, plan.chainId, { staticNetwork: true });
-  const treasury = new ethers.Wallet(privateKeys("P42_FUNDING_TREASURY_PRIVATE_KEY")[0], primary);
-  if (ethers.getAddress(treasury.address) !== ethers.getAddress(plan.treasury)) {
-    throw new Error("treasury key does not match activation plan");
+  if (process.env.P42_FUNDING_GOVERNANCE_PRIVATE_KEYS || process.env.P42_FUNDING_TREASURY_PRIVATE_KEY) {
+    throw new Error("threshold key aggregation is forbidden; use one P42_FUNDING_SIGNER_PRIVATE_KEY or an external signed artifact");
   }
-  const governanceWallets = privateKeys("P42_FUNDING_GOVERNANCE_PRIVATE_KEYS")
-    .map((key) => new ethers.Wallet(key, primary));
-  const governanceByAddress = new Map();
-  for (const wallet of governanceWallets) {
-    const address = ethers.getAddress(wallet.address);
-    if (!plan.governanceSigners.map(ethers.getAddress).includes(address) || governanceByAddress.has(address)) {
-      throw new Error("governance key set is duplicated or outside the activation plan");
-    }
-    governanceByAddress.set(address, wallet);
+  const localKey = optionalPrivateKey("P42_FUNDING_SIGNER_PRIVATE_KEY");
+  const localSigner = localKey ? new ethers.Wallet(localKey, primary) : null;
+  const signedTransactionPath = arg("signed-transaction");
+  const signedRecord = signedTransactionPath
+    ? readStrictJsonFileSync(resolve(signedTransactionPath), LIMITS)
+    : null;
+  if (localSigner && signedRecord) {
+    throw new Error("choose either one local activation signer or one externally signed artifact");
   }
-  if (governanceByAddress.size < plan.governanceThreshold) {
-    throw new Error("governance key set cannot satisfy the activation threshold");
+  const declaredSigner = arg("signer");
+  const signerCandidates = [localSigner?.address, signedRecord?.signer, declaredSigner]
+    .filter(Boolean).map(ethers.getAddress);
+  if (new Set(signerCandidates).size > 1) {
+    throw new Error("local, declared, and externally signed activation signers disagree");
+  }
+  const signerAddress = signerCandidates[0] ?? null;
+  const allowedSigners = [plan.treasury, ...plan.governanceSigners].map(ethers.getAddress);
+  if (signerAddress && !allowedSigners.includes(signerAddress)) {
+    throw new Error("activation signer is outside the plan authority set");
   }
 
   const freshPlan = async () => {
@@ -121,10 +128,13 @@ export async function fundingActivationRunMain() {
     });
   };
   const snapshot = await collectFundingActivationSnapshot(plan, primary, secondary);
+  reconcileFundingActivationConfirmations({ plan, snapshot, journalPath, journalRoot });
   const action = nextFundingActivationAction(plan, snapshot, {
-    availableGovernanceSigners: [...governanceByAddress.keys()],
+    availableGovernanceSigners: signerAddress && plan.governanceSigners.map(ethers.getAddress).includes(signerAddress)
+      ? [signerAddress]
+      : [],
   });
-  if (["complete", "wait", "wait-finality"].includes(action.kind)) {
+  if (["complete", "wait", "wait-finality", "wait-signers"].includes(action.kind)) {
     if (action.kind === "complete") {
       const completion = buildFundingActivationCompletion(plan, snapshot);
       if (existsSync(completionPath)) {
@@ -139,13 +149,51 @@ export async function fundingActivationRunMain() {
     process.stdout.write(`${JSON.stringify({ status: action.kind, wakeAt: action.wakeAt?.toString() ?? null })}\n`);
     return;
   }
-  const wallet = action.kind === "authorize"
-    ? treasury
-    : governanceByAddress.get(ethers.getAddress(action.signer));
-  if (!wallet) throw new Error("selected activation signer is unavailable");
-  const result = await signAndBroadcastActivationAction({
-    plan, action, wallet, journalPath, journalRoot, revalidate: freshPlan,
+  if (!signerAddress || ethers.getAddress(action.signer) !== signerAddress) {
+    throw new Error(`activation action ${action.kind} requires signer ${action.signer}`);
+  }
+  const populator = localSigner ?? new ethers.VoidSigner(signerAddress, primary);
+  const signingRequest = await prepareActivationSigningRequest({
+    plan, action, signer: populator, journalPath, journalRoot, revalidate: freshPlan,
     currentTimestamp: () => commonLatestTimestamp(primary, secondary),
+    nonceEvidence: (signer) => collectActivationNonceEvidence(primary, secondary, signer),
+  });
+  const signingRequestOutput = arg("signing-request-output");
+  if (signingRequestOutput) {
+    const outputPath = resolve(signingRequestOutput);
+    if (existsSync(outputPath)) {
+      const existing = readStrictJsonFileSync(outputPath, { ...LIMITS, trustedRoot: journalRoot });
+      if (JSON.stringify(existing) !== JSON.stringify(signingRequest)) {
+        if (![signingRequest.schema, "p42-funding-activation-signing-request/v1"].includes(existing?.schema)
+            || existing.planDigest !== signingRequest.planDigest
+            || existing.label !== signingRequest.label
+            || (existing.schema === signingRequest.schema
+              && (!Number.isSafeInteger(existing.requestGeneration)
+                || existing.requestGeneration >= signingRequest.requestGeneration))) {
+          throw new Error("existing activation signing request conflicts with selected action");
+        }
+        writeTrustedFileSync(outputPath, journalRoot, Buffer.from(`${JSON.stringify(signingRequest, null, 2)}\n`));
+      }
+    } else {
+      writeTrustedFileSync(outputPath, journalRoot, Buffer.from(`${JSON.stringify(signingRequest, null, 2)}\n`));
+    }
+  }
+  if (!localSigner && !signedRecord) {
+    if (!signingRequestOutput) throw new Error("external signing requires --signing-request-output");
+    process.stdout.write(`${JSON.stringify({
+      status: "awaiting-signature",
+      label: signingRequest.label,
+      signer: signerAddress,
+      unsignedHash: signingRequest.unsignedHash,
+      requestGeneration: signingRequest.requestGeneration,
+      requestExpiresAt: signingRequest.requestExpiresAt,
+    })}\n`);
+    return;
+  }
+  const result = await signAndBroadcastActivationAction({
+    plan, action, wallet: localSigner, provider: primary, signedRecord, journalPath, journalRoot, revalidate: freshPlan,
+    currentTimestamp: () => commonLatestTimestamp(primary, secondary),
+    nonceEvidence: (signer) => collectActivationNonceEvidence(primary, secondary, signer),
   });
   process.stdout.write(`${JSON.stringify({ status: `${result.status}-awaiting-finality`, label: result.label, transactionHash: result.transactionHash })}\n`);
 }
