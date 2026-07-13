@@ -1,0 +1,19 @@
+{
+  "schema": "p42-objective-execution/v1",
+  "status": "single-host-mock-execution",
+  "proofKind": "none",
+  "identitySha256": "sha256:93832e5ee85ff8e069f3c6682382e708fc57adcd9aacce52aa2824b1e36a5eba",
+  "guestElfSha256": "sha256:2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6",
+  "programVKey": "0x0016d27da623507d3e323cc70a9da608e55879c4d74481566040fc38bf7f9799",
+  "solutionPath": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
+  "solutionSha256": "sha256:4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6",
+  "correctedChallengerWins": true,
+  "journalDigest": "0xb7fc3d85ad6a8606edb944c1883fd8feed8363a74b84697d81439f3a69c664fc",
+  "publicValuesBytes": 32,
+  "totalInstructionCount": "53222072",
+  "executionHost": {
+    "os": "darwin",
+    "architecture": "arm64"
+  },
+  "executedAt": "2026-07-14T01:10:47Z"
+}

@@ -416,7 +416,7 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.03",
     challengeBondEth: "0.03",
-    verifierVersion: "0.1.1",
+    verifierVersion: "0.1.2",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/hadamard-668-defect",

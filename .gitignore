@@ -14,6 +14,7 @@ build/
 web/data/
 contracts/artifacts/
 contracts/cache/
+objective-programs/target/
 *.tsbuildinfo
 # Never commit private keys (testnet deployer key etc.)
 *.key.json

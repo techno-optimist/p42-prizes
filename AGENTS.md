@@ -35,6 +35,7 @@ make test
 make verify-seed
 make admit-host-seed
 make contracts-test
+P42_CARGO_PROVE=/path/to/pinned/v6.1/cargo-prove make objective-program-gates
 cd web && npm test && npx tsc --noEmit && npm run build:prizes && npm audit --audit-level=moderate
 ```
 
