@@ -42,9 +42,9 @@ describe("Erdős frontier atlas", () => {
       .toThrow("invalid cursor");
   });
 
-  it("treats p42_slug as a five-entry join only", () => {
+  it("treats p42_slug as a six-entry join only", () => {
     const joined = listAtlasEntries({ p42: true, limit: 51 });
-    expect(joined.total).toBe(5);
+    expect(joined.total).toBe(6);
     expect(joined.items.every((entry) => typeof entry.p42_slug === "string")).toBe(true);
     expect(getAtlasMeta().settlement_authority).toBe(false);
   });
@@ -52,9 +52,9 @@ describe("Erdős frontier atlas", () => {
   it("reports exact facets and pinned provenance", () => {
     const meta = getAtlasMeta();
     expect(meta.facets.boardability).toEqual({ READY: 13, HEAVY: 14, NONE: 24 });
-    expect(meta.facets.p42).toEqual({ true: 5, false: 46 });
-    expect(meta.provenance.commit).toBe("bd82a0ab34ffe4c33dffba0c402d54b61a5a0103");
-    expect(meta.provenance.sha256).toBe("dd9d4bfebf6c99a086c9378df648bfd8c969873e08b428e1ad43e9204d68becd");
+    expect(meta.facets.p42).toEqual({ true: 6, false: 45 });
+    expect(meta.provenance.commit).toBe("0901734c487ab1e51ddc772ab45b08b42c86fc2c");
+    expect(meta.provenance.sha256).toBe("cd1222e90a31d53c5d58549322eb211cfb9e5478d75e9230031141fdad940864");
     expect(getAtlasEntry(67)?.frontier?.summary).toContain("130,000");
     expect(getAtlasEntry(552)).toMatchObject({
       frontier: { summary: expect.stringContaining("a(12..16)") },
@@ -83,7 +83,7 @@ describe("Erdős frontier atlas", () => {
 
   it("recommends only movable, unpackaged entries", () => {
     const result = listAtlasEntries({ boardability: "READY", reach: "MOVABLE", p42: false, limit: 51 });
-    expect(result.items.map(({ id }) => id)).toEqual([552]);
+    expect(result.items).toEqual([]);
     expect(result.items.every(({ beatable, p42_slug }) => beatable === "MOVABLE" && p42_slug === undefined)).toBe(true);
   });
 });

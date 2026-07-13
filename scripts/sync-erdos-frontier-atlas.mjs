@@ -6,9 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const UPSTREAM_REPOSITORY = "https://github.com/techno-optimist/erdos-frontier-atlas";
-export const UPSTREAM_COMMIT = "bd82a0ab34ffe4c33dffba0c402d54b61a5a0103";
+export const UPSTREAM_COMMIT = "0901734c487ab1e51ddc772ab45b08b42c86fc2c";
 export const UPSTREAM_PATH = "atlas/problems.json";
-export const UPSTREAM_SHA256 = "dd9d4bfebf6c99a086c9378df648bfd8c969873e08b428e1ad43e9204d68becd";
+export const UPSTREAM_SHA256 = "cd1222e90a31d53c5d58549322eb211cfb9e5478d75e9230031141fdad940864";
 export const UPSTREAM_RAW_URL = `https://raw.githubusercontent.com/techno-optimist/erdos-frontier-atlas/${UPSTREAM_COMMIT}/${UPSTREAM_PATH}`;
 
 const outputPath = fileURLToPath(
@@ -45,8 +45,11 @@ export function buildSnapshot(sourceBytes) {
   const coverage = erdos552?.compute?.coverage;
   if (erdos552?.compute?.schema !== "p42-atlas-compute-v1" || !Array.isArray(coverage)
       || !coverage.some((record) => record.axis === "n" && record.start === 12 && record.end === 16 && record.status === "CERTIFIED")
-      || !coverage.some((record) => record.axis === "n" && record.start === 17 && record.end === 17 && record.status === "UNKNOWN"
-        && record.result.includes("Lower endpoint m=21 certified"))) {
+      || !coverage.some((record) => record.axis === "m" && record.start === 21 && record.end === 21
+        && record.status === "CERTIFIED" && record.where?.n === 17)
+      || !coverage.some((record) => record.axis === "m" && record.start === 22 && record.end === 22
+        && record.status === "UNKNOWN" && record.where?.n === 17)
+      || erdos552?.p42_slug !== "c4-star-ramsey-a17") {
     throw new Error("Erdős 552 structured compute coverage is missing or changed");
   }
   for (const problem of source.problems) {
