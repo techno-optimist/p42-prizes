@@ -1,0 +1,27 @@
+schema_version: p42-problem/v1
+problem_id: c4-star-ramsey-a17
+title: C4 versus K1,17 star Ramsey lower-bound witness
+status: phase-0-packaging
+objective:
+  direction: maximize
+  score_name: vertex_count
+  seed_best: "21/1"
+  optimum: "22/1"  # lossless verifier cap, not a claim that 22 is attainable
+  min_improvement: "1/1"
+  gauge: "max(0, vertex_count - seed_best)"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "python3 verifier/verify.py --solution {solution}"
+  max_compute:
+    wall_seconds: 5
+    memory_mb: 128
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: optional-mirror

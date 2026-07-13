@@ -647,6 +647,51 @@ export const problems: Problem[] = [
     solutionSchema: { type: "object", required: ["signs"] },
     sampleSolution: { signs: "single +/- string of length N (Konev-Lisitsa l130000 seed witness)" },
   },
+  {
+    id: 16,
+    slug: "c4-star-ramsey-a17",
+    repoId: "c4-star-ramsey-a17",
+    title: "C4 vs 17-Star Ramsey",
+    status: "locked",
+    mode: "construction",
+    direction: "maximize",
+    scoreName: "vertex count",
+    seedBest: "21/1",
+    currentBest: "21/1",
+    optimum: "22/1",
+    minImprovement: "1/1",
+    bountyEth: "0.00",
+    challengeWindowHours: 72,
+    postingBondEth: "0.00",
+    challengeBondEth: "0.00",
+    verifierVersion: "0.1.0",
+    verifierImage: "sha256:local-dev",
+    verifierCommand: "make verify SOLUTION=path",
+    repoPath: "problems/c4-star-ramsey-a17",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No C4 vs 17-Star pool is deployed. Donations stay unavailable until immutable-image admission and chain reconciliation.",
+    ),
+    tagline: "Close Erdos #552 by finding a 22-vertex C4-free graph of minimum degree 5.",
+    description:
+      "Erdos problem #552 / OEIS A006672. The bundled exact 21-vertex witness proves R(C4,K1,17) >= 22; Parsons' general bound gives R(C4,K1,17) <= 23. A verified 22-vertex witness would close the remaining one-bit frontier and prove the exact value 23. The board stays locked until immutable-image and N-host admission evidence exist.",
+    statement:
+      "\\max\\ m \\quad \\text{over C}_4\\text{-free simple graphs } G \\text{ on } m \\text{ vertices with } \\delta(G) \\ge m-17, \\qquad 21 \\le m \\le 22",
+    statementCaveat:
+      "The value 22 is a proven lossless verifier cap, not a claim that a witness exists. The executable seed establishes only the lower bound R(C4,K1,17) >= 22; a valid score-22 submission would establish equality at 23.",
+    verifierStandard: [
+      "R1 exact integer graph checks",
+      "R2 ignores claimed score and improvement",
+      "H3 every unordered pair codegree checked",
+      "H5 lying-claim, duplicate, self-loop, C4, and degree-boundary fixtures",
+      "H6 open-witness and N-host admission pending",
+    ],
+    solutionSchema: { type: "object", required: ["vertices", "edges"] },
+    sampleSolution: {
+      vertices: 21,
+      edges: "49-edge repository-certified seed in problems/c4-star-ramsey-a17/tests/seed-n17-m21.json",
+    },
+  },
 ];
 
 // The research registry may contain verifier packages that have not crossed the

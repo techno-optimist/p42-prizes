@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/c4-star-ramsey-a17/solution.schema.json",
+  "x-p42-max-bytes": 16384,
+  "type": "object",
+  "required": ["vertices", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "vertices": {"type": "integer", "minimum": 1, "maximum": 22},
+    "edges": {
+      "type": "array",
+      "maxItems": 231,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {"type": "integer", "minimum": 0, "maximum": 21}
+      }
+    },
+    "source": {"type": "string"},
+    "claimed_score": {"type": "string"},
+    "claimed_improvement": {"type": "string"}
+  }
+}

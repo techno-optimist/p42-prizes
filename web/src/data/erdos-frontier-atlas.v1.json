@@ -2,14 +2,14 @@
   "snapshot_schema": "p42-erdos-frontier-atlas-v1",
   "provenance": {
     "repository": "https://github.com/techno-optimist/erdos-frontier-atlas",
-    "commit": "fdc4dade0e6464ab2569d686645052cc8479cb05",
+    "commit": "bd82a0ab34ffe4c33dffba0c402d54b61a5a0103",
     "source_path": "atlas/problems.json",
-    "source_sha256": "f544a5734647b7038b68c4919cba8afa28d93db600e5da8f1e6048c867e7a89c",
+    "source_sha256": "dd9d4bfebf6c99a086c9378df648bfd8c969873e08b428e1ad43e9204d68becd",
     "license": "MIT",
     "attribution": "Copyright (c) 2026 Kevin Russell"
   },
-  "atlas_version": "0.1.0",
-  "generated": "2026-07-11",
+  "atlas_version": "0.2.0",
+  "generated": "2026-07-13",
   "source": "research_sessions/res_20260711_erdos_machinery_audit (cultural-soliton-observatory), 51 deep audits over 95 triaged Erdos prize problems",
   "board_class_rule": {
     "READY": "R1: exact integer/rational witness check, a-priori bounded on a byte-capped witness, <= ~1 s per candidate. R2: a concrete OPEN numeric frontier that a single submitted finite witness strictly improves. R3: witness conditions discrete or open/robust (strict inequalities) so integer/rational witnesses are lossless. R4: one board per finite frontier object (duplicates cross-reference the carrier).",
@@ -1207,21 +1207,72 @@
       "title": "R(C_4, S_n): C4-vs-star Ramsey",
       "prize": "$100 (Erdős)",
       "statement": "Determine the Ramsey number R(C_4, S_n) where S_n = K_{1,n} is the star on n+1 vertices. In particular: is it true that for any c>0 there are infinitely many n with R(C_4, S_n) <= n + sqrt(n) - c?",
-      "finite_object": "short",
-      "current_record": "OEIS A006672 = {4,4,6,7,8,9,11,12,13,14,16} for n=1..11. Frontier term a(11)=R(C_4,K_{1,11})=16, added by Alex Towell on 30 Jun 2026 (11 days ago); a(12) OPEN. Sequence tagged nonn,hard,more. General upper bound Parsons 1975: R(C_4,K_{1,n}) <= n + ceil(sqrt(n)) + 1, tight (=) when n=q^2 or q^2+1 for prime power q, via polarity/projective-plane graphs.",
-      "frontier": "A006672 a(11) = R(C4,K_{1,11}) = 16 (Jun 2026); a(12) open",
+      "finite_object": "For fixed n, a simple red graph on m labeled vertices with no C4 and minimum degree at least m-n. Its complement then has no K1,n. Maximizing m improves the lower bound R(C4,K1,n) >= m+1.",
+      "current_record": "OEIS A006672 publishes {4,4,6,7,8,9,11,12,13,14,16} for n=1..11 (a(11) from Alex Towell, Jun 2026). P42 exact certificates establish a(12..16)={17,18,19,20,21}, meeting Parsons' upper bound, and a 21-vertex witness proves 22 <= a(17) <= 23.",
+      "frontier": "Repository-certified: a(12..16) = 17,18,19,20,21; next open term 22 <= a(17) <= 23",
       "beatable": "MOVABLE",
-      "beatable_reason": "short",
+      "beatable_reason": "The n=12..16 endpoints are closed and the n=17 lower endpoint is certified. Route new compute only to n=17,m=22: a C4-free graph on 22 vertices with minimum degree 5.",
       "fit_score": 7,
       "impact_score": 3,
       "impact_reason": "Prize is only $100 and is unclaimable by finite computation. Classic Erdős/Parsons problem with elegant projective-plane structure (moderate field interest), but a single new OEIS table term is a minor, non-prize-claiming contribution with negligible real-world relevance. The genuinely significant part (the asymptotic conjecture) is out of computational reach entirely.",
       "verifier": "Represent the red graph. Check C_4-freeness by requiring every vertex pair to have codegree <= 1. A blue S_n is absent exactly when every blue degree is <= n-1, equivalently every red degree is >= m-n on an m-vertex complete graph. Both checks are exact and tiny for m ~ 15-45.",
-      "attack": "For the next OEIS term a(n) (start n=12): (a) Lower bound — search for a C_4-free graph on m=a(n)-1 vertices with delta >= m-n via SAT/CP (Boolean edge vars, clause per 4-subset forbidding a C_4, cardinality constraints for min degree) or direct orbit/MIS enumeration seeded from truncated polarity graphs of PG(2,q); a hit is an instantly-verified witness. (b) Upper bound — prove UNSAT that no such graph exists on m=a(n) vertices, emit DRAT, verify. Parsons' bound (a(12)<=17) caps the search: a(12) is decided purely by whether a C_4-free graph on 16 vertices with delta>=4 exists — trivially SAT-scale. Compute: single term for n<=~20 is minutes-to-hours on a few cores; the UNSAT side for n in the 25-40 range with symmetry breaking is the cost driver but still farm-tractable for a handful of terms. Rough: <1 CPU-day per new term near the current frontier, growing toward the feasibility wall around n~40+.",
+      "attack": "Search only n=17,m=22 with exact C4 clauses and minimum-degree constraints; this reaches Parsons' upper bound. Require DRAT/LRAT for nonexistence.",
       "our_edge": "None beyond generic compute. The verifier is trivial (no moat), the object is small, and the exact table is already being actively extended by an outside worker (Alex Towell, added a(11) 11 days ago) with the same SAT tooling we'd deploy. We cannot claim the $100 prize this way (asymptotic), and on the table we'd merely be racing.",
-      "verdict": "PARTIAL. The $100 headline (general formula + the n+sqrt(n)-c asymptotic) is analytic/number-theoretic and cannot be settled by finite computation — a WALL requiring a new theorem. But there is a bona fide in-class finite sub-problem: extending the exact small-value table A006672 (R(C_4,K_{1,n})), which reduces cleanly to witness-search + SAT/DRAT nonexistence on tiny graphs with a poly-time exact verifier — the R(5,5)-style split (asymptotic side NONE, finite small-value side computable). Recommendation: NOT worth a campaign. The finite work is real but low-impact (does not claim the prize), we hold zero differential edge, and the sequence is already being actively pushed by an external computational worker using our exact tool. Pass, or at most opportunistically pick off a(12)/a(13) if idle farm capacity exists and we want a cheap verified OEIS contribution — not a prize play.",
+      "campaign_finding": "2026-07-13: local PySAT/CaDiCaL edge-SAT passes found exact witnesses meeting Parsons' upper bound for n=12..16 and a 21-vertex witness proving R(C4,K1,17) >= 22. Dependency-free verifiers recomputed all degrees and pair-codegrees; CHRONOS independently replayed n=12 and a separate hostile checker replayed all six graphs. A limited 1,000,000-conflict pass on n=17,m=22 returned UNKNOWN, not UNSAT. Do not repeat the certified regions or treat that timeout as a bound.",
+      "evidence": {
+        "status": "verified",
+        "checked_at": "2026-07-13T07:30:00Z",
+        "digest": "sha256:6fad85db5cc5925f5a5894446c56720433065652fecb284a1340262a70a914d3",
+        "artifact_path": "certificates/erdos-552/witnesses.json",
+        "artifact_sha256": "6fad85db5cc5925f5a5894446c56720433065652fecb284a1340262a70a914d3",
+        "verifier_path": "certificates/erdos-552/verify.py",
+        "verifier_sha256": "b31ab2d4950825fbb7270f986ada54652d152885fb158eaa3209178bfaa4bcb2",
+        "claims": [
+          "R(C4,K1,12)=17",
+          "R(C4,K1,13)=18",
+          "R(C4,K1,14)=19",
+          "R(C4,K1,15)=20",
+          "R(C4,K1,16)=21",
+          "R(C4,K1,17)>=22"
+        ],
+        "independent_review": "CHRONOS hostile-referee replay passed n=12; a separate direct C4 enumerator replayed all six graphs; the bundled verifier checks every graph identically."
+      },
+      "compute": {
+        "schema": "p42-atlas-compute-v1",
+        "status": "completed",
+        "method": "edge SAT with exact C4 clauses and sequential-counter minimum-degree constraints",
+        "solver": "PySAT 1.9.dev5 / CaDiCaL 1.9.5",
+        "hardware": "local Apple workstation; single solver process",
+        "parameter_region": {
+          "n_min": 12,
+          "n_max": 17,
+          "top_endpoint_only": true
+        },
+        "coverage": [
+          {
+            "axis": "n",
+            "start": 12,
+            "end": 16,
+            "status": "CERTIFIED",
+            "result": "Exact values 17,18,19,20,21",
+            "artifact_sha256": "6fad85db5cc5925f5a5894446c56720433065652fecb284a1340262a70a914d3"
+          },
+          {
+            "axis": "n",
+            "start": 17,
+            "end": 17,
+            "status": "UNKNOWN",
+            "result": "Lower endpoint m=21 certified; top endpoint m=22 undecided after bounded conflict budget",
+            "artifact_sha256": "6fad85db5cc5925f5a5894446c56720433065652fecb284a1340262a70a914d3"
+          }
+        ],
+        "result": "SAT witnesses closed n=12..16 and improved n=17 to 22..23; n=17,m=22 remained UNKNOWN",
+        "limits": "n=17 endpoint used a 1,000,000-conflict budget; UNKNOWN is not an exclusion."
+      },
+      "verdict": "PARTIAL. The asymptotic prize headline remains analytic and is not claimed. Exact certificates close n=12..16; n=17 remains open in 22..23.",
       "lane": "SAT+DRAT-nonexistence",
       "board_class": "READY",
-      "board_class_reason": "witness = C4-free red graph with minimum degree >= m-n; codegree and degree checks are exact and cheap; a(12) lower bound is witness-improvable",
+      "board_class_reason": "witness = C4-free red graph with minimum degree >= m-n; codegree and degree checks are exact and cheap; the next open cell a(17) is witness-improvable from the certified m=21 seed",
       "wall_reason": null,
       "p42_slug": null,
       "erdos_url": "https://www.erdosproblems.com/552",

@@ -7,9 +7,9 @@ network requests for atlas data.
 ## Pinned source
 
 - Repository: <https://github.com/techno-optimist/erdos-frontier-atlas>
-- Commit: `7435d8f35114d3dcb9831961656ca9613378bb1e`
+- Commit: `bd82a0ab34ffe4c33dffba0c402d54b61a5a0103`
 - Source path: `atlas/problems.json`
-- Source SHA-256: `ab05558b69d14348fb9bafd153d036ce6b9a51560e9ef57c71c2a5ab67574bde`
+- Source SHA-256: `dd9d4bfebf6c99a086c9378df648bfd8c969873e08b428e1ad43e9204d68becd`
 - License: MIT
 - Attribution: Copyright (c) 2026 Kevin Russell
 - Snapshot size: 51 entries
@@ -47,6 +47,6 @@ P42 problem, release, chain, and settlement records.
 Upstream `frontier` values occur as structured objects, strings, or null. The
 API gives nonempty values a common `summary`, copies explicit structured fields,
 and omits absent frontiers. It does not parse claims out of prose. Structured `evidence`
-and `compute` metadata are optional public fields; because this pinned source
-does not provide them, they remain absent. Boardability, verifier prose, links,
-and campaign notes are never promoted into inferred certification.
+and `compute` metadata are optional public fields. The pinned source currently
+provides both for Erdős #552; the API preserves them without promoting prose,
+links, or campaign notes into inferred certification.
