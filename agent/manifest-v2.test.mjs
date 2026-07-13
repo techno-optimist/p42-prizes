@@ -74,6 +74,10 @@ function v2Manifest() {
   first.admissionMatrixHashAlgorithm = "keccak256-utf8/v1";
   first.admissionMatrixHash = digestHash(firstMatrix);
   first.admissionMatrixURI = "ipfs://p42-admission-matrix-first";
+  first.objectiveProgramPath = "release/objective-program-1.bin";
+  first.objectiveProgramDigest = sha("objective-program-1");
+  first.objectiveProgramId = ethers.id("objective-program-1");
+  first.objectivePackageHash = ethers.id("objective-package-1");
   first.certifiedObjective = {
     seedBest: "1000",
     direction: "minimize",
@@ -88,6 +92,8 @@ function v2Manifest() {
   second.problemId = "2";
   second.problemSlug = "hadamard-second";
   second.metadataURI = "ipfs://p42-problem-metadata-second";
+  second.objectiveProgramPath = "release/objective-program-2.bin";
+  second.objectiveProgramDigest = sha("objective-program-2");
   second.verifierSourceDigest = secondSource;
   second.verifierSourceHash = digestHash(secondSource);
   second.verifierImageDigest = secondImage;
@@ -95,6 +101,8 @@ function v2Manifest() {
   second.admissionMatrixDigest = secondMatrix;
   second.admissionMatrixHash = digestHash(secondMatrix);
   second.admissionMatrixURI = "ar://p42-admission-matrix-second";
+  second.objectiveProgramId = ethers.id("objective-program-2");
+  second.objectivePackageHash = ethers.id("objective-package-2");
   second.contracts = secondContracts;
   second.pool = secondContracts.pool.address;
   second.ledger = secondContracts.ledger.address;
@@ -104,6 +112,8 @@ function v2Manifest() {
   second.maxSolutionBytes = "0";
 
   manifest.schema = MANIFEST_SCHEMA_V2;
+  manifest.roles.objectiveVerifier = address(0x44);
+  manifest.roles.objectiveVerifierCodehash = ethers.id("objective-verifier-runtime");
   manifest.releaseMode = "fixture";
   manifest.releaseEvidence = null;
   manifest.contracts = {
@@ -137,6 +147,10 @@ function v2Manifest() {
     problem.problemId = String(problemId);
     problem.problemSlug = `hadamard-${problemId}`;
     problem.metadataURI = `ipfs://p42-problem-metadata-${problemId}`;
+    problem.objectiveProgramPath = `release/objective-program-${problemId}.bin`;
+    problem.objectiveProgramDigest = sha(`objective-program-${problemId}`);
+    problem.objectiveProgramId = ethers.id(`objective-program-${problemId}`);
+    problem.objectivePackageHash = ethers.id(`objective-package-${problemId}`);
     problem.contracts = contracts;
     problem.pool = contracts.pool.address;
     problem.ledger = contracts.ledger.address;
@@ -187,6 +201,26 @@ test("solver validates v1 deployment evidence and config before startup", () => 
 
 function rebind(manifest) {
   manifest.deploymentConfigHash = computeDeploymentConfigHash(manifest);
+  return manifest;
+}
+
+function bindObjectivePackages(manifest) {
+  for (const problem of manifest.problems) {
+    problem.objectivePackageHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+      ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
+      [
+        "P42_OBJECTIVE_PACKAGE_V1",
+        BigInt(manifest.network.chainId),
+        manifest.contracts.registry.address,
+        BigInt(problem.problemId),
+        problem.specHash,
+        problem.verifierSourceHash,
+        problem.verifierImageHash,
+        problem.admissionMatrixHash,
+        problem.objectiveProgramId,
+      ],
+    ));
+  }
   return manifest;
 }
 const validateFixture = (manifest) => validateManifestEvidence(manifest, { allowFixture: true });
@@ -293,8 +327,10 @@ function productionManifest(capsule) {
     problemId: String(index + 1), problemSlug: `certified-${index + 1}`, verifierVersion: "1.0.0",
     specHash: `0x${createHash("sha256").update(`spec-${index}`).digest("hex")}`,
     verifierSourceDigest: sha(`source-${index}`), verifierImageDigest: sha(`image-${index}`), admissionMatrixDigest: sha(`matrix-${index}`),
+    objectiveProgramPath: `program-${index}.bin`, objectiveProgramDigest: sha(`objective-program-bytes-${index}`),
+    objectiveProgramId: `0x${createHash("sha256").update(`objective-program-${index}`).digest("hex")}`,
   }));
-  const slateBody = { schema: "p42-prizes/production-release-slate/v1", mode: "production", status: "ready", generatedAt: "2026-07-11T00:00:00.000Z", sourceCommit: manifest.deploymentCommit, imageRegistry: { path: "registry.json", digest: digest("f") }, boards: slateIdentities.map((identity, index) => ({ ...identity, problemPath: `problems/${identity.problemSlug}`, problemPackageDigest: identity.verifierSourceDigest, admissionMatrixPath: `matrix-${index}.json` })) };
+  const slateBody = { schema: "p42-prizes/production-release-slate/v1", mode: "production", status: "ready", generatedAt: "2026-07-11T00:00:00.000Z", sourceCommit: manifest.deploymentCommit, imageRegistry: { path: "registry.json", digest: digest("f") }, objectiveVerifier: { artifactPath: "objective-verifier.json", artifactDigest: sha("objective-verifier-artifact"), runtimeCodehash: manifest.roles.objectiveVerifierCodehash }, boards: slateIdentities.map((identity, index) => ({ ...identity, problemPath: `problems/${identity.problemSlug}`, problemPackageDigest: identity.verifierSourceDigest, admissionMatrixPath: `matrix-${index}.json` })) };
   const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
   const slate = { ...slateBody, slateDigest: `sha256:${createHash("sha256").update(canonical(slateBody)).digest("hex")}` };
   const template = deepCopy(manifest.problems[0]);
@@ -316,7 +352,13 @@ function productionManifest(capsule) {
   const bindContract = (entry) => {
     const artifact = capsuleByName.get(entry.name); const timestamp = 1_800_000_000;
     const types = (artifact.abi.find((item) => item.type === "constructor")?.inputs ?? []).map((input) => input.type);
-    if (entry.constructorArgs.length !== types.length) entry.constructorArgs = types.map((type) => type.endsWith("[]") ? [] : type === "address" ? address(1) : type === "bool" ? false : "0");
+    if (entry.constructorArgs.length !== types.length) entry.constructorArgs = types.map((type) => {
+      if (type.endsWith("[]")) return [];
+      if (type === "address") return address(1);
+      if (type === "bool") return false;
+      if (type === "bytes32") return ethers.ZeroHash;
+      return "0";
+    });
     const initCodeHash = ethers.keccak256(ethers.concat([artifact.creationCode, ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs)]));
     const runtimeHash = ethers.keccak256(reconstructExpectedRuntime(artifact, immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: timestamp })));
     Object.assign(entry, { capsuleArtifactDigest: artifact.artifactDigest, initCodeHash, constructorArgsHash: ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs)), deploymentBlockTimestamp: timestamp, blockTimestampEvidence: { timestamp, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: `0x${"a".repeat(64)}`, secondaryBlockHash: `0x${"a".repeat(64)}` }, runtimeCodeHash: runtimeHash, deployedCodeHash: runtimeHash, expectedRuntimeCodeHash: runtimeHash, primaryObservedRuntimeCodeHash: runtimeHash, secondaryObservedRuntimeCodeHash: runtimeHash });
@@ -344,6 +386,7 @@ function productionManifest(capsule) {
   });
   manifest.setupTransactions = deriveExactSetupOperations(manifest).map((operation) => ({ ...operation, status: "pending", executedOperationId: null, executedOperationClass: null, txHash: null, blockNumber: null }));
   manifest.sourceVerification.contracts.boards = manifest.problems.map(({ problemId }) => ({ problemId, pool: null, ledger: null, submissions: null, challenges: null }));
+  bindObjectivePackages(manifest);
   manifest.releaseMode = "production";
   manifest.releaseEvidence = { mode: "production", slateDigest: slate.slateDigest, capsuleDigest: capsule.capsuleDigest, configDigest: digest("b"), boardSetDigest: digest("0"), operationPlanDigest: digest("0"), contractCount: 46, boardCount: 10, operationCount: 110 };
   manifest.releaseEvidence.releaseBindingDigest = `sha256:${createHash("sha256").update(JSON.stringify({ capsuleDigest: manifest.releaseEvidence.capsuleDigest, configDigest: manifest.releaseEvidence.configDigest, deploymentCommit: manifest.deploymentCommit, slateDigest: manifest.releaseEvidence.slateDigest })).digest("hex")}`;
@@ -370,6 +413,14 @@ test("production indexer validation recomputes exact-ten release evidence and ru
   ]) {
     const { manifest: changed, slate } = productionManifest(capsule); mutate(changed); rebind(changed);
     assert.throws(() => validateManifestEvidence(changed, optionsFor(slate)), pattern, name);
+  }
+  for (const [name, mutate] of [
+    ["objective program ID", (m) => { m.problems[0].objectiveProgramId = ethers.id("substituted-objective-program"); }],
+    ["objective program digest", (m) => { m.problems[0].objectiveProgramDigest = sha("substituted-objective-program-bytes"); }],
+    ["objective verifier runtime", (m) => { m.roles.objectiveVerifierCodehash = ethers.id("substituted-objective-verifier-runtime"); }],
+  ]) {
+    const { manifest: changed, slate } = productionManifest(capsule); mutate(changed); rebind(changed);
+    assert.throws(() => validateManifestEvidence(changed, optionsFor(slate)), /trusted closed release slate/, name);
   }
   {
     const { manifest, slate } = productionManifest(capsule);

@@ -10,6 +10,7 @@ import {
   buildResolverQuorumSignatureArtifact,
   collectResolverQuorumSignatures,
 } from "../../agent/resolver-quorum.mjs";
+import { challengeManagerEffectiveSalt } from "../scripts/deployment-ceremony-helper.js";
 
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW = 72n * 60n * 60n;
@@ -18,6 +19,7 @@ const MANAGER_COUNT = 10;
 const RESOLVER_BOND = ethers.parseEther("0.005");
 const CHALLENGE_BOND = ethers.parseEther("0.03");
 const DA_HASH = ethers.id("resolver-quorum-da");
+const OBJECTIVE_PROGRAM = ethers.id("p42-objective-program-v1");
 const SHA = (digit) => `sha256:${digit.repeat(64)}`;
 
 const DECISION_TYPES = {
@@ -80,6 +82,17 @@ async function setNextTimestamp(timestamp) {
   await ethers.provider.send("evm_setNextBlockTimestamp", [Number(timestamp)]);
 }
 
+function objectivePackageHash(registry, problemId, binding) {
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+    ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
+    [
+      "P42_OBJECTIVE_PACKAGE_V1", 31337n, registry, BigInt(problemId), binding.specHash,
+      binding.verifierSourceHash, binding.verifierImageHash, binding.admissionMatrixHash,
+      binding.objectiveProgramId,
+    ],
+  ));
+}
+
 async function deployFixture(options = {}) {
   const [owner, treasury, signerA, signerB, signerC, solver, challenger, relayer, beneficiary, outsider] =
     await ethers.getSigners();
@@ -95,6 +108,9 @@ async function deployFixture(options = {}) {
   );
   await ledger.waitForDeployment();
   await pool.connect(owner).setLedger(await ledger.getAddress());
+  const Registry = await ethers.getContractFactory("P42ProblemRegistry");
+  const registry = await Registry.deploy(owner.address);
+  await registry.waitForDeployment();
 
   const Submissions = await ethers.getContractFactory("P42SubmissionManager");
   const SubmissionFactory = await ethers.getContractFactory("P42SubmissionManagerFactory");
@@ -125,10 +141,25 @@ async function deployFixture(options = {}) {
   const factory = await Factory.deploy();
   await factory.waitForDeployment();
   const Manager = await ethers.getContractFactory("P42ChallengeManager");
+  const ObjectiveVerifier = await ethers.getContractFactory("MockObjectiveVerifierGateway");
+  const objectiveVerifier = await ObjectiveVerifier.deploy();
+  await objectiveVerifier.waitForDeployment();
+  const objectiveVerifierCodehash = ethers.keccak256(
+    await ethers.provider.getCode(await objectiveVerifier.getAddress()),
+  );
   const startNonce = await ethers.provider.getTransactionCount(owner.address);
   const predictedQuorum = ethers.getCreateAddress({ from: owner.address, nonce: startNonce + MANAGER_COUNT * 2 });
   const managers = [];
+  const objectiveBindings = [];
   for (let i = 0; i < MANAGER_COUNT; i += 1) {
+    const objectiveBinding = {
+      specHash: ethers.id(`p42-spec-${i}`),
+      verifierSourceHash: ethers.id(`p42-source-${i}`),
+      verifierImageHash: ethers.id(`p42-image-${i}`),
+      admissionMatrixHash: ethers.id(`p42-admission-${i}`),
+      objectiveProgramId: ethers.id(`p42-objective-program-${i}`),
+    };
+    objectiveBindings.push(objectiveBinding);
     const tx = await factory.deployManager(
       ethers.id(`resolver-manager-${i}`),
       await submissionFactory.getAddress(),
@@ -138,6 +169,9 @@ async function deployFixture(options = {}) {
         betaBps: 500, minCounterBondWei: CHALLENGE_BOND, rerunCostWei: ethers.parseEther("0.01"),
         rerunCostMultiplierBps: 30_000, resolverDecisionBondWei: RESOLVER_BOND,
         resolverFraudWindowSeconds: FRAUD_WINDOW,
+        problemRegistry: await registry.getAddress(), problemId: i + 1,
+        objectivePackageHash: objectivePackageHash(await registry.getAddress(), i + 1, objectiveBinding),
+        objectiveProgramId: objectiveBinding.objectiveProgramId,
       },
     );
     const receipt = await tx.wait();
@@ -160,6 +194,8 @@ async function deployFixture(options = {}) {
     [signerA.address, signerB.address, signerC.address],
     2,
     managerAddresses,
+    await objectiveVerifier.getAddress(),
+    objectiveVerifierCodehash,
   );
   await quorum.waitForDeployment();
   assert.equal(await quorum.getAddress(), predictedQuorum);
@@ -180,7 +216,7 @@ async function deployFixture(options = {}) {
 
   return {
     owner, treasury, signerA, signerB, signerC, solver, challenger, relayer, beneficiary, outsider,
-    quorum, factory, submissionFactory, pool, ledger, managers, submissions, submissionId,
+    quorum, factory, submissionFactory, objectiveVerifier, objectiveBindings, registry, pool, ledger, managers, submissions, submissionId,
   };
 }
 
@@ -220,31 +256,66 @@ async function signaturesFor(fixture, decision, selected = [fixture.signerA, fix
   return signed.sort((left, right) => left.address.localeCompare(right.address)).map((entry) => entry.signature);
 }
 
+async function objectiveProofFor(fixture, { correctedChallengerWins, proofBeneficiary = fixture.beneficiary.address } = {}) {
+  const manager = fixture.managers[0];
+  const managerAddress = await manager.getAddress();
+  const challengeInstanceHash = await manager.challengeInstanceHashOf(fixture.submissionId);
+  const [contextHash] = await manager.objectiveProofContext(fixture.submissionId, challengeInstanceHash);
+  const programId = await fixture.quorum.objectiveProgramIdOf(managerAddress);
+  const chainId = (await ethers.provider.getNetwork()).chainId;
+  const journalDigest = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+    ["string", "uint256", "address", "address", "bytes32", "bytes32", "bool", "address"],
+    [
+      "P42_OBJECTIVE_VERDICT_JOURNAL_V1", chainId, await fixture.quorum.getAddress(), managerAddress,
+      programId, contextHash, correctedChallengerWins, proofBeneficiary,
+    ],
+  ));
+  return {
+    claim: {
+      manager: managerAddress,
+      submissionId: fixture.submissionId,
+      challengeInstanceHash,
+      correctedChallengerWins,
+      proofBeneficiary,
+    },
+    proof: ethers.AbiCoder.defaultAbiCoder().encode(["bytes32", "bytes32"], [programId, journalDigest]),
+    journalDigest,
+  };
+}
+
 describe("P42ResolverQuorum", function () {
   it("requires a strict-majority immutable signer quorum and an exact constructor-frozen manager set", async function () {
     const [owner, a, b, c, d, outsider] = await ethers.getSigners();
     const Quorum = await ethers.getContractFactory("P42ResolverQuorum");
     await expectCustomError(
-      Quorum.deploy(owner.address, outsider.address, RESOLVER_BOND, outsider.address, [a.address, b.address], 2, []),
+      Quorum.deploy(owner.address, outsider.address, RESOLVER_BOND, outsider.address, [a.address, b.address], 2, [], outsider.address, ethers.id("verifier-code")),
       Quorum,
       "BadSigner",
     );
     await expectCustomError(
-      Quorum.deploy(owner.address, outsider.address, RESOLVER_BOND, outsider.address, [a.address, b.address, c.address], 1, []), Quorum, "BadThreshold",
+      Quorum.deploy(owner.address, outsider.address, RESOLVER_BOND, outsider.address, [a.address, b.address, c.address], 1, [], outsider.address, ethers.id("verifier-code")), Quorum, "BadThreshold",
     );
     await expectCustomError(
       Quorum.deploy(
         owner.address, outsider.address, RESOLVER_BOND,
-        outsider.address, [a.address, b.address, c.address, d.address, outsider.address], 2, [],
+        outsider.address, [a.address, b.address, c.address, d.address, outsider.address], 2, [], outsider.address, ethers.id("verifier-code"),
       ),
       Quorum, "BadThreshold",
     );
     const Factory = await ethers.getContractFactory("P42ChallengeManagerFactory");
     const factory = await Factory.deploy();
     await factory.waitForDeployment();
+    const ObjectiveVerifier = await ethers.getContractFactory("MockObjectiveVerifierGateway");
+    const objectiveVerifier = await ObjectiveVerifier.deploy();
+    await objectiveVerifier.waitForDeployment();
+    const objectiveVerifierCodehash = ethers.keccak256(
+      await ethers.provider.getCode(await objectiveVerifier.getAddress()),
+    );
     await expectCustomError(
       Quorum.deploy(
         owner.address, outsider.address, RESOLVER_BOND, await factory.getAddress(), [a.address, b.address, c.address], 2, [],
+        await objectiveVerifier.getAddress(),
+        objectiveVerifierCodehash,
       ),
       Quorum,
       "WrongManagerCount",
@@ -264,11 +335,84 @@ describe("P42ResolverQuorum", function () {
       await fixture.factory.CANONICAL_SUBMISSION_MANAGER_FACTORY_CODEHASH(),
     );
     for (const manager of fixture.managers) assert.equal(await fixture.quorum.isManager(await manager.getAddress()), true);
+    const binding = fixture.objectiveBindings[0];
+    await fixture.registry.connect(fixture.owner).register({
+      specHash: binding.specHash,
+      verifierSourceHash: binding.verifierSourceHash,
+      verifierImageHash: binding.verifierImageHash,
+      admissionMatrixHash: binding.admissionMatrixHash,
+      metadataURI: "ipfs://resolver-quorum-board-1",
+      pool: await fixture.pool.getAddress(),
+      ledger: await fixture.ledger.getAddress(),
+      submissionManager: await fixture.submissions.getAddress(),
+      challengeManager: await fixture.managers[0].getAddress(),
+      challengeWindowSeconds: CHALLENGE_WINDOW,
+      minImprovementAtoms: 1,
+    });
+    assert.equal(await fixture.registry.problemCount(), 1n);
+    await expectCustomError(
+      fixture.registry.connect(fixture.owner).updateBeforeFunding(1, {
+        specHash: ethers.id("wrong-spec"),
+        verifierSourceHash: binding.verifierSourceHash,
+        verifierImageHash: binding.verifierImageHash,
+        admissionMatrixHash: binding.admissionMatrixHash,
+        metadataURI: "ipfs://resolver-quorum-board-1",
+        pool: await fixture.pool.getAddress(),
+        ledger: await fixture.ledger.getAddress(),
+        submissionManager: await fixture.submissions.getAddress(),
+        challengeManager: await fixture.managers[0].getAddress(),
+        challengeWindowSeconds: CHALLENGE_WINDOW,
+        minImprovementAtoms: 1,
+      }),
+      fixture.registry,
+      "P42_ZERO_HASH",
+    );
   });
 
   it("rejects a manager set containing a contract not created by the pinned factory", async function () {
     const Quorum = await ethers.getContractFactory("P42ResolverQuorum");
     await expectCustomError(deployFixture({ substituteManager: true }), Quorum, "BadManager");
+  });
+
+  it("binds every objective field into the effective CREATE2 salt", async function () {
+    const fixture = await deployFixture();
+    const manager = fixture.managers[0];
+    const requestedSalt = ethers.id("resolver-manager-0");
+    const canonical = {
+      owner: fixture.owner.address, resolver: await fixture.quorum.getAddress(), treasury: fixture.treasury.address,
+      submissionManager: await fixture.submissions.getAddress(), challengeWindowSeconds: CHALLENGE_WINDOW,
+      betaBps: 500, minCounterBondWei: CHALLENGE_BOND, rerunCostWei: ethers.parseEther("0.01"),
+      rerunCostMultiplierBps: 30_000, resolverDecisionBondWei: RESOLVER_BOND,
+      resolverFraudWindowSeconds: FRAUD_WINDOW,
+      problemRegistry: await fixture.registry.getAddress(), problemId: 1,
+      objectivePackageHash: (await manager.objectiveBinding())[2],
+      objectiveProgramId: fixture.objectiveBindings[0].objectiveProgramId,
+    };
+    const substituted = {
+      ...canonical,
+      objectivePackageHash: ethers.id("attacker-package"),
+      objectiveProgramId: ethers.id("attacker-program"),
+    };
+    const canonicalSalt = await fixture.factory.effectiveSalt(
+      requestedSalt, await fixture.submissionFactory.getAddress(), canonical,
+    );
+    assert.equal(
+      challengeManagerEffectiveSalt(ethers, requestedSalt, await fixture.submissionFactory.getAddress(), canonical),
+      canonicalSalt,
+    );
+    const substitutedSalt = await fixture.factory.effectiveSalt(
+      requestedSalt, await fixture.submissionFactory.getAddress(), substituted,
+    );
+    assert.notEqual(canonicalSalt, substitutedSalt);
+    const receipt = await (await fixture.factory.deployManager(
+      requestedSalt, await fixture.submissionFactory.getAddress(), substituted,
+    )).wait();
+    const deployed = receipt.logs.map((log) => {
+      try { return fixture.factory.interface.parseLog(log); } catch { return null; }
+    }).find((log) => log?.name === "CanonicalManagerDeployed");
+    assert.ok(deployed);
+    assert.equal(deployed.args.salt, substitutedSalt);
+    assert.notEqual(deployed.args.manager, await manager.getAddress());
   });
 
   it("rejects a genuine manager deployment attempt bound to a noncanonical submission manager", async function () {
@@ -290,6 +434,9 @@ describe("P42ResolverQuorum", function () {
           betaBps: 500, minCounterBondWei: CHALLENGE_BOND, rerunCostWei: ethers.parseEther("0.01"),
           rerunCostMultiplierBps: 30_000, resolverDecisionBondWei: RESOLVER_BOND,
           resolverFraudWindowSeconds: FRAUD_WINDOW,
+          problemRegistry: await fixture.registry.getAddress(), problemId: 11,
+          objectivePackageHash: ethers.id("spoof-objective-package"),
+          objectiveProgramId: OBJECTIVE_PROGRAM,
         },
       ),
       fixture.factory,
@@ -323,6 +470,9 @@ describe("P42ResolverQuorum", function () {
           betaBps: 500, minCounterBondWei: CHALLENGE_BOND, rerunCostWei: ethers.parseEther("0.01"),
           rerunCostMultiplierBps: 30_000, resolverDecisionBondWei: RESOLVER_BOND,
           resolverFraudWindowSeconds: FRAUD_WINDOW,
+          problemRegistry: await fixture.registry.getAddress(), problemId: 11,
+          objectivePackageHash: ethers.id("wrong-governance-objective-package"),
+          objectiveProgramId: OBJECTIVE_PROGRAM,
         },
       ),
       fixture.factory,
@@ -478,6 +628,78 @@ describe("P42ResolverQuorum", function () {
       fixture.quorum.proveEquivocation(first.decision, firstSignatures, second.decision, secondSignatures),
       fixture.quorum, "EquivocationAlreadyProven",
     );
+  });
+
+  it("permissionlessly corrects a wrong quorum verdict and closes the proved reveal instance", async function () {
+    const fixture = await deployFixture();
+    await fixture.quorum.connect(fixture.signerA).fundStake({ value: RESOLVER_BOND });
+    const pending = await decisionFor(fixture, { nonce: 14n, challengerWins: true });
+    await fixture.quorum.resolve(
+      pending.decision, pending.transcriptURI, await signaturesFor(fixture, pending.decision),
+    );
+
+    const objective = await objectiveProofFor(fixture, { correctedChallengerWins: false });
+    await expectCustomError(
+      fixture.quorum.connect(fixture.outsider).proveObjectiveFraud(
+        objective.claim, ethers.hexlify(ethers.randomBytes(64)),
+      ),
+      fixture.quorum,
+      "BadObjectiveProof",
+    );
+    const copied = { ...objective.claim, proofBeneficiary: fixture.outsider.address };
+    await expectCustomError(
+      fixture.quorum.connect(fixture.outsider).proveObjectiveFraud(copied, objective.proof),
+      fixture.quorum,
+      "BadObjectiveProof",
+    );
+
+    await fixture.quorum.connect(fixture.outsider).proveObjectiveFraud(objective.claim, objective.proof);
+    const resolverBond = await fixture.managers[0].resolverBonds(fixture.submissionId);
+    assert.equal(resolverBond.amountWei, 0n);
+    assert.notEqual(resolverBond.slashProofHash, ethers.ZeroHash);
+    assert.equal(
+      await fixture.managers[0].claimableBondWei(fixture.beneficiary.address), RESOLVER_BOND,
+    );
+    assert.equal(
+      await fixture.managers[0].claimableBondWei(fixture.treasury.address), CHALLENGE_BOND,
+    );
+    assert.equal(
+      await fixture.submissions.objectiveClearedRevealInstanceHashOf(fixture.submissionId),
+      await fixture.submissions.revealInstanceHashOf(fixture.submissionId),
+    );
+    await expectCustomError(
+      fixture.managers[0].connect(fixture.outsider).challenge(
+        fixture.submissionId,
+        await fixture.submissions.revealInstanceHashOf(fixture.submissionId),
+        ethers.id("repeat challenge after objective proof"),
+        { value: CHALLENGE_BOND },
+      ),
+      fixture.submissions,
+      "P42_OBJECTIVE_CHALLENGE_ALREADY_CLEARED",
+    );
+    await fixture.submissions.connect(fixture.solver).finalize(fixture.submissionId, ethers.ZeroHash);
+  });
+
+  it("applies an objective challenger win and rewards the proof-bound beneficiary", async function () {
+    const fixture = await deployFixture();
+    await fixture.quorum.connect(fixture.signerA).fundStake({ value: RESOLVER_BOND });
+    const pending = await decisionFor(fixture, { nonce: 15n, challengerWins: false });
+    await fixture.quorum.resolve(
+      pending.decision, pending.transcriptURI, await signaturesFor(fixture, pending.decision),
+    );
+    const objective = await objectiveProofFor(fixture, { correctedChallengerWins: true });
+    await fixture.quorum.connect(fixture.outsider).proveObjectiveFraud(objective.claim, objective.proof);
+    assert.equal(
+      await fixture.managers[0].claimableBondWei(fixture.challenger.address), CHALLENGE_BOND,
+    );
+    assert.equal(
+      await fixture.managers[0].claimableBondWei(fixture.beneficiary.address), RESOLVER_BOND,
+    );
+    assert.equal(
+      await fixture.submissions.claimableBondWei(fixture.challenger.address), ethers.parseEther("0.01"),
+    );
+    const submission = await fixture.submissions.submissions(fixture.submissionId);
+    assert.equal(submission.status, 5n);
   });
 
   it("rotates strict-majority signer sets monotonically and rejects stale-epoch execution", async function () {

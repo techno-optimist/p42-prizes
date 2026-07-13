@@ -3,10 +3,18 @@ pragma solidity ^0.8.24;
 
 import {P42Math} from "./P42Math.sol";
 
+interface IP42ObjectiveBindingFactory {
+    function objectiveBindingOf(address manager)
+        external
+        view
+        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId);
+}
+
 interface IP42SubmissionChallengeHook {
     function markChallenged(uint256 submissionId) external;
     function resolveChallenge(uint256 submissionId, bool challengerWins, address beneficiary) external;
     function cancelChallenge(uint256 submissionId) external;
+    function resolveObjectiveChallenge(uint256 submissionId, bool challengerWins, address beneficiary) external;
     function disputedEntitlementWei(uint256 submissionId) external view returns (uint256);
     function solverOf(uint256 submissionId) external view returns (address);
     function revealInstanceHashOf(uint256 submissionId) external view returns (bytes32);
@@ -42,6 +50,8 @@ contract P42ChallengeManager {
     error P42_RESOLVER_BOND_LOCKED(uint64 releaseAt, uint64 nowAt);
     error P42_RESOLVER_FRAUD_WINDOW_CLOSED(uint64 releaseAt, uint64 nowAt);
     error P42_EMPTY_FRAUD_PROOF_HASH();
+    error P42_OBJECTIVE_OUTCOME_NOT_CONTRADICTORY();
+    error P42_FRAUD_PROOF_BENEFICIARY_ZERO();
     error P42_EMPTY_REVEAL_INSTANCE_HASH();
     error P42_REVEAL_INSTANCE_MISMATCH(bytes32 expected, bytes32 actual);
     error P42_EMPTY_CHALLENGE_INSTANCE_HASH();
@@ -74,6 +84,7 @@ contract P42ChallengeManager {
     }
 
     address public immutable owner;
+    address public factory;
     address public immutable resolver;
     address public immutable treasury;
     IP42SubmissionChallengeHook public immutable submissionManager;
@@ -134,9 +145,17 @@ contract P42ChallengeManager {
     );
     event ResolverBondSlashed(
         uint256 indexed submissionId,
-        address indexed treasury,
+        address indexed beneficiary,
         uint256 amount,
         bytes32 proofHash,
+        bytes32 challengeInstanceHash
+    );
+    event ObjectiveFraudProven(
+        uint256 indexed submissionId,
+        address indexed proofBeneficiary,
+        bytes32 indexed proofHash,
+        bool correctedChallengerWins,
+        uint256 resolverBondRewardWei,
         bytes32 challengeInstanceHash
     );
     event BondClaimed(address indexed claimant, uint256 amount);
@@ -184,6 +203,7 @@ contract P42ChallengeManager {
         require(resolverDecisionBondWei_ > 0, "P42_RESOLVER_BOND_ZERO");
         if (betaBps_ > MAX_BETA_BPS) revert P42_BAD_BETA();
         owner = owner_;
+        factory = msg.sender;
         resolver = resolver_;
         treasury = treasury_;
         submissionManager = IP42SubmissionChallengeHook(submissionManager_);
@@ -489,6 +509,119 @@ contract P42ChallengeManager {
         submissionManager.cancelChallenge(submissionId);
         emit ResolverBondSlashed(submissionId, treasury, amount, proofHash, expectedChallengeInstanceHash);
         emit ResolverDecisionCancelled(submissionId, challenger, proofHash, expectedChallengeInstanceHash);
+    }
+
+    /// @notice Applies an objectively proven correction to a pending resolver
+    /// decision. The resolver adapter may call this only after its immutable
+    /// verifier gateway accepts a proof bound to this exact challenge instance.
+    function applyObjectiveResolution(
+        uint256 submissionId,
+        bytes32 expectedChallengeInstanceHash,
+        bool correctedChallengerWins,
+        bytes32 proofHash,
+        address proofBeneficiary
+    ) external onlyResolver {
+        Challenge storage current = challenges[submissionId];
+        if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        _requireChallengeInstance(submissionId, expectedChallengeInstanceHash);
+        if (!current.decisionPending) revert P42_NO_PENDING_DECISION();
+        if (proofHash == bytes32(0)) revert P42_EMPTY_FRAUD_PROOF_HASH();
+        if (proofBeneficiary == address(0)) revert P42_FRAUD_PROOF_BENEFICIARY_ZERO();
+        if (correctedChallengerWins == current.challengerWins) {
+            revert P42_OBJECTIVE_OUTCOME_NOT_CONTRADICTORY();
+        }
+
+        ResolverBond storage decisionBond = resolverBonds[submissionId];
+        uint256 resolverBond = decisionBond.amountWei;
+        if (resolverBond == 0) revert P42_NO_RESOLVER_BOND();
+        if (block.timestamp >= decisionBond.releaseAt) {
+            revert P42_RESOLVER_FRAUD_WINDOW_CLOSED(decisionBond.releaseAt, uint64(block.timestamp));
+        }
+
+        address challenger = current.challenger;
+        uint256 challengeBond = current.challengeBondWei;
+        current.decisionPending = false;
+        current.resolved = true;
+        current.challengerWins = correctedChallengerWins;
+        decisionBond.amountWei = 0;
+        decisionBond.slashProofHash = proofHash;
+        delete resolverBondBeneficiaryOf[submissionId];
+
+        // The proof beneficiary is journal-bound by the adapter, preventing a
+        // mempool observer from redirecting the resolver-bond reward.
+        claimableBondWei[proofBeneficiary] += resolverBond;
+        if (correctedChallengerWins) {
+            claimableBondWei[challenger] += challengeBond;
+        } else {
+            claimableBondWei[treasury] += challengeBond;
+        }
+
+        submissionManager.resolveObjectiveChallenge(submissionId, correctedChallengerWins, challenger);
+        if (!correctedChallengerWins) delete challenges[submissionId];
+
+        emit ResolverBondSlashed(
+            submissionId, proofBeneficiary, resolverBond, proofHash, expectedChallengeInstanceHash
+        );
+        emit ObjectiveFraudProven(
+            submissionId,
+            proofBeneficiary,
+            proofHash,
+            correctedChallengerWins,
+            resolverBond,
+            expectedChallengeInstanceHash
+        );
+        emit Resolved(submissionId, correctedChallengerWins, expectedChallengeInstanceHash);
+    }
+
+    /// @notice Canonical public input for an objective verifier proof. The
+    /// reveal fingerprint binds the solver, commitment, solution hash/CID,
+    /// claimed score, and challenge deadline in P42SubmissionManager.
+    function objectiveProofContext(uint256 submissionId, bytes32 expectedChallengeInstanceHash)
+        external
+        view
+        returns (bytes32 contextHash, bool pendingChallengerWins)
+    {
+        Challenge storage current = challenges[submissionId];
+        if (current.challenger == address(0)) revert P42_UNKNOWN_CHALLENGE();
+        _requireChallengeInstance(submissionId, expectedChallengeInstanceHash);
+        if (!current.decisionPending) revert P42_NO_PENDING_DECISION();
+        bytes32 pendingDecisionContext = keccak256(
+            abi.encode(
+                expectedChallengeInstanceHash,
+                challengeRevealInstanceHashOf[submissionId],
+                current.challenger,
+                current.reasonHash,
+                current.challengerWins,
+                current.transcriptHash,
+                keccak256(bytes(current.transcriptURI)),
+                current.verdictHash
+            )
+        );
+        contextHash = keccak256(
+            abi.encode(
+                "P42_OBJECTIVE_CHALLENGE_CONTEXT_V1",
+                block.chainid,
+                address(this),
+                address(submissionManager),
+                _objectiveBindingContext(),
+                submissionId,
+                pendingDecisionContext
+            )
+        );
+        pendingChallengerWins = current.challengerWins;
+    }
+
+    function objectiveBinding()
+        public
+        view
+        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId)
+    {
+        return IP42ObjectiveBindingFactory(factory).objectiveBindingOf(address(this));
+    }
+
+    function _objectiveBindingContext() private view returns (bytes32) {
+        (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId) = objectiveBinding();
+        return keccak256(abi.encode(registry, problemId, packageHash, programId));
     }
 
     function claimBond() external nonReentrant {

@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { link, lstat, open, unlink } from "node:fs/promises";
 import { basename, delimiter, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import { keccak256 } from "ethers";
 
 import {
   ADMISSION_MATRIX_HASH_ALGORITHM,
@@ -51,8 +52,8 @@ validateProductionBoardEvidence(productionEvidence);
 if (productionEvidence?.schema !== "p42-prizes/production-board-evidence/v1" || canonical(productionEvidence?.boards?.map((board) => board?.slug)) !== canonical([productionBoardSet.boards[0], productionBoardSet.boards[6]])) throw new Error("canonical production board evidence identity mismatch");
 export const PRODUCTION_LAUNCH_SLUGS = Object.freeze([...productionBoardSet.boards]);
 
-const RELEASE_IDENTITY_KEYS = ["problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"];
-const RELEASE_BOARD_KEYS = ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest"];
+const RELEASE_IDENTITY_KEYS = ["problemId", "problemSlug", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest", "objectiveProgramPath", "objectiveProgramDigest", "objectiveProgramId"];
+const RELEASE_BOARD_KEYS = ["problemId", "problemSlug", "problemPath", "problemPackageDigest", "verifierVersion", "specHash", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixPath", "admissionMatrixDigest", "objectiveProgramPath", "objectiveProgramDigest", "objectiveProgramId"];
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
 const PLACEHOLDER_DIGEST_RE = /^sha256:([0-9a-f])\1{63}$/;
 const IMAGE_REPOSITORY_RE = /^(?=.{1,255}$)(?:localhost|[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?)\/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/;
@@ -80,25 +81,32 @@ export function releaseBoardIdentity(problem, index) {
     verifierSourceDigest: problem.verifierSourceDigest,
     verifierImageDigest: problem.verifierImageDigest,
     admissionMatrixDigest: problem.admissionMatrixDigest,
+    objectiveProgramPath: problem.objectiveProgramPath,
+    objectiveProgramDigest: problem.objectiveProgramDigest,
+    objectiveProgramId: problem.objectiveProgramId,
   };
 }
 
 export function validateProductionReleaseSlate(slate, problems) {
-  const root = exactObject(slate, ["schema", "mode", "status", "generatedAt", "sourceCommit", "imageRegistry", "boards", "slateDigest"], "production release slate");
+  const root = exactObject(slate, ["schema", "mode", "status", "generatedAt", "sourceCommit", "imageRegistry", "objectiveVerifier", "boards", "slateDigest"], "production release slate");
   if (root.schema !== PRODUCTION_RELEASE_SLATE_SCHEMA || root.mode !== RELEASE_MODES.PRODUCTION || root.status !== "ready") throw new Error("production release slate must have production/ready identity");
   if (!/^[0-9a-f]{40}$/.test(root.sourceCommit) || !Number.isFinite(Date.parse(root.generatedAt))) throw new Error("production release slate provenance is invalid");
   exactObject(root.imageRegistry, ["path", "digest"], "production release slate.imageRegistry");
   if (!DIGEST_RE.test(root.imageRegistry.digest) || PLACEHOLDER_DIGEST_RE.test(root.imageRegistry.digest)) throw new Error("production image registry digest is placeholder or invalid");
+  exactObject(root.objectiveVerifier, ["artifactPath", "artifactDigest", "runtimeCodehash"], "production release slate.objectiveVerifier");
+  if (!DIGEST_RE.test(root.objectiveVerifier.artifactDigest) || PLACEHOLDER_DIGEST_RE.test(root.objectiveVerifier.artifactDigest)
+      || !/^0x[0-9a-f]{64}$/.test(root.objectiveVerifier.runtimeCodehash)
+      || /^0x([0-9a-f])\1{63}$/.test(root.objectiveVerifier.runtimeCodehash)) throw new Error("production objective verifier artifact is placeholder or invalid");
   if (!Array.isArray(root.boards) || root.boards.length !== 10) throw new Error("production release slate must contain exactly 10 boards");
   root.boards.forEach((board, index) => {
     exactObject(board, RELEASE_BOARD_KEYS, `production release slate.boards[${index}]`);
     if (board.problemId !== String(index + 1)) throw new Error(`production release slate board ${index + 1} must have ordered problemId ${index + 1}`);
     if (board.problemPath !== `problems/${board.problemSlug}`) throw new Error(`production board ${index + 1} problemPath must be canonical`);
-    for (const field of ["problemPackageDigest", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"]) {
+    for (const field of ["problemPackageDigest", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest", "objectiveProgramDigest"]) {
       if (!DIGEST_RE.test(board[field]) || PLACEHOLDER_DIGEST_RE.test(board[field]) || /local-dev|placeholder/i.test(board[field])) throw new Error(`production board ${index + 1} ${field} is placeholder or invalid`);
     }
   });
-  for (const field of ["problemPackageDigest", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest"]) {
+  for (const field of ["problemPackageDigest", "verifierSourceDigest", "verifierImageDigest", "admissionMatrixDigest", "objectiveProgramDigest"]) {
     if (new Set(root.boards.map((board) => board[field])).size !== 10) throw new Error(`production ${field} values must be distinct`);
   }
   const { slateDigest, ...body } = root;
@@ -153,12 +161,20 @@ export function createProductionReleaseSlate({
   imageRegistryPath,
   imageRegistryBytes,
   imageDossier,
+  objectiveVerifierArtifactPath,
+  objectiveVerifierArtifactBytes,
+  objectiveVerifierArtifact,
   problems,
   now = Date.now(),
 } = {}) {
   if (!/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/.test(imageRegistryPath ?? "")) throw new Error("production image dossier path must be repository-relative");
   if (!(Buffer.isBuffer(imageRegistryBytes) || imageRegistryBytes instanceof Uint8Array)) throw new Error("production image dossier exact bytes are required");
   const dossier = validateVerifierImageReleaseDossier(imageDossier, { sourceCommit, problems, now });
+  if (!/^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[A-Za-z0-9._/-]+$/.test(objectiveVerifierArtifactPath ?? "")) throw new Error("objective verifier artifact path must be repository-relative");
+  if (!(Buffer.isBuffer(objectiveVerifierArtifactBytes) || objectiveVerifierArtifactBytes instanceof Uint8Array)) throw new Error("objective verifier artifact exact bytes are required");
+  const objectiveVerifierDeployedBytecode = objectiveVerifierArtifact?.deployedBytecode;
+  if (typeof objectiveVerifierDeployedBytecode !== "string" || !/^0x(?:[0-9a-fA-F]{2})+$/.test(objectiveVerifierDeployedBytecode)) throw new Error("objective verifier artifact must contain nonempty deployedBytecode");
+  const objectiveVerifierRuntimeCodehash = keccak256(objectiveVerifierDeployedBytecode);
   const generatedAtMs = Date.parse(generatedAt);
   const canonicalGeneratedAt = Number.isFinite(generatedAtMs) ? new Date(generatedAtMs).toISOString().replace(".000Z", "Z") : null;
   if (!Number.isFinite(generatedAtMs) || canonicalGeneratedAt !== generatedAt || generatedAtMs < Date.parse(dossier.published_at_utc) || generatedAtMs > now) throw new Error("production slate generatedAt is invalid, future-dated, or predates image publication");
@@ -172,6 +188,11 @@ export function createProductionReleaseSlate({
       path: imageRegistryPath,
       digest: `sha256:${createHash("sha256").update(imageRegistryBytes).digest("hex")}`,
     },
+    objectiveVerifier: {
+      artifactPath: objectiveVerifierArtifactPath,
+      artifactDigest: `sha256:${createHash("sha256").update(objectiveVerifierArtifactBytes).digest("hex")}`,
+      runtimeCodehash: objectiveVerifierRuntimeCodehash,
+    },
     boards: problems.map((problem, index) => ({
       problemId: String(index + 1),
       problemSlug: problem.problemSlug,
@@ -183,6 +204,9 @@ export function createProductionReleaseSlate({
       verifierImageDigest: problem.verifierImageDigest,
       admissionMatrixPath: problem.admissionMatrixPath,
       admissionMatrixDigest: problem.admissionMatrixDigest,
+      objectiveProgramPath: problem.objectiveProgramPath,
+      objectiveProgramDigest: problem.objectiveProgramDigest,
+      objectiveProgramId: problem.objectiveProgramId,
     })),
   };
   const slate = { ...body, slateDigest: sha256Canonical(body) };
@@ -336,6 +360,17 @@ function resolveWithin(root, relativePath, label) {
   return path;
 }
 
+function readBoundArtifact(path, label, maxBytes = 64 * 1024 * 1024) {
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.nlink !== 1 || metadata.size < 1 || metadata.size > maxBytes) throw new Error(`${label} is not a bounded nonempty single-link regular file`);
+    return readFileSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export function validateProductionSlatePreflight(ethers, slate, config, {
   repoRoot,
   evidenceRoot = repoRoot,
@@ -356,11 +391,21 @@ export function validateProductionSlatePreflight(ethers, slate, config, {
     sourceCommit: slate.sourceCommit,
     problems: config.problems,
   });
+  const objectiveVerifierPath = resolveWithin(evidence, slate.objectiveVerifier.artifactPath, "objective verifier artifact path");
+  const { bytes: objectiveVerifierBytes, value: objectiveVerifierArtifact } = readDossier(objectiveVerifierPath, { trustedRoot: evidence });
+  if (`sha256:${createHash("sha256").update(objectiveVerifierBytes).digest("hex")}` !== slate.objectiveVerifier.artifactDigest) throw new Error("objective verifier artifact digest mismatch");
+  if (typeof objectiveVerifierArtifact?.deployedBytecode !== "string" || !/^0x(?:[0-9a-fA-F]{2})+$/.test(objectiveVerifierArtifact.deployedBytecode)
+      || keccak256(objectiveVerifierArtifact.deployedBytecode) !== slate.objectiveVerifier.runtimeCodehash) throw new Error("objective verifier runtime codehash is not derived from its artifact");
+  if (config.roles.objectiveVerifierCodehash !== slate.objectiveVerifier.runtimeCodehash) throw new Error("objective verifier runtime codehash is outside the closed release");
   const images = new Map(registry.boards.map((entry) => [entry.slug, entry.index_digest]));
   return slate.boards.map((board, index) => {
     const problemPath = resolveWithin(root, board.problemPath, `board ${index + 1} problemPath`);
     const matrixPath = resolveWithin(evidence, board.admissionMatrixPath, `board ${index + 1} admissionMatrixPath`);
     const { bytes: matrixBytes, value: matrix } = readMatrixSnapshot(matrixPath, { trustedRoot: evidence });
+    const objectiveProgramPath = resolveWithin(evidence, board.objectiveProgramPath, `board ${index + 1} objectiveProgramPath`);
+    const objectiveProgramBytes = readBoundArtifact(objectiveProgramPath, `board ${index + 1} objective program`);
+    if (`sha256:${createHash("sha256").update(objectiveProgramBytes).digest("hex")}` !== board.objectiveProgramDigest) throw new Error(`production board ${index + 1} objective program digest mismatch`);
+    if (keccak256(objectiveProgramBytes) !== board.objectiveProgramId) throw new Error(`production board ${index + 1} objective program ID is not keccak256(exact program bytes)`);
     runAdmitReady({ repoRoot: root, problemPath, matrixPath, matrixBytes, pythonExecutable });
     if (matrix.matrix_hash !== board.admissionMatrixDigest || matrix.problem_id !== board.problemSlug || matrix.verifier_version !== board.verifierVersion || matrix.verifier_image !== board.verifierImageDigest) throw new Error(`production board ${index + 1} admission matrix identity mismatch`);
     if (matrix.source?.tree_hash !== board.verifierSourceDigest || board.problemPackageDigest !== board.verifierSourceDigest) throw new Error(`production board ${index + 1} package/source provenance mismatch`);
@@ -377,7 +422,7 @@ export function bindReleaseMode(config, { releaseMode, slate } = {}) {
 
 const ROOT_KEYS = ["schema", "governance", "roles", "parameters", "problems"];
 const GOVERNANCE_KEYS = ["signers", "threshold", "delaySeconds", "guardian"];
-const ROLE_KEYS = ["treasury", "resolver"];
+const ROLE_KEYS = ["treasury", "resolver", "objectiveVerifier", "objectiveVerifierCodehash"];
 const PARAMETER_ENV = Object.freeze({
   alphaBps: "P42_ALPHA_BPS",
   betaBps: "P42_BETA_BPS",
@@ -405,6 +450,9 @@ const BOARD_ENV = Object.freeze({
   metadataURI: "P42_METADATA_URI",
   seedScoreAtoms: "P42_SEED_SCORE_ATOMS",
   minImprovementAtoms: "P42_MIN_IMPROVEMENT_ATOMS",
+  objectiveProgramPath: "P42_OBJECTIVE_PROGRAM_PATH",
+  objectiveProgramDigest: "P42_OBJECTIVE_PROGRAM_DIGEST",
+  objectiveProgramId: "P42_OBJECTIVE_PROGRAM_ID",
 });
 const BOARD_KEYS = [
   ...Object.keys(BOARD_ENV),
@@ -468,6 +516,11 @@ function problemEnv(ethers, input, problem) {
     P42_GUARDIAN_ADDRESS: requiredString(governance.guardian, "governance.guardian"),
     P42_TREASURY_ADDRESS: requiredString(roles.treasury, "roles.treasury"),
     P42_RESOLVER_ADDRESS: requiredString(roles.resolver, "roles.resolver"),
+    P42_OBJECTIVE_VERIFIER_ADDRESS: requiredString(roles.objectiveVerifier, "roles.objectiveVerifier"),
+    P42_OBJECTIVE_VERIFIER_CODEHASH: requiredString(
+      roles.objectiveVerifierCodehash,
+      "roles.objectiveVerifierCodehash",
+    ),
     P42_ADMISSION_MATRIX_HASH: admission.admissionMatrixHash,
     P42_ONCHAIN_DA: board.onchainDa === true ? "true" : board.onchainDa === false ? "false" : (() => {
       throw new Error("problem.onchainDa must be a boolean");

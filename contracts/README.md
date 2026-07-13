@@ -104,7 +104,8 @@ event/state consistency report under `deployments/base-sepolia/reconciliation/`.
 ## Still Missing For Gate 1
 
 - real DA/permanence receipt verification, not just hash gates
-- fraud-proof/equivalent resolver and slashing adjudication beyond the owner-slash scaffold
+- independently reviewed per-board objective proof programs and a deployed,
+  audited verifier gateway for the source-level permissionless correction path
 - actual Base Sepolia deployment, committed manifest, and verified source/address artifacts
 - real committed Base Sepolia reconciliation report and production indexer
 - broader fuzz/formal testing and external audit

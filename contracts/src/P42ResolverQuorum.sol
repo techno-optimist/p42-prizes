@@ -22,8 +22,30 @@ interface IP42QuorumChallengeManager {
         bytes32 proofHash
     ) external;
 
+    function applyObjectiveResolution(
+        uint256 submissionId,
+        bytes32 expectedChallengeInstanceHash,
+        bool correctedChallengerWins,
+        bytes32 proofHash,
+        address proofBeneficiary
+    ) external;
+
+    function objectiveProofContext(uint256 submissionId, bytes32 expectedChallengeInstanceHash)
+        external
+        view
+        returns (bytes32 contextHash, bool pendingChallengerWins);
+
+    function objectiveBinding()
+        external
+        view
+        returns (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId);
+
     function resolverDecisionBondWei() external view returns (uint256);
     function claimBond() external;
+}
+
+interface IP42ObjectiveVerifierGateway {
+    function verify(bytes32 programId, bytes32 journalDigest, bytes calldata proof) external view returns (bool);
 }
 
 interface IP42QuorumSubmissionManager {
@@ -62,11 +84,17 @@ contract P42ResolverQuorum {
     error InsufficientStake(uint256 required, uint256 available);
     error NotEquivocation();
     error EquivocationAlreadyProven();
+    error BadObjectiveVerifier();
+    error BadObjectiveProgram();
+    error BadObjectiveProof();
+    error ObjectiveOutcomeNotContradictory();
+    error FraudProofBeneficiaryZero();
+    error ObjectiveProofReentrancy();
 
     uint256 public constant REQUIRED_MANAGER_COUNT = 10;
     // Set from the independently compiled P42ChallengeManagerFactory runtime.
     bytes32 public constant CANONICAL_MANAGER_FACTORY_CODEHASH =
-        0x114a9fdaa20276d35be105f2984df29b21c53923663dc3f0fca8e7ac7959c7ec;
+        0x16a202c30ad99ce66322755ee79038508f3d2303684f8fac83a420a369613876;
     bytes32 public constant DECISION_TYPEHASH = keccak256(
         "Decision(uint256 chainId,address adapter,address manager,uint256 submissionId,bytes32 challengeInstanceHash,bool challengerWins,bytes32 transcriptHash,bytes32 transcriptURIHash,bytes32 verdictHash,address bondBeneficiary,uint256 nonce,uint64 expiry,uint64 signerEpoch)"
     );
@@ -97,10 +125,20 @@ contract P42ResolverQuorum {
         uint64 signerEpoch;
     }
 
+    struct ObjectiveClaim {
+        address manager;
+        uint256 submissionId;
+        bytes32 challengeInstanceHash;
+        bool correctedChallengerWins;
+        address proofBeneficiary;
+    }
+
     address public immutable owner;
     address public immutable expectedTreasury;
     uint256 public immutable expectedDecisionBondWei;
     address public immutable managerFactory;
+    address public immutable objectiveVerifier;
+    bytes32 public immutable objectiveVerifierCodehash;
     uint256 public threshold;
     uint64 public signerEpoch;
     address[] private _signers;
@@ -109,11 +147,13 @@ contract P42ResolverQuorum {
     mapping(uint64 => mapping(address => bool)) private _isEpochSigner;
     mapping(uint64 => uint256) public epochThreshold;
     mapping(address => bool) public isManager;
+    mapping(address => bytes32) public objectiveProgramIdOf;
     address[] private _managers;
     bool public constant managersFrozen = true;
     uint64 public pauseUntil;
     uint64 public pauseCooldownUntil;
     uint64 public nextSignerRotationAt;
+    bool private _provingObjective;
 
     mapping(address => mapping(uint256 => bool)) public nonceUsed;
     mapping(address => mapping(bytes32 => bool)) public challengeDecided;
@@ -137,6 +177,15 @@ contract P42ResolverQuorum {
         bytes32 firstDecisionHash,
         bytes32 secondDecisionHash
     );
+    event ObjectiveFraudProven(
+        address indexed manager,
+        uint256 indexed submissionId,
+        bytes32 indexed challengeInstanceHash,
+        bytes32 proofHash,
+        bytes32 journalDigest,
+        bool correctedChallengerWins,
+        address proofBeneficiary
+    );
     event StakeFunded(address indexed signer, uint256 amount, uint256 balance);
     event StakeReclaimed(address indexed manager, uint256 balance);
 
@@ -152,7 +201,9 @@ contract P42ResolverQuorum {
         address managerFactory_,
         address[] memory signers_,
         uint256 threshold_,
-        address[] memory managers_
+        address[] memory managers_,
+        address objectiveVerifier_,
+        bytes32 objectiveVerifierCodehash_
     ) {
         if (owner_ == address(0) || expectedTreasury_ == address(0)) revert BadOwner();
         if (signers_.length < 3 || signers_.length > 5) revert BadSigner();
@@ -166,6 +217,14 @@ contract P42ResolverQuorum {
                 || managerFactory_.codehash != CANONICAL_MANAGER_FACTORY_CODEHASH
         ) revert BadManager();
         managerFactory = managerFactory_;
+        if (
+            objectiveVerifier_ == address(0) || objectiveVerifier_.code.length == 0
+                || objectiveVerifierCodehash_ == bytes32(0) || objectiveVerifier_.codehash != objectiveVerifierCodehash_
+        ) {
+            revert BadObjectiveVerifier();
+        }
+        objectiveVerifier = objectiveVerifier_;
+        objectiveVerifierCodehash = objectiveVerifierCodehash_;
         _installSignerSet(1, signers_, threshold_);
         nextSignerRotationAt = uint64(block.timestamp) + SIGNER_ROTATION_COOLDOWN;
         if (managers_.length != REQUIRED_MANAGER_COUNT) {
@@ -221,14 +280,17 @@ contract P42ResolverQuorum {
         }
         IP42QuorumChallengeManager candidate = IP42QuorumChallengeManager(manager);
         address submissions = candidate.submissionManager();
+        (address registry, uint256 problemId, bytes32 packageHash, bytes32 programId) = candidate.objectiveBinding();
         if (
             candidate.owner() != owner || candidate.resolver() != address(this)
                 || candidate.treasury() != expectedTreasury
                 || candidate.resolverDecisionBondWei() != expectedDecisionBondWei
                 || submissions.code.length == 0
+                || registry == address(0) || problemId == 0 || packageHash == bytes32(0) || programId == bytes32(0)
                 || IP42QuorumSubmissionManager(submissions).challengeManager() != manager
         ) revert BadManager();
         isManager[manager] = true;
+        objectiveProgramIdOf[manager] = programId;
         _managers.push(manager);
     }
 
@@ -396,6 +458,61 @@ contract P42ResolverQuorum {
             firstStructHash,
             secondStructHash
         );
+    }
+
+    /// @notice Permissionlessly proves that a pending quorum verdict is wrong.
+    /// The immutable board program verifies the exact challenge context, and
+    /// the proof beneficiary is journal-bound so a copied proof cannot redirect
+    /// the resolver-bond reward.
+    function proveObjectiveFraud(ObjectiveClaim calldata claim, bytes calldata proof) external {
+        if (_provingObjective) revert ObjectiveProofReentrancy();
+        _provingObjective = true;
+        if (!isManager[claim.manager]) revert BadManager();
+        if (claim.proofBeneficiary == address(0)) revert FraudProofBeneficiaryZero();
+        if (objectiveVerifier.codehash != objectiveVerifierCodehash) revert BadObjectiveVerifier();
+
+        (bytes32 contextHash, bool pendingChallengerWins) = IP42QuorumChallengeManager(claim.manager)
+            .objectiveProofContext(claim.submissionId, claim.challengeInstanceHash);
+        if (claim.correctedChallengerWins == pendingChallengerWins) {
+            revert ObjectiveOutcomeNotContradictory();
+        }
+
+        bytes32 programId = objectiveProgramIdOf[claim.manager];
+        bytes32 journalDigest = keccak256(
+            abi.encode(
+                "P42_OBJECTIVE_VERDICT_JOURNAL_V1",
+                block.chainid,
+                address(this),
+                claim.manager,
+                programId,
+                contextHash,
+                claim.correctedChallengerWins,
+                claim.proofBeneficiary
+            )
+        );
+        if (!IP42ObjectiveVerifierGateway(objectiveVerifier).verify(programId, journalDigest, proof)) {
+            revert BadObjectiveProof();
+        }
+        bytes32 proofHash = keccak256(
+            abi.encode("P42_OBJECTIVE_FRAUD_PROOF_V1", programId, journalDigest, keccak256(proof))
+        );
+        IP42QuorumChallengeManager(claim.manager).applyObjectiveResolution(
+            claim.submissionId,
+            claim.challengeInstanceHash,
+            claim.correctedChallengerWins,
+            proofHash,
+            claim.proofBeneficiary
+        );
+        emit ObjectiveFraudProven(
+            claim.manager,
+            claim.submissionId,
+            claim.challengeInstanceHash,
+            proofHash,
+            journalDigest,
+            claim.correctedChallengerWins,
+            claim.proofBeneficiary
+        );
+        _provingObjective = false;
     }
 
     function _requireDecisionBinding(Decision calldata decision, bool enforceExpiry) private view {

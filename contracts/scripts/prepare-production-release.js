@@ -12,6 +12,7 @@ try {
     repoRoot: resolve(process.cwd(), ".."),
     ceremonyConfigPath: env.P42_MULTIBOARD_CEREMONY_CONFIG,
     imageDossierPath: env.P42_PRODUCTION_IMAGE_DOSSIER_PATH,
+    objectiveVerifierArtifactPath: env.P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH,
     evidenceRoot: env.P42_RELEASE_EVIDENCE_ROOT,
     expectedDeployer: env.P42_EXPECTED_DEPLOYER_ADDRESS,
     generatedAt: env.P42_RELEASE_GENERATED_AT,

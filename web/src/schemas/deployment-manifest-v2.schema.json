@@ -96,13 +96,15 @@
     "roles": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["deployer", "owner", "treasury", "resolver", "guardian"],
+      "required": ["deployer", "owner", "treasury", "resolver", "guardian", "objectiveVerifier", "objectiveVerifierCodehash"],
       "properties": {
         "deployer": { "$ref": "#/$defs/address" },
         "owner": { "$ref": "#/$defs/address" },
         "treasury": { "$ref": "#/$defs/address" },
         "resolver": { "$ref": "#/$defs/address" },
-        "guardian": { "$ref": "#/$defs/address" }
+        "guardian": { "$ref": "#/$defs/address" },
+        "objectiveVerifier": { "$ref": "#/$defs/address" },
+        "objectiveVerifierCodehash": { "$ref": "#/$defs/bytes32" }
       }
     },
     "parameters": {
@@ -440,6 +442,7 @@
     "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "repoPath": { "type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$" },
     "completionBlockEvidence": {
       "type": "object", "additionalProperties": false,
       "required": ["blockNumber", "blockHash", "timestamp", "primaryOperatorId", "secondaryOperatorId", "primaryBlockHash", "secondaryBlockHash"],
@@ -796,6 +799,10 @@
         "admissionMatrixHashAlgorithm",
         "admissionMatrixHash",
         "admissionMatrixURI",
+        "objectiveProgramPath",
+        "objectiveProgramDigest",
+        "objectiveProgramId",
+        "objectivePackageHash",
         "immutablePins",
         "minImprovementAtoms",
         "seedScoreAtoms",
@@ -835,6 +842,10 @@
         "admissionMatrixHashAlgorithm": { "$ref": "#/$defs/admissionMatrixHashAlgorithm" },
         "admissionMatrixHash": { "$ref": "#/$defs/bytes32" },
         "admissionMatrixURI": { "$ref": "#/$defs/durableAdmissionMatrixURI" },
+        "objectiveProgramPath": { "$ref": "#/$defs/repoPath" },
+        "objectiveProgramDigest": { "$ref": "#/$defs/digest" },
+        "objectiveProgramId": { "$ref": "#/$defs/bytes32" },
+        "objectivePackageHash": { "$ref": "#/$defs/bytes32" },
         "immutablePins": { "const": true },
         "minImprovementAtoms": { "$ref": "#/$defs/positiveUintString" },
         "seedScoreAtoms": { "type": "string", "pattern": "^-?[0-9]+$" },
