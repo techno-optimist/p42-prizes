@@ -9,6 +9,8 @@
     "dev": "next dev",
     "build": "next build",
     "build:prizes": "NEXT_PUBLIC_BASE_PATH=/prizes next build",
+    "db:migrate": "node scripts/migrate-portal-db.mjs",
+    "db:import-state": "node scripts/import-portal-state.mjs",
     "start": "next start",
     "start:prizes": "NEXT_PUBLIC_BASE_PATH=/prizes next start",
     "test": "vitest run"
@@ -22,12 +24,14 @@
     "ethers": "^6.17.0",
     "katex": "^0.17.0",
     "next": "16.2.10",
+    "pg": "^8.16.3",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^20",
+    "@types/pg": "^8.15.5",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "typescript": "^5",

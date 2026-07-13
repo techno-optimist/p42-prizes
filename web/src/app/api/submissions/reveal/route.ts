@@ -8,7 +8,7 @@ import {
   type IdempotencyReservation,
 } from "@/lib/idempotency";
 import { revealCommit } from "@/lib/portal-state";
-import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
+import { enforceRateLimitShared, rateLimitPolicy } from "@/lib/rate-limit";
 
 const revealSchema = z.object({
   problem_id: z.coerce.number().int().positive(),
@@ -22,7 +22,7 @@ export async function POST(req: Request) {
   let idempotency: IdempotencyReservation | undefined;
   try {
     const principal = enforceMutationApiKey(req, "submissions.reveal");
-    enforceRateLimit(req, rateLimitPolicy("reveal", { limit: 20, windowMs: 60_000 }), principal.rateLimitSubject);
+    await enforceRateLimitShared(req, rateLimitPolicy("reveal", { limit: 20, windowMs: 60_000 }), principal.rateLimitSubject);
     const body = await readJson(req, revealSchema);
 
     const problem = getProblemById(body.problem_id);
@@ -31,7 +31,7 @@ export async function POST(req: Request) {
       return json({ error: "External verifier runner is not wired in this Phase 0 portal" }, { status: 409 });
     }
 
-    const attempt = beginIdempotentRequest(req, "submissions.reveal", body);
+    const attempt = await beginIdempotentRequest(req, "submissions.reveal", body);
     if (attempt.replay) return attempt.replay;
     idempotency = attempt.reservation;
 
@@ -45,7 +45,7 @@ export async function POST(req: Request) {
     const { idempotencyHeaders, status, ...responseBody } = result;
     return json(responseBody, { status, headers: idempotencyHeaders });
   } catch (error) {
-    releaseIdempotencyReservation(idempotency);
+    await releaseIdempotencyReservation(idempotency).catch(() => {});
     return apiError(error);
   }
 }

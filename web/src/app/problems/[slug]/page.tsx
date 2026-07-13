@@ -7,7 +7,7 @@ import { Plate } from "@/components/Plate";
 import { getProblemBySlug, sortLeaderboardRows } from "@/lib/data";
 import { loadIndexerProvenance } from "@/lib/indexer-provenance";
 import { discoveries } from "@/lib/discoveries";
-import { allSubmissions } from "@/lib/portal-state";
+import { allSubmissionsShared } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
 import { compareRational, parseRational } from "@/lib/exact";
 import { sitePath } from "@/lib/site-paths";
@@ -23,7 +23,7 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
   const chainProvenance = loadIndexerProvenance(problem);
   const seedDiscovery = discoveries.find((discovery) => discovery.boardSlugs.includes(slug));
 
-  const rows = sortLeaderboardRows(problem.id, allSubmissions());
+  const rows = sortLeaderboardRows(problem.id, await allSubmissionsShared());
   const isLocked = problem.status === "locked";
   // A digest is only real when it is a full sha256; anything else (pending,
   // pilot, local-dev placeholders) and every locked board is shown as pending.

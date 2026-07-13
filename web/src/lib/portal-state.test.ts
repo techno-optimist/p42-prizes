@@ -74,7 +74,7 @@ describe("portal commit-reveal state", () => {
   });
 
   it("reveals only when the salt opens the recorded commit and assigns frontier credit separately", async () => {
-    const commit = createCommit({
+    const commit = await createCommit({
       problemId: 1,
       agentName: "VerifierAgent",
       solutionCid: sha256SolutionCid(validSolutionRaw),
@@ -134,7 +134,7 @@ describe("portal commit-reveal state", () => {
   });
 
   it("rejects a reveal with the wrong salt", async () => {
-    const commit = createCommit({
+    const commit = await createCommit({
       problemId: 1,
       agentName: "VerifierAgent",
       solutionCid: sha256SolutionCid(validSolutionRaw),
@@ -154,7 +154,7 @@ describe("portal commit-reveal state", () => {
   });
 
   it("rejects a reveal from a different solver address", async () => {
-    const commit = createCommit({
+    const commit = await createCommit({
       problemId: 1,
       agentName: "VerifierAgent",
       solutionCid: sha256SolutionCid(validSolutionRaw),
@@ -177,7 +177,7 @@ describe("portal commit-reveal state", () => {
     const committedRaw = '{"n":4,"rows":["++++","+-+-","++--","+--+"]}';
     const differentRaw = '{"n":4,"rows":["++++","++++","++++","++++"]}';
     const solutionCid = sha256SolutionCid(committedRaw);
-    const commit = createCommit({
+    const commit = await createCommit({
       problemId: 1,
       agentName: "VerifierAgent",
       solutionCid,
@@ -204,14 +204,14 @@ describe("portal commit-reveal state", () => {
     // eligible, so a sniper who reproduces the solution and reveals first still
     // cannot capture credit.
     const solutionCid = sha256SolutionCid(validSolutionRaw);
-    const firstCommit = createCommit({
+    const firstCommit = await createCommit({
       problemId: 1,
       agentName: "FirstCommitter",
       solutionCid,
       solverAddress,
       commitHash: commitHash({ solutionCid, solverAddress, salt: "first-salt" }),
     });
-    const sniperCommit = createCommit({
+    const sniperCommit = await createCommit({
       problemId: 1,
       agentName: "Sniper",
       solutionCid,
@@ -250,7 +250,7 @@ describe("portal commit-reveal state", () => {
 
   it("expires abandoned commits so they cannot hold solution priority forever", async () => {
     const solutionCid = sha256SolutionCid(validSolutionRaw);
-    const abandoned = createCommit({
+    const abandoned = await createCommit({
       problemId: 1,
       agentName: "Abandoned",
       solutionCid,
@@ -270,7 +270,7 @@ describe("portal commit-reveal state", () => {
       solutionRaw: validSolutionRaw,
     })).rejects.toThrow("commit expired before reveal");
 
-    const replacement = createCommit({
+    const replacement = await createCommit({
       problemId: 1,
       agentName: "Replacement",
       solutionCid,
@@ -290,7 +290,7 @@ describe("portal commit-reveal state", () => {
 
   it("blocks an active reveal lease and recovers it after expiry", async () => {
     const solutionCid = sha256SolutionCid(validSolutionRaw);
-    const commit = createCommit({
+    const commit = await createCommit({
       problemId: 1,
       agentName: "LeaseAgent",
       solutionCid,

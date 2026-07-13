@@ -9,7 +9,7 @@ import {
   type IdempotencyReservation,
 } from "@/lib/idempotency";
 import { commitHash, persistCommit, prepareCommit, verifySolverSignature } from "@/lib/portal-state";
-import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
+import { enforceRateLimitShared, rateLimitPolicy } from "@/lib/rate-limit";
 
 const commitSchema = z.object({
   problem_id: z.coerce.number().int().positive(),
@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   let idempotency: IdempotencyReservation | undefined;
   try {
     const principal = enforceMutationApiKey(req, "submissions.commit");
-    enforceRateLimit(req, rateLimitPolicy("commit", { limit: 30, windowMs: 60_000 }), principal.rateLimitSubject);
+    await enforceRateLimitShared(req, rateLimitPolicy("commit", { limit: 30, windowMs: 60_000 }), principal.rateLimitSubject);
     const body = await readJson(req, commitSchema);
 
     const problemId = body.problem_id;
@@ -65,7 +65,7 @@ export async function POST(req: Request) {
       });
     }
 
-    const attempt = beginIdempotentRequest(req, "submissions.commit", body);
+    const attempt = await beginIdempotentRequest(req, "submissions.commit", body);
     if (attempt.replay) return attempt.replay;
     idempotency = attempt.reservation;
 
@@ -89,14 +89,14 @@ export async function POST(req: Request) {
         ? "Local Phase 0 computed p42:v0 from dev_salt. This non-settlement commitment is not a chain p42:v1 commitment."
         : "Local Phase 0 p42:v0 commit accepted with solver authorization. It is not a chain p42:v1 commitment.",
     };
-    const completed = completeIdempotentOperation(idempotency, 201, (state) => {
+    const completed = await completeIdempotentOperation(idempotency, 201, (state) => {
       persistCommit(state, commit);
       return responseBody;
     });
 
     return json(completed.response, { status: completed.status, headers: completed.headers });
   } catch (error) {
-    releaseIdempotencyReservation(idempotency);
+    await releaseIdempotencyReservation(idempotency).catch(() => {});
     return apiError(error);
   }
 }

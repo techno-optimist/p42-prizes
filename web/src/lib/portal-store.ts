@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { ApiError } from "@/lib/api";
+import { portalDatabaseConfigured, portalDatabasePool, portalDatabaseTimeouts } from "@/lib/portal-db";
 import { withPortalStateFileLock } from "@/lib/portal-lock";
 import type { Submission } from "@/lib/types";
 
@@ -208,8 +209,16 @@ export function readPortalState(): PortalStateSnapshot {
     throw new Error(`portal state file exceeds configured size limit: ${filePath}`);
   }
   const parsed = JSON.parse(readFileSync(filePath, "utf8")) as Partial<PortalStateSnapshot>;
+  return normalizePortalState(parsed, `file ${filePath}`);
+}
+
+function normalizePortalState(
+  parsed: Partial<PortalStateSnapshot>,
+  source: string,
+  canonicalRequired = false,
+): PortalStateSnapshot {
   if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.commits) || !Array.isArray(parsed.submissions)) {
-    throw new Error(`unsupported portal state file: ${filePath}`);
+    throw new Error(`unsupported portal state: ${source}`);
   }
   const limits = portalStateLimits();
   const idempotency = Array.isArray(parsed.idempotency) ? parsed.idempotency : [];
@@ -218,7 +227,7 @@ export function readPortalState(): PortalStateSnapshot {
     || parsed.submissions.length > limits.maxSubmissions
     || idempotency.length > limits.maxIdempotency
   ) {
-    throw new Error(`portal state collection exceeds configured capacity: ${filePath}`);
+    throw new Error(`portal state collection exceeds configured capacity: ${source}`);
   }
   const parsedEvents = Array.isArray(parsed.events) ? parsed.events as PortalEventRecord[] : [];
   const parsedEventOffset = Number.isInteger(parsed.eventOffset) && Number(parsed.eventOffset) >= 0
@@ -237,7 +246,7 @@ export function readPortalState(): PortalStateSnapshot {
   const eventAnchorHash = eventOverflow > 0
     ? parsedEvents[eventOverflow - 1].eventHash
     : parsedAnchorHash;
-  return cloneState({
+  const normalized = cloneState({
     schemaVersion: 1,
     commits: (parsed.commits as Array<Partial<CommitRecord>>).map((commit) => {
       const createdAt = String(commit.createdAt);
@@ -279,6 +288,21 @@ export function readPortalState(): PortalStateSnapshot {
     eventOffset: parsedEventOffset + eventOverflow,
     eventAnchorHash,
   });
+  if (canonicalRequired && canonicalJson(normalized) !== canonicalJson(parsed)) {
+    throw new Error(`portal database state is not in canonical runtime form: ${source}`);
+  }
+  return normalized;
+}
+
+export async function readPortalStateShared(): Promise<PortalStateSnapshot> {
+  if (!portalDatabaseConfigured()) return readPortalState();
+  const result = await portalDatabasePool().query<{ state: Partial<PortalStateSnapshot> }>(
+    "SELECT state FROM p42_portal_state WHERE singleton = true",
+  );
+  if (result.rowCount !== 1) {
+    throw new Error("portal database is not initialized; run npm run db:migrate and import portal state");
+  }
+  return normalizePortalState(result.rows[0].state, "PostgreSQL singleton row", true);
 }
 
 function validTimestamp(value: string | undefined): number | undefined {
@@ -409,6 +433,51 @@ export function updatePortalState(mutator: (state: PortalStateSnapshot) => void)
     writePortalState(state);
     return state;
   });
+}
+
+export async function updatePortalStateShared(
+  mutator: (state: PortalStateSnapshot) => void,
+): Promise<PortalStateSnapshot> {
+  if (!portalDatabaseConfigured()) return updatePortalState(mutator);
+
+  const client = await portalDatabasePool().connect();
+  const timeouts = portalDatabaseTimeouts();
+  try {
+    await client.query("BEGIN");
+    await client.query(`SET LOCAL lock_timeout = '${timeouts.lockMs}ms'`);
+    await client.query(`SET LOCAL statement_timeout = '${timeouts.statementMs}ms'`);
+    const result = await client.query<{ state: Partial<PortalStateSnapshot> }>(
+      "SELECT state FROM p42_portal_state WHERE singleton = true FOR UPDATE",
+    );
+    if (result.rowCount !== 1) {
+      throw new Error("portal database is not initialized; run npm run db:migrate and import portal state");
+    }
+    const state = normalizePortalState(result.rows[0].state, "PostgreSQL singleton row", true);
+    maintainPortalState(state);
+    mutator(state);
+    maintainPortalState(state);
+    const serialized = JSON.stringify(cloneState(state));
+    if (Buffer.byteLength(serialized, "utf8") > portalStateLimits().maxBytes) {
+      throw new Error("portal database state exceeds configured size limit");
+    }
+    await client.query(
+      `UPDATE p42_portal_state
+         SET state = $1::jsonb, revision = revision + 1, updated_at = clock_timestamp()
+       WHERE singleton = true`,
+      [serialized],
+    );
+    await client.query("COMMIT");
+    return state;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // Preserve the original transaction error.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export function appendPortalEvent(

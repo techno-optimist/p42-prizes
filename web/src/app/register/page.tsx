@@ -5,7 +5,7 @@ import { PayoutSplit, type PayoutSlice } from "@/components/PayoutSplit";
 import { Plate } from "@/components/Plate";
 import { launchProblems } from "@/lib/data";
 import { discoveries, DISCOVERIES_META } from "@/lib/discoveries";
-import { allSubmissions } from "@/lib/portal-state";
+import { allSubmissionsShared } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
 import { computeStandings, weiToEth } from "@/lib/cohort";
 import { sitePath } from "@/lib/site-paths";
@@ -60,8 +60,8 @@ const VERDICT_REPORT = `{
   "verifier_version": "0.1.1"
 }`;
 
-export default function HomePage() {
-  const submissions = allSubmissions();
+export default async function HomePage() {
+  const submissions = await allSubmissionsShared();
   const runnable = launchProblems.filter((p) => p.status === "pilot" || p.status === "open");
   const locked = launchProblems.filter((p) => p.status === "locked");
   const erdos = discoveries[0];

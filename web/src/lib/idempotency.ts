@@ -4,7 +4,7 @@ import {
   appendPortalEvent,
   assertPortalCapacity,
   portalLifecyclePolicy,
-  updatePortalState,
+  updatePortalStateShared,
   type PortalStateSnapshot,
 } from "@/lib/portal-store";
 
@@ -52,7 +52,7 @@ export function requestHash(payload: unknown): string {
   return `sha256:${createHash("sha256").update(canonicalJson(payload), "utf8").digest("hex")}`;
 }
 
-export function beginIdempotentRequest(req: Request, route: string, payload: unknown): IdempotencyAttempt {
+export async function beginIdempotentRequest(req: Request, route: string, payload: unknown): Promise<IdempotencyAttempt> {
   const key = idempotencyKey(req);
   if (!key) return {};
 
@@ -62,7 +62,7 @@ export function beginIdempotentRequest(req: Request, route: string, payload: unk
   const leaseExpiresAt = new Date(now + portalLifecyclePolicy().idempotencyLeaseMs).toISOString();
   const outcome: { current: ReservationOutcome } = { current: { kind: "reserved" } };
 
-  updatePortalState((state) => {
+  await updatePortalStateShared((state) => {
     const existing = state.idempotency.find((entry) => entry.route === route && entry.key === key);
     if (!existing) {
       assertPortalCapacity(state, "idempotency");
@@ -131,14 +131,14 @@ export function beginIdempotentRequest(req: Request, route: string, payload: unk
   return { reservation: { key, route, requestHash: hash, reservationId } };
 }
 
-export function completeIdempotentOperation<T>(
+export async function completeIdempotentOperation<T>(
   reservation: IdempotencyReservation | undefined,
   status: number | ((response: T) => number),
   operation: (state: PortalStateSnapshot) => T,
-): { response: T; status: number; headers: HeadersInit } {
+): Promise<{ response: T; status: number; headers: HeadersInit }> {
   let response!: T;
   let responseStatus!: number;
-  updatePortalState((state) => {
+  await updatePortalStateShared((state) => {
     if (!reservation) {
       response = operation(state);
       responseStatus = typeof status === "function" ? status(response) : status;
@@ -185,9 +185,9 @@ export function completeIdempotentOperation<T>(
   };
 }
 
-export function releaseIdempotencyReservation(reservation: IdempotencyReservation | undefined): void {
+export async function releaseIdempotencyReservation(reservation: IdempotencyReservation | undefined): Promise<void> {
   if (!reservation) return;
-  updatePortalState((state) => {
+  await updatePortalStateShared((state) => {
     const index = state.idempotency.findIndex(
       (entry) => entry.route === reservation.route
         && entry.key === reservation.key

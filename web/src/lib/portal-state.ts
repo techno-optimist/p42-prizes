@@ -13,8 +13,8 @@ import {
   commitIsExpired,
   leaseIsActive,
   portalLifecyclePolicy,
-  readPortalState,
-  updatePortalState,
+  readPortalStateShared,
+  updatePortalStateShared,
   type CommitRecord,
   type PortalStateSnapshot,
 } from "@/lib/portal-store";
@@ -36,8 +36,8 @@ interface LocalRevealResult {
   };
 }
 
-export function allSubmissions(): Submission[] {
-  return [...submissions, ...readPortalState().submissions];
+export async function allSubmissionsShared(): Promise<Submission[]> {
+  return [...submissions, ...(await readPortalStateShared()).submissions];
 }
 
 export function normalizeSolverAddress(address: string): string {
@@ -115,16 +115,16 @@ function assertSolutionMatchesCid(solutionCid: string, rawSolution: string) {
   }
 }
 
-export function createCommit(input: {
+export async function createCommit(input: {
   problemId: number;
   agentName: string;
   solutionCid: string;
   solverAddress: string;
   commitHash?: string;
   devSalt?: string;
-}): CommitRecord {
+}): Promise<CommitRecord> {
   const record = prepareCommit(input);
-  updatePortalState((state) => persistCommit(state, record));
+  await updatePortalStateShared((state) => persistCommit(state, record));
   return record;
 }
 
@@ -192,7 +192,7 @@ export async function revealCommit(input: {
   problemSlug: string;
   solverAddress: string;
 }, idempotency?: IdempotencyReservation) {
-  const state = readPortalState();
+  const state = await readPortalStateShared();
   const record = state.commits.find((commit) => commit.id === input.commitId);
   if (!record) throw new ClientError("commit not found");
   if (record.revealed) throw new ClientError("commit already revealed");
@@ -216,7 +216,7 @@ export async function revealCommit(input: {
   // concurrent reveals of the same commit can't both run the verifier and both
   // record a submission.
   const revealLeaseId = randomUUID();
-  updatePortalState((state) => {
+  await updatePortalStateShared((state) => {
     const storedCommit = state.commits.find((commit) => commit.id === input.commitId);
     if (!storedCommit) throw new ClientError("commit not found");
     if (storedCommit.revealed) throw new ClientError("commit already revealed");
@@ -231,7 +231,7 @@ export async function revealCommit(input: {
   try {
     const verdict = await runCanonicalVerifier({ problemSlug: input.problemSlug, solutionRaw: input.solutionRaw });
 
-    const completed = completeIdempotentOperation<LocalRevealResult>(
+    const completed = await completeIdempotentOperation<LocalRevealResult>(
       idempotency,
       (result) => result.submission.state === "revealed" ? 201 : 422,
       (nextState) => {
@@ -325,12 +325,12 @@ export async function revealCommit(input: {
   } catch (error) {
     // Release the reservation so a transient verifier failure doesn't wedge the
     // commit as permanently un-revealable.
-    updatePortalState((state) => {
+    await updatePortalStateShared((state) => {
       const storedCommit = state.commits.find((commit) => commit.id === input.commitId);
       if (storedCommit && !storedCommit.revealed && storedCommit.revealLease?.id === revealLeaseId) {
         delete storedCommit.revealLease;
       }
-    });
+    }).catch(() => {});
     throw error;
   }
 }

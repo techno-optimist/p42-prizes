@@ -1,4 +1,5 @@
 import { ApiError } from "@/lib/api";
+import { portalDatabaseConfigured, portalDatabasePool } from "@/lib/portal-db";
 
 interface RateLimitBucket {
   count: number;
@@ -82,6 +83,44 @@ export function enforceRateLimit(req: Request, policy: RateLimitPolicy, subject 
 
   bucket.count += 1;
   state.buckets.set(key, bucket);
+}
+
+export async function enforceRateLimitShared(
+  req: Request,
+  policy: RateLimitPolicy,
+  subject = rateLimitSubject(req),
+): Promise<void> {
+  if (process.env.P42_DISABLE_RATE_LIMIT === "1") return;
+  if (!portalDatabaseConfigured()) return enforceRateLimit(req, policy, subject);
+
+  const result = await portalDatabasePool().query<{ count: number; expires_at: Date }>(
+    `INSERT INTO p42_rate_limit_bucket (policy_id, subject, count, expires_at)
+     VALUES ($1, $2, 1, clock_timestamp() + ($4::bigint * interval '1 millisecond'))
+     ON CONFLICT (policy_id, subject) DO UPDATE
+       SET count = CASE
+             WHEN p42_rate_limit_bucket.expires_at <= clock_timestamp() THEN 1
+             ELSE LEAST(p42_rate_limit_bucket.count + 1, $3 + 1)
+           END,
+           expires_at = CASE
+             WHEN p42_rate_limit_bucket.expires_at <= clock_timestamp()
+               THEN clock_timestamp() + ($4::bigint * interval '1 millisecond')
+             ELSE p42_rate_limit_bucket.expires_at
+           END
+     RETURNING count, expires_at`,
+    [policy.id, subject, policy.limit, policy.windowMs],
+  );
+  const row = result.rows[0];
+  if (!row) throw new ApiError("rate limiter state unavailable", 503);
+  if (Number(row.count) > policy.limit) {
+    const resetAt = new Date(row.expires_at).getTime();
+    const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
+    throw new ApiError("rate limit exceeded", 429, {
+      "Retry-After": String(retryAfterSeconds),
+      "X-RateLimit-Limit": String(policy.limit),
+      "X-RateLimit-Remaining": "0",
+      "X-RateLimit-Reset": String(Math.ceil(resetAt / 1000)),
+    });
+  }
 }
 
 export function resetRateLimitsForTests(): void {

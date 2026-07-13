@@ -50,13 +50,13 @@ describe("idempotency", () => {
       headers: { "Idempotency-Key": "atomic-request-1" },
     });
     const payload = { problem_id: 1, solution_raw: "{}" };
-    const first = beginIdempotentRequest(request, "solutions.verify", payload);
+    const first = await beginIdempotentRequest(request, "solutions.verify", payload);
     expect(first.reservation).toBeDefined();
-    expect(() => beginIdempotentRequest(request, "solutions.verify", payload)).toThrow(
+    await expect(beginIdempotentRequest(request, "solutions.verify", payload)).rejects.toThrow(
       "an idempotent request with this key is already in progress",
     );
 
-    const completed = completeIdempotentOperation(first.reservation, 201, (state) => {
+    const completed = await completeIdempotentOperation(first.reservation, 201, (state) => {
       appendPortalEvent(state, {
         type: "verification.completed",
         subjectId: "sha256:test",
@@ -66,7 +66,7 @@ describe("idempotency", () => {
     });
     expect(completed.headers).toMatchObject({ "Idempotency-Status": "stored" });
 
-    const replay = beginIdempotentRequest(request, "solutions.verify", payload).replay;
+    const replay = (await beginIdempotentRequest(request, "solutions.verify", payload)).replay;
     expect(replay?.status).toBe(201);
     await expect(replay?.json()).resolves.toEqual({ accepted: true });
     expect(readPortalState().events.map((event) => event.type)).toEqual([
@@ -76,33 +76,33 @@ describe("idempotency", () => {
     ]);
   });
 
-  it("reclaims an expired reservation and does not persist a failed operation", () => {
+  it("reclaims an expired reservation and does not persist a failed operation", async () => {
     const request = new Request("http://localhost/api/solutions", {
       headers: { "Idempotency-Key": "recover-request-1" },
     });
     const payload = { problem_id: 1 };
-    const first = beginIdempotentRequest(request, "solutions.verify", payload).reservation;
+    const first = (await beginIdempotentRequest(request, "solutions.verify", payload)).reservation;
     expect(first).toBeDefined();
 
     updatePortalState((state) => {
       const record = state.idempotency[0];
       record.leaseExpiresAt = new Date(Date.now() - 1_000).toISOString();
     });
-    const recovered = beginIdempotentRequest(request, "solutions.verify", payload).reservation;
+    const recovered = (await beginIdempotentRequest(request, "solutions.verify", payload)).reservation;
     expect(recovered?.reservationId).not.toBe(first?.reservationId);
 
-    expect(() => completeIdempotentOperation(recovered, 201, (state) => {
+    await expect(completeIdempotentOperation(recovered, 201, (state) => {
       appendPortalEvent(state, {
         type: "verification.completed",
         subjectId: "never-committed",
         payload: {},
       });
       throw new Error("operation failed");
-    })).toThrow("operation failed");
+    })).rejects.toThrow("operation failed");
     expect(readPortalState().events).toEqual([]);
     expect(readPortalState().idempotency[0]).toMatchObject({ state: "pending" });
 
-    releaseIdempotencyReservation(recovered);
+    await releaseIdempotencyReservation(recovered);
     expect(readPortalState().idempotency).toEqual([]);
   });
 });
