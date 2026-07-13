@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { json } from "@/lib/api";
-import { readPortalState, type PortalEventType } from "@/lib/portal-store";
+import { readPortalStateShared, type PortalEventType } from "@/lib/portal-store";
 
 const EVENT_TYPES: PortalEventType[] = [
   "commit.created",
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
     return json({ error: "limit must be an integer from 1 to 250" }, { status: 400 });
   }
 
-  const state = readPortalState();
+  const state = await readPortalStateShared();
   const allEvents = state.events;
   const matching = allEvents.filter((event) => (
     event.sequence > after &&

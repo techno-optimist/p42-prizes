@@ -9,7 +9,7 @@ import {
   type IdempotencyReservation,
 } from "@/lib/idempotency";
 import { appendPortalEvent } from "@/lib/portal-store";
-import { enforceRateLimit, rateLimitPolicy } from "@/lib/rate-limit";
+import { enforceRateLimitShared, rateLimitPolicy } from "@/lib/rate-limit";
 import { runCanonicalVerifier } from "@/lib/verifier-runner";
 
 const solutionSchema = z.object({
@@ -22,7 +22,7 @@ export async function POST(req: Request) {
   let idempotency: IdempotencyReservation | undefined;
   try {
     const principal = enforceMutationApiKey(req, "solutions.verify");
-    enforceRateLimit(req, rateLimitPolicy("solutions", { limit: 15, windowMs: 60_000 }), principal.rateLimitSubject);
+    await enforceRateLimitShared(req, rateLimitPolicy("solutions", { limit: 15, windowMs: 60_000 }), principal.rateLimitSubject);
     const body = await readJson(req, solutionSchema);
 
     const problem = getProblemById(body.problem_id);
@@ -34,14 +34,14 @@ export async function POST(req: Request) {
       );
     }
 
-    const attempt = beginIdempotentRequest(req, "solutions.verify", body);
+    const attempt = await beginIdempotentRequest(req, "solutions.verify", body);
     if (attempt.replay) return attempt.replay;
     idempotency = attempt.reservation;
 
     const verdict = await runCanonicalVerifier({ problemSlug: problem.slug, solutionRaw: body.solution_raw });
     const status = verdict.valid ? 201 : 422;
     const responseBody = { status: verdict.valid ? "accepted" : "rejected", verdict };
-    const completed = completeIdempotentOperation(idempotency, status, (state) => {
+    const completed = await completeIdempotentOperation(idempotency, status, (state) => {
       appendPortalEvent(state, {
         type: "verification.completed",
         subjectId: verdict.solution_hash,
@@ -61,7 +61,7 @@ export async function POST(req: Request) {
     });
     return json(completed.response, { status: completed.status, headers: completed.headers });
   } catch (error) {
-    releaseIdempotencyReservation(idempotency);
+    await releaseIdempotencyReservation(idempotency).catch(() => {});
     return apiError(error);
   }
 }
