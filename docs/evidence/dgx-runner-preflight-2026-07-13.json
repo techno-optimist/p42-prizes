@@ -1,0 +1,74 @@
+{
+  "schemaVersion": "p42-dgx-runner-preflight/v1",
+  "createdAt": "2026-07-13T08:46:29Z",
+  "sourceCommit": "c4c0099d615733651700a6bc40243847ea62a7aa",
+  "scope": "credential-free runner preflight; not a signed burst report or Gate 1 closure",
+  "host": {
+    "id": "dgx",
+    "architecture": "aarch64",
+    "dockerVersion": "29.2.1",
+    "umask": "0077",
+    "pythonEnvironmentPinnedInPath": true
+  },
+  "sandboxRegression": {
+    "status": "passed",
+    "command": "CI=true PYTHONPATH=src python -m pytest -q tests/test_runner_sandbox.py tests/test_runner_sandbox_live.py tests/test_runner_worker.py tests/test_runner_chain_runtime.py",
+    "passed": 53,
+    "skipped": 1,
+    "skipReason": "the no-runtime fail-closed unit case is inapplicable when Docker is reachable",
+    "controls": [
+      "non-root UID/GID",
+      "zero capabilities and no-new-privileges",
+      "network isolation",
+      "read-only root and solution",
+      "bounded tmpfs",
+      "cgroup memory and PID limits",
+      "timeout container removal",
+      "stdout/stderr/child output bounds"
+    ]
+  },
+  "fixedFinding": {
+    "finding": "a mode-0600 submission under the required secure umask was unreadable by the non-root verifier container",
+    "resolution": "nonblocking no-follow open; enforce the admitted x-p42-max-bytes ceiling and source stability; stage a content-identical mode-0444 copy beneath the runner-owned private staging root for the lifetime of docker run; preserve the source mode and remove the staged copy on every handled exit path",
+    "crossHostChecks": [
+      "macOS Docker Desktop",
+      "DGX Linux aarch64"
+    ]
+  },
+  "guardCases": [
+    {
+      "reason": "swap_guard_tripped",
+      "decision": "wait",
+      "input": {"totalMemoryMb": 124609, "availableMemoryMb": 19941, "swapUsedMb": 4336, "maxSwapUsedMb": 1024}
+    },
+    {
+      "reason": "memory_guard_tripped",
+      "decision": "wait",
+      "input": {"totalMemoryMb": 131072, "availableMemoryMb": 1000, "swapUsedMb": 0, "minAvailableMemoryMb": 24576}
+    },
+    {
+      "reason": "job_exceeds_host_capacity",
+      "decision": "wait",
+      "input": {"totalMemoryMb": 16000, "availableMemoryMb": 16000, "swapUsedMb": 0, "minAvailableMemoryMb": 24576}
+    },
+    {
+      "reason": "runner_concurrency_full",
+      "decision": "wait",
+      "input": {"maxRunning": 1, "activeRunningCount": 1, "queuedCount": 1}
+    }
+  ],
+  "queueImmutability": {
+    "status": "passed",
+    "queuedSha256Before": "sha256:b5f9335cdf215c6fb68bf6b403ba7df202082e15597c6439f3406adfd3f65b54",
+    "queuedSha256After": "sha256:b5f9335cdf215c6fb68bf6b403ba7df202082e15597c6439f3406adfd3f65b54",
+    "concurrencySha256Before": "sha256:4c9e5cae2648a0fd1be5b53d5275b5c66fc0071771efab560d6fde2098b16195",
+    "concurrencySha256After": "sha256:4c9e5cae2648a0fd1be5b53d5275b5c66fc0071771efab560d6fde2098b16195"
+  },
+  "remainingGateRequirements": [
+    "pullable released verifier image",
+    "admitted N-host matrix",
+    "current Base Sepolia reveal and DA authority",
+    "timestamped serialized three-job loop with transcripts and alert",
+    "three-party signed burst packet and live authority resolution"
+  ]
+}
