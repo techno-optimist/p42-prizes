@@ -12,7 +12,7 @@ $(error invalid canonical production board set: $(PRODUCTION_BOARD_SET))
 endif
 LAUNCH_SLUGS := $(BOARD_SET_RESULT)
 LAUNCH_PROBLEMS := $(addprefix problems/,$(LAUNCH_SLUGS))
-RESEARCH_PROBLEMS := problems/hadamard-mini problems/signed-autoconvolution-c3-upper problems/b3-ruler-11-marks problems/b3-subset-first-jump-9 problems/edp-c3-longest-sequence problems/c4-star-ramsey-a17
+RESEARCH_PROBLEMS := problems/hadamard-mini problems/signed-autoconvolution-c3-upper problems/b3-ruler-11-marks problems/b3-subset-first-jump-9 problems/edp-c3-longest-sequence problems/c4-star-ramsey-a17 problems/hypercube-q7-c4-free
 PROBLEMS := $(LAUNCH_PROBLEMS) $(RESEARCH_PROBLEMS)
 
 .PHONY: install-verifier-deps test validate lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-q6 admit-host-distinct-subset-sums admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test verify-render-release all

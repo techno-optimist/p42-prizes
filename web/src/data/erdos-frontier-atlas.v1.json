@@ -2,9 +2,9 @@
   "snapshot_schema": "p42-erdos-frontier-atlas-v1",
   "provenance": {
     "repository": "https://github.com/techno-optimist/erdos-frontier-atlas",
-    "commit": "0901734c487ab1e51ddc772ab45b08b42c86fc2c",
+    "commit": "1afebbdc0e56166d8b0e5f0afa2b323070e9037c",
     "source_path": "atlas/problems.json",
-    "source_sha256": "cd1222e90a31d53c5d58549322eb211cfb9e5478d75e9230031141fdad940864",
+    "source_sha256": "d72891f56359bb5d01c30b9938abc724c1af3bb73547416cd483bae2d30b7470",
     "license": "MIT",
     "attribution": "Copyright (c) 2026 Kevin Russell"
   },
@@ -531,7 +531,7 @@
       "board_class": "READY",
       "board_class_reason": "witness = edge subset of Q7; scan the 672 4-cycles, exact, microseconds; ex(Q7,C4) >= 305 witness-improvable",
       "wall_reason": null,
-      "p42_slug": null,
+      "p42_slug": "hypercube-q7-c4-free",
       "erdos_url": "https://www.erdosproblems.com/86",
       "links": {
         "oeis": [

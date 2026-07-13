@@ -692,6 +692,50 @@ export const problems: Problem[] = [
       edges: "49-edge repository-certified seed in problems/c4-star-ramsey-a17/tests/seed-n17-m21.json",
     },
   },
+  {
+    id: 17,
+    slug: "hypercube-q7-c4-free",
+    repoId: "hypercube-q7-c4-free",
+    title: "C4-Free Hypercube Q7",
+    status: "locked",
+    mode: "construction",
+    direction: "maximize",
+    scoreName: "edge count",
+    seedBest: "304/1",
+    currentBest: "304/1",
+    optimum: "448/1",
+    minImprovement: "1/1",
+    bountyEth: "0.00",
+    challengeWindowHours: 72,
+    postingBondEth: "0.00",
+    challengeBondEth: "0.00",
+    verifierVersion: "0.1.0",
+    verifierImage: "sha256:local-dev",
+    verifierCommand: "make verify SOLUTION=path",
+    repoPath: "problems/hypercube-q7-c4-free",
+    poolAddress: null,
+    donationWallet: undeployedBaseSepoliaPool(
+      "No C4-Free Hypercube Q7 pool is deployed. Donations stay unavailable until immutable-image admission and chain reconciliation.",
+    ),
+    tagline: "Beat the 304-edge record for a C4-free subgraph of the 7-cube.",
+    description:
+      "Erdos problem #86 / OEIS A245762. Minamoto's 2026 construction gives a public 304-edge C4-free subgraph of Q7. The verifier accepts arbitrary Q7 edge sets, checks every edge and all 672 four-cycles exactly, and scores the recomputed edge count. A valid 305-edge witness would improve the finite lower bound. The board stays locked until immutable-image and N-host admission evidence exist.",
+    statement:
+      "\\max\\ |E(G)| \\quad \\text{over spanning subgraphs } G \\subseteq Q_7 \\text{ containing no } C_4, \\qquad |E(G)| \\ge 304 \\text{ is known}",
+    statementCaveat:
+      "The value 448 is only the lossless ambient edge cap of Q7. It is not an attainable-value claim. Equality ex(Q7,C4) = 304 is conjectural, and this finite record board does not claim Erdos's separate $100 asymptotic prize.",
+    verifierStandard: [
+      "R1 exact integer and bitwise hypercube checks",
+      "R2 ignores claimed score and improvement",
+      "H3 all 672 Q7 four-cycles enumerated",
+      "H5 lying-claim, duplicate, malformed-edge, and C4 fixtures",
+      "H6 immutable image and N-host admission pending",
+    ],
+    solutionSchema: { type: "object", required: ["edges"] },
+    sampleSolution: {
+      edges: "304-edge primary-source seed in problems/hypercube-q7-c4-free/tests/seed-q7-304.json",
+    },
+  },
 ];
 
 // The research registry may contain verifier packages that have not crossed the
