@@ -34,7 +34,7 @@ const IMMUTABLE_SEMANTICS = Object.freeze({
   P42ChallengeManagerFactory: Object.freeze([]),
   P42SubmissionManagerFactory: Object.freeze([]),
   P42RolloverVault: Object.freeze([]),
-  P42ResolverQuorum: Object.freeze(["owner", "expectedTreasury", "expectedDecisionBondWei", "managerFactory", "threshold"]),
+  P42ResolverQuorum: Object.freeze(["owner", "expectedTreasury", "expectedDecisionBondWei", "managerFactory"]),
   P42BountyPool: Object.freeze(["owner", "fundingCap"]),
   P42PayoutLedger: Object.freeze(["owner", "pool", "treasury", "feeBps", "earliestCloseTimestamp", "closeByTimestamp"]),
   P42SubmissionManager: Object.freeze(["owner", "treasury", "fundingAuthorizer", "pool", "ledger", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "deployedAt", "armNotBefore", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"]),

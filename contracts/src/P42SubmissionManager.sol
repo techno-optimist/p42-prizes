@@ -29,6 +29,8 @@ contract P42SubmissionManager {
     error P42_FUNDING_ALREADY_ARMED();
     error P42_FUNDING_AUTHORIZATION_ZERO();
     error P42_FUNDING_AUTHORIZATION_EXPIRED(uint64 expiresAt, uint64 nowAt);
+    error P42_FUNDING_AUTHORIZATION_ACTIVE(bytes32 authorizationDigest, uint64 expiresAt);
+    error P42_FUNDING_AUTHORIZATION_NOT_ACTIVE(bytes32 authorizationDigest, uint64 expiresAt);
     error P42_NOT_FUNDING_AUTHORIZER();
     error P42_FUNDING_AUTHORIZATION_MISMATCH(bytes32 expected, bytes32 actual);
     error P42_OPEN_WITNESS_WINDOW_OPEN(uint64 armNotBefore, uint64 nowAt);
@@ -275,6 +277,11 @@ contract P42SubmissionManager {
     event OpenWitnessWindowConfigured(uint64 deployedAt, uint64 armNotBefore);
     event FundingArmed(uint64 at, bytes32 indexed authorizationDigest);
     event FundingAuthorized(bytes32 indexed authorizationDigest, address indexed authorizer, uint64 expiresAt);
+    event FundingAuthorizationCancelled(
+        bytes32 indexed authorizationDigest,
+        address indexed canceller,
+        uint64 expiresAt
+    );
     event FinalizeVoided(
         uint256 indexed submissionId,
         address indexed solver,
@@ -460,12 +467,33 @@ contract P42SubmissionManager {
         if (msg.sender != fundingAuthorizer) revert P42_NOT_FUNDING_AUTHORIZER();
         if (authorizationDigest == bytes32(0)) revert P42_FUNDING_AUTHORIZATION_ZERO();
         if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
+        if (authorizedFundingDigest != bytes32(0) && block.timestamp <= fundingAuthorizationExpiresAt) {
+            revert P42_FUNDING_AUTHORIZATION_ACTIVE(authorizedFundingDigest, fundingAuthorizationExpiresAt);
+        }
         if (block.timestamp > expiresAt) {
             revert P42_FUNDING_AUTHORIZATION_EXPIRED(expiresAt, uint64(block.timestamp));
         }
         authorizedFundingDigest = authorizationDigest;
         fundingAuthorizationExpiresAt = expiresAt;
         emit FundingAuthorized(authorizationDigest, msg.sender, expiresAt);
+    }
+
+    /// @notice Lets the owner/timelock cancel the treasury's exact active
+    /// authorization before arming, so neither authority can replace it alone.
+    function cancelFundingAuthorization(bytes32 expectedAuthorizationDigest) external onlyOwner {
+        if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
+        bytes32 authorizationDigest = authorizedFundingDigest;
+        uint64 expiresAt = fundingAuthorizationExpiresAt;
+        if (expectedAuthorizationDigest != authorizationDigest) {
+            revert P42_FUNDING_AUTHORIZATION_MISMATCH(authorizationDigest, expectedAuthorizationDigest);
+        }
+        if (authorizationDigest == bytes32(0) || block.timestamp > expiresAt) {
+            revert P42_FUNDING_AUTHORIZATION_NOT_ACTIVE(authorizationDigest, expiresAt);
+        }
+
+        authorizedFundingDigest = bytes32(0);
+        fundingAuthorizationExpiresAt = 0;
+        emit FundingAuthorizationCancelled(authorizationDigest, msg.sender, expiresAt);
     }
 
     function armFunding(bytes32 authorizationDigest) external onlyOwner {
