@@ -4,6 +4,26 @@
 
 A ProjectForty2 flagship. 42 = the Answer; the verifier is *Deep Thought*.
 
+## OpenAI Build Week 2026
+
+P42 predates the hackathon. The eligible submission-period extension is a zero-setup
+**Verifier Lab** that lets judges run, alter, and attack an exact certificate in
+the browser. It was built with Codex and GPT-5.6 after the submission period
+opened. See [`docs/BUILD_WEEK_2026.md`](docs/BUILD_WEEK_2026.md) for the dated
+before/after boundary, judge test path, and honest scope.
+
+Run it locally:
+
+```bash
+cd web
+npm ci
+npm test
+npm run dev
+```
+
+Open `http://localhost:3000/build-week`. No account, wallet, API key, or funds
+are required.
+
 ---
 
 ## Start here
