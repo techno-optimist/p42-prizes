@@ -2,9 +2,9 @@
   "snapshot_schema": "p42-erdos-frontier-atlas-v1",
   "provenance": {
     "repository": "https://github.com/techno-optimist/erdos-frontier-atlas",
-    "commit": "f2db29d0c47b61caad80b1a70e68e9702260f5e0",
+    "commit": "7435d8f35114d3dcb9831961656ca9613378bb1e",
     "source_path": "atlas/problems.json",
-    "source_sha256": "a0a7236cde326d57251209f1c8c0e2fb91a18c29747e408a73d2737a506e15c6",
+    "source_sha256": "ab05558b69d14348fb9bafd153d036ce6b9a51560e9ef57c71c2a5ab67574bde",
     "license": "MIT",
     "attribution": "Copyright (c) 2026 Kevin Russell"
   },
@@ -67,7 +67,7 @@
       "title": "Covering-system min-modulus record (>42)",
       "prize": "$1000",
       "statement": "Erdős's \"favourite problem\": can the smallest modulus of a covering system (distinct moduli covering all integers) be arbitrarily large? DISPROVED (Hough 2015: ≤10^16; BBMST 2022: ≤616000). Remaining finite sub-problem: the lower-bound record — a covering system whose smallest modulus exceeds the current best of 42.",
-      "finite_object": "A covering system (finite set of congruences a_i mod m_i) with distinct moduli all ≥ 43 that covers every integer. \"Finite\" only nominally: Nielsen's min-40 witness already has &gt;10^50 congruences; a min-43+ witness is comparably or vastly more astronomical.",
+      "finite_object": "A covering system (finite set of congruences a_i mod m_i) with distinct moduli all ≥ 43 that covers every integer. \"Finite\" only nominally: Nielsen's min-40 witness already has >10^50 congruences; a min-43+ witness is comparably or vastly more astronomical.",
       "current_record": "Smallest modulus = 42, Tyler Owens, MSc thesis, BYU, 2014 (improving Pace Nielsen's 40, 2009; Krukenberg/Choi/Gibson chain before that). Upper bound side: Hough 2015 (≤10^16), Balister–Bollobás–Morris–Sahasrabudhe–Tiba 2022 (≤616000), Cummings–Filaseta–Trifonov (≤118 for squarefree moduli).",
       "frontier": null,
       "beatable": "WALL",
@@ -152,7 +152,7 @@
     },
     {
       "id": 20,
-      "title": "Erdős–Rado sunflower conjecture (f(n,k) &lt; c_k^n)",
+      "title": "Erdős–Rado sunflower conjecture (f(n,k) < c_k^n)",
       "prize": "$1000 (headline asymptotic conjecture only; finite table-extension carries no prize)",
       "statement": "Let f(n,k) be minimal such that every n-uniform family with |F| ≥ f(n,k) contains a k-sunflower (k sets with all pairwise intersections equal). Conjecture: f(n,k) < c_k^n for some c_k depending only on k. Headline is asymptotic ($1000, OPEN, page-marked non-finite). Genuine finite sub-problem: the exact \"sunflower numbers\" Sun(m,n) (OEIS A332077, tagged hard/more) — smallest number of ≤m-sets forcing an n-sunflower — equivalently the largest s-sunflower-free m-uniform family.",
       "finite_object": "A family of N sets, each of size ≤ m, on a fixed ground set [g], containing no s-set that forms a sunflower (equal pairwise intersections). Target: beat a recorded best-known size for a specific (m,s) cell of the A332077 table, or improve the base gadget behind the sqrt(10)^k growth-constant lower bound.",
@@ -429,8 +429,8 @@
       "prize": "$500 — but ALREADY CLAIMED by Tao (problem PROVED). No prize is obtainable by any finite computation.",
       "statement": "For f:ℕ→{−1,+1}, for every C there exist d,m with |∑_{k≤m} f(kd)| > C. Headline PROVED by Tao (2015/16). Finite sub-problem: exact maximal length of a ±1 sequence whose every homogeneous-AP partial sum stays within [−C,C].",
       "finite_object": "A ±1 sequence of length n with discrepancy ≤ C (every sum over {d,2d,…,md} bounded by C in absolute value). Verifier: check all (d,m) with dm≤n — O(n log n) exact, trivial.",
-      "current_record": "C=1: 11. C=2 (general): exactly 1160, tight (1161 UNSAT) — Konev & Lisitsa 2014, SAT + ~13GB DRUP cert. C=3 (GENERAL): OPEN — best known witness ≈13,000–14,000, exact value unknown, static since Konev–Lisitsa 2014. C=3 (multiplicative only): exactly 127,645 (E(3)=127,646), tight — Konev–Lisitsa; this restricted subcase is NOT the general record. Headline asymptotic result: Tao 2016.",
-      "frontier": "C=3 general witness ~ 13,000-14,000, static since Konev-Lisitsa 2014; C=2 tight at 1160",
+      "current_record": "C=1: 11. C=2 (general): exactly 1160, tight (1161 UNSAT) — Konev & Lisitsa 2014, SAT + ~13GB DRUP cert. C=3 (GENERAL): OPEN — a length-130,000 unrestricted witness published by Konev–Lisitsa has been exactly re-verified by the P42 package; the exact maximum remains unknown. C=3 (multiplicative only): exactly 127,645 (E(3)=127,646), tight — Konev–Lisitsa; this restricted subcase is distinct from the unrestricted frontier. Headline asymptotic result: Tao 2016.",
+      "frontier": "C=3 general witness >= 130,000 (Konev-Lisitsa unrestricted witness, exactly re-verified by P42); C=2 tight at 1160",
       "beatable": "MOVABLE",
       "beatable_reason": "Split verdict, R(5,5)-style. (1) WITNESS/lower-bound side is MOVABLE: the longest-known GENERAL discrepancy-3 sequence has sat at ~14,000 since 2014 on Lingeling/Glucose-era solvers. Modern Kissat/CaDiCaL + SLS (YalSAT) + streamliners (the same 'walters' streamliner tricks that took the MULTIPLICATIVE C=3 case to 127k) on a 100-core farm can very plausibly push the general witness to tens of thousands. Beating a concrete number with a trivial exact verifier — clean fit. (2) EXACT-VALUE/tight-bound side is a WALL: proving UNSAT at threshold+1 for general C=3 is the killer. The C=2 UNSAT at 1161 already produced a 'Wikipedia-sized' proof; the general C=3 threshold is far larger (≥14k, likely ≥100k), so its DRAT certificate is almost certainly beyond feasibility — exactly the R(5,5) upper-bound situation. So the tight value is unattainable; only the lower bound moves. And critically: the movable side is LOW-VALUE (see impact).",
       "fit_score": 7,
@@ -442,10 +442,11 @@
       "verdict": "PARTIAL. Headline is PROVED/asymptotic (NONE by itself), but a genuine in-class finite sub-problem exists: exact maximal length of a general discrepancy-C sequence. C=2 is closed at 1160; C=3 general is OPEN with only a ~14,000 witness lower bound from 2014. Our machinery fits cleanly (trivial O(n log n) verifier, SAT/SLS search, DRAT) and the WITNESS/lower-bound record IS movable with a modern solver farm. BUT: (a) the $500 prize is already claimed and unobtainable; (b) the movable side is low-impact niche work; (c) the high-value side — the exact tight value with a nonexistence certificate — is a WALL (DRAT proof at the true threshold is infeasible, R(5,5)-upper-bound style). Recommendation: NOT worth a campaign. If touched at all, only as a cheap farm shakedown to bump the longest-known general discrepancy-3 sequence, with no expectation of a tight/prize result.",
       "lane": "witness-local-search",
       "board_class": "READY",
-      "board_class_reason": "witness = +-1 sequence; O(N log N) integer prefix-sum scan; frontier ~14,000 witness-extendable",
+      "board_class_reason": "witness = +-1 sequence; O(N log N) integer prefix-sum scan; exactly re-verified 130,000-term frontier witness-extendable",
       "wall_reason": null,
       "p42_slug": "edp-c3-longest-sequence",
       "erdos_url": "https://www.erdosproblems.com/67",
+      "campaign_finding": "2026-07-12 correction: the unrestricted Konev-Lisitsa length-130,000 witness was recovered from the authors' archived result artifact and exactly re-verified by the P42 verifier. Earlier ~14,000 frontier and search-cost prose in the originating audit is superseded; new work must start above 130,000.",
       "links": {
         "oeis": [],
         "arxiv": []

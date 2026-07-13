@@ -4,7 +4,7 @@
 
 This product includes a snapshot from
 <https://github.com/techno-optimist/erdos-frontier-atlas> at commit
-`b73ad3df07b9971de0b512db14113baaedae0e70`.
+`7435d8f35114d3dcb9831961656ca9613378bb1e`.
 
 MIT License
 

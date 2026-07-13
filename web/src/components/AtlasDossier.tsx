@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { sitePath } from "@/lib/site-paths";
 
 type Entry = Record<string, unknown>;
 const read = (entry: Entry, ...keys: string[]) => {
@@ -72,7 +73,7 @@ function Citation({ citation }: { citation: unknown }) {
 }
 
 function Join({ value }: { value: unknown }) {
-  if (typeof value === "string") return <a className="atlas-join-link" href={`/problems/${encodeURIComponent(value)}`}>Open P42 board →</a>;
+  if (typeof value === "string") return <a className="atlas-join-link" href={sitePath(`/problems/${encodeURIComponent(value)}`)}>Open P42 board →</a>;
   if (typeof value === "boolean") return <p>{value ? "A P42 connection is recorded for this entry." : "No P42 board is currently joined."}</p>;
   const join = value as Entry;
   const href = read(join, "url", "href", "path");
