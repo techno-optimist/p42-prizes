@@ -6,9 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const UPSTREAM_REPOSITORY = "https://github.com/techno-optimist/erdos-frontier-atlas";
-export const UPSTREAM_COMMIT = "0901734c487ab1e51ddc772ab45b08b42c86fc2c";
+export const UPSTREAM_COMMIT = "1afebbdc0e56166d8b0e5f0afa2b323070e9037c";
 export const UPSTREAM_PATH = "atlas/problems.json";
-export const UPSTREAM_SHA256 = "cd1222e90a31d53c5d58549322eb211cfb9e5478d75e9230031141fdad940864";
+export const UPSTREAM_SHA256 = "d72891f56359bb5d01c30b9938abc724c1af3bb73547416cd483bae2d30b7470";
 export const UPSTREAM_RAW_URL = `https://raw.githubusercontent.com/techno-optimist/erdos-frontier-atlas/${UPSTREAM_COMMIT}/${UPSTREAM_PATH}`;
 
 const outputPath = fileURLToPath(
@@ -51,6 +51,10 @@ export function buildSnapshot(sourceBytes) {
         && record.status === "UNKNOWN" && record.where?.n === 17)
       || erdos552?.p42_slug !== "c4-star-ramsey-a17") {
     throw new Error("Erdős 552 structured compute coverage is missing or changed");
+  }
+  const erdos86 = source.problems.find((problem) => problem.id === 86);
+  if (erdos86?.p42_slug !== "hypercube-q7-c4-free") {
+    throw new Error("Erdős 86 P42 package join is missing or changed");
   }
   for (const problem of source.problems) {
     const records = problem.compute?.coverage;

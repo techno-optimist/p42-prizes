@@ -55,10 +55,10 @@ function releaseGuardBoards(): ReleaseGuardBoard[] {
 }
 
 describe("problem funding wallets", () => {
-  it("lists the fifteen-board Phase 0 launch slate", () => {
-    expect(problems).toHaveLength(16);
-    expect(new Set(problems.map((problem) => problem.id))).toHaveProperty("size", 16);
-    expect(new Set(problems.map((problem) => problem.slug))).toHaveProperty("size", 16);
+  it("lists the seventeen-board Phase 0 registry", () => {
+    expect(problems).toHaveLength(17);
+    expect(new Set(problems.map((problem) => problem.id))).toHaveProperty("size", 17);
+    expect(new Set(problems.map((problem) => problem.slug))).toHaveProperty("size", 17);
   });
 
   it("matches the frozen ten-board production authority in exact order", () => {

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/hypercube-q7-c4-free/solution.schema.json",
+  "x-p42-max-bytes": 16384,
+  "type": "object",
+  "required": ["edges"],
+  "additionalProperties": false,
+  "properties": {
+    "edges": {
+      "type": "array",
+      "maxItems": 448,
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {"type": "integer", "minimum": 0, "maximum": 127}
+      }
+    },
+    "source": {"type": "string", "maxLength": 1024},
+    "claimed_score": {"type": "string", "maxLength": 128},
+    "claimed_improvement": {"type": "string", "maxLength": 128}
+  }
+}

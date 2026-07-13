@@ -1,0 +1,1 @@
+# stdlib-only verifier path; pytest and jsonschema belong to the repository harness.

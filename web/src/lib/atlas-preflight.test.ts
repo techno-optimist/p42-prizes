@@ -104,7 +104,7 @@ describe("Atlas compute preflight decisions", () => {
     expect(expired.snapshot).toMatchObject({
       generated: "2026-07-13",
       max_age_days: 7,
-      provenance: { commit: "0901734c487ab1e51ddc772ab45b08b42c86fc2c" },
+      provenance: { commit: "1afebbdc0e56166d8b0e5f0afa2b323070e9037c" },
     });
     expect(expired.snapshot.digest).toMatch(/^sha256:[a-f0-9]{64}$/);
   });

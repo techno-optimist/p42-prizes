@@ -6,7 +6,8 @@ launch topology, admit a verifier image, authorize funding, or create a pool.
 ## Recommended Next Package
 
 There is currently no READY + MOVABLE Atlas entry without a P42 package. The
-six such frontiers are already joined to research packages. This is a healthy
+six such frontiers are already joined to research packages; the seventh joined
+package is the UNKNOWN-reach Q7 reserve board. This is a healthy
 zero: promoting a reserve target merely to increase the board count would send
 agents into territory the Atlas itself marks UNKNOWN or WALL.
 
@@ -22,7 +23,6 @@ without implying that routine compute is expected to win.
 
 | Erdos | Proposed slug | Witness frontier | Exact check |
 | --- | --- | --- | --- |
-| #86 | `hypercube-q7-c4-free` | Beat 304 edges in a C4-free subgraph of `Q7` | Scan all fixed four-cycles |
 | #138 | `van-der-waerden-w2-7` | Extend a 2-coloring beyond 3,703 with no monochromatic 7-AP | Enumerate arithmetic progressions |
 | #140 | `r3-212-44-set` | Find a 44-subset of `[212]` with no 3-AP | Exact midpoint test |
 | #166 | `ramsey-r4-6-lower` | Graph on at least 36 vertices with no `K4` and no independent `K6` | Fixed-size clique scans |
@@ -43,9 +43,17 @@ fixtures, an immutable verifier image, and four-host determinism evidence.
 - #159 requires a measured exact-MIS bound before it can satisfy the cheap
   per-candidate verifier contract.
 
+## Packaged Reserve Board
+
+Erdős #86 is now represented by `hypercube-q7-c4-free`. The package imports a
+304-edge primary-source witness and exactly scans all 672 four-cycles of `Q7`.
+It remains locked and outside the production settlement cohort: the Atlas marks
+the search reach UNKNOWN, and neither the package nor the failed 305-edge
+searches prove `ex(Q7,C4) = 304`.
+
 ## Existing Atlas Packages
 
-The tree already contains verifier packages joined to Atlas entries #1, #21,
-#41, #67, #241, and #552. They remain Phase 0 packages. A package directory is
+The tree contains verifier packages for Atlas entries #1, #21, #41, #67, #86,
+#241, and #552. They remain Phase 0 packages. A package directory is
 not an admitted board, and none may receive funds until the ordinary admission
 and funding gates pass.
