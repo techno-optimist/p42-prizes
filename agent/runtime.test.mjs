@@ -61,7 +61,7 @@ test("npm pack installs complete runnable agent binaries", () => {
   for (const module of ["transcript-store.mjs", "strict-json.mjs", "signed-transaction.mjs", "solver-manifest.mjs"]) {
     assert.equal(readFileSync(join(installDir, "node_modules", "p42-agent", module)).length > 0, true, module);
   }
-  for (const binary of ["p42-resolve", "p42-solve"]) {
+  for (const binary of ["p42-resolve", "p42-resolver-sign", "p42-solve"]) {
     const result = spawnSync(join(installDir, "node_modules", ".bin", binary), [], { encoding: "utf8" });
     assert.notEqual(result.status, 126, `${binary} is executable`);
     assert.notEqual(result.status, 127, `${binary} resolves its packaged modules`);
@@ -79,6 +79,15 @@ test("npm pack installs complete runnable agent binaries", () => {
   assert.equal(schemaProbe.status, 0, schemaProbe.stderr);
   assert.doesNotMatch(schemaProbe.stderr, /ENOENT|ERR_MODULE_NOT_FOUND/);
   assert.match(schemaProbe.stderr, /Manifest missing|schema validation/);
+  const installedSigner = pathToFileURL(join(installDir, "node_modules", "p42-agent", "resolver-signer.mjs")).href;
+  const abiProbe = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const { Interface } = await import("ethers");
+    const { resolverSignerAbi } = await import(${JSON.stringify(installedSigner)});
+    for (const name of ["P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry", "P42ResolverQuorum"]) {
+      new Interface(resolverSignerAbi(name));
+    }
+  `], { cwd: installDir, encoding: "utf8" });
+  assert.equal(abiProbe.status, 0, abiProbe.stderr);
 });
 const entryPointLike = new ethers.Interface([
   "function handle(bytes accountCallData,address beneficiary)",

@@ -1374,7 +1374,7 @@ function assertBindingRegistryFields(binding, problem, isFrozen, explicitlyFroze
   }
 }
 
-async function verifyLiveRegistryBinding(context, value) {
+export async function verifyLiveRegistryBinding(context, value) {
   const binding = validateRegistryBinding(value, {
     chain_id: context.chainId,
     registry_address: String(context.registry.target).toLowerCase(),

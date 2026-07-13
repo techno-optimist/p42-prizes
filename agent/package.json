@@ -24,6 +24,7 @@
     "production-validation-context.mjs",
     "role-acceptance.mjs",
     "resolver.mjs",
+    "resolver-signer.mjs",
     "resolver-quorum.mjs",
     "runner-transcript.mjs",
     "runtime_bridge.py",
@@ -38,6 +39,7 @@
   "bin": {
     "p42-solve": "solver.mjs",
     "p42-resolve": "resolver.mjs",
+    "p42-resolver-sign": "resolver-signer.mjs",
     "p42-open-witness-collect": "open-witness-promote.mjs",
     "p42-funding-activation-plan": "funding-activation.mjs",
     "p42-funding-activate": "funding-activation-run.mjs",

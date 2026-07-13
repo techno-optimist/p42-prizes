@@ -69,11 +69,35 @@ def write(root: str, path: str, payload: bytes) -> None:
         for item in reversed(held): os.close(item)
 
 
+def write_exclusive(root: str, path: str, payload: bytes) -> bool:
+    """Atomically publish payload only when the trusted target is absent."""
+    if len(payload) > MAX_BYTES: raise ValueError("trusted write exceeds limit")
+    held, parent, name = parent_fd(root, path)
+    temporary = f".{name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
+    descriptor = -1
+    try:
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=parent)
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = -1; output.write(payload); output.flush(); os.fsync(output.fileno())
+        try:
+            os.link(temporary, name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+        except FileExistsError:
+            return False
+        os.fsync(parent)
+        return True
+    finally:
+        if descriptor >= 0: os.close(descriptor)
+        try: os.unlink(temporary, dir_fd=parent)
+        except FileNotFoundError: pass
+        for item in reversed(held): os.close(item)
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(); parser.add_argument("command", choices=["read", "read-public", "write"]); parser.add_argument("--root", required=True); parser.add_argument("--path", required=True)
+    parser = argparse.ArgumentParser(); parser.add_argument("command", choices=["read", "read-public", "write", "write-exclusive"]); parser.add_argument("--root", required=True); parser.add_argument("--path", required=True)
     args = parser.parse_args()
     if args.command in {"read", "read-public"}: sys.stdout.buffer.write(read(args.root, args.path, public_readonly=args.command == "read-public"))
-    else: write(args.root, args.path, sys.stdin.buffer.read(MAX_BYTES + 1))
+    elif args.command == "write": write(args.root, args.path, sys.stdin.buffer.read(MAX_BYTES + 1))
+    else: print("CREATED" if write_exclusive(args.root, args.path, sys.stdin.buffer.read(MAX_BYTES + 1)) else "EXISTS")
     return 0
 
 
