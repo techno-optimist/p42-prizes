@@ -32,7 +32,7 @@ Status: DESIGN SPEC v1.0 — hand-off ready. Not audited, not legally reviewed. 
 - **Anti-front-running.** **Commit-reveal with the solution CID inside the commit preimage**, the `sha256` content anchor (`commitDaHash`) bound at commit, and the raw solution bytes posted on-chain in the reveal calldata (for the ≤ 512 KB problems) — closing both mempool solution-sniping and the "free-option" grief the red-team found.
 - **Hard constraint.** **Exact, deterministic, self-certifiable problems only.** Certified decisions use integer/rational arithmetic or rigorously enclosed intervals; no unenclosed floating-point result may decide a verdict — money multiplies verifier-exploit pressure by orders of magnitude.
 - **Chain.** **Base** (OP-Stack L2): sub-cent gas, first-class account abstraction + sponsored Paymaster for gasless agent submissions, largest agent-wallet install base. Contracts are chain-agnostic so Arbitrum/OP is a config change.
-- **No token at launch.** ETH/USDC bounties only; a native token is the fastest path to an unregistered-securities problem and adds no mechanism we need. Sustainability comes from a capped protocol fee on payouts (v1: 2.5%).
+- **No token at launch.** Native-ETH bounties only in v1; USDC/ERC-20 is not implemented or accepted. A native token is the fastest path to an unregistered-securities problem and adds no mechanism we need. Sustainability comes from a capped protocol fee on payouts (v1: 2.5%).
 - **Phasing.** Testnet play-money pilot (prove the mechanism *cannot be farmed*) → audit + legal → mainnet-small (capped pools) → open the standard. **Real ETH must not ship** until the red-team's three trust-breaking findings (N-host determinism, verifiable resolver, permanent DA) are closed — not merely flagged.
 
 ---
@@ -51,7 +51,7 @@ Each decision states the choice, the rationale, the rejected alternative, and �
 
 5. **Problems: exact, deterministic, self-certifiable only.** *Rationale:* on-chain money multiplies verifier-exploit pressure by orders of magnitude; a float-vs-exact trap that costs a leaderboard rank in a free arena becomes theft here. Integer / rational / enclosed-interval arithmetic only. *Rejected:* floating-point scorers and sampled/Monte-Carlo verifiers (both are theft vectors — the seeded-sampling gap and float-vs-exact trap are exploits we've already caught). Admission is gated by the P42 Verifier Standard (R1–R5 + hardening checklist H1–H6). **Red-team change:** determinism is enforced by an *N-host admission matrix* (x86 + ARM + two glibc versions hashing identically) plus AST-lint banning `float`/`math.`/float-dtype on the certified path — not the weak "two runs on two similar hosts" check.
 
-6. **No token at launch.** *Rationale:* a native token is the fastest path to an unregistered-securities offering and invites speculation that corrupts the "pay for verified work" thesis; every mechanism works in ETH/USDC. *Rejected:* utility token / points-with-implied-airdrop. Sustainability instead comes from a **capped protocol fee** (v1: 2.5% on payouts, `MAX_FEE_BPS = 250`) to a Treasury multisig — a service fee, not a distribution.
+6. **No token at launch.** *Rationale:* a native token is the fastest path to an unregistered-securities offering and invites speculation that corrupts the "pay for verified work" thesis; v1 implements native ETH only. USDC/ERC-20 remains unsupported unless a separate pool, fee, and payout path is implemented and audited. *Rejected:* utility token / points-with-implied-airdrop. Sustainability instead comes from a **capped protocol fee** (v1: 2.5% on payouts, `MAX_FEE_BPS = 250`) to a Treasury multisig — a service fee, not a distribution.
 
 7. **Legal framing: bounty/prize, not wager or investment.** *Rationale:* payout is for delivered, verified work, gated by skill and a deterministic verifier, with zero chance — the Erdős/Clay/HackerOne/Gitcoin lineage. Non-custodial escrow (the entity never holds pool keys) minimizes money-transmission surface. *Rejected:* framing the pool as a jackpot or funders as investors (invites gambling/securities characterization). Every value-moving item is flagged **[COUNSEL]**; a written money-transmission + securities opinion blocks mainnet.
 
@@ -576,7 +576,7 @@ Fund operations from a **small, flat protocol fee**, structured as a **service f
 
 ### 4. Token recommendation: NO (default, strongly held)
 
-Ship with **ETH/stablecoin (USDC) bounties only.** A native token is the fastest path to an unregistered securities offering, invites speculation that corrupts the "pay for verified work" thesis, and adds no mechanism we need. **No token, no points-with-implied-airdrop, no "pre-token" wink.** Revisit only if a *governance* need emerges, with **[COUNSEL]** and a non-investment structure.
+Ship v1 with **native-ETH bounties only. USDC/ERC-20 is not supported or accepted.** A native token is the fastest path to an unregistered securities offering, invites speculation that corrupts the "pay for verified work" thesis, and adds no mechanism we need. **No token, no points-with-implied-airdrop, no "pre-token" wink.** Revisit only if a *governance* need emerges, with **[COUNSEL]**, a separately implemented and audited asset path, and a non-investment structure.
 
 ### 5. Entity, jurisdiction, disclaimers
 
