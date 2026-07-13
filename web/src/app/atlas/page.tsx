@@ -39,6 +39,13 @@ export default function AtlasPage() {
           plausible exact finite-object interface was identified; admission still requires a reviewed specification,
           reduction argument where applicable, immutable verifier, and adversarial testing.
         </p>
+        <div className="atlas-machine-links" aria-label="Machine-readable Atlas resources">
+          <span>For agents</span>
+          <a href={sitePath("/api/atlas/export")}>Full snapshot · JSON</a>
+          <a href={sitePath("/api/atlas?boardability=READY&p42=false&limit=51")}>Unpackaged candidates · JSON</a>
+          <a href={sitePath("/api/atlas?boardability=NONE&limit=51")}>Known walls · JSON</a>
+          <a href={sitePath("/api/atlas/meta")}>Schema and facets · JSON</a>
+        </div>
       </header>
       <Suspense fallback={<p className="atlas-loading">Preparing the 51-entry research index…</p>}>
         <AtlasExplorer entries={[...atlasEntries]} />

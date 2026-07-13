@@ -3,8 +3,23 @@ import { describe, expect, it } from "vitest";
 import { GET as detailGet } from "@/app/api/atlas/[id]/route";
 import { GET as metaGet } from "@/app/api/atlas/meta/route";
 import { GET as listGet } from "@/app/api/atlas/route";
+import { GET as exportGet } from "@/app/api/atlas/export/route";
 
 describe("atlas API routes", () => {
+  it("exports the complete immutable snapshot with a reproducible digest", async () => {
+    const first = await exportGet();
+    const second = await exportGet();
+    const body = await first.text();
+    const parsed = JSON.parse(body);
+
+    expect(parsed.entries).toHaveLength(51);
+    expect(parsed.meta.total).toBe(51);
+    expect(first.headers.get("cache-control")).toContain("immutable");
+    expect(first.headers.get("content-disposition")).toContain("p42-erdos-atlas-v1.json");
+    expect(first.headers.get("x-content-sha256")).toMatch(/^[a-f0-9]{64}$/);
+    expect(second.headers.get("x-content-sha256")).toBe(first.headers.get("x-content-sha256"));
+  });
+
   it("serves a filtered list with immutable snapshot caching", async () => {
     const response = await listGet(new Request("http://localhost/api/atlas?boardability=HEAVY&limit=2"));
     const body = await response.json();
