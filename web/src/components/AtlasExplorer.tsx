@@ -17,6 +17,9 @@ type AtlasRow = {
   lane: string;
   fit: number;
   impact: number;
+  packaged: boolean;
+  plotX: number;
+  plotY: number;
 };
 
 const text = (entry: RawEntry, keys: string[], fallback = "") => {
@@ -47,7 +50,34 @@ function normalize(entry: unknown, index: number): AtlasRow {
     lane: text(raw, ["lane", "attackLane", "category"], "unclassified"),
     fit: score(raw, ["fit_score"], 50),
     impact: score(raw, ["impact_score"], 50),
+    packaged: Boolean(text(raw, ["p42_slug"])),
+    plotX: 0,
+    plotY: 0,
   };
+}
+
+function layoutRows(entries: unknown[]): AtlasRow[] {
+  const rows = entries.map(normalize);
+  const groups = new Map<string, AtlasRow[]>();
+  for (const row of rows) {
+    const key = `${row.fit}:${row.impact}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  for (const group of groups.values()) {
+    group.sort((left, right) => Number(left.id) - Number(right.id));
+    group.forEach((row, index) => {
+      if (group.length === 1) {
+        row.plotX = 65 + row.fit * 9;
+        row.plotY = 475 - row.impact * 4.5;
+        return;
+      }
+      const angle = (index / group.length) * Math.PI * 2 - Math.PI / 2;
+      const radius = 6 + Math.min(group.length, 5) * 1.5;
+      row.plotX = 65 + row.fit * 9 + Math.cos(angle) * radius;
+      row.plotY = 475 - row.impact * 4.5 + Math.sin(angle) * radius;
+    });
+  }
+  return rows;
 }
 
 const unique = (rows: AtlasRow[], key: "boardability" | "reach" | "lane") =>
@@ -57,13 +87,14 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
   const router = useRouter();
   const pathname = usePathname();
   const params = useSearchParams();
-  const rows = useMemo(() => entries.map(normalize), [entries]);
+  const rows = useMemo(() => layoutRows(entries), [entries]);
   const [query, setQuery] = useState(() => params.get("q") ?? "");
   const [selected, setSelected] = useState<string | null>(null);
   const deferredQuery = useDeferredValue(query.trim().toLowerCase());
   const board = params.get("boardability") ?? "all";
   const reach = params.get("reach") ?? "all";
   const lane = params.get("lane") ?? "all";
+  const packageState = params.get("package") ?? "all";
 
   const updateUrl = useCallback((changes: Record<string, string>) => {
     const next = new URLSearchParams(params.toString());
@@ -84,8 +115,9 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
     return (!deferredQuery || haystack.includes(deferredQuery))
       && (board === "all" || row.boardability === board)
       && (reach === "all" || row.reach === reach)
-      && (lane === "all" || row.lane === lane);
-  }), [board, deferredQuery, lane, reach, rows]);
+      && (lane === "all" || row.lane === lane)
+      && (packageState === "all" || row.packaged === (packageState === "packaged"));
+  }), [board, deferredQuery, lane, packageState, reach, rows]);
 
   const clear = () => {
     setQuery("");
@@ -102,6 +134,14 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
         <output aria-live="polite">{filtered.length} of {rows.length} entries</output>
       </div>
 
+      <nav className="atlas-routes" aria-label="Atlas routing views">
+        <RouteButton label="All surveyed" count={rows.length} active={board === "all" && packageState === "all"} onClick={() => updateUrl({ boardability: "all", package: "all" })} />
+        <RouteButton label="Board candidates" count={rows.filter((row) => row.boardability === "READY" && !row.packaged).length} active={board === "READY" && packageState === "unpackaged"} onClick={() => updateUrl({ boardability: "READY", package: "unpackaged" })} />
+        <RouteButton label="Heavy verification" count={rows.filter((row) => row.boardability === "HEAVY").length} active={board === "HEAVY"} onClick={() => updateUrl({ boardability: "HEAVY", package: "all" })} />
+        <RouteButton label="Known walls" count={rows.filter((row) => row.boardability === "NONE").length} active={board === "NONE"} onClick={() => updateUrl({ boardability: "NONE", package: "all" })} />
+        <RouteButton label="P42 packages" count={rows.filter((row) => row.packaged).length} active={packageState === "packaged"} onClick={() => updateUrl({ boardability: "all", package: "packaged" })} />
+      </nav>
+
       <form className="atlas-controls" role="search" onSubmit={(event) => event.preventDefault()}>
         <label className="atlas-search">
           <span>Search title, frontier, or number</span>
@@ -110,7 +150,7 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
         <AtlasSelect label="Boardability" value={board} values={unique(rows, "boardability")} onChange={(value) => updateUrl({ boardability: value })} />
         <AtlasSelect label="Research reach" value={reach} values={unique(rows, "reach")} onChange={(value) => updateUrl({ reach: value })} />
         <AtlasSelect label="Attack lane" value={lane} values={unique(rows, "lane")} onChange={(value) => updateUrl({ lane: value })} />
-        <button className="atlas-clear" type="button" onClick={clear} disabled={!query && board === "all" && reach === "all" && lane === "all"}>Clear</button>
+        <button className="atlas-clear" type="button" onClick={clear} disabled={!query && board === "all" && reach === "all" && lane === "all" && packageState === "all"}>Clear</button>
       </form>
 
       <div className="atlas-map-wrap">
@@ -132,7 +172,7 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
           <g>
             {filtered.map((row) => (
               <Link key={row.id} href={`/atlas/${encodeURIComponent(row.id)}`} aria-label={`Erdős ${row.number}: ${row.title}. Verifier fit ${Math.round(row.fit)}, impact ${Math.round(row.impact)}.`}>
-                <circle className={selected === row.id ? "is-selected" : ""} cx={65 + row.fit * 9} cy={475 - row.impact * 4.5} r={selected === row.id ? 10 : 7} tabIndex={0} onMouseEnter={() => setSelected(row.id)} onMouseLeave={() => setSelected(null)} onFocus={() => setSelected(row.id)} onBlur={() => setSelected(null)} />
+                <circle className={selected === row.id ? "is-selected" : ""} cx={row.plotX} cy={row.plotY} r={selected === row.id ? 10 : 7} tabIndex={0} onMouseEnter={() => setSelected(row.id)} onMouseLeave={() => setSelected(null)} onFocus={() => setSelected(row.id)} onBlur={() => setSelected(null)} />
               </Link>
             ))}
           </g>
@@ -156,6 +196,10 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
       </div>
     </section>
   );
+}
+
+function RouteButton({ label, count, active, onClick }: { label: string; count: number; active: boolean; onClick: () => void }) {
+  return <button type="button" className={active ? "is-active" : undefined} aria-pressed={active} onClick={onClick}><span>{label}</span><b>{count}</b></button>;
 }
 
 function AtlasSelect({ label, value, values, onChange }: { label: string; value: string; values: string[]; onChange: (value: string) => void }) {
