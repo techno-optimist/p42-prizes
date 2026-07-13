@@ -1,0 +1,4 @@
+{
+  "source": "Boundary: last mark exceeds the MAX_MARK cap by one",
+  "marks": [0, 1, 4, 13, 32, 71, 124, 218, 375, 572, 1000001]
+}

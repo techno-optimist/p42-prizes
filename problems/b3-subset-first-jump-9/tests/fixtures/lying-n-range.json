@@ -1,0 +1,15 @@
+{
+  "n": 150,
+  "set": [
+    1,
+    2,
+    5,
+    14,
+    33,
+    72,
+    125,
+    219,
+    376
+  ],
+  "source": "tries to smuggle a better score through the declared bound; elements exceed n"
+}

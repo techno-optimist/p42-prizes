@@ -1,0 +1,6 @@
+{
+"claimed_length": 999999,
+"claimed_score": "999999/1",
+"signs": "-++-+--++-++-+--+--++-+--+--++-+--++-++-+--+--++-+--++-++-+--++-++-+----+++-+--+--++-+--++-++-+-++--",
+"source": "Truncated 100-prefix of the Konev-Lisitsa l17000 witness with deliberately lying claimed fields; the verifier must recompute score 100/1 and ignore every claim."
+}

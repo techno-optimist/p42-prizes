@@ -1,0 +1,27 @@
+schema_version: p42-problem/v1
+problem_id: b3-ruler-11-marks
+title: Shortest 11-mark triple-sum (B3 with repetition) ruler — beat 445
+status: phase-0-packaging
+objective:
+  direction: minimize
+  score_name: ruler_length
+  seed_best: "445/1"  # a(11) <= 445, John Tromp (OEIS A227358, Aug 28 2013)
+  optimum: "310/1"  # lower bound: first 10 marks form a valid 10-mark ruler, so marks[9] >= a(10) = 309
+  min_improvement: "1/1"
+  gauge: "max(0, seed_best - ruler_length)"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "python3 verifier/verify.py --solution {solution}"
+  max_compute:
+    wall_seconds: 5
+    memory_mb: 128
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: optional-mirror  # DA rides reveal calldata (sha256==commitDaHash); Arweave permanence is an optional mirror, not required (see docs/DATA_AVAILABILITY.md)

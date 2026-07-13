@@ -1,0 +1,4 @@
+{
+  "source": "OEIS A276661 comment line: a(11) <= 594 witness, Conway-Guy lineage",
+  "set": [285, 433, 510, 550, 570, 581, 587, 590, 592, 593, 594]
+}

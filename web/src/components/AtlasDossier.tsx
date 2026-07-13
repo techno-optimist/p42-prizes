@@ -1,0 +1,80 @@
+import Link from "next/link";
+
+type Entry = Record<string, unknown>;
+const read = (entry: Entry, ...keys: string[]) => {
+  for (const key of keys) if (entry[key] !== undefined && entry[key] !== null) return entry[key];
+  return undefined;
+};
+const words = (value: unknown, fallback = "Not yet recorded in this snapshot.") => typeof value === "string" || typeof value === "number" ? String(value) : fallback;
+const list = (value: unknown): unknown[] => Array.isArray(value) ? value : value ? [value] : [];
+
+export function AtlasDossier({ entry: value }: { entry: unknown }) {
+  const entry = value as Entry;
+  const id = words(read(entry, "id", "slug", "problemId"), "unlisted");
+  const number = words(read(entry, "number", "erdosNumber", "problemNumber"), id);
+  const title = words(read(entry, "title", "name", "problem"), `Erdős problem ${number}`);
+  const boardability = words(read(entry, "board_class"), "unassessed");
+  const reach = words(read(entry, "beatable"), "unassessed");
+  const lane = words(read(entry, "lane", "attackLane", "category"), "unclassified");
+  const links = read(entry, "links") as Entry | undefined;
+  const citations = [read(entry, "erdos_url"), ...list(links?.oeis), ...list(links?.arxiv)].filter(Boolean);
+  const join = read(entry, "p42_slug");
+
+  return <article className="atlas-page atlas-dossier">
+    <div className="running-head"><span>P42 Prizes · Erdős Atlas</span><span>entry {number} · research dossier</span></div>
+    <nav className="atlas-back" aria-label="Breadcrumb"><Link href="/atlas">Atlas index</Link><span aria-hidden="true">/</span><span>Problem {number}</span></nav>
+    <header className="atlas-dossier-head">
+      <p className="atlas-kicker">Erdős problem {number} · {boardability}</p>
+      <h1>{title}</h1>
+      <p className="atlas-deck">{words(read(entry, "summary", "statement", "description", "abstract"))}</p>
+      <dl className="atlas-dossier-facts"><div><dt>Boardability</dt><dd>{boardability}</dd></div><div><dt>Research reach</dt><dd>{reach}</dd></div><div><dt>Attack lane</dt><dd>{lane}</dd></div></dl>
+    </header>
+    <div className="atlas-dossier-grid">
+      <main>
+        <DossierSection no="01" title="The frontier" value={frontierText(entry)} />
+        <DossierSection no="02" title="Finite object" value={read(entry, "finite_object")} />
+        <DossierSection no="03" title="Verifier" value={read(entry, "verifier")} />
+        <DossierSection no="04" title="Attack lane" value={read(entry, "attack")} />
+        <DossierSection no="05" title="Wall and campaign notes" value={read(entry, "campaign_finding", "wall_reason", "beatable_reason")} />
+      </main>
+      <aside className="atlas-dossier-aside" aria-label="Dossier references and scope">
+        <section><h2>Citations</h2>{citations.length ? <ol className="atlas-citations">{citations.map((citation, index) => <Citation key={index} citation={citation} />)}</ol> : <p>No bibliography was recorded for this entry in the snapshot.</p>}</section>
+        <section><h2>Scope note</h2><p>This dossier is a research-routing assessment. It does not assert that the problem is solved, that a proposed finite check proves the original statement, or that a P42 prize board has been admitted.</p></section>
+        {join !== undefined && <section className="atlas-join"><h2>P42 join</h2><Join value={join} /></section>}
+      </aside>
+    </div>
+  </article>;
+}
+
+function DossierSection({ no, title, value }: { no: string; title: string; value: unknown }) {
+  return <section className="atlas-dossier-section"><span>{no}</span><div><h2>{title}</h2>{Array.isArray(value) ? <ul>{value.map((item, index) => <li key={index}>{words(typeof item === "object" ? JSON.stringify(item) : item)}</li>)}</ul> : <p>{words(value)}</p>}</div></section>;
+}
+
+function frontierText(entry: Entry) {
+  const frontier = read(entry, "frontier");
+  if (frontier && typeof frontier === "object") {
+    const item = frontier as Entry;
+    return [read(item, "summary", "value"), read(item, "holder") && `Holder: ${words(read(item, "holder"))}.`, read(item, "year") && `Recorded: ${words(read(item, "year"))}.`, read(item, "note")].filter(Boolean).join(" ");
+  }
+  return read(entry, "current_record");
+}
+
+function Citation({ citation }: { citation: unknown }) {
+  if (typeof citation === "string") {
+    const href = citation.startsWith("http") ? citation : citation.startsWith("A") ? `https://oeis.org/${citation}` : `https://arxiv.org/abs/${citation}`;
+    const label = citation.includes("erdosproblems.com") ? "Erdős Problems source entry" : citation.startsWith("A") ? `OEIS ${citation}` : citation.startsWith("http") ? citation : `arXiv:${citation}`;
+    return <li><a href={href} target="_blank" rel="noreferrer">{label}</a></li>;
+  }
+  const item = citation as Entry;
+  const label = words(read(item, "label", "title", "citation", "name"), "Source");
+  const href = read(item, "url", "href", "doiUrl");
+  return <li>{typeof href === "string" ? <a href={href} target="_blank" rel="noreferrer">{label}</a> : label}</li>;
+}
+
+function Join({ value }: { value: unknown }) {
+  if (typeof value === "string") return <a className="atlas-join-link" href={`/problems/${encodeURIComponent(value)}`}>Open P42 board →</a>;
+  if (typeof value === "boolean") return <p>{value ? "A P42 connection is recorded for this entry." : "No P42 board is currently joined."}</p>;
+  const join = value as Entry;
+  const href = read(join, "url", "href", "path");
+  return <>{read(join, "note", "status", "description") && <p>{words(read(join, "note", "status", "description"))}</p>}{typeof href === "string" && <a className="atlas-join-link" href={href}>Open P42 board →</a>}</>;
+}

@@ -320,8 +320,11 @@ def buildx_command(root: Path, repository: str, commit: str, manifest: Mapping[s
 def _board_inputs(root: Path, registry_base: str) -> list[dict[str, Any]]:
     boards = []
     actual = tuple(path.name for path in sorted((root / "problems").iterdir()) if (path / "problem.yaml").is_file())
-    if set(actual) != set(LAUNCH_SLUGS) or len(actual) != len(LAUNCH_SLUGS):
-        raise ReleaseError("repository problem set does not equal the exact ten-board launch set")
+    missing = sorted(set(LAUNCH_SLUGS) - set(actual))
+    if missing:
+        raise ReleaseError(f"repository is missing launch-board packages: {', '.join(missing)}")
+    # Research packages may coexist in the repository, but only the frozen
+    # launch tuple below can enter a release dossier.
     for slug in LAUNCH_SLUGS:
         problem = root / "problems" / slug
         manifest = load_manifest(problem)

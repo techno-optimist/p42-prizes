@@ -194,6 +194,7 @@ def test_plan_mode_runs_only_git_and_never_docker(monkeypatch):
     plan = release.release(root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT, publish=False, output=None, runner=runner)
     assert plan["mode"] == "plan"
     assert [board["slug"] for board in plan["boards"]] == list(release.LAUNCH_SLUGS)
+    assert len(plan["boards"]) == 10
     assert all(call[0] == "git" for call in calls)
 
 

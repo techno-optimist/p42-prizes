@@ -1,0 +1,31 @@
+schema_version: p42-problem/v1
+problem_id: b3-subset-first-jump-9
+title: Erdos 241 / A387704 first jump to a 9-element B3 subset of {1..N}
+status: phase-0-packaging
+objective:
+  direction: minimize
+  score_name: containment_bound_n
+  seed_best: "376/1"
+  # a(150)=8 in OEIS A387704 (b-file, verified against the primary source)
+  # implies no 9-element B3 subset of {1..150} exists, so the true frontier
+  # satisfies N >= 151. This floor is metadata only: validity is decided
+  # solely by the recomputed B3 property, never by this bound.
+  optimum: "151/1"
+  min_improvement: "1/1"
+  gauge: "max(0, seed_best - max(set))"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "python3 verifier/verify.py --solution {solution}"
+  max_compute:
+    wall_seconds: 5
+    memory_mb: 128
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: optional-mirror  # DA rides reveal calldata (sha256==commitDaHash); Arweave permanence is an optional mirror, not required (see docs/DATA_AVAILABILITY.md)

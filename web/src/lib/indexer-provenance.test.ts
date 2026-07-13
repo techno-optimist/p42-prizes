@@ -2,7 +2,7 @@ import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { problems } from "@/lib/data";
+import { launchProblems, problems } from "@/lib/data";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { activatedProvenanceFromArtifacts, computePortalDeploymentConfigHash, configuredIndexerArtifactPaths, loadIndexerProvenance } from "@/lib/indexer-provenance";
 
@@ -151,7 +151,7 @@ describe("indexer provenance v2", () => {
     const base = artifacts();
     const templateProblem = base.manifest.problems[0];
     const templateBoard = base.checkpoint.boards[0];
-    const manifestProblems = problems.map((portalProblem, index) => {
+    const manifestProblems = launchProblems.map((portalProblem, index) => {
       const item = clone(templateProblem);
       item.problemId = String(portalProblem.id); item.problemSlug = portalProblem.slug;
       for (const [offset, key] of boardKeys.entries()) {

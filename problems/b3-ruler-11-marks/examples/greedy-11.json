@@ -1,0 +1,4 @@
+{
+  "source": "Deterministic greedy extension of OEIS A051912 to 11 terms (terms 0..8 match the published b-file; 572 and 744 computed by the same greedy rule)",
+  "marks": [0, 1, 4, 13, 32, 71, 124, 218, 375, 572, 744]
+}

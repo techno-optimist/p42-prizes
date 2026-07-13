@@ -1,0 +1,6 @@
+{
+  "source": "hostile fixture: valid distinct-subset-sums set (powers of two, true score 1024) with a lying claimed score",
+  "claimed_score": "150/1",
+  "claimed_improvement": "444/1",
+  "set": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024]
+}

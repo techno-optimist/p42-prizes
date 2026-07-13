@@ -1,0 +1,4 @@
+{
+  "source": "hostile fixture: out-of-order pair breaks strict increase",
+  "set": [285, 433, 510, 550, 570, 581, 587, 590, 592, 594, 593]
+}

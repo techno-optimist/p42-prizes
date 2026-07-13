@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/distinct-subset-sums-a11/solution.schema.json",
+  "x-p42-max-bytes": 4096,
+  "type": "object",
+  "required": ["set"],
+  "additionalProperties": false,
+  "properties": {
+    "source": { "type": "string" },
+    "claimed_score": { "type": "string" },
+    "claimed_improvement": { "type": "string" },
+    "set": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 1000000000000000
+      }
+    }
+  }
+}

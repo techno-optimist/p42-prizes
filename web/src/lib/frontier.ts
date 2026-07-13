@@ -54,6 +54,6 @@ export function incrementalFrontierCredit(
 
   const credit = rational(rawDelta.num * normalizationScale(problem).den, rawDelta.den * normalizationScale(problem).num);
   const minImprovement = parseRational(problem.minImprovement);
-  const eligible = compareRational(absRational(credit), minImprovement) >= 0;
+  const eligible = compareRational(absRational(rawDelta), minImprovement) >= 0;
   return { credit: eligible ? rationalToString(credit) : "0/1", priorBest, eligible };
 }

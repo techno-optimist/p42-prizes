@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/b3-subset-first-jump-9/solution.schema.json",
+  "x-p42-max-bytes": 4096,
+  "type": "object",
+  "required": ["n", "set"],
+  "additionalProperties": false,
+  "properties": {
+    "n": { "type": "integer", "minimum": 1 },
+    "source": { "type": "string" },
+    "claimed_score": { "type": "string" },
+    "claimed_n": { "type": "integer" },
+    "claimed_improvement": { "type": "string" },
+    "set": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "uniqueItems": true,
+      "items": { "type": "integer", "minimum": 1 }
+    }
+  }
+}

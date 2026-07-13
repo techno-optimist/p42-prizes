@@ -1,0 +1,7 @@
+{
+  "source": "Same greedy witness but with lying claimed fields; the verifier must recompute 744 and ignore every claim",
+  "claimed_score": "300/1",
+  "claimed_improvement": "145/1",
+  "claimed_length": 300,
+  "marks": [0, 1, 4, 13, 32, 71, 124, 218, 375, 572, 744]
+}

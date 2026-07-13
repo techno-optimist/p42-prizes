@@ -1,0 +1,33 @@
+schema_version: p42-problem/v1
+problem_id: distinct-subset-sums-a11
+title: Erdos distinct subset sums n=11 frontier board (OEIS A276661, a(11) open)
+status: phase-0-packaging
+objective:
+  direction: minimize
+  score_name: max_element
+  seed_best: "594/1"
+  # Optimum lemma: for any valid 11-set a1 < ... < a11, the prefix subset
+  # {a1..a10} is itself a valid distinct-subset-sum 10-set, so
+  # a10 >= a(10) = 309 (Dyson, Oct 2025, OEIS A276661), hence
+  # a11 >= a10 + 1 >= 310. So 310 is a PROVEN lower bound for a(11), and no
+  # valid witness on this board can score below 310. a(11) itself is open;
+  # the known bracket is 310 <= a(11) <= 594 (Conway-Guy-lineage upper bound).
+  optimum: "310/1"
+  min_improvement: "1/1"
+  gauge: "max(0, seed_best - max_element)"
+verifier:
+  version: "0.1.0"
+  image: "sha256:local-dev"
+  command: "python3 verifier/verify.py --solution {solution}"
+  max_compute:
+    wall_seconds: 5
+    memory_mb: 128
+settlement:
+  chain: base-sepolia
+  pool_address: null
+  challenge_window_seconds: 259200
+  posting_bond_wei: "0"
+  challenge_bond_wei: "0"
+data_availability:
+  commit_time_blob: local-file-for-phase-0
+  finalize_receipt: optional-mirror  # DA rides reveal calldata (sha256==commitDaHash); Arweave permanence is an optional mirror, not required (see docs/DATA_AVAILABILITY.md)

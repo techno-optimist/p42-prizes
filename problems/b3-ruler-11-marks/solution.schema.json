@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/problems/b3-ruler-11-marks/solution.schema.json",
+  "x-p42-max-bytes": 4096,
+  "type": "object",
+  "required": ["marks"],
+  "additionalProperties": false,
+  "properties": {
+    "source": { "type": "string" },
+    "claimed_score": { "type": "string" },
+    "claimed_improvement": { "type": "string" },
+    "claimed_length": { "type": "integer" },
+    "marks": {
+      "type": "array",
+      "minItems": 11,
+      "maxItems": 11,
+      "items": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 1000000
+      }
+    }
+  }
+}

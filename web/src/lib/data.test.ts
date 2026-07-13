@@ -8,7 +8,7 @@ import {
   publishedDonationTarget,
   validatedDonationTarget,
 } from "@/lib/chain-provenance";
-import { problems } from "@/lib/data";
+import { launchProblems, problems } from "@/lib/data";
 import { parseRational } from "@/lib/exact";
 import type { DonationWallet } from "@/lib/types";
 
@@ -55,10 +55,10 @@ function releaseGuardBoards(): ReleaseGuardBoard[] {
 }
 
 describe("problem funding wallets", () => {
-  it("lists the ten-board Phase 0 launch slate", () => {
-    expect(problems).toHaveLength(10);
-    expect(new Set(problems.map((problem) => problem.id))).toHaveProperty("size", 10);
-    expect(new Set(problems.map((problem) => problem.slug))).toHaveProperty("size", 10);
+  it("lists the fifteen-board Phase 0 launch slate", () => {
+    expect(problems).toHaveLength(15);
+    expect(new Set(problems.map((problem) => problem.id))).toHaveProperty("size", 15);
+    expect(new Set(problems.map((problem) => problem.slug))).toHaveProperty("size", 15);
   });
 
   it("publishes no donation address before a per-problem pool is deployed", () => {
@@ -191,7 +191,7 @@ describe("problem funding wallets", () => {
   });
 
   it("keeps the independent live-release projection synchronized with portal data", () => {
-    const projection = problems.map((problem) => ({
+    const projection = launchProblems.map((problem) => ({
       id: problem.id,
       slug: problem.slug,
       title: problem.title,

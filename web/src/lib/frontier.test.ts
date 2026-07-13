@@ -34,7 +34,9 @@ const problem: Problem = {
   seedBest: "6/1",
   currentBest: "6/1",
   optimum: "0/1",
-  minImprovement: "1/6",
+  // RAW score units (defects) — the manifest/verifier/contract convention,
+  // NOT normalized units. See the "min_improvement raw-unit gate" tests below.
+  minImprovement: "1/1",
   bountyEth: "0.00",
   challengeWindowHours: 72,
   postingBondEth: "0.00",
@@ -118,6 +120,85 @@ describe("incrementalFrontierCredit", () => {
       credit: "1/6",
       eligible: true,
     });
+  });
+});
+
+describe("min_improvement raw-unit gate (regression: normalized-vs-raw conflation)", () => {
+  // Regression for the unit-mismatch defect: the portal normalized credit by
+  // the seed->optimum distance and then compared it against min_improvement,
+  // which the manifests, verifiers, and P42SubmissionManager.minImprovementAtoms
+  // all express in RAW score units. On any board with scale > 1 a genuinely
+  // winning raw improvement of exactly min_improvement was marked ineligible.
+  type ObjectiveManifest = {
+    problem_id: string;
+    objective: {
+      direction: "minimize" | "maximize";
+      seed_best: string;
+      optimum: string;
+      min_improvement: string;
+    };
+  };
+
+  function problemFromManifest(repoPath: string): Problem {
+    const manifest = parse(
+      readFileSync(join(repoRoot, repoPath, "problem.yaml"), "utf8"),
+    ) as ObjectiveManifest;
+    return {
+      ...problem,
+      id: 4242,
+      slug: manifest.problem_id,
+      repoId: manifest.problem_id,
+      repoPath,
+      direction: manifest.objective.direction,
+      seedBest: manifest.objective.seed_best,
+      currentBest: manifest.objective.seed_best,
+      optimum: manifest.objective.optimum,
+      minImprovement: manifest.objective.min_improvement,
+    };
+  }
+
+  it("b3-ruler-11-marks: a raw improvement of exactly min_improvement is eligible", () => {
+    // seed 445/1, optimum 310/1 (scale 135), min_improvement 1/1: a 444 ruler
+    // is a genuine record and must be eligible even though its normalized
+    // credit is 1/135 < 1.
+    const b3 = problemFromManifest("problems/b3-ruler-11-marks");
+    const result = incrementalFrontierCredit(b3, "444/1", []);
+    expect(result.eligible).toBe(true);
+    expect(result.credit).toBe("1/135");
+    expect(result.priorBest).toBe("445/1");
+  });
+
+  it("b3-ruler-11-marks: matching the seed is not an improvement", () => {
+    const b3 = problemFromManifest("problems/b3-ruler-11-marks");
+    expect(incrementalFrontierCredit(b3, "445/1", [])).toMatchObject({
+      credit: "0/1",
+      eligible: false,
+    });
+  });
+
+  it.each([
+    "problems/q6-intersecting-hypergraph",
+    "problems/distinct-subset-sums-a11",
+    "problems/b3-subset-first-jump-9",
+  ] as const)("%s: raw delta of exactly min_improvement is eligible", (repoPath) => {
+    const p = problemFromManifest(repoPath);
+    const seed = parseRational(p.seedBest);
+    const step = parseRational(p.minImprovement);
+    const candidate = p.direction === "minimize"
+      ? `${seed.num * step.den - step.num * seed.den}/${seed.den * step.den}`
+      : `${seed.num * step.den + step.num * seed.den}/${seed.den * step.den}`;
+    expect(incrementalFrontierCredit(p, candidate, []).eligible).toBe(true);
+  });
+
+  it("gates in raw units, not normalized units", () => {
+    // min_improvement 2 raw units on the toy board (scale 6): a raw delta of 1
+    // must be ineligible, a raw delta of 2 eligible with normalized display
+    // credit 2/6 = 1/3. Under the old normalized gate with these numbers a
+    // delta of 1 (credit 1/6 < 2) and a delta of 2 (credit 1/3 < 2) would BOTH
+    // have been rejected — including the genuinely winning one.
+    const strict: Problem = { ...problem, minImprovement: "2/1" };
+    expect(incrementalFrontierCredit(strict, "5/1", [])).toMatchObject({ eligible: false, credit: "0/1" });
+    expect(incrementalFrontierCredit(strict, "4/1", [])).toMatchObject({ eligible: true, credit: "1/3" });
   });
 });
 

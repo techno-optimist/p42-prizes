@@ -1,0 +1,18 @@
+{
+  "n": 376,
+  "set": [
+    1,
+    2,
+    5,
+    14,
+    33,
+    72,
+    125,
+    219,
+    376
+  ],
+  "claimed_score": "150/1",
+  "claimed_n": 150,
+  "claimed_improvement": "226/1",
+  "source": "seed construction with fabricated better claims; verifier must report 376/1"
+}
