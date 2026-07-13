@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { increaseTime as advanceTimeBy, advanceToTimestamp } from "../test-support/time.js";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
@@ -36,12 +37,7 @@ async function expectCustomError(action, contract, errorName) {
 }
 
 async function advanceTo(timestamp) {
-  const latest = await ethers.provider.getBlock("latest");
-  const remaining = timestamp - BigInt(latest.timestamp);
-  if (remaining > 0n) {
-    await ethers.provider.send("evm_increaseTime", [Number(remaining)]);
-    await ethers.provider.send("evm_mine", []);
-  }
+  await advanceToTimestamp(ethers.provider, timestamp);
 }
 
 async function deployFixture({
@@ -196,8 +192,7 @@ describe("P42 sponsorship economics", function () {
       ethers.parseEther("3")
     );
 
-    await ethers.provider.send("evm_increaseTime", [Number(2n * 365n * DAY)]);
-    await ethers.provider.send("evm_mine", []);
+    await advanceTimeBy(ethers.provider, 2n * 365n * DAY);
     await fixture.pool.connect(fixture.bob).sponsorRefund();
     assert.equal(await fixture.pool.sponsorshipOf(fixture.alice.address), 0n);
     assert.equal(await fixture.pool.sponsorshipOf(fixture.bob.address), 0n);
@@ -352,8 +347,7 @@ describe("P42 sponsorship economics", function () {
 
     assert.equal(await fixture.pool.forcedEthAvailable(), 7n);
 
-    await ethers.provider.send("evm_increaseTime", [Number((await fixture.ledger.CLAIM_DEADLINE_SECONDS()) + 1n)]);
-    await ethers.provider.send("evm_mine", []);
+    await advanceTimeBy(ethers.provider, (await fixture.ledger.CLAIM_DEADLINE_SECONDS()) + 1n);
     const vaultBefore = await ethers.provider.getBalance(await fixture.vault.getAddress());
     await fixture.ledger.connect(fixture.outsider).sweepRollover();
     // 67 wei expired entitlement plus 1 wei floor dust; the forced 7 wei stays put.
@@ -386,8 +380,7 @@ describe("P42 sponsorship economics", function () {
     const forceEther = await ForceEther.deploy({ value: 7n });
     await forceEther.waitForDeployment();
     await forceEther.force(await fixture.pool.getAddress());
-    await ethers.provider.send("evm_increaseTime", [Number((await fixture.ledger.CLAIM_DEADLINE_SECONDS()) + 1n)]);
-    await ethers.provider.send("evm_mine", []);
+    await advanceTimeBy(ethers.provider, (await fixture.ledger.CLAIM_DEADLINE_SECONDS()) + 1n);
     const vaultBefore = await ethers.provider.getBalance(await fixture.vault.getAddress());
     await fixture.ledger.sweepRollover();
     await fixture.pool.connect(fixture.alice).recoverForcedEth(7n);

@@ -83,8 +83,17 @@ async function executePending(timelock, signers, operations, journalPath, { cras
         await (await timelock.connect(signers[signerIndex]).confirm(operation.operationId)).wait();
       }
     }
-    await ethers.provider.send("evm_increaseTime", [Number(operation.delaySeconds) + 1]);
-    await ethers.provider.send("evm_mine", []);
+    // Deterministic advance to the operation's actual on-chain eta. Override-class
+    // operations get a 2x timelock delay, so a plan-derived delaySeconds can
+    // undershoot the real readyAt; evm_increaseTime is also wall-clock-relative and
+    // drifts across a long multi-operation run. Reading eta and pinning the next
+    // block to it is exact for both classes (7-day grace, so no OpExpired risk).
+    const _eta = BigInt((await timelock.ops(operation.operationId)).eta);
+    const _latest = await ethers.provider.getBlock("latest");
+    if (BigInt(_latest.timestamp) < _eta) {
+      await ethers.provider.send("evm_setNextBlockTimestamp", [Number(_eta)]);
+      await ethers.provider.send("evm_mine", []);
+    }
     try {
       await (await timelock.connect(signers[0]).execute(...args)).wait();
     } catch (error) {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { increaseTime as advanceTimeBy } from "../test-support/time.js";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
@@ -38,8 +39,7 @@ function findErrorData(v) {
   return undefined;
 }
 async function advance(sec) {
-  await ethers.provider.send("evm_increaseTime", [Number(sec)]);
-  await ethers.provider.send("evm_mine", []);
+  await advanceTimeBy(ethers.provider, sec);
 }
 
 async function fixture() {

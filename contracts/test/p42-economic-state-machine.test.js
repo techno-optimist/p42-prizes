@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { advanceToTimestamp } from "../test-support/time.js";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
@@ -30,12 +31,7 @@ function tracedFailure(error, seed, trace) {
 }
 
 async function advanceTo(timestamp) {
-  const block = await ethers.provider.getBlock("latest");
-  const delta = timestamp - BigInt(block.timestamp);
-  if (delta > 0n) {
-    await ethers.provider.send("evm_increaseTime", [Number(delta)]);
-    await ethers.provider.send("evm_mine", []);
-  }
+  await advanceToTimestamp(ethers.provider, timestamp);
 }
 
 async function setNextTimestamp(timestamp) {
@@ -232,6 +228,16 @@ describe("P42 economic state-machine differential", function () {
     for (const [seedIndex, seed] of seeds.entries()) {
       const trace = [];
       try {
+      // Pin a deterministic, monotonically-increasing base per seed so the whole
+      // differential is independent of the host wall clock. network.create seeds
+      // genesis from real time and auto-mined blocks drift by real elapsed time,
+      // which previously let an absolute deadline advance land inconsistently.
+      const _seedBase = 4102444800 + seedIndex * 800 * 86400; // 2100-01-01 + 800d/seed
+      const _cur0 = await ethers.provider.getBlock("latest");
+      if (Number(_cur0.timestamp) < _seedBase) {
+        await ethers.provider.send("evm_setNextBlockTimestamp", [_seedBase]);
+        await ethers.provider.send("evm_mine", []);
+      }
       const pick = seeded(seed);
       const feeBps = [250n, 0n, 50n, 125n][seedIndex % 4];
       const f = await deployFixture(feeBps);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { increaseTime as advanceTimeBy } from "../test-support/time.js";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
@@ -45,8 +46,7 @@ async function expectCustomError(action, contract, errorName) {
 }
 
 async function increaseTime(seconds) {
-  await ethers.provider.send("evm_increaseTime", [Number(seconds)]);
-  await ethers.provider.send("evm_mine", []);
+  await advanceTimeBy(ethers.provider, seconds);
 }
 
 async function advanceTo(timestamp) {
