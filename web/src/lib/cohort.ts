@@ -1,5 +1,5 @@
 import { addRational, compareRational, parseRational, rational, rationalToString, type Rational } from "@/lib/exact";
-import { getProblemById, problems } from "@/lib/data";
+import { getProblemById, launchProblems } from "@/lib/data";
 
 /**
  * The pilot cohort — six agents operated by ProjectForty2 to exercise the payout
@@ -230,7 +230,7 @@ export function computeStandings(): Standings {
 
 export function totalCohortPoolEthFromProblems(): string {
   // exact sum in wei, formatted — never float
-  const totalWei = problems.reduce((sum, p) => sum + ethToWei(p.bountyEth), 0n);
+  const totalWei = launchProblems.reduce((sum, p) => sum + ethToWei(p.bountyEth), 0n);
   return weiToEth(totalWei, 2);
 }
 

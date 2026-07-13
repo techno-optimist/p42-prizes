@@ -649,6 +649,11 @@ export const problems: Problem[] = [
   },
 ];
 
+// The research registry may contain verifier packages that have not crossed the
+// release ceremony. Only this cohort is allowed to reach funding, settlement,
+// registration, or release-manifest surfaces.
+export const launchProblems: readonly Problem[] = problems.slice(0, 10);
+
 // One worked-example submission: the pilot's known-good order-4 construction.
 // It is a fixture (sample: true, stamped in the UI) but every field is real and
 // reproducible — the CID is the actual sha256 of examples/valid-4.json and the

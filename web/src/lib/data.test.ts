@@ -8,7 +8,7 @@ import {
   publishedDonationTarget,
   validatedDonationTarget,
 } from "@/lib/chain-provenance";
-import { problems } from "@/lib/data";
+import { launchProblems, problems } from "@/lib/data";
 import { parseRational } from "@/lib/exact";
 import type { DonationWallet } from "@/lib/types";
 
@@ -191,7 +191,7 @@ describe("problem funding wallets", () => {
   });
 
   it("keeps the independent live-release projection synchronized with portal data", () => {
-    const projection = problems.map((problem) => ({
+    const projection = launchProblems.map((problem) => ({
       id: problem.id,
       slug: problem.slug,
       title: problem.title,

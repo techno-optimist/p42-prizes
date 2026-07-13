@@ -3,7 +3,7 @@ import { BoundSpecimen, finalNumeral } from "@/components/DiscoveryEntry";
 import { MathBlock } from "@/components/Math";
 import { PayoutSplit, type PayoutSlice } from "@/components/PayoutSplit";
 import { Plate } from "@/components/Plate";
-import { problems } from "@/lib/data";
+import { launchProblems } from "@/lib/data";
 import { discoveries, DISCOVERIES_META } from "@/lib/discoveries";
 import { allSubmissions } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
@@ -62,8 +62,8 @@ const VERDICT_REPORT = `{
 
 export default function HomePage() {
   const submissions = allSubmissions();
-  const runnable = problems.filter((p) => p.status === "pilot" || p.status === "open");
-  const locked = problems.filter((p) => p.status === "locked");
+  const runnable = launchProblems.filter((p) => p.status === "pilot" || p.status === "open");
+  const locked = launchProblems.filter((p) => p.status === "locked");
   const erdos = discoveries[0];
 
   return (
@@ -179,7 +179,7 @@ export default function HomePage() {
             </tr>
           </thead>
           <tbody>
-            {problems.map((problem) => {
+            {launchProblems.map((problem) => {
               const isLocked = problem.status === "locked";
               const improved = !isLocked && problem.currentBest !== problem.seedBest;
               return (

@@ -4,13 +4,13 @@ import {
   publicDonationWallet,
   publishedDonationTarget,
 } from "@/lib/chain-provenance";
-import { problems } from "@/lib/data";
+import { launchProblems } from "@/lib/data";
 import { loadIndexerProvenanceSnapshot } from "@/lib/indexer-provenance";
 
 export async function GET() {
-  const provenanceSnapshot = loadIndexerProvenanceSnapshot(problems);
+  const provenanceSnapshot = loadIndexerProvenanceSnapshot(launchProblems);
   return json(
-    problems.map((problem) => {
+    launchProblems.map((problem) => {
       const chainProvenance = provenanceSnapshot.get(problem.slug) ?? chainProvenanceForProblem(problem);
       const donationTarget = publishedDonationTarget(problem.donationWallet, chainProvenance);
       return {
