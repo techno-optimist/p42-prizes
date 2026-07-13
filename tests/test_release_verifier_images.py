@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -9,6 +10,8 @@ import tarfile
 
 import jsonschema
 import pytest
+
+from p42_prizes.readiness import FUNDING_ADMISSION_BLOCKS
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,10 +83,93 @@ def completed(argv, stdout="", returncode=0):
 
 def test_launch_set_is_exact_and_ordered():
     assert release.LAUNCH_SLUGS == (
-        "hadamard-mini", "erdos-min-overlap", "edges-vs-triangles", "arithmetic-kakeya",
-        "autoconvolution-c1-upper", "autoconvolution-c2-lower", "signed-autoconvolution-c3-upper",
+        "q6-intersecting-hypergraph", "erdos-min-overlap", "edges-vs-triangles", "arithmetic-kakeya",
+        "autoconvolution-c1-upper", "autoconvolution-c2-lower", "distinct-subset-sums-a11",
         "mertens-lp-ceiling-k12000", "pnt-sparse-mertens-construction", "hadamard-668-defect",
     )
+
+
+def test_frozen_board_authority_has_no_permanent_semantic_block_and_matches_schema():
+    board_set = json.loads((ROOT / "protocol" / "production-board-set-v1.json").read_text())
+    assert board_set["schema"] == "p42-prizes/production-board-set/v1"
+    assert board_set["status"] == "frozen-source-cohort"
+    assert board_set["boards"] == list(release.LAUNCH_SLUGS)
+    evidence_path = ROOT / board_set["evidence"]["path"]
+    evidence_schema_path = ROOT / board_set["evidence"]["schema_path"]
+    assert release.sha256_bytes(evidence_path.read_bytes()) == board_set["evidence"]["sha256"]
+    assert release.sha256_bytes(evidence_schema_path.read_bytes()) == board_set["evidence"]["schema_sha256"]
+    assert set(release.LAUNCH_SLUGS).isdisjoint(FUNDING_ADMISSION_BLOCKS)
+
+    schema = json.loads((ROOT / "schemas" / "verifier-image-release.schema.json").read_text())
+    schema_slugs = [item["allOf"][1]["properties"]["slug"]["const"] for item in schema["properties"]["boards"]["prefixItems"]]
+    assert schema_slugs == list(release.LAUNCH_SLUGS)
+
+
+def test_new_board_provenance_binds_exact_seed_bytes():
+    evidence = json.loads((ROOT / "docs" / "provenance" / "production-board-evidence-v1.json").read_text())
+    schema = json.loads((ROOT / "schemas" / "production-board-evidence.schema.json").read_text())
+    jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(evidence)
+    assert [board["slug"] for board in evidence["boards"]] == [
+        "q6-intersecting-hypergraph", "distinct-subset-sums-a11",
+    ]
+    for board in evidence["boards"]:
+        seed = board["seed"]
+        assert hashlib.sha256((ROOT / seed["path"]).read_bytes()).hexdigest() == seed["sha256"]
+        assert board["funding_review"] == "PENDING_INDEPENDENT_MATH_AND_LEGAL_REVIEW"
+
+
+@pytest.mark.parametrize("mutation", ["missing-sources", "forged-review"])
+def test_release_entry_rejects_schema_invalid_evidence_even_when_digest_matches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str):
+    evidence = json.loads((ROOT / "docs" / "provenance" / "production-board-evidence-v1.json").read_text())
+    if mutation == "missing-sources":
+        del evidence["boards"][0]["sources"]
+    else:
+        evidence["boards"][1]["funding_review"] = "APPROVED"
+
+    evidence_path = tmp_path / "docs" / "provenance" / "production-board-evidence-v1.json"
+    schema_path = tmp_path / "schemas" / "production-board-evidence.schema.json"
+    board_set_path = tmp_path / "protocol" / "production-board-set-v1.json"
+    evidence_path.parent.mkdir(parents=True)
+    schema_path.parent.mkdir(parents=True)
+    board_set_path.parent.mkdir(parents=True)
+    evidence_bytes = (json.dumps(evidence, separators=(",", ":")) + "\n").encode()
+    schema_bytes = (ROOT / "schemas" / "production-board-evidence.schema.json").read_bytes()
+    evidence_path.write_bytes(evidence_bytes)
+    schema_path.write_bytes(schema_bytes)
+    board_set_path.write_text(json.dumps({
+        "schema": "p42-prizes/production-board-set/v1",
+        "status": "frozen-source-cohort",
+        "evidence": {
+            "path": "docs/provenance/production-board-evidence-v1.json",
+            "sha256": release.sha256_bytes(evidence_bytes),
+            "schema_path": "schemas/production-board-evidence.schema.json",
+            "schema_sha256": release.sha256_bytes(schema_bytes),
+        },
+        "boards": list(release.LAUNCH_SLUGS),
+    }))
+    monkeypatch.setattr(release, "BOARD_SET_PATH", board_set_path)
+    with pytest.raises(RuntimeError, match="fails schema validation"):
+        release._load_launch_slugs()
+
+
+@pytest.mark.parametrize("payload", [
+    None,
+    {"schema": "p42-prizes/production-board-set/v1", "status": "frozen-source-cohort", "boards": ["one"] * 10},
+    {"schema": "p42-prizes/production-board-set/v1", "status": "frozen-source-cohort", "boards": [f"board-{index}" for index in range(9)]},
+])
+def test_make_fails_before_recipes_for_invalid_board_authority(tmp_path: Path, payload: dict | None):
+    authority = tmp_path / "board-set.json"
+    if payload is not None:
+        authority.write_text(json.dumps(payload))
+    completed = subprocess.run(
+        ["make", "-n", "validate", f"PRODUCTION_BOARD_SET={authority}"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    assert "invalid canonical production board set" in completed.stderr
 
 
 @pytest.mark.parametrize("bad", [
@@ -97,7 +183,7 @@ def test_registry_canonicalization_rejects_noncanonical_or_secret_bearing_values
 
 def test_registry_and_repository_canonicalization():
     assert release.canonicalize_registry_base("ghcr.io/projectforty2/verifiers") == "ghcr.io/projectforty2/verifiers"
-    assert release.image_repository("ghcr.io/projectforty2/verifiers", "hadamard-mini") == "ghcr.io/projectforty2/verifiers/hadamard-mini"
+    assert release.image_repository("ghcr.io/projectforty2/verifiers", "q6-intersecting-hypergraph") == "ghcr.io/projectforty2/verifiers/q6-intersecting-hypergraph"
 
 
 def test_parse_index_requires_raw_oci_index_and_exact_platforms():

@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { PRODUCTION_LAUNCH_SLUGS, bindReleaseMode, createProductionReleaseIndex, createProductionReleaseSlate, publishProductionReleaseIndex, publishProductionReleaseSlate, releaseBoardIdentity, validateProductionReleaseIndex, validateProductionReleaseSlate, validateProductionSlatePreflight, validateVerifierImageReleaseDossier } from "../scripts/multiboard-ceremony-helper.js";
+import { PRODUCTION_LAUNCH_SLUGS, bindReleaseMode, createProductionReleaseIndex, createProductionReleaseSlate, publishProductionReleaseIndex, publishProductionReleaseSlate, releaseBoardIdentity, validateProductionBoardEvidence, validateProductionReleaseIndex, validateProductionReleaseSlate, validateProductionSlatePreflight, validateVerifierImageReleaseDossier } from "../scripts/multiboard-ceremony-helper.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const fixture = JSON.parse(readFileSync(resolve(ROOT, "contracts/test/fixtures/multiboard-ceremony-10.json"), "utf8"));
@@ -68,6 +68,23 @@ const imageDossier = (slate) => {
 };
 
 describe("exact-ten production release slate", () => {
+  it("loads the one frozen source-cohort authority", () => {
+    const authority = JSON.parse(readFileSync(resolve(ROOT, "protocol/production-board-set-v1.json"), "utf8"));
+    assert.equal(authority.schema, "p42-prizes/production-board-set/v1");
+    assert.equal(authority.status, "frozen-source-cohort");
+    assert.deepEqual(PRODUCTION_LAUNCH_SLUGS, authority.boards);
+    const evidenceBytes = readFileSync(resolve(ROOT, authority.evidence.path));
+    assert.equal(`sha256:${createHash("sha256").update(evidenceBytes).digest("hex")}`, authority.evidence.sha256);
+    const evidenceSchemaBytes = readFileSync(resolve(ROOT, authority.evidence.schema_path));
+    assert.equal(`sha256:${createHash("sha256").update(evidenceSchemaBytes).digest("hex")}`, authority.evidence.schema_sha256);
+    const evidence = JSON.parse(evidenceBytes);
+    assert.equal(validateProductionBoardEvidence(evidence), evidence);
+    const missingSources = structuredClone(evidence); delete missingSources.boards[0].sources;
+    assert.throws(() => validateProductionBoardEvidence(missingSources), /fails schema validation/);
+    const approvedWithoutReview = structuredClone(evidence); approvedWithoutReview.boards[1].funding_review = "APPROVED";
+    assert.throws(() => validateProductionBoardEvidence(approvedWithoutReview), /fails schema validation/);
+  });
+
   it("accepts only a status-ready closed ordered ten-board identity", () => {
     const slate = syntheticSlate(); const problems = slate.boards.map((board) => releaseBoardIdentity(board, Number(board.problemId) - 1));
     assert.equal(validateProductionReleaseSlate(slate, problems).slateDigest, slate.slateDigest);

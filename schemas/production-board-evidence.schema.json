@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.org/schemas/production-board-evidence.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "reviewed_at", "scope", "boards"],
+  "properties": {
+    "schema": {"const": "p42-prizes/production-board-evidence/v1"},
+    "reviewed_at": {"type": "string", "format": "date"},
+    "scope": {"type": "string", "minLength": 1},
+    "boards": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "prefixItems": [
+        {"$ref": "#/$defs/q6"},
+        {"$ref": "#/$defs/subsetSums"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "seed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "score"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^problems/[a-z0-9-]+/[A-Za-z0-9._/-]+$"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "score": {"type": "string", "pattern": "^-?[0-9]+/[1-9][0-9]*$"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "url"],
+      "properties": {
+        "role": {"type": "string", "minLength": 1},
+        "url": {"type": "string", "pattern": "^https://"},
+        "doi": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "pdf_sha256": {"$ref": "#/$defs/digest"},
+        "source_sha256": {"$ref": "#/$defs/digest"},
+        "license": {"type": "string", "minLength": 1},
+        "license_note": {"type": "string", "minLength": 1}
+      },
+      "anyOf": [
+        {"required": ["version", "pdf_sha256"]},
+        {"required": ["commit"]}
+      ]
+    },
+    "board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "seed", "sources", "claim_scope", "funding_review"],
+      "properties": {
+        "slug": {"type": "string"},
+        "seed": {"$ref": "#/$defs/seed"},
+        "sources": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/source"}},
+        "claim_scope": {"type": "string", "minLength": 1},
+        "funding_review": {"const": "PENDING_INDEPENDENT_MATH_AND_LEGAL_REVIEW"}
+      }
+    },
+    "q6": {
+      "allOf": [
+        {"$ref": "#/$defs/board"},
+        {"type": "object", "properties": {"slug": {"const": "q6-intersecting-hypergraph"}}}
+      ]
+    },
+    "subsetSums": {
+      "allOf": [
+        {"$ref": "#/$defs/board"},
+        {"type": "object", "properties": {"slug": {"const": "distinct-subset-sums-a11"}}}
+      ]
+    }
+  }
+}

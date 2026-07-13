@@ -1,0 +1,22 @@
+{
+  "schema": "p42-prizes/production-board-set/v1",
+  "status": "frozen-source-cohort",
+  "evidence": {
+    "path": "docs/provenance/production-board-evidence-v1.json",
+    "sha256": "sha256:0d129b55c848f90b48e5feccb51455f3fdc199256ff8c743b7d4ecf0c838d739",
+    "schema_path": "schemas/production-board-evidence.schema.json",
+    "schema_sha256": "sha256:82212e7e4fcbc3958eec36f9de41901ccc52b22c16c980eb91940927a9a74ba4"
+  },
+  "boards": [
+    "q6-intersecting-hypergraph",
+    "erdos-min-overlap",
+    "edges-vs-triangles",
+    "arithmetic-kakeya",
+    "autoconvolution-c1-upper",
+    "autoconvolution-c2-lower",
+    "distinct-subset-sums-a11",
+    "mertens-lp-ceiling-k12000",
+    "pnt-sparse-mertens-construction",
+    "hadamard-668-defect"
+  ]
+}

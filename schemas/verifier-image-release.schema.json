@@ -18,13 +18,13 @@
     "boards": {
       "type": "array", "minItems": 10, "maxItems": 10,
       "prefixItems": [
-        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "hadamard-mini"}, "problem_id": {"const": "hadamard-mini"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "q6-intersecting-hypergraph"}, "problem_id": {"const": "q6-intersecting-hypergraph"}}}]},
         {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "erdos-min-overlap"}, "problem_id": {"const": "erdos-min-overlap"}}}]},
         {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "edges-vs-triangles"}, "problem_id": {"const": "edges-vs-triangles"}}}]},
         {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "arithmetic-kakeya"}, "problem_id": {"const": "arithmetic-kakeya"}}}]},
         {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "autoconvolution-c1-upper"}, "problem_id": {"const": "autoconvolution-c1-upper"}}}]},
         {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "autoconvolution-c2-lower"}, "problem_id": {"const": "autoconvolution-c2-lower"}}}]},
-        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "signed-autoconvolution-c3-upper"}, "problem_id": {"const": "signed-autoconvolution-c3-upper"}}}]},
+        {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "distinct-subset-sums-a11"}, "problem_id": {"const": "distinct-subset-sums-a11"}}}]},
         {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "mertens-lp-ceiling-k12000"}, "problem_id": {"const": "mertens-lp-ceiling-k12000"}}}]},
         {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "pnt-sparse-mertens-construction"}, "problem_id": {"const": "pnt-sparse-mertens-construction"}}}]},
         {"allOf": [{"$ref": "#/$defs/board"}, {"properties": {"slug": {"const": "hadamard-668-defect"}, "problem_id": {"const": "hadamard-668-defect"}}}]}

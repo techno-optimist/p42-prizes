@@ -67,9 +67,12 @@ fundingValid            = false
 ```
 
 Admission requires `report.improvement` to equal `derived_improvement` exactly
-and `report.valid` to equal `fundingValid`. The gate independently requires the
-admitted report to be valid. Seed and candidate atoms must be strictly inside
-`(-2^254, 2^254)`, matching the submission-manager score range, and
+and `report.valid` to equal `fundingValid`. Verifier admission does not require
+an unpublished winning solution before a prize can open: it accepts either a
+strict witness or a structurally valid non-winning report whose reason is exactly
+`NOT_STRICT_IMPROVEMENT`. Other false reports remain inadmissible. Seed and
+candidate atoms must be strictly inside `(-2^254, 2^254)`, matching the
+submission-manager score range, and
 `minImprovementAtoms` must fit a positive `uint256`. These checks cover negative
 scores and both native objective directions.
 

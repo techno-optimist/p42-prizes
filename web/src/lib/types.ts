@@ -36,6 +36,8 @@ export interface ChainProvenance {
 }
 
 export interface Problem {
+  /** Stable portal catalog ID. Production registry IDs are cohort positions
+   * 1..10 and must be derived from the frozen ordered deployment manifest. */
   id: number;
   slug: string;
   repoId: string;

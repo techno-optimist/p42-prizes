@@ -652,7 +652,24 @@ export const problems: Problem[] = [
 // The research registry may contain verifier packages that have not crossed the
 // release ceremony. Only this cohort is allowed to reach funding, settlement,
 // registration, or release-manifest surfaces.
-export const launchProblems: readonly Problem[] = problems.slice(0, 10);
+export const productionBoardSlugs = [
+  "q6-intersecting-hypergraph",
+  "erdos-min-overlap",
+  "edges-vs-triangles",
+  "arithmetic-kakeya",
+  "autoconvolution-c1-upper",
+  "autoconvolution-c2-lower",
+  "distinct-subset-sums-a11",
+  "mertens-lp-ceiling-k12000",
+  "pnt-sparse-mertens-construction",
+  "hadamard-668-defect",
+] as const;
+
+export const launchProblems: readonly Problem[] = productionBoardSlugs.map((slug) => {
+  const problem = problems.find((candidate) => candidate.slug === slug);
+  if (!problem) throw new Error(`Missing production board metadata for ${slug}`);
+  return problem;
+});
 
 // One worked-example submission: the pilot's known-good order-4 construction.
 // It is a fixture (sample: true, stamped in the UI) but every field is real and

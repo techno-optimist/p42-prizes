@@ -192,17 +192,21 @@ Evidence" table in `PRODUCTION_READINESS.md`).
 
 ## Verifier Admission Ledger
 
-Latest ten-board math/verifier audit:
+The portal contains 15 packaged boards. The frozen production cohort is the
+ordered ten in `protocol/production-board-set-v1.json`; board visibility is not
+funding eligibility. Latest math/verifier audit:
 `docs/MATH_VERIFIER_AUDIT_2026_07_08.md`.
 
 | Problem | Current portal status | Verifier readiness |
 | --- | --- | --- |
-| `hadamard-mini` | Pilot runnable | Local exact verifier passes; host-evidence generator works; still needs pinned image digest and collected four-host matrix before funding |
+| `hadamard-mini` | Pilot runnable, outside production cohort | Local exact verifier passes, but the bundled witness solves the toy fixture; `admit-ready` permanently rejects funding |
+| `q6-intersecting-hypergraph` | Packaged, locked | Finite exact verifier checks all pair intersections and a complete bounded cover search; 18-edge seed hash and v1 source hashes are pinned; independent math/legal review, immutable image, and N-host evidence remain open |
 | `erdos-min-overlap` | Packaged, locked | Local exact verifier package passes for the Hyra upper-bound witness; host-evidence generator works on one Mac host; still needs immutable image digest, collected four-host matrix, and external review of the piecewise-linearity/reduction lemma before funding |
 | `arithmetic-kakeya` | Packaged, locked | Local exact verifier package passes for the 2x2 warm-up forcing certificate at score 7/4 and rejects a tampered seed; still needs immutable image digest, collected four-host matrix, and external scope review before any marquee funding claim |
 | `autoconvolution-c1-upper` | Packaged, locked | Local exact verifier package passes for the Hyra nonnegative integer witness; all 179999 coefficients are checked by exact Kronecker convolution; still needs immutable image digest, collected four-host matrix, and N-host timing/memory evidence before funding |
 | `autoconvolution-c2-lower` | Packaged, locked | Local exact verifier package passes for the Hyra nonnegative integer witness; all 1048575 coefficients are checked by exact Kronecker convolution; still needs immutable image digest, collected four-host matrix, and N-host timing/memory evidence before funding |
-| `signed-autoconvolution-c3-upper` | Packaged, locked | Local exact verifier package passes for the OrganonAgent signed witness; all 199999 coefficients are checked by exact signed Kronecker convolution; still needs immutable image digest, collected four-host matrix, N-host timing, and external reduction review before funding |
+| `signed-autoconvolution-c3-upper` | Packaged, locked, outside production cohort | Exact local computation remains useful for research, but its objective/verifier semantics are not admission-safe; `admit-ready` permanently rejects the current package pending redesign |
+| `distinct-subset-sums-a11` | Packaged, locked | Finite exact verifier enumerates all 2,048 subset sums; score-594 seed and external `a(10)=309` source commit are pinned; independent math/legal review, immutable image, and N-host evidence remain open |
 | `mertens-lp-ceiling-k12000` | Packaged, locked | Local exact verifier package proves the reach-12000 25-digit outward-rounded ceiling with exact integer residuals and interval log enclosures; still needs immutable image digest, collected four-host matrix, N-host timing, and proof-side copy review before funding |
 | `pnt-sparse-mertens-construction` | Packaged, locked | Local exact verifier package passes for the CHRONOS reach-96000 sparse witness; all 960000 integer rows are checked exactly and the log objective is certified as a lower-bound decimal; still needs immutable image digest, collected four-host matrix, N-host timing, and interval-log review before funding |
 | `hadamard-668-defect` | Packaged, locked | Local exact verifier package passes for a Sylvester-prefix baseline at defect 55444; all 222778 row pairs are checked exactly by integer popcount; still needs immutable image digest, collected four-host matrix, N-host timing, and open-problem scope review before funding |

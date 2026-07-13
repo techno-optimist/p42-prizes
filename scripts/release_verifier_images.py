@@ -20,6 +20,8 @@ from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import jsonschema
+
 from p42_prizes.admission import (
     OCI_REVISION_LABEL,
     PROBLEM_ID_LABEL,
@@ -45,18 +47,54 @@ LAYER_MEDIA_TYPES = frozenset({
     "application/vnd.oci.image.layer.v1.tar+zstd",
 })
 PLATFORMS = ("linux/amd64", "linux/arm64")
-LAUNCH_SLUGS = (
-    "hadamard-mini",
-    "erdos-min-overlap",
-    "edges-vs-triangles",
-    "arithmetic-kakeya",
-    "autoconvolution-c1-upper",
-    "autoconvolution-c2-lower",
-    "signed-autoconvolution-c3-upper",
-    "mertens-lp-ceiling-k12000",
-    "pnt-sparse-mertens-construction",
-    "hadamard-668-defect",
-)
+BOARD_SET_PATH = Path(__file__).resolve().parents[1] / "protocol" / "production-board-set-v1.json"
+
+
+def _load_launch_slugs() -> tuple[str, ...]:
+    try:
+        board_set = json.loads(BOARD_SET_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("canonical production board set is unreadable") from exc
+    if (
+        not isinstance(board_set, dict)
+        or set(board_set) != {"schema", "status", "evidence", "boards"}
+        or board_set.get("schema") != "p42-prizes/production-board-set/v1"
+        or board_set.get("status") != "frozen-source-cohort"
+        or not isinstance(board_set.get("boards"), list)
+        or len(board_set["boards"]) != 10
+        or len(set(board_set["boards"])) != 10
+        or any(not isinstance(slug, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug) for slug in board_set["boards"])
+    ):
+        raise RuntimeError("canonical production board set is invalid")
+    evidence_ref = board_set.get("evidence")
+    if not isinstance(evidence_ref, dict) or set(evidence_ref) != {"path", "sha256", "schema_path", "schema_sha256"}:
+        raise RuntimeError("canonical production board evidence reference is invalid")
+    evidence_path = evidence_ref.get("path")
+    schema_path = evidence_ref.get("schema_path")
+    if evidence_path != "docs/provenance/production-board-evidence-v1.json" or schema_path != "schemas/production-board-evidence.schema.json":
+        raise RuntimeError("canonical production board evidence path is invalid")
+    try:
+        evidence_bytes = (BOARD_SET_PATH.parents[1] / evidence_path).read_bytes()
+        schema_bytes = (BOARD_SET_PATH.parents[1] / schema_path).read_bytes()
+        evidence = json.loads(evidence_bytes)
+        evidence_schema = json.loads(schema_bytes)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("canonical production board evidence is unreadable") from exc
+    if evidence_ref.get("sha256") != sha256_bytes(evidence_bytes) or evidence_ref.get("schema_sha256") != sha256_bytes(schema_bytes):
+        raise RuntimeError("canonical production board evidence digest mismatch")
+    try:
+        jsonschema.Draft202012Validator(evidence_schema, format_checker=jsonschema.FormatChecker()).validate(evidence)
+    except jsonschema.SchemaError as exc:
+        raise RuntimeError("canonical production board evidence schema is invalid") from exc
+    except jsonschema.ValidationError as exc:
+        raise RuntimeError("canonical production board evidence fails schema validation") from exc
+    evidence_slugs = [entry.get("slug") for entry in evidence.get("boards", []) if isinstance(entry, dict)] if isinstance(evidence, dict) else []
+    if evidence.get("schema") != "p42-prizes/production-board-evidence/v1" or evidence_slugs != [board_set["boards"][0], board_set["boards"][6]]:
+        raise RuntimeError("canonical production board evidence identity mismatch")
+    return tuple(board_set["boards"])
+
+
+LAUNCH_SLUGS = _load_launch_slugs()
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY_RE = re.compile(

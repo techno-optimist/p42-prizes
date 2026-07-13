@@ -5,11 +5,17 @@ P42_GIT_REMOTE ?= origin
 # Make recipe. Suppress recursive directory banners so verifier stdout stays a
 # single canonical JSON report across GNU Make versions and CI hosts.
 MAKEFLAGS += --no-print-directory
-LAUNCH_PROBLEMS := problems/hadamard-mini problems/erdos-min-overlap problems/edges-vs-triangles problems/arithmetic-kakeya problems/autoconvolution-c1-upper problems/autoconvolution-c2-lower problems/signed-autoconvolution-c3-upper problems/mertens-lp-ceiling-k12000 problems/pnt-sparse-mertens-construction problems/hadamard-668-defect
-ERDOS_PROBLEMS := problems/q6-intersecting-hypergraph problems/distinct-subset-sums-a11 problems/b3-ruler-11-marks problems/b3-subset-first-jump-9 problems/edp-c3-longest-sequence
-PROBLEMS := $(LAUNCH_PROBLEMS) $(ERDOS_PROBLEMS)
+PRODUCTION_BOARD_SET ?= protocol/production-board-set-v1.json
+BOARD_SET_RESULT := $(shell $(PYTHON) -c 'import hashlib,json,re,sys; d=json.load(open(sys.argv[1])); b=d.get("boards"); e=d.get("evidence"); assert set(d) == {"schema","status","evidence","boards"} and d.get("schema") == "p42-prizes/production-board-set/v1" and d.get("status") == "frozen-source-cohort" and isinstance(b,list) and len(b) == len(set(b)) == 10 and all(isinstance(s,str) and re.fullmatch(r"[a-z0-9][a-z0-9-]*",s) for s in b) and isinstance(e,dict) and set(e) == {"path","sha256","schema_path","schema_sha256"} and e.get("path") == "docs/provenance/production-board-evidence-v1.json" and e.get("schema_path") == "schemas/production-board-evidence.schema.json" and e.get("sha256") == "sha256:" + hashlib.sha256(open(e["path"],"rb").read()).hexdigest() and e.get("schema_sha256") == "sha256:" + hashlib.sha256(open(e["schema_path"],"rb").read()).hexdigest(); print(" ".join(b))' "$(PRODUCTION_BOARD_SET)" 2>/dev/null || printf '__P42_INVALID_BOARD_SET__')
+ifneq ($(filter __P42_INVALID_BOARD_SET__,$(BOARD_SET_RESULT)),)
+$(error invalid canonical production board set: $(PRODUCTION_BOARD_SET))
+endif
+LAUNCH_SLUGS := $(BOARD_SET_RESULT)
+LAUNCH_PROBLEMS := $(addprefix problems/,$(LAUNCH_SLUGS))
+RESEARCH_PROBLEMS := problems/hadamard-mini problems/signed-autoconvolution-c3-upper problems/b3-ruler-11-marks problems/b3-subset-first-jump-9 problems/edp-c3-longest-sequence
+PROBLEMS := $(LAUNCH_PROBLEMS) $(RESEARCH_PROBLEMS)
 
-.PHONY: install-verifier-deps test validate lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test verify-render-release all
+.PHONY: install-verifier-deps test validate lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-q6 admit-host-distinct-subset-sums admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test verify-render-release all
 
 all: validate lint test verify-seed
 
@@ -86,11 +92,23 @@ admit-host-seed:
 
 admit-host-ten-board:
 	@status=0; \
-	for target in admit-host-seed admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668; do \
+	for target in admit-host-q6 admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-distinct-subset-sums admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668; do \
 		$(MAKE) $$target || status=1; \
 		sleep 1; \
 	done; \
 	exit $$status
+
+admit-host-q6:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
+		--problem problems/q6-intersecting-hypergraph \
+		--solution problems/q6-intersecting-hypergraph/tests/seed-pg25.json \
+		--runs 2
+
+admit-host-distinct-subset-sums:
+	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
+		--problem problems/distinct-subset-sums-a11 \
+		--solution problems/distinct-subset-sums-a11/tests/conway-guy-594.json \
+		--runs 2
 
 admit-host-erdos:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli admit-host \
