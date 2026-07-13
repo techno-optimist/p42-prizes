@@ -20,6 +20,7 @@ export function AtlasDossier({ entry: value }: { entry: unknown }) {
   const links = read(entry, "links") as Entry | undefined;
   const citations = [read(entry, "erdos_url"), ...list(links?.oeis), ...list(links?.arxiv)].filter(Boolean);
   const join = read(entry, "p42_slug");
+  const compute = read(entry, "compute");
 
   return <article className="atlas-page atlas-dossier">
     <div className="running-head"><span>P42 Prizes · Erdős Atlas</span><span>entry {number} · research dossier</span></div>
@@ -40,6 +41,7 @@ export function AtlasDossier({ entry: value }: { entry: unknown }) {
         <DossierSection no="06" title="Why this verifier class" value={read(entry, "board_class_reason")} />
         <DossierSection no="07" title="Why pursue or stop" value={read(entry, "beatable_reason", "wall_reason")} />
         <DossierSection no="08" title="Prior campaign findings" value={read(entry, "campaign_finding")} />
+        {compute !== undefined && <ComputeCoverage value={compute} />}
       </main>
       <aside className="atlas-dossier-aside" aria-label="Dossier references and scope">
         <section><h2>Citations</h2>{citations.length ? <ol className="atlas-citations">{citations.map((citation, index) => <Citation key={index} citation={citation} />)}</ol> : <p>No bibliography was recorded for this entry in the snapshot.</p>}</section>
@@ -50,6 +52,32 @@ export function AtlasDossier({ entry: value }: { entry: unknown }) {
       </aside>
     </div>
   </article>;
+}
+
+function ComputeCoverage({ value }: { value: unknown }) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const compute = value as Entry;
+  const coverage = list(read(compute, "coverage")).filter((item) => item && typeof item === "object") as Entry[];
+  return <section className="atlas-dossier-section atlas-compute"><span>09</span><div>
+    <h2>Charted compute</h2>
+    <p>{words(read(compute, "result", "limits"))}</p>
+    {coverage.length > 0 && <div className="atlas-coverage" role="list" aria-label="Recorded compute coverage">
+      {coverage.map((record, index) => {
+        const axis = words(read(record, "axis"), "parameter");
+        const start = words(read(record, "start"), "?");
+        const end = words(read(record, "end"), start);
+        const where = read(record, "where");
+        const constraints = where && typeof where === "object" && !Array.isArray(where)
+          ? Object.entries(where as Entry).map(([key, item]) => `${key}=${words(item, "?")}`).join(", ")
+          : "";
+        return <article key={`${axis}-${start}-${end}-${index}`} role="listitem">
+          <div><b>{words(read(record, "status"), "RECORDED")}</b><span>{axis} {start === end ? start : `${start}–${end}`}{constraints ? ` · ${constraints}` : ""}</span></div>
+          <p>{words(read(record, "result"))}</p>
+        </article>;
+      })}
+    </div>}
+    <small>Coverage records route compute; they do not establish prize eligibility or settlement authority.</small>
+  </div></section>;
 }
 
 function DossierSection({ no, title, value }: { no: string; title: string; value: unknown }) {

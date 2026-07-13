@@ -101,6 +101,16 @@ export interface AtlasMeta {
   generated: string;
   source: string;
   total: number;
+  survey: {
+    triaged: number;
+    deep_audited: number;
+  };
+  queue: {
+    ready_interfaces: number;
+    p42_packages: number;
+    recommended_unpacked: number;
+    reserve_unpacked: number;
+  };
   facets: {
     boardability: Record<AtlasBoardability, number>;
     reach: Record<AtlasReach, number>;

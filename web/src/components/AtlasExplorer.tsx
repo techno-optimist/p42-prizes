@@ -120,6 +120,7 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
   }), [board, deferredQuery, lane, packageState, reach, rows]);
 
   const recommended = rows.filter((row) => row.boardability === "READY" && row.reach === "MOVABLE" && !row.packaged);
+  const reserve = rows.filter((row) => row.boardability === "READY" && !row.packaged);
 
   const clear = () => {
     setQuery("");
@@ -137,11 +138,12 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
       </div>
 
       <nav className="atlas-routes" aria-label="Atlas routing views">
-        <RouteButton label="All surveyed" count={rows.length} active={board === "all" && packageState === "all"} onClick={() => updateUrl({ boardability: "all", package: "all" })} />
+        <RouteButton label="All deep audits" count={rows.length} active={board === "all" && reach === "all" && packageState === "all"} onClick={() => updateUrl({ boardability: "all", reach: "all", package: "all" })} />
         <RouteButton label="Recommended next" count={recommended.length} active={board === "READY" && reach === "MOVABLE" && packageState === "unpackaged"} onClick={() => updateUrl({ boardability: "READY", reach: "MOVABLE", package: "unpackaged" })} />
-        <RouteButton label="Heavy verification" count={rows.filter((row) => row.boardability === "HEAVY").length} active={board === "HEAVY"} onClick={() => updateUrl({ boardability: "HEAVY", package: "all" })} />
-        <RouteButton label="Known walls" count={rows.filter((row) => row.boardability === "NONE").length} active={board === "NONE"} onClick={() => updateUrl({ boardability: "NONE", package: "all" })} />
-        <RouteButton label="P42 packages" count={rows.filter((row) => row.packaged).length} active={packageState === "packaged"} onClick={() => updateUrl({ boardability: "all", package: "packaged" })} />
+        <RouteButton label="Reserve boards" count={reserve.length} active={board === "READY" && reach === "all" && packageState === "unpackaged"} onClick={() => updateUrl({ boardability: "READY", reach: "all", package: "unpackaged" })} />
+        <RouteButton label="Heavy verification" count={rows.filter((row) => row.boardability === "HEAVY").length} active={board === "HEAVY" && reach === "all"} onClick={() => updateUrl({ boardability: "HEAVY", reach: "all", package: "all" })} />
+        <RouteButton label="Known walls" count={rows.filter((row) => row.boardability === "NONE").length} active={board === "NONE" && reach === "all"} onClick={() => updateUrl({ boardability: "NONE", reach: "all", package: "all" })} />
+        <RouteButton label="P42 packages" count={rows.filter((row) => row.packaged).length} active={board === "all" && reach === "all" && packageState === "packaged"} onClick={() => updateUrl({ boardability: "all", reach: "all", package: "packaged" })} />
       </nav>
 
       <form className="atlas-controls" role="search" onSubmit={(event) => event.preventDefault()}>

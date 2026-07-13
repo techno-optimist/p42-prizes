@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { AtlasDossier } from "@/components/AtlasDossier";
 import { getAtlasEntry } from "@/lib/atlas";
+import { sitePath } from "@/lib/site-paths";
 import "../atlas.css";
 
 export async function generateMetadata({ params }: { params: Promise<{ id: string }> }): Promise<Metadata> {
@@ -17,6 +18,7 @@ export async function generateMetadata({ params }: { params: Promise<{ id: strin
   return {
     title: `${String(entry.title ?? entry.name ?? `Erdős ${id}`)} - Erdős Atlas`,
     description,
+    alternates: { canonical: sitePath(`/atlas/${numericId}`) },
   };
 }
 
