@@ -1,21 +1,21 @@
 {
   "schemaVersion": "p42-source-release-evidence/v2",
-  "createdAt": "2026-07-14T15:23:59Z",
+  "createdAt": "2026-07-14T16:06:20Z",
   "repository": "techno-optimist/p42-prizes",
   "branch": "main",
   "deployRelevantCommit": "a6e2f83351b64af5d56ee1a2a9c5e239db45391e",
-  "observedBranchHead": "34dd685080eeb14e00131a021f0cdecd239ee42f",
-  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/103",
+  "observedBranchHead": "139e20217be8271c79926eb8ae7f82492855bc1c",
+  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/105",
   "ci": {
     "workflow": "CI",
     "event": "push",
     "branch": "main",
-    "runId": 29343997732,
-    "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/29343997732",
-    "headSha": "34dd685080eeb14e00131a021f0cdecd239ee42f",
+    "runId": 29347103490,
+    "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/29347103490",
+    "headSha": "139e20217be8271c79926eb8ae7f82492855bc1c",
     "status": "completed",
     "conclusion": "success",
-    "completedAt": "2026-07-14T15:23:23Z",
+    "completedAt": "2026-07-14T16:05:53Z",
     "requiredJobs": [
       {"name": "Python verifier gates", "conclusion": "success"},
       {"name": "Autonomous agent gates", "conclusion": "success"},
@@ -60,5 +60,5 @@
     "failClosedPolicy": "An exact-ten cohort requires activated, fresh, independently attested v3 checkpoints; any stale, partial, mixed, malformed, or untrusted generation falls back atomically to local-only portal state.",
     "liveFundingState": "No canonical Base Sepolia pools are deployed or authorized; the live portal publishes no transfer target."
   },
-  "evidenceHash": "sha256:7572d19b0655f81199b6311d5030fa2eb3a8ceac155867daf6bb580dded21c31"
+  "evidenceHash": "sha256:a389a9a8d6e1eeb511d8d106dfc2bd7b5b593790ad431564b83237b0ed84b2e1"
 }
