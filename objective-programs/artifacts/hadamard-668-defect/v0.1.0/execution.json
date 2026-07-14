@@ -2,7 +2,7 @@
   "schema": "p42-objective-execution/v1",
   "status": "single-host-mock-execution",
   "proofKind": "none",
-  "identitySha256": "sha256:25840b6d97f21a197ddc1327a152248282912f923183e793dde88e0d14176dbd",
+  "identitySha256": "sha256:7b4365d47b05cb3005647791da7bc2b05068b27c5e6a422f502f00dde64f921f",
   "guestElfSha256": "sha256:991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a",
   "programVKey": "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7",
   "solutionPath": "problems/hadamard-668-defect/examples/sylvester-prefix.json",

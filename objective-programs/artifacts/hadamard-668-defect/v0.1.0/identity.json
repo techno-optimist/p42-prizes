@@ -25,7 +25,7 @@
     "objective-programs/Cargo.lock": "sha256:06d4485944ad7de6075ee3c9a159341a1d216cd056f1ee444384b7580b757823",
     "objective-programs/rust-toolchain.toml": "sha256:07897ac31bda5b67235f4a9abc5e4a07876e7422bbda0720cbf370b9c53220a8",
     "objective-programs/p42-objective-core/Cargo.toml": "sha256:c375df5a850868923924535f1ab70740af38a216b15528ce47b9a737571c5a2a",
-    "objective-programs/p42-objective-core/src/lib.rs": "sha256:05b34f706cf8069da380a24c4931a819b0d9e6c8b8b59105d2e1529bd182cfea",
+    "objective-programs/p42-objective-core/src/lib.rs": "sha256:12889ba6d724b46132939fa3844f110893cd5d1d7221b5272bac8c9a15609464",
     "objective-programs/hadamard-668-defect/program/Cargo.toml": "sha256:8f67c3625002129d39b628dbc73966f3f36feb2385385c677b3a5abe331f4021",
     "objective-programs/hadamard-668-defect/program/src/main.rs": "sha256:43b0f8850bf1298fa83adc872ace3e46f6e3a34498d1b1f6c3e54727124cd513",
     "objective-programs/hadamard-668-defect/script/Cargo.toml": "sha256:9f0cae9f36aeab757dc51bf03cc1b0ab4d9606aecaf3542d17d38b93ec5e408d",
