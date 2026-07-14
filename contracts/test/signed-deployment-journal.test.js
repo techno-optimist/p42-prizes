@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -342,7 +342,7 @@ describe("signed deployment journal fail-closed recovery", () => {
     });
   });
 
-  it("reclaims a provably dead crash lock and a PID-reuse lock", async () => {
+  it("never automatically reclaims a dead or PID-reuse lock", async () => {
     await fixture(async (directory) => {
       for (const owner of [
         { ...deploymentLockOwnerIdentity(), pid: 999999999, processStartId: "dead-process" },
@@ -350,28 +350,27 @@ describe("signed deployment journal fail-closed recovery", () => {
       ]) {
         const { path, plan } = await signedFixture(directory, 1);
         writeCrashLock(path, owner);
-        const result = await reconcileSignedDeployment({ provider: providerFor(), journalPath: path, planDigest: plan.planDigest, index: 0 });
-        assert.equal(result.state, "broadcast");
+        await assert.rejects(
+          () => reconcileSignedDeployment({ provider: providerFor(), journalPath: path, planDigest: plan.planDigest, index: 0 }),
+          /explicit recovery is required/,
+        );
+        assert.equal(existsSync(`${path}.lock`), true);
+        await rm(`${path}.lock`, { recursive: true, force: true });
         await rm(path, { force: true });
       }
     });
   });
 
-  it("allows only one simultaneous stale-lock reclaimer and never removes its successor", async () => {
+  it("rejects every contender against an abandoned lock without deleting it", async () => {
     await fixture(async (directory) => {
       const { path, plan } = await signedFixture(directory);
       writeCrashLock(path, { ...deploymentLockOwnerIdentity(), pid: 999999999, processStartId: "dead-process" });
-      let release;
-      const gate = new Promise((resolve) => { release = resolve; });
-      const provider = providerFor({ async onBroadcast(raw) { await gate; return { hash: ethers.keccak256(raw) }; } });
-      const first = reconcileSignedDeployment({ provider, journalPath: path, planDigest: plan.planDigest, index: 0 });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      const second = reconcileSignedDeployment({ provider, journalPath: path, planDigest: plan.planDigest, index: 0 });
-      await assert.rejects(() => second, /another signed deployment runner/);
-      release();
-      await first;
-      const successor = await reconcileSignedDeployment({ provider: providerFor(), journalPath: path, planDigest: plan.planDigest, index: 0 });
-      assert.equal(successor.state, "broadcast");
+      const attempts = await Promise.allSettled(Array.from({ length: 8 }, () => reconcileSignedDeployment({
+        provider: providerFor(), journalPath: path, planDigest: plan.planDigest, index: 0,
+      })));
+      assert.equal(attempts.every(({ status, reason }) => status === "rejected" && /explicit recovery is required/.test(reason.message)), true);
+      assert.equal(existsSync(`${path}.lock`), true);
+      assert.deepEqual(readdirSync(directory).filter((name) => name.includes(".candidate-")), []);
     });
   });
 

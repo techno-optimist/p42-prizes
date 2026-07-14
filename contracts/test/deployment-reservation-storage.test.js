@@ -15,7 +15,7 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
@@ -82,8 +82,8 @@ function wrappedHandle(handle, kind, events, overrides = {}) {
       events.push("write");
       return handle.write(...args);
     }),
-    read: (...args) => handle.read(...args),
-    stat: () => handle.stat(),
+    read: overrides.read ?? ((...args) => handle.read(...args)),
+    stat: overrides.stat ?? (() => handle.stat()),
     sync: overrides.sync ?? (() => {
       events.push(`${kind}-fsync`);
       return handle.sync();
@@ -388,7 +388,7 @@ describe("deployment reservation durable secure storage", () => {
                 });
               },
               async rename(from, to) {
-                if (stage === "rename") throw new Error("injected rename failure");
+                if (stage === "rename" && from.includes(".tmp-")) throw new Error("injected rename failure");
                 await renameFile(from, to);
               },
             },
@@ -429,6 +429,142 @@ describe("deployment reservation durable secure storage", () => {
       assert.equal(reservation.record.generation, 2);
       assert.equal(reservation.record.deployments.timelock.name, "P42MultisigTimelock");
       assert.equal(reservation.record.deployments.registry.name, "P42ProblemRegistry");
+    });
+  });
+
+  it("retries when a lock owner releases between collision and validation", async () => {
+    await withDirectory("p42-reservation-lock-handoff-", async (directory) => {
+      const output = join(directory, "deployment.json");
+      const identity = identityFor(output, directory);
+      const lockPath = `${manifestOutputReservationPath(output)}.lock`;
+      let injectedCollision = false;
+      await reserveManifestOutput(identity);
+      await recordManifestOutputDeployment(
+        identity,
+        "timelock",
+        broadcast("P42MultisigTimelock", DEPLOYER, "a"),
+        {
+          storage: {
+            async open(path, flags, mode) {
+              if (path === lockPath && (flags & constants.O_EXCL) !== 0 && !injectedCollision) {
+                injectedCollision = true;
+                const error = new Error("injected lock handoff collision");
+                error.code = "EEXIST";
+                throw error;
+              }
+              return openFile(path, flags, mode);
+            },
+          },
+        },
+      );
+      assert.equal(injectedCollision, true);
+      const reservation = await readManifestOutputReservation(identity);
+      assert.equal(reservation.record.generation, 1);
+      assert.equal(reservation.record.deployments.timelock.name, "P42MultisigTimelock");
+    });
+  });
+
+  it("retries lock handoffs that replace the owner while opening or reading", async () => {
+    for (const stage of ["opening", "reading"]) {
+      await withDirectory(`p42-reservation-lock-${stage}-`, async (directory) => {
+        const output = join(directory, "deployment.json");
+        const identity = identityFor(output, directory);
+        const lockPath = `${manifestOutputReservationPath(output)}.lock`;
+        let injectedCollision = false;
+        let replaced = false;
+        let removedReplacement = false;
+        await reserveManifestOutput(identity);
+        await recordManifestOutputDeployment(
+          identity,
+          "timelock",
+          broadcast("P42MultisigTimelock", DEPLOYER, "a"),
+          {
+            storage: {
+              async open(path, flags, mode) {
+                if (path === lockPath && (flags & constants.O_EXCL) !== 0 && !injectedCollision) {
+                  await writeFile(lockPath, "{}\n", { mode: 0o600 });
+                  injectedCollision = true;
+                  const error = new Error("injected lock owner collision");
+                  error.code = "EEXIST";
+                  throw error;
+                }
+                if (path !== lockPath || (flags & constants.O_EXCL) !== 0 || replaced) {
+                  return openFile(path, flags, mode);
+                }
+                if (stage === "opening") {
+                  const replacement = `${lockPath}.replacement`;
+                  await writeFile(replacement, "[]\n", { mode: 0o600 });
+                  await renameFile(replacement, lockPath);
+                  replaced = true;
+                  const handle = await openFile(path, flags, mode);
+                  return wrappedHandle(handle, "file", [], {
+                    async stat() {
+                      const metadata = await handle.stat();
+                      await rm(lockPath, { force: true });
+                      removedReplacement = true;
+                      return metadata;
+                    },
+                  });
+                }
+                const handle = await openFile(path, flags, mode);
+                return wrappedHandle(handle, "file", [], {
+                  async read(...args) {
+                    const result = await handle.read(...args);
+                    if (!replaced) {
+                      const replacement = `${lockPath}.replacement`;
+                      await writeFile(replacement, "[]\n", { mode: 0o600 });
+                      await renameFile(replacement, lockPath);
+                      replaced = true;
+                    }
+                    return result;
+                  },
+                });
+              },
+              async lstat(path) {
+                const metadata = await lstat(path);
+                if (stage === "reading" && path === lockPath && replaced && !removedReplacement) {
+                  await rm(lockPath, { force: true });
+                  removedReplacement = true;
+                }
+                return metadata;
+              },
+            },
+          },
+        );
+        assert.equal(injectedCollision, true);
+        assert.equal(replaced, true);
+        assert.equal(removedReplacement, true);
+        assert.equal((await readManifestOutputReservation(identity)).record.generation, 1);
+      });
+    }
+  });
+
+  it("never reclaims an abandoned lock without explicit recovery", async () => {
+    await withDirectory("p42-reservation-abandoned-lock-", async (directory) => {
+      const output = join(directory, "deployment.json");
+      const identity = identityFor(output, directory);
+      const lockPath = `${manifestOutputReservationPath(output)}.lock`;
+      await reserveManifestOutput(identity);
+      await writeFile(lockPath, `${JSON.stringify({
+        schema: "p42-prizes/deployment-reservation-lock/v1",
+        token: "abandoned-lock-token",
+        pid: 999999999,
+        hostname: hostname(),
+        createdAt: new Date(0).toISOString(),
+        identityDigest: identity.identityDigest,
+      })}\n`, { mode: 0o600 });
+
+      await assert.rejects(
+        () => recordManifestOutputDeployment(
+          identity,
+          "timelock",
+          broadcast("P42MultisigTimelock", DEPLOYER, "a"),
+          { lockAttempts: 1 },
+        ),
+        /busy or abandoned; explicit recovery is required/,
+      );
+      assert.equal((await lstat(lockPath)).isFile(), true);
+      assert.equal((await readManifestOutputReservation(identity)).record.generation, 0);
     });
   });
 

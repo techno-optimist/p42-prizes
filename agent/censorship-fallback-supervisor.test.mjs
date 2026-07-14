@@ -3,6 +3,7 @@ import { it } from "node:test";
 
 import {
   assertCompleteOutcome,
+  assertTerminalOutcome,
   classifyRetryOutcome,
   parseSupervisorArgs,
   superviseFallback,
@@ -42,6 +43,20 @@ it("bounds RPC retry failures and rejects an unclassified exit 75", async () => 
   assert.equal(await superviseFallback({ runStep: async () => "stopped", sleep: async () => {} }), 0);
 });
 
+it("stops cleanly before another child step after termination during retry delay", async () => {
+  let attempts = 0;
+  let stopped = false;
+  assert.equal(await superviseFallback({
+    runStep: async () => {
+      attempts += 1;
+      return { status: 75, reasonCode: "awaiting-finalized-chain-evidence" };
+    },
+    sleep: async () => { stopped = true; },
+    shouldStop: () => stopped,
+  }), 0);
+  assert.equal(attempts, 1);
+});
+
 it("accepts only canonical classified retry outcomes on the correct stream", () => {
   const waiting = Buffer.from(`${canonicalJson({
     schema: "p42-censorship-fallback-outcome/v1",
@@ -78,6 +93,19 @@ it("requires an exact canonical completion outcome", () => {
   assert.doesNotThrow(() => assertCompleteOutcome([complete], []));
   assert.throws(() => assertCompleteOutcome([], []), /stdout only/);
   assert.throws(() => assertCompleteOutcome([complete], [Buffer.from("warning\n")]), /stdout only/);
+});
+
+it("requires an exact canonical terminal refusal before suppressing restart", () => {
+  const terminal = Buffer.from(`${canonicalJson({
+    schema: "p42-censorship-fallback-outcome/v1",
+    status: "terminal-error",
+    reason_code: "configuration-or-invariant-refusal",
+    message: "policy refused",
+    retry_after_seconds: null,
+  })}\n`);
+  assert.doesNotThrow(() => assertTerminalOutcome([], [terminal]));
+  assert.throws(() => assertTerminalOutcome([terminal], []), /stderr only/);
+  assert.throws(() => assertTerminalOutcome([], [Buffer.from("{}\n")]), /envelope is invalid/);
 });
 
 it("requires exact bounded options and an absolute runtime", () => {

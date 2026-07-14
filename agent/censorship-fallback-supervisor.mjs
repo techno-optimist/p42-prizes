@@ -50,9 +50,10 @@ export function parseSupervisorArgs(argv) {
   };
 }
 
-export async function superviseFallback({ runStep, sleep, maxRpcRetries = 8 }) {
+export async function superviseFallback({ runStep, sleep, maxRpcRetries = 8, shouldStop = () => false }) {
   let consecutiveRpcFailures = 0;
   while (true) {
+    if (shouldStop()) return 0;
     const result = await runStep();
     if (result === "stopped") return 0;
     const status = typeof result === "number" ? result : result.status;
@@ -68,6 +69,7 @@ export async function superviseFallback({ runStep, sleep, maxRpcRetries = 8 }) {
       return 70;
     }
     await sleep();
+    if (shouldStop()) return 0;
   }
 }
 
@@ -114,6 +116,22 @@ export function assertCompleteOutcome(stdout, stderr) {
       || value.stage !== "challenge_l2_confirmed" || value.reason_code !== null
       || value.retry_after_seconds !== null || !/^sha256:[0-9a-f]{64}$/.test(value.plan_hash)) {
     throw new Error("complete outcome envelope is invalid");
+  }
+}
+
+export function assertTerminalOutcome(stdout, stderr) {
+  const stdoutText = Buffer.concat(stdout).toString("utf8");
+  const stderrText = Buffer.concat(stderr).toString("utf8");
+  if (stdoutText || !stderrText) throw new Error("terminal outcome must use stderr only");
+  const value = parseStrictJsonText(stderrText, {
+    canonical: true, trailingNewline: "require", maxBytes: MAX_OUTCOME_BYTES, maxDepth: 8,
+  });
+  const keys = ["message", "reason_code", "retry_after_seconds", "schema", "status"];
+  if (Object.keys(value ?? {}).sort().join(",") !== keys.sort().join(",")
+      || value.schema !== "p42-censorship-fallback-outcome/v1" || value.status !== "terminal-error"
+      || value.reason_code !== "configuration-or-invariant-refusal" || value.retry_after_seconds !== null
+      || typeof value.message !== "string" || !value.message || value.message.length > 4096) {
+    throw new Error("terminal outcome envelope is invalid");
   }
 }
 
@@ -180,6 +198,13 @@ function runRuntimeStep({ runtime, runtimeArgs, stepTimeoutMs, killGraceMs }) {
         } catch {
           resolve(70);
         }
+      } else if (Number(code) === 64) {
+        try {
+          assertTerminalOutcome(stdout, stderr);
+          resolve(64);
+        } catch {
+          resolve(70);
+        }
       } else resolve(Number(code));
     });
   });
@@ -187,11 +212,37 @@ function runRuntimeStep({ runtime, runtimeArgs, stepTimeoutMs, killGraceMs }) {
 
 export async function main(argv = process.argv.slice(2)) {
   const options = parseSupervisorArgs(argv);
-  return superviseFallback({
-    runStep: () => runRuntimeStep(options),
-    sleep: () => new Promise((resolve) => setTimeout(resolve, options.retryDelayMs)),
-    maxRpcRetries: options.maxRpcRetries,
-  });
+  let stopped = false;
+  let wakeSleep = null;
+  const stop = () => {
+    stopped = true;
+    wakeSleep?.();
+  };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  try {
+    return await superviseFallback({
+      runStep: () => runRuntimeStep(options),
+      sleep: () => new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          wakeSleep = null;
+          resolve();
+        };
+        const timer = setTimeout(finish, options.retryDelayMs);
+        wakeSleep = finish;
+        if (stopped) finish();
+      }),
+      maxRpcRetries: options.maxRpcRetries,
+      shouldStop: () => stopped,
+    });
+  } finally {
+    process.off("SIGTERM", stop);
+    process.off("SIGINT", stop);
+  }
 }
 
 if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) {
