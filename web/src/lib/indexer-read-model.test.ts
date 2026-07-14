@@ -86,7 +86,7 @@ function sourceLog(entry: ReturnType<typeof log>) {
 }
 
 function projection(index: number) {
-  const current = index % 2 === 0 ? 8n * SCALE : 12n * SCALE;
+  const current = index % 2 === 0 ? 8n * SCALE : -12n * SCALE;
   const events = index === 0 ? [log("1", 10), log("2", 20), log("3", 30)] : [];
   const submissions = index === 0 ? [
     {
@@ -159,7 +159,7 @@ function projection(index: number) {
 function snapshot(inputProblems = problems()): ActivatedIndexerSnapshot {
   const manifestProblems = inputProblems.map((problem, index) => ({
     problemId: String(index + 1), problemSlug: problem.slug, scoreAtomScale: String(SCALE),
-    seedScoreAtoms: String(10n * SCALE),
+    seedScoreAtoms: String(problem.direction === "maximize" ? -10n * SCALE : 10n * SCALE),
     certifiedObjective: { seedBest: "10/1", direction: problem.direction, minImprovement: "1/1" },
   }));
   const boards = inputProblems.map((problem, index) => {
@@ -216,7 +216,7 @@ describe("atomic v3 portal read model", () => {
       { claimant: `0x${"3".repeat(40)}`, credit: "0/1", finalEntitlementEth: "0", challengeBondEth: "0.1", withdrawableBondEth: "0.1" },
     ]);
     expect(model.submissions[1]).toMatchObject({
-      state: "rejected", credit: "0/1", originalCredit: "1/1", transcriptCid: "ipfs://transcript",
+      state: "voided", credit: "0/1", originalCredit: "1/1", provisionalImprovement: "1/1", transcriptCid: "ipfs://transcript",
       activeChallenge: { challengeBondEth: "1", resolved: true, challengerWins: true },
     });
   });

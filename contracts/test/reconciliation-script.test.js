@@ -137,7 +137,11 @@ describe("Base Sepolia reconciliation evidence gate", () => {
       });
 
       assert.equal(validated, checkpoint);
-      assert.equal(report.schema, "p42-prizes/reconciliation-report/v3");
+      assert.equal(
+        report.schema,
+        schema.endsWith("/v3") ? "p42-prizes/reconciliation-report/v4" : "p42-prizes/reconciliation-report/v3",
+      );
+      assert.equal(report.checkpointSchema, schema.endsWith("/v3") ? schema : undefined);
       assert.deepEqual(report.boards, checkpoint.boards);
       assert.deepEqual(report.boards[0].portalProjection, board.portalProjection);
     }

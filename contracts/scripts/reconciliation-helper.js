@@ -103,9 +103,13 @@ export function buildReconciliationReport({
     }
     validateMultiBoard(checkpoint);
   }
+  const checkpointV3 = multiBoard && checkpoint.schema === "p42-prizes/indexer-checkpoint/v3";
   return {
     ...checkpoint,
-    schema: multiBoard ? "p42-prizes/reconciliation-report/v3" : "p42-prizes/reconciliation-report/v2",
+    schema: checkpointV3
+      ? "p42-prizes/reconciliation-report/v4"
+      : multiBoard ? "p42-prizes/reconciliation-report/v3" : "p42-prizes/reconciliation-report/v2",
+    ...(checkpointV3 ? { checkpointSchema: checkpoint.schema } : {}),
     manifestPath,
     contracts: multiBoard
       ? {

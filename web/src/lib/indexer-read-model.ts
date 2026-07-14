@@ -47,6 +47,19 @@ function atomsToRational(atoms: unknown, scale: string, label: string): string {
   return rationalToString(rational(BigInt(value), BigInt(scale)));
 }
 
+function scoreAtomsToRational(atoms: unknown, scale: string, direction: Direction, label: string): string {
+  const value = BigInt(integerString(atoms, label));
+  return rationalToString(rational(direction === "maximize" ? -value : value, BigInt(scale)));
+}
+
+function chainAtomsForScore(score: string, scale: string, direction: Direction): string {
+  const value = parseRational(score);
+  const scaled = (direction === "maximize" ? -value.num : value.num) * BigInt(scale);
+  let quotient = scaled / value.den;
+  if (scaled > 0n && scaled % value.den !== 0n) quotient += 1n;
+  return quotient.toString();
+}
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value !== null && typeof value === "object") {
@@ -119,8 +132,8 @@ function submissionState(status: unknown): SubmissionState {
     case "Revealed": return "revealed";
     case "Challenged": return "challenged";
     case "Finalized": return "finalized";
-    case "Rejected":
-    case "Voided": return "rejected";
+    case "Rejected": return "rejected";
+    case "Voided": return "voided";
     default: throw new Error(`unsupported projected submission status ${String(status)}`);
   }
 }
@@ -240,6 +253,7 @@ function projectedSubmission(
   problem: Problem,
   registryId: string,
   scale: string,
+  direction: Direction,
   value: unknown,
 ): Submission {
   const row = object(value, "portal projection submission");
@@ -261,10 +275,11 @@ function projectedSubmission(
     agentName: solverAddress,
     solverAddress,
     source: "chain-p42-v1",
-    settlementState: state === "finalized" ? "finalized" : state === "rejected" ? "ineligible" : "unsettled",
+    settlementState: state === "finalized" ? "finalized" : ["rejected", "voided"].includes(state) ? "ineligible" : "unsettled",
     state,
-    score: atomsToRational(row.claimedScoreAtoms, scale, "claimed score atoms"),
+    score: scoreAtomsToRational(row.claimedScoreAtoms, scale, direction, "claimed score atoms"),
     improvement: atomsToRational(row.improvementAtoms, scale, "improvement atoms"),
+    provisionalImprovement: atomsToRational(row.improvementAtoms, scale, "improvement atoms"),
     credit: atomsToRational(currentCredit, scale, "credit atoms"),
     originalCredit: atomsToRational(row.originalCreditAtoms, scale, "original credit atoms"),
     activeChallenge: challenge,
@@ -314,7 +329,7 @@ export function portalReadModelFromActivatedSnapshot(
     if (BigInt(scale) <= 0n || direction !== problem.direction
       || !equalRational(String(objective.seedBest), problem.seedBest)
       || !equalRational(String(objective.minImprovement), problem.minImprovement)
-      || !equalRational(atomsToRational(manifestProblem.seedScoreAtoms, scale, "seed score atoms"), problem.seedBest)) {
+      || chainAtomsForScore(problem.seedBest, scale, direction) !== integerString(manifestProblem.seedScoreAtoms, "seed score atoms")) {
       throw new Error(`portal objective binding mismatch for ${problem.slug}`);
     }
     const projection = object(board.portalProjection, "board portal projection");
@@ -336,14 +351,14 @@ export function portalReadModelFromActivatedSnapshot(
     }
     replayEvents[problem.slug] = { digest: String(events.digest), total: Number(events.total) };
     submissions.push(...array(projection.submissions, "portal projection submissions")
-      .map((row) => projectedSubmission(problem, registryId, scale, row)));
+      .map((row) => projectedSubmission(problem, registryId, scale, direction, row)));
     const pool = poolReadModel(projection, scale);
     const checkpointTimestamp = secondsString(object(checkpoint.range, "checkpoint range").toBlockTimestamp, "checkpoint timestamp");
     const funding = fundingReadModel(projection, pool.closed);
     return {
       ...problem,
       status: pool.closed ? "resolved" : "open",
-      currentBest: atomsToRational(frontier.currentAtoms, scale, "frontier atoms"),
+      currentBest: scoreAtomsToRational(frontier.currentAtoms, scale, direction, "frontier atoms"),
       bountyEth: pool.totalFundedEth,
       poolAddress: provenance.poolAddress,
       donationWallet: {

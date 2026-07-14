@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -30,6 +30,7 @@ import {
   validateMultiBoardCheckpoint,
 } from "./indexer.mjs";
 import { CANONICAL_BOARD_CONTRACTS, CANONICAL_SHARED_CONTRACTS } from "./canonical-topology.mjs";
+import { validateCheckpointDescriptor } from "./checkpoint-validate.mjs";
 
 it("derives operational topology keys and artifacts from the canonical 47-contract authority", () => {
   assert.deepEqual(SHARED_CONTRACT_KEYS, CANONICAL_SHARED_CONTRACTS.map(({ key }) => key));
@@ -1442,6 +1443,16 @@ describe("P42 deterministic indexer replay", () => {
     });
     assert.equal(projection.eventProvenance.total, events.length);
     assert.equal(projection.eventProvenance.replayEventsDigest, checkpoint.boards[0].events.digest);
+    const checkpointPath = join(mkdtempSync(join(tmpdir(), "p42-checkpoint-validator-")), "checkpoint.json");
+    writeFileSync(checkpointPath, `${stableStringify(checkpoint)}\n`, { mode: 0o600 });
+    const checkpointDescriptor = openSync(checkpointPath, "r");
+    try {
+      assert.deepEqual(validateCheckpointDescriptor(checkpointDescriptor), {
+        ok: true, schema: "p42-prizes/indexer-checkpoint/v3", boards: 1,
+      });
+    } finally {
+      closeSync(checkpointDescriptor);
+    }
 
     const refundable = portalCheckpoint(portalRefundFixture({ refunded: false }));
     assert.equal(refundable.boards[0].portalProjection.pool.refundableWei, "100");

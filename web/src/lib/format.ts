@@ -13,6 +13,7 @@ export function stateLabel(state: SubmissionState): string {
   if (state === "revealed") return "Reveal window · unsettled";
   if (state === "challenged") return "Challenged · unsettled";
   if (state === "finalized") return "Finalized";
+  if (state === "voided") return "Finalization voided";
   return "Rejected";
 }
 

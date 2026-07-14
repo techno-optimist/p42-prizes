@@ -1428,7 +1428,8 @@ h3 {
   color: var(--warn);
 }
 
-.state-word.rejected {
+.state-word.rejected,
+.state-word.voided {
   color: var(--crit);
 }
 

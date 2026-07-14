@@ -1,6 +1,6 @@
 export type Direction = "minimize" | "maximize";
 export type ProblemStatus = "open" | "pilot" | "locked" | "resolved";
-export type SubmissionState = "committed" | "revealed" | "challenged" | "finalized" | "rejected";
+export type SubmissionState = "committed" | "revealed" | "challenged" | "finalized" | "rejected" | "voided";
 export type PortalDataSource = "local-phase-0" | "chain-p42-v1";
 
 export interface DonationWallet {

@@ -265,12 +265,6 @@ $ make verify SOLUTION=examples/valid-4.json`}
                       · {isoDate(row.submittedAt)} · window closes {isoDate(row.windowEndsAt)} · cid{" "}
                       <span className="ref">{row.solutionCid}</span> · commit{" "}
                       <span className="ref">{row.commitHash.slice(0, 18)}…</span>
-                      {row.solverAddress && claimants.find((claimant) => claimant.claimant === row.solverAddress)?.finalEntitlementWei !== "0" && (
-                        <> · final entitlement {claimants.find((claimant) => claimant.claimant === row.solverAddress)?.finalEntitlementEth} ETH</>
-                      )}
-                      {row.solverAddress && claimants.find((claimant) => claimant.claimant === row.solverAddress)?.withdrawableBondWei !== "0" && (
-                        <> · withdrawable bond {claimants.find((claimant) => claimant.claimant === row.solverAddress)?.withdrawableBondEth} ETH</>
-                      )}
                     </span>
                     {row.state === "finalized" && <span className="tombstone"> ∎</span>}
                     {row.sample && <span className="fixture-stamp">fixture · worked example</span>}
@@ -302,7 +296,7 @@ $ make verify SOLUTION=examples/valid-4.json`}
                   <span className="num">{pool.accountedBalanceEth} ETH</span>
                 </div>
                 <div className="fact-row">
-                  <span className="smallcaps">Claimed</span>
+                  <span className="smallcaps">Claimed or donated</span>
                   <span className="num">{pool.totalClaimedEth} ETH</span>
                 </div>
                 <div className="fact-row">
@@ -311,7 +305,7 @@ $ make verify SOLUTION=examples/valid-4.json`}
                 </div>
                 {pool.totalWinningsDonatedWei !== "0" && (
                   <div className="fact-row">
-                    <span className="smallcaps">Winnings donated</span>
+                    <span className="smallcaps">Of which donated</span>
                     <span className="num">{pool.totalWinningsDonatedEth} ETH</span>
                   </div>
                 )}
