@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/source-release-evidence.schema.json",
+  "title": "P42 source release evidence v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "createdAt", "repository", "branch", "deployRelevantCommit", "observedBranchHead", "pullRequest", "ci", "render", "releaseGuard", "portalProjection", "evidenceHash"],
+  "properties": {
+    "schemaVersion": {"const": "p42-source-release-evidence/v2"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "repository": {"const": "techno-optimist/p42-prizes"},
+    "branch": {"const": "main"},
+    "deployRelevantCommit": {"$ref": "#/$defs/commit"},
+    "observedBranchHead": {"$ref": "#/$defs/commit"},
+    "pullRequest": {"type": "string", "pattern": "^https://github\\.com/techno-optimist/p42-prizes/pull/[1-9][0-9]*$"},
+    "ci": {
+      "type": "object", "additionalProperties": false,
+      "required": ["workflow", "event", "branch", "runId", "url", "headSha", "status", "conclusion", "completedAt", "requiredJobs"],
+      "properties": {
+        "workflow": {"const": "CI"}, "event": {"const": "push"}, "branch": {"const": "main"},
+        "runId": {"type": "integer", "minimum": 1},
+        "url": {"type": "string", "pattern": "^https://github\\.com/techno-optimist/p42-prizes/actions/runs/[1-9][0-9]*$"},
+        "headSha": {"$ref": "#/$defs/commit"}, "status": {"const": "completed"}, "conclusion": {"const": "success"},
+        "completedAt": {"type": "string", "format": "date-time"},
+        "requiredJobs": {"type": "array", "minItems": 6, "maxItems": 6, "items": {"$ref": "#/$defs/job"}}
+      }
+    },
+    "render": {
+      "type": "object", "additionalProperties": false,
+      "required": ["serviceId", "deployId", "status", "trigger", "runtimeCommit", "liveCommit", "finishedAt"],
+      "properties": {
+        "serviceId": {"type": "string", "pattern": "^srv-[a-z0-9]+$"}, "deployId": {"type": "string", "pattern": "^dep-[a-z0-9]+$"},
+        "status": {"const": "live"}, "trigger": {"const": "new_commit"}, "runtimeCommit": {"$ref": "#/$defs/commit"},
+        "liveCommit": {"$ref": "#/$defs/commit"}, "finishedAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "releaseGuard": {
+      "type": "object", "additionalProperties": false,
+      "required": ["command", "status", "boardProjection", "healthyRoutes", "requiredRoutes", "probes"],
+      "properties": {
+        "command": {"const": "make verify-render-release"}, "status": {"const": "passed"},
+        "boardProjection": {"$ref": "#/$defs/hash"}, "healthyRoutes": {"const": 10}, "requiredRoutes": {"const": 10},
+        "probes": {"type": "array", "minItems": 10, "maxItems": 10, "items": {"$ref": "#/$defs/probe"}}
+      }
+    },
+    "portalProjection": {
+      "type": "object", "additionalProperties": false,
+      "required": ["checkpointSchema", "projectionSchema", "status", "failClosedPolicy", "liveFundingState"],
+      "properties": {
+        "checkpointSchema": {"const": "p42-prizes/indexer-checkpoint/v3"}, "projectionSchema": {"const": "p42-prizes/portal-projection/v2"},
+        "status": {"const": "source-complete-deployment-pending"},
+        "failClosedPolicy": {"type": "string", "minLength": 32}, "liveFundingState": {"type": "string", "minLength": 32}
+      }
+    },
+    "evidenceHash": {"$ref": "#/$defs/hash"}
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "job": {
+      "type": "object", "additionalProperties": false, "required": ["name", "conclusion"],
+      "properties": {"name": {"type": "string", "minLength": 1}, "conclusion": {"const": "success"}}
+    },
+    "probe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["routeId", "origin", "url", "status", "contentType", "finalUrl", "bodySha256"],
+      "properties": {
+        "routeId": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"}, "origin": {"enum": ["render", "public"]},
+        "url": {"type": "string", "format": "uri"}, "status": {"const": 200}, "contentType": {"type": "string", "minLength": 1},
+        "finalUrl": {"type": "string", "format": "uri"}, "bodySha256": {"$ref": "#/$defs/hash"}
+      }
+    }
+  }
+}

@@ -92,6 +92,16 @@ export const PROBE_ROUTES = Object.freeze([
     ]),
   }),
   Object.freeze({
+    id: "build-week",
+    path: "/prizes/build-week",
+    kind: "html",
+    origins: Object.freeze(["render", "public"]),
+    markers: Object.freeze([
+      "Don’t trust the score.",
+      "Try to fool the verifier.",
+    ]),
+  }),
+  Object.freeze({
     id: "problems",
     path: "/prizes/api/problems",
     kind: "problems-json",

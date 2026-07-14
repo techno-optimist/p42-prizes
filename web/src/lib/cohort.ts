@@ -4,8 +4,8 @@ import { getProblemById, launchProblems } from "@/lib/data";
 /**
  * The pilot cohort — six agents operated by ProjectForty2 to exercise the payout
  * mechanism on the local modeled slate. CHRONOS sets the floor on every board and
- * donates its entire share back into the pool; the other five compete for what
- * remains. Nothing here is organic third-party traction: it is a transparent,
+ * redirects each nonzero matured award to the canonical Hadamard Mini destination;
+ * the other five collect their modeled awards. Nothing here is organic third-party traction: it is a transparent,
  * first-party demonstration of how a pool resolves, with every figure computed
  * by the exact wei math in this file — not hand-typed.
  */
@@ -14,7 +14,18 @@ export interface CohortAgent {
   name: string;
   role: "floor" | "competitor";
   strategy: string;
-  donatesBack: boolean;
+  maturedAwardRedirect: MaturedAwardRedirectPolicy | null;
+  /** @deprecated Uninhabited migration guard for the legacy standings API. */
+  donatesBack?: never;
+}
+
+export interface MaturedAwardRedirectPolicy {
+  destinationProblemId: number;
+  destinationEligibility: "modeled-same-registry-distinct-open-armed-pool";
+  destinationModeledState: "open-armed";
+  sponsorshipAttribution: "solver";
+  failureSemantics: "atomic-source-claim-unconsumed";
+  zeroCreditCloseEconomics: "attributed-principal-refundable";
 }
 
 /** A modeled entry: `delta` is the exact rational share of a board's frontier
@@ -31,43 +42,50 @@ export const cohortAgents: CohortAgent[] = [
     id: "chronos",
     name: "CHRONOS",
     role: "floor",
-    strategy: "Sets the baseline certificate on every board; returns its entire modeled share to the pool.",
-    donatesBack: true,
+    strategy: "Sets each baseline certificate; redirects every nonzero matured modeled award to Hadamard Mini as attributed sponsorship.",
+    maturedAwardRedirect: {
+      destinationProblemId: 1,
+      destinationEligibility: "modeled-same-registry-distinct-open-armed-pool",
+      destinationModeledState: "open-armed",
+      sponsorshipAttribution: "solver",
+      failureSemantics: "atomic-source-claim-unconsumed",
+      zeroCreditCloseEconomics: "attributed-principal-refundable",
+    },
   },
   {
     id: "noether",
     name: "NOETHER",
     role: "competitor",
     strategy: "Symmetry-reduced construction search over sign matrices and extremal graphs.",
-    donatesBack: false,
+    maturedAwardRedirect: null,
   },
   {
     id: "hypatia",
     name: "HYPATIA",
     role: "competitor",
     strategy: "Interval-certified analytic bounds; dual certificates for LP ceilings.",
-    donatesBack: false,
+    maturedAwardRedirect: null,
   },
   {
     id: "lovelace",
     name: "LOVELACE",
     role: "competitor",
     strategy: "Program-synthesized constructions with exact rational step heights.",
-    donatesBack: false,
+    maturedAwardRedirect: null,
   },
   {
     id: "ramanujan",
     name: "RAMANUJAN",
     role: "competitor",
     strategy: "High-throughput numeric search for sparse exact certificates.",
-    donatesBack: false,
+    maturedAwardRedirect: null,
   },
   {
     id: "turing",
     name: "TURING",
     role: "competitor",
     strategy: "Exhaustive, verifier-guided enumeration under the compute budget.",
-    donatesBack: false,
+    maturedAwardRedirect: null,
   },
 ];
 
@@ -107,7 +125,30 @@ export interface BoardResolution {
   poolWei: bigint;
   poolEth: string;
   leaderAgentId: string | null;
-  rows: Array<{ agentId: string; delta: Rational; share: Rational; winningsWei: bigint; isLeader: boolean }>;
+  rows: Array<{
+    agentId: string;
+    delta: Rational;
+    share: Rational;
+    winningsWei: bigint;
+    grossAwardWei: bigint;
+    netAwardWei: bigint;
+    feeAmountWei: bigint;
+    isLeader: boolean;
+  }>;
+}
+
+export interface ModeledMaturedAwardRedirect {
+  solverAgentId: string;
+  sourceProblemId: number;
+  destinationProblemId: number;
+  destinationSlug: string;
+  destinationTitle: string;
+  grossAmountWei: bigint;
+  donatedAmountWei: bigint;
+  feeAmountWei: bigint;
+  sponsorshipAttributedToAgentId: string;
+  failureConsumesSourceClaim: false;
+  zeroCreditDestinationPrincipalRefundable: true;
 }
 
 export interface AgentStanding {
@@ -116,6 +157,12 @@ export interface AgentStanding {
   records: number;
   frontierCredit: Rational; // Σ per-board share, exact
   collectedWei: bigint;
+  grossAwardWei: bigint;
+  redirectedGrossWei: bigint;
+  redirectedSponsorshipWei: bigint;
+  redirectFeeWei: bigint;
+  redirects: ModeledMaturedAwardRedirect[];
+  /** @deprecated Net cross-pool sponsorship, retained for the legacy standings API. */
   donatedWei: bigint;
 }
 
@@ -124,6 +171,10 @@ export interface Standings {
   boards: BoardResolution[];
   totalPoolWei: bigint;
   totalCollectedWei: bigint;
+  totalRedirectedGrossWei: bigint;
+  totalRedirectedSponsorshipWei: bigint;
+  totalRedirectFeeWei: bigint;
+  /** @deprecated Net cross-pool sponsorship, retained for the legacy standings API. */
   totalDonatedWei: bigint;
 }
 
@@ -147,7 +198,10 @@ export function weiToEth(wei: bigint, digits = 4): string {
   return `${whole}.${scaled.toString().padStart(digits, "0")}`;
 }
 
-export function computeStandings(): Standings {
+export function computeStandings({ feeBps = 0 }: { feeBps?: number } = {}): Standings {
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 250) {
+    throw new Error("feeBps must be an integer from 0 through the protocol cap of 250");
+  }
   const boards: BoardResolution[] = [];
 
   const perProblem = new Map<number, CohortEntry[]>();
@@ -179,9 +233,20 @@ export function computeStandings(): Standings {
       // share = delta / total (exact)
       const share = total.num === 0n ? rational(0) : rational(delta.num * total.den, delta.den * total.num);
       // winnings_wei = floor(poolWei * delta.num * total.den / (delta.den * total.num))
-      const winningsWei =
+      const grossAwardWei =
         total.num === 0n ? 0n : (poolWei * delta.num * total.den) / (delta.den * total.num);
-      return { agentId: e.agentId, delta, share, winningsWei, isLeader: e.agentId === leaderAgentId };
+      const feeAmountWei = (grossAwardWei * BigInt(feeBps)) / 10_000n;
+      const netAwardWei = grossAwardWei - feeAmountWei;
+      return {
+        agentId: e.agentId,
+        delta,
+        share,
+        winningsWei: grossAwardWei,
+        grossAwardWei,
+        netAwardWei,
+        feeAmountWei,
+        isLeader: e.agentId === leaderAgentId,
+      };
     });
 
     boards.push({
@@ -200,17 +265,64 @@ export function computeStandings(): Standings {
     let records = 0;
     let frontierCredit = rational(0);
     let collectedWei = 0n;
-    let donatedWei = 0n;
+    let grossAwardWei = 0n;
+    let redirectedGrossWei = 0n;
+    let redirectedSponsorshipWei = 0n;
+    let redirectFeeWei = 0n;
+    const redirects: ModeledMaturedAwardRedirect[] = [];
     for (const board of boards) {
       const row = board.rows.find((r) => r.agentId === agent.id);
       if (!row) continue;
       boardsCount += 1;
       frontierCredit = addRational(frontierCredit, row.share);
       if (row.isLeader) records += 1;
-      if (agent.donatesBack) donatedWei += row.winningsWei;
-      else collectedWei += row.winningsWei;
+      grossAwardWei += row.grossAwardWei;
+      const policy = agent.maturedAwardRedirect;
+      if (policy && row.grossAwardWei !== 0n) {
+        if (policy.destinationProblemId === board.problemId) {
+          throw new Error(`matured award destination must differ from source problem ${board.problemId}`);
+        }
+        const destination = getProblemById(policy.destinationProblemId);
+        if (!destination) throw new Error(`unknown matured award destination ${policy.destinationProblemId}`);
+        if (
+          policy.destinationEligibility !== "modeled-same-registry-distinct-open-armed-pool"
+          || policy.destinationModeledState !== "open-armed"
+        ) {
+          throw new Error(`modeled matured award destination ${policy.destinationProblemId} is not open and armed`);
+        }
+        redirectedGrossWei += row.grossAwardWei;
+        redirectedSponsorshipWei += row.netAwardWei;
+        redirectFeeWei += row.feeAmountWei;
+        redirects.push({
+          solverAgentId: agent.id,
+          sourceProblemId: board.problemId,
+          destinationProblemId: destination.id,
+          destinationSlug: destination.slug,
+          destinationTitle: destination.title,
+          grossAmountWei: row.grossAwardWei,
+          donatedAmountWei: row.netAwardWei,
+          feeAmountWei: row.feeAmountWei,
+          sponsorshipAttributedToAgentId: agent.id,
+          failureConsumesSourceClaim: false,
+          zeroCreditDestinationPrincipalRefundable: true,
+        });
+      } else {
+        collectedWei += row.netAwardWei;
+      }
     }
-    return { agent, boards: boardsCount, records, frontierCredit, collectedWei, donatedWei };
+    return {
+      agent,
+      boards: boardsCount,
+      records,
+      frontierCredit,
+      collectedWei,
+      grossAwardWei,
+      redirectedGrossWei,
+      redirectedSponsorshipWei,
+      redirectFeeWei,
+      redirects,
+      donatedWei: redirectedSponsorshipWei,
+    };
   });
 
   // Rank competitors by collected winnings desc, then frontier credit; the floor
@@ -223,9 +335,20 @@ export function computeStandings(): Standings {
 
   const totalPoolWei = boards.reduce((sum, b) => sum + b.poolWei, 0n);
   const totalCollectedWei = agents.reduce((sum, a) => sum + a.collectedWei, 0n);
-  const totalDonatedWei = agents.reduce((sum, a) => sum + a.donatedWei, 0n);
+  const totalRedirectedGrossWei = agents.reduce((sum, a) => sum + a.redirectedGrossWei, 0n);
+  const totalRedirectedSponsorshipWei = agents.reduce((sum, a) => sum + a.redirectedSponsorshipWei, 0n);
+  const totalRedirectFeeWei = agents.reduce((sum, a) => sum + a.redirectFeeWei, 0n);
 
-  return { agents, boards, totalPoolWei, totalCollectedWei, totalDonatedWei };
+  return {
+    agents,
+    boards,
+    totalPoolWei,
+    totalCollectedWei,
+    totalRedirectedGrossWei,
+    totalRedirectedSponsorshipWei,
+    totalRedirectFeeWei,
+    totalDonatedWei: totalRedirectedSponsorshipWei,
+  };
 }
 
 export function totalCohortPoolEthFromProblems(): string {

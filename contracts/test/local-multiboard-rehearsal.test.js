@@ -4,13 +4,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
-import { network } from "hardhat";
+import { artifacts, network } from "hardhat";
 
+import { canonicalTopologyDescriptors } from "../../agent/canonical-topology.mjs";
 import {
-  boardCeremonyConfig,
   buildMultiBoardSetupOperations,
-  constructorArgsFor,
+  createDeploymentReservationIdentity,
 } from "../scripts/deployment-ceremony-helper.js";
+import {
+  buildTrustedRpcEvidence,
+  readSignedDeploymentJournal,
+  signedDeploymentJournalPath,
+} from "../scripts/signed-deployment-journal.js";
 import {
   PRODUCTION_LAUNCH_SLUGS,
   readMultiBoardCeremonyConfig,
@@ -22,43 +27,63 @@ import {
   recordGovernanceObservation,
   reserveGovernanceOperationJournal,
 } from "../scripts/governance-operation-journal.js";
+import {
+  buildCanonicalMultiBoardDeploymentDefinitions,
+  materializeCanonicalMultiBoardDeploymentPlan,
+  multiBoardPredeploymentGovernanceOperations,
+  verifyMultiBoardPredeploymentGovernancePhase,
+  MULTIBOARD_BOARD_CONTRACT_NAMES,
+  MULTIBOARD_CONTRACT_NAMES,
+  MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT,
+} from "../scripts/multiboard-deployment-plan.js";
 
 const FIXTURE = new URL("./fixtures/multiboard-ceremony-10.json", import.meta.url);
 const { ethers } = await network.create();
-
-async function deploy(deployer, name, args) {
-  const contract = await (await ethers.getContractFactory(name, deployer)).deploy(...args);
-  await contract.waitForDeployment();
-  return contract;
-}
+const deploymentLibraryImport = Symbol.for("p42-prizes.deploy-base-sepolia.library-import");
+globalThis[deploymentLibraryImport] = true;
+const { executeSignedDeploymentPlan } = await import("../scripts/deploy-base-sepolia.js");
+delete globalThis[deploymentLibraryImport];
+const DECISION_TYPES = {
+  Decision: [
+    { name: "chainId", type: "uint256" },
+    { name: "adapter", type: "address" },
+    { name: "manager", type: "address" },
+    { name: "submissionId", type: "uint256" },
+    { name: "challengeInstanceHash", type: "bytes32" },
+    { name: "challengerWins", type: "bool" },
+    { name: "transcriptHash", type: "bytes32" },
+    { name: "transcriptURIHash", type: "bytes32" },
+    { name: "verdictHash", type: "bytes32" },
+    { name: "bondBeneficiary", type: "address" },
+    { name: "nonce", type: "uint256" },
+    { name: "expiry", type: "uint64" },
+    { name: "signerEpoch", type: "uint64" },
+  ],
+};
 
 async function interfaces() {
   return Object.fromEntries(await Promise.all(Object.entries({
-    timelock: "P42MultisigTimelock",
-    registry: "P42ProblemRegistry",
-    pool: "P42BountyPool",
-    ledger: "P42PayoutLedger",
-    submissions: "P42SubmissionManager",
-    challenges: "P42ChallengeManager",
+    timelock: MULTIBOARD_CONTRACT_NAMES.timelock,
+    registry: MULTIBOARD_CONTRACT_NAMES.registry,
+    ...MULTIBOARD_BOARD_CONTRACT_NAMES,
   }).map(async ([key, name]) => [key, (await ethers.getContractFactory(name)).interface])));
 }
 
-async function deployBoard(deployer, config, roots) {
-  const contracts = {};
-  const addresses = { ...roots };
-  for (const [key, name] of Object.entries({
-    pool: "P42BountyPool",
-    ledger: "P42PayoutLedger",
-    submissions: "P42SubmissionManager",
-    challenges: "P42ChallengeManager",
-  })) {
-    contracts[key] = await deploy(deployer, name, constructorArgsFor(name, config, addresses));
-    addresses[key] = await contracts[key].getAddress();
-  }
-  return { contracts, addresses };
+async function advanceTo(timestamp) {
+  const latest = await ethers.provider.getBlock("latest");
+  if (BigInt(latest.timestamp) >= BigInt(timestamp)) return;
+  await ethers.provider.send("evm_setNextBlockTimestamp", [Number(timestamp)]);
+  await ethers.provider.send("evm_mine", []);
 }
 
-async function executePending(timelock, signers, operations, journalPath, { crashAfterExecute = Infinity } = {}) {
+async function executeOperations(
+  timelock,
+  signers,
+  operations,
+  indexes,
+  journalPath,
+  { crashAfterExecute = Infinity } = {},
+) {
   const journalIdentity = readGovernanceOperationJournal(journalPath);
   const planDigest = journalIdentity.planDigest;
   const observe = async (operation) => observeGovernanceOperation(timelock, operation, {
@@ -68,12 +93,11 @@ async function executePending(timelock, signers, operations, journalPath, { cras
     toBlock: await ethers.provider.getBlockNumber(),
   });
   let executed = 0;
-  for (const [index, operation] of operations.entries()) {
+  for (const index of indexes) {
+    const operation = operations[index];
     let evidence = await observe(operation);
     await recordGovernanceObservation(journalPath, planDigest, index, evidence);
-    if (evidence.state === "executed") {
-      continue;
-    }
+    if (evidence.state === "executed") continue;
     const args = [operation.target, operation.value, operation.data, operation.salt];
     if (evidence.state === "planned") {
       const scheduleFunction = operation.operationClass === "override" ? "scheduleOverride" : "schedule";
@@ -88,11 +112,7 @@ async function executePending(timelock, signers, operations, journalPath, { cras
     }
     await ethers.provider.send("evm_increaseTime", [Number(operation.delaySeconds) + 1]);
     await ethers.provider.send("evm_mine", []);
-    try {
-      await (await timelock.connect(signers[0]).execute(...args)).wait();
-    } catch (error) {
-      throw new Error(`operation ${operation.sequence} (${operation.label}) failed: ${error.message}`);
-    }
+    await (await timelock.connect(signers[0]).execute(...args)).wait();
     executed += 1;
     if (executed === crashAfterExecute) throw new Error("injected post-execution pre-journal crash");
     evidence = await observe(operation);
@@ -100,110 +120,376 @@ async function executePending(timelock, signers, operations, journalPath, { cras
   }
 }
 
-describe("exact ten-board local ceremony rehearsal", { timeout: 240_000 }, function () {
-  it("logically replays ten board stacks and 110 governance operations without funding", async function () {
+async function executeGovernedCall(timelock, signers, target, data, label) {
+  const salt = ethers.id(`local-lifecycle:${label}`);
+  await timelock.connect(signers[0]).schedule(target, 0, data, salt);
+  const operationId = await timelock.opId(target, 0, data, salt);
+  await timelock.connect(signers[1]).confirm(operationId);
+  await ethers.provider.send("evm_increaseTime", [Number(await timelock.delay()) + 1]);
+  await ethers.provider.send("evm_mine", []);
+  await timelock.connect(signers[0]).execute(target, 0, data, salt);
+}
+
+function boardContracts(deployed, problemId) {
+  return Object.fromEntries(Object.keys(MULTIBOARD_BOARD_CONTRACT_NAMES).map((key) => [
+    key,
+    deployed[`board-${problemId}-${key}`],
+  ]));
+}
+
+describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, function () {
+  it("deploys the canonical 47, executes 110 governed setup operations, and settles one challenged board", async function (t) {
     const input = JSON.parse(await readFile(FIXTURE, "utf8"));
     const signers = await ethers.getSigners();
-    const [signer1, signer2, signer3, guardian, treasury, resolver, deployer] = signers;
-    const roleAddresses = [signer1, signer2, signer3, guardian, treasury, resolver].map((signer) => signer.address);
-    input.governance.signers = roleAddresses.slice(0, 3);
-    input.governance.guardian = roleAddresses[3];
-    input.roles.treasury = roleAddresses[4];
-    input.roles.resolver = roleAddresses[5];
+    const [signer1, signer2, signer3, guardian, treasury, resolver, deployerFunder, sponsor, solver, challenger] = signers;
+    const deployer = ethers.Wallet.createRandom().connect(ethers.provider);
+    await (await deployerFunder.sendTransaction({ to: deployer.address, value: ethers.parseEther("100") })).wait();
+    input.governance.signers = [signer1.address, signer2.address, signer3.address];
+    input.governance.guardian = guardian.address;
+    input.roles.treasury = treasury.address;
+    input.roles.resolver = resolver.address;
     for (const problem of input.problems) {
       problem.verifierSourceHash = ethers.keccak256(ethers.toUtf8Bytes(problem.verifierSourceDigest));
       problem.verifierImageHash = ethers.keccak256(ethers.toUtf8Bytes(problem.verifierImageDigest));
     }
     const config = readMultiBoardCeremonyConfig(ethers, input, { deployerAddress: deployer.address });
-    assert.equal(config.problems.length, 10);
-    assert.deepEqual(
-      config.problems.map((problem) => problem.problemSlug),
-      PRODUCTION_LAUNCH_SLUGS,
-      "local deployment rehearsal must exercise the exact ordered production cohort",
-    );
+    assert.deepEqual(config.problems.map(({ problemSlug }) => problemSlug), PRODUCTION_LAUNCH_SLUGS);
 
-    const timelock = await deploy(deployer, "P42MultisigTimelock", constructorArgsFor("P42MultisigTimelock", config));
-    const roots = { timelock: await timelock.getAddress() };
-    const registry = await deploy(deployer, "P42ProblemRegistry", constructorArgsFor("P42ProblemRegistry", config, roots));
-    roots.registry = await registry.getAddress();
-    const vault = await deploy(deployer, "P42RolloverVault", constructorArgsFor("P42RolloverVault", config, roots));
-    roots.rolloverVault = await vault.getAddress();
-    const boards = [];
-    for (const problem of config.problems) {
-      boards.push({ problem, ...await deployBoard(deployer, boardCeremonyConfig(config, problem), roots) });
-    }
+    const objectiveArtifact = await artifacts.readArtifact(MULTIBOARD_CONTRACT_NAMES.objectiveVerifier);
+    const objectiveVerifierRuntimeCodehash = ethers.keccak256(objectiveArtifact.deployedBytecode);
+    const { definitions, canonicalDefinitions } = await buildCanonicalMultiBoardDeploymentDefinitions({
+      ethers,
+      config,
+      chainId: 31337n,
+      objectiveVerifierRuntimeCodehash,
+    });
+    assert.equal(definitions.length, 47);
+    assert.equal(canonicalDefinitions.length, 47);
+    assert.deepEqual(
+      canonicalDefinitions.map(({ id, name }) => ({ id, name })),
+      canonicalTopologyDescriptors().map(({ id, name }) => ({ id, name })),
+    );
+    const startNonce = await ethers.provider.getTransactionCount(deployer.address);
+    const plan = await materializeCanonicalMultiBoardDeploymentPlan(ethers, deployer, startNonce, definitions);
+    assert.equal(plan.steps.length, 47);
+    assert.equal(new Set(Object.values(plan.addresses).map((address) => address.toLowerCase())).size, 47);
+
+    const boards = config.problems.map((problem) => ({
+      problem,
+      addresses: {
+        timelock: plan.addresses.timelock,
+        registry: plan.addresses.registry,
+        rolloverVault: plan.addresses.rolloverVault,
+        ...Object.fromEntries(Object.keys(MULTIBOARD_BOARD_CONTRACT_NAMES).map((key) => [
+          key,
+          plan.addresses[`board-${problem.problemId}-${key}`],
+        ])),
+      },
+    }));
     const operations = buildMultiBoardSetupOperations({
       ethers,
       chainId: 31337n,
-      timelockAddress: roots.timelock,
-      registryAddress: roots.registry,
+      timelockAddress: plan.addresses.timelock,
+      registryAddress: plan.addresses.registry,
       config,
-      boards: boards.map(({ problem, addresses }) => ({ problem, addresses })),
+      boards,
       interfaces: await interfaces(),
     });
     assert.equal(operations.length, 110);
+    assert.equal(new Set(operations.map(({ operationId }) => operationId)).size, 110);
+    const prerequisiteIds = new Set(multiBoardPredeploymentGovernanceOperations(operations).map(({ operationId }) => operationId));
+    const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(operations);
+    const prerequisiteIndexes = operations.flatMap((operation, index) => prerequisiteIds.has(operation.operationId) ? [index] : []);
+    const remainingIndexes = operations.flatMap((operation, index) => prerequisiteIds.has(operation.operationId) ? [] : [index]);
+    assert.equal(prerequisiteIndexes.length, 40);
+    assert.equal(remainingIndexes.length, 70);
 
-    const directory = await mkdtemp(join(tmpdir(), "p42-local-ceremony-"));
-    const journalPath = join(directory, "journal.json");
+    const directory = await mkdtemp(join(tmpdir(), "p42-production-shaped-"));
+    const output = join(directory, "manifest.json");
+    const journalPath = join(directory, "governance.json");
     try {
+      const reservationIdentity = createDeploymentReservationIdentity(output, {
+        deploymentCommit: "0".repeat(40),
+        network: "hardhat",
+        chainId: 31337,
+        deployer: deployer.address,
+      }, { trustedRoot: directory, configValue: input });
+      const rpcEvidence = buildTrustedRpcEvidence({
+        primaryUrl: "https://primary.example/rpc",
+        secondaryUrl: "https://secondary.example/rpc",
+        primaryOperatorId: "local-primary",
+        secondaryOperatorId: "local-secondary",
+      });
+      const predeploymentJournalPath = join(directory, "predeployment-governance.json");
+      let predeploymentVerification;
+      let phaseGateCalls = 0;
+      const beforeStep = async ({ index }) => {
+        if (index !== MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT) return;
+        phaseGateCalls += 1;
+        const timelockFactory = await ethers.getContractFactory(MULTIBOARD_CONTRACT_NAMES.timelock);
+        const timelock = timelockFactory.attach(plan.addresses.timelock).connect(deployer);
+        predeploymentVerification ??= {
+          operations: predeploymentOperations,
+          timelock,
+          secondaryTimelock: timelock,
+          journalPath: predeploymentJournalPath,
+          chainId: 31337,
+          timelockAddress: plan.addresses.timelock,
+          expectedTimelockCodeHash: ethers.keccak256(await ethers.provider.getCode(plan.addresses.timelock)),
+          deploymentConfigHash: ethers.id("local-predeployment-config"),
+          releaseBindingDigest: `sha256:${"1".repeat(64)}`,
+          fromBlock: 0,
+        };
+        await verifyMultiBoardPredeploymentGovernancePhase({
+          ...predeploymentVerification,
+          toBlock: await ethers.provider.getBlockNumber(),
+        });
+      };
+      const runnerOptions = {
+        beforeStep,
+        secondaryProvider: ethers.provider,
+        rpcEvidence,
+        chainId: 31337n,
+        networkName: "hardhat",
+      };
+      const durableProgress = new Map();
+      const recordProgress = async (definition, progress) => {
+        const previous = durableProgress.get(definition.id);
+        if (previous?.state === "mined" && progress.state !== "mined") {
+          throw new Error(`deployment progress regressed for ${definition.id}`);
+        }
+        durableProgress.set(definition.id, progress);
+      };
+      await assert.rejects(
+        executeSignedDeploymentPlan(
+          ethers,
+          deployer,
+          output,
+          reservationIdentity,
+          definitions,
+          recordProgress,
+          1,
+          null,
+          plan,
+          runnerOptions,
+        ),
+        /pre-challenge governance phase is incomplete/,
+      );
+      assert.equal(phaseGateCalls, 1);
+      const signedAfterCrash = readSignedDeploymentJournal(signedDeploymentJournalPath(output));
+      assert.equal(signedAfterCrash.steps.filter(({ state }) => state === "mined").length, 36);
+      assert.equal(signedAfterCrash.steps.filter(({ state }) => state === "planned").length, 11);
+      assert.equal([...durableProgress.values()].filter(({ state }) => state === "mined").length, 36);
+      t.diagnostic("durable runner stopped at the 36-deployment governance boundary");
+      const timelock = (await ethers.getContractFactory(MULTIBOARD_CONTRACT_NAMES.timelock))
+        .attach(plan.addresses.timelock)
+        .connect(deployer);
       const expectedJournal = buildGovernanceOperationJournal({
-        chainId: 31337, timelock: roots.timelock,
-        deploymentConfigHash: ethers.keccak256(ethers.toUtf8Bytes("local-ten-board-rehearsal")),
+        chainId: 31337,
+        timelock: plan.addresses.timelock,
+        deploymentConfigHash: ethers.id("local-production-shaped-rehearsal"),
         releaseBindingDigest: `sha256:${"0".repeat(64)}`,
-        expectedTimelockCodeHash: ethers.keccak256(await ethers.provider.getCode(roots.timelock)),
+        expectedTimelockCodeHash: ethers.keccak256(await ethers.provider.getCode(plan.addresses.timelock)),
         operations,
       });
       reserveGovernanceOperationJournal(journalPath, expectedJournal);
-      await assert.rejects(observeGovernanceOperation(timelock, operations[0], {
-        chainId: 1, timelockAddress: roots.timelock, expectedTimelockCodeHash: expectedJournal.expectedTimelockCodeHash,
-        toBlock: await ethers.provider.getBlockNumber(),
-      }), /chain or timelock binding/);
-      await assert.rejects(observeGovernanceOperation(timelock, operations[0], {
-        chainId: 31337, timelockAddress: roots.timelock, expectedTimelockCodeHash: expectedJournal.expectedTimelockCodeHash,
-      }), /exact numeric chain range/);
-      await assert.rejects(observeGovernanceOperation(timelock, operations[0], {
-        chainId: 31337, timelockAddress: roots.timelock, expectedTimelockCodeHash: expectedJournal.expectedTimelockCodeHash,
-        toBlock: await ethers.provider.getBlockNumber(), requireIndependent: true,
-      }), /independent governance operation evidence is required/);
+      assert.equal(
+        readGovernanceOperationJournal(predeploymentJournalPath).operations.filter(({ state }) => state === "planned").length,
+        40,
+      );
+      await executeOperations(timelock, [signer1, signer2, signer3], operations, prerequisiteIndexes, journalPath);
+      t.diagnostic("40 prerequisite governance operations executed");
+      assert.equal(readGovernanceOperationJournal(journalPath).operations.filter(({ state }) => state === "executed").length, 40);
+      const resumed = await executeSignedDeploymentPlan(
+        ethers,
+        deployer,
+        output,
+        reservationIdentity,
+        definitions,
+        recordProgress,
+        1,
+        null,
+        plan,
+        runnerOptions,
+      );
+      const deployed = Object.fromEntries(Object.entries(resumed.deployments).map(([id, deployment]) => [
+        id,
+        deployment.contract.connect(deployer),
+      ]));
+      assert.equal(phaseGateCalls, 2);
+      const signedAfterResume = readSignedDeploymentJournal(signedDeploymentJournalPath(output));
+      assert.equal(signedAfterResume.planDigest, signedAfterCrash.planDigest);
+      assert.equal(signedAfterResume.steps.filter(({ state }) => state === "mined").length, 47);
+      assert.equal([...durableProgress.values()].filter(({ state }) => state === "mined").length, 47);
+      t.diagnostic("durable runner resumed the identical journal through all 47 deployments");
+      assert.equal(
+        readGovernanceOperationJournal(predeploymentJournalPath).operations.filter(({ state }) => state === "executed").length,
+        40,
+      );
+      assert.equal(Object.keys(deployed).length, 47);
+      for (const descriptor of canonicalTopologyDescriptors()) {
+        assert.notEqual(await ethers.provider.getCode(plan.addresses[descriptor.id]), "0x", descriptor.id);
+      }
+
       await assert.rejects(
-        executePending(timelock, [signer1, signer2, signer3], operations, journalPath, { crashAfterExecute: 37 }),
+        executeOperations(timelock, [signer1, signer2, signer3], operations, remainingIndexes, journalPath, { crashAfterExecute: 17 }),
         /post-execution pre-journal crash/,
       );
-      const interrupted = readGovernanceOperationJournal(journalPath);
-      assert.equal(interrupted.operations.filter(({ state }) => state === "executed").length, 36);
-      assert.equal(await timelock.stateOf(operations[36].operationId), 2n);
-      const disagreeingTimelock = {
-        runner: timelock.runner, filters: timelock.filters,
-        getAddress: () => timelock.getAddress(),
-        stateOf: async () => 0n,
-        queryFilter: (...args) => timelock.queryFilter(...args),
-      };
-      await assert.rejects(observeGovernanceOperation(timelock, operations[36], {
-        chainId: 31337, timelockAddress: roots.timelock, expectedTimelockCodeHash: expectedJournal.expectedTimelockCodeHash,
-        toBlock: await ethers.provider.getBlockNumber(), secondaryTimelock: disagreeingTimelock, requireIndependent: true,
-      }), /state.event mismatch|evidence disagreement/);
-      await executePending(timelock, [signer1, signer2, signer3], operations, journalPath);
+      assert.equal(readGovernanceOperationJournal(journalPath).operations.filter(({ state }) => state === "executed").length, 56);
+      await executeOperations(timelock, [signer1, signer2, signer3], operations, remainingIndexes, journalPath);
       const journal = readGovernanceOperationJournal(journalPath);
       assert.equal(journal.operations.filter(({ state }) => state === "executed").length, 110);
-      assert.equal(new Set(journal.operations.map((entry) => entry.operationId)).size, 110);
-      assert.equal(await registry.problemCount(), 10n);
+      t.diagnostic("all 110 governed setup operations executed and reconciled");
 
-      for (const [index, board] of boards.entries()) {
-        const id = BigInt(index + 1);
-        const registered = await registry.problems(id);
-        assert.equal(registered.pool, board.addresses.pool);
-        assert.equal(await registry.explicitlyFrozen(id), true);
-        assert.equal(await board.contracts.pool.problemId(), id);
-        assert.equal(await board.contracts.pool.registry(), roots.registry);
-        assert.equal(await board.contracts.submissions.fundingArmed(), false);
-        assert.equal(await board.contracts.pool.acceptingFunds(), false);
-        assert.equal(await ethers.provider.getBalance(board.addresses.pool), 0n);
-        for (const contract of Object.values(board.contracts)) {
-          assert.equal(await contract.owner(), roots.timelock);
-        }
+      const registry = deployed.registry;
+      const submissionFactory = deployed.submissionManagerFactory;
+      const challengeFactory = deployed.challengeManagerFactory;
+      const quorum = deployed.resolverQuorum;
+      assert.equal(await registry.problemCount(), 10n);
+      assert.equal(await quorum.managerCount(), 10n);
+      assert.equal(await quorum.managersFrozen(), true);
+      assert.equal(await quorum.objectiveVerifier(), plan.addresses.objectiveVerifier);
+      assert.equal(await quorum.objectiveVerifierCodehash(), objectiveVerifierRuntimeCodehash);
+      for (const [index, problem] of config.problems.entries()) {
+        const problemId = String(index + 1);
+        const contracts = boardContracts(deployed, problemId);
+        assert.equal(await registry.explicitlyFrozen(BigInt(problemId)), true);
+        assert.equal(await submissionFactory.isCanonicalSubmissionManager(await contracts.submissions.getAddress()), true);
+        const submissionStep = plan.steps.find(({ addressKey }) => addressKey === `board-${problemId}-submissions`);
+        const challengeStep = plan.steps.find(({ addressKey }) => addressKey === `board-${problemId}-challenges`);
+        assert.ok(submissionStep);
+        assert.ok(challengeStep);
+        assert.equal(
+          await submissionFactory.configurationHashOf(await contracts.submissions.getAddress()),
+          submissionStep.configurationHash,
+        );
+        assert.equal(await challengeFactory.isCanonicalManager(await contracts.challenges.getAddress()), true);
+        assert.equal(
+          await challengeFactory.pairConfigurationHashOf(await contracts.challenges.getAddress()),
+          challengeStep.configurationHash,
+        );
+        assert.equal(await quorum.managerAt(index), await contracts.challenges.getAddress());
+        assert.equal(await quorum.isManager(await contracts.challenges.getAddress()), true);
+        assert.equal(await contracts.pool.owner(), plan.addresses.timelock);
+        assert.equal(await contracts.ledger.owner(), plan.addresses.timelock);
+        assert.equal(await contracts.submissions.owner(), plan.addresses.timelock);
+        assert.equal(await contracts.challenges.owner(), plan.addresses.timelock);
+        assert.equal(await contracts.submissions.fundingArmed(), false);
+        assert.equal(await contracts.pool.acceptingFunds(), false);
+        assert.equal(await ethers.provider.getBalance(await contracts.pool.getAddress()), 0n);
+        assert.equal(problem.problemId, problemId);
       }
-      assert.equal(await ethers.provider.getBalance(await vault.getAddress()), 0n);
-      assert.ok((await ethers.provider.getBalance(deployer.address)) > 0n);
+
+      const active = boardContracts(deployed, "1");
+      await advanceTo(await active.submissions.armNotBefore());
+      const fundingDigest = ethers.id("local-production-shaped-funding-authorization");
+      await active.submissions.connect(treasury).authorizeFunding(fundingDigest, 2n ** 64n - 1n);
+      await executeGovernedCall(
+        timelock,
+        [signer1, signer2],
+        await active.submissions.getAddress(),
+        active.submissions.interface.encodeFunctionData("armFunding", [fundingDigest]),
+        "arm-board-1",
+      );
+      await executeGovernedCall(
+        timelock,
+        [signer1, signer2],
+        await active.pool.getAddress(),
+        active.pool.interface.encodeFunctionData("setAcceptingFunds", [true]),
+        "open-board-1",
+      );
+      const funded = 10_000n;
+      await active.pool.connect(sponsor).fund({ value: funded });
+
+      const solutionBytes = ethers.toUtf8Bytes("production-shaped-local-solution");
+      const daHash = ethers.sha256(solutionBytes);
+      const solutionCid = "ipfs://production-shaped-local-solution";
+      const salt = "production-shaped-local-salt";
+      const commitment = await active.submissions["computeCommitment(string,address,bytes32,string)"](
+        solutionCid,
+        solver.address,
+        daHash,
+        salt,
+      );
+      await active.submissions.connect(solver).commit(commitment, daHash, {
+        value: await active.submissions.requiredPostingBondNow(),
+      });
+      const submissionId = await active.submissions.submissionCount();
+      const improvement = config.problems[0].minImprovementAtoms;
+      const score = config.problems[0].seedScoreAtoms - improvement;
+      await active.submissions.connect(solver).reveal(
+        submissionId,
+        solutionCid,
+        score,
+        improvement,
+        salt,
+        solutionBytes,
+      );
+      const challengeInstance = await active.submissions.revealInstanceHashOf(submissionId);
+      const challengeBond = await active.challenges.requiredChallengeBond(
+        await active.submissions.disputedEntitlementWei(submissionId),
+      );
+      await active.challenges.connect(challenger).challenge(
+        submissionId,
+        challengeInstance,
+        ethers.id("production-shaped-challenge"),
+        { value: challengeBond },
+      );
+
+      const resolverBond = await active.challenges.resolverDecisionBondWei();
+      await quorum.connect(signer1).fundStake({ value: resolverBond * 2n });
+      const transcriptURI = "ipfs://production-shaped-transcript";
+      const decision = {
+        chainId: 31337n,
+        adapter: await quorum.getAddress(),
+        manager: await active.challenges.getAddress(),
+        submissionId,
+        challengeInstanceHash: await active.challenges.challengeInstanceHashOf(submissionId),
+        challengerWins: false,
+        transcriptHash: ethers.id("production-shaped-transcript-bytes"),
+        transcriptURIHash: ethers.keccak256(ethers.toUtf8Bytes(transcriptURI)),
+        verdictHash: ethers.id("production-shaped-verdict"),
+        bondBeneficiary: await quorum.getAddress(),
+        nonce: 1n,
+        expiry: BigInt((await ethers.provider.getBlock("latest")).timestamp) + 3_600n,
+        signerEpoch: await quorum.signerEpoch(),
+      };
+      const domain = {
+        name: "P42ResolverQuorum",
+        version: "1",
+        chainId: decision.chainId,
+        verifyingContract: await quorum.getAddress(),
+      };
+      const signatures = (await Promise.all([signer1, signer2].map(async (signer) => ({
+        signer: signer.address.toLowerCase(),
+        signature: await signer.signTypedData(domain, DECISION_TYPES, decision),
+      })))).sort((left, right) => left.signer.localeCompare(right.signer)).map(({ signature }) => signature);
+      await quorum.resolve(decision, transcriptURI, signatures);
+      const resolverBondState = await active.challenges.resolverBonds(submissionId);
+      await advanceTo(resolverBondState.releaseAt);
+      await active.challenges.finalizeResolution(submissionId, decision.challengeInstanceHash);
+      await advanceTo((await active.submissions.submissions(submissionId)).challengeEndsAt);
+      await active.submissions.connect(solver).finalize(submissionId, ethers.id("production-shaped-permanence"));
+      assert.equal(await active.ledger.creditAtomsOf(solver.address), improvement);
+
+      await advanceTo(await active.ledger.closeByTimestamp());
+      await active.ledger.close();
+      assert.equal(await active.ledger.finalEntitlement(solver.address), funded);
+      await active.pool.connect(solver).claim();
+      assert.equal(await active.pool.totalFunded(), funded);
+      assert.equal(await active.pool.totalGrossClaimed(), funded);
+      assert.equal(await active.pool.totalClaimed(), funded);
+      assert.equal(await active.pool.accountedBalance(), 0n);
+      assert.equal(await ethers.provider.getBalance(await active.pool.getAddress()), 0n);
+
+      for (let problemId = 2; problemId <= 10; problemId += 1) {
+        const untouched = boardContracts(deployed, String(problemId));
+        assert.equal(await untouched.submissions.submissionCount(), 0n);
+        assert.equal(await untouched.submissions.fundingArmed(), false);
+        assert.equal(await untouched.pool.acceptingFunds(), false);
+        assert.equal(await untouched.ledger.totalCreditAtoms(), 0n);
+        assert.equal(await ethers.provider.getBalance(await untouched.pool.getAddress()), 0n);
+      }
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

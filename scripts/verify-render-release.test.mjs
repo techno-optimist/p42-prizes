@@ -177,6 +177,8 @@ test("probeUrls retains the standalone and proxied prize paths", () => {
   assert.deepEqual(probeUrls("https://render.example/", "https://public.example/"), [
     "https://render.example/prizes",
     "https://public.example/prizes",
+    "https://render.example/prizes/build-week",
+    "https://public.example/prizes/build-week",
     "https://render.example/prizes/api/problems",
     "https://public.example/prizes/api/problems",
     "https://render.example/prizes/api/capabilities",
@@ -192,6 +194,17 @@ test("page probes require stable identity markers", () => {
   assert.throws(
     () => validateProbeBody("home", "<html><h1>Unrelated healthy page</h1></html>", contentTypes.html),
     /missing stable identity marker/,
+  );
+
+  const buildWeek = "<html><h1>Don’t trust the score.</h1><h2>Try to fool the verifier.</h2></html>";
+  assert.equal(validateProbeBody("build-week", buildWeek, contentTypes.html), buildWeek);
+  assert.throws(
+    () => validateProbeBody(
+      "build-week",
+      "<html><h1>Don’t trust the score.</h1><h2>Verifier unavailable.</h2></html>",
+      contentTypes.html,
+    ),
+    /missing stable identity marker "Try to fool the verifier\."/,
   );
 
   const standings = "<html><b>P42 Prizes</b><h1>The pilot cohort.</h1><p>Modeled</p></html>";
@@ -288,6 +301,8 @@ test("paired direct and proxy probes reject body and semantic divergence", () =>
   const matching = [
     result("home", "render", "same home"),
     result("home", "public", "same home"),
+    result("build-week", "render", "same Build Week lab"),
+    result("build-week", "public", "same Build Week lab"),
     result("problems", "render", "render json", sameProblems),
     result("problems", "public", "public json", structuredClone(sameProblems)),
     result("capabilities", "render", "render json", sameCapabilities),
@@ -309,6 +324,20 @@ test("paired direct and proxy probes reject body and semantic divergence", () =>
         : probe
     ))),
     /diverges between the direct Render service and the public proxy/,
+  );
+  assert.throws(
+    () => assertProbeEquivalence(matching.filter((probe) => !(
+      probe.route.id === "build-week" && probe.origin === "public"
+    ))),
+    /\/prizes\/build-week is missing a configured Render or public comparison response/,
+  );
+  assert.throws(
+    () => assertProbeEquivalence(matching.map((probe) => (
+      probe.route.id === "build-week" && probe.origin === "public"
+        ? { ...probe, body: "stale Build Week page" }
+        : probe
+    ))),
+    /\/prizes\/build-week diverges between the direct Render service and the public proxy/,
   );
 });
 

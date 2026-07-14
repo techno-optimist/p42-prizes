@@ -65,6 +65,10 @@ from p42_prizes.runner_queue import (
 )
 from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
 from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json, read_strict_json_stream
+from p42_prizes.source_release import (
+    SourceReleaseEvidenceError,
+    validate_source_release_evidence,
+)
 from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes
 
 
@@ -952,6 +956,23 @@ def _cmd_production_launch_authorization_validate(args: argparse.Namespace) -> i
     return 0
 
 
+def _cmd_source_release_evidence_validate(args: argparse.Namespace) -> int:
+    try:
+        report = load_evidence_file(args.report)
+        _enforce_gate_schema(report, "source-release-evidence.schema.json")
+        normalized = validate_source_release_evidence(
+            report,
+            repo_root=args.repo_root,
+            report_path=args.report,
+            online=args.online,
+        )
+    except (AdmissionError, SourceReleaseEvidenceError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(normalized, args.output)
+    return 0
+
+
 def _cmd_open_witness_promote(args: argparse.Namespace) -> int:
     try:
         report = load_evidence_file(args.report)
@@ -1313,6 +1334,16 @@ def build_parser() -> argparse.ArgumentParser:
     launch_authorization.set_defaults(
         func=_cmd_production_launch_authorization_validate
     )
+
+    source_release = subparsers.add_parser(
+        "source-release-evidence-validate",
+        help="validate a sealed source-release receipt offline or against live GitHub/Render authorities",
+    )
+    source_release.add_argument("--report", required=True)
+    source_release.add_argument("--repo-root", default=".")
+    source_release.add_argument("--online", action="store_true")
+    source_release.add_argument("--output")
+    source_release.set_defaults(func=_cmd_source_release_evidence_validate)
 
     open_witness_promote = subparsers.add_parser(
         "open-witness-promote",

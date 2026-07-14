@@ -18,10 +18,8 @@ import {
   assertVerifierSourceAnchor,
   assertTimelockOwnedConstructorArgs,
   bindDeploymentConfigHash,
-  boardCeremonyConfig,
   buildMultiBoardSetupOperations,
   buildSetupOperations,
-  challengeManagerEffectiveSalt,
   completeManifestOutputReservation,
   completeSetupManifest,
   createDeploymentReservationIdentity,
@@ -82,6 +80,16 @@ import {
   recordGovernanceObservation,
   reserveGovernanceOperationJournal,
 } from "./governance-operation-journal.js";
+import {
+  buildCanonicalMultiBoardDeploymentDefinitions,
+  materializeCanonicalMultiBoardDeploymentPlan,
+  multiBoardPredeploymentGovernanceOperations,
+  objectivePackageHash as canonicalObjectivePackageHash,
+  predeploymentGovernanceJournalPath,
+  runPhasedDeploymentSteps,
+  verifyMultiBoardPredeploymentGovernancePhase,
+  MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT,
+} from "./multiboard-deployment-plan.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const PINNED_SUBMISSION_FACTORY_RUNTIME_HASH = "0xab7765c44ddced5da5d4d85645c6e1a4215ad6ebddea55f34e75dd194da82eac";
@@ -106,14 +114,7 @@ const BOARD_CONTRACT_NAMES = Object.freeze({
 });
 
 function objectivePackageHash(ethers, registryAddress, problem) {
-  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-    ["string", "uint256", "address", "uint256", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32", "bytes32"],
-    [
-      "P42_OBJECTIVE_PACKAGE_V2", BASE_SEPOLIA_CHAIN_ID, registryAddress, BigInt(problem.problemId),
-      problem.specHash, problem.verifierSourceHash, problem.verifierImageHash,
-      problem.admissionMatrixHash, problem.objectiveGuestElfSha256, problem.objectiveProgramVKey,
-    ],
-  ));
+  return canonicalObjectivePackageHash(ethers, BASE_SEPOLIA_CHAIN_ID, registryAddress, problem);
 }
 
 function requiredEnv(name) {
@@ -275,32 +276,88 @@ async function materializeExecutablePlan(ethers, deployer, startNonce, definitio
   return { startNonce, definitions, addresses, steps: await materializeDeploymentSteps(ethers, definitions, addresses) };
 }
 
-async function executeSignedDeploymentPlan(ethers, deployer, output, reservationIdentity, definitions, recordProgress, requiredConfirmations, releaseCapsule = null, preflightPlan = null) {
+function executablePlanIdentity(plan) {
+  return JSON.stringify({
+    startNonce: plan.startNonce,
+    addresses: Object.fromEntries(Object.entries(plan.addresses).sort(([left], [right]) => left.localeCompare(right))),
+    steps: plan.steps.map((step) => ({
+      id: step.id,
+      kind: step.kind,
+      addressKey: step.addressKey,
+      expectedInitCode: step.expectedInitCode,
+      expectedCalldata: step.expectedCalldata,
+      factoryAddress: step.factoryAddress,
+      salt: step.salt,
+      configurationHash: step.configurationHash,
+      configurationReadCalldata: step.configurationReadCalldata,
+      deploymentEventTopic: step.deploymentEventTopic,
+      unsigned: step.unsigned,
+    })),
+  }, (_key, value) => typeof value === "bigint" ? value.toString() : value);
+}
+
+export async function executeSignedDeploymentPlan(
+  ethers,
+  deployer,
+  output,
+  reservationIdentity,
+  definitions,
+  recordProgress,
+  requiredConfirmations,
+  releaseCapsule = null,
+  preflightPlan = null,
+  {
+    beforeStep,
+    secondaryProvider: suppliedSecondaryProvider,
+    rpcEvidence: suppliedRpcEvidence,
+    chainId: executionChainId = BASE_SEPOLIA_CHAIN_ID,
+    networkName = "baseSepolia",
+  } = {},
+) {
   const liveNetwork = await ethers.provider.getNetwork();
-  if (liveNetwork.chainId !== BASE_SEPOLIA_CHAIN_ID) {
-    throw new Error(`provider chain drift: expected ${BASE_SEPOLIA_CHAIN_ID}, got ${liveNetwork.chainId}`);
+  if (liveNetwork.chainId !== executionChainId) {
+    throw new Error(`provider chain drift: expected ${executionChainId}, got ${liveNetwork.chainId}`);
   }
-  const secondaryRpcUrl = requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL");
-  const primaryRpcUrl = requiredEnv("BASE_SEPOLIA_RPC_URL");
-  const rpcEvidence = buildTrustedRpcEvidence({
-    primaryUrl: primaryRpcUrl, secondaryUrl: secondaryRpcUrl,
+  const hasSuppliedSecondaryProvider = suppliedSecondaryProvider !== undefined;
+  const hasSuppliedRpcEvidence = suppliedRpcEvidence !== undefined;
+  if (hasSuppliedSecondaryProvider !== hasSuppliedRpcEvidence) {
+    throw new Error("deployment RPC test overrides must provide both a secondary provider and trusted evidence");
+  }
+  if (executionChainId === BASE_SEPOLIA_CHAIN_ID && hasSuppliedSecondaryProvider) {
+    throw new Error("production Base Sepolia execution cannot override trusted RPC providers or evidence");
+  }
+  if (executionChainId !== BASE_SEPOLIA_CHAIN_ID && !hasSuppliedSecondaryProvider) {
+    throw new Error("non-production deployment execution requires explicit test RPC providers and evidence");
+  }
+  if (
+    reservationIdentity.chainId !== Number(executionChainId)
+    || reservationIdentity.network !== networkName
+    || reservationIdentity.deployer.toLowerCase() !== deployer.address.toLowerCase()
+  ) throw new Error("deployment execution identity differs from the reserved manifest identity");
+  const secondaryRpcUrl = hasSuppliedSecondaryProvider ? null : requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL");
+  const rpcEvidence = suppliedRpcEvidence ?? buildTrustedRpcEvidence({
+    primaryUrl: requiredEnv("BASE_SEPOLIA_RPC_URL"), secondaryUrl: secondaryRpcUrl,
     primaryOperatorId: requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID"),
     secondaryOperatorId: requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"),
   });
-  const secondaryProvider = new ethers.JsonRpcProvider(secondaryRpcUrl, Number(BASE_SEPOLIA_CHAIN_ID), { staticNetwork: true });
+  const secondaryProvider = suppliedSecondaryProvider
+    ?? new ethers.JsonRpcProvider(secondaryRpcUrl, Number(executionChainId), { staticNetwork: true });
   const secondaryNetwork = await secondaryProvider.getNetwork();
-  if (secondaryNetwork.chainId !== BASE_SEPOLIA_CHAIN_ID) throw new Error("secondary deployment RPC chain drift");
+  if (secondaryNetwork.chainId !== executionChainId) throw new Error("secondary deployment RPC chain drift");
   const journalPath = signedDeploymentJournalPath(output);
   const priorJournal = existsSync(journalPath) ? readSignedDeploymentJournal(journalPath) : null;
   if (priorJournal && (
     priorJournal.identityDigest !== reservationIdentity.identityDigest ||
-    priorJournal.chainId !== Number(BASE_SEPOLIA_CHAIN_ID) ||
+    priorJournal.chainId !== Number(executionChainId) ||
     priorJournal.deployer.toLowerCase() !== deployer.address.toLowerCase()
   )) throw new Error("existing signed deployment journal has chain/account/config drift");
   const livePendingNonce = await ethers.provider.getTransactionCount(deployer.address, "pending");
   const startNonce = priorJournal?.startNonce ?? preflightPlan?.startNonce ?? livePendingNonce;
   if (preflightPlan && (preflightPlan.definitions !== definitions || preflightPlan.startNonce !== startNonce || (!priorJournal && livePendingNonce !== startNonce))) throw new Error("executable deployment preflight identity drift before reservation/signing");
-  const materialized = preflightPlan ?? await materializeExecutablePlan(ethers, deployer, startNonce, definitions);
+  const materialized = await materializeExecutablePlan(ethers, deployer, startNonce, definitions);
+  if (preflightPlan && executablePlanIdentity(preflightPlan) !== executablePlanIdentity(materialized)) {
+    throw new Error("executable deployment preflight content drift before reservation/signing");
+  }
   const { addresses, steps } = materialized;
   const capsuleContracts = releaseCapsule ? new Map(releaseCapsule.contracts.map((contract) => [contract.name, contract])) : null;
   if (capsuleContracts) for (const step of steps) {
@@ -309,8 +366,8 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
   }
   const expected = buildDeploymentNoncePlan(ethers, {
     identityDigest: reservationIdentity.identityDigest,
-    network: "baseSepolia",
-    chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+    network: networkName,
+    chainId: Number(executionChainId),
     deployer: deployer.address,
     rpcEvidence,
     startNonce,
@@ -326,16 +383,21 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
   reserveDeploymentNoncePlan(journalPath, expected);
 
   const deployments = {};
-  for (const [index, definition] of steps.entries()) {
+  await runPhasedDeploymentSteps({
+    steps,
+    beforeStep: beforeStep ? ({ index, definition }) => beforeStep({
+      index, definition, deployments, addresses, steps, secondaryProvider, rpcEvidence,
+    }) : undefined,
+    executeStep: async ({ index, definition }) => {
     let journal = readSignedDeploymentJournal(journalPath);
     let durable = journal.steps[index];
     if (durable.state === "planned") {
-      const populated = await deployer.populateTransaction({ ...definition.unsigned, chainId: BASE_SEPOLIA_CHAIN_ID, nonce: durable.nonce });
-      if (Number(populated.nonce) !== durable.nonce || BigInt(populated.chainId) !== BASE_SEPOLIA_CHAIN_ID) throw new Error("signer populated a transaction outside the reserved identity");
-      if (populated.data !== durable.expectedCalldata || (populated.to?.toLowerCase() ?? null) !== (durable.expectedTo?.toLowerCase() ?? null) || BigInt(populated.value ?? 0).toString() !== durable.expectedValue) throw new Error("populated deployment transaction differs from immutable plan");
+      const populated = await deployer.populateTransaction({ ...definition.unsigned, chainId: executionChainId, nonce: durable.nonce });
+      if (Number(populated.nonce) !== durable.nonce || BigInt(populated.chainId) !== executionChainId) throw new Error("signer populated a transaction outside the reserved identity");
+      if (ethers.keccak256(populated.data) !== durable.expectedCalldataHash || (populated.to?.toLowerCase() ?? null) !== (durable.expectedTo?.toLowerCase() ?? null) || BigInt(populated.value ?? 0).toString() !== durable.expectedValue) throw new Error("populated deployment transaction differs from immutable plan");
       const raw = await deployer.signTransaction(populated);
       const decoded = ethers.Transaction.from(raw);
-      if (decoded.from?.toLowerCase() !== deployer.address.toLowerCase() || decoded.nonce !== durable.nonce || decoded.chainId !== BASE_SEPOLIA_CHAIN_ID || (decoded.to?.toLowerCase() ?? null) !== (durable.expectedTo?.toLowerCase() ?? null)) {
+      if (decoded.from?.toLowerCase() !== deployer.address.toLowerCase() || decoded.nonce !== durable.nonce || decoded.chainId !== executionChainId || (decoded.to?.toLowerCase() ?? null) !== (durable.expectedTo?.toLowerCase() ?? null)) {
         throw new Error("signed deployment transaction identity drift");
       }
       journal = persistSignedDeployment(journalPath, expected.planDigest, index, ethers, raw);
@@ -343,8 +405,8 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
     }
     let reconciliation = await reconcileSignedDeployment({ ethers, provider: ethers.provider, secondaryProvider, journalPath, planDigest: expected.planDigest, index, requiredConfirmations });
     durable = reconciliation.step;
-    await recordProgress(definition, { name: definition.name, address: durable.address, txHash: durable.expectedHash, state: "broadcast", blockNumber: null });
     if (reconciliation.state !== "mined") {
+      await recordProgress(definition, { name: definition.name, address: durable.address, txHash: durable.expectedHash, state: "broadcast", blockNumber: null });
       const receipt = await ethers.provider.waitForTransaction(durable.expectedHash, requiredConfirmations);
       if (receipt === null) throw new Error(`deployment receipt was not available for ${durable.expectedHash}`);
       reconciliation = await reconcileSignedDeployment({ ethers, provider: ethers.provider, secondaryProvider, journalPath, planDigest: expected.planDigest, index, allowBroadcast: false, requiredConfirmations });
@@ -390,8 +452,8 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
         deploymentBlockTimestamp: receiptBlock.timestamp,
         blockTimestampEvidence: {
           timestamp: receiptBlock.timestamp,
-          primaryOperatorId: rpcEvidence.primary.operatorId,
-          secondaryOperatorId: rpcEvidence.secondary.operatorId,
+          primaryOperatorId: rpcEvidence.primaryOperatorId,
+          secondaryOperatorId: rpcEvidence.secondaryOperatorId,
           primaryBlockHash: receiptBlock.hash,
           secondaryBlockHash: secondaryReceiptBlock.hash,
         },
@@ -399,7 +461,8 @@ async function executeSignedDeploymentPlan(ethers, deployer, output, reservation
     };
     await recordProgress(definition, { ...manifest, state: "mined" });
     deployments[definition.id] = { contract: definition.factory.attach(durable.address), factory: definition.factory, manifest };
-  }
+    },
+  });
   return { deployments, addresses };
 }
 
@@ -433,26 +496,6 @@ async function preflightSingleDeploymentPlan(ethers, deployer, config) {
   });
   const plan = validatePreBroadcastManifestPlan(MANIFEST_SCHEMA, 1);
   if (operations.length !== plan.expectedOperations) throw new Error("pre-broadcast v1 operation plan is incomplete");
-}
-
-function factoryConfigurationHash(ethers, factoryInterface, method, parameters, prefixHash = null) {
-  const inputs = factoryInterface.getFunction(method).inputs;
-  const tupleType = inputs[inputs.length - 1].format("sighash");
-  const types = prefixHash === null ? [tupleType] : ["bytes32", tupleType];
-  const values = prefixHash === null ? [parameters] : [prefixHash, parameters];
-  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(types, values));
-}
-
-function assertMultiBoardExecutionDependencyOrder(definitions, config) {
-  const expected = [
-    "timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier",
-    ...config.problems.flatMap((problem) => [`board-${problem.problemId}-pool`, `board-${problem.problemId}-ledger`]),
-    ...config.problems.map((problem) => `board-${problem.problemId}-submissions`),
-    ...config.problems.map((problem) => `board-${problem.problemId}-challenges`),
-    "resolverQuorum",
-  ];
-  const actual = definitions.map(({ id }) => id);
-  if (JSON.stringify(actual) !== JSON.stringify(expected)) throw new Error("multi-board executable dependency order drift");
 }
 
 async function assertPinnedSubmissionFactoryRuntime(ethers) {
@@ -667,6 +710,9 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
 
   const input = await readMultiBoardCeremonyInput();
   let config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
+  if (config.governance.signers.some((signer) => lower(signer) === lower(deployer.address))) {
+    throw new Error("phased multi-board deployment requires the deployer account to be distinct from every governance signer");
+  }
   validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
   const latest = await ethers.provider.getBlock("latest");
   if (latest === null) throw new Error("Unable to read the latest Base Sepolia block");
@@ -682,107 +728,30 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const output = manifestPath();
 
-  const directRoots = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier"].map((key) => ({
-    id: key, addressKey: key, name: CONTRACT_NAMES[key],
-    args: (plannedAddresses) => (key.endsWith("Factory") || key === "objectiveVerifier")
-      ? []
-      : constructorArgsFor(CONTRACT_NAMES[key], config, plannedAddresses),
-  }));
-  const poolAndLedgerDefinitions = [];
-  const submissionDefinitions = [];
-  const challengeDefinitions = [];
-  for (const problem of config.problems) {
-    const boardConfig = boardCeremonyConfig(config, problem);
-    const boardAddressView = (plannedAddresses) => ({
-      timelock: plannedAddresses.timelock, registry: plannedAddresses.registry,
-      rolloverVault: plannedAddresses.rolloverVault,
-      pool: plannedAddresses[`board-${problem.problemId}-pool`],
-      ledger: plannedAddresses[`board-${problem.problemId}-ledger`],
-      submissions: plannedAddresses[`board-${problem.problemId}-submissions`],
-      challenges: plannedAddresses[`board-${problem.problemId}-challenges`],
-    });
-    for (const [key, name] of Object.entries({ pool: BOARD_CONTRACT_NAMES.pool, ledger: BOARD_CONTRACT_NAMES.ledger })) poolAndLedgerDefinitions.push({
-      id: `board-${problem.problemId}-${key}`, addressKey: `board-${problem.problemId}-${key}`, name,
-      args: (plannedAddresses) => constructorArgsFor(name, boardConfig, boardAddressView(plannedAddresses)),
-    });
-    const submissionId = `board-${problem.problemId}-submissions`;
-    const submissionSalt = ethers.keccak256(ethers.toUtf8Bytes(`p42-prizes/base-sepolia/${submissionId}`));
-    submissionDefinitions.push({
-      id: submissionId, addressKey: submissionId, name: BOARD_CONTRACT_NAMES.submissions, kind: "factory-call-create2",
-      factoryName: CONTRACT_NAMES.submissionManagerFactory, factoryAddressKey: "submissionManagerFactory",
-      factoryMethod: "deploySubmissionManager", factoryEvent: "CanonicalSubmissionManagerDeployed", salt: submissionSalt,
-      configurationGetter: "configurationHashOf",
-      args: (plannedAddresses) => constructorArgsFor(BOARD_CONTRACT_NAMES.submissions, boardConfig, boardAddressView(plannedAddresses)),
-      parameters: (args) => args,
-      factoryCallArgs: ({ salt, parameters }) => [salt, parameters],
-      configurationHash: ({ ethers: runtimeEthers, parameters, factoryInterface }) => factoryConfigurationHash(runtimeEthers, factoryInterface, "deploySubmissionManager", parameters),
-    });
-    const challengeId = `board-${problem.problemId}-challenges`;
-    const challengeSalt = ethers.keccak256(ethers.toUtf8Bytes(`p42-prizes/base-sepolia/${challengeId}`));
-    challengeDefinitions.push({
-      id: challengeId, addressKey: challengeId, name: BOARD_CONTRACT_NAMES.challenges, kind: "factory-call-create2",
-      factoryName: CONTRACT_NAMES.challengeManagerFactory, factoryAddressKey: "challengeManagerFactory",
-      factoryMethod: "deployManager", factoryEvent: "CanonicalManagerDeployed", salt: challengeSalt,
-      configurationGetter: "pairConfigurationHashOf",
-      args: (plannedAddresses) => {
-        const args = constructorArgsFor(BOARD_CONTRACT_NAMES.challenges, boardConfig, boardAddressView(plannedAddresses));
-        args[1] = plannedAddresses.resolverQuorum;
-        return args;
-      },
-      parameters: (args, plannedAddresses) => ({
-        owner: args[0], resolver: args[1], treasury: args[2], submissionManager: args[3],
-        challengeWindowSeconds: args[4], betaBps: args[5], minCounterBondWei: args[6],
-        rerunCostWei: args[7], rerunCostMultiplierBps: args[8], resolverDecisionBondWei: args[9],
-        resolverFraudWindowSeconds: args[10], problemRegistry: plannedAddresses.registry,
-        problemId: BigInt(problem.problemId),
-        objectivePackageHash: objectivePackageHash(ethers, plannedAddresses.registry, problem),
-        objectiveGuestElfSha256: problem.objectiveGuestElfSha256,
-        objectiveProgramVKey: problem.objectiveProgramVKey,
-      }),
-      effectiveSalt: ({ ethers: runtimeEthers, requestedSalt, parameters, addresses: plannedAddresses }) =>
-        challengeManagerEffectiveSalt(runtimeEthers, requestedSalt, plannedAddresses.submissionManagerFactory, parameters),
-      factoryCallArgs: ({ salt, parameters, addresses: plannedAddresses }) => [salt, plannedAddresses.submissionManagerFactory, parameters],
-      configurationHash: ({ ethers: runtimeEthers, parameters, addresses: plannedAddresses, factoryInterface }) => {
-        const submission = submissionDefinitions.find((entry) => entry.id === submissionId);
-        const submissionParameters = submission.args(plannedAddresses);
-        const submissionHash = factoryConfigurationHash(runtimeEthers, submissionFactoryInterface, "deploySubmissionManager", submissionParameters);
-        return factoryConfigurationHash(runtimeEthers, factoryInterface, "deployManager", parameters, submissionHash);
-      },
-    });
-  }
-  const submissionFactoryInterface = (await ethers.getContractFactory(CONTRACT_NAMES.submissionManagerFactory)).interface;
   const objectiveVerifierArtifact = await artifacts.readArtifact(CONTRACT_NAMES.objectiveVerifier);
   const objectiveVerifierRuntimeCodehash = ethers.keccak256(objectiveVerifierArtifact.deployedBytecode);
-  const resolverQuorum = {
-    id: "resolverQuorum", addressKey: "resolverQuorum", name: CONTRACT_NAMES.resolverQuorum,
-    args: (plannedAddresses) => [
-      plannedAddresses.timelock, config.roles.treasury, config.parameters.resolverDecisionBondWei,
-      plannedAddresses.challengeManagerFactory, config.governance.signers, config.governance.threshold,
-      config.problems.map((problem) => plannedAddresses[`board-${problem.problemId}-challenges`]),
-      plannedAddresses.objectiveVerifier,
-      objectiveVerifierRuntimeCodehash,
-    ],
-  };
-  const definitions = [...directRoots, ...poolAndLedgerDefinitions, ...submissionDefinitions, ...challengeDefinitions, resolverQuorum];
-  const canonicalManifestDefinitions = [
-    ...directRoots, resolverQuorum,
-    ...config.problems.flatMap((problem) => [
-      ...poolAndLedgerDefinitions.filter((entry) => entry.id.startsWith(`board-${problem.problemId}-`)),
-      submissionDefinitions.find((entry) => entry.id === `board-${problem.problemId}-submissions`),
-      challengeDefinitions.find((entry) => entry.id === `board-${problem.problemId}-challenges`),
-    ]),
-  ];
+  const { definitions, canonicalDefinitions } = await buildCanonicalMultiBoardDeploymentDefinitions({
+    ethers,
+    config,
+    chainId: BASE_SEPOLIA_CHAIN_ID,
+    objectiveVerifierRuntimeCodehash,
+  });
+  const canonicalManifestDefinitions = canonicalDefinitions;
   assertCanonicalDeploymentPlan(canonicalManifestDefinitions, config.problems.length);
-  assertMultiBoardExecutionDependencyOrder(definitions, config);
-  const canonicalMembers = [...canonicalManifestDefinitions].map(({ id, name }) => `${id}:${name}`).sort();
-  const executableMembers = [...definitions].map(({ id, name }) => `${id}:${name}`).sort();
+  const canonicalMembers = canonicalDefinitions.map(({ id, name }) => `${id}:${name}`).sort();
+  const executableMembers = definitions.map(({ id, name }) => `${id}:${name}`).sort();
   if (JSON.stringify(canonicalMembers) !== JSON.stringify(executableMembers)) throw new Error("canonical manifest and executable deployment membership differ");
   await assertPinnedSubmissionFactoryRuntime(ethers);
   const existingJournalPath = signedDeploymentJournalPath(output);
   const existingJournal = existsSync(existingJournalPath) ? readSignedDeploymentJournal(existingJournalPath) : null;
   if (existingJournal && (existingJournal.chainId !== Number(BASE_SEPOLIA_CHAIN_ID) || existingJournal.deployer.toLowerCase() !== deployer.address.toLowerCase())) throw new Error("existing signed deployment journal has chain/account drift before preflight");
   const preflightStartNonce = existingJournal?.startNonce ?? await ethers.provider.getTransactionCount(deployer.address, "pending");
-  const executablePreflight = await materializeExecutablePlan(ethers, deployer, preflightStartNonce, definitions);
+  const executablePreflight = await materializeCanonicalMultiBoardDeploymentPlan(
+    ethers,
+    deployer,
+    preflightStartNonce,
+    definitions,
+  );
   if (executablePreflight.steps.length !== 47 || executablePreflight.steps.some((step) => !step.expectedInitCode || !step.unsigned?.data)) throw new Error("multi-board executable preflight did not materialize all 47 initcode/calldata payloads");
   const preflightBoards = config.problems.map((problem) => ({
     problem,
@@ -796,12 +765,22 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const preflightOperations = buildMultiBoardSetupOperations({ ethers, chainId: BASE_SEPOLIA_CHAIN_ID, timelockAddress: executablePreflight.addresses.timelock, registryAddress: executablePreflight.addresses.registry, config, boards: preflightBoards, interfaces: preflightInterfaces });
   const operationPlan = validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
   if (preflightOperations.length !== operationPlan.expectedOperations) throw new Error("pre-broadcast v2 operation plan is incomplete");
+  const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(preflightOperations);
 
   const reservationIdentity = createDeploymentReservationIdentity(output, {
     deploymentCommit, network: "baseSepolia", chainId: Number(BASE_SEPOLIA_CHAIN_ID), deployer: deployer.address,
   }, { trustedRoot: dirname(output), configValue: { config: input.value, releaseMode, slateDigest: release?.slate.slateDigest ?? null, capsuleDigest: release?.capsule.capsuleDigest ?? null } });
   const reservation = await ensureManifestReservation(reservationIdentity);
   console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
+  const predeploymentJournalPath = predeploymentGovernanceJournalPath(output);
+  const predeploymentReleaseBindingDigest = release
+    ? productionReleaseBindingDigest({
+      deploymentCommit,
+      configDigest: reservationIdentity.configDigest,
+      slateDigest: release.slate.slateDigest,
+      capsuleDigest: release.capsule.capsuleDigest,
+    })
+    : reservationIdentity.configDigest;
   const executed = await executeSignedDeploymentPlan(
     ethers, deployer, output, reservationIdentity, definitions,
     (definition, deployment) => definition.id.startsWith("board-")
@@ -810,6 +789,70 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     config.finalityPolicy.confirmations,
     release?.capsule ?? null,
     executablePreflight,
+    {
+      beforeStep: async ({ index, deployments, addresses, secondaryProvider, rpcEvidence }) => {
+        if (index !== MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT) return;
+        const timelock = deployments.timelock?.contract;
+        if (!timelock) throw new Error("pre-challenge deployment phase is missing the durable timelock deployment");
+        const endpoints = [
+          {
+            operatorId: rpcEvidence.primaryOperatorId,
+            url: requiredEnv("BASE_SEPOLIA_RPC_URL"),
+            provider: ethers.provider,
+          },
+          {
+            operatorId: rpcEvidence.secondaryOperatorId,
+            url: requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"),
+            provider: secondaryProvider,
+          },
+        ];
+        const anchor = await collectFinalityAnchor({ endpoints, policy: BASE_SEPOLIA_FINALITY_POLICY });
+        const checkedBlock = anchor.l2.finalized.number;
+        const timelockBlock = deployments.timelock.manifest.blockNumber;
+        if (checkedBlock < timelockBlock) {
+          throw new Error("finalized governance checkpoint predates the timelock deployment");
+        }
+        await verifyMultiBoardPredeploymentGovernancePhase({
+          operations: predeploymentOperations,
+          timelock,
+          secondaryTimelock: timelock.connect(secondaryProvider),
+          journalPath: predeploymentJournalPath,
+          chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+          timelockAddress: addresses.timelock,
+          expectedTimelockCodeHash: deployments.timelock.manifest.runtimeCodeHash,
+          deploymentConfigHash: `0x${reservationIdentity.configDigest.slice("sha256:".length)}`,
+          releaseBindingDigest: predeploymentReleaseBindingDigest,
+          fromBlock: timelockBlock,
+          toBlock: checkedBlock,
+        });
+        await recheckFinalityAnchor({
+          endpoints,
+          policy: BASE_SEPOLIA_FINALITY_POLICY,
+          previous: anchor,
+        });
+        for (const problem of config.problems) {
+          const prefix = `board-${problem.problemId}`;
+          const [pool, ledger, submissions] = await Promise.all([
+            ethers.getContractAt(BOARD_CONTRACT_NAMES.pool, addresses[`${prefix}-pool`]),
+            ethers.getContractAt(BOARD_CONTRACT_NAMES.ledger, addresses[`${prefix}-ledger`]),
+            ethers.getContractAt(BOARD_CONTRACT_NAMES.submissions, addresses[`${prefix}-submissions`]),
+          ]);
+          const expected = {
+            ledger: addresses[`${prefix}-ledger`],
+            submissions: addresses[`${prefix}-submissions`],
+            challenges: addresses[`${prefix}-challenges`],
+          };
+          if (
+            lower(await pool.ledger({ blockTag: checkedBlock })) !== lower(expected.ledger)
+            || lower(await pool.submissionManager({ blockTag: checkedBlock })) !== lower(expected.submissions)
+            || lower(await ledger.creditRecorder({ blockTag: checkedBlock })) !== lower(expected.submissions)
+            || lower(await submissions.challengeManager({ blockTag: checkedBlock })) !== lower(expected.challenges)
+          ) {
+            throw new Error(`pre-challenge governance wiring mismatch for problem ${problem.problemId}`);
+          }
+        }
+      },
+    },
   );
   const sharedKeys = ["timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier", "resolverQuorum"];
   const rootDeployments = Object.fromEntries(sharedKeys.map((key) => [key, executed.deployments[key]]));
@@ -1675,6 +1718,8 @@ async function continueCeremony(ethers) {
   }
 }
 
+const libraryImportRequested = globalThis[Symbol.for("p42-prizes.deploy-base-sepolia.library-import")] === true;
+if (!libraryImportRequested) {
 const mode = (process.env.P42_DEPLOY_MODE ?? "deploy").trim().toLowerCase();
 if (mode !== "deploy" && mode !== "deploy-multiboard-production" && mode !== "continue" && mode !== "inspect-reservation") {
   throw new Error("P42_DEPLOY_MODE must be deploy, deploy-multiboard-production, continue, or inspect-reservation");
@@ -1714,4 +1759,5 @@ if (mode === "inspect-reservation") {
   } finally {
     await connection.close();
   }
+}
 }

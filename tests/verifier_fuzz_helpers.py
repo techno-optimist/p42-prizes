@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -12,17 +13,38 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 
 SEED_EXAMPLES = {
-    "arithmetic-kakeya": "kt-2x2-forcing.json",
-    "autoconvolution-c1-upper": "hyra-upper.json",
-    "autoconvolution-c2-lower": "hyra-lower.json",
-    "edges-vs-triangles": "rational-curve-sample.json",
-    "erdos-min-overlap": "hyra-upper.json",
-    "hadamard-668-defect": "sylvester-prefix.json",
-    "hadamard-mini": "valid-4.json",
-    "mertens-lp-ceiling-k12000": "certificate-k12000.json",
-    "pnt-sparse-mertens-construction": "chronos-96000.json",
-    "signed-autoconvolution-c3-upper": "organon-upper.json",
+    "arithmetic-kakeya": "examples/kt-2x2-forcing.json",
+    "autoconvolution-c1-upper": "examples/hyra-upper.json",
+    "autoconvolution-c2-lower": "examples/hyra-lower.json",
+    "distinct-subset-sums-a11": "tests/conway-guy-594.json",
+    "edges-vs-triangles": "examples/rational-curve-sample.json",
+    "erdos-min-overlap": "examples/hyra-upper.json",
+    "hadamard-668-defect": "examples/sylvester-prefix.json",
+    "mertens-lp-ceiling-k12000": "examples/certificate-k12000.json",
+    "pnt-sparse-mertens-construction": "examples/chronos-96000.json",
+    "q6-intersecting-hypergraph": "tests/seed-pg25.json",
 }
+
+
+def production_board_slugs() -> tuple[str, ...]:
+    path = ROOT / "protocol" / "production-board-set-v1.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(value, dict)
+    assert value.get("schema") == "p42-prizes/production-board-set/v1"
+    assert value.get("status") == "frozen-source-cohort"
+    evidence = value.get("evidence")
+    assert isinstance(evidence, dict)
+    assert set(evidence) == {"path", "sha256", "schema_path", "schema_sha256"}
+    for path_key, digest_key in (("path", "sha256"), ("schema_path", "schema_sha256")):
+        artifact = ROOT / evidence[path_key]
+        assert artifact.is_file()
+        assert evidence[digest_key] == f"sha256:{hashlib.sha256(artifact.read_bytes()).hexdigest()}"
+    boards = value.get("boards")
+    assert isinstance(boards, list)
+    assert len(boards) == 10
+    assert all(isinstance(slug, str) and slug for slug in boards)
+    assert len(set(boards)) == len(boards)
+    return tuple(boards)
 
 
 def load_verifier(slug: str) -> ModuleType:
@@ -35,7 +57,7 @@ def load_verifier(slug: str) -> ModuleType:
 
 
 def seed_fixture(slug: str) -> dict[str, Any]:
-    path = ROOT / "problems" / slug / "examples" / SEED_EXAMPLES[slug]
+    path = ROOT / "problems" / slug / SEED_EXAMPLES[slug]
     value = json.loads(path.read_text(encoding="utf-8"))
     assert isinstance(value, dict)
     return value

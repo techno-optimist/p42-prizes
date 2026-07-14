@@ -141,6 +141,8 @@ jobs:
           echo "$RUNNER_TEMP/cargo-prove" >> "$GITHUB_PATH"
       - name: Install pinned host and SP1 guest toolchains
         shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           rustup toolchain install 1.91.1 --profile minimal

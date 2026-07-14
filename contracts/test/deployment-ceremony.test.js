@@ -91,9 +91,9 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /factoryCreation:\s*\{/);
     assert.match(executable, /transactionHash:\s*durable\.expectedHash/);
     assert.match(executable, /createdAddress:\s*durable\.address/);
-    assert.match(executable, /primaryOperatorId:\s*rpcEvidence\.primary\.operatorId/);
-    assert.match(executable, /secondaryOperatorId:\s*rpcEvidence\.secondary\.operatorId/);
-    assert.doesNotMatch(executable, /blockTimestampEvidence:\s*\{[^}]*\bprimaryOperatorId\s*,/s);
+    assert.match(executable, /primaryOperatorId:\s*rpcEvidence\.primaryOperatorId/);
+    assert.match(executable, /secondaryOperatorId:\s*rpcEvidence\.secondaryOperatorId/);
+    assert.doesNotMatch(executable, /^\s+primaryOperatorId,\s*$/m);
     for (const journal of [
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json",
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json.lock",

@@ -166,10 +166,19 @@ def _validate_witness(value: Any, board: Mapping[str, Any], artifacts: Mapping[s
         raise OpenWitnessError("commit, reveal, and finalize receipts must be strictly ordered")
     pre = _integer(witness.get("pre_frontier_atoms"), "report.witness.pre_frontier_atoms")
     post = _integer(witness.get("post_frontier_atoms"), "report.witness.post_frontier_atoms")
-    if policy["objective"] != "minimize":
-        raise OpenWitnessError("Gate 1 open-witness launch currently requires a release-bound minimize objective")
-    if post >= pre or pre - post < policy["min_improvement_atoms"]:
-        raise OpenWitnessError("frontier must decrease by at least release-bound minImprovementAtoms")
+    direction = policy["objective"]
+    # Chain atoms negate native maximize scores so every stored frontier moves downward.
+    native_pre = pre if direction == "minimize" else -pre
+    native_post = post if direction == "minimize" else -post
+    improvement = native_pre - native_post if direction == "minimize" else native_post - native_pre
+    if improvement <= 0:
+        raise OpenWitnessError(
+            f"frontier must strictly improve for release-bound {direction} objective"
+        )
+    if improvement < policy["min_improvement_atoms"]:
+        raise OpenWitnessError(
+            "frontier improvement must be at least release-bound minImprovementAtoms"
+        )
     if witness.get("credit_atoms") != 0 or witness.get("funding_armed_at_commit") is not False:
         raise OpenWitnessError("open witness must have zero credit and be committed before funding was armed")
     expected_id = _witness_id(board, cid, receipts[0]["transaction_hash"])
