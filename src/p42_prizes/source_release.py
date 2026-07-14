@@ -12,6 +12,9 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 SOURCE_RELEASE_SCHEMA_VERSION = "p42-source-release-evidence/v2"
+SOURCE_RELEASE_REPOSITORY = "techno-optimist/p42-prizes"
+SOURCE_RELEASE_BRANCH = "main"
+SOURCE_RELEASE_REMOTE = f"https://github.com/{SOURCE_RELEASE_REPOSITORY}.git"
 REQUIRED_CI_JOBS = (
     "Python verifier gates",
     "Autonomous agent gates",
@@ -119,6 +122,12 @@ def validate_source_release_evidence(
         raise SourceReleaseEvidenceError("repo_root must be an existing directory")
     if report.get("schemaVersion") != SOURCE_RELEASE_SCHEMA_VERSION:
         raise SourceReleaseEvidenceError(f"schemaVersion must be {SOURCE_RELEASE_SCHEMA_VERSION}")
+    if report.get("repository") != SOURCE_RELEASE_REPOSITORY:
+        raise SourceReleaseEvidenceError(
+            f"repository must be the canonical {SOURCE_RELEASE_REPOSITORY} authority"
+        )
+    if report.get("branch") != SOURCE_RELEASE_BRANCH:
+        raise SourceReleaseEvidenceError(f"branch must be {SOURCE_RELEASE_BRANCH}")
 
     normalized = dict(report)
     provided_hash = normalized.pop("evidenceHash", None)
@@ -164,22 +173,29 @@ def validate_source_release_evidence(
         raise SourceReleaseEvidenceError("releaseGuard.probes must equal the exact ordered live-route policy")
     if guard.get("requiredRoutes") != len(REQUIRED_PROBES) or guard.get("healthyRoutes") != len(REQUIRED_PROBES):
         raise SourceReleaseEvidenceError("releaseGuard route counts must equal the complete probe policy")
+    head = _commit(command_runner(["git", "rev-parse", "HEAD"], root), "HEAD")
     try:
-        expected_projection = json.loads((root / BOARD_MANIFEST_PATH).read_text(encoding="utf-8"))[
-            "projection_sha256"
-        ]
+        committed_board_manifest = command_runner(
+            ["git", "show", f"{head}:{BOARD_MANIFEST_PATH.as_posix()}"], root
+        )
+        expected_projection = json.loads(committed_board_manifest)["projection_sha256"]
     except (OSError, KeyError, json.JSONDecodeError) as exc:
-        raise SourceReleaseEvidenceError("committed release-guard board manifest is unreadable") from exc
+        raise SourceReleaseEvidenceError(
+            "committed release-guard board manifest is unreadable"
+        ) from exc
     if guard.get("boardProjection") != expected_projection:
         raise SourceReleaseEvidenceError(
             "releaseGuard.boardProjection must equal the committed board-manifest projection"
         )
 
-    _ensure_complete_git_history(root, command_runner)
+    _ensure_complete_git_history(
+        root,
+        command_runner,
+        remote=SOURCE_RELEASE_REMOTE if online else "origin",
+    )
     _git_commit_exists(deploy_commit, root, command_runner)
     _git_commit_exists(observed_head, root, command_runner)
     _require_ancestor(deploy_commit, observed_head, root, command_runner)
-    head = _commit(command_runner(["git", "rev-parse", "HEAD"], root), "HEAD")
     _require_ancestor(observed_head, head, root, command_runner)
     runtime_commit = _commit(
         command_runner(
@@ -197,27 +213,54 @@ def validate_source_release_evidence(
         )
 
     if online:
-        changed_paths = {
+        if command_runner(
+            ["git", "status", "--porcelain", "--untracked-files=all"], root
+        ):
+            raise SourceReleaseEvidenceError(
+                "online release verification requires a completely clean checkout"
+            )
+        remote_main = _commit(
+            command_runner(
+                [
+                    "gh",
+                    "api",
+                    "--hostname",
+                    "github.com",
+                    f"repos/{SOURCE_RELEASE_REPOSITORY}/git/ref/heads/{SOURCE_RELEASE_BRANCH}",
+                    "--jq",
+                    ".object.sha",
+                ],
+                root,
+            ),
+            "authenticated GitHub main head",
+        )
+        _git_commit_exists(remote_main, root, command_runner)
+        if head != remote_main:
+            raise SourceReleaseEvidenceError(
+                "validated HEAD must equal the authenticated remote main head"
+            )
+        touched_paths = {
             line.strip()
             for line in command_runner(
-                ["git", "diff", "--name-only", f"{observed_head}..{head}"], root
+                [
+                    "git",
+                    "log",
+                    "--first-parent",
+                    "--diff-merges=first-parent",
+                    "--format=",
+                    "--name-only",
+                    f"{observed_head}..{remote_main}",
+                ],
+                root,
             ).splitlines()
             if line.strip()
         }
-        unexpected_paths = sorted(changed_paths - EVIDENCE_ONLY_TAIL_PATHS)
+        unexpected_paths = sorted(touched_paths - EVIDENCE_ONLY_TAIL_PATHS)
         if unexpected_paths:
             raise SourceReleaseEvidenceError(
                 "online release verification requires CI for the released source commit; "
                 f"non-evidence changes follow observedBranchHead: {', '.join(unexpected_paths)}"
             )
-        remote_line = command_runner(
-            ["git", "ls-remote", "origin", "refs/heads/main"], root
-        ).split()
-        if len(remote_line) != 2 or remote_line[1] != "refs/heads/main":
-            raise SourceReleaseEvidenceError("could not resolve the authenticated remote main head")
-        remote_main = _commit(remote_line[0], "remote main head")
-        _git_commit_exists(remote_main, root, command_runner)
-        _require_ancestor(head, remote_main, root, command_runner)
 
     publication_commit = None
     if report_path is not None:
@@ -342,10 +385,15 @@ def _git_commit_exists(commit: str, root: Path, runner: CommandRunner) -> None:
     runner(["git", "cat-file", "-e", f"{commit}^{{commit}}"], root)
 
 
-def _ensure_complete_git_history(root: Path, runner: CommandRunner) -> None:
+def _ensure_complete_git_history(
+    root: Path,
+    runner: CommandRunner,
+    *,
+    remote: str,
+) -> None:
     shallow = runner(["git", "rev-parse", "--is-shallow-repository"], root)
     if shallow == "true":
-        runner(["git", "fetch", "--quiet", "--no-tags", "--unshallow", "origin"], root)
+        runner(["git", "fetch", "--quiet", "--no-tags", "--unshallow", remote], root)
     elif shallow != "false":
         raise SourceReleaseEvidenceError("git did not report a valid shallow-repository state")
 
