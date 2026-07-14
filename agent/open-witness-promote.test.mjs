@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 
 import {
   COLLECTOR_AUTHORITY_CLASS,
+  COLLECTOR_EVIDENCE_SCHEMA,
   agreeCollectorEvidence,
   collectPinnedProviderQuorum,
   evidenceDigest,
@@ -21,7 +22,16 @@ const policy = {
   authority_class: COLLECTOR_AUTHORITY_CLASS, authority_key_ids: ["collector-1"],
 };
 const evidence = (block = 50) => ({
-  schema: "p42-prizes/open-witness-launch-evidence/v1", collector_authoritative: false,
+  schema: COLLECTOR_EVIDENCE_SCHEMA, collector_authoritative: false,
+  releaseBinding: {
+    deploymentCommit: "1".repeat(40), deploymentConfigHash: `0x${"2".repeat(64)}`,
+    chainId: 84532, problemId: "1", problemSlug: "hadamard-mini",
+    contracts: {
+      registry: `0x${"11".repeat(20)}`, pool: `0x${"22".repeat(20)}`,
+      ledger: `0x${"33".repeat(20)}`, submissions: `0x${"44".repeat(20)}`,
+      challenges: `0x${"55".repeat(20)}`,
+    },
+  },
   finalizedEvidence: { blockNumber: block, blockHash: `0x${"ab".repeat(32)}` }, value: "bound",
 });
 const observation = (providerId, value) => ({
@@ -61,6 +71,24 @@ describe("production open-witness quorum authority", () => {
     const forged = observation("a", a); forged.evidence_digest = hash(8);
     assert.throws(() => agreeCollectorEvidence({ ...base, observations: [forged, observation("b", a), observation("c", a)] }), /evidence digest mismatch/);
     assert.throws(() => agreeCollectorEvidence({ ...base, observations: [observation("a", { ...a, collector_authoritative: true }), observation("b", a), observation("c", a)] }), /begin non-authoritative/);
+  });
+
+  it("rejects v1 collector evidence and requires all five canonical board bindings", () => {
+    const base = { policy, policyDigest: evidenceDigest(policy), manifestDigest: hash(2), launchEvidenceHash: hash(3) };
+    const v1 = { ...evidence(), schema: "p42-prizes/open-witness-launch-evidence/v1" };
+    assert.throws(() => agreeCollectorEvidence({ ...base, observations: [observation("a", v1), observation("b", v1), observation("c", v1)] }), /evidence schema is invalid/);
+    for (const slot of ["registry", "pool", "ledger", "submissions", "challenges"]) {
+      const incomplete = structuredClone(evidence());
+      delete incomplete.releaseBinding.contracts[slot];
+      assert.throws(
+        () => agreeCollectorEvidence({ ...base, observations: [observation("a", incomplete), observation("b", incomplete), observation("c", incomplete)] }),
+        /must bind exactly registry, pool, ledger, submissions, and challenges/,
+        `${slot} must be bound`,
+      );
+      const changed = structuredClone(evidence());
+      changed.releaseBinding.contracts[slot] = `0x${"66".repeat(20)}`;
+      assert.notEqual(evidenceDigest(changed), evidenceDigest(evidence()), `${slot} must affect the signed evidence digest`);
+    }
   });
 
   it("never signs authority under a test policy", () => {

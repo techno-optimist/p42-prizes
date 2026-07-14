@@ -1,27 +1,23 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://p42.xyz/schemas/open-witness-launch-v2.json",
-  "title": "P42 canonical-topology per-board Gate 1 open-witness launch evidence",
-  "$comment": "Operational v2 evidence is bound to the canonical release topology. Schema validity alone is not a live gate.",
+  "$id": "https://p42.xyz/schemas/open-witness-launch-v1.json",
+  "title": "P42 per-board Gate 1 open-witness launch evidence",
+  "$comment": "Schema validity alone is not a live gate. Production collection is unavailable until an OpenWitnessChainReader is integrated.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "evidence_id", "observed_at_utc", "release_binding", "board", "artifacts", "witness", "funding", "reviewers", "attestations", "evidence_hash", "evidence_valid", "attestation_valid", "gate_passed"],
   "properties": {
-    "schema_version": {"const": "p42-open-witness-launch/v2"},
+    "schema_version": {"const": "p42-open-witness-launch/v1"},
     "evidence_id": {"type": "string", "minLength": 3},
     "observed_at_utc": {"type": "string", "format": "date-time"},
-    "release_binding": {"$ref": "https://p42.xyz/schemas/adversarial-campaign-v2.json#/$defs/releaseBinding"},
+    "release_binding": {"$ref": "#/$defs/legacyReleaseBinding"},
     "board": {
       "type": "object", "additionalProperties": false,
-      "required": ["registry_problem_id", "slug", "problem_registry", "bounty_pool", "payout_ledger", "submission_manager", "challenge_manager"],
+      "required": ["registry_problem_id", "slug", "problem_registry", "bounty_pool", "submission_manager"],
       "properties": {
-        "registry_problem_id": {"type": "string", "pattern": "^(?:[1-9]|10)$"},
+        "registry_problem_id": {"type": "string", "minLength": 1},
         "slug": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
-        "problem_registry": {"$ref": "#/$defs/address"},
-        "bounty_pool": {"$ref": "#/$defs/address"},
-        "payout_ledger": {"$ref": "#/$defs/address"},
-        "submission_manager": {"$ref": "#/$defs/address"},
-        "challenge_manager": {"$ref": "#/$defs/address"}
+        "problem_registry": {"$ref": "#/$defs/address"}, "bounty_pool": {"$ref": "#/$defs/address"}, "submission_manager": {"$ref": "#/$defs/address"}
       }
     },
     "artifacts": {
@@ -58,6 +54,38 @@
     "artifact": {
       "type": "object", "additionalProperties": false, "required": ["uri", "local_path", "sha256", "created_at_utc"],
       "properties": {"uri": {"type": "string", "minLength": 1}, "local_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"}, "sha256": {"$ref": "#/$defs/hash"}, "created_at_utc": {"type": "string", "format": "date-time"}}
+    },
+    "legacyContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "properties": {
+        "name": {"enum": ["P42BountyPool", "P42PayoutLedger", "P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"]},
+        "address": {"$ref": "#/$defs/address"},
+        "runtime_bytecode_hash": {"$ref": "#/$defs/hash"},
+        "source_artifact": {"$ref": "#/$defs/artifact"},
+        "runtime_bytecode_artifact": {"$ref": "#/$defs/artifact"},
+        "chain_bytecode_artifact": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "legacyReleaseBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_uri", "git_commit", "network", "chain_id", "deployment_manifest", "configuration_artifact", "contracts"],
+      "properties": {
+        "repository_uri": {"type": "string", "pattern": "^https://"},
+        "git_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "network": {"enum": ["local", "base-sepolia", "base-mainnet"]},
+        "chain_id": {"type": "integer", "enum": [31337, 8453, 84532]},
+        "deployment_manifest": {"$ref": "#/$defs/artifact"},
+        "configuration_artifact": {"$ref": "#/$defs/artifact"},
+        "contracts": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/legacyContract"}
+        }
+      }
     },
     "receipt": {
       "type": "object", "additionalProperties": false,

@@ -1,8 +1,10 @@
 import { createHash, createPrivateKey, createPublicKey, sign, verify } from "node:crypto";
 
 export const COLLECTOR_AUTHORITY_CLASS = "p42-open-witness-collector-authority/v1";
+export const COLLECTOR_EVIDENCE_SCHEMA = "p42-prizes/open-witness-launch-evidence/v2";
 const DOMAIN = "P42-OPEN-WITNESS-COLLECTOR-AUTHORITY-V1";
 const ED25519_PUBLIC_DER_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+const BOARD_CONTRACT_SLOTS = ["registry", "pool", "ledger", "submissions", "challenges"];
 
 function canonicalize(value) {
   if (typeof value === "bigint") return value.toString();
@@ -28,6 +30,26 @@ export function canonicalSha256(value) {
 export function requireDigest(value, label) {
   invariant(/^sha256:[0-9a-f]{64}$/.test(String(value)), `${label} must be sha256:<64-lowercase-hex>`);
   return value;
+}
+
+export function requireCollectorEvidenceV2(evidence) {
+  invariant(evidence?.schema === COLLECTOR_EVIDENCE_SCHEMA, "collector observation evidence schema is invalid");
+  invariant(evidence.collector_authoritative === false, "provider observations must begin non-authoritative");
+  const binding = evidence.releaseBinding;
+  invariant(binding && typeof binding === "object" && !Array.isArray(binding), "collector evidence release binding is missing");
+  invariant(/^[0-9a-f]{40}$/.test(String(binding.deploymentCommit)), "collector evidence deployment commit is invalid");
+  invariant(/^0x[0-9a-f]{64}$/.test(String(binding.deploymentConfigHash)), "collector evidence deployment config hash is invalid");
+  invariant(Number.isSafeInteger(binding.chainId) && binding.chainId > 0, "collector evidence chain id is invalid");
+  invariant(/^[1-9][0-9]*$/.test(String(binding.problemId)), "collector evidence registry problem id is invalid");
+  invariant(/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(String(binding.problemSlug)), "collector evidence problem slug is invalid");
+  const contracts = binding.contracts;
+  invariant(contracts && typeof contracts === "object" && !Array.isArray(contracts), "collector evidence board contracts are missing");
+  invariant(stableStringify(Object.keys(contracts).sort()) === stableStringify([...BOARD_CONTRACT_SLOTS].sort()), "collector evidence board contracts must bind exactly registry, pool, ledger, submissions, and challenges");
+  for (const slot of BOARD_CONTRACT_SLOTS) {
+    invariant(/^0x[0-9a-fA-F]{40}$/.test(String(contracts[slot])), `collector evidence ${slot} address is invalid`);
+  }
+  invariant(new Set(BOARD_CONTRACT_SLOTS.map((slot) => contracts[slot].toLowerCase())).size === BOARD_CONTRACT_SLOTS.length, "collector evidence board contract addresses must be distinct");
+  return evidence;
 }
 
 export function requireProviderSet(policy, observations) {
@@ -62,9 +84,7 @@ export function agreeCollectorEvidence({ policy, policyDigest, manifestDigest, l
   const groups = new Map();
   for (const observation of observations) {
     invariant(observation && typeof observation === "object", "collector observation must be an object");
-    const evidence = observation.evidence;
-    invariant(evidence?.schema === "p42-prizes/open-witness-launch-evidence/v1", "collector observation evidence schema is invalid");
-    invariant(evidence.collector_authoritative === false, "provider observations must begin non-authoritative");
+    const evidence = requireCollectorEvidenceV2(observation.evidence);
     invariant(observation.policy_digest === policyDigest, "collector observation policy digest mismatch");
     invariant(observation.manifest_digest === manifestDigest, "collector observation manifest digest mismatch");
     const digest = canonicalSha256(evidence);

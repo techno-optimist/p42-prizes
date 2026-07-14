@@ -74,8 +74,32 @@ def fixtures():
     commit = receipt("a", 10); reveal = receipt("b", 20); finalize = receipt("c", 30); arm = receipt("d", 40)
     board = {
         "registry_problem_id": "1", "slug": "hadamard-mini", "problem_registry": address("1"),
-        "bounty_pool": address("2"), "submission_manager": address("3"),
+        "bounty_pool": address("2"), "payout_ledger": address("5"),
+        "submission_manager": address("3"), "challenge_manager": address("6"),
     }
+    topology_keys = [
+        "shared.timelock", "shared.registry", "shared.rolloverVault",
+        "shared.submissionManagerFactory", "shared.challengeManagerFactory",
+        "shared.objectiveVerifier", "shared.resolverQuorum",
+    ] + [
+        f"board.{board_id}.{slot}"
+        for board_id in range(1, 11)
+        for slot in ("pool", "ledger", "submissions", "challenges")
+    ]
+    bound_addresses = {
+        "shared.registry": board["problem_registry"],
+        "board.1.pool": board["bounty_pool"],
+        "board.1.ledger": board["payout_ledger"],
+        "board.1.submissions": board["submission_manager"],
+        "board.1.challenges": board["challenge_manager"],
+    }
+    release_contracts = [
+        {
+            "topology_key": key,
+            "address": bound_addresses.get(key, f"0x{index + 100:040x}"),
+        }
+        for index, key in enumerate(topology_keys)
+    ]
     witness = {
         "submission_id": 1, "solver": address("4"), "solution_cid": "ipfs://solution",
         "da_hash": "sha256:" + "7" * 64, "transcript_hash": "sha256:" + "8" * 64,
@@ -84,10 +108,14 @@ def fixtures():
         "finalize_receipt": finalize,
     }
     report = {
-        "schema_version": "p42-open-witness-launch/v1", "evidence_id": "evidence-1",
+        "schema_version": "p42-open-witness-launch/v2", "evidence_id": "evidence-1",
         "observed_at_utc": "2026-07-10T17:00:00Z", "release_binding": {
+            "binding_version": "p42-release-binding/v2",
+            "canonical_topology": {"sha256": "sha256:" + "0" * 64},
+            "deployment_commit": "7" * 40,
             "git_commit": policy["release_binding"]["git_commit"], "network": "base-sepolia", "chain_id": 84532,
             "deployment_manifest": {"sha256": policy["release_binding"]["manifest_sha256"]},
+            "contracts": release_contracts,
         }, "board": board,
         "artifacts": {}, "witness": witness, "funding": {"arm_receipt": arm},
         "reviewers": [{"public_key": "ed25519:" + "4" * 64}, {"public_key": "ed25519:" + "5" * 64}],
@@ -95,9 +123,14 @@ def fixtures():
         "evidence_valid": True, "attestation_valid": True, "gate_passed": False,
     }
     evidence = {
-        "schema": "p42-prizes/open-witness-launch-evidence/v1", "collector_authoritative": False,
-        "releaseBinding": {"problemId": "1", "problemSlug": "hadamard-mini", "chainId": 84532, "contracts": {
-            "registry": board["problem_registry"], "pool": board["bounty_pool"], "submissions": board["submission_manager"],
+        "schema": "p42-prizes/open-witness-launch-evidence/v2", "collector_authoritative": False,
+        "releaseBinding": {
+            "deploymentCommit": "7" * 40,
+            "deploymentConfigHash": policy["release_binding"]["deployment_config_hash"],
+            "problemId": "1", "problemSlug": "hadamard-mini", "chainId": 84532, "contracts": {
+            "registry": board["problem_registry"], "pool": board["bounty_pool"],
+            "ledger": board["payout_ledger"], "submissions": board["submission_manager"],
+            "challenges": board["challenge_manager"],
         }},
         "artifactBinding": {
             "solutionBytesHash": "0x" + "7" * 64, "transcriptHash": "0x" + "8" * 64,
@@ -186,6 +219,13 @@ def _strengthen_finality(_report, quorum, _envelope, policy, _registry) -> None:
     quorum["policy_digest"] = canonical_policy_digest(policy)
 
 
+def _substitute_cross_board_pool(report, _quorum, _envelope, _policy, _registry) -> None:
+    report["board"]["bounty_pool"] = next(
+        item["address"] for item in report["release_binding"]["contracts"]
+        if item["topology_key"] == "board.2.pool"
+    )
+
+
 def test_promotes_only_complete_three_layer_authority() -> None:
     report, quorum, envelope, policy, registry = fixtures()
     promoted = _build_open_witness_promotion(
@@ -226,6 +266,7 @@ def test_quorum_reader_rejects_cross_board_or_witness_queries() -> None:
     [
         (lambda r, q, e, p, t: r.update(gate_passed=True), "fail-closed"),
         (lambda r, q, e, p, t: r["release_binding"].update(chain_id=8453), "protected collector policy"),
+        (_substitute_cross_board_pool, "canonical topology slots"),
         (lambda r, q, e, p, t: p.update(environment="test"), "test policy"),
         (lambda r, q, e, p, t: q.update(launch_evidence_hash="sha256:" + "0" * 64), "launch_evidence_hash"),
         (lambda r, q, e, p, t: (q.update(provider_ids=["a", "d"]), e.update(provider_ids=["a", "d"])), "provider identities"),

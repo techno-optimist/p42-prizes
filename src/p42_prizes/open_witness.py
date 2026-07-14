@@ -22,7 +22,7 @@ from p42_prizes.legal import (
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-OPEN_WITNESS_SCHEMA_VERSION = "p42-open-witness-launch/v1"
+OPEN_WITNESS_SCHEMA_VERSION = "p42-open-witness-launch/v2"
 REVIEWER_ROLES = ("independent-reviewer", "engineering-owner")
 COLLECTOR_PROOF_VERSION = "p42-open-witness-collector-proof/v1"
 MAX_OBSERVATION_AGE = timedelta(minutes=15)
@@ -78,7 +78,8 @@ def normalize_open_witness_launch(
     _nonempty(normalized.get("evidence_id"), "report.evidence_id")
     observed_at = _require_utc(normalized.get("observed_at_utc"), "report.observed_at_utc", OpenWitnessError)
     release = _validate_release_binding(
-        normalized.get("release_binding"), "report.release_binding", OpenWitnessError, context
+        normalized.get("release_binding"), "report.release_binding", OpenWitnessError, context,
+        require_canonical_topology=True,
     )
     board = _validate_board(normalized.get("board"), release)
     artifacts = _validate_artifacts(normalized.get("artifacts"), context)
@@ -110,22 +111,31 @@ def normalize_open_witness_launch(
 
 def _validate_board(value: Any, release: Mapping[str, Any]) -> Mapping[str, Any]:
     board = _mapping(value, "report.board")
-    expected = {"registry_problem_id", "slug", "problem_registry", "bounty_pool", "submission_manager"}
+    expected = {
+        "registry_problem_id", "slug", "problem_registry", "bounty_pool", "payout_ledger",
+        "submission_manager", "challenge_manager",
+    }
     _exact_keys(board, expected, "report.board")
-    _nonempty(board.get("registry_problem_id"), "report.board.registry_problem_id")
+    problem_id = _nonempty(board.get("registry_problem_id"), "report.board.registry_problem_id")
+    if problem_id not in {str(index) for index in range(1, 11)}:
+        raise OpenWitnessError("report.board.registry_problem_id must be a canonical board id from 1 through 10")
     slug = _nonempty(board.get("slug"), "report.board.slug")
     if slug.lower() != slug or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in slug):
         raise OpenWitnessError("report.board.slug must be a lowercase board slug")
-    addresses = {
-        "problem_registry": "P42ProblemRegistry",
-        "bounty_pool": "P42BountyPool",
-        "submission_manager": "P42SubmissionManager",
+    topology_fields = {
+        "problem_registry": "shared.registry",
+        "bounty_pool": f"board.{problem_id}.pool",
+        "payout_ledger": f"board.{problem_id}.ledger",
+        "submission_manager": f"board.{problem_id}.submissions",
+        "challenge_manager": f"board.{problem_id}.challenges",
     }
-    release_addresses = {item["name"]: item["address"].casefold() for item in release["contracts"]}
-    for field, contract in addresses.items():
+    release_addresses = {item["topology_key"]: item["address"].casefold() for item in release["contracts"]}
+    for field, topology_key in topology_fields.items():
         address = _require_address(board.get(field), f"report.board.{field}", OpenWitnessError).casefold()
-        if address != release_addresses[contract]:
-            raise OpenWitnessError(f"report.board.{field} must match the exact release binding")
+        if address != release_addresses.get(topology_key):
+            raise OpenWitnessError(
+                f"report.board.{field} must match canonical release slot {topology_key}"
+            )
     return board
 
 
@@ -188,25 +198,29 @@ def _validate_witness(value: Any, board: Mapping[str, Any], artifacts: Mapping[s
 
 
 def _validate_board_policy(release: Mapping[str, Any], board: Mapping[str, Any], artifacts: Mapping[str, Any], context: Any) -> Mapping[str, Any]:
-    configuration = _parse_json_object(
-        _artifact_bytes(context, release["configuration_artifact"]),
-        "report.release_binding.configuration_artifact", OpenWitnessError,
+    deployment = _parse_json_object(
+        _artifact_bytes(context, release["deployment_manifest"]),
+        "report.release_binding.deployment_manifest", OpenWitnessError,
     )
-    boards = configuration.get("open_witness_boards")
-    if not isinstance(boards, list):
-        raise OpenWitnessError("release-bound configuration must contain open_witness_boards")
-    matches = [item for item in boards if isinstance(item, Mapping) and item.get("registry_problem_id") == board["registry_problem_id"] and item.get("problem_slug") == board["slug"]]
-    if len(matches) != 1:
-        raise OpenWitnessError("release-bound configuration must identify exactly this board")
-    policy = matches[0]
-    if policy.get("admission_matrix_hash") != artifacts["admission_matrix"]["sha256"]:
-        raise OpenWitnessError("release-bound board admission matrix hash does not match evidence")
-    minimum = policy.get("min_improvement_atoms")
-    if not isinstance(minimum, int) or isinstance(minimum, bool) or minimum <= 0:
+    problems = deployment.get("problems")
+    if not isinstance(problems, list) or len(problems) != 10:
+        raise OpenWitnessError("release-bound deployment manifest must contain exactly 10 boards")
+    index = int(board["registry_problem_id"]) - 1
+    manifest_board = problems[index]
+    if not isinstance(manifest_board, Mapping) or (
+        str(manifest_board.get("problemId")) != board["registry_problem_id"]
+        or manifest_board.get("problemSlug") != board["slug"]
+    ):
+        raise OpenWitnessError("release-bound deployment manifest does not identify this canonical board")
+    if manifest_board.get("admissionMatrixDigest") != artifacts["admission_matrix"]["sha256"]:
+        raise OpenWitnessError("release-bound board admission matrix digest does not match evidence")
+    minimum_raw = manifest_board.get("minImprovementAtoms")
+    if not isinstance(minimum_raw, str) or not minimum_raw.isdecimal() or int(minimum_raw) <= 0:
         raise OpenWitnessError("release-bound minImprovementAtoms must be a positive integer")
-    if policy.get("objective") not in {"minimize", "maximize"}:
+    objective = manifest_board.get("certifiedObjective")
+    if not isinstance(objective, Mapping) or objective.get("direction") not in {"minimize", "maximize"}:
         raise OpenWitnessError("release-bound objective must be minimize or maximize")
-    return policy
+    return {"objective": objective["direction"], "min_improvement_atoms": int(minimum_raw)}
 
 
 def _validate_funding(value: Any) -> Mapping[str, Any]:
@@ -268,7 +282,8 @@ def _read_live(reader: Any, release: Mapping[str, Any], board: Mapping[str, Any]
     query = {
         "registry_problem_id": board["registry_problem_id"], "slug": board["slug"],
         "problem_registry": board["problem_registry"], "bounty_pool": board["bounty_pool"],
-        "submission_manager": board["submission_manager"], "witness_id": witness["witness_id"],
+        "payout_ledger": board["payout_ledger"], "submission_manager": board["submission_manager"],
+        "challenge_manager": board["challenge_manager"], "witness_id": witness["witness_id"],
     }
     try:
         live = reader.read_open_witness(release["network"], release["chain_id"], query)
