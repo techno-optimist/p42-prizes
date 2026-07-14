@@ -8,6 +8,7 @@ const PRODUCTION_CONTRACTS = [
   ["P42BountyPool", "artifacts/src/P42BountyPool.sol/P42BountyPool.json"],
   ["P42ChallengeManager", "artifacts/src/P42ChallengeManager.sol/P42ChallengeManager.json"],
   ["P42ChallengeManagerFactory", "artifacts/src/P42ChallengeManagerFactory.sol/P42ChallengeManagerFactory.json"],
+  ["P42ForcedInclusionController", "artifacts/src/P42ForcedInclusionController.sol/P42ForcedInclusionController.json"],
   ["P42MultisigTimelock", "artifacts/src/P42MultisigTimelock.sol/P42MultisigTimelock.json"],
   ["P42PayoutLedger", "artifacts/src/P42PayoutLedger.sol/P42PayoutLedger.json"],
   ["P42ProblemRegistry", "artifacts/src/P42ProblemRegistry.sol/P42ProblemRegistry.json"],

@@ -7,6 +7,8 @@ pragma solidity ^0.8.24;
 /// scope without teaching this wallet every downstream ABI.
 contract P42AgentWallet {
     error NotOwner();
+    error NotForcedInclusionOwner();
+    error ForcedInclusionOwnerAlreadySet();
     error NotSession();
     error KeyRevoked();
     error SessionExpired(uint64 expiresAt, uint64 nowAt);
@@ -20,6 +22,7 @@ contract P42AgentWallet {
     error BadCallPolicy();
     error ValueCapExceeded(uint256 value, uint256 cap);
     error SpendCapExceeded(uint256 wouldSpend, uint256 cap);
+    error ForcedExecutionValueMismatch(uint256 expected, uint256 received);
     error CallFailed();
     error Reentrancy();
 
@@ -36,6 +39,7 @@ contract P42AgentWallet {
     }
 
     address public immutable owner;
+    address public forcedInclusionOwner;
     address public sessionKey;
     uint256 public sessionChainId;
     uint64 public sessionExpiresAt;
@@ -49,6 +53,7 @@ contract P42AgentWallet {
     mapping(address => mapping(bytes4 => CallPolicy)) public callPolicies;
 
     event SessionKeySet(address indexed sessionKey);
+    event ForcedInclusionOwnerSet(address indexed forcedInclusionOwner);
     event SessionPolicySet(address indexed sessionKey, uint256 indexed chainId, uint64 expiresAt);
     event SessionRevoked();
     event AllowedSet(address indexed target, bytes4 indexed selector, bool ok);
@@ -64,11 +69,17 @@ contract P42AgentWallet {
     );
     event CapsSet(uint256 perCallValueCapWei, uint256 totalSpendCapWei);
     event Executed(address indexed target, uint256 value, bytes4 indexed selector, bytes32 calldataHash);
+    event ForcedPolicyExecuted(address indexed target, uint256 value, bytes4 indexed selector, bytes32 calldataHash);
     event Funded(address indexed from, uint256 amount);
     event Withdrawn(address indexed to, uint256 amount);
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert NotOwner();
+        _;
+    }
+
+    modifier onlyForcedInclusionOwner() {
+        if (msg.sender != forcedInclusionOwner) revert NotForcedInclusionOwner();
         _;
     }
 
@@ -105,6 +116,13 @@ contract P42AgentWallet {
 
     function setSessionKey(address key) external onlyOwner {
         _setSessionPolicy(key, block.chainid, uint64(block.timestamp) + MAX_SESSION_LIFETIME);
+    }
+
+    function setForcedInclusionOwner(address account) external onlyOwner {
+        if (forcedInclusionOwner != address(0)) revert ForcedInclusionOwnerAlreadySet();
+        if (account == address(0)) revert NotForcedInclusionOwner();
+        forcedInclusionOwner = account;
+        emit ForcedInclusionOwnerSet(account);
     }
 
     function setSessionPolicy(address key, uint256 chainId, uint64 expiresAt) external onlyOwner {
@@ -144,6 +162,32 @@ contract P42AgentWallet {
         bytes32 calldataHash,
         bytes32 scopeHash
     ) external onlyOwner {
+        _setCallPolicy(target, selector, ok, chainId, expiresAt, maxCalls, calldataHash, scopeHash);
+    }
+
+    function setForcedCallPolicy(
+        address target,
+        bytes4 selector,
+        bool ok,
+        uint256 chainId,
+        uint64 expiresAt,
+        uint32 maxCalls,
+        bytes32 calldataHash,
+        bytes32 scopeHash
+    ) external onlyForcedInclusionOwner {
+        _setCallPolicy(target, selector, ok, chainId, expiresAt, maxCalls, calldataHash, scopeHash);
+    }
+
+    function _setCallPolicy(
+        address target,
+        bytes4 selector,
+        bool ok,
+        uint256 chainId,
+        uint64 expiresAt,
+        uint32 maxCalls,
+        bytes32 calldataHash,
+        bytes32 scopeHash
+    ) private {
         if (
             target == address(0) || selector == bytes4(0) || chainId != block.chainid
                 || expiresAt <= block.timestamp || maxCalls == 0 || calldataHash == bytes32(0)
@@ -182,6 +226,32 @@ contract P42AgentWallet {
             revert SessionExpired(sessionExpiresAt, uint64(block.timestamp));
         }
 
+        return _executePolicy(target, value, data, false);
+    }
+
+    /// @notice Censorship fallback for a one-time role controlled through an
+    /// L1-to-L2 deposit path. The forced role cannot bypass the exact-calldata
+    /// policy, call count, chain/expiry binding, or shared value caps. Requiring
+    /// the deposit value to equal the forwarded value also prevents silent use
+    /// of unrelated wallet funds.
+    function executeForcedPolicy(address target, uint256 value, bytes calldata data)
+        external
+        payable
+        onlyForcedInclusionOwner
+        nonReentrant
+        returns (bytes memory)
+    {
+        if (msg.value != value) revert ForcedExecutionValueMismatch(value, msg.value);
+        bytes memory ret = _executePolicy(target, value, data, true);
+        bytes4 selector = data.length >= 4 ? bytes4(data[:4]) : bytes4(0);
+        emit ForcedPolicyExecuted(target, value, selector, keccak256(data));
+        return ret;
+    }
+
+    function _executePolicy(address target, uint256 value, bytes calldata data, bool requireExactPolicy)
+        private
+        returns (bytes memory)
+    {
         bytes4 selector = data.length >= 4 ? bytes4(data[:4]) : bytes4(0);
         if (!allowed[target][selector]) revert CallNotAllowed(target, selector);
         bytes32 dataHash = keccak256(data);
@@ -194,7 +264,7 @@ contract P42AgentWallet {
             if (policy.calls >= policy.maxCalls) revert CallPolicyExhausted(policy.maxCalls);
             if (dataHash != policy.calldataHash) revert CalldataHashMismatch(policy.calldataHash, dataHash);
             policy.calls += 1;
-        } else if (selector == bytes4(0) ? data.length != 0 : data.length != 4) {
+        } else if (requireExactPolicy || (selector == bytes4(0) ? data.length != 0 : data.length != 4)) {
             revert ExactCalldataPolicyRequired(target, selector);
         }
 
