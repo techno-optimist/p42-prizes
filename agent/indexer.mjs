@@ -3799,6 +3799,7 @@ function eventDigestInput(event) {
     transactionHash: event.transactionHash,
     transactionIndex: event.transactionIndex ?? 0,
     index: event.index ?? event.logIndex,
+    blockTimestamp: event.blockTimestamp,
     args,
   };
 }
@@ -3812,6 +3813,152 @@ function publicReplayState(state) {
   delete output.recoveryByTx;
   delete output.claimConsumptionByTx;
   return canonicalize(output);
+}
+
+const PORTAL_EVENT_SOURCES = Object.freeze([
+  "pool",
+  "ledger",
+  "submissions",
+  "challenges",
+  "resolverQuorum",
+  "registry",
+  "rolloverVault",
+]);
+
+function portalSourceAddress(binding, problemId, source) {
+  const boardContracts = binding.boards?.[problemId];
+  const contract = boardContracts?.[source] ?? binding.contracts?.[source];
+  invariant(contract?.address, `portal projection cannot bind ${source} log to a contract`);
+  return addressKey(contract.address);
+}
+
+function portalLogIdentity(event, binding, problemId) {
+  invariant(PORTAL_EVENT_SOURCES.includes(event.source), `portal projection rejects event source ${event.source}`);
+  invariant(event.blockTimestamp !== undefined, `portal projection ${event.source}.${event.eventName} is missing blockTimestamp`);
+  return {
+    source: event.source,
+    eventName: event.eventName,
+    contractAddress: portalSourceAddress(binding, problemId, event.source),
+    blockNumber: event.blockNumber,
+    blockHash: String(event.blockHash).toLowerCase(),
+    transactionHash: String(event.transactionHash).toLowerCase(),
+    transactionIndex: event.transactionIndex ?? 0,
+    logIndex: event.index ?? event.logIndex,
+    blockTimestamp: asBigInt(event.blockTimestamp).toString(),
+  };
+}
+
+function portalEventProvenance(event, binding, problemId) {
+  const submissionId = event.args?.submissionId === undefined
+    ? null
+    : asBigInt(event.args.submissionId).toString();
+  return {
+    ...portalLogIdentity(event, binding, problemId),
+    submissionId,
+    argsDigest: ethers.keccak256(ethers.toUtf8Bytes(stableStringify(event.args ?? {}))),
+  };
+}
+
+function comparePortalLogs(left, right) {
+  return (
+    left.blockNumber - right.blockNumber ||
+    left.transactionIndex - right.transactionIndex ||
+    left.logIndex - right.logIndex
+  );
+}
+
+function portalSubmissionBase(submission) {
+  return {
+    submissionId: String(submission.submissionId),
+    solver: addressKey(submission.solver),
+    status: submission.status,
+    claimedScoreAtoms: String(submission.claimedScoreAtoms),
+    improvementAtoms: String(submission.improvementAtoms),
+    creditAtoms: String(submission.finalizeInfo?.creditAtoms ?? 0),
+    solutionCid: submission.solutionCid,
+    committedAt: String(submission.committedAt),
+    revealedAt: String(submission.revealedAt),
+  };
+}
+
+function portalStateFacts(state) {
+  const solverAddresses = [...new Set([
+    ...Object.values(state.submissions ?? {}).map((submission) => addressKey(submission.solver)),
+    ...Object.keys(state.ledger?.creditAtomsOf ?? {}).map(addressKey),
+    ...Object.keys(state.ledger?.claimedWeiOf ?? {}).map(addressKey),
+  ])].sort();
+  const refundableWei = state.ledger.closed && asBigInt(state.ledger.totalCreditAtoms) === 0n
+    ? Object.values(state.pool.sponsorshipOf ?? {}).reduce((total, value) => total + asBigInt(value), 0n)
+    : 0n;
+  return canonicalize({
+    frontier: { currentAtoms: state.bestScoreAtoms },
+    solvers: solverAddresses.map((solver) => ({
+      solver,
+      creditAtoms: state.ledger.creditAtomsOf?.[solver] ?? 0n,
+      claimedWei: state.ledger.claimedWeiOf?.[solver] ?? 0n,
+    })),
+    pool: {
+      totalFundedWei: state.pool.totalFunded,
+      accountedBalanceWei: state.pool.accountedBalance,
+      totalClaimedWei: state.pool.totalClaimed,
+      refundableWei,
+      totalSponsorRefundedWei: state.pool.totalSponsorRefunded,
+      totalFeeAccruedWei: state.pool.totalFeeAccrued,
+      totalFeePaidWei: state.pool.totalFeePaid,
+      totalResidualPaidWei: state.pool.totalResidualPaid,
+    },
+    ledgerClose: {
+      closed: state.ledger.closed,
+      closedPoolBalanceWei: state.ledger.closedPoolBalance,
+      feeReserveWei: state.ledger.feeReserve,
+      closedAt: state.ledger.closedAt,
+      totalCreditAtoms: state.ledger.totalCreditAtoms,
+      totalGrossClaimedWei: state.ledger.totalGrossClaimed,
+      totalFeeAccruedWei: state.ledger.totalFeeAccrued,
+      feeSwept: state.ledger.feeSwept,
+      residualSwept: state.ledger.residualSwept,
+    },
+    submissions: Object.values(state.submissions ?? {})
+      .sort((left, right) => {
+        const leftId = asBigInt(left.submissionId);
+        const rightId = asBigInt(right.submissionId);
+        return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+      })
+      .map(portalSubmissionBase),
+  });
+}
+
+function buildPortalProjection(replay, binding, problemId, eventsDigest, replayedEvents) {
+  const trace = replay?.[REPLAY_EVENT_TRACE]
+    ?? replayedEvents?.slice().sort(compareEventOrder).map(eventDigestInput);
+  invariant(Array.isArray(trace), `portal projection board ${problemId} requires the canonical replay trace`);
+  const provenanceLogs = trace.map((event) => portalEventProvenance(event, binding, problemId));
+  const facts = portalStateFacts(replay);
+  const submissions = facts.submissions.map((submission) => {
+    const related = provenanceLogs.filter((log) => log.submissionId === submission.submissionId);
+    const finalized = related.filter(
+      (log) => log.source === "submissions" && log.eventName === "Finalized",
+    );
+    invariant(finalized.length <= 1, `portal projection submission ${submission.submissionId} has duplicate Finalized logs`);
+    return {
+      ...submission,
+      finalizedAt: finalized[0]?.blockTimestamp ?? "0",
+      sourceLogs: related.map(({ submissionId: _submissionId, argsDigest: _argsDigest, ...identity }) => identity),
+    };
+  });
+  return canonicalize({
+    schema: "p42-prizes/portal-projection/v1",
+    frontier: facts.frontier,
+    submissions,
+    solvers: facts.solvers,
+    pool: facts.pool,
+    ledgerClose: facts.ledgerClose,
+    eventProvenance: {
+      replayEventsDigest: eventsDigest,
+      total: provenanceLogs.length,
+      logs: provenanceLogs,
+    },
+  });
 }
 
 export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, toBlockHash, toBlockTimestamp, events, replay, snapshot, checks }) {
@@ -3914,6 +4061,13 @@ export function buildMultiBoardCheckpoint({
       events: report.events,
       onchain: report.onchain,
       state: report.state,
+      portalProjection: buildPortalProjection(
+        board.replay,
+        binding,
+        String(board.problem.problemId),
+        report.events.digest,
+        board.scan.events,
+      ),
       reconstruction: report.reconstruction,
     };
   });
@@ -4003,6 +4157,87 @@ function prefixedMultiBoardChecks(boards) {
   );
 }
 
+function portalLogKey(log) {
+  return `${log.transactionHash}:${log.logIndex}`;
+}
+
+function validateCanonicalPortalProjection(board, binding) {
+  const projection = board.portalProjection;
+  const facts = portalStateFacts(board.state);
+  for (const key of ["frontier", "solvers", "pool", "ledgerClose"]) {
+    invariant(
+      stableStringify(projection[key]) === stableStringify(facts[key]),
+      `checkpoint board ${board.problemId} portalProjection.${key} does not match replay state`,
+    );
+  }
+  const projectedSubmissionBases = projection.submissions.map(({
+    finalizedAt: _finalizedAt,
+    sourceLogs: _sourceLogs,
+    ...submission
+  }) => submission);
+  invariant(
+    stableStringify(projectedSubmissionBases) === stableStringify(facts.submissions),
+    `checkpoint board ${board.problemId} portalProjection.submissions do not match replay state`,
+  );
+
+  const provenance = projection.eventProvenance;
+  invariant(
+    provenance.replayEventsDigest === board.events.digest,
+    `checkpoint board ${board.problemId} portal projection replay digest mismatch`,
+  );
+  invariant(
+    provenance.total === board.events.total && provenance.logs.length === board.events.total,
+    `checkpoint board ${board.problemId} portal projection event total mismatch`,
+  );
+  invariant(
+    provenance.logs.every((log, index, logs) => index === 0 || comparePortalLogs(logs[index - 1], log) < 0),
+    `checkpoint board ${board.problemId} portal projection provenance logs are not canonically ordered`,
+  );
+  invariant(
+    new Set(provenance.logs.map(portalLogKey)).size === provenance.logs.length,
+    `checkpoint board ${board.problemId} portal projection provenance contains duplicate log identities`,
+  );
+  const projectedCounts = Object.fromEntries(REQUIRED_LIFECYCLE_COVERAGE.map((name) => [name, 0]));
+  for (const log of provenance.logs) {
+    invariant(
+      log.contractAddress === portalSourceAddress(binding, board.problemId, log.source),
+      `checkpoint board ${board.problemId} portal projection ${portalLogKey(log)} contract binding mismatch`,
+    );
+    const coverageName = normalizeCoverageName(`${log.source}.${log.eventName}`);
+    invariant(
+      projectedCounts[coverageName] !== undefined,
+      `checkpoint board ${board.problemId} portal projection contains unknown event ${coverageName}`,
+    );
+    projectedCounts[coverageName] += 1;
+  }
+  invariant(
+    stableStringify(projectedCounts) === stableStringify(board.events.counts),
+    `checkpoint board ${board.problemId} portal projection event counts mismatch`,
+  );
+
+  for (const submission of projection.submissions) {
+    const expectedLogs = provenance.logs
+      .filter((log) => log.submissionId === submission.submissionId)
+      .map(({ submissionId: _submissionId, argsDigest: _argsDigest, ...identity }) => identity);
+    invariant(
+      stableStringify(submission.sourceLogs) === stableStringify(expectedLogs),
+      `checkpoint board ${board.problemId} portal projection submission ${submission.submissionId} source logs mismatch`,
+    );
+    const timestampFor = (eventName) => expectedLogs.filter(
+      (log) => log.source === "submissions" && log.eventName === eventName,
+    );
+    const committed = timestampFor("Committed");
+    const revealed = timestampFor("Revealed");
+    const finalized = timestampFor("Finalized");
+    invariant(committed.length === 1, `portal projection submission ${submission.submissionId} must have one Committed log`);
+    invariant(revealed.length <= 1, `portal projection submission ${submission.submissionId} has duplicate Revealed logs`);
+    invariant(finalized.length <= 1, `portal projection submission ${submission.submissionId} has duplicate Finalized logs`);
+    invariant(submission.committedAt === committed[0].blockTimestamp, `portal projection submission ${submission.submissionId} committed timestamp mismatch`);
+    invariant(submission.revealedAt === (revealed[0]?.blockTimestamp ?? "0"), `portal projection submission ${submission.submissionId} revealed timestamp mismatch`);
+    invariant(submission.finalizedAt === (finalized[0]?.blockTimestamp ?? "0"), `portal projection submission ${submission.submissionId} finalized timestamp mismatch`);
+  }
+}
+
 function refreshMultiBoardCheckpointReconstruction(checkpoint) {
   for (const board of checkpoint.boards) {
     board.reconstruction.ok =
@@ -4048,6 +4283,7 @@ export function validateMultiBoardCheckpoint(checkpoint) {
     if (stableStringify(countKeys) !== stableStringify(expectedCountKeys)) {
       throw new Error(`checkpoint board ${board.problemId} lifecycle counts must cover the exact event catalog`);
     }
+    validateCanonicalPortalProjection(board, checkpoint.manifestBinding);
     const derivedComplete =
       board.events.lifecycleCountsComplete === true
       && board.reconstruction.lifecycleSnapshotComplete === true

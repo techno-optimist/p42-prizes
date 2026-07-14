@@ -554,6 +554,155 @@ const POLICY = {
   maxScanRestarts: 2,
 };
 
+function portalCheckpoint(events, config = CONFIG) {
+  const replay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+  const snapshot = snapshotFromReplay(replay);
+  const checks = compareReplayToSnapshot(replay, snapshot, config);
+  const lastBlock = Math.max(...events.map((event) => event.blockNumber));
+  return buildMultiBoardCheckpoint({
+    binding: {
+      deploymentCommit: "a".repeat(40),
+      deploymentConfigHash: hash(99),
+      chainId: 84532,
+      startBlock: 1,
+      contracts: checkpointSharedContracts(),
+      boards: {
+        "1": {
+          pool: checkpointContract(11),
+          ledger: checkpointContract(12),
+          submissions: checkpointContract(13),
+          challenges: checkpointContract(14),
+        },
+      },
+    },
+    finalityPolicy: POLICY,
+    fromBlock: 1,
+    toBlock: lastBlock,
+    toBlockHash: hash(20_000 + lastBlock),
+    toBlockTimestamp: Number(events.at(-1).blockTimestamp),
+    boards: [{
+      problem: { problemId: "1", problemSlug: "portal-projection" },
+      scan: { events },
+      replay,
+      snapshot,
+      checks,
+    }],
+  });
+}
+
+function portalEconomicFixture() {
+  const { events, tx } = fixtureBuilder();
+  tx([
+    ["pool", "LedgerSet", { ledger: ADDR.ledger }],
+    ["pool", "SubmissionManagerSet", { submissionManager: ADDR.submissions }],
+    ["pool", "RegistrySet", { registry: ADDR.registry, problemId: 1n }],
+    ["ledger", "CreditRecorderSet", { recorder: ADDR.submissions }],
+    ["submissions", "ChallengeManagerSet", { challengeManager: ADDR.challenges }],
+    ["registry", "ProblemRegistered", {
+      problemId: 1n, specHash: hash(1), verifierImageHash: hash(2),
+      pool: ADDR.pool, metadataURI: "ipfs://portal-projection",
+    }],
+  ], 10);
+  tx([["pool", "Funded", { from: ADDR.owner, amount: 1000n, newBalance: 1000n }], ["pool", "SponsorshipFunded", {
+    payer: ADDR.owner, sponsor: ADDR.owner, amount: 1000n,
+    sponsorPrincipal: 1000n, accountedBalance: 1000n,
+  }]], 20);
+  tx([["submissions", "Committed", {
+    submissionId: 1n, solver: ADDR.solverA, commitment: hash(101), commitDaHash: hash(201),
+    bondWei: 10n, poolAtSubmissionWei: 1000n, requiredBondWei: 10n,
+    paidAtCommit: true, committedBlock: 3n,
+  }]], 30);
+  tx([["submissions", "Revealed", {
+    submissionId: 1n, solver: ADDR.solverA, solutionCid: "ipfs://solution-a",
+    improvementAtoms: 100n, claimedScoreAtoms: 900n, challengeEndsAt: 50n,
+    solutionBytesLength: 1n, revealInstanceHash: hash(601),
+  }]], 40);
+  tx([
+    ["ledger", "CreditRecorded", { solver: ADDR.solverA, atoms: 100n, totalCreditAtoms: 100n }],
+    ["submissions", "Finalized", {
+      submissionId: 1n, solver: ADDR.solverA, creditAtoms: 100n,
+      claimedScoreAtoms: 900n, bestScoreAtoms: 900n, permanenceHash: hash(301),
+      poolAtFinalizationWei: 1000n,
+    }],
+  ], 60);
+  tx([["submissions", "Committed", {
+    submissionId: 2n, solver: ADDR.solverB, commitment: hash(102), commitDaHash: hash(202),
+    bondWei: 10n, poolAtSubmissionWei: 1000n, requiredBondWei: 10n,
+    paidAtCommit: true, committedBlock: 6n,
+  }]], 70);
+  tx([["submissions", "Revealed", {
+    submissionId: 2n, solver: ADDR.solverB, solutionCid: "ar://solution-b",
+    improvementAtoms: 100n, claimedScoreAtoms: 800n, challengeEndsAt: 90n,
+    solutionBytesLength: 1n, revealInstanceHash: hash(602),
+  }]], 80);
+  tx([
+    ["submissions", "SubmissionChallenged", { submissionId: 2n, challengeManager: ADDR.challenges }],
+    ["challenges", "Challenged", {
+      submissionId: 2n, challenger: ADDR.challenger, reasonHash: hash(401), bondWei: 20n,
+      disputeEndsAt: 100n, revealInstanceHash: hash(602), challengeInstanceHash: hash(702),
+    }],
+  ], 90);
+  tx([["challenges", "ResolverTranscriptPosted", {
+    submissionId: 2n, resolver: ADDR.resolver, transcriptHash: hash(501),
+    transcriptURI: "ipfs://transcript", verdictHash: hash(502), resolverBondWei: 5n,
+    resolverBondReleaseAt: 120n, challengerWins: false, challengeInstanceHash: hash(702),
+  }]], 100);
+  tx([
+    ["submissions", "SubmissionChallengeResolved", { submissionId: 2n, challengerWins: false }],
+    ["challenges", "Resolved", { submissionId: 2n, challengerWins: false, challengeInstanceHash: hash(702) }],
+  ], 110);
+  tx([
+    ["ledger", "CreditRecorded", { solver: ADDR.solverB, atoms: 100n, totalCreditAtoms: 200n }],
+    ["submissions", "Finalized", {
+      submissionId: 2n, solver: ADDR.solverB, creditAtoms: 100n,
+      claimedScoreAtoms: 800n, bestScoreAtoms: 800n, permanenceHash: hash(302),
+      poolAtFinalizationWei: 1000n,
+    }],
+  ], 130);
+  tx([["ledger", "Closed", { poolBalance: 1000n, feeReserve: 0n, closedAt: 140n, claimDeadline: 1000n }]], 140);
+  tx([
+    ["ledger", "ClaimConsumed", { solver: ADDR.solverA, grossAmount: 500n, feeAmount: 50n }],
+    ["pool", "Claimed", { solver: ADDR.solverA, amount: 450n }],
+    ["pool", "ClaimedTo", { solver: ADDR.solverA, recipient: ADDR.solverA, amount: 450n }],
+    ["pool", "FeeAccrued", { solver: ADDR.solverA, amount: 50n, accruedFeeBalance: 50n }],
+    ["pool", "SolverClaimSettled", {
+      solver: ADDR.solverA, recipient: ADDR.solverA, grossAmount: 500n,
+      solverPayment: 450n, feeAmount: 50n,
+    }],
+  ], 150);
+  tx([
+    ["pool", "FeeClaimed", { recipient: ADDR.treasury, amount: 50n }],
+    ["pool", "FeePaid", { to: ADDR.treasury, amount: 50n }],
+  ], 160);
+  tx([
+    ["ledger", "RolloverSwept", { destination: address(30), amount: 500n }],
+    ["pool", "RolloverPaid", { to: address(30), amount: 500n }],
+  ], 170);
+  return events;
+}
+
+function portalRefundFixture({ refunded }) {
+  const { events, tx } = fixtureBuilder();
+  tx([
+    ["pool", "LedgerSet", { ledger: ADDR.ledger }],
+    ["pool", "SubmissionManagerSet", { submissionManager: ADDR.submissions }],
+    ["pool", "RegistrySet", { registry: ADDR.registry, problemId: 1n }],
+    ["ledger", "CreditRecorderSet", { recorder: ADDR.submissions }],
+    ["submissions", "ChallengeManagerSet", { challengeManager: ADDR.challenges }],
+    ["registry", "ProblemRegistered", {
+      problemId: 1n, specHash: hash(1), verifierImageHash: hash(2),
+      pool: ADDR.pool, metadataURI: "ipfs://portal-refund",
+    }],
+  ], 10);
+  tx([["pool", "Funded", { from: ADDR.owner, amount: 100n, newBalance: 100n }], ["pool", "SponsorshipFunded", {
+    payer: ADDR.owner, sponsor: ADDR.owner, amount: 100n,
+    sponsorPrincipal: 100n, accountedBalance: 100n,
+  }]], 20);
+  tx([["ledger", "Closed", { poolBalance: 100n, feeReserve: 0n, closedAt: 30n, claimDeadline: 0n }]], 30);
+  if (refunded) tx([["pool", "SponsorRefunded", { sponsor: ADDR.owner, recipient: ADDR.owner, principal: 100n }]], 40);
+  return events;
+}
+
 function openWitnessFixture() {
   const solutionBytes = ethers.toUtf8Bytes('{"answer":42}');
   const { events, tx } = fixtureBuilder();
@@ -1215,6 +1364,101 @@ describe("P42 deterministic indexer replay", () => {
     assert.match(bad.mismatches[0].reason, /decoy matched|ambiguous reveal calldata/);
   });
 
+
+  it("projects the canonical portal read model and rejects malformed or reordered projections", () => {
+    const events = portalEconomicFixture();
+    const checkpoint = portalCheckpoint(events);
+    const projection = checkpoint.boards[0].portalProjection;
+
+    assert.equal(projection.frontier.currentAtoms, "800");
+    assert.deepEqual(
+      projection.submissions.map((submission) => ({
+        submissionId: submission.submissionId,
+        solver: submission.solver,
+        status: submission.status,
+        score: submission.claimedScoreAtoms,
+        improvement: submission.improvementAtoms,
+        credit: submission.creditAtoms,
+        cid: submission.solutionCid,
+        committedAt: submission.committedAt,
+        revealedAt: submission.revealedAt,
+        finalizedAt: submission.finalizedAt,
+      })),
+      [
+        {
+          submissionId: "1", solver: ADDR.solverA, status: "Finalized", score: "900",
+          improvement: "100", credit: "100", cid: "ipfs://solution-a",
+          committedAt: "30", revealedAt: "40", finalizedAt: "60",
+        },
+        {
+          submissionId: "2", solver: ADDR.solverB, status: "Finalized", score: "800",
+          improvement: "100", credit: "100", cid: "ar://solution-b",
+          committedAt: "70", revealedAt: "80", finalizedAt: "130",
+        },
+      ],
+    );
+    assert.ok(projection.submissions[1].sourceLogs.some((log) => log.eventName === "Challenged"));
+    assert.ok(projection.submissions[1].sourceLogs.some((log) => log.eventName === "Resolved"));
+    assert.deepEqual(projection.solvers, [
+      { solver: ADDR.solverA, creditAtoms: "100", claimedWei: "500" },
+      { solver: ADDR.solverB, creditAtoms: "100", claimedWei: "0" },
+    ]);
+    assert.deepEqual(projection.pool, {
+      accountedBalanceWei: "0",
+      refundableWei: "0",
+      totalClaimedWei: "450",
+      totalFeeAccruedWei: "50",
+      totalFeePaidWei: "50",
+      totalFundedWei: "1000",
+      totalResidualPaidWei: "500",
+      totalSponsorRefundedWei: "0",
+    });
+    assert.deepEqual(projection.ledgerClose, {
+      closed: true,
+      closedAt: "140",
+      closedPoolBalanceWei: "1000",
+      feeReserveWei: "0",
+      feeSwept: false,
+      residualSwept: true,
+      totalCreditAtoms: "200",
+      totalFeeAccruedWei: "50",
+      totalGrossClaimedWei: "500",
+    });
+    assert.equal(projection.eventProvenance.total, events.length);
+    assert.equal(projection.eventProvenance.replayEventsDigest, checkpoint.boards[0].events.digest);
+
+    const refundable = portalCheckpoint(portalRefundFixture({ refunded: false }));
+    assert.equal(refundable.boards[0].portalProjection.pool.refundableWei, "100");
+    const refunded = portalCheckpoint(portalRefundFixture({ refunded: true }));
+    assert.equal(refunded.boards[0].portalProjection.pool.refundableWei, "0");
+    assert.equal(refunded.boards[0].portalProjection.pool.totalSponsorRefundedWei, "100");
+
+    const malformed = structuredClone(checkpoint);
+    delete malformed.boards[0].portalProjection.pool.totalFundedWei;
+    assert.throws(
+      () => validateMultiBoardCheckpoint(malformed),
+      /portalProjection\.pool\.totalFundedWei/,
+    );
+
+    const reorderedSubmissions = structuredClone(checkpoint);
+    reorderedSubmissions.boards[0].portalProjection.submissions.reverse();
+    assert.throws(
+      () => validateMultiBoardCheckpoint(reorderedSubmissions),
+      /portalProjection\.submissions do not match replay state/,
+    );
+
+    const reorderedProvenance = structuredClone(checkpoint);
+    reorderedProvenance.boards[0].portalProjection.eventProvenance.logs.reverse();
+    assert.throws(
+      () => validateMultiBoardCheckpoint(reorderedProvenance),
+      /provenance logs are not canonically ordered/,
+    );
+
+    assert.equal(
+      `${stableStringify(checkpoint)}\n`,
+      `${stableStringify(portalCheckpoint(portalEconomicFixture()))}\n`,
+    );
+  });
 
   it("builds byte-stable checkpoints for identical finalized evidence", () => {
     const events = lifecycleFixture();
