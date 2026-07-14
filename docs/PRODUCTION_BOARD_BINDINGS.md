@@ -84,7 +84,14 @@ reproduction, production audit, or activation authority.
 
 ## Reproduction
 
-Validate structure with the repository's Python dependencies:
+Validate the schema, all repository hashes, manifest fields, source trees, and
+exact seed verifier outputs with:
+
+```bash
+make verify-production-board-bindings
+```
+
+For schema-only inspection:
 
 ```bash
 python3 - <<'PY'
