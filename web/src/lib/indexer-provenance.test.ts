@@ -172,6 +172,19 @@ describe("indexer provenance v2", () => {
     expect(configuredIndexerArtifactPaths({})).toBeNull();
     expect(configuredIndexerArtifactPaths({ P42_DEPLOYMENT_MANIFEST_PATH: "/m" })).toBeNull();
     expect(configuredIndexerArtifactPaths({ P42_DEPLOYMENT_MANIFEST_PATH: " /m ", P42_INDEXER_CHECKPOINT_PATH: " /c " })).toEqual({ deploymentManifestPath: "/m", indexerCheckpointPath: "/c" });
+    expect(configuredIndexerArtifactPaths({
+      P42_DEPLOYMENT_MANIFEST_PATH: "/m", P42_INDEXER_CHECKPOINT_PATH: "/c",
+      P42_LAUNCH_AUTHORIZATION_PATH: "/a", P42_INDEXER_CHECKPOINT_ATTESTATION_PATH: "/ca",
+      P42_FUNDING_ACTIVATION_PLAN_PATH: "/p", P42_FUNDING_ACTIVATION_COMPLETION_PATH: "/fc",
+      P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS: "300",
+      P42_ATTESTATION_TRUST_REGISTRY_PATH: "/caller/registry.json",
+      P42_ATTESTATION_TRUST_REGISTRY_SHA256: digest("f"),
+    })).toEqual({
+      deploymentManifestPath: "/m", indexerCheckpointPath: "/c",
+      launchAuthorizationPath: "/a", indexerCheckpointAttestationPath: "/ca",
+      fundingActivationPlanPath: "/p", fundingActivationCompletionPath: "/fc",
+      checkpointMaxAgeSeconds: 300,
+    });
   });
 
   it("publishes a pool only when authorization, activation, and checkpoint agree", () => {
@@ -242,13 +255,22 @@ describe("indexer provenance v2", () => {
     };
     const completion = { ...completionBody, completionDigest: canonicalDigest(completionBody) };
     const trustRegistryDigest = canonicalDigest(trustRegistry);
+    const productionPolicy = {
+      schema_version: "p42-portal-production-trust-policy/v1", environment: "production",
+      deployment_manifest: { sha256: `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}` },
+      launch_authorization: {
+        sha256: `sha256:${createHash("sha256").update(authorizationBytes).digest("hex")}`,
+        authorization_digest: authorizationDigest,
+      },
+      trust_registry: { path: "/etc/p42/attestation-trust-registry.json", sha256: trustRegistryDigest },
+    };
     const checkpointBytes = Buffer.from(JSON.stringify(base.checkpoint));
     const checkpointDigest = `sha256:${createHash("sha256").update(checkpointBytes).digest("hex")}`;
     const checkpointMessage = Buffer.from(`P42-ATTESTATION-V2\np42-indexer-checkpoint-attestation/v1\nindexer-checkpoint-authority\n${checkpointDigest}\n${checkpointSignedAt}`, "ascii");
     const checkpointAttestation = { schema: "p42-indexer-checkpoint-attestation/v1", signerRole: "indexer-checkpoint-authority", publicKey: checkpointPublicKey, checkpointDigest, signedAtUtc: checkpointSignedAt, signature: `ed25519:${sign(null, checkpointMessage, checkpointSigner.privateKey).toString("hex")}` };
     const activatedArtifacts = {
       manifest: base.manifest, manifestBytes, checkpoint: base.checkpoint, checkpointBytes,
-      authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion,
+      authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, plan, completion,
     };
     const activatedSnapshot = activatedIndexerSnapshotFromArtifacts(launchProblems, activatedArtifacts);
     expect(activatedSnapshot.provenance).toHaveLength(10);
@@ -263,11 +285,21 @@ describe("indexer provenance v2", () => {
       ...activatedArtifacts,
       completion: partialCompletion,
     })).toThrow();
-    const result = activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion);
+    const result = activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, plan, completion);
     expect(result).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[0].pool, fundingAuthorizationDigest: authorizationDigest, activationFinalizedBlock: 99 });
-    const subsetSums = activatedProvenanceFromArtifacts(launchProblems[6], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion);
+    const subsetSums = activatedProvenanceFromArtifacts(launchProblems[6], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, plan, completion);
     expect(subsetSums).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[6].pool, problemRegistryId: "7" });
+    for (const mutate of [
+      (policy: any) => { policy.deployment_manifest.sha256 = digest("8"); },
+      (policy: any) => { policy.launch_authorization.sha256 = digest("8"); },
+      (policy: any) => { policy.launch_authorization.authorization_digest = digest("8"); },
+      (policy: any) => { policy.trust_registry.sha256 = digest("8"); },
+      (policy: any) => { policy.trust_registry.path = "/tmp/caller-registry.json"; },
+    ]) {
+      const changedPolicy = clone(productionPolicy); mutate(changedPolicy);
+      expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, changedPolicy, trustRegistry, checkpointAttestation, plan, completion)).toThrow();
+    }
     base.checkpoint.boards[0].onchain.fundingAuthorizationDigest = hash("9");
-    expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion)).toThrow();
+    expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, plan, completion)).toThrow();
   });
 });

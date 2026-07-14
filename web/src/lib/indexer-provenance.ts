@@ -29,8 +29,8 @@ interface ActivatedArtifactBundle {
   checkpointBytes: Buffer;
   authorization: JsonObject;
   authorizationBytes: Buffer;
+  productionPolicy: JsonObject;
   trustRegistry: JsonObject;
-  trustRegistryDigest: string;
   checkpointAttestation: JsonObject;
   plan: JsonObject;
   completion: JsonObject;
@@ -45,8 +45,6 @@ export interface IndexerArtifactPaths {
   launchAuthorizationPath?: string;
   fundingActivationPlanPath?: string;
   fundingActivationCompletionPath?: string;
-  trustRegistryPath?: string;
-  trustRegistryDigest?: string;
   checkpointMaxAgeSeconds?: number;
 }
 
@@ -58,10 +56,11 @@ export interface IndexerProvenanceEnvironment {
   P42_LAUNCH_AUTHORIZATION_PATH?: string;
   P42_FUNDING_ACTIVATION_PLAN_PATH?: string;
   P42_FUNDING_ACTIVATION_COMPLETION_PATH?: string;
-  P42_ATTESTATION_TRUST_REGISTRY_PATH?: string;
-  P42_ATTESTATION_TRUST_REGISTRY_SHA256?: string;
   P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS?: string;
 }
+
+export const PRODUCTION_PORTAL_TRUST_POLICY_PATH = "/etc/p42/portal-production-trust-policy.json";
+export const PRODUCTION_PORTAL_TRUST_POLICY_ROOT = "/etc/p42/portal-production-trust-policy.sha256";
 
 function object(value: unknown, label: string): JsonObject {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -166,6 +165,28 @@ function readBoundedRegularJson(path: string): unknown {
   return readBoundedRegularJsonWithBytes(path).value;
 }
 
+function readProtectedFile(path: string, maxBytes: number): Buffer {
+  if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
+    throw new Error("protected portal trust policy requires O_NOFOLLOW support");
+  }
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const before = fstatSync(descriptor);
+    if (!before.isFile() || before.uid !== 0 || before.nlink !== 1
+      || (before.mode & 0o222) !== 0 || before.size > maxBytes) {
+      throw new Error("protected portal trust policy file is unsafe");
+    }
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (bytes.length !== before.size || before.dev !== after.dev || before.ino !== after.ino
+      || before.uid !== after.uid || before.mode !== after.mode || before.nlink !== after.nlink
+      || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs) {
+      throw new Error("protected portal trust policy changed while reading");
+    }
+    return bytes;
+  } finally { closeSync(descriptor); }
+}
+
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value !== null && typeof value === "object") {
@@ -200,6 +221,47 @@ function sha256Bytes(bytes: Buffer): string {
 
 function sha256Canonical(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(canonicalize(value))).digest("hex")}`;
+}
+
+function exactKeys(value: JsonObject, keys: readonly string[]): boolean {
+  return JSON.stringify(Object.keys(value).sort()) === JSON.stringify([...keys].sort());
+}
+
+function verifyProductionPolicyBindings(
+  policy: JsonObject,
+  manifestBytes: Buffer,
+  authorization: JsonObject,
+  authorizationBytes: Buffer,
+  trustRegistry: JsonObject,
+): string {
+  requireBinding(exactKeys(policy, ["schema_version", "environment", "deployment_manifest", "launch_authorization", "trust_registry"]));
+  requireBinding(policy.schema_version === "p42-portal-production-trust-policy/v1" && policy.environment === "production");
+  const manifestPin = object(policy.deployment_manifest, "production policy deployment manifest");
+  const authorizationPin = object(policy.launch_authorization, "production policy launch authorization");
+  const registryPin = object(policy.trust_registry, "production policy trust registry");
+  requireBinding(exactKeys(manifestPin, ["sha256"])
+    && exactKeys(authorizationPin, ["sha256", "authorization_digest"])
+    && exactKeys(registryPin, ["path", "sha256"]));
+  requireBinding(manifestPin.sha256 === sha256Bytes(manifestBytes));
+  requireBinding(authorizationPin.sha256 === sha256Bytes(authorizationBytes)
+    && authorizationPin.authorization_digest === authorization.authorization_digest);
+  requireBinding(typeof registryPin.path === "string" && registryPin.path.startsWith("/etc/p42/")
+    && registryPin.sha256 === sha256Canonical(trustRegistry));
+  return registryPin.sha256 as string;
+}
+
+function readProductionTrustPolicy(): { policy: JsonObject; trustRegistry: JsonObject } {
+  const policyBytes = readProtectedFile(PRODUCTION_PORTAL_TRUST_POLICY_PATH, MAX_ARTIFACT_BYTES);
+  const rootBytes = readProtectedFile(PRODUCTION_PORTAL_TRUST_POLICY_ROOT, 256);
+  if (!rootBytes.every((byte) => byte <= 0x7f)) throw new Error("protected portal trust policy root must be ASCII");
+  const expectedPolicyDigest = rootBytes.toString("ascii").trim();
+  if (!/^sha256:[0-9a-f]{64}$/.test(expectedPolicyDigest) || expectedPolicyDigest !== sha256Bytes(policyBytes)) {
+    throw new Error("portal production trust policy does not match its protected root");
+  }
+  const policy = object(JSON.parse(policyBytes.toString("utf8")) as unknown, "production portal trust policy");
+  const registryPin = object(policy.trust_registry, "production policy trust registry");
+  const trustRegistry = object(readBoundedRegularJson(String(registryPin.path)), "trust registry");
+  return { policy, trustRegistry };
 }
 
 const AUTHORIZER_ROLES = new Set([
@@ -334,17 +396,15 @@ export function configuredIndexerArtifactPaths(env: IndexerProvenanceEnvironment
   const indexerCheckpointAttestationPath = env.P42_INDEXER_CHECKPOINT_ATTESTATION_PATH?.trim();
   const fundingActivationPlanPath = env.P42_FUNDING_ACTIVATION_PLAN_PATH?.trim();
   const fundingActivationCompletionPath = env.P42_FUNDING_ACTIVATION_COMPLETION_PATH?.trim();
-  const trustRegistryPath = env.P42_ATTESTATION_TRUST_REGISTRY_PATH?.trim();
-  const trustRegistryDigest = env.P42_ATTESTATION_TRUST_REGISTRY_SHA256?.trim();
   const maxAgeText = env.P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS?.trim();
   const checkpointMaxAgeSeconds = maxAgeText ? Number(maxAgeText) : null;
-  const funding = [launchAuthorizationPath, fundingActivationPlanPath, fundingActivationCompletionPath, indexerCheckpointAttestationPath, trustRegistryPath, trustRegistryDigest];
+  const funding = [launchAuthorizationPath, fundingActivationPlanPath, fundingActivationCompletionPath, indexerCheckpointAttestationPath];
   if (funding.some(Boolean) && (!funding.every(Boolean) || !Number.isSafeInteger(checkpointMaxAgeSeconds) || checkpointMaxAgeSeconds! < 1 || checkpointMaxAgeSeconds! > 300)) return { deploymentManifestPath, indexerCheckpointPath };
   return funding.every(Boolean) ? {
     deploymentManifestPath, indexerCheckpointPath,
     indexerCheckpointAttestationPath,
     launchAuthorizationPath, fundingActivationPlanPath, fundingActivationCompletionPath,
-    trustRegistryPath, trustRegistryDigest, checkpointMaxAgeSeconds: checkpointMaxAgeSeconds!,
+    checkpointMaxAgeSeconds: checkpointMaxAgeSeconds!,
   } : { deploymentManifestPath, indexerCheckpointPath };
 }
 
@@ -408,8 +468,8 @@ export function activatedProvenanceFromArtifacts(
   checkpointBytes: Buffer,
   authorization: JsonObject,
   authorizationBytes: Buffer,
+  productionPolicy: JsonObject,
   trustRegistry: JsonObject,
-  trustRegistryDigest: string,
   checkpointAttestation: JsonObject,
   plan: JsonObject,
   completion: JsonObject,
@@ -419,6 +479,9 @@ export function activatedProvenanceFromArtifacts(
   const pending = provenanceFromArtifacts(problem, manifest, checkpoint);
   requireBinding(manifest.releaseMode === "production" && manifest.status === "governance-setup-complete");
   requireBinding(authorization.schema_version === "p42-production-launch-authorization/v1" && authorization.status === "authorized");
+  const trustRegistryDigest = verifyProductionPolicyBindings(
+    productionPolicy, manifestBytes, authorization, authorizationBytes, trustRegistry,
+  );
   verifyLaunchAuthorization(authorization, trustRegistry, trustRegistryDigest);
   verifyCheckpointAttestation(checkpointAttestation, checkpointBytes, trustRegistry, nowSeconds);
   requireBinding(/^sha256:[0-9a-f]{64}$/.test(String(authorization.authorization_digest)));
@@ -534,8 +597,8 @@ export function activatedIndexerSnapshotFromArtifacts(
       artifacts.checkpointBytes,
       artifacts.authorization,
       artifacts.authorizationBytes,
+      artifacts.productionPolicy,
       artifacts.trustRegistry,
-      artifacts.trustRegistryDigest,
       artifacts.checkpointAttestation,
       artifacts.plan,
       artifacts.completion,
@@ -563,12 +626,11 @@ export function loadActivatedIndexerSnapshot(
   if (!paths?.launchAuthorizationPath
     || !paths.fundingActivationPlanPath
     || !paths.fundingActivationCompletionPath
-    || !paths.indexerCheckpointAttestationPath
-    || !paths.trustRegistryPath
-    || !paths.trustRegistryDigest) return null;
+    || !paths.indexerCheckpointAttestationPath) return null;
   try {
     const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
     const authorizationFile = readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath);
+    const productionTrust = readProductionTrustPolicy();
     const completion = object(readBoundedRegularJson(paths.fundingActivationCompletionPath), "activation completion");
     validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
     return activatedIndexerSnapshotFromArtifacts(problems, {
@@ -578,8 +640,8 @@ export function loadActivatedIndexerSnapshot(
       checkpointBytes,
       authorization: object(authorizationFile.value, "authorization"),
       authorizationBytes: authorizationFile.bytes,
-      trustRegistry: object(readBoundedRegularJson(paths.trustRegistryPath), "trust registry"),
-      trustRegistryDigest: paths.trustRegistryDigest,
+      productionPolicy: productionTrust.policy,
+      trustRegistry: productionTrust.trustRegistry,
       checkpointAttestation: object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath), "checkpoint attestation"),
       plan: object(readBoundedRegularJson(paths.fundingActivationPlanPath), "activation plan"),
       completion,
@@ -594,15 +656,15 @@ export function loadIndexerProvenance(problem: Problem, paths = configuredIndexe
   if (!paths) return localOnly(problem);
   try {
     const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
-    if (paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath && paths.trustRegistryPath && paths.trustRegistryDigest) {
+    if (paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath) {
       const authorizationFile = readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath);
       const authorization = object(authorizationFile.value, "authorization");
-      const trustRegistry = object(readBoundedRegularJson(paths.trustRegistryPath), "trust registry");
+      const productionTrust = readProductionTrustPolicy();
       const checkpointAttestation = object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath), "checkpoint attestation");
       const plan = object(readBoundedRegularJson(paths.fundingActivationPlanPath), "activation plan");
       const completion = object(readBoundedRegularJson(paths.fundingActivationCompletionPath), "activation completion");
       validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
-      return activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization, authorizationFile.bytes, trustRegistry, paths.trustRegistryDigest, checkpointAttestation, plan, completion, paths.checkpointMaxAgeSeconds);
+      return activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization, authorizationFile.bytes, productionTrust.policy, productionTrust.trustRegistry, checkpointAttestation, plan, completion, paths.checkpointMaxAgeSeconds);
     }
     return provenanceFromArtifacts(problem, manifest, checkpoint);
   } catch { return localOnly(problem); }
@@ -616,16 +678,16 @@ export function loadIndexerProvenanceSnapshot(
   if (!paths) return new Map(problems.map((problem) => [problem.slug, localOnly(problem)]));
   try {
     const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
-    const hasFunding = paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath && paths.trustRegistryPath && paths.trustRegistryDigest;
+    const hasFunding = paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath;
     const authorizationFile = hasFunding ? readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath!) : null;
     const authorization = authorizationFile ? object(authorizationFile.value, "authorization") : null;
-    const trustRegistry = hasFunding ? object(readBoundedRegularJson(paths.trustRegistryPath!), "trust registry") : null;
+    const productionTrust = hasFunding ? readProductionTrustPolicy() : null;
     const checkpointAttestation = hasFunding ? object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath!), "checkpoint attestation") : null;
     const plan = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationPlanPath!), "activation plan") : null;
     const completion = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationCompletionPath!), "activation completion") : null;
     if (completion) validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
     const entries = problems.map((problem) => [problem.slug, hasFunding
-      ? activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization!, authorizationFile!.bytes, trustRegistry!, paths.trustRegistryDigest!, checkpointAttestation!, plan!, completion!, paths.checkpointMaxAgeSeconds)
+      ? activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization!, authorizationFile!.bytes, productionTrust!.policy, productionTrust!.trustRegistry, checkpointAttestation!, plan!, completion!, paths.checkpointMaxAgeSeconds)
       : provenanceFromArtifacts(problem, manifest, checkpoint)] as const);
     return new Map(entries);
   } catch {

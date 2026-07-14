@@ -17,6 +17,7 @@ from p42_prizes.launch_authorization import (
     normalize_launch_authorization,
 )
 from p42_prizes.legal import build_attestation_context
+from p42_prizes.security_audit import normalize_security_audit
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -86,6 +87,16 @@ def test_launch_authorization_schema_is_valid_draft_2020_12() -> None:
         (ROOT / "schemas" / "production-launch-authorization.schema.json").read_text()
     )
     jsonschema.Draft202012Validator.check_schema(schema)
+
+
+def test_launch_authorization_requires_independently_validated_security_audit() -> None:
+    schema = json.loads(
+        (ROOT / "schemas" / "production-launch-authorization.schema.json").read_text()
+    )
+
+    assert "security_audit" in schema["$defs"]["artifacts"]["required"]
+    assert launch_module.GATE_NORMALIZERS["security_audit"] is normalize_security_audit
+    assert launch_module.GATE_HASH_FIELDS["security_audit"] == "audit_hash"
 
 
 def test_launch_authorization_rejects_inactive_objective_proofs() -> None:

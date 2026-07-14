@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/security-audit-v1.json",
+  "title": "P42 External Security Audit v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "audit_id",
+    "status",
+    "completed_at_utc",
+    "audited_organization",
+    "release_binding",
+    "auditor",
+    "engagement_identifier",
+    "engagement_artifact",
+    "audit_report",
+    "scope",
+    "contracts_reviewed",
+    "findings",
+    "audit_hash",
+    "auditor_signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "p42-security-audit/v1" },
+    "audit_id": { "type": "string", "minLength": 1 },
+    "status": { "const": "passed" },
+    "completed_at_utc": { "type": "string", "format": "date-time" },
+    "audited_organization": { "type": "string", "minLength": 3 },
+    "release_binding": {
+      "$ref": "https://p42.xyz/schemas/adversarial-campaign-v2.json#/$defs/releaseBinding"
+    },
+    "auditor": { "$ref": "#/$defs/auditor" },
+    "engagement_identifier": { "type": "string", "minLength": 5 },
+    "engagement_artifact": { "$ref": "#/$defs/artifact" },
+    "audit_report": { "$ref": "#/$defs/artifact" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "solidity_source",
+        "deployed_runtime_bytecode",
+        "access_control_and_governance",
+        "upgrade_and_initialization",
+        "funding_and_payout_flows",
+        "submission_challenge_resolution",
+        "cryptographic_verifier_boundary",
+        "denial_of_service"
+      ],
+      "properties": {
+        "solidity_source": { "const": true },
+        "deployed_runtime_bytecode": { "const": true },
+        "access_control_and_governance": { "const": true },
+        "upgrade_and_initialization": { "const": true },
+        "funding_and_payout_flows": { "const": true },
+        "submission_challenge_resolution": { "const": true },
+        "cryptographic_verifier_boundary": { "const": true },
+        "denial_of_service": { "const": true }
+      }
+    },
+    "contracts_reviewed": {
+      "type": "array",
+      "minItems": 47,
+      "maxItems": 47,
+      "items": { "$ref": "#/$defs/contractReview" }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "audit_hash": { "$ref": "#/$defs/hash" },
+    "auditor_signature": { "$ref": "#/$defs/signature" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "artifact": {
+      "$ref": "https://p42.xyz/schemas/adversarial-campaign-v2.json#/$defs/artifact"
+    },
+    "auditor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "independent_from_p42",
+        "signed_at_utc"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "external-security-auditor" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
+        "independent_from_p42": { "const": true },
+        "signed_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "contractReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["topology_key", "name", "address", "source_sha256", "runtime_bytecode_hash"],
+      "properties": {
+        "topology_key": {
+          "type": "string",
+          "pattern": "^(?:shared\\.(?:timelock|registry|rolloverVault|submissionManagerFactory|challengeManagerFactory|objectiveVerifier|resolverQuorum)|board\\.(?:[1-9]|10)\\.(?:pool|ledger|submissions|challenges))$"
+        },
+        "name": {
+          "enum": [
+            "P42MultisigTimelock",
+            "P42ProblemRegistry",
+            "P42RolloverVault",
+            "P42SubmissionManagerFactory",
+            "P42ChallengeManagerFactory",
+            "P42SP1VerifierGateway",
+            "P42ResolverQuorum",
+            "P42BountyPool",
+            "P42PayoutLedger",
+            "P42SubmissionManager",
+            "P42ChallengeManager"
+          ]
+        },
+        "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+        "source_sha256": { "$ref": "#/$defs/hash" },
+        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "title", "severity", "disposition"],
+      "properties": {
+        "finding_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "severity": { "enum": ["critical", "high", "medium", "low", "informational"] },
+        "disposition": { "enum": ["resolved", "accepted", "open"] },
+        "remediation_artifact": { "$ref": "#/$defs/artifact" },
+        "retest_artifact": { "$ref": "#/$defs/artifact" },
+        "risk_acceptance_artifact": { "$ref": "#/$defs/artifact" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "disposition": { "const": "resolved" },
+              "severity": { "enum": ["critical", "high", "medium", "low"] }
+            },
+            "required": ["disposition", "severity"]
+          },
+          "then": {
+            "required": ["remediation_artifact", "retest_artifact"],
+            "not": { "required": ["risk_acceptance_artifact"] }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "disposition": { "const": "resolved" },
+              "severity": { "const": "informational" }
+            },
+            "required": ["disposition", "severity"]
+          },
+          "then": {
+            "not": {
+              "anyOf": [
+                { "required": ["remediation_artifact"] },
+                { "required": ["retest_artifact"] },
+                { "required": ["risk_acceptance_artifact"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "disposition": { "const": "accepted" } },
+            "required": ["disposition"]
+          },
+          "then": {
+            "properties": { "severity": { "enum": ["medium", "low", "informational"] } },
+            "required": ["risk_acceptance_artifact"],
+            "not": {
+              "anyOf": [
+                { "required": ["remediation_artifact"] },
+                { "required": ["retest_artifact"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "disposition": { "const": "open" } },
+            "required": ["disposition"]
+          },
+          "then": {
+            "properties": { "severity": { "const": "informational" } },
+            "not": {
+              "anyOf": [
+                { "required": ["remediation_artifact"] },
+                { "required": ["retest_artifact"] },
+                { "required": ["risk_acceptance_artifact"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "const": "external-security-auditor" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    }
+  }
+}

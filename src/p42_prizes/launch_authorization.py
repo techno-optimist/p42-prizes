@@ -25,6 +25,7 @@ from p42_prizes.legal import (
     normalize_legal_memo,
 )
 from p42_prizes.operational_controls import normalize_operational_controls
+from p42_prizes.security_audit import normalize_security_audit
 from p42_prizes.secure_json import loads_strict_json
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
@@ -38,6 +39,7 @@ AUTHORIZER_ROLES = {
     "governance-authority",
 }
 GATE_NORMALIZERS: dict[str, Callable[..., dict[str, Any]]] = {
+    "security_audit": normalize_security_audit,
     "legal_memo": normalize_legal_memo,
     "governance_signoff": normalize_governance_signoff,
     "incident_drill": normalize_incident_drill_report,
@@ -45,6 +47,7 @@ GATE_NORMALIZERS: dict[str, Callable[..., dict[str, Any]]] = {
     "operational_controls": normalize_operational_controls,
 }
 GATE_HASH_FIELDS = {
+    "security_audit": "audit_hash",
     "legal_memo": "legal_hash",
     "governance_signoff": "governance_hash",
     "incident_drill": "drill_hash",

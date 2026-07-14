@@ -99,6 +99,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "security_audit",
         "legal_memo",
         "governance_signoff",
         "incident_drill",
@@ -113,6 +114,7 @@
         "explorer_operator_policy"
       ],
       "properties": {
+        "security_audit": { "$ref": "#/$defs/artifact" },
         "legal_memo": { "$ref": "#/$defs/artifact" },
         "governance_signoff": { "$ref": "#/$defs/artifact" },
         "incident_drill": { "$ref": "#/$defs/artifact" },
