@@ -84,7 +84,8 @@ reproduction, production audit, or activation authority.
 
 ## Reproduction
 
-Validate the schema, all repository hashes, manifest fields, source trees, and
+After installing the locked root and per-problem verifier dependencies,
+validate the schema, all repository hashes, manifest fields, source trees, and
 exact seed verifier outputs with:
 
 ```bash

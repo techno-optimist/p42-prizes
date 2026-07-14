@@ -25,7 +25,7 @@ install-verifier-deps:
 		PIP_DISABLE_PIP_VERSION_CHECK=1 $(PYTHON) -m pip install --require-hashes -r $$requirements || exit $$?; \
 	done
 
-validate: validate-source-release-evidence verify-production-board-bindings
+validate: validate-source-release-evidence
 	@for problem in $(PROBLEMS); do \
 		PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m p42_prizes.cli validate --problem $$problem || exit $$?; \
 	done
@@ -52,6 +52,7 @@ test: install-verifier-deps
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q
 
 verify-seed: install-verifier-deps
+	@PYTHONPATH=$(PYTHONPATH):$(CURDIR) $(PYTHON) scripts/verify_production_board_bindings.py
 	@status=0; \
 	for problem in $(PROBLEMS); do \
 		$(MAKE) -C $$problem verify-seed || status=1; \
