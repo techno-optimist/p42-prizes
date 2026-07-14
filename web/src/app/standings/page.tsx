@@ -36,8 +36,8 @@ export default function StandingsPage() {
         <h1>The pilot cohort.</h1>
         <p className="abstract">
           Six agents operated by ProjectForty2 run the payout mechanism across the local modeled slate, so you can see how a
-          pool resolves before any real ether is at stake. CHRONOS sets the floor on every board and returns its entire modeled
-          share back into the pool; the other five compete for what remains.
+          pool resolves before any real ether is at stake. After a source pool closes, CHRONOS redirects each nonzero matured
+          modeled award into the distinct Hadamard Mini pool as CHRONOS-attributed sponsorship; the other five collect theirs.
         </p>
       </header>
 
@@ -67,8 +67,8 @@ export default function StandingsPage() {
           <strong>≈{weiToEth(standings.totalPoolWei, 2)}</strong> <span className="qual">simulated ETH units</span>
         </div>
         <div>
-          <span className="smallcaps">Returned to pool</span>
-          <strong>≈{weiToEth(standings.totalDonatedWei, 3)}</strong> <span className="qual">by CHRONOS</span>
+          <span className="smallcaps">Redirected sponsorship</span>
+          <strong>≈{weiToEth(standings.totalRedirectedSponsorshipWei, 3)}</strong> <span className="qual">net · by CHRONOS</span>
         </div>
         <div>
           <span className="smallcaps">Real ETH paid</span>
@@ -104,7 +104,7 @@ export default function StandingsPage() {
                 <td className="prob-no">—</td>
                 <td>
                   <span className="agent-name">{floor.agent.name}</span>
-                  <span className="donate-tag">floor · returns share</span>
+                  <span className="donate-tag">floor · redirects matured awards</span>
                   <small className="agent-strategy">{floor.agent.strategy}</small>
                 </td>
                 <td className="num hide-sm">{floor.boards}</td>
@@ -112,7 +112,7 @@ export default function StandingsPage() {
                 <td className="num right hide-sm">{creditLabel(floor.frontierCredit)}</td>
                 <td className="num right">
                   <span className="win-eth">0</span>
-                  <span className="win-sub">≈{weiToEth(floor.donatedWei, 3)} returned</span>
+                  <span className="win-sub">≈{weiToEth(floor.redirectedSponsorshipWei, 3)} net sponsored</span>
                 </td>
               </tr>
             )}
@@ -180,13 +180,19 @@ export default function StandingsPage() {
                   <td className="split-cell">
                     {board.rows.map((row) => {
                       const agent = standings.agents.find((a) => a.agent.id === row.agentId)?.agent;
-                      const donates = agent?.donatesBack;
+                      const redirect = agent?.maturedAwardRedirect
+                        ? standings.agents.find((standing) => standing.agent.id === agent.id)?.redirects.find(
+                            (candidate) => candidate.sourceProblemId === board.problemId,
+                          )
+                        : undefined;
                       return (
                         <span className="split-part" key={row.agentId}>
                           <span className={row.isLeader ? "split-agent lead" : "split-agent"}>{agent?.name}</span>{" "}
                           <span className="muted">{rationalToString(row.share).replace("/", "⁄")}</span>{" "}
                           <span className="win-eth small">
-                            {donates ? `↩ ≈${weiToEth(row.winningsWei, 3)}` : `≈${weiToEth(row.winningsWei, 3)}`}
+                            {redirect
+                              ? `→ ${redirect.destinationTitle} ≈${weiToEth(redirect.donatedAmountWei, 3)} net`
+                              : `≈${weiToEth(row.netAwardWei, 3)}`}
                           </span>
                         </span>
                       );
@@ -200,6 +206,12 @@ export default function StandingsPage() {
         <p className="fact-note" style={{ marginTop: 12 }}>
           Pools are local simulation figures for a future Base Sepolia deployment. On the one runnable board (Hadamard Mini) the pool is 0.00, so its
           modeled winnings are zero even though CHRONOS holds the real, reproducible record there.
+        </p>
+        <p className="fact-note" style={{ marginTop: 8 }}>
+          A redirect is not a refill of its settled source pool. It is one atomic claim settlement into a distinct, same-registry destination that
+          must be armed and accepting funds. Gross award = net sponsorship + claim fee; the destination credits the net principal to CHRONOS. If
+          validation or funding fails, the transaction reverts and the source claim remains available. If the destination later closes with zero
+          credit, that attributed principal is refundable under the destination pool’s sponsor-refund rule.
         </p>
       </section>
     </div>

@@ -348,8 +348,9 @@ export default async function HomePage() {
         </div>
         <p className="prose">
           To show how a pool resolves before real ether is at stake, ProjectForty2 runs six of its own agents across
-          the modeled slate. CHRONOS sets the floor on every board and returns its entire modeled share to the pool; the
-          other five compete. Winnings are modeled by the exact payout rule in integer wei — no real ETH has moved.
+          the modeled slate. Once each source pool closes, CHRONOS redirects its nonzero matured modeled award into the
+          distinct Hadamard Mini pool as attributed sponsorship; the other five collect theirs. Redirects are atomic and
+          account for gross award, net sponsorship, and claim fee in integer wei. No real ETH has moved.
         </p>
         <table className="register standings-table" style={{ marginTop: 8 }}>
           <thead>
@@ -372,12 +373,12 @@ export default async function HomePage() {
                       <td className="prob-no">—</td>
                       <td>
                         <span className="agent-name">{floor.agent.name}</span>
-                        <span className="donate-tag">floor · returns share</span>
+                        <span className="donate-tag">floor · redirects matured awards</span>
                       </td>
                       <td className="num">{floor.records}</td>
                       <td className="num right">
                         <span className="win-eth">0</span>
-                        <span className="win-sub">≈{weiToEth(floor.donatedWei, 3)} returned</span>
+                        <span className="win-sub">≈{weiToEth(floor.redirectedSponsorshipWei, 3)} net sponsored</span>
                       </td>
                     </tr>
                   )}

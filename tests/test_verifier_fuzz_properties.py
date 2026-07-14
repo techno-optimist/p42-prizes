@@ -4,6 +4,7 @@ from copy import deepcopy
 from decimal import Decimal, localcontext
 from fractions import Fraction
 import hashlib
+from itertools import combinations
 import json
 from pathlib import Path
 import random
@@ -21,16 +22,23 @@ from p42_prizes.verdict import (
 )
 from verifier_fuzz_helpers import (
     SEED_EXAMPLES,
+    ROOT,
     duplicate_first_key,
     duplicate_nested_key,
     load_verifier,
+    production_board_slugs,
     run_verifier_cli,
     seed_fixture,
 )
 
 
-SLUGS = tuple(sorted(SEED_EXAMPLES))
+SLUGS = production_board_slugs()
+assert set(SEED_EXAMPLES) == set(SLUGS)
 VERIFIERS = {slug: load_verifier(slug) for slug in SLUGS}
+OUTSIDE_VERIFIERS = {
+    slug: load_verifier(slug)
+    for slug in ("hadamard-mini", "signed-autoconvolution-c3-upper")
+}
 REPORT_KEYS = {
     "details",
     "improvement",
@@ -43,6 +51,15 @@ REPORT_KEYS = {
     "verifier_image",
     "verifier_version",
 }
+
+
+def test_fuzz_cohort_is_exactly_the_frozen_production_board_set() -> None:
+    assert len(SLUGS) == 10
+    assert set(SEED_EXAMPLES) == set(SLUGS)
+    assert {
+        "hadamard-mini",
+        "signed-autoconvolution-c3-upper",
+    }.isdisjoint(SLUGS)
 
 
 def assert_fail_closed(module: ModuleType, path: Path, expected_reason: str | None = None) -> dict:
@@ -129,13 +146,13 @@ TYPE_MUTATIONS = {
     "arithmetic-kakeya": ("grid", [True, 2]),
     "autoconvolution-c1-upper": ("n", True),
     "autoconvolution-c2-lower": ("n", "524288"),
+    "distinct-subset-sums-a11": ("set", "not-an-array"),
     "edges-vs-triangles": ("rows", {}),
     "erdos-min-overlap": ("denominator_power", False),
     "hadamard-668-defect": ("encoding", []),
-    "hadamard-mini": ("rows", []),
     "mertens-lp-ceiling-k12000": ("denom_pow", 48.0),
     "pnt-sparse-mertens-construction": ("denominator", True),
-    "signed-autoconvolution-c3-upper": ("denominator_power", False),
+    "q6-intersecting-hypergraph": ("vertices", True),
 }
 
 
@@ -154,13 +171,13 @@ MUTATION_FIELDS = {
     "arithmetic-kakeya": ("grid", "slopes", "free", "edge_labels", "relations"),
     "autoconvolution-c1-upper": ("n", "values"),
     "autoconvolution-c2-lower": ("n", "values"),
+    "distinct-subset-sums-a11": ("set",),
     "edges-vs-triangles": ("atoms", "row_sum", "rows"),
     "erdos-min-overlap": ("n", "denominator_power", "values"),
     "hadamard-668-defect": ("n", "encoding", "rows"),
-    "hadamard-mini": ("n", "rows"),
     "mertens-lp-ceiling-k12000": ("K", "M", "denom_pow", "m", "Y"),
     "pnt-sparse-mertens-construction": ("reach", "denominator", "printed_decimal", "support"),
-    "signed-autoconvolution-c3-upper": ("n", "denominator_power", "values"),
+    "q6-intersecting-hypergraph": ("vertices", "edges"),
 }
 
 
@@ -182,16 +199,10 @@ def test_seeded_random_fixture_mutations_are_total(slug: str, tmp_path: Path) ->
         assert_fail_closed(VERIFIERS[slug], solution)
 
 
-TOTALITY_SLUGS = (
-    "arithmetic-kakeya",
-    "erdos-min-overlap",
-    "hadamard-668-defect",
-    "mertens-lp-ceiling-k12000",
-    "pnt-sparse-mertens-construction",
-)
+CLI_TOTALITY_SLUGS = SLUGS
 
 
-@pytest.mark.parametrize("slug", TOTALITY_SLUGS)
+@pytest.mark.parametrize("slug", CLI_TOTALITY_SLUGS)
 def test_adversarial_cli_completes_within_timeout(slug: str, tmp_path: Path) -> None:
     solution = tmp_path / "nested-duplicate.json"
     solution.write_bytes(duplicate_nested_key(slug, seed_fixture(slug)))
@@ -207,6 +218,12 @@ def test_adversarial_cli_completes_within_timeout(slug: str, tmp_path: Path) -> 
 
 VALID_FIXTURE_EXPECTATIONS = {
     "arithmetic-kakeya": ("7/4", "NOT_STRICT_IMPROVEMENT", "edge_cost", 4),
+    "distinct-subset-sums-a11": (
+        "594/1",
+        "NOT_STRICT_IMPROVEMENT",
+        "distinct_subset_sums",
+        2048,
+    ),
     "erdos-min-overlap": (
         "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401",
         "NOT_STRICT_IMPROVEMENT",
@@ -226,10 +243,16 @@ VALID_FIXTURE_EXPECTATIONS = {
         "checked_rows",
         960000,
     ),
+    "q6-intersecting-hypergraph": (
+        "18/1",
+        "NOT_STRICT_IMPROVEMENT",
+        "pairs_checked",
+        153,
+    ),
 }
 
 
-@pytest.mark.parametrize("slug", TOTALITY_SLUGS)
+@pytest.mark.parametrize("slug", tuple(VALID_FIXTURE_EXPECTATIONS))
 def test_uncovered_valid_fixture_executes_real_score_path(slug: str, tmp_path: Path) -> None:
     fixture = seed_fixture(slug)
     solution = tmp_path / "valid.json"
@@ -288,7 +311,7 @@ def test_c2_score_matches_naive_oracle(values: list[int], monkeypatch: pytest.Mo
 def test_signed_autoconvolution_score_uses_absolute_linf(
     values: list[int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    module = VERIFIERS["signed-autoconvolution-c3-upper"]
+    module = OUTSIDE_VERIFIERS["signed-autoconvolution-c3-upper"]
     monkeypatch.setattr(module, "N", len(values))
     coefficients = naive_autoconvolution(values)
     linf = max(map(abs, coefficients))
@@ -311,7 +334,7 @@ def test_signed_autoconvolution_score_uses_absolute_linf(
 def test_hadamard_mini_defect_matches_pairwise_oracle(
     rows: list[list[int]], expected_defect: int
 ) -> None:
-    module = VERIFIERS["hadamard-mini"]
+    module = OUTSIDE_VERIFIERS["hadamard-mini"]
 
     defect, pairs = module.compute_defect(rows)
     expected = sum(
@@ -480,6 +503,90 @@ def test_hadamard_668_matches_bit_by_bit_dot_oracle(
     assert details["max_abs_dot"] == max(map(abs, dots))
 
 
+def test_distinct_subset_sums_seed_matches_combinations_oracle() -> None:
+    module = VERIFIERS["distinct-subset-sums-a11"]
+    fixture = seed_fixture("distinct-subset-sums-a11")
+    elements = fixture["set"]
+    oracle = [
+        sum(subset)
+        for size in range(len(elements) + 1)
+        for subset in combinations(elements, size)
+    ]
+
+    score, details = module.compute_score(elements)
+
+    assert len(oracle) == len(set(oracle)) == module.SUBSET_COUNT
+    assert score == Fraction(max(elements), 1) == Fraction(594, 1)
+    assert details["min_subset_sum"] == min(oracle) == 0
+    assert details["max_subset_sum"] == max(oracle) == sum(elements)
+
+
+def test_distinct_subset_sums_element_boundary_is_exact() -> None:
+    module = VERIFIERS["distinct-subset-sums-a11"]
+    at_limit = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, module.MAX_ELEMENT]
+    parsed = module.parse_solution(json.dumps({"set": at_limit}).encode())
+    score, details = module.compute_score(parsed)
+
+    assert score == Fraction(module.MAX_ELEMENT, 1)
+    assert details["distinct_subset_sums"] == module.SUBSET_COUNT
+
+    with pytest.raises(module.VerifierFailure) as caught:
+        module.parse_solution(
+            json.dumps({"set": [*at_limit[:-1], module.MAX_ELEMENT + 1]}).encode()
+        )
+    assert caught.value.reason == "ELEMENT_RANGE"
+
+
+def q6_has_cover_of_size_at_most_five(edges: list[list[int]]) -> bool:
+    used = sorted({vertex for edge in edges for vertex in edge})
+    return any(
+        all(set(edge).intersection(candidate) for edge in edges)
+        for size in range(6)
+        for candidate in combinations(used, size)
+    )
+
+
+def test_q6_seed_matches_independent_intersection_and_cover_oracle() -> None:
+    module = VERIFIERS["q6-intersecting-hypergraph"]
+    fixture = seed_fixture("q6-intersecting-hypergraph")
+    edges = fixture["edges"]
+
+    assert all(set(left).intersection(right) for left, right in combinations(edges, 2))
+    assert not q6_has_cover_of_size_at_most_five(edges)
+    parsed_vertices, parsed_edges = module.parse_solution(json.dumps(fixture).encode())
+    assert parsed_vertices == fixture["vertices"]
+    assert module.check_intersecting(parsed_edges) == 153
+    assert module.find_hitting_set(parsed_edges)[0] is None
+
+
+def test_q6_tau_five_and_vertex_cap_boundaries_fail_closed(tmp_path: Path) -> None:
+    module = VERIFIERS["q6-intersecting-hypergraph"]
+    tau_five = json.loads(
+        (ROOT / "problems" / module.PROBLEM_ID / "tests" / "boundary-tau5.json").read_text()
+    )
+    assert q6_has_cover_of_size_at_most_five(tau_five["edges"])
+    tau_path = tmp_path / "tau-five.json"
+    tau_path.write_text(json.dumps(tau_five), encoding="utf-8")
+    assert_fail_closed(module, tau_path, "COVERABLE_BY_5")
+
+    shifted = seed_fixture(module.PROBLEM_ID)
+    shifted["vertices"] = module.MAX_VERTICES
+    shifted["edges"] = [
+        [vertex + module.MAX_VERTICES - 31 for vertex in edge]
+        for edge in shifted["edges"]
+    ]
+    cap_path = tmp_path / "at-vertex-cap.json"
+    cap_path.write_text(json.dumps(shifted), encoding="utf-8")
+    at_cap = module.report_for_solution(cap_path).to_dict()
+    assert at_cap["reason"] == "NOT_STRICT_IMPROVEMENT"
+    assert at_cap["details"]["used_vertex_count"] == 31
+
+    shifted["vertices"] = module.MAX_VERTICES + 1
+    over_path = tmp_path / "over-vertex-cap.json"
+    over_path.write_text(json.dumps(shifted), encoding="utf-8")
+    assert_fail_closed(module, over_path, "V_RANGE")
+
+
 def test_mertens_dual_hash_matches_wire_format_oracle() -> None:
     module = VERIFIERS["mertens-lp-ceiling-k12000"]
     rows = [(1, 0), (17, 2**32 + 7), (119999, 2**63 - 1)]
@@ -616,13 +723,13 @@ TRANSITION_CASES = {
         "maximize",
         Fraction(689, 1200),
     ),
+    "distinct-subset-sums-a11": ("minimize", Fraction(594)),
     "edges-vs-triangles": ("maximize", Fraction(-16684282317138839, 23437500000000000)),
     "erdos-min-overlap": (
         "minimize",
         Fraction(1, 2),
     ),
     "hadamard-668-defect": ("minimize", Fraction(0)),
-    "hadamard-mini": ("minimize", Fraction(6)),
     "mertens-lp-ceiling-k12000": (
         "minimize",
         Fraction(249371902576813203926437, 250000000000000000000000),
@@ -631,10 +738,7 @@ TRANSITION_CASES = {
         "maximize",
         Fraction(0),
     ),
-    "signed-autoconvolution-c3-upper": (
-        "minimize",
-        Fraction(16),
-    ),
+    "q6-intersecting-hypergraph": ("minimize", Fraction(18)),
 }
 
 
@@ -645,9 +749,6 @@ def transition_witness(
     if slug in ("autoconvolution-c1-upper", "autoconvolution-c2-lower"):
         monkeypatch.setattr(module, "N", 4)
         fixture = {"n": 4, "values": [2, 0, 5, 1]}
-    elif slug == "signed-autoconvolution-c3-upper":
-        monkeypatch.setattr(module, "N", 2)
-        fixture = {"n": 2, "denominator_power": 0, "values": [2, -1]}
     elif slug == "erdos-min-overlap":
         monkeypatch.setattr(module, "N", 4)
         monkeypatch.setattr(module, "HALF_N", 2)
@@ -666,8 +767,6 @@ def transition_witness(
             "printed_decimal": "0.0000000000000000",
             "support": [{"k": 2, "value": 0}],
         }
-    elif slug == "hadamard-mini":
-        fixture = {"n": 4, "rows": ["++++"] * 4}
     else:
         fixture = seed_fixture(slug)
     solution.write_text(json.dumps(fixture, separators=(",", ":")), encoding="utf-8")
@@ -683,14 +782,9 @@ def test_one_atom_frontier_transition_accepts_then_rejects_equal_score(
     score_atom = Fraction(1, SCORE_ATOM_SCALE)
     solution = transition_witness(slug, tmp_path, module, monkeypatch)
 
-    if slug == "hadamard-mini":
-        frontier = expected_score + score_atom
-        expected_improvement = Fraction(score_atom, frontier)
-        monkeypatch.setattr(module, "SEED_DEFECT", frontier)
-    else:
-        frontier = expected_score + score_atom if direction == "minimize" else expected_score - score_atom
-        expected_improvement = score_atom
-        monkeypatch.setattr(module, "SEED_BEST", frontier)
+    frontier = expected_score + score_atom if direction == "minimize" else expected_score - score_atom
+    expected_improvement = score_atom
+    monkeypatch.setattr(module, "SEED_BEST", frontier)
     monkeypatch.setattr(module, "MIN_IMPROVEMENT", expected_improvement)
 
     accepted = module.report_for_solution(solution).to_dict()
@@ -701,10 +795,7 @@ def test_one_atom_frontier_transition_accepts_then_rejects_equal_score(
     assert parse_rational(accepted["improvement"]) == expected_improvement
     assert chain_score_atoms(frontier, direction) - chain_score_atoms(expected_score, direction) == 1
 
-    if slug == "hadamard-mini":
-        monkeypatch.setattr(module, "SEED_DEFECT", expected_score)
-    else:
-        monkeypatch.setattr(module, "SEED_BEST", expected_score)
+    monkeypatch.setattr(module, "SEED_BEST", expected_score)
 
     equal = module.report_for_solution(solution).to_dict()
 

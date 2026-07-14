@@ -180,8 +180,23 @@ process.stdout.write(JSON.stringify({
     return json.loads(completed.stdout)
 
 
-def test_raw_report_crosses_node_quorum_and_python_promotion(tmp_path: Path) -> None:
-    report, fixture, registry, fixture_reader = _support(tmp_path)
+@pytest.mark.parametrize(
+    ("objective", "pre", "post"),
+    [
+        ("minimize", 1000, 900),
+        ("maximize", -(10**30), -(10**30 + 50)),
+        ("maximize", 10**30, 10**30 - 50),
+    ],
+)
+def test_raw_report_crosses_node_quorum_and_python_promotion(
+    tmp_path: Path, objective: str, pre: int, post: int
+) -> None:
+    report, fixture, registry, fixture_reader = _support(
+        tmp_path,
+        objective=objective,
+        pre_frontier_atoms=pre,
+        post_frontier_atoms=post,
+    )
     policy = {
         "schema_version": "p42-open-witness-collector-policy/v1",
         "environment": "production",
@@ -249,6 +264,10 @@ def test_raw_report_crosses_node_quorum_and_python_promotion(tmp_path: Path) -> 
     assert promoted["collector_authoritative"] is True
     assert promoted["evidence_hash"] == report["evidence_hash"]
     assert promoted["collector_authority"]["quorum"] == collector["quorum"]
+    assert collector["quorum"]["evidence"]["submission"]["frontier"] == {
+        "previousAtoms": str(pre),
+        "currentAtoms": str(post),
+    }
 
     tampered = deepcopy(collector["authority_envelope"])
     tampered["signature"] = "ed25519:" + "0" * 128
