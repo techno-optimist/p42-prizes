@@ -88,6 +88,7 @@ export function buildForcedChallengePlan({
   if (expiresAt < deadline) throw new Error("policyExpiresAt must cover the challenge deadline");
 
   const forcedInclusionSeconds = 2n * windowBlocks * blockSeconds;
+  const singleDepositRequiredSeconds = windowBlocks * blockSeconds + safetySeconds;
   const requiredRemainingSeconds = forcedInclusionSeconds + safetySeconds;
   if (deadline <= now || deadline - now < requiredRemainingSeconds) {
     throw new Error(
@@ -112,6 +113,7 @@ export function buildForcedChallengePlan({
 
   return {
     version: 1,
+    l2ChainId: l2ChainId.toString(),
     l1Controller: controller,
     l1ControllerCodeHash,
     expectedForcedInclusionOwner: forcedOwner,
@@ -122,9 +124,15 @@ export function buildForcedChallengePlan({
     calldataHash,
     scopeHash,
     bondWei: bond.toString(),
+    policyExpiresAt: expiresAt.toString(),
+    challengeDeadline: deadline.toString(),
+    portalGasLimit: gasLimit.toString(),
+    sequencingWindowL1Blocks: windowBlocks.toString(),
+    l1BlockSeconds: blockSeconds.toString(),
     forcedInclusionSeconds: forcedInclusionSeconds.toString(),
     safetySeconds: safetySeconds.toString(),
     requiredRemainingSeconds: requiredRemainingSeconds.toString(),
+    singleDepositRequiredSeconds: singleDepositRequiredSeconds.toString(),
     deposits: [
       { purpose: "install-exact-policy", to: controller, valueWei: "0", calldata: setPolicyCalldata },
       { purpose: "execute-challenge", to: controller, valueWei: bond.toString(), calldata: executeCalldata },

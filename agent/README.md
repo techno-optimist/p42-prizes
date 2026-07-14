@@ -145,6 +145,36 @@ writes a `p42-signed-transaction/v1` journal under `actions/`, records the
 reconciles the receipt or rebroadcasts the same raw transaction bytes; it never
 creates a replacement nonce transaction for the same candidate.
 
+### Sequencer-censorship fallback
+
+`p42-censorship-fallback` advances one crash-safe L1/L2 state-machine step per
+invocation. It takes a frozen plan, an independently signed plan/cap
+authorization, and a private journal path, while the two L1 RPCs, two L2 RPCs,
+and operator key come only from environment variables. RPC pairs must be
+credential-free root HTTPS endpoints on distinct hosts. Fee, gas, chain, L2
+observation-start, RPC-lag, and shared coordination bounds are explicit command
+arguments. The command never accepts a private key on argv.
+
+The first transaction installs the exact one-call policy through the bounded L1
+controller. The second cannot be signed until two L2 RPCs agree on finalized
+policy storage and the exact `CallPolicySet` event is traced to an L2 deposit
+from the controller alias. Completion similarly requires exact finalized
+`Challenged` storage/event evidence. The durable journal preserves raw signed
+bytes before either broadcast and resumes them after restart. A chain-plus-
+operator lock and allocator journal are shared with the ordinary challenge
+operator, preventing separate boards from signing conflicting nonces.
+
+The authorization approver must differ from the hot operator and binds the
+exact plan, expiry, bond, portal gas, L1 gas, EIP-1559 fees, both deposits'
+worst-case fee, RPC lag, and L2 scan bounds.
+Pending progress and retryable RPC failure exit `75`, completion exits `0`, and
+terminal refusal exits `64`. The bounded systemd contract is in
+`deployments/p42-censorship-fallback.service.example`.
+
+This is not deployment evidence. `docs/CENSORSHIP_FALLBACK.md` retains the
+external review, canonical Base Sepolia deployment, live chain-parameter, gas,
+restart, reorg, and two-deposit rehearsal gates.
+
 The operator cursor stores finalized block anchors and always rescans an overlap
 window. If an anchored block changes or a rescan no longer contains a queued
 job's original `Revealed` source event, the bridge marks that job/action

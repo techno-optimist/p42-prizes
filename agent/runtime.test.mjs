@@ -58,7 +58,10 @@ test("npm pack installs complete runnable agent binaries", () => {
   execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", join(packDir, tarballName)], {
     cwd: installDir, encoding: "utf8",
   });
-  for (const module of ["transcript-store.mjs", "strict-json.mjs", "signed-transaction.mjs", "solver-manifest.mjs"]) {
+  for (const module of [
+    "transcript-store.mjs", "strict-json.mjs", "signed-transaction.mjs", "solver-manifest.mjs",
+    "censorship-fallback-runtime.mjs", "wallet-nonce-coordinator.mjs",
+  ]) {
     assert.equal(readFileSync(join(installDir, "node_modules", "p42-agent", module)).length > 0, true, module);
   }
   for (const binary of ["p42-resolve", "p42-resolver-sign", "p42-solve"]) {
@@ -69,6 +72,13 @@ test("npm pack installs complete runnable agent binaries", () => {
     assert.doesNotMatch(result.stderr, /ENOENT/, binary);
     assert.match(`${result.stdout}\n${result.stderr}`, /required:|set AGENT_PRIVATE_KEY/, `${binary} reached argument validation`);
   }
+  const fallback = spawnSync(join(installDir, "node_modules", ".bin", "p42-censorship-fallback"), [], {
+    encoding: "utf8",
+  });
+  assert.equal(fallback.status, 64, fallback.stderr);
+  assert.doesNotMatch(fallback.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
+  assert.match(fallback.stderr, /p42-censorship-fallback-outcome\/v1/);
+  assert.match(fallback.stderr, /terminal-error/);
   const installedIndexer = pathToFileURL(join(installDir, "node_modules", "p42-agent", "indexer.mjs")).href;
   const schemaProbe = spawnSync(process.execPath, ["--input-type=module", "-e", `
     const { validateManifestEvidence } = await import(${JSON.stringify(installedIndexer)});

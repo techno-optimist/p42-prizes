@@ -1,0 +1,36 @@
+[Unit]
+Description=P42 OP Stack censorship fallback
+After=network-online.target
+Wants=network-online.target
+OnFailure=p42-censorship-fallback-alert@%n.service
+
+[Service]
+Type=oneshot
+User=p42-fallback
+Group=p42-fallback
+EnvironmentFile=/etc/p42/censorship-fallback.env
+ExecStart=/usr/local/bin/p42-censorship-fallback \
+  --plan ${P42_FALLBACK_PLAN} --plan-root ${P42_FALLBACK_PLAN_ROOT} \
+  --authorization ${P42_FALLBACK_AUTHORIZATION} --authorization-root ${P42_FALLBACK_AUTHORIZATION_ROOT} \
+  --authorization-approver ${P42_FALLBACK_AUTHORIZATION_APPROVER} \
+  --state ${P42_FALLBACK_STATE} --state-root ${P42_FALLBACK_STATE_ROOT} \
+  --coordination-root ${P42_COORDINATION_ROOT} --l1-chain-id ${P42_L1_CHAIN_ID} \
+  --l2-start-block ${P42_L2_START_BLOCK} --l1-gas-limit ${P42_L1_GAS_LIMIT} \
+  --max-fee-per-gas ${P42_MAX_FEE_PER_GAS} \
+  --max-priority-fee-per-gas ${P42_MAX_PRIORITY_FEE_PER_GAS} \
+  --max-rpc-head-lag-blocks ${P42_MAX_RPC_HEAD_LAG_BLOCKS} \
+  --max-l2-scan-blocks ${P42_MAX_L2_SCAN_BLOCKS} --max-l2-logs ${P42_MAX_L2_LOGS}
+Restart=on-failure
+RestartSec=15s
+RestartPreventExitStatus=64
+RuntimeMaxSec=2min
+TimeoutStopSec=10s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=${P42_FALLBACK_STATE_ROOT} ${P42_COORDINATION_ROOT}
+
+[Install]
+WantedBy=multi-user.target
