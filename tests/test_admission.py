@@ -481,6 +481,23 @@ def test_source_hash_v2_binds_every_build_input_class(
     assert compute_source_hash(problem) != before
 
 
+@pytest.mark.parametrize("metadata_dir", ["p42_prizes.egg-info", "p42_prizes.dist-info"])
+def test_source_hash_v2_ignores_generated_package_metadata(
+    tmp_path: Path, metadata_dir: str
+) -> None:
+    root = tmp_path / "repo"
+    shutil.copytree(ROOT / "schemas", root / "schemas")
+    shutil.copytree(ROOT / "src", root / "src")
+    shutil.copytree(ROOT / "problems" / "hadamard-mini", root / "problems" / "hadamard-mini")
+    _copy_source_build_inputs(root)
+    problem = root / "problems" / "hadamard-mini"
+    before = compute_source_hash(problem)
+    generated = root / "src" / metadata_dir
+    generated.mkdir()
+    (generated / "PKG-INFO").write_text("generated metadata\n", encoding="utf-8")
+    assert compute_source_hash(problem) == before
+
+
 def test_source_hash_v2_rejects_symlinks_and_hardlinks(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     shutil.copytree(ROOT / "schemas", root / "schemas")

@@ -210,6 +210,7 @@ def compute_source_hash(problem_dir: str | Path) -> str:
 def _source_path_excluded(relative: Path) -> bool:
     return (
         "__pycache__" in relative.parts
+        or any(part.endswith((".egg-info", ".dist-info")) for part in relative.parts)
         or relative.suffix == ".pyc"
         or relative.name.endswith(".key.json")
         or relative.name == ".env"

@@ -90,8 +90,13 @@ def verify_board_bindings(root: Path, dossier_path: Path) -> None:
             raise BoardBindingError(f"{prefix}.objective does not match problem.yaml")
         if record["verifier"]["version"] != verifier["version"] or record["verifier"]["command"] != verifier["command"]:
             raise BoardBindingError(f"{prefix}.verifier identity does not match problem.yaml")
-        if compute_source_hash(problem) != record["verifier"]["source_tree_sha256"]:
-            raise BoardBindingError(f"{prefix}.verifier source-tree digest drifted")
+        observed_source_hash = compute_source_hash(problem)
+        expected_source_hash = record["verifier"]["source_tree_sha256"]
+        if observed_source_hash != expected_source_hash:
+            raise BoardBindingError(
+                f"{prefix}.verifier source-tree digest drifted: "
+                f"expected {expected_source_hash}, observed {observed_source_hash}"
+            )
 
         run = run_verifier_once(problem, seed_path)
         expected_report = record["seed"]
