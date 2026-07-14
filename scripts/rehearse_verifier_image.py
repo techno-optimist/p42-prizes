@@ -835,6 +835,7 @@ def rehearse_published(
     memory_mb: int | None,
     pids_limit: int,
     cpus: float,
+    execution_nonce: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     problem = problem_path.resolve()
     solution = solution_path.resolve()
@@ -842,6 +843,8 @@ def rehearse_published(
         raise SmokeError("published rehearsal requires an existing problem directory and solution file")
     _require_positive(pids_limit, "pids limit")
     _require_positive(cpus, "CPU limit")
+    if execution_nonce is not None and re.fullmatch(r"[0-9a-f]{64}", execution_nonce) is None:
+        raise SmokeError("execution nonce must be 64 lowercase hexadecimal characters")
 
     root = repo_root_from_problem(problem)
     if problem.parent != (root / "problems").resolve() or problem.name != board_slug:
@@ -971,6 +974,7 @@ def rehearse_published(
     report = _finalize_runtime_report({
         "schema_version": RUNTIME_SCHEMA_VERSION,
         "completed_at_utc": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "execution_nonce": execution_nonce,
         "scope": "single-host-pull-rehearsal",
         "not_launch_evidence": True,
         "source_commit": source_commit,
@@ -1059,6 +1063,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--memory-mb", type=int)
     parser.add_argument("--pids-limit", type=int, default=256)
     parser.add_argument("--cpus", type=float, default=1.0)
+    parser.add_argument("--execution-nonce", help="64-hex orchestrator challenge bound into a published rehearsal")
     return parser
 
 
@@ -1099,10 +1104,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 memory_mb=args.memory_mb,
                 pids_limit=args.pids_limit,
                 cpus=args.cpus,
+                execution_nonce=args.execution_nonce,
             )
         else:
-            if args.tag is None or args.board is not None or args.dossier_sha256 is not None:
-                raise SmokeError("local smoke mode requires --tag and forbids --board/--dossier-sha256")
+            if args.tag is None or args.board is not None or args.dossier_sha256 is not None or args.execution_nonce is not None:
+                raise SmokeError("local smoke mode requires --tag and forbids published-mode arguments")
             report, succeeded = rehearse(
                 problem_path=args.problem,
                 solution_path=args.solution,

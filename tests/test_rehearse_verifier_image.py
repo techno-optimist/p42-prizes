@@ -258,6 +258,7 @@ def _runtime_report(smoke) -> dict:
     return {
         "schema_version": smoke.RUNTIME_SCHEMA_VERSION,
         "completed_at_utc": "2026-07-14T00:00:00Z",
+        "execution_nonce": None,
         "scope": "single-host-pull-rehearsal",
         "not_launch_evidence": True,
         "source_commit": dossier["source_commit"],
