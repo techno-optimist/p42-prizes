@@ -12,6 +12,7 @@
     "censorship-fallback-runtime.mjs",
     "censorship-fallback-run.mjs",
     "censorship-fallback-supervisor.mjs",
+    "runtime-supervisor.mjs",
     "censorship-fallback-verify.mjs",
     "wallet-nonce-coordinator.mjs",
     "canonical-topology.mjs",
@@ -57,6 +58,7 @@
     "p42-indexer-checkpoint-validate": "checkpoint-validate.mjs",
     "p42-censorship-fallback": "censorship-fallback-run.mjs",
     "p42-censorship-fallback-supervisor": "censorship-fallback-supervisor.mjs",
+    "p42-runtime-supervisor": "runtime-supervisor.mjs",
     "p42-censorship-fallback-verify": "censorship-fallback-verify.mjs"
   },
   "scripts": {

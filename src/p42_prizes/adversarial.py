@@ -23,7 +23,7 @@ from p42_prizes.secure_json import loads_strict_json
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-ADVERSARIAL_CAMPAIGN_SCHEMA_VERSION = "p42-adversarial-testnet/v1"
+ADVERSARIAL_CAMPAIGN_SCHEMA_VERSION = "p42-adversarial-testnet/v2"
 RUNNER_TRANSCRIPT_ARCHIVE_SCHEMA_VERSION = "p42-runner-transcript-archive/v1"
 _MAX_RUNNER_EVIDENCE_BYTES = 8 * 1024 * 1024
 
@@ -97,7 +97,11 @@ def normalize_adversarial_campaign_report(
         raise AdversarialCampaignError("report.started_at_utc must be before report.completed_at_utc")
 
     release_binding = _validate_release_binding(
-        normalized.get("release_binding"), "report.release_binding", AdversarialCampaignError, context
+        normalized.get("release_binding"),
+        "report.release_binding",
+        AdversarialCampaignError,
+        context,
+        require_canonical_topology=True,
     )
     expected_network = "base-sepolia" if normalized["environment"] == "base-sepolia" else "local"
     if release_binding["network"] != expected_network:
@@ -587,22 +591,27 @@ def _validate_chain_bound_transcript(
                 f"{prefix}.verifier.challenge_candidate.{field} must be a non-empty string"
             )
 
+    problem_id = claim["problem_id"]
+    if not problem_id.isdigit() or str(int(problem_id)) != problem_id or not 1 <= int(problem_id) <= 10:
+        raise AdversarialCampaignError(
+            f"{prefix}.verifier.chain_claim.problem_id must be a canonical decimal board id from 1 through 10"
+        )
     expected_contracts = {
-        contract["name"]: contract["address"].casefold()
+        contract["topology_key"]: contract["address"].casefold()
         for contract in release_binding["contracts"]
     }
     if claim.get("chain_id") != release_binding["chain_id"]:
         raise AdversarialCampaignError(
             f"{prefix}.verifier.chain_claim.chain_id must match report.release_binding.chain_id"
         )
-    for field, contract_name in (
-        ("submission_contract", "P42SubmissionManager"),
-        ("challenge_contract", "P42ChallengeManager"),
+    for field, topology_key in (
+        ("submission_contract", f"board.{problem_id}.submissions"),
+        ("challenge_contract", f"board.{problem_id}.challenges"),
     ):
         value = claim.get(field)
-        if not isinstance(value, str) or value.casefold() != expected_contracts[contract_name]:
+        if not isinstance(value, str) or value.casefold() != expected_contracts[topology_key]:
             raise AdversarialCampaignError(
-                f"{prefix}.verifier.chain_claim.{field} must match the release-bound {contract_name}"
+                f"{prefix}.verifier.chain_claim.{field} must match release-bound {topology_key}"
             )
 
     for field in (

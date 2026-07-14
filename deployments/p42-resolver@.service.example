@@ -1,0 +1,54 @@
+[Unit]
+Description=P42 resolver runtime for %i
+After=network-online.target
+Wants=network-online.target
+OnFailure=p42-runtime-failure@%n.service
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=p42-resolver
+Group=p42-resolver
+EnvironmentFile=/etc/p42/resolver/%i/runtime.env
+ExecStart=/usr/local/bin/p42-runtime-supervisor \
+  --runtime /usr/bin/node --journal /var/lib/p42/resolver/%i/supervisor.jsonl \
+  --cycle-timeout-ms 120000 --kill-grace-ms 10000 --max-failures 5 \
+  --backoff-ms 1000 --max-backoff-ms 30000 -- \
+  /opt/p42/agent/resolver.mjs \
+  --rpc ${P42_RPC_URL} --manifest /etc/p42/resolver/%i/manifest.json \
+  --problem-id ${P42_PROBLEM_SLUG} --registry-problem-id ${P42_REGISTRY_PROBLEM_ID} \
+  --transcripts /var/lib/p42/resolver/%i/transcripts \
+  --quorum-signatures /var/lib/p42/resolver/%i/quorum-signatures \
+  --runtime /var/lib/p42/resolver/%i \
+  --coordination-root /var/lib/p42/resolver/coordination
+Restart=on-failure
+RestartSec=15s
+RestartPreventExitStatus=64 70 78 143
+OOMPolicy=kill
+KillMode=mixed
+TimeoutStopSec=20s
+SendSIGKILL=yes
+UMask=0077
+StateDirectory=p42/resolver/%i p42/resolver/%i/transcripts p42/resolver/%i/quorum-signatures p42/resolver/coordination
+StateDirectoryMode=0700
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/p42/resolver/%i /opt/p42
+ReadWritePaths=/var/lib/p42/resolver/%i /var/lib/p42/resolver/coordination
+InaccessiblePaths=/etc/p42/operator /etc/p42/runtime-evidence /var/lib/p42/operator /var/lib/p42/runtime-evidence
+
+[Install]
+WantedBy=multi-user.target

@@ -25,14 +25,15 @@ def chain_evidence(
     source_event_hash: str,
     evidence_hash: str,
     reason_code: str,
+    problem_id: str = "10",
 ) -> tuple[dict, dict]:
-    contracts = {contract["name"]: contract["address"] for contract in binding["contracts"]}
+    contracts = {contract["topology_key"]: contract["address"] for contract in binding["contracts"]}
     claim = {
         "schema_version": "p42-chain-claim/v1",
         "chain_id": binding["chain_id"],
-        "problem_id": "hadamard-mini",
-        "submission_contract": contracts["P42SubmissionManager"],
-        "challenge_contract": contracts["P42ChallengeManager"],
+        "problem_id": problem_id,
+        "submission_contract": contracts[f"board.{problem_id}.submissions"],
+        "challenge_contract": contracts[f"board.{problem_id}.challenges"],
         "submission_id": submission_id,
         "claimed_score_atoms": "0",
         "reveal_instance_hash": "0x" + hashlib.sha256(f"reveal:{submission_id}".encode()).hexdigest(),
@@ -105,7 +106,7 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
         )
         for index, attack_id in enumerate(attack_specs)
     }
-    binding = fixture.release_binding("base-sepolia")
+    binding = fixture.canonical_release_binding("base-sepolia")
     external_auditor = fixture.identity(
         "campaign-auditor",
         "Kendall Price",
@@ -227,7 +228,7 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
         generated_at_utc="2026-07-08T19:06:00Z",
     )
     report = {
-        "schema_version": "p42-adversarial-testnet/v1",
+        "schema_version": "p42-adversarial-testnet/v2",
         "campaign_id": "base-sepolia-gate1-2026-07",
         "started_at_utc": "2026-07-08T18:00:00Z",
         "completed_at_utc": "2026-07-08T20:00:00Z",
@@ -289,12 +290,12 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
     ]
     attach_signatures(
         report,
-        schema_version="p42-adversarial-testnet/v1",
+        schema_version="p42-adversarial-testnet/v2",
         hash_field="campaign_hash",
         signatures_field="attestations",
         signers=signers,
     )
-    registry = fixture.trust_registry("p42-adversarial-testnet/v1", signers)
+    registry = fixture.trust_registry("p42-adversarial-testnet/v2", signers)
     runner_registry = fixture.trust_registry(
         "p42-runner-transcript-archive/v1",
         [("runner-operator", runner_operator, "2026-07-08T19:05:00Z")],
@@ -415,7 +416,55 @@ def test_adversarial_campaign_rejects_runner_transcript_for_other_deployment(tmp
     transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
     rewrite_signed_runner_evidence(report, fixture, archive)
 
-    with pytest.raises(AdversarialCampaignError, match="release-bound P42SubmissionManager"):
+    with pytest.raises(AdversarialCampaignError, match=r"release-bound board\.10\.submissions"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_legacy_five_contract_release(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    report["release_binding"] = fixture.release_binding("base-sepolia")
+
+    with pytest.raises(AdversarialCampaignError, match="binding_version must be p42-release-binding/v2"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_missing_canonical_contract_slot(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    report["release_binding"]["contracts"].pop()
+
+    with pytest.raises(AdversarialCampaignError, match="exactly 47 topology contracts"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_substituted_topology_slot(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    report["release_binding"]["contracts"][0]["topology_key"] = "board.1.pool"
+
+    with pytest.raises(AdversarialCampaignError, match="does not match canonical topology slot"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_other_board_contract_for_problem(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    claim = transcript["verifier"]["chain_claim"]
+    candidate = transcript["verifier"]["challenge_candidate"]
+    contracts = {
+        contract["topology_key"]: contract["address"]
+        for contract in report["release_binding"]["contracts"]
+    }
+    claim["submission_contract"] = contracts["board.9.submissions"]
+    claim["challenge_contract"] = contracts["board.9.challenges"]
+    candidate["submission_contract"] = claim["submission_contract"]
+    candidate["challenge_contract"] = claim["challenge_contract"]
+    candidate.pop("candidate_hash")
+    candidate["candidate_hash"] = sha256_bytes(canonical_json(candidate).encode("utf-8"))
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    rewrite_signed_runner_evidence(report, fixture, archive)
+
+    with pytest.raises(AdversarialCampaignError, match=r"release-bound board\.10\.submissions"):
         normalize(report, fixture, registry)
 
 

@@ -1,0 +1,32 @@
+[Unit]
+Description=P42 runtime failure evidence for %i
+
+[Service]
+Type=oneshot
+User=p42-runtime-evidence
+Group=p42-runtime-evidence
+ExecStart=/usr/bin/systemctl show --no-pager --property=Id,LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts,StateChangeTimestamp %i
+StandardOutput=append:/var/lib/p42/runtime-evidence/%i.properties
+StandardError=journal
+TimeoutStartSec=30s
+TimeoutStopSec=10s
+KillMode=mixed
+UMask=0077
+StateDirectory=p42/runtime-evidence
+StateDirectoryMode=0700
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/p42/runtime-evidence
+InaccessiblePaths=/etc/p42/operator /etc/p42/resolver /var/lib/p42/operator /var/lib/p42/resolver

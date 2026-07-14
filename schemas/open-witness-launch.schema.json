@@ -10,7 +10,7 @@
     "schema_version": {"const": "p42-open-witness-launch/v1"},
     "evidence_id": {"type": "string", "minLength": 3},
     "observed_at_utc": {"type": "string", "format": "date-time"},
-    "release_binding": {"$ref": "adversarial-campaign.schema.json#/$defs/releaseBinding"},
+    "release_binding": {"$ref": "#/$defs/legacyReleaseBinding"},
     "board": {
       "type": "object", "additionalProperties": false,
       "required": ["registry_problem_id", "slug", "problem_registry", "bounty_pool", "submission_manager"],
@@ -54,6 +54,38 @@
     "artifact": {
       "type": "object", "additionalProperties": false, "required": ["uri", "local_path", "sha256", "created_at_utc"],
       "properties": {"uri": {"type": "string", "minLength": 1}, "local_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+"}, "sha256": {"$ref": "#/$defs/hash"}, "created_at_utc": {"type": "string", "format": "date-time"}}
+    },
+    "legacyContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "properties": {
+        "name": {"enum": ["P42BountyPool", "P42PayoutLedger", "P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"]},
+        "address": {"$ref": "#/$defs/address"},
+        "runtime_bytecode_hash": {"$ref": "#/$defs/hash"},
+        "source_artifact": {"$ref": "#/$defs/artifact"},
+        "runtime_bytecode_artifact": {"$ref": "#/$defs/artifact"},
+        "chain_bytecode_artifact": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "legacyReleaseBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_uri", "git_commit", "network", "chain_id", "deployment_manifest", "configuration_artifact", "contracts"],
+      "properties": {
+        "repository_uri": {"type": "string", "pattern": "^https://"},
+        "git_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "network": {"enum": ["local", "base-sepolia", "base-mainnet"]},
+        "chain_id": {"type": "integer", "enum": [31337, 8453, 84532]},
+        "deployment_manifest": {"$ref": "#/$defs/artifact"},
+        "configuration_artifact": {"$ref": "#/$defs/artifact"},
+        "contracts": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "items": {"$ref": "#/$defs/legacyContract"}
+        }
+      }
     },
     "receipt": {
       "type": "object", "additionalProperties": false,

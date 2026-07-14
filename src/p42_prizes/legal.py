@@ -36,6 +36,24 @@ REQUIRED_CONTRACT_NAMES = {
     "P42ChallengeManager",
     "P42ProblemRegistry",
 }
+CANONICAL_RELEASE_BINDING_VERSION = "p42-release-binding/v2"
+CANONICAL_TOPOLOGY_SCHEMA_VERSION = "p42-prizes/canonical-contract-topology/v1"
+CANONICAL_SHARED_CONTRACTS = (
+    ("timelock", "P42MultisigTimelock"),
+    ("registry", "P42ProblemRegistry"),
+    ("rolloverVault", "P42RolloverVault"),
+    ("submissionManagerFactory", "P42SubmissionManagerFactory"),
+    ("challengeManagerFactory", "P42ChallengeManagerFactory"),
+    ("objectiveVerifier", "P42SP1VerifierGateway"),
+    ("resolverQuorum", "P42ResolverQuorum"),
+)
+CANONICAL_BOARD_CONTRACTS = (
+    ("pool", "P42BountyPool"),
+    ("ledger", "P42PayoutLedger"),
+    ("submissions", "P42SubmissionManager"),
+    ("challenges", "P42ChallengeManager"),
+)
+CANONICAL_BOARD_COUNT = 10
 NETWORK_CHAIN_IDS = {"local": 31337, "base-sepolia": 84532, "base-mainnet": 8453}
 PLACEHOLDERS = {"", "tbd", "todo", "pending", "n/a", "na", "none", "null", "unknown"}
 PLACEHOLDER_WORDS = {"dummy", "example", "fake", "placeholder", "sample"}
@@ -488,6 +506,8 @@ def _validate_release_binding(
     prefix: str,
     error_type: type[ValueError],
     context: AttestationValidationContext,
+    *,
+    require_canonical_topology: bool = False,
 ) -> Mapping[str, Any]:
     if not isinstance(value, dict):
         raise error_type(f"{prefix} must be an object")
@@ -514,10 +534,37 @@ def _validate_release_binding(
     _verify_git_artifact(context, deployment_ref, commit, f"{prefix}.deployment_manifest", error_type)
     _verify_git_artifact(context, configuration_ref, commit, f"{prefix}.configuration_artifact", error_type)
 
+    canonical = value.get("binding_version") == CANONICAL_RELEASE_BINDING_VERSION
+    if require_canonical_topology and not canonical:
+        raise error_type(
+            f"{prefix}.binding_version must be {CANONICAL_RELEASE_BINDING_VERSION} for adversarial campaign evidence"
+        )
+    topology_names: dict[str, str] | None = None
+    deployment_commit: str | None = None
+    if canonical:
+        deployment_commit = value.get("deployment_commit")
+        deployment_match = (
+            COMMIT_RE.fullmatch(deployment_commit) if isinstance(deployment_commit, str) else None
+        )
+        if deployment_match is None or len(set(deployment_match.group(1))) < 8:
+            raise error_type(
+                f"{prefix}.deployment_commit must be a non-dummy 40-character lowercase commit hash"
+            )
+        _verify_git_ancestor(context, deployment_commit, commit, prefix, error_type)
+        topology_ref = _validate_artifact_reference(
+            value.get("canonical_topology"), f"{prefix}.canonical_topology", error_type, context
+        )
+        _verify_git_artifact(context, topology_ref, commit, f"{prefix}.canonical_topology", error_type)
+        topology_names = _validate_canonical_topology(
+            _artifact_bytes(context, topology_ref), f"{prefix}.canonical_topology", error_type
+        )
+
     contracts = value.get("contracts")
-    if not isinstance(contracts, list) or len(contracts) < len(REQUIRED_CONTRACT_NAMES):
-        raise error_type(f"{prefix}.contracts must contain all five P42 contracts")
+    expected_count = len(topology_names) if topology_names is not None else len(REQUIRED_CONTRACT_NAMES)
+    if not isinstance(contracts, list) or len(contracts) != expected_count:
+        raise error_type(f"{prefix}.contracts must contain exactly {expected_count} topology contracts")
     names: set[str] = set()
+    topology_keys: set[str] = set()
     addresses: set[str] = set()
     runtime_hashes: set[str] = set()
     expected_contracts: list[dict[str, Any]] = []
@@ -526,9 +573,23 @@ def _validate_release_binding(
         if not isinstance(contract, dict):
             raise error_type(f"{contract_prefix} must be an object")
         name = contract.get("name")
-        if name not in REQUIRED_CONTRACT_NAMES:
+        topology_key = contract.get("topology_key") if canonical else None
+        if canonical:
+            if not isinstance(topology_key, str) or topology_key not in topology_names:
+                raise error_type(f"{contract_prefix}.topology_key must identify a canonical topology slot")
+            if topology_key in topology_keys:
+                raise error_type(f"duplicate topology key in release binding: {topology_key}")
+            if name != topology_names[topology_key]:
+                raise error_type(f"{contract_prefix}.name does not match canonical topology slot {topology_key}")
+            topology_keys.add(topology_key)
+            _require_bytes32(
+                contract.get("manifest_runtime_code_hash"),
+                f"{contract_prefix}.manifest_runtime_code_hash",
+                error_type,
+            )
+        elif name not in REQUIRED_CONTRACT_NAMES:
             raise error_type(f"{contract_prefix}.name must identify a required P42 contract")
-        if name in names:
+        elif name in names:
             raise error_type(f"duplicate contract name in release binding: {name}")
         names.add(name)
         address = _require_address(contract.get("address"), f"{contract_prefix}.address", error_type).casefold()
@@ -540,7 +601,7 @@ def _validate_release_binding(
             f"{contract_prefix}.runtime_bytecode_hash",
             error_type,
         )
-        if runtime_hash in runtime_hashes:
+        if not canonical and runtime_hash in runtime_hashes:
             raise error_type(f"duplicate runtime bytecode hash in release binding: {runtime_hash}")
         runtime_hashes.add(runtime_hash)
         source_ref = _validate_artifact_reference(
@@ -577,12 +638,20 @@ def _validate_release_binding(
             prefix=f"{contract_prefix}.chain_bytecode_artifact",
             error_type=error_type,
         )
-        expected_contracts.append(
-            {"name": name, "address": address, "runtime_bytecode_hash": runtime_hash}
-        )
-    missing = sorted(REQUIRED_CONTRACT_NAMES - names)
+        expected_contract = {
+            "name": name,
+            "address": address,
+            "runtime_bytecode_hash": runtime_hash,
+        }
+        if canonical:
+            expected_contract.update(
+                topology_key=topology_key,
+                manifest_runtime_code_hash=contract["manifest_runtime_code_hash"].casefold(),
+            )
+        expected_contracts.append(expected_contract)
+    missing = sorted((set(topology_names) - topology_keys) if canonical else (REQUIRED_CONTRACT_NAMES - names))
     if missing:
-        raise error_type(f"{prefix}.contracts missing required contract(s): {', '.join(missing)}")
+        raise error_type(f"{prefix}.contracts missing required topology slot(s): {', '.join(missing)}")
     _validate_release_documents(
         deployment_bytes=_artifact_bytes(context, deployment_ref),
         configuration_bytes=_artifact_bytes(context, configuration_ref),
@@ -590,6 +659,8 @@ def _validate_release_binding(
         network=network,
         chain_id=chain_id,
         contracts=expected_contracts,
+        deployment_commit=deployment_commit,
+        canonical_topology=topology_names,
         prefix=prefix,
         error_type=error_type,
     )
@@ -780,6 +851,27 @@ def _verify_git_artifact(
         raise error_type(f"{prefix} resolved bytes do not match the bytes stored at release git_commit")
 
 
+def _verify_git_ancestor(
+    context: AttestationValidationContext,
+    ancestor: str,
+    descendant: str,
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    assert context.artifact_root is not None
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(context.artifact_root), "merge-base", "--is-ancestor", ancestor, descendant],
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise error_type(f"{prefix}.deployment_commit ancestry could not be verified") from exc
+    if completed.returncode != 0:
+        raise error_type(f"{prefix}.deployment_commit must be an ancestor of git_commit")
+
+
 def _run_git(
     context: AttestationValidationContext,
     arguments: list[str],
@@ -871,11 +963,26 @@ def _validate_release_documents(
     network: str,
     chain_id: int,
     contracts: list[dict[str, Any]],
+    deployment_commit: str | None,
+    canonical_topology: Mapping[str, str] | None,
     prefix: str,
     error_type: type[ValueError],
 ) -> None:
     deployment = _parse_json_object(deployment_bytes, f"{prefix}.deployment_manifest", error_type)
     configuration = _parse_json_object(configuration_bytes, f"{prefix}.configuration_artifact", error_type)
+    if canonical_topology is not None:
+        _validate_canonical_release_documents(
+            deployment=deployment,
+            configuration=configuration,
+            deployment_commit=deployment_commit,
+            network=network,
+            chain_id=chain_id,
+            contracts=contracts,
+            topology_names=canonical_topology,
+            prefix=prefix,
+            error_type=error_type,
+        )
+        return
     expected_contracts = sorted(contracts, key=lambda item: item["name"])
     manifest_contracts = deployment.get("contracts")
     if not isinstance(manifest_contracts, list):
@@ -910,6 +1017,134 @@ def _validate_release_documents(
         or configured_addresses != expected_addresses
     ):
         raise error_type(f"{prefix}.configuration_artifact bytes do not match the release binding")
+
+
+def _validate_canonical_topology(
+    topology_bytes: bytes,
+    prefix: str,
+    error_type: type[ValueError],
+) -> dict[str, str]:
+    topology = _parse_json_object(topology_bytes, prefix, error_type)
+    expected = {
+        "schema": CANONICAL_TOPOLOGY_SCHEMA_VERSION,
+        "boardCount": CANONICAL_BOARD_COUNT,
+        "shared": [{"key": key, "name": name} for key, name in CANONICAL_SHARED_CONTRACTS],
+        "perBoard": [{"key": key, "name": name} for key, name in CANONICAL_BOARD_CONTRACTS],
+    }
+    if topology != expected:
+        raise error_type(f"{prefix} bytes must equal the canonical exact-ten contract topology")
+    names = {f"shared.{key}": name for key, name in CANONICAL_SHARED_CONTRACTS}
+    for board in range(1, CANONICAL_BOARD_COUNT + 1):
+        names.update(
+            {f"board.{board}.{key}": name for key, name in CANONICAL_BOARD_CONTRACTS}
+        )
+    return names
+
+
+def _validate_canonical_release_documents(
+    *,
+    deployment: Mapping[str, Any],
+    configuration: Mapping[str, Any],
+    deployment_commit: str | None,
+    network: str,
+    chain_id: int,
+    contracts: list[dict[str, Any]],
+    topology_names: Mapping[str, str],
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    if deployment.get("schema") != "p42-prizes/deployment-manifest/v2":
+        raise error_type(f"{prefix}.deployment_manifest must be a production deployment-manifest v2")
+    if deployment_commit is None or str(deployment.get("deploymentCommit", "")).casefold() != deployment_commit:
+        raise error_type(
+            f"{prefix}.deployment_manifest deploymentCommit must match deployment_commit"
+        )
+    manifest_network = deployment.get("network")
+    expected_network_name = "baseSepolia" if network == "base-sepolia" else network
+    if not isinstance(manifest_network, Mapping) or (
+        manifest_network.get("name") != expected_network_name
+        or manifest_network.get("chainId") != chain_id
+    ):
+        raise error_type(f"{prefix}.deployment_manifest network must match the release binding")
+    if network == "base-sepolia":
+        if deployment.get("releaseMode") != "production" or deployment.get("status") != "governance-setup-complete":
+            raise error_type(
+                f"{prefix}.deployment_manifest must be a completed production Base Sepolia deployment"
+            )
+        release_evidence = deployment.get("releaseEvidence")
+        if not isinstance(release_evidence, Mapping) or (
+            release_evidence.get("contractCount") != 47
+            or release_evidence.get("boardCount") != CANONICAL_BOARD_COUNT
+        ):
+            raise error_type(f"{prefix}.deployment_manifest releaseEvidence must bind 47 contracts and 10 boards")
+
+    deployment_config_hash = _require_bytes32(
+        deployment.get("deploymentConfigHash"),
+        f"{prefix}.deployment_manifest.deploymentConfigHash",
+        error_type,
+    ).casefold()
+    manifest_contracts: dict[str, dict[str, str]] = {}
+    shared = deployment.get("contracts")
+    if not isinstance(shared, Mapping):
+        raise error_type(f"{prefix}.deployment_manifest contracts must be an object")
+    for key, expected_name in CANONICAL_SHARED_CONTRACTS:
+        manifest_contracts[f"shared.{key}"] = _canonical_manifest_contract(
+            shared.get(key), expected_name, f"{prefix}.deployment_manifest.contracts.{key}", error_type
+        )
+    problems = deployment.get("problems")
+    if not isinstance(problems, list) or len(problems) != CANONICAL_BOARD_COUNT:
+        raise error_type(f"{prefix}.deployment_manifest must contain exactly 10 problems")
+    for board, problem in enumerate(problems, start=1):
+        problem_prefix = f"{prefix}.deployment_manifest.problems[{board - 1}]"
+        if not isinstance(problem, Mapping) or str(problem.get("problemId")) != str(board):
+            raise error_type(f"{problem_prefix}.problemId must preserve canonical board order")
+        board_contracts = problem.get("contracts")
+        if not isinstance(board_contracts, Mapping):
+            raise error_type(f"{problem_prefix}.contracts must be an object")
+        for key, expected_name in CANONICAL_BOARD_CONTRACTS:
+            manifest_contracts[f"board.{board}.{key}"] = _canonical_manifest_contract(
+                board_contracts.get(key), expected_name, f"{problem_prefix}.contracts.{key}", error_type
+            )
+    if set(manifest_contracts) != set(topology_names):
+        raise error_type(f"{prefix}.deployment_manifest topology does not contain exactly 47 contracts")
+
+    expected_contracts = {
+        contract["topology_key"]: {
+            "name": contract["name"],
+            "address": contract["address"].casefold(),
+            "manifest_runtime_code_hash": contract["manifest_runtime_code_hash"].casefold(),
+        }
+        for contract in contracts
+    }
+    if manifest_contracts != expected_contracts:
+        raise error_type(f"{prefix}.deployment_manifest topology does not match the release binding")
+
+    expected_configuration = {
+        "schema": "p42-adversarial-release-configuration/v2",
+        "network": network,
+        "chain_id": chain_id,
+        "deployment_config_hash": deployment_config_hash,
+        "contracts": expected_contracts,
+    }
+    if configuration != expected_configuration:
+        raise error_type(f"{prefix}.configuration_artifact bytes do not match the canonical release binding")
+
+
+def _canonical_manifest_contract(
+    value: Any,
+    expected_name: str,
+    prefix: str,
+    error_type: type[ValueError],
+) -> dict[str, str]:
+    if not isinstance(value, Mapping) or value.get("name") != expected_name:
+        raise error_type(f"{prefix}.name must be {expected_name}")
+    return {
+        "name": expected_name,
+        "address": _require_address(value.get("address"), f"{prefix}.address", error_type).casefold(),
+        "manifest_runtime_code_hash": _require_bytes32(
+            value.get("runtimeCodeHash"), f"{prefix}.runtimeCodeHash", error_type
+        ).casefold(),
+    }
 
 
 def _parse_json_object(value: bytes, prefix: str, error_type: type[ValueError]) -> Mapping[str, Any]:
@@ -1085,6 +1320,12 @@ def _require_sha256(value: Any, prefix: str, error_type: type[ValueError]) -> st
     match = HASH_RE.fullmatch(value) if isinstance(value, str) else None
     if match is None or len(set(match.group(1))) < 8:
         raise error_type(f"{prefix} must be a non-dummy sha256:<64 lowercase hex> digest")
+    return value
+
+
+def _require_bytes32(value: Any, prefix: str, error_type: type[ValueError]) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"^0x[a-fA-F0-9]{64}$", value) is None:
+        raise error_type(f"{prefix} must be a 32-byte 0x-prefixed hex value")
     return value
 
 
