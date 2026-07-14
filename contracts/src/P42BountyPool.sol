@@ -406,6 +406,10 @@ contract P42BountyPool {
         _requireFrozenRegistryBinding(registry_);
         address ledger_ = ledger;
         if (ledger_ != address(0) && IP42PayoutLedger(ledger_).closed()) revert P42_POOL_CLOSED();
+        uint64 authorizationExpiresAt = ISubmissionManagerArmed(manager).fundingAuthorizationExpiresAt();
+        if (block.timestamp > authorizationExpiresAt) {
+            revert P42_FUNDING_AUTHORIZATION_EXPIRED(authorizationExpiresAt, uint64(block.timestamp));
+        }
         uint64 deadline = IP42PayoutLedger(ledger_).fundingDeadline();
         if (block.timestamp > deadline) revert P42_FUNDING_WINDOW_CLOSED(deadline, uint64(block.timestamp));
         uint256 currentBalance = accountedBalance;

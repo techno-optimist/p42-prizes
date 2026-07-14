@@ -21,6 +21,10 @@ contract MockFundingArmed {
         fundingArmed = armed;
     }
 
+    function setFundingAuthorizationExpiresAt(uint64 expiresAt) external {
+        fundingAuthorizationExpiresAt = expiresAt;
+    }
+
     function openSubmissionCount() external pure returns (uint256) {
         return 0;
     }
