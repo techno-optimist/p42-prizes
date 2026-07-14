@@ -493,7 +493,7 @@ def test_source_hash_v2_ignores_generated_package_metadata(
     problem = root / "problems" / "hadamard-mini"
     before = compute_source_hash(problem)
     generated = root / "src" / metadata_dir
-    generated.mkdir()
+    generated.mkdir(exist_ok=True)
     (generated / "PKG-INFO").write_text("generated metadata\n", encoding="utf-8")
     assert compute_source_hash(problem) == before
 
