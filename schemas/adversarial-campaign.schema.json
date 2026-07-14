@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://p42.xyz/schemas/adversarial-campaign-v1.json",
-  "title": "P42 Adversarial Testnet Campaign v1",
+  "$id": "https://p42.xyz/schemas/adversarial-campaign-v2.json",
+  "title": "P42 Adversarial Testnet Campaign v2",
   "type": "object",
   "required": [
     "schema_version",
@@ -24,7 +24,7 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "p42-adversarial-testnet/v1" },
+    "schema_version": { "const": "p42-adversarial-testnet/v2" },
     "campaign_id": { "type": "string", "minLength": 1 },
     "started_at_utc": { "type": "string", "format": "date-time" },
     "completed_at_utc": { "type": "string", "format": "date-time" },
@@ -177,20 +177,40 @@
     },
     "contract": {
       "type": "object",
-      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
+      "required": [
+        "topology_key",
+        "name",
+        "address",
+        "runtime_bytecode_hash",
+        "manifest_runtime_code_hash",
+        "source_artifact",
+        "runtime_bytecode_artifact",
+        "chain_bytecode_artifact"
+      ],
       "additionalProperties": false,
       "properties": {
+        "topology_key": {
+          "type": "string",
+          "pattern": "^(?:shared\\.(?:timelock|registry|rolloverVault|submissionManagerFactory|challengeManagerFactory|objectiveVerifier|resolverQuorum)|board\\.(?:[1-9]|10)\\.(?:pool|ledger|submissions|challenges))$"
+        },
         "name": {
           "enum": [
+            "P42MultisigTimelock",
+            "P42ProblemRegistry",
+            "P42RolloverVault",
+            "P42SubmissionManagerFactory",
+            "P42ChallengeManagerFactory",
+            "P42SP1VerifierGateway",
+            "P42ResolverQuorum",
             "P42BountyPool",
             "P42PayoutLedger",
             "P42SubmissionManager",
-            "P42ChallengeManager",
-            "P42ProblemRegistry"
+            "P42ChallengeManager"
           ]
         },
         "address": { "$ref": "#/$defs/address" },
         "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
+        "manifest_runtime_code_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
         "source_artifact": { "$ref": "#/$defs/artifact" },
         "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
         "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
@@ -199,26 +219,32 @@
     "releaseBinding": {
       "type": "object",
       "required": [
+        "binding_version",
         "repository_uri",
         "git_commit",
+        "deployment_commit",
         "network",
         "chain_id",
+        "canonical_topology",
         "deployment_manifest",
         "configuration_artifact",
         "contracts"
       ],
       "additionalProperties": false,
       "properties": {
+        "binding_version": { "const": "p42-release-binding/v2" },
         "repository_uri": { "type": "string", "pattern": "^https://" },
         "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "deployment_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
         "network": { "enum": ["local", "base-sepolia", "base-mainnet"] },
         "chain_id": { "type": "integer", "enum": [31337, 8453, 84532] },
+        "canonical_topology": { "$ref": "#/$defs/artifact" },
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
         "configuration_artifact": { "$ref": "#/$defs/artifact" },
         "contracts": {
           "type": "array",
-          "minItems": 5,
-          "maxItems": 5,
+          "minItems": 47,
+          "maxItems": 47,
           "items": { "$ref": "#/$defs/contract" }
         }
       }

@@ -27,6 +27,21 @@ CONTRACT_NAMES = [
     "P42ChallengeManager",
     "P42ProblemRegistry",
 ]
+CANONICAL_SHARED_CONTRACTS = [
+    ("timelock", "P42MultisigTimelock"),
+    ("registry", "P42ProblemRegistry"),
+    ("rolloverVault", "P42RolloverVault"),
+    ("submissionManagerFactory", "P42SubmissionManagerFactory"),
+    ("challengeManagerFactory", "P42ChallengeManagerFactory"),
+    ("objectiveVerifier", "P42SP1VerifierGateway"),
+    ("resolverQuorum", "P42ResolverQuorum"),
+]
+CANONICAL_BOARD_CONTRACTS = [
+    ("pool", "P42BountyPool"),
+    ("ledger", "P42PayoutLedger"),
+    ("submissions", "P42SubmissionManager"),
+    ("challenges", "P42ChallengeManager"),
+]
 
 _SIGNING_SEEDS: dict[str, bytes] = {}
 
@@ -194,6 +209,149 @@ class AttestationFixture:
             "git_commit": commit,
             "network": network,
             "chain_id": chain_id,
+            "deployment_manifest": deployment_manifest,
+            "configuration_artifact": configuration_artifact,
+            "contracts": contracts,
+        }
+
+    def canonical_release_binding(self, network: str = "base-sepolia") -> dict[str, Any]:
+        chain_id = {"local": 31337, "base-sepolia": 84532, "base-mainnet": 8453}[network]
+        topology = {
+            "schema": "p42-prizes/canonical-contract-topology/v1",
+            "boardCount": 10,
+            "shared": [{"key": key, "name": name} for key, name in CANONICAL_SHARED_CONTRACTS],
+            "perBoard": [{"key": key, "name": name} for key, name in CANONICAL_BOARD_CONTRACTS],
+        }
+        topology_artifact = self.artifact(
+            f"release-{network}-canonical-topology", content=topology, created_at_utc="2026-07-08T13:00:00Z"
+        )
+        slots = [(f"shared.{key}", name) for key, name in CANONICAL_SHARED_CONTRACTS]
+        slots.extend(
+            (f"board.{board}.{key}", name)
+            for board in range(1, 11)
+            for key, name in CANONICAL_BOARD_CONTRACTS
+        )
+        contracts: list[dict[str, Any]] = []
+        manifest_contracts: dict[str, dict[str, str]] = {}
+        for index, (topology_key, name) in enumerate(slots):
+            contract_address = address(f"{network}-{topology_key}-{name}")
+            runtime_bytes = hashlib.sha256(f"runtime:{network}:{name}".encode()).digest()[:16]
+            runtime_hash = "sha256:" + hashlib.sha256(runtime_bytes).hexdigest()
+            manifest_runtime_hash = "0x" + hashlib.sha256(
+                f"manifest-runtime:{network}:{name}".encode()
+            ).hexdigest()
+            runtime_artifact = self.artifact(
+                f"canonical-{network}-runtime-{name}",
+                content="0x" + runtime_bytes.hex(),
+                created_at_utc="2026-07-08T14:00:00Z",
+                suffix=".hex",
+            )
+            source_artifact = self.artifact(
+                f"canonical-{network}-source-{name}",
+                content=f"// exact release source for {name}\ncontract {name} {{}}\n",
+                created_at_utc="2026-07-08T13:30:00Z",
+                suffix=".sol",
+            )
+            block_number = 5200 + index
+            block_hash = "0x" + hashlib.sha256(f"canonical-block:{network}:{index}".encode()).hexdigest()
+            chain_artifact = self.artifact(
+                f"canonical-{network}-chain-{topology_key}",
+                content={
+                    "jsonrpc": "2.0",
+                    "method": "eth_getCode",
+                    "network": network,
+                    "chain_id": chain_id,
+                    "address": contract_address,
+                    "block_number": block_number,
+                    "block_hash": block_hash,
+                    "result": "0x" + runtime_bytes.hex(),
+                },
+                created_at_utc="2026-07-08T14:05:00Z",
+            )
+            self._chain_id = chain_id
+            self._chain_state[(chain_id, contract_address.casefold(), block_number)] = {
+                "block_hash": block_hash,
+                "runtime_bytecode": "0x" + runtime_bytes.hex(),
+            }
+            contracts.append(
+                {
+                    "topology_key": topology_key,
+                    "name": name,
+                    "address": contract_address,
+                    "runtime_bytecode_hash": runtime_hash,
+                    "manifest_runtime_code_hash": manifest_runtime_hash,
+                    "source_artifact": source_artifact,
+                    "runtime_bytecode_artifact": runtime_artifact,
+                    "chain_bytecode_artifact": chain_artifact,
+                }
+            )
+            manifest_contracts[topology_key] = {
+                "name": name,
+                "address": contract_address,
+                "runtimeCodeHash": manifest_runtime_hash,
+            }
+
+        self._run("git", "add", ".")
+        self._run("git", "commit", "-q", "-m", f"freeze canonical topology {network}")
+        deployment_commit = self._run("git", "rev-parse", "HEAD").stdout.strip()
+        deployment_config_hash = "0x" + hashlib.sha256(
+            f"deployment-config:{network}:{deployment_commit}".encode()
+        ).hexdigest()
+        deployment = {
+            "schema": "p42-prizes/deployment-manifest/v2",
+            "deploymentCommit": deployment_commit,
+            "network": {"name": "baseSepolia" if network == "base-sepolia" else network, "chainId": chain_id},
+            "releaseMode": "production",
+            "status": "governance-setup-complete",
+            "deploymentConfigHash": deployment_config_hash,
+            "releaseEvidence": {"contractCount": 47, "boardCount": 10},
+            "contracts": {
+                key: manifest_contracts[f"shared.{key}"] for key, _ in CANONICAL_SHARED_CONTRACTS
+            },
+            "problems": [
+                {
+                    "problemId": str(board),
+                    "contracts": {
+                        key: manifest_contracts[f"board.{board}.{key}"]
+                        for key, _ in CANONICAL_BOARD_CONTRACTS
+                    },
+                }
+                for board in range(1, 11)
+            ],
+        }
+        deployment_manifest = self.artifact(
+            f"canonical-{network}-deployment", content=deployment, created_at_utc="2026-07-08T14:10:00Z"
+        )
+        expected_contracts = {
+            contract["topology_key"]: {
+                "name": contract["name"],
+                "address": contract["address"].casefold(),
+                "manifest_runtime_code_hash": contract["manifest_runtime_code_hash"].casefold(),
+            }
+            for contract in contracts
+        }
+        configuration_artifact = self.artifact(
+            f"canonical-{network}-configuration",
+            content={
+                "schema": "p42-adversarial-release-configuration/v2",
+                "network": network,
+                "chain_id": chain_id,
+                "deployment_config_hash": deployment_config_hash,
+                "contracts": expected_contracts,
+            },
+            created_at_utc="2026-07-08T14:10:00Z",
+        )
+        self._run("git", "add", ".")
+        self._run("git", "commit", "-q", "-m", f"publish deployment evidence {network}")
+        commit = self._run("git", "rev-parse", "HEAD").stdout.strip()
+        return {
+            "binding_version": "p42-release-binding/v2",
+            "repository_uri": REPOSITORY_URI,
+            "deployment_commit": deployment_commit,
+            "git_commit": commit,
+            "network": network,
+            "chain_id": chain_id,
+            "canonical_topology": topology_artifact,
             "deployment_manifest": deployment_manifest,
             "configuration_artifact": configuration_artifact,
             "contracts": contracts,

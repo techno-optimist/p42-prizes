@@ -1,0 +1,58 @@
+[Unit]
+Description=P42 operator runtime for %i
+After=network-online.target
+Wants=network-online.target
+OnFailure=p42-runtime-failure@%n.service
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=p42-operator
+Group=p42-operator
+EnvironmentFile=/etc/p42/operator/%i/runtime.env
+ExecStart=/usr/local/bin/p42-runtime-supervisor \
+  --runtime /usr/bin/node --journal /var/lib/p42/operator/%i/supervisor.jsonl \
+  --cycle-timeout-ms 120000 --kill-grace-ms 10000 --max-failures 5 \
+  --backoff-ms 1000 --max-backoff-ms 30000 -- \
+  /opt/p42/agent/operator.mjs \
+  --rpc ${P42_RPC_URL} --nonce-rpc-secondary ${P42_NONCE_RPC_SECONDARY_URL} \
+  --manifest /etc/p42/operator/%i/manifest.json \
+  --problem /opt/p42/problems/${P42_PROBLEM_SLUG} \
+  --registry-problem-id ${P42_REGISTRY_PROBLEM_ID} \
+  --repo-root /opt/p42 --runtime /var/lib/p42/operator/%i \
+  --coordination-root /var/lib/p42/operator/coordination \
+  --runner-health-public-key ${P42_RUNNER_HEALTH_PUBLIC_KEY} \
+  --runner-recovery-public-key ${P42_RUNNER_RECOVERY_PUBLIC_KEY} \
+  --runner-host-id ${P42_RUNNER_HOST_ID} --runner-boot-id ${P42_RUNNER_BOOT_ID} \
+  --runner-queue-id ${P42_RUNNER_QUEUE_ID}
+Restart=on-failure
+RestartSec=15s
+RestartPreventExitStatus=64 70 78 143
+OOMPolicy=kill
+KillMode=mixed
+TimeoutStopSec=20s
+SendSIGKILL=yes
+UMask=0077
+StateDirectory=p42/operator/%i p42/operator/coordination
+StateDirectoryMode=0700
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/p42/operator/%i /opt/p42
+ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination
+InaccessiblePaths=/etc/p42/resolver /etc/p42/runtime-evidence /var/lib/p42/resolver /var/lib/p42/runtime-evidence
+
+[Install]
+WantedBy=multi-user.target

@@ -30,7 +30,7 @@ flag is for local tests and cannot close Gate 1.
 it differs from the queried block hash or bytecode.
 
 The trust registry is supplied out of band from the campaign report. Each
-registration binds `p42-adversarial-testnet/v1`, a reviewer role, the reviewer's
+registration binds `p42-adversarial-testnet/v2`, a reviewer role, the reviewer's
 name/organization/professional email, Ed25519 public key, and validity window.
 A signature by a key invented inside the campaign packet is rejected.
 
@@ -64,10 +64,12 @@ archive hash. Reusing the same contract addresses does not make evidence
 portable across commits, configuration, or runtime bytecode. Transcript and
 archive timestamps must be ordered
 inside the campaign window. Every transcript must carry the runner-derived
-chain claim and self-hashed challenge candidate. Their chain ID, submission and
+chain claim and self-hashed challenge candidate. Their chain ID, board ID, submission and
 challenge contract addresses, submission identity, reveal hash, and challenge
 deadline must agree with each other; the chain and contract addresses must also
-match the exact release binding under review.
+match the exact release binding under review. A transcript for board `N` must
+bind `board.N.submissions` and `board.N.challenges`; evidence from another board
+is rejected even when both instances run identical bytecode.
 
 `runner_alert_bundle` is likewise recomputed, not trusted. Validation rebuilds
 the exact `p42-runner-alerts/v2` bundle from the signed archive and rejects any
@@ -84,15 +86,25 @@ agent to spend the challenge key.
 
 ## Exact Release Binding
 
-`release_binding` contains the HTTPS repository URI, exact 40-character Git
-commit, network/chain ID, resolved deployment manifest, resolved configuration
-artifact, and exactly five required contracts. The deployment manifest,
-configuration artifact, and each source artifact must equal the bytes stored at
-the bound commit.
+`release_binding` uses `p42-release-binding/v2` and contains the HTTPS repository
+URI, exact 40-character evidence-publication `git_commit`, frozen
+`deployment_commit`, network/chain ID, resolved canonical-topology artifact,
+deployment manifest, configuration artifact, and exactly 47 contract instances.
+The deployment commit must be a Git ancestor of the publication commit. This
+models the real ceremony without asking a manifest to name the commit that first
+contains itself. Every resolved release artifact must equal the bytes stored at
+the publication commit.
+
+The topology is exact: seven shared contracts plus four contracts for each of
+ten ordered boards. Each entry has a unique `topology_key`; addresses are unique,
+while repeated contract names and runtime hashes across board instances are
+expected. The deployment manifest and configuration artifact must reconstruct
+the same topology, addresses, and manifest runtime-code hashes byte for byte.
 
 Each contract contains:
 
-- `name`, deployed `address`, and `runtime_bytecode_hash`.
+- `topology_key`, `name`, deployed `address`, `runtime_bytecode_hash`, and
+  `manifest_runtime_code_hash`.
 - `source_artifact`, resolved from the bound Git commit.
 - `runtime_bytecode_artifact`, containing non-empty `0x` EVM bytecode whose
   decoded bytes hash to `runtime_bytecode_hash`.
@@ -149,16 +161,19 @@ so it cannot accidentally green-light Gate 1.
 
 ```json
 {
-  "schema_version": "p42-adversarial-testnet/v1",
+  "schema_version": "p42-adversarial-testnet/v2",
   "campaign_id": "<REAL-CAMPAIGN-ID>",
   "started_at_utc": "<RFC3339>",
   "completed_at_utc": "<RFC3339>",
   "environment": "base-sepolia",
   "release_binding": {
+    "binding_version": "p42-release-binding/v2",
     "repository_uri": "https://github.com/techno-optimist/p42-prizes",
+    "deployment_commit": "<FROZEN-DEPLOYMENT-COMMIT>",
     "git_commit": "<EXACT-COMMIT>",
     "network": "base-sepolia",
     "chain_id": 84532,
+    "canonical_topology": "<RESOLVED-ARTIFACT-OBJECT>",
     "deployment_manifest": "<RESOLVED-ARTIFACT-OBJECT>",
     "configuration_artifact": "<RESOLVED-ARTIFACT-OBJECT>",
     "contracts": []

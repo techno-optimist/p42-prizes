@@ -1,0 +1,3 @@
+u p42-operator - "P42 operator runtime" /var/lib/p42/operator /usr/sbin/nologin
+u p42-resolver - "P42 resolver runtime" /var/lib/p42/resolver /usr/sbin/nologin
+u p42-runtime-evidence - "P42 runtime failure evidence recorder" /var/lib/p42/runtime-evidence /usr/sbin/nologin
