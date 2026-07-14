@@ -1,0 +1,326 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.ai/prizes/schemas/production-board-bindings.schema.json",
+  "title": "P42 exact-ten production board source bindings",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "board_set", "records"],
+  "properties": {
+    "schema_version": {"const": "p42-prizes/production-board-bindings/v1"},
+    "board_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"const": "protocol/production-board-set-v1.json"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "records": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "prefixItems": [
+        {"$ref": "#/$defs/q6"},
+        {"$ref": "#/$defs/erdosOverlap"},
+        {"$ref": "#/$defs/edgesTriangles"},
+        {"$ref": "#/$defs/arithmeticKakeya"},
+        {"$ref": "#/$defs/autoconvolutionC1"},
+        {"$ref": "#/$defs/autoconvolutionC2"},
+        {"$ref": "#/$defs/subsetSums"},
+        {"$ref": "#/$defs/mertensLp"},
+        {"$ref": "#/$defs/pntSparse"},
+        {"$ref": "#/$defs/hadamard"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "rational": {"type": "string", "pattern": "^-?[0-9]+/[1-9][0-9]*$"},
+    "repoArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._/-]+$"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "objective": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "score_name", "seed_best", "optimum", "min_improvement", "gauge", "target_classification"],
+      "properties": {
+        "direction": {"enum": ["minimize", "maximize"]},
+        "score_name": {"type": "string", "minLength": 1},
+        "seed_best": {"$ref": "#/$defs/rational"},
+        "optimum": {"$ref": "#/$defs/rational"},
+        "min_improvement": {"$ref": "#/$defs/rational"},
+        "gauge": {"type": "string", "minLength": 1},
+        "target_classification": {
+          "enum": ["proven_exact", "proven_lower_bound", "proven_upper_bound", "search_target", "scoped_surrogate"]
+        }
+      }
+    },
+    "missingGuest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "identity", "execution", "resource_profile", "proof_kind", "activation_eligible"],
+      "properties": {
+        "status": {"const": "missing"},
+        "identity": {"type": "null"},
+        "execution": {"type": "null"},
+        "resource_profile": {"type": "null"},
+        "proof_kind": {"const": "none"},
+        "activation_eligible": {"const": false}
+      }
+    },
+    "mockGuest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "identity", "execution", "resource_profile", "proof_kind", "activation_eligible"],
+      "properties": {
+        "status": {"const": "source-bound-mock-only"},
+        "identity": {"$ref": "#/$defs/repoArtifact"},
+        "execution": {"$ref": "#/$defs/repoArtifact"},
+        "resource_profile": {"$ref": "#/$defs/repoArtifact"},
+        "proof_kind": {"const": "none"},
+        "activation_eligible": {"const": false}
+      }
+    },
+    "board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "problem_yaml", "specification", "solution_schema", "verifier", "seed", "objective", "claim_scope", "provenance", "guest", "math_review"],
+      "properties": {
+        "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "problem_yaml": {"$ref": "#/$defs/repoArtifact"},
+        "specification": {"$ref": "#/$defs/repoArtifact"},
+        "solution_schema": {"$ref": "#/$defs/repoArtifact"},
+        "verifier": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version", "command", "source_tree_sha256"],
+          "properties": {
+            "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$"},
+            "command": {"type": "string", "minLength": 1},
+            "source_tree_sha256": {"$ref": "#/$defs/digest"}
+          }
+        },
+        "seed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256", "canonical_verdict_sha256", "verdict_valid", "verdict_reason", "verified_score", "verified_improvement"],
+          "properties": {
+            "path": {"type": "string", "pattern": "^problems/[a-z0-9][a-z0-9-]*/[^/].*\\.json$"},
+            "sha256": {"$ref": "#/$defs/digest"},
+            "canonical_verdict_sha256": {"$ref": "#/$defs/digest"},
+            "verdict_valid": {"type": "boolean"},
+            "verdict_reason": {"type": "string", "minLength": 1},
+            "verified_score": {"$ref": "#/$defs/rational"},
+            "verified_improvement": {"$ref": "#/$defs/rational"}
+          }
+        },
+        "objective": {"$ref": "#/$defs/objective"},
+        "claim_scope": {"type": "string", "minLength": 1},
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "unresolved", "local_evidence"],
+          "properties": {
+            "status": {"const": "incomplete"},
+            "unresolved": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {"type": "string", "minLength": 1}
+            },
+            "local_evidence": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"$ref": "#/$defs/repoArtifact"}
+            }
+          }
+        },
+        "guest": {"oneOf": [{"$ref": "#/$defs/missingGuest"}, {"$ref": "#/$defs/mockGuest"}]},
+        "math_review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "artifact"],
+          "properties": {
+            "status": {"const": "pending"},
+            "artifact": {"type": "null"}
+          }
+        }
+      }
+    },
+    "missingBoard": {
+      "allOf": [
+        {"$ref": "#/$defs/board"},
+        {"type": "object", "properties": {"guest": {"$ref": "#/$defs/missingGuest"}}}
+      ]
+    },
+    "q6": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetQ6"}
+      ]
+    },
+    "erdosOverlap": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetErdosOverlap"}
+      ]
+    },
+    "edgesTriangles": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetEdgesTriangles"}
+      ]
+    },
+    "arithmeticKakeya": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetArithmeticKakeya"}
+      ]
+    },
+    "autoconvolutionC1": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetAutoconvolutionC1"}
+      ]
+    },
+    "autoconvolutionC2": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetAutoconvolutionC2"}
+      ]
+    },
+    "subsetSums": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetSubsetSums"}
+      ]
+    },
+    "mertensLp": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetMertensLp"}
+      ]
+    },
+    "pntSparse": {
+      "allOf": [
+        {"$ref": "#/$defs/missingBoard"},
+        {"$ref": "#/$defs/pathSetPntSparse"}
+      ]
+    },
+    "hadamard": {
+      "allOf": [
+        {"$ref": "#/$defs/board"},
+        {"$ref": "#/$defs/pathSetHadamard"},
+        {"type": "object", "properties": {"guest": {"$ref": "#/$defs/mockGuest"}}}
+      ]
+    },
+    "pathSetQ6": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "q6-intersecting-hypergraph"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/q6-intersecting-hypergraph/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/q6-intersecting-hypergraph/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/q6-intersecting-hypergraph/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/q6-intersecting-hypergraph/tests/seed-pg25.json"}}}
+      }
+    },
+    "pathSetErdosOverlap": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "erdos-min-overlap"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/erdos-min-overlap/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/erdos-min-overlap/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/erdos-min-overlap/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/erdos-min-overlap/examples/hyra-upper.json"}}}
+      }
+    },
+    "pathSetEdgesTriangles": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "edges-vs-triangles"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/edges-vs-triangles/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/edges-vs-triangles/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/edges-vs-triangles/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/edges-vs-triangles/examples/rational-curve-sample.json"}}}
+      }
+    },
+    "pathSetArithmeticKakeya": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "arithmetic-kakeya"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/arithmetic-kakeya/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/arithmetic-kakeya/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/arithmetic-kakeya/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json"}}}
+      }
+    },
+    "pathSetAutoconvolutionC1": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "autoconvolution-c1-upper"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/autoconvolution-c1-upper/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/autoconvolution-c1-upper/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/autoconvolution-c1-upper/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/autoconvolution-c1-upper/examples/hyra-upper.json"}}}
+      }
+    },
+    "pathSetAutoconvolutionC2": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "autoconvolution-c2-lower"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/autoconvolution-c2-lower/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/autoconvolution-c2-lower/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/autoconvolution-c2-lower/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/autoconvolution-c2-lower/examples/hyra-lower.json"}}}
+      }
+    },
+    "pathSetSubsetSums": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "distinct-subset-sums-a11"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/distinct-subset-sums-a11/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/distinct-subset-sums-a11/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/distinct-subset-sums-a11/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/distinct-subset-sums-a11/tests/conway-guy-594.json"}}}
+      }
+    },
+    "pathSetMertensLp": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "mertens-lp-ceiling-k12000"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/mertens-lp-ceiling-k12000/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/mertens-lp-ceiling-k12000/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/mertens-lp-ceiling-k12000/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/mertens-lp-ceiling-k12000/examples/certificate-k12000.json"}}}
+      }
+    },
+    "pathSetPntSparse": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "pnt-sparse-mertens-construction"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/pnt-sparse-mertens-construction/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/pnt-sparse-mertens-construction/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/pnt-sparse-mertens-construction/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/pnt-sparse-mertens-construction/examples/chronos-96000.json"}}}
+      }
+    },
+    "pathSetHadamard": {
+      "type": "object",
+      "properties": {
+        "slug": {"const": "hadamard-668-defect"},
+        "problem_yaml": {"properties": {"path": {"const": "problems/hadamard-668-defect/problem.yaml"}}},
+        "specification": {"properties": {"path": {"const": "problems/hadamard-668-defect/SPEC.md"}}},
+        "solution_schema": {"properties": {"path": {"const": "problems/hadamard-668-defect/solution.schema.json"}}},
+        "seed": {"properties": {"path": {"const": "problems/hadamard-668-defect/examples/sylvester-prefix.json"}}}
+      }
+    }
+  }
+}
