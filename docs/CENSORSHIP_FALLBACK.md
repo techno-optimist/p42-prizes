@@ -263,8 +263,8 @@ eligible. Treat an unknown `RestartMode` warning as a deployment failure.
   completed cleanly both during a child step and during the supervisor's retry
   delay; and the runtime account could not write the alert state
   root. The drill ran from clean source commit
-  `88f306abdfaa5c281cfdbc7379ba8694cc2bd6c1`; report hash:
-  `sha256:e827a69d3f241530eb5e7237f0293629673ed4c3422f95842df22537fb661579`.
+  `087eb3101b4af4af84f0fa26fb3a463f506ba729`; report hash:
+  `sha256:45180a519718e93a240034b17b361864564649e9be3d23b53bbfa89f3f70e9e4`.
   This closes only the local manager-semantics subgate. The ephemeral accounts,
   shortened timings, and fixture child do not attest the canonical deployment,
   a signed deposit, reorg recovery, or external review.
