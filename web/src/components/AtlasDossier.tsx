@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { MathProse } from "@/components/MathProse";
 import { sitePath } from "@/lib/site-paths";
 
 type Entry = Record<string, unknown>;
@@ -27,12 +28,12 @@ export function AtlasDossier({ entry: value }: { entry: unknown }) {
     <nav className="atlas-back" aria-label="Breadcrumb"><Link href="/atlas">Atlas index</Link><span aria-hidden="true">/</span><span>Problem {number}</span></nav>
     <header className="atlas-dossier-head">
       <p className="atlas-kicker">Erdős problem {number} · {boardability}</p>
-      <h1>{title}</h1>
-      <p className="atlas-deck">{words(read(entry, "summary", "statement", "description", "abstract"))}</p>
+      <h1><MathProse>{title}</MathProse></h1>
+      <p className="atlas-deck"><MathProse>{words(read(entry, "summary", "statement", "description", "abstract"))}</MathProse></p>
       <dl className="atlas-dossier-facts"><div><dt>Boardability</dt><dd>{boardability}</dd></div><div><dt>Research reach</dt><dd>{reach}</dd></div><div><dt>Attack lane</dt><dd>{lane}</dd></div></dl>
     </header>
     <div className="atlas-dossier-grid">
-      <main>
+      <div className="atlas-dossier-body">
         <DossierSection no="01" title="The frontier" value={frontierText(entry)} />
         <DossierSection no="02" title="Finite object" value={read(entry, "finite_object")} />
         <DossierSection no="03" title="Verifier" value={read(entry, "verifier")} />
@@ -42,11 +43,11 @@ export function AtlasDossier({ entry: value }: { entry: unknown }) {
         <DossierSection no="07" title="Why pursue or stop" value={read(entry, "beatable_reason", "wall_reason")} />
         <DossierSection no="08" title="Prior campaign findings" value={read(entry, "campaign_finding")} />
         {compute !== undefined && <ComputeCoverage value={compute} />}
-      </main>
+      </div>
       <aside className="atlas-dossier-aside" aria-label="Dossier references and scope">
         <section><h2>Citations</h2>{citations.length ? <ol className="atlas-citations">{citations.map((citation, index) => <Citation key={index} citation={citation} />)}</ol> : <p>No bibliography was recorded for this entry in the snapshot.</p>}</section>
         <section><h2>Research scores</h2><p>Verifier fit: {words(read(entry, "fit_score"), "unscored")}/10<br />Mathematical impact: {words(read(entry, "impact_score"), "unscored")}/10</p></section>
-        <section><h2>Impact rationale</h2><p>{words(read(entry, "impact_reason"))}</p></section>
+        <section><h2>Impact rationale</h2><p><MathProse>{words(read(entry, "impact_reason"))}</MathProse></p></section>
         <section><h2>Scope note</h2><p>This dossier is a research-routing assessment. READY means an exact finite verifier is plausible; it is not a compute recommendation. Only READY + MOVABLE entries enter the recommended queue. No label asserts that the problem is solved, that a finite check proves the original statement, or that a P42 prize board has been admitted.</p></section>
         {join !== undefined && <section className="atlas-join"><h2>P42 join</h2><Join value={join} /></section>}
       </aside>
@@ -60,7 +61,7 @@ function ComputeCoverage({ value }: { value: unknown }) {
   const coverage = list(read(compute, "coverage")).filter((item) => item && typeof item === "object") as Entry[];
   return <section className="atlas-dossier-section atlas-compute"><span>09</span><div>
     <h2>Charted compute</h2>
-    <p>{words(read(compute, "result", "limits"))}</p>
+    <p><MathProse>{words(read(compute, "result", "limits"))}</MathProse></p>
     {coverage.length > 0 && <div className="atlas-coverage" role="list" aria-label="Recorded compute coverage">
       {coverage.map((record, index) => {
         const axis = words(read(record, "axis"), "parameter");
@@ -72,7 +73,7 @@ function ComputeCoverage({ value }: { value: unknown }) {
           : "";
         return <article key={`${axis}-${start}-${end}-${index}`} role="listitem">
           <div><b>{words(read(record, "status"), "RECORDED")}</b><span>{axis} {start === end ? start : `${start}–${end}`}{constraints ? ` · ${constraints}` : ""}</span></div>
-          <p>{words(read(record, "result"))}</p>
+          <p><MathProse>{words(read(record, "result"))}</MathProse></p>
         </article>;
       })}
     </div>}
@@ -81,7 +82,7 @@ function ComputeCoverage({ value }: { value: unknown }) {
 }
 
 function DossierSection({ no, title, value }: { no: string; title: string; value: unknown }) {
-  return <section className="atlas-dossier-section"><span>{no}</span><div><h2>{title}</h2>{Array.isArray(value) ? <ul>{value.map((item, index) => <li key={index}>{words(typeof item === "object" ? JSON.stringify(item) : item)}</li>)}</ul> : <p>{words(value)}</p>}</div></section>;
+  return <section className="atlas-dossier-section"><span>{no}</span><div><h2>{title}</h2>{Array.isArray(value) ? <ul>{value.map((item, index) => <li key={index}><MathProse>{words(typeof item === "object" ? JSON.stringify(item) : item)}</MathProse></li>)}</ul> : <p><MathProse>{words(value)}</MathProse></p>}</div></section>;
 }
 
 function frontierText(entry: Entry) {
