@@ -1055,7 +1055,7 @@ def test_runner_alerts_are_empty_for_clean_valid_transcript(tmp_path: Path) -> N
     assert alerts["alerts"] == []
 
 
-def test_runner_alerts_mark_invalid_transcript_as_challenge_candidate(tmp_path: Path) -> None:
+def test_runner_alerts_quarantine_local_invalid_transcript_without_chain_candidate(tmp_path: Path) -> None:
     queue = tmp_path / "runner-queue.json"
     transcripts = tmp_path / "transcripts"
     _write_runner_queue(
@@ -1078,12 +1078,12 @@ def test_runner_alerts_mark_invalid_transcript_as_challenge_candidate(tmp_path: 
     alerts = _read_runner_alerts(completed.stdout)
     assert alerts["alert_count"] == 1
     alert = alerts["alerts"][0]
-    assert alert["category"] == "verifier_rejected"
-    assert alert["severity"] == "high"
-    assert alert["recommended_action"] == "challenge_submission"
-    assert alert["agent_action_mode"] == "auto_challenge_candidate"
-    assert alert["requires_agent_challenge_key"] is True
-    assert alert["requires_spend_cap"] is True
+    assert alert["category"] == "verifier_execution_inconsistent"
+    assert alert["severity"] == "critical"
+    assert alert["recommended_action"] == "quarantine_transcript"
+    assert alert["agent_action_mode"] == "auto_quarantine"
+    assert alert["requires_agent_challenge_key"] is False
+    assert alert["requires_spend_cap"] is False
     assert alert["job_id"] == "local-invalid"
     assert alert["report_hash"].startswith("sha256:")
     assert alert["reason"] == "NOT_STRICT_IMPROVEMENT"
