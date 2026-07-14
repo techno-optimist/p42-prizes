@@ -80,13 +80,14 @@
             { "type": "null" },
             {
               "type": "object", "additionalProperties": false,
-              "required": ["challenger", "reasonHash", "challengeBondWei", "challengedAt", "disputeEndsAt", "decisionPending", "challengerWins", "transcriptHash", "transcriptURI", "verdictHash"],
+              "required": ["challenger", "reasonHash", "challengeBondWei", "challengedAt", "disputeEndsAt", "resolved", "decisionPending", "challengerWins", "transcriptHash", "transcriptURI", "verdictHash"],
               "properties": {
                 "challenger": { "$ref": "#/$defs/address" },
                 "reasonHash": { "$ref": "#/$defs/bytes32" },
                 "challengeBondWei": { "$ref": "#/$defs/canonicalUintString" },
                 "challengedAt": { "$ref": "#/$defs/canonicalUintString" },
                 "disputeEndsAt": { "$ref": "#/$defs/canonicalUintString" },
+                "resolved": { "type": "boolean" },
                 "decisionPending": { "type": "boolean" },
                 "challengerWins": { "type": "boolean" },
                 "transcriptHash": { "$ref": "#/$defs/bytes32" },

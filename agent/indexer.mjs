@@ -3901,6 +3901,7 @@ function portalSubmissionBase(submission, state) {
       challengeBondWei: activeChallenge.challengeBondWei,
       challengedAt: activeChallenge.challengedAt,
       disputeEndsAt: activeChallenge.disputeEndsAt,
+      resolved: activeChallenge.resolved,
       decisionPending: activeChallenge.decisionPending,
       challengerWins: activeChallenge.challengerWins,
       transcriptHash: activeChallenge.transcriptHash,

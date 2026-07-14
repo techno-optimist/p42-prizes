@@ -2,12 +2,13 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { FrontierChart, type FrontierPoint } from "@/components/FrontierChart";
 import { FundingPanel } from "@/components/FundingPanel";
+import { chainProvenanceForProblem } from "@/lib/chain-provenance";
 import { MathBlock } from "@/components/Math";
 import { Plate } from "@/components/Plate";
 import { getProblemBySlug, sortLeaderboardRows } from "@/lib/data";
-import { loadIndexerProvenance } from "@/lib/indexer-provenance";
+import { finalizedFrontierRows } from "@/lib/frontier";
+import { loadPortalReadModel } from "@/lib/indexer-read-model";
 import { discoveries } from "@/lib/discoveries";
-import { allSubmissionsShared } from "@/lib/portal-state";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
 import { compareRational, parseRational } from "@/lib/exact";
 import { sitePath } from "@/lib/site-paths";
@@ -18,12 +19,18 @@ export const revalidate = 0;
 
 export default async function ProblemPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
-  const problem = getProblemBySlug(slug);
-  if (!problem) notFound();
-  const chainProvenance = loadIndexerProvenance(problem);
+  const catalogProblem = getProblemBySlug(slug);
+  if (!catalogProblem) notFound();
+  const readModel = await loadPortalReadModel();
+  const readProblem = readModel.problems.find((entry) => entry.slug === slug);
+  const problem = readProblem ?? catalogProblem;
+  const chainProvenance = readProblem?.chainProvenance ?? chainProvenanceForProblem(catalogProblem);
+  const pool = readProblem?.pool ?? null;
+  const funding = readProblem?.funding ?? null;
+  const claimants = readProblem?.claimants ?? [];
   const seedDiscovery = discoveries.find((discovery) => discovery.boardSlugs.includes(slug));
 
-  const rows = sortLeaderboardRows(problem.id, await allSubmissionsShared());
+  const rows = sortLeaderboardRows(problem.id, [...readModel.submissions]);
   const isLocked = problem.status === "locked";
   // A digest is only real when it is a full sha256; anything else (pending,
   // pilot, local-dev placeholders) and every locked board is shown as pending.
@@ -33,13 +40,7 @@ export default async function ProblemPage({ params }: { params: Promise<{ slug: 
 
   // The record ladder: declared seed, then each verified submission that
   // strictly improved on the record at its time, in submission order.
-  const chronological = [...rows]
-    .filter((row) => (
-      row.state === "finalized"
-      && row.source === "chain-p42-v1"
-      && row.settlementState === "finalized"
-    ))
-    .sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
+  const chronological = finalizedFrontierRows(problem, rows);
   const ladder: FrontierPoint[] = [{ x: 0, score: problem.seedBest, label: "declared seed", dateLabel: "" }];
   for (const row of chronological) {
     const best = parseRational(ladder[ladder.length - 1].score);
@@ -254,10 +255,22 @@ $ make verify SOLUTION=examples/valid-4.json`}
                       )}
                     </span>.{" "}
                     <span className={`state-word ${row.state}`}>{stateLabel(row.state)}</span>{" "}
+                    {row.activeChallenge && (
+                      <span className="cite-meta">
+                        · challenged by <span className="ref">{row.activeChallenge.challenger.slice(0, 10)}…</span>
+                        {row.activeChallenge.decisionPending ? " · decision pending" : row.activeChallenge.resolved ? row.activeChallenge.challengerWins ? " · challenge sustained" : " · challenge denied" : " · dispute open"}
+                      </span>
+                    )}
                     <span className="cite-meta">
                       · {isoDate(row.submittedAt)} · window closes {isoDate(row.windowEndsAt)} · cid{" "}
                       <span className="ref">{row.solutionCid}</span> · commit{" "}
                       <span className="ref">{row.commitHash.slice(0, 18)}…</span>
+                      {row.solverAddress && claimants.find((claimant) => claimant.claimant === row.solverAddress)?.finalEntitlementWei !== "0" && (
+                        <> · final entitlement {claimants.find((claimant) => claimant.claimant === row.solverAddress)?.finalEntitlementEth} ETH</>
+                      )}
+                      {row.solverAddress && claimants.find((claimant) => claimant.claimant === row.solverAddress)?.withdrawableBondWei !== "0" && (
+                        <> · withdrawable bond {claimants.find((claimant) => claimant.claimant === row.solverAddress)?.withdrawableBondEth} ETH</>
+                      )}
                     </span>
                     {row.state === "finalized" && <span className="tombstone"> ∎</span>}
                     {row.sample && <span className="fixture-stamp">fixture · worked example</span>}
@@ -279,9 +292,59 @@ $ make verify SOLUTION=examples/valid-4.json`}
               <span className={`status-word ${problem.status}`}>{statusLabel(problem.status)}</span>
             </div>
             <div className="fact-row">
-              <span className="smallcaps">Modeled prize</span>
-              <span className="num">{problem.bountyEth} ETH · not deployed</span>
+              <span className="smallcaps">{pool ? "Pool funded" : "Modeled prize"}</span>
+              <span className="num">{problem.bountyEth} ETH{pool ? " · chain" : " · not deployed"}</span>
             </div>
+            {pool && (
+              <>
+                <div className="fact-row">
+                  <span className="smallcaps">Pool balance</span>
+                  <span className="num">{pool.accountedBalanceEth} ETH</span>
+                </div>
+                <div className="fact-row">
+                  <span className="smallcaps">Claimed</span>
+                  <span className="num">{pool.totalClaimedEth} ETH</span>
+                </div>
+                <div className="fact-row">
+                  <span className="smallcaps">Sponsors</span>
+                  <span className="num">{pool.sponsors.length}</span>
+                </div>
+                {pool.totalWinningsDonatedWei !== "0" && (
+                  <div className="fact-row">
+                    <span className="smallcaps">Winnings donated</span>
+                    <span className="num">{pool.totalWinningsDonatedEth} ETH</span>
+                  </div>
+                )}
+                {pool.refundableWei !== "0" && (
+                  <div className="fact-row">
+                    <span className="smallcaps">Refundable</span>
+                    <span className="num">{pool.refundableEth} ETH</span>
+                  </div>
+                )}
+                {pool.claimDeadline && (
+                  <div className="fact-row">
+                    <span className="smallcaps">Claim deadline</span>
+                    <span className="num">{isoDate(pool.claimDeadline)}</span>
+                  </div>
+                )}
+              </>
+            )}
+            {funding && (
+              <div className="fact-row">
+                <span className="smallcaps">Actions</span>
+                <span className="num">
+                  {funding.canSubmit ? "submissions open" : "submissions paused"} · {funding.canFund ? "funding open" : "funding closed"}
+                </span>
+              </div>
+            )}
+            {claimants.filter((claimant) => claimant.withdrawableBondWei !== "0").map((claimant) => (
+              <div className="fact-row" key={claimant.claimant}>
+                <span className="smallcaps">Bond claimant</span>
+                <span className="num">
+                  {claimant.claimant.slice(0, 10)}… · {claimant.withdrawableBondEth} ETH
+                </span>
+              </div>
+            ))}
             <div className="fact-row">
               <span className="smallcaps">Posting bond</span>
               <span className="num">{problem.postingBondEth} ETH</span>
@@ -313,7 +376,9 @@ $ make verify SOLUTION=examples/valid-4.json`}
             )}
           </div>
           <p className="fact-note">
-            {isLocked
+            {pool
+              ? `Chain-derived at finalized block ${chainProvenance.checkpointBlock}; source chain-p42-v1.`
+              : isLocked
               ? "Locked board: score fields are placeholders until the repo and verifier are packaged at admission. No bound is asserted here."
               : "Local simulation figures for a future testnet deployment. Settlement remains disabled until custody, audit, legal, and resolver gates close."}
           </p>

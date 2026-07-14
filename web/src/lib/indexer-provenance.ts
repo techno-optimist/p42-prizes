@@ -2,7 +2,8 @@ import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs
 import { createHash, createPublicKey, verify } from "node:crypto";
 import { keccak256, toUtf8Bytes } from "ethers";
 import deploymentSchema from "@/schemas/deployment-manifest-v2.schema.json";
-import checkpointSchema from "@/schemas/indexer-checkpoint-v2.schema.json";
+import checkpointV2Schema from "@/schemas/indexer-checkpoint-v2.schema.json";
+import checkpointV3Schema from "@/schemas/indexer-checkpoint-v3.schema.json";
 import completionSchema from "@/schemas/funding-activation-completion.schema.json";
 import type { ChainProvenance, Problem } from "@/lib/types";
 
@@ -14,6 +15,28 @@ if (typeof window !== "undefined") throw new Error("indexer provenance artifacts
 
 type JsonSchema = Record<string, unknown>;
 type JsonObject = Record<string, unknown>;
+
+export interface ActivatedIndexerSnapshot {
+  manifest: Readonly<JsonObject>;
+  checkpoint: Readonly<JsonObject>;
+  provenance: ReadonlyMap<string, ChainProvenance>;
+}
+
+interface ActivatedArtifactBundle {
+  manifest: JsonObject;
+  manifestBytes: Buffer;
+  checkpoint: JsonObject;
+  checkpointBytes: Buffer;
+  authorization: JsonObject;
+  authorizationBytes: Buffer;
+  trustRegistry: JsonObject;
+  trustRegistryDigest: string;
+  checkpointAttestation: JsonObject;
+  plan: JsonObject;
+  completion: JsonObject;
+  checkpointMaxAgeSeconds?: number;
+  nowSeconds?: number;
+}
 
 export interface IndexerArtifactPaths {
   deploymentManifestPath: string;
@@ -481,8 +504,90 @@ function readValidatedArtifacts(paths: IndexerArtifactPaths): { manifest: JsonOb
   const checkpointFile = readBoundedRegularJsonWithBytes(paths.indexerCheckpointPath);
   const checkpoint = object(checkpointFile.value, "checkpoint");
   validateSchema(manifest, deploymentSchema, deploymentSchema as JsonSchema, "manifest");
+  const checkpointSchema = checkpoint.schema === "p42-prizes/indexer-checkpoint/v2"
+    ? checkpointV2Schema
+    : checkpoint.schema === "p42-prizes/indexer-checkpoint/v3"
+      ? checkpointV3Schema
+      : null;
+  if (!checkpointSchema) throw new Error("unsupported indexer checkpoint schema");
   validateSchema(checkpoint, checkpointSchema, checkpointSchema as JsonSchema, "checkpoint");
   return { manifest, manifestBytes: manifestFile.bytes, checkpoint, checkpointBytes: checkpointFile.bytes };
+}
+
+/**
+ * Apply the production activation/attestation gate to the cohort as one unit.
+ * A caller receives every board from the same parsed artifact generation or an
+ * exception; per-board success is intentionally not representable.
+ */
+export function activatedIndexerSnapshotFromArtifacts(
+  problems: readonly Problem[],
+  artifacts: ActivatedArtifactBundle,
+): ActivatedIndexerSnapshot {
+  requireBinding(problems.length === 10);
+  requireBinding(artifacts.checkpoint.schema === "p42-prizes/indexer-checkpoint/v3");
+  const entries = problems.map((problem) => {
+    const provenance = activatedProvenanceFromArtifacts(
+      problem,
+      artifacts.manifest,
+      artifacts.manifestBytes,
+      artifacts.checkpoint,
+      artifacts.checkpointBytes,
+      artifacts.authorization,
+      artifacts.authorizationBytes,
+      artifacts.trustRegistry,
+      artifacts.trustRegistryDigest,
+      artifacts.checkpointAttestation,
+      artifacts.plan,
+      artifacts.completion,
+      artifacts.checkpointMaxAgeSeconds,
+      artifacts.nowSeconds,
+    );
+    requireBinding(
+      provenance.reconciliationOk
+      && (provenance.settlementState === "testnet-indexed" || provenance.settlementState === "mainnet-indexed"),
+    );
+    return [problem.slug, provenance] as const;
+  });
+  return {
+    manifest: artifacts.manifest,
+    checkpoint: artifacts.checkpoint,
+    provenance: new Map(entries),
+  };
+}
+
+/** Load only an exact-ten, activated, freshly attested artifact generation. */
+export function loadActivatedIndexerSnapshot(
+  problems: readonly Problem[],
+  paths = configuredIndexerArtifactPaths(),
+): ActivatedIndexerSnapshot | null {
+  if (!paths?.launchAuthorizationPath
+    || !paths.fundingActivationPlanPath
+    || !paths.fundingActivationCompletionPath
+    || !paths.indexerCheckpointAttestationPath
+    || !paths.trustRegistryPath
+    || !paths.trustRegistryDigest) return null;
+  try {
+    const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
+    const authorizationFile = readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath);
+    const completion = object(readBoundedRegularJson(paths.fundingActivationCompletionPath), "activation completion");
+    validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
+    return activatedIndexerSnapshotFromArtifacts(problems, {
+      manifest,
+      manifestBytes,
+      checkpoint,
+      checkpointBytes,
+      authorization: object(authorizationFile.value, "authorization"),
+      authorizationBytes: authorizationFile.bytes,
+      trustRegistry: object(readBoundedRegularJson(paths.trustRegistryPath), "trust registry"),
+      trustRegistryDigest: paths.trustRegistryDigest,
+      checkpointAttestation: object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath), "checkpoint attestation"),
+      plan: object(readBoundedRegularJson(paths.fundingActivationPlanPath), "activation plan"),
+      completion,
+      checkpointMaxAgeSeconds: paths.checkpointMaxAgeSeconds,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export function loadIndexerProvenance(problem: Problem, paths = configuredIndexerArtifactPaths()): ChainProvenance {

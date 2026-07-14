@@ -1,12 +1,13 @@
 export type Direction = "minimize" | "maximize";
 export type ProblemStatus = "open" | "pilot" | "locked" | "resolved";
 export type SubmissionState = "committed" | "revealed" | "challenged" | "finalized" | "rejected";
+export type PortalDataSource = "local-phase-0" | "chain-p42-v1";
 
 export interface DonationWallet {
   chain: "Base Sepolia" | "Base";
   asset: "ETH";
   address: string | null;
-  status: "not-deployed" | "testnet-only" | "mainnet-gated" | "enabled";
+  status: "not-deployed" | "testnet-only" | "mainnet-gated" | "enabled" | "paused" | "closed";
   explorerUrl: string | null;
   note: string;
 }
@@ -81,19 +82,155 @@ export interface Submission {
   /** True for seeded walkthrough fixtures. Rendered with an explicit
    * "worked example" label so sample rows can never read as live traction. */
   sample?: boolean;
-  source: "local-phase-0" | "chain-p42-v1";
+  source: PortalDataSource;
+  solverAddress?: string;
+  provenanceLogs?: PortalProvenanceLog[];
   settlementState: "unsettled" | "finalized" | "ineligible";
   state: SubmissionState;
   score: string;
   improvement: string;
+  /** Current chain credit. Voided/rejected submissions expose zero here. */
   provisionalImprovement?: string;
   credit: string;
+  /** Historical credit assigned at finalization before any later void. */
+  originalCredit?: string;
+  activeChallenge?: PortalActiveChallenge | null;
   payoutEth: string;
   solutionCid: string;
   commitHash: string;
   submittedAt: string;
   windowEndsAt: string;
   transcriptCid: string | null;
+}
+
+export interface PortalActiveChallenge {
+  challenger: string;
+  reasonHash: string;
+  challengeBondWei: string;
+  challengeBondEth: string;
+  challengedAt: string;
+  disputeEndsAt: string;
+  resolved: boolean;
+  decisionPending: boolean;
+  challengerWins: boolean;
+  transcriptHash: string;
+  transcriptUri: string;
+  verdictHash: string;
+}
+
+export interface PortalProvenanceLog {
+  source: string;
+  eventName: string;
+  contractAddress: string;
+  blockNumber: number;
+  blockHash: string;
+  transactionHash: string;
+  transactionIndex: number;
+  logIndex: number;
+  blockTimestamp: string;
+}
+
+export interface PortalPoolReadModel {
+  totalFundedWei: string;
+  totalFundedEth: string;
+  accountedBalanceWei: string;
+  accountedBalanceEth: string;
+  totalClaimedWei: string;
+  totalClaimedEth: string;
+  totalWinningsDonatedWei: string;
+  totalWinningsDonatedEth: string;
+  refundableWei: string;
+  refundableEth: string;
+  totalSponsorRefundedWei: string;
+  totalFeeAccruedWei: string;
+  totalFeePaidWei: string;
+  totalResidualPaidWei: string;
+  sponsors: PortalSponsor[];
+  sponsorshipFundings: PortalSponsorshipFunding[];
+  winningsDonations: PortalWinningsDonation[];
+  closed: boolean;
+  closedAt: string | null;
+  claimDeadline: string | null;
+  totalCredit: string;
+}
+
+export interface PortalSponsor {
+  sponsor: string;
+  principalWei: string;
+  principalEth: string;
+}
+
+export interface PortalSponsorshipFunding {
+  transactionHash: string;
+  payer: string;
+  sponsor: string;
+  amountWei: string;
+  amountEth: string;
+}
+
+export interface PortalWinningsDonation {
+  transactionHash: string;
+  solver: string;
+  destinationPool: string;
+  grossAmountWei: string;
+  grossAmountEth: string;
+  donatedAmountWei: string;
+  donatedAmountEth: string;
+  feeAmountWei: string;
+  feeAmountEth: string;
+}
+
+export interface PortalFundingReadModel {
+  acceptingFunds: boolean;
+  fundingArmed: boolean;
+  authorizationExpiresAt: string;
+  ledgerPausedNewActions: boolean;
+  submissionsPausedNewActions: boolean;
+  submissionsPausedAll: boolean;
+  challengesPausedNewActions: boolean;
+  canFund: boolean;
+  canSubmit: boolean;
+  canChallenge: boolean;
+}
+
+export interface PortalClaimantReadModel {
+  claimant: string;
+  credit: string;
+  claimedWei: string;
+  claimedEth: string;
+  finalEntitlementWei: string;
+  finalEntitlementEth: string;
+  submissionBondWei: string;
+  submissionBondEth: string;
+  challengeBondWei: string;
+  challengeBondEth: string;
+  withdrawableBondWei: string;
+  withdrawableBondEth: string;
+}
+
+export interface PortalProblemReadModel extends Problem {
+  source: PortalDataSource;
+  chainProvenance: ChainProvenance;
+  pool: PortalPoolReadModel | null;
+  funding: PortalFundingReadModel | null;
+  claimants: readonly PortalClaimantReadModel[];
+}
+
+export interface PortalReadModelProvenance {
+  source: PortalDataSource;
+  deploymentCommit: string | null;
+  checkpointBlock: number | null;
+  checkpointTimestamp: string | null;
+  activationCompletionDigest: string | null;
+  replayEvents: Readonly<Record<string, { digest: string; total: number }>>;
+  note: string;
+}
+
+export interface PortalReadModel {
+  source: PortalDataSource;
+  problems: readonly PortalProblemReadModel[];
+  submissions: readonly Submission[];
+  provenance: PortalReadModelProvenance;
 }
 
 export interface ActivityItem {
