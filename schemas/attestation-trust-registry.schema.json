@@ -56,6 +56,7 @@
             "p42-adversarial-testnet/v1",
             "p42-adversarial-testnet/v2",
             "p42-operational-controls/v1",
+            "p42-security-audit/v1",
             "p42-runner-burst/v1",
             "p42-math-review/v1",
             "p42-production-launch-authorization/v1",

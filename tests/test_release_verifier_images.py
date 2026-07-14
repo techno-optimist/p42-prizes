@@ -25,6 +25,15 @@ DIGEST_A = "sha256:" + "1" * 64
 DIGEST_B = "sha256:" + "2" * 64
 SOURCE = "sha256:" + "3" * 64
 ARCHIVE = "sha256:" + "4" * 64
+REAL_BOARD_BINDING_VERIFIER = release.verify_production_board_bindings
+
+
+@pytest.fixture(autouse=True)
+def stub_exact_ten_replay(monkeypatch):
+    # Release orchestration tests inject/observe this boundary explicitly. The
+    # real ten-verifier replay is exercised once below instead of on every
+    # synthetic release call.
+    monkeypatch.setattr(release, "verify_production_board_bindings", lambda _root: None)
 
 
 def index_json(*, platforms=("linux/amd64", "linux/arm64"), media_type=release.INDEX_MEDIA_TYPE, duplicate=False):
@@ -282,6 +291,56 @@ def test_plan_mode_runs_only_git_and_never_docker(monkeypatch):
     assert [board["slug"] for board in plan["boards"]] == list(release.LAUNCH_SLUGS)
     assert len(plan["boards"]) == 10
     assert all(call[0] == "git" for call in calls)
+
+
+def test_canonical_board_binding_replay_accepts_current_exact_ten_dossier():
+    REAL_BOARD_BINDING_VERIFIER(ROOT)
+
+
+def test_release_replays_board_bindings_before_plan_or_publish(monkeypatch, tmp_path):
+    calls = []
+    verified = []
+
+    def runner(argv, **kwargs):
+        calls.append(argv)
+        if argv[0] == "git":
+            return completed(argv, COMMIT + "\n" if argv[1:3] == ["rev-parse", "HEAD"] else "")
+        if argv[:3] == ["docker", "buildx", "build"]:
+            raise RuntimeError("stop after frozen-source preflight")
+        return completed(argv, "")
+
+    monkeypatch.setattr(release, "compute_source_hash", lambda problem: SOURCE)
+    monkeypatch.setattr(release, "_prepare_frozen_context", lambda **kwargs: (ROOT, ARCHIVE))
+    plan = release.release(
+        root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
+        publish=False, output=None, runner=runner,
+        board_binding_verifier=lambda root: verified.append(root),
+    )
+    assert plan["mode"] == "plan"
+    assert verified == [ROOT.resolve()]
+
+    verified.clear()
+    with pytest.raises(RuntimeError, match="stop after frozen-source preflight"):
+        release.release(
+            root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
+            publish=True, output=tmp_path / "release.json", runner=runner,
+            board_binding_verifier=lambda root: verified.append(root),
+        )
+    assert verified == [ROOT.resolve(), ROOT]
+
+
+def test_release_fails_closed_when_board_binding_replay_fails():
+    def runner(argv, **kwargs):
+        return completed(argv, COMMIT + "\n" if argv[1:3] == ["rev-parse", "HEAD"] else "")
+
+    def reject(_root):
+        raise release.ReleaseError("canonical production board bindings failed exact replay")
+
+    with pytest.raises(release.ReleaseError, match="board bindings failed exact replay"):
+        release.release(
+            root=ROOT, registry_base="ghcr.io/projectforty2/verifiers", commit=COMMIT,
+            publish=False, output=None, runner=runner, board_binding_verifier=reject,
+        )
 
 
 def test_publish_mock_writes_canonical_self_hashed_schema_valid_dossier(monkeypatch, tmp_path):

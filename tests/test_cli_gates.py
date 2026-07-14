@@ -14,6 +14,7 @@ from test_incident import valid_drill_report
 from test_legal import valid_legal_memo
 from test_operational_controls import valid_report as valid_operational_controls
 from test_runner_burst import _fixture as runner_burst_fixture
+from test_security_audit import valid_security_audit
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -40,6 +41,7 @@ ATTESTATION_GATE_CASES = [
     ("incident-drill-validate", valid_drill_report),
     ("adversarial-campaign-validate", valid_campaign_report),
     ("operational-controls-validate", valid_operational_controls),
+    ("security-audit-validate", valid_security_audit),
 ]
 
 

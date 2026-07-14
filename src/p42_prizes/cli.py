@@ -65,6 +65,7 @@ from p42_prizes.runner_queue import (
 )
 from p42_prizes.runner_worker import RunnerWorkerError, drain_runner_queue, run_next_job_once
 from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json, read_strict_json_stream
+from p42_prizes.security_audit import SecurityAuditError, normalize_security_audit
 from p42_prizes.source_release import (
     SourceReleaseEvidenceError,
     validate_source_release_evidence,
@@ -924,6 +925,23 @@ def _cmd_operational_controls_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_security_audit_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        report = normalize_security_audit(
+            load_evidence_file(args.report),
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
+        _enforce_gate_schema(report, "security-audit.schema.json")
+    except (AdmissionError, SecurityAuditError, jsonschema.ValidationError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(report, args.output)
+    return 0
+
+
 def _cmd_production_launch_authorization_validate(args: argparse.Namespace) -> int:
     try:
         trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
@@ -1324,6 +1342,15 @@ def build_parser() -> argparse.ArgumentParser:
     _add_attestation_validation_args(operational_controls)
     operational_controls.add_argument("--output")
     operational_controls.set_defaults(func=_cmd_operational_controls_validate)
+
+    security_audit = subparsers.add_parser(
+        "security-audit-validate",
+        help="validate and hash the mandatory signed external security audit",
+    )
+    security_audit.add_argument("--report", required=True)
+    _add_attestation_validation_args(security_audit)
+    security_audit.add_argument("--output")
+    security_audit.set_defaults(func=_cmd_security_audit_validate)
 
     launch_authorization = subparsers.add_parser(
         "production-launch-authorization-validate",

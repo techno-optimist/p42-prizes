@@ -7,6 +7,7 @@ import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -48,6 +49,7 @@ LAYER_MEDIA_TYPES = frozenset({
 })
 PLATFORMS = ("linux/amd64", "linux/arm64")
 BOARD_SET_PATH = Path(__file__).resolve().parents[1] / "protocol" / "production-board-set-v1.json"
+BOARD_BINDINGS_PATH = "protocol/production-board-bindings-v1.json"
 
 
 def _load_launch_slugs() -> tuple[str, ...]:
@@ -106,6 +108,23 @@ MAX_INSPECT_BYTES = 4 * 1024 * 1024
 
 class ReleaseError(RuntimeError):
     """A release precondition or OCI verification failed."""
+
+
+def verify_production_board_bindings(root: Path) -> None:
+    """Replay the canonical exact-ten source dossier from the release checkout."""
+
+    script = root / "scripts" / "verify_production_board_bindings.py"
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"p42_release_board_bindings_{uuid4().hex}", script
+        )
+        if spec is None or spec.loader is None:
+            raise ImportError("module loader is unavailable")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.verify_board_bindings(root, root / BOARD_BINDINGS_PATH)
+    except Exception as exc:
+        raise ReleaseError("canonical production board bindings failed exact replay") from exc
 
 
 def canonicalize_registry_base(value: str) -> str:
@@ -821,10 +840,13 @@ def release(
     *, root: Path, registry_base: str, commit: str, publish: bool,
     output: Path | None, runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    board_binding_verifier: Callable[[Path], None] | None = None,
 ) -> dict[str, Any]:
     root = root.resolve()
+    board_binding_verifier = board_binding_verifier or verify_production_board_bindings
     base = canonicalize_registry_base(registry_base)
     require_clean_exact_commit(root, commit, runner=runner)
+    board_binding_verifier(root)
     boards = _board_inputs(root, base)
     if not publish:
         return {"schema_version": PLAN_SCHEMA_VERSION, "mode": "plan", "source_commit": commit, "platforms": list(PLATFORMS), "boards": boards}
@@ -852,6 +874,7 @@ def release(
         else: raise ReleaseError("unreserved publish workspace already exists")
     _require_private_workspace(workspace, create=fresh_release)
     frozen_root, source_archive_digest = _prepare_frozen_context(root=root, workspace=workspace, commit=commit, runner=runner, fresh_release=fresh_release)
+    board_binding_verifier(frozen_root)
     frozen_boards = _board_inputs(frozen_root, base)
     if canonical_json(boards) != canonical_json(frozen_boards):
         raise ReleaseError("frozen exact-commit source differs from the preflight checkout")
