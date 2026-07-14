@@ -3,7 +3,7 @@ Description=P42 OP Stack censorship fallback
 After=network-online.target
 Wants=network-online.target
 OnFailure=p42-censorship-fallback-alert@%n.service
-StartLimitIntervalSec=10min
+StartLimitIntervalSec=20min
 StartLimitBurst=6
 
 [Service]
@@ -31,8 +31,11 @@ ExecStart=/usr/local/bin/p42-censorship-fallback-supervisor \
   --max-rpc-head-lag-blocks ${P42_MAX_RPC_HEAD_LAG_BLOCKS} \
   --max-l2-scan-blocks ${P42_MAX_L2_SCAN_BLOCKS} --max-l2-logs ${P42_MAX_L2_LOGS}
 Restart=on-failure
+RestartMode=direct
 RestartSec=15s
 RestartPreventExitStatus=64
+KillMode=mixed
+TimeoutStartSec=infinity
 TimeoutStopSec=20s
 UMask=0077
 StateDirectory=p42-censorship-fallback

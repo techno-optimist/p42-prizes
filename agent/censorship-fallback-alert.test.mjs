@@ -73,13 +73,15 @@ it("ships a bounded writable systemd service and its named alert unit", () => {
   const service = readFileSync(new URL("../deployments/p42-censorship-fallback.service.example", import.meta.url), "utf8");
   const alert = readFileSync(new URL("../deployments/p42-censorship-fallback-alert@.service.example", import.meta.url), "utf8");
   assert.match(service, /^OnFailure=p42-censorship-fallback-alert@%n\.service$/m);
-  assert.match(service, /^StartLimitIntervalSec=10min$/m);
+  assert.match(service, /^StartLimitIntervalSec=20min$/m);
   assert.match(service, /^StartLimitBurst=6$/m);
   assert.match(service, /^ExecStart=\/usr\/local\/bin\/p42-censorship-fallback-supervisor \\$/m);
   assert.match(service, /--step-timeout-ms 120000 --kill-grace-ms 10000 --retry-delay-ms 15000 \\$/m);
   assert.match(service, /--max-rpc-retries 8 -- \\$/m);
   assert.match(service, /^TimeoutStopSec=20s$/m);
-  assert.doesNotMatch(service, /^TimeoutStartSec=/m);
+  assert.match(service, /^TimeoutStartSec=infinity$/m);
+  assert.match(service, /^RestartMode=direct$/m);
+  assert.match(service, /^KillMode=mixed$/m);
   assert.doesNotMatch(service, /^RuntimeMaxSec=/m);
   assert.match(service, /^StateDirectory=p42-censorship-fallback$/m);
   assert.match(service, /^ReadWritePaths=\/var\/lib\/p42-censorship-fallback$/m);

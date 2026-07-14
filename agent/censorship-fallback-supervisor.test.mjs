@@ -42,6 +42,20 @@ it("bounds RPC retry failures and rejects an unclassified exit 75", async () => 
   assert.equal(await superviseFallback({ runStep: async () => "stopped", sleep: async () => {} }), 0);
 });
 
+it("stops cleanly before another child step after termination during retry delay", async () => {
+  let attempts = 0;
+  let stopped = false;
+  assert.equal(await superviseFallback({
+    runStep: async () => {
+      attempts += 1;
+      return { status: 75, reasonCode: "awaiting-finalized-chain-evidence" };
+    },
+    sleep: async () => { stopped = true; },
+    shouldStop: () => stopped,
+  }), 0);
+  assert.equal(attempts, 1);
+});
+
 it("accepts only canonical classified retry outcomes on the correct stream", () => {
   const waiting = Buffer.from(`${canonicalJson({
     schema: "p42-censorship-fallback-outcome/v1",

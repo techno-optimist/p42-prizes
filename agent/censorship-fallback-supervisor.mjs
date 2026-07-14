@@ -50,9 +50,10 @@ export function parseSupervisorArgs(argv) {
   };
 }
 
-export async function superviseFallback({ runStep, sleep, maxRpcRetries = 8 }) {
+export async function superviseFallback({ runStep, sleep, maxRpcRetries = 8, shouldStop = () => false }) {
   let consecutiveRpcFailures = 0;
   while (true) {
+    if (shouldStop()) return 0;
     const result = await runStep();
     if (result === "stopped") return 0;
     const status = typeof result === "number" ? result : result.status;
@@ -68,6 +69,7 @@ export async function superviseFallback({ runStep, sleep, maxRpcRetries = 8 }) {
       return 70;
     }
     await sleep();
+    if (shouldStop()) return 0;
   }
 }
 
@@ -187,11 +189,37 @@ function runRuntimeStep({ runtime, runtimeArgs, stepTimeoutMs, killGraceMs }) {
 
 export async function main(argv = process.argv.slice(2)) {
   const options = parseSupervisorArgs(argv);
-  return superviseFallback({
-    runStep: () => runRuntimeStep(options),
-    sleep: () => new Promise((resolve) => setTimeout(resolve, options.retryDelayMs)),
-    maxRpcRetries: options.maxRpcRetries,
-  });
+  let stopped = false;
+  let wakeSleep = null;
+  const stop = () => {
+    stopped = true;
+    wakeSleep?.();
+  };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  try {
+    return await superviseFallback({
+      runStep: () => runRuntimeStep(options),
+      sleep: () => new Promise((resolve) => {
+        let settled = false;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          wakeSleep = null;
+          resolve();
+        };
+        const timer = setTimeout(finish, options.retryDelayMs);
+        wakeSleep = finish;
+        if (stopped) finish();
+      }),
+      maxRpcRetries: options.maxRpcRetries,
+      shouldStop: () => stopped,
+    });
+  } finally {
+    process.off("SIGTERM", stop);
+    process.off("SIGINT", stop);
+  }
 }
 
 if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])) {
