@@ -144,6 +144,30 @@ PYTHONPATH=src python3 scripts/rehearse_verifier_image.py \
   --problem problems/<slug>
 ```
 
+Each admission host then runs the all-ten collector locally. The command has no
+offline-report mode: it launches both pull-only rehearsals itself, binds a fresh
+collector challenge into each report, signs each board artifact and the complete
+ordered host-set index with the same host key, and publishes through an atomic
+no-replace directory operation.
+
+```bash
+PYTHONPATH=src python3 scripts/collect_verifier_host_set.py \
+  --run \
+  --dossier /secure/releases/verifier-image-release.json \
+  --dossier-sha256 sha256:<independent-dossier-pin> \
+  --fixtures protocol/production-verifier-fixtures-v1.json \
+  --fixtures-sha256 sha256:<independent-fixture-pin> \
+  --signing-key /secure/keys/<host>.ed25519 \
+  --host-label <stable-host-label> \
+  --output-dir /secure/evidence/<host>-all-ten
+```
+
+This is signed host-operator evidence, not a trustless proof that the operator
+owns independent hardware. Matrix admission still requires four distinct
+trusted keys and the architecture/glibc coverage policy; key custody and host
+independence are deployment controls. Copying reports between hosts is not an
+accepted workflow.
+
 ## Queue And OOM Guard
 
 Verifier execution must be queued. A submission burst should increase latency,

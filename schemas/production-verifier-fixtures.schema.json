@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.org/schemas/production-verifier-fixtures.schema.json",
+  "title": "P42 production verifier fixture cohort",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "board_set", "fixtures"],
+  "properties": {
+    "schema_version": {"const": "p42-production-verifier-fixtures/v1"},
+    "board_set": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": {"const": "protocol/production-board-set-v1.json"},
+        "sha256": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "fixtures": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slug", "path", "sha256"],
+        "properties": {
+          "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+          "path": {"type": "string", "pattern": "^problems/[a-z0-9][a-z0-9-]*/[^/].*\\.json$"},
+          "sha256": {"$ref": "#/$defs/digest"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
