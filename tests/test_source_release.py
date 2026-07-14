@@ -89,6 +89,8 @@ class FakeGit:
             if command[2].endswith("scripts/release-guard-problems-v1.json"):
                 return json.dumps({"projection_sha256": HASH})
             return self.report_text
+        if command[:3] == ["git", "merge-base", "--is-ancestor"] and "7" * 40 in command:
+            raise SourceReleaseEvidenceError("commit is not on the released source lineage")
         if command[:3] in (["git", "cat-file", "-e"], ["git", "merge-base", "--is-ancestor"]):
             return ""
         raise AssertionError(command)
@@ -204,6 +206,39 @@ def test_valid_receipt_derives_distinct_runtime_and_publication_commits(tmp_path
         "evidencePublicationCommit": PUBLICATION,
         "onlineVerified": False,
     }
+
+
+def test_authenticated_api_trigger_is_schema_valid(tmp_path: Path) -> None:
+    report = receipt()
+    report["render"]["trigger"] = "api"
+    report = seal_source_release_evidence(report)
+
+    validate(report, tmp_path)
+    schema = json.loads((ROOT / "schemas/source-release-evidence.schema.json").read_text())
+    jsonschema.Draft202012Validator(schema).validate(report)
+
+
+def test_online_validation_accepts_matching_authenticated_api_trigger(tmp_path: Path) -> None:
+    report = receipt()
+    report["render"]["trigger"] = "api"
+    report = seal_source_release_evidence(report)
+    path = tmp_path / "receipt.json"
+    manifest = tmp_path / "scripts" / "release-guard-problems-v1.json"
+    manifest.parent.mkdir(exist_ok=True)
+    manifest.write_text(json.dumps({"projection_sha256": HASH}), encoding="utf-8")
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+
+    result = validate_source_release_evidence(
+        report,
+        repo_root=tmp_path,
+        report_path=path,
+        online=True,
+        command_runner=FakeOnline(text, render_override={"trigger": "api"}),
+        url_reader=lambda url: HttpObservation(200, "text/html; charset=utf-8", url, HASH),
+    )
+
+    assert result["derived"]["onlineVerified"] is True
 
 
 def test_validation_unshallows_before_git_ancestry_checks(tmp_path: Path) -> None:
