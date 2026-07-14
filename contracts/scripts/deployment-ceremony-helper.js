@@ -1419,6 +1419,10 @@ export async function reserveManifestOutput(identity, options = {}) {
 async function withReservationLock(identity, options, operation) {
   const storage = reservationStorage(options.storage);
   const lockPath = `${manifestOutputReservationPath(identity.manifestPath)}.lock`;
+  const lockAttempts = options.lockAttempts ?? 200;
+  if (!Number.isSafeInteger(lockAttempts) || lockAttempts <= 0) {
+    throw new Error("deployment reservation lock attempts must be a positive safe integer");
+  }
   const owner = {
     schema: "p42-prizes/deployment-reservation-lock/v1",
     token: randomUUID(),
@@ -1429,17 +1433,18 @@ async function withReservationLock(identity, options, operation) {
   };
   const ownerBytes = Buffer.from(`${JSON.stringify(owner)}\n`, "utf8");
   let context;
-  for (let attempt = 0; attempt < (options.lockAttempts ?? 200); attempt += 1) {
+  let acquired = false;
+  for (let attempt = 0; attempt < lockAttempts; attempt += 1) {
     context = await openTrustedParent(identity, storage, lockPath);
     try {
       await writePrivateExclusive(context.path, ownerBytes, storage);
       await context.parent.sync();
+      acquired = true;
       break;
     } catch (error) {
       await closeTrustedParent(context, storage);
       context = undefined;
       if (error?.code !== "EEXIST") throw error;
-      let stale = false;
       try {
         const existing = await readSecureJson(identity, lockPath, storage);
         if (
@@ -1447,31 +1452,35 @@ async function withReservationLock(identity, options, operation) {
           !Number.isSafeInteger(existing.pid) || existing.pid <= 0 || existing.hostname !== owner.hostname ||
           existing.identityDigest !== identity.identityDigest || !Number.isFinite(Date.parse(existing.createdAt))
         ) throw new Error("deployment reservation lock record is malformed");
-        try {
-          process.kill(existing.pid, 0);
-        } catch (probeError) {
-          if (probeError?.code === "ESRCH") stale = true;
-          else throw probeError;
-        }
       } catch (lockError) {
+        // The owner may release after our exclusive create reports EEXIST but
+        // before we inspect its record. That is a normal handoff: retry.
+        if (
+          lockError?.code === "ENOENT" ||
+          lockError?.message?.startsWith(`Deployment reservation ${lockPath} changed while `)
+        ) continue;
         if (lockError?.message?.includes("lock record is malformed")) throw lockError;
         throw new Error(`deployment reservation lock cannot be validated: ${lockError.message}`);
       }
-      if (stale) {
-        await removeAndSync(identity, lockPath, storage);
-        continue;
+      if (attempt + 1 >= lockAttempts) {
+        throw new Error("deployment reservation lock is busy or abandoned; explicit recovery is required");
       }
-      if (attempt + 1 >= (options.lockAttempts ?? 200)) throw new Error("deployment reservation lock is busy");
       await new Promise((resolveDelay) => setTimeout(resolveDelay, options.lockRetryMs ?? 10));
     }
   }
+  if (!acquired) throw new Error("deployment reservation lock is busy or abandoned; explicit recovery is required");
   try {
     return await operation(storage);
   } finally {
+    const quarantinePath = `${lockPath}.quarantine-${owner.token}`;
     try {
       const current = await readSecureJson(identity, lockPath, storage);
       if (current.token !== owner.token) throw new Error("deployment reservation lock ownership changed");
-      await storage.rm(context.path);
+      await storage.rename(context.path, quarantinePath);
+      await context.parent.sync();
+      const quarantined = await readSecureJson(identity, quarantinePath, storage);
+      if (quarantined.token !== owner.token) throw new Error("deployment reservation lock ownership changed during release");
+      await storage.rm(quarantinePath);
       await context.parent.sync();
     } finally {
       await closeTrustedParent(context, storage);

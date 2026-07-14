@@ -174,6 +174,13 @@ recorded transactions and manifest destination before any owner-approved
 recovery action. The reservation is removed only after the exclusive final
 manifest write succeeds.
 
+Reservation journal updates also use a private sibling `.lock` file. A runner
+retries ordinary lock handoffs, but it never reclaims a lock based only on PID
+liveness: a check-then-unlink can delete a successor's live lock. If a runner
+crashes while holding this lock, stop every ceremony runner, preserve and
+inspect the reservation plus lock record, and remove the lock only as an
+explicit recovery action before resuming reconciliation.
+
 ### 1. Legacy Single-Board Rehearsal Inputs
 
 The deploy command requires all constructor policy to be explicit. No economic
@@ -228,11 +235,15 @@ different infrastructure operators. These identities and endpoint digests are
 bound into the immutable signed-transaction journal. Missing, aliased, or
 common-operator evidence fails closed before transaction signing or broadcast.
 
-The deployment reconciliation lock is published only after its private
-candidate directory and owner record are durable. An incomplete legacy live
-lock directory (a `.lock` directory without a valid `owner.json`) is never
-reclaimed automatically. Stop all deployment runners, investigate the host,
-and remove that directory explicitly before retrying.
+The deployment reconciliation owner record is made durable in a private
+candidate first. The live `.lock` directory is then claimed with atomic,
+no-replace `mkdir`, and the owner record is moved inside and fsynced. No existing
+lock is reclaimed automatically, even when its recorded process appears dead:
+a liveness check followed by a path-only rename can capture a successor's live
+lock. Stop all deployment runners, investigate the host and retained owner
+record, and remove an abandoned lock explicitly before retrying. A crash after
+the directory claim can leave an incomplete lock without `owner.json`; that
+state follows the same fail-closed recovery path.
 
 `P42_GOVERNANCE_SIGNERS` contains public addresses, not private keys. The only
 plaintext key accepted by the command is the single deployer key already used

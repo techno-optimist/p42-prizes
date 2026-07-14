@@ -380,45 +380,13 @@ function removeQuarantinedLock(path, expectedToken, expectedMetadata) {
   rmdirSync(path);
 }
 
-function reclaimDeadLock(lockPath, contender) {
-  let lock;
-  try { lock = readLock(lockPath); }
-  catch (error) {
-    if (error?.code === "ENOENT" && (() => { try { return lstatSync(lockPath).isDirectory(); } catch { return false; } })()) {
-      throw new Error("incomplete live deployment lock requires explicit operator recovery");
-    }
-    throw error;
-  }
-  const { owner, metadata } = lock;
-  if (
-    !owner || typeof owner.hostname !== "string" || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 ||
-    typeof owner.bootId !== "string" || owner.bootId.length < 4 || typeof owner.processStartId !== "string" || owner.processStartId.length < 4 ||
-    typeof owner.createdAt !== "string" || !Number.isFinite(Date.parse(owner.createdAt)) || typeof owner.token !== "string" || owner.token.length < 4
-  ) throw new Error("deployment lock owner identity is malformed; refusing reclaim");
-  if (owner.hostname !== contender.hostname) throw new Error("deployment lock owner is on another host; refusing reclaim");
-  let dead = false;
-  if (owner.bootId !== contender.bootId) dead = true;
-  else {
-    const observedStart = processStartIdentity(owner.pid);
-    if (observedStart === owner.processStartId) throw new Error("another signed deployment runner holds the reconciliation lock");
-    if (observedStart === null || observedStart !== owner.processStartId) dead = true;
-  }
-  if (!dead) throw new Error("deployment lock liveness cannot be proven; refusing reclaim");
-  const current = lstatSync(lockPath);
-  if (current.ino !== metadata.ino || current.dev !== metadata.dev || current.isSymbolicLink()) throw new Error("deployment lock changed during stale-owner validation");
-  const quarantine = `${lockPath}.quarantine-${contender.token}`;
-  renameSync(lockPath, quarantine);
-  removeQuarantinedLock(quarantine, owner.token, metadata);
-  const directory = openSync(dirname(lockPath), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  try { fsyncSync(directory); } finally { closeSync(directory); }
-}
-
 function prepareLockCandidate(lockPath, owner) {
   const candidate = `${lockPath}.candidate-${owner.token}`;
+  const ownerPath = join(candidate, "owner.json");
   mkdirSync(candidate, { mode: 0o700 });
   let fd;
   try {
-    fd = openSync(join(candidate, "owner.json"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    fd = openSync(ownerPath, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
     const bytes = Buffer.from(`${JSON.stringify(owner)}\n`);
     writeSync(fd, bytes);
     fsyncSync(fd);
@@ -427,7 +395,15 @@ function prepareLockCandidate(lockPath, owner) {
     try { fsyncSync(candidateFd); } finally { closeSync(candidateFd); }
     return candidate;
   } catch (error) {
-    if (fd !== undefined) closeSync(fd);
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch {}
+    }
+    const cleanupErrors = [];
+    try { unlinkSync(ownerPath); } catch (cleanupError) { if (cleanupError?.code !== "ENOENT") cleanupErrors.push(cleanupError); }
+    try { rmdirSync(candidate); } catch (cleanupError) { if (cleanupError?.code !== "ENOENT") cleanupErrors.push(cleanupError); }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([error, ...cleanupErrors], "deployment lock candidate creation and cleanup both failed");
+    }
     throw error;
   }
 }
@@ -437,36 +413,40 @@ function discardOwnedCandidate(candidate, token) {
     const { owner, metadata } = readLock(candidate);
     if (owner.token !== token) throw new Error("deployment lock candidate ownership mismatch");
     removeQuarantinedLock(candidate, token, metadata);
-  } catch (error) { if (error?.code !== "ENOENT") throw error; }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    try { rmdirSync(candidate); } catch (cleanupError) { if (cleanupError?.code !== "ENOENT") throw cleanupError; }
+  }
 }
 
 export async function withDurableJournalLock(journalPath, operation, hooks = {}) {
   const lockPath = `${journalPath}.lock`;
   assertTrustedAncestors(lockPath);
   const owner = { ...deploymentLockOwnerIdentity(), createdAt: new Date().toISOString(), token: randomUUID() };
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const candidate = prepareLockCandidate(lockPath, owner);
-    if (hooks.afterCandidateDurable) await hooks.afterCandidateDurable(candidate);
-    try {
-      try {
-        lstatSync(lockPath);
-        if (attempt === 0) { reclaimDeadLock(lockPath, owner); discardOwnedCandidate(candidate, owner.token); continue; }
-        throw new Error("another signed deployment runner holds the reconciliation lock");
-      } catch (error) {
-        if (error?.code !== "ENOENT") throw error;
+  const candidate = prepareLockCandidate(lockPath, owner);
+  if (hooks.afterCandidateDurable) await hooks.afterCandidateDurable(candidate);
+  try {
+    try { mkdirSync(lockPath, { mode: 0o700 }); }
+    catch (error) {
+      if (error?.code === "EEXIST") {
+        try { readLock(lockPath); }
+        catch (readError) {
+          if (readError?.code === "ENOENT") throw new Error("incomplete live deployment lock requires explicit operator recovery");
+          throw readError;
+        }
+        throw new Error("another signed deployment runner may hold the reconciliation lock; explicit recovery is required if it was abandoned");
       }
-      try { renameSync(candidate, lockPath); }
-      catch (error) {
-        if (["EEXIST", "ENOTEMPTY"].includes(error?.code)) throw new Error("another signed deployment runner holds the reconciliation lock");
-        throw error;
-      }
-      const directory = openSync(dirname(lockPath), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-      try { fsyncSync(directory); } finally { closeSync(directory); }
-      break;
-    } catch (error) {
-      discardOwnedCandidate(candidate, owner.token);
       throw error;
     }
+    renameSync(join(candidate, "owner.json"), join(lockPath, "owner.json"));
+    const lockDirectory = openSync(lockPath, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(lockDirectory); } finally { closeSync(lockDirectory); }
+    rmdirSync(candidate);
+    const directory = openSync(dirname(lockPath), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+    try { fsyncSync(directory); } finally { closeSync(directory); }
+  } catch (error) {
+    discardOwnedCandidate(candidate, owner.token);
+    throw error;
   }
   try { return await operation(); }
   finally {
@@ -474,9 +454,7 @@ export async function withDurableJournalLock(journalPath, operation, hooks = {})
     if (currentOwner.token !== owner.token) throw new Error("deployment lock ownership changed before release");
     const current = lstatSync(lockPath);
     if (current.ino !== metadata.ino || current.dev !== metadata.dev) throw new Error("deployment lock inode changed before release");
-    const quarantine = `${lockPath}.quarantine-${owner.token}`;
-    renameSync(lockPath, quarantine);
-    removeQuarantinedLock(quarantine, owner.token, metadata);
+    removeQuarantinedLock(lockPath, owner.token, metadata);
     const directory = openSync(dirname(lockPath), constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { fsyncSync(directory); } finally { closeSync(directory); }
   }
