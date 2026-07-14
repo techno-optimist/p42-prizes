@@ -1401,8 +1401,18 @@ describe("P42 deterministic indexer replay", () => {
     assert.ok(projection.submissions[1].sourceLogs.some((log) => log.eventName === "Challenged"));
     assert.ok(projection.submissions[1].sourceLogs.some((log) => log.eventName === "Resolved"));
     assert.deepEqual(projection.solvers, [
-      { solver: ADDR.solverA, creditAtoms: "100", claimedWei: "500", finalEntitlementWei: "500" },
-      { solver: ADDR.solverB, creditAtoms: "100", claimedWei: "0", finalEntitlementWei: "500" },
+      {
+        solver: ADDR.treasury, creditAtoms: "0", claimedWei: "0", finalEntitlementWei: "0",
+        submissionBondWei: "0", challengeBondWei: "20", withdrawableBondWei: "20",
+      },
+      {
+        solver: ADDR.solverA, creditAtoms: "100", claimedWei: "500", finalEntitlementWei: "500",
+        submissionBondWei: "0", challengeBondWei: "0", withdrawableBondWei: "0",
+      },
+      {
+        solver: ADDR.solverB, creditAtoms: "100", claimedWei: "0", finalEntitlementWei: "500",
+        submissionBondWei: "0", challengeBondWei: "0", withdrawableBondWei: "0",
+      },
     ]);
     assert.deepEqual(projection.pool, {
       accountedBalanceWei: "0",
@@ -1479,11 +1489,33 @@ describe("P42 deterministic indexer replay", () => {
     const reorderedInput = portalCheckpoint([...events].reverse());
     assert.equal(reorderedInput.boards[0].events.digest, checkpoint.boards[0].events.digest);
 
-    const voided = portalCheckpoint(lifecycleFixture()).boards[0].portalProjection.submissions
+    const lifecycleCheckpoint = portalCheckpoint(lifecycleFixture());
+    const voided = lifecycleCheckpoint.boards[0].portalProjection.submissions
       .find((submission) => submission.status === "Voided");
     assert.ok(voided);
     assert.equal(voided.creditAtoms, "0");
     assert.equal(voided.originalCreditAtoms, "100");
+
+    const coordinatedForgery = structuredClone(lifecycleCheckpoint);
+    const forgedPause = coordinatedForgery.boards[0].portalProjection.eventProvenance.logs
+      .find((log) => log.source === "submissions" && log.eventName === "NewActionsPaused");
+    assert.ok(forgedPause);
+    forgedPause.args.paused = false;
+    forgedPause.argsDigest = ethers.keccak256(ethers.toUtf8Bytes(stableStringify(forgedPause.args)));
+    const forgedDigest = ethers.keccak256(ethers.toUtf8Bytes(stableStringify(
+      coordinatedForgery.boards[0].portalProjection.eventProvenance.logs.map((log) => ({
+        source: log.source, eventName: log.eventName, blockNumber: log.blockNumber,
+        blockHash: log.blockHash, transactionHash: log.transactionHash,
+        transactionIndex: log.transactionIndex, index: log.logIndex,
+        blockTimestamp: log.blockTimestamp, args: log.args,
+      })),
+    )));
+    coordinatedForgery.boards[0].events.digest = forgedDigest;
+    coordinatedForgery.boards[0].portalProjection.eventProvenance.replayEventsDigest = forgedDigest;
+    assert.throws(
+      () => validateMultiBoardCheckpoint(coordinatedForgery),
+      /portal transcript does not reconstruct retained replay state/,
+    );
 
     assert.equal(
       `${stableStringify(checkpoint)}\n`,
@@ -1633,24 +1665,41 @@ describe("P42 deterministic indexer replay", () => {
       /checks must contain every board check in deterministic order/,
     );
 
-    const donationArgs = structuredClone(args);
-    donationArgs.boards[0].replay = structuredClone(args.boards[0].replay);
-    donationArgs.boards[1].replay = structuredClone(args.boards[1].replay);
     const donationTx = hash(88_001);
-    donationArgs.boards[0].replay.pool.winningsDonations.push({
-      transactionHash: donationTx,
-      solver: ADDR.solverA,
-      destinationPool: address(21),
-      grossAmount: 100n,
-      donatedAmount: 90n,
-      feeAmount: 10n,
+    const donationEvent = (source, eventName, args, index) => ({
+      source, eventName, args, index, transactionHash: donationTx,
+      blockNumber: 1_000, blockHash: hash(89_001), transactionIndex: 0, blockTimestamp: 2_000n,
     });
-    donationArgs.boards[1].replay.pool.sponsorshipFundings.push({
-      transactionHash: donationTx,
-      payer: address(11),
-      sponsor: ADDR.solverA,
-      amount: 90n,
-    });
+    const sourceEvents = [...events,
+      donationEvent("ledger", "ClaimConsumed", { solver: ADDR.solverA, grossAmount: 100n, feeAmount: 10n }, 0),
+      donationEvent("pool", "WinningsDonated", {
+        solver: ADDR.solverA, destinationPool: address(21), grossAmount: 100n,
+        donatedAmount: 90n, feeAmount: 10n,
+      }, 1),
+      donationEvent("pool", "SolverClaimSettled", {
+        solver: ADDR.solverA, recipient: address(21), grossAmount: 100n,
+        solverPayment: 90n, feeAmount: 10n,
+      }, 2),
+    ];
+    const destinationEvents = [...events,
+      donationEvent("pool", "Funded", { from: address(11), amount: 90n, newBalance: 1_090n }, 0),
+      donationEvent("pool", "SponsorshipFunded", {
+        payer: address(11), sponsor: ADDR.solverA, amount: 90n,
+        sponsorPrincipal: 90n, accountedBalance: 1_090n,
+      }, 1),
+    ];
+    const donationArgs = structuredClone(args);
+    for (const [index, boardEvents] of [sourceEvents, destinationEvents].entries()) {
+      const boardReplay = replayProtocolEvents(boardEvents, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+      const boardSnapshot = snapshotFromReplay(boardReplay);
+      donationArgs.boards[index] = {
+        ...donationArgs.boards[index],
+        scan: { events: boardEvents },
+        replay: boardReplay,
+        snapshot: boardSnapshot,
+        checks: compareReplayToSnapshot(boardReplay, boardSnapshot, config),
+      };
+    }
     const donationCheckpoint = buildMultiBoardCheckpoint(donationArgs);
     const retained = donationCheckpoint.boards[0].state.pool.winningsDonations[0];
     assert.deepEqual(retained, {
@@ -1682,12 +1731,18 @@ describe("P42 deterministic indexer replay", () => {
       funding[field] = value;
       assert.throws(
         () => validateMultiBoardCheckpoint(tampered),
-        /requires exactly one matching destination SponsorshipFunded event/,
+        /portalProjection|portal transcript|requires exactly one matching destination/,
       );
     }
 
     const missingDestinationEvidence = structuredClone(donationArgs);
-    missingDestinationEvidence.boards[1].replay.pool.sponsorshipFundings = [];
+    const missingReplay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+    const missingSnapshot = snapshotFromReplay(missingReplay);
+    missingDestinationEvidence.boards[1] = {
+      ...missingDestinationEvidence.boards[1],
+      scan: { events }, replay: missingReplay, snapshot: missingSnapshot,
+      checks: compareReplayToSnapshot(missingReplay, missingSnapshot, config),
+    };
     assert.throws(
       () => buildMultiBoardCheckpoint(missingDestinationEvidence),
       /requires exactly one matching destination SponsorshipFunded event/,

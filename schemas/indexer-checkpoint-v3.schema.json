@@ -102,20 +102,38 @@
     "portalSolver": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["solver", "creditAtoms", "claimedWei", "finalEntitlementWei"],
+      "required": ["solver", "creditAtoms", "claimedWei", "finalEntitlementWei", "submissionBondWei", "challengeBondWei", "withdrawableBondWei"],
       "properties": {
         "solver": { "$ref": "#/$defs/address" },
         "creditAtoms": { "$ref": "#/$defs/canonicalUintString" },
         "claimedWei": { "$ref": "#/$defs/canonicalUintString" },
-        "finalEntitlementWei": { "$ref": "#/$defs/canonicalUintString" }
+        "finalEntitlementWei": { "$ref": "#/$defs/canonicalUintString" },
+        "submissionBondWei": { "$ref": "#/$defs/canonicalUintString" },
+        "challengeBondWei": { "$ref": "#/$defs/canonicalUintString" },
+        "withdrawableBondWei": { "$ref": "#/$defs/canonicalUintString" }
       }
     },
     "portalProjection": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema", "frontier", "submissions", "solvers", "pool", "funding", "ledgerClose", "eventProvenance"],
+      "required": ["schema", "replayConfig", "frontier", "submissions", "solvers", "pool", "funding", "ledgerClose", "eventProvenance"],
       "properties": {
         "schema": { "const": "p42-prizes/portal-projection/v2" },
+        "replayConfig": {
+          "type": "object", "additionalProperties": false,
+          "required": ["seedScoreAtoms", "minImprovementAtoms", "challengeWindowSeconds", "treasury", "challengeManager", "problemCount"],
+          "properties": {
+            "seedScoreAtoms": { "$ref": "#/$defs/canonicalIntegerString" },
+            "minImprovementAtoms": { "$ref": "#/$defs/positiveUintString" },
+            "challengeWindowSeconds": { "$ref": "#/$defs/positiveUintString" },
+            "treasury": { "$ref": "#/$defs/address" },
+            "challengeManager": { "$ref": "#/$defs/address" },
+            "problemCount": { "type": "integer", "minimum": 1, "maximum": 10 },
+            "fundingCapWei": { "$ref": "#/$defs/canonicalUintString" },
+            "earliestCloseTimestamp": { "$ref": "#/$defs/canonicalUintString" },
+            "closeByTimestamp": { "$ref": "#/$defs/canonicalUintString" }
+          }
+        },
         "frontier": {
           "type": "object", "additionalProperties": false, "required": ["currentAtoms"],
           "properties": { "currentAtoms": { "$ref": "#/$defs/canonicalIntegerString" } }
@@ -168,11 +186,11 @@
         },
         "funding": {
           "type": "object", "additionalProperties": false,
-          "required": ["acceptingFunds", "fundingArmed", "authorizationExpiresAt", "poolPausedNewActions", "submissionsPausedNewActions", "submissionsPausedAll", "challengesPausedNewActions"],
+          "required": ["acceptingFunds", "fundingArmed", "authorizationExpiresAt", "ledgerPausedNewActions", "submissionsPausedNewActions", "submissionsPausedAll", "challengesPausedNewActions"],
           "properties": {
             "acceptingFunds": { "type": "boolean" }, "fundingArmed": { "type": "boolean" },
             "authorizationExpiresAt": { "$ref": "#/$defs/canonicalUintString" },
-            "poolPausedNewActions": { "type": "boolean" }, "submissionsPausedNewActions": { "type": "boolean" },
+            "ledgerPausedNewActions": { "type": "boolean" }, "submissionsPausedNewActions": { "type": "boolean" },
             "submissionsPausedAll": { "type": "boolean" }, "challengesPausedNewActions": { "type": "boolean" }
           }
         },

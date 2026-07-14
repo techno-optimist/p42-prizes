@@ -3915,6 +3915,8 @@ function portalStateFacts(state) {
     ...Object.values(state.submissions ?? {}).map((submission) => addressKey(submission.solver)),
     ...Object.keys(state.ledger?.creditAtomsOf ?? {}).map(addressKey),
     ...Object.keys(state.ledger?.claimedWeiOf ?? {}).map(addressKey),
+    ...Object.keys(state.submissionClaimableBondWei ?? {}).map(addressKey),
+    ...Object.keys(state.challengeClaimableBondWei ?? {}).map(addressKey),
   ])].sort();
   const refundableWei = state.ledger.closed && asBigInt(state.ledger.totalCreditAtoms) === 0n
     ? Object.values(state.pool.sponsorshipOf ?? {}).reduce((total, value) => total + asBigInt(value), 0n)
@@ -3929,6 +3931,10 @@ function portalStateFacts(state) {
         ? asBigInt(state.ledger.closedPoolBalance) * asBigInt(state.ledger.creditAtomsOf?.[solver] ?? 0n)
           / asBigInt(state.ledger.totalCreditAtoms)
         : 0n,
+      submissionBondWei: state.submissionClaimableBondWei?.[solver] ?? 0n,
+      challengeBondWei: state.challengeClaimableBondWei?.[solver] ?? 0n,
+      withdrawableBondWei: asBigInt(state.submissionClaimableBondWei?.[solver] ?? 0n)
+        + asBigInt(state.challengeClaimableBondWei?.[solver] ?? 0n),
     })),
     pool: {
       totalFundedWei: state.pool.totalFunded,
@@ -3966,7 +3972,7 @@ function portalStateFacts(state) {
       acceptingFunds: state.pool.acceptingFunds,
       fundingArmed: state.fundingArmed,
       authorizationExpiresAt: state.fundingAuthorizationExpiresAt,
-      poolPausedNewActions: state.ledger.pausedNewActions,
+      ledgerPausedNewActions: state.ledger.pausedNewActions,
       submissionsPausedNewActions: state.pausedNewActions,
       submissionsPausedAll: state.pausedAll,
       challengesPausedNewActions: state.challengePausedNewActions,
@@ -3993,6 +3999,12 @@ function portalStateFacts(state) {
   });
 }
 
+function publicReplayConfig(config) {
+  return canonicalize(Object.fromEntries(
+    Object.entries(config).filter(([, value]) => value !== undefined),
+  ));
+}
+
 function buildPortalProjection(replay, binding, problemId, eventsDigest, replayedEvents) {
   const trace = replay?.[REPLAY_EVENT_TRACE]
     ?? replayedEvents?.slice().sort(compareEventOrder).map(eventDigestInput);
@@ -4013,6 +4025,7 @@ function buildPortalProjection(replay, binding, problemId, eventsDigest, replaye
   });
   return canonicalize({
     schema: "p42-prizes/portal-projection/v2",
+    replayConfig: publicReplayConfig(replay.config),
     frontier: facts.frontier,
     submissions,
     solvers: facts.solvers,
@@ -4332,6 +4345,38 @@ function validateCanonicalPortalProjection(board, binding) {
   }
 }
 
+function replayComparableState(state) {
+  const comparable = structuredClone(canonicalize(state));
+  comparable.pool.winningsDonations = (comparable.pool.winningsDonations ?? []).map((donation) => {
+    const { sourcePool: _sourcePool, destinationSponsorship: _destinationSponsorship, ...raw } = donation;
+    return raw;
+  });
+  return comparable;
+}
+
+function validatePortalTranscriptReplay(board) {
+  const projection = board.portalProjection;
+  const events = projection.eventProvenance.logs.map((log) => ({
+    source: log.source,
+    eventName: log.eventName,
+    args: log.args,
+    blockNumber: log.blockNumber,
+    blockHash: log.blockHash,
+    transactionHash: log.transactionHash,
+    transactionIndex: log.transactionIndex,
+    index: log.logIndex,
+    blockTimestamp: BigInt(log.blockTimestamp),
+  }));
+  const replayed = replayProtocolEvents(events, projection.replayConfig, {
+    coverage: REQUIRED_LIFECYCLE_COVERAGE,
+  });
+  invariant(
+    stableStringify(replayComparableState(publicReplayState(replayed)))
+      === stableStringify(replayComparableState(board.state)),
+    `checkpoint board ${board.problemId} portal transcript does not reconstruct retained replay state`,
+  );
+}
+
 function refreshMultiBoardCheckpointReconstruction(checkpoint) {
   for (const board of checkpoint.boards) {
     board.reconstruction.ok =
@@ -4379,6 +4424,7 @@ export function validateMultiBoardCheckpoint(checkpoint) {
     }
     if (checkpoint.schema === "p42-prizes/indexer-checkpoint/v3") {
       validateCanonicalPortalProjection(board, checkpoint.manifestBinding);
+      validatePortalTranscriptReplay(board);
     }
     const derivedComplete =
       board.events.lifecycleCountsComplete === true
