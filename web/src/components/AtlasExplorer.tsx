@@ -118,6 +118,7 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
       && (lane === "all" || row.lane === lane)
       && (packageState === "all" || row.packaged === (packageState === "packaged"));
   }), [board, deferredQuery, lane, packageState, reach, rows]);
+  const selectedRow = selected === null ? null : filtered.find((row) => row.id === selected) ?? null;
 
   const recommended = rows.filter((row) => row.boardability === "READY" && row.reach === "MOVABLE" && !row.packaged);
   const reserve = rows.filter((row) => row.boardability === "READY" && !row.packaged);
@@ -160,7 +161,9 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
       <div className="atlas-map-wrap">
         <div className="atlas-map-heading">
           <p><b>Region map.</b> Each mark is one surveyed problem. Focus or hover a mark to locate its table row.</p>
-          <span aria-hidden="true">higher impact ↑</span>
+          <output className={selectedRow ? "is-active" : undefined}>
+            {selectedRow ? `Erdős ${selectedRow.number} · ${selectedRow.title}` : "higher impact ↑"}
+          </output>
         </div>
         <svg className="atlas-map" viewBox="0 0 1000 520" role="img" aria-labelledby="atlas-map-title atlas-map-desc">
           <title id="atlas-map-title">Erdős problems by verifier fit and mathematical impact</title>
@@ -175,9 +178,18 @@ export function AtlasExplorer({ entries }: { entries: unknown[] }) {
           </g>
           <g>
             {filtered.map((row) => (
-              <Link key={row.id} href={`/atlas/${encodeURIComponent(row.id)}`} aria-label={`Erdős ${row.number}: ${row.title}. Verifier fit ${Math.round(row.fit)}, impact ${Math.round(row.impact)}.`}>
+              <Link
+                key={row.id}
+                href={`/atlas/${encodeURIComponent(row.id)}`}
+                aria-label={`Erdős ${row.number}: ${row.title}. Verifier fit ${Math.round(row.fit)}, impact ${Math.round(row.impact)}.`}
+                data-atlas-id={row.id}
+                onMouseEnter={() => setSelected(row.id)}
+                onMouseLeave={() => setSelected(null)}
+                onFocus={() => setSelected(row.id)}
+                onBlur={() => setSelected(null)}
+              >
                 <circle className="atlas-map-hit" cx={row.plotX} cy={row.plotY} r="18" aria-hidden="true" />
-                <circle className={selected === row.id ? "atlas-map-dot is-selected" : "atlas-map-dot"} cx={row.plotX} cy={row.plotY} r={selected === row.id ? 10 : 7} onMouseEnter={() => setSelected(row.id)} onMouseLeave={() => setSelected(null)} onFocus={() => setSelected(row.id)} onBlur={() => setSelected(null)} />
+                <circle className={selected === row.id ? "atlas-map-dot is-selected" : "atlas-map-dot"} cx={row.plotX} cy={row.plotY} r={selected === row.id ? 10 : 7} />
               </Link>
             ))}
           </g>

@@ -68,7 +68,6 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
                 <Link href="/atlas">Atlas</Link>
                 <Link href="/discoveries">Discoveries</Link>
                 <Link href="/journey">Journey</Link>
-                <Link href="/build-week">Build Week Lab</Link>
                 <Link href="/standings">Standings</Link>
                 <Link href="/agents">For agents</Link>
                 <a href={sitePath("/skill.md")}>skill.md</a>
