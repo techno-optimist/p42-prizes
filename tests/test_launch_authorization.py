@@ -13,6 +13,7 @@ from p42_prizes.launch_authorization import (
     LaunchAuthorizationError,
     MATH_REVIEW_SCHEMA_VERSION,
     _validate_math_review,
+    _validated_reconciliation_checkpoint,
     normalize_launch_authorization,
 )
 from p42_prizes.legal import build_attestation_context
@@ -149,6 +150,187 @@ def test_reconciliation_rejects_boolean_only_completion_claim() -> None:
     }
     with pytest.raises(LaunchAuthorizationError, match="checkpoint is invalid"):
         launch_module._validate_reconciliation_report(report, {})
+
+
+def reconciliation_checkpoint_report(*, with_portal_projection: bool) -> dict:
+    hex_value = lambda digit, length: "0x" + digit * length
+    address = lambda digit: hex_value(digit, 40)
+    contract = lambda digit: {
+        "address": address(digit),
+        "deployedCodeHash": hex_value(digit, 64),
+        "abiHash": hex_value(digit, 64),
+    }
+    shared_keys = [key for key, _name in launch_module.CANONICAL_SHARED_CONTRACTS]
+    board_contract_keys = [key for key, *_rest in launch_module.CANONICAL_BOARD_CONTRACTS]
+    board = {
+        "problemId": "1",
+        "problemSlug": "hadamard-mini",
+        "events": {
+            "digest": hex_value("1", 64),
+            "total": 0,
+            "counts": {"Committed": 0},
+            "lifecycleCountsComplete": True,
+        },
+        "onchain": {
+            "submissionCount": "0",
+            "openSubmissionCount": "0",
+            "bestScoreAtoms": "0",
+            "poolFirstFundedAt": "0",
+            "poolAcceptingFunds": False,
+            "fundingArmed": False,
+            "authorizedFundingDigest": hex_value("0", 64),
+            "fundingAuthorizationDigest": hex_value("0", 64),
+            "fundingAuthorizationExpiresAt": "0",
+            "ledgerPausedNewActions": False,
+            "submissionsPausedNewActions": False,
+            "submissionsPausedAll": False,
+            "submissionExpiryGraceUntil": "0",
+            "challengePausedNewActions": False,
+            "registryProblemCount": "1",
+            "registryFrozen": {"1": False},
+        },
+        "state": {"coverage": {"complete": True}},
+        "reconstruction": {
+            "ok": True,
+            "complete": True,
+            "lifecycleSnapshotComplete": True,
+            "checks": [],
+        },
+    }
+    if with_portal_projection:
+        board["portalProjection"] = {
+            "schema": "p42-prizes/portal-projection/v2",
+            "replayConfig": {
+                "seedScoreAtoms": "0",
+                "minImprovementAtoms": "1",
+                "challengeWindowSeconds": "1",
+                "treasury": address("a"),
+                "challengeManager": address("b"),
+                "problemCount": 1,
+            },
+            "frontier": {"currentAtoms": "0"},
+            "submissions": [],
+            "solvers": [],
+            "pool": {
+                "totalFundedWei": "0",
+                "accountedBalanceWei": "0",
+                "totalClaimedWei": "0",
+                "totalWinningsDonatedWei": "0",
+                "refundableWei": "0",
+                "totalSponsorRefundedWei": "0",
+                "totalFeeAccruedWei": "0",
+                "totalFeePaidWei": "0",
+                "totalResidualPaidWei": "0",
+                "sponsors": [],
+                "sponsorshipFundings": [],
+                "winningsDonations": [],
+            },
+            "funding": {
+                "acceptingFunds": False,
+                "fundingArmed": False,
+                "authorizationExpiresAt": "0",
+                "ledgerPausedNewActions": False,
+                "submissionsPausedNewActions": False,
+                "submissionsPausedAll": False,
+                "challengesPausedNewActions": False,
+            },
+            "ledgerClose": {
+                "closed": False,
+                "closedPoolBalanceWei": "0",
+                "feeReserveWei": "0",
+                "closedAt": "0",
+                "claimDeadline": "0",
+                "totalCreditAtoms": "0",
+                "totalGrossClaimedWei": "0",
+                "totalFeeAccruedWei": "0",
+                "feeSwept": False,
+                "residualSwept": False,
+            },
+            "eventProvenance": {
+                "replayEventsDigest": hex_value("0", 64),
+                "total": 0,
+                "logs": [],
+            },
+        }
+    return {
+        "schema": "p42-prizes/reconciliation-report/v4" if with_portal_projection else "p42-prizes/reconciliation-report/v3",
+        **({"checkpointSchema": "p42-prizes/indexer-checkpoint/v3"} if with_portal_projection else {}),
+        "manifestBinding": {
+            "deploymentCommit": "a" * 40,
+            "deploymentConfigHash": hex_value("2", 64),
+            "chainId": 84532,
+            "startBlock": 1,
+            "contracts": {key: contract(str(index)) for index, key in enumerate(shared_keys, 1)},
+            "boards": {"1": {key: contract(str(index)) for index, key in enumerate(board_contract_keys, 1)}},
+        },
+        "finalityPolicy": {
+            "mode": "confirmations",
+            "confirmations": 1,
+            "logChunkSize": 2,
+            "reorgOverlapBlocks": 1,
+            "maxRetries": 1,
+            "retryBaseDelayMs": 0,
+            "maxScanRestarts": 1,
+        },
+        "range": {
+            "fromBlock": 1,
+            "toBlock": 2,
+            "toBlockHash": hex_value("3", 64),
+            "toBlockTimestamp": 1,
+        },
+        "boards": [board],
+        "reconstruction": {"ok": True, "complete": True, "checks": []},
+    }
+
+
+@pytest.mark.parametrize(
+    ("with_portal_projection", "expected_schema"),
+    [
+        (False, "p42-prizes/indexer-checkpoint/v2"),
+        (True, "p42-prizes/indexer-checkpoint/v3"),
+    ],
+)
+def test_reconciliation_checkpoint_migration_round_trips_v2_and_v3(
+    with_portal_projection: bool,
+    expected_schema: str,
+) -> None:
+    report = reconciliation_checkpoint_report(with_portal_projection=with_portal_projection)
+    original_boards = json.loads(json.dumps(report["boards"]))
+
+    validated_semantics: list[str] = []
+    checkpoint = _validated_reconciliation_checkpoint(
+        report,
+        semantic_validator=lambda value: validated_semantics.append(value["schema"]),
+    )
+
+    assert checkpoint["schema"] == expected_schema
+    assert checkpoint["boards"] == original_boards
+    assert report["boards"] == original_boards
+    assert validated_semantics == (["p42-prizes/indexer-checkpoint/v3"] if with_portal_projection else [])
+
+
+def test_reconciliation_checkpoint_rejects_mixed_v2_v3_boards() -> None:
+    report = reconciliation_checkpoint_report(with_portal_projection=True)
+    legacy_board = dict(report["boards"][0])
+    legacy_board.pop("portalProjection")
+    report["boards"].append(legacy_board)
+
+    with pytest.raises(LaunchAuthorizationError, match="complete checkpoint v3 cohort"):
+        _validated_reconciliation_checkpoint(report)
+
+
+def test_reconciliation_checkpoint_rejects_projection_stripping_downgrade() -> None:
+    report = reconciliation_checkpoint_report(with_portal_projection=True)
+    for board in report["boards"]:
+        board.pop("portalProjection")
+    with pytest.raises(LaunchAuthorizationError, match="complete checkpoint v3 cohort"):
+        _validated_reconciliation_checkpoint(report)
+
+
+def test_reconciliation_checkpoint_v3_requires_independent_semantic_replay() -> None:
+    report = reconciliation_checkpoint_report(with_portal_projection=True)
+    with pytest.raises(LaunchAuthorizationError, match="independent checkpoint replay failed"):
+        _validated_reconciliation_checkpoint(report)
 
 
 def test_math_review_requires_a_registered_independent_signature(tmp_path: Path) -> None:

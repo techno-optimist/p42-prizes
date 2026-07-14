@@ -329,22 +329,17 @@ def _flatten_contract_addresses(value: Any) -> set[str]:
 
 
 def _validate_reconciliation_report(report: Mapping[str, Any], manifest: Mapping[str, Any]) -> None:
-    expected_keys = {
+    base_keys = {
         "schema", "manifestBinding", "finalityPolicy", "range", "boards",
         "reconstruction", "manifestPath", "contracts", "finalityAnchor",
     }
-    if set(report) != expected_keys or report.get("schema") != "p42-prizes/reconciliation-report/v3":
-        raise LaunchAuthorizationError("production reconciliation report must be multi-board v3")
-    checkpoint = {
-        key: report[key]
-        for key in ("manifestBinding", "finalityPolicy", "range", "boards", "reconstruction")
-    }
-    checkpoint["schema"] = "p42-prizes/indexer-checkpoint/v2"
-    try:
-        schema = json.loads((_SCHEMA_DIR / "indexer-checkpoint-v2.schema.json").read_text(encoding="utf-8"))
-        jsonschema.Draft202012Validator(schema).validate(checkpoint)
-    except (OSError, ValueError, jsonschema.ValidationError) as exc:
-        raise LaunchAuthorizationError(f"production reconciliation checkpoint is invalid: {exc}") from exc
+    report_schema = report.get("schema")
+    expected_keys = base_keys | ({"checkpointSchema"} if report_schema == "p42-prizes/reconciliation-report/v4" else set())
+    if set(report) != expected_keys or report_schema not in {
+        "p42-prizes/reconciliation-report/v3", "p42-prizes/reconciliation-report/v4",
+    }:
+        raise LaunchAuthorizationError("production reconciliation report must be a supported multi-board version")
+    _validated_reconciliation_checkpoint(report)
 
     def contract_binding(entry: Mapping[str, Any]) -> dict[str, Any]:
         return {
@@ -419,6 +414,67 @@ def _validate_reconciliation_report(report: Mapping[str, Any], manifest: Mapping
         or range_value.get("toBlock", -1) < governance.get("completionBlock", 0)
     ):
         raise LaunchAuthorizationError("production reconciliation lacks an exact fresh finalized range anchor")
+
+
+def _validated_reconciliation_checkpoint(
+    report: Mapping[str, Any],
+    *,
+    semantic_validator: Callable[[Mapping[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    checkpoint = {
+        key: report[key]
+        for key in ("manifestBinding", "finalityPolicy", "range", "boards", "reconstruction")
+    }
+    boards = checkpoint["boards"]
+    if not isinstance(boards, list) or not boards or any(not isinstance(board, Mapping) for board in boards):
+        raise LaunchAuthorizationError("production reconciliation checkpoint boards must be non-empty objects")
+    projection_presence = ["portalProjection" in board for board in boards]
+    if report.get("schema") == "p42-prizes/reconciliation-report/v4":
+        if report.get("checkpointSchema") != "p42-prizes/indexer-checkpoint/v3" or not all(projection_presence):
+            raise LaunchAuthorizationError("production reconciliation v4 must bind a complete checkpoint v3 cohort")
+        checkpoint_schema = "p42-prizes/indexer-checkpoint/v3"
+        schema_file = "indexer-checkpoint-v3.schema.json"
+    elif report.get("checkpointSchema") is not None or any(projection_presence):
+        raise LaunchAuthorizationError("production reconciliation v3 cannot carry checkpoint v3 fields")
+    else:
+        checkpoint_schema = "p42-prizes/indexer-checkpoint/v2"
+        schema_file = "indexer-checkpoint-v2.schema.json"
+    checkpoint["schema"] = checkpoint_schema
+    try:
+        schema = json.loads((_SCHEMA_DIR / schema_file).read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator(schema).validate(checkpoint)
+    except (OSError, ValueError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"production reconciliation checkpoint is invalid: {exc}") from exc
+    if checkpoint_schema == "p42-prizes/indexer-checkpoint/v3":
+        (semantic_validator or _validate_checkpoint_with_node)(checkpoint)
+    return checkpoint
+
+
+def _validate_checkpoint_with_node(checkpoint: Mapping[str, Any]) -> None:
+    script = Path(__file__).resolve().parents[2] / "agent" / "checkpoint-validate.mjs"
+    try:
+        with tempfile.TemporaryFile() as checkpoint_file:
+            checkpoint_file.write(canonical_json(checkpoint).encode("utf-8"))
+            checkpoint_file.flush()
+            checkpoint_file.seek(0)
+            result = run_bounded_process(
+                ["node", str(script), str(checkpoint_file.fileno())],
+                cwd=script.parent,
+                env={"PATH": os.environ.get("PATH", "")},
+                timeout=120,
+                pass_fds=(checkpoint_file.fileno(),),
+            )
+    except (OSError, ValueError, subprocess.SubprocessError, OutputLimitExceeded) as exc:
+        raise LaunchAuthorizationError(f"independent checkpoint replay could not run: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "unknown validator failure"
+        raise LaunchAuthorizationError(f"independent checkpoint replay failed: {detail}")
+    try:
+        verdict = loads_strict_json(result.stdout)
+    except ValueError as exc:
+        raise LaunchAuthorizationError("independent checkpoint replay returned malformed output") from exc
+    if verdict != {"ok": True, "schema": "p42-prizes/indexer-checkpoint/v3", "boards": len(checkpoint["boards"])}:
+        raise LaunchAuthorizationError("independent checkpoint replay returned an unexpected verdict")
 
 
 def _canonical_contract_entries(manifest: Mapping[str, Any]) -> list[tuple[str, Mapping[str, Any], str | None]]:

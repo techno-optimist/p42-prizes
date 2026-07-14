@@ -4,7 +4,13 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { launchProblems, problems } from "@/lib/data";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { activatedProvenanceFromArtifacts, computePortalDeploymentConfigHash, configuredIndexerArtifactPaths, loadIndexerProvenance } from "@/lib/indexer-provenance";
+import {
+  activatedIndexerSnapshotFromArtifacts,
+  activatedProvenanceFromArtifacts,
+  computePortalDeploymentConfigHash,
+  configuredIndexerArtifactPaths,
+  loadIndexerProvenance,
+} from "@/lib/indexer-provenance";
 
 const root = resolve(process.cwd(), "..");
 const boardKeys = ["pool", "ledger", "submissions", "challenges"] as const;
@@ -117,7 +123,7 @@ describe("indexer provenance v2", () => {
   });
 
   it("keeps Render-bundled schemas byte-equivalent to canonical protocol schemas", () => {
-    for (const name of ["deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json", "funding-activation-completion.schema.json"]) {
+    for (const name of ["deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json", "indexer-checkpoint-v3.schema.json", "funding-activation-completion.schema.json"]) {
       const canonical = JSON.parse(require("node:fs").readFileSync(join(root, "schemas", name), "utf8"));
       const bundled = JSON.parse(require("node:fs").readFileSync(join(process.cwd(), "src", "schemas", name), "utf8"));
       expect(bundled).toEqual(canonical);
@@ -210,6 +216,7 @@ describe("indexer provenance v2", () => {
       ...clone(templateBoard), problemId: item.problemId, problemSlug: item.problemSlug,
       onchain: { ...clone(templateBoard.onchain), poolAcceptingFunds: true, fundingArmed: true, authorizedFundingDigest: digestHex, fundingAuthorizationDigest: digestHex, fundingAuthorizationExpiresAt: String(expires) },
     }));
+    base.checkpoint.schema = "p42-prizes/indexer-checkpoint/v3";
     const manifestBytes = Buffer.from(JSON.stringify(base.manifest));
     const authorization = { ...unsignedAuthorization, authorization_digest: authorizationDigest, authorization_signatures: signers.map(({ role, privateKey, publicKey }) => {
       const message = Buffer.from(`P42-ATTESTATION-V2\np42-production-launch-authorization/v1\n${role}\n${authorizationDigest}\n${issuedAt}`, "ascii");
@@ -239,6 +246,23 @@ describe("indexer provenance v2", () => {
     const checkpointDigest = `sha256:${createHash("sha256").update(checkpointBytes).digest("hex")}`;
     const checkpointMessage = Buffer.from(`P42-ATTESTATION-V2\np42-indexer-checkpoint-attestation/v1\nindexer-checkpoint-authority\n${checkpointDigest}\n${checkpointSignedAt}`, "ascii");
     const checkpointAttestation = { schema: "p42-indexer-checkpoint-attestation/v1", signerRole: "indexer-checkpoint-authority", publicKey: checkpointPublicKey, checkpointDigest, signedAtUtc: checkpointSignedAt, signature: `ed25519:${sign(null, checkpointMessage, checkpointSigner.privateKey).toString("hex")}` };
+    const activatedArtifacts = {
+      manifest: base.manifest, manifestBytes, checkpoint: base.checkpoint, checkpointBytes,
+      authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion,
+    };
+    const activatedSnapshot = activatedIndexerSnapshotFromArtifacts(launchProblems, activatedArtifacts);
+    expect(activatedSnapshot.provenance).toHaveLength(10);
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts,
+      nowSeconds: Number(base.checkpoint.range.toBlockTimestamp) + 301,
+      checkpointMaxAgeSeconds: 300,
+    })).toThrow();
+    const partialCompletion = clone(completion);
+    partialCompletion.boards.pop();
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts,
+      completion: partialCompletion,
+    })).toThrow();
     const result = activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion);
     expect(result).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[0].pool, fundingAuthorizationDigest: authorizationDigest, activationFinalizedBlock: 99 });
     const subsetSums = activatedProvenanceFromArtifacts(launchProblems[6], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, trustRegistry, trustRegistryDigest, checkpointAttestation, plan, completion);

@@ -1,17 +1,15 @@
 import { json } from "@/lib/api";
 import {
-  chainProvenanceForProblem,
   publicDonationWallet,
   publishedDonationTarget,
 } from "@/lib/chain-provenance";
-import { launchProblems } from "@/lib/data";
-import { loadIndexerProvenanceSnapshot } from "@/lib/indexer-provenance";
+import { loadPortalReadModel } from "@/lib/indexer-read-model";
 
 export async function GET() {
-  const provenanceSnapshot = loadIndexerProvenanceSnapshot(launchProblems);
+  const model = await loadPortalReadModel();
   return json(
-    launchProblems.map((problem) => {
-      const chainProvenance = provenanceSnapshot.get(problem.slug) ?? chainProvenanceForProblem(problem);
+    model.problems.map((problem) => {
+      const chainProvenance = problem.chainProvenance;
       const donationTarget = publishedDonationTarget(problem.donationWallet, chainProvenance);
       return {
         id: problem.id,
@@ -24,6 +22,8 @@ export async function GET() {
         currentBest: problem.currentBest,
         minImprovement: problem.minImprovement,
         bountyEth: problem.bountyEth,
+        source: problem.source,
+        pool: problem.pool,
         donationWallet: publicDonationWallet(problem.donationWallet, chainProvenance),
         donationTarget,
         chainProvenance,
@@ -31,5 +31,6 @@ export async function GET() {
         verifierVersion: problem.verifierVersion,
       };
     }),
+    { headers: { "X-P42-Data-Source": model.source } },
   );
 }

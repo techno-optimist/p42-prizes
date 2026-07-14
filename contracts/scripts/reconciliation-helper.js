@@ -14,6 +14,7 @@ import {
   loadContractArtifacts,
   stableStringify,
   validateManifestEvidence,
+  validateMultiBoardCheckpoint,
 } from "../../agent/indexer.mjs";
 import { readContractsArtifactJson } from "./strict-json-helper.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
@@ -87,6 +88,43 @@ export async function loadManifestFromPath(path) {
   } catch (error) {
     throw new Error(`Unable to read deployment manifest at ${path}: ${error.message}`);
   }
+}
+
+export function buildReconciliationReport({
+  checkpoint,
+  manifest,
+  manifestPath,
+  multiBoard,
+  validateMultiBoard = validateMultiBoardCheckpoint,
+}) {
+  if (multiBoard) {
+    if (!["p42-prizes/indexer-checkpoint/v2", "p42-prizes/indexer-checkpoint/v3"].includes(checkpoint?.schema)) {
+      throw new Error(`unsupported multi-board checkpoint schema ${checkpoint?.schema}`);
+    }
+    validateMultiBoard(checkpoint);
+  }
+  const checkpointV3 = multiBoard && checkpoint.schema === "p42-prizes/indexer-checkpoint/v3";
+  return {
+    ...checkpoint,
+    schema: checkpointV3
+      ? "p42-prizes/reconciliation-report/v4"
+      : multiBoard ? "p42-prizes/reconciliation-report/v3" : "p42-prizes/reconciliation-report/v2",
+    ...(checkpointV3 ? { checkpointSchema: checkpoint.schema } : {}),
+    manifestPath,
+    contracts: multiBoard
+      ? {
+        timelock: manifest.contracts.timelock.address,
+        registry: manifest.contracts.registry.address,
+        rolloverVault: manifest.contracts.rolloverVault.address,
+        boards: Object.fromEntries(manifest.problems.map((problem) => [
+          problem.problemId,
+          Object.fromEntries(Object.entries(problem.contracts).map(([key, entry]) => [key, entry.address])),
+        ])),
+      }
+      : Object.fromEntries(
+        Object.entries(manifest.contracts).map(([key, entry]) => [key, entry.address])
+      ),
+  };
 }
 
 export function assertReconciliationPublishable(manifest, report, freshAnchor) {
@@ -169,6 +207,7 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
       fromBlock,
       toBlock,
       toBlockHash: anchor.hash,
+      toBlockTimestamp: anchor.timestamp,
       boards,
     });
   } else {
@@ -188,6 +227,7 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
       fromBlock,
       toBlock,
       toBlockHash: anchor.hash,
+      toBlockTimestamp: anchor.timestamp,
       events: scan.events,
       replay,
       snapshot,
@@ -195,24 +235,12 @@ export async function reconcileWithProvider({ ethers, manifest, outputPath = nul
     });
   }
 
-  const report = {
-    ...checkpoint,
-    schema: multiBoard ? "p42-prizes/reconciliation-report/v3" : "p42-prizes/reconciliation-report/v2",
+  const report = buildReconciliationReport({
+    checkpoint,
+    manifest: manifest.data,
     manifestPath: manifest.path,
-    contracts: multiBoard
-      ? {
-        timelock: manifest.data.contracts.timelock.address,
-        registry: manifest.data.contracts.registry.address,
-        rolloverVault: manifest.data.contracts.rolloverVault.address,
-        boards: Object.fromEntries(manifest.data.problems.map((problem) => [
-          problem.problemId,
-          Object.fromEntries(Object.entries(problem.contracts).map(([key, entry]) => [key, entry.address])),
-        ])),
-      }
-      : Object.fromEntries(
-        Object.entries(manifest.data.contracts).map(([key, entry]) => [key, entry.address])
-      ),
-  };
+    multiBoard,
+  });
 
   if (outputPath) {
     assertReconciliationPublishable(manifest.data, report, finalityAnchor);

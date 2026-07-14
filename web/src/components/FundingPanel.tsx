@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { publishedDonationTarget } from "@/lib/chain-provenance";
+import { publishedDonationTarget, validatedDonationTarget } from "@/lib/chain-provenance";
 import type { ChainProvenance, DonationWallet } from "@/lib/types";
 
 export function FundingPanel({
@@ -16,6 +16,7 @@ export function FundingPanel({
   compact?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
+  const deployedTarget = validatedDonationTarget(provenance);
   const target = publishedDonationTarget(wallet, provenance);
 
   async function copyAddress() {
@@ -34,7 +35,7 @@ export function FundingPanel({
       <div className="funding-head">
         <h3>Proposed sponsor pool — {label ?? `${wallet.chain} ${wallet.asset}`}</h3>
         <span className={`status-word ${target ? "pilot" : "locked"}`}>
-          {target ? "deployed" : "not deployed"}
+          {target ? "deployed" : deployedTarget ? "funding unavailable" : "not deployed"}
         </span>
       </div>
       {!compact && <p className="funding-note">{wallet.note}</p>}
@@ -60,8 +61,9 @@ export function FundingPanel({
         </>
       ) : (
         <p className="testnet-warning">
-          Pool not deployed. No address or sponsorship-funding action is published until per-problem chain provenance is
-          reconciled to deployed runtime bytecode.
+          {deployedTarget
+            ? "Pool deployment is reconciled, but funding is not currently actionable. No transfer target is published."
+            : "Pool not deployed. No address or sponsorship-funding action is published until per-problem chain provenance is reconciled to deployed runtime bytecode."}
         </p>
       )}
     </div>

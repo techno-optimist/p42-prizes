@@ -11,6 +11,7 @@ const names = [
   "deployment-manifest.schema.json",
   "deployment-manifest-v2.schema.json",
   "indexer-checkpoint-v2.schema.json",
+  "indexer-checkpoint-v3.schema.json",
   "runner-health-v2.schema.json",
 ];
 
