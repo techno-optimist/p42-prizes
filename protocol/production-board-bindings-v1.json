@@ -1,0 +1,714 @@
+{
+  "board_set": {
+    "path": "protocol/production-board-set-v1.json",
+    "sha256": "sha256:1519ea83e14b780a3b0818890a5be45cc72a71b62cf1ed7b4b4d9582702b6cc8"
+  },
+  "records": [
+    {
+      "claim_scope": "Certifies only the submitted finite 6-uniform intersecting hypergraph and its covering number. The 14/1 objective target is recorded as a literature-backed lower bound; this dossier does not claim q(6)=18 or approve the external mathematics.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "minimize",
+        "gauge": "max(0, seed_best - edge_count)",
+        "min_improvement": "1/1",
+        "optimum": "14/1",
+        "score_name": "edge_count",
+        "seed_best": "18/1",
+        "target_classification": "proven_lower_bound"
+      },
+      "problem_yaml": {
+        "path": "problems/q6-intersecting-hypergraph/problem.yaml",
+        "sha256": "sha256:68d3096d57de6bf7e458941f2e97d654e1ac815e15709ff789f0403cfaaf760f"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/q6-intersecting-hypergraph/SPEC.md",
+            "sha256": "sha256:a408a5454f6e17345304f32944901d5138b3bf239b3c2b26d6d5f4a925adf483"
+          },
+          {
+            "path": "problems/q6-intersecting-hypergraph/HARDENING.md",
+            "sha256": "sha256:fd219d04a76383e5dd911fa3a98a104d798166138c2ad193ec8e75be6cea17e6"
+          },
+          {
+            "path": "problems/q6-intersecting-hypergraph/PROVENANCE.md",
+            "sha256": "sha256:bcb498b362c4fe919c9431fa5100883dc6f153d53bad1637282817208088fe80"
+          },
+          {
+            "path": "docs/provenance/production-board-evidence-v1.json",
+            "sha256": "sha256:0d129b55c848f90b48e5feccb51455f3fdc199256ff8c743b7d4ecf0c838d739"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent validation of the pinned q(6) source artifacts and the 14/1 lower-bound interpretation is not supplied.",
+          "Independent mathematical and rights review is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:a1fb208b6f99695707fd6d44acb1a82a8104d293fd47cacfc0973f38b677ca19",
+        "path": "problems/q6-intersecting-hypergraph/tests/seed-pg25.json",
+        "sha256": "sha256:4c0e38ba9e174fe95c78de0acc2fa216ade92a52ba41b88ee010fbf7a61092ce",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "18/1"
+      },
+      "slug": "q6-intersecting-hypergraph",
+      "solution_schema": {
+        "path": "problems/q6-intersecting-hypergraph/solution.schema.json",
+        "sha256": "sha256:6a1c2dc16cdc966ff6178cf9fec453963315ded5401dd1a3bb524a0ed4128a4d"
+      },
+      "specification": {
+        "path": "problems/q6-intersecting-hypergraph/SPEC.md",
+        "sha256": "sha256:a408a5454f6e17345304f32944901d5138b3bf239b3c2b26d6d5f4a925adf483"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:aa59c328aecea7bdc976170f0a7787fdafbfaa143a11ea311be9e27ee970fd87",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "claim_scope": "Certifies the exact overlap upper-bound score of the submitted finite rational vector. It does not establish a global optimum, an attested literature record, or approval of the continuum interpretation.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "minimize",
+        "gauge": "max(0, seed_best - exact_overlap_upper_bound)",
+        "min_improvement": "1/1000000000000",
+        "optimum": "0/1",
+        "score_name": "overlap_upper_bound",
+        "seed_best": "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401",
+        "target_classification": "search_target"
+      },
+      "problem_yaml": {
+        "path": "problems/erdos-min-overlap/problem.yaml",
+        "sha256": "sha256:4965b2161c2a81b1fabad61c64eba2500e190a5be626a4e92453faf583064251"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/erdos-min-overlap/SPEC.md",
+            "sha256": "sha256:02fb2857f1cd8952c5235a19d3a1b28a86d822d2452215d2d5c7f475fd1a6aec"
+          },
+          {
+            "path": "problems/erdos-min-overlap/HARDENING.md",
+            "sha256": "sha256:3236cf06896fa9d56b6e7ffcb2dfb03ea92a5169bd3dbecabc4732bbb166dd8c"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent mathematical review of the claim scope, finite reduction, and objective target classification is not supplied.",
+          "Independent provenance and rights review of the mathematical lineage and frontier assertions is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:8b193936f9d96a4cfa802b62de857819425450770729cdbb4ac97d6b72824e8c",
+        "path": "problems/erdos-min-overlap/examples/hyra-upper.json",
+        "sha256": "sha256:f37c8f97ae3f3b8a50344d7b9e9ffb3be506457a26a8d55622004b83f5ae64d1",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401"
+      },
+      "slug": "erdos-min-overlap",
+      "solution_schema": {
+        "path": "problems/erdos-min-overlap/solution.schema.json",
+        "sha256": "sha256:b3dd805eab4b46ef7123819528b50eb87e5660916b7d75aae8725f1c161d472e"
+      },
+      "specification": {
+        "path": "problems/erdos-min-overlap/SPEC.md",
+        "sha256": "sha256:02fb2857f1cd8952c5235a19d3a1b28a86d822d2452215d2d5c7f475fd1a6aec"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:016166adda872f52f02e5c265b3a0424fe49d3b1f5c14595c2e0d95d48b59662",
+        "version": "0.1.1"
+      }
+    },
+    {
+      "claim_scope": "Certifies the repository-defined finite 20-atom, slope-3 interpolation surrogate for the submitted rows. It does not recover the missing historical incumbent artifact or establish a theorem about the unscoped edges-versus-triangles problem.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "maximize",
+        "gauge": "max(0, exact_score - seed_best)",
+        "min_improvement": "1/1000000000000",
+        "optimum": "0/1",
+        "score_name": "negative_slope3_area_plus_gap_penalty",
+        "seed_best": "-16684282317138839/23437500000000000",
+        "target_classification": "scoped_surrogate"
+      },
+      "problem_yaml": {
+        "path": "problems/edges-vs-triangles/problem.yaml",
+        "sha256": "sha256:1f95f32f5fc896ec2652328024e0d3a6aafcbad2b50b707d3fd5d2e150afa50e"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/edges-vs-triangles/SPEC.md",
+            "sha256": "sha256:22e689561dd7a696959025feae4d8c4777e4a26c96822843be0c48e14e5807ca"
+          },
+          {
+            "path": "problems/edges-vs-triangles/HARDENING.md",
+            "sha256": "sha256:6778cddfe60849637e02e2bf907508c39b26408f2d47cb0a455249c9648fa033"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent mathematical review of the claim scope, finite reduction, and objective target classification is not supplied.",
+          "Independent provenance and rights review of the mathematical lineage and frontier assertions is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:15e6c0607d4d8c15e4e9566e2a470f183f916a306da9a99ab088d5151835f204",
+        "path": "problems/edges-vs-triangles/examples/rational-curve-sample.json",
+        "sha256": "sha256:a662d18c930fbb2c351ca5987e78113be30657a04615cbff87e4781745969214",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "-16684282317138839/23437500000000000"
+      },
+      "slug": "edges-vs-triangles",
+      "solution_schema": {
+        "path": "problems/edges-vs-triangles/solution.schema.json",
+        "sha256": "sha256:c88def6b44752ca3c4a76ad365a3818d745dce28e5cdd1acf32b067bbb38a127"
+      },
+      "specification": {
+        "path": "problems/edges-vs-triangles/SPEC.md",
+        "sha256": "sha256:22e689561dd7a696959025feae4d8c4777e4a26c96822843be0c48e14e5807ca"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:6a068da6bccc9146ef43ee090719e089e63940ee0e245d789f196ef46f4f1177",
+        "version": "0.1.1"
+      }
+    },
+    {
+      "claim_scope": "Certifies only the repository-defined 2x2 forcing warm-up certificate and its exact rational cost. It does not claim an arithmetic-Kakeya record or a reduction from the general problem.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "minimize",
+        "gauge": "max(0, seed_best - forcing_score)",
+        "min_improvement": "1/1000000000000",
+        "optimum": "1/1",
+        "score_name": "forcing_score",
+        "seed_best": "7/4",
+        "target_classification": "scoped_surrogate"
+      },
+      "problem_yaml": {
+        "path": "problems/arithmetic-kakeya/problem.yaml",
+        "sha256": "sha256:2c1bc3c70387915f0c0928fdc895514658bd06c9eb5cad58388536f66d3fa3fd"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/arithmetic-kakeya/SPEC.md",
+            "sha256": "sha256:cfb24db99f0c38da3d8d6d9ccd0491a22063aa4ef6b413671f78149e592cb08b"
+          },
+          {
+            "path": "problems/arithmetic-kakeya/HARDENING.md",
+            "sha256": "sha256:024a709c92b5d957dd24a67056db6444d5ca2bd436fd90dc449fce11b56138c7"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent mathematical review of the claim scope, finite reduction, and objective target classification is not supplied.",
+          "Independent provenance and rights review of the mathematical lineage and frontier assertions is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:3802918b374bd80e4ff2206c4d6fe85341cf71287380625d9a76500e703a865b",
+        "path": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
+        "sha256": "sha256:031865755a17795bf2a4c65a24986589b6a8d10085d6a062fae5293c38a7f118",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "7/4"
+      },
+      "slug": "arithmetic-kakeya",
+      "solution_schema": {
+        "path": "problems/arithmetic-kakeya/solution.schema.json",
+        "sha256": "sha256:de3f854d04395db12d3cba970debac6ffd75aa0d3247b4dd8dc30966c9066d7c"
+      },
+      "specification": {
+        "path": "problems/arithmetic-kakeya/SPEC.md",
+        "sha256": "sha256:cfb24db99f0c38da3d8d6d9ccd0491a22063aa4ef6b413671f78149e592cb08b"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:28b1a31baa2a6026fa6d20ffd9b4f8931f907d8813993b3922fc70805482a6c5",
+        "version": "0.1.1"
+      }
+    },
+    {
+      "claim_scope": "Certifies the exact discrete score of the submitted nonnegative length-90000 integer step witness. It does not approve a continuum reduction, establish the global optimum, or attest a literature record.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "minimize",
+        "gauge": "max(0, seed_best - exact_c1_upper_bound)",
+        "min_improvement": "1/1000000000000",
+        "optimum": "0/1",
+        "score_name": "c1_upper_bound",
+        "seed_best": "15041971118343665197137380984232095998912388144895190342004000000000000/10008961702715850455872036862958802052289156042841554837278437518918769",
+        "target_classification": "search_target"
+      },
+      "problem_yaml": {
+        "path": "problems/autoconvolution-c1-upper/problem.yaml",
+        "sha256": "sha256:f395828a2721452ce415113daff834067e81f38d6faed80893ac8df9efae5239"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/autoconvolution-c1-upper/SPEC.md",
+            "sha256": "sha256:9d53f7ef8e9bad41a09d3ba81c9eb34fb7fdc8716d9abe0f328d37691289150a"
+          },
+          {
+            "path": "problems/autoconvolution-c1-upper/HARDENING.md",
+            "sha256": "sha256:afd762e82c643dde95f83db284699f39d8e8654020efde3b8a05a2e293500928"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent mathematical review of the claim scope, finite reduction, and objective target classification is not supplied.",
+          "Independent provenance and rights review of the mathematical lineage and frontier assertions is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:8acb58d03480edc1bc6c0c725a707709b33ee0e6c4a6c302f2c176c3b742ae39",
+        "path": "problems/autoconvolution-c1-upper/examples/hyra-upper.json",
+        "sha256": "sha256:0dc121b9404193d8a423400b946645e14ed1403c2d7bcb6c3b23ffc07675ad0e",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "15041971118343665197137380984232095998912388144895190342004000000000000/10008961702715850455872036862958802052289156042841554837278437518918769"
+      },
+      "slug": "autoconvolution-c1-upper",
+      "solution_schema": {
+        "path": "problems/autoconvolution-c1-upper/solution.schema.json",
+        "sha256": "sha256:e12b48a68774a607dd7f6aa33dfeeb01ddb9d149b72bf6ad86021d2fb547785c"
+      },
+      "specification": {
+        "path": "problems/autoconvolution-c1-upper/SPEC.md",
+        "sha256": "sha256:9d53f7ef8e9bad41a09d3ba81c9eb34fb7fdc8716d9abe0f328d37691289150a"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:1654a9e9e2bb4e737ea4c9189b98d27f281bee80bc1da8422fa49b89d63b4248",
+        "version": "0.1.1"
+      }
+    },
+    {
+      "claim_scope": "Certifies the exact discrete score of the submitted nonnegative length-524288 integer witness. It does not approve a continuum interpretation, establish the global optimum, or attest a literature record.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "maximize",
+        "gauge": "max(0, exact_c2_lower_bound - seed_best)",
+        "min_improvement": "1/1000000000000",
+        "optimum": "1/1",
+        "score_name": "c2_lower_bound",
+        "seed_best": "140651861665566489683881393353250795846281833/146070932420211259869783468438333325818535926",
+        "target_classification": "search_target"
+      },
+      "problem_yaml": {
+        "path": "problems/autoconvolution-c2-lower/problem.yaml",
+        "sha256": "sha256:26765577ad597704652f6fc7a72f3a6543388b705bf7d1fbda270c56c3753a74"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/autoconvolution-c2-lower/SPEC.md",
+            "sha256": "sha256:a95d1a3f0620af3e4d844e5aa25c5f482a87a259ff7c6655d252a5478812efc2"
+          },
+          {
+            "path": "problems/autoconvolution-c2-lower/HARDENING.md",
+            "sha256": "sha256:e4d203d04a956f8618ce1608d98b7bad68222ab015bdcc5d40b494bb1d3b80d5"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent mathematical review of the claim scope, finite reduction, and objective target classification is not supplied.",
+          "Independent provenance and rights review of the mathematical lineage and frontier assertions is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:82b009f62e63da32b08e3f40352f783488542727509ac6cd84e797d6f8c1ba2a",
+        "path": "problems/autoconvolution-c2-lower/examples/hyra-lower.json",
+        "sha256": "sha256:6e785f481b592e0a6d1a77dd367c0379b8a3e55fe3b739c5cd1b352d7a25f064",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "140651861665566489683881393353250795846281833/146070932420211259869783468438333325818535926"
+      },
+      "slug": "autoconvolution-c2-lower",
+      "solution_schema": {
+        "path": "problems/autoconvolution-c2-lower/solution.schema.json",
+        "sha256": "sha256:650cd1058e3bb939c5a826955b07da9b8c1837a06da9e0e820add5ade0f8b7f8"
+      },
+      "specification": {
+        "path": "problems/autoconvolution-c2-lower/SPEC.md",
+        "sha256": "sha256:a95d1a3f0620af3e4d844e5aa25c5f482a87a259ff7c6655d252a5478812efc2"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:f2bea2f8ec226e040c0204e0ae1aff35f09ee2eba11cfce0eaefa79d2b2499ef",
+        "version": "0.1.1"
+      }
+    },
+    {
+      "claim_scope": "Certifies a submitted 11-element set by exhaustive enumeration of all 2048 subset sums. The 310/1 objective target is recorded as a lower bound using the externally reported a(10)=309; this dossier does not prove a(11), validate that external computation, or approve funding.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "minimize",
+        "gauge": "max(0, seed_best - max_element)",
+        "min_improvement": "1/1",
+        "optimum": "310/1",
+        "score_name": "max_element",
+        "seed_best": "594/1",
+        "target_classification": "proven_lower_bound"
+      },
+      "problem_yaml": {
+        "path": "problems/distinct-subset-sums-a11/problem.yaml",
+        "sha256": "sha256:883649b7f82e8a4d199b1fe7521e3e2377d54e49ea84de48955c96941b852370"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/distinct-subset-sums-a11/SPEC.md",
+            "sha256": "sha256:f23d4f3f1de4fd98cb8f83cb3ecfa4c001b383025841469b3ccbc355208c08d2"
+          },
+          {
+            "path": "problems/distinct-subset-sums-a11/HARDENING.md",
+            "sha256": "sha256:73a701ed80090d4ede74b52788fbcb420834a3039f37ef7968700c849352880d"
+          },
+          {
+            "path": "problems/distinct-subset-sums-a11/PROVENANCE.md",
+            "sha256": "sha256:d4f278e50a1a8d4a89e5303c5e6222a06656c88e9a4e944caa494806d2e3039b"
+          },
+          {
+            "path": "docs/provenance/production-board-evidence-v1.json",
+            "sha256": "sha256:0d129b55c848f90b48e5feccb51455f3fdc199256ff8c743b7d4ecf0c838d739"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent validation of the externally reported a(10)=309 computation and the resulting 310/1 lower bound is not supplied.",
+          "Independent mathematical and rights review is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:b8b1f1f6a30318b34bf6cb38b831806ff67dd083aa2bcdfdf287dd55450e265b",
+        "path": "problems/distinct-subset-sums-a11/tests/conway-guy-594.json",
+        "sha256": "sha256:5081fe54d10220c1ad2862fd872b3cf5dffe14184bb9f52a9e517ad4a5a26768",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "594/1"
+      },
+      "slug": "distinct-subset-sums-a11",
+      "solution_schema": {
+        "path": "problems/distinct-subset-sums-a11/solution.schema.json",
+        "sha256": "sha256:fea6cb1767e885a321a9b3eb59343a5ed6024d77ef7ef82dea3e0f04d0a1e3b4"
+      },
+      "specification": {
+        "path": "problems/distinct-subset-sums-a11/SPEC.md",
+        "sha256": "sha256:f23d4f3f1de4fd98cb8f83cb3ecfa4c001b383025841469b3ccbc355208c08d2"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:3a3d5f5f7837b2714a1ed560e1a008fe8aa0d638856ea2114b3a2eba46f14c47",
+        "version": "0.1.0"
+      }
+    },
+    {
+      "claim_scope": "Certifies the submitted nonnegative dyadic dual and its outward-rounded ceiling for the frozen K=12000 finite linear program. It does not imply monotonicity, cover larger reaches, or approve the reduction to a broader Mertens or PNT claim.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "minimize",
+        "gauge": "max(0, seed_best - certified_ceiling)",
+        "min_improvement": "1/1000000000000",
+        "optimum": "0/1",
+        "score_name": "certified_ceiling",
+        "seed_best": "249371902576813203926437/250000000000000000000000",
+        "target_classification": "scoped_surrogate"
+      },
+      "problem_yaml": {
+        "path": "problems/mertens-lp-ceiling-k12000/problem.yaml",
+        "sha256": "sha256:255f0b7b7bf465ce238f76de772ba95789ee221ce3436e49cd2373132aa50e13"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/mertens-lp-ceiling-k12000/SPEC.md",
+            "sha256": "sha256:f75e2178d05b8ae0f3c75a0b05f41eb999ee65c8312276d2182b5af5377d305f"
+          },
+          {
+            "path": "problems/mertens-lp-ceiling-k12000/HARDENING.md",
+            "sha256": "sha256:910ee89569e4fd615696567b926dc8887fbdf15d2eff5862a740532ced6ef871"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent mathematical review of the claim scope, finite reduction, and objective target classification is not supplied.",
+          "Independent provenance and rights review of the mathematical lineage and frontier assertions is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:58742a4e6b03d94bbd31d3757f4bc713e8ccc9fb282636f84f220dca29f91a9a",
+        "path": "problems/mertens-lp-ceiling-k12000/examples/certificate-k12000.json",
+        "sha256": "sha256:769a2cc98425695b4024d9c6ef549cc668e31882ae7773992967744540cb2795",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "249371902576813203926437/250000000000000000000000"
+      },
+      "slug": "mertens-lp-ceiling-k12000",
+      "solution_schema": {
+        "path": "problems/mertens-lp-ceiling-k12000/solution.schema.json",
+        "sha256": "sha256:83debdf556299b578b27da7e73de92f30215c702a42cbe9241de3d8e5767f181"
+      },
+      "specification": {
+        "path": "problems/mertens-lp-ceiling-k12000/SPEC.md",
+        "sha256": "sha256:f75e2178d05b8ae0f3c75a0b05f41eb999ee65c8312276d2182b5af5377d305f"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:7903667e2ed6d6587ad18c6aa6f3367ecc9fa361c3630123cac4f70a1ec9d6c5",
+        "version": "0.1.1"
+      }
+    },
+    {
+      "claim_scope": "Certifies the submitted sparse rational construction at frozen reach 96000 against every repository-defined row through 960000 and its interval-enclosed lower score. It does not establish a general PNT result or approve the finite reduction.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": null,
+        "identity": null,
+        "proof_kind": "none",
+        "resource_profile": null,
+        "status": "missing"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "maximize",
+        "gauge": "max(0, certified_lower_bound - seed_best)",
+        "min_improvement": "1/1000000000000",
+        "optimum": "10001/10000",
+        "score_name": "certified_log_objective_lower_bound",
+        "seed_best": "9974252022196793/10000000000000000",
+        "target_classification": "scoped_surrogate"
+      },
+      "problem_yaml": {
+        "path": "problems/pnt-sparse-mertens-construction/problem.yaml",
+        "sha256": "sha256:1dcfdf92bff2c46c9e1d8c3bed41ebe55087191633f5c26ea3242b570d51c9bc"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/pnt-sparse-mertens-construction/SPEC.md",
+            "sha256": "sha256:4888f9ab981b8c43ed87f7fff084f559d012e19b7f5d1baf82bef03e2a64a9b6"
+          },
+          {
+            "path": "problems/pnt-sparse-mertens-construction/HARDENING.md",
+            "sha256": "sha256:525169135e17c9c1c8c2b91d1ee6a6f9e97dbdb75bab44af047a3a8189b5585a"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent mathematical review of the claim scope, finite reduction, and objective target classification is not supplied.",
+          "Independent provenance and rights review of the mathematical lineage and frontier assertions is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:9d626c0b63eae462cb03cd48c17f7cb5e61c92f31c6f8d21aafbb7daecccf891",
+        "path": "problems/pnt-sparse-mertens-construction/examples/chronos-96000.json",
+        "sha256": "sha256:a60e6687ed1731009b3e3383fba1429bfac2bff694ee8e4fe256eef1fa42fb05",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "9974252022196793/10000000000000000"
+      },
+      "slug": "pnt-sparse-mertens-construction",
+      "solution_schema": {
+        "path": "problems/pnt-sparse-mertens-construction/solution.schema.json",
+        "sha256": "sha256:c21da75234ebdd0ce1e25cacfb686be24cb4326ca5bd8a3754d6905f4dd90bf8"
+      },
+      "specification": {
+        "path": "problems/pnt-sparse-mertens-construction/SPEC.md",
+        "sha256": "sha256:4888f9ab981b8c43ed87f7fff084f559d012e19b7f5d1baf82bef03e2a64a9b6"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:212f145d3d9bd0e5883c1efa8ecd09939b5e1c73448951cc01ca085481fdb72a",
+        "version": "0.1.2"
+      }
+    },
+    {
+      "claim_scope": "Certifies the exact nonorthogonal-row-pair defect of the submitted 668x668 sign matrix. Score 0/1 remains a search target; the bound seed and mock guest do not claim a Hadamard matrix of order 668 or authorize activation.",
+      "guest": {
+        "activation_eligible": false,
+        "execution": {
+          "path": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/execution.json",
+          "sha256": "sha256:302d9706d512fe99fbb24ea4654bf0e6c29a7b5cf2797a7e079e38bb8aded332"
+        },
+        "identity": {
+          "path": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/identity.json",
+          "sha256": "sha256:7b4365d47b05cb3005647791da7bc2b05068b27c5e6a422f502f00dde64f921f"
+        },
+        "proof_kind": "none",
+        "resource_profile": {
+          "path": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/resource-profile.json",
+          "sha256": "sha256:2e3a79cd0ab17edccc63b78d78b4760fe1816c18021f157d4a4b9ae187f1aa87"
+        },
+        "status": "source-bound-mock-only"
+      },
+      "math_review": {
+        "artifact": null,
+        "status": "pending"
+      },
+      "objective": {
+        "direction": "minimize",
+        "gauge": "max(0, seed_best - defect)",
+        "min_improvement": "1/222778",
+        "optimum": "0/1",
+        "score_name": "nonorthogonal_row_pair_defect",
+        "seed_best": "55444/1",
+        "target_classification": "search_target"
+      },
+      "problem_yaml": {
+        "path": "problems/hadamard-668-defect/problem.yaml",
+        "sha256": "sha256:4649db007b26500762aff1d0b58da7606513d2c317f7f6dc08cfa88f71fe3c04"
+      },
+      "provenance": {
+        "local_evidence": [
+          {
+            "path": "problems/hadamard-668-defect/SPEC.md",
+            "sha256": "sha256:60b8fcfc571793263b8e19d5583ee39fd45e9cba18242a87da4781f603cc8422"
+          },
+          {
+            "path": "problems/hadamard-668-defect/HARDENING.md",
+            "sha256": "sha256:ba4027442b366ba8127594f3ca6378e32bbb43711d12559438a98e48f336eaaa"
+          }
+        ],
+        "status": "incomplete",
+        "unresolved": [
+          "Independent mathematical review of the claim scope, finite reduction, and objective target classification is not supplied.",
+          "Independent provenance and rights review of the mathematical lineage and frontier assertions is not supplied."
+        ]
+      },
+      "seed": {
+        "canonical_verdict_sha256": "sha256:90d7d4cf27ce28e71e548911467b5d967c9453d7e433e798383c6251a560d069",
+        "path": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
+        "sha256": "sha256:4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6",
+        "verdict_reason": "NOT_STRICT_IMPROVEMENT",
+        "verdict_valid": false,
+        "verified_improvement": "0/1",
+        "verified_score": "55444/1"
+      },
+      "slug": "hadamard-668-defect",
+      "solution_schema": {
+        "path": "problems/hadamard-668-defect/solution.schema.json",
+        "sha256": "sha256:1a50e82804c9ee695d7af37f45b5a74a4fe6347eea7fdf6ba1610d193179d757"
+      },
+      "specification": {
+        "path": "problems/hadamard-668-defect/SPEC.md",
+        "sha256": "sha256:60b8fcfc571793263b8e19d5583ee39fd45e9cba18242a87da4781f603cc8422"
+      },
+      "verifier": {
+        "command": "python3 verifier/verify.py --solution {solution}",
+      "source_tree_sha256": "sha256:38490dbc5c07ebd9e91a7ba91fe2e3de2cf57069b5e0136f7006a74473577fba",
+        "version": "0.1.2"
+      }
+    }
+  ],
+  "schema_version": "p42-prizes/production-board-bindings/v1"
+}
