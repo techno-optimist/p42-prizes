@@ -517,9 +517,13 @@ mod tests {
         let witness = fixture_witness();
         assert_eq!(verify_hadamard_668(&witness.solution), Some(55_444));
         let journal = verify_hadamard_668_and_journal(&witness).unwrap();
+        let execution = artifact_json("execution.json");
         assert_eq!(
             hex_word(journal),
-            "b7fc3d85ad6a8606edb944c1883fd8feed8363a74b84697d81439f3a69c664fc"
+            execution["journalDigest"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("0x")
         );
     }
 
@@ -563,6 +567,7 @@ mod tests {
     }
 
     fn fixture_witness() -> ObjectiveWitness {
+        let identity = artifact_json("identity.json");
         let solution = std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../problems/hadamard-668-defect/examples/sylvester-prefix.json"),
@@ -577,10 +582,16 @@ mod tests {
             problem_id: word_u128(10),
             objective_package_hash: [0x55; 32],
             guest_elf_sha256: hex_word_array(
-                "2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6",
+                identity["guestElfSha256"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("sha256:"),
             ),
             program_vkey: hex_word_array(
-                "0016d27da623507d3e323cc70a9da608e55879c4d74481566040fc38bf7f9799",
+                identity["programVKey"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("0x"),
             ),
             submission_id: word_u128(7),
             solver: [0x66; 20],
@@ -602,6 +613,13 @@ mod tests {
             proof_beneficiary: [0xcc; 20],
             solution,
         }
+    }
+
+    fn artifact_json(name: &str) -> serde_json::Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../artifacts/hadamard-668-defect/v0.1.0")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
     fn hex_word(word: Word) -> String {

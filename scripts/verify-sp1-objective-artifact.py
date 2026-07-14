@@ -16,8 +16,8 @@ DEFAULT_IDENTITY = ROOT / "objective-programs/artifacts/hadamard-668-defect/v0.1
 DEFAULT_EXECUTION = ROOT / "objective-programs/artifacts/hadamard-668-defect/v0.1.0/execution.json"
 HEX_32 = re.compile(r"0x[0-9a-f]{64}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-EXPECTED_ELF = "sha256:2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6"
-EXPECTED_VKEY = "0x0016d27da623507d3e323cc70a9da608e55879c4d74481566040fc38bf7f9799"
+EXPECTED_ELF = "sha256:991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a"
+EXPECTED_VKEY = "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7"
 EXPECTED_CARGO_PROVE_SHA256 = {
     "sha256:492b6e0a377683e17e2e7806af100319e9229eeaec1ac324c5ede53c1d89f64c",
     "sha256:639e1101649a4c03b6a3e9f0e93f1dc8b884039852c48ab003a504f67d5b6b1f",
@@ -126,8 +126,8 @@ def main() -> None:
         fail("identity has an unexpected key set")
     if identity["schema"] != "p42-objective-program-identity/v1":
         fail("wrong schema")
-    if identity["status"] != "single-host-source-build":
-        fail("this validator only accepts the fail-closed source-build status")
+    if identity["status"] != "dual-glibc-x86-source-build":
+        fail("this validator only accepts the reviewed dual-glibc source-build status")
     if identity["program"] != "hadamard-668-defect" or identity["version"] != "0.1.0":
         fail("wrong program identity")
     if identity["sp1Version"] != "6.1.0":
@@ -138,7 +138,12 @@ def main() -> None:
         fail("Rust toolchain drift")
     if identity["publicValuesBytes"] != 32:
         fail("public journal must be exactly 32 bytes")
-    if identity["buildHost"] != {"os": "linux", "architecture": "x86_64"}:
+    if identity["buildHost"] != {
+        "os": "linux",
+        "architecture": "x86_64",
+        "images": ["ubuntu-22.04", "ubuntu-24.04"],
+        "operator": "github-actions",
+    }:
         fail("unreviewed build host")
     if not isinstance(identity["sourceFiles"], dict) or set(identity["sourceFiles"]) != EXPECTED_SOURCE_FILES:
         fail("source binding does not cover the exact reviewed build-input set")
@@ -209,7 +214,7 @@ def main() -> None:
         fail("unexpected conformance outcome")
     if not isinstance(execution["journalDigest"], str) or HEX_32.fullmatch(execution["journalDigest"]) is None:
         fail("malformed execution journal")
-    if execution["journalDigest"] != "0xb7fc3d85ad6a8606edb944c1883fd8feed8363a74b84697d81439f3a69c664fc":
+    if execution["journalDigest"] != "0x2075a1869943196cfdc2e9fa5dc71ab202d903c4b20ec5a22a2e518a69e16b72":
         fail("execution journal drift")
     if execution["executionHost"] != {"os": "darwin", "architecture": "arm64"}:
         fail("unreviewed execution host")
@@ -225,7 +230,7 @@ def main() -> None:
     print(f"  ELF: {identity['guestElfSha256']}")
     print(f"  vkey: {identity['programVKey']}")
     print(f"  instructions: {execution['totalInstructionCount']}")
-    print("  status: single-host-source-build (not production authorization)")
+    print("  status: dual-glibc-x86-source-build (same operator; not production authorization)")
 
 
 if __name__ == "__main__":

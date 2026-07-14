@@ -79,7 +79,7 @@ describe("P42 objective journal conformance", () => {
         [registry, problemId, packageHash, guestElfSha256, identity.programVKey],
       ),
     );
-    assert.equal(objectiveBindingContext, "0x70895dca8f6e656db9dd7d7fbabb07b540846df096ae9e8255e3517cef55a4ac");
+    assert.equal(objectiveBindingContext, "0x32cdd2112bdb9e249416907365759f7fb4aca5304f2d6608fefb939e669db009");
 
     const contextHash = keccak256(
       coder.encode(
@@ -87,7 +87,7 @@ describe("P42 objective journal conformance", () => {
         ["P42_OBJECTIVE_CHALLENGE_CONTEXT_V2", chainId, manager, submissionManager, objectiveBindingContext, submissionId, pendingDecisionContext],
       ),
     );
-    assert.equal(contextHash, "0x7734605d3c99dc6ae622fab06dcd63145fbe3c8076ceec51dbcb3d56a1f44a29");
+    assert.equal(contextHash, "0x705d8fdf254483294d1820d5a2252b9a16eb6e1b60186cd9aa9afb5c3095d152");
 
     const journalDigest = keccak256(
       coder.encode(
@@ -95,6 +95,6 @@ describe("P42 objective journal conformance", () => {
         ["P42_OBJECTIVE_VERDICT_JOURNAL_V2", chainId, quorum, manager, guestElfSha256, identity.programVKey, contextHash, true, proofBeneficiary],
       ),
     );
-    assert.equal(journalDigest, "0xb7fc3d85ad6a8606edb944c1883fd8feed8363a74b84697d81439f3a69c664fc");
+    assert.equal(journalDigest, "0x2075a1869943196cfdc2e9fa5dc71ab202d903c4b20ec5a22a2e518a69e16b72");
   });
 });

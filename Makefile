@@ -15,7 +15,7 @@ LAUNCH_PROBLEMS := $(addprefix problems/,$(LAUNCH_SLUGS))
 RESEARCH_PROBLEMS := problems/hadamard-mini problems/signed-autoconvolution-c3-upper problems/b3-ruler-11-marks problems/b3-subset-first-jump-9 problems/edp-c3-longest-sequence problems/c4-star-ramsey-a17 problems/hypercube-q7-c4-free
 PROBLEMS := $(LAUNCH_PROBLEMS) $(RESEARCH_PROBLEMS)
 
-.PHONY: install-verifier-deps test validate lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-q6 admit-host-distinct-subset-sums admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test objective-core-test objective-program-gates verify-sp1-objective-artifact verify-render-release all
+.PHONY: install-verifier-deps test validate lint verify-seed verify-open-witness-release verify-hadamard-seed verify-erdos-seed verify-edges-seed verify-arithmetic-kakeya-seed verify-autoconvolution-c1-seed verify-autoconvolution-c2-seed verify-signed-c3-seed verify-mertens-k12000-seed verify-pnt-sparse-seed verify-hadamard-668-seed admit-host-seed admit-host-ten-board admit-host-q6 admit-host-distinct-subset-sums admit-host-erdos admit-host-edges admit-host-arithmetic-kakeya admit-host-autoconvolution-c1 admit-host-autoconvolution-c2 admit-host-signed-c3 admit-host-mertens-k12000 admit-host-pnt-sparse admit-host-hadamard-668 contracts-test objective-core-test objective-program-gates verify-sp1-objective-artifact verify-sp1-objective-resource-profile verify-render-release all
 
 all: validate lint test verify-seed
 
@@ -170,11 +170,14 @@ contracts-test:
 objective-core-test:
 	@cd objective-programs && cargo test --locked -p p42-objective-core
 
-objective-program-gates: objective-core-test verify-sp1-objective-artifact
+objective-program-gates: objective-core-test verify-sp1-objective-artifact verify-sp1-objective-resource-profile
 
 verify-sp1-objective-artifact:
 	@test -n "$(P42_CARGO_PROVE)" || (echo "P42_CARGO_PROVE must name the pinned SP1 v6.1 cargo-prove binary" >&2; exit 2)
 	@$(PYTHON) scripts/verify-sp1-objective-artifact.py --cargo-prove "$(P42_CARGO_PROVE)"
+
+verify-sp1-objective-resource-profile:
+	@$(PYTHON) scripts/verify-sp1-objective-resource-profile.py
 
 verify-render-release:
 	@node scripts/verify-render-release.mjs --git-remote "$(P42_GIT_REMOTE)"

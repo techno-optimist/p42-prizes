@@ -1,0 +1,44 @@
+{
+  "schema": "p42-objective-resource-profile/v1",
+  "status": "deterministic-envelope-not-proof-economics",
+  "program": "hadamard-668-defect",
+  "version": "0.1.0",
+  "limits": {
+    "witnessSolutionBytes": 1048576,
+    "verifierSolutionBytes": 262144,
+    "solutionCidBytes": 512,
+    "transcriptUriBytes": 512,
+    "publicValuesBytes": 32
+  },
+  "deterministicWork": {
+    "rows": 668,
+    "rowHexDigits": 167,
+    "wordsPerRow64": 11,
+    "rowPairs": 222778,
+    "popcountOperations": 2450558
+  },
+  "fixture": {
+    "path": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
+    "bytes": 113745,
+    "sha256": "sha256:4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6",
+    "mockInstructionCount": 53335905
+  },
+  "reproduction": {
+    "guestElfSha256": "sha256:991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a",
+    "programVKey": "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7",
+    "sourceBuildImages": [
+      "ubuntu-22.04",
+      "ubuntu-24.04"
+    ],
+    "sameOperator": true
+  },
+  "proofEconomics": {
+    "groth16ProofMeasured": false,
+    "activationAuthorized": false
+  },
+  "remainingBlockers": [
+    "genuine-groth16-proof-benchmark",
+    "independent-operator-and-hardware-reproduction",
+    "production-audit-and-testnet-rehearsal"
+  ]
+}

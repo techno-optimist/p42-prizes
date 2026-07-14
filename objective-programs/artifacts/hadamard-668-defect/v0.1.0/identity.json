@@ -1,6 +1,6 @@
 {
   "schema": "p42-objective-program-identity/v1",
-  "status": "single-host-source-build",
+  "status": "dual-glibc-x86-source-build",
   "program": "hadamard-668-defect",
   "version": "0.1.0",
   "sp1Version": "6.1.0",
@@ -8,19 +8,24 @@
   "hostRustVersion": "1.91.1",
   "guestRustVersion": "rustc 1.93.0-dev",
   "guestElfPath": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/program.elf",
-  "guestElfSha256": "sha256:2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6",
-  "programVKey": "0x0016d27da623507d3e323cc70a9da608e55879c4d74481566040fc38bf7f9799",
+  "guestElfSha256": "sha256:991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a",
+  "programVKey": "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7",
   "publicValuesBytes": 32,
   "buildHost": {
     "os": "linux",
-    "architecture": "x86_64"
+    "architecture": "x86_64",
+    "images": [
+      "ubuntu-22.04",
+      "ubuntu-24.04"
+    ],
+    "operator": "github-actions"
   },
   "sourceFiles": {
     "objective-programs/Cargo.toml": "sha256:5e0a821fcb0658d280df0b820750a8618d1a184ffd458a45b3a37c6d89e666ec",
-    "objective-programs/Cargo.lock": "sha256:8f022736178125a522ef2a14c1ba7edb84b528d5c38bbbaa21fa887e3bc1f9b8",
+    "objective-programs/Cargo.lock": "sha256:06d4485944ad7de6075ee3c9a159341a1d216cd056f1ee444384b7580b757823",
     "objective-programs/rust-toolchain.toml": "sha256:07897ac31bda5b67235f4a9abc5e4a07876e7422bbda0720cbf370b9c53220a8",
-    "objective-programs/p42-objective-core/Cargo.toml": "sha256:1b27cef7e6401dcdf81afb16c6112dbda4452670ec783b9b4db11308546badef",
-    "objective-programs/p42-objective-core/src/lib.rs": "sha256:c3e3a7292c1d96a59564d7e0ad53f142b09e86d5706c95a7b1bce701474e0463",
+    "objective-programs/p42-objective-core/Cargo.toml": "sha256:c375df5a850868923924535f1ab70740af38a216b15528ce47b9a737571c5a2a",
+    "objective-programs/p42-objective-core/src/lib.rs": "sha256:05b34f706cf8069da380a24c4931a819b0d9e6c8b8b59105d2e1529bd182cfea",
     "objective-programs/hadamard-668-defect/program/Cargo.toml": "sha256:8f67c3625002129d39b628dbc73966f3f36feb2385385c677b3a5abe331f4021",
     "objective-programs/hadamard-668-defect/program/src/main.rs": "sha256:43b0f8850bf1298fa83adc872ace3e46f6e3a34498d1b1f6c3e54727124cd513",
     "objective-programs/hadamard-668-defect/script/Cargo.toml": "sha256:9f0cae9f36aeab757dc51bf03cc1b0ab4d9606aecaf3542d17d38b93ec5e408d",

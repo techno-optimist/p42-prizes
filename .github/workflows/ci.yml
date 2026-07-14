@@ -180,12 +180,14 @@ jobs:
         run: |
           set -euo pipefail
           rebuilt=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
-          echo "2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6  $rebuilt" | sha256sum --check --strict
+          echo "991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a  $rebuilt" | sha256sum --check --strict
           frozen=artifacts/hadamard-668-defect/v0.1.0/program.elf
           cmp --silent "$rebuilt" "$frozen"
-          echo "2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6  $frozen" | sha256sum --check --strict
+          echo "991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a  $frozen" | sha256sum --check --strict
       - name: Verify frozen ELF and independently derive vkey
         run: python scripts/verify-sp1-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
+      - name: Verify deterministic resource envelope
+        run: python scripts/verify-sp1-objective-resource-profile.py
       - name: Replay frozen mock execution
         working-directory: objective-programs
         run: |
