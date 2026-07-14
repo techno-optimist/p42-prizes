@@ -214,7 +214,12 @@ class AttestationFixture:
             "contracts": contracts,
         }
 
-    def canonical_release_binding(self, network: str = "base-sepolia") -> dict[str, Any]:
+    def canonical_release_binding(
+        self,
+        network: str = "base-sepolia",
+        *,
+        problem_overrides: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         chain_id = {"local": 31337, "base-sepolia": 84532, "base-mainnet": 8453}[network]
         topology = {
             "schema": "p42-prizes/canonical-contract-topology/v1",
@@ -315,6 +320,7 @@ class AttestationFixture:
                         key: manifest_contracts[f"board.{board}.{key}"]
                         for key, _ in CANONICAL_BOARD_CONTRACTS
                     },
+                    **dict((problem_overrides or {}).get(str(board), {})),
                 }
                 for board in range(1, 11)
             ],

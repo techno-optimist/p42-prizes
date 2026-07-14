@@ -3,7 +3,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
-from p42_prizes.legal import _verify_ed25519
+from p42_prizes.legal import (
+    CANONICAL_BOARD_CONTRACTS,
+    CANONICAL_BOARD_COUNT,
+    CANONICAL_SHARED_CONTRACTS,
+    _verify_ed25519,
+)
 from p42_prizes.open_witness import OPEN_WITNESS_SCHEMA_VERSION, OpenWitnessError
 from p42_prizes.open_witness_policy import (
     OPEN_WITNESS_AUTHORITY_CLASS,
@@ -77,6 +82,8 @@ def validate_open_witness_collector_authority(
     trust_registry: Mapping[str, Any],
     now_utc: datetime | None = None,
 ) -> Mapping[str, Any]:
+    if report.get("schema_version") != OPEN_WITNESS_SCHEMA_VERSION:
+        raise OpenWitnessAuthorityError("only canonical open-witness v2 evidence can be promoted")
     normalized_policy = validate_open_witness_policy(policy, now_utc=now_utc)
     if normalized_policy["environment"] != "production":
         raise OpenWitnessAuthorityError("test policy can never promote an open-witness gate")
@@ -84,19 +91,66 @@ def validate_open_witness_collector_authority(
     release = report.get("release_binding")
     policy_release = normalized_policy["release_binding"]
     if not isinstance(release, Mapping) or (
-        release.get("git_commit") != policy_release["git_commit"]
+        release.get("binding_version") != "p42-release-binding/v2"
+        or not isinstance(release.get("canonical_topology"), Mapping)
+        or release.get("git_commit") != policy_release["git_commit"]
         or release.get("network") != normalized_policy["network"]["name"]
         or release.get("chain_id") != normalized_policy["network"]["chain_id"]
         or not isinstance(release.get("deployment_manifest"), Mapping)
         or release["deployment_manifest"].get("sha256") != policy_release["manifest_sha256"]
     ):
         raise OpenWitnessAuthorityError("open-witness release does not match the protected collector policy")
+    _validate_canonical_report_topology(report)
     _validate_quorum(quorum, normalized_policy, policy_digest, report["evidence_hash"])
-    _validate_js_evidence_binding(report, quorum["evidence"])
+    _validate_js_evidence_binding(report, quorum["evidence"], normalized_policy)
     _validate_policy_finality(report, quorum, normalized_policy)
     return _validate_authority_envelope(
         authority_envelope, quorum, normalized_policy, trust_registry, report, now_utc=now_utc
     )
+
+
+def _validate_canonical_report_topology(report: Mapping[str, Any]) -> None:
+    release = report["release_binding"]
+    contracts = release.get("contracts")
+    expected_keys = {f"shared.{key}" for key, _ in CANONICAL_SHARED_CONTRACTS}
+    expected_keys.update(
+        f"board.{board}.{key}"
+        for board in range(1, CANONICAL_BOARD_COUNT + 1)
+        for key, _ in CANONICAL_BOARD_CONTRACTS
+    )
+    if not isinstance(contracts, list) or len(contracts) != len(expected_keys):
+        raise OpenWitnessAuthorityError("open-witness release must contain the canonical 47-contract topology")
+    by_key: dict[str, str] = {}
+    for contract in contracts:
+        if not isinstance(contract, Mapping):
+            raise OpenWitnessAuthorityError("open-witness release topology contract is invalid")
+        key = contract.get("topology_key")
+        address = contract.get("address")
+        if (
+            key not in expected_keys or key in by_key
+            or not isinstance(address, str) or len(address) != 42 or not address.startswith("0x")
+            or any(character not in "0123456789abcdefABCDEF" for character in address[2:])
+        ):
+            raise OpenWitnessAuthorityError("open-witness release topology contract is invalid")
+        by_key[key] = address.casefold()
+    if set(by_key) != expected_keys:
+        raise OpenWitnessAuthorityError("open-witness release topology is incomplete")
+    if len(set(by_key.values())) != len(expected_keys):
+        raise OpenWitnessAuthorityError("open-witness release topology addresses must be distinct")
+    board = report["board"]
+    board_id = str(board.get("registry_problem_id"))
+    field_keys = {
+        "problem_registry": "shared.registry",
+        "bounty_pool": f"board.{board_id}.pool",
+        "payout_ledger": f"board.{board_id}.ledger",
+        "submission_manager": f"board.{board_id}.submissions",
+        "challenge_manager": f"board.{board_id}.challenges",
+    }
+    if board_id not in {str(index) for index in range(1, CANONICAL_BOARD_COUNT + 1)} or any(
+        str(board.get(field, "")).casefold() != by_key.get(key)
+        for field, key in field_keys.items()
+    ):
+        raise OpenWitnessAuthorityError("open-witness board does not match its canonical topology slots")
 
 
 def _validate_policy_finality(
@@ -199,7 +253,9 @@ def collector_authority_message(quorum: Mapping[str, Any], metadata: Mapping[str
     return f"{AUTHORITY_DOMAIN}\n{canonical_json(binding)}".encode("utf-8")
 
 
-def _validate_js_evidence_binding(report: Mapping[str, Any], evidence: Mapping[str, Any]) -> None:
+def _validate_js_evidence_binding(
+    report: Mapping[str, Any], evidence: Mapping[str, Any], policy: Mapping[str, Any] | None = None
+) -> None:
     try:
         release = evidence["releaseBinding"]
         artifacts = evidence["artifactBinding"]
@@ -214,7 +270,10 @@ def _validate_js_evidence_binding(report: Mapping[str, Any], evidence: Mapping[s
     expected_release = {
         "problemId": board["registry_problem_id"], "problemSlug": board["slug"],
         "chainId": report["release_binding"]["chain_id"],
+        "deploymentCommit": report["release_binding"]["deployment_commit"],
     }
+    if policy is not None:
+        expected_release["deploymentConfigHash"] = policy["release_binding"]["deployment_config_hash"]
     for field, expected in expected_release.items():
         if str(release.get(field)) != str(expected):
             raise OpenWitnessAuthorityError(f"collector evidence release {field} mismatch")
@@ -222,7 +281,8 @@ def _validate_js_evidence_binding(report: Mapping[str, Any], evidence: Mapping[s
         str(contracts.get(key, "")).casefold() != str(expected).casefold()
         for key, expected in {
             "registry": board["problem_registry"], "pool": board["bounty_pool"],
-            "submissions": board["submission_manager"],
+            "ledger": board["payout_ledger"], "submissions": board["submission_manager"],
+            "challenges": board["challenge_manager"],
         }.items()
     ):
         raise OpenWitnessAuthorityError("collector evidence contract binding mismatch")

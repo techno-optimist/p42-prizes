@@ -64,27 +64,28 @@ def _support(
     min_improvement_atoms: int = 50,
 ) -> tuple[dict, AttestationFixture, dict, FixtureOpenWitnessReader]:
     af = AttestationFixture(tmp_path)
-    release = af.release_binding("base-sepolia")
-    addresses = {item["name"]: item["address"] for item in release["contracts"]}
-    board = {
-        "registry_problem_id": "7", "slug": "hadamard-mini",
-        "problem_registry": addresses["P42ProblemRegistry"],
-        "bounty_pool": addresses["P42BountyPool"],
-        "submission_manager": addresses["P42SubmissionManager"],
-    }
     artifacts = {
         name: af.artifact("open-" + name, content={"kind": name}, created_at_utc="2026-07-08T19:00:00Z")
         for name in ("verifier_image", "admission_matrix", "solution_payload")
     }
-    configured_addresses = {item["name"]: item["address"] for item in release["contracts"]}
-    release["configuration_artifact"] = af.artifact(
-        "open-release-configuration",
-        content={"network": "base-sepolia", "chain_id": 84532, "contracts": configured_addresses, "open_witness_boards": [{"registry_problem_id": "7", "problem_slug": "hadamard-mini", "objective": objective, "min_improvement_atoms": min_improvement_atoms, "admission_matrix_hash": artifacts["admission_matrix"]["sha256"]}]},
-        created_at_utc="2026-07-08T18:00:00Z",
+    release = af.canonical_release_binding(
+        "base-sepolia",
+        problem_overrides={"7": {
+            "problemSlug": "hadamard-mini",
+            "admissionMatrixDigest": artifacts["admission_matrix"]["sha256"],
+            "minImprovementAtoms": str(min_improvement_atoms),
+            "certifiedObjective": {"direction": objective},
+        }},
     )
-    af._run("git", "add", ".")
-    af._run("git", "commit", "-q", "-m", "bind open witness board policy")
-    release["git_commit"] = af._run("git", "rev-parse", "HEAD").stdout.strip()
+    addresses = {item["topology_key"]: item["address"] for item in release["contracts"]}
+    board = {
+        "registry_problem_id": "7", "slug": "hadamard-mini",
+        "problem_registry": addresses["shared.registry"],
+        "bounty_pool": addresses["board.7.pool"],
+        "payout_ledger": addresses["board.7.ledger"],
+        "submission_manager": addresses["board.7.submissions"],
+        "challenge_manager": addresses["board.7.challenges"],
+    }
     logs = {
         "commit": [{"event": "SubmissionCommitted", "problemId": "7"}],
         "reveal": [{"event": "SubmissionRevealed", "solutionCid": "ipfs://bafy-open-witness"}],
@@ -257,7 +258,7 @@ def test_plain_chain_reader_fails_closed(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda report, reader: report["board"].update(slug="other-board"), "release-bound configuration"),
+        (lambda report, reader: report["board"].update(slug="other-board"), "deployment manifest"),
         (lambda report, reader: report["witness"].update(witness_id=_hash("reused-witness")), "witness_id"),
         (lambda report, reader: report["witness"]["reveal_receipt"].update(transaction_hash=report["witness"]["commit_receipt"]["transaction_hash"]), "receipts must not be reused"),
         (lambda report, reader: reader.snapshot["finalized_head"]["canonical_block_hashes"].update({"5002": "0x" + "f" * 64}), "stale, reorged"),
@@ -273,6 +274,24 @@ def test_rejects_invalid_or_reused_evidence(tmp_path: Path, mutation, message: s
     report, af, registry, reader = _support(tmp_path)
     mutation(report, reader)
     with pytest.raises(OpenWitnessError, match=message):
+        _normalize(report, af, registry, reader)
+
+
+def test_rejects_legacy_v1_release_before_witness_promotion(tmp_path: Path) -> None:
+    report, af, registry, reader = _support(tmp_path)
+    report["release_binding"] = af.release_binding("base-sepolia")
+    with pytest.raises(OpenWitnessError, match="binding_version must be p42-release-binding/v2"):
+        _normalize(report, af, registry, reader)
+
+
+def test_rejects_cross_board_contract_substitution(tmp_path: Path) -> None:
+    report, af, registry, reader = _support(tmp_path)
+    topology = {
+        item["topology_key"]: item["address"]
+        for item in report["release_binding"]["contracts"]
+    }
+    report["board"]["bounty_pool"] = topology["board.6.pool"]
+    with pytest.raises(OpenWitnessError, match="canonical release slot board.7.pool"):
         _normalize(report, af, registry, reader)
 
 

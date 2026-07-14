@@ -60,7 +60,8 @@
             "p42-math-review/v1",
             "p42-production-launch-authorization/v1",
             "p42-indexer-checkpoint-attestation/v1",
-            "p42-open-witness-launch/v1",
+              "p42-open-witness-launch/v1",
+              "p42-open-witness-launch/v2",
             "p42-open-witness-collector-authority/v1",
             "p42-runner-transcript-archive/v1"
           ]

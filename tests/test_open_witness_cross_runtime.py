@@ -22,11 +22,15 @@ ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 7, 8, 20, 5, tzinfo=timezone.utc)
 
 
-def test_open_witness_v1_schema_does_not_import_adversarial_release_binding() -> None:
-    schema = json.loads((ROOT / "schemas" / "open-witness-launch.schema.json").read_text())
+def test_historical_open_witness_v1_schema_remains_frozen_and_noncanonical() -> None:
+    schema = json.loads((ROOT / "schemas" / "open-witness-launch-v1.schema.json").read_text())
     release_ref = schema["properties"]["release_binding"]["$ref"]
     assert release_ref == "#/$defs/legacyReleaseBinding"
     assert schema["$defs"]["legacyReleaseBinding"]["properties"]["contracts"]["maxItems"] == 5
+
+    operational = json.loads((ROOT / "schemas" / "open-witness-launch.schema.json").read_text())
+    assert operational["properties"]["schema_version"]["const"] == "p42-open-witness-launch/v2"
+    assert operational["properties"]["release_binding"]["$ref"].endswith("#/$defs/releaseBinding")
 
 
 def _bytes32(digest: str) -> str:
@@ -37,6 +41,9 @@ def _collector_evidence(report: dict, reader: FixtureOpenWitnessReader) -> dict:
     witness = report["witness"]
     board = report["board"]
     snapshot = reader.snapshot
+    configuration = json.loads(
+        (reader.fixture.root / report["release_binding"]["configuration_artifact"]["local_path"]).read_text()
+    )
     receipts = {
         "commit": witness["commit_receipt"],
         "reveal": witness["reveal_receipt"],
@@ -77,16 +84,20 @@ def _collector_evidence(report: dict, reader: FixtureOpenWitnessReader) -> dict:
         ],
     }
     return {
-        "schema": "p42-prizes/open-witness-launch-evidence/v1",
+        "schema": "p42-prizes/open-witness-launch-evidence/v2",
         "collector_authoritative": False,
         "releaseBinding": {
+            "deploymentCommit": report["release_binding"]["deployment_commit"],
+            "deploymentConfigHash": configuration["deployment_config_hash"],
             "problemId": board["registry_problem_id"],
             "problemSlug": board["slug"],
             "chainId": report["release_binding"]["chain_id"],
             "contracts": {
                 "registry": board["problem_registry"],
                 "pool": board["bounty_pool"],
+                "ledger": board["payout_ledger"],
                 "submissions": board["submission_manager"],
+                "challenges": board["challenge_manager"],
             },
         },
         "artifactBinding": {
@@ -221,7 +232,9 @@ def test_raw_report_crosses_node_quorum_and_python_promotion(
             "manifest_path": "/etc/p42/manifest.json",
             "manifest_sha256": report["release_binding"]["deployment_manifest"]["sha256"],
             "git_commit": report["release_binding"]["git_commit"],
-            "deployment_config_hash": "0x" + "3" * 64,
+            "deployment_config_hash": json.loads(
+                (fixture.root / report["release_binding"]["configuration_artifact"]["local_path"]).read_text()
+            )["deployment_config_hash"],
         },
         "finality_confirmations": 12,
         "authority_class": "p42-open-witness-collector-authority/v1",

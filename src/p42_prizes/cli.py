@@ -993,7 +993,9 @@ def _cmd_open_witness_promote(args: argparse.Namespace) -> int:
             "slug": report["board"]["slug"],
             "problem_registry": report["board"]["problem_registry"],
             "bounty_pool": report["board"]["bounty_pool"],
+            "payout_ledger": report["board"]["payout_ledger"],
             "submission_manager": report["board"]["submission_manager"],
+            "challenge_manager": report["board"]["challenge_manager"],
             "witness_id": report["witness"]["witness_id"],
         }
         chain_reader = _OpenWitnessQuorumChainReader(
