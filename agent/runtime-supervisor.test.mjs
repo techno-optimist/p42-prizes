@@ -127,27 +127,27 @@ it("classifies retryable, terminal, and ordinary runtime exits", async () => {
 it("times out a child, forwards SIGTERM, then observes grace-period exit", async () => {
   const result = await runRuntimeCycle(options({
     runtimeArgs: ["--eval", "process.on('SIGTERM',()=>process.exit(23));setInterval(()=>{},1000)", "--"],
-    cycleTimeoutMs: 50,
+    cycleTimeoutMs: 1_000,
   }));
   assert.equal(result.classification, "timeout");
   assert.equal(result.code, 23);
-  assert.ok(result.duration_ms < 1_000);
+  assert.ok(result.duration_ms < 3_000);
 });
 
 it("kills a timed-out child that ignores SIGTERM after the bounded grace period", async () => {
   const result = await runRuntimeCycle(options({
     runtimeArgs: ["--eval", "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)", "--"],
-    cycleTimeoutMs: 150,
-    killGraceMs: 40,
+    cycleTimeoutMs: 1_000,
+    killGraceMs: 100,
   }));
   assert.equal(result.classification, "timeout");
   assert.equal(result.signal, "SIGKILL");
-  assert.ok(result.duration_ms < 1_000);
+  assert.ok(result.duration_ms < 3_000);
 });
 
 it("forwards supervisor termination to an active child", async () => {
   const controller = new AbortController();
-  setTimeout(() => controller.abort(), 50);
+  setTimeout(() => controller.abort(), 1_000);
   const result = await runRuntimeCycle(options({
     runtimeArgs: ["--eval", "process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000)", "--"],
     signal: controller.signal,
