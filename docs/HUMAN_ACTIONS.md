@@ -10,7 +10,7 @@ signature.
 | Gate | Open action | Exact evidence required |
 | --- | --- | --- |
 | All external gates | Provision the owner-controlled production attestation trust registry and pin its canonical digest out of band. The built-in production registry intentionally contains no signer registrations. | Registry conforming to `schemas/attestation-trust-registry.schema.json`, maintained separately from attestation packets, with pre-registered attestation class, role, identity, Ed25519 key, and validity window for every real signer. The owner mounts its independently verified digest at `/etc/p42/production-attestation-root.sha256` as a no-follow, non-writable regular file and records custody, rotation, revocation, and distribution-path verification. A caller-authored `environment: production` label or environment variable alone is rejected. |
-| Gate 0 | Maintain CI and live-release evidence. The reviewed workflow is published, and [`source-release evidence`](evidence/source-release-2026-07-13-3a3ee37.json) binds post-merge [`main` run 29243704647](https://github.com/techno-optimist/p42-prizes/actions/runs/29243704647), all four required lanes, Render deploy `dep-d9ac2a58nd3s73dbli10`, and a passing release guard to exact release `3a3ee37bb90f98fbdf3c5366a74d24fb4823638e`. | Each deploy-relevant release has a completed required-check run and release-guard record against its exact `main` commit. This does not replace protected-release enforcement or private-vulnerability reporting. |
+| Gate 0 | Maintain CI and live-release evidence. The reviewed workflow is published, and [`source-release evidence`](evidence/source-release-2026-07-14-8cfbd36.json) binds post-merge [`main` run 29326212579](https://github.com/techno-optimist/p42-prizes/actions/runs/29326212579), all six required lanes, Render deploy `dep-d9b14cbbc2fs73a3n3h0`, and a passing release guard to exact release `8cfbd366ec206e244aa125535cfca7b7adca4fbb`. | Each deploy-relevant release has a completed required-check run and release-guard record against its exact `main` commit. This does not replace protected-release enforcement or private-vulnerability reporting. |
 | Gate 0 | Decide how protected releases will be enforced. Both branch-protection and rulesets APIs returned HTTP 403: `Upgrade to GitHub Pro or make this repository public to enable this feature` because `p42-prizes` is private. | Repo owner makes an explicit subscription/publicity decision: upgrade the applicable GitHub plan or make the repository public, then configure and independently verify required reviews/checks. The source-control gate remains open until enforcement is visible. |
 | Gate 0 | Enable and test private vulnerability reporting. The authenticated GitHub API returned `404` for both inspection and enablement on the current private repository; no enabled state can be claimed. | Repo owner uses a supported GitHub security-settings surface, records that private reporting is enabled, and proves a non-owner test reaches maintainers through the advisory route. |
 | Gate 1 | Deploy the remediated frozen release under intended testnet roles. The prior canonical Base Sepolia manifest predates current source, is machine-rejected as stale, and does not attest it. | New manifest and explorer verification bind the frozen commit, chain ID, all addresses, constructor/wiring/config values, source hashes, and runtime-bytecode hashes; reconciliation runs from deployment genesis. |
@@ -91,10 +91,10 @@ problem requirement.
 ## Exact Blockers At This Snapshot
 
 - Source control: the CI workflow is published and the current
-  [`source-release evidence`](evidence/source-release-2026-07-13-3a3ee37.json)
-  binds successful post-merge [`main` run 29243704647](https://github.com/techno-optimist/p42-prizes/actions/runs/29243704647),
-  all four required lanes, and the live Render release to exact source
-  `3a3ee37bb90f98fbdf3c5366a74d24fb4823638e`. Branch protection and rulesets remain blocked by the private-repository
+  [`source-release evidence`](evidence/source-release-2026-07-14-8cfbd36.json)
+  binds successful post-merge [`main` run 29326212579](https://github.com/techno-optimist/p42-prizes/actions/runs/29326212579),
+  all six required lanes, and the live Render release to exact source
+  `8cfbd366ec206e244aa125535cfca7b7adca4fbb`. Branch protection and rulesets remain blocked by the private-repository
   GitHub plan until the owner upgrades or goes public; private vulnerability
   reporting is also still unverified.
 - External audit: no commissioned auditor identity/engagement, signed report,
