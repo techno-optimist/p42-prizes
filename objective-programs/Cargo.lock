@@ -2639,6 +2639,7 @@ dependencies = [
 name = "p42-objective-core"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "serde",
  "serde_json",
  "sha2",
