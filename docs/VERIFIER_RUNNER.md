@@ -97,6 +97,53 @@ are:
 - worst-case runtime for large boards,
 - N-host matrix evidence for verifier admission.
 
+## Pull-Only Image Rehearsal
+
+After the all-ten image release dossier exists, every production runner host
+must prove that it can execute the published bytes without rebuilding or using
+a mutable tag. The published mode of `scripts/rehearse_verifier_image.py`:
+
+- requires canonical, schema-valid `p42-verifier-image-release/v1` dossier
+  bytes, an independently supplied digest of those bytes, and the exact fully
+  clean source commit named by that dossier;
+- selects the board's `repository@sha256:<OCI-index>` reference from the
+  dossier rather than accepting an image reference from the caller;
+- runs only `docker pull` and `docker image inspect` before execution. It never
+  invokes `build`, `tag`, or `push`;
+- requires the pulled `RepoDigests`, platform-specific config/image ID,
+  provenance labels, working directory, user, entrypoint, and command to match
+  the dossier's raw OCI descriptor chain;
+- stages the authorized solution through the same bounded no-follow path and
+  runs it through the real networkless, read-only, non-root cgroup sandbox;
+- requires canonical `VerdictReport` bytes bound to the OCI index digest and
+  emits a schema-valid, self-hashed, private, non-overwriting report.
+
+```bash
+PYTHONPATH=src python3 scripts/rehearse_verifier_image.py \
+  --published-dossier /secure/releases/verifier-image-release.json \
+  --dossier-sha256 sha256:<digest-pinned-by-the-release-operator> \
+  --board <slug> \
+  --problem problems/<slug> \
+  --solution /secure/fixtures/<slug>-solution.json \
+  --output /secure/evidence/<host>-<slug>-runtime.json
+```
+
+The report schema is
+`schemas/verifier-image-runtime-rehearsal.schema.json`. A successful report is
+single-host operational evidence only: `not_launch_evidence` is always true.
+It does not replace the four independently operated signed host profiles,
+admission matrix, registry retention review, or deployed Gate 1 rehearsal.
+Consumers must run the semantic and self-hash validator, not schema validation
+alone:
+
+```bash
+PYTHONPATH=src python3 scripts/rehearse_verifier_image.py \
+  --validate-runtime-report /secure/evidence/<host>-<slug>-runtime.json \
+  --published-dossier /secure/releases/verifier-image-release.json \
+  --dossier-sha256 sha256:<digest-pinned-by-the-release-operator> \
+  --problem problems/<slug>
+```
+
 ## Queue And OOM Guard
 
 Verifier execution must be queued. A submission burst should increase latency,

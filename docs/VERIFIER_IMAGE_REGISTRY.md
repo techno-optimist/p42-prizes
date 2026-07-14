@@ -74,6 +74,14 @@ The four independently operated, source-bound host profiles and their signed
 admission matrix remain an external blocker; publishing two-platform images
 does not create those hosts, prove hardware identity, or close Gate 2.
 
+Each runner can consume the finished dossier with the pull-only rehearsal in
+`docs/VERIFIER_RUNNER.md`. That path refuses tags and local builds, matches the
+resolved host-platform config digest and OCI labels to the dossier, executes a
+fixture under the production sandbox policy, and emits
+`p42-verifier-image-runtime-rehearsal/v1`. It deliberately remains marked
+single-host, non-launch evidence until the independent signed host matrix and
+deployment-specific rehearsal exist.
+
 The verifier image digest is part of the P42 trust root. A mutable tag,
 `sha256:local-dev`, `sha256:pending`, or `sha256:pilot` is acceptable for local
 fixtures and locked boards, but it is not admissible for a funded bounty.
