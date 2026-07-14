@@ -50,6 +50,7 @@ contract P42ChallengeManager {
     error P42_SETTLEMENT_HORIZON_EXCEEDED(uint64 deadline, uint64 proposedFinality);
     error P42_EMPTY_TRANSCRIPT_HASH();
     error P42_EMPTY_TRANSCRIPT_URI();
+    error P42_TRANSCRIPT_URI_TOO_LARGE(uint256 cap, uint256 got);
     error P42_EMPTY_VERDICT_HASH();
     error P42_NO_BOND_TO_CLAIM();
     error P42_NO_RESOLVER_BOND();
@@ -67,6 +68,7 @@ contract P42ChallengeManager {
 
     uint16 public constant MAX_BETA_BPS = 10_000;
     uint64 public constant MAX_CHALLENGE_WINDOW_SECONDS = 30 days;
+    uint256 public constant MAX_TRANSCRIPT_URI_BYTES = 512;
 
     struct Challenge {
         uint256 submissionId;
@@ -378,6 +380,9 @@ contract P42ChallengeManager {
         }
         if (transcriptHash == bytes32(0)) revert P42_EMPTY_TRANSCRIPT_HASH();
         if (bytes(transcriptURI).length == 0) revert P42_EMPTY_TRANSCRIPT_URI();
+        if (bytes(transcriptURI).length > MAX_TRANSCRIPT_URI_BYTES) {
+            revert P42_TRANSCRIPT_URI_TOO_LARGE(MAX_TRANSCRIPT_URI_BYTES, bytes(transcriptURI).length);
+        }
         if (verdictHash == bytes32(0)) revert P42_EMPTY_VERDICT_HASH();
 
         current.decisionPending = true;

@@ -478,6 +478,12 @@ describe("P42 Gate 1 contract scaffold", function () {
       submissions,
       "P42_BAD_COMMITMENT_REVEAL"
     );
+    assert.equal(await submissions.MAX_SOLUTION_CID_BYTES(), 512n);
+    await expectCustomError(
+      submissions.connect(alice).reveal(1, "c".repeat(513), 123, 7, salt, "0x"),
+      submissions,
+      "P42_SOLUTION_CID_TOO_LARGE"
+    );
     // F1 frontier gate: an ABSOLUTE claimed score that does not strictly beat
     // the current on-chain best is rejected at reveal.
     await expectCustomError(
@@ -909,6 +915,14 @@ describe("P42 Gate 1 contract scaffold", function () {
       resolveChallenge(fixture, resolver, submissionId, true, transcriptHash, "", verdictHash, { value: resolverBond }),
       challenges,
       "P42_EMPTY_TRANSCRIPT_URI"
+    );
+    assert.equal(await challenges.MAX_TRANSCRIPT_URI_BYTES(), 512n);
+    await expectCustomError(
+      resolveChallenge(fixture, resolver, submissionId, true, transcriptHash, "u".repeat(513), verdictHash, {
+        value: resolverBond,
+      }),
+      challenges,
+      "P42_TRANSCRIPT_URI_TOO_LARGE"
     );
     await expectCustomError(
       resolveChallenge(fixture, resolver, submissionId, true, transcriptHash, transcriptURI, ethers.ZeroHash, {

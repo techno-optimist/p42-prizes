@@ -46,6 +46,7 @@ contract P42SubmissionManager {
     error P42_COMMIT_NOT_MATURE(uint256 eligibleBlock, uint256 currentBlock);
     error P42_COMMIT_EXPIRED(uint64 expiresAt, uint64 nowAt);
     error P42_EMPTY_SOLUTION_CID();
+    error P42_SOLUTION_CID_TOO_LARGE(uint256 cap, uint256 got);
     error P42_BAD_COMMITMENT_REVEAL();
     error P42_NOT_SOLVER();
     error P42_NOT_CHALLENGE_MANAGER();
@@ -75,6 +76,7 @@ contract P42SubmissionManager {
     uint64 public constant MIN_COMMIT_AGE_BLOCKS = 1;
     uint64 public constant MAX_CUMULATIVE_DISPUTE_WINDOWS = 3;
     uint64 public constant MAX_CHALLENGE_WINDOW_SECONDS = 30 days;
+    uint256 public constant MAX_SOLUTION_CID_BYTES = 512;
     /// @notice A continuous full-pause may not block settlement indefinitely.
     /// Governance has this fixed interval to investigate and, when needed,
     /// call voidFinalize before anyone can resume normal settlement.
@@ -621,6 +623,9 @@ contract P42SubmissionManager {
         _requireCommitMature(submissionId);
         _requireCommitOpen(submissionId);
         if (bytes(solutionCid).length == 0) revert P42_EMPTY_SOLUTION_CID();
+        if (bytes(solutionCid).length > MAX_SOLUTION_CID_BYTES) {
+            revert P42_SOLUTION_CID_TOO_LARGE(MAX_SOLUTION_CID_BYTES, bytes(solutionCid).length);
+        }
         // Seed gate (F1): the claimed ABSOLUTE score must strictly beat the
         // IMMUTABLE seed (the starting frontier). We gate on `seedScoreAtoms`,
         // NOT the live `bestScoreAtoms`: the seed is fixed at commit time, so an

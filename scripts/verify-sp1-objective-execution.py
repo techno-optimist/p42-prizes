@@ -7,11 +7,11 @@ import sys
 
 EXPECTED = {
     "schema": "p42-objective-execution/v1",
-    "guestElfSha256": "0x2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6",
-    "programVKey": "0x0016d27da623507d3e323cc70a9da608e55879c4d74481566040fc38bf7f9799",
-    "journalDigest": "0xb7fc3d85ad6a8606edb944c1883fd8feed8363a74b84697d81439f3a69c664fc",
+    "guestElfSha256": "0x991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a",
+    "programVKey": "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7",
+    "journalDigest": "0x2075a1869943196cfdc2e9fa5dc71ab202d903c4b20ec5a22a2e518a69e16b72",
     "publicValuesBytes": 32,
-    "totalInstructionCount": 53222072,
+    "totalInstructionCount": 53335905,
 }
 
 

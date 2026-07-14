@@ -10,6 +10,9 @@ pub const HADAMARD_N: usize = 668;
 pub const HADAMARD_ROW_HEX_DIGITS: usize = 167;
 pub const HADAMARD_SEED_DEFECT: u64 = 55_444;
 pub const MAX_SOLUTION_BYTES: usize = 256 * 1024;
+pub const MAX_WITNESS_SOLUTION_BYTES: usize = 1024 * 1024;
+pub const MAX_SOLUTION_CID_BYTES: usize = 512;
+pub const MAX_TRANSCRIPT_URI_BYTES: usize = 512;
 pub const SCORE_ATOM_SCALE: u128 = 1_000_000_000_000_000_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +31,7 @@ pub struct ObjectiveWitness {
     pub solver: Address,
     pub commitment: Word,
     pub commit_da_hash: Word,
+    #[serde(deserialize_with = "deserialize_solution_cid")]
     pub solution_cid: Vec<u8>,
     pub claimed_score_atoms: Word,
     pub improvement_atoms: Word,
@@ -38,16 +42,20 @@ pub struct ObjectiveWitness {
     pub dispute_ends_at: Word,
     pub pending_challenger_wins: bool,
     pub transcript_hash: Word,
+    #[serde(deserialize_with = "deserialize_transcript_uri")]
     pub transcript_uri: Vec<u8>,
     pub verdict_hash: Word,
     pub corrected_challenger_wins: bool,
     pub proof_beneficiary: Address,
+    #[serde(deserialize_with = "deserialize_solution")]
     pub solution: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ObjectiveError {
     SolutionAnchorMismatch,
+    SolutionCidOutOfBounds { got: usize },
+    TranscriptUriOutOfBounds { got: usize },
     CorrectedOutcomeMismatch { expected: bool, supplied: bool },
     NonContradictoryOutcome,
 }
@@ -56,6 +64,14 @@ impl fmt::Display for ObjectiveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SolutionAnchorMismatch => write!(f, "solution bytes do not match commitDaHash"),
+            Self::SolutionCidOutOfBounds { got } => write!(
+                f,
+                "solution CID length must be in 1..={MAX_SOLUTION_CID_BYTES} bytes, got {got}"
+            ),
+            Self::TranscriptUriOutOfBounds { got } => write!(
+                f,
+                "transcript URI length must be in 1..={MAX_TRANSCRIPT_URI_BYTES} bytes, got {got}"
+            ),
             Self::CorrectedOutcomeMismatch { expected, supplied } => {
                 write!(
                     f,
@@ -70,6 +86,17 @@ impl fmt::Display for ObjectiveError {
 }
 
 pub fn verify_hadamard_668_and_journal(witness: &ObjectiveWitness) -> Result<Word, ObjectiveError> {
+    if witness.solution_cid.is_empty() || witness.solution_cid.len() > MAX_SOLUTION_CID_BYTES {
+        return Err(ObjectiveError::SolutionCidOutOfBounds {
+            got: witness.solution_cid.len(),
+        });
+    }
+    if witness.transcript_uri.is_empty() || witness.transcript_uri.len() > MAX_TRANSCRIPT_URI_BYTES
+    {
+        return Err(ObjectiveError::TranscriptUriOutOfBounds {
+            got: witness.transcript_uri.len(),
+        });
+    }
     if sha256(&witness.solution) != witness.commit_da_hash {
         return Err(ObjectiveError::SolutionAnchorMismatch);
     }
@@ -153,6 +180,82 @@ pub fn verify_hadamard_668_and_journal(witness: &ObjectiveWitness) -> Result<Wor
             word_address(witness.proof_beneficiary),
         ],
     ))
+}
+
+fn deserialize_solution_cid<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_SOLUTION_CID_BYTES>(deserializer)
+}
+
+fn deserialize_transcript_uri<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_TRANSCRIPT_URI_BYTES>(deserializer)
+}
+
+fn deserialize_solution<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_bounded_bytes::<D, MAX_WITNESS_SOLUTION_BYTES>(deserializer)
+}
+
+fn deserialize_bounded_bytes<'de, D, const MAX: usize>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct BoundedBytes<const MAX: usize>;
+
+    impl<'de, const MAX: usize> de::Visitor<'de> for BoundedBytes<MAX> {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(formatter, "at most {MAX} bytes")
+        }
+
+        fn visit_bytes<E>(self, value: &[u8]) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if value.len() > MAX {
+                return Err(E::custom(format!("byte length exceeds {MAX}")));
+            }
+            Ok(value.to_vec())
+        }
+
+        fn visit_byte_buf<E>(self, value: Vec<u8>) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if value.len() > MAX {
+                return Err(E::custom(format!("byte length exceeds {MAX}")));
+            }
+            Ok(value)
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: de::SeqAccess<'de>,
+        {
+            let size_hint = seq.size_hint().unwrap_or(0);
+            if size_hint > MAX {
+                return Err(de::Error::custom(format!("byte length exceeds {MAX}")));
+            }
+            let mut value = Vec::with_capacity(size_hint.min(MAX));
+            while let Some(byte) = seq.next_element::<u8>()? {
+                if value.len() == MAX {
+                    return Err(de::Error::custom(format!("byte length exceeds {MAX}")));
+                }
+                value.push(byte);
+            }
+            Ok(value)
+        }
+    }
+
+    deserializer.deserialize_seq(BoundedBytes::<MAX>)
 }
 
 pub fn verify_hadamard_668(raw: &[u8]) -> Option<u64> {
@@ -411,13 +514,66 @@ mod tests {
 
     #[test]
     fn full_hadamard_journal_matches_independent_ethers_vector() {
+        let witness = fixture_witness();
+        assert_eq!(verify_hadamard_668(&witness.solution), Some(55_444));
+        let journal = verify_hadamard_668_and_journal(&witness).unwrap();
+        let execution = artifact_json("execution.json");
+        assert_eq!(
+            hex_word(journal),
+            execution["journalDigest"]
+                .as_str()
+                .unwrap()
+                .trim_start_matches("0x")
+        );
+    }
+
+    #[test]
+    fn bounds_variable_witness_fields_before_guest_execution() {
+        let witness = fixture_witness();
+        let encoded = bincode::serialize(&witness).unwrap();
+        assert_eq!(
+            bincode::deserialize::<ObjectiveWitness>(&encoded).unwrap(),
+            witness
+        );
+
+        let mut oversized_cid = witness.clone();
+        oversized_cid.solution_cid = vec![b'c'; MAX_SOLUTION_CID_BYTES + 1];
+        assert!(matches!(
+            verify_hadamard_668_and_journal(&oversized_cid),
+            Err(ObjectiveError::SolutionCidOutOfBounds { got }) if got == MAX_SOLUTION_CID_BYTES + 1
+        ));
+        assert!(bincode::deserialize::<ObjectiveWitness>(
+            &bincode::serialize(&oversized_cid).unwrap()
+        )
+        .is_err());
+
+        let mut oversized_uri = witness.clone();
+        oversized_uri.transcript_uri = vec![b'u'; MAX_TRANSCRIPT_URI_BYTES + 1];
+        assert!(matches!(
+            verify_hadamard_668_and_journal(&oversized_uri),
+            Err(ObjectiveError::TranscriptUriOutOfBounds { got }) if got == MAX_TRANSCRIPT_URI_BYTES + 1
+        ));
+        assert!(bincode::deserialize::<ObjectiveWitness>(
+            &bincode::serialize(&oversized_uri).unwrap()
+        )
+        .is_err());
+
+        let mut oversized_solution = witness;
+        oversized_solution.solution = vec![0; MAX_WITNESS_SOLUTION_BYTES + 1];
+        assert!(bincode::deserialize::<ObjectiveWitness>(
+            &bincode::serialize(&oversized_solution).unwrap()
+        )
+        .is_err());
+    }
+
+    fn fixture_witness() -> ObjectiveWitness {
+        let identity = artifact_json("identity.json");
         let solution = std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../problems/hadamard-668-defect/examples/sylvester-prefix.json"),
         )
         .unwrap();
-        assert_eq!(verify_hadamard_668(&solution), Some(55_444));
-        let witness = ObjectiveWitness {
+        ObjectiveWitness {
             chain_id: word_u128(84_532),
             quorum: [0x11; 20],
             manager: [0x22; 20],
@@ -426,10 +582,16 @@ mod tests {
             problem_id: word_u128(10),
             objective_package_hash: [0x55; 32],
             guest_elf_sha256: hex_word_array(
-                "2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6",
+                identity["guestElfSha256"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("sha256:"),
             ),
             program_vkey: hex_word_array(
-                "0016d27da623507d3e323cc70a9da608e55879c4d74481566040fc38bf7f9799",
+                identity["programVKey"]
+                    .as_str()
+                    .unwrap()
+                    .trim_start_matches("0x"),
             ),
             submission_id: word_u128(7),
             solver: [0x66; 20],
@@ -450,12 +612,14 @@ mod tests {
             corrected_challenger_wins: true,
             proof_beneficiary: [0xcc; 20],
             solution,
-        };
-        let journal = verify_hadamard_668_and_journal(&witness).unwrap();
-        assert_eq!(
-            hex_word(journal),
-            "b7fc3d85ad6a8606edb944c1883fd8feed8363a74b84697d81439f3a69c664fc"
-        );
+        }
+    }
+
+    fn artifact_json(name: &str) -> serde_json::Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../artifacts/hadamard-668-defect/v0.1.0")
+            .join(name);
+        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
     fn hex_word(word: Word) -> String {
