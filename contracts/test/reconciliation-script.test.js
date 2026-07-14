@@ -10,7 +10,11 @@ import {
   STALE_BASE_SEPOLIA_RELEASE_GUARDS,
   validateManifestEvidence,
 } from "../../agent/indexer.mjs";
-import { assertReconciliationPublishable, reconcileWithProvider } from "../scripts/reconciliation-helper.js";
+import {
+  assertReconciliationPublishable,
+  buildReconciliationReport,
+  reconcileWithProvider,
+} from "../scripts/reconciliation-helper.js";
 import { validateMonotonicFinalityAnchor } from "../scripts/finality-anchor.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -103,6 +107,53 @@ describe("Base Sepolia reconciliation evidence gate", () => {
     assert.equal(checkpoint.reconstruction.complete, false);
     assert.equal(checkpoint.reconstruction.lifecycleSnapshotComplete, false);
     assert.equal(checkpoint.reconstruction.ok, false);
+  });
+
+  it("carries validated v2 and v3 checkpoints into reconciliation without rewriting board payloads", () => {
+    const address = (digit) => `0x${digit.repeat(40)}`;
+    const manifest = {
+      contracts: {
+        timelock: { address: address("1") },
+        registry: { address: address("2") },
+        rolloverVault: { address: address("3") },
+      },
+      problems: [{
+        problemId: "1",
+        contracts: { pool: { address: address("4") } },
+      }],
+    };
+    for (const schema of ["p42-prizes/indexer-checkpoint/v2", "p42-prizes/indexer-checkpoint/v3"]) {
+      const board = { problemId: "1", state: { retained: true } };
+      if (schema.endsWith("/v3")) board.portalProjection = { schema: "p42-prizes/portal-projection/v2" };
+      const checkpoint = { schema, boards: [board], reconstruction: { ok: true, complete: true } };
+      let validated;
+
+      const report = buildReconciliationReport({
+        checkpoint,
+        manifest,
+        manifestPath: "manifest.json",
+        multiBoard: true,
+        validateMultiBoard(value) { validated = value; },
+      });
+
+      assert.equal(validated, checkpoint);
+      assert.equal(report.schema, "p42-prizes/reconciliation-report/v3");
+      assert.deepEqual(report.boards, checkpoint.boards);
+      assert.deepEqual(report.boards[0].portalProjection, board.portalProjection);
+    }
+  });
+
+  it("rejects unsupported multi-board checkpoint versions before reconciliation", () => {
+    assert.throws(
+      () => buildReconciliationReport({
+        checkpoint: { schema: "p42-prizes/indexer-checkpoint/v4" },
+        manifest: {},
+        manifestPath: "manifest.json",
+        multiBoard: true,
+        validateMultiBoard() { throw new Error("must not be reached"); },
+      }),
+      /unsupported multi-board checkpoint schema/,
+    );
   });
 
   it("refuses publication before finalized governance completion or any failed reconstruction", () => {
