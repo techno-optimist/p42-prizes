@@ -10,7 +10,7 @@ objective:
   min_improvement: "1/222778"
   gauge: "max(0, seed_best - defect)"
 verifier:
-  version: "0.1.1"
+  version: "0.1.2"
   image: "sha256:local-dev"
   command: "python3 verifier/verify.py --solution {solution}"
   max_compute:

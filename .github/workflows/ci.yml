@@ -110,3 +110,81 @@ jobs:
         run: npm test
       - name: Audit dependencies
         run: npm audit --audit-level=moderate
+
+  objective-program:
+    name: SP1 objective-program gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Install pinned SP1 v6.1 verifier CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/cargo-prove.tar.gz"
+          curl --fail --location --silent --show-error \
+            https://github.com/succinctlabs/sp1/releases/download/v6.1.0/cargo_prove_v6.1.0_linux_amd64.tar.gz \
+            --output "$archive"
+          echo "99f0087f581798ec510573baedcd51b97a32c6f6a1f5942612ed252e5285954b  $archive" | sha256sum --check --strict
+          mkdir "$RUNNER_TEMP/cargo-prove"
+          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP/cargo-prove"
+          test -f "$RUNNER_TEMP/cargo-prove/cargo-prove"
+          test ! -L "$RUNNER_TEMP/cargo-prove/cargo-prove"
+          chmod 700 "$RUNNER_TEMP/cargo-prove/cargo-prove"
+          echo "$RUNNER_TEMP/cargo-prove" >> "$GITHUB_PATH"
+      - name: Install pinned host and SP1 guest toolchains
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.91.1 --profile minimal
+          cargo-prove prove install-toolchain
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler
+      - name: Restore pinned Rust build cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            objective-programs/target
+          key: sp1-v6.1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('objective-programs/Cargo.lock') }}
+      - name: Test objective predicate and Solidity ABI encoding
+        working-directory: objective-programs
+        run: cargo test --locked -p p42-objective-core
+      - name: Rebuild frozen guest on x86 Linux
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked -p p42-hadamard-668-objective-script
+          rebuilt=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
+          sha256sum "$rebuilt"
+          if strings "$rebuilt" | grep --extended-regexp '/home/runner/(work/p42-prizes|\.cargo)|/private/tmp/p42'; then
+            echo "guest ELF leaked a host-specific source path" >&2
+            exit 1
+          fi
+      - name: Retain x86 guest for cross-host audit
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p42-hadamard-668-x86-elf-${{ github.run_id }}
+          path: objective-programs/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
+          if-no-files-found: error
+          retention-days: 7
+      - name: Enforce frozen guest identity
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rebuilt=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
+          echo "2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6  $rebuilt" | sha256sum --check --strict
+          frozen=artifacts/hadamard-668-defect/v0.1.0/program.elf
+          cmp --silent "$rebuilt" "$frozen"
+          echo "2cda9c4c278b5c5b72b56417d6c0d2c7a15f045898e69ead9b75a61026ca13a6  $frozen" | sha256sum --check --strict
+      - name: Verify frozen ELF and independently derive vkey
+        run: python scripts/verify-sp1-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
+      - name: Replay frozen mock execution
+        working-directory: objective-programs
+        run: |
+          set -euo pipefail
+          output=$(cargo run --locked -p p42-hadamard-668-objective-script -- execute-fixture-elf artifacts/hadamard-668-defect/v0.1.0/program.elf ../problems/hadamard-668-defect/examples/sylvester-prefix.json)
+          printf '%s\n' "$output" | python3 ../scripts/verify-sp1-objective-execution.py

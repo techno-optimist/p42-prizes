@@ -86,6 +86,18 @@ def test_solution_json_rejects_nan_even_in_an_ignored_field(tmp_path: Path) -> N
     assert "non-JSON numeric constant" in report["details"]["error"]
 
 
+def test_hadamard_668_rejects_float_spelling_of_integer_n(tmp_path: Path) -> None:
+    source = ROOT / "problems/hadamard-668-defect/examples/sylvester-prefix.json"
+    solution = tmp_path / "float-n.json"
+    solution.write_bytes(source.read_bytes().replace(b'"n":668', b'"n":668.0', 1))
+
+    completed = run_verifier("hadamard-668-defect", solution)
+
+    assert completed.returncode == 1
+    report = json.loads(completed.stdout)
+    assert report["reason"] == "WRONG_N"
+
+
 @pytest.mark.parametrize("slug, example", sorted(SEED_EXAMPLES.items()))
 def test_designated_seed_example_matches_published_solution_schema(slug: str, example: str) -> None:
     problem = ROOT / "problems" / slug

@@ -16,7 +16,7 @@ from p42_prizes.verdict import (
 
 
 PROBLEM_ID = "hadamard-668-defect"
-VERIFIER_VERSION = "0.1.1"
+VERIFIER_VERSION = "0.1.2"
 VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
 N = 668
 ROW_HEX_DIGITS = 167
@@ -62,8 +62,8 @@ def parse_solution(raw: bytes) -> list[int]:
 
     if not isinstance(data, dict):
         raise VerifierFailure("MALFORMED", "solution root must be an object")
-    if data.get("n") != N:
-        raise VerifierFailure("WRONG_N", "n must equal 668")
+    if type(data.get("n")) is not int or data["n"] != N:
+        raise VerifierFailure("WRONG_N", "n must be the integer 668")
     if data.get("encoding") != ENCODING:
         raise VerifierFailure("WRONG_ENCODING", f"encoding must equal {ENCODING}")
 

@@ -5,8 +5,13 @@
 The contracts implement a permissionless correction path for a unanimously
 wrong, non-equivocating resolver decision. The production gateway is currently
 fail-closed: `objectiveProofsActive()` is false and every proof attempt reverts.
-This is source and local-test evidence only. No board has a P42-owned exact
-32-byte SP1 guest proof, so this path cannot count toward production readiness.
+The repository now contains the first P42-owned exact-32-byte SP1 v6.1 guest for
+`hadamard-668-defect`, a frozen single-host ELF/vkey identity, an independent
+ethers conformance vector for the full Solidity hash chain, and a successful
+mock execution over all 222,778 row pairs. This is source and local-execution
+evidence only: it is not a genuine Groth16 proof, independent reproduction,
+audit, or production activation, and the other nine launch boards have no
+objective program yet.
 
 ## Frozen authority chain
 
@@ -65,11 +70,13 @@ outcome is true.
 
 ## Remaining production gates
 
-- Implement and independently review a total proof program for every admitted
-  board, including malformed-input and resource-bound behavior.
-- Build and independently reproduce a P42-owned exact-32-byte SP1 guest, derive
-  its vkey from the exact ELF under the pinned toolchain, and freeze a genuine
-  positive proof plus adversarial mutations for every admitted board.
+- Implement and independently review a total proof program for the other nine
+  admitted boards, including malformed-input and resource-bound behavior.
+- Independently reproduce the Hadamard ELF/vkey on distinct x86 and ARM hosts,
+  then freeze a genuine positive Groth16 proof plus adversarial mutations. The
+  current mock execution emits the exact expected 32-byte journal in 53,222,072
+  RISC-V instructions but contains no proof bytes. CI must replay that execution
+  exactly; malformed inputs still require worst-case benchmarks.
 - Audit and rehearse a new active gateway release. The current production
   gateway pins SP1 v6.1 on Base but is intentionally and immutably inactive;
   the mock gateway under `contracts/src/mocks` is test-only.
