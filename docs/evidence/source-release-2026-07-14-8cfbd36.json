@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "p42-source-release-evidence/v1",
+  "createdAt": "2026-07-14T10:56:11Z",
+  "sourceCommit": "8cfbd366ec206e244aa125535cfca7b7adca4fbb",
+  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/97",
+  "ci": {
+    "workflow": "CI",
+    "event": "push",
+    "branch": "main",
+    "runId": 29326212579,
+    "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/29326212579",
+    "conclusion": "success",
+    "requiredJobs": {
+      "Python verifier gates": "success",
+      "Contract gates": "success",
+      "Autonomous agent gates": "success",
+      "Portal gates": "success",
+      "SP1 objective-program gates (ubuntu-22.04)": "success",
+      "SP1 objective-program gates (ubuntu-24.04)": "success"
+    }
+  },
+  "render": {
+    "serviceId": "srv-d96pokeq1p3s73foqk60",
+    "deployId": "dep-d9b14cbbc2fs73a3n3h0",
+    "status": "live",
+    "trigger": "new_commit",
+    "runtimeCommit": "8cfbd366ec206e244aa125535cfca7b7adca4fbb",
+    "liveCommit": "8cfbd366ec206e244aa125535cfca7b7adca4fbb"
+  },
+  "releaseGuard": {
+    "command": "make verify-render-release",
+    "status": "passed",
+    "boardProjection": "sha256:ffa222755590d96016bc0e1b151327ac912d4916a7c762d7c84f738e886365c2",
+    "healthyRoutes": 8,
+    "requiredRoutes": 8
+  },
+  "portalProjection": {
+    "checkpointSchema": "indexer-checkpoint/v3",
+    "projectionSchema": "portal-projection/v2",
+    "status": "source-complete-deployment-pending",
+    "failClosedPolicy": "An exact-ten cohort requires activated, fresh, independently attested v3 checkpoints; any stale, partial, mixed, malformed, or untrusted generation falls back atomically to local-only portal state.",
+    "liveFundingState": "No canonical Base Sepolia pools are deployed or authorized; the live portal publishes no transfer target."
+  }
+}
