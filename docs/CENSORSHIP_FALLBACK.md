@@ -165,18 +165,67 @@ abandons an already broadcast transaction to create a replacement.
   hashes, chain configuration, deadline calculation, gas used, and finality
   observations. Local mocks are not substitute evidence.
 
+## Independent Terminal Verification
+
+`p42-censorship-fallback-verify` revalidates a completed journal without the
+operator private key. The observer supplies the expected operator address, the
+frozen plan and authorization, the exact execution policy, and two independent
+RPCs per chain. The command rechecks controller/wallet bindings, both finalized
+L1 receipts, both canonical L2 anchors, each source-bound type-`0x7e` deposit,
+and the exact policy/challenge events. Its content-addressed
+`p42-censorship-fallback-terminal-verification/v1` output binds the journal and
+all chain anchors while explicitly setting `sequencerCensorshipClaimed=false`
+and `gate3Closed=false`.
+
+The verifier accepts a release/deployment/chain-bound verification policy only
+when its canonical hash exactly matches
+`/etc/p42/censorship-fallback-verification-policy.sha256`. Provision that file
+as a single `sha256:<64 lowercase hex>` line owned by root, with no write bits
+and one hard link, beneath a root-owned `/etc/p42` directory that is not group-
+or world-writable. The observer account must not be able to replace either the
+directory or digest. The policy pins both chain genesis hashes and post-release
+checkpoints, so matching chain IDs on a private fork are insufficient.
+
+This technical verification is an input to the signed rehearsal dossier. It is
+not release provenance, external review, or evidence that censorship actually
+occurred.
+
 ## Supervisor Contract
 
 `p42-censorship-fallback` performs one monotonic step. It emits exactly one
 `p42-censorship-fallback-outcome/v1` JSON result. `complete` exits `0`, ordinary
 pending progress emits `retry` and exits `75`, retryable RPC failures also exit
 `75`, and invariant/configuration refusal emits `terminal-error` and exits
-`64`. `deployments/p42-censorship-fallback.service.example` supplies bounded
-runtime, 15-second retry, `RestartPreventExitStatus=64`, and `OnFailure`
-alerting. The mode-`0600` environment file must be readable only by the
+`64`. `p42-censorship-fallback-supervisor` runs each monotonic step with a
+two-minute timeout, validates the child's fully drained bounded canonical retry
+or completion outcome, waits 15
+seconds after expected exit `75`, and continues without consuming systemd's
+crash budget. A malformed retry fails immediately; after eight canonical
+`rpc-unavailable` retries, a ninth consecutive failure exhausts the supervisor.
+Expected finalized-chain
+waiting resets that RPC-failure counter. Unexpected exit or child timeout maps
+to supervisor exit `70`, while service `SIGTERM` is forwarded with a ten-second
+kill grace and exits cleanly. `deployments/p42-censorship-fallback.service.example`
+then applies an explicit six-start/ten-minute abnormal-restart ceiling and
+`RestartPreventExitStatus=64` before `OnFailure` alerting through the shipped
+`p42-censorship-fallback-alert@.service.example` unit. The alert helper reads
+the manager's exact result/code/status and durably creates a hash-bound mode-0600
+record. It runs as a separate `p42-fallback-alert` account whose systemd state
+directory is not writable by the fallback runtime account. `systemd-analyze
+verify` statically parses both units in CI. The runtime unit creates and
+uses fixed private `state/` and `coordination/` descendants of
+`/var/lib/p42-censorship-fallback`; systemd does not expand environment
+variables in `ReadWritePaths`. The mode-`0600` environment file must be readable only by the
 dedicated fallback service account; RPC credentials belong behind local
 credential-bearing HTTPS proxies because the command accepts only
 credential-free root URLs.
+
+Before enabling the units, install
+`deployments/p42-censorship-fallback.sysusers.example` as
+`/etc/sysusers.d/p42-censorship-fallback.conf` and run
+`systemd-sysusers /etc/sysusers.d/p42-censorship-fallback.conf`. This provisions
+the separate `p42-fallback` and `p42-fallback-alert` system accounts; unit
+startup must fail rather than collapsing them into one identity.
 
 ## Test Evidence
 
@@ -195,6 +244,11 @@ credential-free root URLs.
   dual-RPC finalized state, formula-recomputed challenge-instance binding,
   bounded evidence scans, HTTPS endpoint separation, and exact L1-source-bound
   alias-origin event provenance.
+- `agent/censorship-fallback-alert.test.mjs` plus
+  `scripts/verify-censorship-fallback-systemd.sh`: exclusive hash-bound alert
+  creation, separated writable roots, bounded step/retry directives, and
+  static unit parsing. The manager-level restart, timeout, `OnFailure`, and
+  sandbox drill remains a launch gate rather than a CI claim.
 
 Gate 3 remains open until an externally reviewed release is deployed and the
 signed Base Sepolia rehearsal evidence above passes canonical reconciliation.

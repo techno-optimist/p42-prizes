@@ -7,9 +7,12 @@
   "files": [
     "README.md",
     "challenge-envelope.mjs",
+    "censorship-fallback-alert.mjs",
     "censorship-fallback.mjs",
     "censorship-fallback-runtime.mjs",
     "censorship-fallback-run.mjs",
+    "censorship-fallback-supervisor.mjs",
+    "censorship-fallback-verify.mjs",
     "wallet-nonce-coordinator.mjs",
     "canonical-topology.mjs",
     "canonical-topology-v1.json",
@@ -42,6 +45,7 @@
     "transcript-store.mjs"
   ],
   "bin": {
+    "p42-censorship-fallback-alert": "censorship-fallback-alert.mjs",
     "p42-solve": "solver.mjs",
     "p42-resolve": "resolver.mjs",
     "p42-resolver-sign": "resolver-signer.mjs",
@@ -49,7 +53,9 @@
     "p42-funding-activation-plan": "funding-activation.mjs",
     "p42-funding-activate": "funding-activation-run.mjs",
     "p42-indexer-checkpoint-attest": "checkpoint-attest.mjs",
-    "p42-censorship-fallback": "censorship-fallback-run.mjs"
+    "p42-censorship-fallback": "censorship-fallback-run.mjs",
+    "p42-censorship-fallback-supervisor": "censorship-fallback-supervisor.mjs",
+    "p42-censorship-fallback-verify": "censorship-fallback-verify.mjs"
   },
   "scripts": {
     "sync:schemas": "node scripts/sync-package-schemas.mjs",

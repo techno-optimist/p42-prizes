@@ -167,9 +167,25 @@ operator, preventing separate boards from signing conflicting nonces.
 The authorization approver must differ from the hot operator and binds the
 exact plan, expiry, bond, portal gas, L1 gas, EIP-1559 fees, both deposits'
 worst-case fee, RPC lag, and L2 scan bounds.
+
+After completion, `p42-censorship-fallback-verify` lets an independent observer
+revalidate the immutable plan, authorization, completed journal, controller and
+wallet bindings, both finalized L1 receipts, both source-bound type-`0x7e` L2
+deposits, and both exact events through its own two-RPC-per-chain view. It takes
+the expected operator address rather than the hot private key and emits a
+content-addressed terminal verification report. The report always records that
+sequencer censorship was not proved and Gate 3 was not closed; external review,
+release binding, and the signed Base Sepolia rehearsal dossier remain separate.
+The verifier's policy must match the root-owned, non-writable canonical digest
+at `/etc/p42/censorship-fallback-verification-policy.sha256`; that policy binds
+the release, deployment, chain genesis hashes, and post-release checkpoints.
+
 Pending progress and retryable RPC failure exit `75`, completion exits `0`, and
 terminal refusal exits `64`. The bounded systemd contract is in
-`deployments/p42-censorship-fallback.service.example`.
+`deployments/p42-censorship-fallback.service.example`; its packaged supervisor
+keeps expected exit-`75` finality waits outside systemd's finite abnormal-crash
+budget. Provision both isolated service accounts from
+`deployments/p42-censorship-fallback.sysusers.example` before enabling it.
 
 This is not deployment evidence. `docs/CENSORSHIP_FALLBACK.md` retains the
 external review, canonical Base Sepolia deployment, live chain-parameter, gas,

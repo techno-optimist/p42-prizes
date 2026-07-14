@@ -208,6 +208,58 @@ export function validateFallbackPlan(plan) {
   return plan;
 }
 
+function normalizeVerificationCheckpoint(value, label) {
+  if (!value || !Number.isSafeInteger(value.blockNumber) || value.blockNumber < 0) {
+    throw new Error(`${label} block number is invalid`);
+  }
+  return {
+    blockNumber: value.blockNumber,
+    blockHash: assertHash(value.blockHash, `${label} block hash`),
+  };
+}
+
+export function validateFallbackVerificationPolicy(value, {
+  plan, l1ChainId, operator, authorizationApprover,
+}) {
+  const expectedKeys = [
+    "authorizationApprover", "challengeManager", "controller", "controllerCodeHash",
+    "deploymentManifestDigest", "l1ChainId", "l1Checkpoint", "l1GenesisHash", "l2ChainId",
+    "l2Checkpoint", "l2GenesisHash", "operator", "planHash", "portal", "releaseIndexDigest",
+    "schema", "wallet",
+  ];
+  if (!value || canonicalJson(Object.keys(value).sort()) !== canonicalJson(expectedKeys.sort())
+      || value.schema !== "p42-censorship-fallback-verification-policy/v1") {
+    throw new Error("forced-inclusion verification policy shape is invalid");
+  }
+  const policy = {
+    ...value,
+    l1Checkpoint: normalizeVerificationCheckpoint(value.l1Checkpoint, "verification policy L1 checkpoint"),
+    l2Checkpoint: normalizeVerificationCheckpoint(value.l2Checkpoint, "verification policy L2 checkpoint"),
+  };
+  for (const field of ["deploymentManifestDigest", "releaseIndexDigest"]) {
+    if (!/^sha256:[0-9a-f]{64}$/.test(policy[field])) {
+      throw new Error(`forced-inclusion verification policy ${field} is invalid`);
+    }
+  }
+  for (const field of ["l1GenesisHash", "l2GenesisHash", "controllerCodeHash"]) {
+    policy[field] = assertHash(policy[field], `verification policy ${field}`);
+  }
+  if (policy.planHash !== sha256Canonical(plan)
+      || policy.l1ChainId !== Number(l1ChainId)
+      || policy.l2ChainId !== Number(plan.l2ChainId)
+      || !sameAddress(policy.operator, operator)
+      || !sameAddress(policy.authorizationApprover, authorizationApprover)
+      || !sameAddress(policy.controller, plan.l1Controller)
+      || !sameAddress(policy.portal, plan.portal)
+      || !sameAddress(policy.wallet, plan.wallet)
+      || !sameAddress(policy.challengeManager, plan.challengeManager)
+      || !sameHex(policy.controllerCodeHash, plan.l1ControllerCodeHash)
+      || policy.l1Checkpoint.blockNumber <= 0 || policy.l2Checkpoint.blockNumber <= 0) {
+    throw new Error("forced-inclusion verification policy binding is invalid");
+  }
+  return policy;
+}
+
 function initialState(plan, l1ChainId, l2StartBlock, executionPolicyHash, authorizationHash) {
   return {
     schema: STATE_SCHEMA,
@@ -326,16 +378,26 @@ export function fallbackWalletNonceActionId({
   });
 }
 
-function assertRunSignedRecord(record, { plan, action, l1ChainId, operator }) {
+function assertRunSignedRecord(record, {
+  plan, action, l1ChainId, operator, executionPolicy,
+}) {
   const tx = transactionFor(plan, action);
-  return assertSignedTransactionRecord(record, {
+  const validated = assertSignedTransactionRecord(record, {
     signer: operator,
     chainId: l1ChainId,
     to: tx.to,
     value: tx.valueWei,
     data: tx.calldata,
     label: `censorship-fallback:${plan.calldataHash}:${action}`,
-  }).record;
+  });
+  const signed = validated.transaction;
+  if (signed.type !== 2
+      || signed.gasLimit !== BigInt(executionPolicy.l1GasLimit)
+      || signed.maxFeePerGas !== BigInt(executionPolicy.maxFeePerGas)
+      || signed.maxPriorityFeePerGas !== BigInt(executionPolicy.maxPriorityFeePerGas)) {
+    throw new Error("forced-inclusion signed transaction exceeds or changes the authorized fee envelope");
+  }
+  return validated.record;
 }
 
 export async function advanceFallbackRun({
@@ -409,6 +471,11 @@ export async function advanceFallbackRun({
     if (state.operator === null) state.operator = operatorAddress;
     await adapter.assertBindings(plan);
     if (state.stage === "challenge_l2_confirmed") {
+      for (const action of ["policy", "challenge"]) {
+        assertRunSignedRecord(state[action].signedTransaction, {
+          plan, action, l1ChainId: normalizedL1ChainId, operator: operatorAddress, executionPolicy,
+        });
+      }
       await adapter.revalidateComplete(state, plan);
       return state;
     }
@@ -429,7 +496,7 @@ export async function advanceFallbackRun({
       preparedTransaction = await adapter.prepare(action, transactionFor(plan, action), plan);
     } else {
       assertRunSignedRecord(slot.signedTransaction, {
-        plan, action, l1ChainId, operator: operatorAddress,
+        plan, action, l1ChainId, operator: operatorAddress, executionPolicy,
       });
     }
 
@@ -466,7 +533,7 @@ export async function advanceFallbackRun({
           await adapter.assertDeadline(plan, action);
           await adapter.assertAuthorizationDeadline(approved);
           slot.signedTransaction = assertRunSignedRecord(signed, {
-            plan, action, l1ChainId: normalizedL1ChainId, operator: operatorAddress,
+            plan, action, l1ChainId: normalizedL1ChainId, operator: operatorAddress, executionPolicy,
           });
           if (Number(slot.signedTransaction.nonce) !== allocation.nonce) {
             throw new Error("forced-inclusion signer ignored the allocated wallet nonce");
@@ -529,12 +596,141 @@ export async function advanceFallbackRun({
   }
 }
 
+export async function verifyCompletedFallbackRun({
+  state: stateValue,
+  plan: planValue,
+  l1ChainId,
+  operator,
+  l2StartBlock,
+  adapter,
+  executionPolicy,
+  authorization,
+  authorizationApprover,
+  verificationPolicy,
+  observedAtUtc = new Date().toISOString(),
+}) {
+  const plan = validateFallbackPlan(planValue);
+  const normalizedL1ChainId = Number(l1ChainId);
+  if (!Number.isSafeInteger(normalizedL1ChainId) || normalizedL1ChainId <= 0) {
+    throw new Error("forced-inclusion verification requires a positive safe L1 chain id");
+  }
+  if (!Number.isSafeInteger(l2StartBlock) || l2StartBlock < 0) {
+    throw new Error("forced-inclusion verification requires a non-negative L2 observation start block");
+  }
+  const operatorAddress = ethers.getAddress(operator).toLowerCase();
+  const approverAddress = ethers.getAddress(authorizationApprover).toLowerCase();
+  const policy = validateFallbackVerificationPolicy(verificationPolicy, {
+    plan,
+    l1ChainId: normalizedL1ChainId,
+    operator: operatorAddress,
+    authorizationApprover: approverAddress,
+  });
+  const executionPolicyHash = sha256Canonical(normalizeFallbackExecutionPolicy(executionPolicy));
+  const approved = validateFallbackAuthorization(authorization, {
+    plan,
+    l1ChainId: normalizedL1ChainId,
+    l2StartBlock,
+    operator: operatorAddress,
+    expectedApprover: approverAddress,
+    executionPolicy,
+  });
+  const state = validateFallbackRunState(stateValue, {
+    plan,
+    l1ChainId: normalizedL1ChainId,
+    l2StartBlock,
+    executionPolicyHash,
+    authorizationHash: approved.artifactHash,
+    operator: operatorAddress,
+  });
+  if (state.stage !== "challenge_l2_confirmed") {
+    throw new Error("forced-inclusion verification requires a completed journal");
+  }
+  for (const action of ["policy", "challenge"]) {
+    assertRunSignedRecord(state[action].signedTransaction, {
+      plan,
+      action,
+      l1ChainId: normalizedL1ChainId,
+      operator: operatorAddress,
+      executionPolicy,
+    });
+  }
+  if (adapter.executionPolicyHash !== executionPolicyHash
+      || adapter.l1ChainId !== normalizedL1ChainId
+      || adapter.l2StartBlock !== l2StartBlock
+      || ethers.getAddress(adapter.operator).toLowerCase() !== operatorAddress
+      || adapter.l1GenesisHash !== policy.l1GenesisHash
+      || adapter.l2GenesisHash !== policy.l2GenesisHash
+      || canonicalJson(adapter.l1Checkpoint) !== canonicalJson(policy.l1Checkpoint)
+      || canonicalJson(adapter.l2Checkpoint) !== canonicalJson(policy.l2Checkpoint)) {
+    throw new Error("forced-inclusion verification adapter identity mismatch");
+  }
+  const observedAt = Date.parse(observedAtUtc);
+  if (!Number.isFinite(observedAt) || observedAt < Date.parse(state.updatedAtUtc)) {
+    throw new Error("forced-inclusion verification time predates the completed journal");
+  }
+  await adapter.assertBindings(plan);
+  await adapter.revalidateComplete(state, plan);
+  if (state.policy.l1Anchor.blockNumber < policy.l1Checkpoint.blockNumber
+      || state.challenge.l1Anchor.blockNumber < policy.l1Checkpoint.blockNumber
+      || state.policy.l2Anchor.blockNumber < policy.l2Checkpoint.blockNumber
+      || state.challenge.l2Anchor.blockNumber < policy.l2Checkpoint.blockNumber) {
+    throw new Error("forced-inclusion evidence predates the trusted deployment checkpoints");
+  }
+  const actionEvidence = (action) => ({
+    l1: { ...state[action].l1Anchor },
+    l2: { ...state[action].l2Anchor },
+    signedTransactionHash: state[action].signedTransaction.hash,
+  });
+  const body = {
+    schema: "p42-censorship-fallback-terminal-verification/v1",
+    status: "verified",
+    observedAtUtc: new Date(observedAt).toISOString(),
+    planHash: state.planHash,
+    authorizationHash: state.authorizationHash,
+    executionPolicyHash: state.executionPolicyHash,
+    journalHash: sha256Canonical(state),
+    verificationPolicyHash: sha256Canonical(policy),
+    releaseIndexDigest: policy.releaseIndexDigest,
+    deploymentManifestDigest: policy.deploymentManifestDigest,
+    l1ChainId: state.l1ChainId,
+    l2ChainId: state.l2ChainId,
+    l2StartBlock: state.l2StartBlock,
+    controller: state.controller,
+    wallet: ethers.getAddress(plan.wallet).toLowerCase(),
+    challengeManager: ethers.getAddress(plan.challengeManager).toLowerCase(),
+    operator: operatorAddress,
+    authorizationApprover: approverAddress,
+    chainIdentity: {
+      l1GenesisHash: policy.l1GenesisHash,
+      l2GenesisHash: policy.l2GenesisHash,
+      l1Checkpoint: policy.l1Checkpoint,
+      l2Checkpoint: policy.l2Checkpoint,
+    },
+    deadline: {
+      challengeDeadline: String(plan.challengeDeadline),
+      policyExpiresAt: String(plan.policyExpiresAt),
+      sequencingWindowL1Blocks: String(plan.sequencingWindowL1Blocks),
+      l1BlockSeconds: String(plan.l1BlockSeconds),
+      safetySeconds: String(plan.safetySeconds),
+      requiredRemainingSeconds: String(plan.requiredRemainingSeconds),
+      singleDepositRequiredSeconds: String(plan.singleDepositRequiredSeconds),
+    },
+    bondWei: String(plan.bondWei),
+    policy: actionEvidence("policy"),
+    challenge: actionEvidence("challenge"),
+    sequencerCensorshipClaimed: false,
+    gate3Closed: false,
+  };
+  return { ...body, verificationHash: sha256Canonical(body) };
+}
+
 export function createEthersFallbackAdapter({
   l1Primary,
   l1Secondary,
   l2Primary,
   l2Secondary,
-  wallet,
+  wallet = null,
+  operator = undefined,
   l1ChainId,
   gasLimit,
   maxFeePerGas,
@@ -543,6 +739,10 @@ export function createEthersFallbackAdapter({
   maxL2ScanBlocks,
   maxL2Logs,
   l2StartBlock,
+  l1GenesisHash = null,
+  l2GenesisHash = null,
+  l1Checkpoint = null,
+  l2Checkpoint = null,
 }) {
   if (!l1Primary || !l1Secondary || l1Primary === l1Secondary
       || !l2Primary || !l2Secondary || l2Primary === l2Secondary) {
@@ -590,6 +790,22 @@ export function createEthersFallbackAdapter({
     maxL2Logs,
   });
   const executionPolicyHash = sha256Canonical(executionPolicy);
+  const operatorAddress = ethers.getAddress(wallet?.address ?? operator);
+  if (wallet && operator !== undefined && !sameAddress(wallet.address, operator)) {
+    throw new Error("forced-inclusion wallet and operator bindings disagree");
+  }
+  const expectedL1GenesisHash = l1GenesisHash === null ? null : assertHash(l1GenesisHash, "L1 genesis hash");
+  const expectedL2GenesisHash = l2GenesisHash === null ? null : assertHash(l2GenesisHash, "L2 genesis hash");
+  const expectedL1Checkpoint = l1Checkpoint === null
+    ? null : normalizeVerificationCheckpoint(l1Checkpoint, "L1 checkpoint");
+  const expectedL2Checkpoint = l2Checkpoint === null
+    ? null : normalizeVerificationCheckpoint(l2Checkpoint, "L2 checkpoint");
+  if ([expectedL1GenesisHash, expectedL2GenesisHash, expectedL1Checkpoint, expectedL2Checkpoint]
+    .some((item) => item === null)
+      && [expectedL1GenesisHash, expectedL2GenesisHash, expectedL1Checkpoint, expectedL2Checkpoint]
+        .some((item) => item !== null)) {
+    throw new Error("forced-inclusion chain identity anchors must be supplied together");
+  }
 
   async function commonBlock(primary, secondary, tag, label) {
     const [a, b] = await Promise.all([primary.getBlock(tag), secondary.getBlock(tag)]);
@@ -740,6 +956,23 @@ export function createEthersFallbackAdapter({
         || [l2NetworkA.chainId, l2NetworkB.chainId].some((id) => id !== BigInt(plan.l2ChainId))) {
       throw new Error("forced-inclusion RPC chain binding mismatch");
     }
+    if (expectedL1GenesisHash !== null) {
+      for (const [primary, secondary, genesisHash, checkpoint, label] of [
+        [l1Primary, l1Secondary, expectedL1GenesisHash, expectedL1Checkpoint, "L1"],
+        [l2Primary, l2Secondary, expectedL2GenesisHash, expectedL2Checkpoint, "L2"],
+      ]) {
+        const [genesisA, genesisB, checkpointA, checkpointB] = await Promise.all([
+          primary.getBlock(0), secondary.getBlock(0),
+          primary.getBlock(checkpoint.blockNumber), secondary.getBlock(checkpoint.blockNumber),
+        ]);
+        if (!genesisA || !genesisB || !sameHex(genesisA.hash, genesisHash)
+            || !sameHex(genesisB.hash, genesisHash) || !checkpointA || !checkpointB
+            || !sameHex(checkpointA.hash, checkpoint.blockHash)
+            || !sameHex(checkpointB.hash, checkpoint.blockHash)) {
+          throw new Error(`forced-inclusion ${label} trusted chain identity mismatch`);
+        }
+      }
+    }
     const [l1Block, l2Block] = await Promise.all([
       commonBlock(l1Primary, l1Secondary, "finalized", "L1"),
       commonBlock(l2Primary, l2Secondary, "finalized", "L2"),
@@ -754,7 +987,7 @@ export function createEthersFallbackAdapter({
     const controller = new ethers.Contract(plan.l1Controller, controllerAbi);
     for (const [fn, expected] of [
       ["portal", plan.portal], ["l2Wallet", plan.wallet], ["challengeManager", plan.challengeManager],
-      ["challengeSelector", plan.selector], ["operator", wallet.address],
+      ["challengeSelector", plan.selector], ["operator", operatorAddress],
     ]) {
       const [actual] = await dualContractCall(l1Primary, l1Secondary, controller, fn, [], l1Block, `controller ${fn}`);
       if (fn === "challengeSelector" ? !sameHex(actual, expected) : !sameAddress(actual, expected)) {
@@ -801,8 +1034,8 @@ export function createEthersFallbackAdapter({
       type: 2,
     };
     const [estimateA, estimateB] = await Promise.all([
-      l1Primary.estimateGas({ ...request, from: wallet.address }),
-      l1Secondary.estimateGas({ ...request, from: wallet.address }),
+      l1Primary.estimateGas({ ...request, from: operatorAddress }),
+      l1Secondary.estimateGas({ ...request, from: operatorAddress }),
     ]);
     if (estimateA > request.gasLimit || estimateB > request.gasLimit) {
       throw new Error("forced-inclusion L1 transaction exceeds provisioned gas limit");
@@ -811,6 +1044,7 @@ export function createEthersFallbackAdapter({
   }
 
   async function sign(action, prepared, plan, nonce) {
+    if (!wallet) throw new Error("forced-inclusion read-only adapter cannot sign");
     return buildSignedTransactionRecord({
       wallet: wallet.connect(null),
       request: { ...prepared, chainId: normalizedL1ChainId, nonce },
@@ -1058,9 +1292,13 @@ export function createEthersFallbackAdapter({
 
   return {
     executionPolicyHash,
+    l1GenesisHash: expectedL1GenesisHash,
+    l2GenesisHash: expectedL2GenesisHash,
+    l1Checkpoint: expectedL1Checkpoint,
+    l2Checkpoint: expectedL2Checkpoint,
     l1ChainId: normalizedL1ChainId,
     l2StartBlock,
-    operator: wallet.address,
+    operator: operatorAddress,
     nonceRpcProvider: l1Primary,
     nonceRpcProviders: [l1Primary, l1Secondary],
     assertBindings,

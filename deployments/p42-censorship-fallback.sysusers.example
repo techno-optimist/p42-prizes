@@ -1,0 +1,2 @@
+u p42-fallback - "P42 censorship fallback runtime" /var/lib/p42-censorship-fallback /usr/sbin/nologin
+u p42-fallback-alert - "P42 censorship fallback alert recorder" /var/lib/p42-censorship-fallback-alerts /usr/sbin/nologin
