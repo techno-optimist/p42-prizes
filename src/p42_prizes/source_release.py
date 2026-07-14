@@ -152,9 +152,9 @@ def validate_source_release_evidence(
     if any(item.get("conclusion") != "success" for item in jobs):
         raise SourceReleaseEvidenceError("every required CI job must be successful")
 
-    for key in ("runtimeCommit", "liveCommit"):
-        if render.get(key) != deploy_commit:
-            raise SourceReleaseEvidenceError(f"render.{key} must equal deployRelevantCommit")
+    if render.get("runtimeCommit") != deploy_commit:
+        raise SourceReleaseEvidenceError("render.runtimeCommit must equal deployRelevantCommit")
+    live_commit = _commit(render.get("liveCommit"), "render.liveCommit")
     if render.get("status") != "live":
         raise SourceReleaseEvidenceError("render.status must be live")
 
@@ -194,8 +194,17 @@ def validate_source_release_evidence(
         remote=SOURCE_RELEASE_REMOTE if online else "origin",
     )
     _git_commit_exists(deploy_commit, root, command_runner)
+    _git_commit_exists(live_commit, root, command_runner)
     _git_commit_exists(observed_head, root, command_runner)
     _require_ancestor(deploy_commit, observed_head, root, command_runner)
+    try:
+        _require_ancestor(deploy_commit, live_commit, root, command_runner)
+        _require_ancestor(live_commit, observed_head, root, command_runner)
+    except SourceReleaseEvidenceError as exc:
+        raise SourceReleaseEvidenceError(
+            "render.liveCommit must be on the released source lineage between "
+            "deployRelevantCommit and observedBranchHead"
+        ) from exc
     _require_ancestor(observed_head, head, root, command_runner)
     runtime_commit = _commit(
         command_runner(
