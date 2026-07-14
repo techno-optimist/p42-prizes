@@ -57,6 +57,9 @@ jobs:
         run: npm run build
       - name: Run agent tests
         run: npm test
+      - name: Validate censorship fallback supervisor units
+        working-directory: .
+        run: bash scripts/verify-censorship-fallback-systemd.sh
       - name: Audit dependencies
         run: npm audit --audit-level=moderate
 
