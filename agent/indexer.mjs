@@ -119,7 +119,7 @@ export const MANIFEST_SCHEMA_V1 = "p42-prizes/deployment-manifest/v1";
 export const MANIFEST_SCHEMA_V2 = "p42-prizes/deployment-manifest/v2";
 export const PRODUCTION_RELEASE_MODE = "production";
 let deploymentManifestSchemas;
-let multiboardCheckpointSchema;
+let multiboardCheckpointSchemas;
 function manifestSchemas() {
   deploymentManifestSchemas ??= Object.freeze({
     [MANIFEST_SCHEMA_V1]: JSON.parse(readFileSync(`${SCHEMA_ROOT}/deployment-manifest.schema.json`, "utf8")),
@@ -127,11 +127,18 @@ function manifestSchemas() {
   });
   return deploymentManifestSchemas;
 }
-function checkpointSchema() {
-  multiboardCheckpointSchema ??= JSON.parse(
-    readFileSync(`${SCHEMA_ROOT}/indexer-checkpoint-v2.schema.json`, "utf8"),
-  );
-  return multiboardCheckpointSchema;
+function checkpointSchema(schema = "p42-prizes/indexer-checkpoint/v3") {
+  multiboardCheckpointSchemas ??= Object.freeze({
+    "p42-prizes/indexer-checkpoint/v2": JSON.parse(
+      readFileSync(`${SCHEMA_ROOT}/indexer-checkpoint-v2.schema.json`, "utf8"),
+    ),
+    "p42-prizes/indexer-checkpoint/v3": JSON.parse(
+      readFileSync(`${SCHEMA_ROOT}/indexer-checkpoint-v3.schema.json`, "utf8"),
+    ),
+  });
+  const selected = multiboardCheckpointSchemas[schema];
+  if (!selected) throw new Error(`unsupported multi-board checkpoint schema ${schema}`);
+  return selected;
 }
 const PRIVATE_FILE_MODE = 0o600;
 const PRIVATE_DIRECTORY_MODE = 0o700;
@@ -1616,6 +1623,7 @@ function newReplayState(config, coverage) {
       closedPoolBalance: 0n,
       feeReserve: 0n,
       closedAt: 0n,
+      claimDeadline: 0n,
       totalCreditAtoms: 0n,
       creditAtomsOf: {},
       claimedWeiOf: {},
@@ -1924,6 +1932,7 @@ function replayLedgerEvent(state, event) {
       state.ledger.closedPoolBalance = asBigInt(getArg(event, "poolBalance"));
       state.ledger.feeReserve = asBigInt(getArg(event, "feeReserve"));
       state.ledger.closedAt = asBigInt(getArg(event, "closedAt"));
+      state.ledger.claimDeadline = asBigInt(getArg(event, "claimDeadline"));
       break;
     case "ClaimConsumed": {
       const solver = getArg(event, "solver");
@@ -2992,6 +3001,7 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     check("ledger.closedPoolBalance", state.ledger.closedPoolBalance, snapshot.ledger.closedPoolBalance),
     check("ledger.feeReserve", state.ledger.feeReserve, snapshot.ledger.feeReserve),
     check("ledger.closedAt", state.ledger.closedAt, snapshot.ledger.closedAt),
+    check("ledger.claimDeadline", state.ledger.claimDeadline, snapshot.ledger.claimDeadline),
     check("ledger.feeSwept", state.ledger.feeSwept, snapshot.ledger.feeSwept),
     check("ledger.residualSwept", state.ledger.residualSwept, snapshot.ledger.residualSwept),
     check("registry.problemCount", state.registry.problemCount, snapshot.registry.problemCount),
@@ -3446,6 +3456,7 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
       closedPoolBalance: await ledger.closedPoolBalance(...atBlock),
       feeReserve: await ledger.feeReserve(...atBlock),
       closedAt: await ledger.closedAt(...atBlock),
+      claimDeadline: await ledger.claimDeadline(...atBlock),
       feeSwept: await ledger.feeSwept(...atBlock),
       residualSwept: await ledger.residualSwept(...atBlock),
       creditAtomsOf: {},
@@ -3795,8 +3806,8 @@ function eventDigestInput(event) {
     source: event.source,
     eventName: event.eventName,
     blockNumber: event.blockNumber,
-    blockHash: event.blockHash,
-    transactionHash: event.transactionHash,
+    blockHash: String(event.blockHash).toLowerCase(),
+    transactionHash: String(event.transactionHash).toLowerCase(),
     transactionIndex: event.transactionIndex ?? 0,
     index: event.index ?? event.logIndex,
     blockTimestamp: event.blockTimestamp,
@@ -3852,10 +3863,12 @@ function portalEventProvenance(event, binding, problemId) {
   const submissionId = event.args?.submissionId === undefined
     ? null
     : asBigInt(event.args.submissionId).toString();
+  const args = canonicalize(event.args ?? {});
   return {
     ...portalLogIdentity(event, binding, problemId),
     submissionId,
-    argsDigest: ethers.keccak256(ethers.toUtf8Bytes(stableStringify(event.args ?? {}))),
+    args,
+    argsDigest: ethers.keccak256(ethers.toUtf8Bytes(stableStringify(args))),
   };
 }
 
@@ -3867,17 +3880,33 @@ function comparePortalLogs(left, right) {
   );
 }
 
-function portalSubmissionBase(submission) {
+function portalSubmissionBase(submission, state) {
+  const activeChallenge = state.challenges?.[String(submission.submissionId)] ?? null;
+  const originalCreditAtoms = asBigInt(submission.finalizeInfo?.creditAtoms ?? 0);
   return {
     submissionId: String(submission.submissionId),
     solver: addressKey(submission.solver),
     status: submission.status,
     claimedScoreAtoms: String(submission.claimedScoreAtoms),
     improvementAtoms: String(submission.improvementAtoms),
-    creditAtoms: String(submission.finalizeInfo?.creditAtoms ?? 0),
+    creditAtoms: submission.status === "Finalized" ? originalCreditAtoms : 0n,
+    originalCreditAtoms,
     solutionCid: submission.solutionCid,
     committedAt: String(submission.committedAt),
     revealedAt: String(submission.revealedAt),
+    challengeEndsAt: String(submission.challengeEndsAt),
+    activeChallenge: activeChallenge ? {
+      challenger: addressKey(activeChallenge.challenger),
+      reasonHash: activeChallenge.reasonHash,
+      challengeBondWei: activeChallenge.challengeBondWei,
+      challengedAt: activeChallenge.challengedAt,
+      disputeEndsAt: activeChallenge.disputeEndsAt,
+      decisionPending: activeChallenge.decisionPending,
+      challengerWins: activeChallenge.challengerWins,
+      transcriptHash: activeChallenge.transcriptHash,
+      transcriptURI: activeChallenge.transcriptURI,
+      verdictHash: activeChallenge.verdictHash,
+    } : null,
   };
 }
 
@@ -3896,22 +3925,58 @@ function portalStateFacts(state) {
       solver,
       creditAtoms: state.ledger.creditAtomsOf?.[solver] ?? 0n,
       claimedWei: state.ledger.claimedWeiOf?.[solver] ?? 0n,
+      finalEntitlementWei: state.ledger.closed && asBigInt(state.ledger.totalCreditAtoms) > 0n
+        ? asBigInt(state.ledger.closedPoolBalance) * asBigInt(state.ledger.creditAtomsOf?.[solver] ?? 0n)
+          / asBigInt(state.ledger.totalCreditAtoms)
+        : 0n,
     })),
     pool: {
       totalFundedWei: state.pool.totalFunded,
       accountedBalanceWei: state.pool.accountedBalance,
       totalClaimedWei: state.pool.totalClaimed,
+      totalWinningsDonatedWei: state.pool.totalWinningsDonated,
       refundableWei,
       totalSponsorRefundedWei: state.pool.totalSponsorRefunded,
       totalFeeAccruedWei: state.pool.totalFeeAccrued,
       totalFeePaidWei: state.pool.totalFeePaid,
       totalResidualPaidWei: state.pool.totalResidualPaid,
+      sponsors: Object.entries(state.pool.sponsorshipOf ?? {})
+        .map(([sponsor, principalWei]) => ({ sponsor: addressKey(sponsor), principalWei }))
+        .sort((left, right) => left.sponsor.localeCompare(right.sponsor)),
+      sponsorshipFundings: [...(state.pool.sponsorshipFundings ?? [])]
+        .sort((left, right) => left.transactionHash.localeCompare(right.transactionHash))
+        .map((funding) => ({
+          transactionHash: funding.transactionHash,
+          payer: addressKey(funding.payer),
+          sponsor: addressKey(funding.sponsor),
+          amountWei: funding.amount,
+        })),
+      winningsDonations: [...(state.pool.winningsDonations ?? [])]
+        .sort((left, right) => left.transactionHash.localeCompare(right.transactionHash))
+        .map((donation) => ({
+          transactionHash: donation.transactionHash,
+          solver: addressKey(donation.solver),
+          destinationPool: addressKey(donation.destinationPool),
+          grossAmountWei: donation.grossAmount,
+          donatedAmountWei: donation.donatedAmount,
+          feeAmountWei: donation.feeAmount,
+        })),
+    },
+    funding: {
+      acceptingFunds: state.pool.acceptingFunds,
+      fundingArmed: state.fundingArmed,
+      authorizationExpiresAt: state.fundingAuthorizationExpiresAt,
+      poolPausedNewActions: state.ledger.pausedNewActions,
+      submissionsPausedNewActions: state.pausedNewActions,
+      submissionsPausedAll: state.pausedAll,
+      challengesPausedNewActions: state.challengePausedNewActions,
     },
     ledgerClose: {
       closed: state.ledger.closed,
       closedPoolBalanceWei: state.ledger.closedPoolBalance,
       feeReserveWei: state.ledger.feeReserve,
       closedAt: state.ledger.closedAt,
+      claimDeadline: state.ledger.claimDeadline,
       totalCreditAtoms: state.ledger.totalCreditAtoms,
       totalGrossClaimedWei: state.ledger.totalGrossClaimed,
       totalFeeAccruedWei: state.ledger.totalFeeAccrued,
@@ -3924,7 +3989,7 @@ function portalStateFacts(state) {
         const rightId = asBigInt(right.submissionId);
         return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
       })
-      .map(portalSubmissionBase),
+      .map((submission) => portalSubmissionBase(submission, state)),
   });
 }
 
@@ -3943,15 +4008,16 @@ function buildPortalProjection(replay, binding, problemId, eventsDigest, replaye
     return {
       ...submission,
       finalizedAt: finalized[0]?.blockTimestamp ?? "0",
-      sourceLogs: related.map(({ submissionId: _submissionId, argsDigest: _argsDigest, ...identity }) => identity),
+      sourceLogs: related.map(({ submissionId: _submissionId, argsDigest: _argsDigest, args: _args, ...identity }) => identity),
     };
   });
   return canonicalize({
-    schema: "p42-prizes/portal-projection/v1",
+    schema: "p42-prizes/portal-projection/v2",
     frontier: facts.frontier,
     submissions,
     solvers: facts.solvers,
     pool: facts.pool,
+    funding: facts.funding,
     ledgerClose: facts.ledgerClose,
     eventProvenance: {
       replayEventsDigest: eventsDigest,
@@ -3963,7 +4029,7 @@ function buildPortalProjection(replay, binding, problemId, eventsDigest, replaye
 
 export function buildCheckpoint({ binding, finalityPolicy, fromBlock, toBlock, toBlockHash, toBlockTimestamp, events, replay, snapshot, checks }) {
   const eventDigest = ethers.keccak256(
-    ethers.toUtf8Bytes(stableStringify(events.map(eventDigestInput)))
+    ethers.toUtf8Bytes(stableStringify([...events].sort(compareEventOrder).map(eventDigestInput)))
   );
   const lifecycleCountsComplete = REQUIRED_LIFECYCLE_COVERAGE.every(
     (name) => Number.isSafeInteger(replay.eventCounts?.[name]) && replay.eventCounts[name] >= 0
@@ -4081,7 +4147,7 @@ export function buildMultiBoardCheckpoint({
   const complete = boardReports.every((report) => report.reconstruction.complete);
   const ok = complete && boardReports.every((report) => report.reconstruction.ok);
   const checkpoint = canonicalize({
-    schema: "p42-prizes/indexer-checkpoint/v2",
+    schema: "p42-prizes/indexer-checkpoint/v3",
     manifestBinding: binding,
     finalityPolicy,
     range: { fromBlock, toBlock, toBlockHash, toBlockTimestamp },
@@ -4164,7 +4230,7 @@ function portalLogKey(log) {
 function validateCanonicalPortalProjection(board, binding) {
   const projection = board.portalProjection;
   const facts = portalStateFacts(board.state);
-  for (const key of ["frontier", "solvers", "pool", "ledgerClose"]) {
+  for (const key of ["frontier", "solvers", "pool", "funding", "ledgerClose"]) {
     invariant(
       stableStringify(projection[key]) === stableStringify(facts[key]),
       `checkpoint board ${board.problemId} portalProjection.${key} does not match replay state`,
@@ -4200,6 +4266,17 @@ function validateCanonicalPortalProjection(board, binding) {
   const projectedCounts = Object.fromEntries(REQUIRED_LIFECYCLE_COVERAGE.map((name) => [name, 0]));
   for (const log of provenance.logs) {
     invariant(
+      log.argsDigest === ethers.keccak256(ethers.toUtf8Bytes(stableStringify(log.args))),
+      `checkpoint board ${board.problemId} portal projection ${portalLogKey(log)} args digest mismatch`,
+    );
+    const derivedSubmissionId = log.args?.submissionId === undefined
+      ? null
+      : asBigInt(log.args.submissionId).toString();
+    invariant(
+      log.submissionId === derivedSubmissionId,
+      `checkpoint board ${board.problemId} portal projection ${portalLogKey(log)} submission binding mismatch`,
+    );
+    invariant(
       log.contractAddress === portalSourceAddress(binding, board.problemId, log.source),
       `checkpoint board ${board.problemId} portal projection ${portalLogKey(log)} contract binding mismatch`,
     );
@@ -4214,11 +4291,28 @@ function validateCanonicalPortalProjection(board, binding) {
     stableStringify(projectedCounts) === stableStringify(board.events.counts),
     `checkpoint board ${board.problemId} portal projection event counts mismatch`,
   );
+  const recomputedEventsDigest = ethers.keccak256(ethers.toUtf8Bytes(stableStringify(
+    provenance.logs.map((log) => ({
+      source: log.source,
+      eventName: log.eventName,
+      blockNumber: log.blockNumber,
+      blockHash: log.blockHash,
+      transactionHash: log.transactionHash,
+      transactionIndex: log.transactionIndex,
+      index: log.logIndex,
+      blockTimestamp: log.blockTimestamp,
+      args: log.args,
+    })),
+  )));
+  invariant(
+    recomputedEventsDigest === board.events.digest,
+    `checkpoint board ${board.problemId} portal projection event transcript digest mismatch`,
+  );
 
   for (const submission of projection.submissions) {
     const expectedLogs = provenance.logs
       .filter((log) => log.submissionId === submission.submissionId)
-      .map(({ submissionId: _submissionId, argsDigest: _argsDigest, ...identity }) => identity);
+      .map(({ submissionId: _submissionId, argsDigest: _argsDigest, args: _args, ...identity }) => identity);
     invariant(
       stableStringify(submission.sourceLogs) === stableStringify(expectedLogs),
       `checkpoint board ${board.problemId} portal projection submission ${submission.submissionId} source logs mismatch`,
@@ -4253,7 +4347,7 @@ function refreshMultiBoardCheckpointReconstruction(checkpoint) {
 }
 
 export function validateMultiBoardCheckpoint(checkpoint) {
-  validateSchemaValue(checkpoint, checkpointSchema(), checkpointSchema(), "checkpoint");
+  validateSchemaValue(checkpoint, checkpointSchema(checkpoint.schema), checkpointSchema(checkpoint.schema), "checkpoint");
   if (checkpoint.range.toBlock < checkpoint.range.fromBlock) {
     throw new Error("checkpoint.range.toBlock must not precede checkpoint.range.fromBlock");
   }
@@ -4283,7 +4377,9 @@ export function validateMultiBoardCheckpoint(checkpoint) {
     if (stableStringify(countKeys) !== stableStringify(expectedCountKeys)) {
       throw new Error(`checkpoint board ${board.problemId} lifecycle counts must cover the exact event catalog`);
     }
-    validateCanonicalPortalProjection(board, checkpoint.manifestBinding);
+    if (checkpoint.schema === "p42-prizes/indexer-checkpoint/v3") {
+      validateCanonicalPortalProjection(board, checkpoint.manifestBinding);
+    }
     const derivedComplete =
       board.events.lifecycleCountsComplete === true
       && board.reconstruction.lifecycleSnapshotComplete === true
@@ -4561,10 +4657,14 @@ function parseArg(argv, name, defaultValue = undefined) {
 function loadPriorCheckpoint(path, binding, schema) {
   if (!existsSync(path)) return null;
   const checkpoint = readStrictJsonFileSync(path, CHECKPOINT_JSON_LIMITS);
-  if (checkpoint.schema !== schema) {
+  const migratingV2ToV3 = schema === "p42-prizes/indexer-checkpoint/v3"
+    && checkpoint.schema === "p42-prizes/indexer-checkpoint/v2";
+  if (checkpoint.schema !== schema && !migratingV2ToV3) {
     throw new Error(`Refusing to overwrite non-checkpoint file ${path}`);
   }
-  if (schema === "p42-prizes/indexer-checkpoint/v2") validateMultiBoardCheckpoint(checkpoint);
+  if (["p42-prizes/indexer-checkpoint/v2", "p42-prizes/indexer-checkpoint/v3"].includes(checkpoint.schema)) {
+    validateMultiBoardCheckpoint(checkpoint);
+  }
   if (stableStringify(checkpoint.manifestBinding) !== stableStringify(binding)) {
     throw new Error(`Existing checkpoint ${path} belongs to a different deployment binding`);
   }
@@ -4601,7 +4701,7 @@ export async function runIndexer({
     const prior = loadPriorCheckpoint(
       resolvedOut,
       binding,
-      multiBoard ? "p42-prizes/indexer-checkpoint/v2" : "p42-prizes/indexer-checkpoint/v1",
+      multiBoard ? "p42-prizes/indexer-checkpoint/v3" : "p42-prizes/indexer-checkpoint/v1",
     );
     if (prior) {
       const priorBlock = await provider.getBlock(prior.range.toBlock);

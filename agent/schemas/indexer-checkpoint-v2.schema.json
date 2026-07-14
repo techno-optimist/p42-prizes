@@ -22,119 +22,17 @@
     "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
     "integerString": { "type": "string", "pattern": "^-?[0-9]+$" },
-    "canonicalIntegerString": { "type": "string", "pattern": "^(0|-?[1-9][0-9]*)$" },
-    "canonicalUintString": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
     "positiveUintString": { "type": "string", "pattern": "^[1-9][0-9]*$" },
     "problemSlug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,63}$" },
     "logIdentity": {
       "type": "object", "additionalProperties": false,
-      "required": ["source", "eventName", "contractAddress", "blockNumber", "blockHash", "transactionHash", "transactionIndex", "logIndex", "blockTimestamp"],
+      "required": ["source", "eventName", "contractAddress", "blockNumber", "blockHash", "transactionHash", "transactionIndex", "logIndex"],
       "properties": {
-        "source": { "enum": ["pool", "ledger", "submissions", "challenges", "resolverQuorum", "registry", "rolloverVault"] },
-        "eventName": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 }, "eventName": { "type": "string", "minLength": 1 },
         "contractAddress": { "$ref": "#/$defs/address" },
         "blockNumber": { "type": "integer", "minimum": 0 }, "blockHash": { "$ref": "#/$defs/bytes32" },
         "transactionHash": { "$ref": "#/$defs/bytes32" }, "transactionIndex": { "type": "integer", "minimum": 0 },
-        "logIndex": { "type": "integer", "minimum": 0 },
-        "blockTimestamp": { "$ref": "#/$defs/canonicalUintString" }
-      }
-    },
-    "provenanceLog": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["source", "eventName", "contractAddress", "blockNumber", "blockHash", "transactionHash", "transactionIndex", "logIndex", "blockTimestamp", "submissionId", "argsDigest"],
-      "properties": {
-        "source": { "enum": ["pool", "ledger", "submissions", "challenges", "resolverQuorum", "registry", "rolloverVault"] },
-        "eventName": { "type": "string", "minLength": 1 },
-        "contractAddress": { "$ref": "#/$defs/address" },
-        "blockNumber": { "type": "integer", "minimum": 0 },
-        "blockHash": { "$ref": "#/$defs/bytes32" },
-        "transactionHash": { "$ref": "#/$defs/bytes32" },
-        "transactionIndex": { "type": "integer", "minimum": 0 },
-        "logIndex": { "type": "integer", "minimum": 0 },
-        "blockTimestamp": { "$ref": "#/$defs/canonicalUintString" },
-        "submissionId": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/positiveUintString" }] },
-        "argsDigest": { "$ref": "#/$defs/bytes32" }
-      }
-    },
-    "portalSubmission": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["submissionId", "solver", "status", "claimedScoreAtoms", "improvementAtoms", "creditAtoms", "solutionCid", "committedAt", "revealedAt", "finalizedAt", "sourceLogs"],
-      "properties": {
-        "submissionId": { "$ref": "#/$defs/positiveUintString" },
-        "solver": { "$ref": "#/$defs/address" },
-        "status": { "enum": ["Committed", "Revealed", "Challenged", "Finalized", "Rejected", "Voided"] },
-        "claimedScoreAtoms": { "$ref": "#/$defs/canonicalIntegerString" },
-        "improvementAtoms": { "$ref": "#/$defs/canonicalUintString" },
-        "creditAtoms": { "$ref": "#/$defs/canonicalUintString" },
-        "solutionCid": { "type": "string" },
-        "committedAt": { "$ref": "#/$defs/canonicalUintString" },
-        "revealedAt": { "$ref": "#/$defs/canonicalUintString" },
-        "finalizedAt": { "$ref": "#/$defs/canonicalUintString" },
-        "sourceLogs": { "type": "array", "items": { "$ref": "#/$defs/logIdentity" } }
-      }
-    },
-    "portalSolver": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["solver", "creditAtoms", "claimedWei"],
-      "properties": {
-        "solver": { "$ref": "#/$defs/address" },
-        "creditAtoms": { "$ref": "#/$defs/canonicalUintString" },
-        "claimedWei": { "$ref": "#/$defs/canonicalUintString" }
-      }
-    },
-    "portalProjection": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["schema", "frontier", "submissions", "solvers", "pool", "ledgerClose", "eventProvenance"],
-      "properties": {
-        "schema": { "const": "p42-prizes/portal-projection/v1" },
-        "frontier": {
-          "type": "object", "additionalProperties": false, "required": ["currentAtoms"],
-          "properties": { "currentAtoms": { "$ref": "#/$defs/canonicalIntegerString" } }
-        },
-        "submissions": { "type": "array", "items": { "$ref": "#/$defs/portalSubmission" } },
-        "solvers": { "type": "array", "items": { "$ref": "#/$defs/portalSolver" } },
-        "pool": {
-          "type": "object", "additionalProperties": false,
-          "required": ["totalFundedWei", "accountedBalanceWei", "totalClaimedWei", "refundableWei", "totalSponsorRefundedWei", "totalFeeAccruedWei", "totalFeePaidWei", "totalResidualPaidWei"],
-          "properties": {
-            "totalFundedWei": { "$ref": "#/$defs/canonicalUintString" },
-            "accountedBalanceWei": { "$ref": "#/$defs/canonicalUintString" },
-            "totalClaimedWei": { "$ref": "#/$defs/canonicalUintString" },
-            "refundableWei": { "$ref": "#/$defs/canonicalUintString" },
-            "totalSponsorRefundedWei": { "$ref": "#/$defs/canonicalUintString" },
-            "totalFeeAccruedWei": { "$ref": "#/$defs/canonicalUintString" },
-            "totalFeePaidWei": { "$ref": "#/$defs/canonicalUintString" },
-            "totalResidualPaidWei": { "$ref": "#/$defs/canonicalUintString" }
-          }
-        },
-        "ledgerClose": {
-          "type": "object", "additionalProperties": false,
-          "required": ["closed", "closedPoolBalanceWei", "feeReserveWei", "closedAt", "totalCreditAtoms", "totalGrossClaimedWei", "totalFeeAccruedWei", "feeSwept", "residualSwept"],
-          "properties": {
-            "closed": { "type": "boolean" },
-            "closedPoolBalanceWei": { "$ref": "#/$defs/canonicalUintString" },
-            "feeReserveWei": { "$ref": "#/$defs/canonicalUintString" },
-            "closedAt": { "$ref": "#/$defs/canonicalUintString" },
-            "totalCreditAtoms": { "$ref": "#/$defs/canonicalUintString" },
-            "totalGrossClaimedWei": { "$ref": "#/$defs/canonicalUintString" },
-            "totalFeeAccruedWei": { "$ref": "#/$defs/canonicalUintString" },
-            "feeSwept": { "type": "boolean" },
-            "residualSwept": { "type": "boolean" }
-          }
-        },
-        "eventProvenance": {
-          "type": "object", "additionalProperties": false,
-          "required": ["replayEventsDigest", "total", "logs"],
-          "properties": {
-            "replayEventsDigest": { "$ref": "#/$defs/bytes32" },
-            "total": { "type": "integer", "minimum": 0 },
-            "logs": { "type": "array", "items": { "$ref": "#/$defs/provenanceLog" } }
-          }
-        }
+        "logIndex": { "type": "integer", "minimum": 0 }
       }
     },
     "contractBinding": {
@@ -287,14 +185,13 @@
     "board": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["problemId", "problemSlug", "events", "onchain", "state", "portalProjection", "reconstruction"],
+      "required": ["problemId", "problemSlug", "events", "onchain", "state", "reconstruction"],
       "properties": {
         "problemId": { "$ref": "#/$defs/positiveUintString" },
         "problemSlug": { "$ref": "#/$defs/problemSlug" },
         "events": { "$ref": "#/$defs/events" },
         "onchain": { "$ref": "#/$defs/onchain" },
         "state": { "type": "object" },
-        "portalProjection": { "$ref": "#/$defs/portalProjection" },
         "reconstruction": { "$ref": "#/$defs/boardReconstruction" }
       }
     }

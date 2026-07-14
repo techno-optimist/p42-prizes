@@ -510,6 +510,7 @@ function snapshotFromReplay(state) {
       closedPoolBalance: state.ledger.closedPoolBalance,
       feeReserve: state.ledger.feeReserve,
       closedAt: state.ledger.closedAt,
+      claimDeadline: state.ledger.claimDeadline,
       feeSwept: state.ledger.feeSwept,
       residualSwept: state.ledger.residualSwept,
       creditAtomsOf: state.ledger.creditAtomsOf,
@@ -1400,22 +1401,27 @@ describe("P42 deterministic indexer replay", () => {
     assert.ok(projection.submissions[1].sourceLogs.some((log) => log.eventName === "Challenged"));
     assert.ok(projection.submissions[1].sourceLogs.some((log) => log.eventName === "Resolved"));
     assert.deepEqual(projection.solvers, [
-      { solver: ADDR.solverA, creditAtoms: "100", claimedWei: "500" },
-      { solver: ADDR.solverB, creditAtoms: "100", claimedWei: "0" },
+      { solver: ADDR.solverA, creditAtoms: "100", claimedWei: "500", finalEntitlementWei: "500" },
+      { solver: ADDR.solverB, creditAtoms: "100", claimedWei: "0", finalEntitlementWei: "500" },
     ]);
     assert.deepEqual(projection.pool, {
       accountedBalanceWei: "0",
       refundableWei: "0",
       totalClaimedWei: "450",
+      totalWinningsDonatedWei: "0",
       totalFeeAccruedWei: "50",
       totalFeePaidWei: "50",
       totalFundedWei: "1000",
       totalResidualPaidWei: "500",
       totalSponsorRefundedWei: "0",
+      sponsors: [{ sponsor: ADDR.owner, principalWei: "1000" }],
+      sponsorshipFundings: [{ transactionHash: hash(10_002), payer: ADDR.owner, sponsor: ADDR.owner, amountWei: "1000" }],
+      winningsDonations: [],
     });
     assert.deepEqual(projection.ledgerClose, {
       closed: true,
       closedAt: "140",
+      claimDeadline: "1000",
       closedPoolBalanceWei: "1000",
       feeReserveWei: "0",
       feeSwept: false,
@@ -1454,6 +1460,31 @@ describe("P42 deterministic indexer replay", () => {
       /provenance logs are not canonically ordered/,
     );
 
+    const forgedArgsDigest = structuredClone(checkpoint);
+    forgedArgsDigest.boards[0].portalProjection.eventProvenance.logs[0].argsDigest = hash(999_001);
+    assert.throws(
+      () => validateMultiBoardCheckpoint(forgedArgsDigest),
+      /args digest mismatch/,
+    );
+
+    const forgedTranscript = structuredClone(checkpoint);
+    const forgedLog = forgedTranscript.boards[0].portalProjection.eventProvenance.logs[0];
+    forgedLog.args.forged = "1";
+    forgedLog.argsDigest = ethers.keccak256(ethers.toUtf8Bytes(stableStringify(forgedLog.args)));
+    assert.throws(
+      () => validateMultiBoardCheckpoint(forgedTranscript),
+      /event transcript digest mismatch/,
+    );
+
+    const reorderedInput = portalCheckpoint([...events].reverse());
+    assert.equal(reorderedInput.boards[0].events.digest, checkpoint.boards[0].events.digest);
+
+    const voided = portalCheckpoint(lifecycleFixture()).boards[0].portalProjection.submissions
+      .find((submission) => submission.status === "Voided");
+    assert.ok(voided);
+    assert.equal(voided.creditAtoms, "0");
+    assert.equal(voided.originalCreditAtoms, "100");
+
     assert.equal(
       `${stableStringify(checkpoint)}\n`,
       `${stableStringify(portalCheckpoint(portalEconomicFixture()))}\n`,
@@ -1486,7 +1517,7 @@ describe("P42 deterministic indexer replay", () => {
     assert.equal(stableStringify(buildCheckpoint(args)), stableStringify(buildCheckpoint(args)));
   });
 
-  it("keeps independent board reports in a deterministic v2 checkpoint", () => {
+  it("keeps independent board reports in a deterministic v3 checkpoint", () => {
     const events = lifecycleFixture();
     const registration = events.find((event) => event.source === "registry" && event.eventName === "ProblemRegistered");
     const frozen = events.find((event) => event.source === "registry" && event.eventName === "ProblemFrozen");
@@ -1547,10 +1578,14 @@ describe("P42 deterministic indexer replay", () => {
       ],
     };
     const checkpoint = buildMultiBoardCheckpoint(args);
-    assert.equal(checkpoint.schema, "p42-prizes/indexer-checkpoint/v2");
+    assert.equal(checkpoint.schema, "p42-prizes/indexer-checkpoint/v3");
     assert.deepEqual(checkpoint.boards.map((board) => board.problemId), ["1", "2"]);
     assert.equal(checkpoint.reconstruction.ok, true);
     assert.equal(stableStringify(checkpoint), stableStringify(buildMultiBoardCheckpoint(args)));
+    const legacyV2 = structuredClone(checkpoint);
+    legacyV2.schema = "p42-prizes/indexer-checkpoint/v2";
+    for (const board of legacyV2.boards) delete board.portalProjection;
+    assert.equal(validateMultiBoardCheckpoint(legacyV2).schema, "p42-prizes/indexer-checkpoint/v2");
     const injectedAuthority = structuredClone(args);
     injectedAuthority.boards[0].openWitnessLaunchEvidence = { collector_authoritative: true };
     assert.throws(
