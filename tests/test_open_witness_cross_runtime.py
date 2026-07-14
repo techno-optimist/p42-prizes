@@ -22,6 +22,13 @@ ROOT = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 7, 8, 20, 5, tzinfo=timezone.utc)
 
 
+def test_open_witness_v1_schema_does_not_import_adversarial_release_binding() -> None:
+    schema = json.loads((ROOT / "schemas" / "open-witness-launch.schema.json").read_text())
+    release_ref = schema["properties"]["release_binding"]["$ref"]
+    assert release_ref == "#/$defs/legacyReleaseBinding"
+    assert schema["$defs"]["legacyReleaseBinding"]["properties"]["contracts"]["maxItems"] == 5
+
+
 def _bytes32(digest: str) -> str:
     return "0x" + digest.removeprefix("sha256:")
 
