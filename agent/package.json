@@ -7,6 +7,7 @@
   "files": [
     "README.md",
     "challenge-envelope.mjs",
+    "censorship-fallback.mjs",
     "canonical-topology.mjs",
     "canonical-topology-v1.json",
     "external-dependencies-v1.json",

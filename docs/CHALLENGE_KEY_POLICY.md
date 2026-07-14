@@ -117,6 +117,13 @@ Rules:
 
 ## Trigger Path
 
+The normal path uses the L2 session key. If the sequencer withholds that path,
+the autonomous operator may switch to the bounded two-deposit L1 path in
+`docs/CENSORSHIP_FALLBACK.md`. That path preserves the wallet as challenger and
+the exact one-call policy; it is not an owner bypass. It is source-complete but
+must not be represented as operational until the controller alias binding and
+full Base Sepolia rehearsal are in the canonical deployment evidence.
+
 1. Reveal observed -> runner re-runs the exact verifier in the pinned sandbox and
    publishes a transcript (`docs/VERIFIER_RUNNER.md`).
 2. `p42-prizes runner-alerts` emits a `p42-runner-alerts/v2` bundle. A

@@ -286,4 +286,96 @@ describe("P42AgentWallet scoped session policies", () => {
     await advance(101n);
     await expectCustomError(wallet.connect(session).execute(target, 0, allowedData), wallet, "SessionExpired");
   });
+
+  it("lets the forced-inclusion role execute an exact policy after the session is revoked", async () => {
+    const { outsider: owner, guardian: forcedRole, session, mock } = await fixture();
+    const Wallet = await ethers.getContractFactory("P42AgentWallet");
+    const wallet = await Wallet.deploy(owner.address, session.address, 0, 0);
+    await wallet.waitForDeployment();
+    await wallet.connect(owner).setForcedInclusionOwner(forcedRole.address);
+    const target = await mock.getAddress();
+    const data = mock.interface.encodeFunctionData("setValue", [77]);
+    const selector = mock.interface.getFunction("setValue").selector;
+    const network = await ethers.provider.getNetwork();
+    const block = await ethers.provider.getBlock("latest");
+    await wallet.connect(forcedRole).setForcedCallPolicy(
+      target,
+      selector,
+      true,
+      network.chainId,
+      BigInt(block.timestamp) + 300n,
+      1,
+      ethers.keccak256(data),
+      ethers.id("forced-challenge:problem:1|submission:9"),
+    );
+    await wallet.connect(owner).revoke();
+
+    await expectCustomError(wallet.connect(session).execute(target, 0, data), wallet, "KeyRevoked");
+    await wallet.connect(forcedRole).executeForcedPolicy(target, 0, data);
+    assert.equal(await mock.value(), 77n);
+    await expectCustomError(
+      wallet.connect(forcedRole).executeForcedPolicy(target, 0, data),
+      wallet,
+      "CallPolicyExhausted",
+    );
+  });
+
+  it("keeps the forced fallback exact, role-bound, one-time configured, and deposit-value bound", async () => {
+    const { outsider: owner, guardian: forcedRole, session, mock } = await fixture();
+    const Wallet = await ethers.getContractFactory("P42AgentWallet");
+    const wallet = await Wallet.deploy(owner.address, session.address, 1, 1);
+    await wallet.waitForDeployment();
+    await wallet.connect(owner).setForcedInclusionOwner(forcedRole.address);
+    await expectCustomError(
+      wallet.connect(owner).setForcedInclusionOwner(session.address),
+      wallet,
+      "ForcedInclusionOwnerAlreadySet",
+    );
+    const target = await mock.getAddress();
+    const data = mock.interface.encodeFunctionData("setValue", [77]);
+    const changedData = mock.interface.encodeFunctionData("setValue", [78]);
+    const selector = mock.interface.getFunction("setValue").selector;
+    const network = await ethers.provider.getNetwork();
+    const block = await ethers.provider.getBlock("latest");
+    await wallet.connect(forcedRole).setForcedCallPolicy(
+      target,
+      selector,
+      true,
+      network.chainId,
+      BigInt(block.timestamp) + 300n,
+      1,
+      ethers.keccak256(data),
+      ethers.id("forced-challenge:exact-value"),
+    );
+
+    await expectCustomError(
+      wallet.connect(session).executeForcedPolicy(target, 0, data),
+      wallet,
+      "NotForcedInclusionOwner",
+    );
+    await expectCustomError(
+      wallet.connect(owner).executeForcedPolicy(target, 0, data),
+      wallet,
+      "NotForcedInclusionOwner",
+    );
+    await expectCustomError(
+      wallet.connect(forcedRole).executeForcedPolicy(target, 0, changedData),
+      wallet,
+      "CalldataHashMismatch",
+    );
+    await expectCustomError(
+      wallet.connect(forcedRole).executeForcedPolicy(target, 0, data, { value: 1n }),
+      wallet,
+      "ForcedExecutionValueMismatch",
+    );
+
+    // A selector-only allowance is intentionally insufficient for the forced
+    // fallback, including when the calldata itself was previously authorized.
+    await wallet.connect(owner).setAllowed(target, selector, true);
+    await expectCustomError(
+      wallet.connect(forcedRole).executeForcedPolicy(target, 0, data),
+      wallet,
+      "ExactCalldataPolicyRequired",
+    );
+  });
 });
