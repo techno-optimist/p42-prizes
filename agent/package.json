@@ -8,6 +8,9 @@
     "README.md",
     "challenge-envelope.mjs",
     "censorship-fallback.mjs",
+    "censorship-fallback-runtime.mjs",
+    "censorship-fallback-run.mjs",
+    "wallet-nonce-coordinator.mjs",
     "canonical-topology.mjs",
     "canonical-topology-v1.json",
     "external-dependencies-v1.json",
@@ -45,7 +48,8 @@
     "p42-open-witness-collect": "open-witness-promote.mjs",
     "p42-funding-activation-plan": "funding-activation.mjs",
     "p42-funding-activate": "funding-activation-run.mjs",
-    "p42-indexer-checkpoint-attest": "checkpoint-attest.mjs"
+    "p42-indexer-checkpoint-attest": "checkpoint-attest.mjs",
+    "p42-censorship-fallback": "censorship-fallback-run.mjs"
   },
   "scripts": {
     "sync:schemas": "node scripts/sync-package-schemas.mjs",

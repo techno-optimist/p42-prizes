@@ -62,6 +62,7 @@ describe("OP Stack censorship fallback planner", () => {
   it("builds two ordered controller calls with exact policy and bond value", () => {
     const plan = buildForcedChallengePlan(validInput());
     assert.equal(plan.requiredRemainingSeconds, "108000");
+    assert.equal(plan.singleDepositRequiredSeconds, "64800");
     assert.equal(plan.deposits.length, 2);
     assert.equal(plan.deposits[0].valueWei, "0");
     assert.equal(plan.deposits[1].valueWei, "1000000");
