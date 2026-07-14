@@ -1,28 +1,46 @@
 {
   "schemaVersion": "p42-source-release-evidence/v2",
-  "createdAt": "2026-07-14T19:36:11Z",
+  "createdAt": "2026-07-14T22:14:32Z",
   "repository": "techno-optimist/p42-prizes",
   "branch": "main",
   "deployRelevantCommit": "f544a7af82afdeea1f0dfab6c81acbd7ab4628f8",
-  "observedBranchHead": "08e911c0311e77837c5449d539749e39adc04f60",
-  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/111",
+  "observedBranchHead": "f54fbd4aeff91596652825b28daa4645ffb378c9",
+  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/115",
   "ci": {
     "workflow": "CI",
     "event": "push",
     "branch": "main",
-    "runId": 29361335514,
-    "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/29361335514",
-    "headSha": "08e911c0311e77837c5449d539749e39adc04f60",
+    "runId": 29371390115,
+    "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/29371390115",
+    "headSha": "f54fbd4aeff91596652825b28daa4645ffb378c9",
     "status": "completed",
     "conclusion": "success",
-    "completedAt": "2026-07-14T19:33:17Z",
+    "completedAt": "2026-07-14T22:12:57Z",
     "requiredJobs": [
-      {"name": "Python verifier gates", "conclusion": "success"},
-      {"name": "Autonomous agent gates", "conclusion": "success"},
-      {"name": "Portal gates", "conclusion": "success"},
-      {"name": "Contract gates", "conclusion": "success"},
-      {"name": "SP1 objective-program gates (ubuntu-22.04)", "conclusion": "success"},
-      {"name": "SP1 objective-program gates (ubuntu-24.04)", "conclusion": "success"}
+      {
+        "name": "Python verifier gates",
+        "conclusion": "success"
+      },
+      {
+        "name": "Autonomous agent gates",
+        "conclusion": "success"
+      },
+      {
+        "name": "Portal gates",
+        "conclusion": "success"
+      },
+      {
+        "name": "Contract gates",
+        "conclusion": "success"
+      },
+      {
+        "name": "SP1 objective-program gates (ubuntu-22.04)",
+        "conclusion": "success"
+      },
+      {
+        "name": "SP1 objective-program gates (ubuntu-24.04)",
+        "conclusion": "success"
+      }
     ]
   },
   "render": {
@@ -41,16 +59,96 @@
     "healthyRoutes": 10,
     "requiredRoutes": 10,
     "probes": [
-      {"routeId": "home", "origin": "render", "url": "https://p42-prizes.onrender.com/prizes", "status": 200, "contentType": "text/html; charset=utf-8", "finalUrl": "https://p42-prizes.onrender.com/prizes/journey", "bodySha256": "sha256:5adb757fe3576db443cd6290ceb8be8d08beb6eb29c8dc02becae5be298a9385"},
-      {"routeId": "home", "origin": "public", "url": "https://projectforty2.ai/prizes", "status": 200, "contentType": "text/html; charset=utf-8", "finalUrl": "https://projectforty2.ai/prizes/journey", "bodySha256": "sha256:5adb757fe3576db443cd6290ceb8be8d08beb6eb29c8dc02becae5be298a9385"},
-      {"routeId": "build-week", "origin": "render", "url": "https://p42-prizes.onrender.com/prizes/build-week", "status": 200, "contentType": "text/html; charset=utf-8", "finalUrl": "https://p42-prizes.onrender.com/prizes/build-week", "bodySha256": "sha256:25200c7c34f666b76a21aa1ff3d166ff514306af2882838900ff2633e26e96e8"},
-      {"routeId": "build-week", "origin": "public", "url": "https://projectforty2.ai/prizes/build-week", "status": 200, "contentType": "text/html; charset=utf-8", "finalUrl": "https://projectforty2.ai/prizes/build-week", "bodySha256": "sha256:25200c7c34f666b76a21aa1ff3d166ff514306af2882838900ff2633e26e96e8"},
-      {"routeId": "problems", "origin": "render", "url": "https://p42-prizes.onrender.com/prizes/api/problems", "status": 200, "contentType": "application/json", "finalUrl": "https://p42-prizes.onrender.com/prizes/api/problems", "bodySha256": "sha256:2a72e911e87e9474397763a5a9dc0db6140029ee6676df7bfe179c1f2fcb6085"},
-      {"routeId": "problems", "origin": "public", "url": "https://projectforty2.ai/prizes/api/problems", "status": 200, "contentType": "application/json", "finalUrl": "https://projectforty2.ai/prizes/api/problems", "bodySha256": "sha256:2a72e911e87e9474397763a5a9dc0db6140029ee6676df7bfe179c1f2fcb6085"},
-      {"routeId": "capabilities", "origin": "render", "url": "https://p42-prizes.onrender.com/prizes/api/capabilities", "status": 200, "contentType": "application/json", "finalUrl": "https://p42-prizes.onrender.com/prizes/api/capabilities", "bodySha256": "sha256:ccb2627a7dfa6c2a9e71a87dbbbeba17e6c6d731ac2722421b0c8e99bf7ed2c8"},
-      {"routeId": "capabilities", "origin": "public", "url": "https://projectforty2.ai/prizes/api/capabilities", "status": 200, "contentType": "application/json", "finalUrl": "https://projectforty2.ai/prizes/api/capabilities", "bodySha256": "sha256:ccb2627a7dfa6c2a9e71a87dbbbeba17e6c6d731ac2722421b0c8e99bf7ed2c8"},
-      {"routeId": "standings", "origin": "public", "url": "https://projectforty2.ai/prizes/standings", "status": 200, "contentType": "text/html; charset=utf-8", "finalUrl": "https://projectforty2.ai/prizes/standings", "bodySha256": "sha256:64e9bf051259d48b2379bdd6a223c3dec8c59d253df84e1f112d45bee3e72d02"},
-      {"routeId": "skill", "origin": "public", "url": "https://projectforty2.ai/prizes/skill.md", "status": 200, "contentType": "text/markdown; charset=UTF-8", "finalUrl": "https://projectforty2.ai/prizes/skill.md", "bodySha256": "sha256:a0d446d4e503bb7a7560844d8b7f08f355d4ec7f082b5002c2493ae846a6d5fd"}
+      {
+        "routeId": "home",
+        "origin": "render",
+        "url": "https://p42-prizes.onrender.com/prizes",
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "finalUrl": "https://p42-prizes.onrender.com/prizes/journey",
+        "bodySha256": "sha256:5adb757fe3576db443cd6290ceb8be8d08beb6eb29c8dc02becae5be298a9385"
+      },
+      {
+        "routeId": "home",
+        "origin": "public",
+        "url": "https://projectforty2.ai/prizes",
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "finalUrl": "https://projectforty2.ai/prizes/journey",
+        "bodySha256": "sha256:5adb757fe3576db443cd6290ceb8be8d08beb6eb29c8dc02becae5be298a9385"
+      },
+      {
+        "routeId": "build-week",
+        "origin": "render",
+        "url": "https://p42-prizes.onrender.com/prizes/build-week",
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "finalUrl": "https://p42-prizes.onrender.com/prizes/build-week",
+        "bodySha256": "sha256:25200c7c34f666b76a21aa1ff3d166ff514306af2882838900ff2633e26e96e8"
+      },
+      {
+        "routeId": "build-week",
+        "origin": "public",
+        "url": "https://projectforty2.ai/prizes/build-week",
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "finalUrl": "https://projectforty2.ai/prizes/build-week",
+        "bodySha256": "sha256:25200c7c34f666b76a21aa1ff3d166ff514306af2882838900ff2633e26e96e8"
+      },
+      {
+        "routeId": "problems",
+        "origin": "render",
+        "url": "https://p42-prizes.onrender.com/prizes/api/problems",
+        "status": 200,
+        "contentType": "application/json",
+        "finalUrl": "https://p42-prizes.onrender.com/prizes/api/problems",
+        "bodySha256": "sha256:2a72e911e87e9474397763a5a9dc0db6140029ee6676df7bfe179c1f2fcb6085"
+      },
+      {
+        "routeId": "problems",
+        "origin": "public",
+        "url": "https://projectforty2.ai/prizes/api/problems",
+        "status": 200,
+        "contentType": "application/json",
+        "finalUrl": "https://projectforty2.ai/prizes/api/problems",
+        "bodySha256": "sha256:2a72e911e87e9474397763a5a9dc0db6140029ee6676df7bfe179c1f2fcb6085"
+      },
+      {
+        "routeId": "capabilities",
+        "origin": "render",
+        "url": "https://p42-prizes.onrender.com/prizes/api/capabilities",
+        "status": 200,
+        "contentType": "application/json",
+        "finalUrl": "https://p42-prizes.onrender.com/prizes/api/capabilities",
+        "bodySha256": "sha256:ccb2627a7dfa6c2a9e71a87dbbbeba17e6c6d731ac2722421b0c8e99bf7ed2c8"
+      },
+      {
+        "routeId": "capabilities",
+        "origin": "public",
+        "url": "https://projectforty2.ai/prizes/api/capabilities",
+        "status": 200,
+        "contentType": "application/json",
+        "finalUrl": "https://projectforty2.ai/prizes/api/capabilities",
+        "bodySha256": "sha256:ccb2627a7dfa6c2a9e71a87dbbbeba17e6c6d731ac2722421b0c8e99bf7ed2c8"
+      },
+      {
+        "routeId": "standings",
+        "origin": "public",
+        "url": "https://projectforty2.ai/prizes/standings",
+        "status": 200,
+        "contentType": "text/html; charset=utf-8",
+        "finalUrl": "https://projectforty2.ai/prizes/standings",
+        "bodySha256": "sha256:64e9bf051259d48b2379bdd6a223c3dec8c59d253df84e1f112d45bee3e72d02"
+      },
+      {
+        "routeId": "skill",
+        "origin": "public",
+        "url": "https://projectforty2.ai/prizes/skill.md",
+        "status": 200,
+        "contentType": "text/markdown; charset=UTF-8",
+        "finalUrl": "https://projectforty2.ai/prizes/skill.md",
+        "bodySha256": "sha256:a0d446d4e503bb7a7560844d8b7f08f355d4ec7f082b5002c2493ae846a6d5fd"
+      }
     ]
   },
   "portalProjection": {
@@ -60,5 +158,5 @@
     "failClosedPolicy": "An exact-ten cohort requires activated, fresh, independently attested v3 checkpoints; any stale, partial, mixed, malformed, or untrusted generation falls back atomically to local-only portal state.",
     "liveFundingState": "No canonical Base Sepolia pools are deployed or authorized; the live portal publishes no transfer target."
   },
-  "evidenceHash": "sha256:e4ce282f4f716c2b8abbc1351deaddc81c883968c5d7231544a9b1a72f8f5ba1"
+  "evidenceHash": "sha256:e1038871485b6b9621f349b8ebf58b362fab10ac0604364f784df32cff2a56d7"
 }
