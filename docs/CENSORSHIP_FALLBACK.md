@@ -206,8 +206,10 @@ Expected finalized-chain
 waiting resets that RPC-failure counter. Unexpected exit or child timeout maps
 to supervisor exit `70`, while service `SIGTERM` is forwarded with a ten-second
 kill grace and exits cleanly. `deployments/p42-censorship-fallback.service.example`
-then applies an explicit six-start/ten-minute abnormal-restart ceiling and
-`RestartPreventExitStatus=64` before `OnFailure` alerting through the shipped
+then applies an explicit six-start/20-minute manager-activation ceiling sized
+above six worst-case 145-second failure cycles,
+`RestartMode=direct`, and `RestartPreventExitStatus=64` before one terminal
+`OnFailure` alert through the shipped
 `p42-censorship-fallback-alert@.service.example` unit. The alert helper reads
 the manager's exact result/code/status and durably creates a hash-bound mode-0600
 record. It runs as a separate `p42-fallback-alert` account whose systemd state
@@ -226,6 +228,9 @@ Before enabling the units, install
 `systemd-sysusers /etc/sysusers.d/p42-censorship-fallback.conf`. This provisions
 the separate `p42-fallback` and `p42-fallback-alert` system accounts; unit
 startup must fail rather than collapsing them into one identity.
+The host must run systemd 254 or newer because `RestartMode=direct` is required
+to suppress intermediate `OnFailure` activation while a restart remains
+eligible. Treat an unknown `RestartMode` warning as a deployment failure.
 
 ## Test Evidence
 
@@ -247,8 +252,22 @@ startup must fail rather than collapsing them into one identity.
 - `agent/censorship-fallback-alert.test.mjs` plus
   `scripts/verify-censorship-fallback-systemd.sh`: exclusive hash-bound alert
   creation, separated writable roots, bounded step/retry directives, and
-  static unit parsing. The manager-level restart, timeout, `OnFailure`, and
-  sandbox drill remains a launch gate rather than a CI claim.
+  static unit parsing.
+- `scripts/run-censorship-fallback-systemd-drill.sh` and
+  `deployments/dgx-supervisor-drill/2026-07-14/report.json`: a root-managed,
+  disposable systemd 255 drill on CHRONOS using the shipped supervisor and
+  alert helper. Canonical pending progress completed after three child steps
+  with zero manager restarts; terminal exit `64` produced one alert and no
+  restart; malformed `75`, malformed `0`, timeout, and crash each stopped after
+  six child invocations with one post-exhaustion alert; service `SIGTERM`
+  completed cleanly both during a child step and during the supervisor's retry
+  delay; and the runtime account could not write the alert state
+  root. The drill ran from clean source commit
+  `88f306abdfaa5c281cfdbc7379ba8694cc2bd6c1`; report hash:
+  `sha256:e827a69d3f241530eb5e7237f0293629673ed4c3422f95842df22537fb661579`.
+  This closes only the local manager-semantics subgate. The ephemeral accounts,
+  shortened timings, and fixture child do not attest the canonical deployment,
+  a signed deposit, reorg recovery, or external review.
 
 Gate 3 remains open until an externally reviewed release is deployed and the
 signed Base Sepolia rehearsal evidence above passes canonical reconciliation.
