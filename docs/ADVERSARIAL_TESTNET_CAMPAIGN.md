@@ -52,6 +52,36 @@ hash to `sha256`. URI/digest declarations without locally resolved bytes fail.
 All evidence `created_at_utc` values and attack/regression execution times must
 precede the final reviewer signatures.
 
+### Signed runner evidence
+
+`transcript_archive` is not an opaque attachment. Its resolved bytes must be
+canonical strict JSON conforming to
+`p42-runner-transcript-archive/v1`. The archive binds the campaign ID, a
+canonical hash of the complete release binding, a pre-registered
+`runner-operator`, normalized relative transcript paths, unique job IDs,
+canonical transcript self-hashes, and an Ed25519 signature over the canonical
+archive hash. Reusing the same contract addresses does not make evidence
+portable across commits, configuration, or runtime bytecode. Transcript and
+archive timestamps must be ordered
+inside the campaign window. Every transcript must carry the runner-derived
+chain claim and self-hashed challenge candidate. Their chain ID, submission and
+challenge contract addresses, submission identity, reveal hash, and challenge
+deadline must agree with each other; the chain and contract addresses must also
+match the exact release binding under review.
+
+`runner_alert_bundle` is likewise recomputed, not trusted. Validation rebuilds
+the exact `p42-runner-alerts/v2` bundle from the signed archive and rejects any
+missing, inserted, reordered, or rewritten alert. The rebuilt bundle must flag
+the exact planted verifier artifact and the exact planted DA artifact recorded
+by their attack rows. An unrelated rejection cannot satisfy either attack.
+The bundle generation timestamp is evidence too, so final reviewers cannot
+sign before the alert computation they attest to.
+
+A failed verifier execution without an independently derived
+`challenge_candidate.action == "challenge"` is quarantined even if it emitted
+parseable bytes and a report hash. A report hash alone never authorizes an
+agent to spend the challenge key.
+
 ## Exact Release Binding
 
 `release_binding` contains the HTTPS repository URI, exact 40-character Git

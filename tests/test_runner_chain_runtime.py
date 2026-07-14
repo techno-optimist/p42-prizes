@@ -174,6 +174,26 @@ def test_verifier_output_limit_is_quarantined_not_auto_challenged() -> None:
     assert candidate["reason_code"] == "verifier_output_limit_exceeded"
 
 
+def test_failed_verifier_with_invalid_report_is_quarantined_not_auto_challenged() -> None:
+    report = {"valid": False, "reason": "candidate bytes rejected before clean exit"}
+    _, candidate = _adjudicate_chain_claim(
+        {"source_event_hash": SOURCE_HASH},
+        _claim(),
+        problem=PROBLEM,
+        verifier={
+            "ok": False,
+            "valid": False,
+            "returncode": 17,
+            "report": report,
+            "report_hash": sha256_bytes(canonical_json(report).encode("utf-8")),
+        },
+        da_result={"ok": True},
+    )
+
+    assert candidate["action"] == "quarantine"
+    assert candidate["reason_code"] == "verifier_execution_failed"
+
+
 def test_chain_job_refuses_a_noncanonical_problem_path(tmp_path: Path) -> None:
     forged_problem = tmp_path / "problems" / "hadamard-mini"
     forged_problem.mkdir(parents=True)

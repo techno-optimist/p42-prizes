@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/runner-transcript-archive-v1.json",
+  "title": "P42 Signed Runner Transcript Archive v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "campaign_id",
+    "release_binding_hash",
+    "created_at_utc",
+    "runner_operator",
+    "transcripts",
+    "archive_hash",
+    "attestation"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "p42-runner-transcript-archive/v1" },
+    "campaign_id": { "type": "string", "minLength": 1 },
+    "release_binding_hash": { "$ref": "#/$defs/hash" },
+    "created_at_utc": { "type": "string", "format": "date-time" },
+    "runner_operator": {
+      "type": "object",
+      "required": [
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "runner-operator" },
+        "public_key": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "transcripts": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10000,
+      "items": {
+        "type": "object",
+        "required": ["path", "transcript"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "minLength": 1 },
+          "transcript": { "$ref": "#/$defs/runnerTranscript" }
+        }
+      }
+    },
+    "archive_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "attestation": { "$ref": "#/$defs/attestation" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "runnerTranscript": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "job_id",
+        "generated_at_utc",
+        "started_at_utc",
+        "problem",
+        "solution",
+        "da",
+        "resource_limits",
+        "verifier",
+        "transcript_hash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "schema_version": { "const": "p42-runner-transcript/v1" },
+        "job_id": { "type": "string", "minLength": 1 },
+        "generated_at_utc": { "type": "string", "minLength": 1 },
+        "started_at_utc": { "type": "string", "minLength": 1 },
+        "problem": { "type": "string", "minLength": 1 },
+        "solution": { "type": "string", "minLength": 1 },
+        "da": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["ok"],
+              "additionalProperties": true,
+              "properties": {
+                "ok": { "type": "boolean" },
+                "evidence_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+                "error": { "type": "string" }
+              }
+            }
+          ]
+        },
+        "resource_limits": {
+          "type": "object",
+          "required": [
+            "required_memory_mb",
+            "memory_safety_factor",
+            "child_address_space_limit_mb",
+            "address_space_limit_supported"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "required_memory_mb": { "type": "integer", "minimum": 1 },
+            "memory_safety_factor": { "type": "number", "minimum": 1 },
+            "child_address_space_limit_mb": { "type": "integer", "minimum": 1 },
+            "address_space_limit_supported": { "type": "boolean" }
+          }
+        },
+        "verifier": {
+          "type": "object",
+          "required": ["ok", "valid", "elapsed_ms", "chain_claim", "challenge_candidate"],
+          "additionalProperties": true,
+          "properties": {
+            "ok": { "type": "boolean" },
+            "valid": { "type": "boolean" },
+            "elapsed_ms": { "type": "integer", "minimum": 0 },
+            "returncode": { "type": "integer" },
+            "report_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "error": { "type": "string" },
+            "report": { "type": "object" },
+            "chain_claim": { "$ref": "#/$defs/chainClaim" },
+            "challenge_candidate": { "$ref": "#/$defs/challengeCandidate" }
+          }
+        },
+        "transcript_hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "chainClaim": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "chain_id",
+        "problem_id",
+        "submission_contract",
+        "challenge_contract",
+        "submission_id",
+        "claimed_score_atoms",
+        "reveal_instance_hash",
+        "challenge_ends_at"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": { "const": "p42-chain-claim/v1" },
+        "chain_id": { "type": "integer", "minimum": 1 },
+        "problem_id": { "type": "string", "minLength": 1 },
+        "submission_contract": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+        "challenge_contract": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+        "submission_id": { "type": "string", "pattern": "^[0-9]+$" },
+        "claimed_score_atoms": { "type": "string", "pattern": "^-?[0-9]+$" },
+        "reveal_instance_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "challenge_ends_at": { "type": "string", "pattern": "^[0-9]+$" }
+      }
+    },
+    "challengeCandidate": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "action",
+        "reason_code",
+        "chain_id",
+        "problem_id",
+        "submission_contract",
+        "challenge_contract",
+        "submission_id",
+        "reveal_instance_hash",
+        "source_event_hash",
+        "challenge_ends_at",
+        "candidate_hash"
+      ],
+      "additionalProperties": true,
+      "properties": {
+        "schema_version": { "const": "p42-challenge-candidate/v1" },
+        "action": { "enum": ["none", "retry", "challenge", "quarantine"] },
+        "reason_code": { "type": "string", "minLength": 1 },
+        "chain_id": { "type": "integer", "minimum": 1 },
+        "problem_id": { "type": "string", "minLength": 1 },
+        "submission_contract": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+        "challenge_contract": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
+        "submission_id": { "type": "string", "pattern": "^[0-9]+$" },
+        "reveal_instance_hash": { "type": "string", "pattern": "^0x[a-fA-F0-9]{64}$" },
+        "source_event_hash": { "$ref": "#/$defs/hash" },
+        "challenge_ends_at": { "type": "string", "pattern": "^[0-9]+$" },
+        "candidate_hash": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["uri", "local_path", "sha256", "created_at_utc"],
+      "additionalProperties": false,
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "local_path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "created_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "required": [
+        "algorithm",
+        "signer_role",
+        "public_key",
+        "signed_hash",
+        "signed_at_utc",
+        "signature"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "const": "runner-operator" },
+        "public_key": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    }
+  }
+}

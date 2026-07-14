@@ -11,9 +11,50 @@ import pytest
 
 from attestation_helpers import AttestationFixture, attach_signatures, unsigned_hash
 from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversarial_campaign_report
+from p42_prizes.runner_alerts import build_runner_alerts_from_transcripts
+from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def chain_evidence(
+    binding: dict,
+    *,
+    submission_id: str,
+    source_event_hash: str,
+    evidence_hash: str,
+    reason_code: str,
+) -> tuple[dict, dict]:
+    contracts = {contract["name"]: contract["address"] for contract in binding["contracts"]}
+    claim = {
+        "schema_version": "p42-chain-claim/v1",
+        "chain_id": binding["chain_id"],
+        "problem_id": "hadamard-mini",
+        "submission_contract": contracts["P42SubmissionManager"],
+        "challenge_contract": contracts["P42ChallengeManager"],
+        "submission_id": submission_id,
+        "claimed_score_atoms": "0",
+        "reveal_instance_hash": "0x" + hashlib.sha256(f"reveal:{submission_id}".encode()).hexdigest(),
+        "challenge_ends_at": "1999999999",
+    }
+    candidate = {
+        "schema_version": "p42-challenge-candidate/v1",
+        "action": "challenge",
+        "reason_code": reason_code,
+        "chain_id": claim["chain_id"],
+        "problem_id": claim["problem_id"],
+        "submission_contract": claim["submission_contract"],
+        "challenge_contract": claim["challenge_contract"],
+        "submission_id": claim["submission_id"],
+        "reveal_instance_hash": claim["reveal_instance_hash"],
+        "source_event_hash": source_event_hash,
+        "evidence_hash": evidence_hash,
+        "challenge_ends_at": claim["challenge_ends_at"],
+        "max_bond_wei": "10000000000000000",
+    }
+    candidate["candidate_hash"] = sha256_bytes(canonical_json(candidate).encode("utf-8"))
+    return claim, candidate
 
 
 def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
@@ -57,6 +98,14 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
             "runner emitted verifier_rejected alert",
         ),
     }
+    planted_artifacts = {
+        attack_id: fixture.artifact(
+            f"planted-{attack_id}",
+            created_at_utc=f"2026-07-08T18:{10 + index:02d}:00Z",
+        )
+        for index, attack_id in enumerate(attack_specs)
+    }
+    binding = fixture.release_binding("base-sepolia")
     external_auditor = fixture.identity(
         "campaign-auditor",
         "Kendall Price",
@@ -73,7 +122,110 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
         "engineering-owner",
         signed_at_utc="2026-07-08T19:35:00Z",
     )
-    binding = fixture.release_binding("base-sepolia")
+    runner_operator = fixture.identity(
+        "campaign-runner-operator",
+        "Morgan Rivera",
+        "runner-operator",
+        organization="P42 Verification Operations",
+    )
+    verifier_report = {
+        "valid": False,
+        "solution_hash": planted_artifacts["verifier_planted_exploit"]["sha256"],
+    }
+    verifier_report_hash = sha256_bytes(canonical_json(verifier_report).encode("utf-8"))
+    verifier_source_hash = "sha256:" + hashlib.sha256(b"planted-verifier-event").hexdigest()
+    verifier_claim, verifier_candidate = chain_evidence(
+        binding,
+        submission_id="71",
+        source_event_hash=verifier_source_hash,
+        evidence_hash=verifier_report_hash,
+        reason_code="verifier_rejected",
+    )
+    transcript = {
+        "schema_version": "p42-runner-transcript/v1",
+        "job_id": "84532:submission:attack:0",
+        "generated_at_utc": "2026-07-08T18:55:00Z",
+        "started_at_utc": "2026-07-08T18:54:00Z",
+        "problem": "problems/hadamard-mini",
+        "solution": planted_artifacts["verifier_planted_exploit"]["local_path"],
+        "da": {"ok": True},
+        "resource_limits": {
+            "required_memory_mb": 512,
+            "memory_safety_factor": 2,
+            "child_address_space_limit_mb": 1024,
+            "address_space_limit_supported": True,
+        },
+        "verifier": {
+            "ok": True,
+            "valid": False,
+            "elapsed_ms": 12,
+            "report": verifier_report,
+            "report_hash": verifier_report_hash,
+            "error": "NOT_STRICT_IMPROVEMENT",
+            "chain_claim": verifier_claim,
+            "challenge_candidate": verifier_candidate,
+        },
+    }
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    transcript_path = "transcripts/planted-verifier-exploit.json"
+    da_source_hash = "sha256:" + hashlib.sha256(b"planted-da-event").hexdigest()
+    da_claim, da_candidate = chain_evidence(
+        binding,
+        submission_id="72",
+        source_event_hash=da_source_hash,
+        evidence_hash=da_source_hash,
+        reason_code="da_missing",
+    )
+    da_transcript = {
+        "schema_version": "p42-runner-transcript/v1",
+        "job_id": "84532:submission:da-attack:0",
+        "generated_at_utc": "2026-07-08T18:57:00Z",
+        "started_at_utc": "2026-07-08T18:56:00Z",
+        "problem": "problems/hadamard-mini",
+        "solution": planted_artifacts["da_expiry_or_missing_payload"]["local_path"],
+        "da": {"ok": False, "error": "content-addressed payload is absent"},
+        "resource_limits": {
+            "required_memory_mb": 512,
+            "memory_safety_factor": 2,
+            "child_address_space_limit_mb": 1024,
+            "address_space_limit_supported": True,
+        },
+        "verifier": {
+            "ok": False,
+            "valid": False,
+            "elapsed_ms": 0,
+            "error": "DA evidence unavailable",
+            "chain_claim": da_claim,
+            "challenge_candidate": da_candidate,
+        },
+    }
+    da_transcript["transcript_hash"] = sha256_bytes(
+        canonical_json(da_transcript).encode("utf-8")
+    )
+    da_transcript_path = "transcripts/planted-da-expiry.json"
+    archive = {
+        "schema_version": "p42-runner-transcript-archive/v1",
+        "campaign_id": "base-sepolia-gate1-2026-07",
+        "release_binding_hash": sha256_bytes(canonical_json(binding).encode("utf-8")),
+        "created_at_utc": "2026-07-08T19:00:00Z",
+        "runner_operator": runner_operator,
+        "transcripts": [
+            {"path": transcript_path, "transcript": transcript},
+            {"path": da_transcript_path, "transcript": da_transcript},
+        ],
+    }
+    attach_signatures(
+        archive,
+        schema_version="p42-runner-transcript-archive/v1",
+        hash_field="archive_hash",
+        signatures_field="attestation",
+        signers=[("runner-operator", runner_operator, "2026-07-08T19:05:00Z")],
+        singular=True,
+    )
+    alert_bundle = build_runner_alerts_from_transcripts(
+        {transcript_path: transcript, da_transcript_path: da_transcript},
+        generated_at_utc="2026-07-08T19:06:00Z",
+    )
     report = {
         "schema_version": "p42-adversarial-testnet/v1",
         "campaign_id": "base-sepolia-gate1-2026-07",
@@ -86,10 +238,14 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
             "campaign-reconciliation", created_at_utc="2026-07-08T19:00:00Z"
         ),
         "runner_alert_bundle": fixture.artifact(
-            "campaign-runner-alerts", created_at_utc="2026-07-08T19:00:00Z"
+            "campaign-runner-alerts",
+            content=alert_bundle,
+            created_at_utc="2026-07-08T19:06:00Z",
         ),
         "transcript_archive": fixture.artifact(
-            "campaign-transcripts", created_at_utc="2026-07-08T19:00:00Z"
+            "campaign-transcripts",
+            content=archive,
+            created_at_utc="2026-07-08T19:05:00Z",
         ),
         "reviewers": [external_auditor, engineering_owner],
         "invariants_checked": {
@@ -106,9 +262,7 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
                 "attack_id": attack_id,
                 "status": "passed",
                 "executed_at_utc": f"2026-07-08T18:{10 + index:02d}:00Z",
-                "planted_artifact": fixture.artifact(
-                    f"planted-{attack_id}", created_at_utc=f"2026-07-08T18:{10 + index:02d}:00Z"
-                ),
+                "planted_artifact": planted_artifacts[attack_id],
                 "expected_failure_mode": expected,
                 "observed_defense": observed,
                 "evidence_artifact": fixture.artifact(
@@ -140,7 +294,13 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
         signatures_field="attestations",
         signers=signers,
     )
-    return report, fixture, fixture.trust_registry("p42-adversarial-testnet/v1", signers)
+    registry = fixture.trust_registry("p42-adversarial-testnet/v1", signers)
+    runner_registry = fixture.trust_registry(
+        "p42-runner-transcript-archive/v1",
+        [("runner-operator", runner_operator, "2026-07-08T19:05:00Z")],
+    )
+    registry["registrations"].extend(runner_registry["registrations"])
+    return report, fixture, registry
 
 
 def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict:
@@ -152,6 +312,47 @@ def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict
     )
 
 
+def rewrite_artifact(
+    fixture: AttestationFixture,
+    reference: dict[str, str],
+    value: object,
+) -> None:
+    encoded = canonical_json(value).encode("utf-8")
+    (fixture.root / reference["local_path"]).write_bytes(encoded)
+    reference["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def read_artifact(fixture: AttestationFixture, reference: dict[str, str]) -> dict:
+    return json.loads((fixture.root / reference["local_path"]).read_text(encoding="utf-8"))
+
+
+def rewrite_signed_runner_evidence(
+    report: dict,
+    fixture: AttestationFixture,
+    archive: dict,
+    *,
+    generated_at_utc: str = "2026-07-08T19:06:00Z",
+) -> None:
+    attach_signatures(
+        archive,
+        schema_version="p42-runner-transcript-archive/v1",
+        hash_field="archive_hash",
+        signatures_field="attestation",
+        signers=[("runner-operator", archive["runner_operator"], "2026-07-08T19:05:00Z")],
+        singular=True,
+    )
+    rewrite_artifact(fixture, report["transcript_archive"], archive)
+    transcripts = {item["path"]: item["transcript"] for item in archive["transcripts"]}
+    rewrite_artifact(
+        fixture,
+        report["runner_alert_bundle"],
+        build_runner_alerts_from_transcripts(
+            transcripts,
+            generated_at_utc=generated_at_utc,
+        ),
+    )
+
+
 def test_adversarial_campaign_verifies_registered_signatures_resolved_bytes_and_schema(tmp_path: Path) -> None:
     report, fixture, registry = valid_campaign_report(tmp_path)
     normalized = normalize(report, fixture, registry)
@@ -159,6 +360,122 @@ def test_adversarial_campaign_verifies_registered_signatures_resolved_bytes_and_
     schema = json.loads((ROOT / "schemas" / "adversarial-campaign.schema.json").read_text())
     jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
     assert normalized["campaign_hash"] == unsigned_hash(normalized, "campaign_hash", "attestations")
+
+
+def test_runner_archive_schema_rejects_unshaped_embedded_transcript(tmp_path: Path) -> None:
+    report, fixture, _ = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    schema = json.loads((ROOT / "schemas" / "runner-transcript-archive.schema.json").read_text())
+    validator = jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker())
+    validator.validate(archive)
+
+    archive["transcripts"][0]["transcript"] = {}
+    with pytest.raises(jsonschema.ValidationError, match="is a required property"):
+        validator.validate(archive)
+
+
+def test_runner_archive_embedded_transcript_schema_extends_standalone_security_fields() -> None:
+    archive_schema = json.loads(
+        (ROOT / "schemas" / "runner-transcript-archive.schema.json").read_text()
+    )
+    transcript_schema = json.loads((ROOT / "schemas" / "runner-transcript.schema.json").read_text())
+    embedded = archive_schema["$defs"]["runnerTranscript"]
+    assert set(embedded["required"]) == set(transcript_schema["required"])
+    assert set(embedded["properties"]) == set(transcript_schema["properties"])
+    assert {
+        "chain_claim",
+        "challenge_candidate",
+    }.issubset(embedded["properties"]["verifier"]["required"])
+
+
+def test_adversarial_campaign_rejects_runner_transcript_without_chain_claim(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    transcript["verifier"].pop("chain_claim")
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    rewrite_signed_runner_evidence(report, fixture, archive)
+
+    with pytest.raises(AdversarialCampaignError, match="chain_claim must be an object"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_runner_transcript_for_other_deployment(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    claim = transcript["verifier"]["chain_claim"]
+    candidate = transcript["verifier"]["challenge_candidate"]
+    claim["submission_contract"] = "0x" + "9" * 40
+    candidate["submission_contract"] = claim["submission_contract"]
+    candidate.pop("candidate_hash")
+    candidate["candidate_hash"] = sha256_bytes(canonical_json(candidate).encode("utf-8"))
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    rewrite_signed_runner_evidence(report, fixture, archive)
+
+    with pytest.raises(AdversarialCampaignError, match="release-bound P42SubmissionManager"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_archive_replayed_across_same_address_release(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    replayed_binding = json.loads(json.dumps(report["release_binding"]))
+    replayed_binding["git_commit"] = "f" * 40
+    archive["release_binding_hash"] = sha256_bytes(
+        canonical_json(replayed_binding).encode("utf-8")
+    )
+    rewrite_signed_runner_evidence(report, fixture, archive)
+
+    with pytest.raises(AdversarialCampaignError, match="canonical release binding"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("submission_id", "not-an-integer", "submission_id must be an unsigned integer string"),
+        ("challenge_ends_at", "not-a-deadline", "challenge_ends_at must be an unsigned integer string"),
+        ("reveal_instance_hash", "not-bytes32", "reveal_instance_hash must be 32-byte"),
+    ],
+)
+def test_adversarial_campaign_runtime_rejects_schema_invalid_chain_fields(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    message: str,
+) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    claim = transcript["verifier"]["chain_claim"]
+    candidate = transcript["verifier"]["challenge_candidate"]
+    claim[field] = value
+    candidate[field] = value
+    candidate.pop("candidate_hash")
+    candidate["candidate_hash"] = sha256_bytes(canonical_json(candidate).encode("utf-8"))
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    rewrite_signed_runner_evidence(report, fixture, archive)
+
+    with pytest.raises(AdversarialCampaignError, match=message):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_alert_generated_after_reviewer_signoff(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    rewrite_signed_runner_evidence(
+        report,
+        fixture,
+        archive,
+        generated_at_utc="2026-07-08T19:40:00Z",
+    )
+
+    with pytest.raises(AdversarialCampaignError, match="on/after campaign evidence"):
+        normalize(report, fixture, registry)
 
 
 def test_adversarial_campaign_cli_outputs_normalized_report(tmp_path: Path) -> None:
@@ -308,4 +625,188 @@ def test_adversarial_campaign_rejects_mismatched_hash(tmp_path: Path) -> None:
     report["campaign_hash"] = "sha256:" + "0" * 64
 
     with pytest.raises(AdversarialCampaignError, match="campaign_hash does not match"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_opaque_runner_archive(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    rewrite_artifact(fixture, report["transcript_archive"], {"evidence": "opaque"})
+
+    with pytest.raises(AdversarialCampaignError, match="Additional properties are not allowed"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_suppressed_runner_alert(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    alerts = read_artifact(fixture, report["runner_alert_bundle"])
+    alerts["alerts"] = []
+    alerts["alert_count"] = 0
+    alerts.pop("alerts_hash")
+    alerts["alerts_hash"] = sha256_bytes(canonical_json(alerts).encode("utf-8"))
+    rewrite_artifact(fixture, report["runner_alert_bundle"], alerts)
+
+    with pytest.raises(AdversarialCampaignError, match="must exactly equal alerts recomputed"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_rewritten_transcript_without_runner_signature(
+    tmp_path: Path,
+) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    transcript["verifier"]["valid"] = True
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    unsigned = dict(archive)
+    unsigned.pop("archive_hash")
+    unsigned.pop("attestation")
+    archive["archive_hash"] = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
+    rewrite_artifact(fixture, report["transcript_archive"], archive)
+
+    with pytest.raises(AdversarialCampaignError, match="signed_hash must match"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_duplicate_transcript_job_ids(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    duplicate = json.loads(json.dumps(archive["transcripts"][0]))
+    duplicate["path"] = "transcripts/duplicate-path.json"
+    archive["transcripts"].append(duplicate)
+    attach_signatures(
+        archive,
+        schema_version="p42-runner-transcript-archive/v1",
+        hash_field="archive_hash",
+        signatures_field="attestation",
+        signers=[("runner-operator", archive["runner_operator"], "2026-07-08T19:05:00Z")],
+        singular=True,
+    )
+    rewrite_artifact(fixture, report["transcript_archive"], archive)
+
+    with pytest.raises(AdversarialCampaignError, match="duplicate transcript job_id"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_unrelated_valid_runner_alerts(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    transcript["solution"] = "evidence/unrelated-rejected-submission.json"
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    attach_signatures(
+        archive,
+        schema_version="p42-runner-transcript-archive/v1",
+        hash_field="archive_hash",
+        signatures_field="attestation",
+        signers=[("runner-operator", archive["runner_operator"], "2026-07-08T19:05:00Z")],
+        singular=True,
+    )
+    rewrite_artifact(fixture, report["transcript_archive"], archive)
+    transcripts = {
+        item["path"]: item["transcript"] for item in archive["transcripts"]
+    }
+    alerts = build_runner_alerts_from_transcripts(
+        transcripts, generated_at_utc="2026-07-08T19:06:00Z"
+    )
+    rewrite_artifact(fixture, report["runner_alert_bundle"], alerts)
+
+    with pytest.raises(AdversarialCampaignError, match="exact planted verifier artifact"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_runner_report_for_different_payload(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    verifier = transcript["verifier"]
+    verifier["report"]["solution_hash"] = "sha256:" + "9" * 64
+    verifier["report_hash"] = sha256_bytes(canonical_json(verifier["report"]).encode("utf-8"))
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+    attach_signatures(
+        archive,
+        schema_version="p42-runner-transcript-archive/v1",
+        hash_field="archive_hash",
+        signatures_field="attestation",
+        signers=[("runner-operator", archive["runner_operator"], "2026-07-08T19:05:00Z")],
+        singular=True,
+    )
+    rewrite_artifact(fixture, report["transcript_archive"], archive)
+    transcripts = {item["path"]: item["transcript"] for item in archive["transcripts"]}
+    rewrite_artifact(
+        fixture,
+        report["runner_alert_bundle"],
+        build_runner_alerts_from_transcripts(
+            transcripts, generated_at_utc="2026-07-08T19:06:00Z"
+        ),
+    )
+
+    with pytest.raises(AdversarialCampaignError, match="exact planted verifier artifact"):
+        normalize(report, fixture, registry)
+
+
+def test_adversarial_campaign_rejects_archive_created_before_transcript(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    archive["created_at_utc"] = "2026-07-08T18:50:00Z"
+    attach_signatures(
+        archive,
+        schema_version="p42-runner-transcript-archive/v1",
+        hash_field="archive_hash",
+        signatures_field="attestation",
+        signers=[("runner-operator", archive["runner_operator"], "2026-07-08T19:05:00Z")],
+        singular=True,
+    )
+    rewrite_artifact(fixture, report["transcript_archive"], archive)
+
+    with pytest.raises(AdversarialCampaignError, match="on/after every transcript"):
+        normalize(report, fixture, registry)
+
+
+def test_failed_runner_report_without_challenge_candidate_is_quarantined(tmp_path: Path) -> None:
+    report, fixture, _ = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    transcript["verifier"] = {
+        "ok": False,
+        "valid": False,
+        "elapsed_ms": 3,
+        "error": "verifier process crashed",
+        "report_hash": "sha256:" + "7" * 64,
+    }
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+
+    alerts = build_runner_alerts_from_transcripts(
+        {"transcripts/crash.json": transcript}, generated_at_utc="2026-07-08T19:06:00Z"
+    )
+
+    assert alerts["alerts"][0]["category"] == "verifier_execution_inconsistent"
+    assert alerts["alerts"][0]["recommended_action"] == "quarantine_transcript"
+
+
+def test_failed_runner_report_with_challenge_candidate_is_still_quarantined(tmp_path: Path) -> None:
+    report, fixture, _ = valid_campaign_report(tmp_path)
+    archive = read_artifact(fixture, report["transcript_archive"])
+    transcript = archive["transcripts"][0]["transcript"]
+    transcript["verifier"]["ok"] = False
+    transcript.pop("transcript_hash")
+    transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
+
+    alerts = build_runner_alerts_from_transcripts(
+        {"transcripts/failed-with-candidate.json": transcript},
+        generated_at_utc="2026-07-08T19:06:00Z",
+    )
+
+    assert alerts["alerts"][0]["category"] == "verifier_execution_inconsistent"
+    assert alerts["alerts"][0]["recommended_action"] == "quarantine_transcript"
+
+
+def test_adversarial_campaign_rejects_injected_gate_passed(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    report["gate_passed"] = True
+
+    with pytest.raises(AdversarialCampaignError, match="Additional properties are not allowed"):
         normalize(report, fixture, registry)

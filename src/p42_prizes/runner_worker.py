@@ -847,6 +847,9 @@ def _adjudicate_chain_claim(
     elif verifier.get("failure_kind") == "verifier_output_limit_exceeded":
         action = "quarantine"
         reason_code = "verifier_output_limit_exceeded"
+    elif verifier.get("ok") is False:
+        action = "quarantine"
+        reason_code = str(verifier.get("failure_kind") or "verifier_execution_failed")
     elif isinstance(verifier.get("report"), Mapping) and verifier["report"].get("valid") is False:
         action = "challenge"
         reason_code = "verifier_rejected"

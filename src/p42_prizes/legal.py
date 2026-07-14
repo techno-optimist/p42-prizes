@@ -382,6 +382,8 @@ def _validate_artifact_reference(
     prefix: str,
     error_type: type[ValueError],
     context: AttestationValidationContext,
+    *,
+    max_bytes: int | None = None,
 ) -> Mapping[str, Any]:
     if not isinstance(value, dict):
         raise error_type(f"{prefix} must be an object")
@@ -408,6 +410,8 @@ def _validate_artifact_reference(
         raise error_type(f"{prefix}.local_path must resolve to a file inside artifact_root") from exc
     if not candidate.is_file():
         raise error_type(f"{prefix}.local_path must resolve to a regular file")
+    if max_bytes is not None and candidate.stat().st_size > max_bytes:
+        raise error_type(f"{prefix}.local_path exceeds the {max_bytes}-byte evidence limit")
     try:
         evidence_bytes = candidate.read_bytes()
     except OSError as exc:
@@ -420,6 +424,20 @@ def _validate_artifact_reference(
     context.resolved_artifacts[(local_path, expected_hash)] = evidence_bytes
     context.evidence_times.append(created_at)
     return value
+
+
+def resolved_artifact_bytes(
+    context: AttestationValidationContext,
+    reference: Mapping[str, Any],
+    *,
+    prefix: str,
+    error_type: type[ValueError],
+) -> bytes:
+    key = (reference.get("local_path"), reference.get("sha256"))
+    evidence = context.resolved_artifacts.get(key)
+    if evidence is None:
+        raise error_type(f"{prefix} must be resolved and hash-validated before use")
+    return evidence
 
 
 def _validate_identity(

@@ -50,6 +50,28 @@ def build_runner_alerts(
     return summary
 
 
+def build_runner_alerts_from_transcripts(
+    transcripts: Mapping[str, Mapping[str, Any]],
+    *,
+    generated_at_utc: str,
+) -> dict[str, Any]:
+    paths = sorted(transcripts)
+    alerts = [
+        alert
+        for path in paths
+        for alert in _alerts_for_transcript(transcripts[path], path)
+    ]
+    summary = {
+        "schema_version": RUNNER_ALERTS_SCHEMA_VERSION,
+        "generated_at_utc": _parse_or_now(generated_at_utc),
+        "transcript_count": len(paths),
+        "alert_count": len(alerts),
+        "alerts": alerts,
+    }
+    summary["alerts_hash"] = sha256_bytes(canonical_json(summary).encode("utf-8"))
+    return summary
+
+
 def _load_transcript(path: str) -> dict[str, Any]:
     try:
         data = read_strict_json_file(
@@ -112,6 +134,8 @@ def _alerts_for_transcript(transcript: Mapping[str, Any], path: str) -> list[dic
             )
         ]
 
+    valid = verifier.get("valid")
+    ok = verifier.get("ok")
     da = transcript.get("da")
     alerts: list[dict[str, Any]] = []
     if isinstance(da, dict) and da.get("ok") is False:
@@ -124,7 +148,7 @@ def _alerts_for_transcript(transcript: Mapping[str, Any], path: str) -> list[dic
                 severity="high",
                 recommended_action=(
                     "challenge_or_block_finalize"
-                    if candidate_action != "quarantine"
+                    if candidate_action == "challenge"
                     else "quarantine_transcript"
                 ),
                 reason=_string_or_default(da.get("error"), "DA/permanence evidence failed"),
@@ -134,7 +158,7 @@ def _alerts_for_transcript(transcript: Mapping[str, Any], path: str) -> list[dic
     candidate = verifier.get("challenge_candidate")
     if isinstance(candidate, dict):
         action = candidate.get("action")
-        if action == "challenge" and not alerts:
+        if action == "challenge" and ok is True and not alerts:
             alerts.append(
                 _make_alert(
                     **base,
@@ -147,7 +171,7 @@ def _alerts_for_transcript(transcript: Mapping[str, Any], path: str) -> list[dic
                     ),
                 )
             )
-        elif action == "quarantine" and not alerts:
+        elif action in {"challenge", "quarantine"} and not alerts:
             alerts.append(
                 _make_alert(
                     **base,
@@ -161,24 +185,25 @@ def _alerts_for_transcript(transcript: Mapping[str, Any], path: str) -> list[dic
                 )
             )
 
-    valid = verifier.get("valid")
-    ok = verifier.get("ok")
-    if valid is False and not alerts:
-        alerts.append(
-            _make_alert(
-                **base,
-                category="verifier_rejected",
-                severity="high",
-                recommended_action="challenge_submission",
-                reason=_verifier_reason(verifier),
-            )
-        )
-    elif ok is False and valid is True:
+    if ok is False and not alerts:
+        # A report hash proves only that bytes parsed, not that execution was
+        # trustworthy. Only the independently derived challenge_candidate
+        # branch above may authorize spending a challenge bond.
         alerts.append(
             _make_alert(
                 **base,
                 category="verifier_execution_inconsistent",
                 severity="critical",
+                recommended_action="quarantine_transcript",
+                reason=_verifier_reason(verifier),
+            )
+        )
+    elif valid is False and not alerts:
+        alerts.append(
+            _make_alert(
+                **base,
+                category="verifier_rejected",
+                severity="high",
                 recommended_action="quarantine_transcript",
                 reason=_verifier_reason(verifier),
             )
