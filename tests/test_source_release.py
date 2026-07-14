@@ -86,6 +86,8 @@ class FakeGit:
         if command[:3] == ["git", "log", "-1"]:
             return PUBLICATION
         if command[:2] == ["git", "show"]:
+            if command[2].endswith("scripts/release-guard-problems-v1.json"):
+                return json.dumps({"projection_sha256": HASH})
             return self.report_text
         if command[:3] in (["git", "cat-file", "-e"], ["git", "merge-base", "--is-ancestor"]):
             return ""
@@ -100,11 +102,14 @@ class FakeOnline(FakeGit):
         github_override: dict | None = None,
         render_override: dict | None = None,
         tail_paths: str = "docs/evidence/source-release-current.json",
+        remote_main: str = HEAD,
     ):
         super().__init__(report_text)
         self.github_override = github_override or {}
         self.render_override = render_override or {}
         self.tail_paths = tail_paths
+        self.remote_main = remote_main
+        self.github_ref_queries: list[str] = []
 
     def __call__(self, command: list[str], cwd: Path) -> str:
         if command[:2] == ["node", "scripts/verify-render-release.mjs"]:
@@ -143,10 +148,23 @@ class FakeOnline(FakeGit):
             }
             deployment.update(self.render_override)
             return json.dumps([deployment])
-        if command[:3] == ["git", "diff", "--name-only"]:
+        if command[:2] == ["git", "status"]:
+            return ""
+        if command[:6] == [
+            "git",
+            "log",
+            "--first-parent",
+            "--diff-merges=first-parent",
+            "--format=",
+            "--name-only",
+        ]:
             return self.tail_paths
-        if command[:3] == ["git", "ls-remote", "origin"]:
-            return f"{HEAD}\trefs/heads/main"
+        if command[:2] == ["gh", "api"]:
+            assert command[2:4] == ["--hostname", "github.com"]
+            self.github_ref_queries.append(command[4])
+            assert command[4] == "repos/techno-optimist/p42-prizes/git/ref/heads/main"
+            assert command[5:] == ["--jq", ".object.sha"]
+            return self.remote_main
         return super().__call__(command, cwd)
 
 
@@ -264,16 +282,48 @@ def test_online_validation_authenticates_all_external_authorities(tmp_path: Path
     text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
     path.write_text(text, encoding="utf-8")
 
+    runner = FakeOnline(text)
     result = validate_source_release_evidence(
         report,
         repo_root=tmp_path,
         report_path=path,
         online=True,
-        command_runner=FakeOnline(text),
+        command_runner=runner,
         url_reader=lambda url: HttpObservation(200, "text/html; charset=utf-8", url, HASH),
     )
 
     assert result["derived"]["onlineVerified"] is True
+    assert runner.github_ref_queries == [
+        "repos/techno-optimist/p42-prizes/git/ref/heads/main"
+    ]
+
+
+def test_online_validation_rejects_stale_local_head(tmp_path: Path) -> None:
+    report = receipt()
+    path = tmp_path / "receipt.json"
+    manifest = tmp_path / "scripts" / "release-guard-problems-v1.json"
+    manifest.parent.mkdir(exist_ok=True)
+    manifest.write_text(json.dumps({"projection_sha256": HASH}), encoding="utf-8")
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(SourceReleaseEvidenceError, match="must equal the authenticated remote main"):
+        validate_source_release_evidence(
+            report,
+            repo_root=tmp_path,
+            report_path=path,
+            online=True,
+            command_runner=FakeOnline(text, remote_main="d" * 40),
+            url_reader=lambda url: HttpObservation(200, "text/html; charset=utf-8", url, HASH),
+        )
+
+
+def test_validation_rejects_noncanonical_repository_even_when_resealed(tmp_path: Path) -> None:
+    report = receipt()
+    report["repository"] = "attacker/p42-prizes"
+    report = seal_source_release_evidence(report)
+    with pytest.raises(SourceReleaseEvidenceError, match="canonical techno-optimist/p42-prizes"):
+        validate(report, tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -319,6 +369,32 @@ def test_online_validation_rejects_source_changes_after_ci_head(tmp_path: Path) 
             report_path=path,
             online=True,
             command_runner=FakeOnline(text, tail_paths="src/p42_prizes/verifier.py"),
+            url_reader=lambda url: HttpObservation(200, "text/html; charset=utf-8", url, HASH),
+        )
+
+
+def test_online_validation_rejects_dirty_checkout(tmp_path: Path) -> None:
+    report = receipt()
+    path = tmp_path / "receipt.json"
+    manifest = tmp_path / "scripts" / "release-guard-problems-v1.json"
+    manifest.parent.mkdir(exist_ok=True)
+    manifest.write_text(json.dumps({"projection_sha256": HASH}), encoding="utf-8")
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+
+    class DirtyOnline(FakeOnline):
+        def __call__(self, command: list[str], cwd: Path) -> str:
+            if command[:2] == ["git", "status"]:
+                return " M scripts/verify-render-release.mjs"
+            return super().__call__(command, cwd)
+
+    with pytest.raises(SourceReleaseEvidenceError, match="completely clean checkout"):
+        validate_source_release_evidence(
+            report,
+            repo_root=tmp_path,
+            report_path=path,
+            online=True,
+            command_runner=DirtyOnline(text),
             url_reader=lambda url: HttpObservation(200, "text/html; charset=utf-8", url, HASH),
         )
 
