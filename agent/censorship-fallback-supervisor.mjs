@@ -119,6 +119,22 @@ export function assertCompleteOutcome(stdout, stderr) {
   }
 }
 
+export function assertTerminalOutcome(stdout, stderr) {
+  const stdoutText = Buffer.concat(stdout).toString("utf8");
+  const stderrText = Buffer.concat(stderr).toString("utf8");
+  if (stdoutText || !stderrText) throw new Error("terminal outcome must use stderr only");
+  const value = parseStrictJsonText(stderrText, {
+    canonical: true, trailingNewline: "require", maxBytes: MAX_OUTCOME_BYTES, maxDepth: 8,
+  });
+  const keys = ["message", "reason_code", "retry_after_seconds", "schema", "status"];
+  if (Object.keys(value ?? {}).sort().join(",") !== keys.sort().join(",")
+      || value.schema !== "p42-censorship-fallback-outcome/v1" || value.status !== "terminal-error"
+      || value.reason_code !== "configuration-or-invariant-refusal" || value.retry_after_seconds !== null
+      || typeof value.message !== "string" || !value.message || value.message.length > 4096) {
+    throw new Error("terminal outcome envelope is invalid");
+  }
+}
+
 function runRuntimeStep({ runtime, runtimeArgs, stepTimeoutMs, killGraceMs }) {
   return new Promise((resolve, reject) => {
     const child = spawn(runtime, runtimeArgs, { stdio: ["inherit", "pipe", "pipe"], env: process.env });
@@ -179,6 +195,13 @@ function runRuntimeStep({ runtime, runtimeArgs, stepTimeoutMs, killGraceMs }) {
         try {
           assertCompleteOutcome(stdout, stderr);
           resolve(0);
+        } catch {
+          resolve(70);
+        }
+      } else if (Number(code) === 64) {
+        try {
+          assertTerminalOutcome(stdout, stderr);
+          resolve(64);
         } catch {
           resolve(70);
         }

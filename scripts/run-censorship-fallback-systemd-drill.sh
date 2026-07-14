@@ -42,9 +42,35 @@ chmod 0755 "$WORK"
 mkdir -p "$STAGE"
 cp -L "$NODE" "$STAGE/node"
 cp -a "$ROOT/agent" "$STAGE/agent"
+mkdir -p "$STAGE/policy/deployments" "$STAGE/policy/scripts"
+cp "$ROOT/deployments/p42-censorship-fallback.service.example" "$STAGE/policy/deployments/"
+cp "$ROOT/deployments/p42-censorship-fallback-alert@.service.example" "$STAGE/policy/deployments/"
+cp "$ROOT/scripts/run-censorship-fallback-systemd-drill.sh" "$STAGE/policy/scripts/"
 chmod 0555 "$STAGE/node"
 chmod -R a+rX,go-w "$STAGE/agent"
 DRILL_NODE="$STAGE/node"
+assert_commit_file() {
+  local relative=$1 staged=$2 committed="$WORK/committed-file"
+  git -C "$ROOT" show "$SOURCE_COMMIT:$relative" > "$committed"
+  cmp -s "$committed" "$staged" || { echo "staged bytes differ from source commit: $relative" >&2; exit 65; }
+}
+verify_commit_sources() {
+  for relative in \
+    agent/censorship-fallback-supervisor.mjs \
+    agent/censorship-fallback-alert.mjs \
+    agent/lib.mjs \
+    agent/strict-json.mjs \
+    agent/secure_path_bridge.py \
+    agent/package.json \
+    agent/package-lock.json; do
+    assert_commit_file "$relative" "$STAGE/$relative"
+  done
+  assert_commit_file deployments/p42-censorship-fallback.service.example "$STAGE/policy/deployments/p42-censorship-fallback.service.example"
+  assert_commit_file deployments/p42-censorship-fallback-alert@.service.example "$STAGE/policy/deployments/p42-censorship-fallback-alert@.service.example"
+  assert_commit_file scripts/run-censorship-fallback-systemd-drill.sh "$STAGE/policy/scripts/run-censorship-fallback-systemd-drill.sh"
+  rm -f "$WORK/committed-file"
+}
+verify_commit_sources
 {
   for path in \
     "$STAGE/node" \
@@ -55,9 +81,9 @@ DRILL_NODE="$STAGE/node"
     "$STAGE/agent/secure_path_bridge.py" \
     "$STAGE/agent/package.json" \
     "$STAGE/agent/package-lock.json" \
-    "$ROOT/deployments/p42-censorship-fallback.service.example" \
-    "$ROOT/deployments/p42-censorship-fallback-alert@.service.example" \
-    "$ROOT/scripts/run-censorship-fallback-systemd-drill.sh"; do
+    "$STAGE/policy/deployments/p42-censorship-fallback.service.example" \
+    "$STAGE/policy/deployments/p42-censorship-fallback-alert@.service.example" \
+    "$STAGE/policy/scripts/run-censorship-fallback-systemd-drill.sh"; do
     if [[ "$path" == "$STAGE/"* ]]; then
       label="executed/${path#"$STAGE"/}"
     else
@@ -120,9 +146,12 @@ if (scenario === "pending-complete") {
   process.stdout.write(count <= 2 ? pending : complete);
   process.exitCode = count <= 2 ? 75 : 0;
 } else if (scenario === "pending-delay") {
+  writeFileSync(`${stateRoot}/child-pid`, `${process.pid}\n`, { mode: 0o600 });
+  process.on("exit", () => writeFileSync(`${stateRoot}/child-exited`, "exited\n", { mode: 0o600 }));
   process.stdout.write(pending);
   process.exitCode = 75;
 } else if (scenario === "terminal-64") {
+  process.stderr.write('{"message":"policy refused","reason_code":"configuration-or-invariant-refusal","retry_after_seconds":null,"schema":"p42-censorship-fallback-outcome/v1","status":"terminal-error"}\n');
   process.exitCode = 64;
 } else if (scenario === "malformed-75") {
   process.stdout.write("not-json\n");
@@ -302,9 +331,10 @@ write_unit sigterm-delay pending-delay 1000 on-failure 10000
 systemctl start --no-block "${PREFIX}-sigterm-delay.service"
 state="/var/lib/${PREFIX}-sigterm-delay"
 deadline=$((SECONDS + 5))
-while [[ ! -f "$state/counter" && $SECONDS -lt $deadline ]]; do sleep 0.05; done
-[[ -f "$state/counter" ]] || { echo "retry-delay fixture never ran" >&2; exit 1; }
-sleep 0.2
+while [[ ! -f "$state/child-exited" && $SECONDS -lt $deadline ]]; do sleep 0.05; done
+[[ -f "$state/child-exited" ]] || { echo "retry-delay child did not exit" >&2; exit 1; }
+child_pid=$(tr -d '\n' < "$state/child-pid")
+kill -0 "$child_pid" 2>/dev/null && { echo "retry-delay child is still alive" >&2; exit 1; }
 stop_started=$(date +%s%3N)
 systemctl stop "${PREFIX}-sigterm-delay.service"
 echo "$(( $(date +%s%3N) - stop_started ))" > "$WORK/sigterm-delay-stop-latency-ms"
@@ -316,6 +346,11 @@ write_unit confinement confinement 1000 no
 systemctl start --no-block "${PREFIX}-confinement.service"
 wait_settled "${PREFIX}-confinement.service"
 record confinement isolated-write-roots
+
+git -C "$ROOT" diff --quiet --ignore-submodules --
+git -C "$ROOT" diff --cached --quiet --ignore-submodules --
+[[ -z "$(git -C "$ROOT" ls-files --others --exclude-standard)" ]]
+verify_commit_sources
 
 python3 - "$RESULTS" "$OUTPUT" "$ROOT" "$RUN_ID" "$NODE" "$SOURCE_COMMIT" "$WORK/executed-source-digests.tsv" <<'PY'
 import hashlib, json, os, platform, subprocess, sys

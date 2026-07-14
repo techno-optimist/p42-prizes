@@ -3,6 +3,7 @@ import { it } from "node:test";
 
 import {
   assertCompleteOutcome,
+  assertTerminalOutcome,
   classifyRetryOutcome,
   parseSupervisorArgs,
   superviseFallback,
@@ -92,6 +93,19 @@ it("requires an exact canonical completion outcome", () => {
   assert.doesNotThrow(() => assertCompleteOutcome([complete], []));
   assert.throws(() => assertCompleteOutcome([], []), /stdout only/);
   assert.throws(() => assertCompleteOutcome([complete], [Buffer.from("warning\n")]), /stdout only/);
+});
+
+it("requires an exact canonical terminal refusal before suppressing restart", () => {
+  const terminal = Buffer.from(`${canonicalJson({
+    schema: "p42-censorship-fallback-outcome/v1",
+    status: "terminal-error",
+    reason_code: "configuration-or-invariant-refusal",
+    message: "policy refused",
+    retry_after_seconds: null,
+  })}\n`);
+  assert.doesNotThrow(() => assertTerminalOutcome([], [terminal]));
+  assert.throws(() => assertTerminalOutcome([terminal], []), /stderr only/);
+  assert.throws(() => assertTerminalOutcome([], [Buffer.from("{}\n")]), /envelope is invalid/);
 });
 
 it("requires exact bounded options and an absolute runtime", () => {
