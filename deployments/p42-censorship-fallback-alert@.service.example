@@ -1,0 +1,19 @@
+[Unit]
+Description=P42 censorship fallback failure alert for %i
+After=%i
+
+[Service]
+Type=oneshot
+User=p42-fallback-alert
+Group=p42-fallback-alert
+ExecStart=/usr/local/bin/p42-censorship-fallback-alert \
+  --unit %i --output-root /var/lib/p42-censorship-fallback-alerts
+TimeoutStartSec=30s
+UMask=0077
+StateDirectory=p42-censorship-fallback-alerts
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/p42-censorship-fallback-alerts

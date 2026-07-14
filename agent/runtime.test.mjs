@@ -60,7 +60,8 @@ test("npm pack installs complete runnable agent binaries", () => {
   });
   for (const module of [
     "transcript-store.mjs", "strict-json.mjs", "signed-transaction.mjs", "solver-manifest.mjs",
-    "censorship-fallback-runtime.mjs", "wallet-nonce-coordinator.mjs",
+    "censorship-fallback-runtime.mjs", "censorship-fallback-supervisor.mjs",
+    "censorship-fallback-verify.mjs", "wallet-nonce-coordinator.mjs",
   ]) {
     assert.equal(readFileSync(join(installDir, "node_modules", "p42-agent", module)).length > 0, true, module);
   }
@@ -79,6 +80,32 @@ test("npm pack installs complete runnable agent binaries", () => {
   assert.doesNotMatch(fallback.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
   assert.match(fallback.stderr, /p42-censorship-fallback-outcome\/v1/);
   assert.match(fallback.stderr, /terminal-error/);
+  const fallbackSupervisor = spawnSync(
+    join(installDir, "node_modules", ".bin", "p42-censorship-fallback-supervisor"),
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(fallbackSupervisor.status, 70, fallbackSupervisor.stderr);
+  assert.doesNotMatch(fallbackSupervisor.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
+  assert.match(fallbackSupervisor.stderr, /p42-censorship-fallback-supervisor-outcome\/v1/);
+  const fallbackVerifier = spawnSync(
+    join(installDir, "node_modules", ".bin", "p42-censorship-fallback-verify"),
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(fallbackVerifier.status, 64, fallbackVerifier.stderr);
+  assert.doesNotMatch(fallbackVerifier.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
+  assert.match(fallbackVerifier.stderr, /p42-censorship-fallback-verification-outcome\/v1/);
+  assert.match(fallbackVerifier.stderr, /terminal-error/);
+  const fallbackAlert = spawnSync(
+    join(installDir, "node_modules", ".bin", "p42-censorship-fallback-alert"),
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(fallbackAlert.status, 64, fallbackAlert.stderr);
+  assert.doesNotMatch(fallbackAlert.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
+  assert.match(fallbackAlert.stderr, /p42-censorship-fallback-alert-outcome\/v1/);
+  assert.match(fallbackAlert.stderr, /terminal-error/);
   const installedIndexer = pathToFileURL(join(installDir, "node_modules", "p42-agent", "indexer.mjs")).href;
   const schemaProbe = spawnSync(process.execPath, ["--input-type=module", "-e", `
     const { validateManifestEvidence } = await import(${JSON.stringify(installedIndexer)});

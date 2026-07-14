@@ -11,7 +11,10 @@ import {
   buildMultiBoardSetupOperations,
   constructorArgsFor,
 } from "../scripts/deployment-ceremony-helper.js";
-import { readMultiBoardCeremonyConfig } from "../scripts/multiboard-ceremony-helper.js";
+import {
+  PRODUCTION_LAUNCH_SLUGS,
+  readMultiBoardCeremonyConfig,
+} from "../scripts/multiboard-ceremony-helper.js";
 import {
   buildGovernanceOperationJournal,
   observeGovernanceOperation,
@@ -113,6 +116,11 @@ describe("exact ten-board local ceremony rehearsal", { timeout: 240_000 }, funct
     }
     const config = readMultiBoardCeremonyConfig(ethers, input, { deployerAddress: deployer.address });
     assert.equal(config.problems.length, 10);
+    assert.deepEqual(
+      config.problems.map((problem) => problem.problemSlug),
+      PRODUCTION_LAUNCH_SLUGS,
+      "local deployment rehearsal must exercise the exact ordered production cohort",
+    );
 
     const timelock = await deploy(deployer, "P42MultisigTimelock", constructorArgsFor("P42MultisigTimelock", config));
     const roots = { timelock: await timelock.getAddress() };

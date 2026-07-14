@@ -3,18 +3,28 @@ Description=P42 OP Stack censorship fallback
 After=network-online.target
 Wants=network-online.target
 OnFailure=p42-censorship-fallback-alert@%n.service
+StartLimitIntervalSec=10min
+StartLimitBurst=6
 
 [Service]
 Type=oneshot
 User=p42-fallback
 Group=p42-fallback
 EnvironmentFile=/etc/p42/censorship-fallback.env
-ExecStart=/usr/local/bin/p42-censorship-fallback \
+ExecStartPre=/usr/bin/install -d -m 0700 \
+  /var/lib/p42-censorship-fallback/state \
+  /var/lib/p42-censorship-fallback/coordination
+ExecStart=/usr/local/bin/p42-censorship-fallback-supervisor \
+  --runtime /usr/local/bin/p42-censorship-fallback \
+  --step-timeout-ms 120000 --kill-grace-ms 10000 --retry-delay-ms 15000 \
+  --max-rpc-retries 8 -- \
   --plan ${P42_FALLBACK_PLAN} --plan-root ${P42_FALLBACK_PLAN_ROOT} \
   --authorization ${P42_FALLBACK_AUTHORIZATION} --authorization-root ${P42_FALLBACK_AUTHORIZATION_ROOT} \
   --authorization-approver ${P42_FALLBACK_AUTHORIZATION_APPROVER} \
-  --state ${P42_FALLBACK_STATE} --state-root ${P42_FALLBACK_STATE_ROOT} \
-  --coordination-root ${P42_COORDINATION_ROOT} --l1-chain-id ${P42_L1_CHAIN_ID} \
+  --state /var/lib/p42-censorship-fallback/state/run.json \
+  --state-root /var/lib/p42-censorship-fallback/state \
+  --coordination-root /var/lib/p42-censorship-fallback/coordination \
+  --l1-chain-id ${P42_L1_CHAIN_ID} \
   --l2-start-block ${P42_L2_START_BLOCK} --l1-gas-limit ${P42_L1_GAS_LIMIT} \
   --max-fee-per-gas ${P42_MAX_FEE_PER_GAS} \
   --max-priority-fee-per-gas ${P42_MAX_PRIORITY_FEE_PER_GAS} \
@@ -23,14 +33,15 @@ ExecStart=/usr/local/bin/p42-censorship-fallback \
 Restart=on-failure
 RestartSec=15s
 RestartPreventExitStatus=64
-RuntimeMaxSec=2min
-TimeoutStopSec=10s
+TimeoutStopSec=20s
 UMask=0077
+StateDirectory=p42-censorship-fallback
+StateDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=${P42_FALLBACK_STATE_ROOT} ${P42_COORDINATION_ROOT}
+ReadWritePaths=/var/lib/p42-censorship-fallback
 
 [Install]
 WantedBy=multi-user.target

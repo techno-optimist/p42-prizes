@@ -15,8 +15,9 @@ import {
   validateFallbackAuthorization,
   validateFallbackPlan,
   validateFallbackRunState,
+  verifyCompletedFallbackRun,
 } from "./censorship-fallback-runtime.mjs";
-import { buildSignedTransactionRecord, sha256Canonical } from "./lib.mjs";
+import { buildSignedTransactionRecord, canonicalJson, sha256Canonical } from "./lib.mjs";
 
 const roots = [];
 afterEach(() => {
@@ -364,6 +365,29 @@ describe("crash-safe censorship fallback runtime", () => {
     });
     assert.equal(disk.policy.l1Anchor.transactionHash, disk.policy.signedTransaction.hash);
     assert.equal(disk.challenge.l1Anchor.transactionHash, disk.challenge.signedTransaction.hash);
+
+    disk.policy.signedTransaction = await buildSignedTransactionRecord({
+      wallet: f.signer,
+      request: {
+        to: f.plan.deposits[0].to,
+        data: f.plan.deposits[0].calldata,
+        value: BigInt(f.plan.deposits[0].valueWei),
+        chainId: 1,
+        nonce: Number(disk.policy.signedTransaction.nonce),
+        gasLimit: BigInt(adapter.executionPolicy.l1GasLimit),
+        maxFeePerGas: BigInt(adapter.executionPolicy.maxFeePerGas) + 1n,
+        maxPriorityFeePerGas: BigInt(adapter.executionPolicy.maxPriorityFeePerGas),
+        type: 2,
+      },
+      chainId: 1,
+      label: `censorship-fallback:${f.plan.calldataHash}:policy`,
+    });
+    writeFileSync(f.statePath, `${canonicalJson(disk)}\n`, { mode: 0o600 });
+    await assert.rejects(
+      advance(f, adapter),
+      /changes the authorized fee envelope/,
+      "a completed-journal restart must not bypass raw signed fee validation",
+    );
   });
 
   it("requires finalized dual-RPC storage and forced-deposit event provenance", async () => {
@@ -401,7 +425,7 @@ describe("crash-safe censorship fallback runtime", () => {
     const portalInterface = new ethers.Interface([
       "event TransactionDeposited(address indexed from,address indexed to,uint256 indexed version,bytes opaqueData)",
     ]);
-    const signedFor = (deposit, nonce, action) => buildSignedTransactionRecord({
+    const signedFor = (deposit, nonce, action, overrides = {}) => buildSignedTransactionRecord({
       wallet: f.signer,
       request: {
         to: deposit.to,
@@ -413,6 +437,7 @@ describe("crash-safe censorship fallback runtime", () => {
         maxFeePerGas: 2,
         maxPriorityFeePerGas: 1,
         type: 2,
+        ...overrides,
       },
       chainId: 1,
       label: `censorship-fallback:${f.plan.calldataHash}:${action}`,
@@ -590,13 +615,19 @@ describe("crash-safe censorship fallback runtime", () => {
       };
     }
 
-    function adapter(forcedFrom, latestPrimary = null, latestSecondary = null) {
+    function adapter(forcedFrom, latestPrimary = null, latestSecondary = null, readOnly = false) {
       return createEthersFallbackAdapter({
         l1Primary: fakeProvider(1),
         l1Secondary: fakeProvider(1),
         l2Primary: fakeProvider(8453, forcedFrom, latestPrimary),
         l2Secondary: fakeProvider(8453, forcedFrom, latestSecondary),
-        wallet: f.signer,
+        ...(readOnly ? {
+          operator: f.signer.address,
+          l1GenesisHash: blockHash,
+          l2GenesisHash: blockHash,
+          l1Checkpoint: { blockNumber: 500, blockHash },
+          l2Checkpoint: { blockNumber: 500, blockHash },
+        } : { wallet: f.signer }),
         l1ChainId: 1,
         l2StartBlock: 0,
         gasLimit: 200_000,
@@ -629,6 +660,157 @@ describe("crash-safe censorship fallback runtime", () => {
         l2Anchor: challengeObservation.anchor,
       },
     }, f.plan);
+
+    const executionPolicy = {
+      l1GasLimit: "200000",
+      maxFeePerGas: "2",
+      maxPriorityFeePerGas: "1",
+      maxRpcHeadLagBlocks: 2,
+      maxL2ScanBlocks: 1000,
+      maxL2Logs: 10,
+    };
+    const authorization = authorizationFor({ plan: f.plan, operator: f.signer.address, approver: f.approver });
+    const completedState = {
+      schema: "p42-censorship-fallback-run/v1",
+      planHash: sha256Canonical(f.plan),
+      l1ChainId: 1,
+      l2ChainId: 8453,
+      l2StartBlock: 0,
+      controller: f.plan.l1Controller.toLowerCase(),
+      executionPolicyHash: sha256Canonical(executionPolicy),
+      authorizationHash: authorization.artifactHash,
+      operator: f.signer.address.toLowerCase(),
+      stage: "challenge_l2_confirmed",
+      policy: {
+        signedTransaction: policySigned,
+        l1Anchor: policyL1Anchor,
+        l2Anchor: policyObservation.anchor,
+      },
+      challenge: {
+        signedTransaction: challengeSigned,
+        l1Anchor: challengeL1Anchor,
+        l2Anchor: challengeObservation.anchor,
+      },
+      createdAtUtc: "2026-07-14T00:00:00.000Z",
+      updatedAtUtc: "2026-07-14T00:01:00.000Z",
+    };
+    const readOnly = adapter(f.plan.expectedForcedInclusionOwner, null, null, true);
+    const verificationPolicy = {
+      schema: "p42-censorship-fallback-verification-policy/v1",
+      planHash: sha256Canonical(f.plan),
+      releaseIndexDigest: `sha256:${"1".repeat(64)}`,
+      deploymentManifestDigest: `sha256:${"2".repeat(64)}`,
+      l1ChainId: 1,
+      l2ChainId: 8453,
+      l1GenesisHash: blockHash,
+      l2GenesisHash: blockHash,
+      l1Checkpoint: { blockNumber: 500, blockHash },
+      l2Checkpoint: { blockNumber: 500, blockHash },
+      controller: f.plan.l1Controller,
+      controllerCodeHash: f.plan.l1ControllerCodeHash,
+      portal: f.plan.portal,
+      wallet: f.plan.wallet,
+      challengeManager: f.plan.challengeManager,
+      operator: f.signer.address,
+      authorizationApprover: f.approver.address,
+    };
+    const report = await verifyCompletedFallbackRun({
+      state: completedState,
+      plan: f.plan,
+      l1ChainId: 1,
+      operator: f.signer.address,
+      l2StartBlock: 0,
+      adapter: readOnly,
+      executionPolicy,
+      authorization,
+      authorizationApprover: f.approver.address,
+      verificationPolicy,
+      observedAtUtc: "2026-07-14T00:02:00.000Z",
+    });
+    assert.equal(report.status, "verified");
+    assert.equal(report.policy.signedTransactionHash, policyL1Hash);
+    assert.equal(report.challenge.signedTransactionHash, challengeL1Hash);
+    assert.equal(report.sequencerCensorshipClaimed, false);
+    assert.equal(report.gate3Closed, false);
+    const { verificationHash, ...reportBody } = report;
+    assert.equal(verificationHash, sha256Canonical(reportBody));
+    const excessiveFeeRecord = await signedFor(f.plan.deposits[0], 0, "policy", {
+      maxFeePerGas: 3,
+    });
+    await assert.rejects(
+      verifyCompletedFallbackRun({
+        state: {
+          ...completedState,
+          policy: { ...completedState.policy, signedTransaction: excessiveFeeRecord },
+        },
+        plan: f.plan,
+        l1ChainId: 1,
+        operator: f.signer.address,
+        l2StartBlock: 0,
+        adapter: readOnly,
+        executionPolicy,
+        authorization,
+        authorizationApprover: f.approver.address,
+        verificationPolicy,
+        observedAtUtc: "2026-07-14T00:02:00.000Z",
+      }),
+      /changes the authorized fee envelope/,
+    );
+    await assert.rejects(
+      readOnly.sign("policy", {}, f.plan, 0),
+      /read-only adapter cannot sign/,
+    );
+    await assert.rejects(
+      verifyCompletedFallbackRun({
+        state: { ...completedState, stage: "challenge_l1_final" },
+        plan: f.plan,
+        l1ChainId: 1,
+        operator: f.signer.address,
+        l2StartBlock: 0,
+        adapter: readOnly,
+        executionPolicy,
+        authorization,
+        authorizationApprover: f.approver.address,
+        verificationPolicy,
+        observedAtUtc: "2026-07-14T00:02:00.000Z",
+      }),
+      /requires a completed journal/,
+    );
+    await assert.rejects(
+      verifyCompletedFallbackRun({
+        state: {
+          ...completedState,
+          policy: { ...completedState.policy, signedTransaction: { hash: policyL1Hash } },
+        },
+        plan: f.plan,
+        l1ChainId: 1,
+        operator: f.signer.address,
+        l2StartBlock: 0,
+        adapter: readOnly,
+        executionPolicy,
+        authorization,
+        authorizationApprover: f.approver.address,
+        verificationPolicy,
+        observedAtUtc: "2026-07-14T00:02:00.000Z",
+      }),
+      /signed transaction journal has an unsupported schema/,
+    );
+    await assert.rejects(
+      verifyCompletedFallbackRun({
+        state: completedState,
+        plan: f.plan,
+        l1ChainId: 1,
+        operator: f.signer.address,
+        l2StartBlock: 0,
+        adapter: readOnly,
+        executionPolicy,
+        authorization,
+        authorizationApprover: f.approver.address,
+        verificationPolicy: { ...verificationPolicy, l1GenesisHash: ethers.id("wrong-genesis") },
+        observedAtUtc: "2026-07-14T00:02:00.000Z",
+      }),
+      /adapter identity mismatch/,
+    );
 
     const wrongSender = adapter(ethers.Wallet.createRandom().address);
     await assert.rejects(
