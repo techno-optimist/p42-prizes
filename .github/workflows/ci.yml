@@ -148,7 +148,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes protobuf-compiler
       - name: Restore pinned Rust build cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -171,7 +171,7 @@ jobs:
             exit 1
           fi
       - name: Retain x86 guest for cross-host audit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: p42-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
           path: objective-programs/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
