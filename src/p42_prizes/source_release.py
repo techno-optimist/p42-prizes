@@ -34,6 +34,11 @@ REQUIRED_PROBES = (
 )
 DEPLOY_RELEVANT_PATHS = ("web", "render.yaml")
 BOARD_MANIFEST_PATH = Path("scripts/release-guard-problems-v1.json")
+EVIDENCE_ONLY_TAIL_PATHS = frozenset({
+    "docs/GATE_LEDGER.md",
+    "docs/HUMAN_ACTIONS.md",
+    "docs/evidence/source-release-current.json",
+})
 
 
 class SourceReleaseEvidenceError(ValueError):
@@ -170,6 +175,7 @@ def validate_source_release_evidence(
             "releaseGuard.boardProjection must equal the committed board-manifest projection"
         )
 
+    _ensure_complete_git_history(root, command_runner)
     _git_commit_exists(deploy_commit, root, command_runner)
     _git_commit_exists(observed_head, root, command_runner)
     _require_ancestor(deploy_commit, observed_head, root, command_runner)
@@ -189,6 +195,29 @@ def validate_source_release_evidence(
         raise SourceReleaseEvidenceError(
             f"deployRelevantCommit {deploy_commit} does not match the runtime derived at observedBranchHead {runtime_commit}"
         )
+
+    if online:
+        changed_paths = {
+            line.strip()
+            for line in command_runner(
+                ["git", "diff", "--name-only", f"{observed_head}..{head}"], root
+            ).splitlines()
+            if line.strip()
+        }
+        unexpected_paths = sorted(changed_paths - EVIDENCE_ONLY_TAIL_PATHS)
+        if unexpected_paths:
+            raise SourceReleaseEvidenceError(
+                "online release verification requires CI for the released source commit; "
+                f"non-evidence changes follow observedBranchHead: {', '.join(unexpected_paths)}"
+            )
+        remote_line = command_runner(
+            ["git", "ls-remote", "origin", "refs/heads/main"], root
+        ).split()
+        if len(remote_line) != 2 or remote_line[1] != "refs/heads/main":
+            raise SourceReleaseEvidenceError("could not resolve the authenticated remote main head")
+        remote_main = _commit(remote_line[0], "remote main head")
+        _git_commit_exists(remote_main, root, command_runner)
+        _require_ancestor(head, remote_main, root, command_runner)
 
     publication_commit = None
     if report_path is not None:
@@ -231,24 +260,56 @@ def _validate_online(
         command_runner(
             [
                 "gh", "run", "view", str(ci["runId"]), "--repo", report["repository"],
-                "--json", "headSha,status,conclusion,jobs",
+                "--json", "headSha,headBranch,event,workflowName,status,conclusion,url,updatedAt,jobs",
             ],
             root,
         )
     )
-    if github.get("headSha") != ci.get("headSha") or github.get("status") != "completed" or github.get("conclusion") != "success":
+    expected_github = {
+        "headSha": ci.get("headSha"),
+        "headBranch": ci.get("branch"),
+        "event": ci.get("event"),
+        "workflowName": ci.get("workflow"),
+        "status": ci.get("status"),
+        "conclusion": ci.get("conclusion"),
+        "url": ci.get("url"),
+        "updatedAt": ci.get("completedAt"),
+    }
+    if any(github.get(key) != value for key, value in expected_github.items()):
         raise SourceReleaseEvidenceError("live GitHub run does not match the receipt")
     actual_jobs = {job.get("name"): job.get("conclusion") for job in github.get("jobs", [])}
     expected_jobs = {job["name"]: job["conclusion"] for job in ci["requiredJobs"]}
     if actual_jobs != expected_jobs or len(github.get("jobs", [])) != len(actual_jobs):
         raise SourceReleaseEvidenceError("live GitHub jobs do not match the exact six-lane receipt")
+    pull_request = json.loads(
+        command_runner(
+            [
+                "gh", "pr", "view", report["pullRequest"], "--repo", report["repository"],
+                "--json", "url,state,baseRefName,mergeCommit",
+            ],
+            root,
+        )
+    )
+    if (
+        pull_request.get("url") != report["pullRequest"]
+        or pull_request.get("state") != "MERGED"
+        or pull_request.get("baseRefName") != report["branch"]
+        or pull_request.get("mergeCommit", {}).get("oid") != report["observedBranchHead"]
+    ):
+        raise SourceReleaseEvidenceError("live GitHub pull request does not match the observed source head")
 
     render = _mapping(report["render"], "render")
     deployments = json.loads(
         command_runner(["render", "deploys", "list", render["serviceId"], "--output", "json"], root)
     )
     live = [item for item in deployments if item.get("status") == "live"]
-    if len(live) != 1 or live[0].get("id") != render.get("deployId") or live[0].get("commit", {}).get("id") != render.get("liveCommit"):
+    if (
+        len(live) != 1
+        or live[0].get("id") != render.get("deployId")
+        or live[0].get("commit", {}).get("id") != render.get("liveCommit")
+        or live[0].get("trigger") != render.get("trigger")
+        or live[0].get("finishedAt") != render.get("finishedAt")
+    ):
         raise SourceReleaseEvidenceError("authenticated Render live deployment does not match the receipt")
 
     for probe in report["releaseGuard"]["probes"]:
@@ -279,6 +340,14 @@ def _commit(value: Any, name: str) -> str:
 
 def _git_commit_exists(commit: str, root: Path, runner: CommandRunner) -> None:
     runner(["git", "cat-file", "-e", f"{commit}^{{commit}}"], root)
+
+
+def _ensure_complete_git_history(root: Path, runner: CommandRunner) -> None:
+    shallow = runner(["git", "rev-parse", "--is-shallow-repository"], root)
+    if shallow == "true":
+        runner(["git", "fetch", "--quiet", "--no-tags", "--unshallow", "origin"], root)
+    elif shallow != "false":
+        raise SourceReleaseEvidenceError("git did not report a valid shallow-repository state")
 
 
 def _require_ancestor(ancestor: str, descendant: str, root: Path, runner: CommandRunner) -> None:

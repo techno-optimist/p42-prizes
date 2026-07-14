@@ -241,7 +241,7 @@ describe("signed deployment journal fail-closed recovery", () => {
       const pending = await reconcileSignedDeployment({ ethers, provider: providerFor({ transaction: pendingTx, pending: 18 }), journalPath: path, planDigest: plan.planDigest, index: 0 });
       assert.equal(pending.state, "pending");
       const address = readSignedDeploymentJournal(path).steps[0].address;
-      const receipt = { status: 1, blockNumber: 99, blockHash: `0x${"b".repeat(64)}`, transactionHash: hash, contractAddress: address };
+      const receipt = { status: 1, blockNumber: 99, blockHash: `0x${"b".repeat(64)}`, hash, contractAddress: address };
       const block = { number: 99, hash: receipt.blockHash };
       const minedProvider = providerFor({ receipt, transaction: pendingTx, block, latest: 18, pending: 18 });
       const mined = await reconcileSignedDeployment({ ethers, provider: minedProvider, secondaryProvider: minedProvider, journalPath: path, planDigest: plan.planDigest, index: 0 });
@@ -288,9 +288,9 @@ describe("signed deployment journal fail-closed recovery", () => {
       const wrongRaw = await wallet.signTransaction({ chainId: 84532, nonce: 17, gasLimit: 100000, gasPrice: 1, data: "0x6001" });
       assert.throws(() => persistSignedDeployment(path, plan.planDigest, 0, ethers, wrongRaw), /calldata differs from immutable/);
       const record = JSON.parse(readFileSync(path, "utf8"));
-      record.steps[0].expectedInitCode = "0x6001";
+      record.steps[0].expectedInitCodeHash = ethers.id("tampered-initcode");
       writeFileSync(path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-      assert.throws(() => readSignedDeploymentJournal(path), /plan initcode hash mismatch/);
+      assert.throws(() => readSignedDeploymentJournal(path), /direct CREATE deployment kind drift|plan digest mismatch/);
     });
   });
 

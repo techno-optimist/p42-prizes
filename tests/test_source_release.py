@@ -78,6 +78,8 @@ class FakeGit:
         del cwd
         if command[:3] == ["git", "rev-parse", "HEAD"]:
             return HEAD
+        if command[:3] == ["git", "rev-parse", "--is-shallow-repository"]:
+            return "false"
         if command[:4] == ["git", "log", "--first-parent", "-1"]:
             assert command[5] == OBSERVED
             return DEPLOY
@@ -91,25 +93,76 @@ class FakeGit:
 
 
 class FakeOnline(FakeGit):
+    def __init__(
+        self,
+        report_text: str,
+        *,
+        github_override: dict | None = None,
+        render_override: dict | None = None,
+        tail_paths: str = "docs/evidence/source-release-current.json",
+    ):
+        super().__init__(report_text)
+        self.github_override = github_override or {}
+        self.render_override = render_override or {}
+        self.tail_paths = tail_paths
+
     def __call__(self, command: list[str], cwd: Path) -> str:
         if command[:2] == ["node", "scripts/verify-render-release.mjs"]:
             return "release guard passed"
         if command[:3] == ["gh", "run", "view"]:
-            return json.dumps({
+            github = {
                 "headSha": OBSERVED,
+                "headBranch": "main",
+                "event": "push",
+                "workflowName": "CI",
                 "status": "completed",
                 "conclusion": "success",
+                "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/123",
+                "updatedAt": "2026-07-14T10:55:25Z",
                 "jobs": [
                     {"name": name, "conclusion": "success"}
                     for name in REQUIRED_CI_JOBS
                 ],
+            }
+            github.update(self.github_override)
+            return json.dumps(github)
+        if command[:3] == ["gh", "pr", "view"]:
+            return json.dumps({
+                "url": "https://github.com/techno-optimist/p42-prizes/pull/97",
+                "state": "MERGED",
+                "baseRefName": "main",
+                "mergeCommit": {"oid": OBSERVED},
             })
         if command[:3] == ["render", "deploys", "list"]:
-            return json.dumps([{
+            deployment = {
                 "id": "dep-test",
                 "status": "live",
                 "commit": {"id": DEPLOY},
-            }])
+                "trigger": "new_commit",
+                "finishedAt": "2026-07-14T10:42:16Z",
+            }
+            deployment.update(self.render_override)
+            return json.dumps([deployment])
+        if command[:3] == ["git", "diff", "--name-only"]:
+            return self.tail_paths
+        if command[:3] == ["git", "ls-remote", "origin"]:
+            return f"{HEAD}\trefs/heads/main"
+        return super().__call__(command, cwd)
+
+
+class FakeShallow(FakeGit):
+    def __init__(self, report_text: str):
+        super().__init__(report_text)
+        self.fetched = False
+
+    def __call__(self, command: list[str], cwd: Path) -> str:
+        if command[:3] == ["git", "rev-parse", "--is-shallow-repository"]:
+            return "true"
+        if command[:2] == ["git", "fetch"]:
+            self.fetched = True
+            return ""
+        if command[:3] == ["git", "cat-file", "-e"] and not self.fetched:
+            raise SourceReleaseEvidenceError("history was not fetched before ancestry validation")
         return super().__call__(command, cwd)
 
 
@@ -133,6 +186,23 @@ def test_valid_receipt_derives_distinct_runtime_and_publication_commits(tmp_path
         "evidencePublicationCommit": PUBLICATION,
         "onlineVerified": False,
     }
+
+
+def test_validation_unshallows_before_git_ancestry_checks(tmp_path: Path) -> None:
+    report = receipt()
+    path = tmp_path / "receipt.json"
+    manifest = tmp_path / "scripts" / "release-guard-problems-v1.json"
+    manifest.parent.mkdir(exist_ok=True)
+    manifest.write_text(json.dumps({"projection_sha256": HASH}), encoding="utf-8")
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+    runner = FakeShallow(text)
+
+    validate_source_release_evidence(
+        report, repo_root=tmp_path, report_path=path, command_runner=runner
+    )
+
+    assert runner.fetched is True
 
 
 @pytest.mark.parametrize(
@@ -204,6 +274,53 @@ def test_online_validation_authenticates_all_external_authorities(tmp_path: Path
     )
 
     assert result["derived"]["onlineVerified"] is True
+
+
+@pytest.mark.parametrize(
+    ("runner", "match"),
+    [
+        (lambda text: FakeOnline(text, github_override={"event": "pull_request"}), "GitHub"),
+        (lambda text: FakeOnline(text, render_override={"trigger": "api"}), "Render"),
+    ],
+)
+def test_online_validation_rejects_external_metadata_drift(tmp_path: Path, runner, match: str) -> None:
+    report = receipt()
+    path = tmp_path / "receipt.json"
+    manifest = tmp_path / "scripts" / "release-guard-problems-v1.json"
+    manifest.parent.mkdir(exist_ok=True)
+    manifest.write_text(json.dumps({"projection_sha256": HASH}), encoding="utf-8")
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(SourceReleaseEvidenceError, match=match):
+        validate_source_release_evidence(
+            report,
+            repo_root=tmp_path,
+            report_path=path,
+            online=True,
+            command_runner=runner(text),
+            url_reader=lambda url: HttpObservation(200, "text/html; charset=utf-8", url, HASH),
+        )
+
+
+def test_online_validation_rejects_source_changes_after_ci_head(tmp_path: Path) -> None:
+    report = receipt()
+    path = tmp_path / "receipt.json"
+    manifest = tmp_path / "scripts" / "release-guard-problems-v1.json"
+    manifest.parent.mkdir(exist_ok=True)
+    manifest.write_text(json.dumps({"projection_sha256": HASH}), encoding="utf-8")
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+
+    with pytest.raises(SourceReleaseEvidenceError, match="non-evidence changes"):
+        validate_source_release_evidence(
+            report,
+            repo_root=tmp_path,
+            report_path=path,
+            online=True,
+            command_runner=FakeOnline(text, tail_paths="src/p42_prizes/verifier.py"),
+            url_reader=lambda url: HttpObservation(200, "text/html; charset=utf-8", url, HASH),
+        )
 
 
 def test_required_probe_policy_matches_node_release_guard() -> None:

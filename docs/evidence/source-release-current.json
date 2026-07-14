@@ -5,7 +5,7 @@
   "branch": "main",
   "deployRelevantCommit": "8cfbd366ec206e244aa125535cfca7b7adca4fbb",
   "observedBranchHead": "9a5c45beaa125b686915023add81b0beae5d4cab",
-  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/97",
+  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/98",
   "ci": {
     "workflow": "CI",
     "event": "push",
@@ -60,5 +60,5 @@
     "failClosedPolicy": "An exact-ten cohort requires activated, fresh, independently attested v3 checkpoints; any stale, partial, mixed, malformed, or untrusted generation falls back atomically to local-only portal state.",
     "liveFundingState": "No canonical Base Sepolia pools are deployed or authorized; the live portal publishes no transfer target."
   },
-  "evidenceHash": "sha256:fa0d7cefd9fba1f2f05c6809761eaf1b1bb72f89e2a2892b28679c44c28b4052"
+  "evidenceHash": "sha256:1fafe2b07962f38ef4bb1bcea4b62b71602b7ce873874cb81b8a156f4b31d740"
 }

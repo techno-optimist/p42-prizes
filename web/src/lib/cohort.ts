@@ -21,7 +21,8 @@ export interface CohortAgent {
 
 export interface MaturedAwardRedirectPolicy {
   destinationProblemId: number;
-  destinationEligibility: "same-registry-distinct-open-armed-pool";
+  destinationEligibility: "modeled-same-registry-distinct-open-armed-pool";
+  destinationModeledState: "open-armed";
   sponsorshipAttribution: "solver";
   failureSemantics: "atomic-source-claim-unconsumed";
   zeroCreditCloseEconomics: "attributed-principal-refundable";
@@ -44,7 +45,8 @@ export const cohortAgents: CohortAgent[] = [
     strategy: "Sets each baseline certificate; redirects every nonzero matured modeled award to Hadamard Mini as attributed sponsorship.",
     maturedAwardRedirect: {
       destinationProblemId: 1,
-      destinationEligibility: "same-registry-distinct-open-armed-pool",
+      destinationEligibility: "modeled-same-registry-distinct-open-armed-pool",
+      destinationModeledState: "open-armed",
       sponsorshipAttribution: "solver",
       failureSemantics: "atomic-source-claim-unconsumed",
       zeroCreditCloseEconomics: "attributed-principal-refundable",
@@ -197,8 +199,8 @@ export function weiToEth(wei: bigint, digits = 4): string {
 }
 
 export function computeStandings({ feeBps = 0 }: { feeBps?: number } = {}): Standings {
-  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 10_000) {
-    throw new Error("feeBps must be an integer from 0 through 10000");
+  if (!Number.isInteger(feeBps) || feeBps < 0 || feeBps > 250) {
+    throw new Error("feeBps must be an integer from 0 through the protocol cap of 250");
   }
   const boards: BoardResolution[] = [];
 
@@ -282,6 +284,12 @@ export function computeStandings({ feeBps = 0 }: { feeBps?: number } = {}): Stan
         }
         const destination = getProblemById(policy.destinationProblemId);
         if (!destination) throw new Error(`unknown matured award destination ${policy.destinationProblemId}`);
+        if (
+          policy.destinationEligibility !== "modeled-same-registry-distinct-open-armed-pool"
+          || policy.destinationModeledState !== "open-armed"
+        ) {
+          throw new Error(`modeled matured award destination ${policy.destinationProblemId} is not open and armed`);
+        }
         redirectedGrossWei += row.grossAwardWei;
         redirectedSponsorshipWei += row.netAwardWei;
         redirectFeeWei += row.feeAmountWei;

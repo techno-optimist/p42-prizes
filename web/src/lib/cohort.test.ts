@@ -9,7 +9,8 @@ describe("pilot cohort matured-award redirects", () => {
     expect(chronos).not.toHaveProperty("donatesBack");
     expect(chronos?.maturedAwardRedirect).toEqual({
       destinationProblemId: 1,
-      destinationEligibility: "same-registry-distinct-open-armed-pool",
+      destinationEligibility: "modeled-same-registry-distinct-open-armed-pool",
+      destinationModeledState: "open-armed",
       sponsorshipAttribution: "solver",
       failureSemantics: "atomic-source-claim-unconsumed",
       zeroCreditCloseEconomics: "attributed-principal-refundable",
@@ -49,7 +50,7 @@ describe("pilot cohort matured-award redirects", () => {
 
   it("rejects invalid fee schedules", () => {
     expect(() => computeStandings({ feeBps: -1 })).toThrow(/feeBps/);
-    expect(() => computeStandings({ feeBps: 10_001 })).toThrow(/feeBps/);
+    expect(() => computeStandings({ feeBps: 251 })).toThrow(/feeBps/);
     expect(() => computeStandings({ feeBps: 1.5 })).toThrow(/feeBps/);
   });
 });
