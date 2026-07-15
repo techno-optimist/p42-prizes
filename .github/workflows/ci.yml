@@ -230,6 +230,7 @@ jobs:
   objective-program-reproducibility:
     name: SP1 objective-program reproducibility
     needs: objective-program
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
