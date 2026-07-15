@@ -118,6 +118,8 @@ jobs:
     name: SP1 objective-program gates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
     strategy:
       fail-fast: false
       matrix:
@@ -154,18 +156,62 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-            ~/.cargo/git
-            objective-programs/target
           key: sp1-v6.1-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('objective-programs/Cargo.lock') }}
+      - name: Capture untrusted SP1 build-input observation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf objective-programs/target
+          rm -rf "$HOME/.cargo/git"
+          test ! -e objective-programs/target
+          guest_archive="$HOME/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz"
+          guest_sysroot="$(rustc +succinct --print sysroot)"
+          python3 scripts/verify-sp1-objective-artifact.py \
+            --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove" \
+            --cargo-prove-archive "$RUNNER_TEMP/cargo-prove.tar.gz" \
+            --guest-toolchain-archive "$guest_archive" \
+            --guest-sysroot "$guest_sysroot" \
+            --cargo-home "$HOME/.cargo" \
+            --capture-build-observation "$RUNNER_TEMP/sp1-build-input-observation.json"
+      - name: Retain untrusted SP1 build-input observation
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-untrusted-sp1-build-inputs-${{ matrix.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/sp1-build-input-observation.json
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Validate clean SP1 build-input provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e objective-programs/target
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+          guest_archive="$HOME/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz"
+          guest_sysroot="$("${clean_env[@]}" "$HOME/.cargo/bin/rustc" +succinct --print sysroot)"
+          "${clean_env[@]}" /usr/bin/python3 scripts/verify-sp1-objective-artifact.py \
+            --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove" \
+            --cargo-prove-archive "$RUNNER_TEMP/cargo-prove.tar.gz" \
+            --guest-toolchain-archive "$guest_archive" \
+            --guest-sysroot "$guest_sysroot" \
+            --cargo-home "$HOME/.cargo" \
+            --capture-build-provenance "$RUNNER_TEMP/sp1-build-provenance.json"
       - name: Test objective predicate and Solidity ABI encoding
         working-directory: objective-programs
-        run: cargo test --locked -p p42-objective-core
+        shell: bash
+        run: |
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            "$HOME/.cargo/bin/cargo" test --locked -p p42-objective-core
       - name: Build objective guests on x86 Linux
         working-directory: objective-programs
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked \
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
             -p p42-hadamard-668-objective-script \
             -p p42-distinct-subset-sums-a11-objective-script
           for rebuilt in \
@@ -181,15 +227,15 @@ jobs:
           hadamard_audit=target/hadamard-reproducibility
           mkdir -p "$hadamard_audit"
           cp "$hadamard" "$hadamard_audit/program.elf"
-          cargo run --locked -p p42-hadamard-668-objective-script -- \
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-hadamard-668-objective-script -- \
             identity-elf "$hadamard" > "$hadamard_audit/identity.json"
           a11=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program
           audit=target/a11-reproducibility
           mkdir -p "$audit"
           cp "$a11" "$audit/program.elf"
-          cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
             identity-elf "$a11" > "$audit/identity.json"
-          cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
             execute-fixture-elf "$a11" ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json \
             > "$audit/execution.json"
       - name: Capture candidate Hadamard mock execution
@@ -197,16 +243,38 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo run --locked -p p42-hadamard-668-objective-script -- \
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            "$HOME/.cargo/bin/cargo" run --locked -p p42-hadamard-668-objective-script -- \
             execute-fixture-elf target/hadamard-reproducibility/program.elf \
             ../problems/hadamard-668-defect/examples/sylvester-prefix.json \
             > target/hadamard-reproducibility/execution.json
+      - name: Retain untrusted A11 candidate forensics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-untrusted-a11-candidate-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/a11-reproducibility
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Retain untrusted Hadamard candidate forensics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-untrusted-hadamard-candidate-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/hadamard-reproducibility
+          if-no-files-found: warn
+          retention-days: 7
       - name: Validate program-scoped reproduction bundles
         working-directory: objective-programs
+        shell: bash
         run: |
-          python3 ../scripts/verify-sp1-objective-reproduction.py \
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
             --program distinct-subset-sums-a11 --directory target/a11-reproducibility
-          python3 ../scripts/verify-sp1-objective-reproduction.py \
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
             --program hadamard-668-defect --directory target/hadamard-reproducibility
       - name: Enforce frozen guest identity
         working-directory: objective-programs
@@ -224,23 +292,45 @@ jobs:
           cmp --silent "$rebuilt_a11" "$frozen_a11"
           echo "f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae  $frozen_a11" | sha256sum --check --strict
       - name: Verify frozen ELF and independently derive vkey
+        shell: bash
         run: |
-          python scripts/verify-sp1-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
-          python scripts/verify-sp1-a11-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
+          set -euo pipefail
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+          guest_sysroot="$("${clean_env[@]}" "$HOME/.cargo/bin/rustc" +succinct --print sysroot)"
+          "${clean_env[@]}" /usr/bin/python3 scripts/verify-sp1-objective-artifact.py \
+            --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove" \
+            --cargo-prove-archive "$RUNNER_TEMP/cargo-prove.tar.gz" \
+            --guest-toolchain-archive "$HOME/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz" \
+            --guest-sysroot "$guest_sysroot" \
+            --cargo-home "$HOME/.cargo" \
+            --build-provenance "$RUNNER_TEMP/sp1-build-provenance.json"
+          "${clean_env[@]}" /usr/bin/python3 scripts/verify-sp1-a11-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
       - name: Verify deterministic resource envelope
-        run: python scripts/verify-sp1-objective-resource-profile.py
+        shell: bash
+        run: |
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            /usr/bin/python3 scripts/verify-sp1-objective-resource-profile.py
       - name: Retain validated objective evidence for cross-image audit
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: p42-distinct-subset-sums-a11-x86-elf-${{ matrix.os }}-${{ github.run_id }}
+          name: p42-validated-distinct-subset-sums-a11-x86-elf-${{ matrix.os }}-${{ github.run_id }}
           path: objective-programs/target/a11-reproducibility
           if-no-files-found: error
           retention-days: 7
       - name: Retain validated Hadamard evidence for cross-image audit
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
-          name: p42-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
+          name: p42-validated-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
           path: objective-programs/target/hadamard-reproducibility
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain validated SP1 build provenance for cross-image audit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-validated-sp1-build-provenance-${{ matrix.os }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/sp1-build-provenance.json
           if-no-files-found: error
           retention-days: 7
 
@@ -253,14 +343,25 @@ jobs:
       PRODUCER_RESULT: ${{ needs.objective-program.result }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
+      - name: Reject failed producer before consuming validated evidence
+        shell: bash
+        run: |
+          if [[ "$PRODUCER_RESULT" != success ]]; then
+            echo "objective-program producer validation failed: $PRODUCER_RESULT" >&2
+            exit 1
+          fi
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          pattern: p42-distinct-subset-sums-a11-x86-elf-*-${{ github.run_id }}
+          pattern: p42-validated-distinct-subset-sums-a11-x86-elf-*-${{ github.run_id }}
           path: objective-programs/reproduced-a11
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
-          pattern: p42-hadamard-668-x86-elf-*-${{ github.run_id }}
+          pattern: p42-validated-hadamard-668-x86-elf-*-${{ github.run_id }}
           path: objective-programs/reproduced-hadamard
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: p42-validated-sp1-build-provenance-*-${{ github.run_id }}
+          path: objective-programs/reproduced-provenance
       - name: Compare dual-image objective guests
         shell: bash
         run: |
@@ -275,7 +376,7 @@ jobs:
             test "${#identities[@]}" -eq 2
             test "${#executions[@]}" -eq 2
             for identity in "${identities[@]}"; do
-              python3 scripts/verify-sp1-objective-reproduction.py \
+              /usr/bin/python3 scripts/verify-sp1-objective-reproduction.py \
                 --program "$program" --directory "$(dirname "$identity")"
             done
             cmp --silent "${guests[0]}" "${guests[1]}"
@@ -285,7 +386,7 @@ jobs:
           }
           compare_pair objective-programs/reproduced-hadamard hadamard-668-defect
           compare_pair objective-programs/reproduced-a11 distinct-subset-sums-a11
-          if [[ "$PRODUCER_RESULT" != success ]]; then
-            echo "objective-program producer validation failed: $PRODUCER_RESULT" >&2
-            exit 1
-          fi
+          mapfile -t provenances < <(find objective-programs/reproduced-provenance -type f -name sp1-build-provenance.json | sort)
+          test "${#provenances[@]}" -eq 2
+          cmp --silent "${provenances[0]}" "${provenances[1]}"
+          sha256sum "${provenances[@]}"
