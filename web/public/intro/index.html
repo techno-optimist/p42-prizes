@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>P42 Prizes — the proof is the re-run</title>
+  <meta name="description" content="Erdős prizes for the AI age. Scroll to fly from the first stone to the open register. The proof is the re-run." />
+
+  <!-- self-hosted (22 woff2, 370KB) — no external origin, nothing blocks first paint -->
+  <link rel="stylesheet" href="/prizes/intro/assets/fonts/fonts.css" />
+
+  <style>
+    /* The world is themed as a PLATE — the brand reserves --plate for figures, and this
+       cinematic is a figure. Values are the dark-mode column of the prizes globals.css. */
+    :root, .sw-root {
+      --sw-bg:       #14120f;   /* --plate       (== the scenes' ground, so posters seam cleanly) */
+      --sw-ink:      #ede8dc;   /* --plate-ink   */
+      --sw-ink-soft: #a19c8d;   /* --muted (dark) */
+      --sw-accent:   #de7566;   /* --record (dark) — the brand's one accent */
+      --sw-font-display: "STIX Two Text", "Source Serif 4", Georgia, serif;
+      --sw-font-body:    "STIX Two Text", "Source Serif 4", Georgia, serif;
+      --p42-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    html, body { margin: 0; background: #14120f; }
+    html {
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      text-rendering: optimizeLegibility;
+      font-synthesis: none;
+    }
+
+    /* --- dark-plate re-skin of the engine chrome ---
+       The engine's CSS lives in `@layer sw`, so these UNLAYERED rules win with no
+       !important. The engine was built for a LIGHT page: its nav uses a #fff-55% fill
+       and its CTAs use `color:#fff; background:var(--sw-ink)`. We inverted the theme
+       (--sw-ink is light), so those render light-on-light and vanish. Re-skin them. */
+    .sw-nav {
+      /* backdrop-filter re-blurs the video behind the pill bar EVERY frame (a top lag
+         source) and layerizes the bar so its text rasterizes soft on hi-DPI. A more
+         opaque flat fill costs nothing and keeps the text crisp. */
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      background: color-mix(in srgb, #14120f 88%, transparent);
+      border: 1px solid rgba(236,233,224,.14);
+    }
+    .sw-nav__item { color: #a19c8d; font-size: .88rem; }
+    .sw-nav__item:hover { color: #ede8dc; }
+    .sw-nav__item.is-active { color: #14120f; background: #de7566; }
+
+    .sw-topcta,
+    .sw-btn--primary { color: #14120f; background: #ede8dc; }
+    .sw-topcta:hover,
+    .sw-btn--primary:hover { background: #fff; }
+    .sw-btn--ghost { color: #ede8dc; }
+
+    /* tags → hairline chips, not filled badges (the only chrome is hairlines) */
+    .sw-copy__tags li {
+      color: #c9c4b6;
+      background: transparent;
+      border: 1px solid rgba(236,233,224,.22);
+    }
+
+    /* route-rail hover label — same light-on-light class as the nav */
+    .sw-route__label {
+      color: #ede8dc;
+      background: color-mix(in srgb, #14120f 88%, transparent);
+      border: 1px solid rgba(236,233,224,.14);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+    }
+
+    /* the real H4 mark instead of the engine's gradient blob (gradients are banned chrome) */
+    .sw-brand__mark {
+      background: #ede8dc;
+      box-shadow: none;
+      border-radius: 0;
+      width: 26px; height: 26px;
+      -webkit-mask: url("/prizes/intro/assets/p42-mark.svg") no-repeat center / contain;
+              mask: url("/prizes/intro/assets/p42-mark.svg") no-repeat center / contain;
+    }
+
+    /* The engine anchors copy at top:50% and its scroll transform replaces the -50%
+       centering, so a block taller than half the viewport grows off the bottom edge.
+       The finale carries a CTA that must never clip — bottom-anchor it. */
+    .sw-copy:has(.sw-copy__cta) {
+      top: auto;
+      bottom: clamp(84px, 12vh, 128px);
+    }
+
+    /* ---------- BIGGER, EASIER COPY (the splash register) ---------- */
+    .sw-copy { width: min(48vw, 640px); }
+    .sw-copy__num { font-family: var(--p42-mono); font-size: .8rem; letter-spacing: .18em; }
+    .sw-copy__eyebrow { font-size: .92rem; letter-spacing: .24em; margin-top: 14px; }
+    .sw-copy__title {
+      font-size: clamp(2.6rem, 4.9vw, 4.4rem);
+      line-height: 1.05;
+      letter-spacing: -.015em;
+    }
+    .sw-copy__body {
+      font-size: clamp(1.14rem, 1.5vw, 1.38rem);
+      line-height: 1.62;
+      max-width: 44ch;
+      margin-top: 22px;
+    }
+    @media (max-width: 860px) {
+      .sw-copy__title { font-size: clamp(2.2rem, 8.6vw, 3rem); }
+      .sw-copy__body  { font-size: clamp(1.04rem, 4vw, 1.2rem); }
+    }
+
+    /* ---------- ELEGANT COPY REVEAL ----------
+       The engine fades the whole article; we stagger its children up out of a soft blur
+       whenever a plate comes on stage (class toggled by the watcher script below).
+       Gated on body.p42-anim so copy is never hidden if JS fails. */
+    /* opacity + transform only — both run purely on the compositor. A blur() filter here
+       forced a per-frame re-raster of every text block during scroll, which both lagged
+       and softened the type; the stagger carries the elegance on its own. */
+    body.p42-anim .sw-copy > * {
+      opacity: 0;
+      transform: translateY(26px);
+      transition: opacity .6s ease, transform .85s cubic-bezier(.19,.8,.22,1);
+    }
+    body.p42-anim .sw-copy.p42-live > * { opacity: 1; transform: none; }
+    body.p42-anim .sw-copy.p42-live > *:nth-child(1) { transition-delay: .03s; }
+    body.p42-anim .sw-copy.p42-live > *:nth-child(2) { transition-delay: .14s; }
+    body.p42-anim .sw-copy.p42-live > *:nth-child(3) { transition-delay: .26s; }
+    body.p42-anim .sw-copy.p42-live > *:nth-child(4) { transition-delay: .42s; }
+    body.p42-anim .sw-copy.p42-live > *:nth-child(5) { transition-delay: .56s; }
+    body.p42-anim .sw-copy.p42-live > *:nth-child(6) { transition-delay: .68s; }
+    @media (prefers-reduced-motion: reduce) {
+      body.p42-anim .sw-copy > * { opacity: 1; transform: none; transition: none; }
+    }
+
+    /* ---------- FILM GRAIN ----------
+       "Fine silver grain" is in the plate art direction; this is texture, not glow. */
+    .p42-grain {
+      position: fixed; inset: -6%;
+      z-index: 65; pointer-events: none;
+      background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+      /* no blend mode: overlay-blending over seven stacked 1080p video layers forces the
+         compositor to re-composite the whole page every frame — the single biggest lag
+         source found in profiling. Plain low-alpha grain reads the same on dark footage. */
+      opacity: .04;
+      will-change: transform;
+      animation: p42-grain .8s steps(4) infinite;
+    }
+    @keyframes p42-grain {
+      0%   { transform: translate(0,0); }
+      25%  { transform: translate(-2.5%, 1.8%); }
+      50%  { transform: translate(1.8%, -2.5%); }
+      75%  { transform: translate(-1.5%, -1.8%); }
+      100% { transform: translate(0,0); }
+    }
+    @media (prefers-reduced-motion: reduce) { .p42-grain { animation: none; } }
+
+    /* kill the engine's decorative radial even if atmosphere ever flips on */
+    .sw-sky__glow { display: none; }
+
+    /* ---------- PROLOGUE — the Erdős lead-in ---------- */
+    #prologue {
+      position: fixed; inset: 0; z-index: 100;
+      background: #14120f;
+      display: flex; align-items: center; justify-content: center;
+      transition: opacity .95s ease;
+    }
+    #prologue.leave { opacity: 0; pointer-events: none; }
+    .pro-inner { position: relative; width: 100%; height: 100%; }
+    .pro-line {
+      position: absolute; left: 50%; top: 50%;
+      width: min(86vw, 880px); margin: 0;
+      transform: translate(-50%,-50%) translateY(16px);
+      text-align: center;
+      font-family: var(--sw-font-display);
+      font-size: clamp(1.6rem, 3.4vw, 2.9rem);
+      line-height: 1.4;
+      color: #ede8dc;
+      opacity: 0; filter: blur(5px);
+      transition: opacity .85s ease, transform 1.05s cubic-bezier(.19,.8,.22,1), filter .95s ease;
+    }
+    .pro-line em { font-style: italic; color: #de7566; }
+    .pro-line.on  { opacity: 1; transform: translate(-50%,-50%); filter: none; }
+    .pro-line.off { opacity: 0; transform: translate(-50%,-50%) translateY(-14px); filter: blur(7px); }
+    .pro-mark {
+      position: absolute; left: 50%; top: 50%;
+      transform: translate(-50%,-50%) scale(.97);
+      text-align: center;
+      opacity: 0; filter: blur(6px);
+      transition: opacity 1.1s ease, transform 1.3s cubic-bezier(.19,.8,.22,1), filter 1.1s ease;
+    }
+    .pro-mark.on { opacity: 1; transform: translate(-50%,-50%) scale(1); filter: none; }
+    .pro-mark .pro-h4 {
+      width: 72px; height: 72px; margin: 0 auto 26px;
+      background: #ede8dc;
+      -webkit-mask: url("/prizes/intro/assets/p42-mark.svg") no-repeat center / contain;
+              mask: url("/prizes/intro/assets/p42-mark.svg") no-repeat center / contain;
+    }
+    .pro-brand {
+      display: block;
+      font-family: var(--sw-font-display); font-weight: 700;
+      font-size: clamp(2.6rem, 6.5vw, 4.6rem);
+      letter-spacing: -.01em; color: #ede8dc;
+    }
+    .pro-tag {
+      display: block; margin-top: 16px;
+      font-family: var(--p42-mono);
+      font-size: clamp(.72rem, 1.4vw, .92rem);
+      letter-spacing: .26em; text-transform: uppercase;
+      color: #de7566;
+    }
+    .pro-cue {
+      position: absolute; left: 50%; bottom: 9vh;
+      transform: translateX(-50%);
+      font-family: var(--p42-mono);
+      font-size: .78rem; letter-spacing: .22em; text-transform: uppercase;
+      color: #a19c8d;
+      opacity: 0; transition: opacity 1s ease .3s;
+      animation: p42-breathe 2.6s ease-in-out infinite;
+    }
+    .pro-cue.on { opacity: 1; }
+    @keyframes p42-breathe { 0%,100% { opacity:.45; } 50% { opacity:1; } }
+    .pro-skip {
+      position: absolute; top: calc(18px + env(safe-area-inset-top)); right: 22px;
+      font-family: var(--p42-mono); font-size: .72rem; letter-spacing: .14em; text-transform: uppercase;
+      color: #a19c8d; background: none;
+      border: 1px solid rgba(236,233,224,.22); border-radius: 999px;
+      padding: 7px 16px; cursor: pointer;
+    }
+    .pro-skip:hover { color: #ede8dc; border-color: rgba(236,233,224,.45); }
+  </style>
+</head>
+<body>
+  <div id="top"></div>
+
+  <!-- ============ PROLOGUE ============ -->
+  <div id="prologue" role="dialog" aria-label="Introduction">
+    <div class="pro-inner">
+      <p class="pro-line">Paul Erdős owned almost nothing.</p>
+      <p class="pro-line">He wandered between universities with a suitcase,<br>a head full of open problems — and prizes in his pocket.</p>
+      <p class="pro-line">A problem. A number. Payable from his own pocket<br>to anyone audacious enough to solve it.</p>
+      <p class="pro-line">No committee. No gatekeeper.<br><em>The proof was the settlement rule.</em></p>
+      <div class="pro-mark">
+        <div class="pro-h4" aria-hidden="true"></div>
+        <span class="pro-brand">P42&nbsp;Prizes</span>
+        <span class="pro-tag">The proof is the re-run</span>
+      </div>
+      <div class="pro-cue">scroll to begin the flight</div>
+    </div>
+    <button class="pro-skip" type="button">Skip</button>
+  </div>
+
+  <div class="p42-grain" aria-hidden="true"></div>
+
+  <div id="world"></div>
+
+  <script src="/prizes/intro/assets/scrub-engine.js"></script>
+  <script>
+    mountScrollWorld(document.getElementById('world'), {
+      "brand": { "name": "P42 Prizes", "href": "#top" },
+      "cta":   { "label": "Enter the prizes", "href": "/prizes" },
+      "hint": "scroll to fly",
+      "nav": true,
+      "atmosphere": false,
+      "diveScroll": 1.3,
+      "crossfade": 0.08,
+      "sections": [
+        {
+          "id": "stone", "label": "The stone",
+          "still": "/prizes/intro/assets/stone.webp",
+          "clip": "/prizes/intro/assets/vid/stone.mp4", "clipMobile": "/prizes/intro/assets/vid/stone-m.mp4",
+          "accent": "#de7566",
+          "eyebrow": "Plate I · In the beginning",
+          "title": "A disagreement with the given",
+          "body": "Somewhere deep in our beginning, a hand closed around a stone and imagined an edge that was not there yet.",
+          "tags": [],
+          "scroll": 1.7, "linger": 0.45
+        },
+        {
+          "id": "intention", "label": "The mark",
+          "still": "/prizes/intro/assets/intention.webp",
+          "clip": "/prizes/intro/assets/vid/intention.mp4", "clipMobile": "/prizes/intro/assets/vid/intention-m.mp4",
+          "accent": "#de7566",
+          "eyebrow": "Plate II · The wager",
+          "title": "Matter can hold intention",
+          "body": "A rock can become an edge. A mark can become memory. A proof can become trust. Sand can become a mind — and a mind can be held to a standard.",
+          "tags": [],
+          "scroll": 1.25
+        },
+        {
+          "id": "erdos", "label": "The suitcase",
+          "still": "/prizes/intro/assets/erdos.webp",
+          "clip": "/prizes/intro/assets/vid/erdos.mp4", "clipMobile": "/prizes/intro/assets/vid/erdos-m.mp4",
+          "accent": "#de7566",
+          "eyebrow": "Plate III · The suitcase",
+          "title": "The proof was the settlement rule",
+          "body": "Erdős posed a problem and pinned a number to it — payable from his own pocket to whoever solved it. No committee. No gatekeeper. The money was never the point; the protocol was.",
+          "tags": [],
+          "scroll": 1.25
+        },
+        {
+          "id": "waiting", "label": "The archive",
+          "still": "/prizes/intro/assets/waiting.webp",
+          "clip": "/prizes/intro/assets/vid/waiting.mp4", "clipMobile": "/prizes/intro/assets/vid/waiting-m.mp4",
+          "accent": "#de7566",
+          "eyebrow": "Plate IV · The long wait",
+          "title": "His problems outlived him",
+          "body": "Erdős died; his problems did not. They moved into journals, inboxes, and the memories of mathematicians — waiting for the number of minds able to attack them to change.",
+          "tags": [],
+          "scroll": 1.25
+        },
+        {
+          "id": "flood", "label": "The flood",
+          "still": "/prizes/intro/assets/flood.webp",
+          "clip": "/prizes/intro/assets/vid/flood.mp4", "clipMobile": "/prizes/intro/assets/vid/flood-m.mp4",
+          "accent": "#de7566",
+          "eyebrow": "Plate V · Machine mathematics",
+          "title": "Abundance, and then a flood",
+          "body": "Machines now produce frontier mathematics faster than any review culture was built to absorb. That abundance is a gift. Without a trust layer, it is a flood.",
+          "tags": [],
+          "scroll": 1.5, "linger": 0.3
+        },
+        {
+          "id": "verifier", "label": "The verifier",
+          "still": "/prizes/intro/assets/verifier.webp",
+          "clip": "/prizes/intro/assets/vid/verifier.mp4", "clipMobile": "/prizes/intro/assets/vid/verifier-m.mp4",
+          "accent": "#de7566",
+          "eyebrow": "Plate VI · The hard boundary",
+          "title": "The claim is not the score",
+          "body": "An independent verifier reconstructs every result from raw evidence, recomputes every constraint, and returns a deterministic verdict. The proof is the re-run.",
+          "tags": [],
+          "scroll": 1.6, "linger": 0.5
+        },
+        {
+          "id": "register", "label": "The register",
+          "still": "/prizes/intro/assets/register.webp",
+          "clip": "/prizes/intro/assets/vid/register.mp4", "clipMobile": "/prizes/intro/assets/vid/register-m.mp4",
+          "accent": "#de7566",
+          "eyebrow": "Plate VII · The register is open",
+          "title": "The suitcase becomes infrastructure",
+          "body": "The pocket check becomes a pool. The proof becomes a public object no one has to believe — because anyone can run it. Welcome to P42 Prizes.",
+          "tags": [ "Open problems", "Open verifiers", "Anyone may rerun" ],
+          "scroll": 1.9, "linger": 0.55,
+          "cta": {
+            "primary":   { "label": "Enter the register", "href": "/prizes/register" },
+            "secondary": { "label": "Run a verifier",     "href": "/prizes/journey" }
+          }
+        }
+      ],
+      "connectors": []
+    });
+  </script>
+
+  <script>
+    /* ---------- copy-reveal watcher ----------
+       The engine drives each plate's opacity from scroll; we mirror that into a class
+       so the children can stagger in. Hysteresis (on >0.4, off <0.05) so a plate
+       replays its reveal only after fully leaving the stage. */
+    /* QA pose mode: freeze all transitions/animations so headless captures show settled states */
+    (function () {
+      if (new URLSearchParams(location.search).has('pose')) {
+        var st = document.createElement('style');
+        st.textContent = '*,*::before,*::after{transition:none!important;animation:none!important}';
+        document.head.appendChild(st);
+      }
+    })();
+
+    (function () {
+      document.body.classList.add('p42-anim');
+      var arts = Array.prototype.slice.call(document.querySelectorAll('#world article'));
+      function tick() {
+        for (var i = 0; i < arts.length; i++) {
+          /* the engine writes opacity inline every frame — reading el.style is free,
+             no forced style flush (getComputedStyle here would thrash layout) */
+          var op = +arts[i].style.opacity || 0;
+          if (op > 0.4) arts[i].classList.add('p42-live');
+          else if (op < 0.05) arts[i].classList.remove('p42-live');
+        }
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    })();
+
+    /* ---------- prologue sequencer ---------- */
+    (function () {
+      var pro = document.getElementById('prologue');
+      if (!pro) return;
+      var q = new URLSearchParams(location.search);
+      if (q.has('skip') || matchMedia('(prefers-reduced-motion: reduce)').matches) { pro.remove(); return; }
+      if (q.has('y')) {
+        pro.remove();
+        addEventListener('load', function () {
+          setTimeout(function () {
+            window.scrollTo(0, +q.get('y') || 0);
+            dispatchEvent(new Event('scroll'));
+          }, 300);
+        });
+        return;
+      }
+
+      document.documentElement.style.overflow = 'hidden';
+      window.scrollTo(0, 0);
+
+      var lines = Array.prototype.slice.call(pro.querySelectorAll('.pro-line'));
+      var mark  = pro.querySelector('.pro-mark');
+      var cue   = pro.querySelector('.pro-cue');
+      var idx = -1, timer = null, atMark = false, done = false;
+
+      function next() {
+        if (done) return;
+        if (idx >= 0 && idx < lines.length) { lines[idx].classList.remove('on'); lines[idx].classList.add('off'); }
+        idx++;
+        if (idx < lines.length) {
+          lines[idx].classList.add('on');
+          timer = setTimeout(next, idx === lines.length - 1 ? 3000 : 2400);
+        } else {
+          atMark = true;
+          mark.classList.add('on');
+          setTimeout(function () { cue.classList.add('on'); }, 1000);
+        }
+      }
+
+      function dismiss() {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        pro.classList.add('leave');
+        document.documentElement.style.overflow = '';
+        window.scrollTo(0, 0);
+        setTimeout(function () { pro.remove(); }, 1000);
+      }
+
+      /* first gesture fast-forwards to the mark; the next one begins the flight */
+      function advance() {
+        if (done) return;
+        if (!atMark) {
+          clearTimeout(timer);
+          lines.forEach(function (l) { l.classList.remove('on'); l.classList.add('off'); });
+          idx = lines.length; atMark = true;
+          mark.classList.add('on'); cue.classList.add('on');
+        } else {
+          dismiss();
+        }
+      }
+
+      pro.addEventListener('click', advance);
+      addEventListener('wheel', advance, { passive: true });
+      addEventListener('touchstart', advance, { passive: true });
+      addEventListener('keydown', advance);
+      pro.querySelector('.pro-skip').addEventListener('click', function (e) { e.stopPropagation(); dismiss(); });
+
+      setTimeout(next, 600);
+    })();
+  </script>
+</body>
+</html>

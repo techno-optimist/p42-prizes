@@ -34,6 +34,30 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      {
+        // The /intro cinematic splash (static, public/intro/) scrubs pre-rendered
+        // video through blob: object URLs created from same-origin fetches, which
+        // the site-wide policy's default-src fallback would block. This rule is
+        // scoped to /intro only and differs from the global CSP solely by the
+        // added `media-src 'self' blob:`; the other security headers still come
+        // from the global rule above.
+        source: "/intro/:path*",
+        headers: [
+          {
+            key: "Content-Security-Policy",
+            value:
+              "default-src 'self'; img-src 'self' data:; media-src 'self' blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+          },
+        ],
+      },
+    ];
+  },
+  async rewrites() {
+    return [
+      // Serve the standalone splash at the bare URL (public route: /prizes/intro).
+      // public/ files only resolve by exact path, so map the directory URL to its
+      // index document; asset refs inside it are absolute (/prizes/intro/assets/…).
+      { source: "/intro", destination: "/intro/index.html" },
     ];
   },
 };
