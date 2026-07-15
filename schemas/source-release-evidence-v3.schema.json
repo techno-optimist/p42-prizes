@@ -91,7 +91,7 @@
       "required": ["baselineObservedHead", "commits"],
       "properties": {
         "baselineObservedHead": {"$ref": "#/$defs/commit"},
-        "commits": {"type": "array", "items": {"$ref": "#/$defs/deployCommit"}}
+        "commits": {"type": "array", "items": {"$ref": "#/$defs/sourceCommit"}}
       }
     },
     "render": {
@@ -155,7 +155,7 @@
         "bodySha256": {"$ref": "#/$defs/hash"}
       }
     },
-    "deployCommit": {
+    "sourceCommit": {
       "type": "object", "additionalProperties": false,
       "required": ["commit", "firstParent", "tree", "changedPathsSha256", "authorization"],
       "properties": {

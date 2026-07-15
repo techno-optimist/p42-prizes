@@ -178,6 +178,10 @@ class CurrentFakeGit:
         self.extra_job = False
         self.pulls: list[dict] | None = None
         self.reviews: list[dict] | None = None
+        self.changed_paths = {
+            GENESIS_PUBLICATION: [CANONICAL_PATH],
+            DEPLOY: ["web/index.html"],
+        }
 
     def __call__(self, command: list[str], cwd: Path) -> str:
         del cwd
@@ -216,7 +220,7 @@ class CurrentFakeGit:
                 return mapping[spec]
         if command[:2] == ["git", "diff-tree"]:
             commit = command[-1]
-            return "web/index.html" if commit == DEPLOY else CANONICAL_PATH
+            return "\n".join(self.changed_paths[commit])
         if command[:3] == ["git", "ls-tree", "-r"]:
             return self.fixture.closure_listing
         if command[:4] == ["git", "log", "--first-parent", "-1"]:
@@ -238,6 +242,8 @@ class CurrentFakeGit:
                 return HEAD
             if command[2] == "--paginate":
                 reviews = self.reviews if self.reviews is not None else [{
+                    "id": 1,
+                    "submitted_at": "2026-07-15T02:00:00Z",
                     "state": "APPROVED",
                     "commit_id": PR_HEAD,
                     "user": {"login": "independent-reviewer"},
@@ -277,7 +283,7 @@ class CurrentFakeGit:
             return json.dumps([{
                 "id": "dep-v3test",
                 "status": "live",
-                "commit": {"id": DEPLOY},
+                "commit": {"id": self.fixture.report["render"]["liveCommit"]},
                 "trigger": "new_commit",
                 "finishedAt": "2026-07-15T03:58:00Z",
             }])
@@ -838,6 +844,82 @@ def test_latest_exact_head_review_state_is_authoritative(current: CurrentFixture
         },
     ]
     with pytest.raises(SourceReleaseEvidenceError, match="exact-head non-author approval"):
+        current.validate()
+
+
+def _configure_non_render_interval(current: CurrentFixture, paths: list[str]) -> None:
+    current.runner.changed_paths[DEPLOY] = paths
+    current.report["deployRelevantCommit"] = GENESIS_OBSERVED
+    current.report["render"]["runtimeCommit"] = GENESIS_OBSERVED
+    current.report["render"]["liveCommit"] = GENESIS_OBSERVED
+    current.report["deployProvenance"]["commits"][0]["changedPathsSha256"] = sha256_bytes(
+        ("\n".join(sorted(paths)) + "\n").encode()
+    )
+    current.write_report()
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "contracts/src/P42BountyPool.sol",
+        "src/p42_prizes/verifier.py",
+        ".github/workflows/ci.yml",
+        "problems/hadamard-668-defect.json",
+        "schemas/problem.schema.json",
+    ],
+)
+def test_direct_source_changes_require_authorization_even_when_render_is_unchanged(
+    current: CurrentFixture,
+    path: str,
+) -> None:
+    _configure_non_render_interval(current, [path])
+    result = current.validate()
+    assert result["derived"]["authorizedSourceCommits"] == [DEPLOY]
+    assert result["derived"]["deployRelevantCommits"] == []
+
+    current.report["deployProvenance"]["commits"] = []
+    current.write_report()
+    with pytest.raises(SourceReleaseEvidenceError, match="every authorization-required"):
+        current.validate()
+
+
+def test_nonempty_all_evidence_commit_is_exempt_but_mixed_commit_is_not(
+    current: CurrentFixture,
+) -> None:
+    _configure_non_render_interval(current, [CANONICAL_PATH])
+    current.report["deployProvenance"]["commits"] = []
+    current.write_report()
+    result = current.validate()
+    assert result["derived"]["authorizedSourceCommits"] == []
+    assert result["derived"]["deployRelevantCommits"] == []
+
+    current.runner.changed_paths[DEPLOY] = [CANONICAL_PATH, "schemas/problem.schema.json"]
+    current.write_report()
+    with pytest.raises(SourceReleaseEvidenceError, match="every authorization-required"):
+        current.validate()
+
+
+def test_empty_first_parent_commit_still_requires_authorization(
+    current: CurrentFixture,
+) -> None:
+    _configure_non_render_interval(current, [])
+    assert current.validate()["derived"]["authorizedSourceCommits"] == [DEPLOY]
+
+    current.report["deployProvenance"]["commits"] = []
+    current.write_report()
+    with pytest.raises(SourceReleaseEvidenceError, match="every authorization-required"):
+        current.validate()
+
+
+def test_approval_submitted_after_merge_is_rejected(current: CurrentFixture) -> None:
+    current.runner.reviews = [{
+        "id": 12,
+        "submitted_at": "2026-07-15T03:00:01Z",
+        "state": "APPROVED",
+        "commit_id": PR_HEAD,
+        "user": {"login": "independent-reviewer"},
+    }]
+    with pytest.raises(SourceReleaseEvidenceError, match="approval submitted after merge"):
         current.validate()
 
 

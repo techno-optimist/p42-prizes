@@ -663,10 +663,19 @@ def _validate_v3_source_release_evidence(
     provenance = _mapping(report["deployProvenance"], "deployProvenance")
     if provenance.get("baselineObservedHead") != baseline:
         raise SourceReleaseEvidenceError("deployProvenance baseline must equal previous observed head")
-    derived_commits = _derive_deploy_commits(baseline, observed_head, root, command_runner)
+    derived_commits, derived_deploy_commits = _derive_source_commits(
+        baseline,
+        observed_head,
+        evidence_only_paths=policy["evidenceOnlyPaths"],
+        deploy_relevant_paths=policy["deployRelevantPaths"],
+        root=root,
+        runner=command_runner,
+    )
     declared_commits = provenance.get("commits")
     if not isinstance(declared_commits, list) or len(declared_commits) != len(derived_commits):
-        raise SourceReleaseEvidenceError("deployProvenance must enumerate every deploy-relevant commit")
+        raise SourceReleaseEvidenceError(
+            "deployProvenance must enumerate every authorization-required first-parent source commit"
+        )
     bootstrap_digests: set[str] = set()
     for index, (declared, derived) in enumerate(zip(declared_commits, derived_commits, strict=True)):
         _validate_deploy_commit(
@@ -681,9 +690,15 @@ def _validate_v3_source_release_evidence(
         root=root,
         now_utc=now_utc,
     )
-    expected_deploy = derived_commits[-1]["commit"] if derived_commits else _previous_deploy_commit(previous)
+    expected_deploy = (
+        derived_deploy_commits[-1]["commit"]
+        if derived_deploy_commits
+        else _previous_deploy_commit(previous)
+    )
     if deploy_commit != expected_deploy:
-        raise SourceReleaseEvidenceError("deployRelevantCommit does not equal the complete derived deploy lineage")
+        raise SourceReleaseEvidenceError(
+            "deployRelevantCommit does not equal the latest Render-relevant first-parent commit"
+        )
 
     _validate_v3_workflow(report["ci"], observed_head, policy, root, command_runner, blob_reader)
     render = _mapping(report["render"], "render")
@@ -716,7 +731,8 @@ def _validate_v3_source_release_evidence(
         "runtimeCommit": deploy_commit,
         "evidencePublicationCommit": publication_commit,
         "previousObservedHead": baseline,
-        "deployRelevantCommits": [item["commit"] for item in derived_commits],
+        "authorizedSourceCommits": [item["commit"] for item in derived_commits],
+        "deployRelevantCommits": [item["commit"] for item in derived_deploy_commits],
         "onlineVerified": True,
         "validationMode": "current",
     }
@@ -992,15 +1008,23 @@ def _previous_deploy_commit(previous: Mapping[str, Any]) -> str:
     return _commit(previous.get("deployRelevantCommit"), "previous deployRelevantCommit")
 
 
-def _derive_deploy_commits(
-    baseline: str, observed: str, root: Path, runner: CommandRunner,
-) -> list[dict[str, str]]:
+def _derive_source_commits(
+    baseline: str,
+    observed: str,
+    *,
+    evidence_only_paths: Sequence[str],
+    deploy_relevant_paths: Sequence[str],
+    root: Path,
+    runner: CommandRunner,
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     commits = [
         line for line in runner(
             ["git", "rev-list", "--first-parent", "--reverse", f"{baseline}..{observed}"], root
         ).splitlines() if line
     ]
-    result: list[dict[str, str]] = []
+    authorization_required: list[dict[str, str]] = []
+    deploy_relevant: list[dict[str, str]] = []
+    evidence_only = set(evidence_only_paths)
     for commit in commits:
         commit = _commit(commit, "derived first-parent commit")
         parent = _commit(runner(["git", "rev-parse", f"{commit}^1"], root), "derived first parent")
@@ -1010,14 +1034,21 @@ def _derive_deploy_commits(
                 ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", "--no-renames", parent, commit], root
             ).splitlines() if line
         })
-        if any(path == "render.yaml" or path.startswith("web/") for path in paths):
-            result.append({
-                "commit": commit,
-                "firstParent": parent,
-                "tree": tree,
-                "changedPathsSha256": sha256_bytes(("\n".join(paths) + "\n").encode("utf-8")),
-            })
-    return result
+        row = {
+            "commit": commit,
+            "firstParent": parent,
+            "tree": tree,
+            "changedPathsSha256": sha256_bytes(("\n".join(paths) + "\n").encode("utf-8")),
+        }
+        if any(
+            path == prefix or path.startswith(prefix + "/")
+            for path in paths
+            for prefix in deploy_relevant_paths
+        ):
+            deploy_relevant.append(row)
+        if not paths or not set(paths).issubset(evidence_only):
+            authorization_required.append(row)
+    return authorization_required, deploy_relevant
 
 
 def _validate_deploy_commit(
@@ -1055,7 +1086,9 @@ def _validate_deploy_commit(
         digest = _digest(authorization.get("artifactSha256"), "bootstrap artifactSha256")
         bootstrap_digests.add(digest)
         return
-    raise SourceReleaseEvidenceError("deploy commit lacks PR or explicit bootstrap-ratification authorization")
+    raise SourceReleaseEvidenceError(
+        "source commit lacks PR or explicit bootstrap-ratification authorization"
+    )
 
 
 def _validate_bootstrap_intervals(
@@ -1103,7 +1136,9 @@ def _validate_bootstrap_intervals(
             first_index = all_commits.index(interval["firstCommit"])
             last_index = all_commits.index(interval["lastCommit"])
         except ValueError as exc:
-            raise SourceReleaseEvidenceError("bootstrap interval is outside derived deploy history") from exc
+            raise SourceReleaseEvidenceError(
+                "bootstrap interval is outside derived authorization-required source history"
+            ) from exc
         if first_index > last_index or covered != all_commits[first_index:last_index + 1]:
             raise SourceReleaseEvidenceError("bootstrap interval is not closed and contiguous")
         interval_derived = derived_commits[first_index:last_index + 1]
@@ -1646,8 +1681,13 @@ def _validate_v3_online(
             and pr.get("head", {}).get("sha") == authorization["headSha"]
         )]
         if len(matching) != 1:
-            raise SourceReleaseEvidenceError("deploy-relevant direct push lacks exact reviewed PR coverage")
+            raise SourceReleaseEvidenceError(
+                "authorization-required direct push lacks exact reviewed PR coverage"
+            )
         pull_request = matching[0]
+        merged_at = _parse_utc(
+            pull_request.get("merged_at"), "GitHub PR merged_at"
+        )
         pr_head_tree = _commit(command_runner([
             "git", "rev-parse", f"{authorization['headSha']}^{{tree}}"
         ], root), "pull-request head tree")
@@ -1671,16 +1711,28 @@ def _validate_v3_online(
         author = pull_request.get("user", {}).get("login")
         if not isinstance(author, str) or not author:
             raise SourceReleaseEvidenceError("GitHub PR author identity is missing")
-        approvals = {
-            login for login, review in latest_by_reviewer.items()
+        approval_candidates = {
+            login: review for login, review in latest_by_reviewer.items()
             if login in review_policy["allowedReviewerLogins"]
             and login != author
             and review.get("state") == "APPROVED"
             and review.get("commit_id") == authorization["headSha"]
         }
+        approval_times = {
+            login: _parse_utc(review.get("submitted_at"), "GitHub review submitted_at")
+            for login, review in approval_candidates.items()
+        }
+        approvals = {
+            login for login, submitted_at in approval_times.items()
+            if submitted_at <= merged_at
+        }
         if len(approvals) < review_policy["minimumApprovals"]:
+            if any(submitted_at > merged_at for submitted_at in approval_times.values()):
+                raise SourceReleaseEvidenceError(
+                    "pull-request approval submitted after merge cannot authorize the source commit"
+                )
             raise SourceReleaseEvidenceError(
-                "deploy PR lacks exact-head non-author approval from external review policy"
+                "source PR lacks exact-head non-author approval from external review policy"
             )
 
     render = _mapping(report["render"], "render")
