@@ -5,6 +5,7 @@ import { mkdir, readFile } from "node:fs/promises";
 import { dirname, relative, resolve, sep } from "node:path";
 
 import { artifacts, network } from "hardhat";
+import { ethers as ethersLibrary } from "ethers";
 import {
   computeProductionReleaseEvidence,
   validateManifestEvidence,
@@ -143,7 +144,7 @@ async function readMultiBoardCeremonyInput() {
   }
 }
 
-async function productionReleaseInputs(ethers, repoRoot, deploymentCommit) {
+async function productionReleaseInputs(repoRoot, deploymentCommit) {
   const outputRoot = resolve(requiredEnv("P42_RELEASE_OUTPUT_ROOT"));
   const withinOutput = (name) => {
     const path = resolve(requiredEnv(name)); const rel = relative(outputRoot, path);
@@ -171,7 +172,7 @@ async function productionReleaseInputs(ethers, repoRoot, deploymentCommit) {
     throw new Error("production objective verifier artifact must remain below P42_RELEASE_EVIDENCE_ROOT");
   }
   const objectiveVerifierArtifact = await readContractsArtifactJsonTrustedPublic(objectiveVerifierArtifactPath, evidenceRoot);
-  assertObjectiveVerifierCapsuleBinding(ethers, capsule, slate, objectiveVerifierArtifact);
+  assertObjectiveVerifierCapsuleBinding(ethersLibrary, capsule, slate, objectiveVerifierArtifact);
   return { slate, capsule, index, slatePath, capsulePath, indexPath };
 }
 
@@ -735,7 +736,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const repoRoot = resolve(process.cwd(), "..");
   assertCleanGitTree(repoRoot);
   const deploymentCommit = gitCommit(repoRoot);
-  const release = releaseMode === "production" ? await productionReleaseInputs(ethers, repoRoot, deploymentCommit) : null;
+  const release = releaseMode === "production" ? await productionReleaseInputs(repoRoot, deploymentCommit) : null;
   config = bindReleaseMode(config, { releaseMode, slate: release?.slate });
   const admissionPreflight = release
     ? validateProductionSlatePreflight(ethers, release.slate, config, { repoRoot, evidenceRoot: resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT")) })

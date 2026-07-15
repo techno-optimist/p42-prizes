@@ -89,6 +89,9 @@ describe("production deployment runbook command contract", () => {
     }));
 
     assert.match(executable, /mode === "deploy-multiboard-production"/);
+    assert.match(executable, /async function productionReleaseInputs\(repoRoot, deploymentCommit\)/);
+    assert.match(executable, /assertObjectiveVerifierCapsuleBinding\(ethersLibrary, capsule, slate, objectiveVerifierArtifact\)/);
+    assert.doesNotMatch(executable, /productionReleaseInputs\(ethers,/);
     assert.match(executable, /P42_EXPECTED_DEPLOYER_ADDRESS/);
     assert.match(executable, /readManifestOutputReservation\(reservationIdentity\)/);
     assert.match(executable, /factoryCreation:\s*\{/);
