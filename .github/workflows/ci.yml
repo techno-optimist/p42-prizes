@@ -199,6 +199,22 @@ jobs:
           path: objective-programs/target/a11-reproducibility
           if-no-files-found: error
           retention-days: 7
+      - name: Capture candidate Hadamard mock execution
+        working-directory: objective-programs
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked -p p42-hadamard-668-objective-script -- \
+            execute-fixture-elf target/hadamard-reproducibility/program.elf \
+            ../problems/hadamard-668-defect/examples/sylvester-prefix.json \
+            > target/hadamard-reproducibility/execution.json
+      - name: Retain candidate Hadamard evidence for cross-image audit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/hadamard-reproducibility
+          if-no-files-found: error
+          retention-days: 7
       - name: Enforce frozen guest identity
         working-directory: objective-programs
         shell: bash
@@ -209,22 +225,6 @@ jobs:
           frozen=artifacts/hadamard-668-defect/v0.1.0/program.elf
           cmp --silent "$rebuilt" "$frozen"
           echo "bf4cd633d5c0a27a772ed4f2beffb8b4a8fffb6a1380550ae45c46c9073439f1  $frozen" | sha256sum --check --strict
-      - name: Capture candidate Hadamard mock execution
-        working-directory: objective-programs
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo run --locked -p p42-hadamard-668-objective-script -- \
-            execute-fixture-elf artifacts/hadamard-668-defect/v0.1.0/program.elf \
-            ../problems/hadamard-668-defect/examples/sylvester-prefix.json \
-            > target/hadamard-reproducibility/execution.json
-      - name: Retain candidate Hadamard evidence for cross-image audit
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: p42-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
-          path: objective-programs/target/hadamard-reproducibility
-          if-no-files-found: error
-          retention-days: 7
       - name: Verify frozen ELF and independently derive vkey
         run: python scripts/verify-sp1-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
       - name: Verify deterministic resource envelope
