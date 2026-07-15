@@ -14,8 +14,10 @@ The workspace also contains an unbound `distinct-subset-sums-a11` guest. It
 parses the verifier's finite JSON field set, requires optional metadata to be
 Unicode strings, rejects unknown or duplicate root keys, and checks all 2,048
 subset sums with checked integer addition. Its production-board guest record
-remains `missing` until a reproducible ELF, vkey, mock execution, and
-deterministic resource profile are frozen and locally validated.
+remains deliberately `missing`: the frozen ELF, vkey, mock execution, and
+deterministic resource profile are source-side evidence only, not a production
+binding or proof. Activation still requires the independent reproduction,
+review, audit, authorization, and deployment gates listed below.
 
 This source does **not** activate production objective proofs. Ubuntu 22.04 and
 24.04 GitHub-hosted x86 runners now reproduce the same frozen ELF and vkey, and

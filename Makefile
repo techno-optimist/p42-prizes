@@ -184,11 +184,18 @@ contracts-test:
 objective-core-test:
 	@cd objective-programs && cargo test --locked -p p42-objective-core
 
-objective-program-gates: objective-core-test verify-sp1-objective-artifact verify-sp1-objective-resource-profile
+objective-program-gates: objective-core-test \
+	verify-sp1-objective-artifact \
+	verify-sp1-a11-objective-artifact \
+	verify-sp1-objective-resource-profile
 
 verify-sp1-objective-artifact:
 	@test -n "$(P42_CARGO_PROVE)" || (echo "P42_CARGO_PROVE must name the pinned SP1 v6.1 cargo-prove binary" >&2; exit 2)
 	@$(PYTHON) scripts/verify-sp1-objective-artifact.py --cargo-prove "$(P42_CARGO_PROVE)"
+
+verify-sp1-a11-objective-artifact:
+	@test -n "$(P42_CARGO_PROVE)" || (echo "P42_CARGO_PROVE must name the pinned SP1 v6.1 cargo-prove binary" >&2; exit 2)
+	@$(PYTHON) scripts/verify-sp1-a11-objective-artifact.py --cargo-prove "$(P42_CARGO_PROVE)"
 
 verify-sp1-objective-resource-profile:
 	@$(PYTHON) scripts/verify-sp1-objective-resource-profile.py
