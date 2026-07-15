@@ -92,6 +92,11 @@ It fails closed unless all of the following agree:
 3. The Render origin and `projectforty2.ai` proxy return success for all prize
    routes required by the portal.
 
+The guard currently makes 12 HTTP probes: paired Render/public checks for the
+portal home, cinematic intro, Build Week archive, problems API, and capability
+API, plus public checks for standings and the agent skill. HTML probes require
+stable page identity markers, and every paired response must be equivalent.
+
 The guard requires an authenticated `render` CLI and the canonical `origin`
 remote. An isolated checkout can pass its GitHub remote explicitly:
 
