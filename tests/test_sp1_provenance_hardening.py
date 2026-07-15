@@ -76,6 +76,8 @@ def prepare_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CARGO_INCREMENTAL", "0")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv(
         "PATH", f"{tmp_path / 'home'}/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
@@ -104,6 +106,7 @@ def test_captures_and_revalidates_approved_toolchain_bytes(
     assert evidence["trust"] == "candidate-build-inputs-only"
     assert evidence["buildIsolation"]["targetInitiallyAbsent"] is True
     assert evidence["guestToolchain"]["regularFileCount"] == 3
+    assert evidence["guestToolchain"]["directoryCount"] == 2
     assert evidence["guestToolchain"]["symlinkCount"] == 1
     assert evidence["guestToolchain"]["hardlinkCount"] == 1
 
@@ -191,6 +194,41 @@ def test_postbuild_detects_sysroot_mode_drift(
         verifier.validate_build_provenance(path, **arguments)
 
 
+def test_archive_rejects_unsafe_directory_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier, _ = prepare_inputs(tmp_path, monkeypatch)
+    archive_path = tmp_path / "unsafe-directory.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        member = tarfile.TarInfo("../../escape")
+        member.type = tarfile.DIRTYPE
+        archive.addfile(member)
+    with pytest.raises(SystemExit, match="unsafe"):
+        verifier.archive_fingerprint(archive_path)
+
+
+def test_directory_mode_is_fingerprinted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    before = verifier.directory_fingerprint(arguments["guest_sysroot"])
+    (arguments["guest_sysroot"] / "lib").chmod(0o700)
+    after = verifier.directory_fingerprint(arguments["guest_sysroot"])
+    assert before != after
+
+
+def test_installer_write_bit_normalization_preserves_build_input_fingerprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    before = verifier.directory_fingerprint(arguments["guest_sysroot"])
+    (arguments["guest_sysroot"] / "lib").chmod(0o775)
+    (arguments["guest_sysroot"] / "lib/data").chmod(0o664)
+    after = verifier.directory_fingerprint(arguments["guest_sysroot"])
+    assert before == after
+    assert after["modePolicy"] == "read-execute-bits"
+
+
 @pytest.mark.parametrize(
     "name",
     ["CARGO_HOME", "RUSTUP_HOME", "RUSTC", "RUSTDOCFLAGS", "LD_PRELOAD", "PYTHONPATH"],
@@ -219,7 +257,9 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     assert workflow.index("Capture untrusted SP1 build-input observation") < workflow.index(
         "Validate clean SP1 build-input provenance"
     )
-    assert workflow.count('clean_env=(env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0)') >= 2
+    assert workflow.count("clean_env=(/usr/bin/env -i HOME=\"$HOME\"") >= 2
+    assert workflow.count("GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1") >= 7
+    assert workflow.count("/usr/bin/python3 scripts/verify-sp1") >= 2
     assert workflow.count('--cargo-home "$HOME/.cargo"') == 3
     build_step = workflow[
         workflow.index("Build objective guests on x86 Linux") : workflow.index(
@@ -235,6 +275,7 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
         )
     ]
     assert "objective-programs/target" not in cache
+    assert "~/.cargo/git" not in cache
 
 
 def test_canonical_identities_and_arm_source_build_boundary_remain_frozen() -> None:
