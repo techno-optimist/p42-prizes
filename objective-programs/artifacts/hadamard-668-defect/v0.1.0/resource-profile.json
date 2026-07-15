@@ -21,11 +21,11 @@
     "path": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
     "bytes": 113745,
     "sha256": "sha256:4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6",
-    "mockInstructionCount": 53335905
+    "mockInstructionCount": 53275736
   },
   "reproduction": {
-    "guestElfSha256": "sha256:991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a",
-    "programVKey": "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7",
+    "guestElfSha256": "sha256:bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2",
+    "programVKey": "0x0033a3faf11b262f60eef30a05dd947d041abac572bdce6ea9e7f0efe678a869",
     "sourceBuildImages": [
       "ubuntu-22.04",
       "ubuntu-24.04"

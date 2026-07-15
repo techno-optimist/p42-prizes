@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 
 import jsonschema
+import pytest
 
 
 PROBLEM = Path(__file__).resolve().parents[1]
@@ -113,6 +114,56 @@ def test_malformed_json_fails_closed() -> None:
     assert code != 0
     assert report["valid"] is False
     assert report["reason"] == "MALFORMED_JSON"
+
+
+def test_verifier_rejects_unknown_root_fields(tmp_path: Path) -> None:
+    solution = tmp_path / "unknown-root.json"
+    solution.write_text(
+        json.dumps(
+            {
+                "set": [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024],
+                "unknown": {"nested": [1, True, None]},
+                "unknown_big_integer": 10**512,
+            }
+        ),
+        encoding="utf-8",
+    )
+    code, report = run_verify(solution)
+    assert code != 0
+    assert report["reason"] == "MALFORMED"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '{"set":[1,2,4,8,16,32,64,128,256,512,1024],"set":[]}',
+        '{"set":[1,2,4,8,16,32,64,128,256,512,1024],"source":"x","source":"y"}',
+    ),
+)
+def test_duplicate_keys_fail_for_allowed_root_fields(
+    tmp_path: Path, raw: str
+) -> None:
+    solution = tmp_path / "duplicate-key.json"
+    solution.write_text(raw, encoding="utf-8")
+    code, report = run_verify(solution)
+    assert code != 0
+    assert report["reason"] == "MALFORMED_JSON"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        '{"set":[1,2,4,8,16,32,64,128,256,512,1024],"source":{"nested":[]}}',
+        '{"set":[1,2,4,8,16,32,64,128,256,512,1024],"claimed_score":1}',
+        '{"set":[1,2,4,8,16,32,64,128,256,512,1024],"source":"\\ud800"}',
+    ),
+)
+def test_metadata_language_is_finite_and_unicode_safe(tmp_path: Path, raw: str) -> None:
+    solution = tmp_path / "bad-metadata.json"
+    solution.write_bytes(raw.encode("utf-8"))
+    code, report = run_verify(solution)
+    assert code != 0
+    assert report["reason"] == "MALFORMED"
 
 
 def test_boolean_entries_are_not_integers(tmp_path: Path) -> None:

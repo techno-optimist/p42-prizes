@@ -1,19 +1,24 @@
 {
   "schema": "p42-objective-execution/v1",
-  "status": "single-host-mock-execution",
+  "status": "dual-glibc-x86-mock-execution",
   "proofKind": "none",
-  "identitySha256": "sha256:7b4365d47b05cb3005647791da7bc2b05068b27c5e6a422f502f00dde64f921f",
-  "guestElfSha256": "sha256:991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a",
-  "programVKey": "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7",
+  "identitySha256": "sha256:96000b471e57db076cf631e2cc42a69aa81d44ff99651e78ea4273f343a0f516",
+  "guestElfSha256": "sha256:bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2",
+  "programVKey": "0x0033a3faf11b262f60eef30a05dd947d041abac572bdce6ea9e7f0efe678a869",
   "solutionPath": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
   "solutionSha256": "sha256:4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6",
   "correctedChallengerWins": true,
-  "journalDigest": "0x2075a1869943196cfdc2e9fa5dc71ab202d903c4b20ec5a22a2e518a69e16b72",
+  "journalDigest": "0xf9be0e1ef3a8990ff478ee36b5890d3d9cf30b269269094f3f28b1b02f715546",
   "publicValuesBytes": 32,
-  "totalInstructionCount": "53335905",
+  "totalInstructionCount": "53275736",
   "executionHost": {
-    "os": "darwin",
-    "architecture": "arm64"
+    "os": "linux",
+    "architecture": "x86_64",
+    "images": [
+      "ubuntu-22.04",
+      "ubuntu-24.04"
+    ],
+    "operator": "github-actions"
   },
-  "executedAt": "2026-07-14T02:47:39Z"
+  "executedAt": "2026-07-15T05:53:04Z"
 }

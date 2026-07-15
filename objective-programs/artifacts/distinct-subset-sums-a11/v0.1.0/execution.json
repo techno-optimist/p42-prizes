@@ -1,0 +1,24 @@
+{
+  "schema": "p42-objective-execution/v1",
+  "status": "dual-glibc-x86-mock-execution",
+  "proofKind": "none",
+  "identitySha256": "sha256:a97e484c952cc10f7f536905a9fffe21bec6f3d67f3c2be751f2164041ff834c",
+  "guestElfSha256": "sha256:f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae",
+  "programVKey": "0x00012fbcbac2981e12622a12e8c5697836479599555c8f02a6ae81f2194edb99",
+  "solutionPath": "problems/distinct-subset-sums-a11/tests/conway-guy-594.json",
+  "solutionSha256": "sha256:5081fe54d10220c1ad2862fd872b3cf5dffe14184bb9f52a9e517ad4a5a26768",
+  "correctedChallengerWins": true,
+  "journalDigest": "0x291ae6588501327ad80f26fa0bba73f06c54d93947824f8eecd6dee1bbadfffa",
+  "publicValuesBytes": 32,
+  "totalInstructionCount": "481587",
+  "executionHost": {
+    "os": "linux",
+    "architecture": "x86_64",
+    "images": [
+      "ubuntu-22.04",
+      "ubuntu-24.04"
+    ],
+    "operator": "github-actions"
+  },
+  "executedAt": "2026-07-15T05:44:31Z"
+}

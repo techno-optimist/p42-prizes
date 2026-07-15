@@ -1,0 +1,41 @@
+{
+  "schema": "p42-objective-resource-profile/v1",
+  "status": "deterministic-envelope-not-proof-economics",
+  "program": "distinct-subset-sums-a11",
+  "version": "0.1.0",
+  "limits": {
+    "witnessSolutionBytes": 4096,
+    "solutionCidBytes": 512,
+    "publicValuesBytes": 32
+  },
+  "deterministicWork": {
+    "elements": 11,
+    "subsetSums": 2048,
+    "subsetAdditions": 2047,
+    "adjacentComparisons": 2047
+  },
+  "fixture": {
+    "path": "problems/distinct-subset-sums-a11/tests/conway-guy-594.json",
+    "bytes": 152,
+    "sha256": "sha256:5081fe54d10220c1ad2862fd872b3cf5dffe14184bb9f52a9e517ad4a5a26768",
+    "mockInstructionCount": 481587
+  },
+  "reproduction": {
+    "guestElfSha256": "sha256:f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae",
+    "programVKey": "0x00012fbcbac2981e12622a12e8c5697836479599555c8f02a6ae81f2194edb99",
+    "sourceBuildImages": [
+      "ubuntu-22.04",
+      "ubuntu-24.04"
+    ],
+    "sameOperator": true
+  },
+  "proofEconomics": {
+    "groth16ProofMeasured": false,
+    "activationAuthorized": false
+  },
+  "remainingBlockers": [
+    "genuine-groth16-proof-benchmark",
+    "independent-operator-and-hardware-reproduction",
+    "production-audit-and-testnet-rehearsal"
+  ]
+}
