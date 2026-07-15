@@ -151,6 +151,11 @@
       100% { transform: translate(0,0); }
     }
     @media (prefers-reduced-motion: reduce) { .p42-grain { animation: none; } }
+    /* On touch devices, hold the grain static — a per-frame animated overlay
+       above the scrubbing video is pure GPU cost the phone can't spare. */
+    @media (hover: none) and (pointer: coarse) {
+      .p42-grain { animation: none; opacity: .035; will-change: auto; }
+    }
 
     /* kill the engine's decorative radial even if atmosphere ever flips on */
     .sw-sky__glow { display: none; }
