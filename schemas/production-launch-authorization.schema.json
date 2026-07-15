@@ -107,6 +107,7 @@
         "operational_controls",
         "production_release_verification",
         "production_release_slate",
+        "production_board_bindings",
         "release_capsule",
         "deployment_manifest",
         "reconciliation_report",
@@ -122,6 +123,7 @@
         "operational_controls": { "$ref": "#/$defs/artifact" },
         "production_release_verification": { "$ref": "#/$defs/artifact" },
         "production_release_slate": { "$ref": "#/$defs/artifact" },
+        "production_board_bindings": { "$ref": "#/$defs/artifact" },
         "release_capsule": { "$ref": "#/$defs/artifact" },
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
         "reconciliation_report": { "$ref": "#/$defs/artifact" },
@@ -135,6 +137,8 @@
       "required": [
         "problem_id",
         "problem_slug",
+        "board_bindings_digest",
+        "board_binding_hash",
         "verifier_image_digest",
         "admission_matrix_digest",
         "math_review_artifact",
@@ -147,6 +151,8 @@
           "type": "string",
           "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
         },
+        "board_bindings_digest": { "$ref": "#/$defs/hash" },
+        "board_binding_hash": { "$ref": "#/$defs/hash" },
         "verifier_image_digest": { "$ref": "#/$defs/hash" },
         "admission_matrix_digest": { "$ref": "#/$defs/hash" },
         "math_review_artifact": { "$ref": "#/$defs/artifact" },

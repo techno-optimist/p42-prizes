@@ -31,7 +31,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 SCHEMA_VERSION = "p42-production-launch-authorization/v1"
-MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v1"
+MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v2"
 NETWORK_CHAIN_IDS = {"base-sepolia": 84532, "base-mainnet": 8453}
 AUTHORIZER_ROLES = {
     "production-launch-authority",
@@ -134,7 +134,7 @@ def normalize_launch_authorization(
         raise LaunchAuthorizationError("release_binding network does not match authorization")
 
     artifacts = authorization.get("artifacts")
-    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "production_release_slate", "release_capsule", "deployment_manifest", "reconciliation_report", "explorer_dossier", "explorer_operator_policy"}
+    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "production_release_slate", "production_board_bindings", "release_capsule", "deployment_manifest", "reconciliation_report", "explorer_dossier", "explorer_operator_policy"}
     if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
     normalized_gate_hashes: dict[str, str] = {}
@@ -171,6 +171,11 @@ def normalize_launch_authorization(
         context,
     )
     _validate_release_slate_for_launch(release_slate, release_report)
+    board_bindings = _read_json_artifact(
+        artifacts["production_board_bindings"],
+        "authorization.artifacts.production_board_bindings",
+        context,
+    )
     manifest = _read_json_artifact(artifacts["deployment_manifest"], "authorization.artifacts.deployment_manifest", context)
     _validate_deployment_manifest(manifest, release_report, network)
     reconciliation = _read_json_artifact(
@@ -195,7 +200,9 @@ def normalize_launch_authorization(
     _validate_problem_reviews(
         authorization.get("problem_reviews"),
         release_report=release_report,
+        release_slate=release_slate,
         deployment_manifest=manifest,
+        board_bindings=board_bindings,
         trust_registry=trust_registry,
         context=context,
         issued=issued,
@@ -636,14 +643,57 @@ def _validate_problem_reviews(
     reviews: Any,
     *,
     release_report: Mapping[str, Any],
+    release_slate: Mapping[str, Any],
     deployment_manifest: Mapping[str, Any],
+    board_bindings: Mapping[str, Any],
     trust_registry: Mapping[str, Any],
     context: AttestationValidationContext,
     issued: datetime,
 ) -> None:
     if not isinstance(reviews, list) or len(reviews) != 10:
         raise LaunchAuthorizationError("problem_reviews must contain exactly ten approvals")
+    try:
+        bindings_schema = json.loads(
+            (_SCHEMA_DIR / "production-board-bindings.schema.json").read_text(encoding="utf-8")
+        )
+        jsonschema.Draft202012Validator(bindings_schema).validate(board_bindings)
+    except (OSError, ValueError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"production board bindings failed schema validation: {exc}") from exc
     admitted = {row["problemId"]: row for row in release_report["admittedBoards"]}
+    if set(board_bindings) != {"schema_version", "board_set", "records"} or board_bindings.get("schema_version") != "p42-prizes/production-board-bindings/v1":
+        raise LaunchAuthorizationError("production board bindings have invalid shape or version")
+    binding_records = board_bindings.get("records")
+    if not isinstance(binding_records, list) or len(binding_records) != 10:
+        raise LaunchAuthorizationError("production board bindings must contain exactly ten records")
+    binding_by_slug = {
+        record.get("slug"): record
+        for record in binding_records
+        if isinstance(record, Mapping) and isinstance(record.get("slug"), str)
+    }
+    if len(binding_by_slug) != 10:
+        raise LaunchAuthorizationError("production board bindings must have ten unique slugs")
+    slate_boards = release_slate.get("boards")
+    if release_slate.get("sourceCommit") != release_report.get("sourceCommit"):
+        raise LaunchAuthorizationError("production board bindings release source does not match verified release")
+    if not isinstance(slate_boards, list) or len(slate_boards) != 10:
+        raise LaunchAuthorizationError("production release slate must contain exactly ten ordered boards")
+    for position, (binding_record, slate_board) in enumerate(zip(binding_records, slate_boards), start=1):
+        if not isinstance(slate_board, Mapping):
+            raise LaunchAuthorizationError("production release slate contains an invalid board")
+        expected_slate_binding = {
+            "problemId": str(position),
+            "problemSlug": binding_record["slug"],
+            "problemPath": f"problems/{binding_record['slug']}",
+            "verifierVersion": binding_record["verifier"]["version"],
+            "specHash": "0x" + binding_record["specification"]["sha256"].removeprefix("sha256:"),
+            "verifierSourceDigest": binding_record["verifier"]["source_tree_sha256"],
+        }
+        for field, expected in expected_slate_binding.items():
+            if slate_board.get(field) != expected:
+                raise LaunchAuthorizationError(
+                    f"production board binding {position} {field} does not match release slate"
+                )
+    board_bindings_digest = sha256_bytes(canonical_json(board_bindings).encode("utf-8"))
     deployed = {
         row.get("problemId"): row
         for row in deployment_manifest.get("problems", [])
@@ -659,6 +709,12 @@ def _validate_problem_reviews(
         if problem_id in seen_ids or slug in seen_slugs:
             raise LaunchAuthorizationError("problem reviews must have unique ids and slugs")
         seen_ids.add(problem_id); seen_slugs.add(slug)
+        try:
+            binding_position = int(problem_id)
+        except (TypeError, ValueError) as exc:
+            raise LaunchAuthorizationError("problem review id must be an exact canonical board position") from exc
+        if not 1 <= binding_position <= 10 or binding_records[binding_position - 1].get("slug") != slug:
+            raise LaunchAuthorizationError("problem review does not match its ordered canonical board binding")
         board = admitted.get(problem_id)
         if board is None or board.get("problemSlug") != slug or board.get("matrixDigest") != review.get("admission_matrix_digest"):
             raise LaunchAuthorizationError(f"problem review {problem_id} does not match admitted board")
@@ -670,6 +726,14 @@ def _validate_problem_reviews(
             or deployed_problem.get("admissionMatrixDigest") != review.get("admission_matrix_digest")
         ):
             raise LaunchAuthorizationError(f"problem review {problem_id} does not match deployed verifier pins")
+        binding_record = binding_by_slug.get(slug)
+        if binding_record is None:
+            raise LaunchAuthorizationError(f"problem review {problem_id} has no production board binding")
+        board_binding_hash = sha256_bytes(canonical_json(binding_record).encode("utf-8"))
+        if review.get("board_bindings_digest") != board_bindings_digest:
+            raise LaunchAuthorizationError(f"problem review {problem_id} board bindings digest mismatch")
+        if review.get("board_binding_hash") != board_binding_hash:
+            raise LaunchAuthorizationError(f"problem review {problem_id} board binding hash mismatch")
         if review.get("review_status") != "approved":
             raise LaunchAuthorizationError(f"problem review {problem_id} is not approved")
         packet = _read_json_artifact(review.get("math_review_artifact"), f"problem_reviews[{index}].math_review_artifact", context)
@@ -686,10 +750,10 @@ def _validate_problem_reviews(
 
 
 def _validate_math_review(packet: Mapping[str, Any], row: Mapping[str, Any], trust_registry: Mapping[str, Any], context: AttestationValidationContext, issued: datetime) -> None:
-    expected = {"schema_version", "problem_id", "problem_slug", "verifier_image_digest", "admission_matrix_digest", "status", "completed_at_utc", "reviewer", "review_hash", "signature"}
+    expected = {"schema_version", "problem_id", "problem_slug", "board_bindings_digest", "board_binding_hash", "verifier_image_digest", "admission_matrix_digest", "status", "completed_at_utc", "reviewer", "review_hash", "signature"}
     if set(packet) != expected or packet.get("schema_version") != MATH_REVIEW_SCHEMA_VERSION or packet.get("status") != "approved":
         raise LaunchAuthorizationError("math review packet has invalid shape or status")
-    for packet_key, row_key in (("problem_id", "problem_id"), ("problem_slug", "problem_slug"), ("verifier_image_digest", "verifier_image_digest"), ("admission_matrix_digest", "admission_matrix_digest")):
+    for packet_key, row_key in (("problem_id", "problem_id"), ("problem_slug", "problem_slug"), ("board_bindings_digest", "board_bindings_digest"), ("board_binding_hash", "board_binding_hash"), ("verifier_image_digest", "verifier_image_digest"), ("admission_matrix_digest", "admission_matrix_digest")):
         if packet.get(packet_key) != row.get(row_key):
             raise LaunchAuthorizationError(f"math review {packet_key} does not match authorization")
     completed = _require_utc(packet.get("completed_at_utc"), "math_review.completed_at_utc", LaunchAuthorizationError)
