@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import tarfile
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts/verify-sp1-objective-artifact.py"
+WORKFLOW = ROOT / ".github/workflows/ci.yml"
+
+
+def load_verifier():
+    spec = importlib.util.spec_from_file_location("sp1_artifact_verifier", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def digest(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def prepare_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    verifier = load_verifier()
+    repo = tmp_path / "repo"
+    build_root = repo / "objective-programs"
+    build_root.mkdir(parents=True)
+    target = build_root / "target"
+    cargo_home = tmp_path / "cargo-home"
+    cargo_home.mkdir()
+
+    installer = tmp_path / ".sp1"
+    sysroot = installer / "toolchains/fixed"
+    (sysroot / "bin").mkdir(parents=True)
+    (sysroot / "lib").mkdir()
+    rustc = sysroot / "bin/rustc"
+    rustc.write_text("#!/bin/sh\necho 'rustc 1.93.0-dev (fixture)'\n", encoding="utf-8")
+    rustc.chmod(0o755)
+    (sysroot / "lib/data").write_bytes(b"guest sysroot fixture\n")
+    (sysroot / "lib/data-link").symlink_to("data")
+    guest_archive = installer / "rust-toolchain-x86_64-unknown-linux-gnu.tar.gz"
+    with tarfile.open(guest_archive, "w:gz") as archive:
+        archive.add(sysroot, arcname=".")
+
+    cargo_prove = tmp_path / "cargo-prove"
+    cargo_prove.write_text(
+        "#!/bin/sh\necho 'cargo-prove sp1 (d454975 2026-04-11T01:54:01.305546215Z)'\n",
+        encoding="utf-8",
+    )
+    cargo_prove.chmod(0o755)
+    cargo_archive = tmp_path / "cargo-prove.tar.gz"
+    cargo_archive.write_bytes(b"approved cargo-prove archive fixture")
+
+    monkeypatch.setattr(verifier, "ROOT", repo)
+    monkeypatch.setattr(verifier.platform, "machine", lambda: "x86_64")
+    monkeypatch.setitem(
+        verifier.PROVENANCE_PLATFORMS,
+        "x86_64",
+        {
+            "cargoProveAsset": "cargo-prove-fixture.tar.gz",
+            "cargoProveArchiveSha256": digest(cargo_archive),
+            "cargoProveExecutableSha256": digest(cargo_prove),
+            "guestToolchainAsset": guest_archive.name,
+            "guestToolchainArchiveSha256": digest(guest_archive),
+        },
+    )
+    for name in list(os.environ):
+        if name in verifier.BUILD_ENV_FORBIDDEN or name.startswith(
+            verifier.BUILD_ENV_FORBIDDEN_PREFIXES
+        ):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("CARGO_INCREMENTAL", "0")
+
+    arguments = {
+        "cargo_prove": cargo_prove,
+        "cargo_prove_archive": cargo_archive,
+        "guest_toolchain_archive": guest_archive,
+        "guest_sysroot": sysroot,
+        "build_root": build_root,
+        "target_dir": target,
+        "cargo_home": cargo_home,
+    }
+    return verifier, arguments
+
+
+def test_captures_and_revalidates_approved_toolchain_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    evidence = verifier.build_provenance(require_clean_target=True, **arguments)
+    assert evidence["trust"] == "candidate-build-inputs-only"
+    assert evidence["buildIsolation"]["targetInitiallyAbsent"] is True
+    assert evidence["guestToolchain"]["regularFileCount"] == 2
+    assert evidence["guestToolchain"]["symlinkCount"] == 1
+
+    path = tmp_path / "provenance.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    assert verifier.validate_build_provenance(path, **arguments) == evidence
+
+
+def test_untrusted_observation_survives_unapproved_cargo_prove(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    arguments["cargo_prove"].write_text(
+        "#!/bin/sh\necho 'cargo-prove sp1 (source-built fixture)'\n", encoding="utf-8"
+    )
+    arguments["cargo_prove"].chmod(0o755)
+
+    observation = verifier.build_observation(**arguments)
+    assert observation["trust"] == "untrusted-forensics-only"
+    assert observation["cargoProve"]["executableSha256"] == digest(arguments["cargo_prove"])
+    with pytest.raises(SystemExit, match="cargo-prove executable digest drift"):
+        verifier.build_provenance(require_clean_target=True, **arguments)
+
+
+@pytest.mark.parametrize("contamination", ["target", "config", "environment"])
+def test_rejects_unclean_build_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contamination: str
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    if contamination == "target":
+        arguments["target_dir"].mkdir()
+    elif contamination == "config":
+        config = arguments["build_root"] / ".cargo/config.toml"
+        config.parent.mkdir()
+        config.write_text("[build]\ntarget-dir = 'elsewhere'\n", encoding="utf-8")
+    else:
+        monkeypatch.setenv("RUSTFLAGS", "-C target-cpu=native")
+
+    with pytest.raises(SystemExit):
+        verifier.build_provenance(require_clean_target=True, **arguments)
+
+
+def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    candidate_upload = workflow.index("Retain untrusted A11 candidate forensics")
+    frozen_equality = workflow.index("Enforce frozen guest identity")
+    validated_upload = workflow.index("Retain validated objective evidence")
+    assert candidate_upload < frozen_equality < validated_upload
+    assert workflow.count("if: ${{ always() }}") >= 4
+    assert "p42-untrusted-a11-candidate-" in workflow
+    assert "p42-untrusted-hadamard-candidate-" in workflow
+    assert "pattern: p42-validated-distinct-subset-sums-a11" in workflow
+    assert "pattern: p42-validated-hadamard-668" in workflow
+    assert "pattern: p42-untrusted" not in workflow
+    assert workflow.index("Capture untrusted SP1 build-input observation") < workflow.index(
+        "Validate clean SP1 build-input provenance"
+    )
+
+    cache = workflow[
+        workflow.index("Restore pinned Rust build cache") : workflow.index(
+            "Capture untrusted SP1 build-input observation"
+        )
+    ]
+    assert "objective-programs/target" not in cache
+
+
+def test_canonical_identities_and_arm_source_build_boundary_remain_frozen() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    verifier = SCRIPT.read_text(encoding="utf-8")
+    verifier_module = load_verifier()
+    assert "bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2" in workflow
+    assert "f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae" in workflow
+    assert "sha256:bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2" in verifier
+    assert verifier_module.PROVENANCE_PLATFORMS["aarch64"]["cargoProveExecutableSha256"] == (
+        "sha256:f5a1f269c845c0c47c0f6542ff3c5181ce6a5b7d73d59fd4448e6b3722aa72c5"
+    )
+    assert "f0ff2d9ec1e65ced44b5608419f02627c69a74fdcf4466d9f259ebc86bc7dc05" not in verifier
