@@ -105,6 +105,19 @@ class DetailedHttpObservation:
     body: bytes
 
 
+@dataclass(frozen=True)
+class SourceAuthorityInterval:
+    declared_commits: tuple[Mapping[str, Any], ...]
+    derived_commits: tuple[Mapping[str, str], ...]
+    derived_deploy_commits: tuple[Mapping[str, str], ...]
+
+
+@dataclass(frozen=True)
+class ValidatedPredecessorChain:
+    immediate_reference: Mapping[str, Any]
+    historical_intervals: tuple[SourceAuthorityInterval, ...]
+
+
 def _run(command: list[str], cwd: Path) -> str:
     completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
@@ -658,47 +671,21 @@ def _validate_v3_source_release_evidence(
         root=root,
         runner=command_runner,
         blob_reader=blob_reader,
+        trust_root=trust_root,
+        now_utc=now_utc,
     )
-    baseline = previous["observedBranchHead"]
-    provenance = _mapping(report["deployProvenance"], "deployProvenance")
-    if provenance.get("baselineObservedHead") != baseline:
-        raise SourceReleaseEvidenceError("deployProvenance baseline must equal previous observed head")
-    derived_commits, derived_deploy_commits = _derive_source_commits(
-        baseline,
-        observed_head,
-        evidence_only_paths=policy["evidenceOnlyPaths"],
-        deploy_relevant_paths=policy["deployRelevantPaths"],
-        root=root,
-        runner=command_runner,
-    )
-    declared_commits = provenance.get("commits")
-    if not isinstance(declared_commits, list) or len(declared_commits) != len(derived_commits):
-        raise SourceReleaseEvidenceError(
-            "deployProvenance must enumerate every authorization-required first-parent source commit"
-        )
-    bootstrap_digests: set[str] = set()
-    for index, (declared, derived) in enumerate(zip(declared_commits, derived_commits, strict=True)):
-        _validate_deploy_commit(
-            declared, derived, index=index, bootstrap_digests=bootstrap_digests,
-        )
-    _validate_bootstrap_intervals(
-        bootstrap_digests,
-        declared_commits=declared_commits,
-        derived_commits=derived_commits,
+    current_interval = _validate_source_authority_interval(
+        report,
+        previous_reference=previous.immediate_reference,
         policy=policy,
         trust_root=trust_root,
         root=root,
+        runner=command_runner,
         now_utc=now_utc,
+        label="current receipt",
     )
-    expected_deploy = (
-        derived_deploy_commits[-1]["commit"]
-        if derived_deploy_commits
-        else _previous_deploy_commit(previous)
-    )
-    if deploy_commit != expected_deploy:
-        raise SourceReleaseEvidenceError(
-            "deployRelevantCommit does not equal the latest Render-relevant first-parent commit"
-        )
+    derived_commits = current_interval.derived_commits
+    derived_deploy_commits = current_interval.derived_deploy_commits
 
     _validate_v3_workflow(report["ci"], observed_head, policy, root, command_runner, blob_reader)
     render = _mapping(report["render"], "render")
@@ -724,13 +711,13 @@ def _validate_v3_source_release_evidence(
     _validate_v3_online(
         report, policy=policy, trust_root=trust_root, root=root,
         command_runner=command_runner, detailed_url_reader=detailed_url_reader,
-        derived_commits=derived_commits,
+        authority_intervals=(*previous.historical_intervals, current_interval),
     )
     normalized["derived"] = {
         "validatedHead": head,
         "runtimeCommit": deploy_commit,
         "evidencePublicationCommit": publication_commit,
-        "previousObservedHead": baseline,
+        "previousObservedHead": previous.immediate_reference["observedBranchHead"],
         "authorizedSourceCommits": [item["commit"] for item in derived_commits],
         "deployRelevantCommits": [item["commit"] for item in derived_deploy_commits],
         "onlineVerified": True,
@@ -899,11 +886,14 @@ def _validate_recursive_predecessor_chain(
     root: Path,
     runner: CommandRunner,
     blob_reader: BlobReader,
-) -> Mapping[str, Any]:
+    trust_root: Mapping[str, Any],
+    now_utc: datetime,
+) -> ValidatedPredecessorChain:
     first_reference = _mapping(value, "previousEvidence")
     reference: Mapping[str, Any] = first_reference
     genesis = _mapping(policy["genesisEvidence"], "policy genesisEvidence")
     seen: set[tuple[str, str, str]] = set()
+    predecessor_receipts: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
     while True:
         _require_exact_keys(
             reference,
@@ -994,14 +984,105 @@ def _validate_recursive_predecessor_chain(
                     f"previousEvidence {field} rewrites committed chain history"
                 )
         if dict(reference) == dict(genesis):
-            return first_reference
+            break
         if version != SOURCE_RELEASE_V3_SCHEMA_VERSION:
             raise SourceReleaseEvidenceError(
                 "predecessor chain terminated before the policy-pinned genesis"
             )
+        predecessor_receipts.append((previous_map, dict(reference)))
         reference = _mapping(previous_map.get("previousEvidence"), "recursive previousEvidence")
         current_observed_head = previous_observed
         current_publication_commit = publication
+
+    historical_intervals: list[SourceAuthorityInterval] = []
+    previous_reference: Mapping[str, Any] = genesis
+    for index, (predecessor, receipt_reference) in enumerate(
+        reversed(predecessor_receipts)
+    ):
+        historical_intervals.append(_validate_source_authority_interval(
+            predecessor,
+            previous_reference=previous_reference,
+            policy=policy,
+            trust_root=trust_root,
+            root=root,
+            runner=runner,
+            now_utc=now_utc,
+            label=f"predecessor receipt {index}",
+        ))
+        previous_reference = receipt_reference
+    if dict(previous_reference) != dict(first_reference):
+        raise SourceReleaseEvidenceError(
+            "predecessor semantic replay did not reach the immediate reference"
+        )
+    return ValidatedPredecessorChain(
+        immediate_reference=first_reference,
+        historical_intervals=tuple(historical_intervals),
+    )
+
+
+def _validate_source_authority_interval(
+    report: Mapping[str, Any],
+    *,
+    previous_reference: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    trust_root: Mapping[str, Any],
+    root: Path,
+    runner: CommandRunner,
+    now_utc: datetime,
+    label: str,
+) -> SourceAuthorityInterval:
+    baseline = _commit(
+        previous_reference.get("observedBranchHead"), f"{label} previous observed head"
+    )
+    observed_head = _commit(report.get("observedBranchHead"), f"{label} observed head")
+    provenance = _mapping(report.get("deployProvenance"), f"{label} deployProvenance")
+    if provenance.get("baselineObservedHead") != baseline:
+        raise SourceReleaseEvidenceError(
+            f"{label} deployProvenance baseline must equal previous observed head"
+        )
+    derived_commits, derived_deploy_commits = _derive_source_commits(
+        baseline,
+        observed_head,
+        evidence_only_paths=policy["evidenceOnlyPaths"],
+        deploy_relevant_paths=policy["deployRelevantPaths"],
+        root=root,
+        runner=runner,
+    )
+    declared_commits = provenance.get("commits")
+    if not isinstance(declared_commits, list) or len(declared_commits) != len(derived_commits):
+        raise SourceReleaseEvidenceError(
+            f"{label} deployProvenance must enumerate every authorization-required first-parent source commit"
+        )
+    bootstrap_digests: set[str] = set()
+    for index, (declared, derived) in enumerate(
+        zip(declared_commits, derived_commits, strict=True)
+    ):
+        _validate_deploy_commit(
+            declared, derived, index=index, bootstrap_digests=bootstrap_digests,
+        )
+    _validate_bootstrap_intervals(
+        bootstrap_digests,
+        declared_commits=declared_commits,
+        derived_commits=derived_commits,
+        policy=policy,
+        trust_root=trust_root,
+        root=root,
+        now_utc=now_utc,
+    )
+    expected_deploy = (
+        derived_deploy_commits[-1]["commit"]
+        if derived_deploy_commits
+        else _previous_deploy_commit(previous_reference)
+    )
+    if report.get("deployRelevantCommit") != expected_deploy:
+        raise SourceReleaseEvidenceError(
+            f"{label} deployRelevantCommit does not equal the latest Render-relevant first-parent commit"
+        )
+    return SourceAuthorityInterval(
+        declared_commits=tuple(declared_commits),
+        derived_commits=tuple(derived_commits),
+        derived_deploy_commits=tuple(derived_deploy_commits),
+    )
 
 
 def _previous_deploy_commit(previous: Mapping[str, Any]) -> str:
@@ -1616,7 +1697,7 @@ def _validate_v3_online(
     report: Mapping[str, Any], *, policy: Mapping[str, Any],
     trust_root: Mapping[str, Any], root: Path,
     command_runner: CommandRunner, detailed_url_reader: DetailedUrlReader,
-    derived_commits: Sequence[Mapping[str, str]],
+    authority_intervals: Sequence[SourceAuthorityInterval],
 ) -> None:
     del trust_root
     if command_runner(["git", "status", "--porcelain", "--untracked-files=all"], root):
@@ -1664,75 +1745,16 @@ def _validate_v3_online(
     ):
         raise SourceReleaseEvidenceError("live GitHub jobs contain missing, reordered, duplicate, or extra jobs")
 
-    declared = report["deployProvenance"]["commits"]
-    for item, derived in zip(declared, derived_commits, strict=True):
-        authorization = item["authorization"]
-        if authorization["type"] != "pull-request":
-            continue
-        pulls = json.loads(command_runner([
-            "gh", "api", f"repos/{SOURCE_RELEASE_REPOSITORY}/commits/{derived['commit']}/pulls"
-        ], root))
-        matching = [pr for pr in pulls if (
-            pr.get("number") == authorization["number"]
-            and pr.get("state") == "closed"
-            and pr.get("merged_at") is not None
-            and pr.get("base", {}).get("ref") == SOURCE_RELEASE_BRANCH
-            and pr.get("merge_commit_sha") == derived["commit"]
-            and pr.get("head", {}).get("sha") == authorization["headSha"]
-        )]
-        if len(matching) != 1:
-            raise SourceReleaseEvidenceError(
-                "authorization-required direct push lacks exact reviewed PR coverage"
-            )
-        pull_request = matching[0]
-        merged_at = _parse_utc(
-            pull_request.get("merged_at"), "GitHub PR merged_at"
-        )
-        pr_head_tree = _commit(command_runner([
-            "git", "rev-parse", f"{authorization['headSha']}^{{tree}}"
-        ], root), "pull-request head tree")
-        if pr_head_tree != derived["tree"]:
-            raise SourceReleaseEvidenceError("pull-request head tree does not equal deployed merge tree")
-        review_pages = json.loads(command_runner([
-            "gh", "api", "--paginate", "--slurp",
-            f"repos/{SOURCE_RELEASE_REPOSITORY}/pulls/{authorization['number']}/reviews?per_page=100",
-        ], root))
-        if not isinstance(review_pages, list) or any(not isinstance(page, list) for page in review_pages):
-            raise SourceReleaseEvidenceError("GitHub review authority returned malformed pagination")
-        reviews = [item for page in review_pages for item in page if isinstance(item, Mapping)]
-        reviews.sort(key=lambda review: (review.get("submitted_at") or "", review.get("id") or 0))
-        latest_by_reviewer: dict[str, Mapping[str, Any]] = {}
-        for review in reviews:
-            if isinstance(review, Mapping):
-                login = review.get("user", {}).get("login")
-                if isinstance(login, str):
-                    latest_by_reviewer[login] = review
-        review_policy = policy["reviewPolicy"]
-        author = pull_request.get("user", {}).get("login")
-        if not isinstance(author, str) or not author:
-            raise SourceReleaseEvidenceError("GitHub PR author identity is missing")
-        approval_candidates = {
-            login: review for login, review in latest_by_reviewer.items()
-            if login in review_policy["allowedReviewerLogins"]
-            and login != author
-            and review.get("state") == "APPROVED"
-            and review.get("commit_id") == authorization["headSha"]
-        }
-        approval_times = {
-            login: _parse_utc(review.get("submitted_at"), "GitHub review submitted_at")
-            for login, review in approval_candidates.items()
-        }
-        approvals = {
-            login for login, submitted_at in approval_times.items()
-            if submitted_at < merged_at
-        }
-        if len(approvals) < review_policy["minimumApprovals"]:
-            if any(submitted_at >= merged_at for submitted_at in approval_times.values()):
-                raise SourceReleaseEvidenceError(
-                    "pull-request approval not unambiguously earlier than merge cannot authorize the source commit"
-                )
-            raise SourceReleaseEvidenceError(
-                "source PR lacks exact-head non-author approval from external review policy"
+    for interval in authority_intervals:
+        for item, derived in zip(
+            interval.declared_commits, interval.derived_commits, strict=True
+        ):
+            _validate_online_pr_authorization(
+                item,
+                derived,
+                policy=policy,
+                root=root,
+                command_runner=command_runner,
             )
 
     render = _mapping(report["render"], "render")
@@ -1771,6 +1793,83 @@ def _validate_v3_online(
             "committed canonical guard did not attest its 12-probe deep-check policy"
         )
     _validate_live_guard_semantics(report, policy, detailed_url_reader)
+
+
+def _validate_online_pr_authorization(
+    item: Mapping[str, Any],
+    derived: Mapping[str, str],
+    *,
+    policy: Mapping[str, Any],
+    root: Path,
+    command_runner: CommandRunner,
+) -> None:
+    authorization = item["authorization"]
+    if authorization["type"] != "pull-request":
+        return
+    pulls = json.loads(command_runner([
+        "gh", "api", f"repos/{SOURCE_RELEASE_REPOSITORY}/commits/{derived['commit']}/pulls"
+    ], root))
+    matching = [pr for pr in pulls if (
+        pr.get("number") == authorization["number"]
+        and pr.get("state") == "closed"
+        and pr.get("merged_at") is not None
+        and pr.get("base", {}).get("ref") == SOURCE_RELEASE_BRANCH
+        and pr.get("merge_commit_sha") == derived["commit"]
+        and pr.get("head", {}).get("sha") == authorization["headSha"]
+    )]
+    if len(matching) != 1:
+        raise SourceReleaseEvidenceError(
+            "authorization-required direct push lacks exact reviewed PR coverage"
+        )
+    pull_request = matching[0]
+    merged_at = _parse_utc(
+        pull_request.get("merged_at"), "GitHub PR merged_at"
+    )
+    pr_head_tree = _commit(command_runner([
+        "git", "rev-parse", f"{authorization['headSha']}^{{tree}}"
+    ], root), "pull-request head tree")
+    if pr_head_tree != derived["tree"]:
+        raise SourceReleaseEvidenceError("pull-request head tree does not equal deployed merge tree")
+    review_pages = json.loads(command_runner([
+        "gh", "api", "--paginate", "--slurp",
+        f"repos/{SOURCE_RELEASE_REPOSITORY}/pulls/{authorization['number']}/reviews?per_page=100",
+    ], root))
+    if not isinstance(review_pages, list) or any(not isinstance(page, list) for page in review_pages):
+        raise SourceReleaseEvidenceError("GitHub review authority returned malformed pagination")
+    reviews = [item for page in review_pages for item in page if isinstance(item, Mapping)]
+    reviews.sort(key=lambda review: (review.get("submitted_at") or "", review.get("id") or 0))
+    latest_by_reviewer: dict[str, Mapping[str, Any]] = {}
+    for review in reviews:
+        login = review.get("user", {}).get("login")
+        if isinstance(login, str):
+            latest_by_reviewer[login] = review
+    review_policy = policy["reviewPolicy"]
+    author = pull_request.get("user", {}).get("login")
+    if not isinstance(author, str) or not author:
+        raise SourceReleaseEvidenceError("GitHub PR author identity is missing")
+    approval_candidates = {
+        login: review for login, review in latest_by_reviewer.items()
+        if login in review_policy["allowedReviewerLogins"]
+        and login != author
+        and review.get("state") == "APPROVED"
+        and review.get("commit_id") == authorization["headSha"]
+    }
+    approval_times = {
+        login: _parse_utc(review.get("submitted_at"), "GitHub review submitted_at")
+        for login, review in approval_candidates.items()
+    }
+    approvals = {
+        login for login, submitted_at in approval_times.items()
+        if submitted_at < merged_at
+    }
+    if len(approvals) < review_policy["minimumApprovals"]:
+        if any(submitted_at >= merged_at for submitted_at in approval_times.values()):
+            raise SourceReleaseEvidenceError(
+                "pull-request approval not unambiguously earlier than merge cannot authorize the source commit"
+            )
+        raise SourceReleaseEvidenceError(
+            "source PR lacks exact-head non-author approval from external review policy"
+        )
 
 
 def _require_exact_keys(value: Mapping[str, Any], expected: set[str], name: str) -> None:

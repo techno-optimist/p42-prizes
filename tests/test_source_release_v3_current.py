@@ -664,15 +664,20 @@ def test_recursive_chain_is_genesis_pinned_and_first_parent_only(current: Curren
         current.validate()
 
 
-def test_recursive_chain_walks_intermediate_v3_receipts_to_genesis(
+def _historical_chain_fixture(
     current: CurrentFixture,
-) -> None:
+    *,
+    authorization: dict | None,
+) -> tuple[dict, dict, object, dict[str, dict]]:
     genesis_observed = ACTIVATION
     genesis_publication = GENESIS_OBSERVED
-    intermediate_observed = GENESIS_PUBLICATION
-    intermediate_publication = DEPLOY
+    historical_observed = GENESIS_PUBLICATION
+    historical_publication = DEPLOY
     current_observed = HEAD
     current_publication = "c" * 40
+    historical_tree = "d" * 40
+    source_path = "src/p42_prizes/historical_authority.py"
+
     genesis_receipt = _genesis_receipt()
     genesis_receipt["observedBranchHead"] = genesis_observed
     genesis_receipt["deployRelevantCommit"] = genesis_observed
@@ -687,26 +692,37 @@ def test_recursive_chain_walks_intermediate_v3_receipts_to_genesis(
         "deployRelevantCommit": genesis_observed,
         "evidenceHash": genesis_receipt["evidenceHash"],
     }
-    intermediate = deepcopy(current.report)
-    intermediate["observedBranchHead"] = intermediate_observed
-    intermediate["deployRelevantCommit"] = intermediate_observed
-    intermediate["ci"]["headSha"] = intermediate_observed
-    intermediate["render"]["runtimeCommit"] = intermediate_observed
-    intermediate["render"]["liveCommit"] = intermediate_observed
-    intermediate["previousEvidence"] = deepcopy(genesis_ref)
+
     policy = deepcopy(current.policy)
     policy["genesisEvidence"] = deepcopy(genesis_ref)
-    intermediate["trustPolicy"] = {
+    historical = deepcopy(current.report)
+    historical["observedBranchHead"] = historical_observed
+    historical["deployRelevantCommit"] = genesis_observed
+    historical["ci"]["headSha"] = historical_observed
+    historical["render"]["runtimeCommit"] = genesis_observed
+    historical["render"]["liveCommit"] = genesis_observed
+    historical["previousEvidence"] = deepcopy(genesis_ref)
+    historical["deployProvenance"] = {
+        "baselineObservedHead": genesis_observed,
+        "commits": [] if authorization is None else [{
+            "commit": historical_observed,
+            "firstParent": genesis_publication,
+            "tree": historical_tree,
+            "changedPathsSha256": sha256_bytes((source_path + "\n").encode()),
+            "authorization": authorization,
+        }],
+    }
+    historical["trustPolicy"] = {
         "policyId": policy["policyId"],
         "sha256": sha256_bytes(canonical_json(policy).encode()),
     }
-    intermediate = seal_source_release_evidence(intermediate)
-    intermediate_ref = {
-        "publicationCommit": intermediate_publication,
+    historical = seal_source_release_evidence(historical)
+    historical_ref = {
+        "publicationCommit": historical_publication,
         "path": CANONICAL_PATH,
-        "observedBranchHead": intermediate_observed,
-        "deployRelevantCommit": intermediate_observed,
-        "evidenceHash": intermediate["evidenceHash"],
+        "observedBranchHead": historical_observed,
+        "deployRelevantCommit": genesis_observed,
+        "evidenceHash": historical["evidenceHash"],
     }
 
     class ChainGit:
@@ -714,17 +730,20 @@ def test_recursive_chain_walks_intermediate_v3_receipts_to_genesis(
             del cwd
             if command[:2] == ["git", "cat-file"]:
                 return ""
+            if command[:4] == ["git", "rev-list", "--first-parent", "--reverse"]:
+                assert command[4] == f"{genesis_observed}..{historical_observed}"
+                return f"{genesis_publication}\n{historical_observed}"
             if command[:3] == ["git", "rev-list", "--first-parent"]:
                 lineage = {
                     current_observed: [
-                        current_observed, intermediate_publication, intermediate_observed,
+                        current_observed, historical_publication, historical_observed,
                         genesis_publication, genesis_observed,
                     ],
-                    intermediate_observed: [
-                        intermediate_observed, genesis_publication, genesis_observed,
+                    historical_observed: [
+                        historical_observed, genesis_publication, genesis_observed,
                     ],
-                    intermediate_publication: [
-                        intermediate_publication, intermediate_observed,
+                    historical_publication: [
+                        historical_publication, historical_observed,
                         genesis_publication, genesis_observed,
                     ],
                     genesis_publication: [genesis_publication, genesis_observed],
@@ -732,53 +751,158 @@ def test_recursive_chain_walks_intermediate_v3_receipts_to_genesis(
                 return "\n".join(lineage)
             if command[:4] == ["git", "log", "--first-parent", "-1"]:
                 latest = {
-                    f"{current_publication}^1": intermediate_publication,
-                    f"{intermediate_publication}^1": genesis_publication,
+                    f"{current_publication}^1": historical_publication,
+                    f"{historical_publication}^1": genesis_publication,
                 }
                 return latest[command[5]]
+            if command[:2] == ["git", "rev-parse"]:
+                return {
+                    f"{genesis_publication}^1": genesis_observed,
+                    f"{historical_observed}^1": genesis_publication,
+                    f"{genesis_publication}^{{tree}}": PUBLICATION_TREE,
+                    f"{historical_observed}^{{tree}}": historical_tree,
+                }[command[2]]
+            if command[:2] == ["git", "diff-tree"]:
+                return CANONICAL_PATH if command[-1] == genesis_publication else source_path
             raise AssertionError(command)
 
     artifacts = {
-        f"{intermediate_publication}:{CANONICAL_PATH}": intermediate,
+        f"{historical_publication}:{CANONICAL_PATH}": historical,
         f"{genesis_publication}:{CANONICAL_PATH}": genesis_receipt,
     }
+    context = {
+        "current_observed": current_observed,
+        "current_publication": current_publication,
+        "historical_observed": historical_observed,
+        "historical_tree": historical_tree,
+    }
+    return historical_ref, policy, ChainGit(), artifacts | {"context": context}
 
-    result = source_release._validate_recursive_predecessor_chain(
-        intermediate_ref,
-        current_observed_head=current_observed,
-        current_publication_commit=current_publication,
+
+def _validate_historical_chain(
+    current: CurrentFixture,
+    historical_ref: dict,
+    policy: dict,
+    runner: object,
+    artifacts: dict[str, dict],
+) -> source_release.ValidatedPredecessorChain:
+    context = artifacts["context"]
+    return source_release._validate_recursive_predecessor_chain(
+        historical_ref,
+        current_observed_head=context["current_observed"],
+        current_publication_commit=context["current_publication"],
         policy=policy,
         root=current.root,
-        runner=ChainGit(),
-        blob_reader=lambda spec, root: (canonical_json(artifacts[spec]) + "\n").encode(),
+        runner=runner,
+        blob_reader=lambda spec, root: (
+            canonical_json(artifacts[spec]) + "\n"
+        ).encode(),
+        trust_root={"bootstrapAllowlist": []},
+        now_utc=datetime(2026, 7, 15, 5, tzinfo=timezone.utc),
     )
-    assert result == intermediate_ref
 
-    with pytest.raises(SourceReleaseEvidenceError, match="skips the latest"):
-        source_release._validate_recursive_predecessor_chain(
-            genesis_ref,
-            current_observed_head=current_observed,
-            current_publication_commit=current_publication,
-            policy=policy,
-            root=current.root,
-            runner=ChainGit(),
-            blob_reader=lambda spec, root: (canonical_json(artifacts[spec]) + "\n").encode(),
-        )
 
-    intermediate["previousEvidence"]["evidenceHash"] = "sha256:" + "0" * 64
-    intermediate = seal_source_release_evidence(intermediate)
-    artifacts[f"{intermediate_publication}:{CANONICAL_PATH}"] = intermediate
-    rewritten_ref = dict(intermediate_ref)
-    rewritten_ref["evidenceHash"] = intermediate["evidenceHash"]
-    with pytest.raises(SourceReleaseEvidenceError, match="rewrites committed chain history"):
-        source_release._validate_recursive_predecessor_chain(
-            rewritten_ref,
-            current_observed_head=current_observed,
-            current_publication_commit=current_publication,
-            policy=policy,
+def test_recursive_chain_replays_valid_intermediate_authority(
+    current: CurrentFixture,
+) -> None:
+    authorization = {
+        "type": "pull-request",
+        "number": 122,
+        "url": "https://github.com/techno-optimist/p42-prizes/pull/122",
+        "headSha": PR_HEAD,
+        "mergeCommit": GENESIS_PUBLICATION,
+    }
+    historical_ref, policy, runner, artifacts = _historical_chain_fixture(
+        current, authorization=authorization
+    )
+    result = _validate_historical_chain(
+        current, historical_ref, policy, runner, artifacts
+    )
+    assert result.immediate_reference == historical_ref
+    assert len(result.historical_intervals) == 1
+    assert [
+        row["commit"] for row in result.historical_intervals[0].derived_commits
+    ] == [GENESIS_PUBLICATION]
+
+
+def test_predecessor_cannot_launder_missing_source_provenance(
+    current: CurrentFixture,
+) -> None:
+    historical_ref, policy, runner, artifacts = _historical_chain_fixture(
+        current, authorization=None
+    )
+    with pytest.raises(SourceReleaseEvidenceError, match="predecessor receipt 0.*every authorization-required"):
+        _validate_historical_chain(current, historical_ref, policy, runner, artifacts)
+
+
+def test_predecessor_cannot_launder_forged_deploy_pointer(
+    current: CurrentFixture,
+) -> None:
+    historical_ref, policy, runner, artifacts = _historical_chain_fixture(
+        current,
+        authorization={
+            "type": "pull-request",
+            "number": 122,
+            "url": "https://github.com/techno-optimist/p42-prizes/pull/122",
+            "headSha": PR_HEAD,
+            "mergeCommit": GENESIS_PUBLICATION,
+        },
+    )
+    artifact_key = f"{DEPLOY}:{CANONICAL_PATH}"
+    historical = deepcopy(artifacts[artifact_key])
+    historical["deployRelevantCommit"] = artifacts["context"]["historical_observed"]
+    historical = seal_source_release_evidence(historical)
+    artifacts[artifact_key] = historical
+    historical_ref["deployRelevantCommit"] = historical["deployRelevantCommit"]
+    historical_ref["evidenceHash"] = historical["evidenceHash"]
+
+    with pytest.raises(SourceReleaseEvidenceError, match="predecessor receipt 0 deployRelevantCommit"):
+        _validate_historical_chain(current, historical_ref, policy, runner, artifacts)
+
+
+def test_historical_bootstrap_authority_fails_closed_without_protected_allowlist(
+    current: CurrentFixture,
+) -> None:
+    historical_ref, policy, runner, artifacts = _historical_chain_fixture(
+        current,
+        authorization={
+            "type": "bootstrap-ratification",
+            "artifactType": "p42-source-release-bootstrap-ratification/v1",
+            "artifactSha256": "sha256:" + "9" * 64,
+        },
+    )
+    with pytest.raises(SourceReleaseEvidenceError, match="absent from trust-root allowlist"):
+        _validate_historical_chain(current, historical_ref, policy, runner, artifacts)
+
+
+def test_forged_historical_pr_metadata_is_rejected_online(
+    current: CurrentFixture,
+) -> None:
+    forged_declared = deepcopy(current.report["deployProvenance"]["commits"][0])
+    forged_declared["authorization"] = {
+        "type": "pull-request",
+        "number": 999,
+        "url": "https://github.com/techno-optimist/p42-prizes/pull/999",
+        "headSha": PR_HEAD,
+        "mergeCommit": DEPLOY,
+    }
+    historical_interval = source_release.SourceAuthorityInterval(
+        declared_commits=(forged_declared,),
+        derived_commits=({
+            key: forged_declared[key]
+            for key in ("commit", "firstParent", "tree", "changedPathsSha256")
+        },),
+        derived_deploy_commits=(),
+    )
+    with pytest.raises(SourceReleaseEvidenceError, match="lacks exact reviewed PR coverage"):
+        source_release._validate_v3_online(
+            current.report,
+            policy=current.policy,
+            trust_root={"bootstrapAllowlist": []},
             root=current.root,
-            runner=ChainGit(),
-            blob_reader=lambda spec, root: (canonical_json(artifacts[spec]) + "\n").encode(),
+            command_runner=current.runner,
+            detailed_url_reader=current.detailed_reader,
+            authority_intervals=(historical_interval,),
         )
 
 
