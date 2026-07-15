@@ -48,7 +48,11 @@ PROVENANCE_PLATFORMS = {
         "guestToolchainArchiveSha256": "sha256:03399c2e31561dcefd58fe1f467b8ef44fc693531f1326520513b3961a7a9267",
     },
 }
-BUILD_ENV_REQUIRED = {"CARGO_INCREMENTAL": "0"}
+BUILD_ENV_REQUIRED = {
+    "CARGO_INCREMENTAL": "0",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+}
 BUILD_ENV_FORBIDDEN = {
     "AR",
     "CARGO_HOME",
@@ -159,11 +163,19 @@ def file_fingerprint(path: Path) -> tuple[int, str]:
     return size, digest.hexdigest()
 
 
+def input_mode(mode: int) -> int:
+    # The Succinct installer may remove archive write bits. Builds only consume
+    # read/execute permission semantics; paths, bytes, and link topology remain exact.
+    return stat.S_IMODE(mode) & 0o555
+
+
 def fingerprint_entries(entries: list[list[object]]) -> dict[str, object]:
     entries.sort(key=lambda entry: str(entry[1]))
     manifest = json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode("ascii")
     return {
         "treeSha256": "sha256:" + hashlib.sha256(manifest).hexdigest(),
+        "modePolicy": "read-execute-bits",
+        "directoryCount": sum(entry[0] == "directory" for entry in entries),
         "regularFileCount": sum(entry[0] in {"file", "hardlink"} for entry in entries),
         "symlinkCount": sum(entry[0] == "symlink" for entry in entries),
         "hardlinkCount": sum(entry[0] == "hardlink" for entry in entries),
@@ -206,11 +218,12 @@ def directory_fingerprint(root: Path) -> dict[str, object]:
         metadata = os.lstat(path)
         relative = path.relative_to(resolved).as_posix()
         if stat.S_ISDIR(metadata.st_mode):
+            entries.append(["directory", relative, input_mode(metadata.st_mode)])
             continue
         if stat.S_ISLNK(metadata.st_mode):
             target = os.readlink(path)
             validate_relative_link(relative, target, "guest sysroot")
-            entries.append(["symlink", relative, stat.S_IMODE(metadata.st_mode), target])
+            entries.append(["symlink", relative, target])
             continue
         if not stat.S_ISREG(metadata.st_mode):
             fail(f"guest sysroot contains a special file: {relative}")
@@ -223,10 +236,10 @@ def directory_fingerprint(root: Path) -> dict[str, object]:
         if metadata.st_nlink != len(siblings):
             fail(f"guest sysroot hardlink escapes its root: {relative}")
         if len(siblings) > 1 and relative != siblings[0]:
-            entries.append(["hardlink", relative, stat.S_IMODE(metadata.st_mode), siblings[0]])
+            entries.append(["hardlink", relative, input_mode(metadata.st_mode), siblings[0]])
             continue
         size, digest = file_fingerprint(path)
-        entries.append(["file", relative, stat.S_IMODE(metadata.st_mode), size, digest])
+        entries.append(["file", relative, input_mode(metadata.st_mode), size, digest])
     return fingerprint_entries(entries)
 
 
@@ -243,16 +256,20 @@ def archive_fingerprint(archive: Path) -> dict[str, object]:
     with handle:
         for member in sorted(handle.getmembers(), key=lambda item: item.name):
             name = member.name.removeprefix("./")
-            if name in {"", "."} or member.isdir():
+            if name in {"", "."}:
                 continue
-            pure = PurePosixPath(name)
-            if pure.is_absolute() or ".." in pure.parts or name in seen:
+            name = normalize_archive_member_name(name, "guest toolchain archive member")
+            if name in seen:
                 fail("guest toolchain archive has an unsafe or duplicate member")
             seen.add(name)
+            if member.isdir():
+                member_kinds[name] = "directory"
+                entries.append(["directory", name, input_mode(member.mode)])
+                continue
             if member.issym():
                 validate_relative_link(name, member.linkname, "guest toolchain archive")
                 member_kinds[name] = "symlink"
-                entries.append(["symlink", name, member.mode, member.linkname])
+                entries.append(["symlink", name, member.linkname])
                 continue
             if member.islnk():
                 target = normalize_archive_member_name(
@@ -293,10 +310,10 @@ def archive_fingerprint(archive: Path) -> dict[str, object]:
             entry_mode = mode if name == target else hardlinks[name][0]
             if entry_mode != mode:
                 fail(f"guest toolchain archive hardlink mode differs from its target: {name}")
-        entries.append(["file", canonical, mode, size, digest])
+        entries.append(["file", canonical, input_mode(mode), size, digest])
         for name in sorted(names):
             if name != canonical:
-                entries.append(["hardlink", name, mode, canonical])
+                entries.append(["hardlink", name, input_mode(mode), canonical])
     return fingerprint_entries(entries)
 
 
@@ -390,6 +407,8 @@ def build_observation(
         [str(rustc), "--version"], capture_output=True, text=True, check=False
     )
     configs = cargo_config_files(build_root.resolve(), cargo_home.resolve())
+    archive_tree = archive_fingerprint(guest_toolchain_archive)
+    installed_tree = directory_fingerprint(sysroot)
     return {
         "schema": "p42-sp1-build-input-observation/v1",
         "trust": "untrusted-forensics-only",
@@ -402,10 +421,11 @@ def build_observation(
         },
         "guestToolchain": {
             "archiveSha256": sha256(guest_toolchain_archive),
+            "archiveTree": archive_tree,
+            "installedTree": installed_tree,
             "rustcSha256": sha256(rustc),
             "rustcExitCode": rustc_result.returncode,
             "rustcVersion": rustc_result.stdout.strip(),
-            **directory_fingerprint(sysroot),
         },
         "buildIsolation": {
             "targetPresent": os.path.lexists(target_dir.absolute()),
