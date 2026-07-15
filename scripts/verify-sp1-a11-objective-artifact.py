@@ -166,6 +166,8 @@ def validate_evidence(identity: dict[str, object]) -> None:
         fail("resource profile has an unexpected key set")
     if profile["schema"] != "p42-objective-resource-profile/v1" or profile["program"] != identity["program"]:
         fail("resource profile program identity mismatch")
+    if profile["status"] != "deterministic-envelope-not-proof-economics":
+        fail("resource profile status drift")
     if profile["version"] != identity["version"] or profile["limits"] != {
         "witnessSolutionBytes": 4096, "solutionCidBytes": 512, "publicValuesBytes": 32,
     }:
@@ -187,6 +189,12 @@ def validate_evidence(identity: dict[str, object]) -> None:
         fail("resource reproduction binding drift")
     if profile["proofEconomics"] != {"groth16ProofMeasured": False, "activationAuthorized": False}:
         fail("resource profile improperly authorizes activation")
+    if profile["remainingBlockers"] != [
+        "genuine-groth16-proof-benchmark",
+        "independent-operator-and-hardware-reproduction",
+        "production-audit-and-testnet-rehearsal",
+    ]:
+        fail("resource profile blocker set drift")
 
     vector = strict_json(VECTOR_PATH)
     if set(vector) != {"schema", "program", "version", "solutionPath", "witness", "hashes"}:
