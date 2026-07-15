@@ -1,21 +1,21 @@
 {
   "schemaVersion": "p42-source-release-evidence/v2",
-  "createdAt": "2026-07-14T23:35:51Z",
+  "createdAt": "2026-07-15T01:19:22Z",
   "repository": "techno-optimist/p42-prizes",
   "branch": "main",
-  "deployRelevantCommit": "b6638ec832e4e9d4bd705811ddf84d1a0a3e5d9f",
-  "observedBranchHead": "b6638ec832e4e9d4bd705811ddf84d1a0a3e5d9f",
-  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/117",
+  "deployRelevantCommit": "c04c37bffdf151bf5ac51b5d3f66bc8e7c9ff164",
+  "observedBranchHead": "c04c37bffdf151bf5ac51b5d3f66bc8e7c9ff164",
+  "pullRequest": "https://github.com/techno-optimist/p42-prizes/pull/119",
   "ci": {
     "workflow": "CI",
     "event": "push",
     "branch": "main",
-    "runId": 29375757945,
-    "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/29375757945",
-    "headSha": "b6638ec832e4e9d4bd705811ddf84d1a0a3e5d9f",
+    "runId": 29380606981,
+    "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/29380606981",
+    "headSha": "c04c37bffdf151bf5ac51b5d3f66bc8e7c9ff164",
     "status": "completed",
     "conclusion": "success",
-    "completedAt": "2026-07-14T23:33:39Z",
+    "completedAt": "2026-07-15T01:17:40Z",
     "requiredJobs": [
       {
         "name": "Python verifier gates",
@@ -45,12 +45,12 @@
   },
   "render": {
     "serviceId": "srv-d96pokeq1p3s73foqk60",
-    "deployId": "dep-d9bc7nt7vvec73a3re60",
+    "deployId": "dep-d9bdnv741pts73ep1g20",
     "status": "live",
     "trigger": "new_commit",
-    "runtimeCommit": "b6638ec832e4e9d4bd705811ddf84d1a0a3e5d9f",
-    "liveCommit": "b6638ec832e4e9d4bd705811ddf84d1a0a3e5d9f",
-    "finishedAt": "2026-07-14T23:20:30.334823Z"
+    "runtimeCommit": "c04c37bffdf151bf5ac51b5d3f66bc8e7c9ff164",
+    "liveCommit": "c04c37bffdf151bf5ac51b5d3f66bc8e7c9ff164",
+    "finishedAt": "2026-07-15T01:04:09.471293Z"
   },
   "releaseGuard": {
     "command": "make verify-render-release",
@@ -66,7 +66,7 @@
         "status": 200,
         "contentType": "text/html; charset=utf-8",
         "finalUrl": "https://p42-prizes.onrender.com/prizes/journey",
-        "bodySha256": "sha256:8f715924e6ea16a044a98f258214dbc677497e826dd3a2a708fc8fda858d7c31"
+        "bodySha256": "sha256:0f407aba7ba15ce9db6b5bb1f3cd3ed28158b463231ffaf917d3e72b3e83e0ae"
       },
       {
         "routeId": "home",
@@ -75,7 +75,7 @@
         "status": 200,
         "contentType": "text/html; charset=utf-8",
         "finalUrl": "https://projectforty2.ai/prizes/journey",
-        "bodySha256": "sha256:8f715924e6ea16a044a98f258214dbc677497e826dd3a2a708fc8fda858d7c31"
+        "bodySha256": "sha256:0f407aba7ba15ce9db6b5bb1f3cd3ed28158b463231ffaf917d3e72b3e83e0ae"
       },
       {
         "routeId": "build-week",
@@ -84,7 +84,7 @@
         "status": 200,
         "contentType": "text/html; charset=utf-8",
         "finalUrl": "https://p42-prizes.onrender.com/prizes/build-week",
-        "bodySha256": "sha256:28a9fafa344a41831117e36d117b43949c0e48b79a507f62b4f3a040155dba17"
+        "bodySha256": "sha256:694dc338940f53bbf07c54a35856ea16ae11bb44731f3a15d9b011e934d5bb84"
       },
       {
         "routeId": "build-week",
@@ -93,7 +93,7 @@
         "status": 200,
         "contentType": "text/html; charset=utf-8",
         "finalUrl": "https://projectforty2.ai/prizes/build-week",
-        "bodySha256": "sha256:28a9fafa344a41831117e36d117b43949c0e48b79a507f62b4f3a040155dba17"
+        "bodySha256": "sha256:694dc338940f53bbf07c54a35856ea16ae11bb44731f3a15d9b011e934d5bb84"
       },
       {
         "routeId": "problems",
@@ -138,7 +138,7 @@
         "status": 200,
         "contentType": "text/html; charset=utf-8",
         "finalUrl": "https://projectforty2.ai/prizes/standings",
-        "bodySha256": "sha256:b174ecd55b2b605d4c05e29d66432cb367637965c76ff69b44ee5236d237e274"
+        "bodySha256": "sha256:01d7c80551c723ca73b8bb4f4ad3a4ad69bd27f8d89b48920a6063f259e90761"
       },
       {
         "routeId": "skill",
@@ -158,5 +158,5 @@
     "failClosedPolicy": "An exact-ten cohort requires activated, fresh, independently attested v3 checkpoints; any stale, partial, mixed, malformed, or untrusted generation falls back atomically to local-only portal state.",
     "liveFundingState": "No canonical Base Sepolia pools are deployed or authorized; the live portal publishes no transfer target."
   },
-  "evidenceHash": "sha256:de0e5023a0b7cbef461f51a9175a2f68cff3b07cbdaca71b8bd8229ef7363943"
+  "evidenceHash": "sha256:bed9d05899328f674325f527dd40e9ecb6caa944365ae28002c3de1267d7c46f"
 }
