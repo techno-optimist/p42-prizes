@@ -333,10 +333,11 @@ function mountScrollWorld(container, config) {
   // first and avoids saturating a phone's bandwidth or its decoders.
   function preloadClips() {
     if (reduce) return;
-    // Low concurrency on mobile so early scenes get the full pipe and finish in
-    // scroll order (a phone reaches scene 1, then 2, then 3 — better that each is
-    // ready in turn than all seven crawling in parallel). Desktop has bandwidth.
-    const MAXC = isMobile() ? 2 : 6;
+    // Modest concurrency so early scenes get the pipe and finish in scroll order
+    // (reach scene 1, then 2, then 3 — better each is ready in turn than all seven
+    // crawling at once and starving the one on screen). Desktop clips are larger
+    // (720p) so it still wants a low cap, just a touch higher than a phone.
+    const MAXC = isMobile() ? 2 : 3;
     let idx = 0;
     (function pump() {
       let inflight = 0;
