@@ -5,7 +5,8 @@ import { chmodSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { buildFundingActivationPlan, runProductionAuthorizationValidator, writePrivateActivationPlan } from "./funding-activation.mjs";
+import { buildFundingActivationPlan, runProductionAuthorizationValidator, serializeFundingActivationPlan, writePrivateActivationPlan } from "./funding-activation.mjs";
+import { assertCanonicalActivationPlanArtifact, buildActivationRpcProviders } from "./funding-activation-run.mjs";
 
 const hash = (char) => `sha256:${char.repeat(64)}`;
 const address = (value) => ethers.getAddress(`0x${value.toString(16).padStart(40, "0")}`);
@@ -16,6 +17,31 @@ const fundingTypes = { FundingAuthorization: [
   { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
   { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
 ] };
+
+test("activation runner providers use canonical no-redirect endpoint transport", () => {
+  assert.throws(
+    () => buildActivationRpcProviders("https://rpc.example/", "https://rpc.example./", 84532),
+    /distinct HTTPS RPC origins and hosts/,
+  );
+  const providers = buildActivationRpcProviders(
+    "https://primary.example/", "https://secondary.example/", 84532,
+  );
+  try {
+    assert.equal(
+      providers.primary._getConnection().clone().getUrlFunc,
+      providers.primary._getConnection().getUrlFunc,
+    );
+    assert.equal(
+      providers.secondary._getConnection().clone().getUrlFunc,
+      providers.secondary._getConnection().getUrlFunc,
+    );
+    assert.equal(providers.endpoints.primary.url, "https://primary.example/");
+    assert.equal(providers.endpoints.secondary.url, "https://secondary.example/");
+  } finally {
+    providers.primary.destroy();
+    providers.secondary.destroy();
+  }
+});
 
 function manifest() {
   return {
@@ -137,6 +163,26 @@ test("activation plan binds ten treasury authorizations before governance opens 
     assert.equal(authorize.verifiedSignatureCount, 3);
     assert.equal(arm.data.slice(-64), "a".repeat(64));
   }
+});
+
+test("activation run rejects caller plan replacement and noncanonical bytes", () => {
+  const deployment = manifest();
+  const auth = authorization(deployment);
+  const plan = buildFundingActivationPlan({
+    manifest: deployment, manifestBytesDigest: hash("e"),
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}),
+  });
+  assert.equal(assertCanonicalActivationPlanArtifact({ value: plan, bytes: serializeFundingActivationPlan(plan) }, plan), plan);
+  const replacement = { ...plan, treasury: address(999) };
+  assert.throws(
+    () => assertCanonicalActivationPlanArtifact({ value: replacement, bytes: serializeFundingActivationPlan(replacement) }, plan),
+    /exact freshly reconstructed canonical plan/,
+  );
+  assert.throws(
+    () => assertCanonicalActivationPlanArtifact({ value: plan, bytes: Buffer.from(JSON.stringify(plan)) }, plan),
+    /exact freshly reconstructed canonical plan/,
+  );
 });
 
 test("activation rejects release substitution and incomplete topology", () => {

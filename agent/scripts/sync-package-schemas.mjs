@@ -13,6 +13,7 @@ const names = [
   "funding-activation-signatures-v2.schema.json",
   "indexer-checkpoint-v2.schema.json",
   "indexer-checkpoint-v3.schema.json",
+  "indexer-checkpoint-v4.schema.json",
   "runner-health-v2.schema.json",
 ];
 

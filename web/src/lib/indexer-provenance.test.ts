@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { launchProblems, problems } from "@/lib/data";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
+import { AbiCoder, Interface, Signature, TypedDataEncoder, Wallet, getAddress, keccak256, toUtf8Bytes } from "ethers";
 import {
   activatedIndexerSnapshotFromArtifacts,
   activatedProvenanceFromArtifacts,
@@ -139,7 +140,7 @@ describe("indexer provenance v2", () => {
   });
 
   it("keeps Render-bundled schemas byte-equivalent to canonical protocol schemas", () => {
-    for (const name of ["deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json", "indexer-checkpoint-v3.schema.json", "funding-activation-completion.schema.json"]) {
+    for (const name of ["deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json", "indexer-checkpoint-v3.schema.json", "indexer-checkpoint-v4.schema.json", "funding-activation-completion.schema.json"]) {
       const canonical = JSON.parse(require("node:fs").readFileSync(join(root, "schemas", name), "utf8"));
       const bundled = JSON.parse(require("node:fs").readFileSync(join(process.cwd(), "src", "schemas", name), "utf8"));
       expect(bundled).toEqual(canonical);
@@ -191,14 +192,14 @@ describe("indexer provenance v2", () => {
     expect(configuredIndexerArtifactPaths({
       P42_DEPLOYMENT_MANIFEST_PATH: "/m", P42_INDEXER_CHECKPOINT_PATH: "/c",
       P42_LAUNCH_AUTHORIZATION_PATH: "/a", P42_INDEXER_CHECKPOINT_ATTESTATION_PATH: "/ca",
-      P42_FUNDING_ACTIVATION_PLAN_PATH: "/p", P42_FUNDING_ACTIVATION_COMPLETION_PATH: "/fc",
+      P42_FUNDING_ACTIVATION_PLAN_PATH: "/p", P42_FUNDING_ACTIVATION_SIGNATURES_PATH: "/fs", P42_FUNDING_ACTIVATION_COMPLETION_PATH: "/fc",
       P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS: "300",
       P42_ATTESTATION_TRUST_REGISTRY_PATH: "/caller/registry.json",
       P42_ATTESTATION_TRUST_REGISTRY_SHA256: digest("f"),
     })).toEqual({
       deploymentManifestPath: "/m", indexerCheckpointPath: "/c",
       launchAuthorizationPath: "/a", indexerCheckpointAttestationPath: "/ca",
-      fundingActivationPlanPath: "/p", fundingActivationCompletionPath: "/fc",
+      fundingActivationPlanPath: "/p", fundingActivationSignaturesPath: "/fs", fundingActivationCompletionPath: "/fc",
       checkpointMaxAgeSeconds: 300,
     });
   });
@@ -222,7 +223,17 @@ describe("indexer provenance v2", () => {
     expect(manifestProblems[0].problemSlug).toBe("q6-intersecting-hypergraph");
     expect(manifestProblems[6].problemSlug).toBe("distinct-subset-sums-a11");
     base.manifest.releaseMode = "production"; base.manifest.status = "governance-setup-complete";
-    base.manifest.releaseEvidence = { releaseBindingDigest: digest("1") };
+    base.manifest.releaseEvidence = {
+      boardSetDigest: digest("2"), releaseBindingDigest: digest("1"), capsuleDigest: digest("3"),
+      slateDigest: digest("4"), releaseIndexDigest: digest("5"),
+    };
+    const fundingRoles = [
+      ["production-launch-authority", "productionLaunchAuthority"],
+      ["independent-security-authority", "independentSecurityAuthority"],
+      ["governance-authority", "governanceAuthority"],
+    ] as const;
+    const fundingWallets = fundingRoles.map(() => Wallet.createRandom());
+    fundingRoles.forEach(([, field], index) => { base.manifest.roles[field] = fundingWallets[index].address; });
     base.manifest.problems = manifestProblems;
     base.manifest.deploymentConfigHash = computePortalDeploymentConfigHash(base.manifest);
     base.checkpoint.manifestBinding.deploymentConfigHash = base.manifest.deploymentConfigHash;
@@ -236,7 +247,7 @@ describe("indexer provenance v2", () => {
     });
     const unsignedAuthorization = {
       schema_version: "p42-production-launch-authorization/v1", status: "authorized", issued_at_utc: issuedAt,
-      expires_at_utc: new Date(expires * 1000).toISOString(), release_binding: { network: "base-sepolia", chain_id: 84532 },
+      expires_at_utc: new Date(expires * 1000).toISOString(), release_binding: { network: "base-sepolia", chain_id: 84532, git_commit: base.manifest.deploymentCommit },
       artifacts: { deployment_manifest: { sha256: bytesDigest(base.manifest) } },
       authorizers: signers.map(({ role, index, publicKey }) => ({ role, public_key: publicKey, name: `Signer ${index}`, organization: "P42 Test", professional_email: `signer${index}@example.org` })),
     };
@@ -245,7 +256,7 @@ describe("indexer provenance v2", () => {
       ...clone(templateBoard), problemId: item.problemId, problemSlug: item.problemSlug,
       onchain: { ...clone(templateBoard.onchain), poolAcceptingFunds: true, fundingArmed: true, authorizedFundingDigest: digestHex, fundingAuthorizationDigest: digestHex, fundingAuthorizationExpiresAt: String(expires) },
     }));
-    base.checkpoint.schema = "p42-prizes/indexer-checkpoint/v3";
+    base.checkpoint.schema = "p42-prizes/indexer-checkpoint/v4";
     const manifestBytes = Buffer.from(JSON.stringify(base.manifest));
     const authorization = { ...unsignedAuthorization, authorization_digest: authorizationDigest, authorization_signatures: signers.map(({ role, privateKey, publicKey }) => {
       const message = Buffer.from(`P42-ATTESTATION-V2\np42-production-launch-authorization/v1\n${role}\n${authorizationDigest}\n${issuedAt}`, "ascii");
@@ -259,17 +270,104 @@ describe("indexer provenance v2", () => {
       { attestation_class: "p42-indexer-checkpoint-attestation/v1", signer_role: "indexer-checkpoint-authority", public_key: checkpointPublicKey, identity: { name: "Indexer Signer", organization: "P42 Test", professional_email: "indexer@example.org" }, valid_from_utc: "2026-01-01T00:00:00.000Z", valid_until_utc: null },
     ] };
     const authorizationBytes = Buffer.from(JSON.stringify(authorization));
-    const planBody = { schema: "p42-funding-activation-plan/v2", chainId: 84532, manifestBytesDigest: bytesDigest(base.manifest), authorizationDigest, authorizationBytesDigest: `sha256:${createHash("sha256").update(authorizationBytes).digest("hex")}`, authorizationExpiresAt: expires, activationSignaturesDigest: digest("7") };
+    const activationSignatures = {
+      schema: "p42-funding-activation-signatures/v2", chainId: 84532,
+      boardSetDigest: base.manifest.releaseEvidence.boardSetDigest,
+      releaseBindingDigest: base.manifest.releaseEvidence.releaseBindingDigest,
+      authorizationDigest, expiresAt: String(expires),
+      authorities: Object.fromEntries(fundingRoles.map(([, field], index) => [field, fundingWallets[index].address])),
+      boards: manifestProblems.map((item, boardIndex) => {
+        const nonce = 0n;
+        const common = {
+          boardSetDigest: `0x${base.manifest.releaseEvidence.boardSetDigest.slice(7)}`,
+          releaseBindingDigest: `0x${base.manifest.releaseEvidence.releaseBindingDigest.slice(7)}`,
+          authorizationDigest: digestHex, expiresAt: BigInt(expires), nonce,
+        };
+        return {
+          boardIndex, problemId: item.problemId, submissionManager: item.contracts.submissions.address, nonce: nonce.toString(),
+          signatures: fundingRoles.map(([role], roleIndex) => ({
+            role, signer: fundingWallets[roleIndex].address,
+            signature: fundingWallets[roleIndex].signingKey.sign(TypedDataEncoder.hash(
+              { name: "P42SubmissionManager", version: "2", chainId: 84532, verifyingContract: item.contracts.submissions.address },
+              { FundingAuthorization: [
+                { name: "role", type: "bytes32" }, { name: "boardSetDigest", type: "bytes32" },
+                { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
+                { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
+              ] },
+              { ...common, role: keccak256(toUtf8Bytes(role)) },
+            )).serialized,
+          })),
+        };
+      }),
+    };
+    const submissionsInterface = new Interface([
+      "function authorizeFunding(bytes32 authorizationDigest,uint64 expiresAt,uint256 nonce,bytes[3] signatures)",
+      "function armFunding(bytes32 authorizationDigest)",
+    ]);
+    const poolInterface = new Interface(["function setAcceptingFunds(bool accepting)"]);
+    const authorizationLabels = manifestProblems.map((item) => `board.${item.problemId}.authorizeFunding`);
+    const armLabels = manifestProblems.map((item) => `board.${item.problemId}.armFunding`);
+    const activationOperations: any[] = [
+      ...manifestProblems.map((item, boardIndex) => ({
+        sequence: boardIndex + 1, authority: "treasury", label: authorizationLabels[boardIndex], boardIndex,
+        problemId: item.problemId, to: getAddress(item.contracts.submissions.address), expectedRuntimeCodeHash: item.contracts.submissions.runtimeCodeHash,
+        value: "0", authorizationNonce: "0", verifiedSignatureCount: 3,
+        data: submissionsInterface.encodeFunctionData("authorizeFunding", [digestHex, expires, 0n, activationSignatures.boards[boardIndex].signatures.map((record) => record.signature)]), dependsOn: [],
+      })),
+      ...manifestProblems.map((item, boardIndex) => {
+        const label = armLabels[boardIndex]; const to = getAddress(item.contracts.submissions.address);
+        const data = submissionsInterface.encodeFunctionData("armFunding", [digestHex]);
+        const salt = keccak256(toUtf8Bytes(`${authorizationDigest}:${label}`));
+        return { sequence: boardIndex + 11, authority: "governance", label, boardIndex, problemId: item.problemId, to, expectedRuntimeCodeHash: item.contracts.submissions.runtimeCodeHash, value: "0", data, salt, operationId: keccak256(AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [to, 0n, data, salt])), dependsOn: authorizationLabels };
+      }),
+      ...manifestProblems.map((item, boardIndex) => {
+        const label = `board.${item.problemId}.setAcceptingFunds`; const to = getAddress(item.contracts.pool.address);
+        const data = poolInterface.encodeFunctionData("setAcceptingFunds", [true]);
+        const salt = keccak256(toUtf8Bytes(`${authorizationDigest}:${label}`));
+        return { sequence: boardIndex + 21, authority: "governance", label, boardIndex, problemId: item.problemId, to, expectedRuntimeCodeHash: item.contracts.pool.runtimeCodeHash, value: "0", data, salt, operationId: keccak256(AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [to, 0n, data, salt])), dependsOn: armLabels };
+      }),
+    ];
+    const planBody = {
+      schema: "p42-funding-activation-plan/v2", chainId: 84532, network: "base-sepolia",
+      deploymentCommit: base.manifest.deploymentCommit, deploymentConfigHash: base.manifest.deploymentConfigHash,
+      manifestBytesDigest: bytesDigest(base.manifest), releaseBindingDigest: base.manifest.releaseEvidence.releaseBindingDigest,
+      capsuleDigest: base.manifest.releaseEvidence.capsuleDigest, slateDigest: base.manifest.releaseEvidence.slateDigest,
+      releaseIndexDigest: base.manifest.releaseEvidence.releaseIndexDigest, authorizationDigest, authorizationExpiresAt: expires,
+      authorizationBytesDigest: `sha256:${createHash("sha256").update(authorizationBytes).digest("hex")}`,
+      activationSignaturesDigest: canonicalDigest(activationSignatures), timelock: getAddress(base.manifest.contracts.timelock.address),
+      timelockRuntimeCodeHash: base.manifest.contracts.timelock.runtimeCodeHash, treasury: getAddress(base.manifest.roles.treasury),
+      governanceSigners: base.manifest.governance.signers.map(getAddress), governanceThreshold: Number(base.manifest.governance.threshold),
+      governanceDelaySeconds: Number(base.manifest.governance.delaySeconds), governanceOperationGraceSeconds: Number(base.manifest.governance.operationGracePeriodSeconds),
+      boardCount: 10, operations: activationOperations,
+    };
     const plan = { ...planBody, planDigest: canonicalDigest(planBody) };
+    (base.checkpoint as any).activationEvidence = {
+      schema: "p42-funding-activation-checkpoint/v1",
+      planDigest: plan.planDigest,
+      finalizedBlockNumber: base.checkpoint.range.toBlock,
+      finalizedBlockHash: base.checkpoint.range.toBlockHash,
+      operations: activationOperations.slice(10).map((operation) => ({
+        sequence: operation.sequence, label: operation.label, problemId: String(operation.problemId),
+        operationId: operation.operationId, state: 2,
+      })),
+    };
     const completionBody = {
-      schema: "p42-funding-activation-completion/v1", chainId: 84532, network: "base-sepolia", planDigest: plan.planDigest,
+      schema: "p42-funding-activation-completion/v2", chainId: 84532, network: "base-sepolia", planDigest: plan.planDigest,
       manifestBytesDigest: plan.manifestBytesDigest, deploymentCommit: base.manifest.deploymentCommit,
       deploymentConfigHash: base.manifest.deploymentConfigHash, releaseBindingDigest: digest("1"),
-      authorizationDigest, authorizationBytesDigest: planBody.authorizationBytesDigest, authorizationExpiresAt: expires, finalizedBlockNumber: 99,
-      finalizedBlockTimestamp: expires - 10,
-      boards: manifestProblems.map((item) => ({ problemId: item.problemId, pool: item.contracts.pool.address, submissionManager: item.contracts.submissions.address, poolRuntimeCodeHash: item.contracts.pool.runtimeCodeHash, authorizedFundingDigest: digestHex, fundingAuthorizationDigest: digestHex, fundingAuthorizationExpiresAt: expires, fundingArmed: true, acceptingFunds: true })),
+      authorizationDigest, authorizationBytesDigest: planBody.authorizationBytesDigest, authorizationExpiresAt: expires,
+      finalizedBlockNumber: base.checkpoint.range.toBlock - 5,
+      finalizedBlockHash: hash("7"),
+      finalizedBlockTimestamp: base.checkpoint.range.toBlockTimestamp - 60,
+      boards: manifestProblems.map((item, index) => ({ problemId: item.problemId, pool: item.contracts.pool.address, submissionManager: item.contracts.submissions.address, poolRuntimeCodeHash: item.contracts.pool.runtimeCodeHash, authorizedFundingDigest: digestHex, fundingAuthorizationDigest: digestHex, fundingAuthorizationExpiresAt: expires, fundingArmed: true, acceptingFunds: true, armOperation: { operationId: activationOperations[index + 10].operationId, state: 2 }, openOperation: { operationId: activationOperations[index + 20].operationId, state: 2 } })),
     };
     const completion = { ...completionBody, completionDigest: canonicalDigest(completionBody) };
+    (base.checkpoint as any).activationEvidence.completionAnchor = {
+      completionDigest: completion.completionDigest,
+      blockNumber: completion.finalizedBlockNumber,
+      blockHash: completion.finalizedBlockHash,
+      blockTimestamp: completion.finalizedBlockTimestamp,
+    };
     const trustRegistryDigest = canonicalDigest(trustRegistry);
     const productionPolicy = {
       schema_version: "p42-portal-production-trust-policy/v1", environment: "production",
@@ -286,10 +384,45 @@ describe("indexer provenance v2", () => {
     const checkpointAttestation = { schema: "p42-indexer-checkpoint-attestation/v1", signerRole: "indexer-checkpoint-authority", publicKey: checkpointPublicKey, checkpointDigest, signedAtUtc: checkpointSignedAt, signature: `ed25519:${sign(null, checkpointMessage, checkpointSigner.privateKey).toString("hex")}` };
     const activatedArtifacts = {
       manifest: base.manifest, manifestBytes, checkpoint: base.checkpoint, checkpointBytes,
-      authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, plan, completion,
+      authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion,
+    };
+    const withSignedCheckpoint = (mutate: (value: any) => void) => {
+      const checkpoint = clone(base.checkpoint); mutate(checkpoint);
+      const checkpointBytes = Buffer.from(JSON.stringify(checkpoint));
+      const checkpointDigest = `sha256:${createHash("sha256").update(checkpointBytes).digest("hex")}`;
+      const message = Buffer.from(`P42-ATTESTATION-V2\np42-indexer-checkpoint-attestation/v1\nindexer-checkpoint-authority\n${checkpointDigest}\n${checkpointSignedAt}`, "ascii");
+      const checkpointAttestation = {
+        schema: "p42-indexer-checkpoint-attestation/v1", signerRole: "indexer-checkpoint-authority",
+        publicKey: checkpointPublicKey, checkpointDigest, signedAtUtc: checkpointSignedAt,
+        signature: `ed25519:${sign(null, message, checkpointSigner.privateKey).toString("hex")}`,
+      };
+      return { ...activatedArtifacts, checkpoint, checkpointBytes, checkpointAttestation };
     };
     const activatedSnapshot = activatedIndexerSnapshotFromArtifacts(launchProblems, activatedArtifacts);
     expect(activatedSnapshot.provenance).toHaveLength(10);
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, withSignedCheckpoint((value) => {
+      value.schema = "p42-prizes/indexer-checkpoint/v3"; delete value.activationEvidence;
+    }))).toThrow();
+    for (const mutate of [
+      (value: any) => { value.activationEvidence.operations[0].operationId = hash("8"); },
+      (value: any) => { value.activationEvidence.finalizedBlockNumber -= 1; },
+      (value: any) => { value.activationEvidence.finalizedBlockHash = hash("8"); },
+      (value: any) => { value.activationEvidence.completionAnchor.completionDigest = digest("8"); },
+      (value: any) => { value.activationEvidence.completionAnchor.blockHash = hash("8"); },
+      (value: any) => { value.activationEvidence.completionAnchor.blockNumber = value.range.toBlock + 1; },
+      (value: any) => { [value.activationEvidence.operations[0], value.activationEvidence.operations[1]] = [value.activationEvidence.operations[1], value.activationEvidence.operations[0]]; },
+      (value: any) => { value.activationEvidence.operations.pop(); },
+      (value: any) => { value.activationEvidence.operations[1] = clone(value.activationEvidence.operations[0]); },
+      (value: any) => { value.activationEvidence.operations[0].state = 1; },
+    ]) {
+      expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, withSignedCheckpoint(mutate))).toThrow();
+    }
+    const unsignedEvidenceTamper = clone(base.checkpoint);
+    (unsignedEvidenceTamper as any).activationEvidence.operations[0].operationId = hash("8");
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts, checkpoint: unsignedEvidenceTamper,
+      checkpointBytes: Buffer.from(JSON.stringify(unsignedEvidenceTamper)),
+    })).toThrow();
     const legacyPlan = clone(plan);
     legacyPlan.schema = "p42-funding-activation-plan/v1";
     const { planDigest: _legacyDigest, ...legacyPlanBody } = legacyPlan;
@@ -309,9 +442,111 @@ describe("indexer provenance v2", () => {
       ...activatedArtifacts,
       completion: partialCompletion,
     })).toThrow();
-    const result = activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, plan, completion);
-    expect(result).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[0].pool, fundingAuthorizationDigest: authorizationDigest, activationFinalizedBlock: 99 });
-    const subsetSums = activatedProvenanceFromArtifacts(launchProblems[6], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, plan, completion);
+    for (const mutate of [
+      (value: any) => { value.finalizedBlockNumber -= 1; },
+      (value: any) => { value.finalizedBlockHash = hash("8"); },
+      (value: any) => { value.finalizedBlockTimestamp -= 1; },
+    ]) {
+      const wrongAnchorCompletion = clone(completion); mutate(wrongAnchorCompletion);
+      const { completionDigest: _digest, ...body } = wrongAnchorCompletion;
+      wrongAnchorCompletion.completionDigest = canonicalDigest(body);
+      expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+        ...activatedArtifacts, completion: wrongAnchorCompletion,
+      })).toThrow();
+    }
+    const legacyCompletion = clone(completion);
+    legacyCompletion.schema = "p42-funding-activation-completion/v1";
+    const { completionDigest: _legacyCompletionDigest, ...legacyCompletionBody } = legacyCompletion;
+    legacyCompletion.completionDigest = canonicalDigest(legacyCompletionBody);
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts,
+      completion: legacyCompletion,
+    })).toThrow();
+    for (const mutate of [
+      (value: any) => { value.boards[0].armOperation.operationId = hash("8"); },
+      (value: any) => { value.boards[0].openOperation.state = 1; },
+    ]) {
+      const substitutedCompletion = clone(completion);
+      mutate(substitutedCompletion);
+      const { completionDigest: _completionDigest, ...substitutedBody } = substitutedCompletion;
+      substitutedCompletion.completionDigest = canonicalDigest(substitutedBody);
+      expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+        ...activatedArtifacts,
+        completion: substitutedCompletion,
+      })).toThrow();
+    }
+    for (const mutate of [
+      (value: any) => { value.operations[0].label = `prefix.${value.operations[0].label}`; },
+      (value: any) => { value.operations[1] = { ...value.operations[0], sequence: 2, boardIndex: 1 }; },
+      (value: any) => { value.operations[10].operationId = hash("8"); },
+    ]) {
+      const substitutedPlan = clone(plan); mutate(substitutedPlan);
+      const { planDigest: _substitutedPlanDigest, ...substitutedPlanBody } = substitutedPlan;
+      substitutedPlan.planDigest = canonicalDigest(substitutedPlanBody);
+      const substitutedCompletion = clone(completion);
+      substitutedCompletion.planDigest = substitutedPlan.planDigest;
+      if (substitutedPlan.operations[10].operationId !== plan.operations[10].operationId) {
+        substitutedCompletion.boards[0].armOperation.operationId = substitutedPlan.operations[10].operationId;
+      }
+      const { completionDigest: _substitutedCompletionDigest, ...substitutedCompletionBody } = substitutedCompletion;
+      substitutedCompletion.completionDigest = canonicalDigest(substitutedCompletionBody);
+      expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+        ...activatedArtifacts, plan: substitutedPlan, completion: substitutedCompletion,
+      })).toThrow();
+    }
+    const substitutedSignatures = clone(activationSignatures);
+    substitutedSignatures.boards[0].signatures[0].signature = substitutedSignatures.boards[1].signatures[0].signature;
+    const resealedSignaturePlan = clone(plan);
+    resealedSignaturePlan.activationSignaturesDigest = canonicalDigest(substitutedSignatures);
+    const { planDigest: _resealedSignaturePlanDigest, ...resealedSignaturePlanBody } = resealedSignaturePlan;
+    resealedSignaturePlan.planDigest = canonicalDigest(resealedSignaturePlanBody);
+    const resealedSignatureCompletion = clone(completion);
+    resealedSignatureCompletion.planDigest = resealedSignaturePlan.planDigest;
+    const { completionDigest: _resealedSignatureCompletionDigest, ...resealedSignatureCompletionBody } = resealedSignatureCompletion;
+    resealedSignatureCompletion.completionDigest = canonicalDigest(resealedSignatureCompletionBody);
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts, activationSignatures: substitutedSignatures,
+      plan: resealedSignaturePlan, completion: resealedSignatureCompletion,
+    })).toThrow();
+    const resealWireSignature = (replacement: string) => {
+      const signatures = clone(activationSignatures);
+      signatures.boards[0].signatures[0].signature = replacement;
+      const substitutedPlan = clone(plan);
+      substitutedPlan.activationSignaturesDigest = canonicalDigest(signatures);
+      substitutedPlan.operations[0].data = submissionsInterface.encodeFunctionData("authorizeFunding", [
+        digestHex, expires, 0n, signatures.boards[0].signatures.map((record: any) => record.signature),
+      ]);
+      const { planDigest: _planDigest, ...substitutedPlanBody } = substitutedPlan;
+      substitutedPlan.planDigest = canonicalDigest(substitutedPlanBody);
+      const substitutedCompletion = clone(completion);
+      substitutedCompletion.planDigest = substitutedPlan.planDigest;
+      const { completionDigest: _completionDigest, ...substitutedCompletionBody } = substitutedCompletion;
+      substitutedCompletion.completionDigest = canonicalDigest(substitutedCompletionBody);
+      return { signatures, substitutedPlan, substitutedCompletion };
+    };
+    const canonicalWireSignature = activationSignatures.boards[0].signatures[0].signature;
+    const compact = resealWireSignature(Signature.from(canonicalWireSignature).compactSerialized);
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts, activationSignatures: compact.signatures,
+      plan: compact.substitutedPlan, completion: compact.substitutedCompletion,
+    })).toThrow();
+    const normalizedV = `${canonicalWireSignature.slice(0, -2)}${(
+      Number.parseInt(canonicalWireSignature.slice(-2), 16) - 27
+    ).toString(16).padStart(2, "0")}`;
+    const normalized = resealWireSignature(normalizedV);
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts, activationSignatures: normalized.signatures,
+      plan: normalized.substitutedPlan, completion: normalized.substitutedCompletion,
+    })).toThrow();
+    expect(() => (activatedProvenanceFromArtifacts as any)(
+      launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes,
+      authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation,
+      compact.signatures, compact.substitutedPlan, compact.substitutedCompletion,
+      300, undefined, compact.substitutedPlan,
+    )).toThrow();
+    const result = activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion);
+    expect(result).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[0].pool, fundingAuthorizationDigest: authorizationDigest, activationFinalizedBlock: 95 });
+    const subsetSums = activatedProvenanceFromArtifacts(launchProblems[6], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion);
     expect(subsetSums).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[6].pool, problemRegistryId: "7" });
     for (const mutate of [
       (policy: any) => { policy.deployment_manifest.sha256 = digest("8"); },
@@ -321,9 +556,9 @@ describe("indexer provenance v2", () => {
       (policy: any) => { policy.trust_registry.path = "/tmp/caller-registry.json"; },
     ]) {
       const changedPolicy = clone(productionPolicy); mutate(changedPolicy);
-      expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, changedPolicy, trustRegistry, checkpointAttestation, plan, completion)).toThrow();
+      expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, changedPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion)).toThrow();
     }
     base.checkpoint.boards[0].onchain.fundingAuthorizationDigest = hash("9");
-    expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, plan, completion)).toThrow();
+    expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion)).toThrow();
   });
 });

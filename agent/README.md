@@ -512,6 +512,14 @@ expiry, and matching finalized/current signer nonces from both RPCs. Every new
 request and imported signature is preceded by a fresh production-authorization
 validation, chain-time check, and dual-RPC nonce check. A mined receipt does
 not advance a barrier until both RPCs observe the resulting state as finalized.
+An armed or open board also must name the exact plan-bound timelock operation in
+`Executed` state; equivalent calldata executed under another salt is rejected.
+Completion v2 records the exact arm/open operation IDs and states for all ten
+boards and is unavailable until all twenty governance operations are executed.
+Before reading either RPC, the run command revalidates the authorization,
+rechecks the activation signature bundle, reconstructs the canonical ordered
+30-operation plan, and requires the supplied private plan artifact to match its
+exact serialized bytes and digest.
 
 RPC endpoints come from `P42_PRIMARY_BASE_RPC_URL` and
 `P42_SECONDARY_BASE_RPC_URL`; both must be credential-free root HTTPS endpoints

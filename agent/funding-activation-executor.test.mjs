@@ -10,16 +10,24 @@ import {
   buildFundingActivationCompletion,
   collectActivationNonceEvidence,
   collectFundingActivationSnapshot,
+  fundingActivationCompletionAnchor,
   nextFundingActivationAction,
   prepareActivationSigningRequest,
   reconcileFundingActivationConfirmations,
   signAndBroadcastActivationAction,
+  validateFundingActivationOperationObservations,
 } from "./funding-activation-executor.mjs";
+import * as activationExecutorModule from "./funding-activation-executor.mjs";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const chainDigest = `0x${"a".repeat(64)}`;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const address = (value) => ethers.getAddress(`0x${value.toString(16).padStart(40, "0")}`);
+const submissionsInterface = new ethers.Interface([
+  "function authorizeFunding(bytes32 authorizationDigest,uint64 expiresAt,uint256 nonce,bytes[3] signatures)",
+  "function armFunding(bytes32 authorizationDigest)",
+]);
+const poolInterface = new ethers.Interface(["function setAcceptingFunds(bool accepting)"]);
 
 function nonceEvidence(currentNonce = 0, finalizedNonce = currentNonce) {
   return async (signer) => ({
@@ -45,18 +53,20 @@ function plan() {
     submissions: address(100 + index * 2),
     pool: address(101 + index * 2),
   }));
-  for (const board of boards) operations.push({
+  for (const [boardIndex, board] of boards.entries()) operations.push({
     sequence: operations.length + 1, authority: "treasury", label: `board.${board.problemId}.authorizeFunding`,
-    problemId: board.problemId, to: board.submissions, expectedRuntimeCodeHash: runtimeCodeHash, value: "0",
-    authorizationNonce: "0", verifiedSignatureCount: 3, data: `0x${"1".repeat(8)}${"a".repeat(64)}`,
+    boardIndex, problemId: board.problemId, to: board.submissions, expectedRuntimeCodeHash: runtimeCodeHash, value: "0",
+    authorizationNonce: "0", verifiedSignatureCount: 3,
+    data: submissionsInterface.encodeFunctionData("authorizeFunding", [chainDigest, 2_000_000_000, 0n, Array(3).fill(`0x${"1".repeat(130)}`)]),
+    dependsOn: [],
   });
   const authorizationLabels = operations.map((row) => row.label);
-  for (const board of boards) {
+  for (const [boardIndex, board] of boards.entries()) {
     const label = `board.${board.problemId}.armFunding`;
-    const data = `0x${"2".repeat(8)}${"a".repeat(64)}`;
+    const data = submissionsInterface.encodeFunctionData("armFunding", [chainDigest]);
     const salt = ethers.id(`${digest}:${label}`);
     operations.push({
-      sequence: operations.length + 1, authority: "governance", label, problemId: board.problemId,
+      sequence: operations.length + 1, authority: "governance", label, boardIndex, problemId: board.problemId,
       to: board.submissions, value: "0", data, salt,
       expectedRuntimeCodeHash: runtimeCodeHash,
       operationId: ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [board.submissions, 0n, data, salt])),
@@ -64,12 +74,12 @@ function plan() {
     });
   }
   const armLabels = operations.slice(10).map((row) => row.label);
-  for (const board of boards) {
+  for (const [boardIndex, board] of boards.entries()) {
     const label = `board.${board.problemId}.setAcceptingFunds`;
-    const data = `0x${"3".repeat(8)}${"0".repeat(63)}1`;
+    const data = poolInterface.encodeFunctionData("setAcceptingFunds", [true]);
     const salt = ethers.id(`${digest}:${label}`);
     operations.push({
-      sequence: operations.length + 1, authority: "governance", label, problemId: board.problemId,
+      sequence: operations.length + 1, authority: "governance", label, boardIndex, problemId: board.problemId,
       to: board.pool, value: "0", data, salt,
       expectedRuntimeCodeHash: runtimeCodeHash,
       operationId: ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [board.pool, 0n, data, salt])),
@@ -218,7 +228,7 @@ test("v1 journal migration rejects ambiguous plan bindings without rewriting", a
     plan: inputPlan, action, signer: null, journalRoot: root, journalPath,
     revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
     nonceEvidence: nonceEvidence(0),
-  }), /ambiguous plan binding/);
+  }), /ambiguous plan binding|problem IDs must be unique/);
   assert.deepEqual(readFileSync(journalPath), before);
 });
 
@@ -254,10 +264,34 @@ test("executor enforces global authorize and arm barriers", () => {
   assert.throws(() => nextFundingActivationAction(inputPlan, state), /before the global arm barrier/);
 });
 
+test("executor rejects protocol state that crossed the global authorization barrier out of plan", () => {
+  const inputPlan = plan();
+  const state = snapshot(inputPlan);
+  state.boards[0].fundingArmed = true;
+  state.boards[0].fundingAuthorizationDigest = chainDigest;
+  state.boards[0].acceptingFunds = true;
+  assert.throws(
+    () => nextFundingActivationAction(inputPlan, state),
+    /before the global authorization barrier/,
+  );
+});
+
 test("executor fails closed on legacy activation plans", () => {
   const inputPlan = plan();
   inputPlan.schema = "p42-funding-activation-plan/v1";
   assert.throws(() => nextFundingActivationAction(inputPlan, snapshot(inputPlan)), /validated activation plan/);
+});
+
+test("executor rejects prefixed, duplicated, and rederived operation topology", () => {
+  for (const mutate of [
+    (inputPlan) => { inputPlan.operations[0].label = `prefix.${inputPlan.operations[0].label}`; },
+    (inputPlan) => { inputPlan.operations[1] = { ...inputPlan.operations[0], sequence: 2, boardIndex: 1 }; },
+    (inputPlan) => { inputPlan.operations[10].operationId = inputPlan.operations[11].operationId; },
+  ]) {
+    const inputPlan = plan();
+    mutate(inputPlan);
+    assert.throws(() => nextFundingActivationAction(inputPlan, snapshot(inputPlan)), /topology|operation|unique|derived/);
+  }
 });
 
 test("executor reaches pool opening only after every finalized arm", () => {
@@ -277,6 +311,68 @@ test("executor reaches pool opening only after every finalized arm", () => {
   const action = nextFundingActivationAction(inputPlan, state);
   assert.equal(action.kind, "schedule");
   assert.match(action.operation.label, /setAcceptingFunds$/);
+});
+
+test("executor rejects alternate-salt state when exact plan operations remain None", () => {
+  const inputPlan = plan();
+  const state = snapshot(inputPlan);
+  for (const board of state.boards) {
+    board.authorizedFundingDigest = chainDigest;
+    board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+    board.fundingAuthorizationNonce = 1n;
+    board.fundingAuthorizationVerified = true;
+    board.fundingArmed = true;
+    board.fundingAuthorizationDigest = chainDigest;
+    board.acceptingFunds = true;
+  }
+  const alternateOperationId = `0x${"f".repeat(64)}`;
+  state.timelockOperations[alternateOperationId] = {
+    state: 2, eta: 0n, expiresAt: 0n, confirmedBy: inputPlan.governanceSigners.slice(0, 2),
+  };
+  assert.throws(
+    () => nextFundingActivationAction(inputPlan, state),
+    /outside its exact plan-bound operation/,
+  );
+});
+
+test("executor validates later out-of-plan arms before selecting an earlier pending operation", () => {
+  const inputPlan = plan();
+  const state = snapshot(inputPlan);
+  for (const board of state.boards) {
+    board.authorizedFundingDigest = chainDigest;
+    board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+    board.fundingAuthorizationNonce = 1n;
+    board.fundingAuthorizationVerified = true;
+  }
+  state.boards[1].fundingArmed = true;
+  state.boards[1].fundingAuthorizationDigest = chainDigest;
+  state.timelockOperations[`0x${"e".repeat(64)}`] = {
+    state: 2, eta: 0n, expiresAt: 0n, confirmedBy: inputPlan.governanceSigners.slice(0, 2),
+  };
+  assert.throws(
+    () => nextFundingActivationAction(inputPlan, state),
+    /outside its exact plan-bound operation/,
+  );
+});
+
+test("completion rejects all-open state when all exact operations are None", () => {
+  const inputPlan = plan();
+  const state = snapshot(inputPlan);
+  for (const board of state.boards) {
+    board.authorizedFundingDigest = chainDigest;
+    board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+    board.fundingAuthorizationNonce = 1n;
+    board.fundingAuthorizationVerified = true;
+    board.fundingArmed = true;
+    board.fundingAuthorizationDigest = chainDigest;
+    board.acceptingFunds = true;
+  }
+  state.blockNumber = 42;
+  state.blockHash = `0x${"4".repeat(64)}`;
+  assert.throws(
+    () => buildFundingActivationCompletion(inputPlan, state),
+    /outside its exact plan-bound operation/,
+  );
 });
 
 test("signing revalidates the exact plan and journals raw bytes before broadcast", async () => {
@@ -691,6 +787,59 @@ test("dual-RPC snapshot uses one common finalized block and rejects disagreement
   await assert.rejects(() => collectFundingActivationSnapshot(inputPlan, provider(), provider(1_900_000_001)), /disagree/);
 });
 
+test("activation checkpoint evidence validates pure exact observations without a provider seam", () => {
+  const inputPlan = plan();
+  const anchor = { number: 50, hash: `0x${"5".repeat(64)}`, timestamp: 1_900_000_000 };
+  const completionAnchor = {
+    completionDigest: `sha256:${"c".repeat(64)}`,
+    blockNumber: 40,
+    blockHash: `0x${"4".repeat(64)}`,
+    blockTimestamp: 1_899_999_000,
+  };
+  const observation = () => ({
+    chainId: inputPlan.chainId,
+    finalizedBlockNumber: 50,
+    blockNumber: 50,
+    blockHash: anchor.hash,
+    blockTimestamp: anchor.timestamp,
+    completionAnchor: { ...completionAnchor },
+    operations: inputPlan.operations.slice(10).map((operation) => ({
+      sequence: operation.sequence,
+      label: operation.label,
+      problemId: String(operation.problemId),
+      operationId: operation.operationId,
+      state: 2,
+      storageState: 2,
+    })),
+  });
+  const primary = observation();
+  const secondary = observation();
+  const evidence = validateFundingActivationOperationObservations(
+    inputPlan, primary, secondary, anchor, completionAnchor,
+  );
+  assert.equal(evidence.finalizedBlockNumber, 50);
+  assert.equal(evidence.operations.length, 20);
+  assert.deepEqual(evidence.operations.map(({ operationId }) => operationId), inputPlan.operations.slice(10).map(({ operationId }) => operationId.toLowerCase()));
+  assert.ok(evidence.operations.every(({ state }) => state === 2));
+  const none = observation(); none.operations[0].state = 0; none.operations[0].storageState = 0;
+  assert.throws(() => validateFundingActivationOperationObservations(inputPlan, none, none, anchor, completionAnchor), /not executed/);
+  const splitState = observation(); splitState.operations[0].storageState = 1;
+  assert.throws(() => validateFundingActivationOperationObservations(inputPlan, splitState, secondary, anchor, completionAnchor), /canonical operation set/);
+  const wrongHash = observation(); wrongHash.blockHash = `0x${"6".repeat(64)}`;
+  assert.throws(() => validateFundingActivationOperationObservations(inputPlan, primary, wrongHash, anchor, completionAnchor), /wrong anchor/);
+  const unfinalized = observation(); unfinalized.finalizedBlockNumber = 49;
+  assert.throws(() => validateFundingActivationOperationObservations(inputPlan, primary, unfinalized, anchor, completionAnchor), /wrong anchor/);
+  const reorgedCompletion = observation();
+  reorgedCompletion.completionAnchor.blockHash = `0x${"9".repeat(64)}`;
+  assert.throws(
+    () => validateFundingActivationOperationObservations(
+      inputPlan, primary, reorgedCompletion, anchor, completionAnchor,
+    ),
+    /wrong anchor/,
+  );
+  assert.equal("fundingActivationOperationEvidenceTestOnly" in activationExecutorModule, false);
+});
+
 test("executor rejects stale bundle nonces and requires post-relay verified nonce semantics", () => {
   const inputPlan = plan();
   const state = snapshot(inputPlan);
@@ -820,7 +969,30 @@ test("completion artifact binds only the exact finalized all-open state", () => 
   const completion = buildFundingActivationCompletion(inputPlan, state);
   assert.equal(completion.status, "complete");
   assert.equal(completion.boards.length, 10);
+  assert.deepEqual(completion.boards[0].armOperation, {
+    operationId: inputPlan.operations[10].operationId,
+    state: 2,
+  });
+  assert.deepEqual(completion.boards[0].openOperation, {
+    operationId: inputPlan.operations[20].operationId,
+    state: 2,
+  });
   assert.match(completion.completionDigest, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual(fundingActivationCompletionAnchor(inputPlan, completion), {
+    completionDigest: completion.completionDigest,
+    blockNumber: completion.finalizedBlockNumber,
+    blockHash: completion.finalizedBlockHash.toLowerCase(),
+    blockTimestamp: completion.finalizedBlockTimestamp,
+  });
+  assert.throws(
+    () => fundingActivationCompletionAnchor(inputPlan, {
+      ...completion, finalizedBlockHash: `0x${"9".repeat(64)}`,
+    }),
+    /does not match/,
+  );
   state.boards[0].acceptingFunds = false;
-  assert.throws(() => buildFundingActivationCompletion(inputPlan, state), /requires every finalized board/);
+  assert.throws(
+    () => buildFundingActivationCompletion(inputPlan, state),
+    /exact pool-open operation executed without matching pool state/,
+  );
 });

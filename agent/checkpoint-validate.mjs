@@ -18,8 +18,8 @@ export function validateCheckpointDescriptor(descriptor) {
     maxBytes: MAX_CHECKPOINT_BYTES,
     maxDepth: 96,
   });
-  if (checkpoint.schema !== "p42-prizes/indexer-checkpoint/v3") {
-    throw new Error("independent portal replay requires checkpoint v3");
+  if (!["p42-prizes/indexer-checkpoint/v3", "p42-prizes/indexer-checkpoint/v4"].includes(checkpoint.schema)) {
+    throw new Error("independent portal replay requires checkpoint v3 or v4");
   }
   validateMultiBoardCheckpoint(checkpoint);
   return { ok: true, schema: checkpoint.schema, boards: checkpoint.boards.length };

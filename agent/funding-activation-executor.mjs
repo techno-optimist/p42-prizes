@@ -1,4 +1,5 @@
 import { ethers } from "ethers";
+import { assertFundingActivationPlanTopology } from "./funding-activation.mjs";
 import { existsSync, realpathSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
@@ -7,12 +8,16 @@ import { reconcileSignedTransaction } from "./lib.mjs";
 import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
 import { readStrictJsonFileSync, writeTrustedFileSync } from "./strict-json.mjs";
 import { acquireEnvelopeLock, releaseEnvelopeLock } from "./challenge-envelope.mjs";
+import {
+  activationRpcFetchRequest,
+  validateActivationRpcEndpointPair,
+} from "./activation-rpc-endpoints.mjs";
 
 export const ACTIVATION_JOURNAL_SCHEMA = "p42-funding-activation-journal/v2";
 const LEGACY_ACTIVATION_JOURNAL_SCHEMA = "p42-funding-activation-journal/v1";
 export const ACTIVATION_SIGNING_REQUEST_SCHEMA = "p42-funding-activation-signing-request/v2";
 const LEGACY_ACTIVATION_SIGNING_REQUEST_SCHEMA = "p42-funding-activation-signing-request/v1";
-export const ACTIVATION_COMPLETION_SCHEMA = "p42-funding-activation-completion/v1";
+export const ACTIVATION_COMPLETION_SCHEMA = "p42-funding-activation-completion/v2";
 export const ACTIVATION_NONCE_EVIDENCE_SCHEMA = "p42-funding-activation-nonce-evidence/v1";
 const ACTIVATION_SIGNING_REQUEST_TTL_SECONDS = 15 * 60;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
@@ -172,6 +177,151 @@ export async function collectFundingActivationSnapshot(planValue, primaryProvide
   return primary;
 }
 
+async function collectOperationObservation(provider, plan, anchor, completionAnchor) {
+  const network = await provider.getNetwork();
+  const [finalized, block, completionBlock] = await Promise.all([
+    provider.getBlock("finalized"), provider.getBlock(anchor.number),
+    provider.getBlock(completionAnchor.blockNumber),
+  ]);
+  if (!finalized || !block || !completionBlock) {
+    throw new Error("activation checkpoint observation block is unavailable");
+  }
+  const operations = [];
+  for (const operation of plan.operations.slice(10)) {
+    const [stateResult, opResult] = await Promise.all([
+      readCall(provider, plan.timelock, timelockInterface, "stateOf", [operation.operationId], block.number),
+      readCall(provider, plan.timelock, timelockInterface, "ops", [operation.operationId], block.number),
+    ]);
+    const state = Number(stateResult[0]);
+    operations.push({
+      sequence: operation.sequence,
+      label: operation.label,
+      problemId: String(operation.problemId),
+      operationId: operation.operationId.toLowerCase(),
+      state,
+      storageState: Number(opResult.state),
+    });
+  }
+  return {
+    chainId: Number(network.chainId),
+    finalizedBlockNumber: finalized.number,
+    blockNumber: block.number,
+    blockHash: block.hash,
+    blockTimestamp: block.timestamp,
+    completionAnchor: {
+      completionDigest: completionAnchor.completionDigest,
+      blockNumber: completionBlock.number,
+      blockHash: completionBlock.hash,
+      blockTimestamp: completionBlock.timestamp,
+    },
+    operations,
+  };
+}
+
+export function validateFundingActivationOperationObservations(
+  planValue,
+  primaryValue,
+  secondaryValue,
+  anchorValue,
+  completionAnchorValue,
+) {
+  const plan = assertPlan(planValue);
+  if (!Number.isSafeInteger(anchorValue?.number) || anchorValue.number < 0
+      || !/^0x[0-9a-fA-F]{64}$/.test(String(anchorValue?.hash))) {
+    throw new Error("activation checkpoint evidence anchor is invalid");
+  }
+  const normalize = (value, label) => {
+    if (!value || value.chainId !== plan.chainId
+        || !Number.isSafeInteger(value.finalizedBlockNumber) || value.finalizedBlockNumber < anchorValue.number
+        || value.blockNumber !== anchorValue.number || !sameHex(value.blockHash, anchorValue.hash)
+        || !Number.isSafeInteger(value.blockTimestamp)
+        || (anchorValue.timestamp !== undefined && value.blockTimestamp !== anchorValue.timestamp)
+        || value.completionAnchor?.completionDigest !== completionAnchorValue.completionDigest
+        || value.completionAnchor?.blockNumber !== completionAnchorValue.blockNumber
+        || !/^0x[0-9a-fA-F]{64}$/.test(String(value.completionAnchor?.blockHash))
+        || !sameHex(value.completionAnchor?.blockHash, completionAnchorValue.blockHash)
+        || value.completionAnchor?.blockTimestamp !== completionAnchorValue.blockTimestamp
+        || !Array.isArray(value.operations) || value.operations.length !== 20) {
+      throw new Error(`${label} activation checkpoint observation is invalid or uses the wrong anchor`);
+    }
+    const operations = value.operations.map((observed, index) => {
+      const planned = plan.operations[index + 10];
+      if (observed?.sequence !== planned.sequence || observed.label !== planned.label
+          || String(observed.problemId) !== String(planned.problemId)
+          || !sameHex(observed.operationId, planned.operationId)
+          || observed.state !== observed.storageState) {
+        throw new Error(`${label} activation checkpoint observation does not match the canonical operation set`);
+      }
+      if (observed.state !== 2) {
+        throw new Error(`activation operation ${planned.label} is not executed at checkpoint anchor`);
+      }
+      return {
+        sequence: planned.sequence,
+        label: planned.label,
+        problemId: String(planned.problemId),
+        operationId: planned.operationId.toLowerCase(),
+        state: 2,
+      };
+    });
+    return {
+      chainId: value.chainId,
+      blockNumber: value.blockNumber,
+      blockHash: value.blockHash.toLowerCase(),
+      blockTimestamp: value.blockTimestamp,
+      completionAnchor: {
+        completionDigest: value.completionAnchor.completionDigest,
+        blockNumber: value.completionAnchor.blockNumber,
+        blockHash: value.completionAnchor.blockHash.toLowerCase(),
+        blockTimestamp: value.completionAnchor.blockTimestamp,
+      },
+      operations,
+    };
+  };
+  const primary = normalize(primaryValue, "primary");
+  const secondary = normalize(secondaryValue, "secondary");
+  if (JSON.stringify(primary) !== JSON.stringify(secondary)) {
+    throw new Error("activation RPCs disagree on checkpoint operation evidence");
+  }
+  return Object.freeze({
+    schema: "p42-funding-activation-checkpoint/v1",
+    planDigest: plan.planDigest,
+    finalizedBlockNumber: primary.blockNumber,
+    finalizedBlockHash: primary.blockHash,
+    completionAnchor: primary.completionAnchor,
+    operations: primary.operations,
+  });
+}
+
+export async function collectFundingActivationOperationEvidence(
+  planValue,
+  primaryRpcUrl,
+  secondaryRpcUrl,
+  anchorValue,
+  completionValue,
+) {
+  const endpoints = validateActivationRpcEndpointPair(primaryRpcUrl, secondaryRpcUrl);
+  const plan = assertPlan(planValue);
+  const completionAnchor = fundingActivationCompletionAnchor(plan, completionValue);
+  const primaryProvider = new ethers.JsonRpcProvider(
+    activationRpcFetchRequest(endpoints.primary.url), plan.chainId, { staticNetwork: true },
+  );
+  const secondaryProvider = new ethers.JsonRpcProvider(
+    activationRpcFetchRequest(endpoints.secondary.url), plan.chainId, { staticNetwork: true },
+  );
+  try {
+    const [primary, secondary] = await Promise.all([
+      collectOperationObservation(primaryProvider, plan, anchorValue, completionAnchor),
+      collectOperationObservation(secondaryProvider, plan, anchorValue, completionAnchor),
+    ]);
+    return validateFundingActivationOperationObservations(
+      plan, primary, secondary, anchorValue, completionAnchor,
+    );
+  } finally {
+    primaryProvider.destroy();
+    secondaryProvider.destroy();
+  }
+}
+
 export async function collectActivationNonceEvidence(primaryProvider, secondaryProvider, signerValue) {
   if (!primaryProvider || !secondaryProvider || primaryProvider === secondaryProvider) {
     throw new Error("activation nonce evidence requires two independent RPC providers");
@@ -251,8 +401,14 @@ export function buildFundingActivationCompletion(planValue, snapshot) {
     finalizedBlockTimestamp: Number(snapshot.now),
     boards: snapshot.boards.map((board) => {
       const authorize = groups.authorize.find((operation) => String(operation.problemId) === String(board.problemId));
+      const arm = groups.arm.find((operation) => String(operation.problemId) === String(board.problemId));
       const open = groups.open.find((operation) => String(operation.problemId) === String(board.problemId));
-      if (!authorize || !open) throw new Error(`activation completion cannot bind board ${board.problemId}`);
+      if (!authorize || !arm || !open) throw new Error(`activation completion cannot bind board ${board.problemId}`);
+      const armState = assertTimelockOperation(snapshot, arm);
+      const openState = assertTimelockOperation(snapshot, open);
+      if (armState.state !== 2 || openState.state !== 2) {
+        throw new Error(`activation completion requires exact executed operations for board ${board.problemId}`);
+      }
       return {
         problemId: String(board.problemId),
         submissionManager: authorize.to,
@@ -263,10 +419,40 @@ export function buildFundingActivationCompletion(planValue, snapshot) {
         fundingAuthorizationExpiresAt: Number(board.fundingAuthorizationExpiresAt),
         fundingArmed: board.fundingArmed,
         acceptingFunds: board.acceptingFunds,
+        armOperation: { operationId: arm.operationId, state: armState.state },
+        openOperation: { operationId: open.operationId, state: openState.state },
       };
     }),
   };
   return Object.freeze({ ...body, completionDigest: sha256Canonical(body) });
+}
+
+export function fundingActivationCompletionAnchor(planValue, completionValue) {
+  const plan = assertPlan(planValue);
+  if (!completionValue || typeof completionValue !== "object" || Array.isArray(completionValue)) {
+    throw new Error("activation completion is required");
+  }
+  const { completionDigest, ...body } = completionValue;
+  if (completionValue.schema !== ACTIVATION_COMPLETION_SCHEMA
+      || completionDigest !== sha256Canonical(body)
+      || completionValue.status !== "complete"
+      || completionValue.chainId !== plan.chainId
+      || completionValue.planDigest !== plan.planDigest
+      || completionValue.manifestBytesDigest !== plan.manifestBytesDigest
+      || completionValue.authorizationDigest !== plan.authorizationDigest
+      || !Number.isSafeInteger(completionValue.finalizedBlockNumber)
+      || completionValue.finalizedBlockNumber < 0
+      || !/^0x[0-9a-fA-F]{64}$/.test(completionValue.finalizedBlockHash ?? "")
+      || !Number.isSafeInteger(completionValue.finalizedBlockTimestamp)
+      || completionValue.finalizedBlockTimestamp < 0) {
+    throw new Error("activation completion does not match the canonical plan and anchor");
+  }
+  return Object.freeze({
+    completionDigest,
+    blockNumber: completionValue.finalizedBlockNumber,
+    blockHash: completionValue.finalizedBlockHash.toLowerCase(),
+    blockTimestamp: completionValue.finalizedBlockTimestamp,
+  });
 }
 
 function expectedDigest(plan) {
@@ -285,6 +471,7 @@ function assertPlan(plan) {
   if (plan?.schema !== "p42-funding-activation-plan/v2" || !/^sha256:[0-9a-f]{64}$/.test(plan.planDigest ?? "")) {
     throw new Error("activation executor requires a validated activation plan");
   }
+  assertFundingActivationPlanTopology(plan);
   const groups = operationGroups(plan);
   if (plan.boardCount !== 10 || plan.operations?.length !== 30 || groups.authorize.length !== 10
       || groups.arm.length !== 10 || groups.open.length !== 10
@@ -367,6 +554,9 @@ export function nextFundingActivationAction(planValue, snapshot, { availableGove
       && observedNonce === expectedNonce + 1n && board.fundingAuthorizationVerified === true;
   });
   if (!allAuthorized) {
+    if (snapshot.boards.some((board) => board.fundingArmed || board.acceptingFunds)) {
+      throw new Error("protocol state advanced before the global authorization barrier");
+    }
     for (const operation of [...groups.arm, ...groups.open]) {
       if (assertTimelockOperation(snapshot, operation).state !== 0) {
         throw new Error("governance activation operation exists before the global authorization barrier");
@@ -379,14 +569,25 @@ export function nextFundingActivationAction(planValue, snapshot, { availableGove
     return { kind: "authorize", operation, signer: plan.treasury };
   }
 
-  const allArmed = groups.arm.every((operation) => {
+  const armBindings = groups.arm.map((operation) => {
     const board = boardByProblemId(snapshot, operation.problemId);
+    const operationState = assertTimelockOperation(snapshot, operation).state;
     if (board.fundingArmed && !sameHex(board.fundingAuthorizationDigest, digest)) {
       throw new Error(`board ${operation.problemId} is armed with a conflicting authorization`);
     }
-    return board.fundingArmed && sameHex(board.fundingAuthorizationDigest, digest);
+    if (board.fundingArmed && operationState !== 2) {
+      throw new Error(`board ${operation.problemId} was armed outside its exact plan-bound operation`);
+    }
+    if (!board.fundingArmed && operationState === 2) {
+      throw new Error(`board ${operation.problemId} exact arm operation executed without matching manager state`);
+    }
+    return board.fundingArmed && sameHex(board.fundingAuthorizationDigest, digest) && operationState === 2;
   });
+  const allArmed = armBindings.every(Boolean);
   if (!allArmed) {
+    if (snapshot.boards.some((board) => board.acceptingFunds)) {
+      throw new Error("pool accepted funds before the global arm barrier");
+    }
     for (const operation of groups.open) {
       if (assertTimelockOperation(snapshot, operation).state !== 0) {
         throw new Error("pool-open operation exists before the global arm barrier");
@@ -401,6 +602,17 @@ export function nextFundingActivationAction(planValue, snapshot, { availableGove
     return { kind: "wait-finality" };
   }
 
+  for (const operation of groups.open) {
+    const board = boardByProblemId(snapshot, operation.problemId);
+    const operationState = assertTimelockOperation(snapshot, operation).state;
+    if (board.acceptingFunds) {
+      if (operationState !== 2) {
+        throw new Error(`board ${operation.problemId} pool was opened outside its exact plan-bound operation`);
+      }
+    } else if (operationState === 2) {
+      throw new Error(`board ${operation.problemId} exact pool-open operation executed without matching pool state`);
+    }
+  }
   for (const operation of groups.open) {
     const board = boardByProblemId(snapshot, operation.problemId);
     if (board.acceptingFunds) continue;

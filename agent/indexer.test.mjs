@@ -24,11 +24,13 @@ import {
   queryHistoricalLogs,
   ReorgDetectedError,
   replayProtocolEvents,
+  runIndexer,
   REQUIRED_LIFECYCLE_COVERAGE,
   ReplayError,
   stableStringify,
   validateMultiBoardCheckpoint,
 } from "./indexer.mjs";
+import { validateActivationRpcEndpointPair } from "./activation-rpc-endpoints.mjs";
 import { CANONICAL_BOARD_CONTRACTS, CANONICAL_SHARED_CONTRACTS } from "./canonical-topology.mjs";
 import { validateCheckpointDescriptor } from "./checkpoint-validate.mjs";
 
@@ -80,6 +82,50 @@ it("indexer CLI configures trusted transcript retrieval", () => {
   );
   assert.deepEqual(configured.endpoints, ["https://one.example", "https://two.test"]);
   assert.equal(typeof configured.fetchClient.fetchTranscript, "function");
+});
+
+it("activation checkpointing requires credential-free independent HTTPS RPC hosts", async () => {
+  const pair = validateActivationRpcEndpointPair("https://RPC-A.example:443/", "https://rpc-b.example");
+  assert.equal(pair.primary.url, "https://rpc-a.example/");
+  for (const [primary, secondary] of [
+    ["https://rpc.example", "https://rpc.example/"],
+    ["https://a.rpc.example", "https://a.rpc.example:443"],
+    ["https://rpc.example", "https://RPC.EXAMPLE./"],
+    ["https://127.0.0.1", "https://127.1"],
+    ["https://127.0.0.1", "https://[::ffff:127.0.0.1]"],
+    ["https://127.0.0.1", "https://[::ffff:7f00:1]"],
+    ["https://192.168.1.9", "https://[::ffff:192.168.1.9]"],
+    ["https://8.8.8.8", "https://[::ffff:808:808]"],
+    ["http://rpc-a.example", "https://rpc-b.example"],
+    ["https://user@rpc-a.example", "https://rpc-b.example"],
+    ["https://rpc-a.example/path", "https://rpc-b.example"],
+    ["https://rpc-a.example?key=value", "https://rpc-b.example"],
+    ["https://rpc-a.example#fragment", "https://rpc-b.example"],
+  ]) {
+    assert.throws(() => validateActivationRpcEndpointPair(primary, secondary));
+  }
+  for (const invalid of [
+    new URL("https://rpc-a.example"),
+    { toString: () => "https://rpc-a.example" },
+    new String("https://rpc-a.example"),
+    "",
+    " https://rpc-a.example",
+  ]) {
+    assert.throws(() => validateActivationRpcEndpointPair(invalid, "https://rpc-b.example"), /primitive string/);
+  }
+  assert.deepEqual(
+    validateActivationRpcEndpointPair("https://203.0.113.10", "https://[2001:db8::10]").primary.hostname,
+    "203.0.113.10",
+  );
+  await assert.rejects(() => runIndexer({
+    manifestPath: "/not-read", rpcUrl: "https://rpc-a.example", outPath: "/not-written",
+    activationPlanPath: "/not-read", secondaryRpcUrl: "https://rpc-b.example",
+  }), /requires --activation-plan, --activation-completion/);
+  await assert.rejects(() => runIndexer({
+    manifestPath: "/not-read", rpcUrl: "https://rpc-a.example", outPath: "/not-written",
+    activationPlanPath: "/not-read", secondaryRpcUrl: "https://rpc-b.example",
+    secondaryProvider: {},
+  }), /unsupported or injectable transport field/);
 });
 
 it("multiboard archive generations commit together and roll back failures", async () => {
