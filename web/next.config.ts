@@ -50,6 +50,21 @@ const nextConfig: NextConfig = {
           },
         ],
       },
+      {
+        // The splash's big static assets (pre-rendered clips, self-hosted fonts,
+        // poster stills) are content-stable — cache them hard so a reload or a
+        // repeat viewer gets them from the browser/CDN instead of re-pulling
+        // ~6MB of video from origin each time. Next serves public/ with
+        // `max-age=0` by default, which is what forced a full re-download on
+        // every view. If these assets are ever changed, bump the filename or
+        // purge the CDN, since a returning browser will hold this for a week.
+        source: "/intro/assets/vid/:path*",
+        headers: [{ key: "Cache-Control", value: "public, max-age=604800, stale-while-revalidate=86400" }],
+      },
+      {
+        source: "/intro/assets/fonts/:path*",
+        headers: [{ key: "Cache-Control", value: "public, max-age=604800, stale-while-revalidate=86400" }],
+      },
     ];
   },
   async rewrites() {
