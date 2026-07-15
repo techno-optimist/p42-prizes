@@ -56,9 +56,10 @@ pub struct ObjectiveWitness {
     pub solution: Vec<u8>,
 }
 
-// The A11 guest uses a distinct wire-compatible witness type so its 4 KiB
-// solution bound is enforced during deserialization, before allocation and
-// hashing. Keep the field order and types synchronized with ObjectiveWitness.
+// The A11 guest uses a distinct wire-compatible witness type so Bincode rejects
+// a solution field above 4 KiB before allocating or hashing that field. SP1
+// frames stdin before typed deserialization, so producers must cap total stdin
+// independently. Keep the field order and types synchronized with ObjectiveWitness.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct A11ObjectiveWitness {
