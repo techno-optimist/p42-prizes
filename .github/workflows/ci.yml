@@ -177,6 +177,12 @@ jobs:
                 exit 1
               fi
           done
+          hadamard=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
+          hadamard_audit=target/hadamard-reproducibility
+          mkdir -p "$hadamard_audit"
+          cp "$hadamard" "$hadamard_audit/program.elf"
+          cargo run --locked -p p42-hadamard-668-objective-script -- \
+            identity-elf "$hadamard" > "$hadamard_audit/identity.json"
           a11=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program
           audit=target/a11-reproducibility
           mkdir -p "$audit"
@@ -186,11 +192,11 @@ jobs:
           cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
             execute-fixture-elf "$a11" ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json \
             > "$audit/execution.json"
-      - name: Retain x86 guest for cross-host audit
+      - name: Retain Hadamard guest identity for cross-image audit
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: p42-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
-          path: objective-programs/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
+          path: objective-programs/target/hadamard-reproducibility
           if-no-files-found: error
           retention-days: 7
       - name: Retain unbound A11 guest for cross-host audit
@@ -236,18 +242,31 @@ jobs:
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: p42-distinct-subset-sums-a11-x86-elf-*-${{ github.run_id }}
-          path: objective-programs/reproduced
-      - name: Compare dual-image A11 guests
+          path: objective-programs/reproduced-a11
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: p42-hadamard-668-x86-elf-*-${{ github.run_id }}
+          path: objective-programs/reproduced-hadamard
+      - name: Compare dual-image objective guests
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t guests < <(find objective-programs/reproduced -type f -name program.elf | sort)
-          mapfile -t identities < <(find objective-programs/reproduced -type f -name identity.json | sort)
-          mapfile -t executions < <(find objective-programs/reproduced -type f -name execution.json | sort)
-          test "${#guests[@]}" -eq 2
-          test "${#identities[@]}" -eq 2
-          test "${#executions[@]}" -eq 2
-          cmp --silent "${guests[0]}" "${guests[1]}"
-          cmp --silent "${identities[0]}" "${identities[1]}"
-          cmp --silent "${executions[0]}" "${executions[1]}"
-          sha256sum "${guests[@]}" "${identities[@]}" "${executions[@]}"
+          compare_pair() {
+            local root=$1
+            local include_execution=$2
+            mapfile -t guests < <(find "$root" -type f -name program.elf | sort)
+            mapfile -t identities < <(find "$root" -type f -name identity.json | sort)
+            test "${#guests[@]}" -eq 2
+            test "${#identities[@]}" -eq 2
+            cmp --silent "${guests[0]}" "${guests[1]}"
+            cmp --silent "${identities[0]}" "${identities[1]}"
+            sha256sum "${guests[@]}" "${identities[@]}"
+            if [[ "$include_execution" == true ]]; then
+              mapfile -t executions < <(find "$root" -type f -name execution.json | sort)
+              test "${#executions[@]}" -eq 2
+              cmp --silent "${executions[0]}" "${executions[1]}"
+              sha256sum "${executions[@]}"
+            fi
+          }
+          compare_pair objective-programs/reproduced-hadamard false
+          compare_pair objective-programs/reproduced-a11 true
