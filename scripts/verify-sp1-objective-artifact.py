@@ -16,8 +16,8 @@ DEFAULT_IDENTITY = ROOT / "objective-programs/artifacts/hadamard-668-defect/v0.1
 DEFAULT_EXECUTION = ROOT / "objective-programs/artifacts/hadamard-668-defect/v0.1.0/execution.json"
 HEX_32 = re.compile(r"0x[0-9a-f]{64}")
 DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
-EXPECTED_ELF = "sha256:991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a"
-EXPECTED_VKEY = "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7"
+EXPECTED_ELF = "sha256:bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2"
+EXPECTED_VKEY = "0x0033a3faf11b262f60eef30a05dd947d041abac572bdce6ea9e7f0efe678a869"
 EXPECTED_CARGO_PROVE_SHA256 = {
     "sha256:492b6e0a377683e17e2e7806af100319e9229eeaec1ac324c5ede53c1d89f64c",
     "sha256:639e1101649a4c03b6a3e9f0e93f1dc8b884039852c48ab003a504f67d5b6b1f",
@@ -200,7 +200,7 @@ def main() -> None:
         fail("execution evidence has an unexpected key set")
     if execution["schema"] != "p42-objective-execution/v1":
         fail("wrong execution schema")
-    if execution["status"] != "single-host-mock-execution" or execution["proofKind"] != "none":
+    if execution["status"] != "dual-glibc-x86-mock-execution" or execution["proofKind"] != "none":
         fail("execution evidence must not imply a genuine proof")
     if execution["identitySha256"] != sha256(identity_path):
         fail("execution evidence is detached from identity bytes")
@@ -214,9 +214,14 @@ def main() -> None:
         fail("unexpected conformance outcome")
     if not isinstance(execution["journalDigest"], str) or HEX_32.fullmatch(execution["journalDigest"]) is None:
         fail("malformed execution journal")
-    if execution["journalDigest"] != "0x2075a1869943196cfdc2e9fa5dc71ab202d903c4b20ec5a22a2e518a69e16b72":
+    if execution["journalDigest"] != "0xf9be0e1ef3a8990ff478ee36b5890d3d9cf30b269269094f3f28b1b02f715546":
         fail("execution journal drift")
-    if execution["executionHost"] != {"os": "darwin", "architecture": "arm64"}:
+    if execution["executionHost"] != {
+        "os": "linux",
+        "architecture": "x86_64",
+        "images": ["ubuntu-22.04", "ubuntu-24.04"],
+        "operator": "github-actions",
+    }:
         fail("unreviewed execution host")
     if not isinstance(execution["totalInstructionCount"], str) or not execution["totalInstructionCount"].isdigit():
         fail("malformed instruction count")

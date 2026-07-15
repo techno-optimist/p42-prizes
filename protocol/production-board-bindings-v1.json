@@ -76,7 +76,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:79495ef1769790b1fb6a29341486e6e08799607d59c27738c31d0f66a84ab7a5",
+        "source_tree_sha256": "sha256:df55a5a096268bfc6d3e825f69fc1838a0fafa18e3e4436463404a4ed9b80a56",
         "version": "0.1.0"
       }
     },
@@ -144,7 +144,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:c1b7ddcfce0c18d9ac116fd047b43f1317c98105b8de25ab772463decb273d25",
+        "source_tree_sha256": "sha256:db25570d7214dc424d1756a3ff2fb83bfcb1ab113657d203972461f05ffd827e",
         "version": "0.1.1"
       }
     },
@@ -212,7 +212,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:394b72fbfc3f297f3680ff798798fbd8a7a12e3b9b656bc1e3efac7e35888992",
+        "source_tree_sha256": "sha256:9846545a68847e2ef5864c776ba5556598b4d82eb356e881d6a34f7b646dc21c",
         "version": "0.1.1"
       }
     },
@@ -280,7 +280,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:ac734c32efc16310a455ee8cfb98178b8337b27c4b99866e8772a8300789d162",
+        "source_tree_sha256": "sha256:b2958c0d7397cd922ed386c843a8030d6ae8321663691779a7827a6e5e5c74cb",
         "version": "0.1.1"
       }
     },
@@ -348,7 +348,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:8135187c893d0a77783a07f825f987294bcc9150d6b587932c87a9d61824643a",
+        "source_tree_sha256": "sha256:44c54ac7553cb8c3f23a87825e6aa30c148b6ad9dfc14dad227c9acea792c779",
         "version": "0.1.1"
       }
     },
@@ -416,7 +416,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:d7a22089a6e820aa18ac248314fb99e4decec3f5df78e349cd3acc2feb41fc96",
+        "source_tree_sha256": "sha256:d81a9013c1a01b78c7b6eeaa3e9048c81799b059279cc6da397220f7ecf69ea4",
         "version": "0.1.1"
       }
     },
@@ -492,7 +492,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:4e7a4d28ade55c6b758cb58d0c42a35738daf3e2bf23a4734fe4d090c5976817",
+        "source_tree_sha256": "sha256:f5795a2bbb3b97f44ae2993068f2f107a43a55a6ccd2bffdfd23ea13f75ef468",
         "version": "0.1.0"
       }
     },
@@ -560,7 +560,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:c1d35e61dc9515e1f881463717ecc63730141a250253ffc868497d727da8714c",
+        "source_tree_sha256": "sha256:b49c5c0c458bbc0049356a16aa5bcb326fe9c9bbfa39d225a464a24ea498679b",
         "version": "0.1.1"
       }
     },
@@ -628,7 +628,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:8f07f236e97aba4509afef333af116e194ab88294f323bc5bd59b24742c893c3",
+        "source_tree_sha256": "sha256:8585ab4fa344400520b1bee783977ac3a23e4773ff600faa2d0b9285f3e51aa0",
         "version": "0.1.2"
       }
     },
@@ -638,16 +638,16 @@
         "activation_eligible": false,
         "execution": {
           "path": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/execution.json",
-          "sha256": "sha256:302d9706d512fe99fbb24ea4654bf0e6c29a7b5cf2797a7e079e38bb8aded332"
+          "sha256": "sha256:9e3c6993344bab52911465c0b9be0ff2ab9d1736353fc2edd3ebbad58c5c1c88"
         },
         "identity": {
           "path": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/identity.json",
-          "sha256": "sha256:7b4365d47b05cb3005647791da7bc2b05068b27c5e6a422f502f00dde64f921f"
+          "sha256": "sha256:96000b471e57db076cf631e2cc42a69aa81d44ff99651e78ea4273f343a0f516"
         },
         "proof_kind": "none",
         "resource_profile": {
           "path": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/resource-profile.json",
-          "sha256": "sha256:2e3a79cd0ab17edccc63b78d78b4760fe1816c18021f157d4a4b9ae187f1aa87"
+          "sha256": "sha256:d08b3e40f1dc0808fb63b756e4ecc3340e6e5a828f6641dd75150a98b721820c"
         },
         "status": "source-bound-mock-only"
       },
@@ -705,7 +705,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:23a5bbd434193e47bf1f6d5ef644a21923398745ea2d329c5889ca82aa6f80a3",
+        "source_tree_sha256": "sha256:c447a02bf33796ff523b167559f4b6831c845763e8d088e92eb66a99603fb381",
         "version": "0.1.2"
       }
     }

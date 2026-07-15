@@ -65,7 +65,7 @@ def main() -> None:
             "path": "problems/hadamard-668-defect/examples/sylvester-prefix.json",
             "bytes": 113_745,
             "sha256": "sha256:4021e45669d91b63179c730309eb26613e4584aa63ee7ec928b32cd4b1ed2bc6",
-            "mockInstructionCount": 53_335_905,
+            "mockInstructionCount": 53_275_736,
         },
         "reproduction": {
             "guestElfSha256": identity["guestElfSha256"],

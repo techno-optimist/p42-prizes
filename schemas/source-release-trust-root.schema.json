@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/source-release-trust-root.schema.json",
+  "title": "P42 protected local source-release trust root v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repository", "branch", "policyPath", "policySha256", "bootstrapAllowlist"],
+  "properties": {
+    "schemaVersion": {"const": "p42-source-release-trust-root/v1"},
+    "repository": {"const": "techno-optimist/p42-prizes"},
+    "branch": {"const": "main"},
+    "policyPath": {"type": "string", "pattern": "^/"},
+    "policySha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "bootstrapAllowlist": {
+      "type": "array", "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["authorizationId", "artifactSha256", "artifactPath", "expiresAt"],
+        "properties": {
+          "authorizationId": {"type": "string", "minLength": 1},
+          "artifactSha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+          "artifactPath": {"type": "string", "pattern": "^/"},
+          "expiresAt": {"type": "string", "format": "date-time"}
+        }
+      }
+    }
+  }
+}

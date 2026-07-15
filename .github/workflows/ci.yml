@@ -192,13 +192,6 @@ jobs:
           cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
             execute-fixture-elf "$a11" ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json \
             > "$audit/execution.json"
-      - name: Retain unbound A11 guest for cross-host audit
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: p42-distinct-subset-sums-a11-x86-elf-${{ matrix.os }}-${{ github.run_id }}
-          path: objective-programs/target/a11-reproducibility
-          if-no-files-found: error
-          retention-days: 7
       - name: Capture candidate Hadamard mock execution
         working-directory: objective-programs
         shell: bash
@@ -208,25 +201,25 @@ jobs:
             execute-fixture-elf target/hadamard-reproducibility/program.elf \
             ../problems/hadamard-668-defect/examples/sylvester-prefix.json \
             > target/hadamard-reproducibility/execution.json
-      - name: Retain candidate Hadamard evidence for cross-image audit
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
-        with:
-          name: p42-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
-          path: objective-programs/target/hadamard-reproducibility
-          if-no-files-found: error
-          retention-days: 7
       - name: Enforce frozen guest identity
         working-directory: objective-programs
         shell: bash
         run: |
           set -euo pipefail
           rebuilt=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
-          echo "bf4cd633d5c0a27a772ed4f2beffb8b4a8fffb6a1380550ae45c46c9073439f1  $rebuilt" | sha256sum --check --strict
+          echo "bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2  $rebuilt" | sha256sum --check --strict
           frozen=artifacts/hadamard-668-defect/v0.1.0/program.elf
           cmp --silent "$rebuilt" "$frozen"
-          echo "bf4cd633d5c0a27a772ed4f2beffb8b4a8fffb6a1380550ae45c46c9073439f1  $frozen" | sha256sum --check --strict
+          echo "bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2  $frozen" | sha256sum --check --strict
+          rebuilt_a11=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program
+          echo "f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae  $rebuilt_a11" | sha256sum --check --strict
+          frozen_a11=artifacts/distinct-subset-sums-a11/v0.1.0/program.elf
+          cmp --silent "$rebuilt_a11" "$frozen_a11"
+          echo "f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae  $frozen_a11" | sha256sum --check --strict
       - name: Verify frozen ELF and independently derive vkey
-        run: python scripts/verify-sp1-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
+        run: |
+          python scripts/verify-sp1-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
+          python scripts/verify-sp1-a11-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
       - name: Verify deterministic resource envelope
         run: python scripts/verify-sp1-objective-resource-profile.py
       - name: Replay frozen mock execution
@@ -235,12 +228,26 @@ jobs:
           set -euo pipefail
           output=$(cargo run --locked -p p42-hadamard-668-objective-script -- execute-fixture-elf artifacts/hadamard-668-defect/v0.1.0/program.elf ../problems/hadamard-668-defect/examples/sylvester-prefix.json)
           printf '%s\n' "$output" | python3 ../scripts/verify-sp1-objective-execution.py
-      - name: Exercise unbound A11 guest in mock mode
+      - name: Replay frozen A11 mock execution
         working-directory: objective-programs
         run: |
           set -euo pipefail
-          cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
-            execute-fixture ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json
+          output=$(cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- execute-fixture-elf artifacts/distinct-subset-sums-a11/v0.1.0/program.elf ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json)
+          printf '%s\n' "$output" | python3 ../scripts/verify-sp1-a11-objective-execution.py
+      - name: Retain validated objective evidence for cross-image audit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-distinct-subset-sums-a11-x86-elf-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/a11-reproducibility
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain validated Hadamard evidence for cross-image audit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/hadamard-reproducibility
+          if-no-files-found: error
+          retention-days: 7
 
   objective-program-reproducibility:
     name: SP1 objective-program reproducibility

@@ -319,7 +319,14 @@
         "problem_yaml": {"properties": {"path": {"const": "problems/hadamard-668-defect/problem.yaml"}}},
         "specification": {"properties": {"path": {"const": "problems/hadamard-668-defect/SPEC.md"}}},
         "solution_schema": {"properties": {"path": {"const": "problems/hadamard-668-defect/solution.schema.json"}}},
-        "seed": {"properties": {"path": {"const": "problems/hadamard-668-defect/examples/sylvester-prefix.json"}}}
+        "seed": {"properties": {"path": {"const": "problems/hadamard-668-defect/examples/sylvester-prefix.json"}}},
+        "guest": {
+          "properties": {
+            "identity": {"properties": {"path": {"const": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/identity.json"}}},
+            "execution": {"properties": {"path": {"const": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/execution.json"}}},
+            "resource_profile": {"properties": {"path": {"const": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/resource-profile.json"}}}
+          }
+        }
       }
     }
   }

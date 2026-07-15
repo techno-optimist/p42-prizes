@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-from copy import deepcopy
 import json
 from pathlib import Path
 import subprocess
@@ -12,10 +10,12 @@ from p42_prizes.source_release import (
     HttpObservation,
     REQUIRED_CI_JOBS,
     REQUIRED_PROBES,
+    REQUIRED_V3_PROBES,
     SourceReleaseEvidenceError,
     seal_source_release_evidence,
     validate_source_release_evidence,
 )
+from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 DEPLOY = "8" * 40
@@ -434,7 +434,7 @@ def test_online_validation_rejects_dirty_checkout(tmp_path: Path) -> None:
         )
 
 
-def test_required_probe_policy_matches_node_release_guard() -> None:
+def test_historical_v2_probe_policy_remains_in_node_release_guard() -> None:
     program = """
       import { PROBE_ROUTES } from './scripts/verify-render-release.mjs';
       const origins = { render: 'https://p42-prizes.onrender.com', public: 'https://projectforty2.ai' };
@@ -450,4 +450,9 @@ def test_required_probe_policy_matches_node_release_guard() -> None:
         capture_output=True,
         check=True,
     )
-    assert json.loads(completed.stdout) == [list(item) for item in REQUIRED_PROBES]
+    node_policy = json.loads(completed.stdout)
+    required = [list(item) for item in REQUIRED_PROBES]
+    # V2 receipts remain archive-verifiable at their exact ten-route policy.
+    # The live guard may add fail-closed probes; a later receipt schema must
+    # explicitly require the expanded policy before it can become current.
+    assert [item for item in node_policy if item in required] == required

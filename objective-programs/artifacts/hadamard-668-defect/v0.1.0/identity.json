@@ -8,8 +8,8 @@
   "hostRustVersion": "1.91.1",
   "guestRustVersion": "rustc 1.93.0-dev",
   "guestElfPath": "objective-programs/artifacts/hadamard-668-defect/v0.1.0/program.elf",
-  "guestElfSha256": "sha256:991bae2463a28cade8b76bd9ce93f151f60db11a97e170db2d18af5f3871786a",
-  "programVKey": "0x00cd15d85a33f55d5e93ceb3840e2eb4c1d088809c323ec64589cde28579a3d7",
+  "guestElfSha256": "sha256:bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2",
+  "programVKey": "0x0033a3faf11b262f60eef30a05dd947d041abac572bdce6ea9e7f0efe678a869",
   "publicValuesBytes": 32,
   "buildHost": {
     "os": "linux",
@@ -21,11 +21,11 @@
     "operator": "github-actions"
   },
   "sourceFiles": {
-    "objective-programs/Cargo.toml": "sha256:5e0a821fcb0658d280df0b820750a8618d1a184ffd458a45b3a37c6d89e666ec",
-    "objective-programs/Cargo.lock": "sha256:06d4485944ad7de6075ee3c9a159341a1d216cd056f1ee444384b7580b757823",
+    "objective-programs/Cargo.toml": "sha256:e0998dadb99d031220cc2e97913425028a4886fb5c0839cccb78cf3ea5d5f612",
+    "objective-programs/Cargo.lock": "sha256:cfaac0901bcb9ba1daf5e78403677468911f0eaf52f1977e4d8aa408edef41ff",
     "objective-programs/rust-toolchain.toml": "sha256:07897ac31bda5b67235f4a9abc5e4a07876e7422bbda0720cbf370b9c53220a8",
     "objective-programs/p42-objective-core/Cargo.toml": "sha256:c375df5a850868923924535f1ab70740af38a216b15528ce47b9a737571c5a2a",
-    "objective-programs/p42-objective-core/src/lib.rs": "sha256:12889ba6d724b46132939fa3844f110893cd5d1d7221b5272bac8c9a15609464",
+    "objective-programs/p42-objective-core/src/lib.rs": "sha256:73cb9b4b83738bc8a55d057d68b4011ceb2d757873b1eaedb6cd8dce84f19e85",
     "objective-programs/hadamard-668-defect/program/Cargo.toml": "sha256:8f67c3625002129d39b628dbc73966f3f36feb2385385c677b3a5abe331f4021",
     "objective-programs/hadamard-668-defect/program/src/main.rs": "sha256:43b0f8850bf1298fa83adc872ace3e46f6e3a34498d1b1f6c3e54727124cd513",
     "objective-programs/hadamard-668-defect/script/Cargo.toml": "sha256:9f0cae9f36aeab757dc51bf03cc1b0ab4d9606aecaf3542d17d38b93ec5e408d",

@@ -68,6 +68,7 @@ from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json, read_st
 from p42_prizes.security_audit import SecurityAuditError, normalize_security_audit
 from p42_prizes.source_release import (
     SourceReleaseEvidenceError,
+    validate_current_source_release,
     validate_source_release_evidence,
 )
 from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes
@@ -991,6 +992,16 @@ def _cmd_source_release_evidence_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_source_release_current_validate(args: argparse.Namespace) -> int:
+    try:
+        normalized = validate_current_source_release(repo_root=args.repo_root)
+    except SourceReleaseEvidenceError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(normalized, args.output)
+    return 0
+
+
 def _cmd_open_witness_promote(args: argparse.Namespace) -> int:
     try:
         report = load_evidence_file(args.report)
@@ -1373,6 +1384,14 @@ def build_parser() -> argparse.ArgumentParser:
     source_release.add_argument("--online", action="store_true")
     source_release.add_argument("--output")
     source_release.set_defaults(func=_cmd_source_release_evidence_validate)
+
+    source_release_current = subparsers.add_parser(
+        "source-release-current-validate",
+        help="validate the canonical current receipt against the protected local trust root",
+    )
+    source_release_current.add_argument("--repo-root", default=".")
+    source_release_current.add_argument("--output")
+    source_release_current.set_defaults(func=_cmd_source_release_current_validate)
 
     open_witness_promote = subparsers.add_parser(
         "open-witness-promote",

@@ -1,0 +1,35 @@
+{
+  "schema": "p42-objective-program-identity/v1",
+  "status": "dual-glibc-x86-source-build",
+  "program": "distinct-subset-sums-a11",
+  "version": "0.1.0",
+  "sp1Version": "6.1.0",
+  "sp1Commit": "d454975ac7c1126097e36eceda9bce2cb9899da4",
+  "hostRustVersion": "1.91.1",
+  "guestRustVersion": "rustc 1.93.0-dev",
+  "guestElfPath": "objective-programs/artifacts/distinct-subset-sums-a11/v0.1.0/program.elf",
+  "guestElfSha256": "sha256:f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae",
+  "programVKey": "0x00012fbcbac2981e12622a12e8c5697836479599555c8f02a6ae81f2194edb99",
+  "publicValuesBytes": 32,
+  "buildHost": {
+    "os": "linux",
+    "architecture": "x86_64",
+    "images": [
+      "ubuntu-22.04",
+      "ubuntu-24.04"
+    ],
+    "operator": "github-actions"
+  },
+  "sourceFiles": {
+    "objective-programs/Cargo.toml": "sha256:e0998dadb99d031220cc2e97913425028a4886fb5c0839cccb78cf3ea5d5f612",
+    "objective-programs/Cargo.lock": "sha256:cfaac0901bcb9ba1daf5e78403677468911f0eaf52f1977e4d8aa408edef41ff",
+    "objective-programs/rust-toolchain.toml": "sha256:07897ac31bda5b67235f4a9abc5e4a07876e7422bbda0720cbf370b9c53220a8",
+    "objective-programs/p42-objective-core/Cargo.toml": "sha256:c375df5a850868923924535f1ab70740af38a216b15528ce47b9a737571c5a2a",
+    "objective-programs/p42-objective-core/src/lib.rs": "sha256:73cb9b4b83738bc8a55d057d68b4011ceb2d757873b1eaedb6cd8dce84f19e85",
+    "objective-programs/distinct-subset-sums-a11/program/Cargo.toml": "sha256:9aa07204b7577ef669aa46a444869e676a2c9f896ac5f80cd1ea554733ee41ca",
+    "objective-programs/distinct-subset-sums-a11/program/src/main.rs": "sha256:09747c8596d2ddd5c4794f3fb4cd0f67f9abf7ef974e92b372db043a77b3fe1e",
+    "objective-programs/distinct-subset-sums-a11/script/Cargo.toml": "sha256:aff3c74683f2d7d712ebc940d52f55bbd1832018036f0cc3cf7adb0ae982e228",
+    "objective-programs/distinct-subset-sums-a11/script/build.rs": "sha256:542028fe065d8ae1fb595e5b68dc934bfa71f6cdaf86414f8aa4b965d8b7460e",
+    "objective-programs/distinct-subset-sums-a11/script/src/main.rs": "sha256:dcf221f83a9b2a8a37aefee28e223b1df95840e7aad154f57e790f1c337387c9"
+  }
+}
