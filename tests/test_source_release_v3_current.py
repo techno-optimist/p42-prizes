@@ -911,15 +911,22 @@ def test_empty_first_parent_commit_still_requires_authorization(
         current.validate()
 
 
-def test_approval_submitted_after_merge_is_rejected(current: CurrentFixture) -> None:
+@pytest.mark.parametrize(
+    "submitted_at",
+    ["2026-07-15T03:00:00Z", "2026-07-15T03:00:01Z"],
+)
+def test_approval_not_unambiguously_before_merge_is_rejected(
+    current: CurrentFixture,
+    submitted_at: str,
+) -> None:
     current.runner.reviews = [{
         "id": 12,
-        "submitted_at": "2026-07-15T03:00:01Z",
+        "submitted_at": submitted_at,
         "state": "APPROVED",
         "commit_id": PR_HEAD,
         "user": {"login": "independent-reviewer"},
     }]
-    with pytest.raises(SourceReleaseEvidenceError, match="approval submitted after merge"):
+    with pytest.raises(SourceReleaseEvidenceError, match="not unambiguously earlier than merge"):
         current.validate()
 
 

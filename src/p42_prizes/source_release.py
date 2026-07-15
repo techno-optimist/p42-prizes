@@ -1724,12 +1724,12 @@ def _validate_v3_online(
         }
         approvals = {
             login for login, submitted_at in approval_times.items()
-            if submitted_at <= merged_at
+            if submitted_at < merged_at
         }
         if len(approvals) < review_policy["minimumApprovals"]:
-            if any(submitted_at > merged_at for submitted_at in approval_times.values()):
+            if any(submitted_at >= merged_at for submitted_at in approval_times.values()):
                 raise SourceReleaseEvidenceError(
-                    "pull-request approval submitted after merge cannot authorize the source commit"
+                    "pull-request approval not unambiguously earlier than merge cannot authorize the source commit"
                 )
             raise SourceReleaseEvidenceError(
                 "source PR lacks exact-head non-author approval from external review policy"
