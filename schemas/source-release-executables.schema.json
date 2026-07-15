@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/source-release-executables.schema.json",
+  "title": "P42 protected source-release executable policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "homePath",
+    "runtimePath",
+    "executables",
+    "gitExecPath"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "p42-source-release-executables/v1"
+    },
+    "homePath": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "executables": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "git",
+              "gh",
+              "render",
+              "node",
+              "curl"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "runtimePath": {
+      "type": "string",
+      "pattern": "^/"
+    },
+    "gitExecPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "treeSha256",
+        "helpers"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "treeSha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "helpers": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "sha256"
+            ],
+            "properties": {
+              "name": {
+                "enum": [
+                  "git-fetch-pack",
+                  "git-index-pack",
+                  "git-remote-https",
+                  "git-unpack-objects"
+                ]
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^sha256:[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

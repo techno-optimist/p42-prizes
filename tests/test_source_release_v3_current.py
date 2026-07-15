@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
+import ctypes
 from datetime import datetime, timezone
 import inspect
 import json
+import shutil
 from pathlib import Path
 import subprocess
+import sys
+import zlib
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -57,6 +62,21 @@ FIXTURE_GIT_ENTRIES = (
     ("100644", "blob", WEB_BLOB, "web/index.html"),
 )
 
+
+
+def _atomic_exchange_paths(left: Path, right: Path) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    left_raw = source_release.os.fsencode(left)
+    right_raw = source_release.os.fsencode(right)
+    if hasattr(libc, "renameat2"):
+        result = libc.renameat2(-100, left_raw, -100, right_raw, 2)
+    elif hasattr(libc, "renamex_np"):
+        result = libc.renamex_np(left_raw, right_raw, 2)
+    else:
+        pytest.skip("atomic path exchange is unavailable on this host")
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, source_release.os.strerror(error))
 
 def _tree_listing(entries: tuple[tuple[str, str, str, str], ...] = FIXTURE_GIT_ENTRIES) -> str:
     return "".join(
@@ -298,6 +318,8 @@ class CurrentFixture:
     def __init__(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         self.root = tmp_path / "repo"
         self.root.mkdir()
+        (self.root / ".git" / "objects" / "info").mkdir(parents=True)
+        (self.root / ".git" / "info").mkdir()
         self.private_keys, self.authorities = _authority_material()
         self.guard_rules, self.bodies, self.content_types = _guard_material()
         self.final_urls = {url: url for url in self.bodies}
@@ -512,7 +534,7 @@ class CurrentFixture:
         )
 
     def validate(self) -> dict:
-        return source_release._validate_current_source_release_at(
+        return source_release._validate_current_source_release_for_test(
             repo_root=self.root,
             command_runner=self.runner,
             detailed_url_reader=self.detailed_reader,
@@ -576,6 +598,77 @@ class CurrentFixture:
         self.write_report()
 
 
+@pytest.fixture(autouse=True)
+def protected_executable_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, Path]:
+    boundary = tmp_path / "protected-boundary"
+    boundary.mkdir(mode=0o700)
+    executable_root = boundary / "executables"
+    executable_root.mkdir(mode=0o700)
+    home = boundary / "auditor-home"
+    home.mkdir(mode=0o700)
+    runtime = boundary / "runtime"
+    runtime.mkdir(mode=0o700)
+    git_helper_root = boundary / "git-exec"
+    git_helper_root.mkdir(mode=0o700)
+    system_git_exec = Path(subprocess.run(
+        ["/usr/bin/git", "--exec-path"], text=True, capture_output=True, check=True,
+    ).stdout.strip())
+    helper_manifest = []
+    for helper_name in (
+        "git-fetch-pack", "git-index-pack",
+        "git-remote-https", "git-unpack-objects",
+    ):
+        helper_target = git_helper_root / helper_name
+        shutil.copyfile((system_git_exec / helper_name).resolve(), helper_target)
+        helper_target.chmod(0o700)
+        helper_manifest.append({
+            "name": helper_name,
+            "sha256": sha256_bytes(helper_target.read_bytes()),
+        })
+    git_target = executable_root / "git"
+    git_target.write_text(
+        "#!/bin/sh\nexec /usr/bin/git \"$@\"\n", encoding="utf-8"
+    )
+    git_target.chmod(0o700)
+    paths: dict[str, Path] = {"git": git_target}
+    for name in ("gh", "render", "node", "curl"):
+        target = executable_root / name
+        target.write_text(
+            "#!/bin/sh\nprintf 'CANONICAL:" + name + "\n'\n",
+            encoding="utf-8",
+        )
+        target.chmod(0o700)
+        paths[name] = target
+    policy = {
+        "schemaVersion": "p42-source-release-executables/v1",
+        "homePath": str(home),
+        "runtimePath": str(runtime),
+        "gitExecPath": {
+            "path": str(git_helper_root),
+            "treeSha256": sha256_bytes(canonical_json(helper_manifest).encode()),
+            "helpers": helper_manifest,
+        },
+        "executables": [
+            {
+                "name": name,
+                "path": str(target),
+                "sha256": sha256_bytes(target.read_bytes()),
+            }
+            for name, target in paths.items()
+        ],
+    }
+    policy_path = boundary / "protected-executables.json"
+    policy_path.write_text(canonical_json(policy) + "\n", encoding="utf-8")
+    policy_path.chmod(0o600)
+    monkeypatch.setattr(source_release, "PRODUCTION_EXECUTABLE_POLICY", policy_path)
+    monkeypatch.setattr(source_release, "PROTECTED_EXECUTION_ROOT", boundary)
+    monkeypatch.setattr(source_release, "PROTECTED_OWNER_UID", policy_path.stat().st_uid)
+    monkeypatch.setattr(source_release, "_TEST_ONLY_ALLOW_PATH_EXECUTION", True)
+    return paths
+
+
 @pytest.fixture
 def current(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CurrentFixture:
     return CurrentFixture(tmp_path, monkeypatch)
@@ -594,6 +687,69 @@ def test_public_current_api_has_no_caller_controlled_clock(current: CurrentFixtu
             repo_root=current.root,
             now_utc=datetime(2026, 7, 15, 5, tzinfo=timezone.utc),
         )
+
+
+@pytest.mark.parametrize(
+    "provider",
+    ["command_runner", "blob_reader", "detailed_url_reader"],
+)
+def test_public_current_api_rejects_caller_evidence_providers(
+    current: CurrentFixture, provider: str,
+) -> None:
+    assert set(inspect.signature(validate_current_source_release).parameters) == {"repo_root"}
+    with pytest.raises(TypeError):
+        validate_current_source_release(
+            repo_root=current.root,
+            **{provider: object()},
+        )
+
+
+def test_public_current_api_binds_only_audited_providers(
+    current: CurrentFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    calls: list[tuple[str, object]] = []
+
+    def capture(**kwargs: object) -> dict:
+        captured.update(kwargs)
+        return {"sealed": True}
+
+    monkeypatch.setattr(source_release, "_validate_current_source_release_impl", capture)
+
+    @source_release.contextmanager
+    def private_authority(root: Path, context: object):
+        yield (
+            root,
+            lambda command, cwd: calls.append(("runner", context)) or "ok",
+            lambda spec, cwd: calls.append(("blob", context)) or b"ok",
+        )
+
+    monkeypatch.setattr(source_release, "_private_git_authority", private_authority)
+    monkeypatch.setattr(
+        source_release, "_read_detailed_url_with_context",
+        lambda url, context: calls.append(("network", context)) or DetailedHttpObservation(
+            200, "text/plain", url, b"ok"
+        ),
+    )
+    assert validate_current_source_release(repo_root=current.root) == {"sealed": True}
+    captured["command_runner"](["gh", "--version"], current.root)
+    captured["blob_reader"]("HEAD:file", current.root)
+    captured["detailed_url_reader"]("https://example.invalid")
+    assert [name for name, _ in calls] == ["runner", "blob", "network"]
+    assert len({id(context) for _, context in calls}) == 1
+    assert isinstance(calls[0][1], source_release.ProductionExecutionContext)
+    assert isinstance(captured["now_utc"], datetime)
+
+
+def test_private_current_test_harness_remains_injectable(current: CurrentFixture) -> None:
+    parameters = inspect.signature(
+        source_release._validate_current_source_release_for_test
+    ).parameters
+    assert {
+        "repo_root", "command_runner", "blob_reader",
+        "detailed_url_reader", "now_utc",
+    } == set(parameters)
+    assert current.validate()["derived"]["validationMode"] == "current"
 
 
 def test_one_physical_ed25519_key_cannot_count_twice(current: CurrentFixture) -> None:
@@ -1056,7 +1212,11 @@ def test_approval_not_unambiguously_before_merge_is_rejected(
 
 def test_current_cli_has_no_report_policy_digest_or_offline_overrides() -> None:
     parser = build_parser()
-    for forbidden in ("--report", "--policy", "--digest", "--online"):
+    for forbidden in (
+        "--report", "--policy", "--digest", "--online",
+        "--command-runner", "--blob-reader", "--detailed-url-reader",
+        "--network-reader",
+    ):
         with pytest.raises(SystemExit):
             parser.parse_args(["source-release-current-validate", forbidden, "x"])
 
@@ -1146,6 +1306,476 @@ def test_policy_rejects_wrong_or_mutable_closure_roots(current: CurrentFixture) 
     current.policy["workflow"]["closureRoots"] = ["web"]
     current.install_policy()
     with pytest.raises(SourceReleaseEvidenceError, match="source-release-policy"):
+        current.validate()
+
+
+def _real_git_repository(tmp_path: Path) -> tuple[Path, str, str]:
+    root = tmp_path / "real-repo"
+    subprocess.run(["git", "init", "--quiet", str(root)], check=True)
+    subprocess.run(["git", "config", "user.name", "P42 Test"], cwd=root, check=True)
+    subprocess.run(["git", "config", "user.email", "p42@example.invalid"], cwd=root, check=True)
+    target = root / "authority.txt"
+    target.write_text("first\n", encoding="utf-8")
+    subprocess.run(["git", "add", "authority.txt"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "first"], cwd=root, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True,
+        capture_output=True, check=True,
+    ).stdout.strip()
+    target.write_text("second\n", encoding="utf-8")
+    subprocess.run(["git", "commit", "--quiet", "-am", "second"], cwd=root, check=True)
+    second = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=root, text=True,
+        capture_output=True, check=True,
+    ).stdout.strip()
+    return root, first, second
+
+
+def test_real_git_replace_ref_fails_closed(tmp_path: Path) -> None:
+    root, first, second = _real_git_repository(tmp_path)
+    subprocess.run(["git", "replace", second, first], cwd=root, check=True)
+    with pytest.raises(SourceReleaseEvidenceError, match="replacement refs"):
+        source_release._run(["git", "rev-parse", "HEAD"], root)
+
+
+def test_real_git_packed_replace_ref_fails_closed(tmp_path: Path) -> None:
+    root, first, second = _real_git_repository(tmp_path)
+    subprocess.run(["git", "replace", second, first], cwd=root, check=True)
+    subprocess.run(["git", "pack-refs", "--all", "--prune"], cwd=root, check=True)
+    with pytest.raises(SourceReleaseEvidenceError, match="replacement refs"):
+        source_release._run(["git", "rev-parse", "HEAD"], root)
+
+
+def test_real_git_graft_fails_closed(tmp_path: Path) -> None:
+    root, first, second = _real_git_repository(tmp_path)
+    (root / ".git" / "info" / "grafts").write_text(
+        f"{second} {first}\n", encoding="utf-8"
+    )
+    with pytest.raises(SourceReleaseEvidenceError, match="Git grafts"):
+        source_release._run(["git", "rev-parse", "HEAD"], root)
+
+
+def test_real_git_object_alternates_fail_closed(tmp_path: Path) -> None:
+    root, _, _ = _real_git_repository(tmp_path)
+    alternates = root / ".git" / "objects" / "info" / "alternates"
+    alternates.write_text("/tmp/untrusted-objects\n", encoding="utf-8")
+    with pytest.raises(SourceReleaseEvidenceError, match="object alternates"):
+        source_release._run(["git", "rev-parse", "HEAD"], root)
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "GIT_DIR",
+        "GIT_GRAFT_FILE",
+        "GIT_WORK_TREE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_ASKPASS",
+        "GIT_SSH",
+        "GIT_SSH_COMMAND",
+        "SSH_ASKPASS",
+    ],
+)
+def test_real_git_environment_rebinding_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variable: str,
+) -> None:
+    root, _, _ = _real_git_repository(tmp_path)
+    monkeypatch.setenv(variable, "/tmp/untrusted-git-authority")
+    with pytest.raises(SourceReleaseEvidenceError, match=variable):
+        source_release._run(["git", "rev-parse", "HEAD"], root)
+
+
+def test_default_git_runner_binds_intended_work_tree(tmp_path: Path) -> None:
+    root, _, _ = _real_git_repository(tmp_path)
+    attacker = tmp_path / "attacker-work-tree"
+    attacker.mkdir()
+    subprocess.run(
+        ["git", "config", "core.worktree", str(attacker)], cwd=root, check=True
+    )
+    assert source_release._run(["git", "rev-parse", "--show-toplevel"], root) == str(root)
+
+
+def test_bound_git_supports_linked_worktree_common_directory(tmp_path: Path) -> None:
+    root, _, second = _real_git_repository(tmp_path)
+    linked = tmp_path / "linked-worktree"
+    subprocess.run(
+        ["/usr/bin/git", "worktree", "add", "--quiet", "--detach", str(linked), second],
+        cwd=root,
+        check=True,
+    )
+    assert (linked / ".git").is_file()
+    assert source_release._run(["git", "rev-parse", "HEAD"], linked) == second
+
+
+def test_default_git_runner_uses_minimal_environment(tmp_path: Path) -> None:
+    root, _, second = _real_git_repository(tmp_path)
+    assert source_release._run(["git", "rev-parse", "HEAD"], root) == second
+    context = source_release._load_production_execution_context()
+    environment = source_release._minimal_execution_environment(context)
+    assert "PATH" not in environment
+    assert environment["GIT_NO_REPLACE_OBJECTS"] == "1"
+    assert environment["GIT_CONFIG_GLOBAL"] == source_release.os.devnull
+    assert environment["GIT_CONFIG_SYSTEM"] == source_release.os.devnull
+    assert set(environment) <= {
+        "HOME", "LANG", "LC_ALL", "NO_COLOR", "GH_PROMPT_DISABLED",
+        "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_SYSTEM",
+        "GIT_NO_REPLACE_OBJECTS", "GIT_TERMINAL_PROMPT",
+        "GH_TOKEN", "GITHUB_TOKEN", "RENDER_API_KEY",
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments"),
+    [
+        ("git", ["--version"]),
+        ("gh", ["--version"]),
+        ("render", ["--version"]),
+        ("node", ["--version"]),
+        ("curl", ["--version"]),
+    ],
+)
+def test_production_runner_ignores_hostile_path_for_every_executable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    arguments: list[str],
+) -> None:
+    hostile = tmp_path / "hostile-path"
+    hostile.mkdir()
+    for executable in ("git", "gh", "render", "node", "curl"):
+        fake = hostile / executable
+        fake.write_text("#!/bin/sh\nprintf 'FORGED:" + executable + "\n'\n", encoding="utf-8")
+        fake.chmod(0o700)
+    monkeypatch.setenv("PATH", str(hostile))
+    monkeypatch.setenv("BASH_FUNC_git%%", "() { printf FORGED; }")
+    root = tmp_path / "bound-root"
+    root.mkdir()
+    if name == "git":
+        subprocess.run(["/usr/bin/git", "init", "--quiet", str(root)], check=True)
+    output = source_release._run([name, *arguments], root)
+    assert "FORGED" not in output
+    if name != "git":
+        assert output == "CANONICAL:" + name
+
+
+def test_bound_executable_replacement_fails_identity_check(
+    tmp_path: Path, protected_executable_policy: dict[str, Path],
+) -> None:
+    root = tmp_path / "identity-root"
+    root.mkdir()
+    assert source_release._run(["node", "--version"], root) == "CANONICAL:node"
+    node = protected_executable_policy["node"]
+    node.write_text("#!/bin/sh\nprintf 'REPLACED\n'\n", encoding="utf-8")
+    node.chmod(0o700)
+    with pytest.raises(SourceReleaseEvidenceError, match="digest mismatch"):
+        source_release._run(["node", "--version"], root)
+
+
+def test_bound_executable_policy_fails_closed_when_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        source_release,
+        "PRODUCTION_EXECUTABLE_POLICY",
+        tmp_path / "missing-executable-policy.json",
+    )
+    with pytest.raises(SourceReleaseEvidenceError, match="executable policy is unavailable"):
+        source_release._run(["gh", "--version"], tmp_path)
+
+
+def test_bound_executable_rejects_symlinked_ancestor(
+    protected_executable_policy: dict[str, Path],
+) -> None:
+    executable_root = protected_executable_policy["node"].parent
+    moved = executable_root.with_name("executables-real")
+    executable_root.rename(moved)
+    executable_root.symlink_to(moved, target_is_directory=True)
+    with pytest.raises(SourceReleaseEvidenceError, match="unavailable or symlinked"):
+        source_release._load_production_execution_context()
+
+
+def test_bound_executable_rejects_writable_ancestor(
+    protected_executable_policy: dict[str, Path],
+) -> None:
+    executable_root = protected_executable_policy["node"].parent
+    executable_root.chmod(0o777)
+    with pytest.raises(SourceReleaseEvidenceError, match="not protected"):
+        source_release._load_production_execution_context()
+
+
+def test_bound_execution_retains_verified_executable_inode_across_path_swap(
+    tmp_path: Path,
+    protected_executable_policy: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "inode-race-root"
+    root.mkdir()
+    context = source_release._load_production_execution_context()
+    executable = protected_executable_policy["node"]
+    original_inode = executable.stat().st_ino
+    replacement = executable.with_name("node-replacement")
+    replacement.write_text("#!/bin/sh\nprintf REPLACED\n\n", encoding="utf-8")
+    replacement.chmod(0o700)
+    observed: dict[str, object] = {}
+
+    def swap(name: str, path: Path, home: Path) -> None:
+        del path, home
+        if name == "node":
+            source_release.os.replace(replacement, executable)
+
+    def capture(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        descriptor = kwargs["pass_fds"][0]
+        observed["inode"] = source_release.os.fstat(descriptor).st_ino
+        source_release.os.lseek(descriptor, 0, source_release.os.SEEK_SET)
+        observed["body"] = source_release.os.read(descriptor, 4096)
+        observed["executable"] = kwargs["executable"]
+        return subprocess.CompletedProcess(arguments, 0, stdout="BOUND\n", stderr="")
+
+    monkeypatch.setattr(source_release, "_TEST_ONLY_ALLOW_PATH_EXECUTION", False)
+    monkeypatch.setattr(source_release, "_is_native_executable", lambda descriptor: True)
+    monkeypatch.setattr(source_release, "_fd_path", lambda descriptor: f"/proc/self/fd/{descriptor}")
+    monkeypatch.setattr(source_release, "_before_bound_exec_for_test", swap, raising=False)
+    monkeypatch.setattr(source_release.subprocess, "run", capture)
+    assert source_release._run_with_context(["node", "--version"], root, context) == "BOUND"
+    assert executable.read_text(encoding="utf-8").startswith("#!/bin/sh\nprintf REPLACED")
+    assert observed["inode"] == original_inode
+    assert b"CANONICAL:node" in observed["body"]
+    assert b"REPLACED" not in observed["body"]
+    assert str(observed["executable"]).startswith("/proc/self/fd/")
+
+
+def test_bound_execution_retains_verified_home_inode_across_path_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "home-race-root"
+    root.mkdir()
+    context = source_release._load_production_execution_context()
+    original_home_inode = context.home.stat().st_ino
+    replacement = context.home.with_name("auditor-home-replacement")
+    replacement.mkdir(mode=0o700)
+    observed: dict[str, object] = {}
+
+    def swap(name: str, path: Path, home: Path) -> None:
+        del name, path
+        _atomic_exchange_paths(home, replacement)
+
+    def capture(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        home_descriptor = kwargs["pass_fds"][1]
+        observed["inode"] = source_release.os.fstat(home_descriptor).st_ino
+        observed["home"] = kwargs["env"]["HOME"]
+        return subprocess.CompletedProcess(arguments, 0, stdout="BOUND\n", stderr="")
+
+    monkeypatch.setattr(source_release, "_TEST_ONLY_ALLOW_PATH_EXECUTION", False)
+    monkeypatch.setattr(source_release, "_is_native_executable", lambda descriptor: True)
+    monkeypatch.setattr(source_release, "_fd_path", lambda descriptor: f"/proc/self/fd/{descriptor}")
+    monkeypatch.setattr(source_release, "_before_bound_exec_for_test", swap, raising=False)
+    monkeypatch.setattr(source_release.subprocess, "run", capture)
+    assert source_release._run_with_context(["node", "--version"], root, context) == "BOUND"
+    assert context.home.stat().st_ino != original_home_inode
+    assert observed["inode"] == original_home_inode
+    assert str(observed["home"]).startswith("/proc/self/fd/")
+
+
+def test_private_git_authority_ignores_graft_inserted_after_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, first, second = _real_git_repository(tmp_path)
+    subprocess.run(["git", "branch", "-M", "main"], cwd=root, check=True)
+    remote = tmp_path / "canonical.git"
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(root), str(remote)], check=True)
+
+    hostile_tmp = tmp_path / "hostile-tmp"
+    hostile_tmp.mkdir()
+    monkeypatch.setenv("TMPDIR", str(hostile_tmp))
+    observed: dict[str, Path] = {}
+
+    def insert_graft(private_root: Path, git_dir: Path, head: str) -> None:
+        assert head == second
+        observed["private_root"] = private_root
+        (git_dir / "info").mkdir(exist_ok=True)
+        (git_dir / "info" / "grafts").write_text(second + "\n", encoding="utf-8")
+        (git_dir / "HEAD").write_text(first + "\n", encoding="utf-8")
+        branch_ref = git_dir / "refs" / "heads" / "main"
+        branch_ref.parent.mkdir(parents=True, exist_ok=True)
+        branch_ref.write_text(first + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        source_release, "_after_private_fetch_for_test", insert_graft,
+        raising=False,
+    )
+    context = source_release._load_production_execution_context()
+    with source_release._private_git_authority(
+        root, context, remote=str(remote), authenticated_head=second
+    ) as (authority_root, runner, blob_reader):
+        del blob_reader
+        assert runner(["git", "rev-list", "--first-parent", second], authority_root).splitlines() == [
+            second, first,
+        ]
+    assert observed["private_root"].parent == context.runtime
+    assert not any(hostile_tmp.iterdir())
+
+
+
+def test_private_git_authority_rechecks_object_content_after_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, first, second = _real_git_repository(tmp_path)
+    subprocess.run(["git", "branch", "-M", "main"], cwd=root, check=True)
+    remote = tmp_path / "canonical-object-check.git"
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(root), str(remote)], check=True)
+    first_content = subprocess.run(
+        ["git", "cat-file", "commit", first], cwd=root,
+        capture_output=True, check=True,
+    ).stdout
+    forged = zlib.compress(
+        ("commit " + str(len(first_content)) + "\0").encode("ascii") + first_content
+    )
+
+    def corrupt_object(private_root: Path, git_dir: Path, head: str) -> None:
+        del private_root
+        assert head == second
+        target = git_dir / "objects" / second[:2] / second[2:]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            target.chmod(0o600)
+        target.write_bytes(forged)
+
+    monkeypatch.setattr(
+        source_release, "_after_private_fetch_for_test", corrupt_object,
+        raising=False,
+    )
+    context = source_release._load_production_execution_context()
+    with pytest.raises(SourceReleaseEvidenceError, match="private Git authority setup failed"):
+        with source_release._private_git_authority(
+            root, context, remote=str(remote), authenticated_head=second
+        ):
+            pass
+
+def test_private_git_authority_supports_linked_worktree(
+    tmp_path: Path,
+) -> None:
+    root, first, second = _real_git_repository(tmp_path)
+    subprocess.run(["git", "branch", "-M", "main"], cwd=root, check=True)
+    remote = tmp_path / "canonical-linked.git"
+    subprocess.run(["git", "clone", "--quiet", "--bare", str(root), str(remote)], check=True)
+    linked = tmp_path / "linked-private-view"
+    subprocess.run(
+        ["/usr/bin/git", "worktree", "add", "--quiet", "--detach", str(linked), second],
+        cwd=root, check=True,
+    )
+    context = source_release._load_production_execution_context()
+    with source_release._private_git_authority(
+        linked, context, remote=str(remote), authenticated_head=second
+    ) as (authority_root, runner, blob_reader):
+        del blob_reader
+        assert runner(["git", "rev-list", "--first-parent", "HEAD"], authority_root).splitlines() == [
+            second, first,
+        ]
+
+
+
+def test_correctly_hashed_shebang_tool_is_rejected_even_after_interpreter_change(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = source_release._load_production_execution_context()
+    script = context.executables["node"].path
+    script.write_text("#!/attacker/controlled/sh\nprintf FORGED\n\n", encoding="utf-8")
+    script.chmod(0o700)
+    identities = dict(context.executables)
+    identities["node"] = source_release.ExecutableIdentity(
+        name="node", path=script, sha256=sha256_bytes(script.read_bytes())
+    )
+    context = replace(context, executables=identities)
+    monkeypatch.setattr(source_release, "_TEST_ONLY_ALLOW_PATH_EXECUTION", False)
+    with pytest.raises(SourceReleaseEvidenceError, match="must be a native executable"):
+        source_release._run_with_context(["node", "--version"], tmp_path, context)
+
+
+@pytest.mark.parametrize(
+    "helper_name",
+    ["git-fetch-pack", "git-index-pack", "git-remote-https", "git-unpack-objects"],
+)
+def test_canonical_fetch_rejects_each_reachable_helper_substitution_before_network(
+    tmp_path: Path,
+    protected_executable_policy: dict[str, Path],
+    helper_name: str,
+) -> None:
+    del protected_executable_policy
+    context = source_release._load_production_execution_context()
+    helper = context.git_exec_path / helper_name
+    replacement = helper.with_name(helper_name + "-replacement")
+    shutil.copyfile("/bin/echo", replacement)
+    replacement.chmod(0o700)
+    source_release.os.replace(replacement, helper)
+    root, _, head = _real_git_repository(tmp_path)
+    with pytest.raises(SourceReleaseEvidenceError, match="Git helper .*digest mismatch"):
+        with source_release._private_git_authority(
+            root,
+            context,
+            remote="https://network-must-not-be-reached.invalid/repository.git",
+            authenticated_head=head,
+        ):
+            pass
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux /proc/self/fd execution test")
+def test_linux_exact_inode_execution_and_held_home_are_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = source_release._load_production_execution_context()
+    source = tmp_path / "held-home.c"
+    source.write_text(
+        "#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n"
+        "int main(void){char p[4096];const char*h=getenv(\"HOME\");"
+        "snprintf(p,sizeof(p),\"%s/config\",h);FILE*f=fopen(p,\"r\");"
+        "if(!f)return 40;char b[128];if(!fgets(b,sizeof(b),f))return 41;"
+        "fclose(f);fputs(b,stdout);return 0;}\n",
+        encoding="utf-8",
+    )
+    executable = context.executables["node"].path
+    subprocess.run(["/usr/bin/cc", str(source), "-o", str(executable)], check=True)
+    executable.chmod(0o700)
+    (context.home / "config").write_text("HELD_HOME\n", encoding="utf-8")
+    replacement_home = context.home.with_name("attacker-home")
+    replacement_home.mkdir(mode=0o700)
+    (replacement_home / "config").write_text("ATTACKER_HOME\n", encoding="utf-8")
+    replacement_executable = executable.with_name("node-attacker")
+    shutil.copyfile("/bin/false", replacement_executable)
+    replacement_executable.chmod(0o700)
+    identities = dict(context.executables)
+    identities["node"] = source_release.ExecutableIdentity(
+        name="node", path=executable, sha256=sha256_bytes(executable.read_bytes())
+    )
+    context = replace(context, executables=identities)
+
+    def swap(name: str, path: Path, home: Path) -> None:
+        assert name == "node" and path == executable and home == context.home
+        source_release.os.replace(replacement_executable, executable)
+        _atomic_exchange_paths(home, replacement_home)
+
+    monkeypatch.setattr(source_release, "_TEST_ONLY_ALLOW_PATH_EXECUTION", False)
+    monkeypatch.setattr(source_release, "_before_bound_exec_for_test", swap, raising=False)
+    assert source_release._run_with_context(["node"], tmp_path, context) == "HELD_HOME"
+    assert (context.home / "config").read_text(encoding="utf-8") == "ATTACKER_HOME\n"
+
+
+def test_v3_policy_genesis_is_rejected(current: CurrentFixture) -> None:
+    current.genesis["schemaVersion"] = "p42-source-release-evidence/v3"
+    current.genesis = seal_source_release_evidence(current.genesis)
+    current.policy["genesisEvidence"]["evidenceHash"] = current.genesis["evidenceHash"]
+    current.install_policy()
+    current.report["previousEvidence"] = deepcopy(current.policy["genesisEvidence"])
+    current.write_report()
+    with pytest.raises(SourceReleaseEvidenceError, match="legacy v2"):
         current.validate()
 
 
@@ -1245,3 +1875,227 @@ def test_bootstrap_expiry_is_closed_at_exact_now(current: CurrentFixture) -> Non
     current.install_bootstrap(expires_at="2026-07-15T05:00:00Z")
     with pytest.raises(SourceReleaseEvidenceError, match="expired"):
         current.validate()
+
+
+def _multi_predecessor_fixture(
+    current: CurrentFixture,
+) -> tuple[dict, dict, object, dict[str, dict], dict[str, str]]:
+    commits = {
+        "genesis_observed": "b" * 40,
+        "genesis_publication": "a" * 40,
+        "first_observed": "c" * 40,
+        "first_publication": "d" * 40,
+        "second_observed": "e" * 40,
+        "second_publication": "f" * 40,
+        "current_observed": HEAD,
+        "current_publication": "0" * 40,
+    }
+    genesis = _genesis_receipt()
+    genesis["observedBranchHead"] = commits["genesis_observed"]
+    genesis["deployRelevantCommit"] = commits["genesis_observed"]
+    genesis["ci"]["headSha"] = commits["genesis_observed"]
+    genesis["render"]["runtimeCommit"] = commits["genesis_observed"]
+    genesis["render"]["liveCommit"] = commits["genesis_observed"]
+    genesis = seal_source_release_evidence(genesis)
+    genesis_ref = {
+        "publicationCommit": commits["genesis_publication"],
+        "path": CANONICAL_PATH,
+        "observedBranchHead": commits["genesis_observed"],
+        "deployRelevantCommit": commits["genesis_observed"],
+        "evidenceHash": genesis["evidenceHash"],
+    }
+    policy = deepcopy(current.policy)
+    policy["genesisEvidence"] = deepcopy(genesis_ref)
+    policy_digest = sha256_bytes(canonical_json(policy).encode())
+
+    def receipt(observed: str, previous: dict) -> dict:
+        value = deepcopy(current.report)
+        value["observedBranchHead"] = observed
+        value["deployRelevantCommit"] = previous["deployRelevantCommit"]
+        value["ci"]["headSha"] = observed
+        value["render"]["runtimeCommit"] = previous["deployRelevantCommit"]
+        value["render"]["liveCommit"] = previous["deployRelevantCommit"]
+        value["previousEvidence"] = deepcopy(previous)
+        value["trustPolicy"] = {
+            "policyId": policy["policyId"],
+            "sha256": policy_digest,
+        }
+        return seal_source_release_evidence(value)
+
+    first = receipt(commits["first_observed"], genesis_ref)
+    first_ref = {
+        "publicationCommit": commits["first_publication"],
+        "path": CANONICAL_PATH,
+        "observedBranchHead": commits["first_observed"],
+        "deployRelevantCommit": commits["genesis_observed"],
+        "evidenceHash": first["evidenceHash"],
+    }
+    second = receipt(commits["second_observed"], first_ref)
+    second_ref = {
+        "publicationCommit": commits["second_publication"],
+        "path": CANONICAL_PATH,
+        "observedBranchHead": commits["second_observed"],
+        "deployRelevantCommit": commits["genesis_observed"],
+        "evidenceHash": second["evidenceHash"],
+    }
+
+    class MultiChainGit:
+        def __call__(self, command: list[str], cwd: Path) -> str:
+            del cwd
+            if command[:2] == ["git", "cat-file"]:
+                return ""
+            if command[:3] == ["git", "rev-list", "--first-parent"]:
+                lineage = {
+                    commits["current_observed"]: [
+                        commits["current_observed"], commits["second_publication"],
+                        commits["second_observed"], commits["first_publication"],
+                        commits["first_observed"], commits["genesis_publication"],
+                        commits["genesis_observed"],
+                    ],
+                    commits["second_observed"]: [
+                        commits["second_observed"], commits["first_publication"],
+                        commits["first_observed"], commits["genesis_publication"],
+                        commits["genesis_observed"],
+                    ],
+                    commits["second_publication"]: [
+                        commits["second_publication"], commits["second_observed"],
+                        commits["first_publication"], commits["first_observed"],
+                        commits["genesis_publication"], commits["genesis_observed"],
+                    ],
+                    commits["first_observed"]: [
+                        commits["first_observed"], commits["genesis_publication"],
+                        commits["genesis_observed"],
+                    ],
+                    commits["first_publication"]: [
+                        commits["first_publication"], commits["first_observed"],
+                        commits["genesis_publication"], commits["genesis_observed"],
+                    ],
+                    commits["genesis_publication"]: [
+                        commits["genesis_publication"], commits["genesis_observed"],
+                    ],
+                }[command[3]]
+                return "\n".join(lineage)
+            if command[:4] == ["git", "log", "--first-parent", "-1"]:
+                latest = {
+                    commits["current_publication"] + "^1": commits["second_publication"],
+                    commits["second_publication"] + "^1": commits["first_publication"],
+                    commits["first_publication"] + "^1": commits["genesis_publication"],
+                }
+                return latest[command[5]]
+            raise AssertionError(command)
+
+    artifacts = {
+        commits["genesis_publication"] + ":" + CANONICAL_PATH: genesis,
+        commits["first_publication"] + ":" + CANONICAL_PATH: first,
+        commits["second_publication"] + ":" + CANONICAL_PATH: second,
+    }
+    return second_ref, policy, MultiChainGit(), artifacts, commits
+
+
+def _validate_multi_predecessor_chain(
+    current: CurrentFixture,
+    reference: dict,
+    policy: dict,
+    runner: object,
+    artifacts: dict[str, dict],
+    commits: dict[str, str],
+) -> source_release.ValidatedPredecessorChain:
+    return source_release._validate_recursive_predecessor_chain(
+        reference,
+        current_observed_head=commits["current_observed"],
+        current_publication_commit=commits["current_publication"],
+        policy=policy,
+        root=current.root,
+        runner=runner,
+        blob_reader=lambda spec, root: (canonical_json(artifacts[spec]) + "\n").encode(),
+        trust_root={"bootstrapAllowlist": []},
+        now_utc=datetime(2026, 7, 15, 5, tzinfo=timezone.utc),
+    )
+
+
+def test_multi_predecessor_chain_replays_oldest_to_newest(
+    current: CurrentFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reference, policy, runner, artifacts, commits = _multi_predecessor_fixture(current)
+    replayed: list[str] = []
+
+    def validate_interval(
+        report: dict, *, label: str, **kwargs: object,
+    ) -> source_release.SourceAuthorityInterval:
+        del kwargs
+        replayed.append(label)
+        row = {"authorization": {"type": "pull-request"}}
+        derived = {"commit": report["observedBranchHead"]}
+        return source_release.SourceAuthorityInterval((row,), (derived,), ())
+
+    monkeypatch.setattr(
+        source_release, "_validate_source_authority_interval", validate_interval
+    )
+    result = _validate_multi_predecessor_chain(
+        current, reference, policy, runner, artifacts, commits
+    )
+    assert replayed == ["predecessor receipt 0", "predecessor receipt 1"]
+    assert [
+        interval.derived_commits[0]["commit"] for interval in result.historical_intervals
+    ] == [commits["first_observed"], commits["second_observed"]]
+
+
+def test_multi_predecessor_chain_rejects_skipped_receipt(current: CurrentFixture) -> None:
+    _, policy, runner, artifacts, commits = _multi_predecessor_fixture(current)
+    first = artifacts[commits["first_publication"] + ":" + CANONICAL_PATH]
+    first_ref = {
+        "publicationCommit": commits["first_publication"],
+        "path": CANONICAL_PATH,
+        "observedBranchHead": commits["first_observed"],
+        "deployRelevantCommit": commits["genesis_observed"],
+        "evidenceHash": first["evidenceHash"],
+    }
+    with pytest.raises(SourceReleaseEvidenceError, match="skips the latest"):
+        _validate_multi_predecessor_chain(
+            current, first_ref, policy, runner, artifacts, commits
+        )
+
+
+def test_multi_predecessor_chain_rejects_reordered_link(current: CurrentFixture) -> None:
+    reference, policy, runner, artifacts, commits = _multi_predecessor_fixture(current)
+    second_key = commits["second_publication"] + ":" + CANONICAL_PATH
+    second = deepcopy(artifacts[second_key])
+    second["previousEvidence"] = deepcopy(policy["genesisEvidence"])
+    second = seal_source_release_evidence(second)
+    artifacts[second_key] = second
+    reference["evidenceHash"] = second["evidenceHash"]
+    with pytest.raises(SourceReleaseEvidenceError, match="skips the latest"):
+        _validate_multi_predecessor_chain(
+            current, reference, policy, runner, artifacts, commits
+        )
+
+
+def test_online_forwards_every_historical_interval_in_order(
+    current: CurrentFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commits = ["c" * 40, "d" * 40, DEPLOY]
+    intervals = tuple(
+        source_release.SourceAuthorityInterval(
+            declared_commits=({"authorization": {"type": "pull-request"}},),
+            derived_commits=({"commit": commit},),
+            derived_deploy_commits=(),
+        )
+        for commit in commits
+    )
+    forwarded: list[str] = []
+
+    def record(item: dict, derived: dict, **kwargs: object) -> None:
+        del item, kwargs
+        forwarded.append(derived["commit"])
+
+    monkeypatch.setattr(source_release, "_validate_online_pr_authorization", record)
+    source_release._validate_v3_online(
+        current.report,
+        policy=current.policy,
+        trust_root={"bootstrapAllowlist": []},
+        root=current.root,
+        command_runner=current.runner,
+        detailed_url_reader=current.detailed_reader,
+        authority_intervals=intervals,
+    )
+    assert forwarded == commits

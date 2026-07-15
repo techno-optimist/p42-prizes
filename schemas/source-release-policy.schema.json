@@ -41,7 +41,10 @@
     "evidenceOnlyPaths": {
       "const": ["docs/GATE_LEDGER.md", "docs/HUMAN_ACTIONS.md", "docs/evidence/source-release-current.json"]
     },
-    "genesisEvidence": {"$ref": "#/$defs/evidenceRef"},
+    "genesisEvidence": {
+      "$comment": "The referenced committed artifact must be the legacy p42-source-release-evidence/v2 anchor; current validation rejects a v3 artifact at genesis.",
+      "$ref": "#/$defs/evidenceRef"
+    },
     "guardProgram": {
       "type": "object", "additionalProperties": false,
       "required": ["command", "path", "blobOid", "sha256", "supportFiles"],
