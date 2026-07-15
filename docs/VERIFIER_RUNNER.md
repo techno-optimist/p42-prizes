@@ -191,13 +191,18 @@ not memory pressure. Queue, plan, and transcript schemas live at
   process exits even at the exact lease-expiry boundary. Queue, transcript, and
   execution-lock roots must be owned by the runner UID and may not be group- or
   world-writable; opens are pinned to no-follow directory file descriptors.
+- Lease creation, heartbeat, reaping, and planner lease classification use the
+  host wall clock. Challenge ordering, expiry, and retry-window decisions use
+  the operator-supplied canonical chain timestamp; durable wall-clock retry
+  backoff is capped by the remaining canonical chain window.
 - Swap pressure blocks new starts; running verifiers should be killed before the
   box begins sustained swapping.
 - The worker starts a queued job only when
   `available_memory_mb >= reserve_memory_mb + ceil(required_memory_mb * safety_factor)`.
-- If that minimum exceeds total host memory, the runner returns
-  `job_exceeds_host_capacity` and leaves the queue untouched for supervisor
-  action; it does not skip FIFO to run later jobs.
+- If that minimum exceeds total host memory, the worker records a source-bound
+  local terminal disposition with reason `job_exceeds_host_capacity`. The job
+  remains first until that fail-closed transition is durable; later eligible
+  work may run on the next worker iteration without reordering live jobs.
 - On Linux runner hosts, every verifier subprocess is launched with an
   address-space limit of `ceil(required_memory_mb * safety_factor)` via
   `RLIMIT_AS`, so a single-process verifier that overruns its budget fails its
@@ -215,11 +220,29 @@ not memory pressure. Queue, plan, and transcript schemas live at
 
 The canonical queue admits ordinary work only through 896 active entries and
 deadline-bearing chain work through 960, leaving 64 operational slots plus 64 KiB of
-serialized-state headroom for leases and terminal metadata. When admission
-needs room, only jobs with a candidate-hash-bound terminal operator action
-(`confirmed`, `broadcast_reverted`, `superseded`, `window_expired`,
-`no_action`, `quarantined`, policy/cap refusal, or resolver-observed terminal
-state) are archived. Each immutable content-addressed record and both
+serialized-state headroom for leases and terminal metadata. Access to those 64
+reserved slots requires the operator to pass the current policy-finalized block
+timestamp into the enqueue transaction; host wall time is never an urgency
+authority. When admission
+needs room, jobs are archived only after either a candidate-hash-bound
+terminal operator action (`confirmed`, `broadcast_reverted`, `superseded`,
+`window_expired`, `no_action`, `quarantined`, policy/cap refusal, or
+resolver-observed terminal
+state) or a self-hashed local terminal disposition. Local dispositions use a
+narrow reason enum, retain a verified retry candidate on window expiry, and
+otherwise fence to `source_event_hash`; callers cannot select either fence and
+they are not chain actions. Every disposition creates a deterministic durable
+terminal-alert identity in `pending` state. A Python bridge transaction holds
+the queue lock and a durable exclusive alert-log lock, then uses directory-FD
+bound direct `O_CREAT|O_EXCL|O_NOFOLLOW` creation, fsyncs each new inode and its
+parent directory, and applies private single-link inode checks for the complete
+canonical newline-terminated JSONL record. It loops over short writes, fsyncs,
+and rechecks directory, lock, descriptor, and pathname identity before the
+operator commits its `delivered` receipt. Restart reconciliation parses complete
+records rather than marker substrings and repairs a missing, unterminated, or
+truncated record for both `pending` and `delivered` queue states. Pending alerts
+are not archiveable. Each immutable
+content-addressed record and both
 replay tombstones are fsynced before queue removal; archive/tombstone damage
 fails closed. Operators should alert on queue bytes, both admission headrooms,
 oldest deadline, and record/tombstone counts.
@@ -384,8 +407,11 @@ transcript still records the reproduced `VerdictReport` and report hash whenever
 the verifier emitted canonical JSON. Low-memory or full-runner decisions return a
 `p42-runner-plan/v1` `wait` response and leave the queue untouched.
 
-For production operation, run the drain loop instead of hand-calling
-`runner-work-once`:
+The standalone drain loop is for unlinked local rehearsal queues only. Production
+chain-linked jobs must run through `agent/operator.mjs`, which supplies the
+confirmation-depth-safe chain timestamp on every worker invocation. Both
+standalone worker commands fail closed when a queued job has a challenge deadline
+but `P42_RUNNER_CHAIN_TIMESTAMP` was not supplied by that operator path:
 
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli runner-drain \

@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -961,7 +969,7 @@ test("operator retries reveal payloads and creates idempotent generation-bound r
       status: "queued",
       da_failure: first.daFailure,
       chain_claim: { challenge_ends_at: "200" },
-    }, 200n), false);
+    }, 200n), true);
     const deferredRetry = {
       status: "queued",
       da_failure: first.daFailure,
@@ -974,6 +982,10 @@ test("operator retries reveal payloads and creates idempotent generation-bound r
     );
     assert.equal(
       retryableJobIsEligible(deferredRetry, 199n, Date.parse("2030-01-01T00:00:15Z")),
+      true,
+    );
+    assert.equal(
+      retryableJobIsEligible(deferredRetry, 200n, Date.parse("2030-01-01T00:00:00Z")),
       true,
     );
 
@@ -1073,6 +1085,7 @@ test("operator retries reveal payloads and creates idempotent generation-bound r
     const enqueue = (jobPath) => JSON.parse(execFileSync("python3", [
       join(REPO_ROOT, "agent", "runtime_bridge.py"),
       "enqueue", "--queue", queuePath, "--job", jobPath,
+      "--chain-now-utc", "2026-07-15T00:00:00Z",
     ], { cwd: REPO_ROOT, encoding: "utf8" }));
     assert.equal(enqueue(revealJobPath).created, true);
     assert.equal(enqueue(generationJobPath).created, true);
@@ -1170,7 +1183,10 @@ test("operator retries reveal payloads and creates idempotent generation-bound r
       const backfill = source.indexOf("async function backfillChallengeExpiredOnce");
       const historicalStart = source.indexOf("START_BLOCK,", backfill);
       const historicalEnd = source.indexOf("safeLatest,", historicalStart);
-      const ingest = source.indexOf("await ingestReveal(event)", historicalEnd);
+      const ingest = source.indexOf(
+        "await ingestReveal(event, chainTimestamp)",
+        historicalEnd,
+      );
       const markComplete = source.indexOf("writeJsonAtomic(CHALLENGE_EXPIRED_BACKFILL", ingest);
       assert.ok(backfill >= 0 && historicalStart > backfill && historicalEnd > historicalStart && ingest > historicalEnd && markComplete > ingest);
     });
@@ -1348,4 +1364,180 @@ test("operator releases the wallet lock after a nonblocking broadcast handoff", 
   assert.ok(walletLock >= 0 && allocate > walletLock && populate > allocate && explicitNonce > populate
     && journal > explicitNonce && durable > journal && broadcast > durable && release > broadcast);
   assert.doesNotMatch(source, /pending\.wait\s*\(/);
+});
+
+test("operator reconciles terminal worker results before transcript continuation", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const terminal = source.indexOf("if (result.terminal_disposition) continue;");
+  const transcript = source.indexOf('if (result.schema_version === "p42-runner-transcript/v1")', terminal);
+  const reconcile = source.indexOf("await reconcileTerminalAlerts();", transcript);
+  assert.ok(terminal >= 0 && transcript > terminal && reconcile > transcript);
+});
+
+test("operator persists chain-action alerts inside the terminal queue transition", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const quarantine = source.indexOf('if (candidate.action === "quarantine")');
+  const end = source.indexOf('if (candidate.action !== "challenge")', quarantine);
+  const branch = source.slice(quarantine, end);
+  assert.match(branch, /recordAction\([\s\S]*"quarantined"[\s\S]*`QUARANTINE /);
+  assert.doesNotMatch(branch, /appendAlert\(/);
+  const reconciliation = source.slice(
+    source.indexOf("export async function reconcileTerminalAlerts"),
+    source.indexOf("async function blockFor"),
+  );
+  assert.match(reconciliation, /job\.terminal_alert \?\? job\.action_alert/);
+});
+
+test("operator binds enqueue urgency to the policy-finalized block timestamp", () => {
+  const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
+  const finalized = source.indexOf("const finalizedBlock = await provider.getBlock(safeLatest)");
+  const ingest = source.indexOf("ingestReveal(event, finalizedBlock.timestamp)", finalized);
+  const enqueue = source.indexOf('"--chain-now-utc", new Date(Number(chainTimestamp)', 0);
+  const worker = source.indexOf("runWorkerOnce(finalizedBlock.timestamp)", finalized);
+  assert.ok(finalized >= 0 && ingest > finalized && enqueue >= 0 && worker > finalized);
+  assert.doesNotMatch(source, /ingestReveal\(event\);/);
+});
+
+test("operator durably quarantines an invalid transcript and alerts once", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "p42-invalid-transcript-"));
+  const repoRoot = join(directory, "repo");
+  const runtime = join(directory, "runtime");
+  const manifestPath = join(directory, "manifest.json");
+  mkdirSync(join(repoRoot, "agent"), { recursive: true });
+  symlinkSync(join(REPO_ROOT, "src"), join(repoRoot, "src"), "dir");
+  symlinkSync(
+    join(REPO_ROOT, "agent", "runtime_bridge.py"),
+    join(repoRoot, "agent", "runtime_bridge.py"),
+  );
+  for (const contractName of ["P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"]) {
+    const artifactPath = join(
+      repoRoot,
+      "contracts",
+      "artifacts",
+      "src",
+      `${contractName}.sol`,
+      `${contractName}.json`,
+    );
+    mkdirSync(dirname(artifactPath), { recursive: true });
+    writeFileSync(artifactPath, JSON.stringify({ abi: [] }), "utf8");
+  }
+  writeFileSync(manifestPath, JSON.stringify({
+    contracts: {
+      submissions: { address: "0x1111111111111111111111111111111111111111" },
+      challenges: { address: "0x2222222222222222222222222222222222222222" },
+      registry: { address: "0x3333333333333333333333333333333333333333" },
+    },
+  }), "utf8");
+  mkdirSync(runtime, { recursive: true });
+  const job = {
+    job_id: "invalid-transcript",
+    status: "failed",
+    required_memory_mb: 128,
+    source_event_hash: `sha256:${"7".repeat(64)}`,
+    transcript_path: join(runtime, "missing-transcript.json"),
+    transcript_hash: `sha256:${"8".repeat(64)}`,
+  };
+  writeFileSync(
+    join(runtime, "runner-queue.json"),
+    `${canonicalJson({ schema_version: "p42-runner-queue/v1", jobs: [job] })}\n`,
+    "utf8",
+  );
+
+  const originalArgv = process.argv;
+  const originalKey = process.env.OPERATOR_PRIVATE_KEY;
+  const alertsPath = join(runtime, "ALERTS.log");
+  let exactAlertLine;
+  process.argv = [
+    process.execPath,
+    "/not-the-operator-entrypoint",
+    "--manifest", manifestPath,
+    "--problem", join(REPO_ROOT, "problems", "hadamard-mini"),
+    "--registry-problem-id", "1",
+    "--runtime", runtime,
+    "--repo-root", repoRoot,
+    "--local-test",
+  ];
+  process.env.OPERATOR_PRIVATE_KEY = `0x${"4".repeat(64)}`;
+  try {
+    const operatorUrl = `${pathToFileURL(join(HERE, "operator.mjs")).href}?invalid-transcript=${Date.now()}`;
+    const { consumeCandidate, reconcileTerminalAlerts } = await import(operatorUrl);
+    await consumeCandidate(job);
+    const pending = JSON.parse(readFileSync(join(runtime, "runner-queue.json"), "utf8")).jobs[0];
+    assert.equal(pending.terminal_alert.status, "pending");
+    exactAlertLine = canonicalJson({
+      schema_version: pending.terminal_alert.schema_version,
+      job_id: pending.terminal_alert.job_id,
+      disposition_hash: pending.terminal_alert.disposition_hash,
+      message: pending.terminal_alert.message,
+      created_at_utc: pending.terminal_alert.created_at_utc,
+      alert_id: pending.terminal_alert.alert_id,
+    });
+
+    writeFileSync(
+      alertsPath,
+      `forged TERMINAL_ALERT [${pending.terminal_alert.alert_id}] ${pending.terminal_alert.message}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+    await assert.rejects(
+      reconcileTerminalAlerts({
+        afterAppend: () => { throw new Error("injected post-append crash"); },
+      }),
+      /injected post-append crash/,
+    );
+    assert.equal(
+      readFileSync(alertsPath, "utf8").split("\n")
+        .filter((line) => line === exactAlertLine).length,
+      1,
+    );
+    assert.equal(
+      JSON.parse(readFileSync(join(runtime, "runner-queue.json"), "utf8"))
+        .jobs[0].terminal_alert.status,
+      "pending",
+    );
+
+    const restarted = await import(`${operatorUrl}&restart=1`);
+    await restarted.reconcileTerminalAlerts();
+    await restarted.reconcileTerminalAlerts();
+    assert.equal(
+      readFileSync(alertsPath, "utf8").split("\n")
+        .filter((line) => line === exactAlertLine).length,
+      1,
+    );
+    assert.equal(
+      JSON.parse(readFileSync(join(runtime, "runner-queue.json"), "utf8"))
+        .jobs[0].terminal_alert.status,
+      "delivered",
+    );
+
+    writeFileSync(alertsPath, exactAlertLine, "utf8");
+    const unterminatedRestart = await import(`${operatorUrl}&restart=2`);
+    await unterminatedRestart.reconcileTerminalAlerts();
+    assert.equal(readFileSync(alertsPath, "utf8"), `${exactAlertLine}\n`);
+
+    writeFileSync(alertsPath, exactAlertLine.slice(0, -7), "utf8");
+    const truncatedRestart = await import(`${operatorUrl}&restart=3`);
+    await truncatedRestart.reconcileTerminalAlerts();
+    assert.equal(
+      readFileSync(alertsPath, "utf8").split("\n")
+        .filter((line) => line === exactAlertLine).length,
+      1,
+    );
+
+    writeFileSync(alertsPath, "", "utf8");
+    const deliveredRestart = await import(`${operatorUrl}&restart=4`);
+    await deliveredRestart.reconcileTerminalAlerts();
+    await deliveredRestart.reconcileTerminalAlerts();
+  } finally {
+    process.argv = originalArgv;
+    if (originalKey === undefined) delete process.env.OPERATOR_PRIVATE_KEY;
+    else process.env.OPERATOR_PRIVATE_KEY = originalKey;
+  }
+
+  const alerts = readFileSync(alertsPath, "utf8").split("\n").filter(Boolean);
+  assert.deepEqual(alerts, [exactAlertLine]);
+  const terminal = JSON.parse(readFileSync(join(runtime, "runner-queue.json"), "utf8")).jobs[0];
+  assert.equal(terminal.terminal_disposition.reason_code, "transcript_invalid");
+  assert.equal(terminal.terminal_disposition.fence_hash, job.source_event_hash);
+  assert.equal(terminal.terminal_alert.status, "delivered");
+  assert.equal(terminal.action, undefined);
 });

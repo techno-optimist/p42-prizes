@@ -22,11 +22,15 @@ sys.path.insert(0, str(ROOT / "src"))
 from p42_prizes.runner_queue import (  # noqa: E402
     MemorySnapshot,
     RunnerPolicy,
+    append_runner_terminal_alert,
     enqueue_runner_job,
     locked_runner_queue,
     memory_snapshot_from_proc,
     read_runner_queue,
     record_runner_action,
+    record_runner_local_disposition,
+    record_runner_terminal_alert_delivery,
+    set_runner_action_alert,
 )
 from p42_prizes.secure_json import read_strict_json_file  # noqa: E402
 from p42_prizes.runner_worker import run_next_job_once  # noqa: E402
@@ -94,6 +98,10 @@ def _quarantine_canonical(queue_path: str, job_ids: list[str], reason: str) -> d
             if isinstance(previous_action, dict) and isinstance(previous_action.get("transaction_hash"), str):
                 action["transaction_hash"] = previous_action["transaction_hash"]
             job["action"] = action
+            set_runner_action_alert(
+                job,
+                message=f"CANONICAL INVALIDATION {job.get('job_id')}: {reason}",
+            )
             job["canonical_status"] = "orphaned_reorg"
             job["canonical_invalidated_at_utc"] = now
             job["canonical_invalidated_reason"] = reason
@@ -127,6 +135,7 @@ def _parser() -> argparse.ArgumentParser:
     enqueue = commands.add_parser("enqueue")
     enqueue.add_argument("--queue", required=True)
     enqueue.add_argument("--job", required=True)
+    enqueue.add_argument("--chain-now-utc", required=True)
 
     read = commands.add_parser("read")
     read.add_argument("--queue", required=True)
@@ -151,6 +160,24 @@ def _parser() -> argparse.ArgumentParser:
     action.add_argument("--status", required=True)
     action.add_argument("--transaction-hash")
     action.add_argument("--detail")
+    action.add_argument("--alert-message")
+
+    local = commands.add_parser("terminalize-local")
+    local.add_argument("--queue", required=True)
+    local.add_argument("--job-id", required=True)
+    local.add_argument("--reason-code", required=True)
+    local.add_argument("--candidate-hash")
+    local.add_argument("--detail")
+
+    append_alert = commands.add_parser("append-terminal-alert")
+    append_alert.add_argument("--queue", required=True)
+    append_alert.add_argument("--alerts", required=True)
+    append_alert.add_argument("--job-id", required=True)
+
+    delivered = commands.add_parser("record-terminal-alert")
+    delivered.add_argument("--queue", required=True)
+    delivered.add_argument("--job-id", required=True)
+    delivered.add_argument("--alert-id", required=True)
 
     quarantine = commands.add_parser("quarantine-canonical")
     quarantine.add_argument("--queue", required=True)
@@ -164,7 +191,11 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = _parser().parse_args()
     if args.command == "enqueue":
-        result = enqueue_runner_job(args.queue, _load_object(args.job))
+        result = enqueue_runner_job(
+            args.queue,
+            _load_object(args.job),
+            chain_now_utc=args.chain_now_utc,
+        )
     elif args.command == "read":
         result = read_runner_queue(args.queue)
     elif args.command == "record-action":
@@ -175,6 +206,27 @@ def main() -> int:
             status=args.status,
             transaction_hash=args.transaction_hash,
             detail=args.detail,
+            alert_message=args.alert_message,
+        )
+    elif args.command == "terminalize-local":
+        result = record_runner_local_disposition(
+            args.queue,
+            job_id=args.job_id,
+            reason_code=args.reason_code,
+            candidate_hash=args.candidate_hash,
+            detail=args.detail,
+        )
+    elif args.command == "append-terminal-alert":
+        result = append_runner_terminal_alert(
+            args.queue,
+            args.alerts,
+            job_id=args.job_id,
+        )
+    elif args.command == "record-terminal-alert":
+        result = record_runner_terminal_alert_delivery(
+            args.queue,
+            job_id=args.job_id,
+            alert_id=args.alert_id,
         )
     elif args.command == "quarantine-canonical":
         result = _quarantine_canonical(args.queue, args.job_id, args.reason)
