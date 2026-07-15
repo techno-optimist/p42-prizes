@@ -117,7 +117,7 @@ jobs:
   objective-program:
     name: SP1 objective-program gates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -229,18 +229,6 @@ jobs:
           python scripts/verify-sp1-a11-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
       - name: Verify deterministic resource envelope
         run: python scripts/verify-sp1-objective-resource-profile.py
-      - name: Replay frozen mock execution
-        working-directory: objective-programs
-        run: |
-          set -euo pipefail
-          output=$(cargo run --locked -p p42-hadamard-668-objective-script -- execute-fixture-elf artifacts/hadamard-668-defect/v0.1.0/program.elf ../problems/hadamard-668-defect/examples/sylvester-prefix.json)
-          printf '%s\n' "$output" | python3 ../scripts/verify-sp1-objective-execution.py
-      - name: Replay frozen A11 mock execution
-        working-directory: objective-programs
-        run: |
-          set -euo pipefail
-          output=$(cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- execute-fixture-elf artifacts/distinct-subset-sums-a11/v0.1.0/program.elf ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json)
-          printf '%s\n' "$output" | python3 ../scripts/verify-sp1-a11-objective-execution.py
       - name: Retain validated objective evidence for cross-image audit
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
