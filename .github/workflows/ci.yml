@@ -201,6 +201,13 @@ jobs:
             execute-fixture-elf target/hadamard-reproducibility/program.elf \
             ../problems/hadamard-668-defect/examples/sylvester-prefix.json \
             > target/hadamard-reproducibility/execution.json
+      - name: Validate program-scoped reproduction bundles
+        working-directory: objective-programs
+        run: |
+          python3 ../scripts/verify-sp1-objective-reproduction.py \
+            --program distinct-subset-sums-a11 --directory target/a11-reproducibility
+          python3 ../scripts/verify-sp1-objective-reproduction.py \
+            --program hadamard-668-defect --directory target/hadamard-reproducibility
       - name: Enforce frozen guest identity
         working-directory: objective-programs
         shell: bash
@@ -257,6 +264,7 @@ jobs:
     env:
       PRODUCER_RESULT: ${{ needs.objective-program.result }}
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.2
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           pattern: p42-distinct-subset-sums-a11-x86-elf-*-${{ github.run_id }}
@@ -271,23 +279,24 @@ jobs:
           set -euo pipefail
           compare_pair() {
             local root=$1
-            local include_execution=$2
+            local program=$2
             mapfile -t guests < <(find "$root" -type f -name program.elf | sort)
             mapfile -t identities < <(find "$root" -type f -name identity.json | sort)
+            mapfile -t executions < <(find "$root" -type f -name execution.json | sort)
             test "${#guests[@]}" -eq 2
             test "${#identities[@]}" -eq 2
+            test "${#executions[@]}" -eq 2
+            for identity in "${identities[@]}"; do
+              python3 scripts/verify-sp1-objective-reproduction.py \
+                --program "$program" --directory "$(dirname "$identity")"
+            done
             cmp --silent "${guests[0]}" "${guests[1]}"
             cmp --silent "${identities[0]}" "${identities[1]}"
-            sha256sum "${guests[@]}" "${identities[@]}"
-            if [[ "$include_execution" == true ]]; then
-              mapfile -t executions < <(find "$root" -type f -name execution.json | sort)
-              test "${#executions[@]}" -eq 2
-              cmp --silent "${executions[0]}" "${executions[1]}"
-              sha256sum "${executions[@]}"
-            fi
+            cmp --silent "${executions[0]}" "${executions[1]}"
+            sha256sum "${guests[@]}" "${identities[@]}" "${executions[@]}"
           }
-          compare_pair objective-programs/reproduced-hadamard true
-          compare_pair objective-programs/reproduced-a11 true
+          compare_pair objective-programs/reproduced-hadamard hadamard-668-defect
+          compare_pair objective-programs/reproduced-a11 distinct-subset-sums-a11
           if [[ "$PRODUCER_RESULT" != success ]]; then
             echo "objective-program producer validation failed: $PRODUCER_RESULT" >&2
             exit 1
