@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/source-release-bootstrap-ratification.schema.json",
+  "title": "P42 source-release bootstrap ratification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "authorizationId", "policyId", "policySha256", "interval", "reason", "expiresAt", "threshold", "authorities", "signatures"],
+  "properties": {
+    "schemaVersion": {"const": "p42-source-release-bootstrap-ratification/v1"},
+    "authorizationId": {"type": "string", "minLength": 1},
+    "policyId": {"type": "string", "minLength": 1},
+    "policySha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "interval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["firstCommit", "lastCommit", "firstParent", "finalTree", "changedPathsSha256", "coveredCommits"],
+      "properties": {
+        "firstCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "lastCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "firstParent": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "finalTree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "changedPathsSha256": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "coveredCommits": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-f0-9]{40}$"}}
+      }
+    },
+    "reason": {"type": "string", "minLength": 32},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "threshold": {"type": "integer", "minimum": 2},
+    "authorities": {
+      "type": "array", "minItems": 2, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "publicKey"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "publicKey": {"type": "string", "pattern": "^ed25519:[a-f0-9]{64}$"}
+        }
+      }
+    },
+    "signatures": {
+      "type": "array", "minItems": 2, "uniqueItems": true,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["authorityId", "signature"],
+        "properties": {
+          "authorityId": {"type": "string", "minLength": 1},
+          "signature": {"type": "string", "pattern": "^ed25519:[a-f0-9]{128}$"}
+        }
+      }
+    }
+  }
+}

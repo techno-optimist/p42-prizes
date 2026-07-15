@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/source-release-policy.schema.json",
+  "title": "P42 external source-release trust policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "policyId", "repository", "branch", "activationCommit", "canonicalRenderServiceId", "workflow", "requiredJobs", "requiredProbes", "deployRelevantPaths", "evidenceOnlyPaths", "genesisEvidence", "guardProgram", "guardSemantics", "reviewPolicy", "threshold", "authorities", "signatures"],
+  "properties": {
+    "schemaVersion": {"const": "p42-source-release-policy/v1"},
+    "policyId": {"type": "string", "minLength": 1},
+    "repository": {"const": "techno-optimist/p42-prizes"},
+    "branch": {"const": "main"},
+    "activationCommit": {"$ref": "#/$defs/commit"},
+    "canonicalRenderServiceId": {"const": "srv-d96pokeq1p3s73foqk60"},
+    "workflow": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "path", "blobOid", "sha256", "closureAlgorithm", "closureRoots"],
+      "properties": {
+        "id": {"type": "integer", "minimum": 1},
+        "path": {"const": ".github/workflows/ci.yml"},
+        "blobOid": {"$ref": "#/$defs/commit"},
+        "sha256": {"$ref": "#/$defs/hash"},
+        "closureAlgorithm": {"const": "p42-git-ls-tree-closure/v1"},
+        "closureRoots": {"const": ["."]}
+      }
+    },
+    "requiredJobs": {"type": "array", "minItems": 6, "maxItems": 6, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+    "requiredProbes": {
+      "type": "array", "minItems": 12, "maxItems": 12,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["routeId", "origin", "url"],
+        "properties": {
+          "routeId": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+          "origin": {"enum": ["render", "public"]},
+          "url": {"type": "string", "format": "uri"}
+        }
+      }
+    },
+    "deployRelevantPaths": {"const": ["web", "render.yaml"]},
+    "evidenceOnlyPaths": {
+      "const": ["docs/GATE_LEDGER.md", "docs/HUMAN_ACTIONS.md", "docs/evidence/source-release-current.json"]
+    },
+    "genesisEvidence": {"$ref": "#/$defs/evidenceRef"},
+    "guardProgram": {
+      "type": "object", "additionalProperties": false,
+      "required": ["command", "path", "blobOid", "sha256", "supportFiles"],
+      "properties": {
+        "command": {"const": ["node", "scripts/verify-render-release.mjs"]},
+        "path": {"const": "scripts/verify-render-release.mjs"},
+        "blobOid": {"$ref": "#/$defs/commit"},
+        "sha256": {"$ref": "#/$defs/hash"},
+        "supportFiles": {
+          "type": "array", "minItems": 1, "maxItems": 1,
+          "prefixItems": [{"$ref": "#/$defs/guardFile"}],
+          "items": false
+        }
+      }
+    },
+    "guardSemantics": {
+      "type": "object", "additionalProperties": false, "required": ["probes"],
+      "properties": {
+        "probes": {
+          "type": "array", "minItems": 12, "maxItems": 12,
+          "items": {"$ref": "#/$defs/guardProbe"}
+        }
+      }
+    },
+    "reviewPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["minimumApprovals", "allowedReviewerLogins", "requireNonAuthor"],
+      "properties": {
+        "minimumApprovals": {"type": "integer", "minimum": 1},
+        "allowedReviewerLogins": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "requireNonAuthor": {"const": true}
+      }
+    },
+    "threshold": {"type": "integer", "minimum": 2},
+    "authorities": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/authority"}},
+    "signatures": {"type": "array", "minItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/signature"}}
+  },
+  "$defs": {
+    "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "hash": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "authority": {
+      "type": "object", "additionalProperties": false, "required": ["id", "publicKey"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "publicKey": {"type": "string", "pattern": "^ed25519:[a-f0-9]{64}$"}
+      }
+    },
+    "signature": {
+      "type": "object", "additionalProperties": false, "required": ["authorityId", "signature"],
+      "properties": {
+        "authorityId": {"type": "string", "minLength": 1},
+        "signature": {"type": "string", "pattern": "^ed25519:[a-f0-9]{128}$"}
+      }
+    },
+    "guardFile": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "blobOid", "sha256"],
+      "properties": {
+        "path": {"const": "scripts/release-guard-problems-v1.json"},
+        "blobOid": {"$ref": "#/$defs/commit"},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "evidenceRef": {
+      "type": "object", "additionalProperties": false,
+      "required": ["publicationCommit", "path", "observedBranchHead", "deployRelevantCommit", "evidenceHash"],
+      "properties": {
+        "publicationCommit": {"$ref": "#/$defs/commit"},
+        "path": {"const": "docs/evidence/source-release-current.json"},
+        "observedBranchHead": {"$ref": "#/$defs/commit"},
+        "deployRelevantCommit": {"$ref": "#/$defs/commit"},
+        "evidenceHash": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "guardProbe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["routeId", "origin", "url", "expectedFinalUrl", "contentTypePrefix", "markers", "jsonRequiredKeys", "equivalenceGroup"],
+      "properties": {
+        "routeId": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+        "origin": {"enum": ["render", "public"]},
+        "url": {"type": "string", "format": "uri"},
+        "expectedFinalUrl": {"type": "string", "format": "uri"},
+        "contentTypePrefix": {"type": "string", "minLength": 1},
+        "markers": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "jsonRequiredKeys": {"type": "array", "items": {"type": "string", "minLength": 1}},
+        "equivalenceGroup": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

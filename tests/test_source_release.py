@@ -1,6 +1,4 @@
 from __future__ import annotations
-
-from copy import deepcopy
 import json
 from pathlib import Path
 import subprocess
@@ -12,10 +10,12 @@ from p42_prizes.source_release import (
     HttpObservation,
     REQUIRED_CI_JOBS,
     REQUIRED_PROBES,
+    REQUIRED_V3_PROBES,
     SourceReleaseEvidenceError,
     seal_source_release_evidence,
     validate_source_release_evidence,
 )
+from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 DEPLOY = "8" * 40
