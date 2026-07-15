@@ -156,13 +156,13 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-            ~/.cargo/git
           key: sp1-v6.1-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('objective-programs/Cargo.lock') }}
       - name: Capture untrusted SP1 build-input observation
         shell: bash
         run: |
           set -euo pipefail
           rm -rf objective-programs/target
+          rm -rf "$HOME/.cargo/git"
           test ! -e objective-programs/target
           guest_archive="$HOME/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz"
           guest_sysroot="$(rustc +succinct --print sysroot)"
@@ -187,7 +187,7 @@ jobs:
           set -euo pipefail
           test ! -e objective-programs/target
           clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
-          clean_env=(env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0)
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           guest_archive="$HOME/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz"
           guest_sysroot="$("${clean_env[@]}" "$HOME/.cargo/bin/rustc" +succinct --print sysroot)"
           "${clean_env[@]}" /usr/bin/python3 scripts/verify-sp1-objective-artifact.py \
@@ -202,7 +202,7 @@ jobs:
         shell: bash
         run: |
           clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
-          env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 \
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
             "$HOME/.cargo/bin/cargo" test --locked -p p42-objective-core
       - name: Build objective guests on x86 Linux
         working-directory: objective-programs
@@ -210,7 +210,7 @@ jobs:
         run: |
           set -euo pipefail
           clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
-          clean_env=(env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0)
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
             -p p42-hadamard-668-objective-script \
             -p p42-distinct-subset-sums-a11-objective-script
@@ -244,7 +244,7 @@ jobs:
         run: |
           set -euo pipefail
           clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
-          env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 \
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
             "$HOME/.cargo/bin/cargo" run --locked -p p42-hadamard-668-objective-script -- \
             execute-fixture-elf target/hadamard-reproducibility/program.elf \
             ../problems/hadamard-668-defect/examples/sylvester-prefix.json \
@@ -267,10 +267,14 @@ jobs:
           retention-days: 7
       - name: Validate program-scoped reproduction bundles
         working-directory: objective-programs
+        shell: bash
         run: |
-          python3 ../scripts/verify-sp1-objective-reproduction.py \
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
             --program distinct-subset-sums-a11 --directory target/a11-reproducibility
-          python3 ../scripts/verify-sp1-objective-reproduction.py \
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
             --program hadamard-668-defect --directory target/hadamard-reproducibility
       - name: Enforce frozen guest identity
         working-directory: objective-programs
@@ -292,7 +296,7 @@ jobs:
         run: |
           set -euo pipefail
           clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
-          clean_env=(env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0)
+          clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           guest_sysroot="$("${clean_env[@]}" "$HOME/.cargo/bin/rustc" +succinct --print sysroot)"
           "${clean_env[@]}" /usr/bin/python3 scripts/verify-sp1-objective-artifact.py \
             --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove" \
@@ -301,9 +305,13 @@ jobs:
             --guest-sysroot "$guest_sysroot" \
             --cargo-home "$HOME/.cargo" \
             --build-provenance "$RUNNER_TEMP/sp1-build-provenance.json"
-          python scripts/verify-sp1-a11-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
+          "${clean_env[@]}" /usr/bin/python3 scripts/verify-sp1-a11-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
       - name: Verify deterministic resource envelope
-        run: python scripts/verify-sp1-objective-resource-profile.py
+        shell: bash
+        run: |
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            /usr/bin/python3 scripts/verify-sp1-objective-resource-profile.py
       - name: Retain validated objective evidence for cross-image audit
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -368,7 +376,7 @@ jobs:
             test "${#identities[@]}" -eq 2
             test "${#executions[@]}" -eq 2
             for identity in "${identities[@]}"; do
-              python3 scripts/verify-sp1-objective-reproduction.py \
+              /usr/bin/python3 scripts/verify-sp1-objective-reproduction.py \
                 --program "$program" --directory "$(dirname "$identity")"
             done
             cmp --silent "${guests[0]}" "${guests[1]}"
