@@ -442,6 +442,59 @@ trust registry.
 
 ## Funding activation plan
 
+Before building the activation plan, produce the non-custodial v2 authority
+bundle. `p42-funding-authorization-request` revalidates the exact deployment
+manifest and production launch authorization, then reads every submission
+manager nonce from two independent RPCs at one common finalized block. It
+writes one immutable private request set containing 30 separately identified
+EIP-712 requests: three authority roles for each of ten managers. The command
+does not accept or read a private key.
+
+```bash
+P42_PRIMARY_BASE_RPC_URL=https://primary.example \
+P42_SECONDARY_BASE_RPC_URL=https://secondary.example \
+p42-funding-authorization-request \
+  --manifest /srv/p42/deployment-manifest.json \
+  --authorization /srv/p42/production-launch-authorization.json \
+  --trust-registry /srv/p42/trust-registry.json \
+  --artifact-root /srv/p42/release \
+  --python /opt/p42/bin/python \
+  --repo-root /opt/p42-prizes \
+  --trusted-root /srv/p42 \
+  --output /srv/p42/funding-authorization-requests.json
+```
+
+Each external signer returns one
+`p42-funding-authorization-role-signature/v2` JSON artifact copying the exact
+`requestSetDigest`, `requestId`, generation, request expiry, board index,
+manager, role, and signer from its request, plus the 65-byte EIP-712 signature.
+After all 30 artifacts are present, assemble the canonical validator input:
+
+```bash
+P42_PRIMARY_BASE_RPC_URL=https://primary.example \
+P42_SECONDARY_BASE_RPC_URL=https://secondary.example \
+p42-funding-authorization-assemble \
+  --manifest /srv/p42/deployment-manifest.json \
+  --authorization /srv/p42/production-launch-authorization.json \
+  --trust-registry /srv/p42/trust-registry.json \
+  --artifact-root /srv/p42/release \
+  --python /opt/p42/bin/python \
+  --repo-root /opt/p42-prizes \
+  --trusted-root /srv/p42 \
+  --request-set /srv/p42/funding-authorization-requests.json \
+  --signature /srv/p42/signatures/board-0-production.json \
+  --signature /srv/p42/signatures/board-0-security.json \
+  --signature /srv/p42/signatures/board-0-governance.json \
+  --output /srv/p42/funding-activation-signatures-v2.json
+```
+
+Pass all 30 `--signature` arguments. Assembly repeats launch validation and
+dual-RPC finalized nonce collection, rejects expired generations, stale manager
+nonces, substitutions, role swaps, duplicates, and partial sets, recovers every
+authority signer, and finally invokes the same v2 bundle validator used by the
+activation planner. Outputs are owner-only, atomic, no-clobber files below the
+named trusted root.
+
 `p42-funding-activation-plan` is the non-signing production activation
 preflight. It re-runs `production-launch-authorization-validate`, consumes the
 exact validated bytes, and writes a private immutable 30-operation plan for the

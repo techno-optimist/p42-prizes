@@ -108,7 +108,32 @@ function immutableValuesFromConstructor(contract, constructorArgs, { blockTimest
   const names = new Set(contract.immutableBindings.map(({ name }) => name)); const values = {};
   inputs.forEach((input, index) => { const name = input.name.replace(/_$/, ""); if (names.has(name)) values[name] = constructorArgs[index]; });
   if (contract.name === "P42MultisigTimelock") { const delay = BigInt(constructorArgs[inputs.findIndex(({ name }) => name === "delaySeconds_")]); values.delay = delay; values.overrideDelay = delay * 2n; values.operationGracePeriod = 604800n; }
-  if (contract.name === "P42SubmissionManager") { if (!Number.isSafeInteger(blockTimestamp)) throw new Error("trusted deployment block timestamp is required"); values.deployedAt = blockTimestamp; values.armNotBefore = BigInt(blockTimestamp) + BigInt(constructorArgs[inputs.findIndex(({ name }) => name === "challengeWindowSeconds_")]); values.fundingAuthorizer = constructorArgs[inputs.findIndex(({ name }) => name === "treasury_")]; }
+  if (contract.name === "P42SubmissionManager") {
+    if (!Number.isSafeInteger(blockTimestamp)) throw new Error("trusted deployment block timestamp is required");
+    const tupleValue = (inputName, fieldName) => {
+      const inputIndex = inputs.findIndex(({ name }) => name === inputName);
+      const componentIndex = inputs[inputIndex]?.components?.findIndex(({ name }) => name === fieldName) ?? -1;
+      const tuple = constructorArgs[inputIndex];
+      if (inputIndex < 0 || componentIndex < 0 || (!Array.isArray(tuple) && (!tuple || typeof tuple !== "object"))) {
+        throw new Error(`P42SubmissionManager constructor is missing ${inputName}.${fieldName}`);
+      }
+      return Array.isArray(tuple) ? tuple[componentIndex] : tuple[fieldName];
+    };
+    if (inputs.some(({ name }) => name === "config_")) {
+      for (const name of [
+        "pool", "ledger", "owner", "treasury", "alphaBps", "minPostingBondWei",
+        "challengeWindowSeconds", "onchainDa", "maxSolutionBytes", "seedScoreAtoms",
+        "minImprovementAtoms",
+      ]) values[name] = tupleValue("config_", name);
+      for (const name of [
+        "boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority",
+        "independentSecurityAuthority", "governanceAuthority",
+      ]) values[name] = tupleValue("fundingAuthorizationConfig_", name);
+    }
+    values.deployedAt = blockTimestamp;
+    values.armNotBefore = BigInt(blockTimestamp) + BigInt(values.challengeWindowSeconds);
+    values.fundingAuthorizer = values.treasury;
+  }
   return values;
 }
 
@@ -213,7 +238,9 @@ export const EVENT_CATALOG = Object.freeze({
     "AllActionsPaused",
     "AllActionsPauseRecovered",
     "FundingArmed",
+    "FundingAuthorizationVerified",
     "FundingAuthorized",
+    "FundingAuthorizationCancelled",
     "FinalizeVoided",
     "CreditRecoveryWindowAdvanced",
     "CreditRecoveryWindowRestored",
@@ -827,6 +854,13 @@ function boardReplayConfig(manifest, problem) {
     fundingCapWei: view.parameters.fundingCapWei,
     earliestCloseTimestamp: view.parameters.earliestCloseTimestamp,
     closeByTimestamp: view.parameters.closeByTimestamp,
+    fundingAuthorizationV2: true,
+    boardSetDigest: manifest.releaseEvidence?.boardSetDigest,
+    releaseBindingDigest: manifest.releaseEvidence?.releaseBindingDigest,
+    owner: view.roles.owner,
+    productionLaunchAuthority: view.roles.productionLaunchAuthority,
+    independentSecurityAuthority: view.roles.independentSecurityAuthority,
+    governanceAuthority: view.roles.governanceAuthority,
   };
 }
 
@@ -1154,12 +1188,30 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
       const timestampEvidence = entry.blockTimestampEvidence;
       if (!timestampEvidence || timestampEvidence.timestamp !== entry.deploymentBlockTimestamp || timestampEvidence.primaryOperatorId === timestampEvidence.secondaryOperatorId || timestampEvidence.primaryBlockHash.toLowerCase() !== timestampEvidence.secondaryBlockHash.toLowerCase()) throw new Error(`${descriptor.path} dual-RPC block timestamp evidence is invalid`);
       if (!artifact || artifact.artifactDigest !== entry.capsuleArtifactDigest) throw new Error(`${descriptor.path} artifact digest does not match trusted capsule`);
-      const encodedArgs = ethers.AbiCoder.defaultAbiCoder().encode((artifact.abi.find((item) => item.type === "constructor")?.inputs ?? []).map((input) => input.type), entry.constructorArgs);
+      const constructorInputs = artifact.abi.find((item) => item.type === "constructor")?.inputs ?? [];
+      const encodedArgs = ethers.AbiCoder.defaultAbiCoder().encode(constructorInputs, entry.constructorArgs);
       const expectedInitCodeHash = ethers.keccak256(ethers.concat([artifact.creationCode, encodedArgs]));
       if (entry.initCodeHash.toLowerCase() !== expectedInitCodeHash.toLowerCase()) throw new Error(`${descriptor.path}.initCodeHash does not match capsule creation code and constructor args`);
       const timestamp = blockTimestampResolver({ blockNumber: entry.blockNumber, entry, path: descriptor.path });
       if (!Number.isSafeInteger(timestamp) || timestamp < 0 || timestamp !== entry.deploymentBlockTimestamp) throw new Error(`${descriptor.path} trusted deployment block timestamp mismatch`);
       const values = immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: timestamp });
+      if (entry.name === "P42SubmissionManager") {
+        const expectedBoardSetDigest = deploymentDigestBytes32(evidence.boardSetDigest, "releaseEvidence.boardSetDigest");
+        const expectedReleaseBindingDigest = deploymentDigestBytes32(evidence.releaseBindingDigest, "releaseEvidence.releaseBindingDigest");
+        if (String(values.boardSetDigest).toLowerCase() !== expectedBoardSetDigest
+            || String(values.releaseBindingDigest).toLowerCase() !== expectedReleaseBindingDigest) {
+          throw new Error(`${descriptor.path} funding authorization digests do not match production release evidence`);
+        }
+        for (const [field, role] of [
+          ["productionLaunchAuthority", "productionLaunchAuthority"],
+          ["independentSecurityAuthority", "independentSecurityAuthority"],
+          ["governanceAuthority", "governanceAuthority"],
+        ]) {
+          if (ethers.getAddress(values[field]) !== ethers.getAddress(manifest.roles[role])) {
+            throw new Error(`${descriptor.path}.${field} does not match manifest.roles.${role}`);
+          }
+        }
+      }
       const expectedRuntimeHash = ethers.keccak256(reconstructExpectedRuntime(artifact, values));
       if (entry.expectedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.runtimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.deployedCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.primaryObservedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase() || entry.secondaryObservedRuntimeCodeHash.toLowerCase() !== expectedRuntimeHash.toLowerCase()) throw new Error(`${descriptor.path} reconstructed expected and all observed runtime hashes must match`);
     }
@@ -1538,6 +1590,7 @@ export async function hydrateEventTimestamps(events, provider, policy) {
 
 function replayConfig(manifestOrConfig) {
   if (manifestOrConfig?.problems) {
+    const fundingEvidence = manifestOrConfig.releaseEvidence;
     return {
       seedScoreAtoms: asBigInt(manifestOrConfig.problems[0].seedScoreAtoms, "seedScoreAtoms"),
       minImprovementAtoms: asBigInt(
@@ -1558,6 +1611,17 @@ function replayConfig(manifestOrConfig) {
         "earliestCloseTimestamp"
       ),
       closeByTimestamp: asBigInt(manifestOrConfig.parameters.closeByTimestamp, "closeByTimestamp"),
+      fundingAuthorizationV2: manifestOrConfig.schema === MANIFEST_SCHEMA_V2,
+      boardSetDigest: fundingEvidence?.boardSetDigest === undefined
+        ? undefined
+        : deploymentDigestBytes32(fundingEvidence.boardSetDigest, "releaseEvidence.boardSetDigest"),
+      releaseBindingDigest: fundingEvidence?.releaseBindingDigest === undefined
+        ? undefined
+        : deploymentDigestBytes32(fundingEvidence.releaseBindingDigest, "releaseEvidence.releaseBindingDigest"),
+      owner: manifestOrConfig.roles.owner,
+      productionLaunchAuthority: manifestOrConfig.roles.productionLaunchAuthority,
+      independentSecurityAuthority: manifestOrConfig.roles.independentSecurityAuthority,
+      governanceAuthority: manifestOrConfig.roles.governanceAuthority,
     };
   }
   return {
@@ -1579,7 +1643,29 @@ function replayConfig(manifestOrConfig) {
     closeByTimestamp: manifestOrConfig.closeByTimestamp === undefined
       ? undefined
       : asBigInt(manifestOrConfig.closeByTimestamp, "closeByTimestamp"),
+    fundingAuthorizationV2: manifestOrConfig.fundingAuthorizationV2
+      ?? (manifestOrConfig.boardSetDigest !== undefined || manifestOrConfig.releaseBindingDigest !== undefined),
+    boardSetDigest: manifestOrConfig.boardSetDigest === undefined
+      ? undefined
+      : deploymentDigestBytes32(manifestOrConfig.boardSetDigest, "boardSetDigest"),
+    releaseBindingDigest: manifestOrConfig.releaseBindingDigest === undefined
+      ? undefined
+      : deploymentDigestBytes32(manifestOrConfig.releaseBindingDigest, "releaseBindingDigest"),
+    owner: manifestOrConfig.owner,
+    productionLaunchAuthority: manifestOrConfig.productionLaunchAuthority,
+    independentSecurityAuthority: manifestOrConfig.independentSecurityAuthority,
+    governanceAuthority: manifestOrConfig.governanceAuthority,
   };
+}
+
+function deploymentDigestBytes32(value, label) {
+  const text = String(value);
+  const normalized = /^sha256:[0-9a-fA-F]{64}$/.test(text)
+    ? `0x${text.slice("sha256:".length)}`
+    : text;
+  invariant(ethers.isHexString(normalized, 32), `${label} must be a bytes32 or sha256 digest`);
+  invariant(normalized.toLowerCase() !== ZERO_HASH, `${label} must be nonzero`);
+  return normalized.toLowerCase();
 }
 
 function newReplayState(config, coverage) {
@@ -1641,6 +1727,8 @@ function newReplayState(config, coverage) {
     fundingAuthorizationDigest: ZERO_HASH,
     authorizedFundingDigest: ZERO_HASH,
     fundingAuthorizationExpiresAt: 0n,
+    fundingAuthorizationNonce: 0n,
+    pendingFundingAuthorizationVerification: null,
     pausedNewActions: false,
     pausedAll: false,
     creditRecoveryEndsAt: 0n,
@@ -1959,6 +2047,9 @@ function replaySubmissionEvent(state, event) {
   const id = event.args?.submissionId === undefined
     ? undefined
     : asBigInt(getArg(event, "submissionId")).toString();
+  if (state.pendingFundingAuthorizationVerification && event.eventName !== "FundingAuthorized") {
+    throw new ReplayError("FundingAuthorizationVerified must be followed by FundingAuthorized");
+  }
   switch (event.eventName) {
     case "NewActionsPaused":
       state.pausedNewActions = asBoolean(getArg(event, "paused"));
@@ -1971,26 +2062,117 @@ function replaySubmissionEvent(state, event) {
           asBigInt(event.blockTimestamp) + state.config.challengeWindowSeconds;
       }
       return;
-    case "FundingAuthorized":
-      invariant(!state.fundingArmed, "FundingAuthorized observed after FundingArmed");
-      state.authorizedFundingDigest = getArg(event, "authorizationDigest");
-      state.fundingAuthorizationExpiresAt = asBigInt(getArg(event, "expiresAt"));
-      invariant(String(state.authorizedFundingDigest).toLowerCase() !== ZERO_HASH, "FundingAuthorized digest is zero");
-      invariant(state.fundingAuthorizationExpiresAt > 0n, "FundingAuthorized expiry is zero");
+    case "FundingAuthorizationVerified": {
+      invariant(!state.fundingArmed, "FundingAuthorizationVerified observed after FundingArmed");
+      invariant(!state.pendingFundingAuthorizationVerification, "duplicate pending FundingAuthorizationVerified");
+      const authorizationDigest = requireNonzeroBytes32(
+        getArg(event, "authorizationDigest"),
+        "FundingAuthorizationVerified authorizationDigest",
+      );
+      const nonce = asBigInt(getArg(event, "nonce"), "FundingAuthorizationVerified nonce");
+      invariant(
+        nonce === state.fundingAuthorizationNonce,
+        `FundingAuthorizationVerified nonce is non-monotonic: expected ${state.fundingAuthorizationNonce}, got ${nonce}`,
+      );
+      const boardSetDigest = requireNonzeroBytes32(
+        getArg(event, "boardSetDigest"),
+        "FundingAuthorizationVerified boardSetDigest",
+      );
+      const releaseBindingDigest = requireNonzeroBytes32(
+        getArg(event, "releaseBindingDigest"),
+        "FundingAuthorizationVerified releaseBindingDigest",
+      );
+      if (state.config.boardSetDigest !== undefined) {
+        invariant(boardSetDigest === state.config.boardSetDigest, "FundingAuthorizationVerified boardSetDigest does not match deployment manifest");
+      }
+      if (state.config.releaseBindingDigest !== undefined) {
+        invariant(releaseBindingDigest === state.config.releaseBindingDigest, "FundingAuthorizationVerified releaseBindingDigest does not match deployment manifest");
+      }
+      state.fundingAuthorizationNonce = nonce + 1n;
+      state.pendingFundingAuthorizationVerification = {
+        transactionHash: txKey(event),
+        logIndex: event.index ?? event.logIndex,
+        authorizationDigest, nonce, boardSetDigest, releaseBindingDigest,
+      };
       return;
+    }
+    case "FundingAuthorized": {
+      invariant(!state.fundingArmed, "FundingAuthorized observed after FundingArmed");
+      const authorizationDigest = requireNonzeroBytes32(
+        getArg(event, "authorizationDigest"),
+        "FundingAuthorized authorizationDigest",
+      );
+      const pending = state.pendingFundingAuthorizationVerification;
+      if (state.config.fundingAuthorizationV2 || pending) {
+        invariant(pending, "FundingAuthorized missing preceding FundingAuthorizationVerified");
+        invariant(pending.transactionHash === txKey(event), "FundingAuthorized is not in the verified authorization transaction");
+        const authorizedLogIndex = event.index ?? event.logIndex;
+        if (Number.isSafeInteger(pending.logIndex) && Number.isSafeInteger(authorizedLogIndex)) {
+          invariant(authorizedLogIndex === pending.logIndex + 1, "FundingAuthorized does not immediately follow FundingAuthorizationVerified");
+        }
+        invariant(pending.authorizationDigest === authorizationDigest, "FundingAuthorized digest does not match FundingAuthorizationVerified");
+      }
+      if (state.config.treasury !== undefined) {
+        invariant(
+          addressKey(getArg(event, "authorizer")) === addressKey(state.config.treasury),
+          "FundingAuthorized authorizer does not match deployment treasury",
+        );
+      }
+      state.authorizedFundingDigest = authorizationDigest;
+      state.fundingAuthorizationExpiresAt = asBigInt(getArg(event, "expiresAt"));
+      invariant(state.fundingAuthorizationExpiresAt > 0n, "FundingAuthorized expiry is zero");
+      if (event.blockTimestamp !== undefined) {
+        invariant(state.fundingAuthorizationExpiresAt >= asBigInt(event.blockTimestamp), "FundingAuthorized was already expired when emitted");
+      }
+      state.pendingFundingAuthorizationVerification = null;
+      return;
+    }
+    case "FundingAuthorizationCancelled": {
+      invariant(!state.fundingArmed, "FundingAuthorizationCancelled observed after FundingArmed");
+      const authorizationDigest = requireNonzeroBytes32(
+        getArg(event, "authorizationDigest"),
+        "FundingAuthorizationCancelled authorizationDigest",
+      );
+      invariant(
+        authorizationDigest === String(state.authorizedFundingDigest).toLowerCase(),
+        "FundingAuthorizationCancelled digest does not match active authorization",
+      );
+      invariant(
+        asBigInt(getArg(event, "expiresAt")) === state.fundingAuthorizationExpiresAt,
+        "FundingAuthorizationCancelled expiry does not match active authorization",
+      );
+      if (event.blockTimestamp !== undefined) {
+        invariant(asBigInt(event.blockTimestamp) <= state.fundingAuthorizationExpiresAt, "FundingAuthorizationCancelled observed after authorization expiry");
+      }
+      if (state.config.owner !== undefined) {
+        invariant(
+          addressKey(getArg(event, "canceller")) === addressKey(state.config.owner),
+          "FundingAuthorizationCancelled canceller does not match deployment owner",
+        );
+      }
+      state.authorizedFundingDigest = ZERO_HASH;
+      state.fundingAuthorizationExpiresAt = 0n;
+      state.fundingAuthorizationNonce += 1n;
+      return;
+    }
     case "FundingArmed":
       invariant(!state.fundingArmed, "duplicate FundingArmed event");
+      invariant(!state.pendingFundingAuthorizationVerification, "FundingArmed observed before FundingAuthorized");
+      invariant(String(state.authorizedFundingDigest).toLowerCase() !== ZERO_HASH, "FundingArmed observed without active authorization");
       state.fundingArmed = true;
       state.armedAt = asBigInt(getArg(event, "at"));
-      state.fundingAuthorizationDigest = getArg(event, "authorizationDigest");
-      invariant(
-        String(state.fundingAuthorizationDigest).toLowerCase() !== ZERO_HASH,
-        "FundingArmed authorization digest is zero",
+      state.fundingAuthorizationDigest = requireNonzeroBytes32(
+        getArg(event, "authorizationDigest"),
+        "FundingArmed authorizationDigest",
       );
       invariant(
         String(state.fundingAuthorizationDigest).toLowerCase() === String(state.authorizedFundingDigest).toLowerCase(),
         "FundingArmed digest does not match FundingAuthorized",
       );
+      if (event.blockTimestamp !== undefined) {
+        invariant(state.armedAt === asBigInt(event.blockTimestamp), "FundingArmed timestamp does not match its block");
+        invariant(state.armedAt <= state.fundingAuthorizationExpiresAt, "FundingArmed observed after authorization expiry");
+      }
       return;
     case "ChallengeManagerSet":
       state.challengeManager = getArg(event, "challengeManager");
@@ -2505,6 +2687,7 @@ export function replayProtocolEvents(events, manifestOrConfig, { coverage = [] }
     else if (event.source === "registry") replayRegistryEvent(state, event);
     else if (event.source === "rolloverVault") replayRolloverVaultEvent(state, event);
   }
+  invariant(!state.pendingFundingAuthorizationVerification, "FundingAuthorizationVerified missing FundingAuthorized");
   validatePairedEvents(state);
   invariant(state.coverage.complete, `historical query coverage incomplete: ${state.coverage.missing.join(", ")}`);
   Object.defineProperty(state, REPLAY_EVENT_TRACE, {
@@ -2962,6 +3145,18 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     ),
     check("submissions.authorizedFundingDigest", state.authorizedFundingDigest, snapshot.authorizedFundingDigest),
     check("submissions.fundingAuthorizationExpiresAt", state.fundingAuthorizationExpiresAt, snapshot.fundingAuthorizationExpiresAt),
+    check("submissions.fundingAuthorizationNonce", state.fundingAuthorizationNonce, snapshot.fundingAuthorizationNonce),
+    ...(config.boardSetDigest === undefined ? [] : [
+      check("submissions.boardSetDigest", config.boardSetDigest, snapshot.boardSetDigest),
+    ]),
+    ...(config.releaseBindingDigest === undefined ? [] : [
+      check("submissions.releaseBindingDigest", config.releaseBindingDigest, snapshot.releaseBindingDigest),
+    ]),
+    ...(config.productionLaunchAuthority === undefined ? [] : [
+      check("submissions.productionLaunchAuthority", addressKey(config.productionLaunchAuthority), addressKey(snapshot.productionLaunchAuthority)),
+      check("submissions.independentSecurityAuthority", addressKey(config.independentSecurityAuthority), addressKey(snapshot.independentSecurityAuthority)),
+      check("submissions.governanceAuthority", addressKey(config.governanceAuthority), addressKey(snapshot.governanceAuthority)),
+    ]),
     check("submissions.pausedNewActions", state.pausedNewActions, snapshot.submissionsPausedNewActions),
     check("submissions.pausedAll", state.pausedAll, snapshot.pausedAll),
     check("submissions.expiryGraceUntil", state.expiryGraceUntil, snapshot.expiryGraceUntil),
@@ -3388,6 +3583,12 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     fundingAuthorizationDigest,
     authorizedFundingDigest,
     fundingAuthorizationExpiresAt,
+    fundingAuthorizationNonce,
+    boardSetDigest,
+    releaseBindingDigest,
+    productionLaunchAuthority,
+    independentSecurityAuthority,
+    governanceAuthority,
     submissionsPausedNewActions,
     pausedAll,
     expiryGraceUntil,
@@ -3401,6 +3602,12 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     submissions.fundingAuthorizationDigest(...atBlock),
     submissions.authorizedFundingDigest(...atBlock),
     submissions.fundingAuthorizationExpiresAt(...atBlock),
+    submissions.fundingAuthorizationNonce(...atBlock),
+    submissions.boardSetDigest(...atBlock),
+    submissions.releaseBindingDigest(...atBlock),
+    submissions.productionLaunchAuthority(...atBlock),
+    submissions.independentSecurityAuthority(...atBlock),
+    submissions.governanceAuthority(...atBlock),
     submissions.pausedNewActions(...atBlock),
     submissions.pausedAll(...atBlock),
     submissions.expiryGraceUntil(...atBlock),
@@ -3416,6 +3623,12 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     fundingAuthorizationDigest,
     authorizedFundingDigest,
     fundingAuthorizationExpiresAt,
+    fundingAuthorizationNonce,
+    boardSetDigest,
+    releaseBindingDigest,
+    productionLaunchAuthority,
+    independentSecurityAuthority,
+    governanceAuthority,
     submissionsPausedNewActions,
     pausedAll,
     expiryGraceUntil,
@@ -4001,8 +4214,13 @@ function portalStateFacts(state) {
 }
 
 function publicReplayConfig(config) {
+  const publicKeys = new Set([
+    "seedScoreAtoms", "minImprovementAtoms", "challengeWindowSeconds", "treasury",
+    "challengeManager", "problemCount", "fundingCapWei", "earliestCloseTimestamp",
+    "closeByTimestamp",
+  ]);
   return canonicalize(Object.fromEntries(
-    Object.entries(config).filter(([, value]) => value !== undefined),
+    Object.entries(config).filter(([key, value]) => publicKeys.has(key) && value !== undefined),
   ));
 }
 

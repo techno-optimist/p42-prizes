@@ -33,6 +33,7 @@ const timelockInterface = new ethers.Interface([
 const managerStateInterface = new ethers.Interface([
   "function authorizedFundingDigest() view returns (bytes32)",
   "function fundingAuthorizationExpiresAt() view returns (uint64)",
+  "function fundingAuthorizationNonce() view returns (uint256)",
   "function fundingArmed() view returns (bool)",
   "function fundingAuthorizationDigest() view returns (bytes32)",
 ]);
@@ -94,9 +95,10 @@ async function collectSnapshotAt(provider, plan, block) {
   for (let index = 0; index < 10; index += 1) {
     const authorize = groups.authorize[index];
     const open = groups.open[index];
-    const [authorized, expires, armed, consumed, accepting] = await Promise.all([
+    const [authorized, expires, nonce, armed, consumed, accepting] = await Promise.all([
       readCall(provider, authorize.to, managerStateInterface, "authorizedFundingDigest", [], block.number),
       readCall(provider, authorize.to, managerStateInterface, "fundingAuthorizationExpiresAt", [], block.number),
+      readCall(provider, authorize.to, managerStateInterface, "fundingAuthorizationNonce", [], block.number),
       readCall(provider, authorize.to, managerStateInterface, "fundingArmed", [], block.number),
       readCall(provider, authorize.to, managerStateInterface, "fundingAuthorizationDigest", [], block.number),
       readCall(provider, open.to, poolStateInterface, "acceptingFunds", [], block.number),
@@ -105,6 +107,10 @@ async function collectSnapshotAt(provider, plan, block) {
       problemId: authorize.problemId,
       authorizedFundingDigest: authorized[0],
       fundingAuthorizationExpiresAt: BigInt(expires[0]),
+      fundingAuthorizationNonce: BigInt(nonce[0]),
+      fundingAuthorizationVerified: sameHex(authorized[0], expectedDigest(plan))
+        && BigInt(expires[0]) === BigInt(plan.authorizationExpiresAt)
+        && BigInt(nonce[0]) === BigInt(authorize.authorizationNonce) + 1n,
       fundingArmed: armed[0],
       fundingAuthorizationDigest: consumed[0],
       acceptingFunds: accepting[0],
@@ -276,10 +282,16 @@ function operationGroups(plan) {
 }
 
 function assertPlan(plan) {
-  if (plan?.schema !== "p42-funding-activation-plan/v1" || !/^sha256:[0-9a-f]{64}$/.test(plan.planDigest ?? "")) {
+  if (plan?.schema !== "p42-funding-activation-plan/v2" || !/^sha256:[0-9a-f]{64}$/.test(plan.planDigest ?? "")) {
     throw new Error("activation executor requires a validated activation plan");
   }
-  if (plan.boardCount !== 10 || plan.operations?.length !== 30 || plan.governanceSigners?.length < plan.governanceThreshold) {
+  const groups = operationGroups(plan);
+  if (plan.boardCount !== 10 || plan.operations?.length !== 30 || groups.authorize.length !== 10
+      || groups.arm.length !== 10 || groups.open.length !== 10
+      || groups.authorize.some((operation) => typeof operation.authorizationNonce !== "string"
+        || !/^(0|[1-9][0-9]*)$/.test(operation.authorizationNonce)
+        || operation.verifiedSignatureCount !== 3)
+      || plan.governanceSigners?.length < plan.governanceThreshold) {
     throw new Error("activation executor plan topology or governance quorum is invalid");
   }
   return plan;
@@ -339,13 +351,20 @@ export function nextFundingActivationAction(planValue, snapshot, { availableGove
   const groups = operationGroups(plan);
   const allAuthorized = groups.authorize.every((operation) => {
     const board = boardByProblemId(snapshot, operation.problemId);
+    const expectedNonce = BigInt(operation.authorizationNonce);
+    const observedNonce = BigInt(board.fundingAuthorizationNonce);
     if (!sameHex(board.authorizedFundingDigest, ZERO_HASH)
         && (!sameHex(board.authorizedFundingDigest, digest)
-          || BigInt(board.fundingAuthorizationExpiresAt) !== BigInt(plan.authorizationExpiresAt))) {
+          || BigInt(board.fundingAuthorizationExpiresAt) !== BigInt(plan.authorizationExpiresAt)
+          || observedNonce !== expectedNonce + 1n || board.fundingAuthorizationVerified !== true)) {
       throw new Error(`board ${operation.problemId} has conflicting funding authorization`);
     }
+    if (sameHex(board.authorizedFundingDigest, ZERO_HASH) && observedNonce !== expectedNonce) {
+      throw new Error(`board ${operation.problemId} funding authorization nonce does not match signature bundle`);
+    }
     return sameHex(board.authorizedFundingDigest, digest)
-      && BigInt(board.fundingAuthorizationExpiresAt) === BigInt(plan.authorizationExpiresAt);
+      && BigInt(board.fundingAuthorizationExpiresAt) === BigInt(plan.authorizationExpiresAt)
+      && observedNonce === expectedNonce + 1n && board.fundingAuthorizationVerified === true;
   });
   if (!allAuthorized) {
     for (const operation of [...groups.arm, ...groups.open]) {

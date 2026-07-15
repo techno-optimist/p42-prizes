@@ -88,7 +88,7 @@ async function deployFixture(feeBps) {
 }
 
 async function deployRealManagerFixture() {
-  const [owner, treasury, solver, outsider] = await ethers.getSigners();
+  const [owner, treasury, solver, outsider, productionLaunch, independentSecurity, governance] = await ethers.getSigners();
   const latest = await ethers.provider.getBlock("latest");
   const closeBy = BigInt(latest.timestamp) + 181n * DAY;
   const Pool = await ethers.getContractFactory("P42BountyPool");
@@ -101,10 +101,18 @@ async function deployRealManagerFixture() {
   );
   await ledger.waitForDeployment();
   const Manager = await ethers.getContractFactory("P42SubmissionManager");
-  const manager = await Manager.deploy(
-    await pool.getAddress(), await ledger.getAddress(), owner.address, treasury.address,
-    200n, 1n, DAY, false, 0n, 1_000_000n, 1n
-  );
+  const manager = await Manager.deploy({
+    pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+    treasury: treasury.address, alphaBps: 200n, minPostingBondWei: 1n,
+    challengeWindowSeconds: DAY, onchainDa: false, maxSolutionBytes: 0n,
+    seedScoreAtoms: 1_000_000n, minImprovementAtoms: 1n,
+  }, {
+    boardSetDigest: ethers.id("economic-state-machine-board-set"),
+    releaseBindingDigest: ethers.id("economic-state-machine-release"),
+    productionLaunchAuthority: productionLaunch.address,
+    independentSecurityAuthority: independentSecurity.address,
+    governanceAuthority: governance.address,
+  });
   await manager.waitForDeployment();
   const Registry = await ethers.getContractFactory("MockProblemRegistry");
   const registry = await Registry.deploy();

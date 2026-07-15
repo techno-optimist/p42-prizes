@@ -14,10 +14,28 @@ import { validateSolverManifest } from "./solver-manifest.mjs";
 
 const LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 256, trailingNewline: "allow" });
 const AUTH_SCHEMA = "p42-production-launch-authorization/v1";
-export const ACTIVATION_PLAN_SCHEMA = "p42-funding-activation-plan/v1";
+export const ACTIVATION_SIGNATURES_SCHEMA = "p42-funding-activation-signatures/v2";
+export const ACTIVATION_PLAN_SCHEMA = "p42-funding-activation-plan/v2";
+
+export const FUNDING_ROLES = Object.freeze([
+  Object.freeze({ name: "production-launch-authority", manifestField: "productionLaunchAuthority" }),
+  Object.freeze({ name: "independent-security-authority", manifestField: "independentSecurityAuthority" }),
+  Object.freeze({ name: "governance-authority", manifestField: "governanceAuthority" }),
+]);
+export const FUNDING_TYPES = Object.freeze({
+  FundingAuthorization: Object.freeze([
+    Object.freeze({ name: "role", type: "bytes32" }),
+    Object.freeze({ name: "boardSetDigest", type: "bytes32" }),
+    Object.freeze({ name: "releaseBindingDigest", type: "bytes32" }),
+    Object.freeze({ name: "authorizationDigest", type: "bytes32" }),
+    Object.freeze({ name: "expiresAt", type: "uint64" }),
+    Object.freeze({ name: "nonce", type: "uint256" }),
+  ]),
+});
+const SECP256K1_HALF_ORDER = BigInt("0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0");
 
 const submissionsInterface = new ethers.Interface([
-  "function authorizeFunding(bytes32 authorizationDigest,uint64 expiresAt)",
+  "function authorizeFunding(bytes32 authorizationDigest,uint64 expiresAt,uint256 nonce,bytes[3] signatures)",
   "function armFunding(bytes32 authorizationDigest)",
 ]);
 const poolInterface = new ethers.Interface(["function setAcceptingFunds(bool accepting)"]);
@@ -39,12 +57,144 @@ function exactPath(path, label) {
   return absolute;
 }
 
-function authorizationBytes32(digest) {
+export function authorizationBytes32(digest) {
   if (!/^sha256:[0-9a-f]{64}$/.test(digest ?? "")) throw new Error("validated authorization digest is malformed");
   return `0x${digest.slice(7)}`;
 }
 
-function assertReleaseBinding(authorization, manifest, manifestBytesDigest) {
+function exactObject(value, keys, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+      || canonical(Object.keys(value).sort()) !== canonical([...keys].sort())) {
+    throw new Error(`${label} has unexpected or missing fields`);
+  }
+  return value;
+}
+
+function boundedUint(value, bits, label) {
+  if (typeof value !== "string" || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`${label} must be a canonical decimal string`);
+  }
+  const parsed = BigInt(value);
+  if (parsed >= (1n << BigInt(bits))) throw new Error(`${label} exceeds uint${bits}`);
+  return parsed;
+}
+
+function validateSignature(signature, expectedSigner, typedDataDigest, label) {
+  if (typeof signature !== "string" || !/^0x[0-9a-fA-F]{130}$/.test(signature)) {
+    throw new Error(`${label} must be one 65-byte signature`);
+  }
+  const s = BigInt(`0x${signature.slice(66, 130)}`);
+  const v = Number.parseInt(signature.slice(130, 132), 16);
+  if (s > SECP256K1_HALF_ORDER || (v !== 27 && v !== 28)) {
+    throw new Error(`${label} is not canonical low-s/v`);
+  }
+  let recovered;
+  try {
+    recovered = ethers.recoverAddress(typedDataDigest, {
+      r: `0x${signature.slice(2, 66)}`,
+      s: `0x${signature.slice(66, 130)}`,
+      v,
+    });
+  } catch {
+    throw new Error(`${label} is not a valid EIP-712 signature`);
+  }
+  if (recovered !== expectedSigner) throw new Error(`${label} recovered signer does not match manifest authority`);
+}
+
+export function validateFundingActivationSignatures({ bundle, manifest, authorizationDigest, expiresAt, boards }) {
+  exactObject(bundle, [
+    "schema", "chainId", "boardSetDigest", "releaseBindingDigest", "authorizationDigest",
+    "expiresAt", "authorities", "boards",
+  ], "funding activation signature bundle");
+  if (bundle.schema !== ACTIVATION_SIGNATURES_SCHEMA) {
+    throw new Error("legacy or unknown funding activation signature bundle is forbidden");
+  }
+  if (bundle.chainId !== manifest.network.chainId) throw new Error("signature bundle chain does not match manifest");
+  for (const [field, expected] of [
+    ["boardSetDigest", manifest.releaseEvidence.boardSetDigest],
+    ["releaseBindingDigest", manifest.releaseEvidence.releaseBindingDigest],
+    ["authorizationDigest", authorizationDigest],
+  ]) {
+    if (bundle[field] !== expected || !/^sha256:[0-9a-f]{64}$/.test(bundle[field] ?? "")) {
+      throw new Error(`signature bundle ${field} does not match activation binding`);
+    }
+  }
+  if (boundedUint(bundle.expiresAt, 64, "signature bundle expiresAt") !== BigInt(expiresAt)) {
+    throw new Error("signature bundle expiry does not match validated authorization");
+  }
+  exactObject(bundle.authorities, FUNDING_ROLES.map(({ manifestField }) => manifestField), "signature bundle authorities");
+  const authorities = FUNDING_ROLES.map(({ manifestField }) => {
+    const pinned = ethers.getAddress(manifest.roles?.[manifestField]);
+    if (ethers.getAddress(bundle.authorities[manifestField]) !== pinned) {
+      throw new Error(`signature bundle ${manifestField} does not match manifest authority`);
+    }
+    return pinned;
+  });
+  if (new Set(authorities.map((value) => value.toLowerCase())).size !== FUNDING_ROLES.length) {
+    throw new Error("manifest funding authorities must be distinct");
+  }
+  const forbiddenAuthorities = [
+    manifest.roles?.deployer,
+    manifest.roles?.owner,
+    manifest.roles?.treasury,
+    manifest.roles?.resolver,
+    manifest.roles?.guardian,
+    manifest.roles?.objectiveVerifier,
+    ...(manifest.governance?.signers ?? []),
+  ]
+    .filter((value) => value !== undefined && value !== null)
+    .map((value) => ethers.getAddress(value).toLowerCase());
+  if (authorities.some((value) => forbiddenAuthorities.includes(value.toLowerCase()))) {
+    throw new Error("manifest funding authorities must be distinct from treasury and owner");
+  }
+  if (!Array.isArray(bundle.boards) || bundle.boards.length !== 10) {
+    throw new Error("signature bundle requires exactly ten board entries");
+  }
+  const expectedManagers = new Set(boards.map(({ contracts }) => ethers.getAddress(contracts.submissions.address).toLowerCase()));
+  const observedManagers = new Set();
+  const validated = bundle.boards.map((entry, index) => {
+    exactObject(entry, ["boardIndex", "problemId", "submissionManager", "nonce", "signatures"], `signature bundle board ${index}`);
+    const board = boards[index];
+    const manager = ethers.getAddress(entry.submissionManager);
+    if (entry.boardIndex !== index || String(entry.problemId) !== String(board.problem.problemId)
+        || manager !== ethers.getAddress(board.contracts.submissions.address)) {
+      throw new Error(`signature bundle board ${index} does not match the ordered manifest board`);
+    }
+    const managerKey = manager.toLowerCase();
+    if (!expectedManagers.has(managerKey) || observedManagers.has(managerKey)) {
+      throw new Error(`signature bundle board ${index} has an extra or duplicate manager`);
+    }
+    observedManagers.add(managerKey);
+    const nonce = boundedUint(entry.nonce, 256, `signature bundle board ${index} nonce`);
+    if (!Array.isArray(entry.signatures) || entry.signatures.length !== FUNDING_ROLES.length) {
+      throw new Error(`signature bundle board ${index} requires exactly three signatures`);
+    }
+    const domain = { name: "P42SubmissionManager", version: "2", chainId: bundle.chainId, verifyingContract: manager };
+    const common = {
+      boardSetDigest: authorizationBytes32(bundle.boardSetDigest),
+      releaseBindingDigest: authorizationBytes32(bundle.releaseBindingDigest),
+      authorizationDigest: authorizationBytes32(bundle.authorizationDigest),
+      expiresAt: BigInt(bundle.expiresAt),
+      nonce,
+    };
+    const signatures = entry.signatures.map((record, roleIndex) => {
+      exactObject(record, ["role", "signer", "signature"], `signature bundle board ${index} signature ${roleIndex}`);
+      const role = FUNDING_ROLES[roleIndex];
+      const expectedSigner = authorities[roleIndex];
+      if (record.role !== role.name || ethers.getAddress(record.signer) !== expectedSigner) {
+        throw new Error(`signature bundle board ${index} signature role order or signer is invalid`);
+      }
+      const value = { ...common, role: ethers.id(role.name) };
+      validateSignature(record.signature, expectedSigner, ethers.TypedDataEncoder.hash(domain, FUNDING_TYPES, value), `signature bundle board ${index} ${role.name}`);
+      return record.signature;
+    });
+    return Object.freeze({ nonce, signatures: Object.freeze(signatures) });
+  });
+  if (observedManagers.size !== expectedManagers.size) throw new Error("signature bundle has missing manifest boards");
+  return Object.freeze(validated);
+}
+
+export function assertReleaseBinding(authorization, manifest, manifestBytesDigest) {
   const binding = authorization.release_binding;
   const authorizationNetwork = manifest.network.chainId === 8453 ? "base-mainnet"
     : manifest.network.chainId === 84532 ? "base-sepolia" : null;
@@ -122,6 +272,7 @@ export function buildFundingActivationPlan({
   manifest,
   manifestBytesDigest,
   validatedAuthorization,
+  activationSignatures,
   manifestValidator = validateSolverManifest,
   validationContext = null,
 }) {
@@ -159,6 +310,13 @@ export function buildFundingActivationPlan({
     contracts: manifestProblemContracts(manifest, problem),
     prefix: `board.${problem.problemId}`,
   }));
+  const verifiedSignatures = validateFundingActivationSignatures({
+    bundle: activationSignatures,
+    manifest,
+    authorizationDigest: authorization.authorization_digest,
+    expiresAt,
+    boards,
+  });
   const addresses = boards.flatMap(({ contracts }) => [contracts.submissions.address, contracts.pool.address].map(ethers.getAddress));
   if (new Set(addresses.map((value) => value.toLowerCase())).size !== 20) {
     throw new Error("funding activation requires twenty unique manager and pool addresses");
@@ -183,6 +341,7 @@ export function buildFundingActivationPlan({
     return { salt, operationId };
   };
   for (const { index, problem, contracts, prefix } of boards) {
+    const signed = verifiedSignatures[index];
     operations.push({
       sequence: operations.length + 1,
       authority: "treasury",
@@ -192,7 +351,9 @@ export function buildFundingActivationPlan({
       to: ethers.getAddress(contracts.submissions.address),
       expectedRuntimeCodeHash: contracts.submissions.runtimeCodeHash,
       value: "0",
-      data: submissionsInterface.encodeFunctionData("authorizeFunding", [digest, expiresAt]),
+      authorizationNonce: signed.nonce.toString(),
+      verifiedSignatureCount: signed.signatures.length,
+      data: submissionsInterface.encodeFunctionData("authorizeFunding", [digest, expiresAt, signed.nonce, signed.signatures]),
       dependsOn: [],
     });
   }
@@ -246,6 +407,7 @@ export function buildFundingActivationPlan({
     authorizationDigest: authorization.authorization_digest,
     authorizationExpiresAt: expiresAt,
     authorizationBytesDigest: validatedAuthorization.validatedBytesDigest,
+    activationSignaturesDigest: sha256(Buffer.from(canonical(activationSignatures))),
     timelock: ethers.getAddress(manifest.contracts.timelock.address),
     timelockRuntimeCodeHash: manifest.contracts.timelock.runtimeCodeHash,
     treasury: ethers.getAddress(manifest.roles.treasury),
@@ -281,6 +443,12 @@ export function loadManifestExact(path) {
     const value = parseStrictJsonBytes(bytes, LIMITS);
     return { value, bytesDigest: sha256(bytes) };
   } finally { closeSync(fd); }
+}
+
+export function loadFundingActivationSignatures(path) {
+  return readStrictJsonFileSync(exactPath(path, "funding activation signatures"), {
+    ...LIMITS, trailingNewline: "require",
+  });
 }
 
 function arg(name) {
@@ -329,7 +497,7 @@ export function writePrivateActivationPlan(path, plan) {
 }
 
 export function fundingActivationPlanMain() {
-  const required = ["manifest", "authorization", "trust-registry", "artifact-root", "chain-rpc-url", "python", "repo-root", "output"];
+  const required = ["manifest", "authorization", "activation-signatures", "trust-registry", "artifact-root", "chain-rpc-url", "python", "repo-root", "output"];
   const values = Object.fromEntries(required.map((name) => [name, arg(name)]));
   const missing = required.filter((name) => values[name] === null);
   if (missing.length > 0) throw new Error(`missing required activation arguments: ${missing.join(", ")}`);
@@ -346,6 +514,7 @@ export function fundingActivationPlanMain() {
     manifest: manifest.value,
     manifestBytesDigest: manifest.bytesDigest,
     validatedAuthorization,
+    activationSignatures: loadFundingActivationSignatures(values["activation-signatures"]),
   });
   writePrivateActivationPlan(values.output, plan);
   process.stdout.write(`${plan.planDigest}\n`);

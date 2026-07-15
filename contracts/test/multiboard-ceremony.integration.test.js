@@ -13,6 +13,25 @@ import {
 } from "../scripts/multiboard-ceremony-helper.js";
 
 const { ethers } = await network.create();
+const BOARD_SET_DIGEST = ethers.id("p42-multiboard-test-board-set");
+const RELEASE_BINDING_DIGEST = ethers.id("p42-multiboard-test-release-binding");
+const FUNDING_ROLES = [ethers.id("production-launch-authority"), ethers.id("independent-security-authority"), ethers.id("governance-authority")];
+const FUNDING_TYPES = { FundingAuthorization: [
+  { name: "role", type: "bytes32" }, { name: "boardSetDigest", type: "bytes32" },
+  { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
+  { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
+] };
+
+async function authorizeFunding(submissions, treasury, authorities, authorizationDigest, expiresAt) {
+  const nonce = await submissions.fundingAuthorizationNonce();
+  const { chainId } = await ethers.provider.getNetwork();
+  const domain = { name: "P42SubmissionManager", version: "2", chainId, verifyingContract: await submissions.getAddress() };
+  const common = { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    authorizationDigest, expiresAt, nonce };
+  const signatures = await Promise.all(authorities.slice(0, 3).map((authority, index) =>
+    authority.signTypedData(domain, FUNDING_TYPES, { ...common, role: FUNDING_ROLES[index] })));
+  return submissions.connect(treasury).authorizeFunding(authorizationDigest, expiresAt, nonce, signatures);
+}
 
 function digest(character) {
   return `sha256:${character.repeat(64)}`;
@@ -130,7 +149,9 @@ async function executeSetupOperation(timelock, signers, operation) {
 describe("multi-board governance ceremony integration", () => {
   it("wires two boards and restricts rollover funding until a future board is armed", async () => {
     const signers = await ethers.getSigners();
-    const [signer1, signer2, signer3, guardian, treasury, resolver, deployer] = signers;
+    const [signer1, signer2, signer3, guardian, treasury, resolver, deployer,
+      productionLaunch, independentSecurity, governanceAuthority] = signers;
+    const fundingAuthorities = [productionLaunch, independentSecurity, governanceAuthority];
     const input = {
       schema: "p42-prizes/multi-board-ceremony/v1",
       governance: {
@@ -142,6 +163,9 @@ describe("multi-board governance ceremony integration", () => {
       roles: {
         treasury: treasury.address,
         resolver: resolver.address,
+        productionLaunchAuthority: productionLaunch.address,
+        independentSecurityAuthority: independentSecurity.address,
+        governanceAuthority: governanceAuthority.address,
       },
       parameters: {
         alphaBps: "200",
@@ -182,7 +206,10 @@ describe("multi-board governance ceremony integration", () => {
 
     const boards = [];
     for (const problem of config.problems) {
-      const deployed = await deployBoard(deployer, boardCeremonyConfig(config, problem), rootAddresses);
+      const deployed = await deployBoard(deployer, {
+        ...boardCeremonyConfig(config, problem),
+        fundingAuthorization: { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST },
+      }, rootAddresses);
       boards.push({ problem, ...deployed });
     }
     const operations = buildMultiBoardSetupOperations({
@@ -272,7 +299,7 @@ describe("multi-board governance ceremony integration", () => {
     await ethers.provider.send("hardhat_setCode", [pool0, pool0Code]);
 
     await advance(BigInt(input.parameters.challengeWindowSeconds) + 1n);
-    await boards[0].contracts.submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(boards[0].contracts.submissions, treasury, fundingAuthorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     await boards[0].contracts.submissions.connect(allocator).armFunding("0x" + "42".repeat(32));
     await boards[0].contracts.pool.connect(allocator).setAcceptingFunds(true);
     await rolloverVault.connect(allocator).fundRegisteredPool(pool0, 10n);

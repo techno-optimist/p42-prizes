@@ -40,6 +40,7 @@ import {
 } from "./deployment-ceremony-helper.js";
 import {
   bindReleaseMode,
+  boardSetDigest,
   readMultiBoardCeremonyConfig,
   validateProductionReleaseSlate,
   validateProductionReleaseIndex,
@@ -92,7 +93,7 @@ import {
 } from "./multiboard-deployment-plan.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
-const PINNED_SUBMISSION_FACTORY_RUNTIME_HASH = "0xab7765c44ddced5da5d4d85645c6e1a4215ad6ebddea55f34e75dd194da82eac";
+const PINNED_SUBMISSION_FACTORY_RUNTIME_HASH = "0xa356f1af95140515395a23ca624afdf97a92e2a602054d01378b9fdc02071783";
 const CONTRACT_NAMES = Object.freeze({
   timelock: "P42MultisigTimelock",
   rolloverVault: "P42RolloverVault",
@@ -242,7 +243,16 @@ async function materializeDeploymentSteps(ethers, definitions, addresses) {
     const salt = definition.effectiveSalt
       ? definition.effectiveSalt({ ethers, requestedSalt, parameters, addresses, factoryInterface: factoryContract.interface })
       : requestedSalt;
-    const expectedCalldata = factoryContract.interface.encodeFunctionData(definition.factoryMethod, definition.factoryCallArgs({ salt: requestedSalt, parameters, addresses }));
+    const factoryArguments = definition.factoryCallArgs({
+      salt: requestedSalt,
+      parameters,
+      addresses,
+      creationCode: factory.bytecode,
+    });
+    if (definition.name === CONTRACT_NAMES.submissions && typeof factoryArguments[2] !== "string") {
+      throw new Error("submission manager factory call is missing pinned manager creation code");
+    }
+    const expectedCalldata = factoryContract.interface.encodeFunctionData(definition.factoryMethod, factoryArguments);
     const configurationReadCalldata = factoryContract.interface.encodeFunctionData(definition.configurationGetter, [addresses[definition.addressKey]]);
     result.push({
       ...definition, kind: "factory-call-create2", factory, args, expectedInitCode: deployRequest.data,
@@ -355,8 +365,13 @@ export async function executeSignedDeploymentPlan(
   const startNonce = priorJournal?.startNonce ?? preflightPlan?.startNonce ?? livePendingNonce;
   if (preflightPlan && (preflightPlan.definitions !== definitions || preflightPlan.startNonce !== startNonce || (!priorJournal && livePendingNonce !== startNonce))) throw new Error("executable deployment preflight identity drift before reservation/signing");
   const materialized = await materializeExecutablePlan(ethers, deployer, startNonce, definitions);
-  if (preflightPlan && executablePlanIdentity(preflightPlan) !== executablePlanIdentity(materialized)) {
-    throw new Error("executable deployment preflight content drift before reservation/signing");
+  if (preflightPlan) {
+    const expectedPlanIdentity = executablePlanIdentity(preflightPlan);
+    const materializedPlanIdentity = executablePlanIdentity(materialized);
+    if (expectedPlanIdentity !== materializedPlanIdentity) {
+      const firstDifference = [...expectedPlanIdentity].findIndex((value, index) => value !== materializedPlanIdentity[index]);
+      throw new Error(`executable deployment preflight content drift before reservation/signing at byte ${firstDifference}`);
+    }
   }
   const { addresses, steps } = materialized;
   const capsuleContracts = releaseCapsule ? new Map(releaseCapsule.contracts.map((contract) => [contract.name, contract])) : null;
@@ -728,6 +743,24 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const output = manifestPath();
 
+  const reservationIdentity = createDeploymentReservationIdentity(output, {
+    deploymentCommit, network: "baseSepolia", chainId: Number(BASE_SEPOLIA_CHAIN_ID), deployer: deployer.address,
+  }, { trustedRoot: dirname(output), configValue: { config: input.value, releaseMode, slateDigest: release?.slate.slateDigest ?? null, capsuleDigest: release?.capsule.capsuleDigest ?? null } });
+  const reservation = await ensureManifestReservation(reservationIdentity);
+  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
+  const predeploymentJournalPath = predeploymentGovernanceJournalPath(output);
+  const predeploymentReleaseBindingDigest = release
+    ? productionReleaseBindingDigest({
+      deploymentCommit,
+      configDigest: reservationIdentity.configDigest,
+      slateDigest: release.slate.slateDigest,
+      capsuleDigest: release.capsule.capsuleDigest,
+    })
+    : reservationIdentity.configDigest;
+  const immutableBoardSetDigest = boardSetDigest(config.problems);
+  const fundingBoardSetDigest = `0x${immutableBoardSetDigest.slice("sha256:".length)}`;
+  const fundingReleaseBindingDigest = `0x${predeploymentReleaseBindingDigest.slice("sha256:".length)}`;
+
   const objectiveVerifierArtifact = await artifacts.readArtifact(CONTRACT_NAMES.objectiveVerifier);
   const objectiveVerifierRuntimeCodehash = ethers.keccak256(objectiveVerifierArtifact.deployedBytecode);
   const { definitions, canonicalDefinitions } = await buildCanonicalMultiBoardDeploymentDefinitions({
@@ -735,6 +768,8 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     config,
     chainId: BASE_SEPOLIA_CHAIN_ID,
     objectiveVerifierRuntimeCodehash,
+    boardSetDigest: fundingBoardSetDigest,
+    releaseBindingDigest: fundingReleaseBindingDigest,
   });
   const canonicalManifestDefinitions = canonicalDefinitions;
   assertCanonicalDeploymentPlan(canonicalManifestDefinitions, config.problems.length);
@@ -767,20 +802,6 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   if (preflightOperations.length !== operationPlan.expectedOperations) throw new Error("pre-broadcast v2 operation plan is incomplete");
   const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(preflightOperations);
 
-  const reservationIdentity = createDeploymentReservationIdentity(output, {
-    deploymentCommit, network: "baseSepolia", chainId: Number(BASE_SEPOLIA_CHAIN_ID), deployer: deployer.address,
-  }, { trustedRoot: dirname(output), configValue: { config: input.value, releaseMode, slateDigest: release?.slate.slateDigest ?? null, capsuleDigest: release?.capsule.capsuleDigest ?? null } });
-  const reservation = await ensureManifestReservation(reservationIdentity);
-  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
-  const predeploymentJournalPath = predeploymentGovernanceJournalPath(output);
-  const predeploymentReleaseBindingDigest = release
-    ? productionReleaseBindingDigest({
-      deploymentCommit,
-      configDigest: reservationIdentity.configDigest,
-      slateDigest: release.slate.slateDigest,
-      capsuleDigest: release.capsule.capsuleDigest,
-    })
-    : reservationIdentity.configDigest;
   const executed = await executeSignedDeploymentPlan(
     ethers, deployer, output, reservationIdentity, definitions,
     (definition, deployment) => definition.id.startsWith("board-")
@@ -895,7 +916,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       finalityPolicy: BASE_SEPOLIA_FINALITY_POLICY,
       configDigest: reservationIdentity.configDigest,
       releaseBindingDigest: productionReleaseBindingDigest({ deploymentCommit, configDigest: reservationIdentity.configDigest, slateDigest: release.slate.slateDigest, capsuleDigest: release.capsule.capsuleDigest }),
-      boardSetDigest: `sha256:${"0".repeat(64)}`, operationPlanDigest: `sha256:${"0".repeat(64)}`,
+      boardSetDigest: immutableBoardSetDigest, operationPlanDigest: `sha256:${"0".repeat(64)}`,
       contractCount: 47, boardCount: 10, operationCount: 110,
     } : null,
     network: {
@@ -918,6 +939,9 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       deployer: deployer.address,
       owner: rootAddresses.timelock,
       treasury: config.roles.treasury,
+      productionLaunchAuthority: config.roles.productionLaunchAuthority,
+      independentSecurityAuthority: config.roles.independentSecurityAuthority,
+      governanceAuthority: config.roles.governanceAuthority,
       resolver: rootAddresses.resolverQuorum,
       objectiveVerifier: rootAddresses.objectiveVerifier,
       objectiveVerifierCodehash: rootDeployments.objectiveVerifier.manifest.runtimeCodeHash,
@@ -1169,6 +1193,11 @@ async function collectMultiBoardContinuationSnapshot(ethers, manifest, contractS
       await submissions.maxSolutionBytes(atBlock),
       await submissions.seedScoreAtoms(atBlock),
       await submissions.minImprovementAtoms(atBlock),
+      await submissions.boardSetDigest(atBlock),
+      await submissions.releaseBindingDigest(atBlock),
+      await submissions.productionLaunchAuthority(atBlock),
+      await submissions.independentSecurityAuthority(atBlock),
+      await submissions.governanceAuthority(atBlock),
     ];
     checks.push({
       name: `config.${prefix}.submissions`,
@@ -1183,7 +1212,12 @@ async function collectMultiBoardContinuationSnapshot(ethers, manifest, contractS
         submissionConfig[7] === problem.onchainDa &&
         sameValue(submissionConfig[8], problem.maxSolutionBytes) &&
         sameValue(submissionConfig[9], problem.seedScoreAtoms) &&
-        sameValue(submissionConfig[10], problem.minImprovementAtoms),
+        sameValue(submissionConfig[10], problem.minImprovementAtoms) &&
+        sameValue(submissionConfig[11], `0x${manifest.releaseEvidence.boardSetDigest.slice("sha256:".length)}`) &&
+        sameValue(submissionConfig[12], `0x${manifest.releaseEvidence.releaseBindingDigest.slice("sha256:".length)}`) &&
+        sameAddress(submissionConfig[13], manifest.roles.productionLaunchAuthority) &&
+        sameAddress(submissionConfig[14], manifest.roles.independentSecurityAuthority) &&
+        sameAddress(submissionConfig[15], manifest.roles.governanceAuthority),
       actual: submissionConfig.map(String),
     });
     const challengeConfig = [

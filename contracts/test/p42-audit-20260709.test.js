@@ -14,6 +14,31 @@ const SEED_SCORE = 1_000_000n;
 const SCORE = 1_000n;
 const DA_HASH = ethers.id("p42-audit-da");
 const PERMANENCE_HASH = ethers.id("p42-audit-permanence");
+const BOARD_SET_DIGEST = ethers.id("p42-audit-board-set");
+const RELEASE_BINDING_DIGEST = ethers.id("p42-audit-release-binding");
+const FUNDING_ROLES = [ethers.id("production-launch-authority"), ethers.id("independent-security-authority"), ethers.id("governance-authority")];
+const FUNDING_TYPES = { FundingAuthorization: [
+  { name: "role", type: "bytes32" }, { name: "boardSetDigest", type: "bytes32" },
+  { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
+  { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
+] };
+
+function fundingAuthorizationConfig(authorities) {
+  return { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    productionLaunchAuthority: authorities[0].address, independentSecurityAuthority: authorities[1].address,
+    governanceAuthority: authorities[2].address };
+}
+
+async function authorizeFunding(submissions, treasury, authorities, digest, expiresAt) {
+  const nonce = await submissions.fundingAuthorizationNonce();
+  const { chainId } = await ethers.provider.getNetwork();
+  const domain = { name: "P42SubmissionManager", version: "2", chainId, verifyingContract: await submissions.getAddress() };
+  const common = { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    authorizationDigest: digest, expiresAt, nonce };
+  const signatures = await Promise.all(authorities.slice(0, 3).map((authority, index) =>
+    authority.signTypedData(domain, FUNDING_TYPES, { ...common, role: FUNDING_ROLES[index] })));
+  return submissions.connect(treasury).authorizeFunding(digest, expiresAt, nonce, signatures);
+}
 
 function findErrorData(value) {
   if (value === null || value === undefined) return undefined;
@@ -62,7 +87,7 @@ async function deployFixture({
   arm = true,
   acceptFunds = freeze && arm,
 } = {}) {
-  const [owner, treasury, resolver, alice, bob, carol, outsider] = await ethers.getSigners();
+  const [owner, treasury, resolver, alice, bob, carol, outsider, ...authorities] = await ethers.getSigners();
   const latest = await ethers.provider.getBlock("latest");
   const earliestClose = BigInt(latest.timestamp) + 30n * 24n * 60n * 60n + 1_000n;
   const closeBy = BigInt(latest.timestamp) + MIN_CLOSE_DELAY + 1_000n;
@@ -79,19 +104,12 @@ async function deployFixture({
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
   const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-  const submissions = await Submissions.deploy(
-    await pool.getAddress(),
-    await ledger.getAddress(),
-    owner.address,
-    treasury.address,
-    alphaBps,
-    MIN_BOND,
-    CHALLENGE_WINDOW,
-    false,
-    0,
-    SEED_SCORE,
-    1n
-  );
+  const submissions = await Submissions.deploy({
+    pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+    treasury: treasury.address, alphaBps, minPostingBondWei: MIN_BOND,
+    challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: false, maxSolutionBytes: 0,
+    seedScoreAtoms: SEED_SCORE, minImprovementAtoms: 1n,
+  }, fundingAuthorizationConfig(authorities));
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
   await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
@@ -137,7 +155,7 @@ async function deployFixture({
   if (freeze) await registry.connect(owner).freeze(1);
   if (arm) {
     await increaseTime(CHALLENGE_WINDOW + 1n);
-    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(submissions, treasury, authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
   }
   if (acceptFunds) await pool.connect(owner).setAcceptingFunds(true);
@@ -150,6 +168,7 @@ async function deployFixture({
     bob,
     carol,
     outsider,
+    authorities,
     pool,
     ledger,
     submissions,
@@ -233,7 +252,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     const preSalt = "phase-before-arm";
     const preCommitment = await commitmentFor(preArm.submissions, preArm.owner, preCid, preSalt);
     const preNonce = await preArm.owner.getNonce();
-    await preArm.submissions.connect(preArm.treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(preArm.submissions, preArm.treasury, preArm.authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     let preCommitTx;
     let preArmTx;
 
@@ -272,7 +291,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     let postArmTx;
     let postCommitTx;
 
-    await postArm.submissions.connect(postArm.treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(postArm.submissions, postArm.treasury, postArm.authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     await ethers.provider.send("evm_setAutomine", [false]);
     try {
       postArmTx = await postArm.submissions.connect(postArm.owner).armFunding("0x" + "42".repeat(32), {
@@ -519,7 +538,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(await fixture.registry.isFrozen(1), false);
 
     await increaseTime(CHALLENGE_WINDOW + 1n);
-    await fixture.submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(fixture.submissions, fixture.treasury, fixture.authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     await fixture.submissions.connect(fixture.owner).armFunding("0x" + "42".repeat(32));
     await expectCustomError(
       fixture.pool.connect(fixture.owner).setAcceptingFunds(true),

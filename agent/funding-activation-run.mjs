@@ -7,6 +7,7 @@ import { ethers } from "ethers";
 
 import {
   buildFundingActivationPlan,
+  loadFundingActivationSignatures,
   loadManifestExact,
   runProductionAuthorizationValidator,
 } from "./funding-activation.mjs";
@@ -77,6 +78,7 @@ export async function fundingActivationRunMain() {
   const manifestPath = required("manifest");
   const planPath = required("plan");
   const authorizationPath = required("authorization");
+  const activationSignaturesPath = required("activation-signatures");
   const trustRegistryPath = required("trust-registry");
   const artifactRoot = required("artifact-root");
   const python = required("python");
@@ -125,6 +127,7 @@ export async function fundingActivationRunMain() {
       manifest: manifest.value,
       manifestBytesDigest: manifest.bytesDigest,
       validatedAuthorization,
+      activationSignatures: loadFundingActivationSignatures(activationSignaturesPath),
     });
   };
   const snapshot = await collectFundingActivationSnapshot(plan, primary, secondary);

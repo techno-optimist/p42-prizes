@@ -341,6 +341,21 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
   const guardian = address(ethers, "P42_GUARDIAN_ADDRESS", required(env, "P42_GUARDIAN_ADDRESS"));
   const treasury = address(ethers, "P42_TREASURY_ADDRESS", required(env, "P42_TREASURY_ADDRESS"));
   const resolver = address(ethers, "P42_RESOLVER_ADDRESS", required(env, "P42_RESOLVER_ADDRESS"));
+  const productionLaunchAuthority = address(
+    ethers,
+    "P42_PRODUCTION_LAUNCH_AUTHORITY_ADDRESS",
+    required(env, "P42_PRODUCTION_LAUNCH_AUTHORITY_ADDRESS"),
+  );
+  const independentSecurityAuthority = address(
+    ethers,
+    "P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS",
+    required(env, "P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS"),
+  );
+  const governanceAuthority = address(
+    ethers,
+    "P42_FUNDING_GOVERNANCE_AUTHORITY_ADDRESS",
+    required(env, "P42_FUNDING_GOVERNANCE_AUTHORITY_ADDRESS"),
+  );
   const objectiveVerifier = address(
     ethers,
     "P42_OBJECTIVE_VERIFIER_ADDRESS",
@@ -351,11 +366,26 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
     "P42_OBJECTIVE_VERIFIER_CODEHASH",
     required(env, "P42_OBJECTIVE_VERIFIER_CODEHASH"),
   );
+  const fundingAuthorization = {
+    boardSetDigest: nonzeroHash(
+      ethers,
+      "P42_FUNDING_BOARD_SET_DIGEST",
+      required(env, "P42_FUNDING_BOARD_SET_DIGEST"),
+    ),
+    releaseBindingDigest: nonzeroHash(
+      ethers,
+      "P42_FUNDING_RELEASE_BINDING_DIGEST",
+      required(env, "P42_FUNDING_RELEASE_BINDING_DIGEST"),
+    ),
+  };
   assertDistinct("governance and operational role separation", [
     ...signers.map((value, index) => [`signer[${index}]`, value]),
     ["guardian", guardian],
     ["treasury", treasury],
     ["resolver", resolver],
+    ["productionLaunchAuthority", productionLaunchAuthority],
+    ["independentSecurityAuthority", independentSecurityAuthority],
+    ["governanceAuthority", governanceAuthority],
     ["objectiveVerifier", objectiveVerifier]
   ]);
   if (deployerAddress !== undefined) {
@@ -365,6 +395,9 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
       ["guardian", guardian],
       ["treasury", treasury],
       ["resolver", resolver],
+      ["productionLaunchAuthority", productionLaunchAuthority],
+      ["independentSecurityAuthority", independentSecurityAuthority],
+      ["governanceAuthority", governanceAuthority],
       ["objectiveVerifier", objectiveVerifier]
     ]);
   }
@@ -536,7 +569,16 @@ export function readCeremonyConfig(ethers, env, { deployerAddress } = {}) {
       operationGracePeriodSeconds: OPERATION_GRACE_PERIOD_SECONDS,
       guardian
     },
-    roles: { treasury, resolver, objectiveVerifier, objectiveVerifierCodehash },
+    roles: {
+      treasury,
+      resolver,
+      productionLaunchAuthority,
+      independentSecurityAuthority,
+      governanceAuthority,
+      objectiveVerifier,
+      objectiveVerifierCodehash,
+    },
+    fundingAuthorization,
     parameters,
     problem,
     finalityPolicy: { ...DEFAULT_FINALITY_POLICY }
@@ -578,17 +620,26 @@ export function constructorArgsFor(name, config, addresses = {}) {
       return [addresses.registry, owner];
     case "P42SubmissionManager":
       return [
-        addresses.pool,
-        addresses.ledger,
-        owner,
-        config.roles.treasury,
-        config.parameters.alphaBps,
-        config.parameters.minPostingBondWei,
-        config.parameters.challengeWindowSeconds,
-        config.parameters.onchainDa,
-        config.parameters.maxSolutionBytes,
-        config.problem.seedScoreAtoms,
-        config.problem.minImprovementAtoms
+        {
+          pool: addresses.pool,
+          ledger: addresses.ledger,
+          owner,
+          treasury: config.roles.treasury,
+          alphaBps: config.parameters.alphaBps,
+          minPostingBondWei: config.parameters.minPostingBondWei,
+          challengeWindowSeconds: config.parameters.challengeWindowSeconds,
+          onchainDa: config.parameters.onchainDa,
+          maxSolutionBytes: config.parameters.maxSolutionBytes,
+          seedScoreAtoms: config.problem.seedScoreAtoms,
+          minImprovementAtoms: config.problem.minImprovementAtoms,
+        },
+        {
+          boardSetDigest: config.fundingAuthorization.boardSetDigest,
+          releaseBindingDigest: config.fundingAuthorization.releaseBindingDigest,
+          productionLaunchAuthority: config.roles.productionLaunchAuthority,
+          independentSecurityAuthority: config.roles.independentSecurityAuthority,
+          governanceAuthority: config.roles.governanceAuthority,
+        }
       ];
     case "P42ChallengeManager":
       return [
@@ -616,7 +667,6 @@ export function assertTimelockOwnedConstructorArgs(timelockAddress, constructorA
   for (const [key, ownerIndex] of Object.entries({
     pool: 0,
     ledger: 1,
-    submissions: 2,
     challenges: 0,
     registry: 0
   })) {
@@ -624,6 +674,10 @@ export function assertTimelockOwnedConstructorArgs(timelockAddress, constructorA
     if (typeof actual !== "string" || actual.toLowerCase() !== expected) {
       throw new Error(`${key} constructor owner must be the deployed timelock`);
     }
+  }
+  const submissionOwner = constructorArgs.submissions?.[0]?.owner;
+  if (typeof submissionOwner !== "string" || submissionOwner.toLowerCase() !== expected) {
+    throw new Error("submissions constructor owner must be the deployed timelock");
   }
 }
 
@@ -968,8 +1022,7 @@ export function buildMultiBoardSetupOperations({
 }
 
 export function constructorArgsHash(ethers, factory, args) {
-  const types = factory.interface.deploy.inputs.map((input) => input.format("sighash"));
-  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(types, args));
+  return ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(factory.interface.deploy.inputs, args));
 }
 
 export function bindDeploymentConfigHash(manifest) {

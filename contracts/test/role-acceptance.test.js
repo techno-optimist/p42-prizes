@@ -16,7 +16,7 @@ import {
 } from "../scripts/role-acceptance-helper.js";
 
 const digest = (character) => `sha256:${character.repeat(64)}`;
-const wallets = [1, 2, 3, 4, 5, 6].map((value) => new ethers.Wallet(`0x${value.toString(16).padStart(64, "0")}`));
+const wallets = [1, 2, 3, 4, 5, 6, 7, 8, 9].map((value) => new ethers.Wallet(`0x${value.toString(16).padStart(64, "0")}`));
 
 function deployment(name, address, seed) {
   return { name, address, runtimeCodeHash: `0x${seed.toString(16).padStart(64, "0")}` };
@@ -38,7 +38,13 @@ function manifest() {
     deploymentCommit: "a".repeat(40),
     network: { chainId: 84532 },
     governance: { signers: wallets.slice(0, 3).map((wallet) => wallet.address), guardian: wallets[3].address },
-    roles: { treasury: wallets[4].address, resolver: wallets[5].address },
+    roles: {
+      treasury: wallets[4].address,
+      resolver: wallets[5].address,
+      productionLaunchAuthority: wallets[6].address,
+      independentSecurityAuthority: wallets[7].address,
+      governanceAuthority: wallets[8].address,
+    },
     contracts: root,
     releaseEvidence: { releaseBindingDigest: digest("1"), capsuleDigest: digest("2"), slateDigest: digest("3"), configDigest: digest("4") },
     problems: Array.from({ length: 10 }, (_, index) => {
@@ -83,6 +89,7 @@ describe("deployment role acceptance", () => {
     const source = manifest();
     const packet = await signedPacket(source);
     assert.equal(packet.acceptances.filter(({ role }) => role === "resolver-quorum-signer").length, 3);
+    assert.equal(packet.acceptances.filter(({ role }) => role.endsWith("-authority")).length, 3);
     assert.equal(packet.acceptances.some(({ address }) => address.toLowerCase() === source.contracts.resolverQuorum.address.toLowerCase()), false);
     assert.equal(deploymentTopologyDigest(source), packet.topologyDigest);
     assert.equal(validateDeploymentRoleAcceptances(ethers, source, packet, { validationTime: 1_900_000_000 }), packet);

@@ -49,7 +49,13 @@ operation tries to register a different ID.
     "delaySeconds": "172800",
     "guardian": "0x..."
   },
-  "roles": { "treasury": "0x...", "resolver": "0x..." },
+  "roles": {
+    "treasury": "0x...",
+    "resolver": "0x...",
+    "productionLaunchAuthority": "0x...",
+    "independentSecurityAuthority": "0x...",
+    "governanceAuthority": "0x..."
+  },
   "parameters": {
     "alphaBps": "200",
     "betaBps": "500",
@@ -91,6 +97,19 @@ operation tries to register a different ID.
   ]
 }
 ```
+
+The three funding authorities are distinct EOA-held secp256k1 accounts in v2.
+They must also be distinct from the deployer, governance signers, guardian,
+treasury, resolver, and objective verifier. Contract-wallet authorities are
+rejected on-chain at manager construction because v2 verifies EIP-712
+signatures with `ecrecover`; ERC-1271 support requires a later explicit
+protocol upgrade.
+
+The three funding authorities are fixed manager immutables and must be distinct
+from one another, treasury, the timelock owner, governance signers, guardian,
+resolver, and deployer. The ceremony derives the exact ordered board-set digest
+and release-binding digest before address planning and puts both into every
+submission-manager constructor. They are never operator-entered substitutes.
 
 All fields are required. The parser rejects unknown fields, noncanonical
 phase-0 image placeholders, malformed addresses/hashes, inconsistent global terms, duplicate

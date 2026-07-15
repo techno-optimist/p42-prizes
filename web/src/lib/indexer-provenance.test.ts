@@ -47,6 +47,9 @@ function artifacts() {
   problem.objectiveGuestElfSha256 = `0x${problem.objectiveGuestElfDigest.slice("sha256:".length)}`;
   problem.objectivePackageHash = hash("e");
   base.schema = "p42-prizes/deployment-manifest/v2";
+  base.roles.productionLaunchAuthority = `0x${"55".repeat(20)}`;
+  base.roles.independentSecurityAuthority = `0x${"66".repeat(20)}`;
+  base.roles.governanceAuthority = `0x${"77".repeat(20)}`;
   base.roles.objectiveVerifier = `0x${"44".repeat(20)}`;
   base.roles.objectiveVerifierCodehash = hash("f");
   base.releaseMode = "fixture";
@@ -120,6 +123,19 @@ describe("indexer provenance v2", () => {
       join(root, "deployments/base-sepolia/p42-prizes.example.json"), "utf8",
     ));
     expect(computePortalDeploymentConfigHash(manifest)).toBe(manifest.deploymentConfigHash);
+  });
+
+  it("binds canonical release evidence and role acceptances into the deployment-config hash", () => {
+    const { manifest } = artifacts();
+    manifest.releaseMode = "production";
+    manifest.releaseEvidence = { boardSetDigest: digest("1"), releaseBindingDigest: digest("2") };
+    manifest.roleAcceptances = { packetDigest: digest("3") };
+    const expected = computePortalDeploymentConfigHash(manifest);
+    for (const field of ["releaseMode", "releaseEvidence", "roleAcceptances"]) {
+      const changed = clone(manifest);
+      changed[field] = field === "releaseMode" ? "fixture" : null;
+      expect(computePortalDeploymentConfigHash(changed)).not.toBe(expected);
+    }
   });
 
   it("keeps Render-bundled schemas byte-equivalent to canonical protocol schemas", () => {
@@ -243,7 +259,7 @@ describe("indexer provenance v2", () => {
       { attestation_class: "p42-indexer-checkpoint-attestation/v1", signer_role: "indexer-checkpoint-authority", public_key: checkpointPublicKey, identity: { name: "Indexer Signer", organization: "P42 Test", professional_email: "indexer@example.org" }, valid_from_utc: "2026-01-01T00:00:00.000Z", valid_until_utc: null },
     ] };
     const authorizationBytes = Buffer.from(JSON.stringify(authorization));
-    const planBody = { schema: "p42-funding-activation-plan/v1", chainId: 84532, manifestBytesDigest: bytesDigest(base.manifest), authorizationDigest, authorizationBytesDigest: `sha256:${createHash("sha256").update(authorizationBytes).digest("hex")}`, authorizationExpiresAt: expires };
+    const planBody = { schema: "p42-funding-activation-plan/v2", chainId: 84532, manifestBytesDigest: bytesDigest(base.manifest), authorizationDigest, authorizationBytesDigest: `sha256:${createHash("sha256").update(authorizationBytes).digest("hex")}`, authorizationExpiresAt: expires, activationSignaturesDigest: digest("7") };
     const plan = { ...planBody, planDigest: canonicalDigest(planBody) };
     const completionBody = {
       schema: "p42-funding-activation-completion/v1", chainId: 84532, network: "base-sepolia", planDigest: plan.planDigest,
@@ -274,6 +290,14 @@ describe("indexer provenance v2", () => {
     };
     const activatedSnapshot = activatedIndexerSnapshotFromArtifacts(launchProblems, activatedArtifacts);
     expect(activatedSnapshot.provenance).toHaveLength(10);
+    const legacyPlan = clone(plan);
+    legacyPlan.schema = "p42-funding-activation-plan/v1";
+    const { planDigest: _legacyDigest, ...legacyPlanBody } = legacyPlan;
+    legacyPlan.planDigest = canonicalDigest(legacyPlanBody);
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts,
+      plan: legacyPlan,
+    })).toThrow();
     expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
       ...activatedArtifacts,
       nowSeconds: Number(base.checkpoint.range.toBlockTimestamp) + 301,

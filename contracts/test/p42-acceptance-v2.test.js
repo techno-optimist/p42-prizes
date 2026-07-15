@@ -10,6 +10,31 @@ const FRAUD_WINDOW = WINDOW / 4n;
 const FUNDING_CAP = ethers.parseEther("100");
 const DA_HASH = ethers.sha256(ethers.toUtf8Bytes("acceptance-solution"));
 const PERMANENCE_HASH = ethers.id("acceptance-permanence");
+const BOARD_SET_DIGEST = ethers.id("p42-acceptance-board-set");
+const RELEASE_BINDING_DIGEST = ethers.id("p42-acceptance-release-binding");
+const FUNDING_ROLES = [ethers.id("production-launch-authority"), ethers.id("independent-security-authority"), ethers.id("governance-authority")];
+const FUNDING_TYPES = { FundingAuthorization: [
+  { name: "role", type: "bytes32" }, { name: "boardSetDigest", type: "bytes32" },
+  { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
+  { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
+] };
+
+function fundingAuthorizationConfig(authorities) {
+  return { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    productionLaunchAuthority: authorities[0].address, independentSecurityAuthority: authorities[1].address,
+    governanceAuthority: authorities[2].address };
+}
+
+async function authorizeFunding(submissions, treasury, authorities, digest, expiresAt) {
+  const nonce = await submissions.fundingAuthorizationNonce();
+  const { chainId } = await ethers.provider.getNetwork();
+  const domain = { name: "P42SubmissionManager", version: "2", chainId, verifyingContract: await submissions.getAddress() };
+  const common = { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    authorizationDigest: digest, expiresAt, nonce };
+  const signatures = await Promise.all(authorities.slice(0, 3).map((authority, index) =>
+    authority.signTypedData(domain, FUNDING_TYPES, { ...common, role: FUNDING_ROLES[index] })));
+  return submissions.connect(treasury).authorizeFunding(digest, expiresAt, nonce, signatures);
+}
 
 function findErrorData(value) {
   if (value == null) return undefined;
@@ -60,7 +85,7 @@ async function closeTimes() {
 }
 
 async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10") } = {}) {
-  const [owner, treasury, resolver, alice, bob, carol] = await ethers.getSigners();
+  const [owner, treasury, resolver, alice, bob, carol, ...authorities] = await ethers.getSigners();
   const Pool = await ethers.getContractFactory("P42BountyPool");
   const pool = await Pool.deploy(owner.address, FUNDING_CAP);
   await pool.waitForDeployment();
@@ -74,19 +99,12 @@ async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10"
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
   const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-  const submissions = await Submissions.deploy(
-    await pool.getAddress(),
-    await ledger.getAddress(),
-    owner.address,
-    treasury.address,
-    200,
-    ethers.parseEther("0.01"),
-    WINDOW,
-    false,
-    0,
-    seed,
-    1,
-  );
+  const submissions = await Submissions.deploy({
+    pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+    treasury: treasury.address, alphaBps: 200, minPostingBondWei: ethers.parseEther("0.01"),
+    challengeWindowSeconds: WINDOW, onchainDa: false, maxSolutionBytes: 0,
+    seedScoreAtoms: seed, minImprovementAtoms: 1,
+  }, fundingAuthorizationConfig(authorities));
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
   await pool.connect(owner).setSubmissionManager(await submissions.getAddress());
@@ -131,7 +149,7 @@ async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10"
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(WINDOW + 1n);
-  await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+  await authorizeFunding(submissions, treasury, authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
   await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
   await pool.connect(owner).setAcceptingFunds(true);
   if (fund > 0n) await pool.fund({ value: fund });

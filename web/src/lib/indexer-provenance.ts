@@ -200,8 +200,10 @@ export function computePortalDeploymentConfigHash(manifest: JsonObject): string 
   const indexer = object(manifest.indexer, "manifest.indexer");
   const payload = {
     schema: manifest.schema, status: manifest.status, deploymentCommit: manifest.deploymentCommit,
+    releaseMode: manifest.releaseMode, releaseEvidence: manifest.releaseEvidence,
     network: manifest.network, governance: manifest.governance, roles: manifest.roles,
     parameters: manifest.parameters, contracts: manifest.contracts,
+    roleAcceptances: manifest.roleAcceptances,
     governanceSetup: manifest.governanceSetup, setupTransactions: manifest.setupTransactions,
     problems: manifest.problems,
     indexer: { startBlock: indexer.startBlock, finalityPolicy: indexer.finalityPolicy },
@@ -485,7 +487,8 @@ export function activatedProvenanceFromArtifacts(
   verifyLaunchAuthorization(authorization, trustRegistry, trustRegistryDigest);
   verifyCheckpointAttestation(checkpointAttestation, checkpointBytes, trustRegistry, nowSeconds);
   requireBinding(/^sha256:[0-9a-f]{64}$/.test(String(authorization.authorization_digest)));
-  requireBinding(plan.schema === "p42-funding-activation-plan/v1" && completion.schema === "p42-funding-activation-completion/v1");
+  requireBinding(plan.schema === "p42-funding-activation-plan/v2" && completion.schema === "p42-funding-activation-completion/v1");
+  requireBinding(/^sha256:[0-9a-f]{64}$/.test(String(plan.activationSignaturesDigest)));
   const { planDigest, ...planBody } = plan;
   const { completionDigest, ...completionBody } = completion;
   requireBinding(planDigest === sha256Canonical(planBody) && completionDigest === sha256Canonical(completionBody));

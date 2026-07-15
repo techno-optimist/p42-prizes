@@ -17,6 +17,7 @@ import {
   signedDeploymentJournalPath,
 } from "../scripts/signed-deployment-journal.js";
 import {
+  boardSetDigest,
   PRODUCTION_LAUNCH_SLUGS,
   readMultiBoardCeremonyConfig,
 } from "../scripts/multiboard-ceremony-helper.js";
@@ -141,13 +142,19 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
   it("deploys the canonical 47, executes 110 governed setup operations, and settles one challenged board", async function (t) {
     const input = JSON.parse(await readFile(FIXTURE, "utf8"));
     const signers = await ethers.getSigners();
-    const [signer1, signer2, signer3, guardian, treasury, resolver, deployerFunder, sponsor, solver, challenger] = signers;
+    const [
+      signer1, signer2, signer3, guardian, treasury, resolver, deployerFunder, sponsor, solver, challenger,
+      productionLaunchAuthority, independentSecurityAuthority, governanceAuthority,
+    ] = signers;
     const deployer = ethers.Wallet.createRandom().connect(ethers.provider);
     await (await deployerFunder.sendTransaction({ to: deployer.address, value: ethers.parseEther("100") })).wait();
     input.governance.signers = [signer1.address, signer2.address, signer3.address];
     input.governance.guardian = guardian.address;
     input.roles.treasury = treasury.address;
     input.roles.resolver = resolver.address;
+    input.roles.productionLaunchAuthority = productionLaunchAuthority.address;
+    input.roles.independentSecurityAuthority = independentSecurityAuthority.address;
+    input.roles.governanceAuthority = governanceAuthority.address;
     for (const problem of input.problems) {
       problem.verifierSourceHash = ethers.keccak256(ethers.toUtf8Bytes(problem.verifierSourceDigest));
       problem.verifierImageHash = ethers.keccak256(ethers.toUtf8Bytes(problem.verifierImageDigest));
@@ -157,11 +164,16 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
 
     const objectiveArtifact = await artifacts.readArtifact(MULTIBOARD_CONTRACT_NAMES.objectiveVerifier);
     const objectiveVerifierRuntimeCodehash = ethers.keccak256(objectiveArtifact.deployedBytecode);
+    const immutableBoardSetDigest = boardSetDigest(config.problems);
+    const fundingBoardSetDigest = `0x${immutableBoardSetDigest.slice("sha256:".length)}`;
+    const fundingReleaseBindingDigest = ethers.id("local-production-shaped-release-binding");
     const { definitions, canonicalDefinitions } = await buildCanonicalMultiBoardDeploymentDefinitions({
       ethers,
       config,
       chainId: 31337n,
       objectiveVerifierRuntimeCodehash,
+      boardSetDigest: fundingBoardSetDigest,
+      releaseBindingDigest: fundingReleaseBindingDigest,
     });
     assert.equal(definitions.length, 47);
     assert.equal(canonicalDefinitions.length, 47);
@@ -383,7 +395,36 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
       const active = boardContracts(deployed, "1");
       await advanceTo(await active.submissions.armNotBefore());
       const fundingDigest = ethers.id("local-production-shaped-funding-authorization");
-      await active.submissions.connect(treasury).authorizeFunding(fundingDigest, 2n ** 64n - 1n);
+      const expiresAt = 2n ** 64n - 1n;
+      const fundingDomain = {
+        name: "P42SubmissionManager",
+        version: "2",
+        chainId: 31337n,
+        verifyingContract: await active.submissions.getAddress(),
+      };
+      const fundingTypes = {
+        FundingAuthorization: [
+          { name: "role", type: "bytes32" },
+          { name: "boardSetDigest", type: "bytes32" },
+          { name: "releaseBindingDigest", type: "bytes32" },
+          { name: "authorizationDigest", type: "bytes32" },
+          { name: "expiresAt", type: "uint64" },
+          { name: "nonce", type: "uint256" },
+        ],
+      };
+      const common = {
+        boardSetDigest: fundingBoardSetDigest,
+        releaseBindingDigest: fundingReleaseBindingDigest,
+        authorizationDigest: fundingDigest,
+        expiresAt,
+        nonce: 0n,
+      };
+      const fundingSignatures = await Promise.all([
+        productionLaunchAuthority.signTypedData(fundingDomain, fundingTypes, { ...common, role: ethers.id("production-launch-authority") }),
+        independentSecurityAuthority.signTypedData(fundingDomain, fundingTypes, { ...common, role: ethers.id("independent-security-authority") }),
+        governanceAuthority.signTypedData(fundingDomain, fundingTypes, { ...common, role: ethers.id("governance-authority") }),
+      ]);
+      await active.submissions.connect(treasury).authorizeFunding(fundingDigest, expiresAt, 0n, fundingSignatures);
       await executeGovernedCall(
         timelock,
         [signer1, signer2],

@@ -66,11 +66,17 @@ The RPC URLs must normalize to distinct hosts and origins, and the operator IDs
 must identify distinct infrastructure operators.
 
 The script requires distinct public governance signer addresses, a threshold,
-delay, and guardian; separate treasury and resolver roles; every economic and
-DA constructor parameter; and nonzero frozen problem/verifier/image/admission
-hashes. It never requests the governance signers' private keys. The output
-manifest starts in `pending-governance-setup` and contains ordered standard and
-override operation calldata for:
+delay, and guardian; separate treasury, resolver, production-launch,
+independent-security, and funding-governance roles; every economic and DA
+constructor parameter; and nonzero frozen problem/verifier/image/admission
+hashes. It never requests authority private keys. The three funding-authority
+addresses must be distinct EOA-held secp256k1
+accounts. Managers reject contract-wallet authority addresses at construction;
+v2 does not claim ERC-1271 support. Each authority also signs the durable
+deployment role-acceptance roster before governance setup can be completed.
+
+The output manifest starts in `pending-governance-setup` and contains ordered
+standard and override operation calldata for:
 
 - pool, ledger, submission, and challenge wiring
 - registry registration, pool binding, and immutable freeze
@@ -89,10 +95,12 @@ each finalized timelock execution event. It refuses to mark the manifest
 
 Neither mode calls `armFunding(bytes32)` or `setAcceptingFunds(true)`. Funding
 activation requires the nonzero canonical production-launch authorization
-digest. The distinct treasury/funding-authorizer role must register that digest
-and the signed packet's expiry before governance can arm it; the manager stores
-both and emits the transition. Delayed arm or initial pool-open execution after
-the authorization deadline reverts on-chain.
+digest. For each manager, three distinct immutable authorities sign a
+role-bound EIP-712 packet covering chain, manager, exact-ten board set, release,
+authorization digest, expiry, and nonce. Treasury may only relay the three
+signatures; it cannot authorize funding alone. Governance can arm only the
+verified active digest. Cancellation consumes another nonce, and delayed arm
+or initial pool-open execution after the deadline reverts on-chain.
 Those calls remain
 separate reviewed governance operations after source verification,
 reconciliation, and the applicable launch gates. See `docs/DEPLOYMENT.md` for
