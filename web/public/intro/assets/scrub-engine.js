@@ -325,6 +325,25 @@ function mountScrollWorld(container, config) {
   layout();
   requestAnimationFrame(raf);
 
+  // Preload every clip up front, in scroll order, so a scene is already decoded
+  // when it scrolls in instead of showing its still poster while the clip
+  // downloads (which reads as sloppy). Bytes arrive via fetch() — this works on
+  // iOS with no user gesture; the <video> only wraps the in-memory blob, and
+  // priming still waits for the first touch. Bounded concurrency keeps scene 0
+  // first and avoids saturating a phone's bandwidth or its decoders.
+  function preloadClips() {
+    if (reduce) return;
+    const MAXC = isMobile() ? 3 : 6;
+    let idx = 0;
+    (function pump() {
+      let inflight = 0;
+      for (let i = 0; i < NSEG; i++) if (SEGMENTS[i].loading && !SEGMENTS[i].ready) inflight++;
+      while (idx < NSEG && inflight < MAXC) { loadClip(SEGMENTS[idx++]); inflight++; }
+      if (idx < NSEG) setTimeout(pump, 300);
+    })();
+  }
+  preloadClips();
+
   // ---- helpers ----
   function el(tag, cls) { const n = document.createElement(tag); if (cls) n.className = cls; return n; }
   function pad(n) { return String(n).padStart(2, '0'); }
