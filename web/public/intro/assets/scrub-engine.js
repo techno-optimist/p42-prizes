@@ -213,41 +213,24 @@ function mountScrollWorld(container, config) {
       }).catch(() => { s.loading = false; });
   }
 
-  // Mobile only: tear down a far-offscreen clip so we never hold more than a
-  // few decoded videos at once. iOS caps simultaneous video decoders hard and
-  // evicts unpredictably under memory pressure, which is a primary cause of
-  // scrub jank on phones. The encoded bytes stay in the HTTP cache, so when the
-  // scene is approached again loadClip() re-fetches instantly and re-primes.
-  function unloadClip(s) {
-    if (!s.hasClip || !s.video) return;
-    const v = s.video;
-    try { v.pause(); } catch (e) {}
-    try { URL.revokeObjectURL(v.src); } catch (e) {}
-    try { v.removeAttribute('src'); v.load(); } catch (e) {}
-    try { s.el.removeChild(v); } catch (e) {}
-    s.el.classList.remove('has-clip');   // fall back to the still poster
-    s.video = null; s.hasClip = false; s.ready = false; s.loading = false;
-  }
-
   function read() {
     const y = window.scrollY || window.pageYOffset;
     const fade = CROSSFADE * vh;
     let ci = 0;
     for (let i = 0; i < NSEG; i++) if (y >= SEGMENTS[i].start) ci = i;
 
-    const mob = isMobile();
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
-      let outside = 0;
-      if (y < s.start) outside = s.start - y; else if (y > s.end) outside = y - s.end;
-      // Load a clip as it nears the viewport; on mobile, release it once it is
-      // well past (wider hysteresis than the load window prevents thrash at the
-      // boundary). Desktop keeps every clip resident — plenty of memory, and no
-      // reload flicker when scrolling back.
-      if (outside < 1.6 * vh) loadClip(s);
-      else if (mob && outside > 2.6 * vh) unloadClip(s);
+      // Load a clip as it nears the viewport and keep it resident. (An earlier
+      // build unloaded far clips on mobile to bound decoder count, but iOS won't
+      // reliably restart a rebuilt muted video outside a user gesture, so the
+      // rebuilt scenes came back as blank posters. Holding all clips resident is
+      // the known-good path; the all-intra 540p mobile encodes are light enough.)
+      if (y > s.start - 1.6 * vh && y < s.end + 1.6 * vh) loadClip(s);
       const local = clamp((y - s.start) / (s.end - s.start), 0, 1);
       s.target = s.linger ? lingerEase(local, s.linger) : local;
+      let outside = 0;
+      if (y < s.start) outside = s.start - y; else if (y > s.end) outside = y - s.end;
       const op = smooth(1 - outside / fade);
       s.el.style.opacity = op; s.visible = op > 0.001;
       s.el.style.zIndex = (i === ci) ? '120' : String(100 + Math.round(op * 10));
