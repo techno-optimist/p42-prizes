@@ -51,6 +51,7 @@ PROVENANCE_PLATFORMS = {
 BUILD_ENV_REQUIRED = {"CARGO_INCREMENTAL": "0"}
 BUILD_ENV_FORBIDDEN = {
     "AR",
+    "CARGO_HOME",
     "CARGO_BUILD_RUSTC",
     "CARGO_BUILD_RUSTC_WRAPPER",
     "CARGO_BUILD_TARGET",
@@ -62,11 +63,17 @@ BUILD_ENV_FORBIDDEN = {
     "CXXFLAGS",
     "HOST_CC",
     "HOST_CFLAGS",
+    "LD_PRELOAD",
+    "PYTHONHOME",
+    "PYTHONPATH",
     "RANLIB",
+    "RUSTC",
     "RUSTC_BOOTSTRAP",
     "RUSTC_WRAPPER",
     "RUSTC_WORKSPACE_WRAPPER",
+    "RUSTDOCFLAGS",
     "RUSTFLAGS",
+    "RUSTUP_HOME",
 }
 BUILD_ENV_FORBIDDEN_PREFIXES = ("CARGO_PROFILE_", "CARGO_TARGET_", "SP1_")
 EXPECTED_SOURCE_FILES = {
@@ -157,35 +164,78 @@ def fingerprint_entries(entries: list[list[object]]) -> dict[str, object]:
     manifest = json.dumps(entries, ensure_ascii=True, separators=(",", ":")).encode("ascii")
     return {
         "treeSha256": "sha256:" + hashlib.sha256(manifest).hexdigest(),
-        "regularFileCount": sum(entry[0] == "file" for entry in entries),
+        "regularFileCount": sum(entry[0] in {"file", "hardlink"} for entry in entries),
         "symlinkCount": sum(entry[0] == "symlink" for entry in entries),
-        "totalBytes": sum(int(entry[2]) for entry in entries if entry[0] == "file"),
+        "hardlinkCount": sum(entry[0] == "hardlink" for entry in entries),
+        "totalBytes": sum(int(entry[3]) for entry in entries if entry[0] == "file"),
     }
+
+
+def validate_relative_link(path: str, target: str, label: str) -> None:
+    link = PurePosixPath(target)
+    if link.is_absolute():
+        fail(f"{label} has an absolute link target: {path}")
+    resolved = list(PurePosixPath(path).parent.parts)
+    for part in link.parts:
+        if part in {"", "."}:
+            continue
+        if part == "..":
+            if not resolved:
+                fail(f"{label} link escapes its root: {path}")
+            resolved.pop()
+        else:
+            resolved.append(part)
+
+
+def normalize_archive_member_name(name: str, label: str) -> str:
+    normalized = name.removeprefix("./")
+    pure = PurePosixPath(normalized)
+    if normalized in {"", "."} or pure.is_absolute() or ".." in pure.parts:
+        fail(f"{label} is unsafe: {name}")
+    return pure.as_posix()
 
 
 def directory_fingerprint(root: Path) -> dict[str, object]:
     resolved = root.resolve()
     if not resolved.is_dir():
         fail("guest sysroot is missing")
+    paths = sorted(resolved.rglob("*"), key=lambda item: item.relative_to(resolved).as_posix())
+    regulars: list[tuple[Path, os.stat_result, str]] = []
     entries: list[list[object]] = []
-    for path in sorted(resolved.rglob("*"), key=lambda item: item.relative_to(resolved).as_posix()):
+    for path in paths:
         metadata = os.lstat(path)
         relative = path.relative_to(resolved).as_posix()
         if stat.S_ISDIR(metadata.st_mode):
             continue
         if stat.S_ISLNK(metadata.st_mode):
-            entries.append(["symlink", relative, os.readlink(path)])
+            target = os.readlink(path)
+            validate_relative_link(relative, target, "guest sysroot")
+            entries.append(["symlink", relative, stat.S_IMODE(metadata.st_mode), target])
             continue
         if not stat.S_ISREG(metadata.st_mode):
             fail(f"guest sysroot contains a special file: {relative}")
+        regulars.append((path, metadata, relative))
+    inode_paths: dict[tuple[int, int], list[str]] = {}
+    for _, metadata, relative in regulars:
+        inode_paths.setdefault((metadata.st_dev, metadata.st_ino), []).append(relative)
+    for path, metadata, relative in regulars:
+        siblings = sorted(inode_paths[(metadata.st_dev, metadata.st_ino)])
+        if metadata.st_nlink != len(siblings):
+            fail(f"guest sysroot hardlink escapes its root: {relative}")
+        if len(siblings) > 1 and relative != siblings[0]:
+            entries.append(["hardlink", relative, stat.S_IMODE(metadata.st_mode), siblings[0]])
+            continue
         size, digest = file_fingerprint(path)
-        entries.append(["file", relative, size, digest])
+        entries.append(["file", relative, stat.S_IMODE(metadata.st_mode), size, digest])
     return fingerprint_entries(entries)
 
 
 def archive_fingerprint(archive: Path) -> dict[str, object]:
     entries: list[list[object]] = []
     seen: set[str] = set()
+    member_kinds: dict[str, str] = {}
+    files: dict[str, tuple[int, int, str]] = {}
+    hardlinks: dict[str, tuple[int, str]] = {}
     try:
         handle = tarfile.open(archive, mode="r:gz")
     except (OSError, tarfile.TarError) as exc:
@@ -200,10 +250,20 @@ def archive_fingerprint(archive: Path) -> dict[str, object]:
                 fail("guest toolchain archive has an unsafe or duplicate member")
             seen.add(name)
             if member.issym():
-                entries.append(["symlink", name, member.linkname])
+                validate_relative_link(name, member.linkname, "guest toolchain archive")
+                member_kinds[name] = "symlink"
+                entries.append(["symlink", name, member.mode, member.linkname])
                 continue
-            if not (member.isfile() or member.islnk()):
+            if member.islnk():
+                target = normalize_archive_member_name(
+                    member.linkname, "guest toolchain archive hardlink target"
+                )
+                hardlinks[name] = (member.mode, target)
+                member_kinds[name] = "hardlink"
+                continue
+            if not member.isfile():
                 fail(f"guest toolchain archive contains a special member: {name}")
+            member_kinds[name] = "file"
             extracted = handle.extractfile(member)
             if extracted is None:
                 fail(f"cannot read guest toolchain archive member: {name}")
@@ -212,7 +272,31 @@ def archive_fingerprint(archive: Path) -> dict[str, object]:
             while chunk := extracted.read(1024 * 1024):
                 size += len(chunk)
                 digest.update(chunk)
-            entries.append(["file", name, size, digest.hexdigest()])
+            files[name] = (member.mode, size, digest.hexdigest())
+
+    groups: dict[str, list[str]] = {name: [name] for name in files}
+    for name, (_, target) in hardlinks.items():
+        visited = {name}
+        while target in hardlinks:
+            if target in visited:
+                fail(f"guest toolchain archive has a hardlink cycle: {name}")
+            visited.add(target)
+            target = hardlinks[target][1]
+        if member_kinds.get(target) != "file":
+            fail(f"guest toolchain archive hardlink has no regular target: {name}")
+        groups[target].append(name)
+
+    for target, names in groups.items():
+        mode, size, digest = files[target]
+        canonical = min(names)
+        for name in names:
+            entry_mode = mode if name == target else hardlinks[name][0]
+            if entry_mode != mode:
+                fail(f"guest toolchain archive hardlink mode differs from its target: {name}")
+        entries.append(["file", canonical, mode, size, digest])
+        for name in sorted(names):
+            if name != canonical:
+                entries.append(["hardlink", name, mode, canonical])
     return fingerprint_entries(entries)
 
 
@@ -228,36 +312,49 @@ def cargo_config_files(build_root: Path, cargo_home: Path) -> list[Path]:
     return [path for path in candidates if os.path.lexists(path)]
 
 
+def expected_build_environment() -> dict[str, str]:
+    home = os.environ.get("HOME")
+    if not home or not PurePosixPath(home).is_absolute():
+        fail("build environment must set an absolute HOME")
+    return {
+        **BUILD_ENV_REQUIRED,
+        "HOME": home,
+        "PATH": f"{home}/.cargo/bin:/usr/local/bin:/usr/bin:/bin",
+    }
+
+
 def build_environment_evidence() -> dict[str, object]:
-    for name, expected in BUILD_ENV_REQUIRED.items():
+    required = expected_build_environment()
+    for name, expected in required.items():
         if os.environ.get(name) != expected:
             fail(f"build environment must set {name}={expected}")
     forbidden = sorted(
         name
         for name, value in os.environ.items()
         if value
-        and name not in BUILD_ENV_REQUIRED
+        and name not in required
         and (name in BUILD_ENV_FORBIDDEN or name.startswith(BUILD_ENV_FORBIDDEN_PREFIXES))
     )
     if forbidden:
         fail(f"build environment contains unreviewed overrides: {', '.join(forbidden)}")
     return {
-        "required": BUILD_ENV_REQUIRED,
+        "required": required,
         "forbiddenPresent": [],
         "policy": "no-target-toolchain-or-compiler-overrides",
     }
 
 
 def build_environment_observation() -> dict[str, object]:
+    required = expected_build_environment()
     forbidden = sorted(
         name
         for name, value in os.environ.items()
         if value
-        and name not in BUILD_ENV_REQUIRED
+        and name not in required
         and (name in BUILD_ENV_FORBIDDEN or name.startswith(BUILD_ENV_FORBIDDEN_PREFIXES))
     )
     return {
-        "required": {name: os.environ.get(name) for name in BUILD_ENV_REQUIRED},
+        "required": {name: os.environ.get(name) for name in required},
         "forbiddenPresent": forbidden,
     }
 
@@ -327,7 +424,7 @@ def build_provenance(
     build_root: Path,
     target_dir: Path,
     cargo_home: Path,
-    require_clean_target: bool,
+    target_phase: str,
 ) -> dict[str, object]:
     architecture = normalized_architecture()
     expected = PROVENANCE_PLATFORMS[architecture]
@@ -360,15 +457,30 @@ def build_provenance(
     if not rustc_version.startswith("rustc 1.93.0-dev"):
         fail(f"unexpected guest rustc identity: {rustc_version}")
 
+    root = ROOT.resolve()
     build_root = build_root.resolve()
-    if ROOT not in build_root.parents:
+    if root not in build_root.parents:
         fail("build root escapes repository")
     target_absolute = target_dir.absolute()
-    if ROOT not in target_absolute.parents:
-        fail("target directory escapes repository")
-    if require_clean_target and os.path.lexists(target_absolute):
+    if target_phase not in {"prebuild", "postbuild"}:
+        fail("unknown target provenance phase")
+    target_exists = os.path.lexists(target_absolute)
+    if target_phase == "prebuild" and target_exists:
         fail("objective-program target must be absent before provenance capture")
-    configs = cargo_config_files(build_root, cargo_home.resolve())
+    if target_phase == "postbuild":
+        if not target_exists:
+            fail("objective-program target is missing after the build")
+        target_metadata = os.lstat(target_absolute)
+        if stat.S_ISLNK(target_metadata.st_mode) or not stat.S_ISDIR(target_metadata.st_mode):
+            fail("objective-program target must be a no-follow directory after the build")
+    target_resolved = target_absolute.resolve(strict=target_phase == "postbuild")
+    if root not in target_resolved.parents:
+        fail("target directory escapes repository")
+    expected_cargo_home = (Path(expected_build_environment()["HOME"]) / ".cargo").resolve()
+    cargo_home = cargo_home.resolve()
+    if cargo_home != expected_cargo_home:
+        fail("cargo-home path differs from the reviewed default")
+    configs = cargo_config_files(build_root, cargo_home)
     if configs:
         fail("Cargo configuration may alter the reviewed guest build")
 
@@ -396,7 +508,7 @@ def build_provenance(
         },
         "buildIsolation": {
             "buildRoot": build_root.relative_to(ROOT).as_posix(),
-            "target": target_absolute.relative_to(ROOT).as_posix(),
+            "target": target_resolved.relative_to(root).as_posix(),
             "targetInitiallyAbsent": True,
             "cargoConfig": {
                 "policy": "no-config-files",
@@ -413,7 +525,7 @@ def validate_build_provenance(
     **inputs: Path,
 ) -> dict[str, object]:
     evidence = strict_json(external_regular_file(path, "build provenance"))
-    expected = build_provenance(require_clean_target=False, **inputs)
+    expected = build_provenance(target_phase="postbuild", **inputs)
     if evidence != expected:
         fail("build provenance does not match the installed build inputs")
     return evidence
@@ -505,7 +617,7 @@ def main() -> None:
             build_root=args.build_root,
             target_dir=args.target_dir,
             cargo_home=args.cargo_home,
-            require_clean_target=True,
+            target_phase="prebuild",
         )
         destination = args.capture_build_provenance
         destination.parent.mkdir(parents=True, exist_ok=True)

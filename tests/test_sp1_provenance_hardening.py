@@ -33,9 +33,6 @@ def prepare_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     build_root = repo / "objective-programs"
     build_root.mkdir(parents=True)
     target = build_root / "target"
-    cargo_home = tmp_path / "cargo-home"
-    cargo_home.mkdir()
-
     installer = tmp_path / ".sp1"
     sysroot = installer / "toolchains/fixed"
     (sysroot / "bin").mkdir(parents=True)
@@ -43,7 +40,9 @@ def prepare_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     rustc = sysroot / "bin/rustc"
     rustc.write_text("#!/bin/sh\necho 'rustc 1.93.0-dev (fixture)'\n", encoding="utf-8")
     rustc.chmod(0o755)
-    (sysroot / "lib/data").write_bytes(b"guest sysroot fixture\n")
+    data = sysroot / "lib/data"
+    data.write_bytes(b"guest sysroot fixture\n")
+    (sysroot / "lib/data-hard").hardlink_to(data)
     (sysroot / "lib/data-link").symlink_to("data")
     guest_archive = installer / "rust-toolchain-x86_64-unknown-linux-gnu.tar.gz"
     with tarfile.open(guest_archive, "w:gz") as archive:
@@ -77,6 +76,13 @@ def prepare_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         ):
             monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CARGO_INCREMENTAL", "0")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv(
+        "PATH", f"{tmp_path / 'home'}/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+    )
+    expected_cargo_home = tmp_path / "home/.cargo"
+    expected_cargo_home.mkdir(parents=True)
+    arguments_cargo_home = expected_cargo_home
 
     arguments = {
         "cargo_prove": cargo_prove,
@@ -85,7 +91,7 @@ def prepare_inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "guest_sysroot": sysroot,
         "build_root": build_root,
         "target_dir": target,
-        "cargo_home": cargo_home,
+        "cargo_home": arguments_cargo_home,
     }
     return verifier, arguments
 
@@ -94,14 +100,16 @@ def test_captures_and_revalidates_approved_toolchain_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
-    evidence = verifier.build_provenance(require_clean_target=True, **arguments)
+    evidence = verifier.build_provenance(target_phase="prebuild", **arguments)
     assert evidence["trust"] == "candidate-build-inputs-only"
     assert evidence["buildIsolation"]["targetInitiallyAbsent"] is True
-    assert evidence["guestToolchain"]["regularFileCount"] == 2
+    assert evidence["guestToolchain"]["regularFileCount"] == 3
     assert evidence["guestToolchain"]["symlinkCount"] == 1
+    assert evidence["guestToolchain"]["hardlinkCount"] == 1
 
     path = tmp_path / "provenance.json"
     path.write_text(json.dumps(evidence), encoding="utf-8")
+    arguments["target_dir"].mkdir()
     assert verifier.validate_build_provenance(path, **arguments) == evidence
 
 
@@ -118,10 +126,12 @@ def test_untrusted_observation_survives_unapproved_cargo_prove(
     assert observation["trust"] == "untrusted-forensics-only"
     assert observation["cargoProve"]["executableSha256"] == digest(arguments["cargo_prove"])
     with pytest.raises(SystemExit, match="cargo-prove executable digest drift"):
-        verifier.build_provenance(require_clean_target=True, **arguments)
+        verifier.build_provenance(target_phase="prebuild", **arguments)
 
 
-@pytest.mark.parametrize("contamination", ["target", "config", "environment"])
+@pytest.mark.parametrize(
+    "contamination", ["target", "config", "environment", "cargo-home-env", "cargo-home-path"]
+)
 def test_rejects_unclean_build_inputs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contamination: str
 ) -> None:
@@ -132,11 +142,66 @@ def test_rejects_unclean_build_inputs(
         config = arguments["build_root"] / ".cargo/config.toml"
         config.parent.mkdir()
         config.write_text("[build]\ntarget-dir = 'elsewhere'\n", encoding="utf-8")
-    else:
+    elif contamination == "environment":
         monkeypatch.setenv("RUSTFLAGS", "-C target-cpu=native")
+    elif contamination == "cargo-home-env":
+        monkeypatch.setenv("CARGO_HOME", str(tmp_path / "controlled"))
+    else:
+        arguments["cargo_home"] = tmp_path / "controlled"
 
     with pytest.raises(SystemExit):
-        verifier.build_provenance(require_clean_target=True, **arguments)
+        verifier.build_provenance(target_phase="prebuild", **arguments)
+
+
+def test_postbuild_rejects_target_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    evidence = verifier.build_provenance(target_phase="prebuild", **arguments)
+    path = tmp_path / "provenance.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    external = tmp_path / "external-target"
+    external.mkdir()
+    arguments["target_dir"].symlink_to(external, target_is_directory=True)
+    with pytest.raises(SystemExit, match="no-follow directory"):
+        verifier.validate_build_provenance(path, **arguments)
+
+
+def test_rejects_unsafe_sysroot_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    unsafe = arguments["guest_sysroot"] / "lib/unsafe"
+    unsafe.symlink_to("/tmp/host-rustc")
+    with pytest.raises(SystemExit, match="absolute link target"):
+        verifier.directory_fingerprint(arguments["guest_sysroot"])
+
+
+def test_postbuild_detects_sysroot_mode_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    evidence = verifier.build_provenance(target_phase="prebuild", **arguments)
+    path = tmp_path / "provenance.json"
+    path.write_text(json.dumps(evidence), encoding="utf-8")
+    arguments["target_dir"].mkdir()
+    data = arguments["guest_sysroot"] / "lib/data"
+    data.chmod(0o600)
+    with pytest.raises(SystemExit, match="installed guest sysroot differs"):
+        verifier.validate_build_provenance(path, **arguments)
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["CARGO_HOME", "RUSTUP_HOME", "RUSTC", "RUSTDOCFLAGS", "LD_PRELOAD", "PYTHONPATH"],
+)
+def test_rejects_environment_control_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    verifier, arguments = prepare_inputs(tmp_path, monkeypatch)
+    monkeypatch.setenv(name, "/tmp/controlled")
+    with pytest.raises(SystemExit, match="unreviewed overrides"):
+        verifier.build_provenance(target_phase="prebuild", **arguments)
 
 
 def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> None:
@@ -154,6 +219,15 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     assert workflow.index("Capture untrusted SP1 build-input observation") < workflow.index(
         "Validate clean SP1 build-input provenance"
     )
+    assert workflow.count('clean_env=(env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0)') >= 2
+    assert workflow.count('--cargo-home "$HOME/.cargo"') == 3
+    build_step = workflow[
+        workflow.index("Build objective guests on x86 Linux") : workflow.index(
+            "Capture candidate Hadamard mock execution"
+        )
+    ]
+    assert "\n          cargo " not in build_step
+    assert '"${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked' in build_step
 
     cache = workflow[
         workflow.index("Restore pinned Rust build cache") : workflow.index(

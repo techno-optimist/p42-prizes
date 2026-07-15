@@ -171,6 +171,7 @@ jobs:
             --cargo-prove-archive "$RUNNER_TEMP/cargo-prove.tar.gz" \
             --guest-toolchain-archive "$guest_archive" \
             --guest-sysroot "$guest_sysroot" \
+            --cargo-home "$HOME/.cargo" \
             --capture-build-observation "$RUNNER_TEMP/sp1-build-input-observation.json"
       - name: Retain untrusted SP1 build-input observation
         if: ${{ always() }}
@@ -185,23 +186,32 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e objective-programs/target
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0)
           guest_archive="$HOME/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz"
-          guest_sysroot="$(rustc +succinct --print sysroot)"
-          python3 scripts/verify-sp1-objective-artifact.py \
+          guest_sysroot="$("${clean_env[@]}" "$HOME/.cargo/bin/rustc" +succinct --print sysroot)"
+          "${clean_env[@]}" /usr/bin/python3 scripts/verify-sp1-objective-artifact.py \
             --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove" \
             --cargo-prove-archive "$RUNNER_TEMP/cargo-prove.tar.gz" \
             --guest-toolchain-archive "$guest_archive" \
             --guest-sysroot "$guest_sysroot" \
+            --cargo-home "$HOME/.cargo" \
             --capture-build-provenance "$RUNNER_TEMP/sp1-build-provenance.json"
       - name: Test objective predicate and Solidity ABI encoding
         working-directory: objective-programs
-        run: cargo test --locked -p p42-objective-core
+        shell: bash
+        run: |
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 \
+            "$HOME/.cargo/bin/cargo" test --locked -p p42-objective-core
       - name: Build objective guests on x86 Linux
         working-directory: objective-programs
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked \
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0)
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
             -p p42-hadamard-668-objective-script \
             -p p42-distinct-subset-sums-a11-objective-script
           for rebuilt in \
@@ -217,15 +227,15 @@ jobs:
           hadamard_audit=target/hadamard-reproducibility
           mkdir -p "$hadamard_audit"
           cp "$hadamard" "$hadamard_audit/program.elf"
-          cargo run --locked -p p42-hadamard-668-objective-script -- \
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-hadamard-668-objective-script -- \
             identity-elf "$hadamard" > "$hadamard_audit/identity.json"
           a11=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program
           audit=target/a11-reproducibility
           mkdir -p "$audit"
           cp "$a11" "$audit/program.elf"
-          cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
             identity-elf "$a11" > "$audit/identity.json"
-          cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
             execute-fixture-elf "$a11" ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json \
             > "$audit/execution.json"
       - name: Capture candidate Hadamard mock execution
@@ -233,7 +243,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo run --locked -p p42-hadamard-668-objective-script -- \
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 \
+            "$HOME/.cargo/bin/cargo" run --locked -p p42-hadamard-668-objective-script -- \
             execute-fixture-elf target/hadamard-reproducibility/program.elf \
             ../problems/hadamard-668-defect/examples/sylvester-prefix.json \
             > target/hadamard-reproducibility/execution.json
@@ -276,12 +288,18 @@ jobs:
           cmp --silent "$rebuilt_a11" "$frozen_a11"
           echo "f7350b3182568fed19536cfa7ea3f3909cbee9bd3f3a0201ac2d9e88ba1074ae  $frozen_a11" | sha256sum --check --strict
       - name: Verify frozen ELF and independently derive vkey
+        shell: bash
         run: |
-          python scripts/verify-sp1-objective-artifact.py \
+          set -euo pipefail
+          clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
+          clean_env=(env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0)
+          guest_sysroot="$("${clean_env[@]}" "$HOME/.cargo/bin/rustc" +succinct --print sysroot)"
+          "${clean_env[@]}" /usr/bin/python3 scripts/verify-sp1-objective-artifact.py \
             --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove" \
             --cargo-prove-archive "$RUNNER_TEMP/cargo-prove.tar.gz" \
             --guest-toolchain-archive "$HOME/.sp1/rust-toolchain-x86_64-unknown-linux-gnu.tar.gz" \
-            --guest-sysroot "$(rustc +succinct --print sysroot)" \
+            --guest-sysroot "$guest_sysroot" \
+            --cargo-home "$HOME/.cargo" \
             --build-provenance "$RUNNER_TEMP/sp1-build-provenance.json"
           python scripts/verify-sp1-a11-objective-artifact.py --cargo-prove "$RUNNER_TEMP/cargo-prove/cargo-prove"
       - name: Verify deterministic resource envelope
