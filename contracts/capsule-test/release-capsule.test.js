@@ -33,13 +33,16 @@ function valuesFor(contract, fill = 1n) {
 
 function constructorArgs(contract) {
   const constructor = contract.abi.find(({ type }) => type === "constructor") ?? { inputs: [] };
-  return constructor.inputs.map(({ type }, index) => {
+  const valueFor = ({ type, components }, index) => {
+    if (type === "tuple") return components.map((component, componentIndex) => valueFor(component, componentIndex));
     if (type.endsWith("[]")) return ["0x0000000000000000000000000000000000000011", "0x0000000000000000000000000000000000000012", "0x0000000000000000000000000000000000000013"];
     if (type === "address") return `0x${(index + 1).toString(16).padStart(40, "0")}`;
     if (type === "bool") return true;
+    if (type === "bytes32") return `0x${(index + 1).toString(16).padStart(64, "0")}`;
     if (type.startsWith("int")) return -100n;
     return index === 0 ? 2n : BigInt(index + 10);
-  });
+  };
+  return constructor.inputs.map(valueFor);
 }
 
 describe("closed immutable release capsule", () => {
@@ -131,12 +134,27 @@ describe("closed immutable release capsule", () => {
   it("binds constructor values and deployment block timestamps for P42SubmissionManager", async () => {
     const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
     const contract = capsule.contracts.find(({ name }) => name === "P42SubmissionManager");
-    const args = ["0x0000000000000000000000000000000000000001", "0x0000000000000000000000000000000000000002", "0x0000000000000000000000000000000000000003", "0x0000000000000000000000000000000000000004", 100, 5n, 3600, true, 4096n, -100n, 1n];
+    const args = [
+      [
+        "0x0000000000000000000000000000000000000001",
+        "0x0000000000000000000000000000000000000002",
+        "0x0000000000000000000000000000000000000003",
+        "0x0000000000000000000000000000000000000004",
+        100, 5n, 3600, true, 4096n, -100n, 1n,
+      ],
+      [
+        `0x${"1".repeat(64)}`,
+        `0x${"2".repeat(64)}`,
+        "0x0000000000000000000000000000000000000005",
+        "0x0000000000000000000000000000000000000006",
+        "0x0000000000000000000000000000000000000007",
+      ],
+    ];
     const first = immutableValuesFromConstructor(contract, args, { blockTimestamp: 1_800_000_000 });
     assert.equal(first.deployedAt, 1_800_000_000);
     assert.equal(first.armNotBefore, 1_800_003_600n);
     assert.notEqual(reconstructExpectedRuntime(contract, first), reconstructExpectedRuntime(contract, immutableValuesFromConstructor(contract, args, { blockTimestamp: 1_800_000_001 })));
-    const changedArgs = [...args]; changedArgs[4] = 101;
+    const changedArgs = structuredClone(args); changedArgs[0][4] = 101;
     assert.notEqual(reconstructExpectedRuntime(contract, first), reconstructExpectedRuntime(contract, immutableValuesFromConstructor(contract, changedArgs, { blockTimestamp: 1_800_000_000 })));
     assert.throws(() => immutableValuesFromConstructor(contract, args), /block timestamp/);
   });

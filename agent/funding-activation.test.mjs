@@ -9,6 +9,13 @@ import { buildFundingActivationPlan, runProductionAuthorizationValidator, writeP
 
 const hash = (char) => `sha256:${char.repeat(64)}`;
 const address = (value) => ethers.getAddress(`0x${value.toString(16).padStart(40, "0")}`);
+const authorityWallets = ["1", "2", "3"].map((char) => new ethers.Wallet(`0x${char.repeat(64)}`));
+const roles = ["production-launch-authority", "independent-security-authority", "governance-authority"];
+const fundingTypes = { FundingAuthorization: [
+  { name: "role", type: "bytes32" }, { name: "boardSetDigest", type: "bytes32" },
+  { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
+  { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
+] };
 
 function manifest() {
   return {
@@ -18,7 +25,10 @@ function manifest() {
     network: { name: "baseSepolia", chainId: 84532 },
     deploymentCommit: "a".repeat(40),
     deploymentConfigHash: `0x${"b".repeat(64)}`,
-    roles: { treasury: address(2) },
+    roles: {
+      owner: address(1), treasury: address(2), productionLaunchAuthority: authorityWallets[0].address,
+      independentSecurityAuthority: authorityWallets[1].address, governanceAuthority: authorityWallets[2].address,
+    },
     governance: {
       signers: [address(3), address(4), address(5)], threshold: "2",
       delaySeconds: "3600", operationGracePeriodSeconds: "604800",
@@ -33,7 +43,8 @@ function manifest() {
       resolverQuorum: { address: address(11) },
     },
     releaseEvidence: {
-      releaseBindingDigest: hash("1"), capsuleDigest: hash("2"), slateDigest: hash("3"), releaseIndexDigest: hash("4"),
+      releaseBindingDigest: hash("1"), boardSetDigest: hash("0"), capsuleDigest: hash("2"),
+      slateDigest: hash("3"), releaseIndexDigest: hash("4"),
     },
     problems: Array.from({ length: 10 }, (_, index) => ({
       problemId: index + 1,
@@ -45,6 +56,40 @@ function manifest() {
         challenges: { address: address(103 + index * 4) },
       },
     })),
+  };
+}
+
+function signatureBundle(inputManifest, auth = authorization(inputManifest)) {
+  const expiresAt = String(Math.floor(Date.parse(auth.expires_at_utc) / 1000));
+  const common = {
+    boardSetDigest: `0x${inputManifest.releaseEvidence.boardSetDigest.slice(7)}`,
+    releaseBindingDigest: `0x${inputManifest.releaseEvidence.releaseBindingDigest.slice(7)}`,
+    authorizationDigest: `0x${auth.authorization_digest.slice(7)}`,
+    expiresAt: BigInt(expiresAt), nonce: 0n,
+  };
+  return {
+    schema: "p42-funding-activation-signatures/v2", chainId: inputManifest.network.chainId,
+    boardSetDigest: inputManifest.releaseEvidence.boardSetDigest,
+    releaseBindingDigest: inputManifest.releaseEvidence.releaseBindingDigest,
+    authorizationDigest: auth.authorization_digest, expiresAt,
+    authorities: {
+      productionLaunchAuthority: authorityWallets[0].address,
+      independentSecurityAuthority: authorityWallets[1].address,
+      governanceAuthority: authorityWallets[2].address,
+    },
+    boards: inputManifest.problems.map((problem, boardIndex) => {
+      const submissionManager = problem.contracts.submissions.address;
+      const domain = { name: "P42SubmissionManager", version: "2", chainId: inputManifest.network.chainId, verifyingContract: submissionManager };
+      return {
+        boardIndex, problemId: problem.problemId, submissionManager, nonce: "0",
+        signatures: roles.map((role, roleIndex) => ({
+          role, signer: authorityWallets[roleIndex].address,
+          signature: ethers.Signature.from(authorityWallets[roleIndex].signingKey.sign(
+            ethers.TypedDataEncoder.hash(domain, fundingTypes, { ...common, role: ethers.id(role) }),
+          )).serialized,
+        })),
+      };
+    }),
   };
 }
 
@@ -67,7 +112,8 @@ test("activation plan binds ten treasury authorizations before governance opens 
   const plan = buildFundingActivationPlan({
     manifest: deployment,
     manifestBytesDigest: hash("e"),
-    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, manifestValidator: () => ({}),
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}),
   });
   assert.equal(plan.boardCount, 10);
   assert.equal(plan.operations.length, 30);
@@ -82,7 +128,13 @@ test("activation plan binds ten treasury authorizations before governance opens 
     const open = plan.operations[index + 20];
     assert.deepEqual(arm.dependsOn, authorizeLabels);
     assert.deepEqual(open.dependsOn, armLabels);
-    assert.equal(authorize.data.slice(10, 74), "a".repeat(64));
+    const decoded = new ethers.Interface([
+      "function authorizeFunding(bytes32,uint64,uint256,bytes[3])",
+    ]).decodeFunctionData("authorizeFunding", authorize.data);
+    assert.equal(decoded[0], `0x${"a".repeat(64)}`);
+    assert.equal(decoded[2], 0n);
+    assert.equal(decoded[3].length, 3);
+    assert.equal(authorize.verifiedSignatureCount, 3);
     assert.equal(arm.data.slice(-64), "a".repeat(64));
   }
 });
@@ -91,9 +143,9 @@ test("activation rejects release substitution and incomplete topology", () => {
   const deployment = manifest();
   const auth = authorization(deployment);
   auth.release_binding.git_commit = "9".repeat(40);
-  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, manifestValidator: () => ({}) }), /git_commit/);
+  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}) }), /git_commit/);
   deployment.problems.pop();
-  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") }, manifestValidator: () => ({}) }), /exactly ten/);
+  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") }, activationSignatures: { schema: "p42-funding-activation-signatures/v2" }, manifestValidator: () => ({}) }), /exactly ten/);
 });
 
 test("activation rejects a legacy 43-contract authorization path", () => {
@@ -107,9 +159,62 @@ test("activation rejects a legacy 43-contract authorization path", () => {
     manifest: deployment,
     manifestBytesDigest: hash("e"),
     validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") },
+    activationSignatures: signatureBundle(deployment),
     manifestValidator: () => { historicalValidatorCalled = true; },
   }), /exact seven ordered shared contracts/);
   assert.equal(historicalValidatorCalled, false);
+});
+
+test("activation fails closed on legacy, reordered, high-s, forged, and incomplete signature bundles", () => {
+  const deployment = manifest();
+  const auth = authorization(deployment);
+  const build = (bundle) => buildFundingActivationPlan({
+    manifest: deployment, manifestBytesDigest: hash("e"),
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    activationSignatures: bundle, manifestValidator: () => ({}),
+  });
+  const legacy = signatureBundle(deployment, auth); legacy.schema = "p42-funding-activation-signatures/v1";
+  assert.throws(() => build(legacy), /legacy or unknown/);
+  const reordered = signatureBundle(deployment, auth);
+  [reordered.boards[0].signatures[0], reordered.boards[0].signatures[1]] = [reordered.boards[0].signatures[1], reordered.boards[0].signatures[0]];
+  assert.throws(() => build(reordered), /role order or signer/);
+  const highS = signatureBundle(deployment, auth);
+  const parsed = ethers.Signature.from(highS.boards[0].signatures[0].signature);
+  const high = 0xfffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141n - BigInt(parsed.s);
+  highS.boards[0].signatures[0].signature = ethers.concat([parsed.r, ethers.toBeHex(high, 32), ethers.toBeHex(parsed.v === 27 ? 28 : 27, 1)]);
+  assert.throws(() => build(highS), /low-s\/v/);
+  const forged = signatureBundle(deployment, auth);
+  forged.boards[0].signatures[0].signature = forged.boards[1].signatures[0].signature;
+  assert.throws(() => build(forged), /recovered signer/);
+  const incomplete = signatureBundle(deployment, auth); incomplete.boards.pop();
+  assert.throws(() => build(incomplete), /exactly ten/);
+  const aliased = signatureBundle(deployment, auth);
+  deployment.roles.productionLaunchAuthority = deployment.roles.treasury;
+  aliased.authorities.productionLaunchAuthority = deployment.roles.treasury;
+  assert.throws(() => build(aliased), /distinct from treasury and owner/);
+});
+
+test("activation signature bundle binds chain, managers, release digests, expiry, and nonce", () => {
+  const deployment = manifest();
+  const auth = authorization(deployment);
+  const build = (bundle) => buildFundingActivationPlan({
+    manifest: deployment, manifestBytesDigest: hash("e"),
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    activationSignatures: bundle, manifestValidator: () => ({}),
+  });
+  for (const [mutate, message] of [
+    [(bundle) => { bundle.chainId = 8453; }, /chain/],
+    [(bundle) => { bundle.boardSetDigest = hash("9"); }, /boardSetDigest/],
+    [(bundle) => { bundle.releaseBindingDigest = hash("9"); }, /releaseBindingDigest/],
+    [(bundle) => { bundle.authorizationDigest = hash("9"); }, /authorizationDigest/],
+    [(bundle) => { bundle.expiresAt = "1"; }, /expiry/],
+    [(bundle) => { bundle.boards[0].submissionManager = address(999); }, /ordered manifest board/],
+    [(bundle) => { bundle.boards[0].nonce = "1"; }, /recovered signer/],
+  ]) {
+    const bundle = signatureBundle(deployment, auth);
+    mutate(bundle);
+    assert.throws(() => build(bundle), message);
+  }
 });
 
 test("validator invocation is argv-only, bounded, and rejects nonzero exit", () => {

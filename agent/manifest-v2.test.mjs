@@ -114,6 +114,9 @@ function v2Manifest() {
   second.maxSolutionBytes = "0";
 
   manifest.schema = MANIFEST_SCHEMA_V2;
+  manifest.roles.productionLaunchAuthority = address(0x45);
+  manifest.roles.independentSecurityAuthority = address(0x46);
+  manifest.roles.governanceAuthority = address(0x47);
   manifest.roles.objectiveVerifier = address(0x44);
   manifest.roles.objectiveVerifierCodehash = ethers.id("objective-verifier-runtime");
   manifest.releaseMode = "fixture";
@@ -370,20 +373,40 @@ function productionManifest(capsule) {
     problem.challengeManager = problem.contracts.challenges.address;
     return problem;
   });
+  manifest.releaseMode = "production";
+  manifest.releaseEvidence = { mode: "production", slateDigest: slate.slateDigest, capsuleDigest: capsule.capsuleDigest, configDigest: digest("b"), boardSetDigest: digest("0"), operationPlanDigest: digest("0"), contractCount: 47, boardCount: 10, operationCount: 110 };
+  manifest.releaseEvidence.releaseBindingDigest = `sha256:${createHash("sha256").update(JSON.stringify({ capsuleDigest: manifest.releaseEvidence.capsuleDigest, configDigest: manifest.releaseEvidence.configDigest, deploymentCommit: manifest.deploymentCommit, slateDigest: manifest.releaseEvidence.slateDigest })).digest("hex")}`;
+  Object.assign(manifest.releaseEvidence, computeProductionReleaseEvidence(manifest, { productionSlate: slate }));
   const capsuleByName = new Map(capsule.contracts.map((contract) => [contract.name, contract]));
   const bindContract = (entry) => {
     const artifact = capsuleByName.get(entry.name); const timestamp = 1_800_000_000;
-    const types = (artifact.abi.find((item) => item.type === "constructor")?.inputs ?? []).map((input) => input.type);
-    if (entry.constructorArgs.length !== types.length) entry.constructorArgs = types.map((type) => {
-      if (type.endsWith("[]")) return [];
-      if (type === "address") return address(1);
-      if (type === "bool") return false;
-      if (type === "bytes32") return ethers.ZeroHash;
+    const inputs = artifact.abi.find((item) => item.type === "constructor")?.inputs ?? [];
+    const defaultValue = (input) => {
+      if (input.type.endsWith("[]")) return [];
+      if (input.type === "tuple") return input.components.map(defaultValue);
+      if (input.type === "address") return address(1);
+      if (input.type === "bool") return false;
+      if (input.type === "bytes32") return ethers.ZeroHash;
       return "0";
-    });
-    const initCodeHash = ethers.keccak256(ethers.concat([artifact.creationCode, ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs)]));
+    };
+    if (entry.name === "P42SubmissionManager") {
+      const problem = manifest.problems.find((candidate) => candidate.contracts.submissions === entry);
+      entry.constructorArgs = [[
+        problem.contracts.pool.address, problem.contracts.ledger.address,
+        manifest.roles.owner, manifest.roles.treasury, manifest.parameters.alphaBps,
+        manifest.parameters.minPostingBondWei, manifest.parameters.challengeWindowSeconds,
+        problem.onchainDa, problem.maxSolutionBytes, problem.seedScoreAtoms, problem.minImprovementAtoms,
+      ], [
+        `0x${manifest.releaseEvidence.boardSetDigest.slice("sha256:".length)}`,
+        `0x${manifest.releaseEvidence.releaseBindingDigest.slice("sha256:".length)}`,
+        manifest.roles.productionLaunchAuthority, manifest.roles.independentSecurityAuthority,
+        manifest.roles.governanceAuthority,
+      ]];
+    } else if (entry.constructorArgs.length !== inputs.length) entry.constructorArgs = inputs.map(defaultValue);
+    const encodedArgs = ethers.AbiCoder.defaultAbiCoder().encode(inputs, entry.constructorArgs);
+    const initCodeHash = ethers.keccak256(ethers.concat([artifact.creationCode, encodedArgs]));
     const runtimeHash = ethers.keccak256(reconstructExpectedRuntime(artifact, immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: timestamp })));
-    Object.assign(entry, { capsuleArtifactDigest: artifact.artifactDigest, initCodeHash, constructorArgsHash: ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs)), deploymentBlockTimestamp: timestamp, blockTimestampEvidence: { timestamp, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: `0x${"a".repeat(64)}`, secondaryBlockHash: `0x${"a".repeat(64)}` }, runtimeCodeHash: runtimeHash, deployedCodeHash: runtimeHash, expectedRuntimeCodeHash: runtimeHash, primaryObservedRuntimeCodeHash: runtimeHash, secondaryObservedRuntimeCodeHash: runtimeHash });
+    Object.assign(entry, { capsuleArtifactDigest: artifact.artifactDigest, initCodeHash, constructorArgsHash: ethers.keccak256(encodedArgs), deploymentBlockTimestamp: timestamp, blockTimestampEvidence: { timestamp, primaryOperatorId: "operator-a", secondaryOperatorId: "operator-b", primaryBlockHash: `0x${"a".repeat(64)}`, secondaryBlockHash: `0x${"a".repeat(64)}` }, runtimeCodeHash: runtimeHash, deployedCodeHash: runtimeHash, expectedRuntimeCodeHash: runtimeHash, primaryObservedRuntimeCodeHash: runtimeHash, secondaryObservedRuntimeCodeHash: runtimeHash });
   };
   Object.values(manifest.contracts).forEach(bindContract);
   manifest.problems.flatMap(({ contracts }) => Object.values(contracts)).forEach(bindContract);
@@ -409,9 +432,6 @@ function productionManifest(capsule) {
   manifest.setupTransactions = deriveExactSetupOperations(manifest).map((operation) => ({ ...operation, status: "pending", executedOperationId: null, executedOperationClass: null, txHash: null, blockNumber: null }));
   manifest.sourceVerification.contracts.boards = manifest.problems.map(({ problemId }) => ({ problemId, pool: null, ledger: null, submissions: null, challenges: null }));
   bindObjectivePackages(manifest);
-  manifest.releaseMode = "production";
-  manifest.releaseEvidence = { mode: "production", slateDigest: slate.slateDigest, capsuleDigest: capsule.capsuleDigest, configDigest: digest("b"), boardSetDigest: digest("0"), operationPlanDigest: digest("0"), contractCount: 47, boardCount: 10, operationCount: 110 };
-  manifest.releaseEvidence.releaseBindingDigest = `sha256:${createHash("sha256").update(JSON.stringify({ capsuleDigest: manifest.releaseEvidence.capsuleDigest, configDigest: manifest.releaseEvidence.configDigest, deploymentCommit: manifest.deploymentCommit, slateDigest: manifest.releaseEvidence.slateDigest })).digest("hex")}`;
   Object.assign(manifest.releaseEvidence, computeProductionReleaseEvidence(manifest, { productionSlate: slate }));
   return { manifest: rebind(manifest), slate };
 }
@@ -440,6 +460,7 @@ test("production indexer validation recomputes exact-ten release evidence and ru
     ["initcode", (m) => { m.problems[0].contracts.pool.initCodeHash = m.problems[0].contracts.ledger.initCodeHash; }, /initCodeHash does not match/],
     ["expected runtime", (m) => { m.problems[0].contracts.pool.expectedRuntimeCodeHash = `0x${"f".repeat(64)}`; }, /runtime hashes must match/],
     ["operator runtime", (m) => { m.problems[0].contracts.pool.secondaryObservedRuntimeCodeHash = `0x${"f".repeat(64)}`; }, /runtime hashes must match/],
+    ["funding authority role", (m) => { m.roles.productionLaunchAuthority = address(0x99); }, /productionLaunchAuthority does not match/],
   ]) {
     const { manifest: changed, slate } = productionManifest(capsule); mutate(changed); rebind(changed);
     assert.throws(() => validateManifestEvidence(changed, optionsFor(slate)), pattern, name);
@@ -476,11 +497,12 @@ test("explorer dossier verifies the canonical ordered 47 with factory-child prov
   for (const { entry } of explorerContractEntries(manifest)) {
     const artifact = artifacts.get(entry.name), info = infos.get(artifact.buildInfoId);
     const runtime = reconstructExpectedRuntime(artifact, immutableValuesFromConstructor(artifact, entry.constructorArgs, { blockTimestamp: entry.deploymentBlockTimestamp }));
-    const types = (artifact.abi.find((item) => item.type === "constructor")?.inputs ?? []).map((input) => input.type);
+    const inputs = artifact.abi.find((item) => item.type === "constructor")?.inputs ?? [];
+    const encodedArgs = ethers.AbiCoder.defaultAbiCoder().encode(inputs, entry.constructorArgs);
     runtimes.set(entry.address.toLowerCase(), runtime);
     fixtures.set(entry.address.toLowerCase(), {
-      etherscan: { status: "1", message: "OK", result: [{ SourceCode: JSON.stringify({ language: "Solidity", sources: info.input.input.sources, settings: info.settings }), CompilerVersion: `v${info.compiler.longVersion}`, ConstructorArguments: ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs).slice(2), ContractName: artifact.name }] },
-      sourcify: { match: "exact_match", creationMatch: "exact_match", runtimeMatch: "exact_match", chainId: "84532", address: entry.address, verifiedAt: "2026-07-11T12:00:00Z", matchId: "3266227", sources: info.input.input.sources, compilation: { language: "Solidity", compiler: "solc", compilerVersion: `v${info.compiler.longVersion}`, compilerSettings: info.settings, name: artifact.name, fullyQualifiedName: `${artifact.sourceName}:${artifact.name}` }, stdJsonInput: { language: "Solidity", sources: info.input.input.sources, settings: info.settings }, creationBytecode: { recompiledBytecode: artifact.creationCode, onchainBytecode: `${artifact.creationCode}${ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs).slice(2)}`, transformationValues: { constructorArguments: ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs) } }, runtimeBytecode: { recompiledBytecode: runtime, onchainBytecode: runtime, immutableReferences: artifact.immutableReferences } },
+      etherscan: { status: "1", message: "OK", result: [{ SourceCode: JSON.stringify({ language: "Solidity", sources: info.input.input.sources, settings: info.settings }), CompilerVersion: `v${info.compiler.longVersion}`, ConstructorArguments: encodedArgs.slice(2), ContractName: artifact.name }] },
+      sourcify: { match: "exact_match", creationMatch: "exact_match", runtimeMatch: "exact_match", chainId: "84532", address: entry.address, verifiedAt: "2026-07-11T12:00:00Z", matchId: "3266227", sources: info.input.input.sources, compilation: { language: "Solidity", compiler: "solc", compilerVersion: `v${info.compiler.longVersion}`, compilerSettings: info.settings, name: artifact.name, fullyQualifiedName: `${artifact.sourceName}:${artifact.name}` }, stdJsonInput: { language: "Solidity", sources: info.input.input.sources, settings: info.settings }, creationBytecode: { recompiledBytecode: artifact.creationCode, onchainBytecode: `${artifact.creationCode}${encodedArgs.slice(2)}`, transformationValues: { constructorArguments: encodedArgs } }, runtimeBytecode: { recompiledBytecode: runtime, onchainBytecode: runtime, immutableReferences: artifact.immutableReferences } },
     });
   }
   const factoryChild = explorerContractEntries(manifest).find(({ creationKind }) => creationKind === "factory-call-create2").entry;

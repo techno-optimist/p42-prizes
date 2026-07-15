@@ -125,7 +125,8 @@ export function parseSourcifyV2Raw(observation, options) {
 }
 
 function expected(artifact, info, entry) {
-  const types = (artifact.abi.find((x) => x.type === "constructor")?.inputs ?? []).map((x) => x.type); const args = ethers.AbiCoder.defaultAbiCoder().encode(types, entry.constructorArgs);
+  const inputs = artifact.abi.find((x) => x.type === "constructor")?.inputs ?? [];
+  const args = ethers.AbiCoder.defaultAbiCoder().encode(inputs, entry.constructorArgs);
   return { sourceDigest: canonicalDigest(info.input.input.sources), settingsDigest: canonicalDigest(info.settings), compilerVersion: info.compiler.longVersion, name: artifact.name, fullyQualifiedName: `${artifact.sourceName}:${artifact.name}`, constructorArgs: args.toLowerCase(), creationCode: artifact.creationCode.toLowerCase(), runtimeHash: entry.runtimeCodeHash.toLowerCase() };
 }
 

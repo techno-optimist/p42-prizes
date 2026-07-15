@@ -21,6 +21,18 @@ const CHALLENGE_BOND = ethers.parseEther("0.03");
 const DA_HASH = ethers.id("resolver-quorum-da");
 const OBJECTIVE_PROGRAM = ethers.id("p42-objective-program-v1");
 const SHA = (digit) => `sha256:${digit.repeat(64)}`;
+const BOARD_SET_DIGEST = ethers.id("p42-resolver-quorum-board-set");
+const RELEASE_BINDING_DIGEST = ethers.id("p42-resolver-quorum-release-binding");
+
+function fundingAuthorizationConfig(authorities) {
+  return {
+    boardSetDigest: BOARD_SET_DIGEST,
+    releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    productionLaunchAuthority: authorities[0].address,
+    independentSecurityAuthority: authorities[1].address,
+    governanceAuthority: authorities[2].address,
+  };
+}
 
 const DECISION_TYPES = {
   Decision: [
@@ -117,15 +129,20 @@ async function deployFixture(options = {}) {
   const submissionFactory = await SubmissionFactory.deploy();
   await submissionFactory.waitForDeployment();
   const submissionManagers = [];
+  const fundingAuthorities = [signerA, signerB, signerC];
   for (let i = 0; i < MANAGER_COUNT; i += 1) {
     const tx = await submissionFactory.deploySubmissionManager(
       ethers.id(`submission-manager-${i}`),
       {
-        pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
-        treasury: treasury.address, alphaBps: 200, minPostingBondWei: ethers.parseEther("0.01"),
-        challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: false, maxSolutionBytes: 0,
-        seedScoreAtoms: 1_000_000, minImprovementAtoms: 1,
+        deployment: {
+          pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+          treasury: treasury.address, alphaBps: 200, minPostingBondWei: ethers.parseEther("0.01"),
+          challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: false, maxSolutionBytes: 0,
+          seedScoreAtoms: 1_000_000, minImprovementAtoms: 1,
+        },
+        fundingAuthorization: fundingAuthorizationConfig(fundingAuthorities),
       },
+      Submissions.bytecode,
     );
     const receipt = await tx.wait();
     const deployed = receipt.logs.map((log) => {
@@ -423,11 +440,12 @@ describe("P42ResolverQuorum", function () {
   it("rejects a genuine manager deployment attempt bound to a noncanonical submission manager", async function () {
     const fixture = await deployFixture();
     const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-    const spoof = await Submissions.deploy(
-      await fixture.pool.getAddress(), await fixture.ledger.getAddress(), fixture.owner.address,
-      fixture.treasury.address, 200, ethers.parseEther("0.01"), CHALLENGE_WINDOW,
-      false, 0, 1_000_000, 1,
-    );
+    const spoof = await Submissions.deploy({
+      pool: await fixture.pool.getAddress(), ledger: await fixture.ledger.getAddress(),
+      owner: fixture.owner.address, treasury: fixture.treasury.address, alphaBps: 200,
+      minPostingBondWei: ethers.parseEther("0.01"), challengeWindowSeconds: CHALLENGE_WINDOW,
+      onchainDa: false, maxSolutionBytes: 0, seedScoreAtoms: 1_000_000, minImprovementAtoms: 1,
+    }, fundingAuthorizationConfig([fixture.signerA, fixture.signerB, fixture.signerC]));
     await spoof.waitForDeployment();
     await expectCustomError(
       fixture.factory.deployManager(
@@ -455,11 +473,15 @@ describe("P42ResolverQuorum", function () {
     const tx = await fixture.submissionFactory.deploySubmissionManager(
       ethers.id("wrong-submission-governance"),
       {
-        pool: await fixture.pool.getAddress(), ledger: await fixture.ledger.getAddress(), owner: fixture.outsider.address,
-        treasury: fixture.treasury.address, alphaBps: 200, minPostingBondWei: ethers.parseEther("0.01"),
-        challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: false, maxSolutionBytes: 0,
-        seedScoreAtoms: 1_000_000, minImprovementAtoms: 1,
+        deployment: {
+          pool: await fixture.pool.getAddress(), ledger: await fixture.ledger.getAddress(), owner: fixture.outsider.address,
+          treasury: fixture.treasury.address, alphaBps: 200, minPostingBondWei: ethers.parseEther("0.01"),
+          challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: false, maxSolutionBytes: 0,
+          seedScoreAtoms: 1_000_000, minImprovementAtoms: 1,
+        },
+        fundingAuthorization: fundingAuthorizationConfig([fixture.signerA, fixture.signerB, fixture.signerC]),
       },
+      (await ethers.getContractFactory("P42SubmissionManager")).bytecode,
     );
     const receipt = await tx.wait();
     const deployed = receipt.logs.map((log) => {

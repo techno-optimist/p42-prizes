@@ -54,7 +54,7 @@ async function advanceTo(timestamp) {
 }
 
 async function deployFixture() {
-  const [owner, treasury, solver, outsider] = await ethers.getSigners();
+  const [owner, treasury, solver, outsider, productionLaunch, independentSecurity, governance] = await ethers.getSigners();
   const latest = await ethers.provider.getBlock("latest");
   const earliestClose = BigInt(latest.timestamp) + MIN_COMPETITION_SECONDS + 1_000n;
   const closeBy = BigInt(latest.timestamp) + MIN_CLOSE_DELAY_SECONDS + 1_000n;
@@ -71,19 +71,18 @@ async function deployFixture() {
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
   const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-  const submissions = await Submissions.deploy(
-    await pool.getAddress(),
-    await ledger.getAddress(),
-    owner.address,
-    treasury.address,
-    200,
-    MIN_BOND,
-    CHALLENGE_WINDOW,
-    false,
-    0,
-    SEED_SCORE,
-    1
-  );
+  const submissions = await Submissions.deploy({
+    pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+    treasury: treasury.address, alphaBps: 200, minPostingBondWei: MIN_BOND,
+    challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: false, maxSolutionBytes: 0,
+    seedScoreAtoms: SEED_SCORE, minImprovementAtoms: 1,
+  }, {
+    boardSetDigest: ethers.id("pause-liveness-board-set"),
+    releaseBindingDigest: ethers.id("pause-liveness-release"),
+    productionLaunchAuthority: productionLaunch.address,
+    independentSecurityAuthority: independentSecurity.address,
+    governanceAuthority: governance.address,
+  });
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
   const Registry = await ethers.getContractFactory("MockProblemRegistry");

@@ -62,6 +62,9 @@ const ADDRESSES = Object.freeze({
   resolver: "0x0000000000000000000000000000000000000006",
   deployer: "0x0000000000000000000000000000000000000007",
   objectiveVerifier: "0x0000000000000000000000000000000000000008",
+  productionLaunchAuthority: "0x0000000000000000000000000000000000000009",
+  independentSecurityAuthority: "0x000000000000000000000000000000000000000a",
+  governanceAuthority: "0x000000000000000000000000000000000000000b",
   timelock: "0x0000000000000000000000000000000000000010",
   pool: "0x0000000000000000000000000000000000000011",
   ledger: "0x0000000000000000000000000000000000000012",
@@ -181,6 +184,11 @@ function validEnv() {
     P42_GUARDIAN_ADDRESS: ADDRESSES.guardian,
     P42_TREASURY_ADDRESS: ADDRESSES.treasury,
     P42_RESOLVER_ADDRESS: ADDRESSES.resolver,
+    P42_PRODUCTION_LAUNCH_AUTHORITY_ADDRESS: ADDRESSES.productionLaunchAuthority,
+    P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS: ADDRESSES.independentSecurityAuthority,
+    P42_FUNDING_GOVERNANCE_AUTHORITY_ADDRESS: ADDRESSES.governanceAuthority,
+    P42_FUNDING_BOARD_SET_DIGEST: `0x${"6".repeat(64)}`,
+    P42_FUNDING_RELEASE_BINDING_DIGEST: `0x${"7".repeat(64)}`,
     P42_OBJECTIVE_VERIFIER_ADDRESS: ADDRESSES.objectiveVerifier,
     P42_OBJECTIVE_VERIFIER_CODEHASH: `0x${"8".repeat(64)}`,
     P42_ALPHA_BPS: "200",
@@ -275,6 +283,9 @@ function multiBoardInput() {
     roles: {
       treasury: env.P42_TREASURY_ADDRESS,
       resolver: env.P42_RESOLVER_ADDRESS,
+      productionLaunchAuthority: env.P42_PRODUCTION_LAUNCH_AUTHORITY_ADDRESS,
+      independentSecurityAuthority: env.P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS,
+      governanceAuthority: env.P42_FUNDING_GOVERNANCE_AUTHORITY_ADDRESS,
     },
     parameters: {
       alphaBps: env.P42_ALPHA_BPS,
@@ -652,6 +663,20 @@ describe("deployment ceremony input gate", () => {
     delete missing.P42_FUNDING_CAP_WEI;
     assert.throws(() => readCeremonyConfig(ethers, missing), /P42_FUNDING_CAP_WEI/);
 
+    const missingFundingAuthority = validEnv();
+    delete missingFundingAuthority.P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS;
+    assert.throws(
+      () => readCeremonyConfig(ethers, missingFundingAuthority),
+      /P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS/,
+    );
+
+    const zeroFundingBinding = validEnv();
+    zeroFundingBinding.P42_FUNDING_RELEASE_BINDING_DIGEST = ethers.ZeroHash;
+    assert.throws(
+      () => readCeremonyConfig(ethers, zeroFundingBinding),
+      /P42_FUNDING_RELEASE_BINDING_DIGEST must not be zero/,
+    );
+
     const zeroImage = validEnv();
     zeroImage.P42_VERIFIER_IMAGE_HASH = `0x${"0".repeat(64)}`;
     assert.throws(() => readCeremonyConfig(ethers, zeroImage), /P42_VERIFIER_IMAGE_HASH must not be zero/);
@@ -703,12 +728,26 @@ describe("deployment ceremony construction", () => {
     assert.deepEqual(args.pool, [ADDRESSES.timelock, 10_000_000_000_000_000_000n]);
     assert.deepEqual(args.ledger.slice(0, 3), [ADDRESSES.pool, ADDRESSES.timelock, ADDRESSES.treasury]);
     assert.deepEqual(args.ledger.slice(3), [0n, 1_800_000_000n, 1_820_000_000n]);
-    assert.deepEqual(args.submissions.slice(0, 4), [
-      ADDRESSES.pool,
-      ADDRESSES.ledger,
-      ADDRESSES.timelock,
-      ADDRESSES.treasury
-    ]);
+    assert.deepEqual(args.submissions[0], {
+      pool: ADDRESSES.pool,
+      ledger: ADDRESSES.ledger,
+      owner: ADDRESSES.timelock,
+      treasury: ADDRESSES.treasury,
+      alphaBps: 200n,
+      minPostingBondWei: 10_000_000_000_000_000n,
+      challengeWindowSeconds: 259_200n,
+      onchainDa: true,
+      maxSolutionBytes: 524_288n,
+      seedScoreAtoms: 1_000_000_000_000_000_000_000n,
+      minImprovementAtoms: 1n,
+    });
+    assert.deepEqual(args.submissions[1], {
+      boardSetDigest: `0x${"6".repeat(64)}`,
+      releaseBindingDigest: `0x${"7".repeat(64)}`,
+      productionLaunchAuthority: ADDRESSES.productionLaunchAuthority,
+      independentSecurityAuthority: ethers.getAddress(ADDRESSES.independentSecurityAuthority),
+      governanceAuthority: ADDRESSES.governanceAuthority,
+    });
     assert.deepEqual(args.challenges.slice(0, 4), [
       ADDRESSES.timelock,
       ADDRESSES.resolver,

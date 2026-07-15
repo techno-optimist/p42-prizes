@@ -198,6 +198,11 @@ P42_GOVERNANCE_DELAY_SECONDS=172800 \
 P42_GUARDIAN_ADDRESS=0xGuardian \
 P42_TREASURY_ADDRESS=0xTreasury \
 P42_RESOLVER_ADDRESS=0xResolver \
+P42_PRODUCTION_LAUNCH_AUTHORITY_ADDRESS=0xLaunchAuthority \
+P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS=0xSecurityAuthority \
+P42_FUNDING_GOVERNANCE_AUTHORITY_ADDRESS=0xGovernanceAuthority \
+P42_FUNDING_BOARD_SET_DIGEST=0x... \
+P42_FUNDING_RELEASE_BINDING_DIGEST=0x... \
 P42_ALPHA_BPS=200 \
 P42_BETA_BPS=500 \
 P42_CHALLENGE_WINDOW_SECONDS=259200 \
@@ -247,10 +252,13 @@ state follows the same fail-closed recovery path.
 
 `P42_GOVERNANCE_SIGNERS` contains public addresses, not private keys. The only
 plaintext key accepted by the command is the single deployer key already used
-by Hardhat. Signers must be unique; guardian, treasury, and resolver must be
-distinct from every signer and one another. The deployer must also differ from
-guardian, treasury, and resolver. `P42_OWNER_ADDRESS` is rejected because every
-immutable child owner must be the newly deployed timelock.
+by Hardhat. Signers must be unique. Guardian, treasury, resolver, and all three
+funding authorities must be distinct from every signer and one another. The
+deployer must also differ from every operational role. `P42_OWNER_ADDRESS` is
+rejected because every immutable child owner must be the newly deployed
+timelock. The single-board compatibility path takes explicit funding digests;
+the production exact-ten ceremony derives both digests from its frozen board
+set and release reservation before deterministic address planning.
 
 For off-chain DA, set `P42_ONCHAIN_DA=false` and
 `P42_MAX_SOLUTION_BYTES=0`. A fresh ceremony requires

@@ -21,6 +21,55 @@ const DA_HASH = ethers.keccak256(ethers.toUtf8Bytes("frontier DA receipt"));
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("frontier permanence receipt"));
 const FUNDING_CAP = ethers.parseEther("100");
 const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+const BOARD_SET_DIGEST = ethers.id("p42-frontier-board-set");
+const RELEASE_BINDING_DIGEST = ethers.id("p42-frontier-release-binding");
+const FUNDING_ROLES = [
+  ethers.id("production-launch-authority"),
+  ethers.id("independent-security-authority"),
+  ethers.id("governance-authority"),
+];
+const FUNDING_TYPES = {
+  FundingAuthorization: [
+    { name: "role", type: "bytes32" },
+    { name: "boardSetDigest", type: "bytes32" },
+    { name: "releaseBindingDigest", type: "bytes32" },
+    { name: "authorizationDigest", type: "bytes32" },
+    { name: "expiresAt", type: "uint64" },
+    { name: "nonce", type: "uint256" },
+  ],
+};
+
+function fundingAuthorizationConfig(authorities) {
+  return {
+    boardSetDigest: BOARD_SET_DIGEST,
+    releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    productionLaunchAuthority: authorities[0].address,
+    independentSecurityAuthority: authorities[1].address,
+    governanceAuthority: authorities[2].address,
+  };
+}
+
+async function authorizeFunding(submissions, relayer, authorities, authorizationDigest, expiresAt) {
+  const nonce = await submissions.fundingAuthorizationNonce();
+  const { chainId } = await ethers.provider.getNetwork();
+  const domain = {
+    name: "P42SubmissionManager",
+    version: "2",
+    chainId,
+    verifyingContract: await submissions.getAddress(),
+  };
+  const common = {
+    boardSetDigest: BOARD_SET_DIGEST,
+    releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    authorizationDigest,
+    expiresAt,
+    nonce,
+  };
+  const signatures = await Promise.all(authorities.slice(0, 3).map((authority, index) =>
+    authority.signTypedData(domain, FUNDING_TYPES, { ...common, role: FUNDING_ROLES[index] })
+  ));
+  return submissions.connect(relayer).authorizeFunding(authorizationDigest, expiresAt, nonce, signatures);
+}
 
 async function nextEarliestClose() {
   const latest = await ethers.provider.getBlock("latest");
@@ -89,7 +138,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     arm = true,
     advanceCompetition = true,
   } = {}) {
-    const [owner, treasury, resolver, alice, bob, carol] = await ethers.getSigners();
+    const [owner, treasury, resolver, alice, bob, carol, ...authorities] = await ethers.getSigners();
     const Pool = await ethers.getContractFactory("P42BountyPool");
     const pool = await Pool.deploy(owner.address, FUNDING_CAP);
     await pool.waitForDeployment();
@@ -103,19 +152,19 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await pool.connect(owner).setLedger(await ledger.getAddress());
 
     const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-    const submissions = await Submissions.deploy(
-      await pool.getAddress(),
-      await ledger.getAddress(),
-      owner.address,
-      treasury.address,
+    const submissions = await Submissions.deploy({
+      pool: await pool.getAddress(),
+      ledger: await ledger.getAddress(),
+      owner: owner.address,
+      treasury: treasury.address,
       alphaBps,
-      minBond,
-      CHALLENGE_WINDOW_SECONDS,
-      false, // off-chain DA mode: frontier fixtures exercise economics, not DA binding
-      0,
+      minPostingBondWei: minBond,
+      challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
+      onchainDa: false,
+      maxSolutionBytes: 0,
       seedScoreAtoms,
-      minImprovementAtoms
-    );
+      minImprovementAtoms,
+    }, fundingAuthorizationConfig(authorities));
     await submissions.waitForDeployment();
     await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
@@ -146,13 +195,13 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
     if (arm) {
       await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-      await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+      await authorizeFunding(submissions, treasury, authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
       await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
       await pool.connect(owner).setAcceptingFunds(true);
     }
     if (advanceCompetition) await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
-    return { owner, treasury, resolver, alice, bob, carol, pool, ledger, submissions, vault, minBond };
+    return { owner, treasury, resolver, alice, bob, carol, authorities, pool, ledger, submissions, vault, minBond };
   }
 
   // Commit + reveal an ABSOLUTE claimed score for `solver`; returns the id.
@@ -282,30 +331,24 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // Out-of-range seeds are rejected at construction.
     const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-    const [owner, treasury] = await ethers.getSigners();
+    const [owner, treasury, , , , , ...authorities] = await ethers.getSigners();
     await expectCustomError(
-      Submissions.deploy(
-        await fixture.pool.getAddress(),
-        await fixture.ledger.getAddress(),
-        owner.address,
-        treasury.address,
-        200n,
-        fixture.minBond,
-        CHALLENGE_WINDOW_SECONDS,
-        false,
-        0,
-        BOUND, // seed >= 2^254
-        1n
-      ),
+      Submissions.deploy({
+        pool: await fixture.pool.getAddress(), ledger: await fixture.ledger.getAddress(),
+        owner: owner.address, treasury: treasury.address, alphaBps: 200n,
+        minPostingBondWei: fixture.minBond, challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
+        onchainDa: false, maxSolutionBytes: 0, seedScoreAtoms: BOUND, minImprovementAtoms: 1n,
+      }, fundingAuthorizationConfig(authorities)),
       submissions,
       "P42_SCORE_ATOMS_OUT_OF_RANGE"
     );
     await assert.rejects(
-      Submissions.deploy(
-        await fixture.pool.getAddress(), await fixture.ledger.getAddress(),
-        owner.address, owner.address, 200n, fixture.minBond,
-        CHALLENGE_WINDOW_SECONDS, false, 0, 1000n * SCALE, 1n
-      ),
+      Submissions.deploy({
+        pool: await fixture.pool.getAddress(), ledger: await fixture.ledger.getAddress(),
+        owner: owner.address, treasury: treasury.address, alphaBps: 200n,
+        minPostingBondWei: fixture.minBond, challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
+        onchainDa: false, maxSolutionBytes: 0, seedScoreAtoms: 1000n * SCALE, minImprovementAtoms: 1n,
+      }, { ...fundingAuthorizationConfig(authorities), productionLaunchAuthority: owner.address }),
       /P42_FUNDING_AUTHORITIES_NOT_DISTINCT/
     );
   });
@@ -827,7 +870,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
   it("armFunding is owner-only, one-shot, and emits FundingArmed", async function () {
     const fixture = await deployFixture({ arm: false, advanceCompetition: false });
-    const { owner, treasury, alice, submissions } = fixture;
+    const { owner, treasury, alice, authorities, submissions } = fixture;
     assert.equal(await submissions.fundingArmed(), false);
     const deployedAt = await submissions.deployedAt();
     const armNotBefore = await submissions.armNotBefore();
@@ -835,8 +878,8 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     await expectCustomError(submissions.connect(alice).armFunding("0x" + "42".repeat(32)), submissions, "P42_NOT_OWNER");
     assert.equal(await submissions.fundingArmed(), false);
-    await expectCustomError(submissions.connect(alice).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n), submissions, "P42_NOT_FUNDING_AUTHORIZER");
-    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await expectCustomError(authorizeFunding(submissions, alice, authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n), submissions, "P42_NOT_FUNDING_AUTHORIZER");
+    await authorizeFunding(submissions, treasury, authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
 
     await expectCustomError(
       submissions.connect(owner).armFunding("0x" + "42".repeat(32)),
@@ -883,7 +926,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     const lateArm = await deployFixture({ arm: false, advanceCompetition: false });
     const lateArmBlock = await ethers.provider.getBlock("latest");
     const lateArmExpiry = BigInt(lateArmBlock.timestamp) + CHALLENGE_WINDOW_SECONDS;
-    await lateArm.submissions.connect(lateArm.treasury).authorizeFunding("0x" + "42".repeat(32), lateArmExpiry);
+    await authorizeFunding(lateArm.submissions, lateArm.treasury, lateArm.authorities, "0x" + "42".repeat(32), lateArmExpiry);
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await expectCustomError(
       lateArm.submissions.connect(lateArm.owner).armFunding("0x" + "42".repeat(32)),
@@ -894,7 +937,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     const lateOpen = await deployFixture({ arm: false, advanceCompetition: false });
     const lateOpenBlock = await ethers.provider.getBlock("latest");
     const lateOpenExpiry = BigInt(lateOpenBlock.timestamp) + CHALLENGE_WINDOW_SECONDS + 10n;
-    await lateOpen.submissions.connect(lateOpen.treasury).authorizeFunding("0x" + "42".repeat(32), lateOpenExpiry);
+    await authorizeFunding(lateOpen.submissions, lateOpen.treasury, lateOpen.authorities, "0x" + "42".repeat(32), lateOpenExpiry);
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await lateOpen.submissions.connect(lateOpen.owner).armFunding("0x" + "42".repeat(32));
     await increaseTime(10n);
@@ -907,15 +950,15 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
   it("keeps an authorization immutable through exact expiry, then permits replacement", async function () {
     const fixture = await deployFixture({ arm: false, advanceCompetition: false });
-    const { owner, treasury, submissions } = fixture;
+    const { owner, treasury, authorities, submissions } = fixture;
     const originalDigest = "0x" + "42".repeat(32);
     const replacementDigest = "0x" + "43".repeat(32);
     const latest = await ethers.provider.getBlock("latest");
     const expiresAt = BigInt(latest.timestamp) + CHALLENGE_WINDOW_SECONDS;
 
-    await submissions.connect(treasury).authorizeFunding(originalDigest, expiresAt);
+    await authorizeFunding(submissions, treasury, authorities, originalDigest, expiresAt);
     await expectCustomError(
-      submissions.connect(treasury).authorizeFunding(replacementDigest, expiresAt + 1n),
+      authorizeFunding(submissions, treasury, authorities, replacementDigest, expiresAt + 1n),
       submissions,
       "P42_FUNDING_AUTHORIZATION_ACTIVE"
     );
@@ -924,7 +967,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     await ethers.provider.send("evm_setNextBlockTimestamp", [Number(expiresAt)]);
     await expectCustomError(
-      submissions.connect(treasury).authorizeFunding(replacementDigest, expiresAt + 1n),
+      authorizeFunding(submissions, treasury, authorities, replacementDigest, expiresAt + 1n),
       submissions,
       "P42_FUNDING_AUTHORIZATION_ACTIVE"
     );
@@ -932,7 +975,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     const replacementExpiresAt = expiresAt + CHALLENGE_WINDOW_SECONDS;
     await ethers.provider.send("evm_setNextBlockTimestamp", [Number(expiresAt + 1n)]);
-    await submissions.connect(treasury).authorizeFunding(replacementDigest, replacementExpiresAt);
+    await authorizeFunding(submissions, treasury, authorities, replacementDigest, replacementExpiresAt);
     assert.equal(await submissions.authorizedFundingDigest(), replacementDigest);
     assert.equal(await submissions.fundingAuthorizationExpiresAt(), replacementExpiresAt);
 
@@ -943,12 +986,12 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
   it("requires owner and exact digest to cancel an active funding authorization", async function () {
     const fixture = await deployFixture({ arm: false, advanceCompetition: false });
-    const { owner, treasury, alice, submissions } = fixture;
+    const { owner, treasury, alice, authorities, submissions } = fixture;
     const authorizationDigest = "0x" + "42".repeat(32);
     const wrongDigest = "0x" + "43".repeat(32);
     const expiresAt = 2n ** 64n - 1n;
 
-    await submissions.connect(treasury).authorizeFunding(authorizationDigest, expiresAt);
+    await authorizeFunding(submissions, treasury, authorities, authorizationDigest, expiresAt);
     await expectCustomError(
       submissions.connect(owner).cancelFundingAuthorization(wrongDigest),
       submissions,
@@ -965,14 +1008,14 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
   it("owner can cancel a max-expiry authorization so treasury can replace it", async function () {
     const fixture = await deployFixture({ arm: false, advanceCompetition: false });
-    const { owner, treasury, submissions } = fixture;
+    const { owner, treasury, authorities, submissions } = fixture;
     const typoDigest = "0x" + "42".repeat(32);
     const replacementDigest = "0x" + "43".repeat(32);
     const maxExpiry = 2n ** 64n - 1n;
 
-    await submissions.connect(treasury).authorizeFunding(typoDigest, maxExpiry);
+    await authorizeFunding(submissions, treasury, authorities, typoDigest, maxExpiry);
     await expectCustomError(
-      submissions.connect(treasury).authorizeFunding(replacementDigest, maxExpiry),
+      authorizeFunding(submissions, treasury, authorities, replacementDigest, maxExpiry),
       submissions,
       "P42_FUNDING_AUTHORIZATION_ACTIVE"
     );
@@ -995,17 +1038,17 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await submissions.authorizedFundingDigest(), ethers.ZeroHash);
     assert.equal(await submissions.fundingAuthorizationExpiresAt(), 0n);
 
-    await submissions.connect(treasury).authorizeFunding(replacementDigest, maxExpiry);
+    await authorizeFunding(submissions, treasury, authorities, replacementDigest, maxExpiry);
     assert.equal(await submissions.authorizedFundingDigest(), replacementDigest);
     assert.equal(await submissions.fundingAuthorizationExpiresAt(), maxExpiry);
   });
 
   it("rejects funding authorization cancellation after arming", async function () {
     const fixture = await deployFixture({ arm: false, advanceCompetition: false });
-    const { owner, treasury, submissions } = fixture;
+    const { owner, treasury, authorities, submissions } = fixture;
     const authorizationDigest = "0x" + "42".repeat(32);
 
-    await submissions.connect(treasury).authorizeFunding(authorizationDigest, 2n ** 64n - 1n);
+    await authorizeFunding(submissions, treasury, authorities, authorizationDigest, 2n ** 64n - 1n);
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(owner).armFunding(authorizationDigest);
     await expectCustomError(
@@ -1050,7 +1093,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // The single arm call opens the deposit path.
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(submissions, fixture.treasury, fixture.authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
@@ -1110,7 +1153,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await ledger.totalCreditAtoms(), 0n);
 
     // The funder arms: pool accepts ETH, finalize starts crediting.
-    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(submissions, treasury, fixture.authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("5") });
@@ -1193,7 +1236,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await submissions.bestScoreAtoms(), 450n * SCALE);
 
     // ...and after arming, paid work earns the marginal over that frontier.
-    await submissions.connect(fixture.treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(submissions, fixture.treasury, fixture.authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.fund({ value: ethers.parseEther("1") });
@@ -1267,7 +1310,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
 
     // Funder arms; pool is funded.
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-    await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+    await authorizeFunding(submissions, treasury, fixture.authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
     await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
     await pool.connect(owner).setAcceptingFunds(true);
     await pool.connect(owner).fund({ value: ethers.parseEther("1") });

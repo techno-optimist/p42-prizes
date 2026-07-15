@@ -96,11 +96,14 @@
     "roles": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["deployer", "owner", "treasury", "resolver", "guardian", "objectiveVerifier", "objectiveVerifierCodehash"],
+      "required": ["deployer", "owner", "treasury", "productionLaunchAuthority", "independentSecurityAuthority", "governanceAuthority", "resolver", "guardian", "objectiveVerifier", "objectiveVerifierCodehash"],
       "properties": {
         "deployer": { "$ref": "#/$defs/address" },
         "owner": { "$ref": "#/$defs/address" },
         "treasury": { "$ref": "#/$defs/address" },
+        "productionLaunchAuthority": { "$ref": "#/$defs/address" },
+        "independentSecurityAuthority": { "$ref": "#/$defs/address" },
+        "governanceAuthority": { "$ref": "#/$defs/address" },
         "resolver": { "$ref": "#/$defs/address" },
         "guardian": { "$ref": "#/$defs/address" },
         "objectiveVerifier": { "$ref": "#/$defs/address" },
@@ -468,12 +471,12 @@
         "timelock": { "$ref": "#/$defs/address" }, "topologyDigest": { "$ref": "#/$defs/digest" }, "contractCount": { "const": 47 },
         "expiresAt": { "type": "integer", "minimum": 1 },
         "acceptances": {
-          "type": "array", "minItems": 4,
+          "type": "array", "minItems": 7,
           "items": {
             "type": "object", "additionalProperties": false,
             "required": ["role", "address", "nonce", "riskAccepted", "roleAccepted", "signature"],
             "properties": {
-              "role": { "enum": ["timelock-signer", "guardian", "treasury", "resolver-quorum-signer"] }, "address": { "$ref": "#/$defs/address" }, "nonce": { "$ref": "#/$defs/bytes32" },
+              "role": { "enum": ["timelock-signer", "guardian", "treasury", "production-launch-authority", "independent-security-authority", "governance-authority", "resolver-quorum-signer"] }, "address": { "$ref": "#/$defs/address" }, "nonce": { "$ref": "#/$defs/bytes32" },
               "riskAccepted": { "const": true }, "roleAccepted": { "const": true }, "signature": { "type": "string", "pattern": "^0x[0-9a-fA-F]{130}$" }
             }
           }

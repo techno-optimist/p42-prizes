@@ -13,6 +13,31 @@ const SEED_SCORE_ATOMS = 1_000_000n;
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("property permanence receipt"));
 const FUNDING_CAP = ethers.parseEther("100");
 const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+const BOARD_SET_DIGEST = ethers.id("p42-properties-board-set");
+const RELEASE_BINDING_DIGEST = ethers.id("p42-properties-release-binding");
+const FUNDING_ROLES = [ethers.id("production-launch-authority"), ethers.id("independent-security-authority"), ethers.id("governance-authority")];
+const FUNDING_TYPES = { FundingAuthorization: [
+  { name: "role", type: "bytes32" }, { name: "boardSetDigest", type: "bytes32" },
+  { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
+  { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
+] };
+
+function fundingAuthorizationConfig(authorities) {
+  return { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    productionLaunchAuthority: authorities[0].address, independentSecurityAuthority: authorities[1].address,
+    governanceAuthority: authorities[2].address };
+}
+
+async function authorizeFunding(submissions, treasury, authorities, digest, expiresAt) {
+  const nonce = await submissions.fundingAuthorizationNonce();
+  const { chainId } = await ethers.provider.getNetwork();
+  const domain = { name: "P42SubmissionManager", version: "2", chainId, verifyingContract: await submissions.getAddress() };
+  const common = { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    authorizationDigest: digest, expiresAt, nonce };
+  const signatures = await Promise.all(authorities.slice(0, 3).map((authority, index) =>
+    authority.signTypedData(domain, FUNDING_TYPES, { ...common, role: FUNDING_ROLES[index] })));
+  return submissions.connect(treasury).authorizeFunding(digest, expiresAt, nonce, signatures);
+}
 
 async function nextEarliestClose() {
   const latest = await ethers.provider.getBlock("latest");
@@ -98,7 +123,8 @@ function scenarioFromSeed(seed) {
 }
 
 async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {}) {
-  const [owner, treasury, resolver, ...participants] = await ethers.getSigners();
+  const [owner, treasury, resolver, productionLaunch, independentSecurity, governance, ...participants] = await ethers.getSigners();
+  const authorities = [productionLaunch, independentSecurity, governance];
   const Pool = await ethers.getContractFactory("P42BountyPool");
   const pool = await Pool.deploy(owner.address, FUNDING_CAP);
   await pool.waitForDeployment();
@@ -112,19 +138,12 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
   const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-  const submissions = await Submissions.deploy(
-    await pool.getAddress(),
-    await ledger.getAddress(),
-    owner.address,
-    treasury.address,
-    alphaBps,
-    minBond,
-    CHALLENGE_WINDOW_SECONDS,
-    false, // off-chain DA mode: property tests exercise economics, not DA binding
-    0,
-    SEED_SCORE_ATOMS,
-    1n // minImprovementAtoms
-  );
+  const submissions = await Submissions.deploy({
+    pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+    treasury: treasury.address, alphaBps, minPostingBondWei: minBond,
+    challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS, onchainDa: false, maxSolutionBytes: 0,
+    seedScoreAtoms: SEED_SCORE_ATOMS, minImprovementAtoms: 1n,
+  }, fundingAuthorizationConfig(authorities));
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
@@ -154,7 +173,7 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
-  await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+  await authorizeFunding(submissions, treasury, authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
   await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
   await pool.connect(owner).setAcceptingFunds(true);
   await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);

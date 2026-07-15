@@ -47,7 +47,8 @@ export function objectivePackageHash(ethers, chainId, registryAddress, problem) 
 
 function factoryConfigurationHash(ethers, factoryInterface, method, parameters, prefixHash = null) {
   const inputs = factoryInterface.getFunction(method).inputs;
-  const tupleInput = inputs[inputs.length - 1];
+  const tupleInput = inputs.find((input) => input.baseType === "tuple");
+  if (!tupleInput) throw new Error(`${method} does not expose a configuration tuple`);
   const tupleType = tupleInput.format("sighash");
   const tupleValues = Array.isArray(parameters)
     ? parameters
@@ -76,7 +77,14 @@ export async function buildCanonicalMultiBoardDeploymentDefinitions({
   config,
   chainId = MULTIBOARD_CHAIN_ID,
   objectiveVerifierRuntimeCodehash,
+  boardSetDigest,
+  releaseBindingDigest,
 }) {
+  for (const [label, value] of [["boardSetDigest", boardSetDigest], ["releaseBindingDigest", releaseBindingDigest]]) {
+    if (!ethers.isHexString(value, 32) || value === ethers.ZeroHash) {
+      throw new Error(`${label} must be a nonzero bytes32 value`);
+    }
+  }
   const directRoots = [
     "timelock", "registry", "rolloverVault", "submissionManagerFactory", "challengeManagerFactory", "objectiveVerifier",
   ].map((key) => ({
@@ -91,7 +99,10 @@ export async function buildCanonicalMultiBoardDeploymentDefinitions({
   const submissionDefinitions = [];
   const challengeDefinitions = [];
   for (const problem of config.problems) {
-    const boardConfig = boardCeremonyConfig(config, problem);
+    const boardConfig = {
+      ...boardCeremonyConfig(config, problem),
+      fundingAuthorization: { boardSetDigest, releaseBindingDigest },
+    };
     const boardAddressView = (plannedAddresses) => ({
       timelock: plannedAddresses.timelock,
       registry: plannedAddresses.registry,
@@ -130,8 +141,8 @@ export async function buildCanonicalMultiBoardDeploymentDefinitions({
         boardConfig,
         boardAddressView(plannedAddresses),
       ),
-      parameters: (args) => args,
-      factoryCallArgs: ({ salt, parameters }) => [salt, parameters],
+      parameters: (args) => [Object.values(args[0]), Object.values(args[1])],
+      factoryCallArgs: ({ salt, parameters, creationCode }) => [salt, parameters, creationCode],
       configurationHash: ({ ethers: runtimeEthers, parameters, factoryInterface }) =>
         factoryConfigurationHash(runtimeEthers, factoryInterface, "deploySubmissionManager", parameters),
     });
@@ -176,7 +187,8 @@ export async function buildCanonicalMultiBoardDeploymentDefinitions({
       ],
       configurationHash: ({ ethers: runtimeEthers, parameters, addresses: plannedAddresses, factoryInterface }) => {
         const submission = submissionDefinitions.find((entry) => entry.id === submissionId);
-        const submissionParameters = submission.args(plannedAddresses);
+        const submissionArgs = submission.args(plannedAddresses);
+        const submissionParameters = submission.parameters(submissionArgs, plannedAddresses);
         const submissionHash = factoryConfigurationHash(
           runtimeEthers,
           submissionFactoryInterface,
@@ -254,7 +266,7 @@ async function materializeDeploymentSteps(ethers, definitions, addresses) {
       : requestedSalt;
     const expectedCalldata = factoryContract.interface.encodeFunctionData(
       definition.factoryMethod,
-      definition.factoryCallArgs({ salt: requestedSalt, parameters, addresses }),
+      definition.factoryCallArgs({ salt: requestedSalt, parameters, addresses, creationCode: factory.bytecode }),
     );
     const configurationReadCalldata = factoryContract.interface.encodeFunctionData(
       definition.configurationGetter,

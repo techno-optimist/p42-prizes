@@ -33,6 +33,12 @@ contract P42SubmissionManager {
     error P42_FUNDING_AUTHORIZATION_NOT_ACTIVE(bytes32 authorizationDigest, uint64 expiresAt);
     error P42_NOT_FUNDING_AUTHORIZER();
     error P42_FUNDING_AUTHORIZATION_MISMATCH(bytes32 expected, bytes32 actual);
+    error P42_FUNDING_AUTHORIZATION_NONCE(uint256 expected, uint256 actual);
+    error P42_FUNDING_AUTHORITY_ZERO();
+    error P42_FUNDING_AUTHORITY_NOT_EOA();
+    error P42_FUNDING_AUTHORITIES_NOT_DISTINCT();
+    error P42_FUNDING_BINDING_ZERO();
+    error P42_INVALID_FUNDING_SIGNATURE();
     error P42_OPEN_WITNESS_WINDOW_OPEN(uint64 armNotBefore, uint64 nowAt);
     error P42_VOID_NOT_ADVANCE(int256 prevBestScoreAtoms, int256 claimedScoreAtoms);
     error P42_VOID_NOT_FRONTIER(int256 bestScoreAtoms, int256 claimedScoreAtoms);
@@ -85,6 +91,21 @@ contract P42SubmissionManager {
     /// interval before the ledger may snapshot claims. It is deliberately no
     /// shorter than the permissionless full-pause recovery interval.
     uint64 public constant CREDIT_FINALIZE_RECOVERY_DELAY = PAUSED_ALL_RECOVERY_DELAY;
+
+    bytes32 private constant PRODUCTION_LAUNCH_AUTHORITY_ROLE =
+        keccak256("production-launch-authority");
+    bytes32 private constant INDEPENDENT_SECURITY_AUTHORITY_ROLE =
+        keccak256("independent-security-authority");
+    bytes32 private constant GOVERNANCE_AUTHORITY_ROLE = keccak256("governance-authority");
+    bytes32 private constant FUNDING_AUTHORIZATION_TYPEHASH = keccak256(
+        "FundingAuthorization(bytes32 role,bytes32 boardSetDigest,bytes32 releaseBindingDigest,bytes32 authorizationDigest,uint64 expiresAt,uint256 nonce)"
+    );
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 private constant EIP712_NAME_HASH = keccak256("P42SubmissionManager");
+    bytes32 private constant EIP712_VERSION_HASH = keccak256("2");
+    uint256 private constant SECP256K1_HALF_ORDER =
+        0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0;
 
     /// @notice Hard ceiling on on-chain solution bytes, bounding reveal-tx
     /// calldata gas. Problems whose certificates exceed this (e.g. the
@@ -160,9 +181,36 @@ contract P42SubmissionManager {
         SubmissionStatus status;
     }
 
+    struct FundingAuthorizationConfig {
+        bytes32 boardSetDigest;
+        bytes32 releaseBindingDigest;
+        address productionLaunchAuthority;
+        address independentSecurityAuthority;
+        address governanceAuthority;
+    }
+
+    struct DeploymentConfig {
+        address pool;
+        address ledger;
+        address owner;
+        address treasury;
+        uint16 alphaBps;
+        uint256 minPostingBondWei;
+        uint64 challengeWindowSeconds;
+        bool onchainDa;
+        uint256 maxSolutionBytes;
+        int256 seedScoreAtoms;
+        uint256 minImprovementAtoms;
+    }
+
     address public immutable owner;
     address public immutable treasury;
     address public immutable fundingAuthorizer;
+    bytes32 public immutable boardSetDigest;
+    bytes32 public immutable releaseBindingDigest;
+    address public immutable productionLaunchAuthority;
+    address public immutable independentSecurityAuthority;
+    address public immutable governanceAuthority;
     IP42PoolBalance public immutable pool;
     IP42CreditLedger public immutable ledger;
     uint16 public immutable alphaBps;
@@ -233,6 +281,7 @@ contract P42SubmissionManager {
     bytes32 public fundingAuthorizationDigest;
     bytes32 public authorizedFundingDigest;
     uint64 public fundingAuthorizationExpiresAt;
+    uint256 public fundingAuthorizationNonce;
     /// @notice After a `pausedAll` recovery ends, no submission may be expired
     /// (bond forfeited) until a full fresh challenge window has passed, so an
     /// honest in-flight commit/reveal frozen by the recovery always gets a real
@@ -281,6 +330,12 @@ contract P42SubmissionManager {
     event OpenWitnessWindowConfigured(uint64 deployedAt, uint64 armNotBefore);
     event FundingArmed(uint64 at, bytes32 indexed authorizationDigest);
     event FundingAuthorized(bytes32 indexed authorizationDigest, address indexed authorizer, uint64 expiresAt);
+    event FundingAuthorizationVerified(
+        bytes32 indexed authorizationDigest,
+        uint256 indexed nonce,
+        bytes32 boardSetDigest,
+        bytes32 releaseBindingDigest
+    );
     event FundingAuthorizationCancelled(
         bytes32 indexed authorizationDigest,
         address indexed canceller,
@@ -360,32 +415,47 @@ contract P42SubmissionManager {
         _claiming = false;
     }
 
-    constructor(
-        address pool_,
-        address ledger_,
-        address owner_,
-        address treasury_,
-        uint16 alphaBps_,
-        uint256 minPostingBondWei_,
-        uint64 challengeWindowSeconds_,
-        bool onchainDa_,
-        uint256 maxSolutionBytes_,
-        int256 seedScoreAtoms_,
-        uint256 minImprovementAtoms_
-    ) {
+    constructor(DeploymentConfig memory config_, FundingAuthorizationConfig memory fundingAuthorizationConfig_) {
+        address pool_ = config_.pool;
+        address ledger_ = config_.ledger;
+        address owner_ = config_.owner;
+        address treasury_ = config_.treasury;
         require(pool_ != address(0), "P42_POOL_ZERO");
         require(ledger_ != address(0), "P42_LEDGER_ZERO");
         require(owner_ != address(0), "P42_OWNER_ZERO");
         require(treasury_ != address(0), "P42_TREASURY_ZERO");
-        require(owner_ != treasury_, "P42_FUNDING_AUTHORITIES_NOT_DISTINCT");
-        if (alphaBps_ > MAX_ALPHA_BPS) revert P42_BAD_ALPHA();
-        if (challengeWindowSeconds_ == 0 || challengeWindowSeconds_ > MAX_CHALLENGE_WINDOW_SECONDS) {
+        require(owner_ != treasury_, "P42_OWNER_TREASURY_NOT_DISTINCT");
+        if (
+            fundingAuthorizationConfig_.boardSetDigest == bytes32(0)
+                || fundingAuthorizationConfig_.releaseBindingDigest == bytes32(0)
+        ) revert P42_FUNDING_BINDING_ZERO();
+        address productionLaunchAuthority_ = fundingAuthorizationConfig_.productionLaunchAuthority;
+        address independentSecurityAuthority_ = fundingAuthorizationConfig_.independentSecurityAuthority;
+        address governanceAuthority_ = fundingAuthorizationConfig_.governanceAuthority;
+        if (
+            productionLaunchAuthority_ == address(0) || independentSecurityAuthority_ == address(0)
+                || governanceAuthority_ == address(0)
+        ) revert P42_FUNDING_AUTHORITY_ZERO();
+        if (
+            productionLaunchAuthority_.code.length != 0 || independentSecurityAuthority_.code.length != 0
+                || governanceAuthority_.code.length != 0
+        ) revert P42_FUNDING_AUTHORITY_NOT_EOA();
+        if (
+            productionLaunchAuthority_ == independentSecurityAuthority_
+                || productionLaunchAuthority_ == governanceAuthority_
+                || independentSecurityAuthority_ == governanceAuthority_
+                || productionLaunchAuthority_ == owner_ || productionLaunchAuthority_ == treasury_
+                || independentSecurityAuthority_ == owner_ || independentSecurityAuthority_ == treasury_
+                || governanceAuthority_ == owner_ || governanceAuthority_ == treasury_
+        ) revert P42_FUNDING_AUTHORITIES_NOT_DISTINCT();
+        if (config_.alphaBps > MAX_ALPHA_BPS) revert P42_BAD_ALPHA();
+        if (config_.challengeWindowSeconds == 0 || config_.challengeWindowSeconds > MAX_CHALLENGE_WINDOW_SECONDS) {
             revert P42_BAD_WINDOW();
         }
         // On-chain DA needs a positive cap within the calldata-gas ceiling;
         // off-chain problems leave it 0 (unused).
-        if (onchainDa_) {
-            if (maxSolutionBytes_ == 0 || maxSolutionBytes_ > MAX_ONCHAIN_SOLUTION_BYTES) {
+        if (config_.onchainDa) {
+            if (config_.maxSolutionBytes == 0 || config_.maxSolutionBytes > MAX_ONCHAIN_SOLUTION_BYTES) {
                 revert P42_BAD_ONCHAIN_DA_CONFIG();
             }
         }
@@ -394,21 +464,26 @@ contract P42SubmissionManager {
         owner = owner_;
         treasury = treasury_;
         fundingAuthorizer = treasury_;
-        alphaBps = alphaBps_;
-        minPostingBondWei = minPostingBondWei_;
-        challengeWindowSeconds = challengeWindowSeconds_;
+        boardSetDigest = fundingAuthorizationConfig_.boardSetDigest;
+        releaseBindingDigest = fundingAuthorizationConfig_.releaseBindingDigest;
+        productionLaunchAuthority = productionLaunchAuthority_;
+        independentSecurityAuthority = independentSecurityAuthority_;
+        governanceAuthority = governanceAuthority_;
+        alphaBps = config_.alphaBps;
+        minPostingBondWei = config_.minPostingBondWei;
+        challengeWindowSeconds = config_.challengeWindowSeconds;
         uint64 deployedAt_ = uint64(block.timestamp);
         deployedAt = deployedAt_;
-        armNotBefore = deployedAt_ + challengeWindowSeconds_;
-        onchainDa = onchainDa_;
-        maxSolutionBytes = maxSolutionBytes_;
-        if (seedScoreAtoms_ <= MIN_SCORE_ATOMS_BOUND || seedScoreAtoms_ >= MAX_SCORE_ATOMS_BOUND) {
-            revert P42_SCORE_ATOMS_OUT_OF_RANGE(seedScoreAtoms_);
+        armNotBefore = deployedAt_ + config_.challengeWindowSeconds;
+        onchainDa = config_.onchainDa;
+        maxSolutionBytes = config_.maxSolutionBytes;
+        if (config_.seedScoreAtoms <= MIN_SCORE_ATOMS_BOUND || config_.seedScoreAtoms >= MAX_SCORE_ATOMS_BOUND) {
+            revert P42_SCORE_ATOMS_OUT_OF_RANGE(config_.seedScoreAtoms);
         }
-        seedScoreAtoms = seedScoreAtoms_;
-        minImprovementAtoms = minImprovementAtoms_;
-        bestScoreAtoms = seedScoreAtoms_;
-        emit OpenWitnessWindowConfigured(deployedAt_, deployedAt_ + challengeWindowSeconds_);
+        seedScoreAtoms = config_.seedScoreAtoms;
+        minImprovementAtoms = config_.minImprovementAtoms;
+        bestScoreAtoms = config_.seedScoreAtoms;
+        emit OpenWitnessWindowConfigured(deployedAt_, deployedAt_ + config_.challengeWindowSeconds);
     }
 
     function setPausedNewActions(bool paused) external onlyOwner {
@@ -467,7 +542,12 @@ contract P42SubmissionManager {
     /// immediately arming a private paid frontier. A timer does not prove that
     /// a public witness was posted, so the strict open-witness transcript and
     /// arm/fund-boundary evidence remain separate launch gates.
-    function authorizeFunding(bytes32 authorizationDigest, uint64 expiresAt) external {
+    function authorizeFunding(
+        bytes32 authorizationDigest,
+        uint64 expiresAt,
+        uint256 nonce,
+        bytes[3] calldata signatures
+    ) external {
         if (msg.sender != fundingAuthorizer) revert P42_NOT_FUNDING_AUTHORIZER();
         if (authorizationDigest == bytes32(0)) revert P42_FUNDING_AUTHORIZATION_ZERO();
         if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
@@ -477,8 +557,41 @@ contract P42SubmissionManager {
         if (block.timestamp > expiresAt) {
             revert P42_FUNDING_AUTHORIZATION_EXPIRED(expiresAt, uint64(block.timestamp));
         }
+        uint256 expectedNonce = fundingAuthorizationNonce;
+        if (nonce != expectedNonce) revert P42_FUNDING_AUTHORIZATION_NONCE(expectedNonce, nonce);
+        _requireFundingSignature(
+            PRODUCTION_LAUNCH_AUTHORITY_ROLE,
+            productionLaunchAuthority,
+            authorizationDigest,
+            expiresAt,
+            nonce,
+            signatures[0]
+        );
+        _requireFundingSignature(
+            INDEPENDENT_SECURITY_AUTHORITY_ROLE,
+            independentSecurityAuthority,
+            authorizationDigest,
+            expiresAt,
+            nonce,
+            signatures[1]
+        );
+        _requireFundingSignature(
+            GOVERNANCE_AUTHORITY_ROLE,
+            governanceAuthority,
+            authorizationDigest,
+            expiresAt,
+            nonce,
+            signatures[2]
+        );
+        fundingAuthorizationNonce = nonce + 1;
         authorizedFundingDigest = authorizationDigest;
         fundingAuthorizationExpiresAt = expiresAt;
+        emit FundingAuthorizationVerified(
+            authorizationDigest,
+            nonce,
+            boardSetDigest,
+            releaseBindingDigest
+        );
         emit FundingAuthorized(authorizationDigest, msg.sender, expiresAt);
     }
 
@@ -497,7 +610,47 @@ contract P42SubmissionManager {
 
         authorizedFundingDigest = bytes32(0);
         fundingAuthorizationExpiresAt = 0;
+        uint256 nonce = fundingAuthorizationNonce;
+        fundingAuthorizationNonce = nonce + 1;
         emit FundingAuthorizationCancelled(authorizationDigest, msg.sender, expiresAt);
+    }
+
+    function _requireFundingSignature(
+        bytes32 role,
+        address authority,
+        bytes32 authorizationDigest,
+        uint64 expiresAt,
+        uint256 nonce,
+        bytes calldata signature
+    ) internal view {
+        if (signature.length != 65) revert P42_INVALID_FUNDING_SIGNATURE();
+        bytes32 r;
+        bytes32 s;
+        uint8 v;
+        assembly ("memory-safe") {
+            r := calldataload(signature.offset)
+            s := calldataload(add(signature.offset, 32))
+            v := byte(0, calldataload(add(signature.offset, 64)))
+        }
+        if (uint256(s) > SECP256K1_HALF_ORDER || (v != 27 && v != 28)) {
+            revert P42_INVALID_FUNDING_SIGNATURE();
+        }
+        bytes32 domainSeparator = keccak256(
+            abi.encode(EIP712_DOMAIN_TYPEHASH, EIP712_NAME_HASH, EIP712_VERSION_HASH, block.chainid, address(this))
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                FUNDING_AUTHORIZATION_TYPEHASH,
+                role,
+                boardSetDigest,
+                releaseBindingDigest,
+                authorizationDigest,
+                expiresAt,
+                nonce
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        if (ecrecover(digest, v, r, s) != authority) revert P42_INVALID_FUNDING_SIGNATURE();
     }
 
     function armFunding(bytes32 authorizationDigest) external onlyOwner {

@@ -72,19 +72,25 @@ The source validator does not itself authorize money. Before this gate can pass:
 Until those consumers are deployed and a real packet validates, all mainnet
 funding paths remain fail-closed.
 
-Each submission manager requires a separate funding-authorizer transaction to
-register the digest before governance can call `armFunding(bytes32)`. The
-manager rejects a zero, absent, or different digest, stores the consumed digest
-on-chain, and emits both authorization and activation events. Authorization
-also stores the signed packet's expiry. A delayed timelock execution cannot arm
-after that deadline, and a pool cannot begin accepting deposits after it.
+Each submission manager requires three role-bound EIP-712 signatures:
+production launch, independent security, and governance. Every signature covers
+the chain, manager, immutable exact-ten board-set digest, immutable
+release-binding digest, authorization digest, expiry, and exact nonce. Treasury
+relays the signatures but has no unilateral authorization power. The manager
+verifies all three, increments the nonce, emits `FundingAuthorizationVerified`
+followed immediately by `FundingAuthorized`, and only then can the timelock
+call `armFunding(bytes32)`. Cancellation consumes another nonce. Cross-board,
+cross-chain, stale-nonce, role-swapped, high-s, and expired packets fail closed.
 
 `p42-funding-activation-plan` is the first fail-closed consumer stage. It invokes
 the production validator as a bounded argv-only subprocess, binds the exact
 authorization and manifest bytes, pins every target runtime hash, and emits a
-private deterministic exact-ten plan. Its global barriers require all ten
-treasury authorizations before any arm operation and all ten arms before any
-pool-opening operation.
+private deterministic exact-ten plan. It rejects legacy packets and requires a
+canonical bundle of 30 verified signatures before encoding calldata. Its global
+barriers require all ten treasury relays before any arm operation and all ten
+arms before any pool-opening operation, for exactly 30 ordered target
+operations. Timelock scheduling, confirmation, and execution transactions remain
+separately journaled governance actions.
 
 `p42-funding-activate` consumes that immutable plan one transaction per run. It
 reconstructs protocol state from two RPCs at one common finalized block, reruns

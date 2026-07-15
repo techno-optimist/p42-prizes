@@ -144,6 +144,10 @@ const CONFIG = {
   treasury: ADDR.treasury,
   challengeManager: ADDR.challenges,
   problemCount: 1,
+  fundingAuthorizationV2: true,
+  boardSetDigest: hash(901),
+  releaseBindingDigest: hash(902),
+  owner: ADDR.owner,
 };
 
 const STATUS = {
@@ -228,7 +232,15 @@ function lifecycleFixture() {
       metadataURI: "ipfs://problem",
     }],
   ]);
-  tx([["submissions", "FundingAuthorized", { authorizationDigest: "0x" + "42".repeat(32), authorizer: address(998), expiresAt: 10_000n }]], 19);
+  tx([
+    ["submissions", "FundingAuthorizationVerified", {
+      authorizationDigest: "0x" + "42".repeat(32), nonce: 0n,
+      boardSetDigest: CONFIG.boardSetDigest, releaseBindingDigest: CONFIG.releaseBindingDigest,
+    }],
+    ["submissions", "FundingAuthorized", {
+      authorizationDigest: "0x" + "42".repeat(32), authorizer: ADDR.treasury, expiresAt: 10_000n,
+    }],
+  ], 19);
   tx([["submissions", "FundingArmed", { at: 20n, authorizationDigest: "0x" + "42".repeat(32) }]], 20);
   tx([
     ["pool", "Funded", { from: ADDR.owner, amount: 100n, newBalance: 100n }],
@@ -473,6 +485,9 @@ function snapshotFromReplay(state) {
     fundingAuthorizationDigest: state.fundingAuthorizationDigest,
     authorizedFundingDigest: state.authorizedFundingDigest,
     fundingAuthorizationExpiresAt: state.fundingAuthorizationExpiresAt,
+    fundingAuthorizationNonce: state.fundingAuthorizationNonce,
+    boardSetDigest: state.config.boardSetDigest,
+    releaseBindingDigest: state.config.releaseBindingDigest,
     submissionsPausedNewActions: state.pausedNewActions,
     pausedAll: state.pausedAll,
     expiryGraceUntil: state.expiryGraceUntil,
@@ -555,6 +570,102 @@ const POLICY = {
   retryBaseDelayMs: 0,
   maxScanRestarts: 2,
 };
+
+function fundingAuthorizationEvents({
+  nonce = 0n,
+  boardSetDigest = CONFIG.boardSetDigest,
+  releaseBindingDigest = CONFIG.releaseBindingDigest,
+  digest = hash(420),
+  expiresAt = 1_000n,
+} = {}) {
+  const { events, tx } = fixtureBuilder();
+  tx([
+    ["submissions", "FundingAuthorizationVerified", {
+      authorizationDigest: digest, nonce, boardSetDigest, releaseBindingDigest,
+    }],
+    ["submissions", "FundingAuthorized", {
+      authorizationDigest: digest, authorizer: ADDR.treasury, expiresAt,
+    }],
+  ], 100);
+  return { events, tx, digest, expiresAt };
+}
+
+it("reconstructs v2 funding authorization nonce, cancellation, and arming deterministically", () => {
+  const { events, tx, digest, expiresAt } = fundingAuthorizationEvents();
+  tx([["submissions", "FundingAuthorizationCancelled", {
+    authorizationDigest: digest, canceller: ADDR.owner, expiresAt,
+  }]], 110);
+  const replacement = hash(421);
+  tx([
+    ["submissions", "FundingAuthorizationVerified", {
+      authorizationDigest: replacement, nonce: 2n,
+      boardSetDigest: CONFIG.boardSetDigest, releaseBindingDigest: CONFIG.releaseBindingDigest,
+    }],
+    ["submissions", "FundingAuthorized", {
+      authorizationDigest: replacement, authorizer: ADDR.treasury, expiresAt: 2_000n,
+    }],
+  ], 120);
+  tx([["submissions", "FundingArmed", { at: 130n, authorizationDigest: replacement }]], 130);
+
+  const replay = replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
+  assert.equal(replay.fundingAuthorizationNonce, 3n);
+  assert.equal(replay.authorizedFundingDigest, replacement);
+  assert.equal(replay.fundingAuthorizationDigest, replacement);
+  assert.equal(replay.fundingArmed, true);
+  assert.equal(
+    stableStringify(replayProtocolEvents([...events].reverse(), CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE })),
+    stableStringify(replay),
+  );
+});
+
+it("rejects replayed nonces, wrong funding bindings, and malformed authorization ordering", () => {
+  const wrongNonce = fundingAuthorizationEvents({ nonce: 1n }).events;
+  assert.throws(
+    () => replayProtocolEvents(wrongNonce, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+    /nonce is non-monotonic/,
+  );
+
+  const wrongBoard = fundingAuthorizationEvents({ boardSetDigest: hash(999) }).events;
+  assert.throws(
+    () => replayProtocolEvents(wrongBoard, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+    /boardSetDigest does not match deployment manifest/,
+  );
+  const wrongRelease = fundingAuthorizationEvents({ releaseBindingDigest: hash(998) }).events;
+  assert.throws(
+    () => replayProtocolEvents(wrongRelease, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+    /releaseBindingDigest does not match deployment manifest/,
+  );
+
+  const authorizedOnly = fundingAuthorizationEvents().events.slice(1);
+  assert.throws(
+    () => replayProtocolEvents(authorizedOnly, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+    /missing preceding FundingAuthorizationVerified/,
+  );
+
+  const splitTransaction = fundingAuthorizationEvents().events;
+  splitTransaction[1] = { ...splitTransaction[1], transactionHash: hash(77_777) };
+  assert.throws(
+    () => replayProtocolEvents(splitTransaction, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+    /not in the verified authorization transaction/,
+  );
+
+  const interveningLog = fundingAuthorizationEvents().events;
+  interveningLog[1] = { ...interveningLog[1], index: 2 };
+  assert.throws(
+    () => replayProtocolEvents(interveningLog, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+    /does not immediately follow FundingAuthorizationVerified/,
+  );
+
+  const armedBeforeAuthorized = fundingAuthorizationEvents().events;
+  armedBeforeAuthorized[1] = {
+    ...armedBeforeAuthorized[1], eventName: "FundingArmed",
+    args: { at: 100n, authorizationDigest: hash(420) },
+  };
+  assert.throws(
+    () => replayProtocolEvents(armedBeforeAuthorized, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+    /must be followed by FundingAuthorized/,
+  );
+});
 
 function portalCheckpoint(events, config = CONFIG) {
   const replay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
@@ -747,7 +858,15 @@ function openWitnessFixture() {
     claimedScoreAtoms: 900n, bestScoreAtoms: 900n, permanenceHash: hash(701),
     poolAtFinalizationWei: 0n,
   }]], 50);
-  tx([["submissions", "FundingAuthorized", { authorizationDigest: "0x" + "42".repeat(32), authorizer: address(998), expiresAt: 10_000n }]], 59);
+  tx([
+    ["submissions", "FundingAuthorizationVerified", {
+      authorizationDigest: "0x" + "42".repeat(32), nonce: 0n,
+      boardSetDigest: CONFIG.boardSetDigest, releaseBindingDigest: CONFIG.releaseBindingDigest,
+    }],
+    ["submissions", "FundingAuthorized", {
+      authorizationDigest: "0x" + "42".repeat(32), authorizer: ADDR.treasury, expiresAt: 10_000n,
+    }],
+  ], 59);
   tx([["submissions", "FundingArmed", { at: 60n, authorizationDigest: "0x" + "42".repeat(32) }]], 60);
   const config = { ...CONFIG, seedScoreAtoms: 1000n };
   const replay = replayProtocolEvents(events, config, { coverage: REQUIRED_LIFECYCLE_COVERAGE });
@@ -769,6 +888,7 @@ function openWitnessFixture() {
   const revealInterface = new ethers.Interface([
     "function reveal(uint256 submissionId,string solutionCid,int256 claimedScoreAtoms,uint256 improvementAtoms,string salt,bytes solution)",
     "event FundingArmed(uint64 at,bytes32 indexed authorizationDigest)",
+    "event FundingAuthorizationVerified(bytes32 indexed authorizationDigest,uint256 indexed nonce,bytes32 boardSetDigest,bytes32 releaseBindingDigest)",
     "event FundingAuthorized(bytes32 indexed authorizationDigest,address indexed authorizer,uint64 expiresAt)",
     "event Committed(uint256 indexed submissionId,address indexed solver,bytes32 indexed commitment,bytes32 commitDaHash,uint256 bondWei,uint256 poolAtSubmissionWei,uint256 requiredBondWei,bool paidAtCommit,uint64 committedBlock)",
     "event Revealed(uint256 indexed submissionId,address indexed solver,string solutionCid,uint256 improvementAtoms,int256 claimedScoreAtoms,uint64 challengeEndsAt,uint256 solutionBytesLength,bytes32 revealInstanceHash)",
@@ -791,6 +911,12 @@ function openWitnessFixture() {
     "function fundingAuthorizationDigest() view returns (bytes32)",
     "function authorizedFundingDigest() view returns (bytes32)",
     "function fundingAuthorizationExpiresAt() view returns (uint64)",
+    "function fundingAuthorizationNonce() view returns (uint256)",
+    "function boardSetDigest() view returns (bytes32)",
+    "function releaseBindingDigest() view returns (bytes32)",
+    "function productionLaunchAuthority() view returns (address)",
+    "function independentSecurityAuthority() view returns (address)",
+    "function governanceAuthority() view returns (address)",
   ]);
   const registryStateInterface = new ethers.Interface([
     "function problems(uint256) view returns (bytes32 specHash,bytes32 verifierSourceHash,bytes32 verifierImageHash,bytes32 admissionMatrixHash,string metadataURI,address pool,address ledger,address submissionManager,address challengeManager,uint64 challengeWindowSeconds,uint256 minImprovementAtoms,bool frozen)",
@@ -850,6 +976,12 @@ function openWitnessFixture() {
         if (parsed.name === "fundingAuthorizationDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [ZERO_HASH]);
         if (parsed.name === "authorizedFundingDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [ZERO_HASH]);
         if (parsed.name === "fundingAuthorizationExpiresAt") return submissionStateInterface.encodeFunctionResult(parsed.name, [0n]);
+        if (parsed.name === "fundingAuthorizationNonce") return submissionStateInterface.encodeFunctionResult(parsed.name, [replay.fundingAuthorizationNonce]);
+        if (parsed.name === "boardSetDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [CONFIG.boardSetDigest]);
+        if (parsed.name === "releaseBindingDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [CONFIG.releaseBindingDigest]);
+        if (parsed.name === "productionLaunchAuthority") return submissionStateInterface.encodeFunctionResult(parsed.name, [address(991)]);
+        if (parsed.name === "independentSecurityAuthority") return submissionStateInterface.encodeFunctionResult(parsed.name, [address(992)]);
+        if (parsed.name === "governanceAuthority") return submissionStateInterface.encodeFunctionResult(parsed.name, [address(993)]);
         return submissionStateInterface.encodeFunctionResult(parsed.name, [
           replay.submissions["1"].solver, replay.submissions["1"].commitment,
           replay.submissions["1"].commitDaHash, 0n, 0n, 0n, 100n, 900n,

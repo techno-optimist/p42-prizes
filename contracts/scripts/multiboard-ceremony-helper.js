@@ -430,9 +430,17 @@ export function bindReleaseMode(config, { releaseMode, slate } = {}) {
 
 const ROOT_KEYS = ["schema", "governance", "roles", "parameters", "problems"];
 const GOVERNANCE_KEYS = ["signers", "threshold", "delaySeconds", "guardian"];
-const ROLE_KEYS = ["treasury", "resolver"];
+const ROLE_KEYS = [
+  "treasury",
+  "resolver",
+  "productionLaunchAuthority",
+  "independentSecurityAuthority",
+  "governanceAuthority",
+];
 const INTERNAL_OBJECTIVE_VERIFIER_PLACEHOLDER = "0x000000000000000000000000000000000000ffff";
 const INTERNAL_OBJECTIVE_VERIFIER_CODEHASH_PLACEHOLDER = `0x${"ab".repeat(32)}`;
+const INTERNAL_FUNDING_BOARD_SET_PLACEHOLDER = `0x${"bc".repeat(32)}`;
+const INTERNAL_FUNDING_RELEASE_BINDING_PLACEHOLDER = `0x${"cd".repeat(32)}`;
 const PARAMETER_ENV = Object.freeze({
   alphaBps: "P42_ALPHA_BPS",
   betaBps: "P42_BETA_BPS",
@@ -530,11 +538,27 @@ function problemEnv(ethers, input, problem) {
     P42_GUARDIAN_ADDRESS: requiredString(governance.guardian, "governance.guardian"),
     P42_TREASURY_ADDRESS: requiredString(roles.treasury, "roles.treasury"),
     P42_RESOLVER_ADDRESS: requiredString(roles.resolver, "roles.resolver"),
+    P42_PRODUCTION_LAUNCH_AUTHORITY_ADDRESS: requiredString(
+      roles.productionLaunchAuthority,
+      "roles.productionLaunchAuthority",
+    ),
+    P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS: requiredString(
+      roles.independentSecurityAuthority,
+      "roles.independentSecurityAuthority",
+    ),
+    P42_FUNDING_GOVERNANCE_AUTHORITY_ADDRESS: requiredString(
+      roles.governanceAuthority,
+      "roles.governanceAuthority",
+    ),
     // The generic single-board parser still models an external verifier role.
     // Multi-board production ignores these internal placeholders and deploys
     // the capsule-attested gateway as a canonical shared root.
     P42_OBJECTIVE_VERIFIER_ADDRESS: INTERNAL_OBJECTIVE_VERIFIER_PLACEHOLDER,
     P42_OBJECTIVE_VERIFIER_CODEHASH: INTERNAL_OBJECTIVE_VERIFIER_CODEHASH_PLACEHOLDER,
+    // The exact values are derived from the frozen ten-board slate and release
+    // reservation before deterministic address planning.
+    P42_FUNDING_BOARD_SET_DIGEST: INTERNAL_FUNDING_BOARD_SET_PLACEHOLDER,
+    P42_FUNDING_RELEASE_BINDING_DIGEST: INTERNAL_FUNDING_RELEASE_BINDING_PLACEHOLDER,
     P42_ADMISSION_MATRIX_HASH: admission.admissionMatrixHash,
     P42_ONCHAIN_DA: board.onchainDa === true ? "true" : board.onchainDa === false ? "false" : (() => {
       throw new Error("problem.onchainDa must be a boolean");
@@ -592,7 +616,13 @@ export function readMultiBoardCeremonyConfig(ethers, value, { deployerAddress } 
   return {
     schema: MULTIBOARD_CEREMONY_SCHEMA,
     governance: first.governance,
-    roles: { treasury: first.roles.treasury, resolver: first.roles.resolver },
+    roles: {
+      treasury: first.roles.treasury,
+      resolver: first.roles.resolver,
+      productionLaunchAuthority: first.roles.productionLaunchAuthority,
+      independentSecurityAuthority: first.roles.independentSecurityAuthority,
+      governanceAuthority: first.roles.governanceAuthority,
+    },
     parameters: Object.fromEntries(Object.keys(PARAMETER_ENV).map((key) => [key, first.parameters[key]])),
     problems: parsed.map(({ config: board, admission }, index) => ({
       ...board.problem,
@@ -606,6 +636,20 @@ export function readMultiBoardCeremonyConfig(ethers, value, { deployerAddress } 
     })),
     finalityPolicy: first.finalityPolicy,
   };
+}
+
+export function boardSetDigest(problems) {
+  if (!Array.isArray(problems) || problems.length < 1 || problems.length > 10) {
+    throw new Error("board-set digest requires 1..10 boards");
+  }
+  return sha256Canonical(problems.map((problem, index) => releaseBoardIdentity(problem, index)));
+}
+
+export function productionBoardSetDigest(problems) {
+  if (!Array.isArray(problems) || problems.length !== 10) {
+    throw new Error("production board-set digest requires exactly 10 boards");
+  }
+  return boardSetDigest(problems);
 }
 
 function runAdmitReadyCommand({ repoRoot, problemPath, matrixPath, matrixBytes, pythonExecutable }) {

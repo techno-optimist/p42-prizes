@@ -26,6 +26,31 @@ const MIN_IMPROVEMENT_ATOMS = 1n;
 const FUNDING_CAP = ethers.parseEther("1");
 const CLOSE_BY_TIMESTAMP = 4_102_444_800n;
 const MIN_COMPETITION_SECONDS = 30n * 24n * 60n * 60n;
+const BOARD_SET_DIGEST = ethers.id("p42-da-board-set");
+const RELEASE_BINDING_DIGEST = ethers.id("p42-da-release-binding");
+const FUNDING_ROLES = [ethers.id("production-launch-authority"), ethers.id("independent-security-authority"), ethers.id("governance-authority")];
+const FUNDING_TYPES = { FundingAuthorization: [
+  { name: "role", type: "bytes32" }, { name: "boardSetDigest", type: "bytes32" },
+  { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
+  { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
+] };
+
+function fundingAuthorizationConfig(authorities) {
+  return { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    productionLaunchAuthority: authorities[0].address, independentSecurityAuthority: authorities[1].address,
+    governanceAuthority: authorities[2].address };
+}
+
+async function authorizeFunding(submissions, treasury, authorities, digest, expiresAt) {
+  const nonce = await submissions.fundingAuthorizationNonce();
+  const { chainId } = await ethers.provider.getNetwork();
+  const domain = { name: "P42SubmissionManager", version: "2", chainId, verifyingContract: await submissions.getAddress() };
+  const common = { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    authorizationDigest: digest, expiresAt, nonce };
+  const signatures = await Promise.all(authorities.slice(0, 3).map((authority, index) =>
+    authority.signTypedData(domain, FUNDING_TYPES, { ...common, role: FUNDING_ROLES[index] })));
+  return submissions.connect(treasury).authorizeFunding(digest, expiresAt, nonce, signatures);
+}
 
 async function nextEarliestClose() {
   const latest = await ethers.provider.getBlock("latest");
@@ -71,7 +96,7 @@ async function increaseTime(seconds) {
 
 // Deploy the full pool/ledger/submission stack for a given DA config.
 async function deploy(onchainDa, maxSolutionBytes) {
-  const [owner, treasury, solver, other] = await ethers.getSigners();
+  const [owner, treasury, solver, other, ...authorities] = await ethers.getSigners();
 
   const Pool = await ethers.getContractFactory("P42BountyPool");
   const pool = await Pool.deploy(owner.address, FUNDING_CAP);
@@ -86,19 +111,12 @@ async function deploy(onchainDa, maxSolutionBytes) {
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
   const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-  const submissions = await Submissions.deploy(
-    await pool.getAddress(),
-    await ledger.getAddress(),
-    owner.address,
-    treasury.address,
-    ALPHA_BPS,
-    MIN_BOND,
-    CHALLENGE_WINDOW,
-    onchainDa,
-    maxSolutionBytes,
-    SEED_SCORE_ATOMS,
-    MIN_IMPROVEMENT_ATOMS
-  );
+  const submissions = await Submissions.deploy({
+    pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+    treasury: treasury.address, alphaBps: ALPHA_BPS, minPostingBondWei: MIN_BOND,
+    challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa, maxSolutionBytes,
+    seedScoreAtoms: SEED_SCORE_ATOMS, minImprovementAtoms: MIN_IMPROVEMENT_ATOMS,
+  }, fundingAuthorizationConfig(authorities));
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
@@ -128,7 +146,7 @@ async function deploy(onchainDa, maxSolutionBytes) {
   await vault.waitForDeployment();
   await ledger.connect(owner).setRolloverDestination(await vault.getAddress());
   await increaseTime(CHALLENGE_WINDOW + 1n);
-  await submissions.connect(treasury).authorizeFunding("0x" + "42".repeat(32), 2n ** 64n - 1n);
+  await authorizeFunding(submissions, treasury, authorities, "0x" + "42".repeat(32), 2n ** 64n - 1n);
   await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
   await pool.connect(owner).setAcceptingFunds(true);
 
@@ -165,7 +183,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
     it("rejects on-chain DA with a zero cap", async function () {
       const { submissions } = await deploy(false, 0); // deploy something to get a factory-bound instance
       const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-      const [owner, treasury] = await ethers.getSigners();
+      const [owner, treasury, , , ...authorities] = await ethers.getSigners();
       const Pool = await ethers.getContractFactory("P42BountyPool");
       const pool = await Pool.deploy(owner.address, FUNDING_CAP);
       const Ledger = await ethers.getContractFactory("P42PayoutLedger");
@@ -174,10 +192,12 @@ describe("P42 on-chain-at-reveal data availability", function () {
         await nextEarliestClose(), CLOSE_BY_TIMESTAMP
       );
       await expectCustomError(
-        Submissions.deploy(
-          await pool.getAddress(), await ledger.getAddress(), owner.address, treasury.address,
-          ALPHA_BPS, MIN_BOND, CHALLENGE_WINDOW, true, 0, SEED_SCORE_ATOMS, MIN_IMPROVEMENT_ATOMS
-        ),
+        Submissions.deploy({
+          pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+          treasury: treasury.address, alphaBps: ALPHA_BPS, minPostingBondWei: MIN_BOND,
+          challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: true, maxSolutionBytes: 0,
+          seedScoreAtoms: SEED_SCORE_ATOMS, minImprovementAtoms: MIN_IMPROVEMENT_ATOMS,
+        }, fundingAuthorizationConfig(authorities)),
         submissions,
         "P42_BAD_ONCHAIN_DA_CONFIG"
       );
@@ -186,7 +206,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
     it("rejects on-chain DA with a cap above the 1 MiB calldata ceiling", async function () {
       const { submissions } = await deploy(false, 0);
       const Submissions = await ethers.getContractFactory("P42SubmissionManager");
-      const [owner, treasury] = await ethers.getSigners();
+      const [owner, treasury, , , ...authorities] = await ethers.getSigners();
       const Pool = await ethers.getContractFactory("P42BountyPool");
       const pool = await Pool.deploy(owner.address, FUNDING_CAP);
       const Ledger = await ethers.getContractFactory("P42PayoutLedger");
@@ -195,10 +215,12 @@ describe("P42 on-chain-at-reveal data availability", function () {
         await nextEarliestClose(), CLOSE_BY_TIMESTAMP
       );
       await expectCustomError(
-        Submissions.deploy(
-          await pool.getAddress(), await ledger.getAddress(), owner.address, treasury.address,
-          ALPHA_BPS, MIN_BOND, CHALLENGE_WINDOW, true, ONE_MIB + 1, SEED_SCORE_ATOMS, MIN_IMPROVEMENT_ATOMS
-        ),
+        Submissions.deploy({
+          pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
+          treasury: treasury.address, alphaBps: ALPHA_BPS, minPostingBondWei: MIN_BOND,
+          challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: true, maxSolutionBytes: ONE_MIB + 1,
+          seedScoreAtoms: SEED_SCORE_ATOMS, minImprovementAtoms: MIN_IMPROVEMENT_ATOMS,
+        }, fundingAuthorizationConfig(authorities)),
         submissions,
         "P42_BAD_ONCHAIN_DA_CONFIG"
       );

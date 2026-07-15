@@ -47,7 +47,8 @@ function plan() {
   }));
   for (const board of boards) operations.push({
     sequence: operations.length + 1, authority: "treasury", label: `board.${board.problemId}.authorizeFunding`,
-    problemId: board.problemId, to: board.submissions, expectedRuntimeCodeHash: runtimeCodeHash, value: "0", data: `0x${"1".repeat(8)}${"a".repeat(64)}`,
+    problemId: board.problemId, to: board.submissions, expectedRuntimeCodeHash: runtimeCodeHash, value: "0",
+    authorizationNonce: "0", verifiedSignatureCount: 3, data: `0x${"1".repeat(8)}${"a".repeat(64)}`,
   });
   const authorizationLabels = operations.map((row) => row.label);
   for (const board of boards) {
@@ -76,7 +77,7 @@ function plan() {
     });
   }
   return {
-    schema: "p42-funding-activation-plan/v1", planDigest: `sha256:${"b".repeat(64)}`,
+    schema: "p42-funding-activation-plan/v2", planDigest: `sha256:${"b".repeat(64)}`,
     chainId: 84532, network: "base-sepolia", boardCount: 10, authorizationDigest: digest,
     manifestBytesDigest: `sha256:${"c".repeat(64)}`, deploymentCommit: "d".repeat(40),
     authorizationBytesDigest: `sha256:${"7".repeat(64)}`,
@@ -98,7 +99,8 @@ function snapshot(inputPlan) {
     chainId: inputPlan.chainId, planDigest: inputPlan.planDigest, now: 1_900_000_000n,
     boards: Array.from({ length: 10 }, (_, index) => ({
       problemId: index + 1, authorizedFundingDigest: `0x${"0".repeat(64)}`,
-      fundingAuthorizationExpiresAt: 0n, fundingArmed: false,
+      fundingAuthorizationExpiresAt: 0n, fundingAuthorizationNonce: 0n,
+      fundingAuthorizationVerified: false, fundingArmed: false,
       fundingAuthorizationDigest: `0x${"0".repeat(64)}`, acceptingFunds: false,
     })),
     timelockOperations,
@@ -230,6 +232,8 @@ test("executor enforces global authorize and arm barriers", () => {
   for (const board of state.boards) {
     board.authorizedFundingDigest = chainDigest;
     board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+    board.fundingAuthorizationNonce = 1n;
+    board.fundingAuthorizationVerified = true;
   }
   action = nextFundingActivationAction(inputPlan, state);
   assert.equal(action.kind, "schedule");
@@ -250,12 +254,20 @@ test("executor enforces global authorize and arm barriers", () => {
   assert.throws(() => nextFundingActivationAction(inputPlan, state), /before the global arm barrier/);
 });
 
+test("executor fails closed on legacy activation plans", () => {
+  const inputPlan = plan();
+  inputPlan.schema = "p42-funding-activation-plan/v1";
+  assert.throws(() => nextFundingActivationAction(inputPlan, snapshot(inputPlan)), /validated activation plan/);
+});
+
 test("executor reaches pool opening only after every finalized arm", () => {
   const inputPlan = plan();
   const state = snapshot(inputPlan);
   for (const board of state.boards) {
     board.authorizedFundingDigest = chainDigest;
     board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+    board.fundingAuthorizationNonce = 1n;
+    board.fundingAuthorizationVerified = true;
     board.fundingArmed = true;
     board.fundingAuthorizationDigest = chainDigest;
   }
@@ -609,6 +621,8 @@ test("one governance signer waits after its confirmation instead of requiring qu
   for (const board of state.boards) {
     board.authorizedFundingDigest = chainDigest;
     board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+    board.fundingAuthorizationNonce = 1n;
+    board.fundingAuthorizationVerified = true;
   }
   const operation = inputPlan.operations[10];
   const operationState = state.timelockOperations[operation.operationId.toLowerCase()];
@@ -646,6 +660,7 @@ test("dual-RPC snapshot uses one common finalized block and rejects disagreement
   const selector = (signature) => ethers.id(signature).slice(0, 10);
   const selectors = {
     authorized: selector("authorizedFundingDigest()"), expires: selector("fundingAuthorizationExpiresAt()"),
+    authorizationNonce: selector("fundingAuthorizationNonce()"),
     armed: selector("fundingArmed()"), consumed: selector("fundingAuthorizationDigest()"),
     accepting: selector("acceptingFunds()"), state: selector("stateOf(bytes32)"),
     ops: selector("ops(bytes32)"), confirmed: selector("confirmedBy(bytes32,address)"),
@@ -661,6 +676,7 @@ test("dual-RPC snapshot uses one common finalized block and rejects disagreement
       const id = data.slice(0, 10);
       if (id === selectors.authorized || id === selectors.consumed) return coder.encode(["bytes32"], [ZERO_HASH]);
       if (id === selectors.expires) return coder.encode(["uint64"], [0]);
+      if (id === selectors.authorizationNonce) return coder.encode(["uint256"], [0]);
       if (id === selectors.armed || id === selectors.accepting || id === selectors.confirmed) return coder.encode(["bool"], [false]);
       if (id === selectors.state) return coder.encode(["uint8"], [0]);
       if (id === selectors.ops) return coder.encode(["uint64", "uint64", "uint32", "uint32", "uint8", "bool", "bytes32"], [0, 0, 0, 0, 0, false, ZERO_HASH]);
@@ -670,7 +686,21 @@ test("dual-RPC snapshot uses one common finalized block and rejects disagreement
   const snapshot = await collectFundingActivationSnapshot(inputPlan, provider(), provider());
   assert.equal(snapshot.blockNumber, 50);
   assert.equal(snapshot.boards.length, 10);
+  assert.equal(snapshot.boards[0].fundingAuthorizationNonce, 0n);
+  assert.equal(snapshot.boards[0].fundingAuthorizationVerified, false);
   await assert.rejects(() => collectFundingActivationSnapshot(inputPlan, provider(), provider(1_900_000_001)), /disagree/);
+});
+
+test("executor rejects stale bundle nonces and requires post-relay verified nonce semantics", () => {
+  const inputPlan = plan();
+  const state = snapshot(inputPlan);
+  state.boards[0].fundingAuthorizationNonce = 1n;
+  assert.throws(() => nextFundingActivationAction(inputPlan, state), /nonce does not match signature bundle/);
+
+  state.boards[0].authorizedFundingDigest = chainDigest;
+  state.boards[0].fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+  state.boards[0].fundingAuthorizationVerified = false;
+  assert.throws(() => nextFundingActivationAction(inputPlan, state), /conflicting funding authorization/);
 });
 
 test("dual-RPC nonce evidence binds finalized and pending current nonces", async () => {
@@ -776,6 +806,8 @@ test("completion artifact binds only the exact finalized all-open state", () => 
   for (const board of state.boards) {
     board.authorizedFundingDigest = chainDigest;
     board.fundingAuthorizationExpiresAt = BigInt(inputPlan.authorizationExpiresAt);
+    board.fundingAuthorizationNonce = 1n;
+    board.fundingAuthorizationVerified = true;
     board.fundingArmed = true;
     board.fundingAuthorizationDigest = chainDigest;
     board.acceptingFunds = true;
