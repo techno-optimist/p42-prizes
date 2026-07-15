@@ -160,23 +160,44 @@ jobs:
       - name: Test objective predicate and Solidity ABI encoding
         working-directory: objective-programs
         run: cargo test --locked -p p42-objective-core
-      - name: Rebuild frozen guest on x86 Linux
+      - name: Build objective guests on x86 Linux
         working-directory: objective-programs
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked -p p42-hadamard-668-objective-script
-          rebuilt=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
-          sha256sum "$rebuilt"
-          if strings "$rebuilt" | grep --extended-regexp '/home/runner/(work/p42-prizes|\.cargo)|/private/tmp/p42'; then
-            echo "guest ELF leaked a host-specific source path" >&2
-            exit 1
-          fi
+          cargo build --locked \
+            -p p42-hadamard-668-objective-script \
+            -p p42-distinct-subset-sums-a11-objective-script
+          for rebuilt in \
+            target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program \
+            target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program; do
+              sha256sum "$rebuilt"
+              if strings "$rebuilt" | grep --extended-regexp '/home/runner/(work/p42-prizes|\.cargo|\.rustup)|/opt/hostedtoolcache|/private/tmp/p42'; then
+                echo "guest ELF leaked a host-specific source path: $rebuilt" >&2
+                exit 1
+              fi
+          done
+          a11=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program
+          audit=target/a11-reproducibility
+          mkdir -p "$audit"
+          cp "$a11" "$audit/program.elf"
+          cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
+            identity-elf "$a11" > "$audit/identity.json"
+          cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
+            execute-fixture-elf "$a11" ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json \
+            > "$audit/execution.json"
       - name: Retain x86 guest for cross-host audit
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: p42-hadamard-668-x86-elf-${{ matrix.os }}-${{ github.run_id }}
           path: objective-programs/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program
+          if-no-files-found: error
+          retention-days: 7
+      - name: Retain unbound A11 guest for cross-host audit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-distinct-subset-sums-a11-x86-elf-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/a11-reproducibility
           if-no-files-found: error
           retention-days: 7
       - name: Enforce frozen guest identity
@@ -199,3 +220,33 @@ jobs:
           set -euo pipefail
           output=$(cargo run --locked -p p42-hadamard-668-objective-script -- execute-fixture-elf artifacts/hadamard-668-defect/v0.1.0/program.elf ../problems/hadamard-668-defect/examples/sylvester-prefix.json)
           printf '%s\n' "$output" | python3 ../scripts/verify-sp1-objective-execution.py
+      - name: Exercise unbound A11 guest in mock mode
+        working-directory: objective-programs
+        run: |
+          set -euo pipefail
+          cargo run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
+            execute-fixture ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json
+
+  objective-program-reproducibility:
+    name: SP1 objective-program reproducibility
+    needs: objective-program
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: p42-distinct-subset-sums-a11-x86-elf-*-${{ github.run_id }}
+          path: objective-programs/reproduced
+      - name: Compare dual-image A11 guests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t guests < <(find objective-programs/reproduced -type f -name program.elf | sort)
+          mapfile -t identities < <(find objective-programs/reproduced -type f -name identity.json | sort)
+          mapfile -t executions < <(find objective-programs/reproduced -type f -name execution.json | sort)
+          test "${#guests[@]}" -eq 2
+          test "${#identities[@]}" -eq 2
+          test "${#executions[@]}" -eq 2
+          cmp --silent "${guests[0]}" "${guests[1]}"
+          cmp --silent "${identities[0]}" "${identities[1]}"
+          cmp --silent "${executions[0]}" "${executions[1]}"
+          sha256sum "${guests[@]}" "${identities[@]}" "${executions[@]}"

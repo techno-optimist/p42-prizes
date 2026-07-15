@@ -26,7 +26,8 @@ as an exact rational (denominator 1), with direction MINIMIZE.
 
 ## Solution Format
 
-Solutions are canonical JSON:
+Solutions are JSON objects whose exact submitted bytes are SHA-256 bound by the
+commit/reveal protocol:
 
 ```json
 {
@@ -36,8 +37,10 @@ Solutions are canonical JSON:
 
 `set` must contain exactly 11 strictly increasing integers with
 `1 <= s_i <= 10^15`. Submitter fields such as `source`, `claimed_score`, or
-`claimed_improvement` are ignored: the verifier recomputes the score from the
-raw set only.
+`claimed_improvement` are accepted only as strings and ignored: the verifier
+recomputes the score from the raw set only. No other root fields are accepted.
+Duplicate object keys and strings containing unpaired Unicode surrogates are
+rejected.
 
 ## Score, Seed, And The Open Frontier
 

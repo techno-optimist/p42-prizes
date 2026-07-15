@@ -22,6 +22,8 @@ N = 11
 SUBSET_COUNT = 1 << N  # 2048
 MAX_ELEMENT = 1000000000000000  # 10^15; keeps every subset sum a small exact int
 MAX_SOLUTION_BYTES = 4096
+ALLOWED_FIELDS = {"set", "source", "claimed_score", "claimed_improvement"}
+METADATA_FIELDS = {"source", "claimed_score", "claimed_improvement"}
 # OEIS A276661: a(11) is OPEN (a(10) = 309 was determined exactly by Paul W.
 # Dyson, Oct 2025). The seed witness is the Conway-Guy-lineage set
 # {285, 433, 510, 550, 570, 581, 587, 590, 592, 593, 594} with max element
@@ -55,6 +57,24 @@ def parse_solution(raw: bytes) -> list[int]:
 
     if not isinstance(data, dict):
         raise VerifierFailure("MALFORMED", "solution root must be an object")
+
+    unknown_fields = sorted(set(data) - ALLOWED_FIELDS)
+    if unknown_fields:
+        raise VerifierFailure(
+            "MALFORMED", f"unknown solution field: {unknown_fields[0]}"
+        )
+    for field in METADATA_FIELDS:
+        if field not in data:
+            continue
+        value = data[field]
+        if not isinstance(value, str):
+            raise VerifierFailure("MALFORMED", f"{field} must be a string")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise VerifierFailure(
+                "MALFORMED", f"{field} must contain valid Unicode scalar values"
+            ) from exc
 
     raw_set = data.get("set")
     if not isinstance(raw_set, list) or len(raw_set) != N:

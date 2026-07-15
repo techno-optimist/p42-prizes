@@ -97,4 +97,87 @@ describe("P42 objective journal conformance", () => {
     );
     assert.equal(journalDigest, "0x2075a1869943196cfdc2e9fa5dc71ab202d903c4b20ec5a22a2e518a69e16b72");
   });
+
+  it("matches the Rust/SP1 A11 witness across the complete Solidity hash chain", () => {
+    const solution = readFileSync(
+      new URL(
+        "../../problems/distinct-subset-sums-a11/tests/conway-guy-594.json",
+        import.meta.url,
+      ),
+    );
+    const solutionSha256 = `0x${createHash("sha256").update(solution).digest("hex")}`;
+    assert.equal(solutionSha256, "0x5081fe54d10220c1ad2862fd872b3cf5dffe14184bb9f52a9e517ad4a5a26768");
+
+    const chainId = 84_532n;
+    const quorum = address("11");
+    const manager = address("22");
+    const submissionManager = address("33");
+    const registry = address("44");
+    const problemId = 7n;
+    const packageHash = repeat("55");
+    const guestElfSha256 = repeat("dd");
+    const programVKey = repeat("ee");
+    const submissionId = 7n;
+    const solver = address("66");
+    const commitment = repeat("77");
+    const solutionCid = "ipfs://p42-a11-objective-fixture";
+    const claimedScoreAtoms = 594n * 10n ** 18n;
+    const challengeEndsAt = 2_000_000_300n;
+    const challenger = address("88");
+    const reasonHash = repeat("99");
+    const challengedAt = 2_000_000_100n;
+    const disputeEndsAt = 2_000_000_200n;
+    const transcriptHash = repeat("aa");
+    const transcriptUri = "ipfs://p42-a11-transcript-fixture";
+    const verdictHash = repeat("bb");
+    const proofBeneficiary = address("cc");
+
+    const revealInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "address", "bytes32", "bytes32", "bytes32", "int256", "uint256", "uint64"],
+        [submissionManager, chainId, submissionId, solver, commitment, solutionSha256, keccak256(toUtf8Bytes(solutionCid)), claimedScoreAtoms, 0n, challengeEndsAt],
+      ),
+    );
+    assert.equal(revealInstanceHash, "0x9ed33748c40c26f3fca0e9bc3c24d817f6af216cadb427efcefaaf1348740c61");
+
+    const challengeInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "bytes32", "address", "bytes32", "uint64", "uint64"],
+        [manager, chainId, submissionId, revealInstanceHash, challenger, reasonHash, challengedAt, disputeEndsAt],
+      ),
+    );
+    assert.equal(challengeInstanceHash, "0x4444fc309ab981abb65a4fe323d1d07f75af9dd6721f2d9034fc3dd6574870e1");
+
+    const pendingDecisionContext = keccak256(
+      coder.encode(
+        ["bytes32", "bytes32", "address", "bytes32", "bool", "bytes32", "bytes32", "bytes32"],
+        [challengeInstanceHash, revealInstanceHash, challenger, reasonHash, false, transcriptHash, keccak256(toUtf8Bytes(transcriptUri)), verdictHash],
+      ),
+    );
+    assert.equal(pendingDecisionContext, "0x60be7db58cfc9d4d21503257d455bd506c532fc41efb61b58efba44868f3306c");
+
+    const objectiveBindingContext = keccak256(
+      coder.encode(
+        ["address", "uint256", "bytes32", "bytes32", "bytes32"],
+        [registry, problemId, packageHash, guestElfSha256, programVKey],
+      ),
+    );
+    assert.equal(objectiveBindingContext, "0x71dec0a6d6c656f35156774fbc92415359f3073627bf467eaf108163a85bc69a");
+
+    const contextHash = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "uint256", "bytes32"],
+        ["P42_OBJECTIVE_CHALLENGE_CONTEXT_V2", chainId, manager, submissionManager, objectiveBindingContext, submissionId, pendingDecisionContext],
+      ),
+    );
+    assert.equal(contextHash, "0xfda55c7ea05f02346779f3185236b0977f75af50fbaa24aefb28bced286d51d5");
+
+    const journalDigest = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "bytes32", "bytes32", "bool", "address"],
+        ["P42_OBJECTIVE_VERDICT_JOURNAL_V2", chainId, quorum, manager, guestElfSha256, programVKey, contextHash, true, proofBeneficiary],
+      ),
+    );
+    assert.equal(journalDigest, "0x561a4ba62b404deda35acc407e9e646cd5a2266dad80a550a626c417405be177");
+  });
 });

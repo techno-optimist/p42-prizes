@@ -451,7 +451,7 @@
         "local_evidence": [
           {
             "path": "problems/distinct-subset-sums-a11/SPEC.md",
-            "sha256": "sha256:f23d4f3f1de4fd98cb8f83cb3ecfa4c001b383025841469b3ccbc355208c08d2"
+            "sha256": "sha256:e092c52a44327210bf718117f316559f5bd5da1744132b0cdb03fcb384c81ca1"
           },
           {
             "path": "problems/distinct-subset-sums-a11/HARDENING.md",
@@ -488,11 +488,11 @@
       },
       "specification": {
         "path": "problems/distinct-subset-sums-a11/SPEC.md",
-        "sha256": "sha256:f23d4f3f1de4fd98cb8f83cb3ecfa4c001b383025841469b3ccbc355208c08d2"
+        "sha256": "sha256:e092c52a44327210bf718117f316559f5bd5da1744132b0cdb03fcb384c81ca1"
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:ecfe95ee8a772a628a886d8b3d2ea59e81d73d8e531a0deff95eab9a692798f9",
+        "source_tree_sha256": "sha256:4e7a4d28ade55c6b758cb58d0c42a35738daf3e2bf23a4734fe4d090c5976817",
         "version": "0.1.0"
       }
     },

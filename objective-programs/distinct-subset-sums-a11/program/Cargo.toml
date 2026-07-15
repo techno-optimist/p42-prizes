@@ -1,0 +1,10 @@
+[package]
+name = "p42-distinct-subset-sums-a11-objective-program"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+p42-objective-core = { path = "../../p42-objective-core" }
+sp1-zkvm.workspace = true
