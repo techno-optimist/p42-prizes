@@ -629,19 +629,20 @@ describe("P42 Gate 1 contract scaffold", function () {
     const fixture = await deployFixture();
     const { alice, bob, ledger, submissions } = fixture;
     const deadline = await ledger.fundingDeadline();
-    const latest = await ethers.provider.getBlock("latest");
-    await increaseTime(deadline - BigInt(latest.timestamp) - 1n);
     const bond = await submissions.requiredPostingBondNow();
     const first = await submissions["computeCommitment(string,address,bytes32,string)"](
       "bafy-deadline-front-run", alice.address, DA_HASH, "deadline"
     );
-    await submissions.connect(alice).commit(first, DA_HASH, { value: bond });
-    assert.equal(await submissions.openSubmissionCount(), 1n);
-
-    await increaseTime(1n);
     const recycled = await submissions["computeCommitment(string,address,bytes32,string)"](
       "bafy-zero-marginal-recycle", bob.address, DA_HASH, "recycle"
     );
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [Number(deadline)]);
+    await submissions.connect(alice).commit(first, DA_HASH, { value: bond });
+    assert.equal(await submissions.openSubmissionCount(), 1n);
+
+    await ethers.provider.send("evm_setNextBlockTimestamp", [Number(deadline + 1n)]);
+    await ethers.provider.send("evm_mine", []);
     await expectCustomError(
       submissions.connect(bob).commit(recycled, DA_HASH, { value: bond }),
       submissions,
