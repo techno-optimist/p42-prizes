@@ -5,7 +5,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-from unittest.mock import patch
 
 import jsonschema
 import pytest
@@ -161,24 +160,12 @@ def valid_production_legal_memo(tmp_path: Path) -> tuple[dict, AttestationFixtur
 
 
 def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict:
-    # Canonical fixture capsules are synthetic so topology attacks can be
-    # isolated cheaply. Real clean-checkout rebuild behavior is exercised by
-    # contracts/capsule-test/release-capsule.test.js.
-    rebuild = (
-        patch("p42_prizes.legal._verify_canonical_capsule_rebuild")
-        if report.get("schema_version") == "p42-legal-memo/v2"
-        else None
+    return normalize_legal_memo(
+        report,
+        trust_registry=registry,
+        artifact_root=fixture.root,
+        chain_reader=fixture.chain_reader,
     )
-    if rebuild is None:
-        return normalize_legal_memo(
-            report, trust_registry=registry, artifact_root=fixture.root,
-            chain_reader=fixture.chain_reader,
-        )
-    with rebuild:
-        return normalize_legal_memo(
-            report, trust_registry=registry, artifact_root=fixture.root,
-            chain_reader=fixture.chain_reader,
-        )
 
 
 def resign_production(report: dict) -> None:

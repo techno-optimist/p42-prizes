@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
+import shutil
+import subprocess
 from typing import Any, Mapping
 
 from p42_prizes.verdict import canonical_json
@@ -9,6 +12,46 @@ from p42_prizes.verdict import canonical_json
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = json.loads((ROOT / "schemas" / "deployment-manifest-v2.schema.json").read_text())
+
+
+def install_pinned_contract_build_inputs(target: Path) -> None:
+    for relative in (
+        Path(".gitignore"),
+        Path("contracts/hardhat.config.js"),
+        Path("contracts/package.json"),
+        Path("contracts/package-lock.json"),
+        Path("protocol/external-dependencies-v1.json"),
+    ):
+        destination = target / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, destination)
+    shutil.copytree(ROOT / "contracts/src", target / "contracts/src", dirs_exist_ok=True)
+
+
+@lru_cache(maxsize=4)
+def _production_capsule_json(git_commit: str) -> str:
+    script = """
+import { createReleaseCapsule } from './contracts/scripts/release-capsule-helper.js';
+const capsule = await createReleaseCapsule({ contractsRoot: './contracts', gitCommit: process.argv[1] });
+process.stdout.write(JSON.stringify(capsule));
+"""
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", script, git_commit],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return completed.stdout
+
+
+def production_capsule_template() -> dict[str, Any]:
+    return json.loads(_production_capsule_json("1" * 40))
+
+
+def production_capsule(git_commit: str) -> dict[str, Any]:
+    return json.loads(_production_capsule_json(git_commit))
 
 
 def _merge(left: Any, right: Any) -> Any:

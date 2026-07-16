@@ -163,7 +163,7 @@ function authorization(inputManifest, manifestBytesDigest = hash("e")) {
     release_binding: {
       network: "base-sepolia", chain_id: 84532,
       deployment_commit: inputManifest.deploymentCommit,
-      git_commit: inputManifest.deploymentCommit,
+      git_commit: "f".repeat(40),
     },
     artifacts: {
       deployment_manifest: { sha256: manifestBytesDigest },

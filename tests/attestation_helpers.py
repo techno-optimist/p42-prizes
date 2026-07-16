@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -10,7 +11,11 @@ import subprocess
 import threading
 from typing import Any, Mapping
 
-from legal_release_fixture import schema_valid_manifest_shell
+from legal_release_fixture import (
+    install_pinned_contract_build_inputs,
+    production_capsule,
+    schema_valid_manifest_shell,
+)
 from p42_prizes.legal import _attestation_message, _ed_decode_point, _ed_scalar_mult, ethereum_keccak256
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
@@ -147,30 +152,83 @@ def _default_value(kind: str) -> Any:
 
 def _constructor_args(name: str, manifest: Mapping[str, Any], problem: Mapping[str, Any] | None) -> list[Any]:
     if name == "P42MultisigTimelock":
-        return ["1"]
+        return [
+            manifest["governance"]["signers"],
+            manifest["governance"]["threshold"],
+            manifest["governance"]["delaySeconds"],
+            manifest["roles"]["guardian"],
+        ]
+    if name == "P42RolloverVault":
+        return [manifest["contracts"]["registry"]["address"], manifest["roles"]["owner"]]
+    if name == "P42ResolverQuorum":
+        return [
+            manifest["roles"]["owner"],
+            manifest["roles"]["treasury"],
+            "1",
+            manifest["contracts"]["submissionManagerFactory"]["address"],
+            manifest["governance"]["signers"],
+            manifest["governance"]["threshold"],
+            [item["contracts"]["submissions"]["address"] for item in manifest["problems"]],
+            manifest["contracts"]["objectiveVerifier"]["address"],
+            manifest["contracts"]["objectiveVerifier"]["runtimeCodeHash"],
+        ]
+    if name == "P42BountyPool":
+        return [manifest["roles"]["owner"], "1"]
+    if name == "P42PayoutLedger":
+        assert problem is not None
+        return [
+            problem["contracts"]["pool"]["address"],
+            manifest["roles"]["owner"],
+            manifest["roles"]["treasury"],
+            "1",
+            "1800000000",
+            "1800000001",
+        ]
     if name == "P42SubmissionManager":
         assert problem is not None
         return [[problem["contracts"]["pool"]["address"], problem["contracts"]["ledger"]["address"], manifest["roles"]["owner"], manifest["roles"]["treasury"], "1", "1", "1", False, "0", "1", "1"], ["0x" + manifest["releaseEvidence"]["boardSetDigest"][7:], "0x" + manifest["releaseEvidence"]["releaseBindingDigest"][7:], manifest["roles"]["productionLaunchAuthority"], manifest["roles"]["independentSecurityAuthority"], manifest["roles"]["governanceAuthority"]]]
-    return [_default_value(_immutable_type(item)) for item in IMMUTABLES[name]]
+    if name == "P42ChallengeManager":
+        assert problem is not None
+        return [
+            manifest["roles"]["owner"],
+            manifest["roles"]["resolver"],
+            manifest["roles"]["treasury"],
+            problem["contracts"]["submissions"]["address"],
+            "1", "1", "1", "1", "1", "1", "1",
+        ]
+    if name == "P42ProblemRegistry":
+        return [manifest["roles"]["owner"]]
+    return []
 
 
-def _runtime(name: str, args: list[Any], timestamp: int) -> bytes:
+def _runtime(contract: Mapping[str, Any], args: list[Any], timestamp: int) -> bytes:
+    name = str(contract["name"])
     names = IMMUTABLES[name]
+    constructor = next((item for item in contract["abi"] if item.get("type") == "constructor"), {"inputs": []})
+    values = {
+        item["name"].removesuffix("_"): args[index]
+        for index, item in enumerate(constructor["inputs"])
+        if item["name"].removesuffix("_") in names
+    }
     if name == "P42MultisigTimelock":
-        values = {"delay": 1, "overrideDelay": 2, "operationGracePeriod": 7 * 24 * 60 * 60}
+        delay = int(args[2])
+        values = {"delay": delay, "overrideDelay": delay * 2, "operationGracePeriod": 7 * 24 * 60 * 60}
     elif name == "P42SubmissionManager":
         deployment, funding = args
         values = dict(zip(["pool", "ledger", "owner", "treasury", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"], deployment))
         values.update(zip(["boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority", "independentSecurityAuthority", "governanceAuthority"], funding))
         values.update(deployedAt=timestamp, armNotBefore=timestamp + int(values["challengeWindowSeconds"]), fundingAuthorizer=values["treasury"])
-    else:
-        values = dict(zip(names, args))
-    encoded = bytearray(max(1, len(names) * 32))
-    for index, immutable in enumerate(names):
-        value = values[immutable]
+    runtime = bytearray.fromhex(str(contract["runtimeTemplate"])[2:])
+    for binding in contract["immutableBindings"]:
+        value = values[binding["name"]]
         integer = int(value, 16) if isinstance(value, str) and value.startswith("0x") else int(value)
-        encoded[index * 32:(index + 1) * 32] = integer.to_bytes(32, "big")
-    return bytes(encoded)
+        for byte_range in binding["ranges"]:
+            length = int(byte_range["length"])
+            if integer < 0:
+                integer = (1 << (length * 8)) + integer
+            start = int(byte_range["start"])
+            runtime[start:start + length] = integer.to_bytes(length, "big")
+    return bytes(runtime)
 
 
 def _deep_update(target: dict[str, Any], override: Mapping[str, Any]) -> None:
@@ -371,18 +429,32 @@ class AttestationFixture:
             for board in range(1, 11)
             for key, name in CANONICAL_BOARD_CONTRACTS
         )
-        # Freeze the topology and source commit before publishing the capsule that names it.
+        # Freeze the complete pinned build input set before publishing the
+        # capsule that names this exact deployment commit.
+        install_pinned_contract_build_inputs(self.root)
+        template = production_capsule("1" * 40)
+        template_by_name = {item["name"]: item for item in template["contracts"]}
+        template_build_infos = {item["id"]: item for item in template["buildInfos"]}
         for name in PRODUCTION_CONTRACT_NAMES:
+            contract = template_by_name[name]
+            build_info = template_build_infos[contract["buildInfoId"]]
+            source = build_info["input"]["input"]["sources"][f"project/{contract['sourceName']}"]["content"]
             self.artifact(
                 f"canonical-{network}-source-{name}",
-                content=f"// canonical test source for {name}\ncontract {name} {{}}\n",
+                content=source,
                 created_at_utc="2026-07-08T13:30:00Z",
                 suffix=".sol",
             )
         self._run("git", "add", ".")
         self._run("git", "commit", "-q", "-m", f"freeze canonical topology {network}")
         deployment_commit = self._run("git", "rev-parse", "HEAD").stdout.strip()
-        capsule, sources = _synthetic_capsule(deployment_commit)
+        capsule = production_capsule(deployment_commit)
+        capsule_build_infos = {item["id"]: item for item in capsule["buildInfos"]}
+        sources = {
+            item["name"]: capsule_build_infos[item["buildInfoId"]]["input"]["input"]["sources"]
+            [f"project/{item['sourceName']}"]["content"]
+            for item in capsule["contracts"]
+        }
         capsule_by_name = {item["name"]: item for item in capsule["contracts"]}
         deployment = schema_valid_manifest_shell()
         deployment["deploymentCommit"] = deployment_commit
@@ -399,7 +471,7 @@ class AttestationFixture:
             problem = deployment["problems"][int(topology_key.split(".")[1]) - 1] if topology_key.startswith("board.") else None
             args = _constructor_args(name, deployment, problem)
             timestamp = 1_800_000_000 + index
-            runtime_bytes = _runtime(name, args, timestamp)
+            runtime_bytes = _runtime(capsule_by_name[name], args, timestamp)
             runtime_hash = "sha256:" + hashlib.sha256(runtime_bytes).hexdigest()
             manifest_runtime_hash = ethereum_keccak256(runtime_bytes)
             runtime_artifact = self.artifact(f"canonical-{network}-runtime-{topology_key}", content="0x" + runtime_bytes.hex(), created_at_utc="2026-07-08T14:00:00Z", suffix=".hex")
@@ -583,9 +655,14 @@ class AttestationFixture:
             thread.join(timeout=5)
 
     def _run(self, *command: str) -> subprocess.CompletedProcess[str]:
+        env = dict(os.environ)
+        if command and command[0] == "git" and "commit" in command:
+            env["GIT_AUTHOR_DATE"] = "2026-07-08T12:00:00Z"
+            env["GIT_COMMITTER_DATE"] = "2026-07-08T12:00:00Z"
         return subprocess.run(
             command,
             cwd=self.root,
+            env=env,
             text=True,
             capture_output=True,
             check=True,
