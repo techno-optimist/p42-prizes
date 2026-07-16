@@ -22,14 +22,13 @@ sys.path.insert(0, str(ROOT / "src"))
 from p42_prizes.runner_queue import (  # noqa: E402
     MemorySnapshot,
     RunnerPolicy,
-    append_runner_terminal_alert,
     enqueue_runner_job,
     locked_runner_queue,
     memory_snapshot_from_proc,
     read_runner_queue,
+    reconcile_runner_terminal_alert,
     record_runner_action,
     record_runner_local_disposition,
-    record_runner_terminal_alert_delivery,
     set_runner_action_alert,
 )
 from p42_prizes.secure_json import read_strict_json_file  # noqa: E402
@@ -169,15 +168,10 @@ def _parser() -> argparse.ArgumentParser:
     local.add_argument("--candidate-hash")
     local.add_argument("--detail")
 
-    append_alert = commands.add_parser("append-terminal-alert")
-    append_alert.add_argument("--queue", required=True)
-    append_alert.add_argument("--alerts", required=True)
-    append_alert.add_argument("--job-id", required=True)
-
-    delivered = commands.add_parser("record-terminal-alert")
-    delivered.add_argument("--queue", required=True)
-    delivered.add_argument("--job-id", required=True)
-    delivered.add_argument("--alert-id", required=True)
+    reconcile_alert = commands.add_parser("reconcile-terminal-alert")
+    reconcile_alert.add_argument("--queue", required=True)
+    reconcile_alert.add_argument("--alerts", required=True)
+    reconcile_alert.add_argument("--job-id", required=True)
 
     quarantine = commands.add_parser("quarantine-canonical")
     quarantine.add_argument("--queue", required=True)
@@ -216,17 +210,11 @@ def main() -> int:
             candidate_hash=args.candidate_hash,
             detail=args.detail,
         )
-    elif args.command == "append-terminal-alert":
-        result = append_runner_terminal_alert(
+    elif args.command == "reconcile-terminal-alert":
+        result = reconcile_runner_terminal_alert(
             args.queue,
             args.alerts,
             job_id=args.job_id,
-        )
-    elif args.command == "record-terminal-alert":
-        result = record_runner_terminal_alert_delivery(
-            args.queue,
-            job_id=args.job_id,
-            alert_id=args.alert_id,
         )
     elif args.command == "quarantine-canonical":
         result = _quarantine_canonical(args.queue, args.job_id, args.reason)

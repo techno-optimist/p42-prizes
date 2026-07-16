@@ -38,7 +38,8 @@ import {
 } from "./canonical-topology.mjs";
 import {
   activationRpcFetchRequest,
-  validateActivationRpcEndpointPair,
+  constructActivationRpcProviders,
+  loadActivationRpcOperatorRegistry,
 } from "./activation-rpc-endpoints.mjs";
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
@@ -1499,6 +1500,22 @@ export function compareEventOrder(left, right) {
     Number(left.transactionIndex ?? 0) - Number(right.transactionIndex ?? 0) ||
     Number(left.index ?? left.logIndex ?? 0) - Number(right.index ?? right.logIndex ?? 0)
   );
+}
+
+export async function withIndexerProviderCleanup(
+  activationProviderBundle,
+  fallbackProvider,
+  operation,
+) {
+  if (typeof operation !== "function") throw new Error("indexer provider operation must be a function");
+  try {
+    return await operation();
+  } finally {
+    const providers = activationProviderBundle
+      ? [activationProviderBundle.primary, activationProviderBundle.secondary]
+      : [fallbackProvider];
+    await Promise.allSettled(providers.map(async (provider) => provider.destroy()));
+  }
 }
 
 export async function scanEventCatalog(
@@ -4980,7 +4997,9 @@ function loadPriorCheckpoint(path, binding, schema) {
 export async function runIndexer(options) {
   const allowed = new Set([
     "manifestPath", "rpcUrl", "outPath", "archivePath", "transcriptEndpoints",
-    "transcriptFetchClient", "activationPlanPath", "activationCompletionPath", "secondaryRpcUrl",
+    "transcriptFetchClient", "activationPlanPath", "activationCompletionPath", "activationAuthorizationPath",
+    "activationTrustRegistryPath", "activationArtifactRoot", "activationPython", "activationRepoRoot",
+    "activationRpcRegistryPath", "activationRpcRegistryTrustedRoot", "secondaryRpcUrl",
   ]);
   if (!options || typeof options !== "object" || Array.isArray(options)
       || Object.keys(options).some((key) => !allowed.has(key))) {
@@ -4995,39 +5014,71 @@ export async function runIndexer(options) {
     transcriptFetchClient = null,
     activationPlanPath = null,
     activationCompletionPath = null,
+    activationAuthorizationPath = null,
+    activationTrustRegistryPath = null,
+    activationArtifactRoot = null,
+    activationPython = null,
+    activationRepoRoot = null,
+    activationRpcRegistryPath = null,
+    activationRpcRegistryTrustedRoot = null,
     secondaryRpcUrl = null,
   } = options;
   if (!manifestPath) throw new Error("required: --manifest <path>");
   if (!outPath) throw new Error("required: --out <checkpoint.json>");
-  const activationInputs = [activationPlanPath, activationCompletionPath, secondaryRpcUrl];
+  const activationInputs = [activationPlanPath, activationCompletionPath, activationAuthorizationPath,
+    activationTrustRegistryPath, activationArtifactRoot, activationPython, activationRepoRoot,
+    activationRpcRegistryPath, activationRpcRegistryTrustedRoot, secondaryRpcUrl];
   if (activationInputs.some((value) => value === null)
       && activationInputs.some((value) => value !== null)) {
-    throw new Error("activation checkpointing requires --activation-plan, --activation-completion, and an independent secondary RPC");
+    throw new Error("activation checkpointing requires plan, completion, authorization, protected RPC registry/root, validator trust inputs, and secondary RPC");
   }
   const resolvedManifest = resolve(manifestPath);
   const resolvedOut = resolve(outPath);
   const manifest = readStrictJsonFileSync(resolvedManifest, MANIFEST_JSON_LIMITS);
   const multiBoard = isMultiBoardManifest(manifest);
   const policy = manifest.indexer.finalityPolicy;
-  const activationEndpoints = activationPlanPath
-    ? validateActivationRpcEndpointPair(rpcUrl, secondaryRpcUrl)
-    : null;
-  const provider = new ethers.JsonRpcProvider(
-    activationRpcFetchRequest(activationEndpoints?.primary.url ?? rpcUrl),
-    manifest.network.chainId,
-    { staticNetwork: true },
-  );
   const activationPlan = activationPlanPath
     ? readStrictJsonFileSync(resolve(activationPlanPath), MANIFEST_JSON_LIMITS)
     : null;
   const activationCompletion = activationCompletionPath
     ? readStrictJsonFileSync(resolve(activationCompletionPath), MANIFEST_JSON_LIMITS)
     : null;
-  const binding = validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
-  const artifacts = loadContractArtifacts();
-  const contracts = multiBoard ? null : instantiateContracts(provider, manifest, artifacts);
+  const activationAuthorization = activationPlan
+    ? (await import("./funding-activation.mjs")).runProductionAuthorizationValidator({
+      python: activationPython,
+      repoRoot: activationRepoRoot,
+      authorizationPath: activationAuthorizationPath,
+      trustRegistryPath: activationTrustRegistryPath,
+      artifactRoot: activationArtifactRoot,
+      chainRpcUrl: secondaryRpcUrl,
+    }).value
+    : null;
+  const authorizationRegistryDigest = activationAuthorization
+    ?.artifacts?.activation_rpc_operator_registry?.sha256;
+  const activationRpcRegistry = activationPlan
+    ? loadActivationRpcOperatorRegistry(
+      resolve(activationRpcRegistryPath), authorizationRegistryDigest,
+      resolve(activationRpcRegistryTrustedRoot),
+    )
+    : null;
+  if (activationPlan && (activationAuthorization?.authorization_digest !== activationPlan.authorizationDigest
+      || authorizationRegistryDigest !== activationPlan.rpcAuthority?.registryDigest)) {
+    throw new Error("activation RPC registry digest is not bound by the supplied launch authorization");
+  }
+  const activationProviderBundle = activationPlan
+    ? await constructActivationRpcProviders(
+      activationRpcRegistry, activationPlan.rpcAuthority, rpcUrl, secondaryRpcUrl, manifest.network.chainId,
+    )
+    : null;
+  const activationEndpoints = activationProviderBundle?.endpoints ?? null;
+  const provider = activationProviderBundle?.primary ?? new ethers.JsonRpcProvider(
+    activationRpcFetchRequest(rpcUrl), manifest.network.chainId, { staticNetwork: true },
+  );
+  return withIndexerProviderCleanup(activationProviderBundle, provider, async () => {
+    const binding = validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
+    const artifacts = loadContractArtifacts();
+    const contracts = multiBoard ? null : instantiateContracts(provider, manifest, artifacts);
 
-  try {
     const head = await provider.getBlockNumber();
     const toBlock = head - policy.confirmations;
     const fromBlock = manifest.indexer.startBlock;
@@ -5068,7 +5119,7 @@ export async function runIndexer(options) {
         ? await (await import("./funding-activation-executor.mjs"))
           .collectFundingActivationOperationEvidence(
             activationPlan, activationEndpoints.primary.url, activationEndpoints.secondary.url,
-            anchor, activationCompletion,
+            anchor, activationCompletion, activationRpcRegistry,
           )
         : null;
       const checkpoint = buildMultiBoardCheckpoint({
@@ -5208,9 +5259,7 @@ export async function runIndexer(options) {
       }
     }
     return checkpoint;
-  } finally {
-    provider.destroy();
-  }
+  });
 }
 
 export function configureIndexerTranscripts(argv = process.argv, env = process.env, fetchImpl = fetch) {
@@ -5227,10 +5276,19 @@ export async function cli(argv = process.argv, env = process.env) {
   const archivePath = parseArg(argv, "archive", null);
   const activationPlanPath = parseArg(argv, "activation-plan", null);
   const activationCompletionPath = parseArg(argv, "activation-completion", null);
+  const activationAuthorizationPath = parseArg(argv, "activation-authorization", null);
+  const activationTrustRegistryPath = parseArg(argv, "activation-trust-registry", null);
+  const activationArtifactRoot = parseArg(argv, "activation-artifact-root", null);
+  const activationPython = parseArg(argv, "activation-python", null);
+  const activationRepoRoot = parseArg(argv, "activation-repo-root", null);
+  const activationRpcRegistryPath = parseArg(argv, "activation-rpc-registry", null);
+  const activationRpcRegistryTrustedRoot = parseArg(argv, "activation-rpc-registry-trusted-root", null);
   const secondaryRpcUrl = parseArg(argv, "secondary-rpc", null);
   const transcriptConfig = configureIndexerTranscripts(argv, env);
   const checkpoint = await runIndexer({
     manifestPath, rpcUrl, outPath, archivePath, activationPlanPath, activationCompletionPath,
+    activationAuthorizationPath, activationTrustRegistryPath, activationArtifactRoot, activationPython, activationRepoRoot,
+    activationRpcRegistryPath, activationRpcRegistryTrustedRoot,
     secondaryRpcUrl,
     transcriptEndpoints: transcriptConfig.endpoints,
     transcriptFetchClient: transcriptConfig.fetchClient,

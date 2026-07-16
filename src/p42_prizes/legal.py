@@ -2,18 +2,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import base64
 import hashlib
 import json
 from pathlib import Path
 import re
-import subprocess
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
+
+import jsonschema
 
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-LEGAL_MEMO_SCHEMA_VERSION = "p42-legal-memo/v1"
+LEGACY_LEGAL_MEMO_SCHEMA_VERSION = "p42-legal-memo/v1"
+PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION = "p42-legal-memo/v2"
+LEGAL_MEMO_SCHEMA_VERSIONS = {
+    LEGACY_LEGAL_MEMO_SCHEMA_VERSION,
+    PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION,
+}
 
 REQUIRED_FINDING_TOPICS = {
     "prize_bounty_classification",
@@ -37,6 +44,9 @@ REQUIRED_CONTRACT_NAMES = {
     "P42ProblemRegistry",
 }
 CANONICAL_RELEASE_BINDING_VERSION = "p42-release-binding/v2"
+CAPSULE_REBUILD_ATTESTATION_VERSION = "p42-capsule-rebuild-attestation/v1"
+CAPSULE_BUILD_AUTHORITY_ROLE = "capsule-build-authority"
+CANONICAL_REPOSITORY_URI = "https://github.com/techno-optimist/p42-prizes"
 CANONICAL_TOPOLOGY_SCHEMA_VERSION = "p42-prizes/canonical-contract-topology/v1"
 CANONICAL_SHARED_CONTRACTS = (
     ("timelock", "P42MultisigTimelock"),
@@ -54,6 +64,8 @@ CANONICAL_BOARD_CONTRACTS = (
     ("challenges", "P42ChallengeManager"),
 )
 CANONICAL_BOARD_COUNT = 10
+CANONICAL_NETWORK = "base-sepolia"
+CANONICAL_CHAIN_ID = 84532
 NETWORK_CHAIN_IDS = {"local": 31337, "base-sepolia": 84532, "base-mainnet": 8453}
 PLACEHOLDERS = {"", "tbd", "todo", "pending", "n/a", "na", "none", "null", "unknown"}
 PLACEHOLDER_WORDS = {"dummy", "example", "fake", "placeholder", "sample"}
@@ -83,6 +95,27 @@ RFC3339_RE = re.compile(
 )
 HEX_BYTES_RE = re.compile(r"^0x(?:[a-fA-F0-9]{2})+$")
 TRUST_REGISTRY_SCHEMA_VERSION = "p42-attestation-trust-registry/v1"
+MAX_RESOLVED_ARTIFACT_BYTES = 16 * 1024 * 1024
+MAX_CANONICAL_JSON_DEPTH = 256
+
+_KECCAK_ROTATIONS = (
+    0, 1, 62, 28, 27,
+    36, 44, 6, 55, 20,
+    3, 10, 43, 25, 39,
+    41, 45, 15, 21, 8,
+    18, 2, 61, 56, 14,
+)
+_KECCAK_ROUND_CONSTANTS = (
+    0x0000000000000001, 0x0000000000008082, 0x800000000000808A,
+    0x8000000080008000, 0x000000000000808B, 0x0000000080000001,
+    0x8000000080008081, 0x8000000000008009, 0x000000000000008A,
+    0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
+    0x000000008000808B, 0x800000000000008B, 0x8000000000008089,
+    0x8000000000008003, 0x8000000000008002, 0x8000000000000080,
+    0x000000000000800A, 0x800000008000000A, 0x8000000080008081,
+    0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+)
+_UINT64_MASK = (1 << 64) - 1
 
 # No production signer is trusted until an owner-controlled registry is supplied.
 # This intentionally keeps every external gate open in a fresh checkout.
@@ -105,6 +138,55 @@ _ED_IDENTITY = (0, 1, 1, 0)
 
 class LegalMemoError(ValueError):
     """Raised when legal/compliance memo evidence is incomplete."""
+
+
+def ethereum_keccak256(value: bytes) -> str:
+    """Return Ethereum Keccak-256, which uses legacy Keccak padding, not SHA3."""
+
+    rate = 136
+    padded = bytearray(value)
+    padded.append(0x01)
+    padded.extend(b"\x00" * ((rate - 1 - len(padded)) % rate))
+    padded.append(0x80)
+    state = [0] * 25
+    for offset in range(0, len(padded), rate):
+        block = padded[offset : offset + rate]
+        for lane in range(rate // 8):
+            state[lane] ^= int.from_bytes(block[lane * 8 : lane * 8 + 8], "little")
+        _keccak_f1600(state)
+    digest = b"".join(lane.to_bytes(8, "little") for lane in state)
+    return "0x" + digest[:32].hex()
+
+
+def _keccak_f1600(state: list[int]) -> None:
+    for round_constant in _KECCAK_ROUND_CONSTANTS:
+        columns = [
+            state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20]
+            for x in range(5)
+        ]
+        for x in range(5):
+            delta = columns[(x - 1) % 5] ^ _rotate_left_64(columns[(x + 1) % 5], 1)
+            for y in range(5):
+                state[x + 5 * y] ^= delta
+        rotated = [0] * 25
+        for x in range(5):
+            for y in range(5):
+                rotated[y + 5 * ((2 * x + 3 * y) % 5)] = _rotate_left_64(
+                    state[x + 5 * y], _KECCAK_ROTATIONS[x + 5 * y]
+                )
+        for x in range(5):
+            for y in range(5):
+                state[x + 5 * y] = rotated[x + 5 * y] ^ (
+                    (~rotated[(x + 1) % 5 + 5 * y]) & rotated[(x + 2) % 5 + 5 * y]
+                )
+                state[x + 5 * y] &= _UINT64_MASK
+        state[0] ^= round_constant
+
+
+def _rotate_left_64(value: int, shift: int) -> int:
+    if shift == 0:
+        return value & _UINT64_MASK
+    return ((value << shift) | (value >> (64 - shift))) & _UINT64_MASK
 
 
 @dataclass
@@ -147,10 +229,13 @@ def normalize_legal_memo(
     artifact_root: str | Path | None = None,
     chain_reader: ChainReader | None = None,
 ) -> dict[str, Any]:
-    if report.get("schema_version") != LEGAL_MEMO_SCHEMA_VERSION:
-        raise LegalMemoError(f"schema_version must be {LEGAL_MEMO_SCHEMA_VERSION}")
+    schema_version = report.get("schema_version")
+    if schema_version not in LEGAL_MEMO_SCHEMA_VERSIONS:
+        raise LegalMemoError(
+            "schema_version must be one of " + ", ".join(sorted(LEGAL_MEMO_SCHEMA_VERSIONS))
+        )
     context = build_attestation_context(
-        LEGAL_MEMO_SCHEMA_VERSION,
+        schema_version,
         trust_registry=trust_registry,
         artifact_root=artifact_root,
         chain_reader=chain_reader,
@@ -203,7 +288,15 @@ def normalize_legal_memo(
         normalized["agent_prepared_by"], "report.agent_prepared_by", LegalMemoError, min_length=3
     )
     _validate_artifact_reference(normalized.get("memo_artifact"), "report.memo_artifact", LegalMemoError, context)
-    _validate_release_binding(normalized.get("release_binding"), "report.release_binding", LegalMemoError, context)
+    _validate_release_binding(
+        normalized.get("release_binding"),
+        "report.release_binding",
+        LegalMemoError,
+        context,
+        require_canonical_topology=schema_version == PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION,
+        require_legacy_topology=schema_version == LEGACY_LEGAL_MEMO_SCHEMA_VERSION,
+        verify_chain_state=False,
+    )
     counsel = _validate_counsel(normalized.get("counsel"), context)
     _validate_scope(normalized.get("scope"))
     _validate_launch_constraints(normalized.get("launch_constraints"))
@@ -230,7 +323,7 @@ def normalize_legal_memo(
     _validate_signature(
         counsel_signature,
         "report.counsel_signature",
-        schema_version=LEGAL_MEMO_SCHEMA_VERSION,
+        schema_version=schema_version,
         artifact_hash=legal_hash,
         identity=counsel,
         expected_role="external-counsel",
@@ -428,12 +521,16 @@ def _validate_artifact_reference(
         raise error_type(f"{prefix}.local_path must resolve to a file inside artifact_root") from exc
     if not candidate.is_file():
         raise error_type(f"{prefix}.local_path must resolve to a regular file")
-    if max_bytes is not None and candidate.stat().st_size > max_bytes:
-        raise error_type(f"{prefix}.local_path exceeds the {max_bytes}-byte evidence limit")
+    byte_limit = max_bytes if max_bytes is not None else MAX_RESOLVED_ARTIFACT_BYTES
+    if candidate.stat().st_size > byte_limit:
+        raise error_type(f"{prefix}.local_path exceeds the {byte_limit}-byte evidence limit")
     try:
-        evidence_bytes = candidate.read_bytes()
+        with candidate.open("rb") as handle:
+            evidence_bytes = handle.read(byte_limit + 1)
     except OSError as exc:
         raise error_type(f"{prefix}.local_path could not be read") from exc
+    if len(evidence_bytes) > byte_limit:
+        raise error_type(f"{prefix}.local_path exceeds the {byte_limit}-byte evidence limit")
     actual_hash = "sha256:" + hashlib.sha256(evidence_bytes).hexdigest()
     if actual_hash != expected_hash:
         raise error_type(
@@ -508,6 +605,8 @@ def _validate_release_binding(
     context: AttestationValidationContext,
     *,
     require_canonical_topology: bool = False,
+    require_legacy_topology: bool = False,
+    verify_chain_state: bool = True,
 ) -> Mapping[str, Any]:
     if not isinstance(value, dict):
         raise error_type(f"{prefix} must be an object")
@@ -524,24 +623,35 @@ def _validate_release_binding(
     chain_id = value.get("chain_id")
     if not isinstance(chain_id, int) or isinstance(chain_id, bool) or chain_id != NETWORK_CHAIN_IDS[network]:
         raise error_type(f"{prefix}.chain_id must match {network} ({NETWORK_CHAIN_IDS[network]})")
-    _verify_repository_binding(context, repository_uri, commit, prefix, error_type)
     deployment_ref = _validate_artifact_reference(
-        value.get("deployment_manifest"), f"{prefix}.deployment_manifest", error_type, context
+        value.get("deployment_manifest"), f"{prefix}.deployment_manifest", error_type, context, max_bytes=4 * 1024 * 1024
     )
     configuration_ref = _validate_artifact_reference(
-        value.get("configuration_artifact"), f"{prefix}.configuration_artifact", error_type, context
+        value.get("configuration_artifact"), f"{prefix}.configuration_artifact", error_type, context, max_bytes=1024 * 1024
     )
-    _verify_git_artifact(context, deployment_ref, commit, f"{prefix}.deployment_manifest", error_type)
-    _verify_git_artifact(context, configuration_ref, commit, f"{prefix}.configuration_artifact", error_type)
 
     canonical = value.get("binding_version") == CANONICAL_RELEASE_BINDING_VERSION
+    if require_legacy_topology and canonical:
+        raise error_type(
+            f"{prefix} in {LEGACY_LEGAL_MEMO_SCHEMA_VERSION} is historical-only and cannot bind or "
+            f"authorize the production topology; use {PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION}"
+        )
     if require_canonical_topology and not canonical:
         raise error_type(
-            f"{prefix}.binding_version must be {CANONICAL_RELEASE_BINDING_VERSION} for adversarial campaign evidence"
+            f"{prefix}.binding_version must be {CANONICAL_RELEASE_BINDING_VERSION} for the production topology"
         )
     topology_names: dict[str, str] | None = None
     deployment_commit: str | None = None
+    capsule_ref: Mapping[str, Any] | None = None
+    rebuild_attestation_ref: Mapping[str, Any] | None = None
     if canonical:
+        if repository_uri != CANONICAL_REPOSITORY_URI:
+            raise error_type(f"{prefix}.repository_uri must equal the canonical P42 repository URI")
+        if network != CANONICAL_NETWORK or chain_id != CANONICAL_CHAIN_ID:
+            raise error_type(
+                f"{prefix} v2 canonical topology is restricted to schema-valid Base Sepolia; "
+                "mainnet requires a future network-aware deployment manifest version"
+            )
         deployment_commit = value.get("deployment_commit")
         deployment_match = (
             COMMIT_RE.fullmatch(deployment_commit) if isinstance(deployment_commit, str) else None
@@ -550,13 +660,21 @@ def _validate_release_binding(
             raise error_type(
                 f"{prefix}.deployment_commit must be a non-dummy 40-character lowercase commit hash"
             )
-        _verify_git_ancestor(context, deployment_commit, commit, prefix, error_type)
         topology_ref = _validate_artifact_reference(
-            value.get("canonical_topology"), f"{prefix}.canonical_topology", error_type, context
+            value.get("canonical_topology"), f"{prefix}.canonical_topology", error_type, context, max_bytes=64 * 1024
         )
-        _verify_git_artifact(context, topology_ref, commit, f"{prefix}.canonical_topology", error_type)
         topology_names = _validate_canonical_topology(
             _artifact_bytes(context, topology_ref), f"{prefix}.canonical_topology", error_type
+        )
+        capsule_ref = _validate_artifact_reference(
+            value.get("release_capsule"), f"{prefix}.release_capsule", error_type, context, max_bytes=8 * 1024 * 1024
+        )
+        rebuild_attestation_ref = _validate_artifact_reference(
+            value.get("capsule_rebuild_attestation"),
+            f"{prefix}.capsule_rebuild_attestation",
+            error_type,
+            context,
+            max_bytes=512 * 1024,
         )
 
     contracts = value.get("contracts")
@@ -568,6 +686,7 @@ def _validate_release_binding(
     addresses: set[str] = set()
     runtime_hashes: set[str] = set()
     expected_contracts: list[dict[str, Any]] = []
+    capsule_projection: list[dict[str, str]] = []
     for index, contract in enumerate(contracts):
         contract_prefix = f"{prefix}.contracts[{index}]"
         if not isinstance(contract, dict):
@@ -582,11 +701,11 @@ def _validate_release_binding(
             if name != topology_names[topology_key]:
                 raise error_type(f"{contract_prefix}.name does not match canonical topology slot {topology_key}")
             topology_keys.add(topology_key)
-            _require_bytes32(
+            manifest_runtime_code_hash = _require_bytes32(
                 contract.get("manifest_runtime_code_hash"),
                 f"{contract_prefix}.manifest_runtime_code_hash",
                 error_type,
-            )
+            ).casefold()
         elif name not in REQUIRED_CONTRACT_NAMES:
             raise error_type(f"{contract_prefix}.name must identify a required P42 contract")
         elif name in names:
@@ -605,14 +724,15 @@ def _validate_release_binding(
             raise error_type(f"duplicate runtime bytecode hash in release binding: {runtime_hash}")
         runtime_hashes.add(runtime_hash)
         source_ref = _validate_artifact_reference(
-            contract.get("source_artifact"), f"{contract_prefix}.source_artifact", error_type, context
+            contract.get("source_artifact"), f"{contract_prefix}.source_artifact", error_type, context, max_bytes=1024 * 1024
         )
-        _verify_git_artifact(context, source_ref, commit, f"{contract_prefix}.source_artifact", error_type)
+        source_bytes = _artifact_bytes(context, source_ref)
         runtime_ref = _validate_artifact_reference(
             contract.get("runtime_bytecode_artifact"),
             f"{contract_prefix}.runtime_bytecode_artifact",
             error_type,
             context,
+            max_bytes=2 * 1024 * 1024,
         )
         runtime_bytes = _parse_runtime_bytecode(
             _artifact_bytes(context, runtime_ref), f"{contract_prefix}.runtime_bytecode_artifact", error_type
@@ -622,11 +742,17 @@ def _validate_release_binding(
             raise error_type(
                 f"{contract_prefix}.runtime_bytecode_hash does not match resolved runtime bytecode"
             )
+        if canonical and ethereum_keccak256(runtime_bytes) != manifest_runtime_code_hash:
+            raise error_type(
+                f"{contract_prefix}.manifest_runtime_code_hash must equal Ethereum keccak256 of "
+                "the chain-verified runtime bytecode"
+            )
         chain_ref = _validate_artifact_reference(
             contract.get("chain_bytecode_artifact"),
             f"{contract_prefix}.chain_bytecode_artifact",
             error_type,
             context,
+            max_bytes=256 * 1024,
         )
         _validate_chain_bytecode_evidence(
             _artifact_bytes(context, chain_ref),
@@ -637,6 +763,7 @@ def _validate_release_binding(
             runtime_bytes=runtime_bytes,
             prefix=f"{contract_prefix}.chain_bytecode_artifact",
             error_type=error_type,
+            require_query=verify_chain_state,
         )
         expected_contract = {
             "name": name,
@@ -646,7 +773,16 @@ def _validate_release_binding(
         if canonical:
             expected_contract.update(
                 topology_key=topology_key,
-                manifest_runtime_code_hash=contract["manifest_runtime_code_hash"].casefold(),
+                manifest_runtime_code_hash=manifest_runtime_code_hash,
+            )
+            capsule_projection.append(
+                {
+                    "topologyKey": topology_key,
+                    "name": name,
+                    "sourceBase64": base64.b64encode(source_bytes).decode("ascii"),
+                    "runtimeHex": "0x" + runtime_bytes.hex(),
+                    "runtimeKeccak": manifest_runtime_code_hash,
+                }
             )
         expected_contracts.append(expected_contract)
     missing = sorted((set(topology_names) - topology_keys) if canonical else (REQUIRED_CONTRACT_NAMES - names))
@@ -664,6 +800,21 @@ def _validate_release_binding(
         prefix=prefix,
         error_type=error_type,
     )
+    if canonical:
+        assert capsule_ref is not None and rebuild_attestation_ref is not None and deployment_commit is not None
+        _verify_canonical_capsule_binding(
+            capsule_bytes=_artifact_bytes(context, capsule_ref),
+            rebuild_attestation_bytes=_artifact_bytes(context, rebuild_attestation_ref),
+            deployment_bytes=_artifact_bytes(context, deployment_ref),
+            repository_uri=repository_uri,
+            deployment_commit=deployment_commit,
+            evidence_commit=commit,
+            rebuild_attestation_created_at=str(rebuild_attestation_ref["created_at_utc"]),
+            contracts=capsule_projection,
+            context=context,
+            prefix=prefix,
+            error_type=error_type,
+        )
     return value
 
 
@@ -679,6 +830,7 @@ def _validate_signature(
     context: AttestationValidationContext,
     expected_signed_at: datetime | None = None,
     not_after: datetime | None = None,
+    require_after_context_evidence: bool = True,
 ) -> Mapping[str, Any]:
     if not isinstance(value, dict):
         raise error_type(f"{prefix} must be an object")
@@ -695,11 +847,20 @@ def _validate_signature(
     signed_at = _require_utc(value.get("signed_at_utc"), f"{prefix}.signed_at_utc", error_type)
     if expected_signed_at is not None and signed_at != expected_signed_at:
         raise error_type(f"{prefix}.signed_at_utc must match the signer's recorded signoff time")
-    if context.latest_evidence_at is not None and signed_at < context.latest_evidence_at:
+    if require_after_context_evidence and context.latest_evidence_at is not None and signed_at < context.latest_evidence_at:
         raise error_type(f"{prefix}.signed_at_utc must be on/after all resolved evidence creation times")
     if not_after is not None and signed_at > not_after:
         raise error_type(f"{prefix}.signed_at_utc must not be after report completion")
-    _require_trusted_signer(context, identity, expected_role, public_key, signed_at, prefix, error_type)
+    _require_trusted_signer(
+        context,
+        identity,
+        expected_role,
+        public_key,
+        signed_at,
+        prefix,
+        error_type,
+        attestation_class=schema_version,
+    )
     signature = value.get("signature")
     if not isinstance(signature, str) or SIGNATURE_RE.fullmatch(signature) is None:
         raise error_type(f"{prefix}.signature must be a 64-byte ed25519 signature")
@@ -775,10 +936,13 @@ def _require_trusted_signer(
     signed_at: datetime,
     prefix: str,
     error_type: type[ValueError],
+    *,
+    attestation_class: str | None = None,
 ) -> None:
+    trusted_class = attestation_class or context.schema_version
     expected_identity = _identity_fingerprint(identity)
     for registration in context.trust_registry["registrations"]:
-        if registration.get("attestation_class") != context.schema_version:
+        if registration.get("attestation_class") != trusted_class:
             continue
         if registration.get("signer_role") != signer_role:
             continue
@@ -799,7 +963,7 @@ def _require_trusted_signer(
         if signed_at >= valid_from and (valid_until is None or signed_at <= valid_until):
             return
     raise error_type(
-        f"{prefix} signer is not pre-registered for {context.schema_version} role {signer_role}"
+        f"{prefix} signer is not pre-registered for {trusted_class} role {signer_role}"
     )
 
 
@@ -815,83 +979,6 @@ def _identity_fingerprint(identity: Mapping[str, Any]) -> tuple[tuple[str, str],
 
 def _artifact_bytes(context: AttestationValidationContext, artifact: Mapping[str, Any]) -> bytes:
     return context.resolved_artifacts[(str(artifact["local_path"]), str(artifact["sha256"]))]
-
-
-def _verify_repository_binding(
-    context: AttestationValidationContext,
-    repository_uri: str,
-    commit: str,
-    prefix: str,
-    error_type: type[ValueError],
-) -> None:
-    if context.artifact_root is None or not (context.artifact_root / ".git").exists():
-        raise error_type(f"{prefix} requires artifact_root to be the bound Git repository")
-    resolved_commit = _run_git(
-        context, ["rev-parse", "--verify", f"{commit}^{{commit}}"], f"{prefix}.git_commit", error_type
-    ).decode("ascii", errors="strict").strip()
-    if resolved_commit != commit:
-        raise error_type(f"{prefix}.git_commit did not resolve to the exact requested commit")
-    remote = _run_git(
-        context, ["config", "--get", "remote.origin.url"], f"{prefix}.repository_uri", error_type
-    ).decode("utf-8", errors="strict").strip()
-    if _normalize_repository_uri(remote) != _normalize_repository_uri(repository_uri):
-        raise error_type(f"{prefix}.repository_uri does not match artifact_root remote.origin.url")
-
-
-def _verify_git_artifact(
-    context: AttestationValidationContext,
-    artifact: Mapping[str, Any],
-    commit: str,
-    prefix: str,
-    error_type: type[ValueError],
-) -> None:
-    local_path = str(artifact["local_path"])
-    committed_bytes = _run_git(context, ["show", f"{commit}:{local_path}"], prefix, error_type)
-    if committed_bytes != _artifact_bytes(context, artifact):
-        raise error_type(f"{prefix} resolved bytes do not match the bytes stored at release git_commit")
-
-
-def _verify_git_ancestor(
-    context: AttestationValidationContext,
-    ancestor: str,
-    descendant: str,
-    prefix: str,
-    error_type: type[ValueError],
-) -> None:
-    assert context.artifact_root is not None
-    try:
-        completed = subprocess.run(
-            ["git", "-C", str(context.artifact_root), "merge-base", "--is-ancestor", ancestor, descendant],
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise error_type(f"{prefix}.deployment_commit ancestry could not be verified") from exc
-    if completed.returncode != 0:
-        raise error_type(f"{prefix}.deployment_commit must be an ancestor of git_commit")
-
-
-def _run_git(
-    context: AttestationValidationContext,
-    arguments: list[str],
-    prefix: str,
-    error_type: type[ValueError],
-) -> bytes:
-    assert context.artifact_root is not None
-    try:
-        completed = subprocess.run(
-            ["git", "-C", str(context.artifact_root), *arguments],
-            capture_output=True,
-            check=False,
-            timeout=10,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise error_type(f"{prefix} could not be verified against the local Git repository") from exc
-    if completed.returncode != 0:
-        detail = completed.stderr.decode("utf-8", errors="replace").strip()
-        raise error_type(f"{prefix} could not be verified against the local Git repository: {detail}")
-    return completed.stdout
 
 
 def _normalize_repository_uri(value: str) -> str:
@@ -918,6 +1005,7 @@ def _validate_chain_bytecode_evidence(
     runtime_bytes: bytes,
     prefix: str,
     error_type: type[ValueError],
+    require_query: bool = True,
 ) -> None:
     evidence = _parse_json_object(value, prefix, error_type)
     if evidence.get("jsonrpc") != "2.0" or evidence.get("method") != "eth_getCode":
@@ -937,6 +1025,8 @@ def _validate_chain_bytecode_evidence(
         raise error_type(f"{prefix}.result must contain non-empty 0x-prefixed runtime bytecode")
     if bytes.fromhex(result[2:]) != runtime_bytes:
         raise error_type(f"{prefix}.result does not match the resolved runtime bytecode")
+    if not require_query:
+        return
     if context.chain_reader is None:
         raise error_type(f"{prefix} cannot be accepted without an out-of-band chain reader")
     try:
@@ -971,6 +1061,7 @@ def _validate_release_documents(
     deployment = _parse_json_object(deployment_bytes, f"{prefix}.deployment_manifest", error_type)
     configuration = _parse_json_object(configuration_bytes, f"{prefix}.configuration_artifact", error_type)
     if canonical_topology is not None:
+        _validate_deployment_manifest_v2_schema(deployment, prefix, error_type)
         _validate_canonical_release_documents(
             deployment=deployment,
             configuration=configuration,
@@ -1017,6 +1108,486 @@ def _validate_release_documents(
         or configured_addresses != expected_addresses
     ):
         raise error_type(f"{prefix}.configuration_artifact bytes do not match the release binding")
+
+
+def _validate_deployment_manifest_v2_schema(
+    deployment: Mapping[str, Any],
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    schema_path = Path(__file__).resolve().parents[2] / "schemas" / "deployment-manifest-v2.schema.json"
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        errors = sorted(
+            jsonschema.Draft202012Validator(
+                schema, format_checker=jsonschema.FormatChecker()
+            ).iter_errors(deployment),
+            key=lambda item: tuple(str(part) for part in item.absolute_path),
+        )
+    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as exc:
+        raise error_type(f"{prefix}.deployment_manifest v2 schema could not be loaded") from exc
+    if errors:
+        error = errors[0]
+        path = ".".join(str(part) for part in error.absolute_path)
+        location = f" at {path}" if path else ""
+        raise error_type(
+            f"{prefix}.deployment_manifest is not schema-valid deployment-manifest v2"
+            f"{location}: {error.message}"
+        )
+
+
+def _verify_canonical_capsule_binding(
+    *,
+    capsule_bytes: bytes,
+    rebuild_attestation_bytes: bytes,
+    deployment_bytes: bytes,
+    repository_uri: str,
+    deployment_commit: str,
+    evidence_commit: str,
+    rebuild_attestation_created_at: str,
+    contracts: list[dict[str, str]],
+    context: AttestationValidationContext,
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    capsule_prefix = f"{prefix}.release_capsule"
+    attestation_prefix = f"{prefix}.capsule_rebuild_attestation"
+    capsule = _parse_capsule_json_object(capsule_bytes, capsule_prefix, error_type)
+    deployment = _parse_canonical_json_object(deployment_bytes, f"{prefix}.deployment_manifest", error_type)
+    attestation = _parse_canonical_json_object(
+        rebuild_attestation_bytes, attestation_prefix, error_type
+    )
+    _validate_json_schema(
+        capsule, "release-capsule.schema.json", capsule_prefix, error_type
+    )
+    _validate_json_schema(
+        attestation,
+        "capsule-rebuild-attestation.schema.json",
+        attestation_prefix,
+        error_type,
+    )
+    _validate_capsule_structure(capsule, capsule_prefix, error_type)
+    _validate_capsule_rebuild_attestation(
+        attestation=attestation,
+        capsule=capsule,
+        capsule_bytes=capsule_bytes,
+        repository_uri=repository_uri,
+        deployment_commit=deployment_commit,
+        evidence_commit=evidence_commit,
+        artifact_created_at=rebuild_attestation_created_at,
+        context=context,
+        prefix=attestation_prefix,
+        error_type=error_type,
+    )
+    _validate_capsule_runtime_projection(
+        capsule=capsule,
+        deployment=deployment,
+        deployment_commit=deployment_commit,
+        contracts=contracts,
+        prefix=capsule_prefix,
+        error_type=error_type,
+    )
+
+
+def _validate_json_schema(
+    value: Mapping[str, Any],
+    schema_name: str,
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    schema_path = Path(__file__).resolve().parents[2] / "schemas" / schema_name
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        errors = sorted(
+            jsonschema.Draft202012Validator(
+                schema, format_checker=jsonschema.FormatChecker()
+            ).iter_errors(value),
+            key=lambda item: tuple(str(part) for part in item.absolute_path),
+        )
+    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as exc:
+        raise error_type(f"{prefix} schema could not be loaded") from exc
+    if errors:
+        error = errors[0]
+        path = ".".join(str(part) for part in error.absolute_path)
+        location = f" at {path}" if path else ""
+        raise error_type(f"{prefix} is not schema-valid{location}: {error.message}")
+
+
+def _validate_capsule_structure(
+    capsule: Mapping[str, Any], prefix: str, error_type: type[ValueError]
+) -> None:
+    body = {key: value for key, value in capsule.items() if key != "capsuleDigest"}
+    if sha256_bytes(_capsule_canonical_json(body).encode("utf-8")) != capsule.get("capsuleDigest"):
+        raise error_type(f"{prefix} binding is invalid: capsule digest mismatch")
+    try:
+        external_policy = json.loads(
+            (Path(__file__).resolve().parents[2] / "protocol" / "external-dependencies-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )["dependencies"]
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        raise error_type(f"{prefix} canonical external dependency policy could not be loaded") from exc
+    if capsule.get("externalDependencies") != external_policy:
+        raise error_type(f"{prefix} binding is invalid: external dependency policy mismatch")
+    expected_names = [
+        "P42MultisigTimelock",
+        "P42ChallengeManagerFactory",
+        "P42SubmissionManagerFactory",
+        "P42RolloverVault",
+        "P42SP1VerifierGateway",
+        "P42ResolverQuorum",
+        "P42BountyPool",
+        "P42PayoutLedger",
+        "P42SubmissionManager",
+        "P42ChallengeManager",
+        "P42ProblemRegistry",
+    ]
+    contracts = capsule.get("contracts")
+    if not isinstance(contracts, list) or [item.get("name") for item in contracts] != expected_names:
+        raise error_type(f"{prefix} binding is invalid: contract artifact order mismatch")
+    build_infos = capsule.get("buildInfos")
+    if not isinstance(build_infos, list) or [item.get("id") for item in build_infos] != sorted(
+        item.get("id") for item in build_infos
+    ):
+        raise error_type(f"{prefix} binding is invalid: build-info order mismatch")
+    info_by_id: dict[str, Mapping[str, Any]] = {}
+    for info in build_infos:
+        info_id = info.get("id")
+        if not isinstance(info_id, str) or info_id in info_by_id:
+            raise error_type(f"{prefix} binding is invalid: duplicate build-info identity")
+        if sha256_bytes(_capsule_canonical_json(info.get("input")).encode("utf-8")) != info.get("inputDigest"):
+            raise error_type(f"{prefix} binding is invalid: build-info input digest mismatch")
+        if sha256_bytes(_capsule_canonical_json(info.get("output")).encode("utf-8")) != info.get("outputDigest"):
+            raise error_type(f"{prefix} binding is invalid: build-info output digest mismatch")
+        if info.get("compiler") != {
+            "version": "0.8.24",
+            "longVersion": "0.8.24+commit.e11b9ed9",
+        }:
+            raise error_type(f"{prefix} binding is invalid: compiler identity drift")
+        build_input = info.get("input")
+        if not isinstance(build_input, Mapping) or build_input.get("id") != info_id:
+            raise error_type(f"{prefix} binding is invalid: build-info input identity mismatch")
+        if build_input.get("solcVersion") != "0.8.24" or build_input.get("solcLongVersion") != "0.8.24+commit.e11b9ed9":
+            raise error_type(f"{prefix} binding is invalid: compiler input identity drift")
+        if build_input.get("input", {}).get("settings") != info.get("settings"):
+            raise error_type(f"{prefix} binding is invalid: compiler settings mismatch")
+        settings = info.get("settings")
+        if (
+            not isinstance(settings, Mapping)
+            or not isinstance(settings.get("optimizer"), Mapping)
+            or settings["optimizer"].get("enabled") is not True
+            or settings["optimizer"].get("runs") != 200
+            or settings.get("evmVersion") != "shanghai"
+        ):
+            raise error_type(f"{prefix} binding is invalid: compiler settings drift")
+        info_by_id[info_id] = info
+    for contract in contracts:
+        info = info_by_id.get(str(contract.get("buildInfoId")))
+        if info is None:
+            raise error_type(f"{prefix} binding is invalid: unknown contract build-info")
+        artifact = {
+            "_format": "hh3-artifact-1",
+            "contractName": contract["name"],
+            "sourceName": contract["sourceName"],
+            "abi": contract["abi"],
+            "bytecode": contract["creationCode"],
+            "deployedBytecode": contract["runtimeTemplate"],
+            "linkReferences": contract["linkReferences"],
+            "deployedLinkReferences": contract["deployedLinkReferences"],
+            "immutableReferences": contract["immutableReferences"],
+            "inputSourceName": f"project/{contract['sourceName']}",
+            "buildInfoId": contract["buildInfoId"],
+        }
+        if sha256_bytes(_capsule_canonical_json(artifact).encode("utf-8")) != contract.get("artifactDigest"):
+            raise error_type(f"{prefix} binding is invalid: contract artifact digest mismatch")
+        compiled = (
+            info.get("output", {})
+            .get("output", {})
+            .get("contracts", {})
+            .get(artifact["inputSourceName"], {})
+            .get(contract["name"])
+        )
+        if not isinstance(compiled, Mapping):
+            raise error_type(f"{prefix} binding is invalid: contract absent from build output")
+        evm = compiled.get("evm", {})
+        if (
+            compiled.get("abi") != contract["abi"]
+            or f"0x{evm.get('bytecode', {}).get('object', '')}" != contract["creationCode"]
+            or f"0x{evm.get('deployedBytecode', {}).get('object', '')}" != contract["runtimeTemplate"]
+            or evm.get("bytecode", {}).get("linkReferences") != contract["linkReferences"]
+            or evm.get("deployedBytecode", {}).get("linkReferences") != contract["deployedLinkReferences"]
+            or evm.get("deployedBytecode", {}).get("immutableReferences") != contract["immutableReferences"]
+        ):
+            raise error_type(f"{prefix} binding is invalid: contract differs from build output")
+        _validate_immutable_ranges(contract, prefix, error_type)
+
+
+def _validate_capsule_rebuild_attestation(
+    *,
+    attestation: Mapping[str, Any],
+    capsule: Mapping[str, Any],
+    capsule_bytes: bytes,
+    repository_uri: str,
+    deployment_commit: str,
+    evidence_commit: str,
+    artifact_created_at: str,
+    context: AttestationValidationContext,
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    unsigned = {key: value for key, value in attestation.items() if key not in {"attestation_hash", "signature"}}
+    attestation_hash = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
+    if attestation.get("attestation_hash") != attestation_hash:
+        raise error_type(f"{prefix}.attestation_hash does not match canonical unsigned bytes")
+    repository = attestation["repository"]
+    if (
+        repository["canonical_uri"] != CANONICAL_REPOSITORY_URI
+        or repository_uri != CANONICAL_REPOSITORY_URI
+        or repository["deployment_commit"] != deployment_commit
+        or repository["evidence_commit"] != evidence_commit
+        or deployment_commit == evidence_commit
+    ):
+        raise error_type(f"{prefix} does not authorize the canonical repository and exact release commits")
+    for field in ("object_closure_digest",):
+        digest = repository[field]
+        if len(set(digest.removeprefix("sha256:"))) < 8:
+            raise error_type(f"{prefix}.{field} must be a non-dummy externally computed digest")
+    capsule_binding = attestation["capsule"]
+    if (
+        capsule_binding["bytes_sha256"] != sha256_bytes(capsule_bytes)
+        or capsule_binding["capsule_digest"] != capsule.get("capsuleDigest")
+        or capsule_binding["git_commit"] != deployment_commit
+        or capsule.get("gitCommit") != deployment_commit
+    ):
+        raise error_type(f"{prefix} does not bind the exact capsule bytes and deployment commit")
+    expected_build_infos = [
+        {
+            "id": item["id"],
+            "input_digest": item["inputDigest"],
+            "output_digest": item["outputDigest"],
+        }
+        for item in capsule["buildInfos"]
+    ]
+    expected_contracts = [
+        {"name": item["name"], "artifact_digest": item["artifactDigest"]}
+        for item in capsule["contracts"]
+    ]
+    build = attestation["build"]
+    if build["build_info_digests"] != expected_build_infos:
+        raise error_type(f"{prefix}.build_info_digests does not equal the capsule digest set")
+    if build["contract_artifact_digests"] != expected_contracts:
+        raise error_type(f"{prefix}.contract_artifact_digests does not equal the capsule artifact set")
+    if len(set(build["toolchain_image_digest"].removeprefix("sha256:"))) < 8:
+        raise error_type(f"{prefix}.toolchain_image_digest must be immutable and non-dummy")
+    authority = attestation["authority"]
+    for field in ("name", "organization", "professional_email"):
+        _validate_real_world_field(authority.get(field), f"{prefix}.authority.{field}", error_type, min_length=3)
+    if EMAIL_RE.fullmatch(str(authority["professional_email"])) is None:
+        raise error_type(f"{prefix}.authority.professional_email must be a professional email address")
+    _require_public_key(authority.get("public_key"), f"{prefix}.authority.public_key", error_type)
+    generated_at = _require_utc(attestation.get("generated_at_utc"), f"{prefix}.generated_at_utc", error_type)
+    if generated_at != _require_utc(artifact_created_at, f"{prefix}.created_at_utc", error_type):
+        raise error_type(f"{prefix}.generated_at_utc must equal the resolved artifact creation time")
+    signature = attestation["signature"]
+    _validate_signature(
+        signature,
+        f"{prefix}.signature",
+        schema_version=CAPSULE_REBUILD_ATTESTATION_VERSION,
+        artifact_hash=attestation_hash,
+        identity=authority,
+        expected_role=CAPSULE_BUILD_AUTHORITY_ROLE,
+        error_type=error_type,
+        context=context,
+        expected_signed_at=generated_at,
+        require_after_context_evidence=False,
+    )
+
+
+def _validate_capsule_runtime_projection(
+    *,
+    capsule: Mapping[str, Any],
+    deployment: Mapping[str, Any],
+    deployment_commit: str,
+    contracts: list[dict[str, str]],
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    if capsule.get("gitCommit") != deployment_commit or deployment.get("deploymentCommit") != deployment_commit:
+        raise error_type(f"{prefix} binding is invalid: capsule and manifest commit mismatch")
+    artifacts = {item["name"]: item for item in capsule["contracts"]}
+    build_infos = {item["id"]: item for item in capsule["buildInfos"]}
+    for row in contracts:
+        contract = artifacts[row["name"]]
+        info = build_infos[contract["buildInfoId"]]
+        source = (
+            info["input"]
+            .get("input", {})
+            .get("sources", {})
+            .get(f"project/{contract['sourceName']}", {})
+            .get("content")
+        )
+        if not isinstance(source, str) or base64.b64decode(row["sourceBase64"], validate=True) != source.encode("utf-8"):
+            raise error_type(f"{prefix} binding is invalid: source bytes differ from canonical capsule build input")
+        manifest_entry = _deployment_contract_entry(deployment, row["topologyKey"], prefix, error_type)
+        if manifest_entry.get("name") != row["name"] or manifest_entry.get("capsuleArtifactDigest") != contract["artifactDigest"]:
+            raise error_type(f"{prefix} binding is invalid: manifest capsule artifact digest mismatch")
+        for field in (
+            "runtimeCodeHash",
+            "deployedCodeHash",
+            "expectedRuntimeCodeHash",
+            "primaryObservedRuntimeCodeHash",
+            "secondaryObservedRuntimeCodeHash",
+        ):
+            if str(manifest_entry.get(field, "")).casefold() != row["runtimeKeccak"]:
+                raise error_type(f"{prefix} binding is invalid: manifest {field} differs from chain runtime")
+        values = _immutable_values_from_constructor(
+            contract,
+            manifest_entry.get("constructorArgs"),
+            manifest_entry.get("deploymentBlockTimestamp"),
+            prefix,
+            error_type,
+        )
+        if _reconstruct_runtime(contract, values, prefix, error_type) != row["runtimeHex"]:
+            raise error_type(f"{prefix} binding is invalid: deployed runtime differs from capsule reconstruction")
+
+
+def _deployment_contract_entry(
+    deployment: Mapping[str, Any], topology_key: str, prefix: str, error_type: type[ValueError]
+) -> Mapping[str, Any]:
+    parts = topology_key.split(".")
+    try:
+        if parts[0] == "shared" and len(parts) == 2:
+            entry = deployment["contracts"][parts[1]]
+        elif parts[0] == "board" and len(parts) == 3:
+            entry = deployment["problems"][int(parts[1]) - 1]["contracts"][parts[2]]
+        else:
+            raise KeyError(topology_key)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        raise error_type(f"{prefix} binding is invalid: manifest topology entry is absent") from exc
+    if not isinstance(entry, Mapping):
+        raise error_type(f"{prefix} binding is invalid: manifest topology entry is malformed")
+    return entry
+
+
+def _immutable_values_from_constructor(
+    contract: Mapping[str, Any],
+    constructor_args: Any,
+    block_timestamp: Any,
+    prefix: str,
+    error_type: type[ValueError],
+) -> dict[str, Any]:
+    constructor = next((entry for entry in contract["abi"] if entry.get("type") == "constructor"), {"inputs": []})
+    inputs = constructor.get("inputs", [])
+    if not isinstance(constructor_args, list) or len(constructor_args) != len(inputs):
+        raise error_type(f"{prefix} binding is invalid: constructor argument count mismatch")
+    names = {binding["name"] for binding in contract["immutableBindings"]}
+    values = {
+        str(input_value.get("name", "")).removesuffix("_"): constructor_args[index]
+        for index, input_value in enumerate(inputs)
+        if str(input_value.get("name", "")).removesuffix("_") in names
+    }
+    if contract["name"] == "P42MultisigTimelock":
+        delay_index = next((index for index, item in enumerate(inputs) if item.get("name") == "delaySeconds_"), -1)
+        if delay_index < 0:
+            raise error_type(f"{prefix} binding is invalid: timelock delay argument is absent")
+        delay = int(constructor_args[delay_index])
+        values = {"delay": delay, "overrideDelay": delay * 2, "operationGracePeriod": 7 * 24 * 60 * 60}
+    if contract["name"] == "P42SubmissionManager":
+        if not isinstance(block_timestamp, int) or isinstance(block_timestamp, bool) or block_timestamp < 0:
+            raise error_type(f"{prefix} binding is invalid: submission deployment timestamp is invalid")
+        deployment_values, funding_values = constructor_args
+        if not isinstance(deployment_values, (list, Mapping)) or not isinstance(funding_values, (list, Mapping)):
+            raise error_type(f"{prefix} binding is invalid: submission constructor tuples are malformed")
+
+        def tuple_field(value: list[Any] | Mapping[str, Any], index: int, name: str) -> Any:
+            return value[index] if isinstance(value, list) else value.get(name)
+
+        deployment_names = [
+            "pool", "ledger", "owner", "treasury", "alphaBps", "minPostingBondWei",
+            "challengeWindowSeconds", "onchainDa", "maxSolutionBytes", "seedScoreAtoms",
+            "minImprovementAtoms",
+        ]
+        funding_names = [
+            "boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority",
+            "independentSecurityAuthority", "governanceAuthority",
+        ]
+        values = {name: tuple_field(deployment_values, index, name) for index, name in enumerate(deployment_names)}
+        values.update({name: tuple_field(funding_values, index, name) for index, name in enumerate(funding_names)})
+        values.update(
+            deployedAt=block_timestamp,
+            armNotBefore=block_timestamp + int(values["challengeWindowSeconds"]),
+            fundingAuthorizer=values["treasury"],
+        )
+    return values
+
+
+def _validate_immutable_ranges(
+    contract: Mapping[str, Any], prefix: str, error_type: type[ValueError]
+) -> None:
+    runtime = str(contract["runtimeTemplate"])
+    if HEX_BYTES_RE.fullmatch(runtime) is None:
+        raise error_type(f"{prefix} binding is invalid: runtime template is not lowercase hex")
+    byte_length = (len(runtime) - 2) // 2
+    references = contract["immutableReferences"]
+    seen: set[str] = set()
+    occupied: list[tuple[int, int]] = []
+    for binding in contract["immutableBindings"]:
+        ast_id = binding["astId"]
+        if ast_id in seen or references.get(ast_id) != binding["ranges"]:
+            raise error_type(f"{prefix} binding is invalid: immutable reference mismatch")
+        seen.add(ast_id)
+        for byte_range in binding["ranges"]:
+            start, length = byte_range["start"], byte_range["length"]
+            if start < 0 or length < 1 or start + length > byte_length:
+                raise error_type(f"{prefix} binding is invalid: immutable range out of bounds")
+            if any(start < end and prior < start + length for prior, end in occupied):
+                raise error_type(f"{prefix} binding is invalid: immutable ranges overlap")
+            occupied.append((start, start + length))
+    if set(references) != seen:
+        raise error_type(f"{prefix} binding is invalid: unknown immutable reference")
+
+
+def _reconstruct_runtime(
+    contract: Mapping[str, Any],
+    values: Mapping[str, Any],
+    prefix: str,
+    error_type: type[ValueError],
+) -> str:
+    _validate_immutable_ranges(contract, prefix, error_type)
+    runtime = bytearray.fromhex(str(contract["runtimeTemplate"])[2:])
+    expected_names = {binding["name"] for binding in contract["immutableBindings"]}
+    if set(values) != expected_names:
+        raise error_type(f"{prefix} binding is invalid: immutable value set mismatch")
+    for binding in contract["immutableBindings"]:
+        value = values[binding["name"]]
+        for byte_range in binding["ranges"]:
+            encoded = _encode_immutable_word(value, binding["type"], byte_range["length"], prefix, error_type)
+            start = byte_range["start"]
+            runtime[start : start + byte_range["length"]] = encoded
+    return "0x" + runtime.hex()
+
+
+def _encode_immutable_word(
+    value: Any, kind: str, length: int, prefix: str, error_type: type[ValueError]
+) -> bytes:
+    try:
+        if isinstance(value, bool):
+            integer = int(value)
+        elif isinstance(value, str) and value.startswith("0x"):
+            integer = int(value, 16)
+        else:
+            integer = int(value)
+    except (TypeError, ValueError) as exc:
+        raise error_type(f"{prefix} binding is invalid: immutable value is not numeric") from exc
+    limit = 1 << (length * 8)
+    signed = kind.startswith("int") and not kind.startswith(("interface", "contract"))
+    if signed and integer < 0:
+        integer += limit
+    if integer < 0 or integer >= limit:
+        raise error_type(f"{prefix} binding is invalid: immutable value is out of range")
+    return integer.to_bytes(length, "big")
 
 
 def _validate_canonical_topology(
@@ -1150,10 +1721,80 @@ def _canonical_manifest_contract(
 def _parse_json_object(value: bytes, prefix: str, error_type: type[ValueError]) -> Mapping[str, Any]:
     try:
         parsed = json.loads(value)
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise error_type(f"{prefix} resolved bytes must be valid JSON") from exc
     if not isinstance(parsed, dict):
         raise error_type(f"{prefix} resolved bytes must contain a JSON object")
+    return parsed
+
+
+def _parse_canonical_json_object(
+    value: bytes, prefix: str, error_type: type[ValueError]
+) -> Mapping[str, Any]:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = item
+        return result
+
+    try:
+        parsed = json.loads(value, object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise error_type(f"{prefix} resolved bytes must be strict JSON without duplicate keys") from exc
+    if not isinstance(parsed, dict):
+        raise error_type(f"{prefix} resolved bytes must contain a JSON object")
+    _assert_json_depth(parsed, prefix, error_type)
+    if value != canonical_json(parsed).encode("utf-8"):
+        raise error_type(f"{prefix} resolved bytes must use exact P42 canonical JSON")
+    return parsed
+
+
+def _capsule_canonical_json(value: Any) -> str:
+    return json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+
+
+def _assert_json_depth(
+    value: Any, prefix: str, error_type: type[ValueError]
+) -> None:
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > MAX_CANONICAL_JSON_DEPTH:
+            raise error_type(f"{prefix} exceeds the {MAX_CANONICAL_JSON_DEPTH}-level JSON depth limit")
+        if isinstance(item, Mapping):
+            stack.extend((child, depth + 1) for child in item.values())
+        elif isinstance(item, list):
+            stack.extend((child, depth + 1) for child in item)
+
+
+def _parse_capsule_json_object(
+    value: bytes, prefix: str, error_type: type[ValueError]
+) -> Mapping[str, Any]:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in result:
+                raise ValueError(f"duplicate key: {key}")
+            result[key] = item
+        return result
+
+    try:
+        parsed = json.loads(value, object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, RecursionError) as exc:
+        raise error_type(f"{prefix} resolved bytes must be strict JSON without duplicate keys") from exc
+    if not isinstance(parsed, dict):
+        raise error_type(f"{prefix} resolved bytes must contain a JSON object")
+    _assert_json_depth(parsed, prefix, error_type)
+    if value != _capsule_canonical_json(parsed).encode("utf-8"):
+        raise error_type(f"{prefix} resolved bytes must use exact release-capsule canonical JSON")
     return parsed
 
 

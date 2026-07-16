@@ -110,6 +110,19 @@ def test_security_audit_normalizes_and_matches_schema(tmp_path: Path) -> None:
     )
 
 
+def test_security_audit_rejects_resigned_canonical_topology_as_reviewed_source(tmp_path: Path) -> None:
+    report, fixture, registry = valid_security_audit(tmp_path)
+    unrelated = report["release_binding"]["canonical_topology"]
+    for contract in report["release_binding"]["contracts"]:
+        contract["source_artifact"] = dict(unrelated)
+    for reviewed in report["contracts_reviewed"]:
+        reviewed["source_sha256"] = unrelated["sha256"]
+    resign(report)
+
+    with pytest.raises(SecurityAuditError, match="source bytes differ from canonical capsule build input"):
+        normalize(report, fixture, registry)
+
+
 def test_security_audit_rejects_untrusted_auditor(tmp_path: Path) -> None:
     report, fixture, registry = valid_security_audit(tmp_path)
     registry["registrations"] = []

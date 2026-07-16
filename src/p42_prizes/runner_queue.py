@@ -14,7 +14,7 @@ from pathlib import Path
 import stat
 import threading
 import time
-from typing import Any, Iterator, Mapping
+from typing import Any, Callable, Iterator, Mapping
 
 import jsonschema
 from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json
@@ -77,6 +77,7 @@ LOCAL_TERMINAL_DISPOSITION_REASONS = frozenset(
 LOCAL_TERMINAL_DISPOSITION_MAX_DETAIL_BYTES = 2048
 LOCAL_TERMINAL_ALERT_SCHEMA_VERSION = "p42-runner-terminal-alert/v1"
 ACTION_TERMINAL_ALERT_SCHEMA_VERSION = "p42-runner-action-alert/v1"
+TERMINAL_ALERT_DELIVERY_PROOF_SCHEMA_VERSION = "p42-runner-alert-delivery-proof/v1"
 HEALTH_SCHEMA_VERSION = "p42-runner-health/v2"
 ARCHIVE_FAULT_SCHEMA_VERSION = "p42-runner-archive-fault/v1"
 ARCHIVE_SCAN_MAX_ENTRIES = 100_000
@@ -95,6 +96,39 @@ class RunnerArchiveTargetMissing(RunnerQueueError):
         super().__init__("runner archive fault target has not been durably recovered")
         self.archive_count = archive_count
         self.tombstone_count = tombstone_count
+
+
+@dataclass
+class _LockedRunnerQueueTransaction:
+    directory_fd: int
+    queue_name: str
+    queue: dict[str, Any]
+    original: dict[str, Any]
+
+    def commit(
+        self,
+        *,
+        before_commit: Callable[[], None] | None = None,
+        after_commit: Callable[[], None] | None = None,
+    ) -> bool:
+        if self.queue == self.original:
+            if before_commit is not None:
+                before_commit()
+            if after_commit is not None:
+                after_commit()
+            return False
+        if before_commit is not None:
+            before_commit()
+        previous = copy.deepcopy(self.original)
+        _write_queue_file_at(self.directory_fd, self.queue_name, self.queue)
+        try:
+            if after_commit is not None:
+                after_commit()
+        except BaseException:
+            _write_queue_file_at(self.directory_fd, self.queue_name, previous)
+            raise
+        self.original = copy.deepcopy(self.queue)
+        return True
 
 
 def open_secure_runner_directory(directory: Path) -> int:
@@ -318,6 +352,31 @@ def _migrate_legacy_action_alerts(queue: dict[str, Any]) -> None:
         )
 
 
+def _migrate_unproven_terminal_alerts(queue: dict[str, Any]) -> None:
+    jobs = queue.get("jobs")
+    if not isinstance(jobs, list):
+        raise RunnerQueueError("queue.jobs must be an array")
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        for field, schema_version in (
+            ("terminal_alert", LOCAL_TERMINAL_ALERT_SCHEMA_VERSION),
+            ("action_alert", ACTION_TERMINAL_ALERT_SCHEMA_VERSION),
+        ):
+            alert = job.get(field)
+            if (
+                not isinstance(alert, dict)
+                or alert.get("schema_version") != schema_version
+                or "delivery_proof" in alert
+            ):
+                continue
+            migrated = {**alert, "delivery_proof": None}
+            if migrated.get("status") == "delivered":
+                migrated["status"] = "pending"
+                migrated["delivered_at_utc"] = None
+            job[field] = migrated
+
+
 def record_runner_local_disposition(
     queue_path: str | Path,
     *,
@@ -417,38 +476,7 @@ def set_runner_local_disposition(
     }
 
 
-def record_runner_terminal_alert_delivery(
-    queue_path: str | Path,
-    *,
-    job_id: str,
-    alert_id: str,
-) -> dict[str, Any]:
-    """Record that the disposition-bound terminal alert is durable in the alert log."""
-    if not job_id:
-        raise RunnerQueueError("job_id must be non-empty")
-    if not _is_sha256(alert_id):
-        raise RunnerQueueError("alert_id must be a sha256 string")
-    with locked_runner_queue(Path(queue_path)) as queue:
-        job = _job_by_id(queue, job_id)
-        alert = _validated_job_terminal_alert(job)
-        if alert["alert_id"] != alert_id:
-            raise RunnerQueueError(f"runner terminal alert fencing mismatch for {job_id}")
-        if alert["status"] == "delivered":
-            return {"created": False, "alert": dict(alert)}
-        delivered_at = max(datetime.now(timezone.utc), _parse_utc(alert["created_at_utc"]))
-        delivered = {
-            **alert,
-            "status": "delivered",
-            "delivered_at_utc": _format_utc(delivered_at),
-        }
-        alert_field = (
-            "terminal_alert" if job.get("terminal_disposition") is not None else "action_alert"
-        )
-        job[alert_field] = delivered
-        return {"created": True, "alert": dict(delivered)}
-
-
-def append_runner_terminal_alert(
+def reconcile_runner_terminal_alert(
     queue_path: str | Path,
     alerts_path: str | Path,
     *,
@@ -456,28 +484,73 @@ def append_runner_terminal_alert(
     _write: Any = os.write,
     _after_open: Any = None,
     _after_write: Any = None,
+    _after_queue_commit: Any = None,
 ) -> dict[str, Any]:
-    """Append one disposition-bound alert under queue and filesystem locks."""
+    """Durably append and acknowledge one terminal alert in one locked transaction."""
     if not isinstance(job_id, str) or not job_id:
         raise RunnerQueueError("job_id must be non-empty")
     queue_file = Path(queue_path).absolute()
     alerts_file = Path(alerts_path).absolute()
     if alerts_file.parent != queue_file.parent or alerts_file.name in {"", ".", ".."}:
         raise RunnerQueueError("runner alert log must be a sibling of the queue")
-    with locked_runner_queue(queue_file) as queue:
-        job = _job_by_id(queue, job_id)
+    with _locked_runner_queue_transaction(queue_file) as transaction:
+        job = _job_by_id(transaction.queue, job_id)
         alert = _validated_job_terminal_alert(job)
-        created = _append_terminal_alert_record(
+
+        def commit_delivery(
+            verify_log: Callable[[], None], delivery_proof: Mapping[str, Any]
+        ) -> bool:
+            current = _validated_job_terminal_alert(job)
+            if current["alert_id"] != alert["alert_id"]:
+                raise RunnerQueueError(
+                    f"runner terminal alert changed during reconciliation for {job_id}"
+                )
+            delivery_created = current["status"] == "pending"
+            if delivery_created:
+                delivered_at = max(
+                    datetime.now(timezone.utc), _parse_utc(current["created_at_utc"])
+                )
+                delivered = {
+                    **current,
+                    "status": "delivered",
+                    "delivered_at_utc": _format_utc(delivered_at),
+                    "delivery_proof": dict(delivery_proof),
+                }
+                alert_field = (
+                    "terminal_alert"
+                    if job.get("terminal_disposition") is not None
+                    else "action_alert"
+                )
+                job[alert_field] = delivered
+            elif current["status"] != "delivered":
+                raise RunnerQueueError("runner terminal alert status is invalid")
+
+            def verify_after_commit() -> None:
+                if _after_queue_commit is not None:
+                    _after_queue_commit()
+                verify_log()
+
+            transaction.commit(
+                before_commit=verify_log,
+                after_commit=verify_after_commit,
+            )
+            return delivery_created
+
+        created, delivered = _append_terminal_alert_record(
             alerts_file,
             alert,
             write_bytes=_write,
             after_open=_after_open,
             after_write=_after_write,
+            commit_delivery=commit_delivery,
         )
+        final_alert = _validated_job_terminal_alert(job)
         return {
             "created": created,
+            "delivered": delivered,
             "alert_id": alert["alert_id"],
             "record": canonical_json(_terminal_alert_record(alert)),
+            "alert": final_alert,
         }
 
 
@@ -490,16 +563,27 @@ def read_runner_queue(queue_path: str | Path) -> dict[str, Any]:
 
 @contextmanager
 def locked_runner_queue(queue_path: Path) -> Iterator[dict[str, Any]]:
+    with _locked_runner_queue_transaction(queue_path) as transaction:
+        yield transaction.queue
+        transaction.commit()
+
+
+@contextmanager
+def _locked_runner_queue_transaction(
+    queue_path: Path,
+) -> Iterator[_LockedRunnerQueueTransaction]:
     lock_key = str(queue_path.resolve(strict=False))
     with _THREAD_LOCKS_GUARD:
         thread_lock = _THREAD_LOCKS.setdefault(lock_key, threading.RLock())
     with thread_lock:
-        with _locked_runner_queue_process(queue_path) as queue:
-            yield queue
+        with _locked_runner_queue_process(queue_path) as transaction:
+            yield transaction
 
 
 @contextmanager
-def _locked_runner_queue_process(queue_path: Path) -> Iterator[dict[str, Any]]:
+def _locked_runner_queue_process(
+    queue_path: Path,
+) -> Iterator[_LockedRunnerQueueTransaction]:
     directory_fd = open_secure_runner_directory(queue_path.parent)
     lock_path = queue_path.with_suffix(queue_path.suffix + ".lock")
     lock_fd = -1
@@ -525,16 +609,20 @@ def _locked_runner_queue_process(queue_path: Path) -> Iterator[dict[str, Any]]:
             queue = _read_queue_file_at(directory_fd, queue_path.name)
             original = copy.deepcopy(queue)
             _migrate_legacy_action_alerts(queue)
+            _migrate_unproven_terminal_alerts(queue)
             _reconcile_archived_duplicates(queue_path, queue)
+            transaction = _LockedRunnerQueueTransaction(
+                directory_fd=directory_fd,
+                queue_name=queue_path.name,
+                queue=queue,
+                original=original,
+            )
             try:
-                yield queue
+                yield transaction
             except BaseException:
                 queue.clear()
                 queue.update(original)
                 raise
-            else:
-                if queue != original:
-                    _write_queue_file_at(directory_fd, queue_path.name, queue)
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
             lock.close()
@@ -746,7 +834,8 @@ def _append_terminal_alert_record(
     write_bytes: Any,
     after_open: Any,
     after_write: Any,
-) -> bool:
+    commit_delivery: Callable[[Callable[[], None], Mapping[str, Any]], bool],
+) -> tuple[bool, bool]:
     directory_fd = open_secure_runner_directory(alerts_path.parent)
     directory_metadata = os.fstat(directory_fd)
     lock_name = f"{alerts_path.name}.lock"
@@ -818,41 +907,54 @@ def _append_terminal_alert_record(
             if created and after_write is not None:
                 after_write(alert_fd, directory_fd)
 
-            final_metadata = os.fstat(alert_fd)
-            _validate_private_single_link_file(
-                final_metadata, label="runner alert log"
-            )
-            if not _same_inode(final_metadata, opened_metadata):
-                raise RunnerQueueError("runner alert log inode changed during write")
-            _assert_file_path_identity(
-                directory_fd,
-                alerts_path.name,
-                final_metadata,
-                label="runner alert log",
-            )
-            final_payload = _read_bounded_descriptor(
-                alert_fd,
-                max_bytes=TERMINAL_ALERT_LOG_MAX_BYTES,
-                label="runner alert log",
-            )
-            if not _alert_log_has_exact_record(final_payload, record):
-                raise RunnerQueueError(
-                    "runner alert record was not durable after append"
+            def verify_locked_log() -> None:
+                final_metadata = os.fstat(alert_fd)
+                _validate_private_single_link_file(
+                    final_metadata, label="runner alert log"
                 )
-            final_lock = os.fstat(lock_file.fileno())
-            _validate_private_single_link_file(
-                final_lock, label="runner alert lock"
-            )
-            _assert_file_path_identity(
-                directory_fd,
-                lock_name,
-                final_lock,
-                label="runner alert lock",
-            )
-            _assert_directory_path_identity(
-                alerts_path.parent, directory_metadata
-            )
-            return created
+                if not _same_inode(final_metadata, opened_metadata):
+                    raise RunnerQueueError("runner alert log inode changed during write")
+                _assert_file_path_identity(
+                    directory_fd,
+                    alerts_path.name,
+                    final_metadata,
+                    label="runner alert log",
+                )
+                final_payload = _read_bounded_descriptor(
+                    alert_fd,
+                    max_bytes=TERMINAL_ALERT_LOG_MAX_BYTES,
+                    label="runner alert log",
+                )
+                if not _alert_log_has_exact_record(final_payload, record):
+                    raise RunnerQueueError(
+                        "runner alert record was not durable after append"
+                    )
+                final_lock = os.fstat(lock_file.fileno())
+                _validate_private_single_link_file(
+                    final_lock, label="runner alert lock"
+                )
+                _assert_file_path_identity(
+                    directory_fd,
+                    lock_name,
+                    final_lock,
+                    label="runner alert lock",
+                )
+                _assert_directory_path_identity(
+                    alerts_path.parent, directory_metadata
+                )
+
+            verify_locked_log()
+            delivery_proof = {
+                "schema_version": TERMINAL_ALERT_DELIVERY_PROOF_SCHEMA_VERSION,
+                "log_name": alerts_path.name,
+                "log_device": str(opened_metadata.st_dev),
+                "log_inode": str(opened_metadata.st_ino),
+                "record_hash": "sha256:"
+                + hashlib.sha256(record).hexdigest(),
+            }
+            delivered = commit_delivery(verify_locked_log, delivery_proof)
+            verify_locked_log()
+            return created, delivered
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             lock_file.close()
@@ -966,6 +1068,7 @@ def _archive_for_admission(
             reason = "count" if not count_ok else "canonical byte"
             raise RunnerQueueError(f"runner queue has no settled terminal job to recover {reason} headroom")
         job = queue["jobs"][index]
+        _verify_terminal_alert_delivery_for_archive(queue_path, job)
         _persist_archived_job(queue_path, job)
         del queue["jobs"][index]
 
@@ -978,6 +1081,90 @@ def _is_archivable(job: Mapping[str, Any]) -> bool:
     except RunnerQueueError:
         return False
     return True
+
+
+def _verify_terminal_alert_delivery_for_archive(
+    queue_path: Path, job: Mapping[str, Any]
+) -> None:
+    if job.get("terminal_alert") is None and job.get("action_alert") is None:
+        return
+    alert = _validated_job_terminal_alert(job)
+    if alert.get("status") != "delivered":
+        raise RunnerQueueError("runner terminal alert is not delivered")
+    proof = _validate_alert_delivery_proof(alert)
+    if proof is None:
+        raise RunnerQueueError("runner terminal alert has no delivery proof")
+    record = canonical_json(_terminal_alert_record(alert)).encode("utf-8")
+    expected_hash = "sha256:" + hashlib.sha256(record).hexdigest()
+    if proof["record_hash"] != expected_hash:
+        raise RunnerQueueError("runner terminal alert delivery proof record hash mismatch")
+
+    directory_fd = open_secure_runner_directory(queue_path.parent)
+    lock_fd = alert_fd = -1
+    lock_file = None
+    try:
+        lock_name = f"{proof['log_name']}.lock"
+        try:
+            lock_fd = _open_stable_lock_at(directory_fd, lock_name)
+        except OSError as exc:
+            raise RunnerQueueError("runner alert lock is unavailable or unsafe") from exc
+        lock_metadata = os.fstat(lock_fd)
+        _validate_private_single_link_file(lock_metadata, label="runner alert lock")
+        lock_file = os.fdopen(lock_fd, "r+b", buffering=0)
+        lock_fd = -1
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            locked_metadata = os.fstat(lock_file.fileno())
+            _validate_private_single_link_file(
+                locked_metadata, label="runner alert lock"
+            )
+            _assert_file_path_identity(
+                directory_fd, lock_name, locked_metadata, label="runner alert lock"
+            )
+            try:
+                alert_fd = os.open(
+                    proof["log_name"],
+                    os.O_RDONLY
+                    | getattr(os, "O_NOFOLLOW", 0)
+                    | getattr(os, "O_NONBLOCK", 0),
+                    dir_fd=directory_fd,
+                )
+            except OSError as exc:
+                raise RunnerQueueError(
+                    "runner delivered alert log is unavailable or unsafe"
+                ) from exc
+            metadata = os.fstat(alert_fd)
+            _validate_private_single_link_file(metadata, label="runner alert log")
+            if (
+                str(metadata.st_dev) != proof["log_device"]
+                or str(metadata.st_ino) != proof["log_inode"]
+            ):
+                raise RunnerQueueError("runner delivered alert log identity mismatch")
+            _assert_file_path_identity(
+                directory_fd,
+                proof["log_name"],
+                metadata,
+                label="runner alert log",
+            )
+            payload = _read_bounded_descriptor(
+                alert_fd,
+                max_bytes=TERMINAL_ALERT_LOG_MAX_BYTES,
+                label="runner alert log",
+            )
+            if not _alert_log_has_exact_record(payload, record):
+                raise RunnerQueueError("runner delivered alert record is missing")
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+            lock_file = None
+    finally:
+        if alert_fd >= 0:
+            os.close(alert_fd)
+        if lock_file is not None:
+            lock_file.close()
+        if lock_fd >= 0:
+            os.close(lock_fd)
+        os.close(directory_fd)
 
 
 def _local_disposition_hash(disposition: Mapping[str, Any]) -> str:
@@ -1060,7 +1247,44 @@ def _build_terminal_alert(disposition: Mapping[str, Any]) -> dict[str, Any]:
         "alert_id": alert_id,
         "status": "pending",
         "delivered_at_utc": None,
+        "delivery_proof": None,
     }
+
+
+def _validate_alert_delivery_proof(alert: Mapping[str, Any]) -> dict[str, Any] | None:
+    proof = alert.get("delivery_proof")
+    if alert.get("status") == "pending":
+        if proof is not None:
+            raise RunnerQueueError("pending runner terminal alert has a delivery proof")
+        return None
+    expected_fields = {
+        "schema_version",
+        "log_name",
+        "log_device",
+        "log_inode",
+        "record_hash",
+    }
+    if (
+        not isinstance(proof, dict)
+        or set(proof) != expected_fields
+        or proof.get("schema_version") != TERMINAL_ALERT_DELIVERY_PROOF_SCHEMA_VERSION
+        or not isinstance(proof.get("log_name"), str)
+        or not proof["log_name"]
+        or proof["log_name"] in {".", ".."}
+        or Path(proof["log_name"]).name != proof["log_name"]
+        or not isinstance(proof.get("log_device"), str)
+        or not proof["log_device"].isascii()
+        or not proof["log_device"].isdecimal()
+        or (len(proof["log_device"]) > 1 and proof["log_device"].startswith("0"))
+        or not isinstance(proof.get("log_inode"), str)
+        or not proof["log_inode"].isascii()
+        or not proof["log_inode"].isdecimal()
+        or proof["log_inode"] == "0"
+        or (len(proof["log_inode"]) > 1 and proof["log_inode"].startswith("0"))
+        or not _is_sha256(proof.get("record_hash"))
+    ):
+        raise RunnerQueueError("runner terminal alert delivery proof is invalid")
+    return dict(proof)
 
 
 def _validate_terminal_alert(job: Mapping[str, Any], alert: Any) -> dict[str, Any]:
@@ -1075,6 +1299,7 @@ def _validate_terminal_alert(job: Mapping[str, Any], alert: Any) -> dict[str, An
         "alert_id",
         "status",
         "delivered_at_utc",
+        "delivery_proof",
     }
     disposition = _validate_local_terminal_disposition(job, job.get("terminal_disposition"))
     identity = _terminal_alert_identity_payload(disposition)
@@ -1095,6 +1320,7 @@ def _validate_terminal_alert(job: Mapping[str, Any], alert: Any) -> dict[str, An
         delivered = _parse_utc(delivered_at)
         if delivered < created:
             raise RunnerQueueError("runner terminal alert delivery predates creation")
+    _validate_alert_delivery_proof(alert)
     return dict(alert)
 
 
@@ -1133,6 +1359,7 @@ def _build_action_terminal_alert(
         "alert_id": alert_id,
         "status": "pending",
         "delivered_at_utc": None,
+        "delivery_proof": None,
     }
 
 
@@ -1165,6 +1392,7 @@ def _validate_action_terminal_alert(
         "alert_id",
         "status",
         "delivered_at_utc",
+        "delivery_proof",
     }
     message = alert.get("message")
     if (
@@ -1192,6 +1420,7 @@ def _validate_action_terminal_alert(
         delivered = _parse_utc(delivered_at)
         if delivered < created:
             raise RunnerQueueError("runner action alert delivery predates creation")
+    _validate_alert_delivery_proof(alert)
     return dict(alert)
 
 

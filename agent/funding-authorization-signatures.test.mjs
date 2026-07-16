@@ -58,7 +58,12 @@ function authorization(inputManifest) {
     status: "authorized",
     authorization_digest: hash("a"),
     expires_at_utc: "2030-01-01T00:00:00Z",
-    release_binding: { network: "base-sepolia", chain_id: 84532, git_commit: inputManifest.deploymentCommit },
+    release_binding: {
+      network: "base-sepolia",
+      chain_id: 84532,
+      deployment_commit: inputManifest.deploymentCommit,
+      git_commit: "f".repeat(40),
+    },
     artifacts: { deployment_manifest: { sha256: hash("e") } },
   };
 }

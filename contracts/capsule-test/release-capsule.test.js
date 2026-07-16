@@ -10,6 +10,8 @@ import {
   assertRuntimeMatches,
   attestReleaseCapsuleAgainstCheckout,
   canonicalDigest,
+  canonicalJson,
+  createCapsuleRebuildAttestationBody,
   createReleaseCapsule,
   immutableValuesFromConstructor,
   publishReleaseCapsule,
@@ -17,7 +19,6 @@ import {
   reconstructExpectedRuntime,
   validateReleaseCapsule,
 } from "../scripts/release-capsule-helper.js";
-
 const contractsRoot = resolve(import.meta.dirname, "..");
 const COMMIT = "d6e96ce83eb89af01e6c090c4ff50eed8e214f3d";
 const clone = (value) => structuredClone(value);
@@ -199,6 +200,32 @@ describe("closed immutable release capsule", () => {
     await assert.rejects(() => attestReleaseCapsuleAgainstCheckout(original, { repoRoot: resolve(contractsRoot, ".."), expectedGitCommit: "f".repeat(40), run, rebuild: async () => original }), /trusted expected commit/);
     const dirtyRun = (program, args) => program === "git" && args[0] === "rev-parse" ? `${COMMIT}\n` : program === "git" && args[0] === "status" ? "?? forged.json\n" : "";
     await assert.rejects(() => attestReleaseCapsuleAgainstCheckout(original, { repoRoot: resolve(contractsRoot, ".."), expectedGitCommit: COMMIT, run: dirtyRun, rebuild: async () => original }), /clean before/);
+  });
+
+  it("derives a closed rebuild-attestation body outside legal validation", async () => {
+    const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const body = createCapsuleRebuildAttestationBody({
+      capsule,
+      capsuleBytes: Buffer.from(canonicalJson(capsule)),
+      deploymentCommit: COMMIT,
+      evidenceCommit: "8b7d4c2a91f0643eb5a8c7d2e190f436abcde789",
+      objectClosureDigest: "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      objectCount: 42,
+      toolchainImageDigest: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+      generatedAtUtc: "2026-07-16T12:00:00Z",
+      attestationId: "capsule-rebuild-test-v1",
+      authority: {
+        name: "Morgan Vale", organization: "Independent Build Lab",
+        professional_email: "morgan@build-lab.example", public_key: `ed25519:${"a".repeat(64)}`,
+      },
+    });
+    assert.equal(body.repository.deployment_commit, COMMIT);
+    assert.equal(body.build.policy.network_access, "denied");
+    assert.equal(body.build.policy.root_filesystem, "read-only");
+    assert.deepEqual(body.build.build_info_digests, capsule.buildInfos.map(({ id, inputDigest, outputDigest }) => ({ id, input_digest: inputDigest, output_digest: outputDigest })));
+    assert.throws(() => createCapsuleRebuildAttestationBody({
+      capsule, capsuleBytes: Buffer.from("{}"), deploymentCommit: COMMIT,
+    }), /canonical capsule bytes/);
   });
 
   it("rejects duplicate-key and symlinked artifact or build-info JSON", async () => {

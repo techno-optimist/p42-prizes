@@ -4,12 +4,15 @@ import { chmodSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ethers } from "ethers";
+import { createHash } from "node:crypto";
+import { canonicalJson } from "./lib.mjs";
 
 import {
   activationRequest,
   buildFundingActivationCompletion,
   collectActivationNonceEvidence,
   collectFundingActivationSnapshot,
+  destroyFundingActivationOperationProviders,
   fundingActivationCompletionAnchor,
   nextFundingActivationAction,
   prepareActivationSigningRequest,
@@ -23,11 +26,35 @@ const digest = `sha256:${"a".repeat(64)}`;
 const chainDigest = `0x${"a".repeat(64)}`;
 const ZERO_HASH = `0x${"0".repeat(64)}`;
 const address = (value) => ethers.getAddress(`0x${value.toString(16).padStart(40, "0")}`);
+const rpcAuthority = () => ({
+  schema: "p42-activation-rpc-authority/v1", registryDigest: `sha256:${"9".repeat(64)}`,
+  primary: { operatorId: "operator-primary", endpointOrigin: "https://primary.example", endpointProfileDigest: `sha256:${"8".repeat(64)}` },
+  secondary: { operatorId: "operator-secondary", endpointOrigin: "https://secondary.example", endpointProfileDigest: `sha256:${"7".repeat(64)}` },
+});
+const observedRpcAuthority = () => ({
+  ...rpcAuthority(),
+  primary: { ...rpcAuthority().primary, observedRawChainId: "0x14a34" },
+  secondary: { ...rpcAuthority().secondary, observedRawChainId: "0x14a34" },
+});
 const submissionsInterface = new ethers.Interface([
   "function authorizeFunding(bytes32 authorizationDigest,uint64 expiresAt,uint256 nonce,bytes[3] signatures)",
   "function armFunding(bytes32 authorizationDigest)",
 ]);
 const poolInterface = new ethers.Interface(["function setAcceptingFunds(bool accepting)"]);
+
+test("operation evidence cleanup attempts both provider destroys when one throws", async () => {
+  const destroyed = [];
+  await destroyFundingActivationOperationProviders(
+    {
+      destroy() {
+        destroyed.push("primary");
+        throw new Error("primary cleanup failed");
+      },
+    },
+    { destroy() { destroyed.push("secondary"); } },
+  );
+  assert.deepEqual(destroyed.sort(), ["primary", "secondary"]);
+});
 
 function nonceEvidence(currentNonce = 0, finalizedNonce = currentNonce) {
   return async (signer) => ({
@@ -91,6 +118,7 @@ function plan() {
     chainId: 84532, network: "base-sepolia", boardCount: 10, authorizationDigest: digest,
     manifestBytesDigest: `sha256:${"c".repeat(64)}`, deploymentCommit: "d".repeat(40),
     authorizationBytesDigest: `sha256:${"7".repeat(64)}`,
+    rpcAuthority: rpcAuthority(),
     deploymentConfigHash: `0x${"e".repeat(64)}`, releaseBindingDigest: `sha256:${"f".repeat(64)}`,
     authorizationExpiresAt: 2_000_000_000, treasury, timelock,
     governanceSigners, governanceThreshold: 2, governanceDelaySeconds: 3600,
@@ -107,6 +135,7 @@ function snapshot(inputPlan) {
   }
   return {
     chainId: inputPlan.chainId, planDigest: inputPlan.planDigest, now: 1_900_000_000n,
+    rpcAuthority: observedRpcAuthority(),
     boards: Array.from({ length: 10 }, (_, index) => ({
       problemId: index + 1, authorizedFundingDigest: `0x${"0".repeat(64)}`,
       fundingAuthorizationExpiresAt: 0n, fundingAuthorizationNonce: 0n,
@@ -779,12 +808,12 @@ test("dual-RPC snapshot uses one common finalized block and rejects disagreement
       throw new Error(`unexpected selector ${id}`);
     },
   });
-  const snapshot = await collectFundingActivationSnapshot(inputPlan, provider(), provider());
+  const snapshot = await collectFundingActivationSnapshot(inputPlan, provider(), provider(), observedRpcAuthority());
   assert.equal(snapshot.blockNumber, 50);
   assert.equal(snapshot.boards.length, 10);
   assert.equal(snapshot.boards[0].fundingAuthorizationNonce, 0n);
   assert.equal(snapshot.boards[0].fundingAuthorizationVerified, false);
-  await assert.rejects(() => collectFundingActivationSnapshot(inputPlan, provider(), provider(1_900_000_001)), /disagree/);
+  await assert.rejects(() => collectFundingActivationSnapshot(inputPlan, provider(), provider(1_900_000_001), observedRpcAuthority()), /disagree/);
 });
 
 test("activation checkpoint evidence validates pure exact observations without a provider seam", () => {
@@ -796,7 +825,8 @@ test("activation checkpoint evidence validates pure exact observations without a
     blockHash: `0x${"4".repeat(64)}`,
     blockTimestamp: 1_899_999_000,
   };
-  const observation = () => ({
+  const observation = (role = "primary") => ({
+    rpcProfile: { ...observedRpcAuthority()[role] },
     chainId: inputPlan.chainId,
     finalizedBlockNumber: 50,
     blockNumber: 50,
@@ -813,7 +843,7 @@ test("activation checkpoint evidence validates pure exact observations without a
     })),
   });
   const primary = observation();
-  const secondary = observation();
+  const secondary = observation("secondary");
   const evidence = validateFundingActivationOperationObservations(
     inputPlan, primary, secondary, anchor, completionAnchor,
   );
@@ -822,20 +852,26 @@ test("activation checkpoint evidence validates pure exact observations without a
   assert.deepEqual(evidence.operations.map(({ operationId }) => operationId), inputPlan.operations.slice(10).map(({ operationId }) => operationId.toLowerCase()));
   assert.ok(evidence.operations.every(({ state }) => state === 2));
   const none = observation(); none.operations[0].state = 0; none.operations[0].storageState = 0;
-  assert.throws(() => validateFundingActivationOperationObservations(inputPlan, none, none, anchor, completionAnchor), /not executed/);
+  assert.throws(() => validateFundingActivationOperationObservations(inputPlan, none, secondary, anchor, completionAnchor), /not executed/);
   const splitState = observation(); splitState.operations[0].storageState = 1;
   assert.throws(() => validateFundingActivationOperationObservations(inputPlan, splitState, secondary, anchor, completionAnchor), /canonical operation set/);
-  const wrongHash = observation(); wrongHash.blockHash = `0x${"6".repeat(64)}`;
+  const wrongHash = observation("secondary"); wrongHash.blockHash = `0x${"6".repeat(64)}`;
   assert.throws(() => validateFundingActivationOperationObservations(inputPlan, primary, wrongHash, anchor, completionAnchor), /wrong anchor/);
-  const unfinalized = observation(); unfinalized.finalizedBlockNumber = 49;
+  const unfinalized = observation("secondary"); unfinalized.finalizedBlockNumber = 49;
   assert.throws(() => validateFundingActivationOperationObservations(inputPlan, primary, unfinalized, anchor, completionAnchor), /wrong anchor/);
-  const reorgedCompletion = observation();
+  const reorgedCompletion = observation("secondary");
   reorgedCompletion.completionAnchor.blockHash = `0x${"9".repeat(64)}`;
   assert.throws(
     () => validateFundingActivationOperationObservations(
       inputPlan, primary, reorgedCompletion, anchor, completionAnchor,
     ),
     /wrong anchor/,
+  );
+  const substitutedProfile = observation("secondary");
+  substitutedProfile.rpcProfile.endpointProfileDigest = `sha256:${"0".repeat(64)}`;
+  assert.throws(
+    () => validateFundingActivationOperationObservations(inputPlan, primary, substitutedProfile, anchor, completionAnchor),
+    /RPC authority does not match the plan/,
   );
   assert.equal("fundingActivationOperationEvidenceTestOnly" in activationExecutorModule, false);
 });
@@ -990,6 +1026,16 @@ test("completion artifact binds only the exact finalized all-open state", () => 
     }),
     /does not match/,
   );
+  const stripped = { ...completion };
+  delete stripped.rpcAuthority;
+  const { completionDigest: _ignored, ...strippedBody } = stripped;
+  stripped.completionDigest = `sha256:${createHash("sha256").update(canonicalJson(strippedBody)).digest("hex")}`;
+  assert.throws(() => fundingActivationCompletionAnchor(inputPlan, stripped), /does not match/);
+  const wrongChainEvidence = structuredClone(completion);
+  wrongChainEvidence.rpcAuthority.primary.observedRawChainId = "0x1";
+  delete wrongChainEvidence.completionDigest;
+  wrongChainEvidence.completionDigest = `sha256:${createHash("sha256").update(canonicalJson(wrongChainEvidence)).digest("hex")}`;
+  assert.throws(() => fundingActivationCompletionAnchor(inputPlan, wrongChainEvidence), /raw chain IDs/);
   state.boards[0].acceptingFunds = false;
   assert.throws(
     () => buildFundingActivationCompletion(inputPlan, state),

@@ -10,7 +10,11 @@ import jsonschema
 import pytest
 
 from attestation_helpers import AttestationFixture, attach_signatures, unsigned_hash
-from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversarial_campaign_report
+from p42_prizes.adversarial import (
+    ENVIRONMENTS,
+    AdversarialCampaignError,
+    normalize_adversarial_campaign_report,
+)
 from p42_prizes.runner_alerts import build_runner_alerts_from_transcripts
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
@@ -299,6 +303,7 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
     runner_registry = fixture.trust_registry(
         "p42-runner-transcript-archive/v1",
         [("runner-operator", runner_operator, "2026-07-08T19:05:00Z")],
+        include_capsule_authority=False,
     )
     registry["registrations"].extend(runner_registry["registrations"])
     return report, fixture, registry
@@ -311,6 +316,32 @@ def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict
         artifact_root=fixture.root,
         chain_reader=fixture.chain_reader,
     )
+
+
+def test_adversarial_v2_schema_runtime_environment_parity_and_reachability(tmp_path: Path) -> None:
+    schema = json.loads((ROOT / "schemas" / "adversarial-campaign.schema.json").read_text())
+    schema_environment = schema["properties"]["environment"]
+    schema_environments = {schema_environment["const"]}
+    assert schema_environments == ENVIRONMENTS == {"base-sepolia"}
+
+    for environment in schema_environments:
+        report, fixture, registry = valid_campaign_report(tmp_path / environment)
+        report["environment"] = environment
+        normalized = normalize(report, fixture, registry)
+        jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
+
+
+def test_adversarial_v2_rejects_local_rehearsal_with_migration_message(tmp_path: Path) -> None:
+    report, fixture, registry = valid_campaign_report(tmp_path)
+    report["environment"] = "local-rehearsal"
+    schema = json.loads((ROOT / "schemas" / "adversarial-campaign.schema.json").read_text())
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(report, schema, format_checker=jsonschema.FormatChecker())
+    with pytest.raises(
+        AdversarialCampaignError,
+        match="local-rehearsal is not supported.*separate historical or future schema version",
+    ):
+        normalize(report, fixture, registry)
 
 
 def rewrite_artifact(

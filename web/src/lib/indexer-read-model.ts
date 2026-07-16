@@ -23,6 +23,16 @@ import type {
 
 type JsonObject = Record<string, unknown>;
 
+const DEFAULT_CHECKPOINT_MAX_AGE_SECONDS = 300;
+const CHECKPOINT_FUTURE_TOLERANCE_SECONDS = 30;
+const FUNDING_WINDOW_BEFORE_CLOSE_SECONDS = 30n * 24n * 60n * 60n;
+const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
+export interface PortalReadModelClock {
+  nowSeconds?: number;
+  checkpointMaxAgeSeconds?: number;
+}
+
 function object(value: unknown, label: string): JsonObject {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object`);
@@ -201,7 +211,12 @@ function poolReadModel(projection: JsonObject, scale: string): PortalPoolReadMod
   };
 }
 
-function fundingReadModel(projection: JsonObject, closed: boolean): PortalFundingReadModel {
+function fundingReadModel(
+  projection: JsonObject,
+  closed: boolean,
+  fundingDeadline: bigint,
+  effectiveTimestamp: number,
+): PortalFundingReadModel {
   const funding = object(projection.funding, "portal projection funding");
   const authorizationExpiresAt = integerString(funding.authorizationExpiresAt, "funding authorization expiry", true);
   const acceptingFunds = funding.acceptingFunds === true;
@@ -210,18 +225,43 @@ function fundingReadModel(projection: JsonObject, closed: boolean): PortalFundin
   const submissionsPausedNewActions = funding.submissionsPausedNewActions === true;
   const submissionsPausedAll = funding.submissionsPausedAll === true;
   const challengesPausedNewActions = funding.challengesPausedNewActions === true;
+  const fundingDeadlineReached = BigInt(effectiveTimestamp) >= fundingDeadline;
   return {
     acceptingFunds,
     fundingArmed,
     authorizationExpiresAt: unixSecondsToIso(authorizationExpiresAt, "funding authorization expiry"),
+    fundingDeadline: unixSecondsToIso(fundingDeadline.toString(), "funding deadline"),
+    fundingDeadlineReached,
+    publicationObservedAt: unixSecondsToIso(effectiveTimestamp, "funding publication observation timestamp"),
     ledgerPausedNewActions,
     submissionsPausedNewActions,
     submissionsPausedAll,
     challengesPausedNewActions,
-    canFund: !closed && fundingArmed && acceptingFunds,
+    canFund: !closed && !fundingDeadlineReached && fundingArmed && acceptingFunds,
     canSubmit: !closed && fundingArmed && !ledgerPausedNewActions && !submissionsPausedNewActions && !submissionsPausedAll,
     canChallenge: !closed && !challengesPausedNewActions && !submissionsPausedAll,
   };
+}
+
+function publicFundingProvenance(
+  provenance: PortalProblemReadModel["chainProvenance"],
+  canFund: boolean,
+): PortalProblemReadModel["chainProvenance"] {
+  const fundingTargetDeployed = normalizedAddress(provenance.poolAddress) !== null
+    && normalizedAddress(provenance.donationWalletAddress) === normalizedAddress(provenance.poolAddress);
+  const publicProvenance = {
+    ...provenance,
+    fundingTargetDeployed,
+  };
+  return canFund ? publicProvenance : {
+    ...publicProvenance,
+    donationWalletAddress: null,
+    poolAddress: null,
+  };
+}
+
+function normalizedAddress(value: unknown): string | null {
+  return typeof value === "string" && EVM_ADDRESS.test(value) ? value.toLowerCase() : null;
 }
 
 function claimantReadModels(projection: JsonObject, scale: string): PortalClaimantReadModel[] {
@@ -296,10 +336,17 @@ function projectedSubmission(
 export function portalReadModelFromActivatedSnapshot(
   problems: readonly Problem[],
   snapshot: ActivatedIndexerSnapshot,
+  clock: PortalReadModelClock = {},
 ): PortalReadModel {
   if (problems.length !== 10) throw new Error("chain portal read model requires the exact-ten cohort");
   const manifest = snapshot.manifest;
   const checkpoint = snapshot.checkpoint;
+  const nowSeconds = clock.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const checkpointMaxAgeSeconds = clock.checkpointMaxAgeSeconds ?? DEFAULT_CHECKPOINT_MAX_AGE_SECONDS;
+  if (!Number.isSafeInteger(nowSeconds) || nowSeconds < 0) throw new Error("portal authoritative timestamp is invalid");
+  if (!Number.isSafeInteger(checkpointMaxAgeSeconds) || checkpointMaxAgeSeconds < 1 || checkpointMaxAgeSeconds > 300) {
+    throw new Error("portal checkpoint max age is invalid");
+  }
   if (checkpoint.schema !== "p42-prizes/indexer-checkpoint/v4") {
     throw new Error("chain portal read model requires activation-bound indexer checkpoint v4");
   }
@@ -308,10 +355,18 @@ export function portalReadModelFromActivatedSnapshot(
   if (manifestProblems.length !== 10 || boards.length !== 10 || snapshot.provenance.size !== 10) {
     throw new Error("chain portal read model requires all ten activated boards");
   }
+  const range = object(checkpoint.range, "checkpoint range");
+  const checkpointTimestamp = Number(secondsString(range.toBlockTimestamp, "checkpoint timestamp"));
+  if (!Number.isSafeInteger(checkpointTimestamp)
+    || checkpointTimestamp > nowSeconds + CHECKPOINT_FUTURE_TOLERANCE_SECONDS
+    || nowSeconds - checkpointTimestamp > checkpointMaxAgeSeconds) {
+    throw new Error("chain portal read model requires a fresh checkpoint timestamp");
+  }
+  const effectiveTimestamp = Math.max(nowSeconds, checkpointTimestamp);
 
   const submissions: Submission[] = [];
   const replayEvents: Record<string, { digest: string; total: number }> = {};
-  const readProblems: PortalProblemReadModel[] = problems.map((problem, index) => {
+  const projectedProblems: PortalProblemReadModel[] = problems.map((problem, index) => {
     const manifestProblem = object(manifestProblems[index], `manifest problem ${index + 1}`);
     const board = object(boards[index], `checkpoint board ${index + 1}`);
     const registryId = String(index + 1);
@@ -334,6 +389,12 @@ export function portalReadModelFromActivatedSnapshot(
     }
     const projection = object(board.portalProjection, "board portal projection");
     if (projection.schema !== "p42-prizes/portal-projection/v2") throw new Error("unsupported portal projection schema");
+    const replayConfig = object(projection.replayConfig, "portal projection replay config");
+    const closeByTimestamp = BigInt(integerString(replayConfig.closeByTimestamp, "close-by timestamp", true));
+    if (closeByTimestamp < FUNDING_WINDOW_BEFORE_CLOSE_SECONDS) {
+      throw new Error("close-by timestamp cannot encode the canonical funding deadline");
+    }
+    const fundingDeadline = closeByTimestamp - FUNDING_WINDOW_BEFORE_CLOSE_SECONDS;
     const frontier = object(projection.frontier, "portal projection frontier");
     const onchain = object(board.onchain, "checkpoint board onchain state");
     if (frontier.currentAtoms !== onchain.bestScoreAtoms) throw new Error("portal projection frontier mismatch");
@@ -353,14 +414,13 @@ export function portalReadModelFromActivatedSnapshot(
     submissions.push(...array(projection.submissions, "portal projection submissions")
       .map((row) => projectedSubmission(problem, registryId, scale, direction, row)));
     const pool = poolReadModel(projection, scale);
-    const checkpointTimestamp = secondsString(object(checkpoint.range, "checkpoint range").toBlockTimestamp, "checkpoint timestamp");
-    const funding = fundingReadModel(projection, pool.closed);
+    const funding = fundingReadModel(projection, pool.closed, fundingDeadline, effectiveTimestamp);
     return {
       ...problem,
       status: pool.closed ? "resolved" : "open",
       currentBest: scoreAtomsToRational(frontier.currentAtoms, scale, direction, "frontier atoms"),
       bountyEth: pool.totalFundedEth,
-      poolAddress: provenance.poolAddress,
+      poolAddress: funding.canFund ? provenance.poolAddress : null,
       donationWallet: {
         ...problem.donationWallet,
         chain: provenance.chain,
@@ -371,7 +431,9 @@ export function portalReadModelFromActivatedSnapshot(
         explorerUrl: null,
         note: funding.canFund
           ? "Chain-derived funding target from the activated P42 checkpoint."
-          : "The chain pool is not currently actionable for funding.",
+          : funding.fundingDeadlineReached
+            ? `The portal conservatively stops publishing funding targets at ${funding.fundingDeadline}; the contract funding function rejects transactions after that timestamp.`
+            : "The chain pool is not currently actionable for funding.",
       },
       source: "chain-p42-v1",
       chainProvenance: provenance,
@@ -381,8 +443,28 @@ export function portalReadModelFromActivatedSnapshot(
     };
   });
 
+  const actionablePoolAddresses = new Set(projectedProblems.flatMap((problem) => {
+    const address = normalizedAddress(problem.chainProvenance.poolAddress);
+    return problem.funding?.canFund && address ? [address] : [];
+  }));
+  const readProblems = projectedProblems.map((problem): PortalProblemReadModel => ({
+    ...problem,
+    chainProvenance: publicFundingProvenance(problem.chainProvenance, problem.funding?.canFund === true),
+    pool: problem.pool && {
+      ...problem.pool,
+      winningsDonations: problem.pool.winningsDonations.map((donation) => {
+        const destinationPool = normalizedAddress(donation.destinationPool);
+        return {
+          ...donation,
+          destinationPool: destinationPool && actionablePoolAddresses.has(destinationPool)
+            ? destinationPool
+            : null,
+        };
+      }),
+    },
+  }));
+
   const firstProvenance = readProblems[0].chainProvenance;
-  const range = object(checkpoint.range, "checkpoint range");
   return {
     source: "chain-p42-v1",
     problems: readProblems,
@@ -432,6 +514,7 @@ export function resolvePortalReadModel(
   problems: readonly Problem[],
   snapshot: ActivatedIndexerSnapshot | null,
   localRows: readonly Submission[],
+  clock: PortalReadModelClock = {},
 ): PortalReadModel {
   if (!snapshot) {
     return localPortalReadModel(
@@ -441,7 +524,7 @@ export function resolvePortalReadModel(
     );
   }
   try {
-    return portalReadModelFromActivatedSnapshot(problems, snapshot);
+    return portalReadModelFromActivatedSnapshot(problems, snapshot, clock);
   } catch (error) {
     const reason = error instanceof Error ? error.message : "invalid chain projection";
     return localPortalReadModel(problems, localRows, `Chain projection rejected (${reason}); serving local-only rows.`);
@@ -451,16 +534,17 @@ export function resolvePortalReadModel(
 export async function loadPortalReadModel(
   problems: readonly Problem[] = launchProblems,
 ): Promise<PortalReadModel> {
+  const nowSeconds = Math.floor(Date.now() / 1000);
   const snapshot = loadActivatedIndexerSnapshot(problems);
   if (!snapshot) {
-    const model = resolvePortalReadModel(problems, null, await allSubmissionsShared());
+    const model = resolvePortalReadModel(problems, null, await allSubmissionsShared(), { nowSeconds });
     console.info("p42.portal.read-model", model.provenance);
     return model;
   }
-  const chainCandidate = resolvePortalReadModel(problems, snapshot, []);
+  const chainCandidate = resolvePortalReadModel(problems, snapshot, [], { nowSeconds });
   const model = chainCandidate.source === "chain-p42-v1"
     ? chainCandidate
-    : resolvePortalReadModel(problems, snapshot, await allSubmissionsShared());
+    : resolvePortalReadModel(problems, snapshot, await allSubmissionsShared(), { nowSeconds });
   console.info("p42.portal.read-model", model.provenance);
   return model;
 }

@@ -11,8 +11,15 @@ import {
   buildActivationRpcProviders,
   destroyActivationRpcProviders,
 } from "./funding-activation-run.mjs";
+import { sha256Canonical } from "./lib.mjs";
 
 const hash = (char) => `sha256:${char.repeat(64)}`;
+const rpcAuthority = () => ({
+  schema: "p42-activation-rpc-authority/v1", registryDigest: hash("9"),
+  primary: { operatorId: "operator-primary", endpointOrigin: "https://primary.example", endpointProfileDigest: sha256Canonical({ operatorId: "operator-primary", endpointOrigin: "https://primary.example" }) },
+  secondary: { operatorId: "operator-secondary", endpointOrigin: "https://secondary.example", endpointProfileDigest: sha256Canonical({ operatorId: "operator-secondary", endpointOrigin: "https://secondary.example" }) },
+});
+const rpcRegistry = () => ({ schema: "p42-activation-rpc-operator-registry/v1", registryDigest: hash("9"), profiles: [rpcAuthority().primary, rpcAuthority().secondary] });
 const address = (value) => ethers.getAddress(`0x${value.toString(16).padStart(40, "0")}`);
 const authorityWallets = ["1", "2", "3"].map((char) => new ethers.Wallet(`0x${char.repeat(64)}`));
 const roles = ["production-launch-authority", "independent-security-authority", "governance-authority"];
@@ -22,13 +29,18 @@ const fundingTypes = { FundingAuthorization: [
   { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
 ] };
 
-test("activation runner providers use canonical no-redirect endpoint transport", () => {
-  assert.throws(
-    () => buildActivationRpcProviders("https://rpc.example/", "https://rpc.example./", 84532),
-    /distinct HTTPS RPC origins and hosts/,
+test("activation runner providers probe raw chain IDs before static construction", async () => {
+  const transport = async (request) => ({
+    statusCode: 200, statusMessage: "OK", headers: { "content-type": "application/json" },
+    body: Buffer.from(JSON.stringify({ jsonrpc: "2.0", id: 1, result: "0x14a34" })),
+  });
+  await assert.rejects(
+    () => buildActivationRpcProviders(rpcRegistry(), rpcAuthority(), "https://rpc.example", "https://rpc.example.", 84532, { primary: transport, secondary: transport }),
+    /origins|hostname|distinct HTTPS RPC origins and hosts|aliases are forbidden/,
   );
-  const providers = buildActivationRpcProviders(
-    "https://primary.example/", "https://secondary.example/", 84532,
+  const providers = await buildActivationRpcProviders(
+    rpcRegistry(), rpcAuthority(), "https://primary.example", "https://secondary.example", 84532,
+    { primary: transport, secondary: transport },
   );
   try {
     assert.equal(
@@ -39,8 +51,9 @@ test("activation runner providers use canonical no-redirect endpoint transport",
       providers.secondary._getConnection().clone().getUrlFunc,
       providers.secondary._getConnection().getUrlFunc,
     );
-    assert.equal(providers.endpoints.primary.url, "https://primary.example/");
-    assert.equal(providers.endpoints.secondary.url, "https://secondary.example/");
+    assert.equal(providers.endpoints.primary.url, "https://primary.example");
+    assert.equal(providers.endpoints.secondary.url, "https://secondary.example");
+    assert.equal(providers.authority.primary.observedRawChainId, "0x14a34");
   } finally {
     providers.primary.destroy();
     providers.secondary.destroy();
@@ -148,9 +161,14 @@ function authorization(inputManifest, manifestBytesDigest = hash("e")) {
     authorization_digest: hash("a"),
     expires_at_utc: "2030-01-01T00:00:00Z",
     release_binding: {
-      network: "base-sepolia", chain_id: 84532, git_commit: inputManifest.deploymentCommit,
+      network: "base-sepolia", chain_id: 84532,
+      deployment_commit: inputManifest.deploymentCommit,
+      git_commit: "f".repeat(40),
     },
-    artifacts: { deployment_manifest: { sha256: manifestBytesDigest } },
+    artifacts: {
+      deployment_manifest: { sha256: manifestBytesDigest },
+      activation_rpc_operator_registry: { sha256: hash("9") },
+    },
   };
 }
 
@@ -161,7 +179,8 @@ test("activation plan binds ten treasury authorizations before governance opens 
     manifest: deployment,
     manifestBytesDigest: hash("e"),
     validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
-    activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}),
+    rpcRegistry: rpcRegistry(),
+    rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}),
   });
   assert.equal(plan.boardCount, 10);
   assert.equal(plan.operations.length, 30);
@@ -193,7 +212,8 @@ test("activation run rejects caller plan replacement and noncanonical bytes", ()
   const plan = buildFundingActivationPlan({
     manifest: deployment, manifestBytesDigest: hash("e"),
     validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
-    activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}),
+    rpcRegistry: rpcRegistry(),
+    rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}),
   });
   assert.equal(assertCanonicalActivationPlanArtifact({ value: plan, bytes: serializeFundingActivationPlan(plan) }, plan), plan);
   const replacement = { ...plan, treasury: address(999) };
@@ -210,10 +230,26 @@ test("activation run rejects caller plan replacement and noncanonical bytes", ()
 test("activation rejects release substitution and incomplete topology", () => {
   const deployment = manifest();
   const auth = authorization(deployment);
-  auth.release_binding.git_commit = "9".repeat(40);
-  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}) }), /git_commit/);
+  auth.release_binding.deployment_commit = "9".repeat(40);
+  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}) }), /deployment_commit/);
   deployment.problems.pop();
-  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") }, activationSignatures: { schema: "p42-funding-activation-signatures/v2" }, manifestValidator: () => ({}) }), /exactly ten/);
+  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: { schema: "p42-funding-activation-signatures/v2" }, manifestValidator: () => ({}) }), /exactly ten/);
+});
+
+test("activation accepts a descendant evidence commit without granting it deployment authority", () => {
+  const deployment = manifest();
+  const auth = authorization(deployment);
+  auth.release_binding.git_commit = "9".repeat(40);
+  const plan = buildFundingActivationPlan({
+    manifest: deployment,
+    manifestBytesDigest: hash("e"),
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    rpcRegistry: rpcRegistry(),
+    rpcAuthority: rpcAuthority(),
+    activationSignatures: signatureBundle(deployment, auth),
+    manifestValidator: () => ({}),
+  });
+  assert.equal(plan.deploymentCommit, deployment.deploymentCommit);
 });
 
 test("activation rejects a legacy 43-contract authorization path", () => {
@@ -227,6 +263,8 @@ test("activation rejects a legacy 43-contract authorization path", () => {
     manifest: deployment,
     manifestBytesDigest: hash("e"),
     validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") },
+    rpcRegistry: rpcRegistry(),
+    rpcAuthority: rpcAuthority(),
     activationSignatures: signatureBundle(deployment),
     manifestValidator: () => { historicalValidatorCalled = true; },
   }), /exact seven ordered shared contracts/);
@@ -239,6 +277,8 @@ test("activation fails closed on legacy, reordered, high-s, forged, and incomple
   const build = (bundle) => buildFundingActivationPlan({
     manifest: deployment, manifestBytesDigest: hash("e"),
     validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    rpcRegistry: rpcRegistry(),
+    rpcAuthority: rpcAuthority(),
     activationSignatures: bundle, manifestValidator: () => ({}),
   });
   const legacy = signatureBundle(deployment, auth); legacy.schema = "p42-funding-activation-signatures/v1";
@@ -268,6 +308,8 @@ test("activation signature bundle binds chain, managers, release digests, expiry
   const build = (bundle) => buildFundingActivationPlan({
     manifest: deployment, manifestBytesDigest: hash("e"),
     validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    rpcRegistry: rpcRegistry(),
+    rpcAuthority: rpcAuthority(),
     activationSignatures: bundle, manifestValidator: () => ({}),
   });
   for (const [mutate, message] of [

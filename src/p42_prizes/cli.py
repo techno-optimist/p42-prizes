@@ -261,6 +261,15 @@ class _OpenWitnessQuorumChainReader:
 
 
 def _add_attestation_validation_args(parser: argparse.ArgumentParser) -> None:
+    _add_offline_attestation_validation_args(parser)
+    parser.add_argument(
+        "--chain-rpc-url",
+        required=True,
+        help="JSON-RPC endpoint queried at each recorded bytecode evidence block",
+    )
+
+
+def _add_offline_attestation_validation_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--trust-registry",
         required=True,
@@ -269,12 +278,7 @@ def _add_attestation_validation_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--artifact-root",
         required=True,
-        help="local bound Git repository containing every referenced evidence file",
-    )
-    parser.add_argument(
-        "--chain-rpc-url",
-        required=True,
-        help="JSON-RPC endpoint queried at each recorded bytecode evidence block",
+        help="local evidence directory containing every referenced evidence file",
     )
     parser.add_argument(
         "--allow-test-trust-registry",
@@ -894,12 +898,18 @@ def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
 
 def _cmd_legal_memo_validate(args: argparse.Namespace) -> int:
     try:
-        trust_registry, artifact_root, chain_reader = _load_attestation_inputs(args)
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
+        artifact_root = Path(args.artifact_root).resolve()
+        if not artifact_root.is_dir():
+            raise AdmissionError("--artifact-root must be an existing directory")
         report = normalize_legal_memo(
             load_evidence_file(args.report),
             trust_registry=trust_registry,
             artifact_root=artifact_root,
-            chain_reader=chain_reader,
+            chain_reader=None,
         )
         _enforce_gate_schema(report, "legal-memo.schema.json")
     except (AdmissionError, LegalMemoError, jsonschema.ValidationError) as exc:
@@ -1341,7 +1351,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="validate and hash Gate 2 legal/compliance memo evidence",
     )
     legal_memo.add_argument("--report", required=True)
-    _add_attestation_validation_args(legal_memo)
+    _add_offline_attestation_validation_args(legal_memo)
+    legal_memo.add_argument(
+        "--chain-rpc-url",
+        help="deprecated compatibility option; legal validation does not make network requests",
+    )
     legal_memo.add_argument("--output")
     legal_memo.set_defaults(func=_cmd_legal_memo_validate)
 

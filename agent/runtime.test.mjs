@@ -1390,6 +1390,8 @@ test("operator persists chain-action alerts inside the terminal queue transition
     source.indexOf("async function blockFor"),
   );
   assert.match(reconciliation, /job\.terminal_alert \?\? job\.action_alert/);
+  assert.match(source, /"reconcile-terminal-alert"/);
+  assert.doesNotMatch(source, /"record-terminal-alert"/);
 });
 
 test("operator binds enqueue urgency to the policy-finalized block timestamp", () => {
@@ -1484,9 +1486,9 @@ test("operator durably quarantines an invalid transcript and alerts once", async
     );
     await assert.rejects(
       reconcileTerminalAlerts({
-        afterAppend: () => { throw new Error("injected post-append crash"); },
+        afterAppend: () => { throw new Error("injected post-reconcile crash"); },
       }),
-      /injected post-append crash/,
+      /injected post-reconcile crash/,
     );
     assert.equal(
       readFileSync(alertsPath, "utf8").split("\n")
@@ -1496,7 +1498,7 @@ test("operator durably quarantines an invalid transcript and alerts once", async
     assert.equal(
       JSON.parse(readFileSync(join(runtime, "runner-queue.json"), "utf8"))
         .jobs[0].terminal_alert.status,
-      "pending",
+      "delivered",
     );
 
     const restarted = await import(`${operatorUrl}&restart=1`);

@@ -9,8 +9,8 @@ import { assertSignedTransactionRecord } from "./signed-transaction.mjs";
 import { readStrictJsonFileSync, writeTrustedFileSync } from "./strict-json.mjs";
 import { acquireEnvelopeLock, releaseEnvelopeLock } from "./challenge-envelope.mjs";
 import {
-  activationRpcFetchRequest,
-  validateActivationRpcEndpointPair,
+  assertObservedActivationRpcAuthority,
+  constructActivationRpcProviders,
 } from "./activation-rpc-endpoints.mjs";
 
 export const ACTIVATION_JOURNAL_SCHEMA = "p42-funding-activation-journal/v2";
@@ -150,8 +150,9 @@ async function collectSnapshotAt(provider, plan, block) {
   };
 }
 
-export async function collectFundingActivationSnapshot(planValue, primaryProvider, secondaryProvider) {
+export async function collectFundingActivationSnapshot(planValue, primaryProvider, secondaryProvider, rpcAuthority) {
   const plan = assertPlan(planValue);
+  const observedAuthority = assertObservedActivationRpcAuthority(rpcAuthority, plan.rpcAuthority, plan.chainId);
   if (!primaryProvider || !secondaryProvider || primaryProvider === secondaryProvider) {
     throw new Error("activation requires two independent RPC providers");
   }
@@ -174,10 +175,10 @@ export async function collectFundingActivationSnapshot(planValue, primaryProvide
   if (JSON.stringify(comparable(primary)) !== JSON.stringify(comparable(secondary))) {
     throw new Error("activation RPCs disagree on finalized protocol state");
   }
-  return primary;
+  return Object.freeze({ ...primary, rpcAuthority: observedAuthority });
 }
 
-async function collectOperationObservation(provider, plan, anchor, completionAnchor) {
+async function collectOperationObservation(provider, plan, anchor, completionAnchor, rpcProfile) {
   const network = await provider.getNetwork();
   const [finalized, block, completionBlock] = await Promise.all([
     provider.getBlock("finalized"), provider.getBlock(anchor.number),
@@ -203,6 +204,7 @@ async function collectOperationObservation(provider, plan, anchor, completionAnc
     });
   }
   return {
+    rpcProfile,
     chainId: Number(network.chainId),
     finalizedBlockNumber: finalized.number,
     blockNumber: block.number,
@@ -231,6 +233,12 @@ export function validateFundingActivationOperationObservations(
     throw new Error("activation checkpoint evidence anchor is invalid");
   }
   const normalize = (value, label) => {
+    const rpcProfile = value?.rpcProfile;
+    const { observedRawChainId, ...profileBinding } = rpcProfile ?? {};
+    if (canonical(profileBinding) !== canonical(plan.rpcAuthority[label])
+        || observedRawChainId !== ethers.toQuantity(plan.chainId)) {
+      throw new Error(`${label} activation checkpoint RPC authority does not match the plan`);
+    }
     if (!value || value.chainId !== plan.chainId
         || !Number.isSafeInteger(value.finalizedBlockNumber) || value.finalizedBlockNumber < anchorValue.number
         || value.blockNumber !== anchorValue.number || !sameHex(value.blockHash, anchorValue.hash)
@@ -264,6 +272,7 @@ export function validateFundingActivationOperationObservations(
       };
     });
     return {
+      rpcProfile,
       chainId: value.chainId,
       blockNumber: value.blockNumber,
       blockHash: value.blockHash.toLowerCase(),
@@ -279,16 +288,24 @@ export function validateFundingActivationOperationObservations(
   };
   const primary = normalize(primaryValue, "primary");
   const secondary = normalize(secondaryValue, "secondary");
-  if (JSON.stringify(primary) !== JSON.stringify(secondary)) {
+  const { rpcProfile: primaryProfile, ...primaryEvidence } = primary;
+  const { rpcProfile: secondaryProfile, ...secondaryEvidence } = secondary;
+  if (JSON.stringify(primaryEvidence) !== JSON.stringify(secondaryEvidence)) {
     throw new Error("activation RPCs disagree on checkpoint operation evidence");
   }
   return Object.freeze({
     schema: "p42-funding-activation-checkpoint/v1",
     planDigest: plan.planDigest,
-    finalizedBlockNumber: primary.blockNumber,
-    finalizedBlockHash: primary.blockHash,
-    completionAnchor: primary.completionAnchor,
-    operations: primary.operations,
+    finalizedBlockNumber: primaryEvidence.blockNumber,
+    finalizedBlockHash: primaryEvidence.blockHash,
+    completionAnchor: primaryEvidence.completionAnchor,
+    rpcAuthority: Object.freeze({
+      schema: plan.rpcAuthority.schema,
+      registryDigest: plan.rpcAuthority.registryDigest,
+      primary: primaryProfile,
+      secondary: secondaryProfile,
+    }),
+    operations: primaryEvidence.operations,
   });
 }
 
@@ -298,28 +315,32 @@ export async function collectFundingActivationOperationEvidence(
   secondaryRpcUrl,
   anchorValue,
   completionValue,
+  rpcRegistry,
+  transports = {},
 ) {
-  const endpoints = validateActivationRpcEndpointPair(primaryRpcUrl, secondaryRpcUrl);
   const plan = assertPlan(planValue);
   const completionAnchor = fundingActivationCompletionAnchor(plan, completionValue);
-  const primaryProvider = new ethers.JsonRpcProvider(
-    activationRpcFetchRequest(endpoints.primary.url), plan.chainId, { staticNetwork: true },
+  const providers = await constructActivationRpcProviders(
+    rpcRegistry, plan.rpcAuthority, primaryRpcUrl, secondaryRpcUrl, plan.chainId, transports,
   );
-  const secondaryProvider = new ethers.JsonRpcProvider(
-    activationRpcFetchRequest(endpoints.secondary.url), plan.chainId, { staticNetwork: true },
-  );
+  const { primary: primaryProvider, secondary: secondaryProvider } = providers;
   try {
     const [primary, secondary] = await Promise.all([
-      collectOperationObservation(primaryProvider, plan, anchorValue, completionAnchor),
-      collectOperationObservation(secondaryProvider, plan, anchorValue, completionAnchor),
+      collectOperationObservation(primaryProvider, plan, anchorValue, completionAnchor, providers.authority.primary),
+      collectOperationObservation(secondaryProvider, plan, anchorValue, completionAnchor, providers.authority.secondary),
     ]);
     return validateFundingActivationOperationObservations(
       plan, primary, secondary, anchorValue, completionAnchor,
     );
   } finally {
-    primaryProvider.destroy();
-    secondaryProvider.destroy();
+    await destroyFundingActivationOperationProviders(primaryProvider, secondaryProvider);
   }
+}
+
+export async function destroyFundingActivationOperationProviders(primaryProvider, secondaryProvider) {
+  await Promise.allSettled(
+    [primaryProvider, secondaryProvider].map(async (provider) => provider.destroy()),
+  );
 }
 
 export async function collectActivationNonceEvidence(primaryProvider, secondaryProvider, signerValue) {
@@ -396,6 +417,7 @@ export function buildFundingActivationCompletion(planValue, snapshot) {
     authorizationDigest: plan.authorizationDigest,
     authorizationBytesDigest: plan.authorizationBytesDigest,
     authorizationExpiresAt: plan.authorizationExpiresAt,
+    rpcAuthority: assertObservedActivationRpcAuthority(snapshot.rpcAuthority, plan.rpcAuthority, plan.chainId),
     finalizedBlockNumber: snapshot.blockNumber,
     finalizedBlockHash: snapshot.blockHash,
     finalizedBlockTimestamp: Number(snapshot.now),
@@ -440,6 +462,7 @@ export function fundingActivationCompletionAnchor(planValue, completionValue) {
       || completionValue.planDigest !== plan.planDigest
       || completionValue.manifestBytesDigest !== plan.manifestBytesDigest
       || completionValue.authorizationDigest !== plan.authorizationDigest
+      || !completionValue.rpcAuthority
       || !Number.isSafeInteger(completionValue.finalizedBlockNumber)
       || completionValue.finalizedBlockNumber < 0
       || !/^0x[0-9a-fA-F]{64}$/.test(completionValue.finalizedBlockHash ?? "")
@@ -447,6 +470,7 @@ export function fundingActivationCompletionAnchor(planValue, completionValue) {
       || completionValue.finalizedBlockTimestamp < 0) {
     throw new Error("activation completion does not match the canonical plan and anchor");
   }
+  assertObservedActivationRpcAuthority(completionValue.rpcAuthority, plan.rpcAuthority, plan.chainId);
   return Object.freeze({
     completionDigest,
     blockNumber: completionValue.finalizedBlockNumber,

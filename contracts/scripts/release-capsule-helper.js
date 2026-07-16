@@ -8,6 +8,17 @@ import { fileURLToPath } from "node:url";
 import { readStrictJsonFile, readStrictJsonFileSync } from "../../agent/strict-json.mjs";
 
 export const RELEASE_CAPSULE_SCHEMA = "p42-prizes/release-capsule/v2";
+export const CAPSULE_REBUILD_ATTESTATION_SCHEMA = "p42-capsule-rebuild-attestation/v1";
+export const CANONICAL_REPOSITORY_URI = "https://github.com/techno-optimist/p42-prizes";
+export const CAPSULE_REBUILD_POLICY = Object.freeze({
+  network_access: "denied",
+  root_filesystem: "read-only",
+  source_mount: "read-only",
+  dependency_mount: "read-only",
+  output_mount: "isolated-write-only",
+  privileges: "none",
+  legal_validator_execution: "forbidden",
+});
 export const PRODUCTION_CONTRACTS = Object.freeze([
   "P42MultisigTimelock",
   "P42ChallengeManagerFactory",
@@ -52,6 +63,10 @@ function canonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
+export function canonicalJson(value) {
+  return canonical(value);
 }
 
 export function sha256(value) {
@@ -193,6 +208,65 @@ export async function createReleaseCapsule({ contractsRoot = process.cwd(), gitC
     buildInfos: [...buildInfos.values()].sort((a, b) => a.id.localeCompare(b.id)),
   };
   return { ...body, capsuleDigest: canonicalDigest(body) };
+}
+
+export function createCapsuleRebuildAttestationBody({
+  capsule,
+  capsuleBytes,
+  deploymentCommit,
+  evidenceCommit,
+  objectClosureDigest,
+  objectCount,
+  toolchainImageDigest,
+  generatedAtUtc,
+  attestationId,
+  authority,
+} = {}) {
+  validateReleaseCapsule(capsule);
+  const bytes = Buffer.from(capsuleBytes ?? []);
+  if (!bytes.equals(Buffer.from(canonical(capsule)))) throw new Error("rebuild attestation requires exact canonical capsule bytes");
+  for (const [label, value] of [["deployment", deploymentCommit], ["evidence", evidenceCommit]]) {
+    if (!/^[a-f0-9]{40}$/.test(value ?? "") || new Set(value).size < 8) throw new Error(`${label} commit must be an externally authorized non-dummy commit`);
+  }
+  for (const [label, value] of [["object closure", objectClosureDigest], ["toolchain image", toolchainImageDigest]]) {
+    if (!DIGEST_RE.test(value ?? "") || new Set(value.slice(7)).size < 8) throw new Error(`${label} digest must be immutable and non-dummy`);
+  }
+  if (!Number.isSafeInteger(objectCount) || objectCount < 1) throw new Error("object closure count must be positive");
+  if (capsule.gitCommit !== deploymentCommit) throw new Error("capsule git commit must equal deployment commit");
+  if (typeof generatedAtUtc !== "string" || Number.isNaN(Date.parse(generatedAtUtc))) throw new Error("rebuild attestation requires generatedAtUtc");
+  if (!/^[a-z0-9][a-z0-9._-]{7,127}$/.test(attestationId ?? "")) throw new Error("rebuild attestation id is invalid");
+  exactKeys(authority, ["name", "organization", "professional_email", "public_key"], "capsule build authority");
+  return {
+    schema_version: CAPSULE_REBUILD_ATTESTATION_SCHEMA,
+    attestation_id: attestationId,
+    generated_at_utc: generatedAtUtc,
+    repository: {
+      canonical_uri: CANONICAL_REPOSITORY_URI,
+      deployment_commit: deploymentCommit,
+      evidence_commit: evidenceCommit,
+      object_format: "sha1",
+      ancestry: "deployment-ancestor-of-evidence",
+      object_closure_algorithm: "git-rev-list-object-ids+sha256/v1",
+      object_closure_digest: objectClosureDigest,
+      object_count: objectCount,
+    },
+    capsule: {
+      bytes_sha256: sha256(bytes),
+      capsule_digest: capsule.capsuleDigest,
+      git_commit: capsule.gitCommit,
+    },
+    build: {
+      build_info_digests: capsule.buildInfos.map(({ id, inputDigest, outputDigest }) => ({
+        id, input_digest: inputDigest, output_digest: outputDigest,
+      })),
+      contract_artifact_digests: capsule.contracts.map(({ name, artifactDigest }) => ({
+        name, artifact_digest: artifactDigest,
+      })),
+      toolchain_image_digest: toolchainImageDigest,
+      policy: { ...CAPSULE_REBUILD_POLICY },
+    },
+    authority: structuredClone(authority),
+  };
 }
 
 function validateRanges(contract) {

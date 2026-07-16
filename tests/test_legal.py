@@ -10,7 +10,14 @@ import jsonschema
 import pytest
 
 from attestation_helpers import AttestationFixture, attach_signatures, unsigned_hash
-from p42_prizes.legal import LegalMemoError, _verify_ed25519, normalize_legal_memo
+from p42_prizes.legal import (
+    LegalMemoError,
+    _attestation_message,
+    _verify_ed25519,
+    ethereum_keccak256,
+    normalize_legal_memo,
+)
+from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,6 +142,23 @@ def valid_legal_memo(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
     return report, fixture, fixture.trust_registry("p42-legal-memo/v1", signers)
 
 
+def valid_production_legal_memo(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
+    report, fixture, _ = valid_legal_memo(tmp_path)
+    report["schema_version"] = "p42-legal-memo/v2"
+    report["release_binding"] = fixture.canonical_release_binding("base-sepolia")
+    counsel = report["counsel"]
+    signers = [("external-counsel", counsel, counsel["signed_at_utc"])]
+    attach_signatures(
+        report,
+        schema_version="p42-legal-memo/v2",
+        hash_field="legal_hash",
+        signatures_field="counsel_signature",
+        signers=signers,
+        singular=True,
+    )
+    return report, fixture, fixture.trust_registry("p42-legal-memo/v2", signers)
+
+
 def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict:
     return normalize_legal_memo(
         report,
@@ -142,6 +166,58 @@ def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict
         artifact_root=fixture.root,
         chain_reader=fixture.chain_reader,
     )
+
+
+def resign_production(report: dict) -> None:
+    counsel = report["counsel"]
+    attach_signatures(
+        report,
+        schema_version="p42-legal-memo/v2",
+        hash_field="legal_hash",
+        signatures_field="counsel_signature",
+        signers=[("external-counsel", counsel, counsel["signed_at_utc"])],
+        singular=True,
+    )
+
+
+def rewrite_rebuild_attestation(
+    report: dict,
+    fixture: AttestationFixture,
+    attestation: dict,
+    *,
+    recompute_attestation_hash: bool = False,
+) -> None:
+    if recompute_attestation_hash:
+        unsigned = {
+            key: value
+            for key, value in attestation.items()
+            if key not in {"attestation_hash", "signature"}
+        }
+        attestation["attestation_hash"] = sha256_bytes(
+            canonical_json(unsigned).encode("utf-8")
+        )
+    artifact = report["release_binding"]["capsule_rebuild_attestation"]
+    encoded = canonical_json(attestation).encode("utf-8")
+    (fixture.root / artifact["local_path"]).write_bytes(encoded)
+    artifact["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    resign_production(report)
+
+
+def recommit_artifact(
+    report: dict,
+    fixture: AttestationFixture,
+    artifact: dict,
+    content: object,
+) -> None:
+    path = fixture.root / artifact["local_path"]
+    encoded = (
+        json.dumps(content, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        if "release-capsule" in artifact["local_path"]
+        else canonical_json(content).encode("utf-8")
+    )
+    path.write_bytes(encoded)
+    artifact["sha256"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    resign_production(report)
 
 
 def test_legal_memo_verifies_registered_signature_resolved_bytes_and_schema(tmp_path: Path) -> None:
@@ -153,6 +229,255 @@ def test_legal_memo_verifies_registered_signature_resolved_bytes_and_schema(tmp_
     assert normalized["legal_hash"] == unsigned_hash(normalized, "legal_hash", "counsel_signature")
 
 
+def test_production_legal_memo_binds_exact_canonical_projection(tmp_path: Path) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    normalized = normalize(report, fixture, registry)
+
+    schema = json.loads((ROOT / "schemas" / "legal-memo.schema.json").read_text())
+    jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
+    contracts = normalized["release_binding"]["contracts"]
+    expected_keys = {
+        "shared.timelock",
+        "shared.registry",
+        "shared.rolloverVault",
+        "shared.submissionManagerFactory",
+        "shared.challengeManagerFactory",
+        "shared.objectiveVerifier",
+        "shared.resolverQuorum",
+        *(
+            f"board.{board}.{slot}"
+            for board in range(1, 11)
+            for slot in ("pool", "ledger", "submissions", "challenges")
+        ),
+    }
+    assert len(contracts) == 47
+    assert {contract["topology_key"] for contract in contracts} == expected_keys
+    assert normalized["release_binding"]["binding_version"] == "p42-release-binding/v2"
+
+
+def test_capsule_authority_rejects_self_initialized_repository_without_pinned_builder(
+    tmp_path: Path,
+) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    registry["registrations"] = [
+        registration
+        for registration in registry["registrations"]
+        if registration["attestation_class"] != "p42-capsule-rebuild-attestation/v1"
+    ]
+
+    with pytest.raises(LegalMemoError, match="not pre-registered.*capsule-build-authority"):
+        normalize(report, fixture, registry)
+
+
+def test_capsule_authority_rejects_forged_signer(tmp_path: Path) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    artifact = report["release_binding"]["capsule_rebuild_attestation"]
+    attestation = json.loads((fixture.root / artifact["local_path"]).read_text())
+    forged = fixture.identity(
+        "forged-capsule-builder",
+        "Mallory Forge",
+        "capsule-build-authority",
+        organization="Unregistered Build Shop",
+    )
+    attestation["authority"] = {
+        key: forged[key]
+        for key in ("name", "organization", "professional_email", "public_key")
+    }
+    attach_signatures(
+        attestation,
+        schema_version="p42-capsule-rebuild-attestation/v1",
+        hash_field="attestation_hash",
+        signatures_field="signature",
+        signers=[("capsule-build-authority", forged, attestation["generated_at_utc"])],
+        singular=True,
+    )
+    rewrite_rebuild_attestation(report, fixture, attestation)
+
+    with pytest.raises(LegalMemoError, match="not pre-registered.*capsule-build-authority"):
+        normalize(report, fixture, registry)
+
+
+def test_capsule_authority_rejects_mutable_toolchain_digest(tmp_path: Path) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    artifact = report["release_binding"]["capsule_rebuild_attestation"]
+    attestation = json.loads((fixture.root / artifact["local_path"]).read_text())
+    attestation["build"]["toolchain_image_digest"] = "sha256:" + hashlib.sha256(
+        b"mutable replacement toolchain"
+    ).hexdigest()
+    rewrite_rebuild_attestation(
+        report, fixture, attestation, recompute_attestation_hash=True
+    )
+
+    with pytest.raises(LegalMemoError, match="signed_hash must match|signature is not valid"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("field", ["network_access", "root_filesystem", "source_mount"])
+def test_capsule_authority_requires_network_denial_and_read_only_policy(
+    tmp_path: Path, field: str
+) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    artifact = report["release_binding"]["capsule_rebuild_attestation"]
+    attestation = json.loads((fixture.root / artifact["local_path"]).read_text())
+    del attestation["build"]["policy"][field]
+    rewrite_rebuild_attestation(report, fixture, attestation)
+
+    with pytest.raises(LegalMemoError, match="not schema-valid"):
+        normalize(report, fixture, registry)
+
+
+def test_legal_capsule_validation_executes_no_git_worktree_hardhat_or_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("legal validation attempted process or network execution")
+
+    monkeypatch.setattr(subprocess, "run", forbidden)
+    normalized = normalize_legal_memo(
+        report,
+        trust_registry=registry,
+        artifact_root=fixture.root,
+        chain_reader=forbidden,
+    )
+    assert normalized["release_binding"]["capsule_rebuild_attestation"]["sha256"].startswith(
+        "sha256:"
+    )
+
+
+def test_production_legal_memo_rejects_resigned_unrelated_source_projection(tmp_path: Path) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    unrelated = report["release_binding"]["canonical_topology"]
+    for contract in report["release_binding"]["contracts"]:
+        contract["source_artifact"] = dict(unrelated)
+    resign_production(report)
+
+    with pytest.raises(LegalMemoError, match="source bytes differ from canonical capsule build input"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize("mutation", ["capsule-digest", "capsule-commit", "build-info", "constructor-immutables", "manifest-runtime"])
+def test_production_legal_memo_rejects_capsule_build_and_runtime_substitution(
+    tmp_path: Path, mutation: str
+) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    binding = report["release_binding"]
+    if mutation in {"constructor-immutables", "manifest-runtime"}:
+        artifact = binding["deployment_manifest"]
+        manifest = json.loads((fixture.root / artifact["local_path"]).read_text())
+        if mutation == "constructor-immutables":
+            manifest["problems"][0]["contracts"]["pool"]["constructorArgs"][0] = "0x" + "99" * 20
+        else:
+            manifest["problems"][0]["contracts"]["pool"]["expectedRuntimeCodeHash"] = "0x" + "f" * 64
+        recommit_artifact(report, fixture, artifact, manifest)
+    else:
+        artifact = binding["release_capsule"]
+        capsule = json.loads((fixture.root / artifact["local_path"]).read_text())
+        if mutation == "capsule-digest":
+            capsule["capsuleDigest"] = "sha256:" + "f" * 64
+        elif mutation == "capsule-commit":
+            capsule["gitCommit"] = "f" * 40
+            body = {key: value for key, value in capsule.items() if key != "capsuleDigest"}
+            capsule["capsuleDigest"] = "sha256:" + hashlib.sha256(
+                json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            ).hexdigest()
+        else:
+            info = capsule["buildInfos"][0]
+            source_name = next(iter(info["output"]["output"]["contracts"]))
+            contract_name = next(iter(info["output"]["output"]["contracts"][source_name]))
+            info["output"]["output"]["contracts"][source_name][contract_name]["evm"]["deployedBytecode"]["object"] = "ff"
+            info["outputDigest"] = "sha256:" + hashlib.sha256(
+                json.dumps(info["output"], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            ).hexdigest()
+            body = {key: value for key, value in capsule.items() if key != "capsuleDigest"}
+            capsule["capsuleDigest"] = "sha256:" + hashlib.sha256(
+                json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            ).hexdigest()
+        recommit_artifact(report, fixture, artifact, capsule)
+
+    with pytest.raises(
+        LegalMemoError,
+        match="release_capsule.*invalid|capsule_rebuild_attestation",
+    ):
+        normalize(report, fixture, registry)
+
+
+def test_production_legal_memo_manifest_schema_runtime_parity_rejects_recursive_extra(tmp_path: Path) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    artifact = report["release_binding"]["deployment_manifest"]
+    manifest = json.loads((fixture.root / artifact["local_path"]).read_text())
+    manifest["problems"][0]["contracts"]["pool"]["recursiveExtra"] = True
+    deployment_schema = json.loads((ROOT / "schemas" / "deployment-manifest-v2.schema.json").read_text())
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(manifest, deployment_schema, format_checker=jsonschema.FormatChecker())
+    recommit_artifact(report, fixture, artifact, manifest)
+
+    with pytest.raises(LegalMemoError, match="not schema-valid deployment-manifest v2"):
+        normalize(report, fixture, registry)
+
+
+def test_production_legal_memo_v2_keeps_mainnet_fail_closed_for_future_manifest(tmp_path: Path) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    report["release_binding"]["network"] = "base-mainnet"
+    report["release_binding"]["chain_id"] = 8453
+    resign_production(report)
+
+    with pytest.raises(LegalMemoError, match="restricted to schema-valid Base Sepolia"):
+        normalize(report, fixture, registry)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing", "extra", "misnamed", "duplicate", "wrong-board", "out-of-range",
+        "duplicate-address", "wrong-runtime-codehash",
+    ],
+)
+def test_production_legal_memo_rejects_hostile_topology_mutations(tmp_path: Path, mutation: str) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    contracts = report["release_binding"]["contracts"]
+    if mutation == "missing":
+        contracts.pop()
+    elif mutation == "extra":
+        contracts.append(dict(contracts[-1]))
+    elif mutation == "misnamed":
+        contracts[0]["name"] = "P42ProblemRegistry"
+    elif mutation == "duplicate":
+        contracts[0]["topology_key"] = contracts[1]["topology_key"]
+        contracts[0]["name"] = contracts[1]["name"]
+    elif mutation == "wrong-board":
+        board_nine = next(item for item in contracts if item["topology_key"] == "board.9.pool")
+        board_ten = next(item for item in contracts if item["topology_key"] == "board.10.pool")
+        board_nine["topology_key"], board_ten["topology_key"] = (
+            board_ten["topology_key"],
+            board_nine["topology_key"],
+        )
+    elif mutation == "out-of-range":
+        board_contract = next(item for item in contracts if item["topology_key"] == "board.10.pool")
+        board_contract["topology_key"] = "board.11.pool"
+    elif mutation == "duplicate-address":
+        contracts[0]["address"] = contracts[1]["address"]
+    else:
+        contracts[0]["manifest_runtime_code_hash"] = "0x" + "f" * 64
+
+    with pytest.raises(LegalMemoError, match="topology|contract address|address must match|runtime bytecode"):
+        normalize(report, fixture, registry)
+
+
+def test_v1_five_address_packet_remains_historical_but_cannot_bind_production(tmp_path: Path) -> None:
+    legacy, fixture, legacy_registry = valid_legal_memo(tmp_path)
+    normalize(legacy, fixture, legacy_registry)
+
+    legacy["release_binding"] = fixture.canonical_release_binding("base-sepolia")
+    schema = json.loads((ROOT / "schemas" / "legal-memo.schema.json").read_text())
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(legacy, schema, format_checker=jsonschema.FormatChecker())
+    with pytest.raises(LegalMemoError, match="historical-only.*cannot bind or authorize"):
+        normalize(legacy, fixture, legacy_registry)
+
+
 def test_ed25519_verifier_matches_rfc8032_vector() -> None:
     public_key = "ed25519:d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
     signature = (
@@ -162,6 +487,27 @@ def test_ed25519_verifier_matches_rfc8032_vector() -> None:
 
     assert _verify_ed25519(public_key, signature, b"")
     assert not _verify_ed25519(public_key, signature, b"tampered")
+
+
+def test_ethereum_keccak256_matches_canonical_vectors() -> None:
+    assert ethereum_keccak256(b"") == "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    assert ethereum_keccak256(b"abc") == "0x4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45"
+
+
+def test_counsel_signature_message_is_exact_v2_envelope() -> None:
+    message = _attestation_message(
+        "p42-legal-memo/v2",
+        "sha256:" + "a" * 64,
+        "external-counsel",
+        "2026-07-08T21:00:00Z",
+    )
+    assert message == (
+        b"P42-ATTESTATION-V2\n"
+        b"p42-legal-memo/v2\n"
+        b"external-counsel\n"
+        b"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        b"2026-07-08T21:00:00Z"
+    )
 
 
 def test_legal_memo_cli_requires_explicit_test_trust_and_local_evidence(tmp_path: Path) -> None:
@@ -206,14 +552,14 @@ def test_legal_memo_rejects_unresolved_or_tampered_artifact_bytes(tmp_path: Path
         normalize(report, fixture, registry)
 
 
-def test_legal_memo_rejects_release_config_not_at_bound_commit(tmp_path: Path) -> None:
+def test_legal_memo_rejects_release_config_bytes_mismatching_signed_binding(tmp_path: Path) -> None:
     report, fixture, registry = valid_legal_memo(tmp_path)
     artifact = report["release_binding"]["configuration_artifact"]
     path = fixture.root / artifact["local_path"]
     path.write_text('{"network":"base-sepolia","chain_id":84532,"contracts":{}}', encoding="utf-8")
     artifact["sha256"] = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
-    with pytest.raises(LegalMemoError, match="bytes stored at release git_commit"):
+    with pytest.raises(LegalMemoError, match="configuration_artifact bytes do not match"):
         normalize(report, fixture, registry)
 
 

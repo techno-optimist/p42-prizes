@@ -35,7 +35,7 @@ REQUIRED_ATTACKS = {
     "resolver_false_transcript",
     "verifier_planted_exploit",
 }
-ENVIRONMENTS = {"base-sepolia", "local-rehearsal"}
+ENVIRONMENTS = {"base-sepolia"}
 FOLLOWUP_SEVERITIES = {"critical", "high", "medium", "low"}
 REVIEWER_ROLES = {"external-auditor", "engineering-owner", "ops-reviewer", "resolver-reviewer"}
 
@@ -90,6 +90,12 @@ def normalize_adversarial_campaign_report(
 
     for key in ("campaign_id", "started_at_utc", "completed_at_utc", "environment"):
         _require_string(normalized, key, "report")
+    if normalized["environment"] == "local-rehearsal":
+        raise AdversarialCampaignError(
+            "report.environment local-rehearsal is not supported by p42-adversarial-testnet/v2; "
+            "v2 requires schema-valid Base Sepolia evidence and local rehearsal must use a "
+            "separate historical or future schema version"
+        )
     _require_enum(normalized, "environment", ENVIRONMENTS)
     started_at = _require_utc(normalized["started_at_utc"], "report.started_at_utc", AdversarialCampaignError)
     completed_at = _require_utc(normalized["completed_at_utc"], "report.completed_at_utc", AdversarialCampaignError)
@@ -103,10 +109,9 @@ def normalize_adversarial_campaign_report(
         context,
         require_canonical_topology=True,
     )
-    expected_network = "base-sepolia" if normalized["environment"] == "base-sepolia" else "local"
-    if release_binding["network"] != expected_network:
+    if release_binding["network"] != "base-sepolia":
         raise AdversarialCampaignError(
-            f"report.release_binding.network must be {expected_network} for environment {normalized['environment']}"
+            "report.release_binding.network must be base-sepolia for p42-adversarial-testnet/v2"
         )
 
     deployment_manifest = _validate_artifact_reference(

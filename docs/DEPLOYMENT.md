@@ -49,6 +49,8 @@ P42_FUNDING_ACTIVATION_SIGNATURES_PATH=/app/release/funding-activation-signature
 P42_FUNDING_ACTIVATION_COMPLETION_PATH=/app/release/funding-activation-completion.json
 P42_ATTESTATION_TRUST_REGISTRY_PATH=/app/release/production-trust-registry.json
 P42_ATTESTATION_TRUST_REGISTRY_SHA256=sha256:<canonical-registry-digest>
+P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH=/app/release/activation-rpc-operator-registry.json
+P42_ACTIVATION_RPC_OPERATOR_REGISTRY_TRUSTED_ROOT=/app/release
 P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS=300
 ```
 
@@ -56,35 +58,73 @@ P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS=300
 pin, not a value copied from the registry artifact. The portal recomputes the
 authorization digest, verifies all three Ed25519 launch-authority signatures
 and the exact checkpoint bytes against that pinned production registry. It also
+opens the activation RPC registry with no-follow semantics below the separately
+configured trusted root and requires an owner-owned regular file with one link,
+zero write bits (`0400` or `0444`; `0600` is rejected), and non-writable trusted
+parents. Registry bytes must be minified, key-sorted canonical JSON followed by
+exactly one LF; pretty JSON, alternate key order, and other trailing whitespace
+are rejected. Its exact bytes digest must equal the digest
+carried by the signed launch authorization; each endpoint profile digest is
+then recomputed before plan or checkpoint authority is accepted. It also
 verifies the three EIP-712 activation authorities for every board and
 reconstructs the exact ordered 30-operation activation plan before requiring every one of the ten
 activated pools to agree with the fresh finalized indexer checkpoint before it
 publishes any funding target.
 
+Provision the already canonicalized registry read-only before starting either
+the indexer or portal. Do not rewrite it after its digest enters authorization:
+
+```bash
+chown "$(id -u):$(id -g)" /app/release/activation-rpc-operator-registry.json
+chmod 0444 /app/release/activation-rpc-operator-registry.json
+chmod go-w /app/release
+```
+
 Activated publication requires `p42-prizes/indexer-checkpoint/v4`. Generate it
-with the canonical activation plan and an operator-independent second RPC:
+with the canonical activation plan and the two exact RPC origins already bound
+to protected operator profiles in that plan:
 
 ```bash
 node agent/indexer.mjs --manifest deployment-manifest.json \
   --rpc "$P42_PRIMARY_RPC_URL" --secondary-rpc "$P42_SECONDARY_RPC_URL" \
+  --activation-authorization launch-authorization.json \
+  --activation-trust-registry production-trust-registry.json \
+  --activation-artifact-root /app/release \
+  --activation-python /app/.venv/bin/python \
+  --activation-repo-root /app/p42-prizes \
+  --activation-rpc-registry activation-rpc-operator-registry.json \
+  --activation-rpc-registry-trusted-root /app/release \
   --activation-plan funding-activation-plan.json \
   --activation-completion funding-activation-completion.json \
   --out indexer-checkpoint.json
 ```
+
+Before constructing either static-network provider, the runner and indexer send
+a raw `eth_chainId` request over each no-redirect transport and require both raw
+values to equal the plan chain. The authorization references the protected,
+schema-validated operator-profile registry by exact artifact digest. The plan
+then binds that registry digest, two distinct stable operator IDs, exact endpoint
+origins, and canonical endpoint-profile digests. Different hostnames alone are
+not evidence of operator independence, and runtime-supplied operator metadata
+has no authority unless it matches the authorization-bound registry.
 
 The indexer queries `stateOf` and `ops` for the exact 20 plan-derived timelock
 operation IDs at the checkpoint's fresh finalized block on both RPCs. It also
 re-fetches the immutable completion block from both RPCs and binds its exact
 hash, timestamp, and self-hashed completion digest as a separate completion
 anchor. It emits v4 only when both providers agree on both anchors, the ordered
-operation set, and `Executed` state. This lets checkpoints rotate for freshness
+operation set, and `Executed` state. Completion and checkpoint authority retain
+both observed raw chain IDs, both operator IDs, both endpoint origins and profile
+digests, and the registry digest. This lets checkpoints rotate for freshness
 without rewriting historical completion. The checkpoint attestation must then
 sign those exact v4 bytes. Checkpoint v2 and v3 remain readable for historical/non-activated
 replay, but the portal rejects them for funding publication; migrate by
 regenerating and re-attesting a v4 checkpoint, not by rewriting an old artifact.
 The production indexer canonicalizes and validates both credential-free HTTPS
-endpoint identities, then constructs both RPC providers internally; callers
-cannot inject a transport object as evidence of provider independence.
+endpoint identities, rejects redirects, credentials, query strings, fragments,
+aliases, and profile substitutions, then constructs both RPC providers
+internally. This is provenance-preserving quorum evidence, not a claim that any
+currently configured pair is independently operated.
 
 Disk:
 
