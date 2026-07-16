@@ -90,6 +90,17 @@ runtime bytes verified through the chain reader and requires that digest to
 equal `manifest_runtime_code_hash` in the memo, manifest, and configuration
 projections. NIST SHA3-256 is not accepted as Ethereum Keccak-256.
 
+V2 additionally requires a `release_capsule` artifact. The validator reads the
+capsule, deployment manifest, and resolved source/runtime projection through
+already-open file descriptors under bounded execution. It validates the
+capsule self-digest and `gitCommit`, every canonical `sourceName`, exact UTF-8
+source content, build-info input/output digests, compiler artifact digest, and
+immutable metadata. Each manifest `capsuleArtifactDigest`, constructor argument
+set, and deployment block timestamp must reconstruct the exact runtime bytes
+already verified against chain state. A memo cannot substitute another file as
+"reviewed source," even if counsel re-signs it and a downstream security audit
+copies the substituted digest.
+
 ## Version Migration
 
 - Existing v1 packets remain verifiable as historical evidence. Changing only
@@ -104,6 +115,13 @@ projections. NIST SHA3-256 is not accepted as Ethereum Keccak-256.
   evidence commit containing the reviewed artifacts. Production launch
   composition requires the verified source commit to equal
   `deployment_commit`; descendant ancestry alone grants no authority.
+- Canonical release binding v2 is deliberately restricted to the complete,
+  closed `p42-prizes/deployment-manifest/v2` contract: Base Sepolia
+  (`base-sepolia`, chain ID `84532`). The validator applies the full Draft
+  2020-12 schema to resolved manifest bytes, including recursive
+  `additionalProperties: false` rules. Base mainnet remains fail-closed until a
+  future network-aware `p42-prizes/deployment-manifest/v3` (or later) is
+  specified and implemented across deployment, agent, web, and launch tooling.
 - Because canonical verifier source identity includes repository `src/` and
   `schemas/`, the exact-ten source-binding dossier must be regenerated after
   the final validator bytes change and pass exact replay before publication.

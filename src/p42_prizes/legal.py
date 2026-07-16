@@ -2,14 +2,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
+import tempfile
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
+import jsonschema
+
+from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -59,6 +65,8 @@ CANONICAL_BOARD_CONTRACTS = (
     ("challenges", "P42ChallengeManager"),
 )
 CANONICAL_BOARD_COUNT = 10
+CANONICAL_NETWORK = "base-sepolia"
+CANONICAL_CHAIN_ID = 84532
 NETWORK_CHAIN_IDS = {"local": 31337, "base-sepolia": 84532, "base-mainnet": 8453}
 PLACEHOLDERS = {"", "tbd", "todo", "pending", "n/a", "na", "none", "null", "unknown"}
 PLACEHOLDER_WORDS = {"dummy", "example", "fake", "placeholder", "sample"}
@@ -630,7 +638,13 @@ def _validate_release_binding(
         )
     topology_names: dict[str, str] | None = None
     deployment_commit: str | None = None
+    capsule_ref: Mapping[str, Any] | None = None
     if canonical:
+        if network != CANONICAL_NETWORK or chain_id != CANONICAL_CHAIN_ID:
+            raise error_type(
+                f"{prefix} v2 canonical topology is restricted to schema-valid Base Sepolia; "
+                "mainnet requires a future network-aware deployment manifest version"
+            )
         deployment_commit = value.get("deployment_commit")
         deployment_match = (
             COMMIT_RE.fullmatch(deployment_commit) if isinstance(deployment_commit, str) else None
@@ -647,6 +661,10 @@ def _validate_release_binding(
         topology_names = _validate_canonical_topology(
             _artifact_bytes(context, topology_ref), f"{prefix}.canonical_topology", error_type
         )
+        capsule_ref = _validate_artifact_reference(
+            value.get("release_capsule"), f"{prefix}.release_capsule", error_type, context
+        )
+        _verify_git_artifact(context, capsule_ref, commit, f"{prefix}.release_capsule", error_type)
 
     contracts = value.get("contracts")
     expected_count = len(topology_names) if topology_names is not None else len(REQUIRED_CONTRACT_NAMES)
@@ -657,6 +675,7 @@ def _validate_release_binding(
     addresses: set[str] = set()
     runtime_hashes: set[str] = set()
     expected_contracts: list[dict[str, Any]] = []
+    capsule_projection: list[dict[str, str]] = []
     for index, contract in enumerate(contracts):
         contract_prefix = f"{prefix}.contracts[{index}]"
         if not isinstance(contract, dict):
@@ -697,6 +716,7 @@ def _validate_release_binding(
             contract.get("source_artifact"), f"{contract_prefix}.source_artifact", error_type, context
         )
         _verify_git_artifact(context, source_ref, commit, f"{contract_prefix}.source_artifact", error_type)
+        source_bytes = _artifact_bytes(context, source_ref)
         runtime_ref = _validate_artifact_reference(
             contract.get("runtime_bytecode_artifact"),
             f"{contract_prefix}.runtime_bytecode_artifact",
@@ -742,6 +762,15 @@ def _validate_release_binding(
                 topology_key=topology_key,
                 manifest_runtime_code_hash=manifest_runtime_code_hash,
             )
+            capsule_projection.append(
+                {
+                    "topologyKey": topology_key,
+                    "name": name,
+                    "sourceBase64": base64.b64encode(source_bytes).decode("ascii"),
+                    "runtimeHex": "0x" + runtime_bytes.hex(),
+                    "runtimeKeccak": manifest_runtime_code_hash,
+                }
+            )
         expected_contracts.append(expected_contract)
     missing = sorted((set(topology_names) - topology_keys) if canonical else (REQUIRED_CONTRACT_NAMES - names))
     if missing:
@@ -758,6 +787,16 @@ def _validate_release_binding(
         prefix=prefix,
         error_type=error_type,
     )
+    if canonical:
+        assert capsule_ref is not None and deployment_commit is not None
+        _verify_canonical_capsule_binding(
+            capsule_bytes=_artifact_bytes(context, capsule_ref),
+            deployment_bytes=_artifact_bytes(context, deployment_ref),
+            deployment_commit=deployment_commit,
+            contracts=capsule_projection,
+            prefix=prefix,
+            error_type=error_type,
+        )
     return value
 
 
@@ -1065,6 +1104,7 @@ def _validate_release_documents(
     deployment = _parse_json_object(deployment_bytes, f"{prefix}.deployment_manifest", error_type)
     configuration = _parse_json_object(configuration_bytes, f"{prefix}.configuration_artifact", error_type)
     if canonical_topology is not None:
+        _validate_deployment_manifest_v2_schema(deployment, prefix, error_type)
         _validate_canonical_release_documents(
             deployment=deployment,
             configuration=configuration,
@@ -1111,6 +1151,82 @@ def _validate_release_documents(
         or configured_addresses != expected_addresses
     ):
         raise error_type(f"{prefix}.configuration_artifact bytes do not match the release binding")
+
+
+def _validate_deployment_manifest_v2_schema(
+    deployment: Mapping[str, Any],
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    schema_path = Path(__file__).resolve().parents[2] / "schemas" / "deployment-manifest-v2.schema.json"
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        errors = sorted(
+            jsonschema.Draft202012Validator(
+                schema, format_checker=jsonschema.FormatChecker()
+            ).iter_errors(deployment),
+            key=lambda item: tuple(str(part) for part in item.absolute_path),
+        )
+    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as exc:
+        raise error_type(f"{prefix}.deployment_manifest v2 schema could not be loaded") from exc
+    if errors:
+        error = errors[0]
+        path = ".".join(str(part) for part in error.absolute_path)
+        location = f" at {path}" if path else ""
+        raise error_type(
+            f"{prefix}.deployment_manifest is not schema-valid deployment-manifest v2"
+            f"{location}: {error.message}"
+        )
+
+
+def _verify_canonical_capsule_binding(
+    *,
+    capsule_bytes: bytes,
+    deployment_bytes: bytes,
+    deployment_commit: str,
+    contracts: list[dict[str, str]],
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    helper = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "scripts"
+        / "legal-release-binding-verifier.js"
+    )
+    projection_bytes = canonical_json(
+        {"deploymentCommit": deployment_commit, "contracts": contracts}
+    ).encode("utf-8")
+    try:
+        with (
+            tempfile.TemporaryFile() as capsule_file,
+            tempfile.TemporaryFile() as deployment_file,
+            tempfile.TemporaryFile() as projection_file,
+        ):
+            for handle, payload in (
+                (capsule_file, capsule_bytes),
+                (deployment_file, deployment_bytes),
+                (projection_file, projection_bytes),
+            ):
+                handle.write(payload)
+                handle.flush()
+                handle.seek(0)
+            fds = (capsule_file.fileno(), deployment_file.fileno(), projection_file.fileno())
+            completed = run_bounded_process(
+                ["node", str(helper), *(str(fd) for fd in fds)],
+                cwd=helper.parent,
+                env=os.environ,
+                timeout=15,
+                stdout_limit=4096,
+                stderr_limit=64 * 1024,
+                pass_fds=fds,
+            )
+    except (OSError, subprocess.TimeoutExpired, OutputLimitExceeded, ValueError) as exc:
+        raise error_type(f"{prefix}.release_capsule verification could not complete safely") from exc
+    if completed.returncode != 0 or completed.stdout != "OK\n":
+        detail = completed.stderr.strip() or "release capsule verifier rejected the binding"
+        raise error_type(f"{prefix}.release_capsule binding is invalid: {detail}")
 
 
 def _validate_canonical_topology(

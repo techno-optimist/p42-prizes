@@ -10,6 +10,7 @@ import subprocess
 import threading
 from typing import Any, Mapping
 
+from legal_release_fixture import schema_valid_manifest_shell
 from p42_prizes.legal import _attestation_message, _ed_decode_point, _ed_scalar_mult, ethereum_keccak256
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
@@ -42,8 +43,142 @@ CANONICAL_BOARD_CONTRACTS = [
     ("submissions", "P42SubmissionManager"),
     ("challenges", "P42ChallengeManager"),
 ]
+PRODUCTION_CONTRACT_NAMES = [
+    "P42MultisigTimelock", "P42ChallengeManagerFactory", "P42SubmissionManagerFactory",
+    "P42RolloverVault", "P42SP1VerifierGateway", "P42ResolverQuorum", "P42BountyPool",
+    "P42PayoutLedger", "P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry",
+]
+IMMUTABLES = {
+    "P42MultisigTimelock": ["delay", "overrideDelay", "operationGracePeriod"],
+    "P42ChallengeManagerFactory": [], "P42SubmissionManagerFactory": [],
+    "P42RolloverVault": [], "P42SP1VerifierGateway": [],
+    "P42ResolverQuorum": ["owner", "expectedTreasury", "expectedDecisionBondWei", "managerFactory", "objectiveVerifier", "objectiveVerifierCodehash"],
+    "P42BountyPool": ["owner", "fundingCap"],
+    "P42PayoutLedger": ["owner", "pool", "treasury", "feeBps", "earliestCloseTimestamp", "closeByTimestamp"],
+    "P42SubmissionManager": ["owner", "treasury", "fundingAuthorizer", "boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority", "independentSecurityAuthority", "governanceAuthority", "pool", "ledger", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "deployedAt", "armNotBefore", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"],
+    "P42ChallengeManager": ["owner", "resolver", "treasury", "submissionManager", "challengeWindowSeconds", "betaBps", "rerunCostMultiplierBps", "minCounterBondWei", "rerunCostWei", "resolverDecisionBondWei", "resolverFraudWindowSeconds"],
+    "P42ProblemRegistry": ["owner"],
+}
+ADDRESS_IMMUTABLES = {"owner", "expectedTreasury", "managerFactory", "objectiveVerifier", "pool", "treasury", "fundingAuthorizer", "productionLaunchAuthority", "independentSecurityAuthority", "governanceAuthority", "ledger", "resolver", "submissionManager"}
+BYTES32_IMMUTABLES = {"objectiveVerifierCodehash", "boardSetDigest", "releaseBindingDigest"}
 
 _SIGNING_SEEDS: dict[str, bytes] = {}
+
+
+def _digest(value: Any) -> str:
+    return "sha256:" + hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _immutable_type(name: str) -> str:
+    if name in ADDRESS_IMMUTABLES:
+        return "address"
+    if name in BYTES32_IMMUTABLES:
+        return "bytes32"
+    if name == "onchainDa":
+        return "bool"
+    return "uint256"
+
+
+def _constructor_abi(name: str) -> list[dict[str, Any]]:
+    if name == "P42MultisigTimelock":
+        inputs = [{"name": "delaySeconds_", "type": "uint256"}]
+    elif name == "P42SubmissionManager":
+        deployment = [
+            "pool", "ledger", "owner", "treasury", "alphaBps", "minPostingBondWei",
+            "challengeWindowSeconds", "onchainDa", "maxSolutionBytes", "seedScoreAtoms",
+            "minImprovementAtoms",
+        ]
+        funding = [
+            "boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority",
+            "independentSecurityAuthority", "governanceAuthority",
+        ]
+        inputs = [
+            {"name": "deployment", "type": "tuple", "components": [{"name": item, "type": _immutable_type(item)} for item in deployment]},
+            {"name": "funding", "type": "tuple", "components": [{"name": item, "type": _immutable_type(item)} for item in funding]},
+        ]
+    else:
+        inputs = [{"name": f"{item}_", "type": _immutable_type(item)} for item in IMMUTABLES[name]]
+    return [{"type": "constructor", "inputs": inputs, "stateMutability": "nonpayable"}]
+
+
+def _synthetic_capsule(git_commit: str) -> tuple[dict[str, Any], dict[str, str]]:
+    contracts = []
+    build_infos = []
+    sources: dict[str, str] = {}
+    for contract_index, name in enumerate(PRODUCTION_CONTRACT_NAMES):
+        source_name = f"src/{name}.sol"
+        input_source_name = f"project/{source_name}"
+        source = f"// canonical test source for {name}\ncontract {name} {{}}\n"
+        sources[name] = source
+        bindings = []
+        references: dict[str, list[dict[str, int]]] = {}
+        nodes = []
+        for immutable_index, immutable in enumerate(IMMUTABLES[name]):
+            ast_id = str(1000 + contract_index * 100 + immutable_index)
+            immutable_type = _immutable_type(immutable)
+            ranges = [{"start": immutable_index * 32, "length": 32}]
+            references[ast_id] = ranges
+            bindings.append({"astId": ast_id, "name": immutable, "type": immutable_type, "ranges": ranges})
+            nodes.append({"nodeType": "VariableDeclaration", "id": int(ast_id), "name": immutable, "stateVariable": True, "mutability": "immutable", "typeDescriptions": {"typeString": immutable_type}})
+        runtime = "0x" + "00" * max(1, 32 * len(bindings))
+        abi = _constructor_abi(name)
+        build_id = hashlib.sha256(name.encode()).hexdigest()
+        settings = {"optimizer": {"enabled": True, "runs": 200}, "evmVersion": "shanghai"}
+        build_input = {"id": build_id, "solcVersion": "0.8.24", "solcLongVersion": "0.8.24+commit.e11b9ed9", "input": {"settings": settings, "sources": {input_source_name: {"content": source}}}}
+        compiled = {"abi": abi, "evm": {"bytecode": {"object": "6000", "linkReferences": {}}, "deployedBytecode": {"object": runtime[2:], "linkReferences": {}, "immutableReferences": references}}}
+        build_output = {"id": build_id, "output": {"sources": {input_source_name: {"ast": {"nodeType": "SourceUnit", "nodes": [{"nodeType": "ContractDefinition", "name": name, "nodes": nodes}]}}}, "contracts": {input_source_name: {name: compiled}}}}
+        artifact = {"_format": "hh3-artifact-1", "contractName": name, "sourceName": source_name, "abi": abi, "bytecode": "0x6000", "deployedBytecode": runtime, "linkReferences": {}, "deployedLinkReferences": {}, "immutableReferences": references, "inputSourceName": input_source_name, "buildInfoId": build_id}
+        contracts.append({"name": name, "sourceName": source_name, "buildInfoId": build_id, "artifactDigest": _digest(artifact), "abi": abi, "creationCode": "0x6000", "runtimeTemplate": runtime, "immutableReferences": references, "immutableBindings": bindings, "linkReferences": {}, "deployedLinkReferences": {}})
+        build_infos.append({"id": build_id, "inputDigest": _digest(build_input), "outputDigest": _digest(build_output), "compiler": {"version": "0.8.24", "longVersion": "0.8.24+commit.e11b9ed9"}, "settings": settings, "input": build_input, "output": build_output})
+    external = json.loads((Path(__file__).resolve().parents[1] / "protocol" / "external-dependencies-v1.json").read_text())["dependencies"]
+    body = {"schema": "p42-prizes/release-capsule/v2", "gitCommit": git_commit, "contracts": contracts, "externalDependencies": external, "buildInfos": sorted(build_infos, key=lambda item: item["id"])}
+    return {**body, "capsuleDigest": _digest(body)}, sources
+
+
+def _default_value(kind: str) -> Any:
+    if kind == "address":
+        return "0x" + "01" * 20
+    if kind == "bytes32":
+        return "0x" + "02" * 32
+    if kind == "bool":
+        return False
+    return "1"
+
+
+def _constructor_args(name: str, manifest: Mapping[str, Any], problem: Mapping[str, Any] | None) -> list[Any]:
+    if name == "P42MultisigTimelock":
+        return ["1"]
+    if name == "P42SubmissionManager":
+        assert problem is not None
+        return [[problem["contracts"]["pool"]["address"], problem["contracts"]["ledger"]["address"], manifest["roles"]["owner"], manifest["roles"]["treasury"], "1", "1", "1", False, "0", "1", "1"], ["0x" + manifest["releaseEvidence"]["boardSetDigest"][7:], "0x" + manifest["releaseEvidence"]["releaseBindingDigest"][7:], manifest["roles"]["productionLaunchAuthority"], manifest["roles"]["independentSecurityAuthority"], manifest["roles"]["governanceAuthority"]]]
+    return [_default_value(_immutable_type(item)) for item in IMMUTABLES[name]]
+
+
+def _runtime(name: str, args: list[Any], timestamp: int) -> bytes:
+    names = IMMUTABLES[name]
+    if name == "P42MultisigTimelock":
+        values = {"delay": 1, "overrideDelay": 2, "operationGracePeriod": 7 * 24 * 60 * 60}
+    elif name == "P42SubmissionManager":
+        deployment, funding = args
+        values = dict(zip(["pool", "ledger", "owner", "treasury", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"], deployment))
+        values.update(zip(["boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority", "independentSecurityAuthority", "governanceAuthority"], funding))
+        values.update(deployedAt=timestamp, armNotBefore=timestamp + int(values["challengeWindowSeconds"]), fundingAuthorizer=values["treasury"])
+    else:
+        values = dict(zip(names, args))
+    encoded = bytearray(max(1, len(names) * 32))
+    for index, immutable in enumerate(names):
+        value = values[immutable]
+        integer = int(value, 16) if isinstance(value, str) and value.startswith("0x") else int(value)
+        encoded[index * 32:(index + 1) * 32] = integer.to_bytes(32, "big")
+    return bytes(encoded)
+
+
+def _deep_update(target: dict[str, Any], override: Mapping[str, Any]) -> None:
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(target.get(key), dict):
+            _deep_update(target[key], value)
+        else:
+            target[key] = value
 
 
 class AttestationFixture:
@@ -236,25 +371,39 @@ class AttestationFixture:
             for board in range(1, 11)
             for key, name in CANONICAL_BOARD_CONTRACTS
         )
-        contracts: list[dict[str, Any]] = []
-        manifest_contracts: dict[str, dict[str, str]] = {}
-        for index, (topology_key, name) in enumerate(slots):
-            contract_address = address(f"{network}-{topology_key}-{name}")
-            runtime_bytes = hashlib.sha256(f"runtime:{network}:{name}".encode()).digest()[:16]
-            runtime_hash = "sha256:" + hashlib.sha256(runtime_bytes).hexdigest()
-            manifest_runtime_hash = ethereum_keccak256(runtime_bytes)
-            runtime_artifact = self.artifact(
-                f"canonical-{network}-runtime-{name}",
-                content="0x" + runtime_bytes.hex(),
-                created_at_utc="2026-07-08T14:00:00Z",
-                suffix=".hex",
-            )
-            source_artifact = self.artifact(
+        # Freeze the topology and source commit before publishing the capsule that names it.
+        for name in PRODUCTION_CONTRACT_NAMES:
+            self.artifact(
                 f"canonical-{network}-source-{name}",
-                content=f"// exact release source for {name}\ncontract {name} {{}}\n",
+                content=f"// canonical test source for {name}\ncontract {name} {{}}\n",
                 created_at_utc="2026-07-08T13:30:00Z",
                 suffix=".sol",
             )
+        self._run("git", "add", ".")
+        self._run("git", "commit", "-q", "-m", f"freeze canonical topology {network}")
+        deployment_commit = self._run("git", "rev-parse", "HEAD").stdout.strip()
+        capsule, sources = _synthetic_capsule(deployment_commit)
+        capsule_by_name = {item["name"]: item for item in capsule["contracts"]}
+        deployment = schema_valid_manifest_shell()
+        deployment["deploymentCommit"] = deployment_commit
+        deployment["roleAcceptances"]["deploymentCommit"] = deployment_commit
+        deployment["network"] = {"name": "baseSepolia", "chainId": 84532, "explorerBaseUrl": "https://sepolia.basescan.org"}
+        deployment["releaseEvidence"]["capsuleDigest"] = capsule["capsuleDigest"]
+        deployment_config_hash = "0x" + hashlib.sha256(f"deployment-config:{network}:{deployment_commit}".encode()).hexdigest()
+        deployment["deploymentConfigHash"] = deployment_config_hash
+
+        contracts: list[dict[str, Any]] = []
+        manifest_contracts: dict[str, dict[str, Any]] = {}
+        for index, (topology_key, name) in enumerate(slots):
+            contract_address = address(f"{network}-{topology_key}-{name}")
+            problem = deployment["problems"][int(topology_key.split(".")[1]) - 1] if topology_key.startswith("board.") else None
+            args = _constructor_args(name, deployment, problem)
+            timestamp = 1_800_000_000 + index
+            runtime_bytes = _runtime(name, args, timestamp)
+            runtime_hash = "sha256:" + hashlib.sha256(runtime_bytes).hexdigest()
+            manifest_runtime_hash = ethereum_keccak256(runtime_bytes)
+            runtime_artifact = self.artifact(f"canonical-{network}-runtime-{topology_key}", content="0x" + runtime_bytes.hex(), created_at_utc="2026-07-08T14:00:00Z", suffix=".hex")
+            source_artifact = self.artifact(f"canonical-{network}-source-{name}", content=sources[name], created_at_utc="2026-07-08T13:30:00Z", suffix=".sol")
             block_number = 5200 + index
             block_hash = "0x" + hashlib.sha256(f"canonical-block:{network}:{index}".encode()).hexdigest()
             chain_artifact = self.artifact(
@@ -288,41 +437,16 @@ class AttestationFixture:
                     "chain_bytecode_artifact": chain_artifact,
                 }
             )
-            manifest_contracts[topology_key] = {
-                "name": name,
-                "address": contract_address,
-                "runtimeCodeHash": manifest_runtime_hash,
-            }
+            entry = (deployment["contracts"][topology_key.split(".")[1]] if topology_key.startswith("shared.") else deployment["problems"][int(topology_key.split(".")[1]) - 1]["contracts"][topology_key.split(".")[2]])
+            entry.update(name=name, address=contract_address, constructorArgs=args, deploymentBlockTimestamp=timestamp, capsuleArtifactDigest=capsule_by_name[name]["artifactDigest"], runtimeCodeHash=manifest_runtime_hash, deployedCodeHash=manifest_runtime_hash, expectedRuntimeCodeHash=manifest_runtime_hash, primaryObservedRuntimeCodeHash=manifest_runtime_hash, secondaryObservedRuntimeCodeHash=manifest_runtime_hash)
+            if "factoryCreation" in entry:
+                entry["factoryCreation"]["createdAddress"] = contract_address
+            manifest_contracts[topology_key] = entry
 
-        self._run("git", "add", ".")
-        self._run("git", "commit", "-q", "-m", f"freeze canonical topology {network}")
-        deployment_commit = self._run("git", "rev-parse", "HEAD").stdout.strip()
-        deployment_config_hash = "0x" + hashlib.sha256(
-            f"deployment-config:{network}:{deployment_commit}".encode()
-        ).hexdigest()
-        deployment = {
-            "schema": "p42-prizes/deployment-manifest/v2",
-            "deploymentCommit": deployment_commit,
-            "network": {"name": "baseSepolia" if network == "base-sepolia" else network, "chainId": chain_id},
-            "releaseMode": "production",
-            "status": "governance-setup-complete",
-            "deploymentConfigHash": deployment_config_hash,
-            "releaseEvidence": {"contractCount": 47, "boardCount": 10},
-            "contracts": {
-                key: manifest_contracts[f"shared.{key}"] for key, _ in CANONICAL_SHARED_CONTRACTS
-            },
-            "problems": [
-                {
-                    "problemId": str(board),
-                    "contracts": {
-                        key: manifest_contracts[f"board.{board}.{key}"]
-                        for key, _ in CANONICAL_BOARD_CONTRACTS
-                    },
-                    **dict((problem_overrides or {}).get(str(board), {})),
-                }
-                for board in range(1, 11)
-            ],
-        }
+        for board, problem in enumerate(deployment["problems"], start=1):
+            problem.update(pool=problem["contracts"]["pool"]["address"], ledger=problem["contracts"]["ledger"]["address"], submissionManager=problem["contracts"]["submissions"]["address"], challengeManager=problem["contracts"]["challenges"]["address"])
+            _deep_update(problem, (problem_overrides or {}).get(str(board), {}))
+        capsule_artifact = self.artifact(f"canonical-{network}-release-capsule", content=capsule, created_at_utc="2026-07-08T14:10:00Z")
         deployment_manifest = self.artifact(
             f"canonical-{network}-deployment", content=deployment, created_at_utc="2026-07-08T14:10:00Z"
         )
@@ -356,6 +480,7 @@ class AttestationFixture:
             "network": network,
             "chain_id": chain_id,
             "canonical_topology": topology_artifact,
+            "release_capsule": capsule_artifact,
             "deployment_manifest": deployment_manifest,
             "configuration_artifact": configuration_artifact,
             "contracts": contracts,
