@@ -5,7 +5,9 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import fcntl
+from functools import lru_cache
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -14,6 +16,7 @@ import threading
 import time
 from typing import Any, Iterator, Mapping
 
+import jsonschema
 from p42_prizes.secure_json import DEFAULT_MAX_BYTES, loads_strict_json
 from p42_prizes.verdict import canonical_json
 
@@ -45,17 +48,42 @@ TERMINAL_ACTION_STATUSES = {
     "orphaned_reorg",
     "canonical_invalidated",
 }
+ACTION_ALERT_REQUIRED_STATUSES = {
+    "superseded",
+    "window_expired",
+    "quarantined",
+    "registry_binding_rejected",
+    "invalid_spend_cap",
+    "bond_over_cap",
+    "canonical_invalidated",
+}
 ACTION_STATUSES = TERMINAL_ACTION_STATUSES | {"signed", "broadcast", "submitted", "reorged"}
 URGENT_DEADLINE_SLACK_SECONDS = 6 * 60 * 60
 _THREAD_LOCKS_GUARD = threading.Lock()
 _THREAD_LOCKS: dict[str, threading.RLock] = {}
 ARCHIVE_SCHEMA_VERSION = "p42-runner-job-archive/v1"
 TOMBSTONE_SCHEMA_VERSION = "p42-runner-job-tombstone/v1"
+LOCAL_TOMBSTONE_SCHEMA_VERSION = "p42-runner-job-tombstone/v2"
+LOCAL_TERMINAL_DISPOSITION_SCHEMA_VERSION = "p42-runner-local-terminal-disposition/v1"
+LOCAL_TERMINAL_DISPOSITION_REASONS = frozenset(
+    {
+        "job_exceeds_host_capacity",
+        "retry_window_expired",
+        "job_run_error",
+        "transcript_missing",
+        "transcript_invalid",
+    }
+)
+LOCAL_TERMINAL_DISPOSITION_MAX_DETAIL_BYTES = 2048
+LOCAL_TERMINAL_ALERT_SCHEMA_VERSION = "p42-runner-terminal-alert/v1"
+ACTION_TERMINAL_ALERT_SCHEMA_VERSION = "p42-runner-action-alert/v1"
 HEALTH_SCHEMA_VERSION = "p42-runner-health/v2"
 ARCHIVE_FAULT_SCHEMA_VERSION = "p42-runner-archive-fault/v1"
 ARCHIVE_SCAN_MAX_ENTRIES = 100_000
 ARCHIVE_SCAN_MAX_BYTES = 256 * 1024 * 1024
 ARCHIVE_SCAN_MAX_SECONDS = 5.0
+TERMINAL_ALERT_LOG_MAX_BYTES = 64 * 1024 * 1024
+TERMINAL_ALERT_RECORD_MAX_BYTES = 64 * 1024
 
 
 class RunnerQueueError(ValueError):
@@ -87,7 +115,12 @@ def open_secure_runner_directory(directory: Path) -> int:
     return descriptor
 
 
-def enqueue_runner_job(queue_path: str | Path, job: Mapping[str, Any]) -> dict[str, Any]:
+def enqueue_runner_job(
+    queue_path: str | Path,
+    job: Mapping[str, Any],
+    *,
+    chain_now_utc: str | None = None,
+) -> dict[str, Any]:
     """Atomically persist one idempotent runner job.
 
     Chain watchers can replay block ranges after restarts or RPC failures. A
@@ -132,7 +165,12 @@ def enqueue_runner_job(queue_path: str | Path, job: Mapping[str, Any]) -> dict[s
                 "source_event_hash": source_event_hash,
             }
 
-        admission_limit = ACTIVE_JOB_ADMISSION_LIMIT if _is_urgent_deadline_job(candidate) else ORDINARY_JOB_ADMISSION_LIMIT
+        chain_now = _parse_utc(chain_now_utc) if chain_now_utc is not None else None
+        admission_limit = (
+            ACTIVE_JOB_ADMISSION_LIMIT
+            if _is_urgent_deadline_job(candidate, chain_now=chain_now)
+            else ORDINARY_JOB_ADMISSION_LIMIT
+        )
         _archive_for_admission(queue_file, queue, candidate, admission_limit=admission_limit)
         if len(queue["jobs"]) >= admission_limit:
             raise RunnerQueueError(
@@ -158,6 +196,7 @@ def record_runner_action(
     status: str,
     transaction_hash: str | None = None,
     detail: str | None = None,
+    alert_message: str | None = None,
 ) -> dict[str, Any]:
     """Persist the terminal disposition of a transcript action candidate.
 
@@ -173,9 +212,23 @@ def record_runner_action(
         raise RunnerQueueError("action status must be non-empty")
     if status not in ACTION_STATUSES:
         raise RunnerQueueError(f"unknown runner action status: {status}")
+    if status in ACTION_ALERT_REQUIRED_STATUSES and alert_message is None:
+        raise RunnerQueueError(f"terminal runner action {status} requires a durable alert")
+    if alert_message is not None and (
+        status not in TERMINAL_ACTION_STATUSES
+        or not isinstance(alert_message, str)
+        or not alert_message
+        or len(alert_message.encode("utf-8")) > LOCAL_TERMINAL_DISPOSITION_MAX_DETAIL_BYTES
+    ):
+        raise RunnerQueueError(
+            "runner action alerts require a terminal action and a 1..2048 byte message"
+        )
 
     with locked_runner_queue(Path(queue_path)) as queue:
         job = _job_by_id(queue, job_id)
+        if job.get("terminal_disposition") is not None:
+            _validate_local_terminal_disposition(job, job["terminal_disposition"])
+            raise RunnerQueueError(f"runner job {job_id} already has a local terminal disposition")
         recorded_hash = job.get("challenge_candidate_hash")
         if recorded_hash != candidate_hash:
             raise RunnerQueueError(
@@ -186,6 +239,8 @@ def record_runner_action(
             if current.get("candidate_hash") != candidate_hash:
                 raise RunnerQueueError(f"runner action candidate changed for {job_id}")
             if current.get("status") == status and current.get("transaction_hash") == transaction_hash:
+                if alert_message is not None:
+                    _validate_action_terminal_alert(job, job.get("action_alert"), alert_message)
                 return dict(current)
             current_status = current.get("status")
             # A receipt is provisional until its block survives the configured
@@ -220,7 +275,210 @@ def record_runner_action(
         elif isinstance(existing_detail, str):
             action["detail"] = existing_detail
         job["action"] = action
+        if alert_message is not None:
+            job["action_alert"] = _build_action_terminal_alert(job, action, alert_message)
         return dict(action)
+
+
+def set_runner_action_alert(job: dict[str, Any], *, message: str) -> dict[str, Any]:
+    """Bind one durable alert to a terminal action already held under its queue lock."""
+    action = job.get("action")
+    if not isinstance(action, dict) or action.get("status") not in TERMINAL_ACTION_STATUSES:
+        raise RunnerQueueError("runner action alert requires a terminal action")
+    if not isinstance(message, str) or not message or len(message.encode("utf-8")) > 2048:
+        raise RunnerQueueError("runner action alert message must be 1..2048 UTF-8 bytes")
+    existing = job.get("action_alert")
+    if existing is not None:
+        return _validate_action_terminal_alert(job, existing, message)
+    alert = _build_action_terminal_alert(job, action, message)
+    job["action_alert"] = alert
+    return dict(alert)
+
+
+def _migrate_legacy_action_alerts(queue: dict[str, Any]) -> None:
+    jobs = queue.get("jobs")
+    if not isinstance(jobs, list):
+        raise RunnerQueueError("queue.jobs must be an array")
+    for job in jobs:
+        if not isinstance(job, dict) or job.get("terminal_disposition") is not None:
+            continue
+        action = job.get("action")
+        if (
+            not isinstance(action, dict)
+            or action.get("status") not in ACTION_ALERT_REQUIRED_STATUSES
+            or job.get("action_alert") is not None
+        ):
+            continue
+        set_runner_action_alert(
+            job,
+            message=(
+                f"MIGRATED TERMINAL ACTION {job.get('job_id')}: "
+                f"{action.get('status')}"
+            ),
+        )
+
+
+def record_runner_local_disposition(
+    queue_path: str | Path,
+    *,
+    job_id: str,
+    reason_code: str,
+    candidate_hash: str | None = None,
+    detail: str | None = None,
+) -> dict[str, Any]:
+    """Durably terminalize a locally unserviceable job without a chain action."""
+    if not job_id:
+        raise RunnerQueueError("job_id must be non-empty")
+    if candidate_hash is not None:
+        raise RunnerQueueError("caller-selected runner local disposition fences are prohibited")
+    with locked_runner_queue(Path(queue_path)) as queue:
+        job = _job_by_id(queue, job_id)
+        return set_runner_local_disposition(
+            job,
+            reason_code=reason_code,
+            detail=detail,
+        )
+
+
+def set_runner_local_disposition(
+    job: dict[str, Any],
+    *,
+    reason_code: str,
+    candidate_hash: str | None = None,
+    detail: str | None = None,
+    recorded_at_utc: str | None = None,
+) -> dict[str, Any]:
+    """Set a local terminal disposition on a job already held under its queue lock."""
+    if reason_code not in LOCAL_TERMINAL_DISPOSITION_REASONS:
+        raise RunnerQueueError(f"unknown runner local disposition reason: {reason_code}")
+    job_id = job.get("job_id")
+    source_event_hash = job.get("source_event_hash")
+    if not isinstance(job_id, str) or not job_id or not _is_sha256(source_event_hash):
+        raise RunnerQueueError("runner local disposition requires a bound job and source event")
+    if candidate_hash is not None:
+        raise RunnerQueueError("caller-selected runner local disposition fences are prohibited")
+    if detail is not None and (
+        not isinstance(detail, str)
+        or not detail
+        or len(detail.encode("utf-8")) > LOCAL_TERMINAL_DISPOSITION_MAX_DETAIL_BYTES
+    ):
+        raise RunnerQueueError("runner local disposition detail must be 1..2048 UTF-8 bytes")
+    if job.get("status") == "running":
+        raise RunnerQueueError("cannot locally terminalize a running runner job")
+    if isinstance(job.get("action"), dict):
+        raise RunnerQueueError("cannot replace a runner chain action with a local disposition")
+
+    status = "window_expired" if reason_code == "retry_window_expired" else "quarantined"
+    if reason_code == "retry_window_expired":
+        fence_hash = _verified_retry_candidate_hash(job)
+    else:
+        fence_hash = source_event_hash
+    current = job.get("terminal_disposition")
+    if current is not None:
+        validated = _validate_local_terminal_disposition(job, current)
+        if (
+            validated["reason_code"] == reason_code
+            and validated["status"] == status
+            and validated["fence_hash"] == fence_hash
+            and validated.get("detail") == detail
+        ):
+            alert = _validate_terminal_alert(job, job.get("terminal_alert"))
+            return {
+                "created": False,
+                "disposition": dict(validated),
+                "alert": dict(alert),
+            }
+        raise RunnerQueueError(f"runner local disposition for {job_id} is already terminal")
+
+    recorded_at = recorded_at_utc or _format_utc(datetime.now(timezone.utc))
+    _parse_utc(recorded_at)
+    disposition: dict[str, Any] = {
+        "schema_version": LOCAL_TERMINAL_DISPOSITION_SCHEMA_VERSION,
+        "job_id": job_id,
+        "source_event_hash": source_event_hash,
+        "fence_hash": fence_hash,
+        "status": status,
+        "reason_code": reason_code,
+        "recorded_at_utc": recorded_at,
+    }
+    if detail is not None:
+        disposition["detail"] = detail
+    disposition["disposition_hash"] = _local_disposition_hash(disposition)
+    if reason_code != "retry_window_expired":
+        job.pop("challenge_candidate_hash", None)
+    job["status"] = "failed"
+    job["terminal_disposition"] = disposition
+    alert = _build_terminal_alert(disposition)
+    job["terminal_alert"] = alert
+    return {
+        "created": True,
+        "disposition": dict(disposition),
+        "alert": dict(alert),
+    }
+
+
+def record_runner_terminal_alert_delivery(
+    queue_path: str | Path,
+    *,
+    job_id: str,
+    alert_id: str,
+) -> dict[str, Any]:
+    """Record that the disposition-bound terminal alert is durable in the alert log."""
+    if not job_id:
+        raise RunnerQueueError("job_id must be non-empty")
+    if not _is_sha256(alert_id):
+        raise RunnerQueueError("alert_id must be a sha256 string")
+    with locked_runner_queue(Path(queue_path)) as queue:
+        job = _job_by_id(queue, job_id)
+        alert = _validated_job_terminal_alert(job)
+        if alert["alert_id"] != alert_id:
+            raise RunnerQueueError(f"runner terminal alert fencing mismatch for {job_id}")
+        if alert["status"] == "delivered":
+            return {"created": False, "alert": dict(alert)}
+        delivered_at = max(datetime.now(timezone.utc), _parse_utc(alert["created_at_utc"]))
+        delivered = {
+            **alert,
+            "status": "delivered",
+            "delivered_at_utc": _format_utc(delivered_at),
+        }
+        alert_field = (
+            "terminal_alert" if job.get("terminal_disposition") is not None else "action_alert"
+        )
+        job[alert_field] = delivered
+        return {"created": True, "alert": dict(delivered)}
+
+
+def append_runner_terminal_alert(
+    queue_path: str | Path,
+    alerts_path: str | Path,
+    *,
+    job_id: str,
+    _write: Any = os.write,
+    _after_open: Any = None,
+    _after_write: Any = None,
+) -> dict[str, Any]:
+    """Append one disposition-bound alert under queue and filesystem locks."""
+    if not isinstance(job_id, str) or not job_id:
+        raise RunnerQueueError("job_id must be non-empty")
+    queue_file = Path(queue_path).absolute()
+    alerts_file = Path(alerts_path).absolute()
+    if alerts_file.parent != queue_file.parent or alerts_file.name in {"", ".", ".."}:
+        raise RunnerQueueError("runner alert log must be a sibling of the queue")
+    with locked_runner_queue(queue_file) as queue:
+        job = _job_by_id(queue, job_id)
+        alert = _validated_job_terminal_alert(job)
+        created = _append_terminal_alert_record(
+            alerts_file,
+            alert,
+            write_bytes=_write,
+            after_open=_after_open,
+            after_write=_after_write,
+        )
+        return {
+            "created": created,
+            "alert_id": alert["alert_id"],
+            "record": canonical_json(_terminal_alert_record(alert)),
+        }
 
 
 def read_runner_queue(queue_path: str | Path) -> dict[str, Any]:
@@ -266,6 +524,7 @@ def _locked_runner_queue_process(queue_path: Path) -> Iterator[dict[str, Any]]:
                 raise RunnerQueueError("runner queue lock changed during acquisition")
             queue = _read_queue_file_at(directory_fd, queue_path.name)
             original = copy.deepcopy(queue)
+            _migrate_legacy_action_alerts(queue)
             _reconcile_archived_duplicates(queue_path, queue)
             try:
                 yield queue
@@ -286,47 +545,326 @@ def _locked_runner_queue_process(queue_path: Path) -> Iterator[dict[str, Any]]:
 
 
 def _open_stable_lock_at(directory_fd: int, lock_name: str) -> int:
-    """Open one permanent lock inode without racing O_CREAT on its final name."""
+    """Open or durably create one private lock inode at its final name."""
     nofollow = getattr(os, "O_NOFOLLOW", 0)
-    flags = os.O_RDWR | nofollow
+    if not nofollow:
+        raise OSError("runner locks require platform O_NOFOLLOW support")
+    flags = os.O_RDWR | nofollow | getattr(os, "O_NONBLOCK", 0)
+    created = False
     try:
-        return os.open(lock_name, flags, dir_fd=directory_fd)
-    except FileNotFoundError:
-        pass
-
-    temporary = f".{lock_name}.{os.getpid()}.{os.urandom(8).hex()}.init"
-    temporary_fd = -1
-    try:
-        temporary_fd = os.open(
-            temporary,
-            os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow,
+        descriptor = os.open(
+            lock_name,
+            flags | os.O_CREAT | os.O_EXCL,
             0o600,
             dir_fd=directory_fd,
         )
-        os.fchmod(temporary_fd, 0o600)
-        try:
-            os.link(
-                temporary,
-                lock_name,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
+        created = True
+    except FileExistsError:
+        descriptor = os.open(lock_name, flags, dir_fd=directory_fd)
+    try:
+        metadata = os.fstat(descriptor)
+        _validate_private_single_link_file(metadata, label="runner lock")
+        _assert_file_path_identity(
+            directory_fd, lock_name, metadata, label="runner lock"
+        )
+        if created:
+            os.fsync(descriptor)
             os.fsync(directory_fd)
-        except FileExistsError:
-            pass
-    finally:
-        if temporary_fd >= 0:
-            os.close(temporary_fd)
-        try:
-            os.unlink(temporary, dir_fd=directory_fd)
-        except FileNotFoundError:
-            pass
+            durable = os.fstat(descriptor)
+            _validate_private_single_link_file(durable, label="runner lock")
+            _assert_file_path_identity(
+                directory_fd, lock_name, durable, label="runner lock"
+            )
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
 
-    # The link either won or lost to an equivalent contender. Opening without
-    # O_CREAT now observes the single permanent inode; unsafe symlinks fail via
-    # O_NOFOLLOW and a removed parent directory fails rather than spinning.
-    return os.open(lock_name, flags, dir_fd=directory_fd)
+
+def _terminal_alert_record(alert: Mapping[str, Any]) -> dict[str, Any]:
+    if alert.get("schema_version") == ACTION_TERMINAL_ALERT_SCHEMA_VERSION:
+        return {
+            "schema_version": alert["schema_version"],
+            "job_id": alert["job_id"],
+            "source_event_hash": alert["source_event_hash"],
+            "candidate_hash": alert["candidate_hash"],
+            "action_status": alert["action_status"],
+            "action_hash": alert["action_hash"],
+            "message": alert["message"],
+            "created_at_utc": alert["created_at_utc"],
+            "alert_id": alert["alert_id"],
+        }
+    return {
+        "schema_version": alert["schema_version"],
+        "job_id": alert["job_id"],
+        "disposition_hash": alert["disposition_hash"],
+        "message": alert["message"],
+        "created_at_utc": alert["created_at_utc"],
+        "alert_id": alert["alert_id"],
+    }
+
+
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _validate_private_single_link_file(
+    metadata: os.stat_result, *, label: str
+) -> None:
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or metadata.st_nlink != 1
+        or metadata.st_mode & 0o077
+    ):
+        raise RunnerQueueError(
+            f"{label} must be a private owner-controlled single-link regular file"
+        )
+
+
+def _assert_directory_path_identity(path: Path, opened: os.stat_result) -> None:
+    try:
+        current = path.stat(follow_symlinks=False)
+    except (FileNotFoundError, OSError) as exc:
+        raise RunnerQueueError("runner alert root changed during transaction") from exc
+    if not stat.S_ISDIR(current.st_mode) or not _same_inode(current, opened):
+        raise RunnerQueueError("runner alert root changed during transaction")
+
+
+def _assert_file_path_identity(
+    directory_fd: int,
+    name: str,
+    opened: os.stat_result,
+    *,
+    label: str,
+) -> None:
+    try:
+        current = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except (FileNotFoundError, OSError) as exc:
+        raise RunnerQueueError(f"{label} changed during transaction") from exc
+    if not _same_inode(current, opened):
+        raise RunnerQueueError(f"{label} changed during transaction")
+
+
+def _open_or_create_private_file_at(directory_fd: int, name: str) -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if not nofollow:
+        raise OSError("runner alert logs require platform O_NOFOLLOW support")
+    flags = os.O_RDWR | os.O_APPEND | nofollow | getattr(os, "O_NONBLOCK", 0)
+    created = False
+    try:
+        descriptor = os.open(
+            name,
+            flags | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        created = True
+    except FileExistsError:
+        try:
+            descriptor = os.open(name, flags, dir_fd=directory_fd)
+        except OSError as exc:
+            raise RunnerQueueError("runner alert log is unavailable or unsafe") from exc
+    except OSError as exc:
+        raise RunnerQueueError("runner alert log is unavailable or unsafe") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        _validate_private_single_link_file(metadata, label="runner alert log")
+        _assert_file_path_identity(
+            directory_fd, name, metadata, label="runner alert log"
+        )
+        if created:
+            os.fsync(descriptor)
+            os.fsync(directory_fd)
+            durable = os.fstat(descriptor)
+            _validate_private_single_link_file(durable, label="runner alert log")
+            _assert_file_path_identity(
+                directory_fd, name, durable, label="runner alert log"
+            )
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _read_bounded_descriptor(descriptor: int, *, max_bytes: int, label: str) -> bytes:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(descriptor, min(64 * 1024, max_bytes - total + 1))
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise RunnerQueueError(f"{label} exceeds its byte limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _alert_log_has_exact_record(payload: bytes, record: bytes) -> bool:
+    for line in payload.split(b"\n")[:-1]:
+        if line != record:
+            continue
+        try:
+            value = loads_strict_json(
+                line,
+                max_bytes=TERMINAL_ALERT_RECORD_MAX_BYTES,
+                max_depth=16,
+                canonical=True,
+                trailing_newline="forbid",
+            )
+        except ValueError:
+            continue
+        if isinstance(value, dict) and canonical_json(value).encode("utf-8") == record:
+            return True
+    return False
+
+
+def _write_all_descriptor(
+    descriptor: int, payload: bytes, write_bytes: Any
+) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = write_bytes(descriptor, payload[offset:])
+        if (
+            not isinstance(written, int)
+            or isinstance(written, bool)
+            or written <= 0
+            or written > len(payload) - offset
+        ):
+            raise RunnerQueueError(
+                "runner alert write did not make bounded forward progress"
+            )
+        offset += written
+
+
+def _append_terminal_alert_record(
+    alerts_path: Path,
+    alert: Mapping[str, Any],
+    *,
+    write_bytes: Any,
+    after_open: Any,
+    after_write: Any,
+) -> bool:
+    directory_fd = open_secure_runner_directory(alerts_path.parent)
+    directory_metadata = os.fstat(directory_fd)
+    lock_name = f"{alerts_path.name}.lock"
+    lock_fd = alert_fd = -1
+    lock_file = None
+    try:
+        _assert_directory_path_identity(alerts_path.parent, directory_metadata)
+        try:
+            lock_fd = _open_stable_lock_at(directory_fd, lock_name)
+        except OSError as exc:
+            raise RunnerQueueError("runner alert lock is unavailable or unsafe") from exc
+        lock_metadata = os.fstat(lock_fd)
+        _validate_private_single_link_file(lock_metadata, label="runner alert lock")
+        lock_file = os.fdopen(lock_fd, "r+b", buffering=0)
+        lock_fd = -1
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            locked_metadata = os.fstat(lock_file.fileno())
+            _validate_private_single_link_file(
+                locked_metadata, label="runner alert lock"
+            )
+            if not _same_inode(locked_metadata, lock_metadata):
+                raise RunnerQueueError("runner alert lock changed during acquisition")
+            _assert_file_path_identity(
+                directory_fd,
+                lock_name,
+                locked_metadata,
+                label="runner alert lock",
+            )
+
+            alert_fd = _open_or_create_private_file_at(
+                directory_fd, alerts_path.name
+            )
+            opened_metadata = os.fstat(alert_fd)
+            _validate_private_single_link_file(
+                opened_metadata, label="runner alert log"
+            )
+            if opened_metadata.st_size > TERMINAL_ALERT_LOG_MAX_BYTES:
+                raise RunnerQueueError("runner alert log exceeds its byte limit")
+            if after_open is not None:
+                after_open(alert_fd, directory_fd)
+            _assert_file_path_identity(
+                directory_fd,
+                alerts_path.name,
+                opened_metadata,
+                label="runner alert log",
+            )
+
+            existing = _read_bounded_descriptor(
+                alert_fd,
+                max_bytes=TERMINAL_ALERT_LOG_MAX_BYTES,
+                label="runner alert log",
+            )
+            record = canonical_json(_terminal_alert_record(alert)).encode("utf-8")
+            if len(record) > TERMINAL_ALERT_RECORD_MAX_BYTES:
+                raise RunnerQueueError("runner alert record exceeds its byte limit")
+            created = not _alert_log_has_exact_record(existing, record)
+            if created:
+                trailing = existing.rsplit(b"\n", 1)[-1]
+                if trailing == record:
+                    payload = b"\n"
+                else:
+                    prefix = b"\n" if existing and not existing.endswith(b"\n") else b""
+                    payload = prefix + record + b"\n"
+                if len(existing) + len(payload) > TERMINAL_ALERT_LOG_MAX_BYTES:
+                    raise RunnerQueueError("runner alert log exceeds its byte limit")
+                _write_all_descriptor(alert_fd, payload, write_bytes)
+            os.fsync(alert_fd)
+            if created and after_write is not None:
+                after_write(alert_fd, directory_fd)
+
+            final_metadata = os.fstat(alert_fd)
+            _validate_private_single_link_file(
+                final_metadata, label="runner alert log"
+            )
+            if not _same_inode(final_metadata, opened_metadata):
+                raise RunnerQueueError("runner alert log inode changed during write")
+            _assert_file_path_identity(
+                directory_fd,
+                alerts_path.name,
+                final_metadata,
+                label="runner alert log",
+            )
+            final_payload = _read_bounded_descriptor(
+                alert_fd,
+                max_bytes=TERMINAL_ALERT_LOG_MAX_BYTES,
+                label="runner alert log",
+            )
+            if not _alert_log_has_exact_record(final_payload, record):
+                raise RunnerQueueError(
+                    "runner alert record was not durable after append"
+                )
+            final_lock = os.fstat(lock_file.fileno())
+            _validate_private_single_link_file(
+                final_lock, label="runner alert lock"
+            )
+            _assert_file_path_identity(
+                directory_fd,
+                lock_name,
+                final_lock,
+                label="runner alert lock",
+            )
+            _assert_directory_path_identity(
+                alerts_path.parent, directory_metadata
+            )
+            return created
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            lock_file.close()
+            lock_file = None
+    finally:
+        if alert_fd >= 0:
+            os.close(alert_fd)
+        if lock_file is not None:
+            lock_file.close()
+        if lock_fd >= 0:
+            os.close(lock_fd)
+        os.close(directory_fd)
 
 
 def _read_queue_file_at(directory_fd: int, queue_name: str) -> dict[str, Any]:
@@ -435,13 +973,278 @@ def _archive_for_admission(
 def _is_archivable(job: Mapping[str, Any]) -> bool:
     if job.get("status") not in TERMINAL_JOB_STATUSES or not _is_sha256(job.get("source_event_hash")):
         return False
+    try:
+        _terminal_archive_identity(job)
+    except RunnerQueueError:
+        return False
+    return True
+
+
+def _local_disposition_hash(disposition: Mapping[str, Any]) -> str:
+    unsigned = {key: value for key, value in disposition.items() if key != "disposition_hash"}
+    return "sha256:" + hashlib.sha256(canonical_json(unsigned).encode("utf-8")).hexdigest()
+
+
+def _validate_local_terminal_disposition(
+    job: Mapping[str, Any], disposition: Any
+) -> dict[str, Any]:
+    if not isinstance(disposition, dict):
+        raise RunnerQueueError("runner local terminal disposition must be an object")
+    required = {
+        "schema_version",
+        "job_id",
+        "source_event_hash",
+        "fence_hash",
+        "status",
+        "reason_code",
+        "recorded_at_utc",
+        "disposition_hash",
+    }
+    if set(disposition) not in (required, required | {"detail"}):
+        raise RunnerQueueError("runner local terminal disposition fields are invalid")
+    reason_code = disposition.get("reason_code")
+    expected_status = "window_expired" if reason_code == "retry_window_expired" else "quarantined"
+    if (
+        disposition.get("schema_version") != LOCAL_TERMINAL_DISPOSITION_SCHEMA_VERSION
+        or reason_code not in LOCAL_TERMINAL_DISPOSITION_REASONS
+        or disposition.get("status") != expected_status
+        or disposition.get("job_id") != job.get("job_id")
+        or disposition.get("source_event_hash") != job.get("source_event_hash")
+        or job.get("status") != "failed"
+        or isinstance(job.get("action"), dict)
+        or not _is_sha256(disposition.get("fence_hash"))
+        or disposition.get("disposition_hash") != _local_disposition_hash(disposition)
+    ):
+        raise RunnerQueueError("runner local terminal disposition binding is invalid")
+    if reason_code == "retry_window_expired":
+        expected_fence = _verified_retry_candidate_hash(job)
+    else:
+        expected_fence = job.get("source_event_hash")
+        if "challenge_candidate_hash" in job:
+            raise RunnerQueueError(
+                "source-event-only runner local disposition retains candidate evidence"
+            )
+    if disposition["fence_hash"] != expected_fence:
+        raise RunnerQueueError("runner local terminal disposition fence is invalid")
+    detail = disposition.get("detail")
+    if detail is not None and (
+        not isinstance(detail, str)
+        or not detail
+        or len(detail.encode("utf-8")) > LOCAL_TERMINAL_DISPOSITION_MAX_DETAIL_BYTES
+    ):
+        raise RunnerQueueError("runner local terminal disposition detail is invalid")
+    if not isinstance(disposition.get("recorded_at_utc"), str):
+        raise RunnerQueueError("runner local terminal disposition timestamp is invalid")
+    _parse_utc(disposition["recorded_at_utc"])
+    return dict(disposition)
+
+
+def _terminal_alert_identity_payload(disposition: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": LOCAL_TERMINAL_ALERT_SCHEMA_VERSION,
+        "job_id": disposition["job_id"],
+        "disposition_hash": disposition["disposition_hash"],
+        "message": (
+            f"LOCAL {disposition['status']} {disposition['job_id']}: "
+            f"{disposition['reason_code']}"
+        ),
+        "created_at_utc": disposition["recorded_at_utc"],
+    }
+
+
+def _build_terminal_alert(disposition: Mapping[str, Any]) -> dict[str, Any]:
+    identity = _terminal_alert_identity_payload(disposition)
+    alert_id = "sha256:" + hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
+    return {
+        **identity,
+        "alert_id": alert_id,
+        "status": "pending",
+        "delivered_at_utc": None,
+    }
+
+
+def _validate_terminal_alert(job: Mapping[str, Any], alert: Any) -> dict[str, Any]:
+    if not isinstance(alert, dict):
+        raise RunnerQueueError("runner terminal alert must be an object")
+    expected_fields = {
+        "schema_version",
+        "job_id",
+        "disposition_hash",
+        "message",
+        "created_at_utc",
+        "alert_id",
+        "status",
+        "delivered_at_utc",
+    }
+    disposition = _validate_local_terminal_disposition(job, job.get("terminal_disposition"))
+    identity = _terminal_alert_identity_payload(disposition)
+    expected_id = "sha256:" + hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
+    if (
+        set(alert) != expected_fields
+        or any(alert.get(key) != value for key, value in identity.items())
+        or alert.get("alert_id") != expected_id
+        or alert.get("status") not in {"pending", "delivered"}
+    ):
+        raise RunnerQueueError("runner terminal alert binding is invalid")
+    created = _parse_utc(alert.get("created_at_utc"))
+    delivered_at = alert.get("delivered_at_utc")
+    if alert["status"] == "pending":
+        if delivered_at is not None:
+            raise RunnerQueueError("pending runner terminal alert has a delivery timestamp")
+    else:
+        delivered = _parse_utc(delivered_at)
+        if delivered < created:
+            raise RunnerQueueError("runner terminal alert delivery predates creation")
+    return dict(alert)
+
+
+def _action_terminal_hash(job: Mapping[str, Any], action: Mapping[str, Any]) -> str:
+    payload = {
+        "schema_version": ACTION_TERMINAL_ALERT_SCHEMA_VERSION,
+        "job_id": job.get("job_id"),
+        "source_event_hash": job.get("source_event_hash"),
+        "action": dict(action),
+    }
+    return "sha256:" + hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _action_terminal_alert_identity(
+    job: Mapping[str, Any], action: Mapping[str, Any], message: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": ACTION_TERMINAL_ALERT_SCHEMA_VERSION,
+        "job_id": job["job_id"],
+        "source_event_hash": job["source_event_hash"],
+        "candidate_hash": action["candidate_hash"],
+        "action_status": action["status"],
+        "action_hash": _action_terminal_hash(job, action),
+        "message": message,
+        "created_at_utc": action["recorded_at_utc"],
+    }
+
+
+def _build_action_terminal_alert(
+    job: Mapping[str, Any], action: Mapping[str, Any], message: str
+) -> dict[str, Any]:
+    identity = _action_terminal_alert_identity(job, action, message)
+    alert_id = "sha256:" + hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
+    return {
+        **identity,
+        "alert_id": alert_id,
+        "status": "pending",
+        "delivered_at_utc": None,
+    }
+
+
+def _validate_action_terminal_alert(
+    job: Mapping[str, Any], alert: Any, expected_message: str | None = None
+) -> dict[str, Any]:
     action = job.get("action")
-    return (
-        isinstance(action, dict)
-        and action.get("status") in TERMINAL_ACTION_STATUSES
-        and _is_sha256(action.get("candidate_hash"))
-        and action.get("candidate_hash") == job.get("challenge_candidate_hash")
-    )
+    if (
+        not isinstance(job.get("job_id"), str)
+        or not job.get("job_id")
+        or not _is_sha256(job.get("source_event_hash"))
+        or not isinstance(action, dict)
+        or action.get("status") not in TERMINAL_ACTION_STATUSES
+        or not _is_sha256(action.get("candidate_hash"))
+        or action.get("candidate_hash") != job.get("challenge_candidate_hash")
+        or not isinstance(action.get("recorded_at_utc"), str)
+    ):
+        raise RunnerQueueError("runner action alert requires a terminal action")
+    if not isinstance(alert, dict):
+        raise RunnerQueueError("runner action terminal alert must be an object")
+    expected_fields = {
+        "schema_version",
+        "job_id",
+        "source_event_hash",
+        "candidate_hash",
+        "action_status",
+        "action_hash",
+        "message",
+        "created_at_utc",
+        "alert_id",
+        "status",
+        "delivered_at_utc",
+    }
+    message = alert.get("message")
+    if (
+        set(alert) != expected_fields
+        or not isinstance(message, str)
+        or not message
+        or len(message.encode("utf-8")) > LOCAL_TERMINAL_DISPOSITION_MAX_DETAIL_BYTES
+        or (expected_message is not None and message != expected_message)
+    ):
+        raise RunnerQueueError("runner action terminal alert fields are invalid")
+    identity = _action_terminal_alert_identity(job, action, message)
+    expected_id = "sha256:" + hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
+    if (
+        any(alert.get(key) != value for key, value in identity.items())
+        or alert.get("alert_id") != expected_id
+        or alert.get("status") not in {"pending", "delivered"}
+    ):
+        raise RunnerQueueError("runner action terminal alert binding is invalid")
+    created = _parse_utc(alert.get("created_at_utc"))
+    delivered_at = alert.get("delivered_at_utc")
+    if alert["status"] == "pending":
+        if delivered_at is not None:
+            raise RunnerQueueError("pending runner action alert has a delivery timestamp")
+    else:
+        delivered = _parse_utc(delivered_at)
+        if delivered < created:
+            raise RunnerQueueError("runner action alert delivery predates creation")
+    return dict(alert)
+
+
+def _validated_job_terminal_alert(job: Mapping[str, Any]) -> dict[str, Any]:
+    if job.get("terminal_disposition") is not None:
+        _validate_local_terminal_disposition(job, job.get("terminal_disposition"))
+        return _validate_terminal_alert(job, job.get("terminal_alert"))
+    if job.get("action_alert") is not None:
+        return _validate_action_terminal_alert(job, job.get("action_alert"))
+    raise RunnerQueueError("runner job has no durable terminal alert")
+
+
+def _terminal_archive_identity(job: Mapping[str, Any]) -> tuple[Any, ...]:
+    action = job.get("action")
+    disposition = job.get("terminal_disposition")
+    if isinstance(action, dict) and disposition is None:
+        candidate_hash = action.get("candidate_hash")
+        if (
+            action.get("status") not in TERMINAL_ACTION_STATUSES
+            or not _is_sha256(candidate_hash)
+            or candidate_hash != job.get("challenge_candidate_hash")
+        ):
+            raise RunnerQueueError("runner terminal action is not archiveable")
+        if action.get("status") in ACTION_ALERT_REQUIRED_STATUSES:
+            if job.get("action_alert") is None:
+                raise RunnerQueueError("runner terminal action is missing its required alert")
+            alert = _validate_action_terminal_alert(job, job.get("action_alert"))
+            if alert["status"] != "delivered":
+                raise RunnerQueueError("runner action terminal alert is not delivered")
+        elif job.get("action_alert") is not None:
+            _validate_action_terminal_alert(job, job.get("action_alert"))
+        return (
+            job.get("job_id"),
+            job.get("source_event_hash"),
+            job.get("status"),
+            "action",
+            action["status"],
+            candidate_hash,
+        )
+    if action is None and disposition is not None:
+        checked = _validate_local_terminal_disposition(job, disposition)
+        alert = _validate_terminal_alert(job, job.get("terminal_alert"))
+        if alert["status"] != "delivered":
+            raise RunnerQueueError("runner local terminal alert is not delivered")
+        return (
+            job.get("job_id"),
+            job.get("source_event_hash"),
+            job.get("status"),
+            "local_disposition",
+            checked["status"],
+            checked["fence_hash"],
+        )
+    raise RunnerQueueError("runner terminal job must have exactly one terminal record")
 
 
 def _challenge_deadline(job: Mapping[str, Any]) -> int | None:
@@ -459,11 +1262,13 @@ def _challenge_deadline(job: Mapping[str, Any]) -> int | None:
     return deadline
 
 
-def _is_urgent_deadline_job(job: Mapping[str, Any], *, now: datetime | None = None) -> bool:
+def _is_urgent_deadline_job(
+    job: Mapping[str, Any], *, chain_now: datetime | None
+) -> bool:
     deadline = _challenge_deadline(job)
-    if deadline is None:
+    if deadline is None or chain_now is None:
         return False
-    current = int((now or datetime.now(timezone.utc)).timestamp())
+    current = int(chain_now.timestamp())
     return current < deadline <= current + URGENT_DEADLINE_SLACK_SECONDS
 
 
@@ -541,6 +1346,7 @@ def _read_private_regular_bytes(path: Path) -> bytes:
             or before.st_dev != opened.st_dev
             or before.st_ino != opened.st_ino
             or opened.st_uid != os.geteuid()
+            or opened.st_nlink != 1
             or opened.st_mode & 0o077
             or opened.st_size > DEFAULT_MAX_BYTES
         ):
@@ -560,6 +1366,101 @@ def _read_private_regular_bytes(path: Path) -> bytes:
         os.close(descriptor)
 
 
+@lru_cache(maxsize=1)
+def _runner_transcript_validator() -> jsonschema.Draft202012Validator:
+    schema_path = Path(__file__).resolve().parents[2] / "schemas/runner-transcript.schema.json"
+    try:
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        return jsonschema.Draft202012Validator(schema)
+    except (OSError, ValueError, jsonschema.SchemaError) as exc:
+        raise RunnerQueueError(
+            f"runner transcript schema is unavailable or invalid: {exc}"
+        ) from exc
+
+
+def _verified_retry_candidate_hash(job: Mapping[str, Any]) -> str:
+    if job.get("failure_reason") != "retry_window_expired":
+        raise RunnerQueueError("retry_window_expired requires an expired retry failure")
+    transcript_path = job.get("transcript_path")
+    transcript_hash = job.get("transcript_hash")
+    if not isinstance(transcript_path, str) or not transcript_path or not _is_sha256(transcript_hash):
+        raise RunnerQueueError("retry_window_expired requires durable transcript evidence")
+
+    path = Path(transcript_path)
+    payload = _read_private_regular_bytes(path)
+    try:
+        transcript = loads_strict_json(
+            payload,
+            max_bytes=DEFAULT_MAX_BYTES,
+            max_depth=128,
+            canonical=True,
+            trailing_newline="require",
+        )
+        if not isinstance(transcript, dict):
+            raise RunnerQueueError("runner retry transcript must be an object")
+        _runner_transcript_validator().validate(transcript)
+    except (ValueError, jsonschema.ValidationError) as exc:
+        raise RunnerQueueError(f"runner retry transcript is invalid: {exc}") from exc
+
+    embedded_hash = transcript.get("transcript_hash")
+    unhashed = {key: value for key, value in transcript.items() if key != "transcript_hash"}
+    derived_transcript_hash = "sha256:" + hashlib.sha256(
+        canonical_json(unhashed).encode("utf-8")
+    ).hexdigest()
+    if (
+        embedded_hash != transcript_hash
+        or embedded_hash != derived_transcript_hash
+        or path.name != f"{embedded_hash.removeprefix('sha256:')}.json"
+        or transcript.get("job_id") != job.get("job_id")
+    ):
+        raise RunnerQueueError("runner retry transcript hash or job binding is invalid")
+
+    verifier = transcript.get("verifier")
+    transcript_claim = verifier.get("chain_claim") if isinstance(verifier, dict) else None
+    queue_claim = job.get("chain_claim")
+    if (
+        not isinstance(transcript_claim, dict)
+        or not isinstance(queue_claim, dict)
+        or canonical_json(transcript_claim) != canonical_json(queue_claim)
+    ):
+        raise RunnerQueueError("runner retry transcript chain claim binding is invalid")
+    candidate = verifier.get("challenge_candidate")
+    if (
+        not isinstance(candidate, dict)
+        or candidate.get("schema_version") != "p42-challenge-candidate/v1"
+        or candidate.get("action") != "retry"
+        or candidate.get("source_event_hash") != job.get("source_event_hash")
+    ):
+        raise RunnerQueueError("runner retry transcript candidate binding is invalid")
+    for field in (
+        "chain_id",
+        "problem_id",
+        "submission_contract",
+        "challenge_contract",
+        "submission_id",
+        "reveal_instance_hash",
+        "challenge_ends_at",
+    ):
+        if candidate.get(field) != queue_claim.get(field):
+            raise RunnerQueueError(f"runner retry candidate {field} binding is invalid")
+
+    candidate_hash = candidate.get("candidate_hash")
+    unsigned_candidate = {
+        key: value for key, value in candidate.items() if key != "candidate_hash"
+    }
+    derived_candidate_hash = "sha256:" + hashlib.sha256(
+        canonical_json(unsigned_candidate).encode("utf-8")
+    ).hexdigest()
+    if (
+        not _is_sha256(candidate_hash)
+        or candidate_hash != derived_candidate_hash
+        or job.get("challenge_candidate_hash") != derived_candidate_hash
+    ):
+        raise RunnerQueueError("runner retry candidate hash binding is invalid")
+    return derived_candidate_hash
+
+
 def _persist_archived_job(queue_path: Path, job: Mapping[str, Any]) -> None:
     records, tombstones = _archive_paths(queue_path)
     _ensure_private_directory(records.parent)
@@ -576,15 +1477,28 @@ def _persist_archived_job(queue_path: Path, job: Mapping[str, Any]) -> None:
     _write_immutable_json(record_path, archive)
     if _read_private_regular_bytes(record_path) != archive_payload:
         raise RunnerQueueError(f"runner archive record digest collision: {record_path}")
-    tombstone = {
-        "schema_version": TOMBSTONE_SCHEMA_VERSION,
-        "job_id": job["job_id"],
-        "source_event_hash": job["source_event_hash"],
-        "terminal_status": job["status"],
-        "terminal_action_status": job["action"]["status"],
-        "candidate_hash": job["action"]["candidate_hash"],
-        "archive_hash": archive_hash,
-    }
+    identity = _terminal_archive_identity(job)
+    if identity[3] == "action":
+        tombstone = {
+            "schema_version": TOMBSTONE_SCHEMA_VERSION,
+            "job_id": identity[0],
+            "source_event_hash": identity[1],
+            "terminal_status": identity[2],
+            "terminal_action_status": identity[4],
+            "candidate_hash": identity[5],
+            "archive_hash": archive_hash,
+        }
+    else:
+        tombstone = {
+            "schema_version": LOCAL_TOMBSTONE_SCHEMA_VERSION,
+            "job_id": identity[0],
+            "source_event_hash": identity[1],
+            "terminal_status": identity[2],
+            "terminal_record_kind": identity[3],
+            "terminal_record_status": identity[4],
+            "fence_hash": identity[5],
+            "archive_hash": archive_hash,
+        }
     _write_immutable_json(tombstones / f"job-{_safe_key(job['job_id'])}.json", tombstone)
     _write_immutable_json(tombstones / f"event-{_safe_key(job['source_event_hash'])}.json", tombstone)
     _validate_archive_store(queue_path, expected_fault=_validated_archive_fault(queue_path))
@@ -701,6 +1615,71 @@ def _validated_archive_fault(queue_path: Path) -> dict[str, Any] | None:
     return value
 
 
+def _tombstone_identity(value: Any) -> tuple[Any, ...]:
+    if not isinstance(value, dict):
+        raise RunnerQueueError("runner tombstone must be an object")
+    common_valid = (
+        isinstance(value.get("job_id"), str)
+        and bool(value["job_id"])
+        and _is_sha256(value.get("source_event_hash"))
+        and value.get("terminal_status") in TERMINAL_JOB_STATUSES
+        and _is_sha256(value.get("archive_hash"))
+    )
+    if value.get("schema_version") == TOMBSTONE_SCHEMA_VERSION:
+        expected = {
+            "schema_version",
+            "job_id",
+            "source_event_hash",
+            "terminal_status",
+            "terminal_action_status",
+            "candidate_hash",
+            "archive_hash",
+        }
+        if (
+            set(value) != expected
+            or not common_valid
+            or value.get("terminal_action_status") not in TERMINAL_ACTION_STATUSES
+            or not _is_sha256(value.get("candidate_hash"))
+        ):
+            raise RunnerQueueError("invalid runner action tombstone")
+        return (
+            value["job_id"],
+            value["source_event_hash"],
+            value["terminal_status"],
+            "action",
+            value["terminal_action_status"],
+            value["candidate_hash"],
+        )
+    if value.get("schema_version") == LOCAL_TOMBSTONE_SCHEMA_VERSION:
+        expected = {
+            "schema_version",
+            "job_id",
+            "source_event_hash",
+            "terminal_status",
+            "terminal_record_kind",
+            "terminal_record_status",
+            "fence_hash",
+            "archive_hash",
+        }
+        if (
+            set(value) != expected
+            or not common_valid
+            or value.get("terminal_record_kind") != "local_disposition"
+            or value.get("terminal_record_status") not in {"quarantined", "window_expired"}
+            or not _is_sha256(value.get("fence_hash"))
+        ):
+            raise RunnerQueueError("invalid runner local-disposition tombstone")
+        return (
+            value["job_id"],
+            value["source_event_hash"],
+            value["terminal_status"],
+            value["terminal_record_kind"],
+            value["terminal_record_status"],
+            value["fence_hash"],
+        )
+    raise RunnerQueueError("unknown runner tombstone schema")
+
+
 def _validate_archive_store(
     queue_path: Path,
     *,
@@ -732,25 +1711,23 @@ def _validate_archive_store(
             job = value.get("job") if isinstance(value, dict) else None
             if not isinstance(value, dict) or set(value) != {"schema_version", "job"} or payload != (canonical_json(value) + "\n").encode() or value.get("schema_version") != ARCHIVE_SCHEMA_VERSION or not isinstance(job, dict) or not _is_archivable(job):
                 raise RunnerQueueError(f"invalid runner archive record: {name}")
-            archived_jobs[digest] = (
-                job.get("job_id"), job.get("source_event_hash"), job.get("status"),
-                job.get("action", {}).get("status"), job.get("challenge_candidate_hash"),
-            )
+            archived_jobs[digest] = _terminal_archive_identity(job)
             if time.monotonic() - budget["started"] > max_seconds:
                 raise RunnerQueueError("runner archive time validation budget exhausted")
         for name, payload in _scan_archive_directory_at(tombstones_fd, budget, max_entries, max_bytes, max_seconds):
             value = loads_strict_json(payload, max_bytes=DEFAULT_MAX_BYTES)
-            if not isinstance(value, dict) or set(value) != {"schema_version", "job_id", "source_event_hash", "terminal_status", "terminal_action_status", "candidate_hash", "archive_hash"} or payload != (canonical_json(value) + "\n").encode() or value.get("schema_version") != TOMBSTONE_SCHEMA_VERSION:
+            if not isinstance(value, dict) or payload != (canonical_json(value) + "\n").encode():
                 raise RunnerQueueError(f"invalid runner tombstone: {name}")
+            try:
+                tombstone_identity = _tombstone_identity(value)
+            except RunnerQueueError as exc:
+                raise RunnerQueueError(f"invalid runner tombstone: {name}") from exc
             prefix = "job" if name.startswith("job-") else "event" if name.startswith("event-") else None
             key = value.get("job_id") if prefix == "job" else value.get("source_event_hash")
             if prefix is None or not isinstance(key, str) or name != f"{prefix}-{_safe_key(key)}.json":
                 raise RunnerQueueError(f"runner tombstone filename mismatch: {name}")
             identity = archived_jobs.get(value.get("archive_hash"))
-            if not identity or (
-                value.get("job_id"), value.get("source_event_hash"), value.get("terminal_status"),
-                value.get("terminal_action_status"), value.get("candidate_hash"),
-            ) != identity:
+            if not identity or tombstone_identity != identity:
                 raise RunnerQueueError(f"runner tombstone does not match archive record: {name}")
             indexed_hashes[value["archive_hash"]] = indexed_hashes.get(value["archive_hash"], 0) + 1
             if time.monotonic() - budget["started"] > max_seconds:
@@ -873,7 +1850,7 @@ def build_runner_health_snapshot(
                 queue,
                 memory=memory,
                 policy=policy,
-                now_utc=_format_utc(datetime.fromtimestamp(chain_time, timezone.utc)),
+                chain_now_utc=_format_utc(datetime.fromtimestamp(chain_time, timezone.utc)),
             )
             result["runner_plan"] = {
                 "decision": plan["decision"],
@@ -896,17 +1873,10 @@ def _read_tombstone(path: Path) -> dict[str, Any] | None:
         value = loads_strict_json(_read_private_regular_bytes(path), max_bytes=DEFAULT_MAX_BYTES)
     except Exception as exc:
         raise RunnerQueueError(f"corrupt runner tombstone: {path}") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != TOMBSTONE_SCHEMA_VERSION:
-        raise RunnerQueueError(f"invalid runner tombstone: {path}")
-    if not isinstance(value.get("job_id"), str) or not _is_sha256(value.get("source_event_hash")):
-        raise RunnerQueueError(f"invalid runner tombstone: {path}")
-    if (
-        value.get("terminal_status") not in TERMINAL_JOB_STATUSES
-        or value.get("terminal_action_status") not in TERMINAL_ACTION_STATUSES
-        or not _is_sha256(value.get("candidate_hash"))
-        or not _is_sha256(value.get("archive_hash"))
-    ):
-        raise RunnerQueueError(f"invalid runner tombstone: {path}")
+    try:
+        tombstone_identity = _tombstone_identity(value)
+    except RunnerQueueError as exc:
+        raise RunnerQueueError(f"invalid runner tombstone: {path}") from exc
     records, _ = _archive_paths(path.parents[1].parent / path.parents[1].name.removesuffix(".archive"))
     record = records / f"{value['archive_hash'].removeprefix('sha256:')}.json"
     try:
@@ -930,13 +1900,8 @@ def _read_tombstone(path: Path) -> dict[str, Any] | None:
         not isinstance(archive, dict)
         or archive.get("schema_version") != ARCHIVE_SCHEMA_VERSION
         or not isinstance(archived_job, dict)
-        or archived_job.get("job_id") != value["job_id"]
-        or archived_job.get("source_event_hash") != value["source_event_hash"]
-        or archived_job.get("status") != value["terminal_status"]
-        or archived_job.get("challenge_candidate_hash") != value["candidate_hash"]
-        or archived_job.get("action", {}).get("status") != value["terminal_action_status"]
-        or archived_job.get("action", {}).get("candidate_hash") != value["candidate_hash"]
         or not _is_archivable(archived_job)
+        or _terminal_archive_identity(archived_job) != tombstone_identity
     ):
         raise RunnerQueueError(f"runner tombstone archive target does not match index: {path}")
     return value
@@ -1027,26 +1992,30 @@ def plan_runner_queue(
     memory: MemorySnapshot,
     policy: RunnerPolicy | None = None,
     now_utc: str | None = None,
+    chain_now_utc: str | None = None,
 ) -> dict[str, Any]:
     policy = policy or RunnerPolicy()
     _validate_memory(memory)
     _validate_policy(policy)
-    now = _parse_utc(now_utc) if now_utc else datetime.now(timezone.utc)
-    now_text = _format_utc(now)
+    wall_now = _parse_utc(now_utc) if now_utc else datetime.now(timezone.utc)
+    chain_now = _parse_utc(chain_now_utc) if chain_now_utc else wall_now
+    now_text = _format_utc(wall_now)
 
     jobs = _validate_jobs(queue)
     queued = sorted(
         [job for job in jobs if job["status"] == "queued"],
-        key=lambda job: _job_sort_key(job, now_epoch=int(now.timestamp())),
+        key=lambda job: _job_sort_key(job, now_epoch=int(chain_now.timestamp())),
     )
-    eligible_queued = [job for job in queued if _retry_not_before(job) is None or _retry_not_before(job) <= now]
+    eligible_queued = [
+        job for job in queued if _retry_is_eligible(job, wall_now=wall_now, chain_now=chain_now)
+    ]
     active_running = []
     stale_running = []
     for job in jobs:
         if job["status"] != "running":
             continue
         lease_expires = job.get("lease_expires_at_utc")
-        if not isinstance(lease_expires, str) or _parse_utc(lease_expires) <= now:
+        if not isinstance(lease_expires, str) or _parse_utc(lease_expires) <= wall_now:
             stale_running.append(job)
         else:
             active_running.append(job)
@@ -1058,7 +2027,7 @@ def plan_runner_queue(
         "reason": "",
         "selected_job_id": None,
         "queued_count": len(queued),
-        "oldest_queued_age_seconds": _oldest_queued_age_seconds(queued, now),
+        "oldest_queued_age_seconds": _oldest_queued_age_seconds(queued, wall_now),
         "active_running_count": len(active_running),
         "stale_running_job_ids": [job["job_id"] for job in stale_running],
         "memory": asdict(memory),
@@ -1262,6 +2231,21 @@ def _validate_jobs(queue: Mapping[str, Any]) -> list[dict[str, Any]]:
                     f"queue.jobs[{index}].retry_not_before_utc must be a UTC timestamp string"
                 )
             _parse_utc(retry_not_before)
+        terminal_disposition = job.get("terminal_disposition")
+        if terminal_disposition is not None:
+            _validate_local_terminal_disposition(job, terminal_disposition)
+            _validate_terminal_alert(job, job.get("terminal_alert"))
+        if job.get("action_alert") is not None:
+            _validate_action_terminal_alert(job, job.get("action_alert"))
+        action = job.get("action")
+        if (
+            isinstance(action, dict)
+            and action.get("status") in ACTION_ALERT_REQUIRED_STATUSES
+            and job.get("action_alert") is None
+        ):
+            raise RunnerQueueError(
+                f"queue.jobs[{index}] terminal action is missing its required alert"
+            )
         _challenge_deadline(job)
         normalized.append(dict(job))
     return normalized
@@ -1295,6 +2279,16 @@ def _job_sort_key(job: Mapping[str, Any], *, now_epoch: int) -> tuple[int, int, 
     if not isinstance(created_at, str):
         created_at = ""
     return (deadline_class, deadline_order, block_number, log_index, created_at, str(job["job_id"]))
+
+
+def _retry_is_eligible(
+    job: Mapping[str, Any], *, wall_now: datetime, chain_now: datetime
+) -> bool:
+    deadline = _challenge_deadline(job)
+    if deadline is not None and deadline <= int(chain_now.timestamp()):
+        return True
+    retry_not_before = _retry_not_before(job)
+    return retry_not_before is None or retry_not_before <= wall_now
 
 
 def _retry_not_before(job: Mapping[str, Any]) -> datetime | None:

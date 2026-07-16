@@ -47,6 +47,7 @@ from p42_prizes.runner_queue import (
     open_secure_runner_directory,
     plan_runner_queue,
     reap_stale_leases,
+    set_runner_local_disposition,
 )
 from p42_prizes.secure_json import loads_strict_json, read_strict_json_file
 from p42_prizes.verdict import canonical_json, parse_rational, sha256_bytes, sha256_file
@@ -122,18 +123,54 @@ def run_next_job_once(
     job_manifest: dict[str, Any] | None = None
 
     with locked_runner_queue(queue_file) as queue:
+        chain_now = _runner_chain_now(
+            now,
+            required=any(_job_requires_chain_time(job) for job in queue.get("jobs", [])),
+        )
         # A worker that died mid-job leaves an expired lease behind. Reap it
         # here, inside the same critical section as planning/claiming, so the
         # requeue is atomic and the queue never wedges on
         # stale_lease_reap_required. _locked_queue persists the reap even when
         # the plan below decides to wait.
         reap_stale_leases(queue, now_utc=_format_utc(now))
-        plan = plan_runner_queue(queue, memory=memory, policy=effective_policy, now_utc=_format_utc(now))
+        plan = plan_runner_queue(
+            queue,
+            memory=memory,
+            policy=effective_policy,
+            now_utc=_format_utc(now),
+            chain_now_utc=_format_utc(chain_now),
+        )
         if plan["decision"] != "start":
+            if plan["reason"] == "job_exceeds_host_capacity":
+                selected = _find_job(queue, plan["selected_job_id"])
+                result = set_runner_local_disposition(
+                    selected,
+                    reason_code="job_exceeds_host_capacity",
+                    detail=(
+                        f"required minimum {plan['min_available_memory_mb']} MB exceeds "
+                        f"host total {memory.total_mb} MB"
+                    ),
+                    recorded_at_utc=_format_utc(now),
+                )
+                return {**plan, "terminal_disposition": result["disposition"]}
             return plan
         job_id = plan["selected_job_id"]
         job = _find_job(queue, job_id)
-        job_manifest = _load_job_manifest(job)
+        try:
+            job_manifest = _load_job_manifest(job)
+        except RunnerWorkerError as exc:
+            detail = (str(exc) or "runner manifest load failed")[:512]
+            result = set_runner_local_disposition(
+                job,
+                reason_code="job_run_error",
+                detail=detail,
+                recorded_at_utc=_format_utc(now),
+            )
+            return {
+                "reason": f"job_run_error: {detail}",
+                "selected_job_id": job_id,
+                "terminal_disposition": result["disposition"],
+            }
         minimum_lease = _minimum_lease_seconds(job_manifest)
         if lease_seconds < minimum_lease:
             raise RunnerWorkerError(
@@ -190,6 +227,7 @@ def run_next_job_once(
         heartbeat.join(timeout=5)
 
     finished_at = _parse_or_now(None)
+    terminal_disposition: dict[str, Any] | None = None
     with locked_runner_queue(queue_file) as queue:
         fresh = _find_job_or_none(queue, job["job_id"])
         # Fencing: only record our outcome if this is still OUR claim (status
@@ -214,7 +252,7 @@ def run_next_job_once(
                 fresh["storage_retry_count"] = retry_count
                 fresh["last_retry_reason"] = f"transcript_storage_error: {run_error}"
                 fresh["retry_not_before_utc"] = _format_utc(
-                    finished_at + timedelta(seconds=RETRY_BACKOFF_SECONDS)
+                    _retry_backoff_deadline(fresh, finished_at)
                 )
                 fresh.pop("failure_reason", None)
                 return {
@@ -223,7 +261,17 @@ def run_next_job_once(
                 }
             fresh["status"] = "failed"
             fresh["failure_reason"] = f"job_run_error: {run_error}"
-            return {"reason": f"job_run_error: {run_error}", "selected_job_id": job["job_id"]}
+            result = set_runner_local_disposition(
+                fresh,
+                reason_code="job_run_error",
+                detail=(run_error or "runner job failed")[:512],
+                recorded_at_utc=_format_utc(finished_at),
+            )
+            return {
+                "reason": f"job_run_error: {run_error}",
+                "selected_job_id": job["job_id"],
+                "terminal_disposition": result["disposition"],
+            }
         fresh["finished_at_utc"] = _format_utc(finished_at)
         fresh["transcript_path"] = transcript["transcript_path"]
         fresh["transcript_hash"] = transcript["transcript_hash"]
@@ -234,17 +282,29 @@ def run_next_job_once(
                 fresh["status"] = "queued"
                 fresh["last_retry_reason"] = _retry_reason(transcript)
                 fresh["retry_not_before_utc"] = _format_utc(
-                    finished_at + timedelta(seconds=RETRY_BACKOFF_SECONDS)
+                    _retry_backoff_deadline(fresh, finished_at)
                 )
                 fresh.pop("failure_reason", None)
+                # This candidate is not terminal while a later verified run can
+                # still replace it after the dependency recovers.
+                fresh.pop("challenge_candidate_hash", None)
             else:
                 fresh["status"] = "failed"
                 fresh["failure_reason"] = "retry_window_expired"
                 fresh.pop("retry_not_before_utc", None)
-            # A retry transcript is evidence of an unavailable dependency, not a
-            # challenge candidate. Leaving the fence unset permits the next run
-            # to publish the eventual verified candidate.
-            fresh.pop("challenge_candidate_hash", None)
+                candidate = transcript["verifier"].get("challenge_candidate")
+                candidate_hash = (
+                    candidate.get("candidate_hash") if isinstance(candidate, dict) else None
+                )
+                if isinstance(candidate_hash, str):
+                    fresh["challenge_candidate_hash"] = candidate_hash
+                result = set_runner_local_disposition(
+                    fresh,
+                    reason_code="retry_window_expired",
+                    detail=_retry_reason(transcript)[:512],
+                    recorded_at_utc=_format_utc(finished_at),
+                )
+                terminal_disposition = result["disposition"]
         else:
             fresh["status"] = "succeeded" if _transcript_succeeded(transcript) else "failed"
             fresh.pop("retry_not_before_utc", None)
@@ -253,6 +313,8 @@ def run_next_job_once(
                 fresh["challenge_candidate_hash"] = candidate["candidate_hash"]
         fresh.pop("lease_expires_at_utc", None)
         fresh.pop("lease_token", None)
+    if terminal_disposition is not None:
+        return {**transcript, "terminal_disposition": terminal_disposition}
     return transcript
 
 
@@ -446,12 +508,54 @@ def _retry_window_open(job: Mapping[str, Any], now: datetime) -> bool:
     claim = job.get("chain_claim")
     if not isinstance(claim, Mapping):
         return True
-    canonical_now = os.environ.get("P42_RUNNER_CHAIN_TIMESTAMP")
     try:
-        now_timestamp = int(canonical_now) if canonical_now is not None else int(now.timestamp())
-        return int(str(claim["challenge_ends_at"])) > now_timestamp
+        return int(str(claim["challenge_ends_at"])) > int(
+            _runner_chain_now(now, required=True).timestamp()
+        )
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def _job_requires_chain_time(job: Any) -> bool:
+    if not isinstance(job, Mapping):
+        return False
+    claim = job.get("chain_claim")
+    return isinstance(claim, Mapping) and "challenge_ends_at" in claim
+
+
+def _runner_chain_now(now: datetime, *, required: bool = False) -> datetime:
+    canonical_now = os.environ.get("P42_RUNNER_CHAIN_TIMESTAMP")
+    if canonical_now is None:
+        if required:
+            raise RunnerWorkerError(
+                "chain-linked runner jobs require P42_RUNNER_CHAIN_TIMESTAMP from the canonical operator"
+            )
+        return now
+    if not canonical_now.isascii() or not canonical_now.isdecimal():
+        raise RunnerWorkerError("P42_RUNNER_CHAIN_TIMESTAMP must be a Unix timestamp")
+    try:
+        timestamp = int(canonical_now)
+        if timestamp < 1:
+            raise ValueError
+        return datetime.fromtimestamp(timestamp, timezone.utc)
+    except (ValueError, OverflowError, OSError) as exc:
+        raise RunnerWorkerError(
+            "P42_RUNNER_CHAIN_TIMESTAMP is outside the supported Unix timestamp range"
+        ) from exc
+
+
+def _retry_backoff_deadline(job: Mapping[str, Any], now: datetime) -> datetime:
+    claim = job.get("chain_claim")
+    if not isinstance(claim, Mapping):
+        return now + timedelta(seconds=RETRY_BACKOFF_SECONDS)
+    try:
+        challenge_deadline = int(str(claim["challenge_ends_at"]))
+        chain_timestamp = int(_runner_chain_now(now, required=True).timestamp())
+    except (KeyError, TypeError, ValueError, OverflowError, OSError):
+        return now + timedelta(seconds=RETRY_BACKOFF_SECONDS)
+    remaining_seconds = max(0, challenge_deadline - chain_timestamp)
+    delay_seconds = min(RETRY_BACKOFF_SECONDS, remaining_seconds)
+    return now + timedelta(seconds=delay_seconds)
 
 
 def _find_job(queue: Mapping[str, Any], job_id: str | None) -> dict[str, Any]:

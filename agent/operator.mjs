@@ -471,16 +471,17 @@ export function retryableJobIsEligible(job, latestTimestamp, nowMs = Date.now())
     || !claim
     || typeof claim !== "object"
   ) return false;
+  try {
+    if (BigInt(claim.challenge_ends_at) <= BigInt(latestTimestamp)) return true;
+  } catch {
+    return false;
+  }
   if (job.retry_not_before_utc !== undefined) {
     if (typeof job.retry_not_before_utc !== "string") return false;
     const retryNotBeforeMs = Date.parse(job.retry_not_before_utc);
     if (!Number.isFinite(retryNotBeforeMs) || retryNotBeforeMs > nowMs) return false;
   }
-  try {
-    return BigInt(claim.challenge_ends_at) > BigInt(latestTimestamp);
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 function sourceEventHashFor(event, submission) {
@@ -709,7 +710,7 @@ export function challengeExpiredBackfillNeeded(marker, expectedBinding) {
   return false;
 }
 
-async function backfillChallengeExpiredOnce(safeLatest) {
+async function backfillChallengeExpiredOnce(safeLatest, chainTimestamp) {
   const binding = challengeExpiredBackfillBinding();
   const existing = readJsonOrNull(CHALLENGE_EXPIRED_BACKFILL);
   if (!challengeExpiredBackfillNeeded(existing, binding)) return false;
@@ -721,7 +722,7 @@ async function backfillChallengeExpiredOnce(safeLatest) {
     safeLatest,
   );
   const rechallengeEvents = await canonicalRechallengeRecords(expirationEvents);
-  for (const event of rechallengeEvents) await ingestReveal(event);
+  for (const event of rechallengeEvents) await ingestReveal(event, chainTimestamp);
   writeJsonAtomic(CHALLENGE_EXPIRED_BACKFILL, buildChallengeExpiredBackfillMarker({
     binding,
     throughBlock: safeLatest,
@@ -781,8 +782,7 @@ async function quarantineOrphanedJobs(fromBlock, toBlock, canonical, reason) {
   if (targets.length === 0) return;
   const args = ["quarantine-canonical", "--queue", QUEUE, "--reason", reason];
   for (const jobId of targets) args.push("--job-id", jobId);
-  const result = bridge(...args);
-  appendAlert(`CANONICAL INVALIDATION ${result.invalidated_job_ids.length} job(s): ${reason}`);
+  bridge(...args);
 }
 
 function parseDetailJson(detail) {
@@ -795,6 +795,70 @@ function appendAlert(message) {
   const line = `${new Date().toISOString()} ${message}`;
   console.error(`  !!! ${line}`);
   appendFileSync(ALERTS, `${line}\n`, { encoding: "utf8", mode: 0o600 });
+}
+
+function terminalAlertRecord(alert) {
+  if (alert.schema_version === "p42-runner-action-alert/v1") {
+    return {
+      schema_version: alert.schema_version,
+      job_id: alert.job_id,
+      source_event_hash: alert.source_event_hash,
+      candidate_hash: alert.candidate_hash,
+      action_status: alert.action_status,
+      action_hash: alert.action_hash,
+      message: alert.message,
+      created_at_utc: alert.created_at_utc,
+      alert_id: alert.alert_id,
+    };
+  }
+  return {
+    schema_version: alert.schema_version,
+    job_id: alert.job_id,
+    disposition_hash: alert.disposition_hash,
+    message: alert.message,
+    created_at_utc: alert.created_at_utc,
+    alert_id: alert.alert_id,
+  };
+}
+
+function appendTerminalAlertOnce(job, alert) {
+  const result = bridge(
+    "append-terminal-alert",
+    "--queue", QUEUE,
+    "--alerts", ALERTS,
+    "--job-id", job.job_id,
+  );
+  const expectedRecord = canonicalJson(terminalAlertRecord(alert));
+  if (result.alert_id !== alert.alert_id || result.record !== expectedRecord) {
+    throw new Error(`terminal alert append result for ${job.job_id} is not disposition-bound`);
+  }
+  if (result.created) console.error(`  !!! ${expectedRecord}`);
+  return result.created;
+}
+
+function recordTerminalAlertDelivery(job, alert) {
+  return bridge(
+    "record-terminal-alert", "--queue", QUEUE,
+    "--job-id", job.job_id,
+    "--alert-id", alert.alert_id,
+  );
+}
+
+export async function reconcileTerminalAlerts({ afterAppend = null } = {}) {
+  const queue = readQueue();
+  for (const job of queue.jobs) {
+    const alert = job.terminal_alert ?? job.action_alert;
+    if (!alert) continue;
+    if (typeof alert !== "object") {
+      throw new Error(`terminal disposition ${job.job_id} has no durable alert record`);
+    }
+    if (!["pending", "delivered"].includes(alert.status)) {
+      throw new Error(`terminal alert ${alert.alert_id || job.job_id} has invalid status`);
+    }
+    const appended = appendTerminalAlertOnce(job, alert);
+    if (appended && afterAppend) await afterAppend(job, alert);
+    if (alert.status === "pending") recordTerminalAlertDelivery(job, alert);
+  }
 }
 
 async function blockFor(number) {
@@ -974,7 +1038,7 @@ async function refreshRetryableJobs(latest) {
   }
 }
 
-async function ingestReveal(event) {
+async function ingestReveal(event, chainTimestamp) {
   // Fail before any payload retrieval or queue write when the local package no
   // longer names the finalized registry source/image identity.
   const registryBinding = await currentRegistryBinding();
@@ -1078,13 +1142,23 @@ async function ingestReveal(event) {
       // recoverPayload already made one retrieval attempt for this reveal. A
       // durable pause prevents a large memory-gated burst from repeatedly
       // querying the same unavailable endpoint before a worker can run.
-      job.retry_not_before_utc = new Date(Date.now() + RETRY_BACKOFF_MS).toISOString();
+      const remainingChallengeMs = Math.max(
+        0, (Number(chainClaim.challenge_ends_at) - Number(chainTimestamp)) * 1000,
+      );
+      job.retry_not_before_utc = new Date(
+        Date.now() + Math.min(RETRY_BACKOFF_MS, remainingChallengeMs),
+      ).toISOString();
     }
   }
 
   const specPath = join(JOB_SPECS, `${sourceEventHash.slice(7)}.json`);
   writeCanonicalAtomic(specPath, job);
-  const result = bridge("enqueue", "--queue", QUEUE, "--job", specPath);
+  const result = bridge(
+    "enqueue",
+    "--queue", QUEUE,
+    "--job", specPath,
+    "--chain-now-utc", new Date(Number(chainTimestamp) * 1000).toISOString().replace(".000Z", "Z"),
+  );
   log(`  queued submission #${submissionId} as ${jobId} (${payload.payloadSource}) created=${result.created}`);
   return result.created;
 }
@@ -1107,7 +1181,14 @@ function runWorkerOnce(chainTimestamp) {
   }
 }
 
-function recordAction(job, candidate, status, transactionHash = null, detail = null) {
+function recordAction(
+  job,
+  candidate,
+  status,
+  transactionHash = null,
+  detail = null,
+  alertMessage = null,
+) {
   const args = [
     "record-action", "--queue", QUEUE,
     "--job-id", job.job_id,
@@ -1116,6 +1197,17 @@ function recordAction(job, candidate, status, transactionHash = null, detail = n
   ];
   if (transactionHash) args.push("--transaction-hash", transactionHash);
   if (detail) args.push("--detail", detail);
+  if (alertMessage) args.push("--alert-message", alertMessage);
+  return bridge(...args);
+}
+
+function recordLocalDisposition(job, reasonCode, detail = null) {
+  const args = [
+    "terminalize-local", "--queue", QUEUE,
+    "--job-id", job.job_id,
+    "--reason-code", reasonCode,
+  ];
+  if (detail) args.push("--detail", String(detail).slice(0, 512));
   return bridge(...args);
 }
 
@@ -1652,14 +1744,26 @@ async function reconcileBroadcast(job) {
         await revalidateRecordedRegistryBinding(transcript.transcript.verifier?.chain_claim?.registry_binding);
       } catch (error) {
         const reason = `registry binding rejected before rebroadcast: ${error.shortMessage || error.message}`;
-        recordAction(job, transcript.candidate, "registry_binding_rejected", action.transaction_hash, reason);
-        appendAlert(`REFUSED ${job.job_id}: ${reason}`);
+        recordAction(
+          job,
+          transcript.candidate,
+          "registry_binding_rejected",
+          action.transaction_hash,
+          reason,
+          `REFUSED ${job.job_id}: ${reason}`,
+        );
         return true;
       }
       const current = await candidateStillChallengeable(transcript.candidate);
       if (!current.ok) {
-        recordAction(job, transcript.candidate, "superseded", action.transaction_hash, current.reason);
-        appendAlert(`SUPERSEDED ${job.job_id}: ${current.reason}`);
+        recordAction(
+          job,
+          transcript.candidate,
+          "superseded",
+          action.transaction_hash,
+          current.reason,
+          `SUPERSEDED ${job.job_id}: ${current.reason}`,
+        );
         return true;
       }
       const nonceDecision = await walletNonceBroadcastDecisionLocked({
@@ -1674,8 +1778,14 @@ async function reconcileBroadcast(job) {
       if (!nonceDecision.broadcast) {
         if (nonceDecision.known) pending = nonceDecision.transaction;
         else {
-          recordAction(job, transcript.candidate, "superseded", action.transaction_hash, nonceDecision.reason);
-          appendAlert(`NONCE FENCED ${job.job_id}: ${nonceDecision.reason}`);
+          recordAction(
+            job,
+            transcript.candidate,
+            "superseded",
+            action.transaction_hash,
+            nonceDecision.reason,
+            `NONCE FENCED ${job.job_id}: ${nonceDecision.reason}`,
+          );
           return true;
         }
       } else {
@@ -1702,22 +1812,40 @@ async function reconcileBroadcast(job) {
   }
 }
 
-async function consumeCandidate(job) {
+export async function consumeCandidate(job) {
   if (job.canonical_status === "orphaned_reorg") return;
-  if (!job.transcript_path) return;
+  if (job.terminal_disposition) return;
   if (job.action) {
     await withOperatorWalletActionLock(() => reconcileBroadcast(job));
+    return;
+  }
+  if (!job.transcript_path) {
+    if (["failed", "succeeded"].includes(job.status)) {
+      recordLocalDisposition(
+        job,
+        "transcript_missing",
+        job.failure_reason || "terminal runner job has no transcript",
+      );
+    }
     return;
   }
   let checked;
   try { checked = verifyRunnerTranscript(job.transcript_path, job.transcript_hash); }
   catch (error) {
-    appendAlert(`QUARANTINE ${job.job_id}: ${error.message}`);
+    recordLocalDisposition(job, "transcript_invalid", error.message);
     return;
   }
   const candidate = checked.candidate;
   if (!candidate) return;
   if (candidate.action === "retry") {
+    if (job.status === "failed" && job.failure_reason === "retry_window_expired") {
+      recordLocalDisposition(
+        job,
+        "retry_window_expired",
+        candidate.reason_code,
+      );
+      return;
+    }
     log(`  retry pending for ${job.job_id}: ${candidate.reason_code}`);
     return;
   }
@@ -1726,8 +1854,14 @@ async function consumeCandidate(job) {
     return;
   }
   if (candidate.action === "quarantine") {
-    recordAction(job, candidate, "quarantined", null, candidate.reason_code);
-    appendAlert(`QUARANTINE ${job.job_id}: ${candidate.reason_code} (${candidate.candidate_hash})`);
+    recordAction(
+      job,
+      candidate,
+      "quarantined",
+      null,
+      candidate.reason_code,
+      `QUARANTINE ${job.job_id}: ${candidate.reason_code} (${candidate.candidate_hash})`,
+    );
     return;
   }
   if (candidate.action !== "challenge") throw new Error(`unknown candidate action: ${candidate.action}`);
@@ -1760,21 +1894,41 @@ async function consumeCandidate(job) {
     await revalidateRecordedRegistryBinding(checked.transcript.verifier?.chain_claim?.registry_binding);
   } catch (error) {
     const detail = `registry binding rejected before signing: ${error.shortMessage || error.message}`;
-    recordAction(job, candidate, "registry_binding_rejected", null, detail);
-    appendAlert(`REFUSED ${job.job_id}: ${detail}`);
+    recordAction(
+      job,
+      candidate,
+      "registry_binding_rejected",
+      null,
+      detail,
+      `REFUSED ${job.job_id}: ${detail}`,
+    );
     return;
   }
   const candidateCap = BigInt(candidate.max_bond_wei || "0");
   if (candidateCap <= 0n || candidateCap > challengeLimits.perChallengeWei) {
-    recordAction(job, candidate, "invalid_spend_cap", null, `candidate cap ${candidateCap} exceeds provisioned cap ${challengeLimits.perChallengeWei}`);
-    appendAlert(`REFUSED ${job.job_id}: invalid candidate spend cap ${candidateCap}`);
+    const detail = `candidate cap ${candidateCap} exceeds provisioned cap ${challengeLimits.perChallengeWei}`;
+    recordAction(
+      job,
+      candidate,
+      "invalid_spend_cap",
+      null,
+      detail,
+      `REFUSED ${job.job_id}: invalid candidate spend cap ${candidateCap}`,
+    );
     return;
   }
 
   const submissionId = BigInt(candidate.submission_id);
   const submission = await subs.submissions(submissionId);
   if (Number(submission.status) !== 2) {
-    recordAction(job, candidate, "superseded", null, `submission status is ${submission.status}`);
+    recordAction(
+      job,
+      candidate,
+      "superseded",
+      null,
+      `submission status is ${submission.status}`,
+      `SUPERSEDED ${job.job_id}: submission status is ${submission.status}`,
+    );
     return;
   }
   const liveRevealInstanceHash = (await subs.revealInstanceHashOf(submissionId)).toLowerCase();
@@ -1785,21 +1939,33 @@ async function consumeCandidate(job) {
       "superseded",
       null,
       `reveal instance changed from ${candidate.reveal_instance_hash} to ${liveRevealInstanceHash}`,
+      `SUPERSEDED ${job.job_id}: reveal instance changed before action consumption`,
     );
-    appendAlert(`SUPERSEDED ${job.job_id}: reveal instance changed before action consumption`);
     return;
   }
   const latest = await provider.getBlock("latest");
   if (!latest || BigInt(latest.timestamp) >= BigInt(candidate.challenge_ends_at)) {
-    recordAction(job, candidate, "window_expired", null, "challenge window closed before action consumption");
-    appendAlert(`MISSED WINDOW ${job.job_id}: ${candidate.reason_code}`);
+    recordAction(
+      job,
+      candidate,
+      "window_expired",
+      null,
+      "challenge window closed before action consumption",
+      `MISSED WINDOW ${job.job_id}: ${candidate.reason_code}`,
+    );
     return;
   }
   const disputed = await subs.disputedEntitlementWei(submissionId);
   const bond = await chal.requiredChallengeBond(disputed);
   if (bond > candidateCap || bond > challengeLimits.perChallengeWei) {
-    recordAction(job, candidate, "bond_over_cap", null, `required ${bond}; cap ${candidateCap}`);
-    appendAlert(`UNPOLICED ${job.job_id}: bond ${bond} exceeds cap ${candidateCap} (${candidate.candidate_hash})`);
+    recordAction(
+      job,
+      candidate,
+      "bond_over_cap",
+      null,
+      `required ${bond}; cap ${candidateCap}`,
+      `UNPOLICED ${job.job_id}: bond ${bond} exceeds cap ${candidateCap} (${candidate.candidate_hash})`,
+    );
     return;
   }
 
@@ -1916,10 +2082,10 @@ async function consumeCandidates() {
 
 async function scanOnce() {
   const latest = await provider.getBlockNumber();
-  const latestBlock = await provider.getBlock(latest);
-  if (!latestBlock) throw new Error(`latest block ${latest} is unavailable`);
   const safeLatest = Math.max(0, latest - finalityConfirmations);
-  await backfillChallengeExpiredOnce(safeLatest);
+  const finalizedBlock = await provider.getBlock(safeLatest);
+  if (!finalizedBlock) throw new Error(`finalized runner block ${safeLatest} is unavailable`);
+  await backfillChallengeExpiredOnce(safeLatest, finalizedBlock.timestamp);
   const mismatch = await cursorAnchorMismatch(cursorState);
   if (mismatch !== null) {
     appendAlert(`REORG detected at anchored block ${mismatch}; rescanning overlap from durable cursor`);
@@ -1958,22 +2124,26 @@ async function scanOnce() {
       canonical,
       `canonical rescan ${range.fromBlock}..${range.toBlock} did not contain the job's source event`,
     );
-    for (const event of events) await ingestReveal(event);
-    for (const event of rechallengeEvents) await ingestReveal(event);
+    for (const event of events) await ingestReveal(event, finalizedBlock.timestamp);
+    for (const event of rechallengeEvents) await ingestReveal(event, finalizedBlock.timestamp);
     await persistCursor(range.toBlock + 1);
   }
 
-  await refreshRetryableJobs(latestBlock);
+  await refreshRetryableJobs(finalizedBlock);
   for (let index = 0; index < MAX_JOBS_PER_SCAN; index += 1) {
-    const result = runWorkerOnce(latestBlock.timestamp);
+    const result = runWorkerOnce(finalizedBlock.timestamp);
+    if (result.terminal_disposition) continue;
     if (result.schema_version === "p42-runner-transcript/v1") {
       log(`  worker completed ${result.job_id}: ${result.verifier.challenge_candidate?.action || "legacy"}`);
       continue;
     }
+
     if (result.reason !== "queue_empty") log(`  worker waiting: ${result.reason}`);
     break;
   }
+  await reconcileTerminalAlerts();
   await consumeCandidates();
+  await reconcileTerminalAlerts();
   if (challengeBondOperator && AUTO_CLAIM_BOND) {
     try {
       const claim = await challengeBondOperator.claimBond();
@@ -2056,7 +2226,9 @@ async function main() {
   log(`P42 operator ${wallet.address} chain=${chainId} mode=${executionMode.mode}`);
   log(`queue=${QUEUE} cursor=${CURSOR} finality=${finalityConfirmations} overlap=${reorgOverlapBlocks}`);
   log(`sandbox=docker max_running=1 max_bond=${ethers.formatEther(challengeLimits.perChallengeWei)} ETH`);
+  await reconcileTerminalAlerts();
   await consumeCandidates();
+  await reconcileTerminalAlerts();
   if (ONCE) {
     await scanOnce();
     log("[once] done");

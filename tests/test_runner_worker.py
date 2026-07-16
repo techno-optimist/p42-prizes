@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from p42_prizes.runner_queue import MemorySnapshot, RunnerPolicy, RunnerQueueError
+from p42_prizes.runner_queue import (
+    MemorySnapshot,
+    RunnerPolicy,
+    RunnerQueueError,
+    enqueue_runner_job,
+    read_runner_queue,
+)
 from p42_prizes.runner_worker import (
     LeaseHeartbeatError,
     RunnerWorkerError,
@@ -500,6 +506,122 @@ def test_transcript_storage_failure_clears_the_live_lease(
     assert queued["storage_retry_count"] == 1
     assert queued["last_retry_reason"] == "transcript_storage_error: disk full"
     assert "lease_expires_at_utc" not in queued
+
+
+def test_host_capacity_head_is_quarantined_before_later_job_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("P42_RUNNER_CHAIN_TIMESTAMP", "1784160000")
+    problem, solution = _write_problem(
+        tmp_path,
+        verifier_name="ok.py",
+        verifier_body="print('{}')\n",
+        wall_seconds=10,
+    )
+    queue_path = tmp_path / "queue.json"
+    too_large = {
+        "job_id": "a-deadline-too-large",
+        "status": "queued",
+        "required_memory_mb": 2048,
+        "source_event_hash": "sha256:" + "1" * 64,
+        "problem": str(problem),
+        "solution": str(solution),
+        "chain_claim": {"challenge_ends_at": "4102444800"},
+    }
+    fitting = {
+        "job_id": "b-fitting",
+        "status": "queued",
+        "required_memory_mb": 64,
+        "source_event_hash": "sha256:" + "2" * 64,
+        "problem": str(problem),
+        "solution": str(solution),
+    }
+    enqueue_runner_job(queue_path, too_large)
+    enqueue_runner_job(queue_path, fitting)
+    memory = MemorySnapshot(total_mb=1024, available_mb=1024, swap_used_mb=0)
+    policy = RunnerPolicy(reserve_memory_mb=128, memory_safety_factor=1.0)
+
+    blocked = run_next_job_once(
+        queue_path,
+        tmp_path / "transcripts",
+        memory=memory,
+        policy=policy,
+    )
+    assert blocked["reason"] == "job_exceeds_host_capacity"
+    assert blocked["selected_job_id"] == too_large["job_id"]
+    assert blocked["terminal_disposition"]["reason_code"] == "job_exceeds_host_capacity"
+    first_state = read_runner_queue(queue_path)["jobs"]
+    assert first_state[0]["status"] == "failed"
+    assert "action" not in first_state[0]
+
+    completed = run_next_job_once(
+        queue_path,
+        tmp_path / "transcripts",
+        memory=memory,
+        policy=policy,
+    )
+    assert completed["schema_version"] == "p42-runner-transcript/v1"
+    assert completed["job_id"] == fitting["job_id"]
+
+
+def test_chain_linked_queue_refuses_host_wall_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("P42_RUNNER_CHAIN_TIMESTAMP", raising=False)
+    problem, solution = _write_problem(
+        tmp_path,
+        verifier_name="ok.py",
+        verifier_body="print('{}')\n",
+        wall_seconds=10,
+    )
+    queue_path = tmp_path / "queue.json"
+    enqueue_runner_job(
+        queue_path,
+        {
+            "job_id": "chain-linked",
+            "status": "queued",
+            "required_memory_mb": 64,
+            "source_event_hash": "sha256:" + "3" * 64,
+            "problem": str(problem),
+            "solution": str(solution),
+            "chain_claim": {"challenge_ends_at": "4102444800"},
+        },
+    )
+
+    with pytest.raises(RunnerWorkerError, match="require P42_RUNNER_CHAIN_TIMESTAMP"):
+        run_next_job_once(
+            queue_path,
+            tmp_path / "transcripts",
+            memory=MemorySnapshot(total_mb=1024, available_mb=1024, swap_used_mb=0),
+            policy=RunnerPolicy(reserve_memory_mb=128, memory_safety_factor=1.0),
+        )
+    assert read_runner_queue(queue_path)["jobs"][0]["status"] == "queued"
+
+
+def test_manifest_load_failure_gets_source_bound_local_disposition(tmp_path: Path) -> None:
+    queue_path = tmp_path / "queue.json"
+    job = {
+        "job_id": "missing-problem",
+        "status": "queued",
+        "required_memory_mb": 64,
+        "source_event_hash": "sha256:" + "3" * 64,
+        "problem": str(tmp_path / "missing"),
+        "solution": str(tmp_path / "missing-solution.json"),
+    }
+    enqueue_runner_job(queue_path, job)
+
+    result = run_next_job_once(
+        queue_path,
+        tmp_path / "transcripts",
+        memory=MemorySnapshot(total_mb=1024, available_mb=1024, swap_used_mb=0),
+        policy=RunnerPolicy(reserve_memory_mb=128, memory_safety_factor=1.0),
+    )
+
+    assert result["reason"].startswith("job_run_error:")
+    terminal = read_runner_queue(queue_path)["jobs"][0]
+    assert terminal["terminal_disposition"]["reason_code"] == "job_run_error"
+    assert terminal["terminal_disposition"]["fence_hash"] == job["source_event_hash"]
+    assert "transcript_path" not in terminal
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process-group kill is POSIX-only")

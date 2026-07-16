@@ -12,6 +12,7 @@ from p42_prizes.runner_queue import (
     MemorySnapshot,
     RunnerPolicy,
     RunnerQueueError,
+    locked_runner_queue,
     enqueue_runner_job,
     read_runner_queue,
     record_runner_action,
@@ -369,6 +370,7 @@ def test_retry_state_promotes_later_verified_absence_to_terminal_challenge(tmp_p
 def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("P42_RUNNER_CHAIN_TIMESTAMP", "1784160000")
     queue = tmp_path / "queue.json"
     retry_solution = tmp_path / "retry-solution.json"
     job = _job(
@@ -420,6 +422,7 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
 def test_unavailable_docker_requeues_then_succeeds_when_sandbox_returns(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("P42_RUNNER_CHAIN_TIMESTAMP", "1784160000")
     queue = tmp_path / "queue.json"
     enqueue_runner_job(queue, _job())
     monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda: False)
@@ -470,6 +473,8 @@ def test_retry_stops_at_the_operator_canonical_challenge_expiry(
             },
         ),
     )
+    with locked_runner_queue(queue) as state:
+        state["jobs"][0]["retry_not_before_utc"] = "2099-01-01T00:00:00Z"
     monkeypatch.setenv("P42_RUNNER_CHAIN_TIMESTAMP", "1999999999")
 
     result = run_next_job_once(
@@ -477,13 +482,27 @@ def test_retry_stops_at_the_operator_canonical_challenge_expiry(
         tmp_path / "transcripts",
         memory=_runner_memory(),
         policy=RunnerPolicy(sandbox="docker"),
+        now_utc="2020-01-01T00:00:00Z",
     )
 
     assert result["verifier"]["challenge_candidate"]["action"] == "retry"
+    assert result["terminal_disposition"]["reason_code"] == "retry_window_expired"
+    assert result["terminal_disposition"]["fence_hash"] == (
+        result["verifier"]["challenge_candidate"]["candidate_hash"]
+    )
     expired = read_runner_queue(queue)["jobs"][0]
     assert expired["status"] == "failed"
     assert expired["failure_reason"] == "retry_window_expired"
-    assert "challenge_candidate_hash" not in expired
+    candidate_hash = result["verifier"]["challenge_candidate"]["candidate_hash"]
+    assert expired["challenge_candidate_hash"] == candidate_hash
+    assert expired["terminal_disposition"]["status"] == "window_expired"
+    assert expired["terminal_disposition"]["reason_code"] == "retry_window_expired"
+    assert expired["terminal_disposition"]["fence_hash"] == candidate_hash
+    assert expired["terminal_alert"]["status"] == "pending"
+    assert expired["terminal_alert"]["disposition_hash"] == (
+        expired["terminal_disposition"]["disposition_hash"]
+    )
+    assert "action" not in expired
 
 
 def test_exact_score_underclaim_becomes_challenge_candidate(
@@ -555,7 +574,17 @@ def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: P
     bridge = ROOT / "agent" / "runtime_bridge.py"
 
     enqueue = subprocess.run(
-        ["python3", str(bridge), "enqueue", "--queue", str(queue), "--job", str(spec)],
+        [
+            "python3",
+            str(bridge),
+            "enqueue",
+            "--queue",
+            str(queue),
+            "--job",
+            str(spec),
+            "--chain-now-utc",
+            "2026-07-15T00:00:00Z",
+        ],
         cwd=ROOT,
         text=True,
         capture_output=True,
@@ -584,6 +613,7 @@ def test_runtime_bridge_vertical_slice_persists_missing_da_candidate(tmp_path: P
         text=True,
         capture_output=True,
         check=False,
+        env={**os.environ, "P42_RUNNER_CHAIN_TIMESTAMP": "1784160000"},
     )
     assert work.returncode == 0, work.stderr
     result = json.loads(work.stdout)
