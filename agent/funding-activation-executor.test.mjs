@@ -12,6 +12,7 @@ import {
   buildFundingActivationCompletion,
   collectActivationNonceEvidence,
   collectFundingActivationSnapshot,
+  destroyFundingActivationOperationProviders,
   fundingActivationCompletionAnchor,
   nextFundingActivationAction,
   prepareActivationSigningRequest,
@@ -40,6 +41,20 @@ const submissionsInterface = new ethers.Interface([
   "function armFunding(bytes32 authorizationDigest)",
 ]);
 const poolInterface = new ethers.Interface(["function setAcceptingFunds(bool accepting)"]);
+
+test("operation evidence cleanup attempts both provider destroys when one throws", async () => {
+  const destroyed = [];
+  await destroyFundingActivationOperationProviders(
+    {
+      destroy() {
+        destroyed.push("primary");
+        throw new Error("primary cleanup failed");
+      },
+    },
+    { destroy() { destroyed.push("secondary"); } },
+  );
+  assert.deepEqual(destroyed.sort(), ["primary", "secondary"]);
+});
 
 function nonceEvidence(currentNonce = 0, finalizedNonce = currentNonce) {
   return async (signer) => ({

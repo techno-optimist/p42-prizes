@@ -1502,6 +1502,22 @@ export function compareEventOrder(left, right) {
   );
 }
 
+export async function withIndexerProviderCleanup(
+  activationProviderBundle,
+  fallbackProvider,
+  operation,
+) {
+  if (typeof operation !== "function") throw new Error("indexer provider operation must be a function");
+  try {
+    return await operation();
+  } finally {
+    const providers = activationProviderBundle
+      ? [activationProviderBundle.primary, activationProviderBundle.secondary]
+      : [fallbackProvider];
+    await Promise.allSettled(providers.map(async (provider) => provider.destroy()));
+  }
+}
+
 export async function scanEventCatalog(
   contracts,
   fromBlock,
@@ -5058,11 +5074,11 @@ export async function runIndexer(options) {
   const provider = activationProviderBundle?.primary ?? new ethers.JsonRpcProvider(
     activationRpcFetchRequest(rpcUrl), manifest.network.chainId, { staticNetwork: true },
   );
-  const binding = validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
-  const artifacts = loadContractArtifacts();
-  const contracts = multiBoard ? null : instantiateContracts(provider, manifest, artifacts);
+  return withIndexerProviderCleanup(activationProviderBundle, provider, async () => {
+    const binding = validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
+    const artifacts = loadContractArtifacts();
+    const contracts = multiBoard ? null : instantiateContracts(provider, manifest, artifacts);
 
-  try {
     const head = await provider.getBlockNumber();
     const toBlock = head - policy.confirmations;
     const fromBlock = manifest.indexer.startBlock;
@@ -5243,13 +5259,7 @@ export async function runIndexer(options) {
       }
     }
     return checkpoint;
-  } finally {
-    if (activationProviderBundle) {
-      await Promise.allSettled([activationProviderBundle.primary.destroy(), activationProviderBundle.secondary.destroy()]);
-    } else {
-      provider.destroy();
-    }
-  }
+  });
 }
 
 export function configureIndexerTranscripts(argv = process.argv, env = process.env, fetchImpl = fetch) {

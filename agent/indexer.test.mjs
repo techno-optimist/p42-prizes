@@ -29,6 +29,7 @@ import {
   ReplayError,
   stableStringify,
   validateMultiBoardCheckpoint,
+  withIndexerProviderCleanup,
 } from "./indexer.mjs";
 import { validateActivationRpcEndpointPair } from "./activation-rpc-endpoints.mjs";
 import { CANONICAL_BOARD_CONTRACTS, CANONICAL_SHARED_CONTRACTS } from "./canonical-topology.mjs";
@@ -123,6 +124,21 @@ it("activation checkpointing requires exact canonical independent HTTPS RPC host
     activationPlanPath: "/not-read", secondaryRpcUrl: "https://rpc-b.example",
     secondaryProvider: {},
   }), /unsupported or injectable transport field/);
+});
+
+it("cleans up both activation providers when pre-validation fails", async () => {
+  const destroyed = [];
+  const primary = { destroy: () => { destroyed.push("primary"); } };
+  const secondary = { destroy: () => { destroyed.push("secondary"); } };
+  await assert.rejects(
+    () => withIndexerProviderCleanup(
+      { primary, secondary },
+      primary,
+      async () => { throw new Error("manifest pre-validation failed"); },
+    ),
+    /manifest pre-validation failed/,
+  );
+  assert.deepEqual(destroyed.sort(), ["primary", "secondary"]);
 });
 
 it("multiboard archive generations commit together and roll back failures", async () => {

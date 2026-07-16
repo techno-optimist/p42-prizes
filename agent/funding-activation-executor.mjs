@@ -333,9 +333,14 @@ export async function collectFundingActivationOperationEvidence(
       plan, primary, secondary, anchorValue, completionAnchor,
     );
   } finally {
-    primaryProvider.destroy();
-    secondaryProvider.destroy();
+    await destroyFundingActivationOperationProviders(primaryProvider, secondaryProvider);
   }
+}
+
+export async function destroyFundingActivationOperationProviders(primaryProvider, secondaryProvider) {
+  await Promise.allSettled(
+    [primaryProvider, secondaryProvider].map(async (provider) => provider.destroy()),
+  );
 }
 
 export async function collectActivationNonceEvidence(primaryProvider, secondaryProvider, signerValue) {
