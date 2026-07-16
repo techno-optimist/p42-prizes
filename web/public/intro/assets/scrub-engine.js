@@ -222,7 +222,11 @@ function mountScrollWorld(container, config) {
     // simply cross-dissolve as you scroll.
     if (reduce) return;
     if (!frameQ) frameQ = buildFrameQueue();
-    const MAXC = isMobile() ? 4 : 8;
+    // Frames are small (~40KB) but this origin's PER-REQUEST latency is the
+    // bottleneck (0.4-2.8s each), not bandwidth — so hundreds of frames need wide
+    // parallelism, not a throttle. A low cap here serialises the latency and the
+    // sequence takes minutes. Let the browser's own per-host limit do the rest.
+    const MAXC = isMobile() ? 12 : 20;
     while (inflight < MAXC && qIdx < frameQ.length) {
       const { s, i } = frameQ[qIdx++];
       inflight++;
@@ -363,9 +367,14 @@ function mountScrollWorld(container, config) {
   layout();
   requestAnimationFrame(raf);
 
-  // Start streaming frames immediately: coarse pass across every scene first, so
-  // the entire flight is scrubbable early, then refine. No gesture needed.
-  pumpFrames();
+  // Stream frames AFTER the document has finished loading. Images kicked off
+  // during script execution are counted as part of page load, so the tab sits
+  // there spinning until all ~420 have landed — the page looks like it never
+  // loads. Deferring lets the page complete (spinner stops, prologue plays)
+  // while the sequence streams in behind it: coarse pass across every scene
+  // first, so the whole flight is scrubbable early, then it refines.
+  if (document.readyState === 'complete') setTimeout(pumpFrames, 0);
+  else window.addEventListener('load', () => setTimeout(pumpFrames, 50), { once: true });
 
   // ---- helpers ----
   function el(tag, cls) { const n = document.createElement(tag); if (cls) n.className = cls; return n; }
