@@ -105,6 +105,19 @@ export function FundingPanel({
   const latestObservedRef = useRef<number | null>(observedTimestamp);
   const requestControllerRef = useRef<AbortController | null>(null);
   const target = boundTarget?.bindingKey === bindingKey ? boundTarget.target : null;
+  const targetIdentity = target ? JSON.stringify([bindingKey, target.address]) : null;
+  const targetIdentityRef = useRef(targetIdentity);
+  targetIdentityRef.current = targetIdentity;
+  const copyOperationRef = useRef(0);
+  const copyResetTimerRef = useRef<number | null>(null);
+
+  function cancelCopyState() {
+    copyOperationRef.current += 1;
+    if (copyResetTimerRef.current !== null) {
+      window.clearTimeout(copyResetTimerRef.current);
+      copyResetTimerRef.current = null;
+    }
+  }
 
   function cutoffReached(candidateObserved = latestObservedRef.current): boolean {
     if (deadlineTimestamp === null || candidateObserved === null) return true;
@@ -120,6 +133,7 @@ export function FundingPanel({
     requestControllerRef.current?.abort();
     requestControllerRef.current = null;
     monotonicCutoffRef.current = null;
+    cancelCopyState();
     setBoundTarget(null);
     setCopied(false);
     setFundingVisibility("unavailable");
@@ -129,6 +143,7 @@ export function FundingPanel({
   useEffect(() => {
     requestControllerRef.current?.abort();
     requestControllerRef.current = null;
+    cancelCopyState();
     setBoundTarget(null);
     setCopied(false);
     setFundingVisibility(canCheckFunding ? "checking" : "unavailable");
@@ -210,6 +225,7 @@ export function FundingPanel({
     return () => {
       active = false;
       controller.abort();
+      cancelCopyState();
       if (requestControllerRef.current === controller) requestControllerRef.current = null;
       if (timeoutId !== undefined) window.clearTimeout(timeoutId);
       document.removeEventListener("visibilitychange", reconcile);
@@ -224,10 +240,24 @@ export function FundingPanel({
       expireFunding(true);
       return;
     }
+    cancelCopyState();
+    const operation = copyOperationRef.current;
+    const copiedBindingKey = boundTarget.bindingKey;
+    const copiedTargetIdentity = JSON.stringify([copiedBindingKey, boundTarget.target.address]);
     try {
       await navigator.clipboard?.writeText(boundTarget.target.address);
+      if (copyOperationRef.current !== operation
+        || bindingKeyRef.current !== copiedBindingKey
+        || targetIdentityRef.current !== copiedTargetIdentity
+        || cutoffReached()) return;
       setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      const timeoutId = window.setTimeout(() => {
+        if (copyOperationRef.current === operation
+          && bindingKeyRef.current === copiedBindingKey
+          && targetIdentityRef.current === copiedTargetIdentity) setCopied(false);
+        if (copyResetTimerRef.current === timeoutId) copyResetTimerRef.current = null;
+      }, 1600);
+      copyResetTimerRef.current = timeoutId;
     } catch {
       // Clipboard unavailable in this browser context.
     }

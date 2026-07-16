@@ -292,6 +292,60 @@ describe("FundingPanel deadline reconciliation", () => {
     expectTargetVisible(B_ADDRESS);
   });
 
+  it("ignores a deferred clipboard completion from binding A after B is visible", async () => {
+    let resolveClipboard!: () => void;
+    const clipboardWrite = vi.fn(() => new Promise<void>((resolve) => { resolveClipboard = resolve; }));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
+    const { rerender } = render(<FundingPanel {...props()} />);
+    await flushResponse();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy sponsor pool address" }));
+    expect(clipboardWrite).toHaveBeenCalledWith(ADDRESS);
+    const pendingB = deferredResponse();
+    vi.mocked(fetch).mockReturnValueOnce(pendingB.promise);
+    rerender(<FundingPanel {...props({ slug: B_SLUG })} />);
+    pendingB.resolve(okResponse(responseBody({ slug: B_SLUG, address: B_ADDRESS })));
+    await flushResponse();
+    expectTargetVisible(B_ADDRESS);
+
+    resolveClipboard();
+    await flushResponse();
+    expect(screen.getByRole("button", { name: "Copy sponsor pool address" }).textContent).toBe("copy");
+    expectTargetVisible(B_ADDRESS);
+  });
+
+  it("does not let binding A's reset timer clear binding B's copy feedback", async () => {
+    const longDeadline = DEADLINE_MS + 10_000;
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ fundingDeadline: longDeadline })));
+    const longProps = props({ fundingDeadline: new Date(longDeadline).toISOString() });
+    const { rerender } = render(<FundingPanel {...longProps} />);
+    await flushResponse();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy sponsor pool address" }));
+    await flushResponse();
+    expect(screen.getByRole("button", { name: "Copy sponsor pool address" }).textContent).toBe("copied");
+    act(() => vi.advanceTimersByTime(800));
+
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({
+      slug: B_SLUG,
+      address: B_ADDRESS,
+      fundingDeadline: longDeadline,
+    })));
+    rerender(<FundingPanel {...longProps} slug={B_SLUG} />);
+    await flushResponse();
+    expectTargetVisible(B_ADDRESS);
+    fireEvent.click(screen.getByRole("button", { name: "Copy sponsor pool address" }));
+    await flushResponse();
+    expect(screen.getByRole("button", { name: "Copy sponsor pool address" }).textContent).toBe("copied");
+
+    act(() => vi.advanceTimersByTime(800));
+    expect(screen.getByRole("button", { name: "Copy sponsor pool address" }).textContent).toBe("copied");
+    act(() => vi.advanceTimersByTime(800));
+    expect(screen.getByRole("button", { name: "Copy sponsor pool address" }).textContent).toBe("copy");
+  });
+
   it("clears at D using the server-derived monotonic budget with a skewed client wall clock", async () => {
     vi.setSystemTime(OBSERVED_MS - 10_000);
     await renderAndReveal();
