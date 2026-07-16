@@ -2667,6 +2667,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "p42-q6-objective-program"
+version = "0.1.0"
+dependencies = [
+ "p42-objective-core",
+ "sp1-zkvm",
+]
+
+[[package]]
+name = "p42-q6-objective-script"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "p42-objective-core",
+ "serde_json",
+ "sp1-build",
+ "sp1-sdk",
+]
+
+[[package]]
 name = "pairing"
 version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
