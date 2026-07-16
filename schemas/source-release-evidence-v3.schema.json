@@ -82,7 +82,7 @@
         "status": {"const": "completed"},
         "conclusion": {"const": "success"},
         "completedAt": {"type": "string", "format": "date-time"},
-        "requiredJobs": {"type": "array", "minItems": 6, "maxItems": 6, "items": {"$ref": "#/$defs/job"}}
+        "requiredJobs": {"type": "array", "minItems": 7, "maxItems": 7, "items": {"$ref": "#/$defs/job"}}
       }
     },
     "deployProvenance": {

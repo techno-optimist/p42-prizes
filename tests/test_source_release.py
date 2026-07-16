@@ -8,7 +8,7 @@ import jsonschema
 
 from p42_prizes.source_release import (
     HttpObservation,
-    REQUIRED_CI_JOBS,
+    LEGACY_REQUIRED_CI_JOBS,
     REQUIRED_PROBES,
     REQUIRED_V3_PROBES,
     SourceReleaseEvidenceError,
@@ -46,7 +46,7 @@ def receipt() -> dict:
             "url": "https://github.com/techno-optimist/p42-prizes/actions/runs/123",
             "headSha": OBSERVED, "status": "completed", "conclusion": "success",
             "completedAt": "2026-07-14T10:55:25Z",
-            "requiredJobs": [{"name": name, "conclusion": "success"} for name in REQUIRED_CI_JOBS],
+            "requiredJobs": [{"name": name, "conclusion": "success"} for name in LEGACY_REQUIRED_CI_JOBS],
         },
         "render": {
             "serviceId": "srv-test", "deployId": "dep-test", "status": "live",
@@ -134,7 +134,7 @@ class FakeOnline(FakeGit):
                 "updatedAt": "2026-07-14T10:55:25Z",
                 "jobs": [
                     {"name": name, "conclusion": "success"}
-                    for name in REQUIRED_CI_JOBS
+                    for name in LEGACY_REQUIRED_CI_JOBS
                 ],
             }
             github.update(self.github_override)
@@ -268,7 +268,7 @@ def test_validation_unshallows_before_git_ancestry_checks(tmp_path: Path) -> Non
     "mutate, match",
     [
         (lambda value: value["ci"].update(headSha="7" * 40), "ci.headSha"),
-        (lambda value: value["ci"]["requiredJobs"].reverse(), "six-lane"),
+        (lambda value: value["ci"]["requiredJobs"].reverse(), "legacy six-job"),
         (lambda value: value["render"].update(liveCommit="7" * 40), "liveCommit"),
         (lambda value: value["releaseGuard"]["probes"].pop(), "exact ordered"),
         (lambda value: value["releaseGuard"]["probes"][0].update(status=503), "HTTP 200"),

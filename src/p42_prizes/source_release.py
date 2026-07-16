@@ -48,13 +48,16 @@ const rows = PROBE_ROUTES.flatMap((route) => route.origins.map((origin) => ({
 })));
 process.stdout.write(JSON.stringify(rows));"""
 SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
-REQUIRED_CI_JOBS = (
+LEGACY_REQUIRED_CI_JOBS = (
     "Python verifier gates",
     "Autonomous agent gates",
     "Portal gates",
     "Contract gates",
     "SP1 objective-program gates (ubuntu-22.04)",
     "SP1 objective-program gates (ubuntu-24.04)",
+)
+REQUIRED_CI_JOBS = LEGACY_REQUIRED_CI_JOBS + (
+    "SP1 objective-program reproducibility",
 )
 REQUIRED_PROBES = (
     ("home", "render", "https://p42-prizes.onrender.com/prizes"),
@@ -1222,8 +1225,8 @@ def _validate_v2_source_release_evidence(
     if ci.get("status") != "completed" or ci.get("conclusion") != "success":
         raise SourceReleaseEvidenceError("CI run must be completed successfully")
     jobs = ci.get("requiredJobs")
-    if not isinstance(jobs, list) or [item.get("name") for item in jobs if isinstance(item, dict)] != list(REQUIRED_CI_JOBS):
-        raise SourceReleaseEvidenceError("ci.requiredJobs must contain the exact ordered six-lane policy")
+    if not isinstance(jobs, list) or [item.get("name") for item in jobs if isinstance(item, dict)] != list(LEGACY_REQUIRED_CI_JOBS):
+        raise SourceReleaseEvidenceError("ci.requiredJobs must contain the exact ordered legacy six-job policy")
     if any(item.get("conclusion") != "success" for item in jobs):
         raise SourceReleaseEvidenceError("every required CI job must be successful")
 
@@ -2072,7 +2075,7 @@ def _validate_v3_workflow(
     if not isinstance(jobs, list) or jobs != [
         {"name": name, "conclusion": "success"} for name in REQUIRED_CI_JOBS
     ]:
-        raise SourceReleaseEvidenceError("v3 CI jobs must equal the exact ordered six-lane policy")
+        raise SourceReleaseEvidenceError("v3 CI jobs must equal the exact ordered seven-job policy")
     blob_oid = _commit(
         runner(["git", "rev-parse", f"{observed_head}:{ci['workflowPath']}"], root),
         "workflow blob OID",
@@ -2527,13 +2530,28 @@ def _validate_v3_online(
         "gh", "api", f"repos/{SOURCE_RELEASE_REPOSITORY}/actions/runs/{ci['runId']}/attempts/{ci['runAttempt']}/jobs"
     ], root))
     jobs = jobs_payload.get("jobs")
-    actual_jobs = [(item.get("name"), item.get("conclusion")) for item in jobs or []]
-    if (
-        len(actual_jobs) != len(REQUIRED_CI_JOBS)
-        or {name for name, _ in actual_jobs} != set(REQUIRED_CI_JOBS)
-        or any(conclusion != "success" for _, conclusion in actual_jobs)
-    ):
-        raise SourceReleaseEvidenceError("live GitHub jobs contain missing, reordered, duplicate, or extra jobs")
+    expected_jobs = [(name, "success") for name in REQUIRED_CI_JOBS]
+    if not isinstance(jobs, list) or len(jobs) != len(REQUIRED_CI_JOBS):
+        raise SourceReleaseEvidenceError(
+            "live GitHub jobs contain missing, failed, duplicate, substituted, or extra jobs"
+        )
+    jobs_by_name: dict[str, str] = {}
+    for item in jobs:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            raise SourceReleaseEvidenceError(
+                "live GitHub jobs contain missing, failed, duplicate, substituted, or extra jobs"
+            )
+        name = item["name"]
+        if name in jobs_by_name:
+            raise SourceReleaseEvidenceError(
+                "live GitHub jobs contain missing, failed, duplicate, substituted, or extra jobs"
+            )
+        jobs_by_name[name] = item.get("conclusion")
+    canonical_jobs = [(name, jobs_by_name.get(name)) for name in REQUIRED_CI_JOBS]
+    if set(jobs_by_name) != set(REQUIRED_CI_JOBS) or canonical_jobs != expected_jobs:
+        raise SourceReleaseEvidenceError(
+            "live GitHub jobs contain missing, failed, duplicate, substituted, or extra jobs"
+        )
 
     for interval in authority_intervals:
         for item, derived in zip(
@@ -2725,7 +2743,7 @@ def _validate_online(
     actual_jobs = {job.get("name"): job.get("conclusion") for job in github.get("jobs", [])}
     expected_jobs = {job["name"]: job["conclusion"] for job in ci["requiredJobs"]}
     if actual_jobs != expected_jobs or len(github.get("jobs", [])) != len(actual_jobs):
-        raise SourceReleaseEvidenceError("live GitHub jobs do not match the exact six-lane receipt")
+        raise SourceReleaseEvidenceError("live GitHub jobs do not match the exact legacy six-job receipt")
     pull_request = json.loads(
         command_runner(
             [

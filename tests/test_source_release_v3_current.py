@@ -196,6 +196,7 @@ class CurrentFakeGit:
         self.remote_failure = False
         self.exclude_publication_from_lineage = False
         self.extra_job = False
+        self.live_jobs: list[dict] | None = None
         self.pulls: list[dict] | None = None
         self.reviews: list[dict] | None = None
         self.changed_paths = {
@@ -284,7 +285,9 @@ class CurrentFakeGit:
                     "updated_at": "2026-07-15T03:59:00Z",
                 })
             if endpoint.endswith("/attempts/1/jobs"):
-                jobs = [{"name": name, "conclusion": "success"} for name in REQUIRED_CI_JOBS]
+                jobs = self.live_jobs or [
+                    {"name": name, "conclusion": "success"} for name in REQUIRED_CI_JOBS
+                ]
                 if self.extra_job:
                     jobs.append({"name": "extra", "conclusion": "success"})
                 return json.dumps({"jobs": jobs})
@@ -675,9 +678,89 @@ def current(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> CurrentFixture:
 
 
 def test_current_entry_uses_protected_root_and_validates_complete_v3(current: CurrentFixture) -> None:
+    assert REQUIRED_CI_JOBS == (
+        "Python verifier gates",
+        "Autonomous agent gates",
+        "Portal gates",
+        "Contract gates",
+        "SP1 objective-program gates (ubuntu-22.04)",
+        "SP1 objective-program gates (ubuntu-24.04)",
+        "SP1 objective-program reproducibility",
+    )
     result = current.validate()
     assert result["derived"]["validationMode"] == "current"
     assert result["derived"]["deployRelevantCommits"] == [DEPLOY]
+
+
+def test_v3_receipt_rejects_six_producers_without_cross_image_aggregator(
+    current: CurrentFixture,
+) -> None:
+    current.report["ci"]["requiredJobs"] = current.report["ci"]["requiredJobs"][:-1]
+    current.write_report()
+    with pytest.raises(SourceReleaseEvidenceError, match="source-release-evidence-v3"):
+        current.validate()
+
+
+def test_v3_policy_rejects_six_producers_without_cross_image_aggregator(
+    current: CurrentFixture,
+) -> None:
+    current.policy["requiredJobs"] = current.policy["requiredJobs"][:-1]
+    current.install_policy()
+    with pytest.raises(SourceReleaseEvidenceError, match="source-release-policy"):
+        current.validate()
+
+
+@pytest.mark.parametrize(
+    "mutate, match",
+    [
+        (
+            lambda jobs: jobs[-1].update(name="SP1 objective-program gates (ubuntu-20.04)"),
+            "exact ordered seven-job policy",
+        ),
+        (
+            lambda jobs: jobs[-1].update(conclusion="failure"),
+            "source-release-evidence-v3",
+        ),
+    ],
+)
+def test_v3_receipt_rejects_aggregator_substitution_or_failure(
+    current: CurrentFixture, mutate, match: str,
+) -> None:
+    mutate(current.report["ci"]["requiredJobs"])
+    current.write_report()
+    with pytest.raises(SourceReleaseEvidenceError, match=match):
+        current.validate()
+
+
+def test_live_github_jobs_accept_permuted_exact_seven_job_authority(
+    current: CurrentFixture,
+) -> None:
+    jobs = [{"name": name, "conclusion": "success"} for name in REQUIRED_CI_JOBS]
+    current.runner.live_jobs = jobs[3:] + jobs[:3]
+    result = current.validate()
+    assert result["derived"]["validationMode"] == "current"
+
+
+@pytest.mark.parametrize(
+    "mutation", ["omit", "duplicate", "extra", "substitute", "failure"]
+)
+def test_live_github_jobs_reject_nonexact_seven_job_authority_set(
+    current: CurrentFixture, mutation: str,
+) -> None:
+    jobs = [{"name": name, "conclusion": "success"} for name in REQUIRED_CI_JOBS]
+    if mutation == "omit":
+        jobs.pop()
+    elif mutation == "duplicate":
+        jobs[-1] = jobs[0].copy()
+    elif mutation == "extra":
+        jobs.append({"name": "extra", "conclusion": "success"})
+    elif mutation == "substitute":
+        jobs[-1]["name"] = "SP1 objective-program reproducibility substitute"
+    else:
+        jobs[-1]["conclusion"] = "failure"
+    current.runner.live_jobs = jobs
+    with pytest.raises(SourceReleaseEvidenceError, match="missing, failed, duplicate"):
+        current.validate()
 
 
 def test_public_current_api_has_no_caller_controlled_clock(current: CurrentFixture) -> None:
