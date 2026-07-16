@@ -18,6 +18,7 @@ export interface ChainProvenance {
   chainId: number;
   donationWalletAddress: string | null;
   poolAddress: string | null;
+  fundingTargetDeployed?: boolean;
   poolRuntimeCodeHash: string | null;
   deploymentTransactionHash: string | null;
   registryAddress: string | null;
@@ -171,7 +172,7 @@ export interface PortalSponsorshipFunding {
 export interface PortalWinningsDonation {
   transactionHash: string;
   solver: string;
-  destinationPool: string;
+  destinationPool: string | null;
   grossAmountWei: string;
   grossAmountEth: string;
   donatedAmountWei: string;
@@ -184,6 +185,9 @@ export interface PortalFundingReadModel {
   acceptingFunds: boolean;
   fundingArmed: boolean;
   authorizationExpiresAt: string;
+  fundingDeadline: string;
+  fundingDeadlineReached: boolean;
+  publicationObservedAt: string;
   ledgerPausedNewActions: boolean;
   submissionsPausedNewActions: boolean;
   submissionsPausedAll: boolean;

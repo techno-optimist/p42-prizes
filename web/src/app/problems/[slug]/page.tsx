@@ -377,7 +377,13 @@ $ make verify SOLUTION=examples/valid-4.json`}
               : "Local simulation figures for a future testnet deployment. Settlement remains disabled until custody, audit, legal, and resolver gates close."}
           </p>
 
-          <FundingPanel label={problem.title} wallet={problem.donationWallet} provenance={chainProvenance} />
+          <FundingPanel
+            slug={problem.slug}
+            label={problem.title}
+            fundingTargetDeployed={chainProvenance.fundingTargetDeployed === true}
+            fundingDeadline={funding?.fundingDeadline ?? null}
+            serverObservedAt={funding?.publicationObservedAt ?? null}
+          />
 
           <div style={{ marginTop: 18 }}>
             <div className="fact-row">

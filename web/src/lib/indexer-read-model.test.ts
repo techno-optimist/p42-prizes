@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { keccak256, toUtf8Bytes } from "ethers";
 import { launchProblems, sortLeaderboardRows } from "@/lib/data";
 import { finalizedFrontierRows, frontierBest } from "@/lib/frontier";
+import { publishedDonationTarget } from "@/lib/chain-provenance";
 import {
   portalReadModelFromActivatedSnapshot,
   resolvePortalReadModel,
@@ -12,6 +13,10 @@ import type { ChainProvenance, Problem, Submission } from "@/lib/types";
 const SCALE = 10n ** 18n;
 const HASH = `0x${"1".repeat(64)}`;
 const ADDRESS = `0x${"2".repeat(40)}`;
+const DESTINATION_ADDRESS = `0x${"4".repeat(40)}`;
+const CHECKPOINT_TIMESTAMP = 1_000;
+const FUNDING_DEADLINE = 2_000;
+const CLOSE_BY_TIMESTAMP = FUNDING_DEADLINE + 30 * 24 * 60 * 60;
 
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);
@@ -114,6 +119,7 @@ function projection(index: number) {
   ] : [];
   return {
     schema: "p42-prizes/portal-projection/v2",
+    replayConfig: { closeByTimestamp: String(CLOSE_BY_TIMESTAMP) },
     frontier: { currentAtoms: String(current) },
     submissions,
     solvers: [
@@ -175,7 +181,7 @@ function snapshot(inputProblems = problems()): ActivatedIndexerSnapshot {
     manifest: { problems: manifestProblems },
     checkpoint: {
       schema: "p42-prizes/indexer-checkpoint/v4",
-      range: { toBlockTimestamp: 1000 },
+      range: { toBlockTimestamp: CHECKPOINT_TIMESTAMP },
       boards,
     },
     provenance: new Map(inputProblems.map((problem, index) => [problem.slug, provenance(problem, index)])),
@@ -194,7 +200,7 @@ function localRow(problem: Problem, source: Submission["source"]): Submission {
 describe("atomic activation-bound portal read model", () => {
   it("consumes all ten boards with exact score atoms and complete economic state", () => {
     const cohort = problems();
-    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort));
+    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
 
     expect(model.source).toBe("chain-p42-v1");
     expect(model.problems).toHaveLength(10);
@@ -210,6 +216,9 @@ describe("atomic activation-bound portal read model", () => {
     expect(model.problems[1].funding).toMatchObject({ canFund: true, canSubmit: true, canChallenge: true });
     expect(model.problems[0].donationWallet.status).toBe("closed");
     expect(model.problems[0].donationWallet.address).toBeNull();
+    expect(model.problems[0].chainProvenance).toMatchObject({
+      poolAddress: null, donationWalletAddress: null, fundingTargetDeployed: true,
+    });
     expect(model.problems[1].donationWallet.status).toBe("testnet-only");
     expect(model.problems[0].claimants).toMatchObject([
       { claimant: ADDRESS, credit: "2/1", finalEntitlementEth: "0.75", submissionBondEth: "0.2", withdrawableBondEth: "0.2" },
@@ -223,10 +232,12 @@ describe("atomic activation-bound portal read model", () => {
 
   it("does not reuse the one-time arm authorization expiry as an ongoing action gate", () => {
     const cohort = problems();
-    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort));
+    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
     expect(model.provenance.checkpointTimestamp).toBe("1970-01-01T00:16:40.000Z");
     expect(model.problems[1].funding).toMatchObject({
       authorizationExpiresAt: "1970-01-01T00:15:00.000Z",
+      fundingDeadline: "1970-01-01T00:33:20.000Z",
+      fundingDeadlineReached: false,
       fundingArmed: true,
       canFund: true,
       canSubmit: true,
@@ -237,7 +248,7 @@ describe("atomic activation-bound portal read model", () => {
     const cohort = problems();
     const value = snapshot(cohort);
     ((value.checkpoint.boards as any[])[1].portalProjection.funding).ledgerPausedNewActions = true;
-    const model = portalReadModelFromActivatedSnapshot(cohort, value);
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
     expect(model.problems[1].funding).toMatchObject({
       ledgerPausedNewActions: true,
       fundingArmed: true,
@@ -247,9 +258,166 @@ describe("atomic activation-bound portal read model", () => {
     });
   });
 
+  it.each([
+    ["just before", FUNDING_DEADLINE - 1, true],
+    ["at the exact boundary", FUNDING_DEADLINE, false],
+    ["after", FUNDING_DEADLINE + 1, false],
+  ])("publishes funding %s the canonical on-chain deadline", (_label, nowSeconds, expectedCanFund) => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    (value.checkpoint.range as Record<string, unknown>).toBlockTimestamp = nowSeconds;
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds });
+    const problem = model.problems[1];
+    expect(problem.funding).toMatchObject({
+      acceptingFunds: true,
+      fundingArmed: true,
+      fundingDeadline: "1970-01-01T00:33:20.000Z",
+      fundingDeadlineReached: !expectedCanFund,
+      canFund: expectedCanFund,
+    });
+    expect(problem.poolAddress).toBe(expectedCanFund ? ADDRESS : null);
+    expect(problem.donationWallet.address).toBe(expectedCanFund ? ADDRESS : null);
+    expect(problem.donationWallet.status).toBe(expectedCanFund ? "testnet-only" : "paused");
+    expect(problem.donationWallet.note).toContain(expectedCanFund ? "activated P42 checkpoint" : "conservatively stops publishing");
+    expect(problem.chainProvenance).toMatchObject({
+      poolAddress: expectedCanFund ? ADDRESS : null,
+      donationWalletAddress: expectedCanFund ? ADDRESS : null,
+      fundingTargetDeployed: true,
+      checkpointBlock: 999,
+      reconciliationOk: true,
+    });
+    expect(problem.pool?.winningsDonations[0].destinationPool).toBe(expectedCanFund ? ADDRESS : null);
+    const target = publishedDonationTarget(problem.donationWallet, problem.chainProvenance);
+    expect(target?.walletUri ?? null).toBe(expectedCanFund ? `ethereum:${ADDRESS}@84532` : null);
+  });
+
+  it.each([
+    ["at the deadline", FUNDING_DEADLINE],
+    ["after the deadline", FUNDING_DEADLINE + 1],
+  ])("uses an accepted chain-ahead checkpoint %s even when the local clock trails by 30 seconds", (_label, checkpointTimestamp) => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    (value.checkpoint.range as Record<string, unknown>).toBlockTimestamp = checkpointTimestamp;
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: checkpointTimestamp - 30 });
+    const problem = model.problems[1];
+    expect(problem.funding).toMatchObject({
+      fundingDeadlineReached: true,
+      canFund: false,
+      publicationObservedAt: new Date(checkpointTimestamp * 1_000).toISOString(),
+    });
+    expect(problem).toMatchObject({
+      poolAddress: null,
+      donationWallet: { address: null, status: "paused" },
+      chainProvenance: { poolAddress: null, donationWalletAddress: null },
+    });
+    expect(problem.pool?.winningsDonations[0].destinationPool).toBeNull();
+    expect(publishedDonationTarget(problem.donationWallet, problem.chainProvenance)).toBeNull();
+  });
+
+  it("publishes a cross-board donation destination only while that destination board is actionable", () => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    const destinationProblem = cohort[2];
+    const updatedProvenance = new Map(value.provenance);
+    updatedProvenance.set(destinationProblem.slug, {
+      ...value.provenance.get(destinationProblem.slug)!,
+      poolAddress: DESTINATION_ADDRESS,
+      donationWalletAddress: DESTINATION_ADDRESS,
+    });
+    value.provenance = updatedProvenance;
+    ((value.checkpoint.boards as any[])[1].portalProjection.pool).winningsDonations[0].destinationPool = DESTINATION_ADDRESS;
+
+    const actionable = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(actionable.problems[1].pool?.winningsDonations[0].destinationPool).toBe(DESTINATION_ADDRESS);
+
+    ((value.checkpoint.boards as any[])[2].portalProjection.funding).acceptingFunds = false;
+    const unavailable = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(unavailable.problems[1].pool?.winningsDonations[0].destinationPool).toBeNull();
+    expect(unavailable.problems[2].chainProvenance).toMatchObject({
+      poolAddress: null,
+      donationWalletAddress: null,
+      fundingTargetDeployed: true,
+    });
+  });
+
+  it.each([
+    ["unknown", DESTINATION_ADDRESS],
+    ["malformed", "not-an-address"],
+    ["missing", undefined],
+  ])("fails closed for a %s donation destination", (_label, destinationPool) => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    ((value.checkpoint.boards as any[])[1].portalProjection.pool).winningsDonations[0].destinationPool = destinationPool;
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.problems[1].pool?.winningsDonations[0].destinationPool).toBeNull();
+  });
+
+  it("redacts public provenance addresses for every projected non-actionable funding state", () => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    ((value.checkpoint.boards as any[])[1].portalProjection.funding).acceptingFunds = false;
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.problems[1]).toMatchObject({
+      poolAddress: null,
+      donationWallet: { address: null, status: "paused" },
+      chainProvenance: {
+        poolAddress: null,
+        donationWalletAddress: null,
+        fundingTargetDeployed: true,
+        poolRuntimeCodeHash: HASH,
+        checkpointBlock: 999,
+        reconciliationOk: true,
+      },
+      funding: { acceptingFunds: false, canFund: false },
+    });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["malformed", "not-a-timestamp"],
+    ["too early", "2591999"],
+  ])("fails closed when closeByTimestamp is %s", (_label, closeByTimestamp) => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    for (const board of value.checkpoint.boards as any[]) {
+      if (closeByTimestamp === undefined) delete board.portalProjection.replayConfig.closeByTimestamp;
+      else board.portalProjection.replayConfig.closeByTimestamp = closeByTimestamp;
+    }
+    const local = localRow(cohort[0], "local-phase-0");
+
+    const model = resolvePortalReadModel(cohort, value, [local], { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.source).toBe("local-phase-0");
+    expect(model.problems.every((problem) => problem.poolAddress === null && problem.funding === null)).toBe(true);
+  });
+
+  it.each([
+    ["stale", CHECKPOINT_TIMESTAMP + 301],
+    ["too far in the future", CHECKPOINT_TIMESTAMP - 31],
+  ])("fails closed for a %s checkpoint clock", (_label, nowSeconds) => {
+    const cohort = problems();
+    const local = localRow(cohort[0], "local-phase-0");
+    const model = resolvePortalReadModel(cohort, snapshot(cohort), [local], { nowSeconds });
+
+    expect(model.source).toBe("local-phase-0");
+    expect(model.provenance.note).toContain("fresh checkpoint timestamp");
+  });
+
+  it("accepts the checkpoint freshness model's exact future-clock tolerance", () => {
+    const cohort = problems();
+    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), {
+      nowSeconds: CHECKPOINT_TIMESTAMP - 30,
+    });
+    expect(model.source).toBe("chain-p42-v1");
+    expect(model.problems[1].donationWallet.status).toBe("testnet-only");
+  });
+
   it("keeps chain ordering and frontier calculations exact", () => {
     const cohort = problems();
-    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort));
+    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
     const rows = sortLeaderboardRows(cohort[0].id, [...model.submissions]);
     expect(rows.map((row) => row.id)).toEqual(["chain:1:1", "chain:1:2", "chain:1:3"]);
     expect(finalizedFrontierRows(model.problems[0], [...model.submissions]).map((row) => row.id))
@@ -259,7 +427,7 @@ describe("atomic activation-bound portal read model", () => {
 
   it("never mixes local rows into a passing chain cohort", () => {
     const cohort = problems();
-    const model = resolvePortalReadModel(cohort, snapshot(cohort), [localRow(cohort[0], "local-phase-0")]);
+    const model = resolvePortalReadModel(cohort, snapshot(cohort), [localRow(cohort[0], "local-phase-0")], { nowSeconds: CHECKPOINT_TIMESTAMP });
     expect(model.source).toBe("chain-p42-v1");
     expect(model.submissions.every((row) => row.source === "chain-p42-v1")).toBe(true);
   });
@@ -288,7 +456,7 @@ describe("atomic activation-bound portal read model", () => {
     const cohort = problems();
     const local = localRow(cohort[0], "local-phase-0");
     const importedChain = localRow(cohort[0], "chain-p42-v1");
-    const model = resolvePortalReadModel(cohort, mutate(snapshot(cohort)), [local, importedChain]);
+    const model = resolvePortalReadModel(cohort, mutate(snapshot(cohort)), [local, importedChain], { nowSeconds: CHECKPOINT_TIMESTAMP });
     expect(model.source).toBe("local-phase-0");
     expect(model.submissions).toEqual([local]);
     expect(model.problems.every((problem) => problem.source === "local-phase-0" && problem.pool === null)).toBe(true);
