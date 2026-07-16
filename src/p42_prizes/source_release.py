@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
 import stat
 import subprocess
-from tempfile import TemporaryDirectory
+import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
 import jsonschema
@@ -24,13 +26,17 @@ SOURCE_RELEASE_V3_SCHEMA_VERSION = "p42-source-release-evidence/v3"
 SOURCE_RELEASE_POLICY_SCHEMA_VERSION = "p42-source-release-policy/v1"
 SOURCE_RELEASE_BOOTSTRAP_SCHEMA_VERSION = "p42-source-release-bootstrap-ratification/v1"
 SOURCE_RELEASE_TRUST_ROOT_SCHEMA_VERSION = "p42-source-release-trust-root/v1"
+SOURCE_RELEASE_EXECUTABLE_POLICY_SCHEMA_VERSION = "p42-source-release-executables/v1"
 SOURCE_RELEASE_REPOSITORY = "techno-optimist/p42-prizes"
 SOURCE_RELEASE_BRANCH = "main"
 SOURCE_RELEASE_REMOTE = f"https://github.com/{SOURCE_RELEASE_REPOSITORY}.git"
 CANONICAL_RENDER_SERVICE_ID = "srv-d96pokeq1p3s73foqk60"
 CANONICAL_CURRENT_RECEIPT = Path("docs/evidence/source-release-current.json")
 PRODUCTION_TRUST_ROOT = Path("/etc/p42/source-release-trust-root.json")
+PRODUCTION_EXECUTABLE_POLICY = Path("/etc/p42/source-release-executables.json")
+PROTECTED_EXECUTION_ROOT = Path("/")
 PROTECTED_OWNER_UID = 0
+_TEST_ONLY_ALLOW_PATH_EXECUTION = False
 GUARD_COMMAND = ("node", "scripts/verify-render-release.mjs")
 GUARD_PROGRAM_PATH = "scripts/verify-render-release.mjs"
 WORKFLOW_CLOSURE_ALGORITHM = "p42-git-ls-tree-closure/v1"
@@ -77,6 +83,33 @@ EVIDENCE_ONLY_TAIL_PATHS = frozenset({
     "docs/HUMAN_ACTIONS.md",
     "docs/evidence/source-release-current.json",
 })
+DANGEROUS_GIT_ENVIRONMENT = frozenset({
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_ASKPASS",
+    "GIT_EXEC_PATH",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_GRAFT_FILE",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
+    "GIT_INDEX_FILE",
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_QUARANTINE_PATH",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "SSH_ASKPASS",
+    "SSH_ASKPASS_REQUIRE",
+    "GIT_WORK_TREE",
+})
 
 
 class SourceReleaseEvidenceError(ValueError):
@@ -105,8 +138,611 @@ class DetailedHttpObservation:
     body: bytes
 
 
+@dataclass(frozen=True)
+class ExecutableIdentity:
+    name: str
+    path: Path
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ProtectedPathHandle:
+    fd: int
+    path: Path
+
+
+@dataclass(frozen=True)
+class GitHelperIdentity:
+    name: str
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ProductionExecutionContext:
+    home: Path
+    runtime: Path
+    executables: Mapping[str, ExecutableIdentity]
+    git_exec_path: Path
+    git_exec_tree_sha256: str
+    git_helpers: tuple[GitHelperIdentity, ...]
+
+
+@dataclass(frozen=True)
+class SourceAuthorityInterval:
+    declared_commits: tuple[Mapping[str, Any], ...]
+    derived_commits: tuple[Mapping[str, str], ...]
+    derived_deploy_commits: tuple[Mapping[str, str], ...]
+
+
+@dataclass(frozen=True)
+class ValidatedPredecessorChain:
+    immediate_reference: Mapping[str, Any]
+    historical_intervals: tuple[SourceAuthorityInterval, ...]
+
+
+def _dangerous_git_environment() -> list[str]:
+    return sorted(
+        key for key in os.environ
+        if key in DANGEROUS_GIT_ENVIRONMENT or key.startswith("GIT_CONFIG")
+    )
+
+
+def _git_directories(root: Path) -> tuple[Path, ...]:
+    marker = root / ".git"
+    if marker.is_dir():
+        git_dir = marker.resolve()
+    elif marker.is_file():
+        try:
+            marker_text = marker.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeError) as exc:
+            raise SourceReleaseEvidenceError("Git repository metadata is unreadable") from exc
+        if not marker_text.startswith("gitdir: "):
+            raise SourceReleaseEvidenceError("Git repository metadata is malformed")
+        candidate = Path(marker_text.removeprefix("gitdir: "))
+        git_dir = (candidate if candidate.is_absolute() else marker.parent / candidate).resolve()
+        if not git_dir.is_dir():
+            raise SourceReleaseEvidenceError("Git repository directory is unavailable")
+    else:
+        raise SourceReleaseEvidenceError("repo_root must contain Git repository metadata")
+
+    common_dir = git_dir
+    commondir_path = git_dir / "commondir"
+    if commondir_path.exists() or commondir_path.is_symlink():
+        try:
+            candidate = Path(commondir_path.read_text(encoding="utf-8").strip())
+        except (OSError, UnicodeError) as exc:
+            raise SourceReleaseEvidenceError("Git common-directory metadata is unreadable") from exc
+        common_dir = (
+            candidate if candidate.is_absolute() else git_dir / candidate
+        ).resolve()
+        if not common_dir.is_dir():
+            raise SourceReleaseEvidenceError("Git common directory is unavailable")
+    return tuple(dict.fromkeys((git_dir, common_dir)))
+
+
+def _preflight_git_repository(root: Path) -> tuple[Path, ...]:
+    dangerous = _dangerous_git_environment()
+    if dangerous:
+        raise SourceReleaseEvidenceError(
+            "dangerous Git environment overrides are forbidden: " + ", ".join(dangerous)
+        )
+    git_directories = _git_directories(root)
+    for git_dir in git_directories:
+        for forbidden, label in (
+            (git_dir / "refs" / "replace", "Git replacement refs"),
+            (git_dir / "info" / "grafts", "Git grafts"),
+            (git_dir / "objects" / "info" / "alternates", "Git object alternates"),
+        ):
+            if forbidden.exists() or forbidden.is_symlink():
+                raise SourceReleaseEvidenceError(
+                    f"{label} are forbidden for source-release validation"
+                )
+        packed_refs = git_dir / "packed-refs"
+        if packed_refs.exists():
+            try:
+                packed_text = packed_refs.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                raise SourceReleaseEvidenceError("Git packed refs are unreadable") from exc
+            if any(
+                line and not line.startswith(("#", "^"))
+                and line.split(" ", 1)[-1].startswith("refs/replace/")
+                for line in packed_text.splitlines()
+            ):
+                raise SourceReleaseEvidenceError(
+                    "Git replacement refs are forbidden for source-release validation"
+                )
+    return git_directories
+
+
+def _minimal_execution_environment(
+    context: ProductionExecutionContext,
+    *,
+    home_path: str | None = None,
+    git_exec_path: str | None = None,
+    git_graft_file: str | None = None,
+) -> dict[str, str]:
+    environment = {
+        "HOME": home_path or str(context.home),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "NO_COLOR": "1",
+        "GH_PROMPT_DISABLED": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+    if git_exec_path is not None:
+        environment["GIT_EXEC_PATH"] = git_exec_path
+    if git_graft_file is not None:
+        environment["GIT_GRAFT_FILE"] = git_graft_file
+    for credential in ("GH_TOKEN", "GITHUB_TOKEN", "RENDER_API_KEY"):
+        value = os.environ.get(credential)
+        if value:
+            environment[credential] = value
+    return environment
+
+
+def _stable_stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev, value.st_ino, value.st_mode, value.st_uid,
+        value.st_size, value.st_mtime_ns,
+    )
+
+
+def _require_protected_stat(value: os.stat_result, *, label: str, directory: bool) -> None:
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if not expected_type(value.st_mode):
+        raise SourceReleaseEvidenceError(f"{label} has the wrong filesystem type")
+    if value.st_uid != PROTECTED_OWNER_UID or value.st_mode & 0o022:
+        raise SourceReleaseEvidenceError(f"{label} is not protected")
+
+
+@contextmanager
+def _open_protected_path(
+    path: Path, *, directory: bool, label: str,
+):
+    boundary = PROTECTED_EXECUTION_ROOT.absolute()
+    target = path.absolute()
+    try:
+        relative = target.relative_to(boundary)
+    except ValueError as exc:
+        raise SourceReleaseEvidenceError(f"{label} escapes the protected path boundary") from exc
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    directory_flag = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not directory_flag:
+        raise SourceReleaseEvidenceError("protected execution paths require O_NOFOLLOW and O_DIRECTORY")
+    descriptors: list[int] = []
+    try:
+        current = os.open(boundary, os.O_RDONLY | directory_flag | nofollow)
+        descriptors.append(current)
+        current_stat = os.fstat(current)
+        _require_protected_stat(
+            current_stat, label="protected execution root", directory=True
+        )
+        parts = relative.parts
+        if not parts:
+            if not directory:
+                raise SourceReleaseEvidenceError(f"{label} must be a file")
+            yield ProtectedPathHandle(fd=current, path=target)
+            return
+        for index, part in enumerate(parts):
+            is_leaf = index == len(parts) - 1
+            flags = os.O_RDONLY | nofollow
+            if not is_leaf or directory:
+                flags |= directory_flag
+            before = os.fstat(current)
+            try:
+                child = os.open(part, flags, dir_fd=current)
+            except OSError as exc:
+                raise SourceReleaseEvidenceError(f"{label} is unavailable or symlinked") from exc
+            after = os.fstat(current)
+            if _stable_stat_identity(before) != _stable_stat_identity(after):
+                os.close(child)
+                raise SourceReleaseEvidenceError(
+                    f"{label} ancestor changed while being traversed"
+                )
+            descriptors.append(child)
+            child_stat = os.fstat(child)
+            _require_protected_stat(
+                child_stat,
+                label=f"{label} path component {part}",
+                directory=not is_leaf or directory,
+            )
+            current = child
+        yield ProtectedPathHandle(fd=current, path=target)
+    finally:
+        for descriptor in reversed(descriptors):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+@contextmanager
+def _open_verified_executable(identity: ExecutableIdentity):
+    with _open_protected_path(
+        identity.path, directory=False, label=f"bound {identity.name} executable"
+    ) as handle:
+        executable_stat = os.fstat(handle.fd)
+        if not executable_stat.st_mode & 0o111:
+            raise SourceReleaseEvidenceError(
+                f"bound {identity.name} executable is not executable"
+            )
+        digest = hashlib.sha256()
+        os.lseek(handle.fd, 0, os.SEEK_SET)
+        while chunk := os.read(handle.fd, 1024 * 1024):
+            digest.update(chunk)
+        after = os.fstat(handle.fd)
+        if _stable_stat_identity(executable_stat) != _stable_stat_identity(after):
+            raise SourceReleaseEvidenceError(
+                f"bound {identity.name} executable changed while being verified"
+            )
+        if "sha256:" + digest.hexdigest() != identity.sha256:
+            raise SourceReleaseEvidenceError(
+                f"bound {identity.name} executable digest mismatch"
+            )
+        yield handle
+
+
+def _is_native_executable(descriptor: int) -> bool:
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    magic = os.read(descriptor, 4)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return magic == b"\x7fELF" or magic in {
+        b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf",
+        b"\xce\xfa\xed\xfe", b"\xcf\xfa\xed\xfe",
+        b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",
+    }
+
+
+def _hash_descriptor(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while chunk := os.read(descriptor, 1024 * 1024):
+        digest.update(chunk)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return "sha256:" + digest.hexdigest()
+
+
+@contextmanager
+def _open_git_exec_path(context: ProductionExecutionContext):
+    with _open_protected_path(
+        context.git_exec_path, directory=True, label="bound Git helper directory"
+    ) as directory_handle:
+        expected = {helper.name: helper for helper in context.git_helpers}
+        try:
+            entries = set(os.listdir(directory_handle.fd))
+        except OSError as exc:
+            raise SourceReleaseEvidenceError("bound Git helper directory is unreadable") from exc
+        if entries != set(expected):
+            raise SourceReleaseEvidenceError("bound Git helper directory closure mismatch")
+        descriptors: list[int] = []
+        manifest: list[dict[str, str]] = []
+        try:
+            for name in sorted(expected):
+                try:
+                    descriptor = os.open(
+                        name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_handle.fd
+                    )
+                except OSError as exc:
+                    raise SourceReleaseEvidenceError(
+                        f"bound Git helper {name} is unavailable or symlinked"
+                    ) from exc
+                descriptors.append(descriptor)
+                helper_stat = os.fstat(descriptor)
+                _require_protected_stat(
+                    helper_stat, label=f"bound Git helper {name}", directory=False
+                )
+                if not helper_stat.st_mode & 0o111 or not _is_native_executable(descriptor):
+                    raise SourceReleaseEvidenceError(
+                        f"bound Git helper {name} must be a native executable"
+                    )
+                digest = _hash_descriptor(descriptor)
+                if digest != expected[name].sha256:
+                    raise SourceReleaseEvidenceError(
+                        f"bound Git helper {name} digest mismatch"
+                    )
+                manifest.append({"name": name, "sha256": digest})
+            tree_digest = sha256_bytes(canonical_json(manifest).encode("utf-8"))
+            if tree_digest != context.git_exec_tree_sha256:
+                raise SourceReleaseEvidenceError("bound Git helper tree digest mismatch")
+            yield directory_handle, tuple(descriptors)
+        finally:
+            for descriptor in reversed(descriptors):
+                os.close(descriptor)
+
+
+@contextmanager
+def _open_empty_git_graft_file(context: ProductionExecutionContext):
+    if hasattr(os, "memfd_create") and not _TEST_ONLY_ALLOW_PATH_EXECUTION:
+        descriptor = os.memfd_create("p42-empty-grafts", os.MFD_ALLOW_SEALING)
+        try:
+            seals = (
+                fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK |
+                fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE
+            )
+            fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, seals)
+            yield descriptor
+        finally:
+            os.close(descriptor)
+        return
+    with _open_protected_path(
+        context.runtime, directory=True, label="validator runtime directory"
+    ) as runtime_handle:
+        directory = str(context.runtime) if _TEST_ONLY_ALLOW_PATH_EXECUTION else _fd_path(runtime_handle.fd)
+        with tempfile.TemporaryFile(dir=directory) as graft_file:
+            yield graft_file.fileno()
+
+
+def _resource_fd_path(descriptor: int) -> str:
+    proc = Path("/proc/self/fd")
+    if proc.is_dir():
+        return str(proc / str(descriptor))
+    if _TEST_ONLY_ALLOW_PATH_EXECUTION:
+        return str(Path("/dev/fd") / str(descriptor))
+    raise SourceReleaseEvidenceError("descriptor-bound resources require Linux /proc/self/fd")
+
+
+def _fd_path(descriptor: int) -> str:
+    proc = Path("/proc/self/fd")
+    if not proc.is_dir():
+        raise SourceReleaseEvidenceError(
+            "exact-inode process execution requires Linux /proc/self/fd"
+        )
+    return str(proc / str(descriptor))
+
+
+def _execute_bound(
+    command: list[str],
+    cwd: Path,
+    context: ProductionExecutionContext,
+    *,
+    text: bool,
+    git_directory: Path | None = None,
+    bind_git_repository: bool = True,
+) -> subprocess.CompletedProcess[Any]:
+    if not command or command[0] not in context.executables:
+        name = command[0] if command else "<empty>"
+        raise SourceReleaseEvidenceError(f"unbound executable is forbidden: {name}")
+    logical_name = command[0]
+    identity = context.executables[logical_name]
+    with ExitStack() as stack:
+        executable_handle = stack.enter_context(_open_verified_executable(identity))
+        home_handle = stack.enter_context(_open_protected_path(
+            context.home, directory=True, label="bound executable HOME"
+        ))
+        if not _TEST_ONLY_ALLOW_PATH_EXECUTION and not _is_native_executable(
+            executable_handle.fd
+        ):
+            raise SourceReleaseEvidenceError(
+                f"bound {logical_name} executable must be a native executable"
+            )
+        if _TEST_ONLY_ALLOW_PATH_EXECUTION:
+            executable_path = str(identity.path)
+            home_path = str(context.home)
+        else:
+            executable_path = _fd_path(executable_handle.fd)
+            home_path = _fd_path(home_handle.fd)
+        pass_fds = [executable_handle.fd, home_handle.fd]
+        environment_arguments: dict[str, str] = {}
+        if logical_name == "git":
+            graft_descriptor = stack.enter_context(_open_empty_git_graft_file(context))
+            git_exec_handle, helper_descriptors = stack.enter_context(
+                _open_git_exec_path(context)
+            )
+            pass_fds.extend((graft_descriptor, git_exec_handle.fd, *helper_descriptors))
+            environment_arguments = {
+                "git_graft_file": _resource_fd_path(graft_descriptor),
+                "git_exec_path": (
+                    str(context.git_exec_path)
+                    if _TEST_ONLY_ALLOW_PATH_EXECUTION
+                    else _resource_fd_path(git_exec_handle.fd)
+                ),
+            }
+        arguments = [executable_path, *command[1:]]
+        if logical_name == "git" and bind_git_repository:
+            selected_git_dir = git_directory or _preflight_git_repository(cwd)[0]
+            arguments = [
+                executable_path, "--no-replace-objects",
+                f"--git-dir={selected_git_dir}",
+                f"--work-tree={cwd.resolve()}", *command[1:],
+            ]
+        hook = globals().get("_before_bound_exec_for_test")
+        if hook is not None:
+            hook(logical_name, identity.path, context.home)
+        return subprocess.run(
+            arguments,
+            executable=executable_path,
+            cwd=cwd,
+            text=text,
+            capture_output=True,
+            check=False,
+            env=_minimal_execution_environment(
+                context, home_path=home_path, **environment_arguments
+            ),
+            pass_fds=tuple(pass_fds),
+        )
+
+
+def _run_with_git_view(
+    command: list[str], cwd: Path, context: ProductionExecutionContext,
+    git_directory: Path,
+) -> str:
+    completed = _execute_bound(
+        command, cwd, context, text=True, git_directory=git_directory
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        display = " ".join(command)
+        raise SourceReleaseEvidenceError(
+            f"{display} failed" + (f": {detail}" if detail else "")
+        )
+    return completed.stdout.strip()
+
+
+def _read_git_blob_from_view(
+    spec: str, root: Path, context: ProductionExecutionContext, git_directory: Path,
+) -> bytes:
+    completed = _execute_bound(
+        ["git", "show", spec], root, context, text=False,
+        git_directory=git_directory,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise SourceReleaseEvidenceError(
+            f"git show {spec} failed" + (f": {detail}" if detail else "")
+        )
+    return completed.stdout
+
+
+@contextmanager
+def _validator_temporary_directory(
+    context: ProductionExecutionContext, *, prefix: str,
+):
+    with _open_protected_path(
+        context.runtime, directory=True, label="validator runtime directory"
+    ) as runtime_handle:
+        parent = (
+            str(context.runtime)
+            if _TEST_ONLY_ALLOW_PATH_EXECUTION
+            else _fd_path(runtime_handle.fd)
+        )
+        with tempfile.TemporaryDirectory(prefix=prefix, dir=parent) as directory:
+            private_root = context.runtime / Path(directory).name
+            private_root.chmod(0o700)
+            yield private_root
+
+
+@contextmanager
+def _private_git_authority(
+    root: Path,
+    context: ProductionExecutionContext,
+    *,
+    remote: str = SOURCE_RELEASE_REMOTE,
+    authenticated_head: str | None = None,
+):
+    """Yield providers backed only by one authenticated canonical commit OID."""
+    _preflight_git_repository(root)
+    hook = globals().get("_after_caller_git_preflight_for_test")
+    if hook is not None:
+        hook(root)
+    if authenticated_head is None:
+        authenticated_head = _commit(_run_with_context([
+            "gh", "api", "--hostname", "github.com",
+            f"repos/{SOURCE_RELEASE_REPOSITORY}/git/ref/heads/{SOURCE_RELEASE_BRANCH}",
+            "--jq", ".object.sha",
+        ], root, context), "authenticated GitHub main head")
+    else:
+        authenticated_head = _commit(authenticated_head, "test authenticated head")
+
+    with _validator_temporary_directory(
+        context, prefix="source-authority-"
+    ) as private_root:
+        git_directory = private_root / "authority.git"
+        authority_root = private_root / "worktree"
+        authority_root.mkdir(mode=0o700)
+
+        def setup(arguments: list[str], *, git_view: bool = False) -> str:
+            command_root = authority_root if git_view else root
+            completed = _execute_bound(
+                ["git", *arguments], command_root, context, text=True,
+                git_directory=git_directory if git_view else None,
+                bind_git_repository=git_view,
+            )
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout).strip()
+                raise SourceReleaseEvidenceError(
+                    "private Git authority setup failed" +
+                    (f": {detail}" if detail else "")
+                )
+            return completed.stdout.strip()
+
+        setup(["init", "--bare", "--quiet", "--template=", str(git_directory)])
+        setup([
+            "fetch", "--quiet", "--no-tags", remote, authenticated_head,
+        ], git_view=True)
+        setup([
+            "fsck", "--strict", "--full", "--no-dangling", authenticated_head,
+        ], git_view=True)
+        setup([
+            "checkout", "--quiet", "--detach", "--force", authenticated_head,
+        ], git_view=True)
+        fetch_head = git_directory / "FETCH_HEAD"
+        if fetch_head.exists():
+            fetch_head.unlink()
+        hook = globals().get("_after_private_fetch_for_test")
+        if hook is not None:
+            hook(private_root, git_directory, authenticated_head)
+        setup([
+            "fsck", "--strict", "--full", "--no-dangling", authenticated_head,
+        ], git_view=True)
+
+        def exact_git_command(command: list[str]) -> list[str]:
+            rewritten = []
+            for argument in command:
+                if argument == "HEAD" or argument.startswith(("HEAD:", "HEAD^", "HEAD~")):
+                    argument = authenticated_head + argument[4:]
+                if argument.startswith("refs/") or argument in {
+                    SOURCE_RELEASE_BRANCH, "origin", "FETCH_HEAD",
+                }:
+                    raise SourceReleaseEvidenceError(
+                        "mutable Git references are forbidden after head authentication"
+                    )
+                rewritten.append(argument)
+            return rewritten
+
+        def runner(command: list[str], cwd: Path) -> str:
+            if command[:2] == ["git", "status"]:
+                return ""
+            if command[:3] == ["git", "rev-parse", "HEAD"]:
+                return authenticated_head
+            if command[:2] == ["git", "rev-parse"] and command[2:] == [
+                "--is-shallow-repository"
+            ]:
+                return "false"
+            if command[:4] == ["gh", "api", "--hostname", "github.com"] and (
+                f"repos/{SOURCE_RELEASE_REPOSITORY}/git/ref/heads/{SOURCE_RELEASE_BRANCH}"
+                in command
+            ):
+                return authenticated_head
+            if command and command[0] == "git":
+                return _run_with_git_view(
+                    exact_git_command(command), cwd, context, git_directory
+                )
+            return _run_with_context(command, cwd, context)
+
+        def blob_reader(spec: str, cwd: Path) -> bytes:
+            if spec == "HEAD" or spec.startswith(("HEAD:", "HEAD^", "HEAD~")):
+                spec = authenticated_head + spec[4:]
+            return _read_git_blob_from_view(spec, cwd, context, git_directory)
+
+        yield authority_root, runner, blob_reader
+
+def _run_with_context(
+    command: list[str], cwd: Path, context: ProductionExecutionContext,
+) -> str:
+    completed = _execute_bound(command, cwd, context, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        display = " ".join(command)
+        raise SourceReleaseEvidenceError(
+            f"{display} failed" + (f": {detail}" if detail else "")
+        )
+    return completed.stdout.strip()
+
+
 def _run(command: list[str], cwd: Path) -> str:
-    completed = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False)
+    """Run a production command through the protected executable policy."""
+    return _run_with_context(command, cwd, _load_production_execution_context())
+
+
+def _run_archive(command: list[str], cwd: Path) -> str:
+    """Historical v2 archive runner; never used for current authority."""
+    completed = subprocess.run(
+        command, cwd=cwd, text=True, capture_output=True, check=False
+    )
     if completed.returncode != 0:
         detail = (completed.stderr or completed.stdout).strip()
         raise SourceReleaseEvidenceError(
@@ -126,19 +762,27 @@ def _read_url(url: str) -> HttpObservation:
 
 
 def _read_detailed_url(url: str) -> DetailedHttpObservation:
-    with TemporaryDirectory(prefix="p42-source-release-") as directory:
-        body_path = Path(directory) / "body.bin"
-        completed = subprocess.run(
+    return _read_detailed_url_with_context(url, _load_production_execution_context())
+
+
+def _read_detailed_url_with_context(
+    url: str, context: ProductionExecutionContext,
+) -> DetailedHttpObservation:
+    with _validator_temporary_directory(
+        context, prefix="network-"
+    ) as directory:
+        body_path = directory / "body.bin"
+        completed = _execute_bound(
             [
-                "curl", "--fail", "--location", "--silent", "--show-error",
+                "curl", "--disable", "--fail", "--location", "--silent", "--show-error",
                 "--max-time", "30", "--user-agent", "p42-source-release-v3",
                 "--output", str(body_path),
                 "--write-out", "%{http_code}\\n%{content_type}\\n%{url_effective}",
                 url,
             ],
+            directory,
+            context,
             text=True,
-            capture_output=True,
-            check=False,
         )
         if completed.returncode != 0:
             raise SourceReleaseEvidenceError(
@@ -157,8 +801,16 @@ def _read_detailed_url(url: str) -> DetailedHttpObservation:
 
 
 def _read_git_blob(spec: str, root: Path) -> bytes:
-    completed = subprocess.run(
-        ["git", "show", spec], cwd=root, capture_output=True, check=False
+    return _read_git_blob_with_context(
+        spec, root, _load_production_execution_context()
+    )
+
+
+def _read_git_blob_with_context(
+    spec: str, root: Path, context: ProductionExecutionContext,
+) -> bytes:
+    completed = _execute_bound(
+        ["git", "show", spec], root, context, text=False
     )
     if completed.returncode != 0:
         detail = completed.stderr.decode("utf-8", errors="replace").strip()
@@ -181,7 +833,7 @@ def validate_source_release_evidence(
     repo_root: str | Path,
     report_path: str | Path | None = None,
     online: bool = False,
-    command_runner: CommandRunner = _run,
+    command_runner: CommandRunner = _run_archive,
     url_reader: UrlReader = _read_url,
 ) -> dict[str, Any]:
     """Validate a historical v2 receipt in archive mode."""
@@ -200,21 +852,27 @@ def validate_source_release_evidence(
 def validate_current_source_release(
     *,
     repo_root: str | Path,
-    command_runner: CommandRunner = _run,
-    detailed_url_reader: DetailedUrlReader = _read_detailed_url,
-    blob_reader: BlobReader = _read_git_blob,
 ) -> dict[str, Any]:
-    """Validate the canonical current receipt against the protected local root."""
-    return _validate_current_source_release_at(
-        repo_root=repo_root,
-        command_runner=command_runner,
-        detailed_url_reader=detailed_url_reader,
-        blob_reader=blob_reader,
-        now_utc=datetime.now(timezone.utc),
-    )
+    """Validate current production authority with fixed audited providers."""
+    root = Path(repo_root).resolve()
+    if not root.is_dir():
+        raise SourceReleaseEvidenceError("repo_root must be an existing directory")
+    execution = _load_production_execution_context()
+    with _private_git_authority(root, execution) as (
+        authority_root, runner, blob_reader,
+    ):
+        return _validate_current_source_release_impl(
+            repo_root=authority_root,
+            command_runner=runner,
+            detailed_url_reader=lambda url: _read_detailed_url_with_context(
+                url, execution
+            ),
+            blob_reader=blob_reader,
+            now_utc=datetime.now(timezone.utc),
+        )
 
 
-def _validate_current_source_release_at(
+def _validate_current_source_release_for_test(
     *,
     repo_root: str | Path,
     command_runner: CommandRunner,
@@ -222,7 +880,29 @@ def _validate_current_source_release_at(
     blob_reader: BlobReader,
     now_utc: datetime,
 ) -> dict[str, Any]:
-    """Private validation seam for deterministic expiry boundary tests."""
+    """Private dependency-injection seam for deterministic tests only."""
+    root = Path(repo_root).resolve()
+    if not root.is_dir():
+        raise SourceReleaseEvidenceError("repo_root must be an existing directory")
+    _preflight_git_repository(root)
+    return _validate_current_source_release_impl(
+        repo_root=repo_root,
+        command_runner=command_runner,
+        detailed_url_reader=detailed_url_reader,
+        blob_reader=blob_reader,
+        now_utc=now_utc,
+    )
+
+
+def _validate_current_source_release_impl(
+    *,
+    repo_root: str | Path,
+    command_runner: CommandRunner,
+    detailed_url_reader: DetailedUrlReader,
+    blob_reader: BlobReader,
+    now_utc: datetime,
+) -> dict[str, Any]:
+    """Shared implementation reached only through sealed production or test wrappers."""
     root = Path(repo_root).resolve()
     if not root.is_dir():
         raise SourceReleaseEvidenceError("repo_root must be an existing directory")
@@ -339,6 +1019,122 @@ def _load_protected_json(path: Path, *, label: str) -> Mapping[str, Any]:
     return _mapping(loaded, label)
 
 
+def _load_production_execution_context() -> ProductionExecutionContext:
+    policy = _load_protected_json(
+        PRODUCTION_EXECUTABLE_POLICY, label="source-release executable policy"
+    )
+    _enforce_internal_schema(policy, "source-release-executables.schema.json")
+    if policy.get("schemaVersion") != SOURCE_RELEASE_EXECUTABLE_POLICY_SCHEMA_VERSION:
+        raise SourceReleaseEvidenceError("unsupported source-release executable policy")
+    home = Path(policy["homePath"])
+    if not home.is_absolute():
+        raise SourceReleaseEvidenceError("executable policy homePath must be absolute")
+    with _open_protected_path(
+        home, directory=True, label="executable policy homePath"
+    ):
+        pass
+
+    executables: dict[str, ExecutableIdentity] = {}
+    for raw in policy["executables"]:
+        item = _mapping(raw, "source-release executable")
+        name = item["name"]
+        path = Path(item["path"])
+        if name in executables or not path.is_absolute():
+            raise SourceReleaseEvidenceError(
+                "executable policy names must be unique and paths absolute"
+            )
+        identity = ExecutableIdentity(
+            name=name,
+            path=path,
+            sha256=_digest(item["sha256"], f"bound {name} executable digest"),
+        )
+        with _open_verified_executable(identity) as executable_handle:
+            if (
+                not _TEST_ONLY_ALLOW_PATH_EXECUTION
+                and not _is_native_executable(executable_handle.fd)
+            ):
+                raise SourceReleaseEvidenceError(
+                    f"bound {name} executable must be a native executable"
+                )
+        executables[name] = identity
+    required = {"git", "gh", "render", "node", "curl"}
+    if set(executables) != required:
+        raise SourceReleaseEvidenceError(
+            "executable policy must bind exactly git, gh, render, node, and curl"
+        )
+    runtime = Path(policy["runtimePath"])
+    git_policy = _mapping(policy["gitExecPath"], "Git helper policy")
+    git_exec_path = Path(git_policy["path"])
+    if not runtime.is_absolute() or not git_exec_path.is_absolute():
+        raise SourceReleaseEvidenceError(
+            "runtimePath and Git helper path must be absolute"
+        )
+    with _open_protected_path(
+        runtime, directory=True, label="validator runtime directory"
+    ):
+        pass
+    helpers = tuple(
+        GitHelperIdentity(
+            name=item["name"],
+            sha256=_digest(item["sha256"], "bound Git helper " + item["name"]),
+        )
+        for item in git_policy["helpers"]
+    )
+    if {helper.name for helper in helpers} != {
+        "git-fetch-pack", "git-index-pack",
+        "git-remote-https", "git-unpack-objects",
+    }:
+        raise SourceReleaseEvidenceError("Git helper names must be unique and complete")
+    git_digest = executables["git"].sha256
+    for helper in helpers:
+        if (
+            not _TEST_ONLY_ALLOW_PATH_EXECUTION
+            and helper.name != "git-remote-https"
+            and helper.sha256 != git_digest
+        ):
+            raise SourceReleaseEvidenceError(
+                f"bound builtin helper {helper.name} must reuse the pinned Git inode bytes"
+            )
+    context = ProductionExecutionContext(
+        home=home,
+        runtime=runtime,
+        executables=executables,
+        git_exec_path=git_exec_path,
+        git_exec_tree_sha256=_digest(
+            git_policy["treeSha256"], "bound Git helper tree digest"
+        ),
+        git_helpers=helpers,
+    )
+    with _open_git_exec_path(context) as (_, helper_descriptors):
+        if not _TEST_ONLY_ALLOW_PATH_EXECUTION:
+            with _open_verified_executable(executables["git"]) as git_handle:
+                for helper, descriptor in zip(
+                    sorted(helpers, key=lambda item: item.name), helper_descriptors,
+                    strict=True,
+                ):
+                    if helper.name == "git-remote-https":
+                        continue
+                    helper_stat = os.fstat(descriptor)
+                    git_stat = os.fstat(git_handle.fd)
+                    if (helper_stat.st_dev, helper_stat.st_ino) != (
+                        git_stat.st_dev, git_stat.st_ino
+                    ):
+                        raise SourceReleaseEvidenceError(
+                            f"bound builtin helper {helper.name} must be a hardlink "
+                            "to the pinned Git executable"
+                        )
+    completed = _execute_bound(
+        ["git", "--list-cmds=builtins"], runtime, context, text=True,
+        bind_git_repository=False,
+    )
+    required_builtins = {"fetch-pack", "index-pack", "unpack-objects"}
+    if completed.returncode != 0 or not required_builtins <= set(completed.stdout.split()):
+        raise SourceReleaseEvidenceError(
+            "pinned Git does not provide the required builtin dispatch closure"
+        )
+    return context
+
+
 def _load_production_trust_context() -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     trust_root = _load_protected_json(PRODUCTION_TRUST_ROOT, label="source-release trust root")
     _enforce_internal_schema(trust_root, "source-release-trust-root.schema.json")
@@ -398,6 +1194,7 @@ def _validate_v2_source_release_evidence(
     root = Path(repo_root).resolve()
     if not root.is_dir():
         raise SourceReleaseEvidenceError("repo_root must be an existing directory")
+    _preflight_git_repository(root)
     if report.get("schemaVersion") != SOURCE_RELEASE_SCHEMA_VERSION:
         raise SourceReleaseEvidenceError(f"schemaVersion must be {SOURCE_RELEASE_SCHEMA_VERSION}")
     if report.get("repository") != SOURCE_RELEASE_REPOSITORY:
@@ -593,6 +1390,7 @@ def _validate_v3_source_release_evidence(
     root = Path(repo_root).resolve()
     if not root.is_dir():
         raise SourceReleaseEvidenceError("repo_root must be an existing directory")
+    _preflight_git_repository(root)
     path = Path(report_path).resolve()
     if path != root / CANONICAL_CURRENT_RECEIPT:
         raise SourceReleaseEvidenceError("v3 current validation requires the canonical receipt path")
@@ -658,47 +1456,21 @@ def _validate_v3_source_release_evidence(
         root=root,
         runner=command_runner,
         blob_reader=blob_reader,
+        trust_root=trust_root,
+        now_utc=now_utc,
     )
-    baseline = previous["observedBranchHead"]
-    provenance = _mapping(report["deployProvenance"], "deployProvenance")
-    if provenance.get("baselineObservedHead") != baseline:
-        raise SourceReleaseEvidenceError("deployProvenance baseline must equal previous observed head")
-    derived_commits, derived_deploy_commits = _derive_source_commits(
-        baseline,
-        observed_head,
-        evidence_only_paths=policy["evidenceOnlyPaths"],
-        deploy_relevant_paths=policy["deployRelevantPaths"],
-        root=root,
-        runner=command_runner,
-    )
-    declared_commits = provenance.get("commits")
-    if not isinstance(declared_commits, list) or len(declared_commits) != len(derived_commits):
-        raise SourceReleaseEvidenceError(
-            "deployProvenance must enumerate every authorization-required first-parent source commit"
-        )
-    bootstrap_digests: set[str] = set()
-    for index, (declared, derived) in enumerate(zip(declared_commits, derived_commits, strict=True)):
-        _validate_deploy_commit(
-            declared, derived, index=index, bootstrap_digests=bootstrap_digests,
-        )
-    _validate_bootstrap_intervals(
-        bootstrap_digests,
-        declared_commits=declared_commits,
-        derived_commits=derived_commits,
+    current_interval = _validate_source_authority_interval(
+        report,
+        previous_reference=previous.immediate_reference,
         policy=policy,
         trust_root=trust_root,
         root=root,
+        runner=command_runner,
         now_utc=now_utc,
+        label="current receipt",
     )
-    expected_deploy = (
-        derived_deploy_commits[-1]["commit"]
-        if derived_deploy_commits
-        else _previous_deploy_commit(previous)
-    )
-    if deploy_commit != expected_deploy:
-        raise SourceReleaseEvidenceError(
-            "deployRelevantCommit does not equal the latest Render-relevant first-parent commit"
-        )
+    derived_commits = current_interval.derived_commits
+    derived_deploy_commits = current_interval.derived_deploy_commits
 
     _validate_v3_workflow(report["ci"], observed_head, policy, root, command_runner, blob_reader)
     render = _mapping(report["render"], "render")
@@ -724,13 +1496,13 @@ def _validate_v3_source_release_evidence(
     _validate_v3_online(
         report, policy=policy, trust_root=trust_root, root=root,
         command_runner=command_runner, detailed_url_reader=detailed_url_reader,
-        derived_commits=derived_commits,
+        authority_intervals=(*previous.historical_intervals, current_interval),
     )
     normalized["derived"] = {
         "validatedHead": head,
         "runtimeCommit": deploy_commit,
         "evidencePublicationCommit": publication_commit,
-        "previousObservedHead": baseline,
+        "previousObservedHead": previous.immediate_reference["observedBranchHead"],
         "authorizedSourceCommits": [item["commit"] for item in derived_commits],
         "deployRelevantCommits": [item["commit"] for item in derived_deploy_commits],
         "onlineVerified": True,
@@ -899,11 +1671,14 @@ def _validate_recursive_predecessor_chain(
     root: Path,
     runner: CommandRunner,
     blob_reader: BlobReader,
-) -> Mapping[str, Any]:
+    trust_root: Mapping[str, Any],
+    now_utc: datetime,
+) -> ValidatedPredecessorChain:
     first_reference = _mapping(value, "previousEvidence")
     reference: Mapping[str, Any] = first_reference
     genesis = _mapping(policy["genesisEvidence"], "policy genesisEvidence")
     seen: set[tuple[str, str, str]] = set()
+    predecessor_receipts: list[tuple[Mapping[str, Any], Mapping[str, Any]]] = []
     while True:
         _require_exact_keys(
             reference,
@@ -970,6 +1745,11 @@ def _validate_recursive_predecessor_chain(
             raise SourceReleaseEvidenceError("previous evidence artifact is unreadable") from exc
         previous_map = _mapping(previous, "previous evidence artifact")
         version = previous_map.get("schemaVersion")
+        is_genesis = dict(reference) == dict(genesis)
+        if is_genesis and version != SOURCE_RELEASE_SCHEMA_VERSION:
+            raise SourceReleaseEvidenceError(
+                "policy genesis must anchor the legacy v2 source-release receipt"
+            )
         if version == SOURCE_RELEASE_SCHEMA_VERSION:
             _enforce_internal_schema(previous_map, "source-release-evidence.schema.json")
         elif version == SOURCE_RELEASE_V3_SCHEMA_VERSION:
@@ -993,15 +1773,106 @@ def _validate_recursive_predecessor_chain(
                 raise SourceReleaseEvidenceError(
                     f"previousEvidence {field} rewrites committed chain history"
                 )
-        if dict(reference) == dict(genesis):
-            return first_reference
+        if is_genesis:
+            break
         if version != SOURCE_RELEASE_V3_SCHEMA_VERSION:
             raise SourceReleaseEvidenceError(
                 "predecessor chain terminated before the policy-pinned genesis"
             )
+        predecessor_receipts.append((previous_map, dict(reference)))
         reference = _mapping(previous_map.get("previousEvidence"), "recursive previousEvidence")
         current_observed_head = previous_observed
         current_publication_commit = publication
+
+    historical_intervals: list[SourceAuthorityInterval] = []
+    previous_reference: Mapping[str, Any] = genesis
+    for index, (predecessor, receipt_reference) in enumerate(
+        reversed(predecessor_receipts)
+    ):
+        historical_intervals.append(_validate_source_authority_interval(
+            predecessor,
+            previous_reference=previous_reference,
+            policy=policy,
+            trust_root=trust_root,
+            root=root,
+            runner=runner,
+            now_utc=now_utc,
+            label=f"predecessor receipt {index}",
+        ))
+        previous_reference = receipt_reference
+    if dict(previous_reference) != dict(first_reference):
+        raise SourceReleaseEvidenceError(
+            "predecessor semantic replay did not reach the immediate reference"
+        )
+    return ValidatedPredecessorChain(
+        immediate_reference=first_reference,
+        historical_intervals=tuple(historical_intervals),
+    )
+
+
+def _validate_source_authority_interval(
+    report: Mapping[str, Any],
+    *,
+    previous_reference: Mapping[str, Any],
+    policy: Mapping[str, Any],
+    trust_root: Mapping[str, Any],
+    root: Path,
+    runner: CommandRunner,
+    now_utc: datetime,
+    label: str,
+) -> SourceAuthorityInterval:
+    baseline = _commit(
+        previous_reference.get("observedBranchHead"), f"{label} previous observed head"
+    )
+    observed_head = _commit(report.get("observedBranchHead"), f"{label} observed head")
+    provenance = _mapping(report.get("deployProvenance"), f"{label} deployProvenance")
+    if provenance.get("baselineObservedHead") != baseline:
+        raise SourceReleaseEvidenceError(
+            f"{label} deployProvenance baseline must equal previous observed head"
+        )
+    derived_commits, derived_deploy_commits = _derive_source_commits(
+        baseline,
+        observed_head,
+        evidence_only_paths=policy["evidenceOnlyPaths"],
+        deploy_relevant_paths=policy["deployRelevantPaths"],
+        root=root,
+        runner=runner,
+    )
+    declared_commits = provenance.get("commits")
+    if not isinstance(declared_commits, list) or len(declared_commits) != len(derived_commits):
+        raise SourceReleaseEvidenceError(
+            f"{label} deployProvenance must enumerate every authorization-required first-parent source commit"
+        )
+    bootstrap_digests: set[str] = set()
+    for index, (declared, derived) in enumerate(
+        zip(declared_commits, derived_commits, strict=True)
+    ):
+        _validate_deploy_commit(
+            declared, derived, index=index, bootstrap_digests=bootstrap_digests,
+        )
+    _validate_bootstrap_intervals(
+        bootstrap_digests,
+        declared_commits=declared_commits,
+        derived_commits=derived_commits,
+        policy=policy,
+        trust_root=trust_root,
+        root=root,
+        now_utc=now_utc,
+    )
+    expected_deploy = (
+        derived_deploy_commits[-1]["commit"]
+        if derived_deploy_commits
+        else _previous_deploy_commit(previous_reference)
+    )
+    if report.get("deployRelevantCommit") != expected_deploy:
+        raise SourceReleaseEvidenceError(
+            f"{label} deployRelevantCommit does not equal the latest Render-relevant first-parent commit"
+        )
+    return SourceAuthorityInterval(
+        declared_commits=tuple(declared_commits),
+        derived_commits=tuple(derived_commits),
+        derived_deploy_commits=tuple(derived_deploy_commits),
+    )
 
 
 def _previous_deploy_commit(previous: Mapping[str, Any]) -> str:
@@ -1616,7 +2487,7 @@ def _validate_v3_online(
     report: Mapping[str, Any], *, policy: Mapping[str, Any],
     trust_root: Mapping[str, Any], root: Path,
     command_runner: CommandRunner, detailed_url_reader: DetailedUrlReader,
-    derived_commits: Sequence[Mapping[str, str]],
+    authority_intervals: Sequence[SourceAuthorityInterval],
 ) -> None:
     del trust_root
     if command_runner(["git", "status", "--porcelain", "--untracked-files=all"], root):
@@ -1664,75 +2535,16 @@ def _validate_v3_online(
     ):
         raise SourceReleaseEvidenceError("live GitHub jobs contain missing, reordered, duplicate, or extra jobs")
 
-    declared = report["deployProvenance"]["commits"]
-    for item, derived in zip(declared, derived_commits, strict=True):
-        authorization = item["authorization"]
-        if authorization["type"] != "pull-request":
-            continue
-        pulls = json.loads(command_runner([
-            "gh", "api", f"repos/{SOURCE_RELEASE_REPOSITORY}/commits/{derived['commit']}/pulls"
-        ], root))
-        matching = [pr for pr in pulls if (
-            pr.get("number") == authorization["number"]
-            and pr.get("state") == "closed"
-            and pr.get("merged_at") is not None
-            and pr.get("base", {}).get("ref") == SOURCE_RELEASE_BRANCH
-            and pr.get("merge_commit_sha") == derived["commit"]
-            and pr.get("head", {}).get("sha") == authorization["headSha"]
-        )]
-        if len(matching) != 1:
-            raise SourceReleaseEvidenceError(
-                "authorization-required direct push lacks exact reviewed PR coverage"
-            )
-        pull_request = matching[0]
-        merged_at = _parse_utc(
-            pull_request.get("merged_at"), "GitHub PR merged_at"
-        )
-        pr_head_tree = _commit(command_runner([
-            "git", "rev-parse", f"{authorization['headSha']}^{{tree}}"
-        ], root), "pull-request head tree")
-        if pr_head_tree != derived["tree"]:
-            raise SourceReleaseEvidenceError("pull-request head tree does not equal deployed merge tree")
-        review_pages = json.loads(command_runner([
-            "gh", "api", "--paginate", "--slurp",
-            f"repos/{SOURCE_RELEASE_REPOSITORY}/pulls/{authorization['number']}/reviews?per_page=100",
-        ], root))
-        if not isinstance(review_pages, list) or any(not isinstance(page, list) for page in review_pages):
-            raise SourceReleaseEvidenceError("GitHub review authority returned malformed pagination")
-        reviews = [item for page in review_pages for item in page if isinstance(item, Mapping)]
-        reviews.sort(key=lambda review: (review.get("submitted_at") or "", review.get("id") or 0))
-        latest_by_reviewer: dict[str, Mapping[str, Any]] = {}
-        for review in reviews:
-            if isinstance(review, Mapping):
-                login = review.get("user", {}).get("login")
-                if isinstance(login, str):
-                    latest_by_reviewer[login] = review
-        review_policy = policy["reviewPolicy"]
-        author = pull_request.get("user", {}).get("login")
-        if not isinstance(author, str) or not author:
-            raise SourceReleaseEvidenceError("GitHub PR author identity is missing")
-        approval_candidates = {
-            login: review for login, review in latest_by_reviewer.items()
-            if login in review_policy["allowedReviewerLogins"]
-            and login != author
-            and review.get("state") == "APPROVED"
-            and review.get("commit_id") == authorization["headSha"]
-        }
-        approval_times = {
-            login: _parse_utc(review.get("submitted_at"), "GitHub review submitted_at")
-            for login, review in approval_candidates.items()
-        }
-        approvals = {
-            login for login, submitted_at in approval_times.items()
-            if submitted_at < merged_at
-        }
-        if len(approvals) < review_policy["minimumApprovals"]:
-            if any(submitted_at >= merged_at for submitted_at in approval_times.values()):
-                raise SourceReleaseEvidenceError(
-                    "pull-request approval not unambiguously earlier than merge cannot authorize the source commit"
-                )
-            raise SourceReleaseEvidenceError(
-                "source PR lacks exact-head non-author approval from external review policy"
+    for interval in authority_intervals:
+        for item, derived in zip(
+            interval.declared_commits, interval.derived_commits, strict=True
+        ):
+            _validate_online_pr_authorization(
+                item,
+                derived,
+                policy=policy,
+                root=root,
+                command_runner=command_runner,
             )
 
     render = _mapping(report["render"], "render")
@@ -1771,6 +2583,83 @@ def _validate_v3_online(
             "committed canonical guard did not attest its 12-probe deep-check policy"
         )
     _validate_live_guard_semantics(report, policy, detailed_url_reader)
+
+
+def _validate_online_pr_authorization(
+    item: Mapping[str, Any],
+    derived: Mapping[str, str],
+    *,
+    policy: Mapping[str, Any],
+    root: Path,
+    command_runner: CommandRunner,
+) -> None:
+    authorization = item["authorization"]
+    if authorization["type"] != "pull-request":
+        return
+    pulls = json.loads(command_runner([
+        "gh", "api", f"repos/{SOURCE_RELEASE_REPOSITORY}/commits/{derived['commit']}/pulls"
+    ], root))
+    matching = [pr for pr in pulls if (
+        pr.get("number") == authorization["number"]
+        and pr.get("state") == "closed"
+        and pr.get("merged_at") is not None
+        and pr.get("base", {}).get("ref") == SOURCE_RELEASE_BRANCH
+        and pr.get("merge_commit_sha") == derived["commit"]
+        and pr.get("head", {}).get("sha") == authorization["headSha"]
+    )]
+    if len(matching) != 1:
+        raise SourceReleaseEvidenceError(
+            "authorization-required direct push lacks exact reviewed PR coverage"
+        )
+    pull_request = matching[0]
+    merged_at = _parse_utc(
+        pull_request.get("merged_at"), "GitHub PR merged_at"
+    )
+    pr_head_tree = _commit(command_runner([
+        "git", "rev-parse", f"{authorization['headSha']}^{{tree}}"
+    ], root), "pull-request head tree")
+    if pr_head_tree != derived["tree"]:
+        raise SourceReleaseEvidenceError("pull-request head tree does not equal deployed merge tree")
+    review_pages = json.loads(command_runner([
+        "gh", "api", "--paginate", "--slurp",
+        f"repos/{SOURCE_RELEASE_REPOSITORY}/pulls/{authorization['number']}/reviews?per_page=100",
+    ], root))
+    if not isinstance(review_pages, list) or any(not isinstance(page, list) for page in review_pages):
+        raise SourceReleaseEvidenceError("GitHub review authority returned malformed pagination")
+    reviews = [item for page in review_pages for item in page if isinstance(item, Mapping)]
+    reviews.sort(key=lambda review: (review.get("submitted_at") or "", review.get("id") or 0))
+    latest_by_reviewer: dict[str, Mapping[str, Any]] = {}
+    for review in reviews:
+        login = review.get("user", {}).get("login")
+        if isinstance(login, str):
+            latest_by_reviewer[login] = review
+    review_policy = policy["reviewPolicy"]
+    author = pull_request.get("user", {}).get("login")
+    if not isinstance(author, str) or not author:
+        raise SourceReleaseEvidenceError("GitHub PR author identity is missing")
+    approval_candidates = {
+        login: review for login, review in latest_by_reviewer.items()
+        if login in review_policy["allowedReviewerLogins"]
+        and login != author
+        and review.get("state") == "APPROVED"
+        and review.get("commit_id") == authorization["headSha"]
+    }
+    approval_times = {
+        login: _parse_utc(review.get("submitted_at"), "GitHub review submitted_at")
+        for login, review in approval_candidates.items()
+    }
+    approvals = {
+        login for login, submitted_at in approval_times.items()
+        if submitted_at < merged_at
+    }
+    if len(approvals) < review_policy["minimumApprovals"]:
+        if any(submitted_at >= merged_at for submitted_at in approval_times.values()):
+            raise SourceReleaseEvidenceError(
+                "pull-request approval not unambiguously earlier than merge cannot authorize the source commit"
+            )
+        raise SourceReleaseEvidenceError(
+            "source PR lacks exact-head non-author approval from external review policy"
+        )
 
 
 def _require_exact_keys(value: Mapping[str, Any], expected: set[str], name: str) -> None:

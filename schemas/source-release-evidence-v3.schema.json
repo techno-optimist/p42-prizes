@@ -86,6 +86,7 @@
       }
     },
     "deployProvenance": {
+      "$comment": "Current validation recursively re-derives and authenticates this interval for every predecessor v3 receipt before accepting its observed head as a baseline.",
       "type": "object",
       "additionalProperties": false,
       "required": ["baselineObservedHead", "commits"],

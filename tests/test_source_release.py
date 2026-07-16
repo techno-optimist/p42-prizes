@@ -26,6 +26,12 @@ HASH = "sha256:" + "c" * 64
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def source_release_git_metadata(tmp_path: Path) -> None:
+    (tmp_path / ".git" / "objects" / "info").mkdir(parents=True)
+    (tmp_path / ".git" / "info").mkdir()
+
+
 def receipt() -> dict:
     report = {
         "schemaVersion": "p42-source-release-evidence/v2",
