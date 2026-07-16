@@ -311,6 +311,7 @@
         "chain_id",
         "canonical_topology",
         "release_capsule",
+        "capsule_rebuild_attestation",
         "deployment_manifest",
         "configuration_artifact",
         "contracts"
@@ -325,6 +326,7 @@
         "chain_id": { "const": 84532 },
         "canonical_topology": { "$ref": "#/$defs/artifact" },
         "release_capsule": { "$ref": "#/$defs/artifact" },
+        "capsule_rebuild_attestation": { "$ref": "#/$defs/artifact" },
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
         "configuration_artifact": { "$ref": "#/$defs/artifact" },
         "contracts": {

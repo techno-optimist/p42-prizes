@@ -1,14 +1,24 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { constants } from "node:fs";
-import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, symlink, unlink } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { link, lstat, open, unlink } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { readStrictJsonFile, readStrictJsonFileSync } from "../../agent/strict-json.mjs";
 
 export const RELEASE_CAPSULE_SCHEMA = "p42-prizes/release-capsule/v2";
+export const CAPSULE_REBUILD_ATTESTATION_SCHEMA = "p42-capsule-rebuild-attestation/v1";
+export const CANONICAL_REPOSITORY_URI = "https://github.com/techno-optimist/p42-prizes";
+export const CAPSULE_REBUILD_POLICY = Object.freeze({
+  network_access: "denied",
+  root_filesystem: "read-only",
+  source_mount: "read-only",
+  dependency_mount: "read-only",
+  output_mount: "isolated-write-only",
+  privileges: "none",
+  legal_validator_execution: "forbidden",
+});
 export const PRODUCTION_CONTRACTS = Object.freeze([
   "P42MultisigTimelock",
   "P42ChallengeManagerFactory",
@@ -53,6 +63,10 @@ function canonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
+}
+
+export function canonicalJson(value) {
+  return canonical(value);
 }
 
 export function sha256(value) {
@@ -194,6 +208,65 @@ export async function createReleaseCapsule({ contractsRoot = process.cwd(), gitC
     buildInfos: [...buildInfos.values()].sort((a, b) => a.id.localeCompare(b.id)),
   };
   return { ...body, capsuleDigest: canonicalDigest(body) };
+}
+
+export function createCapsuleRebuildAttestationBody({
+  capsule,
+  capsuleBytes,
+  deploymentCommit,
+  evidenceCommit,
+  objectClosureDigest,
+  objectCount,
+  toolchainImageDigest,
+  generatedAtUtc,
+  attestationId,
+  authority,
+} = {}) {
+  validateReleaseCapsule(capsule);
+  const bytes = Buffer.from(capsuleBytes ?? []);
+  if (!bytes.equals(Buffer.from(canonical(capsule)))) throw new Error("rebuild attestation requires exact canonical capsule bytes");
+  for (const [label, value] of [["deployment", deploymentCommit], ["evidence", evidenceCommit]]) {
+    if (!/^[a-f0-9]{40}$/.test(value ?? "") || new Set(value).size < 8) throw new Error(`${label} commit must be an externally authorized non-dummy commit`);
+  }
+  for (const [label, value] of [["object closure", objectClosureDigest], ["toolchain image", toolchainImageDigest]]) {
+    if (!DIGEST_RE.test(value ?? "") || new Set(value.slice(7)).size < 8) throw new Error(`${label} digest must be immutable and non-dummy`);
+  }
+  if (!Number.isSafeInteger(objectCount) || objectCount < 1) throw new Error("object closure count must be positive");
+  if (capsule.gitCommit !== deploymentCommit) throw new Error("capsule git commit must equal deployment commit");
+  if (typeof generatedAtUtc !== "string" || Number.isNaN(Date.parse(generatedAtUtc))) throw new Error("rebuild attestation requires generatedAtUtc");
+  if (!/^[a-z0-9][a-z0-9._-]{7,127}$/.test(attestationId ?? "")) throw new Error("rebuild attestation id is invalid");
+  exactKeys(authority, ["name", "organization", "professional_email", "public_key"], "capsule build authority");
+  return {
+    schema_version: CAPSULE_REBUILD_ATTESTATION_SCHEMA,
+    attestation_id: attestationId,
+    generated_at_utc: generatedAtUtc,
+    repository: {
+      canonical_uri: CANONICAL_REPOSITORY_URI,
+      deployment_commit: deploymentCommit,
+      evidence_commit: evidenceCommit,
+      object_format: "sha1",
+      ancestry: "deployment-ancestor-of-evidence",
+      object_closure_algorithm: "git-rev-list-object-ids+sha256/v1",
+      object_closure_digest: objectClosureDigest,
+      object_count: objectCount,
+    },
+    capsule: {
+      bytes_sha256: sha256(bytes),
+      capsule_digest: capsule.capsuleDigest,
+      git_commit: capsule.gitCommit,
+    },
+    build: {
+      build_info_digests: capsule.buildInfos.map(({ id, inputDigest, outputDigest }) => ({
+        id, input_digest: inputDigest, output_digest: outputDigest,
+      })),
+      contract_artifact_digests: capsule.contracts.map(({ name, artifactDigest }) => ({
+        name, artifact_digest: artifactDigest,
+      })),
+      toolchain_image_digest: toolchainImageDigest,
+      policy: { ...CAPSULE_REBUILD_POLICY },
+    },
+    authority: structuredClone(authority),
+  };
 }
 
 function validateRanges(contract) {
@@ -348,60 +421,6 @@ export async function attestReleaseCapsuleAgainstCheckout(capsule, {
   validateReleaseCapsule(rebuilt);
   if (rebuilt.capsuleDigest !== capsule.capsuleDigest || canonical(rebuilt) !== canonical(capsule)) throw new Error("capsule provenance does not match forced source rebuild");
   return { capsuleDigest: capsule.capsuleDigest, gitCommit: expectedGitCommit, compiler: "hardhat:local-pinned-force" };
-}
-
-async function mountLocalNodeModules(source, target) {
-  await mkdir(target, { mode: 0o700 });
-  for (const entry of await readdir(source)) {
-    await symlink(join(source, entry), join(target, entry));
-  }
-}
-
-export async function attestReleaseCapsuleAtCommit(capsule, {
-  repoRoot,
-  toolchainRoot = repoRoot,
-  expectedGitCommit,
-  run = execFileSync,
-  attest = attestReleaseCapsuleAgainstCheckout,
-  createTemporaryDirectory = mkdtemp,
-  remove = rm,
-  installLocalDependencies = mountLocalNodeModules,
-} = {}) {
-  validateReleaseCapsule(capsule);
-  const root = resolve(repoRoot ?? "");
-  if (!repoRoot || !/^[0-9a-f]{40}$/.test(expectedGitCommit ?? "")) throw new Error("detached checkout attestation requires a trusted root and exact expected git commit");
-  if (capsule.gitCommit !== expectedGitCommit) throw new Error("capsule git commit differs from detached checkout commit");
-  const resolvedCommit = run("git", ["rev-parse", "--verify", `${expectedGitCommit}^{commit}`], { cwd: root, encoding: "utf8" }).trim();
-  if (resolvedCommit !== expectedGitCommit) throw new Error("detached checkout commit did not resolve exactly");
-
-  const tools = resolve(toolchainRoot ?? "");
-  const dependencyRoot = join(tools, "contracts", "node_modules");
-  const dependencyMetadata = await lstat(dependencyRoot);
-  if (!dependencyMetadata.isDirectory() || dependencyMetadata.isSymbolicLink()) throw new Error("release rebuild requires a local regular node_modules directory");
-  const expectedLock = run("git", ["show", `${expectedGitCommit}:contracts/package-lock.json`], { cwd: root, encoding: null });
-  const installedLock = await readFile(join(tools, "contracts", "package-lock.json"));
-  if (!Buffer.from(expectedLock).equals(installedLock)) throw new Error("local release toolchain lock differs from the deployment commit");
-
-  const temporaryRoot = await createTemporaryDirectory(join(tmpdir(), "p42-release-rebuild-"));
-  const checkout = join(temporaryRoot, "checkout");
-  let worktreeAdded = false;
-  try {
-    run("git", ["worktree", "add", "--detach", checkout, expectedGitCommit], { cwd: root, encoding: "utf8", stdio: "pipe" });
-    worktreeAdded = true;
-    await installLocalDependencies(dependencyRoot, join(checkout, "contracts", "node_modules"));
-    return await attest(capsule, { repoRoot: checkout, expectedGitCommit, run });
-  } finally {
-    let removalError;
-    if (worktreeAdded) {
-      try {
-        run("git", ["worktree", "remove", "--force", checkout], { cwd: root, encoding: "utf8", stdio: "pipe" });
-      } catch (error) {
-        removalError = error;
-      }
-    }
-    await remove(temporaryRoot, { recursive: true, force: true });
-    if (removalError) throw new Error("detached release checkout could not be removed safely", { cause: removalError });
-  }
 }
 
 async function readExactDescriptor(handle, size) {

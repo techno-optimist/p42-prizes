@@ -9,8 +9,9 @@ import {
   PRODUCTION_EXTERNAL_DEPENDENCIES,
   assertRuntimeMatches,
   attestReleaseCapsuleAgainstCheckout,
-  attestReleaseCapsuleAtCommit,
   canonicalDigest,
+  canonicalJson,
+  createCapsuleRebuildAttestationBody,
   createReleaseCapsule,
   immutableValuesFromConstructor,
   publishReleaseCapsule,
@@ -18,8 +19,6 @@ import {
   reconstructExpectedRuntime,
   validateReleaseCapsule,
 } from "../scripts/release-capsule-helper.js";
-import { verifyLegalReleaseBinding } from "../scripts/legal-release-binding-verifier.js";
-
 const contractsRoot = resolve(import.meta.dirname, "..");
 const COMMIT = "d6e96ce83eb89af01e6c090c4ff50eed8e214f3d";
 const clone = (value) => structuredClone(value);
@@ -203,57 +202,30 @@ describe("closed immutable release capsule", () => {
     await assert.rejects(() => attestReleaseCapsuleAgainstCheckout(original, { repoRoot: resolve(contractsRoot, ".."), expectedGitCommit: COMMIT, run: dirtyRun, rebuild: async () => original }), /clean before/);
   });
 
-  it("requires the legal binding verifier to reject compiler-output forgery through a pinned rebuild", async () => {
-    const original = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
-    const forged = clone(original);
-    forged.buildInfos[0].output.reviewForgery = true;
-    forged.buildInfos[0].outputDigest = canonicalDigest(forged.buildInfos[0].output);
-    reseal(forged);
-    assert.equal(validateReleaseCapsule(forged), forged);
-    const run = (program, args) => {
-      if (program === "git" && args[0] === "rev-parse") return `${COMMIT}\n`;
-      if (program === "git" && args[0] === "status") return "";
-      return "compiled\n";
-    };
-    await assert.rejects(
-      () => verifyLegalReleaseBinding({
-        capsule: forged,
-        manifest: { deploymentCommit: COMMIT },
-        projection: { deploymentCommit: COMMIT, contracts: [] },
-        attestCapsule: (capsule, options) => attestReleaseCapsuleAgainstCheckout(capsule, {
-          ...options, run, rebuild: async () => original,
-        }),
-      }),
-      /forced source rebuild/,
-    );
-  });
-
-  it("materializes the exact deployment commit before clean-checkout attestation", async () => {
+  it("derives a closed rebuild-attestation body outside legal validation", async () => {
     const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
-    const installedLock = await readFile(resolve(contractsRoot, "package-lock.json"));
-    const calls = [];
-    const run = (program, args) => {
-      calls.push([program, args]);
-      if (args[0] === "rev-parse") return `${COMMIT}\n`;
-      if (args[0] === "show") return installedLock;
-      return "";
-    };
-    let attested = false;
-    await attestReleaseCapsuleAtCommit(capsule, {
-      repoRoot: resolve(contractsRoot, ".."), expectedGitCommit: COMMIT, run,
-      createTemporaryDirectory: async () => "/tmp/p42-release-rebuild-test",
-      installLocalDependencies: async () => {}, remove: async () => {},
-      attest: async (_capsule, options) => {
-        attested = true;
-        assert.equal(options.expectedGitCommit, COMMIT);
-        assert.equal(options.repoRoot, "/tmp/p42-release-rebuild-test/checkout");
-        return { capsuleDigest: capsule.capsuleDigest };
+    const body = createCapsuleRebuildAttestationBody({
+      capsule,
+      capsuleBytes: Buffer.from(canonicalJson(capsule)),
+      deploymentCommit: COMMIT,
+      evidenceCommit: "8b7d4c2a91f0643eb5a8c7d2e190f436abcde789",
+      objectClosureDigest: "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      objectCount: 42,
+      toolchainImageDigest: "sha256:abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+      generatedAtUtc: "2026-07-16T12:00:00Z",
+      attestationId: "capsule-rebuild-test-v1",
+      authority: {
+        name: "Morgan Vale", organization: "Independent Build Lab",
+        professional_email: "morgan@build-lab.example", public_key: `ed25519:${"a".repeat(64)}`,
       },
     });
-    assert.equal(attested, true);
-    assert.ok(calls.some(([, args]) => args[0] === "worktree" && args[1] === "add" && args.includes(COMMIT)));
-    assert.ok(calls.some(([, args]) => args[0] === "worktree" && args[1] === "remove"));
-    assert.equal(calls.some(([, args]) => args.includes("fetch") || args.includes("pull")), false);
+    assert.equal(body.repository.deployment_commit, COMMIT);
+    assert.equal(body.build.policy.network_access, "denied");
+    assert.equal(body.build.policy.root_filesystem, "read-only");
+    assert.deepEqual(body.build.build_info_digests, capsule.buildInfos.map(({ id, inputDigest, outputDigest }) => ({ id, input_digest: inputDigest, output_digest: outputDigest })));
+    assert.throws(() => createCapsuleRebuildAttestationBody({
+      capsule, capsuleBytes: Buffer.from("{}"), deploymentCommit: COMMIT,
+    }), /canonical capsule bytes/);
   });
 
   it("rejects duplicate-key and symlinked artifact or build-info JSON", async () => {

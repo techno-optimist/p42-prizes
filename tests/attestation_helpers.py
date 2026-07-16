@@ -246,6 +246,7 @@ class AttestationFixture:
         self._artifacts: dict[str, dict[str, str]] = {}
         self._chain_id: int | None = None
         self._chain_state: dict[tuple[int, str, int], dict[str, str]] = {}
+        self._capsule_authority_signer: dict[str, Any] | None = None
         self._run("git", "init", "-q")
         self._run("git", "config", "user.name", "P42 Test Attestor")
         self._run("git", "config", "user.email", "attestor@p42-fixtures.dev")
@@ -518,7 +519,11 @@ class AttestationFixture:
         for board, problem in enumerate(deployment["problems"], start=1):
             problem.update(pool=problem["contracts"]["pool"]["address"], ledger=problem["contracts"]["ledger"]["address"], submissionManager=problem["contracts"]["submissions"]["address"], challengeManager=problem["contracts"]["challenges"]["address"])
             _deep_update(problem, (problem_overrides or {}).get(str(board), {}))
-        capsule_artifact = self.artifact(f"canonical-{network}-release-capsule", content=capsule, created_at_utc="2026-07-08T14:10:00Z")
+        capsule_artifact = self.artifact(
+            f"canonical-{network}-release-capsule",
+            content=json.dumps(capsule, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
+            created_at_utc="2026-07-08T14:10:00Z",
+        )
         deployment_manifest = self.artifact(
             f"canonical-{network}-deployment", content=deployment, created_at_utc="2026-07-08T14:10:00Z"
         )
@@ -544,6 +549,87 @@ class AttestationFixture:
         self._run("git", "add", ".")
         self._run("git", "commit", "-q", "-m", f"publish deployment evidence {network}")
         commit = self._run("git", "rev-parse", "HEAD").stdout.strip()
+        object_ids = sorted(
+            set(
+                self._run("git", "rev-list", "--objects", "--no-object-names", commit)
+                .stdout.strip()
+                .splitlines()
+            )
+        )
+        closure_bytes = ("\n".join(object_ids) + "\n").encode("ascii")
+        authority_signer = self.identity(
+            "capsule-build-authority",
+            "Morgan Vale",
+            "capsule-build-authority",
+            organization="Independent Reproducible Build Lab",
+        )
+        self._capsule_authority_signer = authority_signer
+        authority = {
+            key: authority_signer[key]
+            for key in ("name", "organization", "professional_email", "public_key")
+        }
+        capsule_bytes = (self.root / capsule_artifact["local_path"]).read_bytes()
+        rebuild_attestation = {
+            "schema_version": "p42-capsule-rebuild-attestation/v1",
+            "attestation_id": f"capsule-rebuild-{deployment_commit[:16]}",
+            "generated_at_utc": "2026-07-08T14:20:00Z",
+            "repository": {
+                "canonical_uri": REPOSITORY_URI,
+                "deployment_commit": deployment_commit,
+                "evidence_commit": commit,
+                "object_format": "sha1",
+                "ancestry": "deployment-ancestor-of-evidence",
+                "object_closure_algorithm": "git-rev-list-object-ids+sha256/v1",
+                "object_closure_digest": "sha256:" + hashlib.sha256(closure_bytes).hexdigest(),
+                "object_count": len(object_ids),
+            },
+            "capsule": {
+                "bytes_sha256": "sha256:" + hashlib.sha256(capsule_bytes).hexdigest(),
+                "capsule_digest": capsule["capsuleDigest"],
+                "git_commit": deployment_commit,
+            },
+            "build": {
+                "build_info_digests": [
+                    {
+                        "id": item["id"],
+                        "input_digest": item["inputDigest"],
+                        "output_digest": item["outputDigest"],
+                    }
+                    for item in capsule["buildInfos"]
+                ],
+                "contract_artifact_digests": [
+                    {"name": item["name"], "artifact_digest": item["artifactDigest"]}
+                    for item in capsule["contracts"]
+                ],
+                "toolchain_image_digest": "sha256:"
+                + hashlib.sha256(b"p42-test-toolchain-image:v1").hexdigest(),
+                "policy": {
+                    "network_access": "denied",
+                    "root_filesystem": "read-only",
+                    "source_mount": "read-only",
+                    "dependency_mount": "read-only",
+                    "output_mount": "isolated-write-only",
+                    "privileges": "none",
+                    "legal_validator_execution": "forbidden",
+                },
+            },
+            "authority": authority,
+        }
+        attach_signatures(
+            rebuild_attestation,
+            schema_version="p42-capsule-rebuild-attestation/v1",
+            hash_field="attestation_hash",
+            signatures_field="signature",
+            signers=[
+                ("capsule-build-authority", authority_signer, rebuild_attestation["generated_at_utc"])
+            ],
+            singular=True,
+        )
+        rebuild_attestation_artifact = self.artifact(
+            f"canonical-{network}-capsule-rebuild-attestation",
+            content=rebuild_attestation,
+            created_at_utc=rebuild_attestation["generated_at_utc"],
+        )
         return {
             "binding_version": "p42-release-binding/v2",
             "repository_uri": REPOSITORY_URI,
@@ -553,6 +639,7 @@ class AttestationFixture:
             "chain_id": chain_id,
             "canonical_topology": topology_artifact,
             "release_capsule": capsule_artifact,
+            "capsule_rebuild_attestation": rebuild_attestation_artifact,
             "deployment_manifest": deployment_manifest,
             "configuration_artifact": configuration_artifact,
             "contracts": contracts,
@@ -562,6 +649,8 @@ class AttestationFixture:
         self,
         schema_version: str,
         signers: list[tuple[str, Mapping[str, Any], str]],
+        *,
+        include_capsule_authority: bool = True,
     ) -> dict[str, Any]:
         registrations = []
         for role, signer, _ in signers:
@@ -582,6 +671,20 @@ class AttestationFixture:
                     "attestation_class": schema_version,
                     "signer_role": role,
                     "identity": identity_fields,
+                    "public_key": signer["public_key"],
+                    "valid_from_utc": "2026-07-01T00:00:00Z",
+                }
+            )
+        if include_capsule_authority and self._capsule_authority_signer is not None:
+            signer = self._capsule_authority_signer
+            registrations.append(
+                {
+                    "attestation_class": "p42-capsule-rebuild-attestation/v1",
+                    "signer_role": "capsule-build-authority",
+                    "identity": {
+                        key: signer[key]
+                        for key in ("name", "organization", "professional_email")
+                    },
                     "public_key": signer["public_key"],
                     "valid_from_utc": "2026-07-01T00:00:00Z",
                 }

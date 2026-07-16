@@ -32,7 +32,7 @@ Both versions require:
   and an independence declaration;
 - a retrievable counsel memo `{uri, sha256}` and hashed evidence for every
   finding and reviewed document;
-- binding to the exact repository commit, Base chain ID, deployment manifest,
+- binding to the externally authorized repository commit pair, Base chain ID, deployment manifest,
   configuration artifact, contract source artifacts, and runtime-bytecode
   hashes;
 - all nine required legal/compliance findings approved, with no open
@@ -90,26 +90,73 @@ runtime bytes verified through the chain reader and requires that digest to
 equal `manifest_runtime_code_hash` in the memo, manifest, and configuration
 projections. NIST SHA3-256 is not accepted as Ethereum Keccak-256.
 
-V2 additionally requires a `release_capsule` artifact. The validator reads the
-capsule, deployment manifest, and resolved source/runtime projection through
-already-open file descriptors under bounded execution. It validates the
-capsule self-digest and `gitCommit`, every canonical `sourceName`, exact UTF-8
-source content, build-info input/output digests, compiler artifact digest, and
-immutable metadata. Each manifest `capsuleArtifactDigest`, constructor argument
-set, and deployment block timestamp must reconstruct the exact runtime bytes
-already verified against chain state. A memo cannot substitute another file as
-"reviewed source," even if counsel re-signs it and a downstream security audit
-copies the substituted digest.
+V2 additionally requires both a `release_capsule` and a
+`capsule_rebuild_attestation`. Legal validation is deliberately non-executable:
+it performs no Git operation, checkout, compiler invocation, Node subprocess,
+repository import, hook, or network request. It parses size-bounded canonical
+JSON, validates schemas and digests, verifies the externally registered Ed25519
+build-authority signature, and compares the closed capsule, manifest,
+source/runtime projection, constructor arguments, immutable metadata, and chain
+runtime bytes.
+
+`--chain-rpc-url` remains accepted by the legal CLI only as a deprecated
+compatibility argument and is never contacted. Live chain corroboration remains
+mandatory in the separate security, adversarial, reconciliation, and launch
+gates; the legal packet verifies its captured runtime evidence offline.
+
+The rebuild attestation is produced outside legal validation in an isolated
+build ceremony. Its signed body binds:
+
+- the exact canonical URI `https://github.com/techno-optimist/p42-prizes`;
+- the deployment commit and descendant evidence commit, with the explicit
+  `deployment-ancestor-of-evidence` relation;
+- a SHA-256 closure over the sorted unique object IDs emitted by
+  `git rev-list --objects --no-object-names <evidence_commit>`, encoded as ASCII
+  with one object ID per LF-terminated line, plus the object count and SHA-1 Git
+  object format;
+- the SHA-256 of the exact canonical capsule file bytes, its internal
+  `capsuleDigest`, and deployment `gitCommit`;
+- the complete ordered build-info input/output digest set and eleven contract
+  artifact digests;
+- a non-dummy immutable toolchain OCI image digest; and
+- the fixed policy `network_access=denied`, read-only root/source/dependency
+  mounts, isolated write-only output, no privileges, and forbidden legal-
+  validator execution.
+
+A memo cannot substitute another capsule, toolchain, commit graph, source, or
+runtime even if counsel re-signs the legal packet. The independently authorized
+capsule builder must sign the replacement attestation too.
+
+## Capsule Authority Trust Root
+
+Repository configuration is not authority. A self-initialized repository can
+set any `remote.origin.url`, objects, refs, hooks, or ancestry it wants; the legal
+validator never reads that state. Authority comes only from the owner-pinned
+production trust-registry digest and a registry entry whose class is
+`p42-capsule-rebuild-attestation/v1`, role is `capsule-build-authority`, identity
+and Ed25519 public key match the signed artifact, and validity interval contains
+the signature time. The owner must provision and protect that registry outside
+the packet exactly as described in `docs/HUMAN_ACTIONS.md`.
+
+The signature authenticates the build authority's externally performed Git
+closure and sandbox checks; legal validation does not independently rebuild or
+recompute Git ancestry. This is intentional to keep validation offline and
+non-executable. The residual provisioning gate is therefore real: before any
+release can pass, the owner must register an independently controlled builder
+key, pin the registry digest, run/review the isolated build ceremony, verify the
+canonical object closure and immutable toolchain image, and obtain the signed
+attestation. This repository ships none of those production facts or keys.
 
 ## Version Migration
 
 - Existing v1 packets remain verifiable as historical evidence. Changing only
   their `schema_version` is invalid: v2 changes the release binding and the
   signed payload, so counsel must review and sign a newly assembled packet.
-- The trust-registry schema admits the `p42-legal-memo/v2` class, but supplies
-  no signer policy. The owner-controlled production registry must separately
-  register the real counsel key for that exact class and pass the protected
-  digest pin. The repository default remains empty and fail-closed.
+- The trust-registry schema admits `p42-legal-memo/v2` and
+  `p42-capsule-rebuild-attestation/v1`, but supplies no signer registrations.
+  The owner-controlled production registry must separately register the real
+  counsel and capsule-build-authority keys for their exact classes and pass the
+  protected digest pin. The repository default remains empty and fail-closed.
 - `deployment_commit` is the source/deployment commit authenticated by release
   verification and the deployment manifest. `git_commit` is the descendant
   evidence commit containing the reviewed artifacts. Production launch
@@ -171,6 +218,8 @@ missing topic rows, and absent signature are intentionally rejected.
     "deployment_manifest": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
     "configuration_artifact": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
     "canonical_topology": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
+    "release_capsule": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
+    "capsule_rebuild_attestation": {"uri": "<REQUIRED_SIGNED_BUILD_AUTHORITY_ARTIFACT>", "sha256": "<REQUIRED>"},
     "contracts": ["<REQUIRED_EXACT_47_CANONICAL_CONTRACT_BINDINGS>"]
   },
   "counsel": {
@@ -203,6 +252,9 @@ missing topic rows, and absent signature are intentionally rejected.
 - The mainnet release binding cannot be completed until the audited exact-47
   deployment manifest, canonical topology, configuration, addresses, and
   runtime-bytecode hashes exist.
+- No production capsule-build-authority key, owner-pinned registration, closed
+  object-closure digest, immutable toolchain image digest, or signed rebuild
+  attestation is provisioned by this repository.
 
 Gate 2 remains open until those facts are real, independently checked, and
 validated. No agent may infer approval from this template.

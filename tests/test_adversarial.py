@@ -303,6 +303,7 @@ def valid_campaign_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dic
     runner_registry = fixture.trust_registry(
         "p42-runner-transcript-archive/v1",
         [("runner-operator", runner_operator, "2026-07-08T19:05:00Z")],
+        include_capsule_authority=False,
     )
     registry["registrations"].extend(runner_registry["registrations"])
     return report, fixture, registry
