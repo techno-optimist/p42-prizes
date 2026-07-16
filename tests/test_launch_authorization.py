@@ -14,9 +14,11 @@ from p42_prizes.launch_authorization import (
     MATH_REVIEW_SCHEMA_VERSION,
     _validate_math_review,
     _validate_problem_reviews,
+    _require_production_legal_memo,
     _validated_reconciliation_checkpoint,
     normalize_launch_authorization,
 )
+from p42_prizes.cli import _enforce_gate_schema
 from p42_prizes.legal import build_attestation_context
 from p42_prizes.security_audit import normalize_security_audit
 from p42_prizes.verdict import canonical_json, sha256_bytes
@@ -88,6 +90,80 @@ def test_launch_authorization_schema_is_valid_draft_2020_12() -> None:
         (ROOT / "schemas" / "production-launch-authorization.schema.json").read_text()
     )
     jsonschema.Draft202012Validator.check_schema(schema)
+    assert schema["properties"]["schema_version"]["const"] == "p42-production-launch-authorization/v1"
+
+
+def test_launch_authorization_schema_resolves_canonical_binding_and_validates_instance(tmp_path: Path) -> None:
+    fixture = AttestationFixture(tmp_path)
+    release_binding = fixture.canonical_release_binding("base-sepolia")
+    artifact = fixture.artifact("launch-schema-artifact")
+    roles = [
+        "production-launch-authority",
+        "independent-security-authority",
+        "governance-authority",
+    ]
+    artifact_names = (
+        "security_audit", "legal_memo", "governance_signoff", "incident_drill",
+        "adversarial_campaign", "operational_controls", "production_release_verification",
+        "production_release_slate", "production_board_bindings", "release_capsule",
+        "deployment_manifest", "reconciliation_report", "explorer_dossier",
+        "explorer_operator_policy",
+    )
+    authorization = {
+        "schema_version": "p42-production-launch-authorization/v1",
+        "status": "authorized",
+        "issued_at_utc": "2026-07-08T17:00:00Z",
+        "expires_at_utc": "2026-07-09T17:00:00Z",
+        "network": "base-sepolia",
+        "chain_id": 84532,
+        "funding_mode": "testnet-only",
+        "release_binding": release_binding,
+        "artifacts": {name: artifact for name in artifact_names},
+        "problem_reviews": [
+            {
+                "problem_id": str(index),
+                "problem_slug": f"problem-{index}",
+                "board_bindings_digest": "sha256:" + "1" * 64,
+                "board_binding_hash": "sha256:" + "2" * 64,
+                "verifier_image_digest": "sha256:" + "3" * 64,
+                "admission_matrix_digest": "sha256:" + "4" * 64,
+                "math_review_artifact": artifact,
+                "review_status": "approved",
+                "review_hash": "sha256:" + "5" * 64,
+            }
+            for index in range(1, 11)
+        ],
+        "authorizers": [
+            {
+                "name": f"Authority Person {index}",
+                "organization": "Independent Launch Authority",
+                "professional_email": f"authority-{index}@attestors.dev",
+                "role": role,
+                "public_key": "ed25519:" + f"{index:064x}",
+                "identity_evidence": artifact,
+            }
+            for index, role in enumerate(roles, start=1)
+        ],
+        "authorization_digest": "sha256:" + "6" * 64,
+        "authorization_signatures": [
+            {
+                "algorithm": "ed25519",
+                "signer_role": role,
+                "public_key": "ed25519:" + f"{index:064x}",
+                "signed_hash": "sha256:" + "6" * 64,
+                "signed_at_utc": "2026-07-08T17:00:00Z",
+                "signature": "ed25519:" + f"{index:0128x}",
+            }
+            for index, role in enumerate(roles, start=1)
+        ],
+    }
+
+    _enforce_gate_schema(authorization, "production-launch-authorization.schema.json")
+
+
+def test_launch_composition_rejects_historical_v1_legal_memo() -> None:
+    with pytest.raises(LaunchAuthorizationError, match="p42-legal-memo/v2"):
+        _require_production_legal_memo({"schema_version": "p42-legal-memo/v1"})
 
 
 def test_launch_authorization_requires_independently_validated_security_audit() -> None:
@@ -101,11 +177,11 @@ def test_launch_authorization_requires_independently_validated_security_audit() 
 
 
 def test_launch_authorization_rejects_inactive_objective_proofs() -> None:
-    release_binding = {"git_commit": "a" * 40}
+    release_binding = {"deployment_commit": "a" * 40}
     report = {
         "schema": "p42-prizes/production-release-verification/v1",
         "status": "verified",
-        "sourceCommit": release_binding["git_commit"],
+        "sourceCommit": release_binding["deployment_commit"],
         "generatedAt": "2026-07-08T16:00:00Z",
         "capsuleDigest": "sha256:" + "b" * 64,
         "slateDigest": "sha256:" + "c" * 64,
@@ -120,7 +196,33 @@ def test_launch_authorization_rejects_inactive_objective_proofs() -> None:
 
 
 def test_launch_authorization_rejects_self_asserted_active_v1_report() -> None:
-    release_binding = {"git_commit": "a" * 40}
+    release_binding = {"deployment_commit": "a" * 40}
+    report = {
+        "schema": "p42-prizes/production-release-verification/v1",
+        "status": "verified",
+        "sourceCommit": release_binding["deployment_commit"],
+        "generatedAt": "2026-07-08T16:00:00Z",
+        "capsuleDigest": "sha256:" + "b" * 64,
+        "slateDigest": "sha256:" + "c" * 64,
+        "releaseIndexDigest": "sha256:" + "d" * 64,
+        "ceremonyConfigDigest": "sha256:" + "e" * 64,
+        "objectiveProofsActive": True,
+        "admittedBoards": [
+            {
+                "problemId": str(index),
+                "problemSlug": f"problem-{index}",
+                "matrixDigest": "sha256:" + f"{index:064x}",
+            }
+            for index in range(1, 11)
+        ],
+    }
+    report["verificationReportDigest"] = sha256_bytes(canonical_json(report).encode())
+    with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
+        launch_module._validate_release_report(report, release_binding)
+
+
+def test_launch_authorization_rejects_evidence_commit_as_deployment_source() -> None:
+    release_binding = {"deployment_commit": "a" * 40, "git_commit": "b" * 40}
     report = {
         "schema": "p42-prizes/production-release-verification/v1",
         "status": "verified",
@@ -141,7 +243,8 @@ def test_launch_authorization_rejects_self_asserted_active_v1_report() -> None:
         ],
     }
     report["verificationReportDigest"] = sha256_bytes(canonical_json(report).encode())
-    with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
+
+    with pytest.raises(LaunchAuthorizationError, match="deployment_commit"):
         launch_module._validate_release_report(report, release_binding)
 
 
@@ -709,6 +812,7 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
     )
     registry["registrations"].extend(launch_registry["registrations"])
     release_binding = {
+        "deployment_commit": "1234567890abcdef1234567890abcdef12345678",
         "git_commit": "1234567890abcdef1234567890abcdef12345678",
         "network": "base-sepolia",
         "chain_id": 84532,
@@ -720,6 +824,8 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             "completed_at_utc": "2026-07-08T16:00:00Z",
             hash_field: "sha256:" + "a" * 64,
         }
+        if name == "legal_memo":
+            report["schema_version"] = "p42-legal-memo/v2"
         if name == "operational_controls":
             report["window_completed_at_utc"] = report.pop("completed_at_utc")
         artifacts[name] = fixture.artifact(name, content=report)

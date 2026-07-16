@@ -13,7 +13,12 @@ from typing import Any, Callable, Mapping
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-LEGAL_MEMO_SCHEMA_VERSION = "p42-legal-memo/v1"
+LEGACY_LEGAL_MEMO_SCHEMA_VERSION = "p42-legal-memo/v1"
+PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION = "p42-legal-memo/v2"
+LEGAL_MEMO_SCHEMA_VERSIONS = {
+    LEGACY_LEGAL_MEMO_SCHEMA_VERSION,
+    PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION,
+}
 
 REQUIRED_FINDING_TOPICS = {
     "prize_bounty_classification",
@@ -84,6 +89,25 @@ RFC3339_RE = re.compile(
 HEX_BYTES_RE = re.compile(r"^0x(?:[a-fA-F0-9]{2})+$")
 TRUST_REGISTRY_SCHEMA_VERSION = "p42-attestation-trust-registry/v1"
 
+_KECCAK_ROTATIONS = (
+    0, 1, 62, 28, 27,
+    36, 44, 6, 55, 20,
+    3, 10, 43, 25, 39,
+    41, 45, 15, 21, 8,
+    18, 2, 61, 56, 14,
+)
+_KECCAK_ROUND_CONSTANTS = (
+    0x0000000000000001, 0x0000000000008082, 0x800000000000808A,
+    0x8000000080008000, 0x000000000000808B, 0x0000000080000001,
+    0x8000000080008081, 0x8000000000008009, 0x000000000000008A,
+    0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
+    0x000000008000808B, 0x800000000000008B, 0x8000000000008089,
+    0x8000000000008003, 0x8000000000008002, 0x8000000000000080,
+    0x000000000000800A, 0x800000008000000A, 0x8000000080008081,
+    0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+)
+_UINT64_MASK = (1 << 64) - 1
+
 # No production signer is trusted until an owner-controlled registry is supplied.
 # This intentionally keeps every external gate open in a fresh checkout.
 PRODUCTION_TRUST_REGISTRY: Mapping[str, Any] = MappingProxyType(
@@ -105,6 +129,55 @@ _ED_IDENTITY = (0, 1, 1, 0)
 
 class LegalMemoError(ValueError):
     """Raised when legal/compliance memo evidence is incomplete."""
+
+
+def ethereum_keccak256(value: bytes) -> str:
+    """Return Ethereum Keccak-256, which uses legacy Keccak padding, not SHA3."""
+
+    rate = 136
+    padded = bytearray(value)
+    padded.append(0x01)
+    padded.extend(b"\x00" * ((rate - 1 - len(padded)) % rate))
+    padded.append(0x80)
+    state = [0] * 25
+    for offset in range(0, len(padded), rate):
+        block = padded[offset : offset + rate]
+        for lane in range(rate // 8):
+            state[lane] ^= int.from_bytes(block[lane * 8 : lane * 8 + 8], "little")
+        _keccak_f1600(state)
+    digest = b"".join(lane.to_bytes(8, "little") for lane in state)
+    return "0x" + digest[:32].hex()
+
+
+def _keccak_f1600(state: list[int]) -> None:
+    for round_constant in _KECCAK_ROUND_CONSTANTS:
+        columns = [
+            state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20]
+            for x in range(5)
+        ]
+        for x in range(5):
+            delta = columns[(x - 1) % 5] ^ _rotate_left_64(columns[(x + 1) % 5], 1)
+            for y in range(5):
+                state[x + 5 * y] ^= delta
+        rotated = [0] * 25
+        for x in range(5):
+            for y in range(5):
+                rotated[y + 5 * ((2 * x + 3 * y) % 5)] = _rotate_left_64(
+                    state[x + 5 * y], _KECCAK_ROTATIONS[x + 5 * y]
+                )
+        for x in range(5):
+            for y in range(5):
+                state[x + 5 * y] = rotated[x + 5 * y] ^ (
+                    (~rotated[(x + 1) % 5 + 5 * y]) & rotated[(x + 2) % 5 + 5 * y]
+                )
+                state[x + 5 * y] &= _UINT64_MASK
+        state[0] ^= round_constant
+
+
+def _rotate_left_64(value: int, shift: int) -> int:
+    if shift == 0:
+        return value & _UINT64_MASK
+    return ((value << shift) | (value >> (64 - shift))) & _UINT64_MASK
 
 
 @dataclass
@@ -147,10 +220,13 @@ def normalize_legal_memo(
     artifact_root: str | Path | None = None,
     chain_reader: ChainReader | None = None,
 ) -> dict[str, Any]:
-    if report.get("schema_version") != LEGAL_MEMO_SCHEMA_VERSION:
-        raise LegalMemoError(f"schema_version must be {LEGAL_MEMO_SCHEMA_VERSION}")
+    schema_version = report.get("schema_version")
+    if schema_version not in LEGAL_MEMO_SCHEMA_VERSIONS:
+        raise LegalMemoError(
+            "schema_version must be one of " + ", ".join(sorted(LEGAL_MEMO_SCHEMA_VERSIONS))
+        )
     context = build_attestation_context(
-        LEGAL_MEMO_SCHEMA_VERSION,
+        schema_version,
         trust_registry=trust_registry,
         artifact_root=artifact_root,
         chain_reader=chain_reader,
@@ -203,7 +279,14 @@ def normalize_legal_memo(
         normalized["agent_prepared_by"], "report.agent_prepared_by", LegalMemoError, min_length=3
     )
     _validate_artifact_reference(normalized.get("memo_artifact"), "report.memo_artifact", LegalMemoError, context)
-    _validate_release_binding(normalized.get("release_binding"), "report.release_binding", LegalMemoError, context)
+    _validate_release_binding(
+        normalized.get("release_binding"),
+        "report.release_binding",
+        LegalMemoError,
+        context,
+        require_canonical_topology=schema_version == PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION,
+        require_legacy_topology=schema_version == LEGACY_LEGAL_MEMO_SCHEMA_VERSION,
+    )
     counsel = _validate_counsel(normalized.get("counsel"), context)
     _validate_scope(normalized.get("scope"))
     _validate_launch_constraints(normalized.get("launch_constraints"))
@@ -230,7 +313,7 @@ def normalize_legal_memo(
     _validate_signature(
         counsel_signature,
         "report.counsel_signature",
-        schema_version=LEGAL_MEMO_SCHEMA_VERSION,
+        schema_version=schema_version,
         artifact_hash=legal_hash,
         identity=counsel,
         expected_role="external-counsel",
@@ -508,6 +591,7 @@ def _validate_release_binding(
     context: AttestationValidationContext,
     *,
     require_canonical_topology: bool = False,
+    require_legacy_topology: bool = False,
 ) -> Mapping[str, Any]:
     if not isinstance(value, dict):
         raise error_type(f"{prefix} must be an object")
@@ -535,9 +619,14 @@ def _validate_release_binding(
     _verify_git_artifact(context, configuration_ref, commit, f"{prefix}.configuration_artifact", error_type)
 
     canonical = value.get("binding_version") == CANONICAL_RELEASE_BINDING_VERSION
+    if require_legacy_topology and canonical:
+        raise error_type(
+            f"{prefix} in {LEGACY_LEGAL_MEMO_SCHEMA_VERSION} is historical-only and cannot bind or "
+            f"authorize the production topology; use {PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION}"
+        )
     if require_canonical_topology and not canonical:
         raise error_type(
-            f"{prefix}.binding_version must be {CANONICAL_RELEASE_BINDING_VERSION} for adversarial campaign evidence"
+            f"{prefix}.binding_version must be {CANONICAL_RELEASE_BINDING_VERSION} for the production topology"
         )
     topology_names: dict[str, str] | None = None
     deployment_commit: str | None = None
@@ -582,11 +671,11 @@ def _validate_release_binding(
             if name != topology_names[topology_key]:
                 raise error_type(f"{contract_prefix}.name does not match canonical topology slot {topology_key}")
             topology_keys.add(topology_key)
-            _require_bytes32(
+            manifest_runtime_code_hash = _require_bytes32(
                 contract.get("manifest_runtime_code_hash"),
                 f"{contract_prefix}.manifest_runtime_code_hash",
                 error_type,
-            )
+            ).casefold()
         elif name not in REQUIRED_CONTRACT_NAMES:
             raise error_type(f"{contract_prefix}.name must identify a required P42 contract")
         elif name in names:
@@ -622,6 +711,11 @@ def _validate_release_binding(
             raise error_type(
                 f"{contract_prefix}.runtime_bytecode_hash does not match resolved runtime bytecode"
             )
+        if canonical and ethereum_keccak256(runtime_bytes) != manifest_runtime_code_hash:
+            raise error_type(
+                f"{contract_prefix}.manifest_runtime_code_hash must equal Ethereum keccak256 of "
+                "the chain-verified runtime bytecode"
+            )
         chain_ref = _validate_artifact_reference(
             contract.get("chain_bytecode_artifact"),
             f"{contract_prefix}.chain_bytecode_artifact",
@@ -646,7 +740,7 @@ def _validate_release_binding(
         if canonical:
             expected_contract.update(
                 topology_key=topology_key,
-                manifest_runtime_code_hash=contract["manifest_runtime_code_hash"].casefold(),
+                manifest_runtime_code_hash=manifest_runtime_code_hash,
             )
         expected_contracts.append(expected_contract)
     missing = sorted((set(topology_names) - topology_keys) if canonical else (REQUIRED_CONTRACT_NAMES - names))

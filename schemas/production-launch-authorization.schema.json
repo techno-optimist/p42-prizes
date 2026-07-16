@@ -28,7 +28,7 @@
     "chain_id": { "type": "integer", "enum": [84532, 8453] },
     "funding_mode": { "enum": ["testnet-only", "real-eth"] },
     "release_binding": {
-      "$ref": "https://p42.xyz/schemas/legal-memo-v1.json#/$defs/releaseBinding"
+      "$ref": "https://p42.xyz/schemas/legal-memo.json#/$defs/canonicalReleaseBinding"
     },
     "artifacts": { "$ref": "#/$defs/artifacts" },
     "problem_reviews": {
@@ -67,7 +67,7 @@
       "pattern": "^sha256:[a-f0-9]{64}$"
     },
     "artifact": {
-      "$ref": "https://p42.xyz/schemas/legal-memo-v1.json#/$defs/artifact"
+      "$ref": "https://p42.xyz/schemas/legal-memo.json#/$defs/artifact"
     },
     "authorizer": {
       "type": "object",

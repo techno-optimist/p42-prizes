@@ -51,6 +51,7 @@
         "attestation_class": {
           "enum": [
             "p42-legal-memo/v1",
+            "p42-legal-memo/v2",
             "p42-governance-signoff/v1",
             "p42-incident-drill/v1",
             "p42-adversarial-testnet/v1",

@@ -23,6 +23,7 @@ from p42_prizes.legal import (
     _validate_signature,
     build_attestation_context,
     normalize_legal_memo,
+    PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION,
 )
 from p42_prizes.operational_controls import normalize_operational_controls
 from p42_prizes.security_audit import normalize_security_audit
@@ -150,6 +151,8 @@ def normalize_launch_authorization(
             )
         except ValueError as exc:
             raise LaunchAuthorizationError(f"{name} failed independent validation: {exc}") from exc
+        if name == "legal_memo":
+            _require_production_legal_memo(normalized)
         if normalized.get("release_binding") != release_binding:
             raise LaunchAuthorizationError(f"{name} release_binding does not exactly match authorization")
         normalized_gate_hashes[name] = normalized[GATE_HASH_FIELDS[name]]
@@ -251,6 +254,13 @@ def normalize_launch_authorization(
     return dict(authorization)
 
 
+def _require_production_legal_memo(report: Mapping[str, Any]) -> None:
+    if report.get("schema_version") != PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION:
+        raise LaunchAuthorizationError(
+            f"legal_memo must use {PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION} for production launch composition"
+        )
+
+
 def _read_json_artifact(value: Any, prefix: str, context: AttestationValidationContext) -> dict[str, Any]:
     ref = _validate_artifact_reference(value, prefix, LaunchAuthorizationError, context)
     payload = context.resolved_artifacts[(ref["local_path"], ref["sha256"])]
@@ -277,8 +287,10 @@ def _validate_release_report(report: Mapping[str, Any], release_binding: Mapping
     unsigned = {key: value for key, value in report.items() if key != "verificationReportDigest"}
     if report.get("verificationReportDigest") != sha256_bytes(canonical_json(unsigned).encode("utf-8")):
         raise LaunchAuthorizationError("production release verification digest is not canonical")
-    if report.get("sourceCommit") != release_binding.get("git_commit"):
-        raise LaunchAuthorizationError("production release source commit does not match release_binding")
+    if report.get("sourceCommit") != release_binding.get("deployment_commit"):
+        raise LaunchAuthorizationError(
+            "production release source commit does not match release_binding.deployment_commit"
+        )
     boards = report.get("admittedBoards")
     if not isinstance(boards, list) or len(boards) != 10:
         raise LaunchAuthorizationError("production release verification must admit exactly ten boards")

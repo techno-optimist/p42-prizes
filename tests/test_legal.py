@@ -10,7 +10,13 @@ import jsonschema
 import pytest
 
 from attestation_helpers import AttestationFixture, attach_signatures, unsigned_hash
-from p42_prizes.legal import LegalMemoError, _verify_ed25519, normalize_legal_memo
+from p42_prizes.legal import (
+    LegalMemoError,
+    _attestation_message,
+    _verify_ed25519,
+    ethereum_keccak256,
+    normalize_legal_memo,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -135,6 +141,23 @@ def valid_legal_memo(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
     return report, fixture, fixture.trust_registry("p42-legal-memo/v1", signers)
 
 
+def valid_production_legal_memo(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
+    report, fixture, _ = valid_legal_memo(tmp_path)
+    report["schema_version"] = "p42-legal-memo/v2"
+    report["release_binding"] = fixture.canonical_release_binding("base-mainnet")
+    counsel = report["counsel"]
+    signers = [("external-counsel", counsel, counsel["signed_at_utc"])]
+    attach_signatures(
+        report,
+        schema_version="p42-legal-memo/v2",
+        hash_field="legal_hash",
+        signatures_field="counsel_signature",
+        signers=signers,
+        singular=True,
+    )
+    return report, fixture, fixture.trust_registry("p42-legal-memo/v2", signers)
+
+
 def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict:
     return normalize_legal_memo(
         report,
@@ -153,6 +176,82 @@ def test_legal_memo_verifies_registered_signature_resolved_bytes_and_schema(tmp_
     assert normalized["legal_hash"] == unsigned_hash(normalized, "legal_hash", "counsel_signature")
 
 
+def test_production_legal_memo_binds_exact_canonical_projection(tmp_path: Path) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    normalized = normalize(report, fixture, registry)
+
+    schema = json.loads((ROOT / "schemas" / "legal-memo.schema.json").read_text())
+    jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
+    contracts = normalized["release_binding"]["contracts"]
+    expected_keys = {
+        "shared.timelock",
+        "shared.registry",
+        "shared.rolloverVault",
+        "shared.submissionManagerFactory",
+        "shared.challengeManagerFactory",
+        "shared.objectiveVerifier",
+        "shared.resolverQuorum",
+        *(
+            f"board.{board}.{slot}"
+            for board in range(1, 11)
+            for slot in ("pool", "ledger", "submissions", "challenges")
+        ),
+    }
+    assert len(contracts) == 47
+    assert {contract["topology_key"] for contract in contracts} == expected_keys
+    assert normalized["release_binding"]["binding_version"] == "p42-release-binding/v2"
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing", "extra", "misnamed", "duplicate", "wrong-board", "out-of-range",
+        "duplicate-address", "wrong-runtime-codehash",
+    ],
+)
+def test_production_legal_memo_rejects_hostile_topology_mutations(tmp_path: Path, mutation: str) -> None:
+    report, fixture, registry = valid_production_legal_memo(tmp_path)
+    contracts = report["release_binding"]["contracts"]
+    if mutation == "missing":
+        contracts.pop()
+    elif mutation == "extra":
+        contracts.append(dict(contracts[-1]))
+    elif mutation == "misnamed":
+        contracts[0]["name"] = "P42ProblemRegistry"
+    elif mutation == "duplicate":
+        contracts[0]["topology_key"] = contracts[1]["topology_key"]
+        contracts[0]["name"] = contracts[1]["name"]
+    elif mutation == "wrong-board":
+        board_nine = next(item for item in contracts if item["topology_key"] == "board.9.pool")
+        board_ten = next(item for item in contracts if item["topology_key"] == "board.10.pool")
+        board_nine["topology_key"], board_ten["topology_key"] = (
+            board_ten["topology_key"],
+            board_nine["topology_key"],
+        )
+    elif mutation == "out-of-range":
+        board_contract = next(item for item in contracts if item["topology_key"] == "board.10.pool")
+        board_contract["topology_key"] = "board.11.pool"
+    elif mutation == "duplicate-address":
+        contracts[0]["address"] = contracts[1]["address"]
+    else:
+        contracts[0]["manifest_runtime_code_hash"] = "0x" + "f" * 64
+
+    with pytest.raises(LegalMemoError, match="topology|contract address|address must match|runtime bytecode"):
+        normalize(report, fixture, registry)
+
+
+def test_v1_five_address_packet_remains_historical_but_cannot_bind_production(tmp_path: Path) -> None:
+    legacy, fixture, legacy_registry = valid_legal_memo(tmp_path)
+    normalize(legacy, fixture, legacy_registry)
+
+    legacy["release_binding"] = fixture.canonical_release_binding("base-mainnet")
+    schema = json.loads((ROOT / "schemas" / "legal-memo.schema.json").read_text())
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(legacy, schema, format_checker=jsonschema.FormatChecker())
+    with pytest.raises(LegalMemoError, match="historical-only.*cannot bind or authorize"):
+        normalize(legacy, fixture, legacy_registry)
+
+
 def test_ed25519_verifier_matches_rfc8032_vector() -> None:
     public_key = "ed25519:d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
     signature = (
@@ -162,6 +261,27 @@ def test_ed25519_verifier_matches_rfc8032_vector() -> None:
 
     assert _verify_ed25519(public_key, signature, b"")
     assert not _verify_ed25519(public_key, signature, b"tampered")
+
+
+def test_ethereum_keccak256_matches_canonical_vectors() -> None:
+    assert ethereum_keccak256(b"") == "0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"
+    assert ethereum_keccak256(b"abc") == "0x4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45"
+
+
+def test_counsel_signature_message_is_exact_v2_envelope() -> None:
+    message = _attestation_message(
+        "p42-legal-memo/v2",
+        "sha256:" + "a" * 64,
+        "external-counsel",
+        "2026-07-08T21:00:00Z",
+    )
+    assert message == (
+        b"P42-ATTESTATION-V2\n"
+        b"p42-legal-memo/v2\n"
+        b"external-counsel\n"
+        b"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+        b"2026-07-08T21:00:00Z"
+    )
 
 
 def test_legal_memo_cli_requires_explicit_test_trust_and_local_evidence(tmp_path: Path) -> None:

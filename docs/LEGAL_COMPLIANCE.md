@@ -16,7 +16,16 @@ PYTHONPATH=src python3 -m p42_prizes.cli legal-memo-validate \
   --output legal/gate2-legal-compliance-memo.normalized.json
 ```
 
-The `p42-legal-memo/v1` validator now requires:
+The validator accepts two deliberately non-equivalent packet versions:
+
+- `p42-legal-memo/v1` preserves validation of historical five-address packets.
+  It is historical evidence only and cannot carry a canonical production
+  release binding or authorize production.
+- `p42-legal-memo/v2` is the only production-capable legal memo format. It
+  requires `p42-release-binding/v2` and the exact canonical 47-contract
+  topology.
+
+Both versions require:
 
 - an external counsel identity with full name, firm, professional email, bar
   jurisdiction, license identifier, identity-evidence hash, engagement hash,
@@ -24,8 +33,8 @@ The `p42-legal-memo/v1` validator now requires:
 - a retrievable counsel memo `{uri, sha256}` and hashed evidence for every
   finding and reviewed document;
 - binding to the exact repository commit, Base chain ID, deployment manifest,
-  configuration artifact, five contract addresses, source artifacts, and
-  runtime-bytecode hashes;
+  configuration artifact, contract source artifacts, and runtime-bytecode
+  hashes;
 - all nine required legal/compliance findings approved, with no open
   critical/high residual risk;
 - agent preparation before counsel signoff, and counsel signoff no later than
@@ -41,17 +50,64 @@ alone does not establish a legal conclusion.
 
 Remove `legal_hash` and `counsel_signature`, serialize the remaining object with
 P42 canonical JSON, and compute its SHA-256 digest. Counsel signs these exact
-ASCII bytes:
+ASCII bytes, in this order, with LF separators and no trailing newline:
 
 ```text
-P42-ATTESTATION-V1
-p42-legal-memo/v1
+P42-ATTESTATION-V2
+p42-legal-memo/v2
+external-counsel
 sha256:<canonical-payload-digest>
+<counsel_signature.signed_at_utc>
 ```
 
 The packet records raw Ed25519 public keys and signatures as lowercase
 `ed25519:<hex>`. Only counsel controls counsel's signing key. Agents must never
 generate or substitute that signature.
+
+## Production Topology
+
+The v2 release binding contains exactly 47 uniquely addressed entries. Each
+entry is identified by a `topology_key`; array order grants no authority.
+
+The seven shared roots are:
+
+- `shared.timelock` (`P42MultisigTimelock`)
+- `shared.registry` (`P42ProblemRegistry`)
+- `shared.rolloverVault` (`P42RolloverVault`)
+- `shared.submissionManagerFactory` (`P42SubmissionManagerFactory`)
+- `shared.challengeManagerFactory` (`P42ChallengeManagerFactory`)
+- `shared.objectiveVerifier` (`P42SP1VerifierGateway`)
+- `shared.resolverQuorum` (`P42ResolverQuorum`)
+
+For every exact board number `1` through `10`, the binding must also contain
+`board.<n>.pool`, `board.<n>.ledger`, `board.<n>.submissions`, and
+`board.<n>.challenges`, with their canonical contract names. The validator
+rejects missing, extra, duplicate, misnamed, out-of-range, or wrong-board
+slots; duplicate addresses; a non-canonical topology artifact; and any
+projection mismatch against the committed deployment manifest or configuration
+artifact. For every slot it also recomputes Ethereum Keccak-256 over the exact
+runtime bytes verified through the chain reader and requires that digest to
+equal `manifest_runtime_code_hash` in the memo, manifest, and configuration
+projections. NIST SHA3-256 is not accepted as Ethereum Keccak-256.
+
+## Version Migration
+
+- Existing v1 packets remain verifiable as historical evidence. Changing only
+  their `schema_version` is invalid: v2 changes the release binding and the
+  signed payload, so counsel must review and sign a newly assembled packet.
+- The trust-registry schema admits the `p42-legal-memo/v2` class, but supplies
+  no signer policy. The owner-controlled production registry must separately
+  register the real counsel key for that exact class and pass the protected
+  digest pin. The repository default remains empty and fail-closed.
+- `deployment_commit` is the source/deployment commit authenticated by release
+  verification and the deployment manifest. `git_commit` is the descendant
+  evidence commit containing the reviewed artifacts. Production launch
+  composition requires the verified source commit to equal
+  `deployment_commit`; descendant ancestry alone grants no authority.
+- Because canonical verifier source identity includes repository `src/` and
+  `schemas/`, the exact-ten source-binding dossier must be regenerated after
+  the final validator bytes change and pass exact replay before publication.
+  A stale dossier must fail replay.
 
 ## Counsel Handoff Checklist
 
@@ -78,7 +134,7 @@ missing topic rows, and absent signature are intentionally rejected.
 
 ```json
 {
-  "schema_version": "p42-legal-memo/v1",
+  "schema_version": "p42-legal-memo/v2",
   "memo_id": "<REQUIRED_MEMO_ID>",
   "completed_at_utc": "<REQUIRED_UTC_AFTER_COUNSEL_SIGNATURE>",
   "jurisdiction": "<REQUIRED_JURISDICTION>",
@@ -88,13 +144,16 @@ missing topic rows, and absent signature are intentionally rejected.
     "sha256": "<REQUIRED_REAL_SHA256>"
   },
   "release_binding": {
+    "binding_version": "p42-release-binding/v2",
     "repository_uri": "https://github.com/techno-optimist/p42-prizes",
+    "deployment_commit": "<REQUIRED_FROZEN_DEPLOYMENT_COMMIT>",
     "git_commit": "<REQUIRED_FROZEN_40_HEX_COMMIT>",
     "network": "base-mainnet",
     "chain_id": 8453,
     "deployment_manifest": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
     "configuration_artifact": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
-    "contracts": ["<REQUIRED_FIVE_CONTRACT_BINDINGS>"]
+    "canonical_topology": {"uri": "<REQUIRED>", "sha256": "<REQUIRED>"},
+    "contracts": ["<REQUIRED_EXACT_47_CANONICAL_CONTRACT_BINDINGS>"]
   },
   "counsel": {
     "name": "<REQUIRED_REAL_FULL_NAME>",
@@ -123,8 +182,9 @@ missing topic rows, and absent signature are intentionally rejected.
   conclusions, residual-risk treatment, or Ed25519 signature.
 - Terms, Privacy, Risk Disclosures, sanctions/KYC, tax, custody, international
   access, and Onramp posture still require counsel review for the exact release.
-- The mainnet release binding cannot be completed until the audited deployment
-  manifest, configuration, addresses, and runtime-bytecode hashes exist.
+- The mainnet release binding cannot be completed until the audited exact-47
+  deployment manifest, canonical topology, configuration, addresses, and
+  runtime-bytecode hashes exist.
 
 Gate 2 remains open until those facts are real, independently checked, and
 validated. No agent may infer approval from this template.

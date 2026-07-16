@@ -10,7 +10,7 @@ import subprocess
 import threading
 from typing import Any, Mapping
 
-from p42_prizes.legal import _attestation_message, _ed_decode_point, _ed_scalar_mult
+from p42_prizes.legal import _attestation_message, _ed_decode_point, _ed_scalar_mult, ethereum_keccak256
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -242,9 +242,7 @@ class AttestationFixture:
             contract_address = address(f"{network}-{topology_key}-{name}")
             runtime_bytes = hashlib.sha256(f"runtime:{network}:{name}".encode()).digest()[:16]
             runtime_hash = "sha256:" + hashlib.sha256(runtime_bytes).hexdigest()
-            manifest_runtime_hash = "0x" + hashlib.sha256(
-                f"manifest-runtime:{network}:{name}".encode()
-            ).hexdigest()
+            manifest_runtime_hash = ethereum_keccak256(runtime_bytes)
             runtime_artifact = self.artifact(
                 f"canonical-{network}-runtime-{name}",
                 content="0x" + runtime_bytes.hex(),
