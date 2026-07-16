@@ -67,6 +67,12 @@ export function buildActivationRpcProviders(primaryUrl, secondaryUrl, chainId) {
   });
 }
 
+export async function destroyActivationRpcProviders(providers) {
+  await Promise.allSettled(
+    [providers.primary, providers.secondary].map(async (provider) => provider.destroy()),
+  );
+}
+
 export function assertCanonicalActivationPlanArtifact(callerPlan, canonicalPlan) {
   if (callerPlan?.value?.planDigest !== canonicalPlan?.planDigest
       || !Buffer.isBuffer(callerPlan?.bytes)
@@ -120,6 +126,7 @@ export async function fundingActivationRunMain() {
   const plan = assertCanonicalActivationPlanArtifact(callerPlan, await freshPlan());
   const providers = buildActivationRpcProviders(endpoints.primary.url, endpoints.secondary.url, plan.chainId);
   const { primary, secondary } = providers;
+  try {
   if (process.env.P42_FUNDING_GOVERNANCE_PRIVATE_KEYS || process.env.P42_FUNDING_TREASURY_PRIVATE_KEY) {
     throw new Error("threshold key aggregation is forbidden; use one P42_FUNDING_SIGNER_PRIVATE_KEY or an external signed artifact");
   }
@@ -213,6 +220,9 @@ export async function fundingActivationRunMain() {
     nonceEvidence: (signer) => collectActivationNonceEvidence(primary, secondary, signer),
   });
   process.stdout.write(`${JSON.stringify({ status: `${result.status}-awaiting-finality`, label: result.label, transactionHash: result.transactionHash })}\n`);
+  } finally {
+    await destroyActivationRpcProviders(providers);
+  }
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {

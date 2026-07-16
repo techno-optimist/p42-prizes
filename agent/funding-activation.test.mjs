@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { buildFundingActivationPlan, runProductionAuthorizationValidator, serializeFundingActivationPlan, writePrivateActivationPlan } from "./funding-activation.mjs";
-import { assertCanonicalActivationPlanArtifact, buildActivationRpcProviders } from "./funding-activation-run.mjs";
+import {
+  assertCanonicalActivationPlanArtifact,
+  buildActivationRpcProviders,
+  destroyActivationRpcProviders,
+} from "./funding-activation-run.mjs";
 
 const hash = (char) => `sha256:${char.repeat(64)}`;
 const address = (value) => ethers.getAddress(`0x${value.toString(16).padStart(40, "0")}`);
@@ -41,6 +45,24 @@ test("activation runner providers use canonical no-redirect endpoint transport",
     providers.primary.destroy();
     providers.secondary.destroy();
   }
+});
+
+test("activation RPC provider cleanup attempts both providers when one destroy fails", async () => {
+  const destroyed = [];
+  await destroyActivationRpcProviders({
+    primary: {
+      destroy() {
+        destroyed.push("primary");
+        throw new Error("primary cleanup failed");
+      },
+    },
+    secondary: {
+      destroy() {
+        destroyed.push("secondary");
+      },
+    },
+  });
+  assert.deepEqual(destroyed, ["primary", "secondary"]);
 });
 
 function manifest() {
