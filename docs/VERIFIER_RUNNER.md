@@ -232,16 +232,24 @@ state) or a self-hashed local terminal disposition. Local dispositions use a
 narrow reason enum, retain a verified retry candidate on window expiry, and
 otherwise fence to `source_event_hash`; callers cannot select either fence and
 they are not chain actions. Every disposition creates a deterministic durable
-terminal-alert identity in `pending` state. A Python bridge transaction holds
-the queue lock and a durable exclusive alert-log lock, then uses directory-FD
-bound direct `O_CREAT|O_EXCL|O_NOFOLLOW` creation, fsyncs each new inode and its
-parent directory, and applies private single-link inode checks for the complete
-canonical newline-terminated JSONL record. It loops over short writes, fsyncs,
-and rechecks directory, lock, descriptor, and pathname identity before the
-operator commits its `delivered` receipt. Restart reconciliation parses complete
+terminal-alert identity in `pending` state. One Python bridge transaction holds
+the queue lock, alert-log lock, and nofollow alert-log descriptor across both the
+exact-record append and the queue's durable `pending` to `delivered` commit; no
+separate delivery command or job-id/alert-id-only API exists. The transaction
+uses directory-FD-bound direct `O_CREAT|O_EXCL|O_NOFOLLOW` creation, fsyncs each
+new inode and its parent directory, and applies private single-link inode checks
+for the complete canonical newline-terminated JSONL record. It loops over short
+writes and rechecks the exact record plus directory, lock, descriptor, and
+pathname/inode identity immediately before and after the queue rename/fsync.
+Restart reconciliation parses complete
 records rather than marker substrings and repairs a missing, unterminated, or
 truncated record for both `pending` and `delivered` queue states. Pending alerts
-are not archiveable. Each immutable
+are not archiveable. Delivered alerts carry an internally derived record and
+log device/inode proof; admission reacquires the alert lock and revalidates that
+proof against the current exact log record before compaction, so deletion,
+replacement, symlink, or hardlink substitution fails closed. Legacy delivered
+alerts without this proof are durably demoted to `pending` for atomic replay.
+Each immutable
 content-addressed record and both
 replay tombstones are fsynced before queue removal; archive/tombstone damage
 fails closed. Operators should alert on queue bytes, both admission headrooms,

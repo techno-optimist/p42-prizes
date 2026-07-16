@@ -821,27 +821,23 @@ function terminalAlertRecord(alert) {
   };
 }
 
-function appendTerminalAlertOnce(job, alert) {
+function reconcileTerminalAlertOnce(job, alert) {
   const result = bridge(
-    "append-terminal-alert",
+    "reconcile-terminal-alert",
     "--queue", QUEUE,
     "--alerts", ALERTS,
     "--job-id", job.job_id,
   );
   const expectedRecord = canonicalJson(terminalAlertRecord(alert));
-  if (result.alert_id !== alert.alert_id || result.record !== expectedRecord) {
-    throw new Error(`terminal alert append result for ${job.job_id} is not disposition-bound`);
+  if (
+    result.alert_id !== alert.alert_id
+    || result.record !== expectedRecord
+    || result.alert?.status !== "delivered"
+  ) {
+    throw new Error(`terminal alert reconciliation for ${job.job_id} is not disposition-bound`);
   }
   if (result.created) console.error(`  !!! ${expectedRecord}`);
   return result.created;
-}
-
-function recordTerminalAlertDelivery(job, alert) {
-  return bridge(
-    "record-terminal-alert", "--queue", QUEUE,
-    "--job-id", job.job_id,
-    "--alert-id", alert.alert_id,
-  );
 }
 
 export async function reconcileTerminalAlerts({ afterAppend = null } = {}) {
@@ -855,9 +851,8 @@ export async function reconcileTerminalAlerts({ afterAppend = null } = {}) {
     if (!["pending", "delivered"].includes(alert.status)) {
       throw new Error(`terminal alert ${alert.alert_id || job.job_id} has invalid status`);
     }
-    const appended = appendTerminalAlertOnce(job, alert);
+    const appended = reconcileTerminalAlertOnce(job, alert);
     if (appended && afterAppend) await afterAppend(job, alert);
-    if (alert.status === "pending") recordTerminalAlertDelivery(job, alert);
   }
 }
 

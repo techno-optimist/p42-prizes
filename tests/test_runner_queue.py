@@ -17,7 +17,7 @@ from p42_prizes.runner_queue import (
     DEFAULT_MAX_JOB_ATTEMPTS,
     MemorySnapshot,
     RunnerQueueError,
-    append_runner_terminal_alert,
+    reconcile_runner_terminal_alert,
     build_runner_health_snapshot,
     enqueue_runner_job,
     locked_runner_queue,
@@ -26,7 +26,6 @@ from p42_prizes.runner_queue import (
     reap_stale_leases,
     record_runner_action,
     record_runner_local_disposition,
-    record_runner_terminal_alert_delivery,
 )
 import p42_prizes.runner_queue as runner_queue
 
@@ -64,7 +63,7 @@ if sys.argv[2] == "enqueue":
     import json
     runner_queue.enqueue_runner_job(sys.argv[3], json.loads(sys.argv[4]))
 elif sys.argv[2] == "append":
-    runner_queue.append_runner_terminal_alert(
+    runner_queue.reconcile_runner_terminal_alert(
         sys.argv[3], sys.argv[4], job_id=sys.argv[5]
     )
 else:
@@ -77,6 +76,46 @@ else:
     environment["PYTHONPATH"] = pythonpath
     return subprocess.run(
         [sys.executable, "-c", script, str(target), operation, *arguments],
+        cwd=root,
+        env=environment,
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def _crash_after_alert_queue_commit(
+    queue_path: Path, alerts_path: Path, job_id: str
+) -> subprocess.CompletedProcess[str]:
+    root = Path(__file__).resolve().parents[1]
+    script = r"""
+import os
+import sys
+
+import p42_prizes.runner_queue as runner_queue
+
+real_write_queue = runner_queue._write_queue_file_at
+
+def crash_after_delivered_commit(directory_fd, queue_name, queue):
+    real_write_queue(directory_fd, queue_name, queue)
+    job = next(item for item in queue["jobs"] if item["job_id"] == sys.argv[3])
+    alert = job.get("terminal_alert") or job.get("action_alert")
+    if alert and alert.get("status") == "delivered":
+        os._exit(74)
+
+runner_queue._write_queue_file_at = crash_after_delivered_commit
+runner_queue.reconcile_runner_terminal_alert(
+    sys.argv[1], sys.argv[2], job_id=sys.argv[3]
+)
+"""
+    environment = os.environ.copy()
+    pythonpath = str(root / "src")
+    if environment.get("PYTHONPATH"):
+        pythonpath += os.pathsep + environment["PYTHONPATH"]
+    environment["PYTHONPATH"] = pythonpath
+    return subprocess.run(
+        [sys.executable, "-c", script, str(queue_path), str(alerts_path), job_id],
         cwd=root,
         env=environment,
         text=True,
@@ -353,11 +392,8 @@ def test_all_real_operator_terminal_statuses_are_archivable(tmp_path, monkeypatc
         with pytest.raises(RunnerQueueError, match="no settled terminal job"):
             enqueue_runner_job(queue_path, _persisted_job(2))
         migrated = read_runner_queue(queue_path)["jobs"][0]
-        alert = append_runner_terminal_alert(
+        reconcile_runner_terminal_alert(
             queue_path, tmp_path / "ALERTS.log", job_id=migrated["job_id"]
-        )
-        record_runner_terminal_alert_delivery(
-            queue_path, job_id=migrated["job_id"], alert_id=alert["alert_id"]
         )
     assert enqueue_runner_job(queue_path, _persisted_job(2))["created"] is True
 
@@ -512,11 +548,8 @@ def test_runtime_bridge_preverification_quarantine_is_archivable(tmp_path, monke
 
     with pytest.raises(RunnerQueueError, match="no settled terminal job"):
         enqueue_runner_job(queue_path, _persisted_job(2))
-    alert = append_runner_terminal_alert(
+    reconcile_runner_terminal_alert(
         queue_path, tmp_path / "ALERTS.log", job_id=job["job_id"]
-    )
-    record_runner_terminal_alert_delivery(
-        queue_path, job_id=job["job_id"], alert_id=alert["alert_id"]
     )
 
     assert enqueue_runner_job(queue_path, _persisted_job(2))["created"] is True
@@ -588,21 +621,19 @@ def test_local_terminal_disposition_is_idempotent_and_fails_closed_on_tamper(tmp
             alert_message="QUARANTINE legacy local terminal",
         )
 
-    with pytest.raises(RunnerQueueError, match="fencing mismatch"):
-        record_runner_terminal_alert_delivery(
-            queue_path,
-            job_id=job["job_id"],
-            alert_id="sha256:" + "e" * 64,
-        )
-    delivered = record_runner_terminal_alert_delivery(
-        queue_path, job_id=job["job_id"], alert_id=first["alert"]["alert_id"]
+    assert not hasattr(runner_queue, "record_runner_terminal_alert_delivery")
+    alerts_path = tmp_path / "ALERTS.log"
+    delivered = reconcile_runner_terminal_alert(
+        queue_path, alerts_path, job_id=job["job_id"]
     )
-    replayed = record_runner_terminal_alert_delivery(
-        queue_path, job_id=job["job_id"], alert_id=first["alert"]["alert_id"]
+    replayed = reconcile_runner_terminal_alert(
+        queue_path, alerts_path, job_id=job["job_id"]
     )
-    assert delivered["created"] is True
+    assert delivered["delivered"] is True
     assert delivered["alert"]["status"] == "delivered"
-    assert replayed == {"created": False, "alert": delivered["alert"]}
+    assert replayed["created"] is False
+    assert replayed["delivered"] is False
+    assert replayed["alert"] == delivered["alert"]
 
     raw = json.loads(queue_path.read_text(encoding="utf-8"))
     alert_id = raw["jobs"][0]["terminal_alert"]["alert_id"]
@@ -661,15 +692,12 @@ def test_terminal_action_alert_is_durable_idempotent_and_blocks_archival(tmp_pat
         alerts_path, "append", str(queue_path), str(alerts_path), job["job_id"]
     )
     assert crashed.returncode == 73, crashed.stderr
-    first = append_runner_terminal_alert(queue_path, alerts_path, job_id=job["job_id"])
-    replay = append_runner_terminal_alert(queue_path, alerts_path, job_id=job["job_id"])
+    first = reconcile_runner_terminal_alert(queue_path, alerts_path, job_id=job["job_id"])
+    replay = reconcile_runner_terminal_alert(queue_path, alerts_path, job_id=job["job_id"])
     assert first["created"] is False
     assert replay["created"] is False
     assert alerts_path.read_text(encoding="utf-8") == first["record"] + "\n"
 
-    record_runner_terminal_alert_delivery(
-        queue_path, job_id=job["job_id"], alert_id=first["alert_id"]
-    )
     delivered = read_runner_queue(queue_path)["jobs"][0]
     assert delivered["action_alert"]["status"] == "delivered"
     assert runner_queue._is_archivable(delivered) is True
@@ -706,6 +734,30 @@ def test_legacy_alert_required_action_migrates_to_pending_before_archival(tmp_pa
     assert persisted["action_alert"] == migrated["action_alert"]
 
 
+def test_unproven_legacy_delivery_migrates_back_to_pending(tmp_path) -> None:
+    queue_path, alerts_path, job, _ = _pending_alert_fixture(tmp_path)
+    reconcile_runner_terminal_alert(queue_path, alerts_path, job_id=job["job_id"])
+    raw = json.loads(queue_path.read_text(encoding="utf-8"))
+    legacy_alert = raw["jobs"][0]["terminal_alert"]
+    legacy_alert.pop("delivery_proof")
+    queue_path.write_text(runner_queue.canonical_json(raw) + "\n", encoding="utf-8")
+
+    migrated = read_runner_queue(queue_path)["jobs"][0]
+    assert migrated["terminal_alert"]["status"] == "pending"
+    assert migrated["terminal_alert"]["delivered_at_utc"] is None
+    assert migrated["terminal_alert"]["delivery_proof"] is None
+    assert runner_queue._is_archivable(migrated) is False
+
+    repaired = reconcile_runner_terminal_alert(
+        queue_path, alerts_path, job_id=job["job_id"]
+    )
+    assert repaired["created"] is False
+    assert repaired["delivered"] is True
+    assert repaired["alert"]["delivery_proof"]["record_hash"] == (
+        "sha256:" + hashlib.sha256(repaired["record"].encode("utf-8")).hexdigest()
+    )
+
+
 def test_local_terminal_dispositions_compact_at_active_queue_capacity(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(runner_queue, "ORDINARY_JOB_ADMISSION_LIMIT", 2)
     queue_path = tmp_path / "queue.json"
@@ -716,14 +768,14 @@ def test_local_terminal_dispositions_compact_at_active_queue_capacity(tmp_path, 
     enqueue_runner_job(queue_path, second)
 
     for job in (first, second):
-        disposition = record_runner_local_disposition(
+        record_runner_local_disposition(
             queue_path,
             job_id=job["job_id"],
             reason_code="job_run_error",
             detail="unrunnable fixture",
         )
-        record_runner_terminal_alert_delivery(
-            queue_path, job_id=job["job_id"], alert_id=disposition["alert"]["alert_id"]
+        reconcile_runner_terminal_alert(
+            queue_path, tmp_path / "ALERTS.log", job_id=job["job_id"]
         )
 
     assert enqueue_runner_job(queue_path, third)["created"] is True
@@ -743,7 +795,7 @@ def test_pending_terminal_alert_blocks_compaction_until_delivery(tmp_path, monke
     first = _persisted_job(1)
     second = _persisted_job(2)
     enqueue_runner_job(queue_path, first)
-    disposition = record_runner_local_disposition(
+    record_runner_local_disposition(
         queue_path,
         job_id=first["job_id"],
         reason_code="job_run_error",
@@ -753,10 +805,8 @@ def test_pending_terminal_alert_blocks_compaction_until_delivery(tmp_path, monke
     with pytest.raises(RunnerQueueError, match="no settled terminal job"):
         enqueue_runner_job(queue_path, second)
 
-    record_runner_terminal_alert_delivery(
-        queue_path,
-        job_id=first["job_id"],
-        alert_id=disposition["alert"]["alert_id"],
+    reconcile_runner_terminal_alert(
+        queue_path, tmp_path / "ALERTS.log", job_id=first["job_id"]
     )
     assert enqueue_runner_job(queue_path, second)["created"] is True
 
@@ -786,7 +836,7 @@ def test_terminal_alert_short_writes_are_complete_and_idempotent(
         calls += 1
         return os.write(descriptor, payload[:7])
 
-    first = append_runner_terminal_alert(
+    first = reconcile_runner_terminal_alert(
         queue_path,
         alerts_path,
         job_id=job["job_id"],
@@ -807,7 +857,7 @@ def test_terminal_alert_short_writes_are_complete_and_idempotent(
         real_fsync(descriptor)
 
     monkeypatch.setattr(runner_queue.os, "fsync", track_fsync)
-    second = append_runner_terminal_alert(
+    second = reconcile_runner_terminal_alert(
         queue_path, alerts_path, job_id=job["job_id"]
     )
 
@@ -834,7 +884,7 @@ def test_terminal_alert_rejects_unsafe_link_targets(tmp_path, unsafe_kind) -> No
         RunnerQueueError,
         match="unavailable or unsafe|single-link",
     ):
-        append_runner_terminal_alert(
+        reconcile_runner_terminal_alert(
             queue_path, alerts_path, job_id=job["job_id"]
         )
     assert read_runner_queue(queue_path)["jobs"][0]["terminal_alert"]["status"] == "pending"
@@ -856,7 +906,7 @@ def test_terminal_alert_rejects_unsafe_lock_links(tmp_path, unsafe_kind) -> None
         RunnerQueueError,
         match="alert lock is unavailable or unsafe|single-link",
     ):
-        append_runner_terminal_alert(
+        reconcile_runner_terminal_alert(
             queue_path, alerts_path, job_id=job["job_id"]
         )
     assert not alerts_path.exists()
@@ -892,7 +942,7 @@ def test_terminal_alert_detects_path_replacement_and_repairs(
         "_after_write": replace_path if swap_phase == "after_write" else None,
     }
     with pytest.raises(RunnerQueueError, match="changed during transaction"):
-        append_runner_terminal_alert(
+        reconcile_runner_terminal_alert(
             queue_path,
             alerts_path,
             job_id=job["job_id"],
@@ -901,11 +951,90 @@ def test_terminal_alert_detects_path_replacement_and_repairs(
 
     alerts_path.unlink()
     (tmp_path / moved_name).unlink()
-    repaired = append_runner_terminal_alert(
+    repaired = reconcile_runner_terminal_alert(
         queue_path, alerts_path, job_id=job["job_id"]
     )
     assert repaired["created"] is True
     assert alerts_path.read_bytes() == (repaired["record"] + "\n").encode("utf-8")
+
+
+def test_terminal_alert_replacement_during_queue_commit_rolls_back_delivery(
+    tmp_path,
+) -> None:
+    queue_path, alerts_path, job, _ = _pending_alert_fixture(tmp_path)
+    moved_path = tmp_path / "ALERTS.moved"
+
+    def replace_after_queue_commit() -> None:
+        alerts_path.rename(moved_path)
+        alerts_path.write_text("replacement\n", encoding="utf-8")
+        alerts_path.chmod(0o600)
+
+    with pytest.raises(RunnerQueueError, match="changed during transaction"):
+        reconcile_runner_terminal_alert(
+            queue_path,
+            alerts_path,
+            job_id=job["job_id"],
+            _after_queue_commit=replace_after_queue_commit,
+        )
+
+    queued = read_runner_queue(queue_path)["jobs"][0]
+    assert queued["terminal_alert"]["status"] == "pending"
+    assert runner_queue._is_archivable(queued) is False
+
+
+def test_removed_or_replaced_delivered_log_blocks_compaction(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(runner_queue, "ORDINARY_JOB_ADMISSION_LIMIT", 1)
+    queue_path, alerts_path, job, _ = _pending_alert_fixture(tmp_path)
+    reconcile_runner_terminal_alert(queue_path, alerts_path, job_id=job["job_id"])
+    alerts_path.unlink()
+
+    with pytest.raises(RunnerQueueError, match="unavailable or unsafe"):
+        enqueue_runner_job(queue_path, _persisted_job(2))
+    assert read_runner_queue(queue_path)["jobs"][0]["job_id"] == job["job_id"]
+
+    alerts_path.write_text("replacement\n", encoding="utf-8")
+    alerts_path.chmod(0o600)
+    with pytest.raises(RunnerQueueError, match="identity mismatch"):
+        enqueue_runner_job(queue_path, _persisted_job(2))
+    assert read_runner_queue(queue_path)["jobs"][0]["job_id"] == job["job_id"]
+
+
+def test_old_delivery_bridge_command_is_fail_closed(tmp_path) -> None:
+    queue_path, _, job, alert = _pending_alert_fixture(tmp_path)
+    bridge = Path(__file__).resolve().parents[1] / "agent" / "runtime_bridge.py"
+    attempted = subprocess.run(
+        [
+            sys.executable,
+            str(bridge),
+            "record-terminal-alert",
+            "--queue",
+            str(queue_path),
+            "--job-id",
+            job["job_id"],
+            "--alert-id",
+            alert["alert_id"],
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert attempted.returncode != 0
+    assert read_runner_queue(queue_path)["jobs"][0]["terminal_alert"]["status"] == "pending"
+
+
+def test_crash_after_queue_commit_restarts_idempotently(tmp_path) -> None:
+    queue_path, alerts_path, job, _ = _pending_alert_fixture(tmp_path)
+    crashed = _crash_after_alert_queue_commit(queue_path, alerts_path, job["job_id"])
+    assert crashed.returncode == 74, crashed.stderr
+    committed = read_runner_queue(queue_path)["jobs"][0]
+    assert committed["terminal_alert"]["status"] == "delivered"
+
+    replayed = reconcile_runner_terminal_alert(
+        queue_path, alerts_path, job_id=job["job_id"]
+    )
+    assert replayed["created"] is False
+    assert replayed["delivered"] is False
+    assert alerts_path.read_bytes() == (replayed["record"] + "\n").encode("utf-8")
 
 
 def test_first_log_creation_crash_reconciles_once_and_compacts_idempotently(
@@ -935,7 +1064,7 @@ def test_first_log_creation_crash_reconciles_once_and_compacts_idempotently(
             [
                 sys.executable,
                 str(bridge),
-                "append-terminal-alert",
+                "reconcile-terminal-alert",
                 "--queue",
                 str(queue_path),
                 "--alerts",
@@ -965,25 +1094,18 @@ def test_first_log_creation_crash_reconciles_once_and_compacts_idempotently(
     assert sorted(result["created"] for result in results) == [False, True]
     record = results[0]["record"]
     assert alerts_path.read_bytes() == (record + "\n").encode("utf-8")
-    pending = read_runner_queue(queue_path)["jobs"][0]["terminal_alert"]
-    assert pending["status"] == "pending"
+    delivered_alert = read_runner_queue(queue_path)["jobs"][0]["terminal_alert"]
+    assert delivered_alert["status"] == "delivered"
     assert record == runner_queue.canonical_json(
-        runner_queue._terminal_alert_record(pending)
+        runner_queue._terminal_alert_record(delivered_alert)
     )
 
-    delivered = record_runner_terminal_alert_delivery(
-        queue_path, job_id=job["job_id"], alert_id=pending["alert_id"]
-    )
-    replayed_append = append_runner_terminal_alert(
+    replayed_append = reconcile_runner_terminal_alert(
         queue_path, alerts_path, job_id=job["job_id"]
     )
-    replayed_delivery = record_runner_terminal_alert_delivery(
-        queue_path, job_id=job["job_id"], alert_id=pending["alert_id"]
-    )
-    assert delivered["created"] is True
-    assert delivered["alert"]["status"] == "delivered"
     assert replayed_append["created"] is False
-    assert replayed_delivery == {"created": False, "alert": delivered["alert"]}
+    assert replayed_append["delivered"] is False
+    assert replayed_append["alert"] == delivered_alert
     assert alerts_path.read_bytes() == (record + "\n").encode("utf-8")
 
     monkeypatch.setattr(runner_queue, "ORDINARY_JOB_ADMISSION_LIMIT", 1)
