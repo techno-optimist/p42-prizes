@@ -13,7 +13,6 @@ from typing import Any, Mapping
 
 from legal_release_fixture import (
     install_pinned_contract_build_inputs,
-    production_capsule,
     schema_valid_manifest_shell,
 )
 from p42_prizes.legal import _attestation_message, _ed_decode_point, _ed_scalar_mult, ethereum_keccak256
@@ -86,7 +85,38 @@ def _immutable_type(name: str) -> str:
 
 def _constructor_abi(name: str) -> list[dict[str, Any]]:
     if name == "P42MultisigTimelock":
-        inputs = [{"name": "delaySeconds_", "type": "uint256"}]
+        inputs = [
+            {"name": "signers_", "type": "address[]"},
+            {"name": "threshold_", "type": "uint256"},
+            {"name": "delaySeconds_", "type": "uint256"},
+            {"name": "guardian_", "type": "address"},
+        ]
+    elif name == "P42RolloverVault":
+        inputs = [
+            {"name": "registry_", "type": "address"},
+            {"name": "owner_", "type": "address"},
+        ]
+    elif name == "P42ResolverQuorum":
+        inputs = [
+            {"name": "owner_", "type": "address"},
+            {"name": "expectedTreasury_", "type": "address"},
+            {"name": "expectedDecisionBondWei_", "type": "uint256"},
+            {"name": "managerFactory_", "type": "address"},
+            {"name": "signers_", "type": "address[]"},
+            {"name": "threshold_", "type": "uint256"},
+            {"name": "allowedManagers_", "type": "address[]"},
+            {"name": "objectiveVerifier_", "type": "address"},
+            {"name": "objectiveVerifierCodehash_", "type": "bytes32"},
+        ]
+    elif name == "P42PayoutLedger":
+        inputs = [
+            {"name": "pool_", "type": "address"},
+            {"name": "owner_", "type": "address"},
+            {"name": "treasury_", "type": "address"},
+            {"name": "feeBps_", "type": "uint256"},
+            {"name": "earliestCloseTimestamp_", "type": "uint256"},
+            {"name": "closeByTimestamp_", "type": "uint256"},
+        ]
     elif name == "P42SubmissionManager":
         deployment = [
             "pool", "ledger", "owner", "treasury", "alphaBps", "minPostingBondWei",
@@ -433,7 +463,7 @@ class AttestationFixture:
         # Freeze the complete pinned build input set before publishing the
         # capsule that names this exact deployment commit.
         install_pinned_contract_build_inputs(self.root)
-        template = production_capsule("1" * 40)
+        template, _ = _synthetic_capsule("1" * 40)
         template_by_name = {item["name"]: item for item in template["contracts"]}
         template_build_infos = {item["id"]: item for item in template["buildInfos"]}
         for name in PRODUCTION_CONTRACT_NAMES:
@@ -449,7 +479,7 @@ class AttestationFixture:
         self._run("git", "add", ".")
         self._run("git", "commit", "-q", "-m", f"freeze canonical topology {network}")
         deployment_commit = self._run("git", "rev-parse", "HEAD").stdout.strip()
-        capsule = production_capsule(deployment_commit)
+        capsule, _ = _synthetic_capsule(deployment_commit)
         capsule_build_infos = {item["id"]: item for item in capsule["buildInfos"]}
         sources = {
             item["name"]: capsule_build_infos[item["buildInfoId"]]["input"]["input"]["sources"]
