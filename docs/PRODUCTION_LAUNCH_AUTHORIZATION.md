@@ -26,6 +26,8 @@ The authorization references exact bytes beneath an immutable artifact root for:
 - current complete v3 reconciliation report bound to that manifest and its
   finalized anchor;
 - current canonical 47-contract explorer verification dossier (target); and
+- a protected `p42-activation-rpc-operator-registry/v1` artifact whose exact
+  bytes digest is signed through the authorization;
 - ten independent signed `p42-math-review/v2` packets. Each packet binds the
   canonical digest of the complete board dossier, the canonical hash of that
   board's ordered record, the deployed verifier image, and the admission
@@ -110,6 +112,24 @@ barriers require all ten treasury relays before any arm operation and all ten
 arms before any pool-opening operation, for exactly 30 ordered target
 operations. Timelock scheduling, confirmation, and execution transactions remain
 separately journaled governance actions.
+
+The protected RPC registry assigns stable operator IDs to exact canonical HTTPS
+origins and canonical profile digests. Selecting two different hostnames does
+not establish operator independence. Plan construction requires two distinct
+registry-backed operator IDs and exact origin matches; the activation runtime
+does not accept self-asserted operator ownership metadata as authority. The
+planner, activation runner, indexer, and portal must each receive the protected
+registry path and trusted root. They open that exact owner-owned, single-link
+file without following links, require zero write bits (`0400` and `0444` are
+accepted while `0600` is rejected), reject writable parents, and require
+minified key-sorted canonical JSON with exactly one trailing LF. They recompute its exact byte
+digest and profile digests, and require the authorization-pinned digest and
+exact profile membership before provider use or checkpoint acceptance. Before
+any static-network provider is constructed, each transport is queried directly
+with `eth_chainId` and a raw mismatch fails closed. Completion and checkpoint
+evidence retain both raw observations and the full non-secret authority binding.
+No checked-in registry or successful two-endpoint run is itself a live
+independent-operator claim.
 
 `p42-funding-activate` consumes that immutable plan one transaction per run. It
 reconstructs protocol state from two RPCs at one common finalized block, reruns

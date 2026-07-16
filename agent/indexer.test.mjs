@@ -84,9 +84,9 @@ it("indexer CLI configures trusted transcript retrieval", () => {
   assert.equal(typeof configured.fetchClient.fetchTranscript, "function");
 });
 
-it("activation checkpointing requires credential-free independent HTTPS RPC hosts", async () => {
-  const pair = validateActivationRpcEndpointPair("https://RPC-A.example:443/", "https://rpc-b.example");
-  assert.equal(pair.primary.url, "https://rpc-a.example/");
+it("activation checkpointing requires exact canonical independent HTTPS RPC hosts", async () => {
+  const pair = validateActivationRpcEndpointPair("https://rpc-a.example", "https://rpc-b.example");
+  assert.equal(pair.primary.url, "https://rpc-a.example");
   for (const [primary, secondary] of [
     ["https://rpc.example", "https://rpc.example/"],
     ["https://a.rpc.example", "https://a.rpc.example:443"],
@@ -113,14 +113,11 @@ it("activation checkpointing requires credential-free independent HTTPS RPC host
   ]) {
     assert.throws(() => validateActivationRpcEndpointPair(invalid, "https://rpc-b.example"), /primitive string/);
   }
-  assert.deepEqual(
-    validateActivationRpcEndpointPair("https://203.0.113.10", "https://[2001:db8::10]").primary.hostname,
-    "203.0.113.10",
-  );
+  assert.throws(() => validateActivationRpcEndpointPair("https://203.0.113.10", "https://rpc-b.example"), /canonical lowercase DNS/);
   await assert.rejects(() => runIndexer({
     manifestPath: "/not-read", rpcUrl: "https://rpc-a.example", outPath: "/not-written",
     activationPlanPath: "/not-read", secondaryRpcUrl: "https://rpc-b.example",
-  }), /requires --activation-plan, --activation-completion/);
+  }), /requires plan, completion, authorization, protected RPC registry/);
   await assert.rejects(() => runIndexer({
     manifestPath: "/not-read", rpcUrl: "https://rpc-a.example", outPath: "/not-written",
     activationPlanPath: "/not-read", secondaryRpcUrl: "https://rpc-b.example",

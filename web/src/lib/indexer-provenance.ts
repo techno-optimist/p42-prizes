@@ -1,11 +1,13 @@
-import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { createHash, createPublicKey, verify } from "node:crypto";
+import { dirname, relative, resolve, sep } from "node:path";
 import { AbiCoder, Interface, Signature, TypedDataEncoder, getAddress, keccak256, recoverAddress, toUtf8Bytes } from "ethers";
 import deploymentSchema from "@/schemas/deployment-manifest-v2.schema.json";
 import checkpointV2Schema from "@/schemas/indexer-checkpoint-v2.schema.json";
 import checkpointV3Schema from "@/schemas/indexer-checkpoint-v3.schema.json";
 import checkpointV4Schema from "@/schemas/indexer-checkpoint-v4.schema.json";
 import completionSchema from "@/schemas/funding-activation-completion.schema.json";
+import rpcRegistrySchema from "@/schemas/activation-rpc-operator-registry.schema.json";
 import type { ChainProvenance, Problem } from "@/lib/types";
 
 const MAX_ARTIFACT_BYTES = 4 * 1024 * 1024;
@@ -36,6 +38,7 @@ interface ActivatedArtifactBundle {
   activationSignatures: JsonObject;
   plan: JsonObject;
   completion: JsonObject;
+  rpcRegistry: JsonObject;
   checkpointMaxAgeSeconds?: number;
   nowSeconds?: number;
 }
@@ -48,6 +51,8 @@ export interface IndexerArtifactPaths {
   fundingActivationPlanPath?: string;
   fundingActivationSignaturesPath?: string;
   fundingActivationCompletionPath?: string;
+  activationRpcOperatorRegistryPath?: string;
+  activationRpcOperatorRegistryTrustedRoot?: string;
   checkpointMaxAgeSeconds?: number;
 }
 
@@ -60,6 +65,8 @@ export interface IndexerProvenanceEnvironment {
   P42_FUNDING_ACTIVATION_PLAN_PATH?: string;
   P42_FUNDING_ACTIVATION_SIGNATURES_PATH?: string;
   P42_FUNDING_ACTIVATION_COMPLETION_PATH?: string;
+  P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH?: string;
+  P42_ACTIVATION_RPC_OPERATOR_REGISTRY_TRUSTED_ROOT?: string;
   P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS?: string;
 }
 
@@ -169,6 +176,52 @@ function readBoundedRegularJson(path: string): unknown {
   return readBoundedRegularJsonWithBytes(path).value;
 }
 
+function readPrivateProtectedJsonWithBytes(pathValue: string, rootValue: string): { value: unknown; bytes: Buffer } {
+  if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
+    throw new Error("protected activation RPC registry requires O_NOFOLLOW support");
+  }
+  const path = resolve(pathValue); const root = resolve(rootValue);
+  const rel = relative(root, path);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || rel.includes("\0")) {
+    throw new Error("protected registry path escapes its trusted root");
+  }
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  let cursor = root;
+  for (const part of rel.split(sep).slice(0, -1)) {
+    const meta = lstatSync(cursor);
+    if (!meta.isDirectory() || meta.isSymbolicLink() || (uid !== null && meta.uid !== uid) || (meta.mode & 0o022) !== 0) {
+      throw new Error("protected registry trusted path ancestor is unsafe");
+    }
+    cursor = resolve(cursor, part);
+  }
+  const parent = lstatSync(dirname(path));
+  const before = lstatSync(path);
+  if (!parent.isDirectory() || parent.isSymbolicLink() || (uid !== null && parent.uid !== uid) || (parent.mode & 0o022) !== 0
+      || !before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || (uid !== null && before.uid !== uid)
+      || (before.mode & 0o222) !== 0 || before.size > MAX_ARTIFACT_BYTES) {
+    throw new Error("protected registry file ownership, mode, link, or parent is unsafe");
+  }
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(descriptor);
+    if (stat.dev !== before.dev || stat.ino !== before.ino || stat.nlink !== 1 || stat.mode !== before.mode
+        || stat.uid !== before.uid || stat.size !== before.size) throw new Error("protected registry path identity changed");
+    const bytes = readFileSync(descriptor);
+    const after = fstatSync(descriptor);
+    if (bytes.length !== stat.size || stat.dev !== after.dev || stat.ino !== after.ino
+        || stat.uid !== after.uid || stat.mode !== after.mode || stat.nlink !== after.nlink
+        || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs || stat.ctimeMs !== after.ctimeMs) {
+      throw new Error("protected registry file changed while reading");
+    }
+    const text = bytes.toString("utf8");
+    const value = JSON.parse(text) as unknown;
+    if (text !== `${JSON.stringify(canonicalize(value))}\n`) {
+      throw new Error("protected registry JSON bytes are not canonical");
+    }
+    return { value, bytes };
+  } finally { closeSync(descriptor); }
+}
+
 function readProtectedFile(path: string, maxBytes: number): Buffer {
   if (typeof constants.O_NOFOLLOW !== "number" || constants.O_NOFOLLOW === 0) {
     throw new Error("protected portal trust policy requires O_NOFOLLOW support");
@@ -229,6 +282,58 @@ function sha256Canonical(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(canonicalize(value))).digest("hex")}`;
 }
 
+export function canonicalActivationRpcOrigin(value: unknown): string {
+  if (typeof value !== "string") throw new Error("activation RPC origin is invalid");
+  requireBinding(value.length > 0 && value === value.trim()
+    && /^[\x21-\x7e]+$/.test(value) && !value.includes("%"));
+  const match = /^https:\/\/([^/:?#]+)(?::([1-9][0-9]{0,4}))?$/.exec(value);
+  requireBinding(match !== null);
+  const hostname = match![1]; const portText = match![2];
+  const labels = hostname.split(".");
+  const labelPattern = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+  requireBinding(hostname.length <= 253 && labels.length >= 2 && labels.every((label) => labelPattern.test(label))
+    && !/^(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+)){0,3}$/.test(hostname));
+  const port = portText === undefined ? 443 : Number(portText);
+  requireBinding(Number.isSafeInteger(port) && port >= 1 && port <= 65535 && !(portText !== undefined && port === 443));
+  const rendered = `https://${hostname}${port === 443 ? "" : `:${port}`}`;
+  requireBinding(value === rendered);
+  return rendered;
+}
+
+function validateActivationRpcRegistry(value: JsonObject, bytes: Buffer, expectedDigest: unknown): JsonObject {
+  requireBinding(expectedDigest === sha256Bytes(bytes));
+  validateSchema(value, rpcRegistrySchema, rpcRegistrySchema as JsonSchema, "activation RPC registry");
+  const profiles = value.profiles as JsonObject[];
+  const ids = new Set<string>(); const origins = new Set<string>();
+  for (const raw of profiles) {
+    const profile = object(raw, "activation RPC registry profile");
+    const operatorId = String(profile.operatorId); const endpointOrigin = canonicalActivationRpcOrigin(profile.endpointOrigin);
+    requireBinding(profile.endpointProfileDigest === sha256Canonical({ operatorId, endpointOrigin })
+      && !ids.has(operatorId) && !origins.has(endpointOrigin));
+    ids.add(operatorId); origins.add(endpointOrigin);
+  }
+  return value;
+}
+
+export function loadProtectedActivationRpcOperatorRegistry(
+  path: string,
+  trustedRoot: string,
+  expectedDigest: string,
+): JsonObject {
+  const file = readPrivateProtectedJsonWithBytes(path, trustedRoot);
+  return validateActivationRpcRegistry(object(file.value, "activation RPC registry"), file.bytes, expectedDigest);
+}
+
+function requireRpcAuthorityRegistryMembership(authority: JsonObject, registry: JsonObject, registryDigest: unknown): void {
+  requireBinding(authority.registryDigest === registryDigest);
+  const profiles = registry.profiles as JsonObject[];
+  for (const role of ["primary", "secondary"]) {
+    const asserted = object(authority[role], `activation RPC ${role} authority`);
+    canonicalActivationRpcOrigin(asserted.endpointOrigin);
+    requireBinding(profiles.some((profile) => JSON.stringify(canonicalize(profile)) === JSON.stringify(canonicalize(asserted))));
+  }
+}
+
 const FUNDING_ROLES = [
   ["production-launch-authority", "productionLaunchAuthority"],
   ["independent-security-authority", "independentSecurityAuthority"],
@@ -264,6 +369,8 @@ function reconstructCanonicalActivationPlan(
   authorization: JsonObject,
   authorizationBytes: Buffer,
   activationSignatures: JsonObject,
+  rpcAuthority: JsonObject,
+  rpcRegistry: JsonObject,
 ): JsonObject {
   requireBinding(exactKeys(activationSignatures, [
     "schema", "chainId", "boardSetDigest", "releaseBindingDigest", "authorizationDigest",
@@ -276,6 +383,20 @@ function reconstructCanonicalActivationPlan(
   const contracts = object(manifest.contracts, "activation manifest contracts");
   const timelock = object(contracts.timelock, "activation timelock");
   const authorizationBinding = object(authorization.release_binding, "activation authorization release binding");
+  const authorizationArtifacts = object(authorization.artifacts, "activation authorization artifacts");
+  const rpcRegistryRef = object(authorizationArtifacts.activation_rpc_operator_registry, "activation RPC registry reference");
+  requireBinding(exactKeys(rpcAuthority, ["schema", "registryDigest", "primary", "secondary"])
+    && rpcAuthority.schema === "p42-activation-rpc-authority/v1"
+    && rpcAuthority.registryDigest === rpcRegistryRef.sha256);
+  requireRpcAuthorityRegistryMembership(rpcAuthority, rpcRegistry, rpcRegistryRef.sha256);
+  for (const role of ["primary", "secondary"]) {
+    const profile = object(rpcAuthority[role], `activation RPC ${role} profile`);
+    requireBinding(exactKeys(profile, ["operatorId", "endpointOrigin", "endpointProfileDigest"])
+      && /^[a-z0-9][a-z0-9._-]{2,63}$/.test(String(profile.operatorId))
+      && canonicalActivationRpcOrigin(profile.endpointOrigin) === profile.endpointOrigin
+      && /^sha256:[0-9a-f]{64}$/.test(String(profile.endpointProfileDigest)));
+  }
+  requireBinding(object(rpcAuthority.primary, "primary RPC").operatorId !== object(rpcAuthority.secondary, "secondary RPC").operatorId);
   const problems = manifest.problems as JsonObject[];
   const signatureBoards = activationSignatures.boards as JsonObject[];
   requireBinding(Array.isArray(problems) && problems.length === 10
@@ -375,6 +496,7 @@ function reconstructCanonicalActivationPlan(
     capsuleDigest: releaseEvidence.capsuleDigest, slateDigest: releaseEvidence.slateDigest,
     releaseIndexDigest: releaseEvidence.releaseIndexDigest, authorizationDigest: authorization.authorization_digest,
     authorizationExpiresAt: expiresAt, authorizationBytesDigest: sha256Bytes(authorizationBytes),
+    rpcAuthority,
     activationSignaturesDigest: sha256Canonical(activationSignatures), timelock: getAddress(String(timelock.address)),
     timelockRuntimeCodeHash: timelock.runtimeCodeHash, treasury: getAddress(String(roles.treasury)),
     governanceSigners: (governance.signers as string[]).map(getAddress), governanceThreshold: Number(governance.threshold),
@@ -558,14 +680,19 @@ export function configuredIndexerArtifactPaths(env: IndexerProvenanceEnvironment
   const fundingActivationPlanPath = env.P42_FUNDING_ACTIVATION_PLAN_PATH?.trim();
   const fundingActivationSignaturesPath = env.P42_FUNDING_ACTIVATION_SIGNATURES_PATH?.trim();
   const fundingActivationCompletionPath = env.P42_FUNDING_ACTIVATION_COMPLETION_PATH?.trim();
+  const activationRpcOperatorRegistryPath = env.P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH?.trim();
+  const activationRpcOperatorRegistryTrustedRoot = env.P42_ACTIVATION_RPC_OPERATOR_REGISTRY_TRUSTED_ROOT?.trim();
   const maxAgeText = env.P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS?.trim();
   const checkpointMaxAgeSeconds = maxAgeText ? Number(maxAgeText) : null;
-  const funding = [launchAuthorizationPath, fundingActivationPlanPath, fundingActivationSignaturesPath, fundingActivationCompletionPath, indexerCheckpointAttestationPath];
+  const funding = [launchAuthorizationPath, fundingActivationPlanPath, fundingActivationSignaturesPath,
+    fundingActivationCompletionPath, indexerCheckpointAttestationPath, activationRpcOperatorRegistryPath,
+    activationRpcOperatorRegistryTrustedRoot];
   if (funding.some(Boolean) && (!funding.every(Boolean) || !Number.isSafeInteger(checkpointMaxAgeSeconds) || checkpointMaxAgeSeconds! < 1 || checkpointMaxAgeSeconds! > 300)) return { deploymentManifestPath, indexerCheckpointPath };
   return funding.every(Boolean) ? {
     deploymentManifestPath, indexerCheckpointPath,
     indexerCheckpointAttestationPath,
     launchAuthorizationPath, fundingActivationPlanPath, fundingActivationSignaturesPath, fundingActivationCompletionPath,
+    activationRpcOperatorRegistryPath, activationRpcOperatorRegistryTrustedRoot,
     checkpointMaxAgeSeconds: checkpointMaxAgeSeconds!,
   } : { deploymentManifestPath, indexerCheckpointPath };
 }
@@ -636,6 +763,7 @@ export function activatedProvenanceFromArtifacts(
   activationSignatures: JsonObject,
   plan: JsonObject,
   completion: JsonObject,
+  rpcRegistry: JsonObject,
   checkpointMaxAgeSeconds = 300,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): ChainProvenance {
@@ -653,6 +781,8 @@ export function activatedProvenanceFromArtifacts(
   requireBinding(plan.schema === "p42-funding-activation-plan/v2" && completion.schema === "p42-funding-activation-completion/v2");
   const canonicalPlan = reconstructCanonicalActivationPlan(
     manifest, manifestBytes, authorization, authorizationBytes, activationSignatures,
+    object(plan.rpcAuthority, "activation plan RPC authority"),
+    rpcRegistry,
   );
   requireBinding(JSON.stringify(canonicalize(plan)) === JSON.stringify(canonicalize(canonicalPlan)));
   const { planDigest, ...planBody } = plan;
@@ -663,6 +793,17 @@ export function activatedProvenanceFromArtifacts(
   const manifestRef = object(authorizationArtifacts.deployment_manifest, "authorization deployment manifest reference");
   requireBinding(manifestRef.sha256 === plan.manifestBytesDigest);
   requireBinding(plan.authorizationDigest === authorization.authorization_digest && completion.authorizationDigest === authorization.authorization_digest);
+  requireBinding(JSON.stringify(canonicalize(completion.rpcAuthority)) === JSON.stringify(canonicalize(checkpoint.activationEvidence && object(checkpoint.activationEvidence, "activation evidence").rpcAuthority))
+    && object(completion.rpcAuthority, "completion RPC authority").registryDigest === object(plan.rpcAuthority, "plan RPC authority").registryDigest);
+  const observedAuthority = object(completion.rpcAuthority, "completion RPC authority");
+  for (const role of ["primary", "secondary"]) {
+    const observed = object(observedAuthority[role], `completion RPC ${role}`);
+    const planned = object(object(plan.rpcAuthority, "plan RPC authority")[role], `plan RPC ${role}`);
+    requireBinding(observed.operatorId === planned.operatorId
+      && observed.endpointOrigin === planned.endpointOrigin
+      && observed.endpointProfileDigest === planned.endpointProfileDigest
+      && observed.observedRawChainId === `0x${Number(plan.chainId).toString(16)}`);
+  }
   requireBinding(plan.authorizationBytesDigest === sha256Bytes(authorizationBytes)
     && completion.authorizationBytesDigest === plan.authorizationBytesDigest);
   const authorizationExpiry = Date.parse(String(authorization.expires_at_utc)) / 1000;
@@ -821,6 +962,7 @@ export function activatedIndexerSnapshotFromArtifacts(
       artifacts.activationSignatures,
       artifacts.plan,
       artifacts.completion,
+      artifacts.rpcRegistry,
       artifacts.checkpointMaxAgeSeconds,
       artifacts.nowSeconds,
     );
@@ -846,19 +988,26 @@ export function loadActivatedIndexerSnapshot(
     || !paths.fundingActivationPlanPath
     || !paths.fundingActivationSignaturesPath
     || !paths.fundingActivationCompletionPath
-    || !paths.indexerCheckpointAttestationPath) return null;
+    || !paths.indexerCheckpointAttestationPath
+    || !paths.activationRpcOperatorRegistryPath
+    || !paths.activationRpcOperatorRegistryTrustedRoot) return null;
   try {
     const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
     const authorizationFile = readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath);
     const productionTrust = readProductionTrustPolicy();
     const completion = object(readBoundedRegularJson(paths.fundingActivationCompletionPath), "activation completion");
     validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
+    const authorization = object(authorizationFile.value, "authorization");
+    const registryDigest = object(object(authorization.artifacts, "authorization artifacts").activation_rpc_operator_registry, "authorization RPC registry").sha256;
+    const rpcRegistry = loadProtectedActivationRpcOperatorRegistry(
+      paths.activationRpcOperatorRegistryPath, paths.activationRpcOperatorRegistryTrustedRoot, String(registryDigest),
+    );
     return activatedIndexerSnapshotFromArtifacts(problems, {
       manifest,
       manifestBytes,
       checkpoint,
       checkpointBytes,
-      authorization: object(authorizationFile.value, "authorization"),
+      authorization,
       authorizationBytes: authorizationFile.bytes,
       productionPolicy: productionTrust.policy,
       trustRegistry: productionTrust.trustRegistry,
@@ -866,6 +1015,7 @@ export function loadActivatedIndexerSnapshot(
       activationSignatures: object(readBoundedRegularJson(paths.fundingActivationSignaturesPath), "activation signatures"),
       plan: object(readBoundedRegularJson(paths.fundingActivationPlanPath), "activation plan"),
       completion,
+      rpcRegistry,
       checkpointMaxAgeSeconds: paths.checkpointMaxAgeSeconds,
     });
   } catch {
@@ -877,7 +1027,7 @@ export function loadIndexerProvenance(problem: Problem, paths = configuredIndexe
   if (!paths) return localOnly(problem);
   try {
     const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
-    if (paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationSignaturesPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath) {
+    if (paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationSignaturesPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath && paths.activationRpcOperatorRegistryPath && paths.activationRpcOperatorRegistryTrustedRoot) {
       const authorizationFile = readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath);
       const authorization = object(authorizationFile.value, "authorization");
       const productionTrust = readProductionTrustPolicy();
@@ -886,7 +1036,11 @@ export function loadIndexerProvenance(problem: Problem, paths = configuredIndexe
       const plan = object(readBoundedRegularJson(paths.fundingActivationPlanPath), "activation plan");
       const completion = object(readBoundedRegularJson(paths.fundingActivationCompletionPath), "activation completion");
       validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
-      return activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization, authorizationFile.bytes, productionTrust.policy, productionTrust.trustRegistry, checkpointAttestation, activationSignatures, plan, completion, paths.checkpointMaxAgeSeconds);
+      const registryDigest = object(object(authorization.artifacts, "authorization artifacts").activation_rpc_operator_registry, "authorization RPC registry").sha256;
+      const rpcRegistry = loadProtectedActivationRpcOperatorRegistry(
+        paths.activationRpcOperatorRegistryPath, paths.activationRpcOperatorRegistryTrustedRoot, String(registryDigest),
+      );
+      return activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization, authorizationFile.bytes, productionTrust.policy, productionTrust.trustRegistry, checkpointAttestation, activationSignatures, plan, completion, rpcRegistry, paths.checkpointMaxAgeSeconds);
     }
     return provenanceFromArtifacts(problem, manifest, checkpoint);
   } catch { return localOnly(problem); }
@@ -900,7 +1054,7 @@ export function loadIndexerProvenanceSnapshot(
   if (!paths) return new Map(problems.map((problem) => [problem.slug, localOnly(problem)]));
   try {
     const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
-    const hasFunding = paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationSignaturesPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath;
+    const hasFunding = paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationSignaturesPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath && paths.activationRpcOperatorRegistryPath && paths.activationRpcOperatorRegistryTrustedRoot;
     const authorizationFile = hasFunding ? readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath!) : null;
     const authorization = authorizationFile ? object(authorizationFile.value, "authorization") : null;
     const productionTrust = hasFunding ? readProductionTrustPolicy() : null;
@@ -908,9 +1062,13 @@ export function loadIndexerProvenanceSnapshot(
     const activationSignatures = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationSignaturesPath!), "activation signatures") : null;
     const plan = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationPlanPath!), "activation plan") : null;
     const completion = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationCompletionPath!), "activation completion") : null;
+    const registryDigest = authorization ? object(object(authorization.artifacts, "authorization artifacts").activation_rpc_operator_registry, "authorization RPC registry").sha256 : null;
+    const rpcRegistry = hasFunding ? loadProtectedActivationRpcOperatorRegistry(
+      paths.activationRpcOperatorRegistryPath!, paths.activationRpcOperatorRegistryTrustedRoot!, String(registryDigest),
+    ) : null;
     if (completion) validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
     const entries = problems.map((problem) => [problem.slug, hasFunding
-      ? activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization!, authorizationFile!.bytes, productionTrust!.policy, productionTrust!.trustRegistry, checkpointAttestation!, activationSignatures!, plan!, completion!, paths.checkpointMaxAgeSeconds)
+      ? activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization!, authorizationFile!.bytes, productionTrust!.policy, productionTrust!.trustRegistry, checkpointAttestation!, activationSignatures!, plan!, completion!, rpcRegistry!, paths.checkpointMaxAgeSeconds)
       : provenanceFromArtifacts(problem, manifest, checkpoint)] as const);
     return new Map(entries);
   } catch {

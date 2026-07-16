@@ -25,6 +25,14 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 ROOT = Path(__file__).resolve().parents[1]
+MAX_DNS_HOST = f'{"a" * 63}.{"b" * 63}.{"c" * 63}.{"d" * 61}'
+OVERLONG_DNS_HOST = f'{"a" * 63}.{"b" * 63}.{"c" * 63}.{"d" * 62}'
+WHATWG_IPV4_ALIASES = [
+    "127.0.0.1", "127.1", "127.0.1", "2130706433", "0x7f000001", "017700000001",
+    "0x7f.0.0.1", "127.0x0.0.1", "0177.0.0.1", "127.0.65535", "127.16777215",
+    "1.2.65535", "0xffffffff", "0300.0250.0001.0001",
+]
+SAFE_DNS_HOSTS = ["127.0.0.1.example", "0x7f.rpc.example", "127.0x0.0.1.example", "123.example"]
 
 
 def canonical_topology_manifest() -> dict:
@@ -1011,6 +1019,22 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             "operators": ["0x" + "a" * 40, "0x" + "b" * 40],
         },
     )
+    rpc_profiles = [
+        {"operatorId": "operator-primary", "endpointOrigin": "https://primary.example"},
+        {"operatorId": "operator-secondary", "endpointOrigin": "https://secondary.example"},
+    ]
+    rpc_registry = {
+        "schema": "p42-activation-rpc-operator-registry/v1",
+        "profiles": [
+            {**profile, "endpointProfileDigest": sha256_bytes(canonical_json(profile).encode("utf-8"))}
+            for profile in rpc_profiles
+        ],
+    }
+    artifacts["activation_rpc_operator_registry"] = fixture.artifact(
+        "activation-rpc-operator-registry",
+        content=(canonical_json(rpc_registry) + "\n").encode("ascii"),
+    )
+    (tmp_path / artifacts["activation_rpc_operator_registry"]["local_path"]).chmod(0o444)
     monkeypatch.setattr(launch_module, "_validate_problem_reviews", lambda *args, **kwargs: None)
     monkeypatch.setattr(launch_module, "_validate_explorer_with_node", lambda **kwargs: None)
     unsigned = {
@@ -1043,3 +1067,95 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             chain_reader=None,
             now_utc=datetime(2026, 7, 8, 18, tzinfo=timezone.utc),
         )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [
+        "https://rpc.example/", "https://RPC.example", "https://rpc.example:443",
+        "https://rpc.example:0", "https://rpc.example:65536", "https://rpc.example:99999",
+        "https://rpc.example:01", "https://127.0.0.1", "https://127.1",
+        *[f"https://{host}" for host in WHATWG_IPV4_ALIASES],
+        "https://%72pc.example", "https://user@rpc.example", "https://rpc.example?x=1",
+        "https://rpc.example#x",
+        f"https://{OVERLONG_DNS_HOST}", f'https://{"a" * 64}.example',
+        f'https://{".".join(["a" * 63] * 5)}',
+    ],
+)
+def test_activation_rpc_origin_rejects_noncanonical_aliases(origin: str) -> None:
+    with pytest.raises(LaunchAuthorizationError):
+        launch_module._canonical_activation_rpc_origin(origin)
+
+
+@pytest.mark.parametrize(
+    "origin", ["https://rpc.example", "https://rpc.example:1", "https://rpc.example:65535", f"https://{MAX_DNS_HOST}:65535", *[f"https://{host}" for host in SAFE_DNS_HOSTS]]
+)
+def test_activation_rpc_origin_accepts_exact_canonical_forms(origin: str) -> None:
+    assert launch_module._canonical_activation_rpc_origin(origin) == origin
+
+
+def test_activation_rpc_registry_schema_matches_runtime_hostname_boundaries() -> None:
+    schema = json.loads((ROOT / "schemas/activation-rpc-operator-registry.schema.json").read_text())
+    endpoint_schema = schema["properties"]["profiles"]["items"]["properties"]["endpointOrigin"]
+    validator = jsonschema.Draft202012Validator(endpoint_schema)
+    accepted = ["https://rpc.example", "https://rpc.example:1", f"https://{MAX_DNS_HOST}:65535", *[f"https://{host}" for host in SAFE_DNS_HOSTS]]
+    rejected = [
+        "https://127.0.0.1", "https://127.1", "https://0177.0.0.1",
+        f"https://{OVERLONG_DNS_HOST}", f'https://{"a" * 64}.example',
+        f'https://{".".join(["a" * 63] * 5)}', "https://rpc.example:0",
+        "https://rpc.example:443", "https://rpc.example:65536", "https://rpc.example:99999",
+        *[f"https://{host}" for host in WHATWG_IPV4_ALIASES],
+    ]
+    for origin in accepted:
+        assert validator.is_valid(origin)
+        assert launch_module._canonical_activation_rpc_origin(origin) == origin
+    for origin in rejected:
+        assert not validator.is_valid(origin)
+        with pytest.raises(LaunchAuthorizationError):
+            launch_module._canonical_activation_rpc_origin(origin)
+
+
+def test_python_protected_rpc_registry_requires_immutable_canonical_bytes(tmp_path: Path) -> None:
+    profile = lambda operator_id, endpoint: {
+        "operatorId": operator_id,
+        "endpointOrigin": endpoint,
+        "endpointProfileDigest": sha256_bytes(canonical_json({"operatorId": operator_id, "endpointOrigin": endpoint}).encode("ascii")),
+    }
+    registry = {"schema": "p42-activation-rpc-operator-registry/v1", "profiles": [
+        profile("operator-primary", "https://primary.example"),
+        profile("operator-secondary", "https://secondary.example"),
+    ]}
+    canonical = (canonical_json(registry) + "\n").encode("ascii")
+
+    def attempt(name: str, payload: bytes = canonical, mode: int = 0o400, parent_mode: int = 0o700) -> dict:
+        root = tmp_path / name
+        evidence = root / "evidence"
+        evidence.mkdir(parents=True, mode=0o700)
+        root.chmod(0o700)
+        evidence.chmod(parent_mode)
+        path = evidence / "registry.json"
+        path.write_bytes(payload)
+        path.chmod(mode)
+        reference = {
+            "uri": "repo://evidence/registry.json", "local_path": "evidence/registry.json",
+            "sha256": sha256_bytes(payload), "created_at_utc": "2026-07-08T15:00:00Z",
+        }
+        context = launch_module.AttestationValidationContext(
+            schema_version="p42-production-launch-authorization/v1", trust_registry={},
+            artifact_root=root, chain_reader=None,
+        )
+        return launch_module._read_protected_activation_rpc_registry(reference, "registry", context)
+
+    assert attempt("mode-0400", mode=0o400) == registry
+    assert attempt("mode-0444", mode=0o444) == registry
+    with pytest.raises(LaunchAuthorizationError, match="unsafe"):
+        attempt("mode-0600", mode=0o600)
+    with pytest.raises(LaunchAuthorizationError, match="ancestor"):
+        attempt("writable-parent", parent_mode=0o720)
+    for index, payload in enumerate([
+        (json.dumps(registry, indent=2) + "\n").encode("ascii"),
+        (json.dumps(registry, separators=(",", ":")) + "\n").encode("ascii"),
+        canonical.removesuffix(b"\n"), canonical + b"\n", canonical.removesuffix(b"\n") + b" \n",
+    ]):
+        with pytest.raises(LaunchAuthorizationError, match="canonical"):
+            attempt(f"noncanonical-{index}", payload=payload)

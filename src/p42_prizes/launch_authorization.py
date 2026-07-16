@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
+import stat
 import subprocess
 import tempfile
 from typing import Any, Callable, Mapping
@@ -135,7 +137,7 @@ def normalize_launch_authorization(
         raise LaunchAuthorizationError("release_binding network does not match authorization")
 
     artifacts = authorization.get("artifacts")
-    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "production_release_slate", "production_board_bindings", "release_capsule", "deployment_manifest", "reconciliation_report", "explorer_dossier", "explorer_operator_policy"}
+    expected_artifacts = {*GATE_NORMALIZERS, "production_release_verification", "production_release_slate", "production_board_bindings", "release_capsule", "deployment_manifest", "reconciliation_report", "explorer_dossier", "explorer_operator_policy", "activation_rpc_operator_registry"}
     if not isinstance(artifacts, Mapping) or set(artifacts) != expected_artifacts:
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
     normalized_gate_hashes: dict[str, str] = {}
@@ -190,6 +192,12 @@ def normalize_launch_authorization(
     capsule = _read_json_artifact(artifacts["release_capsule"], "authorization.artifacts.release_capsule", context)
     dossier = _read_json_artifact(artifacts["explorer_dossier"], "authorization.artifacts.explorer_dossier", context)
     operator_policy = _read_json_artifact(artifacts["explorer_operator_policy"], "authorization.artifacts.explorer_operator_policy", context)
+    rpc_operator_registry = _read_protected_activation_rpc_registry(
+        artifacts["activation_rpc_operator_registry"],
+        "authorization.artifacts.activation_rpc_operator_registry",
+        context,
+    )
+    _validate_activation_rpc_operator_registry(rpc_operator_registry)
     _validate_explorer_dossier(dossier, manifest, expires)
     _validate_explorer_with_node(
         artifact_root=Path(artifact_root),
@@ -271,6 +279,124 @@ def _read_json_artifact(value: Any, prefix: str, context: AttestationValidationC
     if not isinstance(parsed, dict):
         raise LaunchAuthorizationError(f"{prefix} must contain a JSON object")
     return parsed
+
+
+def _read_protected_activation_rpc_registry(
+    value: Any, prefix: str, context: AttestationValidationContext
+) -> dict[str, Any]:
+    ref = _validate_artifact_reference(value, prefix, LaunchAuthorizationError, context)
+    if context.artifact_root is None:
+        raise LaunchAuthorizationError(f"{prefix} requires an artifact root")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    odirectory = getattr(os, "O_DIRECTORY", 0)
+    if not nofollow or not odirectory:
+        raise LaunchAuthorizationError(f"{prefix} requires O_NOFOLLOW and O_DIRECTORY")
+    root = Path(context.artifact_root).absolute()
+    relative = Path(ref["local_path"])
+    if relative.is_absolute() or not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise LaunchAuthorizationError(f"{prefix}.local_path is outside its trusted root")
+    held: list[int] = []
+    descriptor = -1
+    try:
+        held.append(os.open(root, os.O_RDONLY | odirectory | nofollow))
+        for component in relative.parts[:-1]:
+            held.append(os.open(component, os.O_RDONLY | odirectory | nofollow, dir_fd=held[-1]))
+        for directory in held:
+            metadata = os.fstat(directory)
+            if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+                raise LaunchAuthorizationError(f"{prefix} trusted path ancestor is unsafe")
+        descriptor = os.open(relative.parts[-1], os.O_RDONLY | nofollow, dir_fd=held[-1])
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or before.st_mode & 0o222
+            or before.st_size > 1024 * 1024
+        ):
+            raise LaunchAuthorizationError(f"{prefix} protected file is unsafe")
+        chunks: list[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                raise LaunchAuthorizationError(f"{prefix} protected file was truncated")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        if os.read(descriptor, 1):
+            raise LaunchAuthorizationError(f"{prefix} protected file grew while reading")
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        def identity(item: os.stat_result) -> tuple[int, ...]:
+            return (
+                item.st_dev, item.st_ino, item.st_mode, item.st_uid, item.st_nlink,
+                item.st_size, item.st_mtime_ns, item.st_ctime_ns,
+            )
+        if identity(before) != identity(after):
+            raise LaunchAuthorizationError(f"{prefix} protected file changed while reading")
+    except OSError as exc:
+        raise LaunchAuthorizationError(f"{prefix} protected file could not be read") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        for directory in reversed(held):
+            os.close(directory)
+    if sha256_bytes(payload) != ref["sha256"]:
+        raise LaunchAuthorizationError(f"{prefix}.sha256 does not match protected bytes")
+    try:
+        parsed = loads_strict_json(payload)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise LaunchAuthorizationError(f"{prefix} must contain strict JSON") from exc
+    if not isinstance(parsed, dict) or payload != (canonical_json(parsed) + "\n").encode("ascii"):
+        raise LaunchAuthorizationError(f"{prefix} must be canonical sorted JSON with one trailing LF")
+    context.resolved_artifacts[(ref["local_path"], ref["sha256"])] = payload
+    return parsed
+
+
+def _validate_activation_rpc_operator_registry(registry: Mapping[str, Any]) -> None:
+    try:
+        schema = json.loads((_SCHEMA_DIR / "activation-rpc-operator-registry.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator(schema).validate(registry)
+    except (OSError, ValueError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"activation RPC operator registry failed schema validation: {exc}") from exc
+    profiles = registry.get("profiles")
+    operator_ids: set[str] = set()
+    origins: set[str] = set()
+    for index, profile in enumerate(profiles):
+        operator_id = profile["operatorId"]
+        origin = _canonical_activation_rpc_origin(profile["endpointOrigin"])
+        expected = sha256_bytes(canonical_json({"operatorId": operator_id, "endpointOrigin": origin}).encode("utf-8"))
+        if profile["endpointProfileDigest"] != expected:
+            raise LaunchAuthorizationError(f"activation RPC operator profile {index} digest is invalid")
+        if operator_id in operator_ids or origin in origins:
+            raise LaunchAuthorizationError("activation RPC operator profiles require unique stable IDs and origins")
+        operator_ids.add(operator_id)
+        origins.add(origin)
+
+
+def _canonical_activation_rpc_origin(value: Any) -> str:
+    if not isinstance(value, str) or not value or value != value.strip() or "%" in value:
+        raise LaunchAuthorizationError("activation RPC origin must be exact ASCII without percent escapes")
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise LaunchAuthorizationError("activation RPC origin must be exact ASCII") from exc
+    match = re.fullmatch(r"https://([^/:?#]+)(?::([1-9][0-9]{0,4}))?", value)
+    if match is None:
+        raise LaunchAuthorizationError("activation RPC origin is not canonical HTTPS origin syntax")
+    hostname, port_text = match.groups()
+    labels = hostname.split(".")
+    label_pattern = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+    numeric_alias = re.fullmatch(r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+)){0,3}", hostname)
+    if len(hostname) > 253 or len(labels) < 2 or any(label_pattern.fullmatch(label) is None for label in labels) or numeric_alias:
+        raise LaunchAuthorizationError("activation RPC hostname is not canonical lowercase DNS")
+    port = 443 if port_text is None else int(port_text)
+    if port < 1 or port > 65535 or (port_text is not None and port == 443):
+        raise LaunchAuthorizationError("activation RPC port is invalid, redundant, or out of range")
+    rendered = f"https://{hostname}" + ("" if port == 443 else f":{port}")
+    if value != rendered:
+        raise LaunchAuthorizationError("activation RPC origin is not its canonical rendering")
+    return rendered
 
 
 def _validate_release_report(report: Mapping[str, Any], release_binding: Mapping[str, Any]) -> None:

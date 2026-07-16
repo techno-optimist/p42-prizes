@@ -1,4 +1,4 @@
-import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -8,14 +8,27 @@ import { AbiCoder, Interface, Signature, TypedDataEncoder, Wallet, getAddress, k
 import {
   activatedIndexerSnapshotFromArtifacts,
   activatedProvenanceFromArtifacts,
+  canonicalActivationRpcOrigin,
   computePortalDeploymentConfigHash,
   configuredIndexerArtifactPaths,
+  loadProtectedActivationRpcOperatorRegistry,
   loadIndexerProvenance,
 } from "@/lib/indexer-provenance";
 
 const root = resolve(process.cwd(), "..");
 const boardKeys = ["pool", "ledger", "submissions", "challenges"] as const;
 const created: string[] = [];
+const MAX_DNS_HOST = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(61)}`;
+const OVERLONG_DNS_HOST = `${"a".repeat(63)}.${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(62)}`;
+const WHATWG_IPV4_ALIASES = [
+  ["127.0.0.1", "127.0.0.1"], ["127.1", "127.0.0.1"], ["127.0.1", "127.0.0.1"],
+  ["2130706433", "127.0.0.1"], ["0x7f000001", "127.0.0.1"], ["017700000001", "127.0.0.1"],
+  ["0x7f.0.0.1", "127.0.0.1"], ["127.0x0.0.1", "127.0.0.1"], ["0177.0.0.1", "127.0.0.1"],
+  ["127.0.65535", "127.0.255.255"], ["127.16777215", "127.255.255.255"],
+  ["1.2.65535", "1.2.255.255"], ["0xffffffff", "255.255.255.255"],
+  ["0300.0250.0001.0001", "192.168.1.1"],
+] as const;
+const SAFE_DNS_HOSTS = ["127.0.0.1.example", "0x7f.rpc.example", "127.0x0.0.1.example", "123.example"] as const;
 
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
 function hash(char: string): string { return `0x${char.repeat(64)}`; }
@@ -118,6 +131,94 @@ function expectLocalOnly(result: ReturnType<typeof loadIndexerProvenance>) {
 
 afterEach(() => { for (const path of created.splice(0)) require("node:fs").rmSync(path, { recursive: true, force: true }); });
 
+describe("activation RPC authority primitives", () => {
+  it.each([
+    "https://rpc.example/", "https://RPC.example", "https://rpc.example:443",
+    "https://rpc.example:0", "https://rpc.example:65536", "https://rpc.example:99999",
+    "https://rpc.example:01", "https://127.0.0.1", "https://127.1", "https://2130706433",
+    "https://0x7f000001", "https://0177.0.0.1", "https://%72pc.example",
+    "https://user@rpc.example", "https://rpc.example?x=1", "https://rpc.example#x",
+    `https://${OVERLONG_DNS_HOST}`, `https://${"a".repeat(64)}.example`,
+    `https://${Array(5).fill("a".repeat(63)).join(".")}`,
+  ])("rejects noncanonical origin %s", (origin) => {
+    expect(() => canonicalActivationRpcOrigin(origin)).toThrow();
+  });
+
+  it.each(["https://rpc.example", "https://rpc.example:1", "https://rpc.example:65535", `https://${MAX_DNS_HOST}:65535`])(
+    "accepts canonical origin %s", (origin) => expect(canonicalActivationRpcOrigin(origin)).toBe(origin),
+  );
+
+  it("rejects the WHATWG IPv4 numeric-alias corpus while preserving numeric-looking DNS names", () => {
+    for (const [rawHost, normalizedHost] of WHATWG_IPV4_ALIASES) {
+      expect(new URL(`https://${rawHost}`).hostname).toBe(normalizedHost);
+      expect(() => canonicalActivationRpcOrigin(`https://${rawHost}`)).toThrow();
+    }
+    for (const host of SAFE_DNS_HOSTS) {
+      expect(new URL(`https://${host}`).hostname).toBe(host);
+      expect(canonicalActivationRpcOrigin(`https://${host}`)).toBe(`https://${host}`);
+    }
+  });
+
+  it("keeps registry schema hostname and port boundaries aligned with runtime", () => {
+    const schema = JSON.parse(require("node:fs").readFileSync(
+      join(root, "schemas", "activation-rpc-operator-registry.schema.json"), "utf8",
+    ));
+    const endpoint = schema.properties.profiles.items.properties.endpointOrigin;
+    const pattern = new RegExp(endpoint.pattern);
+    const accepts = (value: string) => value.length <= endpoint.maxLength && pattern.test(value);
+    for (const value of ["https://rpc.example", "https://rpc.example:1", `https://${MAX_DNS_HOST}:65535`, ...SAFE_DNS_HOSTS.map((host) => `https://${host}`)]) expect(accepts(value)).toBe(true);
+    for (const value of [
+      "https://127.0.0.1", "https://127.1", "https://0177.0.0.1",
+      `https://${OVERLONG_DNS_HOST}`, `https://${"a".repeat(64)}.example`,
+      `https://${Array(5).fill("a".repeat(63)).join(".")}`,
+      "https://rpc.example:0", "https://rpc.example:443", "https://rpc.example:65536",
+      ...WHATWG_IPV4_ALIASES.map(([host]) => `https://${host}`),
+    ]) expect(accepts(value)).toBe(false);
+  });
+
+  it("loads only an exact private protected registry", () => {
+    const profile = (operatorId: string, endpointOrigin: string) => ({
+      operatorId, endpointOrigin, endpointProfileDigest: canonicalDigest({ operatorId, endpointOrigin }),
+    });
+    const registry = { schema: "p42-activation-rpc-operator-registry/v1", profiles: [
+      profile("operator-primary", "https://primary.example"),
+      profile("operator-secondary", "https://secondary.example"),
+    ] };
+    const bytes = Buffer.from(`${JSON.stringify(canonical(registry))}\n`);
+    const registryDigest = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const make = (name: string, mode = 0o400, content = bytes) => {
+      const root = mkdtempSync(join(tmpdir(), `p42-web-rpc-${name}-`)); created.push(root); chmodSync(root, 0o700);
+      const path = join(root, "registry.json"); writeFileSync(path, content); chmodSync(path, mode);
+      return { root, path, digest: `sha256:${createHash("sha256").update(content).digest("hex")}` };
+    };
+    for (const mode of [0o400, 0o444]) {
+      const good = make(`good-${mode}`, mode);
+      expect(loadProtectedActivationRpcOperatorRegistry(good.path, good.root, registryDigest)).toEqual(registry);
+    }
+    const good = make("good");
+    expect(() => loadProtectedActivationRpcOperatorRegistry(join(good.root, "missing.json"), good.root, registryDigest)).toThrow();
+    const writableFile = make("writable-file", 0o600);
+    expect(() => loadProtectedActivationRpcOperatorRegistry(writableFile.path, writableFile.root, writableFile.digest)).toThrow();
+    for (const [name, content] of [
+      ["pretty", Buffer.from(`${JSON.stringify(registry, null, 2)}\n`)],
+      ["key-order", Buffer.from(`${JSON.stringify(registry)}\n`)],
+      ["no-newline", Buffer.from(JSON.stringify(canonical(registry)))],
+      ["double-newline", Buffer.from(`${JSON.stringify(canonical(registry))}\n\n`)],
+      ["trailing-space", Buffer.from(`${JSON.stringify(canonical(registry))} \n`)],
+    ] as const) {
+      const noncanonical = make(name, 0o400, content);
+      expect(() => loadProtectedActivationRpcOperatorRegistry(noncanonical.path, noncanonical.root, noncanonical.digest)).toThrow();
+    }
+    const writable = make("writable"); chmodSync(writable.root, 0o720);
+    expect(() => loadProtectedActivationRpcOperatorRegistry(writable.path, writable.root, registryDigest)).toThrow();
+    const hard = make("hard"); linkSync(hard.path, join(hard.root, "alias.json"));
+    expect(() => loadProtectedActivationRpcOperatorRegistry(hard.path, hard.root, registryDigest)).toThrow();
+    const linked = make("symlink"); const link = join(linked.root, "link.json"); symlinkSync(linked.path, link);
+    expect(() => loadProtectedActivationRpcOperatorRegistry(link, linked.root, registryDigest)).toThrow();
+    expect(() => loadProtectedActivationRpcOperatorRegistry(good.path, good.root, digest("0"))).toThrow();
+  });
+});
+
 describe("indexer provenance v2", () => {
   it("reproduces the protocol deployment-config hash", () => {
     const manifest = JSON.parse(require("node:fs").readFileSync(
@@ -140,7 +241,7 @@ describe("indexer provenance v2", () => {
   });
 
   it("keeps Render-bundled schemas byte-equivalent to canonical protocol schemas", () => {
-    for (const name of ["deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json", "indexer-checkpoint-v3.schema.json", "indexer-checkpoint-v4.schema.json", "funding-activation-completion.schema.json"]) {
+    for (const name of ["activation-rpc-operator-registry.schema.json", "deployment-manifest-v2.schema.json", "indexer-checkpoint-v2.schema.json", "indexer-checkpoint-v3.schema.json", "indexer-checkpoint-v4.schema.json", "funding-activation-completion.schema.json"]) {
       const canonical = JSON.parse(require("node:fs").readFileSync(join(root, "schemas", name), "utf8"));
       const bundled = JSON.parse(require("node:fs").readFileSync(join(process.cwd(), "src", "schemas", name), "utf8"));
       expect(bundled).toEqual(canonical);
@@ -193,6 +294,7 @@ describe("indexer provenance v2", () => {
       P42_DEPLOYMENT_MANIFEST_PATH: "/m", P42_INDEXER_CHECKPOINT_PATH: "/c",
       P42_LAUNCH_AUTHORIZATION_PATH: "/a", P42_INDEXER_CHECKPOINT_ATTESTATION_PATH: "/ca",
       P42_FUNDING_ACTIVATION_PLAN_PATH: "/p", P42_FUNDING_ACTIVATION_SIGNATURES_PATH: "/fs", P42_FUNDING_ACTIVATION_COMPLETION_PATH: "/fc",
+      P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH: "/r/registry.json", P42_ACTIVATION_RPC_OPERATOR_REGISTRY_TRUSTED_ROOT: "/r",
       P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS: "300",
       P42_ATTESTATION_TRUST_REGISTRY_PATH: "/caller/registry.json",
       P42_ATTESTATION_TRUST_REGISTRY_SHA256: digest("f"),
@@ -200,6 +302,7 @@ describe("indexer provenance v2", () => {
       deploymentManifestPath: "/m", indexerCheckpointPath: "/c",
       launchAuthorizationPath: "/a", indexerCheckpointAttestationPath: "/ca",
       fundingActivationPlanPath: "/p", fundingActivationSignaturesPath: "/fs", fundingActivationCompletionPath: "/fc",
+      activationRpcOperatorRegistryPath: "/r/registry.json", activationRpcOperatorRegistryTrustedRoot: "/r",
       checkpointMaxAgeSeconds: 300,
     });
   });
@@ -245,10 +348,26 @@ describe("indexer provenance v2", () => {
       const raw = pair.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex");
       return { role, index, privateKey: pair.privateKey, publicKey: `ed25519:${raw}` };
     });
+    const rpcProfiles = [
+      { operatorId: "operator-primary", endpointOrigin: "https://primary.example" },
+      { operatorId: "operator-secondary", endpointOrigin: "https://secondary.example" },
+    ].map((profile) => ({ ...profile, endpointProfileDigest: canonicalDigest(profile) }));
+    const rpcRegistry = { schema: "p42-activation-rpc-operator-registry/v1", profiles: rpcProfiles };
+    const rpcRegistryDigest = bytesDigest(rpcRegistry);
+    const rpcAuthority = {
+      schema: "p42-activation-rpc-authority/v1", registryDigest: rpcRegistryDigest,
+      primary: rpcProfiles[0],
+      secondary: rpcProfiles[1],
+    };
+    const observedRpcAuthority = {
+      ...rpcAuthority,
+      primary: { ...rpcAuthority.primary, observedRawChainId: "0x14a34" },
+      secondary: { ...rpcAuthority.secondary, observedRawChainId: "0x14a34" },
+    };
     const unsignedAuthorization = {
       schema_version: "p42-production-launch-authorization/v1", status: "authorized", issued_at_utc: issuedAt,
       expires_at_utc: new Date(expires * 1000).toISOString(), release_binding: { network: "base-sepolia", chain_id: 84532, git_commit: base.manifest.deploymentCommit },
-      artifacts: { deployment_manifest: { sha256: bytesDigest(base.manifest) } },
+      artifacts: { deployment_manifest: { sha256: bytesDigest(base.manifest) }, activation_rpc_operator_registry: { sha256: rpcRegistryDigest } },
       authorizers: signers.map(({ role, index, publicKey }) => ({ role, public_key: publicKey, name: `Signer ${index}`, organization: "P42 Test", professional_email: `signer${index}@example.org` })),
     };
     const authorizationDigest = canonicalDigest(unsignedAuthorization); const digestHex = `0x${authorizationDigest.slice(7)}`;
@@ -334,6 +453,7 @@ describe("indexer provenance v2", () => {
       capsuleDigest: base.manifest.releaseEvidence.capsuleDigest, slateDigest: base.manifest.releaseEvidence.slateDigest,
       releaseIndexDigest: base.manifest.releaseEvidence.releaseIndexDigest, authorizationDigest, authorizationExpiresAt: expires,
       authorizationBytesDigest: `sha256:${createHash("sha256").update(authorizationBytes).digest("hex")}`,
+      rpcAuthority,
       activationSignaturesDigest: canonicalDigest(activationSignatures), timelock: getAddress(base.manifest.contracts.timelock.address),
       timelockRuntimeCodeHash: base.manifest.contracts.timelock.runtimeCodeHash, treasury: getAddress(base.manifest.roles.treasury),
       governanceSigners: base.manifest.governance.signers.map(getAddress), governanceThreshold: Number(base.manifest.governance.threshold),
@@ -346,6 +466,7 @@ describe("indexer provenance v2", () => {
       planDigest: plan.planDigest,
       finalizedBlockNumber: base.checkpoint.range.toBlock,
       finalizedBlockHash: base.checkpoint.range.toBlockHash,
+      rpcAuthority: observedRpcAuthority,
       operations: activationOperations.slice(10).map((operation) => ({
         sequence: operation.sequence, label: operation.label, problemId: String(operation.problemId),
         operationId: operation.operationId, state: 2,
@@ -356,6 +477,7 @@ describe("indexer provenance v2", () => {
       manifestBytesDigest: plan.manifestBytesDigest, deploymentCommit: base.manifest.deploymentCommit,
       deploymentConfigHash: base.manifest.deploymentConfigHash, releaseBindingDigest: digest("1"),
       authorizationDigest, authorizationBytesDigest: planBody.authorizationBytesDigest, authorizationExpiresAt: expires,
+      rpcAuthority: observedRpcAuthority,
       finalizedBlockNumber: base.checkpoint.range.toBlock - 5,
       finalizedBlockHash: hash("7"),
       finalizedBlockTimestamp: base.checkpoint.range.toBlockTimestamp - 60,
@@ -384,7 +506,7 @@ describe("indexer provenance v2", () => {
     const checkpointAttestation = { schema: "p42-indexer-checkpoint-attestation/v1", signerRole: "indexer-checkpoint-authority", publicKey: checkpointPublicKey, checkpointDigest, signedAtUtc: checkpointSignedAt, signature: `ed25519:${sign(null, checkpointMessage, checkpointSigner.privateKey).toString("hex")}` };
     const activatedArtifacts = {
       manifest: base.manifest, manifestBytes, checkpoint: base.checkpoint, checkpointBytes,
-      authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion,
+      authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion, rpcRegistry,
     };
     const withSignedCheckpoint = (mutate: (value: any) => void) => {
       const checkpoint = clone(base.checkpoint); mutate(checkpoint);
@@ -400,6 +522,15 @@ describe("indexer provenance v2", () => {
     };
     const activatedSnapshot = activatedIndexerSnapshotFromArtifacts(launchProblems, activatedArtifacts);
     expect(activatedSnapshot.provenance).toHaveLength(10);
+    const substitutedRegistry = clone(rpcRegistry);
+    substitutedRegistry.profiles[0].endpointOrigin = "https://substitute.example";
+    substitutedRegistry.profiles[0].endpointProfileDigest = canonicalDigest({
+      operatorId: substitutedRegistry.profiles[0].operatorId,
+      endpointOrigin: substitutedRegistry.profiles[0].endpointOrigin,
+    });
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts, rpcRegistry: substitutedRegistry,
+    })).toThrow();
     expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, withSignedCheckpoint((value) => {
       value.schema = "p42-prizes/indexer-checkpoint/v3"; delete value.activationEvidence;
     }))).toThrow();
@@ -542,11 +673,11 @@ describe("indexer provenance v2", () => {
       launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes,
       authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation,
       compact.signatures, compact.substitutedPlan, compact.substitutedCompletion,
-      300, undefined, compact.substitutedPlan,
+      rpcRegistry, 300, undefined, compact.substitutedPlan,
     )).toThrow();
-    const result = activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion);
+    const result = activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion, rpcRegistry);
     expect(result).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[0].pool, fundingAuthorizationDigest: authorizationDigest, activationFinalizedBlock: 95 });
-    const subsetSums = activatedProvenanceFromArtifacts(launchProblems[6], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion);
+    const subsetSums = activatedProvenanceFromArtifacts(launchProblems[6], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion, rpcRegistry);
     expect(subsetSums).toMatchObject({ settlementState: "testnet-indexed", poolAddress: manifestProblems[6].pool, problemRegistryId: "7" });
     for (const mutate of [
       (policy: any) => { policy.deployment_manifest.sha256 = digest("8"); },
@@ -556,9 +687,9 @@ describe("indexer provenance v2", () => {
       (policy: any) => { policy.trust_registry.path = "/tmp/caller-registry.json"; },
     ]) {
       const changedPolicy = clone(productionPolicy); mutate(changedPolicy);
-      expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, changedPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion)).toThrow();
+      expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, changedPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion, rpcRegistry)).toThrow();
     }
     base.checkpoint.boards[0].onchain.fundingAuthorizationDigest = hash("9");
-    expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion)).toThrow();
+    expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion, rpcRegistry)).toThrow();
   });
 });

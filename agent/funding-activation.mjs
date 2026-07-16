@@ -11,6 +11,12 @@ import { assertCanonicalManifestTopology } from "./canonical-topology.mjs";
 import { manifestProblemContracts } from "./indexer.mjs";
 import { readStrictJsonFileSync, parseStrictJsonBytes } from "./strict-json.mjs";
 import { validateSolverManifest } from "./solver-manifest.mjs";
+import {
+  assertActivationRpcAuthority,
+  assertActivationRpcAuthorityRegistryMembership,
+  bindActivationRpcAuthority,
+  loadActivationRpcOperatorRegistry,
+} from "./activation-rpc-endpoints.mjs";
 
 const LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 256, trailingNewline: "allow" });
 const AUTH_SCHEMA = "p42-production-launch-authorization/v1";
@@ -59,6 +65,7 @@ export function assertFundingActivationPlanTopology(plan) {
       || plan.boardCount !== 10 || !/^sha256:[0-9a-f]{64}$/.test(plan.authorizationDigest ?? "")) {
     throw new Error("funding activation plan must contain the exact ordered 30-operation topology");
   }
+  assertActivationRpcAuthority(plan.rpcAuthority);
   const operations = plan.operations;
   const expectedAuthorizationLabels = operations.slice(0, 10).map((_, index) => `board.${operations[index].problemId}.authorizeFunding`);
   const expectedArmLabels = operations.slice(0, 10).map((_, index) => `board.${operations[index].problemId}.armFunding`);
@@ -358,6 +365,8 @@ export function buildFundingActivationPlan({
   manifestBytesDigest,
   validatedAuthorization,
   activationSignatures,
+  rpcRegistry,
+  rpcAuthority,
   manifestValidator = validateSolverManifest,
   validationContext = null,
 }) {
@@ -377,6 +386,10 @@ export function buildFundingActivationPlan({
     throw new Error("funding activation requires validator-produced authorization bytes");
   }
   assertReleaseBinding(authorization, manifest, manifestBytesDigest);
+  const checkedRpcAuthority = assertActivationRpcAuthorityRegistryMembership(rpcRegistry, rpcAuthority);
+  if (authorization.artifacts?.activation_rpc_operator_registry?.sha256 !== checkedRpcAuthority.registryDigest) {
+    throw new Error("activation RPC registry digest is not pinned by the validated authorization");
+  }
   const governanceNumbers = [
     Number(manifest.governance.threshold),
     Number(manifest.governance.delaySeconds),
@@ -492,6 +505,7 @@ export function buildFundingActivationPlan({
     authorizationDigest: authorization.authorization_digest,
     authorizationExpiresAt: expiresAt,
     authorizationBytesDigest: validatedAuthorization.validatedBytesDigest,
+    rpcAuthority: checkedRpcAuthority,
     activationSignaturesDigest: sha256(Buffer.from(canonical(activationSignatures))),
     timelock: ethers.getAddress(manifest.contracts.timelock.address),
     timelockRuntimeCodeHash: manifest.contracts.timelock.runtimeCodeHash,
@@ -584,7 +598,7 @@ export function writePrivateActivationPlan(path, plan) {
 }
 
 export function fundingActivationPlanMain() {
-  const required = ["manifest", "authorization", "activation-signatures", "trust-registry", "artifact-root", "chain-rpc-url", "python", "repo-root", "output"];
+  const required = ["manifest", "authorization", "activation-signatures", "trust-registry", "artifact-root", "chain-rpc-url", "rpc-operator-registry", "rpc-registry-trusted-root", "primary-rpc", "secondary-rpc", "primary-rpc-operator-id", "secondary-rpc-operator-id", "python", "repo-root", "output"];
   const values = Object.fromEntries(required.map((name) => [name, arg(name)]));
   const missing = required.filter((name) => values[name] === null);
   if (missing.length > 0) throw new Error(`missing required activation arguments: ${missing.join(", ")}`);
@@ -597,11 +611,21 @@ export function fundingActivationPlanMain() {
     artifactRoot: values["artifact-root"],
     chainRpcUrl: values["chain-rpc-url"],
   });
+  const registryDigest = validatedAuthorization.value.artifacts?.activation_rpc_operator_registry?.sha256;
+  const rpcRegistry = loadActivationRpcOperatorRegistry(
+    values["rpc-operator-registry"], registryDigest, values["rpc-registry-trusted-root"],
+  );
+  const rpcAuthority = bindActivationRpcAuthority(
+    rpcRegistry, values["primary-rpc"], values["secondary-rpc"],
+    values["primary-rpc-operator-id"], values["secondary-rpc-operator-id"],
+  );
   const plan = buildFundingActivationPlan({
     manifest: manifest.value,
     manifestBytesDigest: manifest.bytesDigest,
     validatedAuthorization,
     activationSignatures: loadFundingActivationSignatures(values["activation-signatures"]),
+    rpcRegistry,
+    rpcAuthority,
   });
   writePrivateActivationPlan(values.output, plan);
   process.stdout.write(`${plan.planDigest}\n`);

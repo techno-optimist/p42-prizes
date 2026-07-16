@@ -7,10 +7,12 @@ const agentRoot = resolve(here, "..");
 const repositorySchemas = resolve(agentRoot, "../schemas");
 const packageSchemas = resolve(agentRoot, "schemas");
 const names = [
+  "activation-rpc-operator-registry.schema.json",
   "challenge-provisioning.schema.json",
   "deployment-manifest.schema.json",
   "deployment-manifest-v2.schema.json",
   "funding-activation-signatures-v2.schema.json",
+  "funding-activation-completion.schema.json",
   "indexer-checkpoint-v2.schema.json",
   "indexer-checkpoint-v3.schema.json",
   "indexer-checkpoint-v4.schema.json",

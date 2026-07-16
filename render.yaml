@@ -21,6 +21,15 @@ services:
         sync: false
       - key: P42_PORTAL_DATABASE_REQUIRED
         value: "1"
+      # Funding publication remains disabled until the complete activation
+      # artifact set is mounted. These two values identify the protected RPC
+      # registry and its independently configured trusted root. Provision the
+      # mounted file owner-owned, nlink=1, mode 0400/0444, as minified sorted
+      # canonical JSON with exactly one trailing LF; writable files fail closed.
+      - key: P42_ACTIVATION_RPC_OPERATOR_REGISTRY_PATH
+        sync: false
+      - key: P42_ACTIVATION_RPC_OPERATOR_REGISTRY_TRUSTED_ROOT
+        sync: false
       # Production code fails closed automatically. Only a non-production local
       # process can opt out, with P42_ALLOW_UNAUTHENTICATED_MUTATIONS=1.
       # Strict JSON array of {hash, scopes, optional expiresAt} records. Hashes

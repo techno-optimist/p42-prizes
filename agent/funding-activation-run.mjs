@@ -22,8 +22,9 @@ import {
   signAndBroadcastActivationAction,
 } from "./funding-activation-executor.mjs";
 import {
-  activationRpcFetchRequest,
-  validateActivationRpcEndpointPair,
+  bindActivationRpcAuthority,
+  constructActivationRpcProviders,
+  loadActivationRpcOperatorRegistry,
 } from "./activation-rpc-endpoints.mjs";
 import { readStrictJsonFileSync, readStrictJsonFileSyncWithBytes, writeTrustedFileSync } from "./strict-json.mjs";
 
@@ -54,17 +55,8 @@ function optionalPrivateKey(name) {
   return raw;
 }
 
-export function buildActivationRpcProviders(primaryUrl, secondaryUrl, chainId) {
-  const endpoints = validateActivationRpcEndpointPair(primaryUrl, secondaryUrl);
-  return Object.freeze({
-    endpoints,
-    primary: new ethers.JsonRpcProvider(
-      activationRpcFetchRequest(endpoints.primary.url), chainId, { staticNetwork: true },
-    ),
-    secondary: new ethers.JsonRpcProvider(
-      activationRpcFetchRequest(endpoints.secondary.url), chainId, { staticNetwork: true },
-    ),
-  });
+export async function buildActivationRpcProviders(registry, authority, primaryUrl, secondaryUrl, chainId, transports) {
+  return constructActivationRpcProviders(registry, authority, primaryUrl, secondaryUrl, chainId, transports);
 }
 
 export async function destroyActivationRpcProviders(providers) {
@@ -100,31 +92,48 @@ export async function fundingActivationRunMain() {
   const activationSignaturesPath = required("activation-signatures");
   const trustRegistryPath = required("trust-registry");
   const artifactRoot = required("artifact-root");
+  const rpcOperatorRegistryPath = required("rpc-operator-registry");
+  const rpcRegistryTrustedRoot = required("rpc-registry-trusted-root");
   const python = required("python");
   const repoRoot = required("repo-root");
   const primaryUrl = requiredEnv("P42_PRIMARY_BASE_RPC_URL");
   const secondaryUrl = requiredEnv("P42_SECONDARY_BASE_RPC_URL");
+  const primaryOperatorId = requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID");
+  const secondaryOperatorId = requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID");
   const journalRoot = realpathSync(resolve(required("journal-root")));
   const journalPath = resolve(required("journal"));
   const completionPath = resolve(required("completion-output"));
-  const endpoints = validateActivationRpcEndpointPair(primaryUrl, secondaryUrl);
-
   const callerPlan = readStrictJsonFileSyncWithBytes(resolve(planPath), LIMITS);
   const freshPlan = async () => {
     const manifest = loadManifestExact(manifestPath);
     const validatedAuthorization = runProductionAuthorizationValidator({
       python, repoRoot, authorizationPath, trustRegistryPath, artifactRoot,
-      chainRpcUrl: endpoints.secondary.url,
+      chainRpcUrl: secondaryUrl,
     });
+    const registryDigest = validatedAuthorization.value.artifacts?.activation_rpc_operator_registry?.sha256;
+    const rpcRegistry = loadActivationRpcOperatorRegistry(
+      rpcOperatorRegistryPath, registryDigest, rpcRegistryTrustedRoot,
+    );
+    const rpcAuthority = bindActivationRpcAuthority(
+      rpcRegistry, primaryUrl, secondaryUrl, primaryOperatorId, secondaryOperatorId,
+    );
     return buildFundingActivationPlan({
       manifest: manifest.value,
       manifestBytesDigest: manifest.bytesDigest,
       validatedAuthorization,
       activationSignatures: loadFundingActivationSignatures(activationSignaturesPath),
+      rpcRegistry,
+      rpcAuthority,
     });
   };
   const plan = assertCanonicalActivationPlanArtifact(callerPlan, await freshPlan());
-  const providers = buildActivationRpcProviders(endpoints.primary.url, endpoints.secondary.url, plan.chainId);
+  const registryDigest = plan.rpcAuthority.registryDigest;
+  const rpcRegistry = loadActivationRpcOperatorRegistry(
+    rpcOperatorRegistryPath, registryDigest, rpcRegistryTrustedRoot,
+  );
+  const providers = await buildActivationRpcProviders(
+    rpcRegistry, plan.rpcAuthority, primaryUrl, secondaryUrl, plan.chainId,
+  );
   const { primary, secondary } = providers;
   try {
   if (process.env.P42_FUNDING_GOVERNANCE_PRIVATE_KEYS || process.env.P42_FUNDING_TREASURY_PRIVATE_KEY) {
@@ -151,7 +160,7 @@ export async function fundingActivationRunMain() {
     throw new Error("activation signer is outside the plan authority set");
   }
 
-  const snapshot = await collectFundingActivationSnapshot(plan, primary, secondary);
+  const snapshot = await collectFundingActivationSnapshot(plan, primary, secondary, providers.authority);
   reconcileFundingActivationConfirmations({ plan, snapshot, journalPath, journalRoot });
   const action = nextFundingActivationAction(plan, snapshot, {
     availableGovernanceSigners: signerAddress && plan.governanceSigners.map(ethers.getAddress).includes(signerAddress)

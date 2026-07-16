@@ -112,7 +112,8 @@
         "deployment_manifest",
         "reconciliation_report",
         "explorer_dossier",
-        "explorer_operator_policy"
+        "explorer_operator_policy",
+        "activation_rpc_operator_registry"
       ],
       "properties": {
         "security_audit": { "$ref": "#/$defs/artifact" },
@@ -128,7 +129,8 @@
         "deployment_manifest": { "$ref": "#/$defs/artifact" },
         "reconciliation_report": { "$ref": "#/$defs/artifact" },
         "explorer_dossier": { "$ref": "#/$defs/artifact" },
-        "explorer_operator_policy": { "$ref": "#/$defs/artifact" }
+        "explorer_operator_policy": { "$ref": "#/$defs/artifact" },
+        "activation_rpc_operator_registry": { "$ref": "#/$defs/artifact" }
       }
     },
     "problemReview": {
