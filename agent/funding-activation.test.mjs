@@ -161,7 +161,9 @@ function authorization(inputManifest, manifestBytesDigest = hash("e")) {
     authorization_digest: hash("a"),
     expires_at_utc: "2030-01-01T00:00:00Z",
     release_binding: {
-      network: "base-sepolia", chain_id: 84532, git_commit: inputManifest.deploymentCommit,
+      network: "base-sepolia", chain_id: 84532,
+      deployment_commit: inputManifest.deploymentCommit,
+      git_commit: inputManifest.deploymentCommit,
     },
     artifacts: {
       deployment_manifest: { sha256: manifestBytesDigest },
@@ -228,10 +230,26 @@ test("activation run rejects caller plan replacement and noncanonical bytes", ()
 test("activation rejects release substitution and incomplete topology", () => {
   const deployment = manifest();
   const auth = authorization(deployment);
-  auth.release_binding.git_commit = "9".repeat(40);
-  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}) }), /git_commit/);
+  auth.release_binding.deployment_commit = "9".repeat(40);
+  assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: signatureBundle(deployment, auth), manifestValidator: () => ({}) }), /deployment_commit/);
   deployment.problems.pop();
   assert.throws(() => buildFundingActivationPlan({ manifest: deployment, manifestBytesDigest: hash("e"), validatedAuthorization: { value: authorization(deployment), validatedBytesDigest: hash("d") }, rpcRegistry: rpcRegistry(), rpcAuthority: rpcAuthority(), activationSignatures: { schema: "p42-funding-activation-signatures/v2" }, manifestValidator: () => ({}) }), /exactly ten/);
+});
+
+test("activation accepts a descendant evidence commit without granting it deployment authority", () => {
+  const deployment = manifest();
+  const auth = authorization(deployment);
+  auth.release_binding.git_commit = "9".repeat(40);
+  const plan = buildFundingActivationPlan({
+    manifest: deployment,
+    manifestBytesDigest: hash("e"),
+    validatedAuthorization: { value: auth, validatedBytesDigest: hash("d") },
+    rpcRegistry: rpcRegistry(),
+    rpcAuthority: rpcAuthority(),
+    activationSignatures: signatureBundle(deployment, auth),
+    manifestValidator: () => ({}),
+  });
+  assert.equal(plan.deploymentCommit, deployment.deploymentCommit);
 });
 
 test("activation rejects a legacy 43-contract authorization path", () => {

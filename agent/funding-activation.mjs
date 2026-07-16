@@ -293,8 +293,8 @@ export function assertReleaseBinding(authorization, manifest, manifestBytesDiges
   if (!binding || binding.network !== authorizationNetwork || binding.chain_id !== manifest.network.chainId) {
     throw new Error("validated authorization network does not match deployment manifest");
   }
-  if (binding.git_commit !== manifest.deploymentCommit) {
-    throw new Error("validated authorization git_commit does not match deployment manifest");
+  if (binding.deployment_commit !== manifest.deploymentCommit) {
+    throw new Error("validated authorization deployment_commit does not match deployment manifest");
   }
   const manifestRef = authorization.artifacts?.deployment_manifest;
   if (manifestRef?.sha256 !== manifestBytesDigest) {

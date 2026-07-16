@@ -794,6 +794,7 @@ def _validate_release_binding(
             deployment_bytes=_artifact_bytes(context, deployment_ref),
             deployment_commit=deployment_commit,
             contracts=capsule_projection,
+            repo_root=context.artifact_root,
             prefix=prefix,
             error_type=error_type,
         )
@@ -1186,9 +1187,12 @@ def _verify_canonical_capsule_binding(
     deployment_bytes: bytes,
     deployment_commit: str,
     contracts: list[dict[str, str]],
+    repo_root: Path | None,
     prefix: str,
     error_type: type[ValueError],
 ) -> None:
+    if repo_root is None:
+        raise error_type(f"{prefix}.release_capsule verification requires the bound repository root")
     helper = (
         Path(__file__).resolve().parents[2]
         / "contracts"
@@ -1198,6 +1202,60 @@ def _verify_canonical_capsule_binding(
     projection_bytes = canonical_json(
         {"deploymentCommit": deployment_commit, "contracts": contracts}
     ).encode("utf-8")
+    _verify_canonical_capsule_rebuild(
+        helper=helper,
+        capsule_bytes=capsule_bytes,
+        deployment_bytes=deployment_bytes,
+        projection_bytes=projection_bytes,
+        repo_root=repo_root,
+        prefix=prefix,
+        error_type=error_type,
+    )
+    _run_canonical_capsule_helper(
+        helper=helper,
+        mode="--structural-only",
+        capsule_bytes=capsule_bytes,
+        deployment_bytes=deployment_bytes,
+        projection_bytes=projection_bytes,
+        repo_root=repo_root,
+        prefix=prefix,
+        error_type=error_type,
+    )
+
+
+def _verify_canonical_capsule_rebuild(
+    *,
+    helper: Path,
+    capsule_bytes: bytes,
+    deployment_bytes: bytes,
+    projection_bytes: bytes,
+    repo_root: Path,
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
+    _run_canonical_capsule_helper(
+        helper=helper,
+        mode="--rebuild-only",
+        capsule_bytes=capsule_bytes,
+        deployment_bytes=deployment_bytes,
+        projection_bytes=projection_bytes,
+        repo_root=repo_root,
+        prefix=prefix,
+        error_type=error_type,
+    )
+
+
+def _run_canonical_capsule_helper(
+    *,
+    helper: Path,
+    mode: str,
+    capsule_bytes: bytes,
+    deployment_bytes: bytes,
+    projection_bytes: bytes,
+    repo_root: Path,
+    prefix: str,
+    error_type: type[ValueError],
+) -> None:
     try:
         with (
             tempfile.TemporaryFile() as capsule_file,
@@ -1214,7 +1272,7 @@ def _verify_canonical_capsule_binding(
                 handle.seek(0)
             fds = (capsule_file.fileno(), deployment_file.fileno(), projection_file.fileno())
             completed = run_bounded_process(
-                ["node", str(helper), *(str(fd) for fd in fds)],
+                ["node", str(helper), *(str(fd) for fd in fds), str(repo_root), mode],
                 cwd=helper.parent,
                 env=os.environ,
                 timeout=15,

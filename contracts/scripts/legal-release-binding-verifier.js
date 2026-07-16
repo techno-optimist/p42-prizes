@@ -1,7 +1,10 @@
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
 import {
+  attestReleaseCapsuleAtCommit,
   immutableValuesFromConstructor,
   reconstructExpectedRuntime,
   validateReleaseCapsule,
@@ -49,10 +52,17 @@ function descriptors(manifest) {
   return result;
 }
 
-function main() {
-  const capsule = readJsonFd(process.argv[2], MAX_CAPSULE_BYTES, "capsule");
-  const manifest = readJsonFd(process.argv[3], MAX_MANIFEST_BYTES, "manifest");
-  const projection = readJsonFd(process.argv[4], MAX_PROJECTION_BYTES, "projection");
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+export async function verifyLegalReleaseBinding({ capsule, manifest, projection, repoRoot = REPO_ROOT, attestCapsule = attestReleaseCapsuleAtCommit }) {
+  exactKeys(projection, ["deploymentCommit", "contracts"], "projection");
+  validateReleaseCapsule(capsule);
+  if (capsule.gitCommit !== projection.deploymentCommit || manifest.deploymentCommit !== projection.deploymentCommit) throw new Error("capsule and manifest gitCommit binding mismatch");
+  await attestCapsule(capsule, { repoRoot, toolchainRoot: REPO_ROOT, expectedGitCommit: projection.deploymentCommit });
+  return verifyLegalReleaseBindingStructure({ capsule, manifest, projection });
+}
+
+export function verifyLegalReleaseBindingStructure({ capsule, manifest, projection }) {
   exactKeys(projection, ["deploymentCommit", "contracts"], "projection");
   validateReleaseCapsule(capsule);
   if (capsule.gitCommit !== projection.deploymentCommit || manifest.deploymentCommit !== projection.deploymentCommit) throw new Error("capsule and manifest gitCommit binding mismatch");
@@ -81,12 +91,36 @@ function main() {
     }
   }
   if ([...projected.keys()].some((key) => !descriptors(manifest).some(({ path }) => path === key))) throw new Error("projection contains an unknown topology key");
+  return true;
+}
+
+async function main() {
+  const capsule = readJsonFd(process.argv[2], MAX_CAPSULE_BYTES, "capsule");
+  const manifest = readJsonFd(process.argv[3], MAX_MANIFEST_BYTES, "manifest");
+  const projection = readJsonFd(process.argv[4], MAX_PROJECTION_BYTES, "projection");
+  const repoRoot = process.argv[5];
+  if (!repoRoot) throw new Error("legal release binding verification requires the bound repository root");
+  const mode = process.argv[6] ?? "--full";
+  if (mode === "--rebuild-only") {
+    exactKeys(projection, ["deploymentCommit", "contracts"], "projection");
+    validateReleaseCapsule(capsule);
+    if (capsule.gitCommit !== projection.deploymentCommit || manifest.deploymentCommit !== projection.deploymentCommit) throw new Error("capsule and manifest gitCommit binding mismatch");
+    await attestReleaseCapsuleAtCommit(capsule, { repoRoot, toolchainRoot: REPO_ROOT, expectedGitCommit: projection.deploymentCommit });
+  } else if (mode === "--structural-only") {
+    verifyLegalReleaseBindingStructure({ capsule, manifest, projection });
+  } else if (mode === "--full") {
+    await verifyLegalReleaseBinding({ capsule, manifest, projection, repoRoot });
+  } else {
+    throw new Error("unknown legal release binding verification mode");
+  }
   process.stdout.write("OK\n");
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error?.message ?? error}\n`);
-  process.exitCode = 1;
+if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
+  try {
+    await main();
+  } catch (error) {
+    process.stderr.write(`${error?.message ?? error}\n`);
+    process.exitCode = 1;
+  }
 }

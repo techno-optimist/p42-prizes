@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { constants } from "node:fs";
-import { link, lstat, open, unlink } from "node:fs/promises";
+import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, rm, symlink, unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -347,6 +348,60 @@ export async function attestReleaseCapsuleAgainstCheckout(capsule, {
   validateReleaseCapsule(rebuilt);
   if (rebuilt.capsuleDigest !== capsule.capsuleDigest || canonical(rebuilt) !== canonical(capsule)) throw new Error("capsule provenance does not match forced source rebuild");
   return { capsuleDigest: capsule.capsuleDigest, gitCommit: expectedGitCommit, compiler: "hardhat:local-pinned-force" };
+}
+
+async function mountLocalNodeModules(source, target) {
+  await mkdir(target, { mode: 0o700 });
+  for (const entry of await readdir(source)) {
+    await symlink(join(source, entry), join(target, entry));
+  }
+}
+
+export async function attestReleaseCapsuleAtCommit(capsule, {
+  repoRoot,
+  toolchainRoot = repoRoot,
+  expectedGitCommit,
+  run = execFileSync,
+  attest = attestReleaseCapsuleAgainstCheckout,
+  createTemporaryDirectory = mkdtemp,
+  remove = rm,
+  installLocalDependencies = mountLocalNodeModules,
+} = {}) {
+  validateReleaseCapsule(capsule);
+  const root = resolve(repoRoot ?? "");
+  if (!repoRoot || !/^[0-9a-f]{40}$/.test(expectedGitCommit ?? "")) throw new Error("detached checkout attestation requires a trusted root and exact expected git commit");
+  if (capsule.gitCommit !== expectedGitCommit) throw new Error("capsule git commit differs from detached checkout commit");
+  const resolvedCommit = run("git", ["rev-parse", "--verify", `${expectedGitCommit}^{commit}`], { cwd: root, encoding: "utf8" }).trim();
+  if (resolvedCommit !== expectedGitCommit) throw new Error("detached checkout commit did not resolve exactly");
+
+  const tools = resolve(toolchainRoot ?? "");
+  const dependencyRoot = join(tools, "contracts", "node_modules");
+  const dependencyMetadata = await lstat(dependencyRoot);
+  if (!dependencyMetadata.isDirectory() || dependencyMetadata.isSymbolicLink()) throw new Error("release rebuild requires a local regular node_modules directory");
+  const expectedLock = run("git", ["show", `${expectedGitCommit}:contracts/package-lock.json`], { cwd: root, encoding: null });
+  const installedLock = await readFile(join(tools, "contracts", "package-lock.json"));
+  if (!Buffer.from(expectedLock).equals(installedLock)) throw new Error("local release toolchain lock differs from the deployment commit");
+
+  const temporaryRoot = await createTemporaryDirectory(join(tmpdir(), "p42-release-rebuild-"));
+  const checkout = join(temporaryRoot, "checkout");
+  let worktreeAdded = false;
+  try {
+    run("git", ["worktree", "add", "--detach", checkout, expectedGitCommit], { cwd: root, encoding: "utf8", stdio: "pipe" });
+    worktreeAdded = true;
+    await installLocalDependencies(dependencyRoot, join(checkout, "contracts", "node_modules"));
+    return await attest(capsule, { repoRoot: checkout, expectedGitCommit, run });
+  } finally {
+    let removalError;
+    if (worktreeAdded) {
+      try {
+        run("git", ["worktree", "remove", "--force", checkout], { cwd: root, encoding: "utf8", stdio: "pipe" });
+      } catch (error) {
+        removalError = error;
+      }
+    }
+    await remove(temporaryRoot, { recursive: true, force: true });
+    if (removalError) throw new Error("detached release checkout could not be removed safely", { cause: removalError });
+  }
 }
 
 async function readExactDescriptor(handle, size) {
