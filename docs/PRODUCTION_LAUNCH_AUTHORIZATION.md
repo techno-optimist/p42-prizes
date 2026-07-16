@@ -116,6 +116,19 @@ reconstructs protocol state from two RPCs at one common finalized block, reruns
 the production validator before every new signature, checks chain-derived time
 both before and after validation, journals raw signed bytes before broadcast,
 and advances only after both RPCs observe the prior transition as finalized.
+Manager and pool state never substitute for the plan-bound governance history:
+an armed manager requires its exact `armFunding` operation ID to be executed,
+and an accepting pool requires its exact `setAcceptingFunds` operation ID to be
+executed. Alternate salts, early state transitions, and partial barrier bypasses
+fail closed. The v2 completion artifact preserves both operation IDs and their
+executed states for every board, and consumers reject legacy or substituted
+completion evidence.
+The activation runner does not trust `--plan` as an authority. Before any RPC
+snapshot or completion decision, it reconstructs the plan from the exact
+manifest bytes, freshly validated authorization, and verified activation
+signature bundle, then requires byte-for-byte and digest equality. Portal
+activation additionally mounts that signature bundle and independently repeats
+the EIP-712 verification and deterministic 30-operation reconstruction.
 The source state machine does not close the production gate by itself: a
 current-deployment rehearsal, independent signer custody review, retained
 finalized activation evidence, and a real authorization packet remain required.

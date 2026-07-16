@@ -10,6 +10,7 @@ import {
   loadFundingActivationSignatures,
   loadManifestExact,
   runProductionAuthorizationValidator,
+  serializeFundingActivationPlan,
 } from "./funding-activation.mjs";
 import {
   collectFundingActivationSnapshot,
@@ -20,7 +21,11 @@ import {
   reconcileFundingActivationConfirmations,
   signAndBroadcastActivationAction,
 } from "./funding-activation-executor.mjs";
-import { readStrictJsonFileSync, writeTrustedFileSync } from "./strict-json.mjs";
+import {
+  activationRpcFetchRequest,
+  validateActivationRpcEndpointPair,
+} from "./activation-rpc-endpoints.mjs";
+import { readStrictJsonFileSync, readStrictJsonFileSyncWithBytes, writeTrustedFileSync } from "./strict-json.mjs";
 
 const LIMITS = Object.freeze({ maxBytes: 16 * 1024 * 1024, maxDepth: 128, trailingNewline: "require", privateFile: true });
 
@@ -49,18 +54,32 @@ function optionalPrivateKey(name) {
   return raw;
 }
 
-function assertDistinctRpcUrls(primaryUrl, secondaryUrl) {
-  const primary = new URL(primaryUrl);
-  const secondary = new URL(secondaryUrl);
-  if (primary.protocol !== "https:" || secondary.protocol !== "https:"
-      || primary.origin === secondary.origin || primary.hostname === secondary.hostname) {
-    throw new Error("activation requires distinct HTTPS RPC origins and hosts");
+export function buildActivationRpcProviders(primaryUrl, secondaryUrl, chainId) {
+  const endpoints = validateActivationRpcEndpointPair(primaryUrl, secondaryUrl);
+  return Object.freeze({
+    endpoints,
+    primary: new ethers.JsonRpcProvider(
+      activationRpcFetchRequest(endpoints.primary.url), chainId, { staticNetwork: true },
+    ),
+    secondary: new ethers.JsonRpcProvider(
+      activationRpcFetchRequest(endpoints.secondary.url), chainId, { staticNetwork: true },
+    ),
+  });
+}
+
+export async function destroyActivationRpcProviders(providers) {
+  await Promise.allSettled(
+    [providers.primary, providers.secondary].map(async (provider) => provider.destroy()),
+  );
+}
+
+export function assertCanonicalActivationPlanArtifact(callerPlan, canonicalPlan) {
+  if (callerPlan?.value?.planDigest !== canonicalPlan?.planDigest
+      || !Buffer.isBuffer(callerPlan?.bytes)
+      || !callerPlan.bytes.equals(serializeFundingActivationPlan(canonicalPlan))) {
+    throw new Error("caller activation plan is not the exact freshly reconstructed canonical plan");
   }
-  for (const url of [primary, secondary]) {
-    if (url.username || url.password || url.search || url.hash || !["", "/"].includes(url.pathname)) {
-      throw new Error("activation RPC URLs must be credential-free root HTTPS endpoints");
-    }
-  }
+  return canonicalPlan;
 }
 
 async function commonLatestTimestamp(primary, secondary) {
@@ -88,11 +107,26 @@ export async function fundingActivationRunMain() {
   const journalRoot = realpathSync(resolve(required("journal-root")));
   const journalPath = resolve(required("journal"));
   const completionPath = resolve(required("completion-output"));
-  assertDistinctRpcUrls(primaryUrl, secondaryUrl);
+  const endpoints = validateActivationRpcEndpointPair(primaryUrl, secondaryUrl);
 
-  const plan = readStrictJsonFileSync(resolve(planPath), LIMITS);
-  const primary = new ethers.JsonRpcProvider(primaryUrl, plan.chainId, { staticNetwork: true });
-  const secondary = new ethers.JsonRpcProvider(secondaryUrl, plan.chainId, { staticNetwork: true });
+  const callerPlan = readStrictJsonFileSyncWithBytes(resolve(planPath), LIMITS);
+  const freshPlan = async () => {
+    const manifest = loadManifestExact(manifestPath);
+    const validatedAuthorization = runProductionAuthorizationValidator({
+      python, repoRoot, authorizationPath, trustRegistryPath, artifactRoot,
+      chainRpcUrl: endpoints.secondary.url,
+    });
+    return buildFundingActivationPlan({
+      manifest: manifest.value,
+      manifestBytesDigest: manifest.bytesDigest,
+      validatedAuthorization,
+      activationSignatures: loadFundingActivationSignatures(activationSignaturesPath),
+    });
+  };
+  const plan = assertCanonicalActivationPlanArtifact(callerPlan, await freshPlan());
+  const providers = buildActivationRpcProviders(endpoints.primary.url, endpoints.secondary.url, plan.chainId);
+  const { primary, secondary } = providers;
+  try {
   if (process.env.P42_FUNDING_GOVERNANCE_PRIVATE_KEYS || process.env.P42_FUNDING_TREASURY_PRIVATE_KEY) {
     throw new Error("threshold key aggregation is forbidden; use one P42_FUNDING_SIGNER_PRIVATE_KEY or an external signed artifact");
   }
@@ -117,19 +151,6 @@ export async function fundingActivationRunMain() {
     throw new Error("activation signer is outside the plan authority set");
   }
 
-  const freshPlan = async () => {
-    const manifest = loadManifestExact(manifestPath);
-    const validatedAuthorization = runProductionAuthorizationValidator({
-      python, repoRoot, authorizationPath, trustRegistryPath, artifactRoot,
-      chainRpcUrl: secondaryUrl,
-    });
-    return buildFundingActivationPlan({
-      manifest: manifest.value,
-      manifestBytesDigest: manifest.bytesDigest,
-      validatedAuthorization,
-      activationSignatures: loadFundingActivationSignatures(activationSignaturesPath),
-    });
-  };
   const snapshot = await collectFundingActivationSnapshot(plan, primary, secondary);
   reconcileFundingActivationConfirmations({ plan, snapshot, journalPath, journalRoot });
   const action = nextFundingActivationAction(plan, snapshot, {
@@ -199,6 +220,9 @@ export async function fundingActivationRunMain() {
     nonceEvidence: (signer) => collectActivationNonceEvidence(primary, secondary, signer),
   });
   process.stdout.write(`${JSON.stringify({ status: `${result.status}-awaiting-finality`, label: result.label, transactionHash: result.transactionHash })}\n`);
+  } finally {
+    await destroyActivationRpcProviders(providers);
+  }
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))) {

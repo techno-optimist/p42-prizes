@@ -174,7 +174,7 @@ function snapshot(inputProblems = problems()): ActivatedIndexerSnapshot {
   return {
     manifest: { problems: manifestProblems },
     checkpoint: {
-      schema: "p42-prizes/indexer-checkpoint/v3",
+      schema: "p42-prizes/indexer-checkpoint/v4",
       range: { toBlockTimestamp: 1000 },
       boards,
     },
@@ -191,7 +191,7 @@ function localRow(problem: Problem, source: Submission["source"]): Submission {
   };
 }
 
-describe("atomic v3 portal read model", () => {
+describe("atomic activation-bound portal read model", () => {
   it("consumes all ten boards with exact score atoms and complete economic state", () => {
     const cohort = problems();
     const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort));

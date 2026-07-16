@@ -50,6 +50,91 @@ function sha256(bytes) {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+export function serializeFundingActivationPlan(plan) {
+  return Buffer.from(`${JSON.stringify(plan, null, 2)}\n`);
+}
+
+export function assertFundingActivationPlanTopology(plan) {
+  if (!plan || !Array.isArray(plan.operations) || plan.operations.length !== 30
+      || plan.boardCount !== 10 || !/^sha256:[0-9a-f]{64}$/.test(plan.authorizationDigest ?? "")) {
+    throw new Error("funding activation plan must contain the exact ordered 30-operation topology");
+  }
+  const operations = plan.operations;
+  const expectedAuthorizationLabels = operations.slice(0, 10).map((_, index) => `board.${operations[index].problemId}.authorizeFunding`);
+  const expectedArmLabels = operations.slice(0, 10).map((_, index) => `board.${operations[index].problemId}.armFunding`);
+  const problemIds = operations.slice(0, 10).map((operation) => String(operation.problemId));
+  if (new Set(problemIds).size !== 10) throw new Error("funding activation plan problem IDs must be unique");
+  const managerTargets = operations.slice(0, 10).map((operation) => ethers.getAddress(operation.to).toLowerCase());
+  const poolTargets = operations.slice(20, 30).map((operation) => ethers.getAddress(operation.to).toLowerCase());
+  if (new Set([...managerTargets, ...poolTargets]).size !== 20) {
+    throw new Error("funding activation plan requires unique manager and pool targets");
+  }
+  const labels = new Set();
+  const operationIds = new Set();
+  const digest = authorizationBytes32(plan.authorizationDigest);
+  for (let index = 0; index < 30; index += 1) {
+    const operation = operations[index];
+    const boardIndex = index % 10;
+    const phase = Math.floor(index / 10);
+    const problemId = problemIds[boardIndex];
+    const suffix = ["authorizeFunding", "armFunding", "setAcceptingFunds"][phase];
+    const expectedLabel = `board.${problemId}.${suffix}`;
+    if (!operation || operation.sequence !== index + 1 || operation.boardIndex !== boardIndex
+        || String(operation.problemId) !== problemId || operation.label !== expectedLabel
+        || labels.has(operation.label) || operation.value !== "0") {
+      throw new Error(`funding activation operation ${index + 1} violates exact order or identity`);
+    }
+    labels.add(operation.label);
+    if (phase === 0) {
+      const expectedKeys = ["sequence", "authority", "label", "boardIndex", "problemId", "to", "expectedRuntimeCodeHash", "value", "authorizationNonce", "verifiedSignatureCount", "data", "dependsOn"];
+      if (canonical(Object.keys(operation).sort()) !== canonical(expectedKeys.sort())
+          || operation.authority !== "treasury" || operation.dependsOn?.length !== 0
+          || typeof operation.authorizationNonce !== "string"
+          || !/^(0|[1-9][0-9]*)$/.test(operation.authorizationNonce)
+          || operation.verifiedSignatureCount !== 3 || operation.salt !== undefined
+          || operation.operationId !== undefined) {
+        throw new Error(`funding activation authorization operation ${operation.label} is malformed`);
+      }
+      let decoded;
+      try { decoded = submissionsInterface.decodeFunctionData("authorizeFunding", operation.data); } catch {
+        throw new Error(`funding activation authorization calldata ${operation.label} is malformed`);
+      }
+      if (decoded[0].toLowerCase() !== digest.toLowerCase()
+          || decoded[1] !== BigInt(plan.authorizationExpiresAt)
+          || decoded[2] !== BigInt(operation.authorizationNonce)
+          || decoded[3].length !== 3
+          || submissionsInterface.encodeFunctionData("authorizeFunding", decoded).toLowerCase() !== operation.data.toLowerCase()) {
+        throw new Error(`funding activation authorization calldata ${operation.label} is not canonical`);
+      }
+      continue;
+    }
+    const expectedTarget = phase === 1 ? operations[boardIndex].to : operation.to;
+    const expectedRuntimeCodeHash = phase === 1 ? operations[boardIndex].expectedRuntimeCodeHash : operation.expectedRuntimeCodeHash;
+    const expectedData = phase === 1
+      ? submissionsInterface.encodeFunctionData("armFunding", [digest])
+      : poolInterface.encodeFunctionData("setAcceptingFunds", [true]);
+    const expectedDependsOn = phase === 1 ? expectedAuthorizationLabels : expectedArmLabels;
+    const expectedSalt = ethers.keccak256(ethers.toUtf8Bytes(`${plan.authorizationDigest}:${expectedLabel}`));
+    const expectedOperationId = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+      ["address", "uint256", "bytes", "bytes32"], [operation.to, 0n, expectedData, expectedSalt],
+    ));
+    const expectedKeys = ["sequence", "authority", "label", "boardIndex", "problemId", "to", "expectedRuntimeCodeHash", "value", "data", "salt", "operationId", "dependsOn"];
+    if (canonical(Object.keys(operation).sort()) !== canonical(expectedKeys.sort())
+        || operation.authority !== "governance" || ethers.getAddress(operation.to) !== ethers.getAddress(expectedTarget)
+        || operation.expectedRuntimeCodeHash !== expectedRuntimeCodeHash
+        || operation.data.toLowerCase() !== expectedData.toLowerCase()
+        || canonical(operation.dependsOn) !== canonical(expectedDependsOn)
+        || operation.salt?.toLowerCase() !== expectedSalt.toLowerCase()
+        || operation.operationId?.toLowerCase() !== expectedOperationId.toLowerCase()
+        || operationIds.has(expectedOperationId.toLowerCase())) {
+      throw new Error(`funding activation governance operation ${operation.label} is not canonically derived`);
+    }
+    operationIds.add(expectedOperationId.toLowerCase());
+  }
+  if (operationIds.size !== 20) throw new Error("funding activation governance operation IDs must be unique");
+  return plan;
+}
+
 function exactPath(path, label) {
   if (typeof path !== "string" || path.trim() === "") throw new Error(`${label} path is required`);
   const absolute = resolve(path);
@@ -418,7 +503,9 @@ export function buildFundingActivationPlan({
     boardCount: 10,
     operations,
   };
-  return Object.freeze({ ...body, planDigest: sha256(Buffer.from(canonical(body))) });
+  const plan = { ...body, planDigest: sha256(Buffer.from(canonical(body))) };
+  assertFundingActivationPlanTopology(plan);
+  return Object.freeze(plan);
 }
 
 export function loadManifestExact(path) {
@@ -469,7 +556,7 @@ export function writePrivateActivationPlan(path, plan) {
   if (resolve(parent, absolute.slice(dirname(absolute).length + 1)) !== absolute) {
     throw new Error("activation plan output path is not canonical");
   }
-  const bytes = Buffer.from(`${JSON.stringify(plan, null, 2)}\n`);
+  const bytes = serializeFundingActivationPlan(plan);
   let fd;
   try {
     fd = openSync(absolute, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);

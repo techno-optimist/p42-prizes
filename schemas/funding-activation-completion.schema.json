@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema", "status", "chainId", "network", "planDigest", "manifestBytesDigest", "deploymentCommit", "deploymentConfigHash", "releaseBindingDigest", "authorizationDigest", "authorizationBytesDigest", "authorizationExpiresAt", "finalizedBlockNumber", "finalizedBlockHash", "finalizedBlockTimestamp", "boards", "completionDigest"],
   "properties": {
-    "schema": { "const": "p42-funding-activation-completion/v1" },
+    "schema": { "const": "p42-funding-activation-completion/v2" },
     "status": { "const": "complete" },
     "chainId": { "enum": [8453, 84532] },
     "network": { "enum": ["base-mainnet", "base-sepolia"] },
@@ -25,7 +25,7 @@
       "type": "array", "minItems": 10, "maxItems": 10,
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["problemId", "submissionManager", "pool", "poolRuntimeCodeHash", "authorizedFundingDigest", "fundingAuthorizationDigest", "fundingAuthorizationExpiresAt", "fundingArmed", "acceptingFunds"],
+        "required": ["problemId", "submissionManager", "pool", "poolRuntimeCodeHash", "authorizedFundingDigest", "fundingAuthorizationDigest", "fundingAuthorizationExpiresAt", "fundingArmed", "acceptingFunds", "armOperation", "openOperation"],
         "properties": {
           "problemId": { "type": "string", "pattern": "^[1-9][0-9]*$" },
           "submissionManager": { "$ref": "#/$defs/address" },
@@ -35,7 +35,9 @@
           "fundingAuthorizationDigest": { "$ref": "#/$defs/bytes32" },
           "fundingAuthorizationExpiresAt": { "type": "integer", "minimum": 1 },
           "fundingArmed": { "const": true },
-          "acceptingFunds": { "const": true }
+          "acceptingFunds": { "const": true },
+          "armOperation": { "$ref": "#/$defs/executedOperation" },
+          "openOperation": { "$ref": "#/$defs/executedOperation" }
         }
       }
     },
@@ -44,6 +46,15 @@
   "$defs": {
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-fA-F]{64}$" },
-    "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" }
+    "address": { "type": "string", "pattern": "^0x[0-9a-fA-F]{40}$" },
+    "executedOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "state"],
+      "properties": {
+        "operationId": { "$ref": "#/$defs/bytes32" },
+        "state": { "const": 2 }
+      }
+    }
   }
 }

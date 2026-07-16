@@ -24,6 +24,7 @@
     "da-arweave.mjs",
     "da-local.mjs",
     "indexer.mjs",
+    "activation-rpc-endpoints.mjs",
     "funding-activation.mjs",
     "funding-authorization-signatures.mjs",
     "funding-activation-executor.mjs",

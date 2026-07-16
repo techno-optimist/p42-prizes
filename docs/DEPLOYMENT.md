@@ -45,6 +45,7 @@ P42_INDEXER_CHECKPOINT_PATH=/app/release/indexer-checkpoint.json
 P42_INDEXER_CHECKPOINT_ATTESTATION_PATH=/app/release/indexer-checkpoint-attestation.json
 P42_LAUNCH_AUTHORIZATION_PATH=/app/release/launch-authorization.json
 P42_FUNDING_ACTIVATION_PLAN_PATH=/app/release/funding-activation-plan.json
+P42_FUNDING_ACTIVATION_SIGNATURES_PATH=/app/release/funding-activation-signatures-v2.json
 P42_FUNDING_ACTIVATION_COMPLETION_PATH=/app/release/funding-activation-completion.json
 P42_ATTESTATION_TRUST_REGISTRY_PATH=/app/release/production-trust-registry.json
 P42_ATTESTATION_TRUST_REGISTRY_SHA256=sha256:<canonical-registry-digest>
@@ -54,9 +55,36 @@ P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS=300
 `P42_ATTESTATION_TRUST_REGISTRY_SHA256` is an out-of-band secret/configuration
 pin, not a value copied from the registry artifact. The portal recomputes the
 authorization digest, verifies all three Ed25519 launch-authority signatures
-and the exact checkpoint bytes against that pinned production registry, and then requires every one of the ten
+and the exact checkpoint bytes against that pinned production registry. It also
+verifies the three EIP-712 activation authorities for every board and
+reconstructs the exact ordered 30-operation activation plan before requiring every one of the ten
 activated pools to agree with the fresh finalized indexer checkpoint before it
 publishes any funding target.
+
+Activated publication requires `p42-prizes/indexer-checkpoint/v4`. Generate it
+with the canonical activation plan and an operator-independent second RPC:
+
+```bash
+node agent/indexer.mjs --manifest deployment-manifest.json \
+  --rpc "$P42_PRIMARY_RPC_URL" --secondary-rpc "$P42_SECONDARY_RPC_URL" \
+  --activation-plan funding-activation-plan.json \
+  --activation-completion funding-activation-completion.json \
+  --out indexer-checkpoint.json
+```
+
+The indexer queries `stateOf` and `ops` for the exact 20 plan-derived timelock
+operation IDs at the checkpoint's fresh finalized block on both RPCs. It also
+re-fetches the immutable completion block from both RPCs and binds its exact
+hash, timestamp, and self-hashed completion digest as a separate completion
+anchor. It emits v4 only when both providers agree on both anchors, the ordered
+operation set, and `Executed` state. This lets checkpoints rotate for freshness
+without rewriting historical completion. The checkpoint attestation must then
+sign those exact v4 bytes. Checkpoint v2 and v3 remain readable for historical/non-activated
+replay, but the portal rejects them for funding publication; migrate by
+regenerating and re-attesting a v4 checkpoint, not by rewriting an old artifact.
+The production indexer canonicalizes and validates both credential-free HTTPS
+endpoint identities, then constructs both RPC providers internally; callers
+cannot inject a transport object as evidence of provider independence.
 
 Disk:
 

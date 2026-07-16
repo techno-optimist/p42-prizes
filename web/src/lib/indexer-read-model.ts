@@ -300,8 +300,8 @@ export function portalReadModelFromActivatedSnapshot(
   if (problems.length !== 10) throw new Error("chain portal read model requires the exact-ten cohort");
   const manifest = snapshot.manifest;
   const checkpoint = snapshot.checkpoint;
-  if (checkpoint.schema !== "p42-prizes/indexer-checkpoint/v3") {
-    throw new Error("chain portal read model requires indexer checkpoint v3");
+  if (checkpoint.schema !== "p42-prizes/indexer-checkpoint/v4") {
+    throw new Error("chain portal read model requires activation-bound indexer checkpoint v4");
   }
   const manifestProblems = array(manifest.problems, "manifest problems");
   const boards = array(checkpoint.boards, "checkpoint boards");
@@ -437,7 +437,7 @@ export function resolvePortalReadModel(
     return localPortalReadModel(
       problems,
       localRows,
-      "The exact-ten activated v3 artifact gate did not pass; serving local-only rows.",
+      "The exact-ten activation-bound v4 artifact gate did not pass; serving local-only rows.",
     );
   }
   try {

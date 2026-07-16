@@ -1,9 +1,10 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { createHash, createPublicKey, verify } from "node:crypto";
-import { keccak256, toUtf8Bytes } from "ethers";
+import { AbiCoder, Interface, Signature, TypedDataEncoder, getAddress, keccak256, recoverAddress, toUtf8Bytes } from "ethers";
 import deploymentSchema from "@/schemas/deployment-manifest-v2.schema.json";
 import checkpointV2Schema from "@/schemas/indexer-checkpoint-v2.schema.json";
 import checkpointV3Schema from "@/schemas/indexer-checkpoint-v3.schema.json";
+import checkpointV4Schema from "@/schemas/indexer-checkpoint-v4.schema.json";
 import completionSchema from "@/schemas/funding-activation-completion.schema.json";
 import type { ChainProvenance, Problem } from "@/lib/types";
 
@@ -32,6 +33,7 @@ interface ActivatedArtifactBundle {
   productionPolicy: JsonObject;
   trustRegistry: JsonObject;
   checkpointAttestation: JsonObject;
+  activationSignatures: JsonObject;
   plan: JsonObject;
   completion: JsonObject;
   checkpointMaxAgeSeconds?: number;
@@ -44,6 +46,7 @@ export interface IndexerArtifactPaths {
   indexerCheckpointAttestationPath?: string;
   launchAuthorizationPath?: string;
   fundingActivationPlanPath?: string;
+  fundingActivationSignaturesPath?: string;
   fundingActivationCompletionPath?: string;
   checkpointMaxAgeSeconds?: number;
 }
@@ -55,6 +58,7 @@ export interface IndexerProvenanceEnvironment {
   P42_INDEXER_CHECKPOINT_ATTESTATION_PATH?: string;
   P42_LAUNCH_AUTHORIZATION_PATH?: string;
   P42_FUNDING_ACTIVATION_PLAN_PATH?: string;
+  P42_FUNDING_ACTIVATION_SIGNATURES_PATH?: string;
   P42_FUNDING_ACTIVATION_COMPLETION_PATH?: string;
   P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS?: string;
 }
@@ -223,6 +227,161 @@ function sha256Bytes(bytes: Buffer): string {
 
 function sha256Canonical(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(canonicalize(value))).digest("hex")}`;
+}
+
+const FUNDING_ROLES = [
+  ["production-launch-authority", "productionLaunchAuthority"],
+  ["independent-security-authority", "independentSecurityAuthority"],
+  ["governance-authority", "governanceAuthority"],
+] as const;
+const FUNDING_TYPES = {
+  FundingAuthorization: [
+    { name: "role", type: "bytes32" }, { name: "boardSetDigest", type: "bytes32" },
+    { name: "releaseBindingDigest", type: "bytes32" }, { name: "authorizationDigest", type: "bytes32" },
+    { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
+  ],
+};
+const HALF_SECP256K1_ORDER = BigInt("0x7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0");
+const submissionsInterface = new Interface([
+  "function authorizeFunding(bytes32 authorizationDigest,uint64 expiresAt,uint256 nonce,bytes[3] signatures)",
+  "function armFunding(bytes32 authorizationDigest)",
+]);
+const poolInterface = new Interface(["function setAcceptingFunds(bool accepting)"]);
+
+function digestBytes32(value: unknown): string {
+  requireBinding(typeof value === "string" && /^sha256:[0-9a-f]{64}$/.test(value));
+  return `0x${(value as string).slice(7)}`;
+}
+
+function canonicalUint(value: unknown): bigint {
+  requireBinding(typeof value === "string" && /^(0|[1-9][0-9]*)$/.test(value));
+  return BigInt(value as string);
+}
+
+function reconstructCanonicalActivationPlan(
+  manifest: JsonObject,
+  manifestBytes: Buffer,
+  authorization: JsonObject,
+  authorizationBytes: Buffer,
+  activationSignatures: JsonObject,
+): JsonObject {
+  requireBinding(exactKeys(activationSignatures, [
+    "schema", "chainId", "boardSetDigest", "releaseBindingDigest", "authorizationDigest",
+    "expiresAt", "authorities", "boards",
+  ]) && activationSignatures.schema === "p42-funding-activation-signatures/v2");
+  const network = object(manifest.network, "activation manifest network");
+  const roles = object(manifest.roles, "activation manifest roles");
+  const governance = object(manifest.governance, "activation manifest governance");
+  const releaseEvidence = object(manifest.releaseEvidence, "activation manifest release evidence");
+  const contracts = object(manifest.contracts, "activation manifest contracts");
+  const timelock = object(contracts.timelock, "activation timelock");
+  const authorizationBinding = object(authorization.release_binding, "activation authorization release binding");
+  const problems = manifest.problems as JsonObject[];
+  const signatureBoards = activationSignatures.boards as JsonObject[];
+  requireBinding(Array.isArray(problems) && problems.length === 10
+    && Array.isArray(signatureBoards) && signatureBoards.length === 10
+    && activationSignatures.chainId === network.chainId
+    && activationSignatures.boardSetDigest === releaseEvidence.boardSetDigest
+    && activationSignatures.releaseBindingDigest === releaseEvidence.releaseBindingDigest
+    && activationSignatures.authorizationDigest === authorization.authorization_digest);
+  requireBinding(authorizationBinding.chain_id === network.chainId
+    && authorizationBinding.network === (network.chainId === 8453 ? "base-mainnet" : "base-sepolia")
+    && authorizationBinding.git_commit === manifest.deploymentCommit);
+  const expiresAt = Date.parse(String(authorization.expires_at_utc)) / 1000;
+  requireBinding(Number.isSafeInteger(expiresAt) && canonicalUint(activationSignatures.expiresAt) === BigInt(expiresAt));
+  const authorities = object(activationSignatures.authorities, "activation signature authorities");
+  requireBinding(exactKeys(authorities, FUNDING_ROLES.map(([, field]) => field)));
+  const authorityAddresses = FUNDING_ROLES.map(([, field]) => {
+    const expected = getAddress(String(roles[field]));
+    requireBinding(getAddress(String(authorities[field])) === expected);
+    return expected;
+  });
+  requireBinding(new Set(authorityAddresses.map((value) => value.toLowerCase())).size === 3);
+  const forbiddenAuthorities = ["deployer", "owner", "treasury", "resolver", "guardian", "objectiveVerifier"]
+    .flatMap((field) => typeof roles[field] === "string" ? [getAddress(String(roles[field])).toLowerCase()] : [])
+    .concat((governance.signers as string[]).map((value) => getAddress(value).toLowerCase()));
+  requireBinding(authorityAddresses.every((value) => !forbiddenAuthorities.includes(value.toLowerCase())));
+  const digest = digestBytes32(authorization.authorization_digest);
+  const boardRows = problems.map((problem, boardIndex) => {
+    const problemContracts = object(problem.contracts, `activation problem ${boardIndex} contracts`);
+    const submissions = object(problemContracts.submissions, `activation problem ${boardIndex} submissions`);
+    const pool = object(problemContracts.pool, `activation problem ${boardIndex} pool`);
+    const bundleBoard = object(signatureBoards[boardIndex], `activation signature board ${boardIndex}`);
+    requireBinding(exactKeys(bundleBoard, ["boardIndex", "problemId", "submissionManager", "nonce", "signatures"])
+      && bundleBoard.boardIndex === boardIndex && String(bundleBoard.problemId) === String(problem.problemId)
+      && getAddress(String(bundleBoard.submissionManager)) === getAddress(String(submissions.address)));
+    const nonce = canonicalUint(bundleBoard.nonce);
+    const signatures = bundleBoard.signatures as JsonObject[];
+    requireBinding(Array.isArray(signatures) && signatures.length === 3);
+    const verifiedSignatures = signatures.map((rawRecord, roleIndex) => {
+      const record = object(rawRecord, `activation signature board ${boardIndex} role ${roleIndex}`);
+      const [role, field] = FUNDING_ROLES[roleIndex];
+      requireBinding(exactKeys(record, ["role", "signer", "signature"])
+        && record.role === role && getAddress(String(record.signer)) === authorityAddresses[roleIndex]);
+      const rawSignature = String(record.signature);
+      requireBinding(/^0x[0-9a-fA-F]{130}$/.test(rawSignature));
+      const rawS = BigInt(`0x${rawSignature.slice(66, 130)}`);
+      const rawV = Number.parseInt(rawSignature.slice(130, 132), 16);
+      requireBinding(rawS <= HALF_SECP256K1_ORDER && [27, 28].includes(rawV));
+      const signature = Signature.from(rawSignature);
+      requireBinding(signature.serialized.toLowerCase() === rawSignature.toLowerCase());
+      const typedDigest = TypedDataEncoder.hash(
+        { name: "P42SubmissionManager", version: "2", chainId: Number(network.chainId), verifyingContract: getAddress(String(submissions.address)) },
+        FUNDING_TYPES,
+        {
+          role: keccak256(toUtf8Bytes(role)), boardSetDigest: digestBytes32(activationSignatures.boardSetDigest),
+          releaseBindingDigest: digestBytes32(activationSignatures.releaseBindingDigest), authorizationDigest: digest,
+          expiresAt: BigInt(expiresAt), nonce,
+        },
+      );
+      requireBinding(recoverAddress(typedDigest, signature) === getAddress(String(roles[field])));
+      return rawSignature;
+    });
+    return { problem, submissions, pool, nonce, signatures: verifiedSignatures };
+  });
+  const addresses = boardRows.flatMap(({ submissions, pool }) => [submissions.address, pool.address].map((value) => getAddress(String(value)).toLowerCase()));
+  requireBinding(new Set(addresses).size === 20);
+  const authorizationLabels = boardRows.map(({ problem }) => `board.${problem.problemId}.authorizeFunding`);
+  const armLabels = boardRows.map(({ problem }) => `board.${problem.problemId}.armFunding`);
+  const operations: JsonObject[] = [];
+  for (const [boardIndex, { problem, submissions, nonce, signatures }] of boardRows.entries()) {
+    operations.push({
+      sequence: operations.length + 1, authority: "treasury", label: authorizationLabels[boardIndex], boardIndex,
+      problemId: problem.problemId, to: getAddress(String(submissions.address)), expectedRuntimeCodeHash: submissions.runtimeCodeHash,
+      value: "0", authorizationNonce: nonce.toString(), verifiedSignatureCount: 3,
+      data: submissionsInterface.encodeFunctionData("authorizeFunding", [digest, expiresAt, nonce, signatures]), dependsOn: [],
+    });
+  }
+  const addGovernanceOperation = (boardIndex: number, phase: "arm" | "open") => {
+    const { problem, submissions, pool } = boardRows[boardIndex];
+    const label = phase === "arm" ? armLabels[boardIndex] : `board.${problem.problemId}.setAcceptingFunds`;
+    const target = phase === "arm" ? submissions : pool;
+    const data = phase === "arm" ? submissionsInterface.encodeFunctionData("armFunding", [digest]) : poolInterface.encodeFunctionData("setAcceptingFunds", [true]);
+    const salt = keccak256(toUtf8Bytes(`${authorization.authorization_digest}:${label}`));
+    const operationId = keccak256(AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [String(target.address), 0n, data, salt]));
+    operations.push({
+      sequence: operations.length + 1, authority: "governance", label, boardIndex, problemId: problem.problemId,
+      to: getAddress(String(target.address)), expectedRuntimeCodeHash: target.runtimeCodeHash, value: "0", data,
+      salt, operationId, dependsOn: phase === "arm" ? authorizationLabels : armLabels,
+    });
+  };
+  for (let index = 0; index < 10; index += 1) addGovernanceOperation(index, "arm");
+  for (let index = 0; index < 10; index += 1) addGovernanceOperation(index, "open");
+  const body = {
+    schema: "p42-funding-activation-plan/v2", chainId: network.chainId,
+    network: network.chainId === 8453 ? "base-mainnet" : "base-sepolia",
+    deploymentCommit: manifest.deploymentCommit, deploymentConfigHash: manifest.deploymentConfigHash,
+    manifestBytesDigest: sha256Bytes(manifestBytes), releaseBindingDigest: releaseEvidence.releaseBindingDigest,
+    capsuleDigest: releaseEvidence.capsuleDigest, slateDigest: releaseEvidence.slateDigest,
+    releaseIndexDigest: releaseEvidence.releaseIndexDigest, authorizationDigest: authorization.authorization_digest,
+    authorizationExpiresAt: expiresAt, authorizationBytesDigest: sha256Bytes(authorizationBytes),
+    activationSignaturesDigest: sha256Canonical(activationSignatures), timelock: getAddress(String(timelock.address)),
+    timelockRuntimeCodeHash: timelock.runtimeCodeHash, treasury: getAddress(String(roles.treasury)),
+    governanceSigners: (governance.signers as string[]).map(getAddress), governanceThreshold: Number(governance.threshold),
+    governanceDelaySeconds: Number(governance.delaySeconds),
+    governanceOperationGraceSeconds: Number(governance.operationGracePeriodSeconds), boardCount: 10, operations,
+  };
+  return { ...body, planDigest: sha256Canonical(body) };
 }
 
 function exactKeys(value: JsonObject, keys: readonly string[]): boolean {
@@ -397,15 +556,16 @@ export function configuredIndexerArtifactPaths(env: IndexerProvenanceEnvironment
   const launchAuthorizationPath = env.P42_LAUNCH_AUTHORIZATION_PATH?.trim();
   const indexerCheckpointAttestationPath = env.P42_INDEXER_CHECKPOINT_ATTESTATION_PATH?.trim();
   const fundingActivationPlanPath = env.P42_FUNDING_ACTIVATION_PLAN_PATH?.trim();
+  const fundingActivationSignaturesPath = env.P42_FUNDING_ACTIVATION_SIGNATURES_PATH?.trim();
   const fundingActivationCompletionPath = env.P42_FUNDING_ACTIVATION_COMPLETION_PATH?.trim();
   const maxAgeText = env.P42_PORTAL_CHECKPOINT_MAX_AGE_SECONDS?.trim();
   const checkpointMaxAgeSeconds = maxAgeText ? Number(maxAgeText) : null;
-  const funding = [launchAuthorizationPath, fundingActivationPlanPath, fundingActivationCompletionPath, indexerCheckpointAttestationPath];
+  const funding = [launchAuthorizationPath, fundingActivationPlanPath, fundingActivationSignaturesPath, fundingActivationCompletionPath, indexerCheckpointAttestationPath];
   if (funding.some(Boolean) && (!funding.every(Boolean) || !Number.isSafeInteger(checkpointMaxAgeSeconds) || checkpointMaxAgeSeconds! < 1 || checkpointMaxAgeSeconds! > 300)) return { deploymentManifestPath, indexerCheckpointPath };
   return funding.every(Boolean) ? {
     deploymentManifestPath, indexerCheckpointPath,
     indexerCheckpointAttestationPath,
-    launchAuthorizationPath, fundingActivationPlanPath, fundingActivationCompletionPath,
+    launchAuthorizationPath, fundingActivationPlanPath, fundingActivationSignaturesPath, fundingActivationCompletionPath,
     checkpointMaxAgeSeconds: checkpointMaxAgeSeconds!,
   } : { deploymentManifestPath, indexerCheckpointPath };
 }
@@ -473,11 +633,14 @@ export function activatedProvenanceFromArtifacts(
   productionPolicy: JsonObject,
   trustRegistry: JsonObject,
   checkpointAttestation: JsonObject,
+  activationSignatures: JsonObject,
   plan: JsonObject,
   completion: JsonObject,
   checkpointMaxAgeSeconds = 300,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): ChainProvenance {
+  requireBinding(JSON.stringify(canonicalize(JSON.parse(checkpointBytes.toString("utf8"))))
+    === JSON.stringify(canonicalize(checkpoint)));
   const pending = provenanceFromArtifacts(problem, manifest, checkpoint);
   requireBinding(manifest.releaseMode === "production" && manifest.status === "governance-setup-complete");
   requireBinding(authorization.schema_version === "p42-production-launch-authorization/v1" && authorization.status === "authorized");
@@ -487,8 +650,11 @@ export function activatedProvenanceFromArtifacts(
   verifyLaunchAuthorization(authorization, trustRegistry, trustRegistryDigest);
   verifyCheckpointAttestation(checkpointAttestation, checkpointBytes, trustRegistry, nowSeconds);
   requireBinding(/^sha256:[0-9a-f]{64}$/.test(String(authorization.authorization_digest)));
-  requireBinding(plan.schema === "p42-funding-activation-plan/v2" && completion.schema === "p42-funding-activation-completion/v1");
-  requireBinding(/^sha256:[0-9a-f]{64}$/.test(String(plan.activationSignaturesDigest)));
+  requireBinding(plan.schema === "p42-funding-activation-plan/v2" && completion.schema === "p42-funding-activation-completion/v2");
+  const canonicalPlan = reconstructCanonicalActivationPlan(
+    manifest, manifestBytes, authorization, authorizationBytes, activationSignatures,
+  );
+  requireBinding(JSON.stringify(canonicalize(plan)) === JSON.stringify(canonicalize(canonicalPlan)));
   const { planDigest, ...planBody } = plan;
   const { completionDigest, ...completionBody } = completion;
   requireBinding(planDigest === sha256Canonical(planBody) && completionDigest === sha256Canonical(completionBody));
@@ -510,7 +676,19 @@ export function activatedProvenanceFromArtifacts(
   requireBinding(completion.deploymentCommit === manifest.deploymentCommit && completion.deploymentConfigHash === manifest.deploymentConfigHash);
   requireBinding(completion.releaseBindingDigest === object(manifest.releaseEvidence, "manifest.releaseEvidence").releaseBindingDigest);
   const range = object(checkpoint.range, "checkpoint.range");
-  requireBinding(Number(completion.finalizedBlockNumber) <= Number(range.toBlock));
+  const activationEvidence = object(checkpoint.activationEvidence, "checkpoint.activationEvidence");
+  const completionAnchor = object(activationEvidence.completionAnchor, "checkpoint completion anchor");
+  requireBinding(checkpoint.schema === "p42-prizes/indexer-checkpoint/v4"
+    && activationEvidence.schema === "p42-funding-activation-checkpoint/v1"
+    && activationEvidence.planDigest === plan.planDigest
+    && completionAnchor.completionDigest === completion.completionDigest
+    && completion.finalizedBlockNumber === completionAnchor.blockNumber
+    && same(completion.finalizedBlockHash, completionAnchor.blockHash)
+    && completion.finalizedBlockTimestamp === completionAnchor.blockTimestamp
+    && Number(completionAnchor.blockNumber) <= Number(range.toBlock)
+    && Number(completionAnchor.blockTimestamp) <= Number(range.toBlockTimestamp)
+    && activationEvidence.finalizedBlockNumber === range.toBlock
+    && same(activationEvidence.finalizedBlockHash, range.toBlockHash));
   requireBinding(Number.isSafeInteger(range.toBlockTimestamp)
     && Number(range.toBlockTimestamp) <= nowSeconds + 30
     && nowSeconds - Number(range.toBlockTimestamp) <= checkpointMaxAgeSeconds);
@@ -518,7 +696,30 @@ export function activatedProvenanceFromArtifacts(
   const manifestProblems = manifest.problems as JsonObject[];
   const checkpointBoards = checkpoint.boards as JsonObject[];
   const completionBoards = completion.boards as JsonObject[];
-  requireBinding(manifestProblems.length === 10 && checkpointBoards.length === 10 && completionBoards.length === 10);
+  const planOperations = Array.isArray(plan.operations)
+    ? plan.operations.map((operation, index) => object(operation, `activation plan operation ${index}`))
+    : [];
+  const checkpointOperations = Array.isArray(activationEvidence.operations)
+    ? activationEvidence.operations.map((operation, index) => object(operation, `checkpoint activation operation ${index}`))
+    : [];
+  requireBinding(manifestProblems.length === 10 && checkpointBoards.length === 10
+    && completionBoards.length === 10 && planOperations.length === 30 && checkpointOperations.length === 20);
+  const governanceOperations = planOperations.slice(10);
+  const evidenceIds = new Set<string>();
+  const evidenceLabels = new Set<string>();
+  for (let index = 0; index < governanceOperations.length; index += 1) {
+    const planned = governanceOperations[index];
+    const attested = checkpointOperations[index];
+    requireBinding(attested.sequence === planned.sequence
+      && attested.label === planned.label
+      && String(attested.problemId) === String(planned.problemId)
+      && same(attested.operationId, planned.operationId)
+      && attested.state === 2
+      && !evidenceIds.has(String(attested.operationId).toLowerCase())
+      && !evidenceLabels.has(String(attested.label)));
+    evidenceIds.add(String(attested.operationId).toLowerCase());
+    evidenceLabels.add(String(attested.label));
+  }
   const digestHex = `0x${String(authorization.authorization_digest).slice(7)}`;
   const seen = new Set<string>();
   for (let row = 0; row < 10; row += 1) {
@@ -532,6 +733,18 @@ export function activatedProvenanceFromArtifacts(
     const pool = object(contracts.pool, `manifest pool ${row}`);
     const submissions = object(contracts.submissions, `manifest submissions ${row}`);
     const onchain = object(board.onchain, `checkpoint board ${row} onchain`);
+    const armMatches = planOperations.filter((operation) => operation.label === `board.${id}.armFunding`
+      && String(operation.problemId) === id && same(operation.to, submissions.address));
+    const openMatches = planOperations.filter((operation) => operation.label === `board.${id}.setAcceptingFunds`
+      && String(operation.problemId) === id && same(operation.to, pool.address));
+    requireBinding(armMatches.length === 1 && openMatches.length === 1);
+    const armEvidence = object(activated.armOperation, `activation completion board ${row} arm operation`);
+    const openEvidence = object(activated.openOperation, `activation completion board ${row} open operation`);
+    requireBinding(armEvidence.state === 2 && openEvidence.state === 2
+      && same(armEvidence.operationId, armMatches[0].operationId)
+      && same(openEvidence.operationId, openMatches[0].operationId)
+      && checkpointOperations.some((operation) => same(operation.operationId, armEvidence.operationId) && operation.state === 2)
+      && checkpointOperations.some((operation) => same(operation.operationId, openEvidence.operationId) && operation.state === 2));
     requireBinding(same(activated.pool, pool.address) && same(activated.submissionManager, submissions.address));
     requireBinding(same(activated.poolRuntimeCodeHash, pool.runtimeCodeHash));
     requireBinding(activated.fundingArmed === true && activated.acceptingFunds === true);
@@ -574,6 +787,8 @@ function readValidatedArtifacts(paths: IndexerArtifactPaths): { manifest: JsonOb
     ? checkpointV2Schema
     : checkpoint.schema === "p42-prizes/indexer-checkpoint/v3"
       ? checkpointV3Schema
+      : checkpoint.schema === "p42-prizes/indexer-checkpoint/v4"
+        ? checkpointV4Schema
       : null;
   if (!checkpointSchema) throw new Error("unsupported indexer checkpoint schema");
   validateSchema(checkpoint, checkpointSchema, checkpointSchema as JsonSchema, "checkpoint");
@@ -590,7 +805,7 @@ export function activatedIndexerSnapshotFromArtifacts(
   artifacts: ActivatedArtifactBundle,
 ): ActivatedIndexerSnapshot {
   requireBinding(problems.length === 10);
-  requireBinding(artifacts.checkpoint.schema === "p42-prizes/indexer-checkpoint/v3");
+  requireBinding(artifacts.checkpoint.schema === "p42-prizes/indexer-checkpoint/v4");
   const entries = problems.map((problem) => {
     const provenance = activatedProvenanceFromArtifacts(
       problem,
@@ -603,6 +818,7 @@ export function activatedIndexerSnapshotFromArtifacts(
       artifacts.productionPolicy,
       artifacts.trustRegistry,
       artifacts.checkpointAttestation,
+      artifacts.activationSignatures,
       artifacts.plan,
       artifacts.completion,
       artifacts.checkpointMaxAgeSeconds,
@@ -628,6 +844,7 @@ export function loadActivatedIndexerSnapshot(
 ): ActivatedIndexerSnapshot | null {
   if (!paths?.launchAuthorizationPath
     || !paths.fundingActivationPlanPath
+    || !paths.fundingActivationSignaturesPath
     || !paths.fundingActivationCompletionPath
     || !paths.indexerCheckpointAttestationPath) return null;
   try {
@@ -646,6 +863,7 @@ export function loadActivatedIndexerSnapshot(
       productionPolicy: productionTrust.policy,
       trustRegistry: productionTrust.trustRegistry,
       checkpointAttestation: object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath), "checkpoint attestation"),
+      activationSignatures: object(readBoundedRegularJson(paths.fundingActivationSignaturesPath), "activation signatures"),
       plan: object(readBoundedRegularJson(paths.fundingActivationPlanPath), "activation plan"),
       completion,
       checkpointMaxAgeSeconds: paths.checkpointMaxAgeSeconds,
@@ -659,15 +877,16 @@ export function loadIndexerProvenance(problem: Problem, paths = configuredIndexe
   if (!paths) return localOnly(problem);
   try {
     const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
-    if (paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath) {
+    if (paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationSignaturesPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath) {
       const authorizationFile = readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath);
       const authorization = object(authorizationFile.value, "authorization");
       const productionTrust = readProductionTrustPolicy();
       const checkpointAttestation = object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath), "checkpoint attestation");
+      const activationSignatures = object(readBoundedRegularJson(paths.fundingActivationSignaturesPath), "activation signatures");
       const plan = object(readBoundedRegularJson(paths.fundingActivationPlanPath), "activation plan");
       const completion = object(readBoundedRegularJson(paths.fundingActivationCompletionPath), "activation completion");
       validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
-      return activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization, authorizationFile.bytes, productionTrust.policy, productionTrust.trustRegistry, checkpointAttestation, plan, completion, paths.checkpointMaxAgeSeconds);
+      return activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization, authorizationFile.bytes, productionTrust.policy, productionTrust.trustRegistry, checkpointAttestation, activationSignatures, plan, completion, paths.checkpointMaxAgeSeconds);
     }
     return provenanceFromArtifacts(problem, manifest, checkpoint);
   } catch { return localOnly(problem); }
@@ -681,16 +900,17 @@ export function loadIndexerProvenanceSnapshot(
   if (!paths) return new Map(problems.map((problem) => [problem.slug, localOnly(problem)]));
   try {
     const { manifest, manifestBytes, checkpoint, checkpointBytes } = readValidatedArtifacts(paths);
-    const hasFunding = paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath;
+    const hasFunding = paths.launchAuthorizationPath && paths.fundingActivationPlanPath && paths.fundingActivationSignaturesPath && paths.fundingActivationCompletionPath && paths.indexerCheckpointAttestationPath;
     const authorizationFile = hasFunding ? readBoundedRegularJsonWithBytes(paths.launchAuthorizationPath!) : null;
     const authorization = authorizationFile ? object(authorizationFile.value, "authorization") : null;
     const productionTrust = hasFunding ? readProductionTrustPolicy() : null;
     const checkpointAttestation = hasFunding ? object(readBoundedRegularJson(paths.indexerCheckpointAttestationPath!), "checkpoint attestation") : null;
+    const activationSignatures = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationSignaturesPath!), "activation signatures") : null;
     const plan = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationPlanPath!), "activation plan") : null;
     const completion = hasFunding ? object(readBoundedRegularJson(paths.fundingActivationCompletionPath!), "activation completion") : null;
     if (completion) validateSchema(completion, completionSchema, completionSchema as JsonSchema, "activation completion");
     const entries = problems.map((problem) => [problem.slug, hasFunding
-      ? activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization!, authorizationFile!.bytes, productionTrust!.policy, productionTrust!.trustRegistry, checkpointAttestation!, plan!, completion!, paths.checkpointMaxAgeSeconds)
+      ? activatedProvenanceFromArtifacts(problem, manifest, manifestBytes, checkpoint, checkpointBytes, authorization!, authorizationFile!.bytes, productionTrust!.policy, productionTrust!.trustRegistry, checkpointAttestation!, activationSignatures!, plan!, completion!, paths.checkpointMaxAgeSeconds)
       : provenanceFromArtifacts(problem, manifest, checkpoint)] as const);
     return new Map(entries);
   } catch {

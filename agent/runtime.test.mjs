@@ -66,6 +66,10 @@ test("npm pack installs complete runnable agent binaries", () => {
   execFileSync("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", join(packDir, tarballName)], {
     cwd: installDir, encoding: "utf8",
   });
+  const packagedExecutor = readFileSync(
+    join(installDir, "node_modules", "p42-agent", "funding-activation-executor.mjs"), "utf8",
+  );
+  assert.doesNotMatch(packagedExecutor, /fundingActivationOperationEvidenceTestOnly|assertActivationProviderEndpoint/);
   for (const module of [
     "transcript-store.mjs", "strict-json.mjs", "signed-transaction.mjs", "solver-manifest.mjs",
     "censorship-fallback-runtime.mjs", "censorship-fallback-supervisor.mjs",

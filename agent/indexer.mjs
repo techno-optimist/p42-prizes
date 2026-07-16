@@ -36,6 +36,10 @@ import {
   assertCanonicalManifestTopology,
   canonicalTopologyDescriptors,
 } from "./canonical-topology.mjs";
+import {
+  activationRpcFetchRequest,
+  validateActivationRpcEndpointPair,
+} from "./activation-rpc-endpoints.mjs";
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
@@ -159,6 +163,9 @@ function checkpointSchema(schema = "p42-prizes/indexer-checkpoint/v3") {
     ),
     "p42-prizes/indexer-checkpoint/v3": JSON.parse(
       readFileSync(`${SCHEMA_ROOT}/indexer-checkpoint-v3.schema.json`, "utf8"),
+    ),
+    "p42-prizes/indexer-checkpoint/v4": JSON.parse(
+      readFileSync(`${SCHEMA_ROOT}/indexer-checkpoint-v4.schema.json`, "utf8"),
     ),
   });
   const selected = multiboardCheckpointSchemas[schema];
@@ -4332,6 +4339,7 @@ export function buildMultiBoardCheckpoint({
   toBlock,
   toBlockHash,
   toBlockTimestamp,
+  activationEvidence = null,
   boards,
 }) {
   if (!Array.isArray(boards) || boards.length === 0) {
@@ -4379,10 +4387,11 @@ export function buildMultiBoardCheckpoint({
   const complete = boardReports.every((report) => report.reconstruction.complete);
   const ok = complete && boardReports.every((report) => report.reconstruction.ok);
   const checkpoint = canonicalize({
-    schema: "p42-prizes/indexer-checkpoint/v3",
+    schema: activationEvidence ? "p42-prizes/indexer-checkpoint/v4" : "p42-prizes/indexer-checkpoint/v3",
     manifestBinding: binding,
     finalityPolicy,
     range: { fromBlock, toBlock, toBlockHash, toBlockTimestamp },
+    ...(activationEvidence ? { activationEvidence } : {}),
     boards: boardReports,
     reconstruction: { ok, complete, checks },
   });
@@ -4615,6 +4624,38 @@ export function validateMultiBoardCheckpoint(checkpoint) {
   if (checkpoint.range.toBlock < checkpoint.range.fromBlock) {
     throw new Error("checkpoint.range.toBlock must not precede checkpoint.range.fromBlock");
   }
+  if (checkpoint.schema === "p42-prizes/indexer-checkpoint/v4") {
+    if (checkpoint.boards.length !== 10 || Object.keys(checkpoint.manifestBinding.boards).length !== 10) {
+      throw new Error("activation-bound checkpoint requires the exact ten-board cohort");
+    }
+    const evidence = checkpoint.activationEvidence;
+    if (evidence.finalizedBlockNumber !== checkpoint.range.toBlock
+        || evidence.finalizedBlockHash.toLowerCase() !== checkpoint.range.toBlockHash.toLowerCase()) {
+      throw new Error("checkpoint activation evidence must use the exact checkpoint anchor");
+    }
+    if (evidence.completionAnchor.blockNumber > checkpoint.range.toBlock
+        || evidence.completionAnchor.blockTimestamp > checkpoint.range.toBlockTimestamp) {
+      throw new Error("checkpoint activation completion anchor must not follow the fresh checkpoint anchor");
+    }
+    const expected = [
+      ...Array.from({ length: 10 }, (_, index) => ({ sequence: index + 11, problemId: String(index + 1), suffix: "armFunding" })),
+      ...Array.from({ length: 10 }, (_, index) => ({ sequence: index + 21, problemId: String(index + 1), suffix: "setAcceptingFunds" })),
+    ];
+    const operationIds = new Set();
+    const labels = new Set();
+    for (let index = 0; index < expected.length; index += 1) {
+      const operation = evidence.operations[index];
+      const row = expected[index];
+      const expectedLabel = `board.${row.problemId}.${row.suffix}`;
+      if (operation.sequence !== row.sequence || operation.problemId !== row.problemId
+          || operation.label !== expectedLabel || operation.state !== 2
+          || operationIds.has(operation.operationId.toLowerCase()) || labels.has(operation.label)) {
+        throw new Error("checkpoint activation evidence violates exact ordered operation topology");
+      }
+      operationIds.add(operation.operationId.toLowerCase());
+      labels.add(operation.label);
+    }
+  }
   const bindingIds = Object.keys(checkpoint.manifestBinding.boards);
   if (bindingIds.some((id) => !/^[1-9][0-9]*$/.test(id))) {
     throw new Error("checkpoint.manifestBinding.boards keys must be canonical positive registry ids");
@@ -4641,7 +4682,7 @@ export function validateMultiBoardCheckpoint(checkpoint) {
     if (stableStringify(countKeys) !== stableStringify(expectedCountKeys)) {
       throw new Error(`checkpoint board ${board.problemId} lifecycle counts must cover the exact event catalog`);
     }
-    if (checkpoint.schema === "p42-prizes/indexer-checkpoint/v3") {
+    if (["p42-prizes/indexer-checkpoint/v3", "p42-prizes/indexer-checkpoint/v4"].includes(checkpoint.schema)) {
       validateCanonicalPortalProjection(board, checkpoint.manifestBinding);
       validatePortalTranscriptReplay(board);
     }
@@ -4922,12 +4963,12 @@ function parseArg(argv, name, defaultValue = undefined) {
 function loadPriorCheckpoint(path, binding, schema) {
   if (!existsSync(path)) return null;
   const checkpoint = readStrictJsonFileSync(path, CHECKPOINT_JSON_LIMITS);
-  const migratingV2ToV3 = schema === "p42-prizes/indexer-checkpoint/v3"
-    && checkpoint.schema === "p42-prizes/indexer-checkpoint/v2";
-  if (checkpoint.schema !== schema && !migratingV2ToV3) {
+  const migratingHistorical = ["p42-prizes/indexer-checkpoint/v3", "p42-prizes/indexer-checkpoint/v4"].includes(schema)
+    && ["p42-prizes/indexer-checkpoint/v2", "p42-prizes/indexer-checkpoint/v3"].includes(checkpoint.schema);
+  if (checkpoint.schema !== schema && !migratingHistorical) {
     throw new Error(`Refusing to overwrite non-checkpoint file ${path}`);
   }
-  if (["p42-prizes/indexer-checkpoint/v2", "p42-prizes/indexer-checkpoint/v3"].includes(checkpoint.schema)) {
+  if (["p42-prizes/indexer-checkpoint/v2", "p42-prizes/indexer-checkpoint/v3", "p42-prizes/indexer-checkpoint/v4"].includes(checkpoint.schema)) {
     validateMultiBoardCheckpoint(checkpoint);
   }
   if (stableStringify(checkpoint.manifestBinding) !== stableStringify(binding)) {
@@ -4936,22 +4977,52 @@ function loadPriorCheckpoint(path, binding, schema) {
   return checkpoint;
 }
 
-export async function runIndexer({
-  manifestPath,
-  rpcUrl,
-  outPath,
-  archivePath = null,
-  transcriptEndpoints = [],
-  transcriptFetchClient = null,
-}) {
+export async function runIndexer(options) {
+  const allowed = new Set([
+    "manifestPath", "rpcUrl", "outPath", "archivePath", "transcriptEndpoints",
+    "transcriptFetchClient", "activationPlanPath", "activationCompletionPath", "secondaryRpcUrl",
+  ]);
+  if (!options || typeof options !== "object" || Array.isArray(options)
+      || Object.keys(options).some((key) => !allowed.has(key))) {
+    throw new Error("indexer options contain an unsupported or injectable transport field");
+  }
+  const {
+    manifestPath,
+    rpcUrl,
+    outPath,
+    archivePath = null,
+    transcriptEndpoints = [],
+    transcriptFetchClient = null,
+    activationPlanPath = null,
+    activationCompletionPath = null,
+    secondaryRpcUrl = null,
+  } = options;
   if (!manifestPath) throw new Error("required: --manifest <path>");
   if (!outPath) throw new Error("required: --out <checkpoint.json>");
+  const activationInputs = [activationPlanPath, activationCompletionPath, secondaryRpcUrl];
+  if (activationInputs.some((value) => value === null)
+      && activationInputs.some((value) => value !== null)) {
+    throw new Error("activation checkpointing requires --activation-plan, --activation-completion, and an independent secondary RPC");
+  }
   const resolvedManifest = resolve(manifestPath);
   const resolvedOut = resolve(outPath);
   const manifest = readStrictJsonFileSync(resolvedManifest, MANIFEST_JSON_LIMITS);
   const multiBoard = isMultiBoardManifest(manifest);
   const policy = manifest.indexer.finalityPolicy;
-  const provider = new ethers.JsonRpcProvider(rpcUrl, manifest.network.chainId, { staticNetwork: true });
+  const activationEndpoints = activationPlanPath
+    ? validateActivationRpcEndpointPair(rpcUrl, secondaryRpcUrl)
+    : null;
+  const provider = new ethers.JsonRpcProvider(
+    activationRpcFetchRequest(activationEndpoints?.primary.url ?? rpcUrl),
+    manifest.network.chainId,
+    { staticNetwork: true },
+  );
+  const activationPlan = activationPlanPath
+    ? readStrictJsonFileSync(resolve(activationPlanPath), MANIFEST_JSON_LIMITS)
+    : null;
+  const activationCompletion = activationCompletionPath
+    ? readStrictJsonFileSync(resolve(activationCompletionPath), MANIFEST_JSON_LIMITS)
+    : null;
   const binding = validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
   const artifacts = loadContractArtifacts();
   const contracts = multiBoard ? null : instantiateContracts(provider, manifest, artifacts);
@@ -4966,7 +5037,9 @@ export async function runIndexer({
     const prior = loadPriorCheckpoint(
       resolvedOut,
       binding,
-      multiBoard ? "p42-prizes/indexer-checkpoint/v3" : "p42-prizes/indexer-checkpoint/v1",
+      multiBoard
+        ? (activationPlan ? "p42-prizes/indexer-checkpoint/v4" : "p42-prizes/indexer-checkpoint/v3")
+        : "p42-prizes/indexer-checkpoint/v1",
     );
     if (prior) {
       const priorBlock = await provider.getBlock(prior.range.toBlock);
@@ -4991,6 +5064,13 @@ export async function runIndexer({
         onReorg: (error) =>
           console.warn(`reorg detected (${error.message}); restarting from ${fromBlock}`),
       });
+      const activationEvidence = activationPlan
+        ? await (await import("./funding-activation-executor.mjs"))
+          .collectFundingActivationOperationEvidence(
+            activationPlan, activationEndpoints.primary.url, activationEndpoints.secondary.url,
+            anchor, activationCompletion,
+          )
+        : null;
       const checkpoint = buildMultiBoardCheckpoint({
         binding,
         finalityPolicy: policy,
@@ -4998,6 +5078,7 @@ export async function runIndexer({
         toBlock,
         toBlockHash: anchor.hash,
         toBlockTimestamp: anchor.timestamp,
+        activationEvidence,
         boards,
       });
 
@@ -5144,9 +5225,13 @@ export async function cli(argv = process.argv, env = process.env) {
   const outPath = parseArg(argv, "out");
   const rpcUrl = parseArg(argv, "rpc", "https://sepolia.base.org");
   const archivePath = parseArg(argv, "archive", null);
+  const activationPlanPath = parseArg(argv, "activation-plan", null);
+  const activationCompletionPath = parseArg(argv, "activation-completion", null);
+  const secondaryRpcUrl = parseArg(argv, "secondary-rpc", null);
   const transcriptConfig = configureIndexerTranscripts(argv, env);
   const checkpoint = await runIndexer({
-    manifestPath, rpcUrl, outPath, archivePath,
+    manifestPath, rpcUrl, outPath, archivePath, activationPlanPath, activationCompletionPath,
+    secondaryRpcUrl,
     transcriptEndpoints: transcriptConfig.endpoints,
     transcriptFetchClient: transcriptConfig.fetchClient,
   });
