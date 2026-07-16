@@ -39,7 +39,8 @@ function launchV2() {
     release_binding: {
       binding_version: "p42-release-binding/v2", repository_uri: "https://example.com/p42.git",
       git_commit: "1".repeat(40), deployment_commit: "2".repeat(40), network: "base-sepolia", chain_id: 84532,
-      canonical_topology: artifact("topology"), deployment_manifest: artifact("manifest"), configuration_artifact: artifact("configuration"),
+      canonical_topology: artifact("topology"), release_capsule: artifact("release-capsule"),
+      deployment_manifest: artifact("manifest"), configuration_artifact: artifact("configuration"),
       contracts: canonicalContracts(),
     },
     board: {
