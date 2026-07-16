@@ -29,6 +29,8 @@ MAX_EDGES = 64
 MAX_VERTICES = EDGE_SIZE + (EDGE_SIZE - 1) * (MAX_EDGES - 1)  # = 321
 MAX_HITTING_SET = 5
 MAX_SOLUTION_BYTES = 65536
+ALLOWED_FIELDS = {"vertices", "edges", "source", "claimed_score", "claimed_improvement"}
+METADATA_FIELDS = {"source", "claimed_score", "claimed_improvement"}
 
 # Erdos problem #21 (Erdos-Lovasz 1975): q(6) = minimum number of edges of an
 # intersecting 6-uniform hypergraph with covering number tau = 6. Verified
@@ -66,6 +68,22 @@ def parse_solution(raw: bytes) -> tuple[int, list[tuple[int, ...]]]:
 
     if not isinstance(data, dict):
         raise VerifierFailure("MALFORMED", "solution root must be an object")
+
+    unknown_fields = sorted(set(data) - ALLOWED_FIELDS)
+    if unknown_fields:
+        raise VerifierFailure("MALFORMED", f"unknown solution field: {unknown_fields[0]}")
+    for field in METADATA_FIELDS:
+        if field not in data:
+            continue
+        value = data[field]
+        if not isinstance(value, str):
+            raise VerifierFailure("MALFORMED", f"{field} must be a string")
+        try:
+            value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise VerifierFailure(
+                "MALFORMED", f"{field} must contain valid Unicode scalar values"
+            ) from exc
 
     vertices = require_int(data.get("vertices"), "vertices")
     if vertices < EDGE_SIZE or vertices > MAX_VERTICES:

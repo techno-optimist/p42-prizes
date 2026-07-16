@@ -5,6 +5,8 @@ members = [
   "hadamard-668-defect/script",
   "distinct-subset-sums-a11/program",
   "distinct-subset-sums-a11/script",
+  "q6-intersecting-hypergraph/program",
+  "q6-intersecting-hypergraph/script",
 ]
 resolver = "2"
 

@@ -1,0 +1,15 @@
+[package]
+name = "p42-q6-objective-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+hex.workspace = true
+p42-objective-core = { path = "../../p42-objective-core" }
+serde_json.workspace = true
+sp1-sdk.workspace = true
+
+[build-dependencies]
+sp1-build.workspace = true

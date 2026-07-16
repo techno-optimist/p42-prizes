@@ -94,6 +94,29 @@ def test_malformed_json_fails_closed() -> None:
     assert code != 0
     assert report["valid"] is False
     assert report["reason"] == "MALFORMED_JSON"
+
+
+def test_unknown_and_non_scalar_metadata_fail_closed(tmp_path: Path) -> None:
+    seed = load_fixture("seed-pg25.json")
+    for mutation in (
+        {**seed, "unknown": 1},
+        {**seed, "source": {"nested": True}},
+    ):
+        path = tmp_path / "mutation.json"
+        path.write_text(json.dumps(mutation), encoding="utf-8")
+        code, report = run_verify(str(path))
+        assert code != 0
+        assert report["valid"] is False
+        assert report["reason"] == "MALFORMED"
+
+    without_source = {key: value for key, value in seed.items() if key != "source"}
+    raw = (json.dumps(without_source, separators=(",", ":"))[:-1] + ',"source":"\\ud800"}').encode()
+    path = tmp_path / "surrogate.json"
+    path.write_bytes(raw)
+    code, report = run_verify(str(path))
+    assert code != 0
+    assert report["valid"] is False
+    assert report["reason"] == "MALFORMED"
     assert report["improvement"] == "0/1"
 
 

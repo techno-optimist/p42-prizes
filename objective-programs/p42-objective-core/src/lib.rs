@@ -14,6 +14,12 @@ pub const A11_SUBSET_COUNT: usize = 1 << A11_N;
 pub const A11_MAX_ELEMENT: u64 = 1_000_000_000_000_000;
 pub const A11_SEED_BEST: u64 = 594;
 pub const A11_MAX_SOLUTION_BYTES: usize = 4 * 1024;
+pub const Q6_EDGE_SIZE: usize = 6;
+pub const Q6_MAX_EDGES: usize = 64;
+pub const Q6_MAX_VERTICES: u64 = 321;
+pub const Q6_MAX_HITTING_SET: usize = 5;
+pub const Q6_SEED_BEST: u64 = 18;
+pub const Q6_MAX_SOLUTION_BYTES: usize = 64 * 1024;
 pub const MAX_SOLUTION_BYTES: usize = 256 * 1024;
 pub const MAX_WITNESS_SOLUTION_BYTES: usize = 1024 * 1024;
 pub const MAX_SOLUTION_CID_BYTES: usize = 512;
@@ -178,6 +184,16 @@ pub fn verify_distinct_subset_sums_a11_and_journal(
 ) -> Result<Word, ObjectiveError> {
     verify_objective_and_journal(witness, |solution| {
         verify_distinct_subset_sums_a11_against_seed(solution, A11_SEED_BEST).and_then(score_atoms)
+    })
+}
+
+pub fn verify_q6_intersecting_hypergraph_and_journal(
+    witness: &ObjectiveWitness,
+) -> Result<Word, ObjectiveError> {
+    verify_objective_and_journal(witness, |solution| {
+        verify_q6_intersecting_hypergraph(solution)
+            .filter(|edges| *edges < Q6_SEED_BEST)
+            .and_then(score_atoms)
     })
 }
 
@@ -443,6 +459,123 @@ pub fn verify_distinct_subset_sums_a11(raw: &[u8]) -> Option<u64> {
 
 pub fn verify_distinct_subset_sums_a11_against_seed(raw: &[u8], seed: u64) -> Option<u64> {
     verify_distinct_subset_sums_a11(raw).filter(|score| *score < seed)
+}
+
+pub fn verify_q6_intersecting_hypergraph(raw: &[u8]) -> Option<u64> {
+    if raw.len() > Q6_MAX_SOLUTION_BYTES {
+        return None;
+    }
+    let solution: Q6Solution = serde_json::from_slice(raw).ok()?;
+    if solution.vertices < Q6_EDGE_SIZE as u64 || solution.vertices > Q6_MAX_VERTICES {
+        return None;
+    }
+    if solution.edges.is_empty() || solution.edges.len() > Q6_MAX_EDGES {
+        return None;
+    }
+
+    let mut edges = Vec::with_capacity(solution.edges.len());
+    for mut edge in solution.edges {
+        if edge.len() != Q6_EDGE_SIZE || edge.iter().any(|vertex| *vertex >= solution.vertices) {
+            return None;
+        }
+        edge.sort_unstable();
+        if edge.windows(2).any(|pair| pair[0] == pair[1]) || edges.contains(&edge) {
+            return None;
+        }
+        edges.push(edge);
+    }
+    for left in 0..edges.len() {
+        for right in (left + 1)..edges.len() {
+            if !edges[left]
+                .iter()
+                .any(|vertex| edges[right].binary_search(vertex).is_ok())
+            {
+                return None;
+            }
+        }
+    }
+    if q6_has_hitting_set(&edges, &mut Vec::new(), Q6_MAX_HITTING_SET) {
+        return None;
+    }
+    Some(edges.len() as u64)
+}
+
+fn q6_has_hitting_set(edges: &[Vec<u64>], chosen: &mut Vec<u64>, budget: usize) -> bool {
+    let target = edges
+        .iter()
+        .find(|edge| !edge.iter().any(|vertex| chosen.contains(vertex)));
+    let Some(target) = target else { return true };
+    if budget == 0 {
+        return false;
+    }
+    for vertex in target {
+        chosen.push(*vertex);
+        if q6_has_hitting_set(edges, chosen, budget - 1) {
+            return true;
+        }
+        chosen.pop();
+    }
+    false
+}
+
+#[derive(Debug)]
+struct Q6Solution {
+    vertices: u64,
+    edges: Vec<Vec<u64>>,
+}
+
+impl<'de> Deserialize<'de> for Q6Solution {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct SolutionVisitor;
+        impl<'de> de::Visitor<'de> for SolutionVisitor {
+            type Value = Q6Solution;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a q6 intersecting-hypergraph solution object")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut seen = HashSet::new();
+                let mut vertices = None;
+                let mut edges = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(de::Error::custom(format!("duplicate key: {key}")));
+                    }
+                    match key.as_str() {
+                        "vertices" => vertices = Some(map.next_value()?),
+                        "edges" => edges = Some(map.next_value()?),
+                        "source" | "claimed_score" | "claimed_improvement" => {
+                            map.next_value::<String>()?;
+                        }
+                        _ => {
+                            return Err(de::Error::unknown_field(
+                                &key,
+                                &[
+                                    "vertices",
+                                    "edges",
+                                    "source",
+                                    "claimed_score",
+                                    "claimed_improvement",
+                                ],
+                            ))
+                        }
+                    }
+                }
+                Ok(Q6Solution {
+                    vertices: vertices.ok_or_else(|| de::Error::missing_field("vertices"))?,
+                    edges: edges.ok_or_else(|| de::Error::missing_field("edges"))?,
+                })
+            }
+        }
+        deserializer.deserialize_map(SolutionVisitor)
+    }
 }
 
 #[derive(Debug)]
@@ -839,6 +972,83 @@ mod tests {
     }
 
     #[test]
+    fn q6_matches_packaged_exact_verifier_fixtures() {
+        assert_eq!(
+            verify_q6_intersecting_hypergraph(&q6_fixture("seed-pg25.json")),
+            Some(18)
+        );
+        assert_eq!(
+            verify_q6_intersecting_hypergraph(&q6_fixture("lying-claim.json")),
+            Some(19)
+        );
+        for name in [
+            "boundary-tau5.json",
+            "coverable-sunflower.json",
+            "duplicate-edge.json",
+            "edge-size.json",
+            "malformed.json",
+            "not-intersecting.json",
+            "vertex-range.json",
+        ] {
+            assert!(
+                verify_q6_intersecting_hypergraph(&q6_fixture(name)).is_none(),
+                "fixture {name}"
+            );
+        }
+        assert!(verify_q6_intersecting_hypergraph(
+            br#"{"vertices":6,"vertices":6,"edges":[[0,1,2,3,4,5]]}"#
+        )
+        .is_none());
+        assert!(verify_q6_intersecting_hypergraph(
+            br#"{"vertices":6,"edges":[[0,1,2,3,4,5]],"unknown":1}"#
+        )
+        .is_none());
+        assert!(verify_q6_intersecting_hypergraph(
+            br#"{"vertices":6,"edges":[[0,1,2,3,4,5]],"source":"\ud800"}"#
+        )
+        .is_none());
+        assert!(
+            verify_q6_intersecting_hypergraph(&vec![b' '; Q6_MAX_SOLUTION_BYTES + 1]).is_none()
+        );
+    }
+
+    #[test]
+    fn q6_objective_journal_rejects_a_false_improvement_claim() {
+        let solution = q6_fixture("seed-pg25.json");
+        let witness = ObjectiveWitness {
+            chain_id: word_u128(84_532),
+            quorum: [0x11; 20],
+            manager: [0x22; 20],
+            submission_manager: [0x33; 20],
+            registry: [0x44; 20],
+            problem_id: word_u128(1),
+            objective_package_hash: [0x55; 32],
+            guest_elf_sha256: [0xdd; 32],
+            program_vkey: [0xee; 32],
+            submission_id: word_u128(7),
+            solver: [0x66; 20],
+            commitment: [0x77; 32],
+            commit_da_hash: sha256(&solution),
+            solution_cid: b"ipfs://p42-q6-objective-fixture".to_vec(),
+            claimed_score_atoms: score_atoms(17).unwrap(),
+            improvement_atoms: score_atoms(1).unwrap(),
+            challenge_ends_at: word_u128(2_000_000_300),
+            challenger: [0x88; 20],
+            reason_hash: [0x99; 32],
+            challenged_at: word_u128(2_000_000_100),
+            dispute_ends_at: word_u128(2_000_000_200),
+            pending_challenger_wins: false,
+            transcript_hash: [0xaa; 32],
+            transcript_uri: b"ipfs://p42-q6-transcript".to_vec(),
+            verdict_hash: [0xbb; 32],
+            corrected_challenger_wins: true,
+            proof_beneficiary: [0xcc; 20],
+            solution,
+        };
+        assert!(verify_q6_intersecting_hypergraph_and_journal(&witness).is_ok());
+    }
+
+    #[test]
     fn bounds_variable_witness_fields_before_guest_execution() {
         let witness = fixture_witness();
         let encoded = bincode::serialize(&witness).unwrap();
@@ -985,6 +1195,15 @@ mod tests {
         std::fs::read(
             Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../problems/distinct-subset-sums-a11/tests")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    fn q6_fixture(name: &str) -> Vec<u8> {
+        std::fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../problems/q6-intersecting-hypergraph/tests")
                 .join(name),
         )
         .unwrap()
