@@ -115,7 +115,7 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
         "adversarial_campaign", "operational_controls", "production_release_verification",
         "production_release_slate", "production_board_bindings", "release_capsule",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
-        "explorer_operator_policy",
+        "explorer_operator_policy", "activation_rpc_operator_registry",
     )
     authorization = {
         "schema_version": "p42-production-launch-authorization/v1",
