@@ -83,6 +83,7 @@ function mountScrollWorld(container, config) {
   const SEGMENTS = [];
   SECTIONS.forEach((s, i) => {
     const dive = { kind: 'dive', si: i, clip: s.clip, clipM: s.clipMobile, still: s.still, accent: s.accent,
+                   dir: s.frames, count: s.frameCount || 0,
                    w: s.scroll || DIVE_W, linger: s.linger || 0 };
     SEGMENTS.push(dive);
     s._seg = dive;
@@ -135,8 +136,14 @@ function mountScrollWorld(container, config) {
     const scene = el('div', 'sw-scene'); scene.style.setProperty('--sw-accent', s.accent || '');
     const img = el('img', 'sw-scene__still'); img.alt = ''; img.decoding = 'async'; img.loading = 'lazy';
     if (s.still) img.src = s.still;
-    scene.appendChild(img); stage.appendChild(scene);
-    s.el = scene; s.img = img; s.video = null; s.hasClip = false;
+    scene.appendChild(img);
+    // Frame-sequence scrubbing: we draw a pre-decoded still frame to a canvas
+    // instead of seeking a video. No decoder, no blob, no wait-for-whole-clip.
+    const cv = el('canvas', 'sw-scene__canvas');
+    scene.appendChild(cv);
+    stage.appendChild(scene);
+    s.el = scene; s.img = img; s.canvas = cv; s.ctx = cv.getContext('2d', { alpha: false });
+    s.frames = []; s.loaded = 0; s.drawnImg = null; s.needsRedraw = false; s.hasClip = false;
     s.loading = false; s.ready = false; s.cur = 0; s.target = 0; s.visible = false;
   });
 
@@ -181,6 +188,7 @@ function mountScrollWorld(container, config) {
     SEGMENTS.forEach(s => { s.start = off * vh; off += s.w; s.end = off * vh; });
     totalW = off;
     track.style.height = (totalW * vh + vh) + 'px';   // +1vh so the last flight completes
+    sizeCanvases();
     read();
   }
 
@@ -189,28 +197,79 @@ function mountScrollWorld(container, config) {
     window.scrollTo({ top: seg.start + (seg.end - seg.start) * 0.5, behavior: reduce ? 'auto' : 'smooth' });
   }
 
-  function loadClip(s) {
-    // Under prefers-reduced-motion we never load the clips at all — the stills stay up
-    // and simply cross-dissolve as you scroll. No scrubbed video motion, no decode cost.
-    if (reduce || s.loading || !s.clip) return;
-    s.loading = true;
-    // Serve the lighter mobile encode on phones when one was provided.
-    const url = (isMobile() && s.clipM) ? s.clipM : s.clip;
-    fetch(url).then(r => r.ok ? r.blob() : Promise.reject(new Error('404')))
-      .then(blob => {
-        const v = document.createElement('video');
-        v.className = 'sw-scene__video';
-        v.muted = true; v.playsInline = true; v.preload = 'auto';
-        v.setAttribute('muted', ''); v.setAttribute('playsinline', '');
-        v.src = URL.createObjectURL(blob);
-        v.addEventListener('loadedmetadata', () => { s.ready = true; read(); });
-        // Reveal the video (hide the still poster) only once a real frame has
-        // painted — on iOS a seeked-but-never-played muted video stays blank, so
-        // hiding the still on metadata alone would flash an empty scene.
-        v.addEventListener('seeked', () => { s.el.classList.add('has-clip'); }, { once: true });
-        v.addEventListener('loadeddata', () => { try { v.pause(); } catch (e) {} if (userReady) primeVideo(v); });
-        s.el.appendChild(v); s.video = v; s.hasClip = true;
-      }).catch(() => { s.loading = false; });
+  // ---- frame-sequence loading (coarse → fine) ----
+  // Every frame is an independent image, so a scene becomes scrubbable as soon as
+  // a handful arrive: we walk strides 8→4→2→1 across ALL scenes, so the whole
+  // flight is usable (if chunky) after ~1/8 of the bytes, then refines to every
+  // frame. Nothing waits on a whole clip, and no video decoder is involved.
+  function pad3(n) { return String(n).padStart(3, '0'); }
+  let frameQ = null, qIdx = 0, inflight = 0;
+  function buildFrameQueue() {
+    const q = [], seen = SEGMENTS.map(() => new Set());
+    for (const stride of [8, 4, 2, 1]) {
+      for (let si = 0; si < NSEG; si++) {
+        const s = SEGMENTS[si];
+        if (!s.dir || !s.count) continue;
+        for (let i = 0; i < s.count; i += stride) {
+          if (!seen[si].has(i)) { seen[si].add(i); q.push({ s, i }); }
+        }
+      }
+    }
+    return q;
+  }
+  function pumpFrames() {
+    // Under prefers-reduced-motion we never load frames — the stills stay up and
+    // simply cross-dissolve as you scroll.
+    if (reduce) return;
+    if (!frameQ) frameQ = buildFrameQueue();
+    const MAXC = isMobile() ? 4 : 8;
+    while (inflight < MAXC && qIdx < frameQ.length) {
+      const { s, i } = frameQ[qIdx++];
+      inflight++;
+      const im = new Image();
+      im.decoding = 'async';
+      im.onload = () => {
+        s.frames[i] = im; s.loaded++;
+        if (!s.ready) { s.ready = true; }
+        s.needsRedraw = true;            // a better frame may now exist
+        inflight--; pumpFrames();
+      };
+      im.onerror = () => { inflight--; pumpFrames(); };
+      im.src = s.dir + '/f_' + pad3(i + 1) + '.webp';
+    }
+  }
+
+  // Nearest already-loaded frame to the wanted index, so a half-loaded scene
+  // still scrubs (it just steps coarsely until the in-between frames arrive).
+  function nearestLoaded(s, idx) {
+    if (s.frames[idx]) return s.frames[idx];
+    for (let d = 1; d < s.count; d++) {
+      if (idx - d >= 0 && s.frames[idx - d]) return s.frames[idx - d];
+      if (idx + d < s.count && s.frames[idx + d]) return s.frames[idx + d];
+    }
+    return null;
+  }
+
+  // object-fit:cover, with the same vertical bias the still poster uses.
+  function drawCover(s, im) {
+    const cw = s.canvas.width, ch = s.canvas.height;
+    if (!cw || !ch || !im.naturalWidth) return;
+    const ir = im.naturalWidth / im.naturalHeight, cr = cw / ch;
+    let sw, sh, sx, sy;
+    if (ir > cr) { sh = im.naturalHeight; sw = sh * cr; sx = (im.naturalWidth - sw) / 2; sy = 0; }
+    else { sw = im.naturalWidth; sh = sw / cr; sx = 0; sy = (im.naturalHeight - sh) * (isMobile() ? 0.46 : 0.42); }
+    s.ctx.drawImage(im, sx, sy, sw, sh, 0, 0, cw, ch);
+  }
+
+  function sizeCanvases() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.round(window.innerWidth * dpr), h = Math.round(window.innerHeight * dpr);
+    SEGMENTS.forEach(s => {
+      if (!s.canvas) return;
+      if (s.canvas.width !== w || s.canvas.height !== h) {
+        s.canvas.width = w; s.canvas.height = h; s.needsRedraw = true;
+      }
+    });
   }
 
   function read() {
@@ -221,12 +280,6 @@ function mountScrollWorld(container, config) {
 
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
-      // Load a clip as it nears the viewport and keep it resident. (An earlier
-      // build unloaded far clips on mobile to bound decoder count, but iOS won't
-      // reliably restart a rebuilt muted video outside a user gesture, so the
-      // rebuilt scenes came back as blank posters. Holding all clips resident is
-      // the known-good path; the all-intra 540p mobile encodes are light enough.)
-      if (y > s.start - 1.6 * vh && y < s.end + 1.6 * vh) loadClip(s);
       const local = clamp((y - s.start) / (s.end - s.start), 0, 1);
       s.target = s.linger ? lingerEase(local, s.linger) : local;
       let outside = 0;
@@ -234,7 +287,7 @@ function mountScrollWorld(container, config) {
       const op = smooth(1 - outside / fade);
       s.el.style.opacity = op; s.visible = op > 0.001;
       s.el.style.zIndex = (i === ci) ? '120' : String(100 + Math.round(op * 10));
-      if (!s.hasClip || !s.ready) {
+      if (!s.hasClip) {
         const sc = reduce ? 1 : 1.03 + local * 0.14;
         s.img.style.transform = `translateX(${stageX - 2}vw) scale(${sc.toFixed(3)})`;
       }
@@ -272,42 +325,27 @@ function mountScrollWorld(container, config) {
   }
 
   function raf() {
-    const eps = isMobile() ? 0.02 : 0.008;   // coarser seek step on phones = fewer decodes
     for (let i = 0; i < NSEG; i++) {
       const s = SEGMENTS[i];
-      if (!s.hasClip || !s.ready || !s.video) continue;
-      // Never queue a seek while the decoder is still resolving the last one.
-      // On phones a fast flick would otherwise pile up seeks and freeze the clip;
-      // cur keeps lerping, so we snap to the latest target the moment it's free.
-      if (s.video.seeking) continue;
+      if (!s.dir || !s.ready) continue;
       if (!s.visible && Math.abs(s.cur - s.target) < 0.002) continue;
       s.cur += (s.target - s.cur) * (reduce ? 1 : 0.18);
-      const dur = s.video.duration || 1;
-      const t = clamp(s.cur, 0, 0.999) * dur;
-      if (Math.abs(s.video.currentTime - t) > eps) { try { s.video.currentTime = t; } catch (e) {} }
+      if (!s.visible) continue;
+      // Scroll → frame index → draw. A canvas blit of an already-decoded image;
+      // there is no seek to wait on, so this cannot stutter the way a video
+      // decoder does, and it is correct even when only some frames have arrived.
+      const idx = clamp(Math.round(s.cur * (s.count - 1)), 0, s.count - 1) | 0;
+      const im = nearestLoaded(s, idx);
+      if (im && (im !== s.drawnImg || s.needsRedraw)) {
+        drawCover(s, im);
+        s.drawnImg = im; s.needsRedraw = false;
+        if (!s.hasClip) { s.hasClip = true; s.el.classList.add('has-clip'); }
+      }
     }
     requestAnimationFrame(raf);
   }
 
-  // iOS needs a user gesture before a muted video will decode/paint reliably. On the
-  // first touch we prime every loaded clip (muted play→pause) so the first seek is
-  // instant instead of showing a blank frame. `userReady` also makes freshly-loaded
-  // clips prime themselves (see loadClip).
-  let userReady = false;
-  function primeVideo(v) {
-    if (!isMobile() || !v) return;
-    try { const p = v.play(); if (p && p.then) p.then(() => { try { v.pause(); } catch (e) {} }).catch(() => {}); }
-    catch (e) {}
-  }
-  function onFirstGesture() {
-    if (userReady) return;
-    userReady = true;
-    SEGMENTS.forEach(s => primeVideo(s.video));
-  }
-  window.addEventListener('pointerdown', onFirstGesture, { once: true, passive: true });
-  window.addEventListener('touchstart', onFirstGesture, { once: true, passive: true });
-
-  // Particles are a per-frame cost we can't afford alongside video scrubbing on a phone.
+  // Particles are a per-frame cost we can't afford alongside scrubbing on a phone.
   seedParticles(particles, reduce || coarse);
   window.addEventListener('scroll', () => { if (!ticking) { ticking = true; requestAnimationFrame(read); } }, { passive: true });
   // Mobile browsers fire `resize` every time the URL bar slides in/out. Re-running
@@ -325,28 +363,9 @@ function mountScrollWorld(container, config) {
   layout();
   requestAnimationFrame(raf);
 
-  // Preload every clip up front, in scroll order, so a scene is already decoded
-  // when it scrolls in instead of showing its still poster while the clip
-  // downloads (which reads as sloppy). Bytes arrive via fetch() — this works on
-  // iOS with no user gesture; the <video> only wraps the in-memory blob, and
-  // priming still waits for the first touch. Bounded concurrency keeps scene 0
-  // first and avoids saturating a phone's bandwidth or its decoders.
-  function preloadClips() {
-    if (reduce) return;
-    // Modest concurrency so early scenes get the pipe and finish in scroll order
-    // (reach scene 1, then 2, then 3 — better each is ready in turn than all seven
-    // crawling at once and starving the one on screen). Desktop clips are larger
-    // (720p) so it still wants a low cap, just a touch higher than a phone.
-    const MAXC = isMobile() ? 2 : 3;
-    let idx = 0;
-    (function pump() {
-      let inflight = 0;
-      for (let i = 0; i < NSEG; i++) if (SEGMENTS[i].loading && !SEGMENTS[i].ready) inflight++;
-      while (idx < NSEG && inflight < MAXC) { loadClip(SEGMENTS[idx++]); inflight++; }
-      if (idx < NSEG) setTimeout(pump, 300);
-    })();
-  }
-  preloadClips();
+  // Start streaming frames immediately: coarse pass across every scene first, so
+  // the entire flight is scrubbable early, then refine. No gesture needed.
+  pumpFrames();
 
   // ---- helpers ----
   function el(tag, cls) { const n = document.createElement(tag); if (cls) n.className = cls; return n; }
@@ -408,6 +427,9 @@ function injectCSS() {
   .sw-scene{position:absolute;inset:0;opacity:0;overflow:hidden;will-change:opacity;}
   .sw-scene__video,.sw-scene__still{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 42%;}
   .sw-scene__still{will-change:transform;} .sw-scene.has-clip .sw-scene__still{opacity:0;} .sw-scene__video{z-index:1;}
+  /* the frame canvas draws its own cover-fit, so no object-fit here */
+  .sw-scene__canvas{position:absolute;inset:0;width:100%;height:100%;z-index:1;opacity:0;transition:opacity .3s ease;}
+  .sw-scene.has-clip .sw-scene__canvas{opacity:1;}
   .sw-copylayer{position:fixed;inset:0;z-index:20;pointer-events:none;}
   .sw-copylayer::before{content:"";position:absolute;inset:0;width:min(58vw,780px);background:linear-gradient(90deg,var(--sw-bg) 0%,color-mix(in srgb,var(--sw-bg) 82%,transparent) 34%,color-mix(in srgb,var(--sw-bg) 40%,transparent) 62%,transparent 100%);}
   .sw-copy{position:absolute;left:clamp(18px,5vw,64px);top:50%;transform:translateY(-50%);width:min(42vw,460px);opacity:0;will-change:opacity,transform;}
