@@ -253,6 +253,7 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     assert "p42-untrusted-hadamard-candidate-" in workflow
     assert "pattern: p42-validated-distinct-subset-sums-a11" in workflow
     assert "pattern: p42-validated-hadamard-668" in workflow
+    assert "pattern: p42-validated-q6-candidate" in workflow
     assert "pattern: p42-untrusted" not in workflow
     assert workflow.index("Capture untrusted SP1 build-input observation") < workflow.index(
         "Validate clean SP1 build-input provenance"

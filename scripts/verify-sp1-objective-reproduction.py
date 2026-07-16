@@ -22,6 +22,16 @@ PROGRAMS = {
         "journal": "0x291ae6588501327ad80f26fa0bba73f06c54d93947824f8eecd6dee1bbadfffa",
         "instructions": 481_587,
     },
+    "q6-intersecting-hypergraph": {
+        # Candidate-only gate: CI derives the ELF hash and vkey from each
+        # clean build, then the cross-image job requires exact agreement.
+        # These values must remain unfrozen until independent review promotes
+        # a reviewed artifact into objective-programs/artifacts.
+        "elf": None,
+        "vkey": None,
+        "journal": "0xb4ea9f8158a14994c5caadcfd88ea1dfead5e11a410e9927bec2a30f16e407fa",
+        "instructions": 9_387_848,
+    },
 }
 
 
@@ -75,14 +85,27 @@ def main() -> None:
     if elf.read_bytes()[:4] != b"\x7fELF":
         fail("program.elf is not an ELF")
     elf_hex = hashlib.sha256(elf.read_bytes()).hexdigest()
-    if elf_hex != expected["elf"]:
+    frozen_elf = expected["elf"]
+    if frozen_elf is not None and elf_hex != frozen_elf:
         fail(f"{args.program} ELF mismatch")
 
+    expected_elf = frozen_elf or elf_hex
+
     identity = strict_json(regular_file(directory, "identity.json"))
+    derived_vkey = identity.get("programVKey")
+    if expected["vkey"] is None:
+        if not isinstance(derived_vkey, str) or len(derived_vkey) != 66:
+            fail(f"{args.program} candidate vkey is malformed")
+        try:
+            if derived_vkey != "0x" + bytes.fromhex(derived_vkey[2:]).hex():
+                fail(f"{args.program} candidate vkey is non-canonical")
+        except ValueError:
+            fail(f"{args.program} candidate vkey is malformed")
+    expected_vkey = expected["vkey"] or derived_vkey
     expected_identity = {
         "schema": "p42-objective-program-identity/v1",
-        "guestElfSha256": "0x" + expected["elf"],
-        "programVKey": expected["vkey"],
+        "guestElfSha256": "0x" + expected_elf,
+        "programVKey": expected_vkey,
         "publicValuesBytes": 32,
         "sp1Version": "6.1.0",
     }
@@ -92,15 +115,16 @@ def main() -> None:
     execution = strict_json(regular_file(directory, "execution.json"))
     expected_execution = {
         "schema": "p42-objective-execution/v1",
-        "guestElfSha256": "0x" + expected["elf"],
-        "programVKey": expected["vkey"],
+        "guestElfSha256": "0x" + expected_elf,
+        "programVKey": expected_vkey,
         "journalDigest": expected["journal"],
         "publicValuesBytes": 32,
         "totalInstructionCount": expected["instructions"],
     }
     if execution != expected_execution:
         fail(f"{args.program} execution mismatch")
-    print(f"SP1 reproduction verified: {args.program}")
+    status = "frozen" if frozen_elf is not None else "untrusted candidate"
+    print(f"SP1 {status} reproduction verified: {args.program}")
 
 
 if __name__ == "__main__":

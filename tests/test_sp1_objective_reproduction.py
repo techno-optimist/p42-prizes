@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -24,6 +25,12 @@ PROGRAMS = {
         "journal": "0x291ae6588501327ad80f26fa0bba73f06c54d93947824f8eecd6dee1bbadfffa",
         "instructions": 481_587,
     },
+    "q6-intersecting-hypergraph": {
+        "elf": None,
+        "vkey": "0x" + "12" * 32,
+        "journal": "0xb4ea9f8158a14994c5caadcfd88ea1dfead5e11a410e9927bec2a30f16e407fa",
+        "instructions": 9_387_848,
+    },
 }
 
 
@@ -31,18 +38,23 @@ def build_bundle(root: Path, program: str) -> Path:
     expected = PROGRAMS[program]
     bundle = root / program
     bundle.mkdir()
-    source = ROOT / f"objective-programs/artifacts/{program}/v0.1.0/program.elf"
-    shutil.copyfile(source, bundle / "program.elf")
+    if expected["elf"] is None:
+        (bundle / "program.elf").write_bytes(b"\x7fELFq6-candidate-fixture")
+        elf = hashlib.sha256((bundle / "program.elf").read_bytes()).hexdigest()
+    else:
+        source = ROOT / f"objective-programs/artifacts/{program}/v0.1.0/program.elf"
+        shutil.copyfile(source, bundle / "program.elf")
+        elf = expected["elf"]
     identity = {
         "schema": "p42-objective-program-identity/v1",
-        "guestElfSha256": "0x" + expected["elf"],
+        "guestElfSha256": "0x" + elf,
         "programVKey": expected["vkey"],
         "publicValuesBytes": 32,
         "sp1Version": "6.1.0",
     }
     execution = {
         "schema": "p42-objective-execution/v1",
-        "guestElfSha256": "0x" + expected["elf"],
+        "guestElfSha256": "0x" + elf,
         "programVKey": expected["vkey"],
         "journalDigest": expected["journal"],
         "publicValuesBytes": 32,
@@ -93,3 +105,12 @@ def test_rejects_unexpected_files(tmp_path: Path) -> None:
     result = verify(bundle, "hadamard-668-defect")
     assert result.returncode != 0
     assert "unexpected file set" in result.stderr
+
+
+def test_candidate_rejects_identity_execution_vkey_disagreement(tmp_path: Path) -> None:
+    bundle = build_bundle(tmp_path, "q6-intersecting-hypergraph")
+    execution_path = bundle / "execution.json"
+    execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    execution["programVKey"] = "0x" + "34" * 32
+    execution_path.write_text(json.dumps(execution), encoding="utf-8")
+    assert verify(bundle, "q6-intersecting-hypergraph").returncode != 0
