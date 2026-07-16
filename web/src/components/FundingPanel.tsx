@@ -241,11 +241,14 @@ export function FundingPanel({
       return;
     }
     cancelCopyState();
+    setCopied(false);
     const operation = copyOperationRef.current;
     const copiedBindingKey = boundTarget.bindingKey;
     const copiedTargetIdentity = JSON.stringify([copiedBindingKey, boundTarget.target.address]);
+    const clipboard = navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== "function") return;
     try {
-      await navigator.clipboard?.writeText(boundTarget.target.address);
+      await clipboard.writeText(boundTarget.target.address);
       if (copyOperationRef.current !== operation
         || bindingKeyRef.current !== copiedBindingKey
         || targetIdentityRef.current !== copiedTargetIdentity

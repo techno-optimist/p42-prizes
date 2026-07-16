@@ -346,6 +346,40 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(screen.getByRole("button", { name: "Copy sponsor pool address" }).textContent).toBe("copy");
   });
 
+  it("clears prior success while a same-binding retry is pending or rejected", async () => {
+    let rejectRetry!: (reason?: unknown) => void;
+    const retry = new Promise<void>((_resolve, reject) => { rejectRetry = reject; });
+    const clipboardWrite = vi.fn()
+      .mockResolvedValueOnce(undefined)
+      .mockReturnValueOnce(retry);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
+    render(<FundingPanel {...props()} />);
+    await flushResponse();
+
+    const copyButton = screen.getByRole("button", { name: "Copy sponsor pool address" });
+    fireEvent.click(copyButton);
+    await flushResponse();
+    expect(copyButton.textContent).toBe("copied");
+
+    fireEvent.click(copyButton);
+    expect(copyButton.textContent).toBe("copy");
+    rejectRetry(new Error("clipboard denied"));
+    await flushResponse();
+    expect(copyButton.textContent).toBe("copy");
+    expect(clipboardWrite).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not report success when the clipboard API is unavailable", async () => {
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    render(<FundingPanel {...props()} />);
+    await flushResponse();
+
+    const copyButton = screen.getByRole("button", { name: "Copy sponsor pool address" });
+    fireEvent.click(copyButton);
+    await flushResponse();
+    expect(copyButton.textContent).toBe("copy");
+  });
+
   it("clears at D using the server-derived monotonic budget with a skewed client wall clock", async () => {
     vi.setSystemTime(OBSERVED_MS - 10_000);
     await renderAndReveal();
