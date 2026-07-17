@@ -100,6 +100,8 @@ curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
   Sepolia deployment command. It is fixed to the exact-ten 47-contract planner.
   Never add a mode-selectable or default legacy branch to that command; the
   seven-contract rehearsal remains test-only and must use noncanonical output.
+  Canonical topology and the complete executable plan must validate and freeze
+  before the durable manifest reservation is created.
 - Build the product path as agent-operated by default: verifier reruns,
   transcript publication, queue draining, alert generation, and challenge
   candidate creation should not wait on a human approval step. External audit,

@@ -83,18 +83,11 @@ describe("production deployment runbook command contract", () => {
       resolve(REPO_ROOT, "contracts/scripts/deploy-base-sepolia.js"),
       "utf8",
     );
-    const productionExecutable = readFileSync(
-      resolve(REPO_ROOT, "contracts/scripts/deploy-base-sepolia-production.js"),
-      "utf8",
-    );
     const runbooks = ["docs/DEPLOYMENT.md", "docs/MULTIBOARD_CEREMONY.md"].map((path) => ({
       path,
       body: readFileSync(resolve(REPO_ROOT, path), "utf8"),
     }));
 
-    assert.match(productionExecutable, /PRODUCTION_DEPLOY_MODE/);
-    assert.match(productionExecutable, /runCanonicalProductionEntryPoint/);
-    assert.match(executable, /deployMultiBoardCeremony\(ethers, "production"\)/);
     assert.match(executable, /async function productionReleaseInputs\(repoRoot, deploymentCommit\)/);
     assert.match(executable, /assertObjectiveVerifierCapsuleBinding\(ethersLibrary, capsule, slate, objectiveVerifierArtifact\)/);
     assert.doesNotMatch(executable, /productionReleaseInputs\(ethers,/);
@@ -136,6 +129,11 @@ describe("production deployment runbook command contract", () => {
         runbook.body,
         /npm run deploy:base-sepolia/,
         `${runbook.path} must name the canonical production command`,
+      );
+      assert.match(
+        runbook.body,
+        /npm run continue:base-sepolia/,
+        `${runbook.path} must name the canonical continuation command`,
       );
       assert.doesNotMatch(
         runbook.body,

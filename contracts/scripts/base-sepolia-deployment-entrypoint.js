@@ -47,11 +47,16 @@ export async function dispatchBaseSepoliaDeployment({
 }
 
 export async function runCanonicalProductionEntryPoint({ requestedMode, dispatch }) {
+  const mode = requireCanonicalProductionMode(requestedMode);
+  return dispatch(mode);
+}
+
+export function requireCanonicalProductionMode(requestedMode) {
   const mode = requireExplicitDeployMode(requestedMode);
   if (mode !== PRODUCTION_DEPLOY_MODE) {
     throw new Error(
       `canonical Base Sepolia deployment requires P42_DEPLOY_MODE=${PRODUCTION_DEPLOY_MODE}`,
     );
   }
-  return dispatch(PRODUCTION_DEPLOY_MODE);
+  return PRODUCTION_DEPLOY_MODE;
 }

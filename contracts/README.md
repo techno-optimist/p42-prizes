@@ -90,8 +90,8 @@ are transaction-building instructions, not claims that setup ran. Each standard
 operation also binds a distinct override-fallback ID and calldata for the F17
 case where the guardian cancels its primary operation.
 
-Run the same command with `P42_DEPLOY_MODE=continue` and no deployer key for the
-read-only continuation. It checks runtime code, ABI/constructor/config pins,
+Run `npm run continue:base-sepolia` with no deployer key for the read-only
+continuation. It checks runtime code, ABI/constructor/config pins,
 governance, child ownership, wiring, registry hashes/freeze, pause targets, and
 each finalized timelock execution event. It refuses to mark the manifest
 `governance-setup-complete` if any check or transaction evidence is missing.

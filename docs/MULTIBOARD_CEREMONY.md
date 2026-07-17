@@ -237,7 +237,7 @@ transaction. It emits exactly eleven timelock operations per board:
 11. Challenge-manager pause-target authorization.
 
 For ten boards this is 110 independently confirmed operations. The only
-supported continuation command is `P42_DEPLOY_MODE=continue`. Production
+supported continuation command is `npm run continue:base-sepolia`. Production
 continuation requires two named, operator-distinct RPCs to agree on canonical
 Base Sepolia `finalized`/`safe` tags and OP Stack L1-origin/finality evidence.
 It reserves a private governance-operation journal bound to the authenticated

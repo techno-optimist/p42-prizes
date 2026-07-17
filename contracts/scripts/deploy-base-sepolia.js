@@ -73,8 +73,8 @@ import {
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
-import { assertCanonicalDeploymentPlan } from "../../agent/canonical-topology.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
+import { validateAndReserveCanonicalDeployment } from "./canonical-deployment-reservation-gate.js";
 import {
   buildGovernanceOperationJournal,
   governanceOperationJournalPath,
@@ -673,7 +673,7 @@ async function deployLegacyTestOnlyCeremony(ethers) {
   console.log(`Timelock owner: ${addresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action.`);
   console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
-  console.log("Use P42_DEPLOY_MODE=continue without a private key to inspect operation calldata and verify completion.");
+  console.log("Run npm run continue:base-sepolia without a private key to inspect operation calldata and verify completion.");
 }
 
 function multiBoardManifestProblem(ethers, registryAddress, problem, deployments) {
@@ -754,8 +754,6 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const reservationIdentity = createDeploymentReservationIdentity(output, {
     deploymentCommit, network: "baseSepolia", chainId: Number(BASE_SEPOLIA_CHAIN_ID), deployer: deployer.address,
   }, { trustedRoot: dirname(output), configValue: { config: input.value, releaseMode, slateDigest: release?.slate.slateDigest ?? null, capsuleDigest: release?.capsule.capsuleDigest ?? null } });
-  const reservation = await ensureManifestReservation(reservationIdentity);
-  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
   const predeploymentJournalPath = predeploymentGovernanceJournalPath(output);
   const predeploymentReleaseBindingDigest = release
     ? productionReleaseBindingDigest({
@@ -779,11 +777,6 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     boardSetDigest: fundingBoardSetDigest,
     releaseBindingDigest: fundingReleaseBindingDigest,
   });
-  const canonicalManifestDefinitions = canonicalDefinitions;
-  assertCanonicalDeploymentPlan(canonicalManifestDefinitions, config.problems.length);
-  const canonicalMembers = canonicalDefinitions.map(({ id, name }) => `${id}:${name}`).sort();
-  const executableMembers = definitions.map(({ id, name }) => `${id}:${name}`).sort();
-  if (JSON.stringify(canonicalMembers) !== JSON.stringify(executableMembers)) throw new Error("canonical manifest and executable deployment membership differ");
   await assertPinnedSubmissionFactoryRuntime(ethers);
   const existingJournalPath = signedDeploymentJournalPath(output);
   const existingJournal = existsSync(existingJournalPath) ? readSignedDeploymentJournal(existingJournalPath) : null;
@@ -795,7 +788,6 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     preflightStartNonce,
     definitions,
   );
-  if (executablePreflight.steps.length !== 47 || executablePreflight.steps.some((step) => !step.expectedInitCode || !step.unsigned?.data)) throw new Error("multi-board executable preflight did not materialize all 47 initcode/calldata payloads");
   const preflightBoards = config.problems.map((problem) => ({
     problem,
     addresses: {
@@ -807,8 +799,17 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const preflightInterfaces = Object.fromEntries(await Promise.all(Object.entries({ timelock: CONTRACT_NAMES.timelock, registry: CONTRACT_NAMES.registry, ...BOARD_CONTRACT_NAMES }).map(async ([key, name]) => [key, (await ethers.getContractFactory(name)).interface])));
   const preflightOperations = buildMultiBoardSetupOperations({ ethers, chainId: BASE_SEPOLIA_CHAIN_ID, timelockAddress: executablePreflight.addresses.timelock, registryAddress: executablePreflight.addresses.registry, config, boards: preflightBoards, interfaces: preflightInterfaces });
   const operationPlan = validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
-  if (preflightOperations.length !== operationPlan.expectedOperations) throw new Error("pre-broadcast v2 operation plan is incomplete");
   const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(preflightOperations);
+  const { frozenPreflight, reservation } = await validateAndReserveCanonicalDeployment({
+    canonicalDefinitions,
+    executableDefinitions: definitions,
+    boardCount: config.problems.length,
+    executablePreflight,
+    setupOperations: preflightOperations,
+    expectedOperationCount: operationPlan.expectedOperations,
+    reserve: () => ensureManifestReservation(reservationIdentity),
+  });
+  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
 
   const executed = await executeSignedDeploymentPlan(
     ethers, deployer, output, reservationIdentity, definitions,
@@ -817,7 +818,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       : recordManifestOutputDeployment(reservationIdentity, definition.id, deployment),
     config.finalityPolicy.confirmations,
     release?.capsule ?? null,
-    executablePreflight,
+    frozenPreflight,
     {
       beforeStep: async ({ index, deployments, addresses, secondaryProvider, rpcEvidence }) => {
         if (index !== MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT) return;
@@ -1018,7 +1019,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   console.log(`Shared timelock owner: ${rootAddresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action across ${boards.length} boards.`);
   console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
-  console.log("Use P42_DEPLOY_MODE=continue without a private key to inspect operation calldata and verify completion.");
+  console.log("Run npm run continue:base-sepolia without a private key to inspect operation calldata and verify completion.");
 }
 
 async function readContractSet(ethers, manifest) {
@@ -1781,7 +1782,15 @@ async function inspectReservation() {
   console.log(jsonStringify((await readManifestOutputReservation(reservationIdentity)).record));
 }
 
-export async function runBaseSepoliaDeployment({ mode, networkApi = network } = {}) {
+export async function runBaseSepoliaDeployment({
+  mode,
+  networkApi = network,
+  planners = {
+    production: (ethers) => deployMultiBoardCeremony(ethers, "production"),
+    legacyTestOnly: deployLegacyTestOnlyCeremony,
+    continuation: continueCeremony,
+  },
+} = {}) {
   return dispatchBaseSepoliaDeployment({
     requestedMode: mode,
     requireRpc: () => requiredEnv("BASE_SEPOLIA_RPC_URL"),
@@ -1792,21 +1801,21 @@ export async function runBaseSepoliaDeployment({ mode, networkApi = network } = 
       if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
         throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
       }
-      return deployMultiBoardCeremony(ethers, "production");
+      return planners.production(ethers);
     },
     deployLegacyTestOnly: async ({ ethers }) => {
       const chain = await ethers.provider.getNetwork();
       if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
         throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
       }
-      return deployLegacyTestOnlyCeremony(ethers);
+      return planners.legacyTestOnly(ethers);
     },
     continueDeployment: async ({ ethers }) => {
       const chain = await ethers.provider.getNetwork();
       if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
         throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
       }
-      return continueCeremony(ethers);
+      return planners.continuation(ethers);
     },
   });
 }

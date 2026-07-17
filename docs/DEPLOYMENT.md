@@ -235,6 +235,13 @@ transaction as the ceremony progresses. A second deploy invocation refuses to
 run while that reservation exists, so it cannot silently create a competing
 set of contracts and then lose the manifest write race.
 
+Before creating that durable reservation, production validates the digest-pinned
+canonical topology, exact executable membership, all 47 materialized
+initcode/calldata payloads, and all 110 setup operations, then freezes the
+preflight plan used by execution. Topology or plan drift therefore leaves no
+reservation behind; a corrected invocation can retry without stale-reservation
+recovery.
+
 If a ceremony stops before its manifest is written, do not restart it. Inspect
 the retained journal first; it may describe already-broadcast deployment
 transactions:
