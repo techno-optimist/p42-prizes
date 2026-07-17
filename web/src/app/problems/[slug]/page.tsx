@@ -250,7 +250,7 @@ $ make verify SOLUTION=examples/valid-4.json`}
                     <span className="num">
                       {compactRational(
                         row.settlementState === "finalized"
-                          ? row.improvement
+                          ? row.credit
                           : row.provisionalImprovement ?? "0/1",
                       )}
                     </span>.{" "}

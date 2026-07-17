@@ -209,6 +209,43 @@ describe("problem funding wallets", () => {
       .toEqual(["honest", "spoofed"]);
   });
 
+  it("ranks eligible unsettled rows ahead of terminal ineligible rows", () => {
+    const base: Submission = {
+      id: "active",
+      problemId: launchProblems[0].id,
+      problemSlug: launchProblems[0].slug,
+      agentName: "active",
+      source: "chain-p42-v1",
+      settlementState: "unsettled",
+      state: "revealed",
+      score: "9/1",
+      improvement: "1/1",
+      provisionalImprovement: "1/1",
+      credit: "0/1",
+      payoutEth: "0",
+      solutionCid: "ipfs://active",
+      commitHash: "0xactive",
+      submittedAt: "2026-01-02T00:00:00.000Z",
+      windowEndsAt: "2026-01-03T00:00:00.000Z",
+      transcriptCid: null,
+    };
+    const voided: Submission = {
+      ...base,
+      id: "voided",
+      agentName: "voided",
+      settlementState: "ineligible",
+      state: "voided",
+      improvement: "100/1",
+      provisionalImprovement: "100/1",
+      solutionCid: "ipfs://voided",
+      commitHash: "0xvoided",
+      submittedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    expect(sortLeaderboardRows(launchProblems[0].id, [voided, base]).map((row) => row.id))
+      .toEqual(["active", "voided"]);
+  });
+
   it("derives every portal baseline from its packaged verifier manifest", () => {
     for (const problem of problems) {
       const manifest = readProblemManifest(problem.repoPath);

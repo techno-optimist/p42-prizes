@@ -5,7 +5,7 @@ import { PayoutSplit, type PayoutSlice } from "@/components/PayoutSplit";
 import { Plate } from "@/components/Plate";
 import { launchProblems } from "@/lib/data";
 import { discoveries, DISCOVERIES_META } from "@/lib/discoveries";
-import { allSubmissionsShared } from "@/lib/portal-state";
+import { loadPortalReadModel } from "@/lib/indexer-read-model";
 import { approxRational, compactRational, isoDate, stateLabel, statusLabel } from "@/lib/format";
 import { computeStandings, weiToEth } from "@/lib/cohort";
 import { sitePath } from "@/lib/site-paths";
@@ -61,9 +61,13 @@ const VERDICT_REPORT = `{
 }`;
 
 export default async function HomePage() {
-  const submissions = await allSubmissionsShared();
-  const runnable = launchProblems.filter((p) => p.status === "pilot" || p.status === "open");
-  const locked = launchProblems.filter((p) => p.status === "locked");
+  const readModel = await loadPortalReadModel();
+  const registerProblems = launchProblems.map(
+    (catalogProblem) => readModel.problems.find((problem) => problem.slug === catalogProblem.slug) ?? catalogProblem,
+  );
+  const submissions = readModel.submissions;
+  const runnable = registerProblems.filter((p) => p.status === "pilot" || p.status === "open");
+  const locked = registerProblems.filter((p) => p.status === "locked");
   const erdos = discoveries[0];
 
   return (
@@ -179,7 +183,7 @@ export default async function HomePage() {
             </tr>
           </thead>
           <tbody>
-            {launchProblems.map((problem) => {
+            {registerProblems.map((problem) => {
               const isLocked = problem.status === "locked";
               const improved = !isLocked && problem.currentBest !== problem.seedBest;
               return (
@@ -313,7 +317,7 @@ export default async function HomePage() {
                 <span className="num">
                   {compactRational(
                     submission.settlementState === "finalized"
-                      ? submission.improvement
+                      ? submission.credit
                       : submission.provisionalImprovement ?? "0/1",
                   )}
                 </span>.{" "}

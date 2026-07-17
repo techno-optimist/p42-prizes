@@ -804,7 +804,13 @@ export function sortLeaderboardRows(problemId: number, rows: Submission[]): Subm
     .sort((a, b) => {
       const aFinalized = a.source === "chain-p42-v1" && a.state === "finalized" && a.settlementState === "finalized";
       const bFinalized = b.source === "chain-p42-v1" && b.state === "finalized" && b.settlementState === "finalized";
-      if (aFinalized !== bFinalized) return aFinalized ? -1 : 1;
+      const aRank = aFinalized ? 0 : a.settlementState === "unsettled" ? 1 : 2;
+      const bRank = bFinalized ? 0 : b.settlementState === "unsettled" ? 1 : 2;
+      if (aRank !== bRank) return aRank - bRank;
+
+      if (aRank === 2) {
+        return a.submittedAt.localeCompare(b.submittedAt) || a.id.localeCompare(b.id);
+      }
 
       const economicOrder = compareRational(
         parseRational(aFinalized ? a.credit : a.provisionalImprovement ?? "0/1"),
