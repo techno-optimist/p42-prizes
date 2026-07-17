@@ -19,7 +19,8 @@ const importSha256 = `sha256:${"7".repeat(64)}`;
 try {
   await transferCase("success", async ({ legacy, target }) => {
     const result = await runTransfer({ legacy, target });
-    assertSuccessResult(result);
+    const receipt = assertSuccessResult(result);
+    if (receipt.status !== "transferred") throw new Error("initial transfer was not labeled transferred");
     const rows = await admin.query(`SELECT revision::text AS revision, state::text AS state_text, import_sha256,
       imported_at::text AS imported_at, updated_at::text AS updated_at FROM ${qualified(target, "p42_portal_state")}`);
     if (rows.rowCount !== 1 || rows.rows[0].revision !== "0" || rows.rows[0].import_sha256 !== importSha256
@@ -32,7 +33,20 @@ try {
 
   await transferCase("nonempty-destination", async ({ legacy, target }) => {
     await seed(target);
-    await expectFailure({ legacy, target }, "destination-not-empty");
+    await expectFailure({ legacy, target }, "destination-not-reconcilable");
+  });
+
+  await transferCase("ambiguous-commit-reconciliation", async ({ legacy, target }) => {
+    await expectFailure({
+      legacy, target, extraEnv: { P42_PORTAL_TEST_FAULT_AFTER_COMMIT: "ambiguous-ack" },
+    }, "commit-acknowledgment-ambiguous");
+    const reconciled = assertSuccessResult(await runTransfer({ legacy, target }));
+    if (reconciled.status !== "reconciled") throw new Error("retry did not emit a reconciled receipt");
+    const markers = await admin.query(`SELECT transfer_id, binding_json FROM
+      ${qualified(target, "p42_portal_state_transfer_provenance")}`);
+    if (markers.rowCount !== 1 || markers.rows[0].transfer_id !== reconciled.transferId) {
+      throw new Error("reconciled receipt was not bound to the durable provenance row");
+    }
   });
 
   await transferCase("empty-source", async ({ legacy, target }) => {
@@ -130,6 +144,103 @@ try {
     }
   });
 
+  await transferCase("schema-rename-and-replace-fails-closed", async ({ legacy, target }) => {
+    const moved = `${legacy}_moved`;
+    const child = runTransferProcess({
+      legacy, target, extraEnv: { P42_PORTAL_TEST_PAUSE_AFTER_RELATION_LOCK_MS: "1500" },
+    });
+    try {
+      await waitForTransferPid();
+      await delay(100);
+      await admin.query(`ALTER SCHEMA ${quoteIdentifier(legacy)} RENAME TO ${quoteIdentifier(moved)}`);
+      await createMigratedSchema(legacy);
+      await seed(legacy, { importDigest: `sha256:${"8".repeat(64)}` });
+      const completed = await child;
+      if (completed.code === 0 || completed.stdout !== "") throw new Error("namespace replacement did not fail closed");
+      const failure = JSON.parse(completed.stderr);
+      if (failure.error !== "legacy-oid-binding-mismatch") {
+        throw new Error(`namespace replacement failed with ${failure.error}`);
+      }
+      await assertEmpty(target);
+      const marker = await admin.query(`SELECT to_regclass($1) IS NULL AS missing`,
+        [`${target}.p42_portal_state_transfer_provenance`]);
+      if (!marker.rows[0]?.missing) throw new Error("failed namespace race left provenance behind");
+    } finally {
+      await child.catch(() => {});
+      await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(moved)} CASCADE`).catch(() => {});
+    }
+  });
+
+  await transferCase("target-schema-rename-and-replace-fails-closed", async ({ legacy, target }) => {
+    const moved = `${target}_moved`;
+    const child = runTransferProcess({
+      legacy, target, extraEnv: { P42_PORTAL_TEST_PAUSE_AFTER_RELATION_LOCK_MS: "1500" },
+    });
+    try {
+      await waitForTransferPid();
+      await delay(100);
+      await admin.query(`ALTER SCHEMA ${quoteIdentifier(target)} RENAME TO ${quoteIdentifier(moved)}`);
+      await createMigratedSchema(target);
+      const completed = await child;
+      if (completed.code === 0 || completed.stdout !== "") throw new Error("target namespace replacement did not fail closed");
+      const failure = JSON.parse(completed.stderr);
+      if (failure.error !== "target-oid-binding-mismatch") {
+        throw new Error(`target namespace replacement failed with ${failure.error}`);
+      }
+      await assertEmpty(target);
+      await assertEmpty(moved);
+      const marker = await admin.query(`SELECT to_regclass($1) IS NULL AS missing`,
+        [`${moved}.p42_portal_state_transfer_provenance`]);
+      if (!marker.rows[0]?.missing) throw new Error("failed target namespace race left provenance behind");
+    } finally {
+      await child.catch(() => {});
+      await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(moved)} CASCADE`).catch(() => {});
+    }
+  });
+
+  await transferCase("queued-target-writer-after-commit", async ({ legacy, target }) => {
+    const writer = new pg.Client({ connectionString, application_name: "p42-queued-target-writer" });
+    await writer.connect();
+    const child = runTransferProcess({
+      legacy,
+      target,
+      extraEnv: {
+        P42_PORTAL_TEST_PAUSE_AFTER_COMMIT_MS: "1000",
+        P42_PORTAL_TEST_PAUSE_BEFORE_COMMIT_MS: "1500",
+      },
+    });
+    try {
+      const transferPid = await waitForTransferPid();
+      await delay(200);
+      const writerPid = (await writer.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+      const write = writer.query(`UPDATE ${qualified(target, "p42_portal_state")}
+        SET revision=1, state='{"marker":"post-transfer-writer"}'::jsonb, updated_at=clock_timestamp()
+        WHERE singleton=true`);
+      let blocked = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const check = await admin.query("SELECT $1::integer=ANY(pg_blocking_pids($2::integer)) AS blocked", [transferPid, writerPid]);
+        if (check.rows[0]?.blocked) { blocked = true; break; }
+        await delay(20);
+      }
+      if (!blocked) throw new Error("target writer was not queued across transfer commit");
+      await write;
+      const completed = await child;
+      const receipt = assertSuccessResult(completed);
+      const current = await admin.query(`SELECT revision::text AS revision, state::text AS state_text
+        FROM ${qualified(target, "p42_portal_state")}`);
+      if (current.rows[0]?.revision !== "1" || current.rows[0]?.state_text !== '{"marker": "post-transfer-writer"}') {
+        throw new Error("queued target writer did not commit before receipt emission");
+      }
+      if (receipt.destinationCurrentStateAttested !== false
+        || receipt.receiptScope !== "committed-transfer-event-and-provenance-row") {
+        throw new Error("receipt falsely claims current destination state");
+      }
+    } finally {
+      await writer.end().catch(() => {});
+      await child.catch(() => {});
+    }
+  });
+
   await transferCase("rollback-and-secret-redaction", async ({ legacy, target }) => {
     const secret = `secret-${randomUUID()}`;
     const result = await runTransferProcess({
@@ -148,10 +259,14 @@ try {
     await assertEmpty(target);
   });
 
+  const postgresVersion = (await admin.query("SHOW server_version")).rows[0].server_version;
+  if (!/^18\.4(?:\s|$)/.test(postgresVersion)) {
+    throw new Error(`integration harness requires PostgreSQL 18.4, received ${postgresVersion}`);
+  }
   process.stdout.write(`${JSON.stringify({
     cases: passed,
-    postgresVersion: (await admin.query("SHOW server_version")).rows[0].server_version,
-    schemaVersion: "p42-legacy-portal-state-transfer-test/v1",
+    postgresVersion,
+    schemaVersion: "p42-legacy-portal-state-transfer-test/v2",
     status: "passed",
   })}\n`);
 } finally {
@@ -260,13 +375,31 @@ function runTransferProcess({
 }
 
 function assertSuccessResult(result) {
-  const value = JSON.parse(result.stdout);
-  const { transferHash, ...unsigned } = value;
-  if (result.stderr !== "" || result.code !== 0 || value.status !== "transferred"
-    || transferHash !== digest(canonicalJson(unsigned))) throw new Error("transfer result self-hash mismatch");
-  for (const key of ["databaseOid", "legacySchemaOid", "legacyRelationOid", "targetSchemaOid", "targetRelationOid"]) {
-    if (!Number.isInteger(value[key]) || value[key] <= 0) throw new Error(`transfer result has invalid ${key}`);
+  if (result.code !== 0 || result.stderr !== "" || result.stdout === "") {
+    throw new Error(`transfer did not emit a success receipt: ${result.stderr || "empty stdout"}`);
   }
+  const value = JSON.parse(result.stdout);
+  const { receiptChecksum, ...checksummed } = value;
+  if (!["transferred", "reconciled"].includes(value.status)
+    || receiptChecksum !== digest(canonicalJson(checksummed))) throw new Error("receipt checksum mismatch");
+  if (value.receiptChecksumPurpose !== "accidental-corruption-check-only-not-authentication-or-evidence") {
+    throw new Error("receipt checksum was not labeled non-authenticating");
+  }
+  for (const key of ["databaseOid", "legacySchemaOid", "legacyRelationOid", "targetSchemaOid", "targetRelationOid"]) {
+    if (!/^[1-9][0-9]*$/.test(value[key])) throw new Error(`transfer result has invalid ${key}`);
+  }
+  return value;
+}
+
+async function waitForTransferPid() {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const activity = await admin.query(`SELECT pid FROM pg_catalog.pg_stat_activity
+      WHERE application_name='p42-legacy-portal-state-transfer' AND pid<>pg_backend_pid()
+      ORDER BY backend_start DESC LIMIT 1`);
+    if (activity.rows[0]?.pid) return activity.rows[0].pid;
+    await delay(20);
+  }
+  throw new Error("transfer connection was not observed");
 }
 
 async function assertEmpty(schema) {
