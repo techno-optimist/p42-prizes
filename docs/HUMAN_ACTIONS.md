@@ -99,7 +99,9 @@ problem requirement.
   PIDs observed while all readers are in flight, a serialized transition
   observably blocked only by held-reader PIDs, and a 2,000 ms post-barrier
   completion ceiling; this is not production evidence. An operator must
-  provision the Render schema/roles, inspect the complete membership graph,
+  run the reviewed fail-closed Render schema/runtime-role provisioning ceremony,
+  retain its non-secret self-hashed JSON receipt, inspect the complete
+  membership graph,
   apply migration 002, run the production OID/function/ACL/privilege and
   concurrent-lock rehearsal, retain the redacted evidence tail, and confirm the
   web child cannot read `P42_PORTAL_MIGRATION_DATABASE_URL`. This has not been
