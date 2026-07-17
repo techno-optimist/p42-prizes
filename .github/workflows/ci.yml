@@ -67,6 +67,18 @@ jobs:
     name: Portal gates
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.4
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     defaults:
       run:
         working-directory: web
@@ -79,6 +91,12 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install dependencies
         run: npm ci
+      - name: Run portal database integrations
+        env:
+          P42_PORTAL_MIGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+        run: |
+          npm run db:migration-integration
+          npm run db:transfer-legacy-integration
       - name: Typecheck
         run: npx tsc --noEmit
       - name: Run portal tests
@@ -117,7 +135,7 @@ jobs:
   objective-program:
     name: SP1 objective-program gates (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       CARGO_INCREMENTAL: "0"
     strategy:
@@ -156,7 +174,7 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-          key: sp1-v6.1-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('objective-programs/Cargo.lock') }}
+          key: sp1-v6.1-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('objective-programs/Cargo.lock', 'objective-programs/q6-intersecting-hypergraph/Cargo.lock', 'objective-programs/edges-vs-triangles/Cargo.lock') }}
       - name: Capture untrusted SP1 build-input observation
         shell: bash
         run: |
@@ -197,6 +215,34 @@ jobs:
             --guest-sysroot "$guest_sysroot" \
             --cargo-home "$HOME/.cargo" \
             --capture-build-provenance "$RUNNER_TEMP/sp1-build-provenance.json"
+      - name: Enforce SP1 build disk budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup_paths=(
+            /usr/local/lib/android
+            /usr/share/dotnet
+            /opt/ghc
+            /usr/local/share/boost
+          )
+          for path in "${cleanup_paths[@]}"; do
+            if [[ ! -e "$path" ]]; then
+              continue
+            fi
+            if [[ ! -d "$path" || -L "$path" ]]; then
+              echo "refusing unsafe runner cleanup path: $path" >&2
+              exit 1
+            fi
+            sudo find "$path" -xdev -mindepth 1 -delete
+          done
+          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+          required_kib=$((20 * 1024 * 1024))
+          printf 'SP1 build disk budget: available=%s KiB required=%s KiB\n' \
+            "$available_kib" "$required_kib"
+          if (( available_kib < required_kib )); then
+            echo "insufficient disk for isolated SP1 workspaces" >&2
+            exit 1
+          fi
       - name: Test objective predicate and Solidity ABI encoding
         working-directory: objective-programs
         shell: bash
@@ -204,6 +250,14 @@ jobs:
           clean_path="$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin"
           /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
             "$HOME/.cargo/bin/cargo" test --locked -p p42-objective-core
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            "$HOME/.cargo/bin/cargo" test --locked \
+            --manifest-path q6-intersecting-hypergraph/Cargo.toml \
+            -p p42-q6-objective-core
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            "$HOME/.cargo/bin/cargo" test --locked \
+            --manifest-path edges-vs-triangles/Cargo.toml \
+            -p p42-edges-objective-core
       - name: Build objective guests on x86 Linux
         working-directory: objective-programs
         shell: bash
@@ -213,14 +267,24 @@ jobs:
           clean_env=(/usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
           "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
             -p p42-hadamard-668-objective-script \
-            -p p42-distinct-subset-sums-a11-objective-script \
+            -p p42-distinct-subset-sums-a11-objective-script
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
+            --manifest-path q6-intersecting-hypergraph/Cargo.toml \
             -p p42-q6-objective-script
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
+            --manifest-path edges-vs-triangles/Cargo.toml \
+            -p p42-edges-objective-script
           for rebuilt in \
             target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program \
             target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program \
-            target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-q6-objective-program; do
+            q6-intersecting-hypergraph/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-q6-objective-program \
+            edges-vs-triangles/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-edges-objective-program; do
               sha256sum "$rebuilt"
-              if strings "$rebuilt" | grep --extended-regexp '/home/runner/(work/p42-prizes|\.cargo|\.rustup)|/opt/hostedtoolcache|/private/tmp/p42'; then
+              host_paths="$(strings "$rebuilt" | grep --extended-regexp '/home/runner/(work/p42-prizes|\.cargo|\.rustup)|/opt/hostedtoolcache|/private/tmp/p42' || true)"
+              # The pinned SP1 guest sysroot itself carries this canonical hashbrown source path.
+              unexpected_paths="$(printf '%s\n' "$host_paths" | grep --invert-match --fixed-strings --line-regexp '/home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.16.1/src/raw/mod.rs' || true)"
+              if [[ -n "$unexpected_paths" ]]; then
+                printf '%s\n' "$unexpected_paths"
                 echo "guest ELF leaked a host-specific source path: $rebuilt" >&2
                 exit 1
               fi
@@ -240,15 +304,45 @@ jobs:
           "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-distinct-subset-sums-a11-objective-script -- \
             execute-fixture-elf "$a11" ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json \
             > "$audit/execution.json"
-          q6=target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-q6-objective-program
+          q6_elf=q6-intersecting-hypergraph/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-q6-objective-program
           q6_audit=target/q6-reproducibility
           mkdir -p "$q6_audit"
-          cp "$q6" "$q6_audit/program.elf"
-          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-q6-objective-script -- \
-            identity-elf "$q6" > "$q6_audit/identity.json"
-          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked -p p42-q6-objective-script -- \
-            execute-fixture-elf "$q6" ../problems/q6-intersecting-hypergraph/tests/seed-pg25.json \
+          cp "$q6_elf" "$q6_audit/program.elf"
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked \
+            --manifest-path q6-intersecting-hypergraph/Cargo.toml \
+            -p p42-q6-objective-script -- \
+            identity-elf "$q6_elf" > "$q6_audit/identity.json"
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked \
+            --manifest-path q6-intersecting-hypergraph/Cargo.toml \
+            -p p42-q6-objective-script -- \
+            execute-fixture-elf "$q6_elf" ../problems/q6-intersecting-hypergraph/tests/seed-pg25.json \
             > "$q6_audit/execution.json"
+          "${clean_env[@]}" /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
+            --program q6-intersecting-hypergraph \
+            --directory "$q6_audit" \
+            --write-source-manifest
+          edges_elf=edges-vs-triangles/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-edges-objective-program
+          edges_audit=target/edges-reproducibility
+          mkdir -p "$edges_audit"
+          cp "$edges_elf" "$edges_audit/program.elf"
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked \
+            --manifest-path edges-vs-triangles/Cargo.toml \
+            -p p42-edges-objective-script -- \
+            identity-elf "$edges_elf" > "$edges_audit/identity.json"
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked \
+            --manifest-path edges-vs-triangles/Cargo.toml \
+            -p p42-edges-objective-script -- \
+            execute-fixture-elf "$edges_elf" ../problems/edges-vs-triangles/examples/rational-curve-sample.json \
+            > "$edges_audit/execution.json"
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked \
+            --manifest-path edges-vs-triangles/Cargo.toml \
+            -p p42-edges-objective-script -- \
+            execute-fixture-elf "$edges_elf" edges-vs-triangles/fixtures/worst-case-500-rows.json \
+            > "$edges_audit/resource.json"
+          "${clean_env[@]}" /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
+            --program edges-vs-triangles \
+            --directory "$edges_audit" \
+            --write-source-manifest
       - name: Capture candidate Hadamard mock execution
         working-directory: objective-programs
         shell: bash
@@ -284,6 +378,14 @@ jobs:
           path: objective-programs/target/q6-reproducibility
           if-no-files-found: warn
           retention-days: 7
+      - name: Retain untrusted Edges candidate forensics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-untrusted-edges-candidate-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/edges-reproducibility
+          if-no-files-found: warn
+          retention-days: 7
       - name: Validate program-scoped reproduction bundles
         working-directory: objective-programs
         shell: bash
@@ -298,6 +400,9 @@ jobs:
           /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
             /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
             --program q6-intersecting-hypergraph --directory target/q6-reproducibility
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
+            --program edges-vs-triangles --directory target/edges-reproducibility
       - name: Enforce frozen guest identity
         working-directory: objective-programs
         shell: bash
@@ -355,6 +460,13 @@ jobs:
           path: objective-programs/target/q6-reproducibility
           if-no-files-found: error
           retention-days: 7
+      - name: Retain validated Edges candidate evidence for cross-image audit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-validated-edges-candidate-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/edges-reproducibility
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain validated SP1 build provenance for cross-image audit
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -393,6 +505,10 @@ jobs:
           path: objective-programs/reproduced-q6
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
+          pattern: p42-validated-edges-candidate-*-${{ github.run_id }}
+          path: objective-programs/reproduced-edges
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
           pattern: p42-validated-sp1-build-provenance-*-${{ github.run_id }}
           path: objective-programs/reproduced-provenance
       - name: Compare dual-image objective guests
@@ -405,9 +521,21 @@ jobs:
             mapfile -t guests < <(find "$root" -type f -name program.elf | sort)
             mapfile -t identities < <(find "$root" -type f -name identity.json | sort)
             mapfile -t executions < <(find "$root" -type f -name execution.json | sort)
+            mapfile -t sources < <(find "$root" -type f -name source.json | sort)
+            mapfile -t resources < <(find "$root" -type f -name resource.json | sort)
             test "${#guests[@]}" -eq 2
             test "${#identities[@]}" -eq 2
             test "${#executions[@]}" -eq 2
+            if [[ "$program" == q6-intersecting-hypergraph || "$program" == edges-vs-triangles ]]; then
+              test "${#sources[@]}" -eq 2
+            else
+              test "${#sources[@]}" -eq 0
+            fi
+            if [[ "$program" == edges-vs-triangles ]]; then
+              test "${#resources[@]}" -eq 2
+            else
+              test "${#resources[@]}" -eq 0
+            fi
             for identity in "${identities[@]}"; do
               /usr/bin/python3 scripts/verify-sp1-objective-reproduction.py \
                 --program "$program" --directory "$(dirname "$identity")"
@@ -415,11 +543,18 @@ jobs:
             cmp --silent "${guests[0]}" "${guests[1]}"
             cmp --silent "${identities[0]}" "${identities[1]}"
             cmp --silent "${executions[0]}" "${executions[1]}"
-            sha256sum "${guests[@]}" "${identities[@]}" "${executions[@]}"
+            if [[ "${#sources[@]}" -eq 2 ]]; then
+              cmp --silent "${sources[0]}" "${sources[1]}"
+            fi
+            if [[ "${#resources[@]}" -eq 2 ]]; then
+              cmp --silent "${resources[0]}" "${resources[1]}"
+            fi
+            sha256sum "${guests[@]}" "${identities[@]}" "${executions[@]}" "${sources[@]}" "${resources[@]}"
           }
           compare_pair objective-programs/reproduced-hadamard hadamard-668-defect
           compare_pair objective-programs/reproduced-a11 distinct-subset-sums-a11
           compare_pair objective-programs/reproduced-q6 q6-intersecting-hypergraph
+          compare_pair objective-programs/reproduced-edges edges-vs-triangles
           mapfile -t provenances < <(find objective-programs/reproduced-provenance -type f -name sp1-build-provenance.json | sort)
           test "${#provenances[@]}" -eq 2
           cmp --silent "${provenances[0]}" "${provenances[1]}"
