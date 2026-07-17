@@ -12,7 +12,8 @@ const transferScript = path.resolve("scripts/transfer-legacy-portal-state.mjs");
 const admin = new pg.Client({ connectionString, connectionTimeoutMillis: 10_000 });
 await admin.connect();
 const runtimeRole = `p42_runtime_${randomUUID().replaceAll("-", "")}`;
-await admin.query(`CREATE ROLE ${quoteIdentifier(runtimeRole)} NOLOGIN`);
+await admin.query(`CREATE ROLE ${quoteIdentifier(runtimeRole)} NOLOGIN NOSUPERUSER NOINHERIT
+  NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
 
 const passed = [];
 const state = { marker: "sensitive-state-marker" };
@@ -86,6 +87,74 @@ try {
     const receipt = assertSuccessResult(await runTransfer({ legacy, target }));
     if (receipt.status !== "transferred") throw new Error("preexisting provenance transfer did not complete");
     await assertProvenanceAclClosed(target);
+  });
+
+  await transferCase("safe-benign-set-role-memberships", async ({ legacy, target }) => {
+    const first = `p42_benign_first_${randomUUID().replaceAll("-", "")}`;
+    const second = `p42_benign_second_${randomUUID().replaceAll("-", "")}`;
+    await createRestrictedRole(first);
+    await createRestrictedRole(second);
+    try {
+      await admin.query(`GRANT ${quoteIdentifier(second)} TO ${quoteIdentifier(first)}
+        WITH INHERIT FALSE, SET TRUE`);
+      await admin.query(`GRANT ${quoteIdentifier(first)} TO ${quoteIdentifier(runtimeRole)}
+        WITH INHERIT FALSE, SET TRUE`);
+      await admin.query(`GRANT SELECT, INSERT, UPDATE ON TABLE ${qualified(target, "p42_portal_state")}
+        TO ${quoteIdentifier(runtimeRole)}`);
+      const receipt = assertSuccessResult(await runTransfer({ legacy, target }));
+      if (receipt.status !== "transferred") throw new Error("benign SET-role closure was rejected");
+    } finally {
+      await admin.query(`REVOKE ${quoteIdentifier(first)} FROM ${quoteIdentifier(runtimeRole)}`).catch(() => {});
+      await admin.query(`REVOKE ${quoteIdentifier(second)} FROM ${quoteIdentifier(first)}`).catch(() => {});
+      await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(first)}, ${quoteIdentifier(second)}`).catch(() => {});
+    }
+  });
+
+  await transferCase("noinherit-set-role-superuser-escalation-rejected", async ({ legacy, target }) => {
+    const intermediary = `p42_intermediary_${randomUUID().replaceAll("-", "")}`;
+    const elevated = `p42_elevated_${randomUUID().replaceAll("-", "")}`;
+    await createRestrictedRole(intermediary);
+    await admin.query(`CREATE ROLE ${quoteIdentifier(elevated)} NOLOGIN SUPERUSER`);
+    try {
+      await admin.query(`GRANT ${quoteIdentifier(elevated)} TO ${quoteIdentifier(intermediary)}
+        WITH INHERIT FALSE, SET TRUE`);
+      await admin.query(`GRANT ${quoteIdentifier(intermediary)} TO ${quoteIdentifier(runtimeRole)}
+        WITH INHERIT FALSE, SET TRUE`);
+      await assertSetRoleEscalation(intermediary, elevated);
+      await expectFailure({ legacy, target }, "runtime-role-dangerous-set-closure");
+      await assertEmpty(target);
+    } finally {
+      await admin.query(`REVOKE ${quoteIdentifier(intermediary)} FROM ${quoteIdentifier(runtimeRole)}`).catch(() => {});
+      await admin.query(`REVOKE ${quoteIdentifier(elevated)} FROM ${quoteIdentifier(intermediary)}`).catch(() => {});
+      await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(intermediary)}, ${quoteIdentifier(elevated)}`).catch(() => {});
+    }
+  });
+
+  await transferCase("timezone-datestyle-stable-reconciliation", async ({ legacy, target }) => {
+    await expectFailure({
+      legacy,
+      target,
+      extraEnv: {
+        PGOPTIONS: "-c TimeZone=America/Denver -c DateStyle=SQL,DMY",
+        P42_PORTAL_TEST_FAULT_AFTER_COMMIT: "ambiguous-ack",
+      },
+    }, "commit-acknowledgment-ambiguous");
+    const marker = await admin.query(`SELECT transfer_id, binding_json FROM
+      ${qualified(target, "p42_portal_state_transfer_provenance")}`);
+    if (marker.rowCount !== 1) throw new Error("timezone transfer marker missing");
+    const binding = JSON.parse(marker.rows[0].binding_json);
+    if (binding.sourceImportedAt !== "2026-07-17T00:00:00.000000Z"
+      || binding.sourceUpdatedAt !== "2026-07-17T01:00:00.000000Z") {
+      throw new Error("bound timestamps were not canonical UTC microsecond text");
+    }
+    const receipt = assertSuccessResult(await runTransfer({
+      legacy,
+      target,
+      extraEnv: { PGOPTIONS: "-c TimeZone=Asia/Tokyo -c DateStyle=German,DMY" },
+    }));
+    if (receipt.status !== "reconciled" || receipt.transferId !== marker.rows[0].transfer_id) {
+      throw new Error("timezone change altered the transfer binding");
+    }
   });
 
   await transferCase("empty-source", async ({ legacy, target }) => {
@@ -305,7 +374,7 @@ try {
   process.stdout.write(`${JSON.stringify({
     cases: passed,
     postgresVersion,
-    schemaVersion: "p42-legacy-portal-state-transfer-test/v3",
+    schemaVersion: "p42-legacy-portal-state-transfer-test/v4",
     status: "passed",
   })}\n`);
 } finally {
@@ -366,6 +435,28 @@ async function createProvenanceTable(schema) {
     binding_json text NOT NULL,
     committed_at timestamp with time zone NOT NULL DEFAULT clock_timestamp()
   )`);
+}
+
+async function createRestrictedRole(role) {
+  await admin.query(`CREATE ROLE ${quoteIdentifier(role)} NOLOGIN NOSUPERUSER NOINHERIT
+    NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
+}
+
+async function assertSetRoleEscalation(intermediary, elevated) {
+  const probe = new pg.Client({ connectionString });
+  await probe.connect();
+  try {
+    await probe.query(`SET SESSION AUTHORIZATION ${quoteIdentifier(runtimeRole)}`);
+    await probe.query(`SET ROLE ${quoteIdentifier(intermediary)}`);
+    await probe.query(`SET ROLE ${quoteIdentifier(elevated)}`);
+    const identity = await probe.query(`SELECT current_user=$1 AS role_matches,
+      (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname=current_user) AS is_superuser`, [elevated]);
+    if (!identity.rows[0]?.role_matches || !identity.rows[0]?.is_superuser) {
+      throw new Error("SET ROLE escalation reproduction did not reach the superuser role");
+    }
+  } finally {
+    await probe.end().catch(() => {});
+  }
 }
 
 async function assertProvenanceAclClosed(schema) {
@@ -460,12 +551,18 @@ function assertSuccessResult(result) {
   }
   if (value.provenanceAuthority !== "database-owner-controlled-not-external-evidence"
     || value.externalEvidenceRequirement !== "external-signed-receipt-capture-required"
-    || value.databaseOwnerRemainsAuthority !== true) {
+    || value.databaseOwnerRemainsAuthority !== true
+    || value.timestampEncoding !== "utc-iso8601-microseconds") {
     throw new Error("receipt did not disclose its owner authority and external evidence boundary");
   }
   for (const key of ["databaseOid", "databaseOwnerRoleOid", "legacySchemaOid", "legacyRelationOid",
     "targetSchemaOid", "targetRelationOid"]) {
     if (!/^[1-9][0-9]*$/.test(value[key])) throw new Error(`transfer result has invalid ${key}`);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value.committedAt)
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value.sourceImportedAt)
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/.test(value.sourceUpdatedAt)) {
+    throw new Error("receipt timestamps were not canonical UTC microsecond text");
   }
   return value;
 }

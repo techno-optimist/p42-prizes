@@ -17,7 +17,7 @@ class TransferError extends Error {
 
 main().catch((error) => {
   const code = error instanceof TransferError ? error.code : "database-operation-failed";
-  process.stderr.write(`${canonicalJson({ error: code, schemaVersion: "p42-legacy-portal-state-transfer-error/v3", status: "failed" })}\n`);
+  process.stderr.write(`${canonicalJson({ error: code, schemaVersion: "p42-legacy-portal-state-transfer-error/v4", status: "failed" })}\n`);
   process.exitCode = 1;
 });
 
@@ -66,7 +66,8 @@ async function main() {
     await testPause("P42_PORTAL_TEST_PAUSE_AFTER_RELATION_LOCK_MS");
     await createOidBoundPortalView(client, "p42_locked_legacy", locked.legacy);
     await createOidBoundPortalView(client, "p42_locked_target", locked.target);
-    await ensureProvenanceTable(client, locked.target, identity.roleOid, runtimeRole);
+    const provenance = await ensureProvenanceTable(client, locked.target, identity.roleOid, runtimeRole);
+    await verifyRuntimeRoleClosure(client, runtimeRole.oid, identity, locked, provenance);
     const sourceRow = await readSingleton(client, "p42_locked_legacy", "source");
     verifyExpectedSource(sourceRow, { expectedImportSha256, expectedRevision, expectedStateSha256 });
 
@@ -84,12 +85,14 @@ async function main() {
       stateSha256: expectedStateSha256,
       targetRelationOid: locked.target.oid,
       targetSchemaOid: locked.target.schemaOid,
+      timestampEncoding: "utc-iso8601-microseconds",
     };
     const bindingJson = canonicalJson(binding);
     const transferId = sha256(bindingJson);
     let status;
     let committedAt;
-    const existingMarker = await client.query(`SELECT binding_json, committed_at::text AS committed_at
+    const existingMarker = await client.query(`SELECT binding_json,
+        ${canonicalTimestampSql("committed_at")} AS committed_at
       FROM pg_temp.p42_locked_provenance WHERE transfer_id=$1`, [transferId]);
 
     if (existingMarker.rowCount === 1 && existingMarker.rows[0].binding_json === bindingJson) {
@@ -107,7 +110,8 @@ async function main() {
       await verifyDestination(client, sourceRow, expectedStateSha256);
       const marker = await client.query(`INSERT INTO pg_temp.p42_locked_provenance
           (transfer_id, binding_json, committed_at)
-        VALUES ($1, $2, clock_timestamp()) RETURNING committed_at::text AS committed_at`, [transferId, bindingJson]);
+        VALUES ($1, $2, clock_timestamp())
+        RETURNING ${canonicalTimestampSql("committed_at")} AS committed_at`, [transferId, bindingJson]);
       if (marker.rowCount !== 1) fail("provenance-insert-count-mismatch");
       committedAt = marker.rows[0].committed_at;
       status = "transferred";
@@ -130,7 +134,7 @@ async function main() {
       provenanceAuthority: "database-owner-controlled-not-external-evidence",
       receiptChecksumPurpose: "accidental-corruption-check-only-not-authentication-or-evidence",
       receiptScope: "historical-committed-transfer-event-and-owner-controlled-provenance-row",
-      schemaVersion: "p42-legacy-portal-state-transfer/v3",
+      schemaVersion: "p42-legacy-portal-state-transfer/v4",
       status,
       transferId,
     };
@@ -158,15 +162,39 @@ async function databaseIdentity(client) {
 }
 
 async function resolveRuntimeRole(client, roleName, ownerOid) {
-  const result = await client.query(`SELECT oid::text AS oid, rolsuper, rolbypassrls,
-      pg_catalog.pg_has_role(oid, $2::oid, 'MEMBER') AS inherits_owner
-    FROM pg_catalog.pg_roles WHERE rolname=$1`, [roleName, ownerOid]);
+  const result = await client.query("SELECT oid::text AS oid FROM pg_catalog.pg_roles WHERE rolname=$1", [roleName]);
   if (result.rowCount !== 1) fail("runtime-role-missing");
-  const role = result.rows[0];
-  if (role.oid === ownerOid || role.rolsuper || role.rolbypassrls || role.inherits_owner) {
-    fail("runtime-role-not-separable-from-owner");
-  }
-  return { name: roleName, oid: role.oid };
+  if (result.rows[0].oid === ownerOid) fail("runtime-role-not-separable-from-owner");
+  return { name: roleName, oid: result.rows[0].oid };
+}
+
+async function verifyRuntimeRoleClosure(client, runtimeRoleOid, identity, relations, provenance) {
+  const ownerOids = [identity.databaseOwnerOid, relations.target.schemaOwnerOid,
+    relations.target.ownerOid, relations.legacy.ownerOid, provenance.ownerOid];
+  const result = await client.query(`SELECT NOT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_roles AS candidate
+      WHERE (candidate.oid=$1::oid OR pg_catalog.pg_has_role($1::oid,candidate.oid,'SET'))
+        AND (candidate.rolsuper OR candidate.rolbypassrls OR candidate.rolcreaterole
+          OR candidate.rolcreatedb OR candidate.rolreplication
+          OR candidate.oid=ANY($7::oid[])
+          OR pg_catalog.has_database_privilege(candidate.oid,$2::oid,'CREATE')
+          OR pg_catalog.has_schema_privilege(candidate.oid,$3::oid,'CREATE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$4::oid,'INSERT')
+          OR pg_catalog.has_table_privilege(candidate.oid,$4::oid,'UPDATE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$4::oid,'DELETE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$4::oid,'TRUNCATE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$4::oid,'TRIGGER')
+          OR pg_catalog.has_table_privilege(candidate.oid,$5::oid,'DELETE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$5::oid,'TRUNCATE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$5::oid,'TRIGGER')
+          OR pg_catalog.has_table_privilege(candidate.oid,$6::oid,'INSERT')
+          OR pg_catalog.has_table_privilege(candidate.oid,$6::oid,'UPDATE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$6::oid,'DELETE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$6::oid,'TRUNCATE')
+          OR pg_catalog.has_table_privilege(candidate.oid,$6::oid,'TRIGGER'))
+    ) AS safe`, [runtimeRoleOid, identity.databaseOid, relations.target.schemaOid,
+    relations.legacy.oid, relations.target.oid, provenance.oid, ownerOids]);
+  if (result.rowCount !== 1 || !result.rows[0].safe) fail("runtime-role-dangerous-set-closure");
 }
 
 async function resolveRelations(client, targetSchema, legacySchema) {
@@ -234,7 +262,7 @@ async function ensureProvenanceTable(client, target, roleOid, runtimeRole) {
     FROM pg_catalog.pg_class AS c WHERE c.relnamespace=$1::oid AND c.relname=$2`, [target.schemaOid, PROVENANCE_TABLE]);
   if (resolved.rowCount !== 1 || resolved.rows[0].schema_oid !== target.schemaOid
     || resolved.rows[0].owner_oid !== roleOid) fail("provenance-identity-mismatch");
-  const relation = { kind: "provenance", oid: resolved.rows[0].oid };
+  const relation = { kind: "provenance", oid: resolved.rows[0].oid, ownerOid: resolved.rows[0].owner_oid };
   await client.query(`LOCK TABLE ${qualified(schema, PROVENANCE_TABLE)} IN ACCESS EXCLUSIVE MODE`);
   await verifyAccessExclusiveLocks(client, [relation.oid], "provenance-lock-mismatch");
   await verifyProvenanceTableShape(client, relation);
@@ -327,7 +355,9 @@ async function verifyProvenanceTableShape(client, relation) {
 
 async function readSingleton(client, viewName, prefix) {
   const result = await client.query(`SELECT singleton, schema_version, revision::text AS revision,
-      state::text AS state_text, import_sha256, imported_at::text AS imported_at, updated_at::text AS updated_at
+      state::text AS state_text, import_sha256,
+      ${canonicalTimestampSql("imported_at")} AS imported_at,
+      ${canonicalTimestampSql("updated_at")} AS updated_at
     FROM pg_temp.${quoteIdentifier(viewName)}`);
   if (result.rowCount !== 1 || result.rows[0]?.singleton !== true) fail(`${prefix}-not-singleton`);
   return result.rows[0];
@@ -450,6 +480,10 @@ function qualified(schema, table) {
 
 function quoteIdentifier(value) {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function canonicalTimestampSql(column) {
+  return `pg_catalog.to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 }
 
 function sha256(value) {
