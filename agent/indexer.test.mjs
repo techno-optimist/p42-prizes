@@ -804,7 +804,7 @@ function portalEconomicFixture() {
   }]], 70);
   tx([["submissions", "Revealed", {
     submissionId: 2n, solver: ADDR.solverB, solutionCid: "ar://solution-b",
-    improvementAtoms: 100n, claimedScoreAtoms: 800n, challengeEndsAt: 90n,
+    improvementAtoms: 200n, claimedScoreAtoms: 800n, challengeEndsAt: 90n,
     solutionBytesLength: 1n, revealInstanceHash: hash(602),
   }]], 80);
   tx([
@@ -1311,6 +1311,21 @@ describe("P42 deterministic indexer replay", () => {
     );
   });
 
+  it("quarantines a spoofed seed-relative improvement field", () => {
+    const events = lifecycleFixture();
+    const reveal = events.find((event) =>
+      event.source === "submissions"
+      && event.eventName === "Revealed"
+      && event.args.submissionId === 2n
+    );
+    reveal.args.improvementAtoms = 199n;
+
+    assert.throws(
+      () => replayProtocolEvents(events, CONFIG, { coverage: REQUIRED_LIFECYCLE_COVERAGE }),
+      /Revealed 2 quarantined: improvementAtoms mismatch: expected 200, observed 199/,
+    );
+  });
+
   it("fails closed when challenge events do not bind the current reveal and dispute instances", () => {
     const wrongReveal = lifecycleFixture();
     const challenge = wrongReveal.find((event) => event.source === "challenges" && event.eventName === "Challenged");
@@ -1585,7 +1600,7 @@ describe("P42 deterministic indexer replay", () => {
         },
         {
           submissionId: "2", solver: ADDR.solverB, status: "Finalized", score: "800",
-          improvement: "100", credit: "100", cid: "ar://solution-b",
+          improvement: "200", credit: "100", cid: "ar://solution-b",
           committedAt: "70", revealedAt: "80", finalizedAt: "130",
         },
       ],
