@@ -40,6 +40,7 @@ function unavailable(slug: string): FundingTargetEnvelopeV3 {
     fundingAuthorizationDigest: null,
     activationCompletionDigest: null,
     checkpointBlock: null,
+    checkpointDigest: null,
     activationFinalizedBlock: null,
     target: null,
   };
@@ -63,6 +64,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
       || chainProvenance.activationCompletionDigest !== model.provenance.activationCompletionDigest
       || !validBlock(chainProvenance.checkpointBlock) || !validBlock(model.provenance.checkpointBlock)
       || chainProvenance.checkpointBlock !== model.provenance.checkpointBlock
+      || !validDigest(model.provenance.checkpointDigest)
       || !validBlock(chainProvenance.activationFinalizedBlock)
       || chainProvenance.activationFinalizedBlock > chainProvenance.checkpointBlock
       || funding.finalizedObservedAt !== model.provenance.checkpointTimestamp) {
@@ -93,6 +95,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ slu
       fundingAuthorizationDigest: chainProvenance.fundingAuthorizationDigest,
       activationCompletionDigest: chainProvenance.activationCompletionDigest,
       checkpointBlock: chainProvenance.checkpointBlock,
+      checkpointDigest: model.provenance.checkpointDigest,
       activationFinalizedBlock: chainProvenance.activationFinalizedBlock,
       target: target && {
         address: target.address,

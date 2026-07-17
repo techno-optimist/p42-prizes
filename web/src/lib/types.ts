@@ -228,6 +228,7 @@ export interface PortalReadModelProvenance {
   source: PortalDataSource;
   deploymentCommit: string | null;
   checkpointBlock: number | null;
+  checkpointDigest: string | null;
   checkpointTimestamp: string | null;
   fundingAuthorizationDigest: string | null;
   activationCompletionDigest: string | null;
@@ -262,6 +263,7 @@ export interface FundingTargetEnvelopeV3 {
   fundingAuthorizationDigest: string | null;
   activationCompletionDigest: string | null;
   checkpointBlock: number | null;
+  checkpointDigest: string | null;
   activationFinalizedBlock: number | null;
   target: FundingTargetV3 | null;
 }

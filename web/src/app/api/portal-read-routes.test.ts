@@ -105,6 +105,7 @@ function model(): PortalReadModel {
     ],
     provenance: {
       source: "chain-p42-v1", deploymentCommit: "a".repeat(40), checkpointBlock: 100,
+      checkpointDigest: `sha256:${"6".repeat(64)}`,
       checkpointTimestamp: "2026-01-04T00:00:00.000Z",
       fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
       activationCompletionDigest: `sha256:${"5".repeat(64)}`,
@@ -245,10 +246,11 @@ describe("chain portal API consumers", () => {
       fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
       activationCompletionDigest: `sha256:${"5".repeat(64)}`,
       checkpointBlock: 100,
+      checkpointDigest: `sha256:${"6".repeat(64)}`,
       activationFinalizedBlock: 99,
     });
     expect(Object.keys(fundingPanel!.props).sort()).toEqual([
-      "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt", "checkpointBlock",
+      "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt", "checkpointBlock", "checkpointDigest",
       "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline", "fundingTargetDeployed",
       "label", "remainingCapWei", "serverObservedAt", "slug",
     ]);
@@ -275,7 +277,7 @@ describe("chain portal API consumers", () => {
     const flightFacingPayload = [JSON.stringify(fundingPanel?.props), ...payloadStrings(page)].join("\n");
 
     expect(Object.keys(fundingPanel!.props).sort()).toEqual([
-      "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt", "checkpointBlock",
+      "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt", "checkpointBlock", "checkpointDigest",
       "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline", "fundingTargetDeployed",
       "label", "remainingCapWei", "serverObservedAt", "slug",
     ]);
@@ -290,6 +292,7 @@ describe("chain portal API consumers", () => {
       fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
       activationCompletionDigest: `sha256:${"5".repeat(64)}`,
       checkpointBlock: 100,
+      checkpointDigest: `sha256:${"6".repeat(64)}`,
       activationFinalizedBlock: 99,
     });
     expect(flightFacingPayload).not.toContain(FUNDING_ADDRESS);
@@ -323,6 +326,7 @@ describe("chain portal API consumers", () => {
       fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
       activationCompletionDigest: `sha256:${"5".repeat(64)}`,
       checkpointBlock: 100,
+      checkpointDigest: `sha256:${"6".repeat(64)}`,
       activationFinalizedBlock: 99,
       target: {
         address: FUNDING_ADDRESS,
@@ -415,6 +419,9 @@ describe("chain portal API consumers", () => {
     ["zero completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = `sha256:${"0".repeat(64)}`; }],
     ["malformed completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = "sha256:no"; }],
     ["changed completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = `sha256:${"9".repeat(64)}`; }],
+    ["missing checkpoint digest", (value: PortalReadModel) => { value.provenance.checkpointDigest = null; }],
+    ["zero checkpoint digest", (value: PortalReadModel) => { value.provenance.checkpointDigest = `sha256:${"0".repeat(64)}`; }],
+    ["malformed checkpoint digest", (value: PortalReadModel) => { value.provenance.checkpointDigest = "sha256:no"; }],
     ["checkpoint block drift", (value: PortalReadModel) => { value.problems[0].chainProvenance.checkpointBlock = 101; }],
     ["activation block after checkpoint", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationFinalizedBlock = 101; }],
   ])("fails closed for %s in the dedicated funding projection", async (_label, mutate) => {

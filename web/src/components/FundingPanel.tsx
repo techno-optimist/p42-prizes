@@ -27,6 +27,7 @@ type FundingTargetResponse = FundingTargetEnvelopeV3 & {
   fundingAuthorizationDigest: string;
   activationCompletionDigest: string;
   checkpointBlock: number;
+  checkpointDigest: string;
   activationFinalizedBlock: number;
 };
 
@@ -62,6 +63,7 @@ function launchBindingKey(response: FundingTargetResponse): string | null {
     response.fundingAuthorizationDigest,
     response.activationCompletionDigest,
     response.checkpointBlock,
+    response.checkpointDigest,
     response.activationFinalizedBlock,
     response.target.address,
     response.target.asset,
@@ -77,7 +79,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
   const response = value as Record<string, unknown>;
   if (!exactKeys(response, [
     "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt",
-    "checkpointBlock", "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline",
+    "checkpointBlock", "checkpointDigest", "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline",
     "remainingCapWei", "schema", "serverObservedAt", "slug", "target",
   ])
     || response.schema !== RESPONSE_SCHEMA || response.slug !== slug
@@ -89,6 +91,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     || !validDigest(response.fundingAuthorizationDigest)
     || !validDigest(response.activationCompletionDigest)
     || !validBlock(response.checkpointBlock) || !validBlock(response.activationFinalizedBlock)
+    || !validDigest(response.checkpointDigest)
     || response.activationFinalizedBlock > response.checkpointBlock) return null;
   if (response.target === null) {
     return {
@@ -100,6 +103,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
       fundingAuthorizationDigest: response.fundingAuthorizationDigest,
       activationCompletionDigest: response.activationCompletionDigest,
       checkpointBlock: response.checkpointBlock,
+      checkpointDigest: response.checkpointDigest,
       activationFinalizedBlock: response.activationFinalizedBlock,
       schema: RESPONSE_SCHEMA,
       slug,
@@ -125,6 +129,7 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     fundingAuthorizationDigest: response.fundingAuthorizationDigest,
     activationCompletionDigest: response.activationCompletionDigest,
     checkpointBlock: response.checkpointBlock,
+    checkpointDigest: response.checkpointDigest,
     activationFinalizedBlock: response.activationFinalizedBlock,
     schema: RESPONSE_SCHEMA,
     slug,
@@ -143,6 +148,7 @@ export interface FundingPanelProps {
   fundingAuthorizationDigest: string | null;
   activationCompletionDigest: string | null;
   checkpointBlock: number | null;
+  checkpointDigest: string | null;
   activationFinalizedBlock: number | null;
   label?: string;
   compact?: boolean;
@@ -161,6 +167,7 @@ export function FundingPanel({
   fundingAuthorizationDigest,
   activationCompletionDigest,
   checkpointBlock,
+  checkpointDigest,
   activationFinalizedBlock,
   label,
   compact = false,
@@ -168,7 +175,7 @@ export function FundingPanel({
   const bindingKey = JSON.stringify([
     slug, authorizationExpiresAt, finalizedObservedAt, fundingDeadline,
     remainingCapWei, serverObservedAt, fundingAuthorizationDigest, activationCompletionDigest,
-    checkpointBlock, activationFinalizedBlock, fundingTargetDeployed,
+    checkpointBlock, checkpointDigest, activationFinalizedBlock, fundingTargetDeployed,
   ]);
   const bindingKeyRef = useRef(bindingKey);
   bindingKeyRef.current = bindingKey;
@@ -183,6 +190,7 @@ export function FundingPanel({
   const validRemainingCap = typeof remainingCapWei === "string" && /^(0|[1-9][0-9]*)$/.test(remainingCapWei);
   const validPolicyBinding = validDigest(fundingAuthorizationDigest) && validDigest(activationCompletionDigest)
     && validBlock(checkpointBlock) && validBlock(activationFinalizedBlock)
+    && validDigest(checkpointDigest)
     && activationFinalizedBlock <= checkpointBlock;
   const canCheckFunding = fundingTargetDeployed && actionCutoffTimestamp !== null
     && finalizedTimestamp !== null && observedTimestamp !== null && validRemainingCap && validPolicyBinding
@@ -194,7 +202,7 @@ export function FundingPanel({
   const [acknowledged, setAcknowledged] = useState(false);
   const [walletLaunchIdentity, setWalletLaunchIdentity] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [copiedDigest, setCopiedDigest] = useState<"authorization" | "activation" | null>(null);
+  const [copiedDigest, setCopiedDigest] = useState<"authorization" | "activation" | "checkpoint" | null>(null);
   const monotonicCutoffRef = useRef<number | null>(null);
   const clientWallStartedRef = useRef<number | null>(null);
   const latestObservedRef = useRef<number | null>(observedTimestamp);
@@ -305,6 +313,7 @@ export function FundingPanel({
             || parsed.fundingAuthorizationDigest !== fundingAuthorizationDigest
             || parsed.activationCompletionDigest !== activationCompletionDigest
             || parsed.checkpointBlock !== checkpointBlock
+            || parsed.checkpointDigest !== checkpointDigest
             || parsed.activationFinalizedBlock !== activationFinalizedBlock
             || parsedTimestamp(parsed.finalizedObservedAt)! < finalizedTimestamp) {
             if (active && !requestController.signal.aborted) expireFunding(false);
@@ -320,7 +329,7 @@ export function FundingPanel({
             expireFunding(responseObserved >= deadlineTimestamp!);
             return;
           }
-          if (responseObserved < observedTimestamp || cutoffReached(responseObserved)) {
+          if (responseObserved < (latestObservedRef.current ?? observedTimestamp) || cutoffReached(responseObserved)) {
             expireFunding(true);
             return;
           }
@@ -401,7 +410,7 @@ export function FundingPanel({
     }
   }
 
-  async function copyPolicyDigest(kind: "authorization" | "activation", digest: string) {
+  async function copyPolicyDigest(kind: "authorization" | "activation" | "checkpoint", digest: string) {
     if (!boundTarget || boundTarget.bindingKey !== bindingKeyRef.current || !validDigest(digest)) return;
     if (cutoffReached()) {
       expireFunding(true);
@@ -482,6 +491,7 @@ export function FundingPanel({
         || parsed.fundingAuthorizationDigest !== fundingAuthorizationDigest
         || parsed.activationCompletionDigest !== activationCompletionDigest
         || parsed.checkpointBlock !== checkpointBlock
+        || parsed.checkpointDigest !== checkpointDigest
         || parsed.activationFinalizedBlock !== activationFinalizedBlock
         || responseObserved === null || responseFinalized === null
         || responseFinalized < finalizedTimestamp! || responseFinalized > responseObserved
@@ -553,7 +563,7 @@ export function FundingPanel({
           <div className="funding-policy-binding">
             <span>authorization <code>{abbreviatedDigest(fundingAuthorizationDigest!)}</code></span>
             <span>activation <code>{abbreviatedDigest(activationCompletionDigest!)}</code></span>
-            <span>checkpoint <code>#{checkpointBlock}</code></span>
+            <span>checkpoint <code>#{checkpointBlock} · {abbreviatedDigest(checkpointDigest!)}</code></span>
           </div>
           <details className="funding-policy-details">
             <summary>Inspect exact policy digests</summary>
@@ -582,6 +592,18 @@ export function FundingPanel({
                   {copiedDigest === "activation" ? "copied" : "copy"}
                 </button>
               </dd>
+              <dt>Checkpoint generation</dt>
+              <dd>
+                <code>{checkpointDigest}</code>
+                <button
+                  className="copy-button funding-digest-copy"
+                  type="button"
+                  onClick={() => void copyPolicyDigest("checkpoint", checkpointDigest!)}
+                  aria-label="Copy full checkpoint generation digest"
+                >
+                  {copiedDigest === "checkpoint" ? "copied" : "copy"}
+                </button>
+              </dd>
             </dl>
           </details>
           <label className="funding-acknowledgement">
@@ -591,7 +613,7 @@ export function FundingPanel({
               onChange={(event) => setAcknowledged(event.currentTarget.checked)}
             />
             <span>
-              I acknowledge the exact full authorization <code>{abbreviatedDigest(fundingAuthorizationDigest!)}</code> and activation <code>{abbreviatedDigest(activationCompletionDigest!)}</code> values available in the policy digest disclosure and API for this funding target.
+              I acknowledge the exact authorization, activation, and checkpoint-generation values available in the policy digest disclosure and API for this funding target.
             </span>
           </label>
           <p className="testnet-warning">

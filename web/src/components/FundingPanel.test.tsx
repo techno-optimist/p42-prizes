@@ -17,6 +17,7 @@ const FINALIZED_MS = OBSERVED_MS - 100;
 const WALLET_URI = `ethereum:${ADDRESS}@84532`;
 const FUNDING_AUTHORIZATION_DIGEST = `sha256:${"4".repeat(64)}`;
 const ACTIVATION_COMPLETION_DIGEST = `sha256:${"5".repeat(64)}`;
+const CHECKPOINT_DIGEST = `sha256:${"6".repeat(64)}`;
 
 function props(overrides: Partial<FundingPanelProps> = {}): FundingPanelProps {
   return {
@@ -30,6 +31,7 @@ function props(overrides: Partial<FundingPanelProps> = {}): FundingPanelProps {
     fundingAuthorizationDigest: FUNDING_AUTHORIZATION_DIGEST,
     activationCompletionDigest: ACTIVATION_COMPLETION_DIGEST,
     checkpointBlock: 100,
+    checkpointDigest: CHECKPOINT_DIGEST,
     activationFinalizedBlock: 99,
     label: "Test pool",
     ...overrides,
@@ -46,6 +48,7 @@ function responseBody({
   fundingAuthorizationDigest = FUNDING_AUTHORIZATION_DIGEST,
   activationCompletionDigest = ACTIVATION_COMPLETION_DIGEST,
   checkpointBlock = 100,
+  checkpointDigest = CHECKPOINT_DIGEST,
   activationFinalizedBlock = 99,
 }: {
   slug?: string;
@@ -57,6 +60,7 @@ function responseBody({
   fundingAuthorizationDigest?: unknown;
   activationCompletionDigest?: unknown;
   checkpointBlock?: unknown;
+  checkpointDigest?: unknown;
   activationFinalizedBlock?: unknown;
 } = {}) {
   return {
@@ -70,6 +74,7 @@ function responseBody({
     fundingAuthorizationDigest,
     activationCompletionDigest,
     checkpointBlock,
+    checkpointDigest,
     activationFinalizedBlock,
     target: target ? {
       address,
@@ -120,7 +125,7 @@ function expectTargetClearedFromDom() {
 }
 
 function acknowledgePolicy() {
-  const acknowledgement = screen.getByRole("checkbox", { name: /I acknowledge the exact full authorization/ });
+  const acknowledgement = screen.getByRole("checkbox", { name: /I acknowledge the exact authorization/ });
   fireEvent.click(acknowledgement);
   expect((acknowledgement as HTMLInputElement).checked).toBe(true);
   return acknowledgement;
@@ -258,7 +263,8 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(details.open).toBe(false);
     expect(details.textContent).toContain(FUNDING_AUTHORIZATION_DIGEST);
     expect(details.textContent).toContain(ACTIVATION_COMPLETION_DIGEST);
-    expect(screen.getByRole("checkbox", { name: /exact full authorization.*policy digest disclosure and API/i })).toBeTruthy();
+    expect(details.textContent).toContain(CHECKPOINT_DIGEST);
+    expect(screen.getByRole("checkbox", { name: /exact authorization.*checkpoint-generation.*policy digest disclosure and API/i })).toBeTruthy();
   });
 
   it("copies the full exact policy digests rather than an abbreviation", async () => {
@@ -275,6 +281,11 @@ describe("FundingPanel deadline reconciliation", () => {
     await flushResponse();
     expect(writeText).toHaveBeenLastCalledWith(ACTIVATION_COMPLETION_DIGEST);
     expect(screen.getByRole("button", { name: "Copy full activation completion digest" }).textContent).toBe("copied");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy full checkpoint generation digest" }));
+    await flushResponse();
+    expect(writeText).toHaveBeenLastCalledWith(CHECKPOINT_DIGEST);
+    expect(screen.getByRole("button", { name: "Copy full checkpoint generation digest" }).textContent).toBe("copied");
   });
 
   it.each([
@@ -296,6 +307,19 @@ describe("FundingPanel deadline reconciliation", () => {
     ["malformed", () => responseBody({ activationCompletionDigest: "sha256:not-a-digest" })],
     ["changed", () => responseBody({ activationCompletionDigest: `sha256:${"9".repeat(64)}` })],
   ])("fails closed on a %s activation completion digest", async (_label, body) => {
+    vi.mocked(fetch).mockResolvedValue(okResponse(body()));
+    render(<FundingPanel {...props()} />);
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
+  });
+
+  it.each([
+    ["missing", () => { const body = responseBody() as Record<string, unknown>; delete body.checkpointDigest; return body; }],
+    ["zero", () => responseBody({ checkpointDigest: `sha256:${"0".repeat(64)}` })],
+    ["malformed", () => responseBody({ checkpointDigest: "sha256:not-a-digest" })],
+    ["changed", () => responseBody({ checkpointDigest: `sha256:${"9".repeat(64)}` })],
+  ])("fails closed on a %s checkpoint generation digest", async (_label, body) => {
     vi.mocked(fetch).mockResolvedValue(okResponse(body()));
     render(<FundingPanel {...props()} />);
     await flushResponse();
@@ -516,6 +540,24 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 
+  it("does not resurrect funding from a sequentially older focus observation", async () => {
+    await renderAndReveal();
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({
+      remainingCapWei: "0",
+      serverObservedAt: OBSERVED_MS + 500,
+      target: false,
+    })));
+    fireEvent(window, new Event("focus"));
+    await flushResponse();
+    expectTargetClearedFromDom();
+
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ serverObservedAt: OBSERVED_MS + 100 })));
+    fireEvent(window, new Event("focus"));
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
+  });
+
   it("resets acknowledgement after a successful focus revalidation", async () => {
     await renderAndReveal();
     acknowledgePolicy();
@@ -523,7 +565,7 @@ describe("FundingPanel deadline reconciliation", () => {
     expectTargetClearedFromDom();
     await flushResponse();
     expectTargetVisible();
-    expect((screen.getByRole("checkbox", { name: /I acknowledge the exact full authorization/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: /I acknowledge the exact authorization/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("resets acknowledgement when the policy binding changes", async () => {
@@ -536,7 +578,7 @@ describe("FundingPanel deadline reconciliation", () => {
     expectTargetClearedFromDom();
     await flushResponse();
     expectTargetVisible();
-    expect((screen.getByRole("checkbox", { name: /I acknowledge the exact full authorization/ }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole("checkbox", { name: /I acknowledge the exact authorization/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   it("blocks and clears a wallet click at the exact boundary", async () => {

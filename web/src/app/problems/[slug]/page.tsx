@@ -389,6 +389,7 @@ $ make verify SOLUTION=examples/valid-4.json`}
             fundingAuthorizationDigest={chainProvenance.fundingAuthorizationDigest}
             activationCompletionDigest={chainProvenance.activationCompletionDigest}
             checkpointBlock={chainProvenance.checkpointBlock ?? null}
+            checkpointDigest={readModel.provenance.checkpointDigest}
             activationFinalizedBlock={chainProvenance.activationFinalizedBlock}
           />
 
