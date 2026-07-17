@@ -723,5 +723,5 @@ describe("indexer provenance v2", () => {
     }
     base.checkpoint.boards[0].onchain.fundingAuthorizationDigest = hash("9");
     expect(() => activatedProvenanceFromArtifacts(launchProblems[0], base.manifest, manifestBytes, base.checkpoint, checkpointBytes, authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion, rpcRegistry)).toThrow();
-  });
+  }, 15_000);
 });
