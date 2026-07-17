@@ -247,7 +247,7 @@
         "local_evidence": [
           {
             "path": "problems/arithmetic-kakeya/SPEC.md",
-            "sha256": "sha256:60ce2afbd5962f38ec15645425f568949ef14227a295bd92b45be6896984a2d6"
+            "sha256": "sha256:0829384fc0bd0c51b6751193cbddb5e396c84da1fbf59b160c8bfda08e427911"
           },
           {
             "path": "problems/arithmetic-kakeya/HARDENING.md",
@@ -276,11 +276,11 @@
       },
       "specification": {
         "path": "problems/arithmetic-kakeya/SPEC.md",
-        "sha256": "sha256:60ce2afbd5962f38ec15645425f568949ef14227a295bd92b45be6896984a2d6"
+        "sha256": "sha256:0829384fc0bd0c51b6751193cbddb5e396c84da1fbf59b160c8bfda08e427911"
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:1a38a6066ce9f1d86725da2692ae55d97b8684bbc3c924417a95031f0ba6a6e2",
+        "source_tree_sha256": "sha256:7c71ab19e2e1a65d84545977fb455dfa4770200b40e9e24c8ee2d57461d34bec",
         "version": "0.2.0"
       }
     },
