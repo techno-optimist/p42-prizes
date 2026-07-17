@@ -12,13 +12,18 @@ const ADDRESS = `0x${"7".repeat(40)}`;
 const B_ADDRESS = `0x${"6".repeat(40)}`;
 const DEADLINE_MS = 2_000_000;
 const OBSERVED_MS = DEADLINE_MS - 1_000;
+const AUTHORIZATION_EXPIRY_MS = DEADLINE_MS + 10_000;
+const FINALIZED_MS = OBSERVED_MS - 100;
 const WALLET_URI = `ethereum:${ADDRESS}@84532`;
 
 function props(overrides: Partial<FundingPanelProps> = {}): FundingPanelProps {
   return {
     slug: SLUG,
     fundingTargetDeployed: true,
+    authorizationExpiresAt: new Date(AUTHORIZATION_EXPIRY_MS).toISOString(),
+    finalizedObservedAt: new Date(FINALIZED_MS).toISOString(),
     fundingDeadline: new Date(DEADLINE_MS).toISOString(),
+    remainingCapWei: "1000000000000000000",
     serverObservedAt: new Date(OBSERVED_MS).toISOString(),
     label: "Test pool",
     ...overrides,
@@ -30,25 +35,32 @@ function responseBody({
   address = ADDRESS,
   fundingDeadline = DEADLINE_MS,
   serverObservedAt = OBSERVED_MS,
+  remainingCapWei = "1000000000000000000",
+  target = true,
 }: {
   slug?: string;
   address?: string;
   fundingDeadline?: number;
   serverObservedAt?: number;
+  remainingCapWei?: string;
+  target?: boolean;
 } = {}) {
   return {
-    schema: "p42-prizes/funding-target/v1",
+    schema: "p42-prizes/funding-target/v2",
     slug,
+    authorizationExpiresAt: new Date(AUTHORIZATION_EXPIRY_MS).toISOString(),
+    finalizedObservedAt: new Date(FINALIZED_MS).toISOString(),
     fundingDeadline: new Date(fundingDeadline).toISOString(),
+    remainingCapWei,
     serverObservedAt: new Date(serverObservedAt).toISOString(),
-    target: {
+    target: target ? {
       address,
       asset: "ETH",
       chain: "Base Sepolia",
       chainId: 84532,
       explorerUrl: `https://sepolia.basescan.org/address/${address}`,
       walletUri: `ethereum:${address}@84532`,
-    },
+    } : null,
   };
 }
 
@@ -405,11 +417,84 @@ describe("FundingPanel deadline reconciliation", () => {
     expectTargetUnavailable();
   });
 
+  it("atomically hides a stale target while focus revalidation observes an exhausted cap", async () => {
+    await renderAndReveal();
+    const pending = deferredResponse();
+    vi.mocked(fetch).mockReturnValueOnce(pending.promise);
+
+    fireEvent(window, new Event("focus"));
+    expectTargetClearedFromDom();
+    expect(screen.getByText("checking funding availability")).toBeTruthy();
+
+    pending.resolve(okResponse(responseBody({ remainingCapWei: "0", target: false })));
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
+  });
+
   it("blocks and clears a wallet click at the exact boundary", async () => {
     await renderAndReveal();
     const walletLink = document.querySelector(`a[href="${WALLET_URI}"]`)!;
     vi.setSystemTime(DEADLINE_MS);
     expect(fireEvent.click(walletLink)).toBe(false);
     expectTargetUnavailable();
+  });
+
+  it("revalidates the exact target, then requires a second trusted click to launch", async () => {
+    await renderAndReveal();
+    const walletLink = document.querySelector(`a[href="${WALLET_URI}"]`)!;
+
+    expect(fireEvent.click(walletLink)).toBe(false);
+    expectTargetClearedFromDom();
+    await flushResponse();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenLastCalledWith(`/api/problems/${SLUG}/funding-target`, expect.objectContaining({
+      cache: "no-store",
+      credentials: "same-origin",
+    }));
+    expectTargetVisible();
+    const confirmedLink = screen.getByRole("link", { name: "Fund Test pool with ETH" });
+    expect(confirmedLink.textContent).toBe("open wallet");
+    expect(fireEvent.click(confirmedLink)).toBe(true);
+  });
+
+  it("does not launch when click-time revalidation observes an exhausted cap", async () => {
+    await renderAndReveal();
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ remainingCapWei: "0", target: false })));
+
+    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    expectTargetClearedFromDom();
+    await flushResponse();
+
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
+  });
+
+  it("does not launch when click-time revalidation changes the target identity", async () => {
+    await renderAndReveal();
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ address: B_ADDRESS })));
+
+    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    await flushResponse();
+
+    expectTargetClearedFromDom();
+  });
+
+  it("cannot arm an older click response after focus starts a newer reconciliation", async () => {
+    await renderAndReveal();
+    const staleClick = deferredResponse();
+    const focusRefresh = deferredResponse();
+    vi.mocked(fetch).mockReturnValueOnce(staleClick.promise).mockReturnValueOnce(focusRefresh.promise);
+
+    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    fireEvent(window, new Event("focus"));
+    staleClick.resolve(okResponse());
+    await flushResponse();
+    expectTargetClearedFromDom();
+
+    focusRefresh.resolve(okResponse(responseBody({ remainingCapWei: "0", target: false })));
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 });

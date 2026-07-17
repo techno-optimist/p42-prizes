@@ -185,8 +185,12 @@ export interface PortalFundingReadModel {
   acceptingFunds: boolean;
   fundingArmed: boolean;
   authorizationExpiresAt: string;
+  authorizationExpired: boolean;
+  fundingCapWei: string;
+  remainingFundingCapWei: string;
   fundingDeadline: string;
   fundingDeadlineReached: boolean;
+  finalizedObservedAt: string;
   publicationObservedAt: string;
   ledgerPausedNewActions: boolean;
   submissionsPausedNewActions: boolean;

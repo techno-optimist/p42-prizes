@@ -215,31 +215,55 @@ function poolReadModel(projection: JsonObject, scale: string): PortalPoolReadMod
 
 function fundingReadModel(
   projection: JsonObject,
+  onchain: JsonObject,
+  pool: PortalPoolReadModel,
+  fundingCapWei: string,
   closed: boolean,
   fundingDeadline: bigint,
+  finalizedTimestamp: number,
   effectiveTimestamp: number,
 ): PortalFundingReadModel {
   const funding = object(projection.funding, "portal projection funding");
   const authorizationExpiresAt = integerString(funding.authorizationExpiresAt, "funding authorization expiry", true);
+  const onchainAuthorizationExpiresAt = integerString(
+    onchain.fundingAuthorizationExpiresAt,
+    "onchain funding authorization expiry",
+    true,
+  );
+  if (authorizationExpiresAt !== onchainAuthorizationExpiresAt
+    || funding.acceptingFunds !== onchain.poolAcceptingFunds
+    || funding.fundingArmed !== onchain.fundingArmed) {
+    throw new Error("portal projection funding state mismatch");
+  }
   const acceptingFunds = funding.acceptingFunds === true;
   const fundingArmed = funding.fundingArmed === true;
   const ledgerPausedNewActions = funding.ledgerPausedNewActions === true;
   const submissionsPausedNewActions = funding.submissionsPausedNewActions === true;
   const submissionsPausedAll = funding.submissionsPausedAll === true;
   const challengesPausedNewActions = funding.challengesPausedNewActions === true;
+  const cap = BigInt(fundingCapWei);
+  const accountedBalance = BigInt(pool.accountedBalanceWei);
+  if (accountedBalance > cap) throw new Error("pool accounted balance exceeds funding cap");
+  const remainingFundingCapWei = (cap - accountedBalance).toString();
+  const authorizationExpired = BigInt(effectiveTimestamp) > BigInt(authorizationExpiresAt);
   const fundingDeadlineReached = BigInt(effectiveTimestamp) >= fundingDeadline;
   return {
     acceptingFunds,
     fundingArmed,
     authorizationExpiresAt: unixSecondsToIso(authorizationExpiresAt, "funding authorization expiry"),
+    authorizationExpired,
+    fundingCapWei,
+    remainingFundingCapWei,
     fundingDeadline: unixSecondsToIso(fundingDeadline.toString(), "funding deadline"),
     fundingDeadlineReached,
+    finalizedObservedAt: unixSecondsToIso(finalizedTimestamp, "funding finalized observation timestamp"),
     publicationObservedAt: unixSecondsToIso(effectiveTimestamp, "funding publication observation timestamp"),
     ledgerPausedNewActions,
     submissionsPausedNewActions,
     submissionsPausedAll,
     challengesPausedNewActions,
-    canFund: !closed && !fundingDeadlineReached && fundingArmed && acceptingFunds,
+    canFund: !closed && !authorizationExpired && !fundingDeadlineReached
+      && remainingFundingCapWei !== "0" && fundingArmed && acceptingFunds,
     canSubmit: !closed && fundingArmed && !ledgerPausedNewActions && !submissionsPausedNewActions && !submissionsPausedAll,
     canChallenge: !closed && !challengesPausedNewActions && !submissionsPausedAll,
   };
@@ -402,6 +426,11 @@ export function portalReadModelFromActivatedSnapshot(
     const projection = object(board.portalProjection, "board portal projection");
     if (projection.schema !== "p42-prizes/portal-projection/v2") throw new Error("unsupported portal projection schema");
     const replayConfig = object(projection.replayConfig, "portal projection replay config");
+    const fundingCapWei = integerString(manifestProblem.fundingCapWei, "manifest funding cap", true);
+    const projectedFundingCapWei = integerString(replayConfig.fundingCapWei, "projected funding cap", true);
+    if (fundingCapWei === "0" || projectedFundingCapWei !== fundingCapWei) {
+      throw new Error("portal funding cap binding mismatch");
+    }
     const closeByTimestamp = BigInt(integerString(replayConfig.closeByTimestamp, "close-by timestamp", true));
     if (closeByTimestamp < FUNDING_WINDOW_BEFORE_CLOSE_SECONDS) {
       throw new Error("close-by timestamp cannot encode the canonical funding deadline");
@@ -435,7 +464,16 @@ export function portalReadModelFromActivatedSnapshot(
       ))
       .filter((row): row is Submission => row !== null));
     const pool = poolReadModel(projection, scale);
-    const funding = fundingReadModel(projection, pool.closed, fundingDeadline, effectiveTimestamp);
+    const funding = fundingReadModel(
+      projection,
+      onchain,
+      pool,
+      fundingCapWei,
+      pool.closed,
+      fundingDeadline,
+      checkpointTimestamp,
+      effectiveTimestamp,
+    );
     return {
       ...problem,
       status: pool.closed ? "resolved" : "open",
@@ -452,9 +490,13 @@ export function portalReadModelFromActivatedSnapshot(
         explorerUrl: null,
         note: funding.canFund
           ? "Chain-derived funding target from the activated P42 checkpoint."
-          : funding.fundingDeadlineReached
-            ? `The portal conservatively stops publishing funding targets at ${funding.fundingDeadline}; the contract funding function rejects transactions after that timestamp.`
-            : "The chain pool is not currently actionable for funding.",
+          : funding.authorizationExpired
+            ? `The portal stops publishing funding targets after authorization expiry at ${funding.authorizationExpiresAt}.`
+            : funding.remainingFundingCapWei === "0"
+              ? "The pool has no remaining funding capacity at the finalized observation."
+              : funding.fundingDeadlineReached
+                ? `The portal conservatively stops publishing funding targets at ${funding.fundingDeadline}; the contract funding function rejects transactions after that timestamp.`
+                : "The chain pool is not currently actionable for funding.",
       },
       source: "chain-p42-v1",
       chainProvenance: provenance,
