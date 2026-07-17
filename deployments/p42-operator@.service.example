@@ -22,6 +22,8 @@ ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --registry-problem-id ${P42_REGISTRY_PROBLEM_ID} \
   --repo-root /opt/p42 --runtime /var/lib/p42/operator/%i \
   --coordination-root /var/lib/p42/operator/coordination \
+  --challenge-provisioning /etc/p42/operator/%i/challenge-provisioning.json \
+  --agent-wallet ${P42_AGENT_WALLET_ADDRESS} \
   --runner-health-public-key ${P42_RUNNER_HEALTH_PUBLIC_KEY} \
   --runner-recovery-public-key ${P42_RUNNER_RECOVERY_PUBLIC_KEY} \
   --runner-host-id ${P42_RUNNER_HOST_ID} --runner-boot-id ${P42_RUNNER_BOOT_ID} \
@@ -30,6 +32,10 @@ Restart=on-failure
 RestartSec=15s
 RestartPreventExitStatus=64 70 78 143
 OOMPolicy=kill
+MemoryHigh=2G
+MemoryMax=3G
+MemorySwapMax=0
+TasksMax=256
 KillMode=mixed
 TimeoutStopSec=20s
 SendSIGKILL=yes

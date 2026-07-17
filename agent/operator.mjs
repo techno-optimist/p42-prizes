@@ -68,6 +68,7 @@ import {
 import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
 import { verifyRunnerTranscript } from "./runner-transcript.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
+import { assertProductionRuntimeContract } from "./runtime-cli-contract.mjs";
 
 const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
@@ -124,6 +125,15 @@ const MAX_SWAP_USED_MB = Number(arg("max-swap-used-mb", "1024"));
 const MEMORY_SAFETY_FACTOR = Number(arg("memory-safety-factor", "2"));
 const RUNNER_CHAIN_TIMESTAMP_ENV = "P42_RUNNER_CHAIN_TIMESTAMP";
 const RETRY_BACKOFF_MS = 15_000;
+
+if (!LOCAL_TEST) {
+  try {
+    assertProductionRuntimeContract("operator", process.argv.slice(2));
+  } catch (error) {
+    console.error(error.message);
+    process.exit(2);
+  }
+}
 
 if (!MANIFEST || !PROBLEM || !REGISTRY_PROBLEM_ID) {
   console.error("required: --manifest <path> --problem <dir> --registry-problem-id <positive numeric id>");

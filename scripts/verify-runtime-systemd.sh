@@ -81,6 +81,10 @@ require_exact "$operator" StateDirectory 'StateDirectory=p42/operator/%i p42/ope
 require_exact "$operator" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/operator/%i /opt/p42'
 require_exact "$operator" ReadWritePaths 'ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination'
 require_exact "$operator" InaccessiblePaths 'InaccessiblePaths=/etc/p42/resolver /etc/p42/runtime-evidence /var/lib/p42/resolver /var/lib/p42/runtime-evidence'
+require_exact "$operator" MemoryHigh 'MemoryHigh=2G'
+require_exact "$operator" MemoryMax 'MemoryMax=3G'
+require_exact "$operator" MemorySwapMax 'MemorySwapMax=0'
+require_exact "$operator" TasksMax 'TasksMax=256'
 
 require_exact "$resolver" User 'User=p42-resolver'
 require_exact "$resolver" Group 'Group=p42-resolver'
@@ -90,6 +94,12 @@ require_exact "$resolver" StateDirectory 'StateDirectory=p42/resolver/%i p42/res
 require_exact "$resolver" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/resolver/%i /opt/p42'
 require_exact "$resolver" ReadWritePaths 'ReadWritePaths=/var/lib/p42/resolver/%i /var/lib/p42/resolver/coordination'
 require_exact "$resolver" InaccessiblePaths 'InaccessiblePaths=/etc/p42/operator /etc/p42/runtime-evidence /var/lib/p42/operator /var/lib/p42/runtime-evidence'
+require_exact "$resolver" MemoryHigh 'MemoryHigh=1G'
+require_exact "$resolver" MemoryMax 'MemoryMax=2G'
+require_exact "$resolver" MemorySwapMax 'MemorySwapMax=0'
+require_exact "$resolver" TasksMax 'TasksMax=128'
+
+node "$repo_root/scripts/verify-runtime-execstart.mjs" "$operator" "$resolver"
 
 require_exact "$failure" User 'User=p42-runtime-evidence'
 require_exact "$failure" Group 'Group=p42-runtime-evidence'

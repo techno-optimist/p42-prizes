@@ -13,6 +13,9 @@ FILES = (
     "deployments/p42-operator@.service.example",
     "deployments/p42-resolver@.service.example",
     "deployments/p42-runtime-failure@.service.example",
+    "agent/runtime-cli-contract.mjs",
+    "agent/runtime-supervisor.mjs",
+    "scripts/verify-runtime-execstart.mjs",
     "scripts/verify-runtime-systemd.sh",
 )
 
@@ -84,6 +87,30 @@ def test_runtime_systemd_templates_pass_static_verifier(tmp_path: Path) -> None:
             "ExecStart=/usr/local/bin/p42-runtime-supervisor",
             "ExecStart=+/usr/local/bin/p42-runtime-supervisor",
             "must not use privileged command prefixes",
+        ),
+        (
+            "deployments/p42-operator@.service.example",
+            "  --agent-wallet ${P42_AGENT_WALLET_ADDRESS} \\",
+            "  --agent-wallet-removed ${P42_AGENT_WALLET_ADDRESS} \\",
+            "--agent-wallet must be provided exactly once",
+        ),
+        (
+            "deployments/p42-operator@.service.example",
+            "  --challenge-provisioning /etc/p42/operator/%i/challenge-provisioning.json \\",
+            "  --challenge-provisioning-removed /etc/p42/operator/%i/challenge-provisioning.json \\",
+            "--challenge-provisioning must be provided exactly once",
+        ),
+        (
+            "deployments/p42-resolver@.service.example",
+            "  --quorum-signatures /var/lib/p42/resolver/%i/quorum-signatures \\",
+            "  --quorum-signatures-removed /var/lib/p42/resolver/%i/quorum-signatures \\",
+            "--quorum-signatures must be provided exactly once",
+        ),
+        (
+            "deployments/p42-resolver@.service.example",
+            "  --transcript-store arweave \\",
+            "  --transcript-store-removed arweave \\",
+            "configure exactly one of --transcript-store or --publication-receipts",
         ),
     ],
 )

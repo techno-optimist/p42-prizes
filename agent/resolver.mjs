@@ -61,6 +61,7 @@ import {
   assertSignedTransactionRecord,
 } from "./signed-transaction.mjs";
 import { readStrictJsonFileSync } from "./strict-json.mjs";
+import { assertProductionRuntimeContract } from "./runtime-cli-contract.mjs";
 
 const RUNTIME_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...RUNTIME_JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
@@ -2068,6 +2069,13 @@ export async function buildResolverContext(argv, clients = {}) {
   }
   if (!localTest && !coordinationRootArg) {
     throw new Error("production resolver requires one shared --coordination-root for all boards");
+  }
+  if (!localTest) {
+    assertProductionRuntimeContract("resolver", argv, {
+      env: process.env,
+      publisherProvided: Boolean(clients.publisher),
+      endpointsProvided: clients.endpoints ?? [],
+    });
   }
   const publicationClients = configureResolverPublication(argv, process.env, clients);
   const privateKey = process.env.RESOLVER_PRIVATE_KEY;

@@ -492,6 +492,55 @@ startup reject it before scanning. A current deployment must produce a new
 manifest and reconciliation report; agents must not rewrite stale addresses or
 tx hashes into a fake current release.
 
+## Operator And Resolver Systemd Templates
+
+The source templates are `deployments/p42-operator@.service.example` and
+`deployments/p42-resolver@.service.example`. Install them only after replacing
+the example configuration with a deployment-specific manifest, immutable
+challenge provisioning, accepted session keys, runner-health identities, and
+publisher credentials. The per-instance environment files are private files at
+`/etc/p42/operator/<instance>/runtime.env` and
+`/etc/p42/resolver/<instance>/runtime.env`.
+
+The operator environment must provide `OPERATOR_PRIVATE_KEY`, `P42_RPC_URL`, an
+independent-host `P42_NONCE_RPC_SECONDARY_URL`, `P42_PROBLEM_SLUG`,
+`P42_REGISTRY_PROBLEM_ID`, `P42_AGENT_WALLET_ADDRESS`, and all five
+`P42_RUNNER_*` identity/public-key values named by the template. Its manifest
+and `challenge-provisioning.json` must be installed in the matching private
+configuration directory.
+
+The resolver environment must provide `RESOLVER_PRIVATE_KEY`, `P42_RPC_URL`,
+`P42_PROBLEM_SLUG`, `P42_REGISTRY_PROBLEM_ID`, `P42_AGENT_WALLET_ADDRESS`,
+`P42_ARWEAVE_OWNER`, `ARWEAVE_JWK_JSON`, and two independently operated HTTPS
+origins in `P42_TRANSCRIPT_ENDPOINT_PRIMARY` and
+`P42_TRANSCRIPT_ENDPOINT_SECONDARY`. The shipped command explicitly selects
+the Arweave publisher. A missing or invalid owner fails startup; a missing,
+invalid, or owner-mismatched funded JWK fails closed when an upload is needed.
+There is no implicit receipt-only fallback.
+
+For shared DGX operation, the operator unit uses `MemoryHigh=2G`,
+`MemoryMax=3G`, `MemorySwapMax=0`, and `TasksMax=256`; the resolver uses 1G, 2G,
+0, and 128 respectively. `MemoryHigh` introduces reclaim before the hard limit,
+while the templates intentionally impose no CPU quota or sleep beyond the
+runtime's existing 12-second poll cadence. These limits bound the service
+process trees. They do not replace per-verifier Docker memory/PID limits, and a
+host using a delegated container manager must verify where container cgroups
+land before treating the operator ceiling as covering verifier children.
+
+Run the local aggregate used by the agent CI lane:
+
+```bash
+bash scripts/verify-censorship-fallback-systemd.sh
+```
+
+It runs `systemd-analyze verify` where available and invokes
+`scripts/verify-runtime-systemd.sh`, which parses both complete `ExecStart`
+commands against the CLIs' shared production option contract. Agent tests also
+render each template through one supervised credential-free fixture cycle with
+stub RPC and publisher behavior. Those checks are source/static evidence only;
+they do not attest installed DGX units, live RPC independence, funded Arweave
+publication, signer custody, queue latency under load, or an on-chain poll.
+
 ## Portal Shortcut Guard
 
 The Render portal still has a Phase 0 developer shortcut that invokes the local

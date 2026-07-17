@@ -21,11 +21,19 @@ ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --transcripts /var/lib/p42/resolver/%i/transcripts \
   --quorum-signatures /var/lib/p42/resolver/%i/quorum-signatures \
   --runtime /var/lib/p42/resolver/%i \
-  --coordination-root /var/lib/p42/resolver/coordination
+  --coordination-root /var/lib/p42/resolver/coordination \
+  --agent-wallet ${P42_AGENT_WALLET_ADDRESS} \
+  --transcript-store arweave \
+  --transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_PRIMARY} \
+  --transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_SECONDARY}
 Restart=on-failure
 RestartSec=15s
 RestartPreventExitStatus=64 70 78 143
 OOMPolicy=kill
+MemoryHigh=1G
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=128
 KillMode=mixed
 TimeoutStopSec=20s
 SendSIGKILL=yes
