@@ -7,7 +7,7 @@ publish.workspace = true
 
 [dependencies]
 hex.workspace = true
-p42-objective-core = { path = "../../p42-objective-core" }
+p42-q6-objective-core = { path = "../core" }
 serde_json.workspace = true
 sp1-sdk.workspace = true
 

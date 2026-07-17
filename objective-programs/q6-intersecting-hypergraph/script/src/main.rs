@@ -1,4 +1,4 @@
-use p42_objective_core::{
+use p42_q6_objective_core::{
     sha256, verify_q6_intersecting_hypergraph_and_journal, word_u128, ObjectiveWitness,
     SCORE_ATOM_SCALE,
 };

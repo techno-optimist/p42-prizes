@@ -196,4 +196,92 @@ describe("P42 objective journal conformance", () => {
     assert.equal(journalDigest, vector.hashes.journalDigest);
     assert.equal(journalDigest, execution.journalDigest);
   });
+
+  it("matches the isolated Rust/SP1 Q6 witness across the complete Solidity hash chain", () => {
+    const solution = readFileSync(
+      new URL(
+        "../../problems/q6-intersecting-hypergraph/tests/seed-pg25.json",
+        import.meta.url,
+      ),
+    );
+    const solutionSha256 = `0x${createHash("sha256").update(solution).digest("hex")}`;
+    assert.equal(solutionSha256, "0x4c0e38ba9e174fe95c78de0acc2fa216ade92a52ba41b88ee010fbf7a61092ce");
+
+    const chainId = 84_532n;
+    const quorum = address("11");
+    const manager = address("22");
+    const submissionManager = address("33");
+    const registry = address("44");
+    const problemId = 1n;
+    const packageHash = repeat("55");
+    const guestElfSha256 = repeat("dd");
+    const programVKey = repeat("ee");
+    const submissionId = 7n;
+    const solver = address("66");
+    const commitment = repeat("77");
+    const solutionCid = "ipfs://p42-q6-objective-fixture";
+    const claimedScoreAtoms = 17n * 10n ** 18n;
+    const improvementAtoms = 1n * 10n ** 18n;
+    const challengeEndsAt = 2_000_000_300n;
+    const challenger = address("88");
+    const reasonHash = repeat("99");
+    const challengedAt = 2_000_000_100n;
+    const disputeEndsAt = 2_000_000_200n;
+    const transcriptHash = repeat("aa");
+    const transcriptUri = "ipfs://p42-q6-transcript";
+    const verdictHash = repeat("bb");
+    const proofBeneficiary = address("cc");
+
+    const solutionCidHash = keccak256(toUtf8Bytes(solutionCid));
+    assert.equal(solutionCidHash, "0xd2ffb06d3eb78191f704d4ac8e2384de116ea22b7ed03c6ca3919ab94d00f845");
+    const revealInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "address", "bytes32", "bytes32", "bytes32", "int256", "uint256", "uint64"],
+        [submissionManager, chainId, submissionId, solver, commitment, solutionSha256, solutionCidHash, claimedScoreAtoms, improvementAtoms, challengeEndsAt],
+      ),
+    );
+    assert.equal(revealInstanceHash, "0xda17baaaea02ced5e95aa6da5d6fb810db3eeb25e68025b7a7e06c31079d5bdf");
+
+    const challengeInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "bytes32", "address", "bytes32", "uint64", "uint64"],
+        [manager, chainId, submissionId, revealInstanceHash, challenger, reasonHash, challengedAt, disputeEndsAt],
+      ),
+    );
+    assert.equal(challengeInstanceHash, "0x34088a069657760d313b6d425225fd181f4a33a8c51a68f394fc0cf35057a026");
+
+    const transcriptUriHash = keccak256(toUtf8Bytes(transcriptUri));
+    assert.equal(transcriptUriHash, "0x211d3fd9383dbe29404bb5e29b1db62b65b5e95265a74c20a079a64e5d2af0e8");
+    const pendingDecisionContext = keccak256(
+      coder.encode(
+        ["bytes32", "bytes32", "address", "bytes32", "bool", "bytes32", "bytes32", "bytes32"],
+        [challengeInstanceHash, revealInstanceHash, challenger, reasonHash, false, transcriptHash, transcriptUriHash, verdictHash],
+      ),
+    );
+    assert.equal(pendingDecisionContext, "0x4bb1e84a4dea50460227e02d8c898f5ab2edfcadb7576b7761cc64c573f51005");
+
+    const objectiveBindingContext = keccak256(
+      coder.encode(
+        ["address", "uint256", "bytes32", "bytes32", "bytes32"],
+        [registry, problemId, packageHash, guestElfSha256, programVKey],
+      ),
+    );
+    assert.equal(objectiveBindingContext, "0xa924ed91d5d18434133dc08a0f34ceb1bd9a5d5dbc3587bb3ff203d8e59603da");
+
+    const contextHash = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "uint256", "bytes32"],
+        ["P42_OBJECTIVE_CHALLENGE_CONTEXT_V2", chainId, manager, submissionManager, objectiveBindingContext, submissionId, pendingDecisionContext],
+      ),
+    );
+    assert.equal(contextHash, "0xbd0f6be311daab9d11d429fd00805997c34189dc57fb3d140208822960e17fd4");
+
+    const journalDigest = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "bytes32", "bytes32", "bool", "address"],
+        ["P42_OBJECTIVE_VERDICT_JOURNAL_V2", chainId, quorum, manager, guestElfSha256, programVKey, contextHash, true, proofBeneficiary],
+      ),
+    );
+    assert.equal(journalDigest, "0xfa233a06c0c886e004200dbdd524aa970605fce4cafe77e2172c61512b8586c4");
+  });
 });

@@ -1,7 +1,7 @@
 #![no_main]
 sp1_zkvm::entrypoint!(main);
 
-use p42_objective_core::{verify_q6_intersecting_hypergraph_and_journal, ObjectiveWitness};
+use p42_q6_objective_core::{verify_q6_intersecting_hypergraph_and_journal, ObjectiveWitness};
 
 pub fn main() {
     let witness = sp1_zkvm::io::read::<ObjectiveWitness>();

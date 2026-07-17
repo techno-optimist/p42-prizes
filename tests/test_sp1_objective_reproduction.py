@@ -28,10 +28,21 @@ PROGRAMS = {
     "q6-intersecting-hypergraph": {
         "elf": None,
         "vkey": "0x" + "12" * 32,
-        "journal": "0xb4ea9f8158a14994c5caadcfd88ea1dfead5e11a410e9927bec2a30f16e407fa",
-        "instructions": 9_387_848,
+        "journal": "0x33f88c0a230786fe647984244fa59e51253056f688fd9a97431d2f597d576206",
+        "instructions": 9_388_507,
     },
 }
+Q6_SOURCE_PATHS = (
+    "objective-programs/q6-intersecting-hypergraph/Cargo.toml",
+    "objective-programs/q6-intersecting-hypergraph/Cargo.lock",
+    "objective-programs/q6-intersecting-hypergraph/core/Cargo.toml",
+    "objective-programs/q6-intersecting-hypergraph/core/src/lib.rs",
+    "objective-programs/q6-intersecting-hypergraph/program/Cargo.toml",
+    "objective-programs/q6-intersecting-hypergraph/program/src/main.rs",
+    "objective-programs/q6-intersecting-hypergraph/script/Cargo.toml",
+    "objective-programs/q6-intersecting-hypergraph/script/build.rs",
+    "objective-programs/q6-intersecting-hypergraph/script/src/main.rs",
+)
 
 
 def build_bundle(root: Path, program: str) -> Path:
@@ -62,12 +73,24 @@ def build_bundle(root: Path, program: str) -> Path:
     }
     (bundle / "identity.json").write_text(json.dumps(identity), encoding="utf-8")
     (bundle / "execution.json").write_text(json.dumps(execution), encoding="utf-8")
+    if program == "q6-intersecting-hypergraph":
+        source = {
+            "schema": "p42-objective-source-closure/v1",
+            "files": [
+                {
+                    "path": relative,
+                    "sha256": "sha256:" + hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(),
+                }
+                for relative in Q6_SOURCE_PATHS
+            ],
+        }
+        (bundle / "source.json").write_text(json.dumps(source), encoding="utf-8")
     return bundle
 
 
-def verify(bundle: Path, program: str) -> subprocess.CompletedProcess[str]:
+def verify(bundle: Path, program: str, *extra: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--program", program, "--directory", str(bundle)],
+        [sys.executable, str(SCRIPT), "--program", program, "--directory", str(bundle), *extra],
         text=True,
         capture_output=True,
         check=False,
@@ -114,3 +137,23 @@ def test_candidate_rejects_identity_execution_vkey_disagreement(tmp_path: Path) 
     execution["programVKey"] = "0x" + "34" * 32
     execution_path.write_text(json.dumps(execution), encoding="utf-8")
     assert verify(bundle, "q6-intersecting-hypergraph").returncode != 0
+
+
+def test_candidate_rejects_source_closure_drift(tmp_path: Path) -> None:
+    bundle = build_bundle(tmp_path, "q6-intersecting-hypergraph")
+    source_path = bundle / "source.json"
+    source = json.loads(source_path.read_text(encoding="utf-8"))
+    source["files"][0]["sha256"] = "sha256:" + "00" * 32
+    source_path.write_text(json.dumps(source), encoding="utf-8")
+    result = verify(bundle, "q6-intersecting-hypergraph")
+    assert result.returncode != 0
+    assert "source closure mismatch" in result.stderr
+
+
+def test_candidate_writes_source_closure_once(tmp_path: Path) -> None:
+    bundle = build_bundle(tmp_path, "q6-intersecting-hypergraph")
+    (bundle / "source.json").unlink()
+    assert verify(bundle, "q6-intersecting-hypergraph", "--write-source-manifest").returncode == 0
+    result = verify(bundle, "q6-intersecting-hypergraph", "--write-source-manifest")
+    assert result.returncode != 0
+    assert "refusing to replace" in result.stderr

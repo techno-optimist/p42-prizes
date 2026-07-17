@@ -1,11 +1,5 @@
 [workspace]
-members = [
-  "p42-objective-core",
-  "hadamard-668-defect/program",
-  "hadamard-668-defect/script",
-  "distinct-subset-sums-a11/program",
-  "distinct-subset-sums-a11/script",
-]
+members = ["core", "program", "script"]
 resolver = "2"
 
 [workspace.package]

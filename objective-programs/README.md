@@ -22,10 +22,11 @@ review, audit, authorization, and deployment gates listed below.
 The unbound `q6-intersecting-hypergraph` guest ports the complete finite Python
 predicate: bounded canonical JSON, 6-uniform distinct edges, every pair
 intersecting, and exhaustive depth-5 hitting-set rejection. Its host harness
-reconstructs the same objective-correction journal. A DGX scratch build has
-executed the guest in mock mode over the 18-edge PG(2,5) fixture, but no ELF,
-vkey, execution report, or resource profile from that observation is release
-authority. Q6 remains `guest.status=missing` until the reproducible artifact
+reconstructs the same objective-correction journal. Independent DGX source
+roots reproduce the candidate ELF after deterministic source-path remapping,
+and a scratch build has executed it in mock mode over the 18-edge PG(2,5)
+fixture. Those candidate observations are not release authority. Q6 remains
+`guest.status=missing` until the hosted dual-image gate, reproducible artifact
 ceremony, genuine proof vector, independent review, and production binding are
 complete.
 
@@ -33,7 +34,7 @@ This source does **not** activate production objective proofs. Ubuntu 22.04 and
 24.04 GitHub-hosted x86 runners now reproduce the same frozen ELF and vkey, and
 the deterministic resource envelope is machine-checked in
 `resource-profile.json`. These are same-operator builds, not independent
-hardware attestation. The same runners also compare the unbound A11 ELF,
+hardware attestation. The same runners also compare the unbound A11 and Q6 ELF,
 derived vkey, and mock execution across both images before any source binding.
 Activation still requires a genuine Groth16 proof and cost benchmark,
 independent operator/hardware reproduction, all ten board programs, audit, and
@@ -48,6 +49,9 @@ cargo run -p p42-hadamard-668-objective-script -- identity
 cargo run -p p42-hadamard-668-objective-script -- execute path/to/witness.json
 cargo run -p p42-distinct-subset-sums-a11-objective-script -- execute-fixture \
   ../problems/distinct-subset-sums-a11/tests/conway-guy-594.json
-cargo run -p p42-q6-objective-script -- execute-fixture \
+cargo test --locked --manifest-path q6-intersecting-hypergraph/Cargo.toml \
+  -p p42-q6-objective-core
+cargo run --locked --manifest-path q6-intersecting-hypergraph/Cargo.toml \
+  -p p42-q6-objective-script -- execute-fixture \
   ../problems/q6-intersecting-hypergraph/tests/seed-pg25.json
 ```

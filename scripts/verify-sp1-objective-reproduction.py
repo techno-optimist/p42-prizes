@@ -9,6 +9,19 @@ import stat
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[1]
+Q6_SOURCE_PATHS = (
+    "objective-programs/q6-intersecting-hypergraph/Cargo.toml",
+    "objective-programs/q6-intersecting-hypergraph/Cargo.lock",
+    "objective-programs/q6-intersecting-hypergraph/core/Cargo.toml",
+    "objective-programs/q6-intersecting-hypergraph/core/src/lib.rs",
+    "objective-programs/q6-intersecting-hypergraph/program/Cargo.toml",
+    "objective-programs/q6-intersecting-hypergraph/program/src/main.rs",
+    "objective-programs/q6-intersecting-hypergraph/script/Cargo.toml",
+    "objective-programs/q6-intersecting-hypergraph/script/build.rs",
+    "objective-programs/q6-intersecting-hypergraph/script/src/main.rs",
+)
+
 PROGRAMS = {
     "hadamard-668-defect": {
         "elf": "bada920c00cb68bb8462e461c13eeb8240bde7c1d9af17b5d517c1a54b31ecb2",
@@ -29,8 +42,8 @@ PROGRAMS = {
         # a reviewed artifact into objective-programs/artifacts.
         "elf": None,
         "vkey": None,
-        "journal": "0xb4ea9f8158a14994c5caadcfd88ea1dfead5e11a410e9927bec2a30f16e407fa",
-        "instructions": 9_387_848,
+        "journal": "0x33f88c0a230786fe647984244fa59e51253056f688fd9a97431d2f597d576206",
+        "instructions": 9_388_507,
     },
 }
 
@@ -68,16 +81,45 @@ def regular_file(directory: Path, name: str) -> Path:
     return path
 
 
+def q6_source_manifest() -> dict[str, object]:
+    files = []
+    for relative in Q6_SOURCE_PATHS:
+        path = ROOT / relative
+        if not path.is_file() or path.is_symlink():
+            fail(f"Q6 source closure contains an unsafe path: {relative}")
+        files.append(
+            {
+                "path": relative,
+                "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+        )
+    return {"schema": "p42-objective-source-closure/v1", "files": files}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--program", choices=sorted(PROGRAMS), required=True)
     parser.add_argument("--directory", type=Path, required=True)
+    parser.add_argument("--write-source-manifest", action="store_true")
     args = parser.parse_args()
     directory = args.directory.resolve()
     if not directory.is_dir() or directory.is_symlink():
         fail("reproduction directory is missing or unsafe")
+    if args.write_source_manifest:
+        if args.program != "q6-intersecting-hypergraph":
+            fail("source manifests are candidate-only")
+        source_path = directory / "source.json"
+        if source_path.exists() or source_path.is_symlink():
+            fail("refusing to replace an existing source manifest")
+        source_path.write_text(
+            json.dumps(q6_source_manifest(), sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
     names = {entry.name for entry in directory.iterdir()}
-    if names != {"program.elf", "identity.json", "execution.json"}:
+    expected_names = {"program.elf", "identity.json", "execution.json"}
+    if args.program == "q6-intersecting-hypergraph":
+        expected_names.add("source.json")
+    if names != expected_names:
         fail("reproduction directory has an unexpected file set")
 
     expected = PROGRAMS[args.program]
@@ -123,6 +165,10 @@ def main() -> None:
     }
     if execution != expected_execution:
         fail(f"{args.program} execution mismatch")
+    if args.program == "q6-intersecting-hypergraph":
+        source = strict_json(regular_file(directory, "source.json"))
+        if source != q6_source_manifest():
+            fail("q6-intersecting-hypergraph source closure mismatch")
     status = "frozen" if frozen_elf is not None else "untrusted candidate"
     print(f"SP1 {status} reproduction verified: {args.program}")
 

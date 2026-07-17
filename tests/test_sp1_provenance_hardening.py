@@ -13,6 +13,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/verify-sp1-objective-artifact.py"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+FROZEN_OBJECTIVE_CORE = ROOT / "objective-programs/p42-objective-core/src/lib.rs"
+FROZEN_OBJECTIVE_CORE_SHA256 = (
+    "73cb9b4b83738bc8a55d057d68b4011ceb2d757873b1eaedb6cd8dce84f19e85"
+)
+FROZEN_WORKSPACE_SHA256 = {
+    "Cargo.toml": "e0998dadb99d031220cc2e97913425028a4886fb5c0839cccb78cf3ea5d5f612",
+    "Cargo.lock": "cfaac0901bcb9ba1daf5e78403677468911f0eaf52f1977e4d8aa408edef41ff",
+}
 
 
 def load_verifier():
@@ -290,3 +298,9 @@ def test_canonical_identities_and_arm_source_build_boundary_remain_frozen() -> N
         "sha256:f5a1f269c845c0c47c0f6542ff3c5181ce6a5b7d73d59fd4448e6b3722aa72c5"
     )
     assert "f0ff2d9ec1e65ced44b5608419f02627c69a74fdcf4466d9f259ebc86bc7dc05" not in verifier
+    assert hashlib.sha256(FROZEN_OBJECTIVE_CORE.read_bytes()).hexdigest() == (
+        FROZEN_OBJECTIVE_CORE_SHA256
+    )
+    for name, expected in FROZEN_WORKSPACE_SHA256.items():
+        path = ROOT / "objective-programs" / name
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == expected
