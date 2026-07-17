@@ -302,7 +302,7 @@ function validateRuntimePassword(password, runtimeName, schemaName) {
   const characters = [...password];
   const classes = [/[a-z]/u, /[A-Z]/u, /[0-9]/u, /[^A-Za-z0-9]/u].filter((pattern) => pattern.test(password)).length;
   if (characters.length < 24 || Buffer.byteLength(password, "utf8") > 1024 || classes < 3
-    || /[\u0000-\u001f\u007f]/u.test(password) || password !== password.normalize("NFC")
+    || !/^[\x21-\x7e]+$/.test(password)
     || password === runtimeName || password === schemaName) {
     throw ceremonyError("weak_runtime_password", "runtime password does not satisfy the non-secret minimum policy");
   }

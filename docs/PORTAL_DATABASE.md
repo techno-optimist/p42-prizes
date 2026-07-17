@@ -46,8 +46,10 @@ suppresses every funding target.
    An exact rerun is allowed. The runtime is `NOSUPERUSER NOCREATEDB
    NOCREATEROLE NOBYPASSRLS NOINHERIT NOREPLICATION`, owns nothing, and has no
    outbound role memberships or `SET ROLE` path. Runtime passwords must be at
-   least 24 characters, use at least three character classes, be NFC-normalized,
-   and contain no control characters. Plaintext is converted client-side to a
+   least 24 characters, use at least three character classes, and consist only
+   of printable non-space ASCII bytes (`0x21` through `0x7e`). This conservative
+   alphabet prevents the custom verifier from disagreeing with PostgreSQL
+   clients that apply SASLprep. Plaintext is converted client-side to a
    fresh-salt PostgreSQL SCRAM-SHA-256 verifier before connecting; only the
    verifier enters SQL. The receipt is provisioning evidence, not a
    production-completion claim. Run `npm run db:provision-integration` against
@@ -61,7 +63,10 @@ suppresses every funding target.
    edge exactly: runtime role, migration-owner member, bootstrap-superuser
    grantor OID 10, `ADMIN TRUE`, `INHERIT FALSE`, and `SET FALSE`. That complete
    row is emitted in the JSON receipt; every additional or changed inbound edge
-   fails closed. Password equality and plaintext cannot be read back from
+   fails closed. The Render audit observed OID 10 as role `postgres` with
+   `rolsuper=true`; that provider identity is a provisioning precondition and
+   must be reconfirmed after a provider, restore, or PostgreSQL environment
+   change. Password equality and plaintext cannot be read back from
    PostgreSQL; an exact pre-migration rerun rotates the stored verifier and
    re-verifies every exposed catalog property.
 3. The ceremony precreates one durable schema owned exactly by the migration

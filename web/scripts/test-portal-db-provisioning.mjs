@@ -51,7 +51,7 @@ try {
   await testPublicCreateRevocation();
   await testWeakPasswordPolicy();
   await testSecretRedactionAndRollback();
-  process.stdout.write(JSON.stringify({ schemaVersion: "p42-portal-db-provisioning-tests/v1", postgres: await serverVersion(), tests: 10, status: "passed" }) + "\n");
+  process.stdout.write(JSON.stringify({ schemaVersion: "p42-portal-db-provisioning-tests/v1", postgres: await serverVersion(), tests: 13, status: "passed" }) + "\n");
 } finally {
   await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ANY($1) AND pid<>pg_backend_pid()", [[...createdDatabases]]).catch(() => undefined);
   for (const database of createdDatabases) await admin.query(`DROP DATABASE IF EXISTS ${q(database)}`).catch(() => undefined);
@@ -189,11 +189,18 @@ async function testSecretRedactionAndRollback() {
 
 async function testWeakPasswordPolicy() {
   const fixture = await makeFixture("weak");
-  const weak = "weak-password";
-  const result = run({ ...fixture, password: weak }, "--apply");
-  assert.equal(result.status, 1);
-  assert.equal(json(result.stderr).code, "weak_runtime_password");
-  assert.equal(`${result.stdout}${result.stderr}`.includes(weak), false);
+  const rejected = [
+    "weak-password",
+    "Runtime-Password-NonAscii-42!é",
+    "Runtime Password With Spaces 42!Aa",
+    "Runtime-Password-With-Control-42!\tAa",
+  ];
+  for (const password of rejected) {
+    const result = run({ ...fixture, password }, "--apply");
+    assert.equal(result.status, 1);
+    assert.equal(json(result.stderr).code, "weak_runtime_password");
+    assert.equal(`${result.stdout}${result.stderr}`.includes(password), false);
+  }
 }
 
 async function makeFixture(label) {
