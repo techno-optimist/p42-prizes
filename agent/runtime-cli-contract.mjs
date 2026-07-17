@@ -2,8 +2,9 @@ const CONTRACTS = Object.freeze({
   operator: Object.freeze({
     executable: "/opt/p42/agent/operator.mjs",
     requiredValueOptions: Object.freeze([
-      "--rpc",
-      "--nonce-rpc-secondary",
+      "--rpc-url-file",
+      "--nonce-rpc-secondary-url-file",
+      "--docker-host",
       "--manifest",
       "--problem",
       "--registry-problem-id",
@@ -20,11 +21,13 @@ const CONTRACTS = Object.freeze({
       "--runner-boot-id",
       "--runner-queue-id",
     ]),
+    forbiddenValueOptions: Object.freeze(["--rpc", "--nonce-rpc-secondary"]),
+    forbiddenEnvironmentNames: Object.freeze(["P42_RPC_URL", "P42_NONCE_RPC_SECONDARY_URL"]),
   }),
   resolver: Object.freeze({
     executable: "/opt/p42/agent/resolver.mjs",
     requiredValueOptions: Object.freeze([
-      "--rpc",
+      "--rpc-url-file",
       "--manifest",
       "--problem-id",
       "--registry-problem-id",
@@ -36,6 +39,8 @@ const CONTRACTS = Object.freeze({
       "--arweave-jwk-file",
       "--agent-wallet",
     ]),
+    forbiddenValueOptions: Object.freeze(["--rpc"]),
+    forbiddenEnvironmentNames: Object.freeze(["P42_RPC_URL"]),
     publisherOptions: Object.freeze(["--transcript-store", "--publication-receipts"]),
     retrievalEndpointOption: "--transcript-endpoint",
     minimumRetrievalEndpoints: 2,
@@ -90,6 +95,16 @@ export function productionRuntimeContractErrors(role, argv, {
   for (const option of contract.requiredValueOptions) {
     if (optionOccurrences(argv, option) !== 1 || optionValues(argv, option).length !== 1) {
       errors.push(`${option} must be provided exactly once with a value`);
+    }
+  }
+  for (const option of contract.forbiddenValueOptions ?? []) {
+    if (optionOccurrences(argv, option) > 0) {
+      errors.push(`${option} is forbidden in production; use its LoadCredential-backed file option`);
+    }
+  }
+  for (const name of contract.forbiddenEnvironmentNames ?? []) {
+    if (hasEnvironmentValue(env, name)) {
+      errors.push(`${name} is forbidden in production runtime units; use the LoadCredential-backed file option`);
     }
   }
   if (argv.includes("--local-test")) errors.push("--local-test is forbidden in production runtime units");

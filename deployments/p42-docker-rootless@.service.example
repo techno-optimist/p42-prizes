@@ -1,0 +1,65 @@
+[Unit]
+Description=P42 rootless Docker authority for operator %i
+After=network-online.target
+Wants=network-online.target
+Before=p42-operator@%i.service
+Conflicts=docker.service docker.socket
+ConditionPathExists=/usr/bin/dockerd-rootless.sh
+ConditionPathExists=/usr/bin/rootlesskit
+ConditionPathExists=/usr/bin/newuidmap
+ConditionPathExists=/usr/bin/newgidmap
+ConditionPathExists=/etc/subuid
+ConditionPathExists=/etc/subgid
+ConditionPathExists=/proc/sys/user/max_user_namespaces
+ConditionPathExists=/sys/fs/cgroup/cgroup.controllers
+ConditionPathExists=!/run/docker.sock
+ConditionPathExists=!/var/run/docker.sock
+
+[Service]
+Type=notify
+User=p42-operator
+Group=p42-operator
+Environment=HOME=/var/lib/p42/docker-home-%i
+Environment=XDG_RUNTIME_DIR=/run/p42-docker-%i
+Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=/run/p42-docker-%i/rootlesskit
+ExecStartPre=/usr/bin/test ! -S /run/docker.sock
+ExecStartPre=/usr/bin/test ! -S /var/run/docker.sock
+ExecStartPre=/usr/bin/grep -Eq '^p42-operator:[0-9]+:65536$' /etc/subuid
+ExecStartPre=/usr/bin/grep -Eq '^p42-operator:[0-9]+:65536$' /etc/subgid
+ExecStartPre=/usr/bin/sh -c 'test "$(/usr/bin/cat /proc/sys/user/max_user_namespaces)" -gt 0'
+ExecStart=/usr/bin/dockerd-rootless.sh --host=unix:///run/p42-docker-%i/docker.sock --config-file=/etc/p42/docker/rootless-daemon.json --data-root=/var/lib/p42/docker-%i
+Restart=on-failure
+RestartSec=5s
+OOMPolicy=kill
+LimitCORE=0
+MemoryHigh=1G
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=512
+KillMode=mixed
+TimeoutStopSec=30s
+SendSIGKILL=yes
+UMask=0077
+RuntimeDirectory=p42-docker-%i
+RuntimeDirectoryMode=0700
+StateDirectory=p42/docker-%i p42/docker-home-%i
+StateDirectoryMode=0700
+Delegate=yes
+NoNewPrivileges=false
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/p42/docker
+ReadWritePaths=/var/lib/p42/docker-%i /var/lib/p42/docker-home-%i /run/p42-docker-%i
+
+[Install]
+WantedBy=multi-user.target

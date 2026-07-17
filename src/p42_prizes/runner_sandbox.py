@@ -53,6 +53,26 @@ SANDBOX_DETERMINISM_ENV = (
     "OPENBLAS_NUM_THREADS=1",
     "MKL_NUM_THREADS=1",
 )
+ROOTLESS_DOCKER_SOCKET_PREFIX = "/run/p42-docker-"
+ROOTFUL_DOCKER_SOCKETS = frozenset({"/run/docker.sock", "/var/run/docker.sock"})
+
+
+def validate_rootless_docker_host(docker_host: str | None) -> str:
+    """Require the production runner's private rootless Unix socket authority."""
+    if not isinstance(docker_host, str) or not docker_host.startswith("unix://"):
+        raise RunnerSandboxError("Docker requires an explicit rootless unix:// socket endpoint")
+    socket_path = docker_host[len("unix://"):]
+    if socket_path in ROOTFUL_DOCKER_SOCKETS:
+        raise RunnerSandboxError("rootful Docker sockets are forbidden; use the p42 rootless socket")
+    if (
+        not socket_path.startswith(ROOTLESS_DOCKER_SOCKET_PREFIX)
+        or not socket_path.endswith("/docker.sock")
+        or ".." in Path(socket_path).parts
+    ):
+        raise RunnerSandboxError(
+            f"Docker socket must be below {ROOTLESS_DOCKER_SOCKET_PREFIX}<instance>/docker.sock"
+        )
+    return docker_host
 
 
 def compose_immutable_image_ref(repository: str, digest: str) -> str:
@@ -77,11 +97,19 @@ def compose_immutable_image_ref(repository: str, digest: str) -> str:
     return f"{repository}@{digest}"
 
 
-def docker_available(binary: str = "docker") -> bool:
+def docker_available(binary: str = "docker", docker_host: str | None = None) -> bool:
     """True only if a container runtime daemon is actually reachable."""
+    if docker_host is None:
+        docker_host = os.environ.get("DOCKER_HOST")
+    if docker_host is None:
+        return False
+    try:
+        validate_rootless_docker_host(docker_host)
+    except RunnerSandboxError:
+        return False
     try:
         result = subprocess.run(
-            [binary, "info"],
+            [binary, f"--host={docker_host}", "info"],
             capture_output=True,
             timeout=10,
             check=False,
@@ -234,6 +262,7 @@ def build_sandbox_command(
     tmpfs_mb: int = 64,
     container_name: str | None = None,
     binary: str = "docker",
+    docker_host: str | None = None,
 ) -> list[str]:
     """Build the hardened ``docker run`` argv that executes the verifier on the
     untrusted solution inside a locked-down container.
@@ -277,8 +306,14 @@ def build_sandbox_command(
     inner_command = inner_command[1:]
     host_path = str(Path(host_solution).resolve())
 
-    args = [
-        binary, "run", "--rm",
+    if docker_host is None:
+        docker_host = os.environ.get("DOCKER_HOST")
+    args = [binary]
+    if docker_host is not None:
+        validate_rootless_docker_host(docker_host)
+        args.append(f"--host={docker_host}")
+    args += [
+        "run", "--rm",
         "--network=none",
         "--add-host=host.docker.internal:host-gateway",
         f"--memory={memory_mb}m",
@@ -307,9 +342,20 @@ def build_sandbox_command(
     return args
 
 
-def force_remove_container(name: str, binary: str = "docker") -> None:
+def force_remove_container(name: str, binary: str = "docker", docker_host: str | None = None) -> None:
     """Best-effort hard-stop of a named container (used on timeout)."""
+    if docker_host is None:
+        return
     try:
-        subprocess.run([binary, "rm", "-f", name], capture_output=True, timeout=15, check=False)
+        validate_rootless_docker_host(docker_host)
+    except RunnerSandboxError:
+        return
+    try:
+        subprocess.run(
+            [binary, f"--host={docker_host}", "rm", "-f", name],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         pass

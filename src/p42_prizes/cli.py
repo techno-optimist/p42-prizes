@@ -781,6 +781,7 @@ def _cmd_runner_work_once(args: argparse.Namespace) -> int:
             now_utc=args.now_utc,
             lease_seconds=args.lease_seconds,
             sandbox_staging_root=args.sandbox_staging_root,
+            docker_host=args.docker_host,
         )
     except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
         print(str(exc), file=sys.stderr)
@@ -801,6 +802,7 @@ def _cmd_runner_drain(args: argparse.Namespace) -> int:
             max_iterations=args.max_iterations,
             max_jobs=args.max_jobs,
             sandbox_staging_root=args.sandbox_staging_root,
+            docker_host=args.docker_host,
         )
     except (AdmissionError, RunnerQueueError, RunnerWorkerError, OSError) as exc:
         print(str(exc), file=sys.stderr)
@@ -1266,6 +1268,7 @@ def build_parser() -> argparse.ArgumentParser:
     runner_work.add_argument("--sandbox-pids-limit", type=int, default=256)
     runner_work.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_work.add_argument("--sandbox-staging-root")
+    runner_work.add_argument("--docker-host")
     runner_work.add_argument("--now-utc")
     runner_work.set_defaults(func=_cmd_runner_work_once)
 
@@ -1291,6 +1294,7 @@ def build_parser() -> argparse.ArgumentParser:
     runner_drain.add_argument("--sandbox-pids-limit", type=int, default=256)
     runner_drain.add_argument("--sandbox-cpus", type=float, default=1.0)
     runner_drain.add_argument("--sandbox-staging-root")
+    runner_drain.add_argument("--docker-host")
     runner_drain.set_defaults(func=_cmd_runner_drain)
 
     runner_alerts = subparsers.add_parser(

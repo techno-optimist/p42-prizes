@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
-import { readCredentialJson, readCredentialText } from "./runtime-credentials.mjs";
+import { readCredentialJson, readCredentialText, readCredentialUrl } from "./runtime-credentials.mjs";
 
 test("systemd credential files are read without environment fallback", () => {
   const root = mkdtempSync(join(tmpdir(), "p42-credential-"));
@@ -15,6 +15,10 @@ test("systemd credential files are read without environment fallback", () => {
   const jwk = join(root, "jwk.json");
   writeFileSync(jwk, '{"kty":"RSA"}\n', { mode: 0o600 });
   assert.deepEqual(readCredentialJson(jwk, "Arweave JWK"), { kty: "RSA" });
+
+  const rpc = join(root, "rpc-url");
+  writeFileSync(rpc, "https://rpc.example/path\n", { mode: 0o600 });
+  assert.equal(readCredentialUrl(rpc, "RPC URL"), "https://rpc.example/path");
 });
 
 test("credential files reject symlinks and permissive modes", () => {
@@ -26,4 +30,8 @@ test("credential files reject symlinks and permissive modes", () => {
   assert.throws(() => readCredentialText(link), /symlink|ELOOP/);
   chmodSync(source, 0o644);
   assert.throws(() => readCredentialText(source), /group\/world-readable/);
+
+  const invalid = join(root, "invalid-url");
+  writeFileSync(invalid, "http://rpc.example\n", { mode: 0o600 });
+  assert.throws(() => readCredentialUrl(invalid), /authenticated HTTPS URL/);
 });

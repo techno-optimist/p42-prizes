@@ -259,7 +259,7 @@ def test_sandbox_uses_manifest_repository_at_digest(tmp_path: Path, monkeypatch:
     )
     observed: dict[str, object] = {}
 
-    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda: True)
+    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda **_: True)
 
     def fake_run(command, **_kwargs):
         observed["command"] = command
@@ -273,10 +273,12 @@ def test_sandbox_uses_manifest_repository_at_digest(tmp_path: Path, monkeypatch:
         child_address_space_limit_mb=256,
         sandbox="docker",
         sandbox_memory_mb=256,
+        docker_host="unix:///run/p42-docker-fixture/docker.sock",
     )
 
     assert result["ok"] is True
     command = observed["command"]
+    assert "--host=unix:///run/p42-docker-fixture/docker.sock" in command
     assert f"{repository}@{image}" in command
     assert f"P42_VERIFIER_IMAGE={image}" in command
 
@@ -295,7 +297,7 @@ def test_worker_binds_staged_solution_below_explicit_runtime_root(
     )
     staging_root = tmp_path / "operator" / "sandbox-staging"
     observed: dict[str, object] = {}
-    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda: True)
+    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda **_: True)
 
     def fake_run(command, **_kwargs):
         observed["command"] = command
@@ -309,15 +311,54 @@ def test_worker_binds_staged_solution_below_explicit_runtime_root(
         sandbox="docker",
         sandbox_memory_mb=256,
         sandbox_staging_root=staging_root,
+        docker_host="unix:///run/p42-docker-fixture/docker.sock",
     )
 
     assert result["ok"] is True
     command = observed["command"]
+    assert "--host=unix:///run/p42-docker-fixture/docker.sock" in command
     mount = command[command.index("-v") + 1]
     staged_host_path = Path(mount.split(":", 1)[0])
     assert staged_host_path != solution.resolve()
     assert staged_host_path.is_relative_to(staging_root)
     assert not any(staging_root.iterdir())
+
+
+def test_worker_refuses_to_lease_before_rootless_docker_authority_is_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    problem, solution = _write_problem(
+        tmp_path,
+        verifier_name="ok.py",
+        verifier_body="",
+        wall_seconds=10,
+        image="sha256:" + "c" * 64,
+        image_repository="registry.example.com/p42/worker-fixture",
+    )
+    queue = tmp_path / "queue.json"
+    enqueue_runner_job(
+        queue,
+        {
+            "job_id": "rootless-preflight",
+            "status": "queued",
+            "source_event_hash": "sha256:" + "d" * 64,
+            "problem": str(problem),
+            "solution": str(solution),
+            "required_memory_mb": 64,
+        },
+        chain_now_utc="2026-07-17T00:00:00Z",
+    )
+    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda **_: False)
+
+    with pytest.raises(RunnerWorkerError, match="before leasing jobs"):
+        run_next_job_once(
+            queue,
+            tmp_path / "transcripts",
+            memory=MemorySnapshot(total_mb=16384, available_mb=16384, swap_used_mb=0),
+            policy=RunnerPolicy(sandbox="docker"),
+            docker_host="unix:///run/p42-docker-fixture/docker.sock",
+        )
+    assert json.loads(queue.read_text(encoding="utf-8"))["jobs"][0]["status"] == "queued"
 
 
 def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:

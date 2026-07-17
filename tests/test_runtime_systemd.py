@@ -12,6 +12,8 @@ FILES = (
     "deployments/p42-runtime.sysusers.example",
     "deployments/p42-operator@.service.example",
     "deployments/p42-resolver@.service.example",
+    "deployments/p42-docker-rootless@.service.example",
+    "deployments/p42-docker-rootless-daemon.json",
     "deployments/p42-runtime-failure@.service.example",
     "agent/runtime-cli-contract.mjs",
     "agent/runtime-supervisor.mjs",
@@ -56,6 +58,24 @@ def test_runtime_systemd_templates_pass_static_verifier(tmp_path: Path) -> None:
     ("relative", "old", "new", "error"),
     [
         ("deployments/p42-operator@.service.example", "User=p42-operator", "User=root", "User=p42-operator"),
+        (
+            "deployments/p42-docker-rootless@.service.example",
+            "User=p42-operator",
+            "User=root",
+            "User=p42-operator",
+        ),
+        (
+            "deployments/p42-docker-rootless@.service.example",
+            "Conflicts=docker.service docker.socket",
+            "Conflicts=docker.service",
+            "Conflicts=docker.service docker.socket",
+        ),
+        (
+            "deployments/p42-docker-rootless@.service.example",
+            "ExecStart=/usr/bin/dockerd-rootless.sh",
+            "ExecStart=/usr/bin/dockerd",
+            "dockerd-rootless.sh",
+        ),
         (
             "deployments/p42-resolver@.service.example",
             "ReadWritePaths=/var/lib/p42/resolver/%i /var/lib/p42/resolver/coordination",

@@ -13,13 +13,15 @@ Group=p42-resolver
 EnvironmentFile=/etc/p42/resolver/%i/runtime.env
 LoadCredential=resolver-private-key:/etc/p42/resolver/%i/credentials/resolver-private-key
 LoadCredential=arweave-jwk:/etc/p42/resolver/%i/credentials/arweave-jwk
-UnsetEnvironment=RESOLVER_PRIVATE_KEY ARWEAVE_JWK_JSON P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE
+LoadCredential=rpc-primary-url:/etc/p42/resolver/%i/credentials/rpc-primary-url
+UnsetEnvironment=RESOLVER_PRIVATE_KEY ARWEAVE_JWK_JSON P42_RPC_URL P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE
 ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --runtime /usr/bin/node --journal /var/lib/p42/resolver/%i/supervisor.jsonl \
   --cycle-timeout-ms 120000 --kill-grace-ms 10000 --max-failures 5 \
   --backoff-ms 1000 --max-backoff-ms 30000 -- \
   /opt/p42/agent/resolver.mjs \
-  --rpc ${P42_RPC_URL} --manifest /etc/p42/resolver/%i/manifest.json \
+  --rpc-url-file ${CREDENTIALS_DIRECTORY}/rpc-primary-url \
+  --manifest /etc/p42/resolver/%i/manifest.json \
   --problem-id ${P42_PROBLEM_SLUG} --registry-problem-id ${P42_REGISTRY_PROBLEM_ID} \
   --transcripts /var/lib/p42/resolver/%i/transcripts \
   --quorum-signatures /var/lib/p42/resolver/%i/quorum-signatures \

@@ -65,7 +65,7 @@ import {
   assertProductionRuntimeContract,
   legacyTranscriptEnvironmentErrors,
 } from "./runtime-cli-contract.mjs";
-import { readCredentialJson, readCredentialText } from "./runtime-credentials.mjs";
+import { readCredentialJson, readCredentialText, readCredentialUrl } from "./runtime-credentials.mjs";
 
 const RUNTIME_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...RUNTIME_JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
@@ -2062,6 +2062,7 @@ export async function buildResolverContext(argv, clients = {}) {
   const quorumSignaturesArg = arg(argv, "quorum-signatures", null);
   const coordinationRootArg = arg(argv, "coordination-root", null);
   const resolverPrivateKeyFile = arg(argv, "resolver-private-key-file", null);
+  const rpcUrlFile = arg(argv, "rpc-url-file", null);
   if (!manifestPath || !problemId || !registryProblemIdArg || !transcriptsArg) {
     throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir>");
   }
@@ -2090,7 +2091,10 @@ export async function buildResolverContext(argv, clients = {}) {
     ? readCredentialText(resolverPrivateKeyFile, "resolver private-key credential")
     : process.env.RESOLVER_PRIVATE_KEY;
   if (!privateKey) throw new Error("provide --resolver-private-key-file from a systemd LoadCredential (or RESOLVER_PRIVATE_KEY for local tests)");
-  const provider = new ethers.JsonRpcProvider(arg(argv, "rpc", "https://sepolia.base.org"));
+  const rpcUrl = rpcUrlFile
+    ? readCredentialUrl(rpcUrlFile, "primary RPC URL credential")
+    : arg(argv, "rpc", "https://sepolia.base.org");
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
   const manifest = readStrictJsonFileSync(resolve(manifestPath), RUNTIME_JSON_LIMITS);
   validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
   const wallet = new ethers.Wallet(privateKey, provider);

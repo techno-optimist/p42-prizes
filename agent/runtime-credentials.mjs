@@ -36,6 +36,20 @@ export function readCredentialText(path, label = "credential") {
   return text;
 }
 
+export function readCredentialUrl(path, label = "credential URL") {
+  const value = readCredentialText(path, label);
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (error) {
+    throw new Error(`${label} must contain a valid URL: ${error.message}`);
+  }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) {
+    throw new Error(`${label} must be an authenticated HTTPS URL without userinfo, query, or fragment`);
+  }
+  return parsed.toString();
+}
+
 export function readCredentialJson(path, label = "credential") {
   const text = readCredentialText(path, label);
   const value = parseStrictJsonText(text, { label, maxBytes: MAX_CREDENTIAL_BYTES, maxDepth: 32 });

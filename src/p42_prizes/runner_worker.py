@@ -37,6 +37,7 @@ from p42_prizes.runner_sandbox import (
     docker_available,
     force_remove_container,
     stage_sandbox_solution,
+    validate_rootless_docker_host,
 )
 from p42_prizes.da import DaEvidenceError, validate_da_evidence
 from p42_prizes.problem import load_manifest
@@ -114,6 +115,7 @@ def run_next_job_once(
     now_utc: str | None = None,
     lease_seconds: int = 3600,
     sandbox_staging_root: str | Path | None = None,
+    docker_host: str | None = None,
 ) -> dict[str, Any]:
     if lease_seconds < 60:
         raise RunnerWorkerError("lease_seconds must be at least 60")
@@ -172,6 +174,21 @@ def run_next_job_once(
                 "selected_job_id": job_id,
                 "terminal_disposition": result["disposition"],
             }
+        needs_verifier = any(
+            isinstance(job.get(name), str) and bool(job.get(name))
+            for name in ("solution", "retry_solution_path")
+        )
+        if effective_policy.sandbox == "docker" and needs_verifier:
+            try:
+                validate_rootless_docker_host(docker_host)
+            except RunnerSandboxError as exc:
+                raise RunnerWorkerError(
+                    f"refusing to lease jobs without rootless Docker authority: {exc}"
+                ) from exc
+            if not docker_available(docker_host=docker_host):
+                raise RunnerWorkerError(
+                    f"rootless Docker endpoint unavailable before leasing jobs: {docker_host}"
+                )
         minimum_lease = _minimum_lease_seconds(job_manifest)
         if lease_seconds < minimum_lease:
             raise RunnerWorkerError(
@@ -213,6 +230,7 @@ def run_next_job_once(
                 manifest=job_manifest,
                 lease_failed=heartbeat_failed,
                 sandbox_staging_root=sandbox_staging_root,
+                docker_host=docker_host,
             )
         run_error = None
         retryable_storage_error = False
@@ -397,6 +415,7 @@ def drain_runner_queue(
     max_jobs: int | None = None,
     sleep: Callable[[float], None] = time.sleep,
     sandbox_staging_root: str | Path | None = None,
+    docker_host: str | None = None,
 ) -> dict[str, Any]:
     if poll_seconds < 0:
         raise RunnerWorkerError("poll_seconds must be >= 0")
@@ -422,6 +441,7 @@ def drain_runner_queue(
             policy=policy,
             lease_seconds=lease_seconds,
             sandbox_staging_root=sandbox_staging_root,
+            docker_host=docker_host,
         )
         iterations += 1
         event = _loop_event_from_result(result)
@@ -591,6 +611,7 @@ def _run_job(
     manifest: Mapping[str, Any] | None = None,
     lease_failed: threading.Event | None = None,
     sandbox_staging_root: str | Path | None = None,
+    docker_host: str | None = None,
 ) -> dict[str, Any]:
     job_id = _require_string(job, "job_id")
     problem = Path(_require_string(job, "problem")).resolve()
@@ -686,6 +707,7 @@ def _run_job(
             ),
             cancellation_event=lease_failed,
             sandbox_staging_root=sandbox_staging_root,
+            docker_host=docker_host,
         )
 
     if chain_claim is not None:
@@ -1168,6 +1190,7 @@ def _run_verifier_for_transcript(
     expected_solution_hash: str | None = None,
     cancellation_event: threading.Event | None = None,
     sandbox_staging_root: str | Path | None = None,
+    docker_host: str | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     wall_seconds = 30
@@ -1180,11 +1203,26 @@ def _run_verifier_for_transcript(
         verifier_command = command_template
         verifier_image = pinned_manifest["verifier"].get("image")
         wall_seconds = int(pinned_manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
-        if sandbox == "docker" and not docker_available():
+        if sandbox == "docker":
+            try:
+                validate_rootless_docker_host(docker_host)
+            except RunnerSandboxError as exc:
+                return {
+                    "ok": False,
+                    "valid": False,
+                    "error": str(exc),
+                    "retryable": True,
+                    "failure_kind": "sandbox_unavailable",
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    "sandbox": sandbox,
+                    "verifier_image": verifier_image,
+                    "verifier_command": verifier_command,
+                }
+        if sandbox == "docker" and not docker_available(docker_host=docker_host):
             return {
                 "ok": False,
                 "valid": False,
-                "error": "sandbox=docker requested but no container runtime is available; refusing to run an untrusted payload on the host",
+                "error": f"rootless Docker endpoint unavailable: {docker_host}; refusing to run an untrusted payload on the host",
                 "retryable": True,
                 "failure_kind": "sandbox_unavailable",
                 "elapsed_ms": int((time.monotonic() - started) * 1000),
@@ -1217,6 +1255,7 @@ def _run_verifier_for_transcript(
                     pids_limit=sandbox_pids_limit,
                     cpus=sandbox_cpus,
                     container_name=container_name,
+                    docker_host=docker_host,
                 )
                 # The container is --network=none and self-contained; the host process
                 # here is only the `docker run` client. Memory is enforced by the
@@ -1237,7 +1276,7 @@ def _run_verifier_for_transcript(
             )
     except LeaseHeartbeatError as exc:
         if container_name is not None:
-            force_remove_container(container_name)
+            force_remove_container(container_name, docker_host=docker_host)
         return {
             "ok": False,
             "valid": False,
@@ -1251,7 +1290,7 @@ def _run_verifier_for_transcript(
         }
     except OutputLimitExceeded as exc:
         if container_name is not None:
-            force_remove_container(container_name)
+            force_remove_container(container_name, docker_host=docker_host)
         return {
             "ok": False,
             "valid": False,
@@ -1265,7 +1304,7 @@ def _run_verifier_for_transcript(
         }
     except subprocess.TimeoutExpired:
         if container_name is not None:
-            force_remove_container(container_name)
+            force_remove_container(container_name, docker_host=docker_host)
         return {
             "ok": False,
             "valid": False,
@@ -1277,7 +1316,7 @@ def _run_verifier_for_transcript(
         }
     except (OSError, ValueError, KeyError, RunnerSandboxError) as exc:
         if container_name is not None:
-            force_remove_container(container_name)
+            force_remove_container(container_name, docker_host=docker_host)
         result = {
             "ok": False,
             "valid": False,

@@ -30,9 +30,11 @@ reject_directive() {
 
 operator="$deployments/p42-operator@.service.example"
 resolver="$deployments/p42-resolver@.service.example"
+rootless="$deployments/p42-docker-rootless@.service.example"
+rootless_config="$deployments/p42-docker-rootless-daemon.json"
 failure="$deployments/p42-runtime-failure@.service.example"
 sysusers="$deployments/p42-runtime.sysusers.example"
-for file in "$operator" "$resolver" "$failure" "$sysusers"; do
+for file in "$operator" "$resolver" "$rootless" "$rootless_config" "$failure" "$sysusers"; do
   [[ -f $file ]] || fail "missing ${file#"$repo_root"/}"
 done
 
@@ -80,11 +82,46 @@ for file in "$operator" "$resolver"; do
   fi
 done
 
+require_exact "$rootless" User 'User=p42-operator'
+require_exact "$rootless" Group 'Group=p42-operator'
+require_exact "$rootless" Conflicts 'Conflicts=docker.service docker.socket'
+require_line "$rootless" 'ConditionPathExists=/usr/bin/rootlesskit'
+require_line "$rootless" 'ConditionPathExists=/sys/fs/cgroup/cgroup.controllers'
+require_line "$rootless" 'ConditionPathExists=!/run/docker.sock'
+require_line "$rootless" 'ConditionPathExists=!/var/run/docker.sock'
+require_line "$rootless" 'Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock'
+require_exact "$rootless" ExecStart 'ExecStart=/usr/bin/dockerd-rootless.sh --host=unix:///run/p42-docker-%i/docker.sock --config-file=/etc/p42/docker/rootless-daemon.json --data-root=/var/lib/p42/docker-%i'
+require_line "$rootless" 'ExecStartPre=/usr/bin/grep -Eq '\''^p42-operator:[0-9]+:65536$'\'' /etc/subuid'
+require_line "$rootless" 'ExecStartPre=/usr/bin/grep -Eq '\''^p42-operator:[0-9]+:65536$'\'' /etc/subgid'
+require_line "$rootless" 'ExecStartPre=/usr/bin/sh -c '\''test "$(/usr/bin/cat /proc/sys/user/max_user_namespaces)" -gt 0'\'''
+require_line "$rootless" 'ExecStartPre=/usr/bin/test ! -S /run/docker.sock'
+require_line "$rootless" 'ExecStartPre=/usr/bin/test ! -S /var/run/docker.sock'
+require_exact "$rootless" RuntimeDirectory 'RuntimeDirectory=p42-docker-%i'
+require_exact "$rootless" Delegate 'Delegate=yes'
+require_exact "$rootless" NoNewPrivileges 'NoNewPrivileges=false'
+require_exact "$rootless" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/docker'
+require_exact "$rootless" ReadWritePaths 'ReadWritePaths=/var/lib/p42/docker-%i /var/lib/p42/docker-home-%i /run/p42-docker-%i'
+require_exact "$rootless" MemorySwapMax 'MemorySwapMax=0'
+require_exact "$rootless" LimitCORE 'LimitCORE=0'
+grep -Fqx '{' "$rootless_config" || fail "rootless Docker config must be JSON"
+grep -Fqx '  "iptables": false,' "$rootless_config" || fail "rootless Docker config must disable iptables"
+grep -Fqx '  "ip6tables": false,' "$rootless_config" || fail "rootless Docker config must disable ip6tables"
+grep -Fqx '  "userland-proxy": false,' "$rootless_config" || fail "rootless Docker config must disable userland proxy"
+if grep -Eq '/(var/)?run/docker\.sock|SupplementaryGroups=.*docker|Group=docker' "$operator" "$resolver"; then
+  fail "production runtime units must not grant rootful Docker socket or docker group access"
+fi
+
 require_exact "$operator" User 'User=p42-operator'
 require_exact "$operator" Group 'Group=p42-operator'
+require_exact "$operator" Requires 'Requires=p42-docker-rootless@%i.service'
+require_exact "$operator" After 'After=network-online.target p42-docker-rootless@%i.service'
 require_exact "$operator" EnvironmentFile 'EnvironmentFile=/etc/p42/operator/%i/runtime.env'
-require_exact "$operator" LoadCredential 'LoadCredential=operator-private-key:/etc/p42/operator/%i/credentials/operator-private-key'
-require_exact "$operator" UnsetEnvironment 'UnsetEnvironment=OPERATOR_PRIVATE_KEY P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE'
+require_line "$operator" 'LoadCredential=operator-private-key:/etc/p42/operator/%i/credentials/operator-private-key'
+require_line "$operator" 'LoadCredential=rpc-primary-url:/etc/p42/operator/%i/credentials/rpc-primary-url'
+require_line "$operator" 'LoadCredential=rpc-secondary-url:/etc/p42/operator/%i/credentials/rpc-secondary-url'
+require_exact "$operator" UnsetEnvironment 'UnsetEnvironment=OPERATOR_PRIVATE_KEY P42_RPC_URL P42_NONCE_RPC_SECONDARY_URL P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE'
+require_exact "$operator" Environment 'Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock'
+require_exact "$operator" ExecStartPre 'ExecStartPre=/usr/bin/test -S /run/p42-docker-%i/docker.sock'
 require_exact "$operator" ExecStart 'ExecStart=/usr/local/bin/p42-runtime-supervisor \'
 require_exact "$operator" StateDirectory 'StateDirectory=p42/operator/%i p42/operator/coordination'
 require_exact "$operator" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/operator/%i /opt/p42'
@@ -100,7 +137,8 @@ require_exact "$resolver" Group 'Group=p42-resolver'
 require_exact "$resolver" EnvironmentFile 'EnvironmentFile=/etc/p42/resolver/%i/runtime.env'
 require_line "$resolver" 'LoadCredential=resolver-private-key:/etc/p42/resolver/%i/credentials/resolver-private-key'
 require_line "$resolver" 'LoadCredential=arweave-jwk:/etc/p42/resolver/%i/credentials/arweave-jwk'
-require_exact "$resolver" UnsetEnvironment 'UnsetEnvironment=RESOLVER_PRIVATE_KEY ARWEAVE_JWK_JSON P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE'
+require_line "$resolver" 'LoadCredential=rpc-primary-url:/etc/p42/resolver/%i/credentials/rpc-primary-url'
+require_exact "$resolver" UnsetEnvironment 'UnsetEnvironment=RESOLVER_PRIVATE_KEY ARWEAVE_JWK_JSON P42_RPC_URL P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE'
 require_exact "$resolver" ExecStart 'ExecStart=/usr/local/bin/p42-runtime-supervisor \'
 require_exact "$resolver" StateDirectory 'StateDirectory=p42/resolver/%i p42/resolver/%i/transcripts p42/resolver/%i/quorum-signatures p42/resolver/coordination'
 require_exact "$resolver" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/resolver/%i /opt/p42'
@@ -156,10 +194,12 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   trap 'rm -rf "$scratch"' EXIT
   operator_unit="$scratch/p42-operator@test.service"
   resolver_unit="$scratch/p42-resolver@test.service"
+  rootless_unit="$scratch/p42-docker-rootless@test.service"
   operator_failure="$scratch/p42-runtime-failure@p42-operator@test.service.service"
   resolver_failure="$scratch/p42-runtime-failure@p42-resolver@test.service.service"
   cp "$operator" "$operator_unit"
   cp "$resolver" "$resolver_unit"
+  cp "$rootless" "$rootless_unit"
   cp "$failure" "$operator_failure"
   cp "$failure" "$resolver_failure"
   user=$(id -un)
@@ -168,7 +208,14 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     -e "s/^User=.*/User=$user/" -e "s/^Group=.*/Group=$group/" \
     -e 's#^EnvironmentFile=.*#EnvironmentFile=-/dev/null#' \
     -e 's#^ExecStart=.*#ExecStart=/bin/true#' -e '/^  /d' \
+    -e 's#^ExecStartPre=.*#ExecStartPre=/bin/true#' \
     "$operator_unit" "$resolver_unit"
+  sed -i \
+    -e "s/^User=.*/User=$user/" -e "s/^Group=.*/Group=$group/" \
+    -e 's#^ExecStart=.*#ExecStart=/bin/true#' \
+    -e 's#^ExecStartPre=.*#ExecStartPre=/bin/true#' \
+    -e '/^  /d' \
+    "$rootless_unit"
   sed -i \
     -e "s/^User=.*/User=$user/" -e "s/^Group=.*/Group=$group/" \
     -e 's#^ExecStart=.*#ExecStart=/bin/true#' \
@@ -176,7 +223,7 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   output="$scratch/systemd-analyze.log"
   unit_path="$scratch:/usr/local/lib/systemd/system:/usr/lib/systemd/system:/lib/systemd/system"
   if ! SYSTEMD_UNIT_PATH="$unit_path" systemd-analyze verify \
-      "$operator_unit" "$resolver_unit" "$operator_failure" "$resolver_failure" >"$output" 2>&1; then
+      "$operator_unit" "$resolver_unit" "$rootless_unit" "$operator_failure" "$resolver_failure" >"$output" 2>&1; then
     cat "$output" >&2
     exit 1
   fi

@@ -502,27 +502,42 @@ publisher credentials. The per-instance environment files are private files at
 `/etc/p42/operator/<instance>/runtime.env` and
 `/etc/p42/resolver/<instance>/runtime.env`.
 
-The operator environment must provide `P42_RPC_URL`, an independent-host
-`P42_NONCE_RPC_SECONDARY_URL`, `P42_PROBLEM_SLUG`, `P42_REGISTRY_PROBLEM_ID`,
-`P42_AGENT_WALLET_ADDRESS`, and all five `P42_RUNNER_*` identity/public-key
-values named by the template. The unit loads the signing key from
-`credentials/operator-private-key`; do not put `OPERATOR_PRIVATE_KEY` in the
-environment file. Its manifest, immutable `challenge-provisioning.json`, and
-credential source must be installed in the matching private configuration
-directory. `--sandbox-staging-root` points the worker at the writable
-`/var/lib/p42/operator/<instance>/sandbox-staging` directory, so Docker never
-tries to bind a staged payload below the protected service home.
+The operator environment must provide `P42_PROBLEM_SLUG`,
+`P42_REGISTRY_PROBLEM_ID`, `P42_AGENT_WALLET_ADDRESS`, and all five
+`P42_RUNNER_*` identity/public-key values named by the template. It must not
+provide `P42_RPC_URL`, `P42_NONCE_RPC_SECONDARY_URL`, or a Docker socket
+override. The unit loads `credentials/operator-private-key`,
+`credentials/rpc-primary-url`, and `credentials/rpc-secondary-url`; do not put
+signing or RPC URL material in the environment file. The RPC credential files
+must be private authenticated HTTPS URLs. Its manifest, immutable
+`challenge-provisioning.json`, and credential sources must be installed in the
+matching private configuration directory. `--sandbox-staging-root` points the
+worker at the writable `/var/lib/p42/operator/<instance>/sandbox-staging`
+directory.
 
-The resolver environment must provide `P42_RPC_URL`, `P42_PROBLEM_SLUG`,
+Production verifier execution has one Docker authority: the same unprivileged
+`p42-operator` account runs `p42-docker-rootless@<instance>.service`, with
+`DOCKER_HOST=unix:///run/p42-docker-<instance>/docker.sock`. The operator
+requires that unit and checks the socket before its first poll. The rootless
+unit conflicts with `docker.service`/`docker.socket`, rejects a rootful socket,
+uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
+`/etc/subuid` and `/etc/subgid` ranges, enabled unprivileged user namespaces,
+and cgroup v2 for `p42-operator`. The worker passes the validated socket to
+every Docker `info`, `run`, and cleanup invocation; it never falls back to
+`/var/run/docker.sock`.
+
+The resolver environment must provide `P42_PROBLEM_SLUG`,
 `P42_REGISTRY_PROBLEM_ID`, `P42_AGENT_WALLET_ADDRESS`, `P42_ARWEAVE_OWNER`, and
 two independently operated HTTPS origins in
 `P42_TRANSCRIPT_ENDPOINT_PRIMARY` and `P42_TRANSCRIPT_ENDPOINT_SECONDARY`. The
-unit loads `credentials/resolver-private-key` and `credentials/arweave-jwk`
-with `LoadCredential`; do not put `RESOLVER_PRIVATE_KEY` or `ARWEAVE_JWK_JSON`
-in the environment file. The shipped command explicitly selects the Arweave
-publisher and two CLI retrieval origins. A missing or invalid owner fails
-startup; a missing, invalid, or owner-mismatched funded JWK fails closed when
-an upload is needed. There is no implicit receipt-only fallback.
+unit loads `credentials/resolver-private-key`, `credentials/arweave-jwk`, and
+`credentials/rpc-primary-url` with `LoadCredential`; do not put
+`P42_RPC_URL`, `RESOLVER_PRIVATE_KEY`, or `ARWEAVE_JWK_JSON` in the environment
+file. The RPC credential must be a private authenticated HTTPS URL. The shipped
+command explicitly selects the Arweave publisher and two CLI retrieval origins.
+A missing or invalid owner fails startup; a missing, invalid, or owner-mismatched
+funded JWK fails closed when an upload is needed. There is no implicit
+receipt-only fallback.
 
 The resolver executable rejects `P42_TRANSCRIPT_RECEIPT_SPOOL`,
 `P42_TRANSCRIPT_STORE`, or `P42_TRANSCRIPT_ENDPOINTS` when they conflict with
@@ -551,15 +566,18 @@ bash scripts/verify-censorship-fallback-systemd.sh
 
 It runs `systemd-analyze verify` where available and invokes
 `scripts/verify-runtime-systemd.sh`, which parses both complete `ExecStart`
-commands against the CLIs' shared production option contract. Agent tests also
-exercise the exact production entrypoint preflight, resolver publication
-configuration, and one supervised credential-free fixture cycle with stub RPC
-and publisher behavior. Python tests verify that the real worker stages the
-solution below the explicit operator root and that the Docker command contains
-per-container memory/PID/OOM/core controls. Those checks are source/static
-evidence only;
-they do not attest installed DGX units, live RPC independence, funded Arweave
-publication, signer custody, queue latency under load, or an on-chain poll.
+commands against the CLIs' shared production option contract and checks the
+rootless daemon unit/configuration. Agent tests exercise the exact expanded
+unit shape with private credential files, staging, rootless socket binding,
+stub RPC, and publisher behavior. Python tests verify that the real worker
+stages the solution below the explicit operator root, uses only the bound
+rootless endpoint, refuses to lease before Docker responds, and that the Docker
+command contains per-container memory/PID/OOM/core controls. These are the
+maximum feasible source and credential-free fixture preflight checks on this
+host; they do not attest an installed Linux rootless daemon, subordinate-ID
+configuration, live Docker cgroups, live jobs, live RPC independence, funded
+Arweave publication, signer custody, queue latency under load, or an on-chain
+poll.
 
 ## Portal Shortcut Guard
 

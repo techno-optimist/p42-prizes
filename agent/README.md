@@ -64,14 +64,15 @@ terminal, while an RPC outage or temporary transaction absence is retried.
 ```bash
 cd agent
 node operator.mjs \
-  --rpc https://sepolia.base.org \
-  --nonce-rpc-secondary https://independent-base-sepolia.example \
+  --rpc-url-file /run/credentials/p42/operator/rpc-primary-url \
+  --nonce-rpc-secondary-url-file /run/credentials/p42/operator/rpc-secondary-url \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem ../problems/hadamard-mini \
   --registry-problem-id 1 \
   --runtime /var/lib/p42/operator/hadamard-mini \
   --coordination-root /var/lib/p42/operator-coordination \
   --sandbox-staging-root /var/lib/p42/operator/hadamard-mini/sandbox-staging \
+  --docker-host unix:///run/p42-docker-hadamard-mini/docker.sock \
   --operator-private-key-file /run/credentials/p42/operator-private-key \
   --agent-wallet 0x... \
   --challenge-provisioning /var/lib/p42/operator/hadamard-mini/challenge-provisioning.json
@@ -229,7 +230,7 @@ instance. A `quarantine` candidate is never converted into an on-chain verdict.
 cd agent
 P42_ARWEAVE_OWNER='<43-character funded wallet address>' \
 node resolver.mjs \
-  --rpc https://sepolia.base.org \
+  --rpc-url-file /run/credentials/p42/resolver/rpc-primary-url \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem-id hadamard-mini \
   --registry-problem-id 1 \
