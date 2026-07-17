@@ -5,10 +5,14 @@ import importlib.util
 import json
 from pathlib import Path
 
+import jsonschema
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 VECTORS = ROOT / "objective-programs/edges-vs-triangles/fixtures/differential-vectors.json"
 VERIFIER = ROOT / "problems/edges-vs-triangles/verifier/verify.py"
+SOLUTION_SCHEMA = ROOT / "problems/edges-vs-triangles/solution.schema.json"
 
 
 def load_verifier():
@@ -56,7 +60,7 @@ def test_python_fraction_oracle_matches_shared_rust_vectors() -> None:
 def test_python_acceptance_matches_shared_rust_parity_vectors() -> None:
     verifier = load_verifier()
     document = json.loads(VECTORS.read_text(encoding="utf-8"))
-    assert len(document["acceptance_vectors"]) == 12
+    assert len(document["acceptance_vectors"]) == 17
     for vector in document["acceptance_vectors"]:
         try:
             verifier.parse_solution(vector["raw"].encode())
@@ -65,6 +69,51 @@ def test_python_acceptance_matches_shared_rust_parity_vectors() -> None:
         else:
             accepted = True
         assert accepted is vector["accepted"], vector["name"]
+
+
+def test_python_and_schema_accept_astral_scalar_metadata() -> None:
+    verifier = load_verifier()
+    raw = (
+        b'{"atoms":20,"row_sum":1000,"rows":'
+        b'[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],'
+        b'"source":"\\ud83d\\ude00"}'
+    )
+    verifier.parse_solution(raw)
+    schema = json.loads(SOLUTION_SCHEMA.read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator(schema).validate(json.loads(raw))
+
+
+@pytest.mark.parametrize(
+    ("field", "escape"),
+    [
+        ("source", b"\\ud800"),
+        ("source", b"\\udfff"),
+        ("claimed_score", b"\\ud800"),
+        ("claimed_score", b"\\udfff"),
+    ],
+)
+def test_python_and_schema_reject_surrogates_in_allowed_metadata(
+    field: str,
+    escape: bytes,
+) -> None:
+    verifier = load_verifier()
+    raw = (
+        b'{"atoms":20,"row_sum":1000,"rows":'
+        b'[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"'
+        + field.encode()
+        + b'":"'
+        + escape
+        + b'"}'
+    )
+    with pytest.raises(verifier.VerifierFailure) as failure:
+        verifier.parse_solution(raw)
+    assert failure.value.reason == "MALFORMED"
+    assert failure.value.detail == f"{field} must contain only Unicode scalar values"
+
+    schema = json.loads(SOLUTION_SCHEMA.read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator.check_schema(schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(json.loads(raw))
 
 
 def test_python_rejects_lone_surrogate_inside_unknown_extra() -> None:

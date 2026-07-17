@@ -63,6 +63,11 @@
       "accepted": true
     },
     {
+      "name": "allowed-astral-string-metadata",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"source\":\"\\ud83d\\ude00\"}",
+      "accepted": true
+    },
+    {
       "name": "unknown-shallow-extra",
       "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":17}",
       "accepted": false
@@ -80,6 +85,26 @@
     {
       "name": "claimed-score-nonstring",
       "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"claimed_score\":[false,3]}",
+      "accepted": false
+    },
+    {
+      "name": "source-lone-high-surrogate",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"source\":\"\\ud800\"}",
+      "accepted": false
+    },
+    {
+      "name": "source-lone-low-surrogate",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"source\":\"\\udfff\"}",
+      "accepted": false
+    },
+    {
+      "name": "claimed-score-lone-high-surrogate",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"claimed_score\":\"\\ud800\"}",
+      "accepted": false
+    },
+    {
+      "name": "claimed-score-lone-low-surrogate",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"claimed_score\":\"\\udfff\"}",
       "accepted": false
     },
     {

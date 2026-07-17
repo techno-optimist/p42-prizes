@@ -179,7 +179,7 @@
         "local_evidence": [
           {
             "path": "problems/edges-vs-triangles/SPEC.md",
-            "sha256": "sha256:2f329b7bcb2e8a26201f531b61cf7ec5e8d48cd635ad9f10a18e9690dd6f8f03"
+            "sha256": "sha256:4adb018fb45365abcb32b24b04f689345e357104e808b36df9ece6c648d69001"
           },
           {
             "path": "problems/edges-vs-triangles/HARDENING.md",
@@ -204,15 +204,15 @@
       "slug": "edges-vs-triangles",
       "solution_schema": {
         "path": "problems/edges-vs-triangles/solution.schema.json",
-        "sha256": "sha256:c88def6b44752ca3c4a76ad365a3818d745dce28e5cdd1acf32b067bbb38a127"
+        "sha256": "sha256:1aac7242d1ffce68f88ba28a3965aa5bf18863c022ef487d6bd356ea622de6ae"
       },
       "specification": {
         "path": "problems/edges-vs-triangles/SPEC.md",
-        "sha256": "sha256:2f329b7bcb2e8a26201f531b61cf7ec5e8d48cd635ad9f10a18e9690dd6f8f03"
+        "sha256": "sha256:4adb018fb45365abcb32b24b04f689345e357104e808b36df9ece6c648d69001"
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:7b2052848bb158c6455a1582985ced942905dcb60e641410e5c832a3c60d7606",
+        "source_tree_sha256": "sha256:1315e7be632fba0fdfb87bedc37ca2852f24fd9a041cd406b6b7d312a04017bd",
         "version": "0.1.2"
       }
     },

@@ -49,6 +49,16 @@ def require_int(value: Any, label: str) -> int:
     return value
 
 
+def require_unicode_scalar_string(value: Any, label: str) -> None:
+    if not isinstance(value, str):
+        raise VerifierFailure("MALFORMED", f"{label} must be a string")
+    if any(0xD800 <= ord(code_point) <= 0xDFFF for code_point in value):
+        raise VerifierFailure(
+            "MALFORMED",
+            f"{label} must contain only Unicode scalar values",
+        )
+
+
 def parse_solution(raw: bytes) -> list[list[int]]:
     if len(raw) > MAX_SOLUTION_BYTES:
         raise VerifierFailure(
@@ -69,8 +79,8 @@ def parse_solution(raw: bytes) -> list[list[int]]:
             f"unknown solution field: {unknown_fields[0]}",
         )
     for field in ("source", "claimed_score"):
-        if field in data and not isinstance(data[field], str):
-            raise VerifierFailure("MALFORMED", f"{field} must be a string")
+        if field in data:
+            require_unicode_scalar_string(data[field], field)
     if data.get("atoms") != ATOMS:
         raise VerifierFailure("WRONG_ATOMS", "atoms must equal 20")
     if data.get("row_sum") != ROW_SUM:
