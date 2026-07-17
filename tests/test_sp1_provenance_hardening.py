@@ -289,6 +289,31 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     assert "~/.cargo/git" not in cache
 
 
+def test_workflow_enforces_bounded_disk_budget_before_candidate_builds() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    disk_gate = workflow[
+        workflow.index("Enforce SP1 build disk budget") : workflow.index(
+            "Test objective predicate and Solidity ABI encoding"
+        )
+    ]
+    assert workflow.index("Validate clean SP1 build-input provenance") < workflow.index(
+        "Enforce SP1 build disk budget"
+    )
+    assert "cleanup_paths=(" in disk_gate
+    for path in (
+        "/usr/local/lib/android",
+        "/usr/share/dotnet",
+        "/opt/ghc",
+        "/usr/local/share/boost",
+    ):
+        assert path in disk_gate
+    assert '[[ ! -d "$path" || -L "$path" ]]' in disk_gate
+    assert 'find "$path" -xdev -mindepth 1 -delete' in disk_gate
+    assert "required_kib=$((20 * 1024 * 1024))" in disk_gate
+    assert "available_kib < required_kib" in disk_gate
+    assert "rm -rf" not in disk_gate
+
+
 def test_canonical_identities_and_arm_source_build_boundary_remain_frozen() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     verifier = SCRIPT.read_text(encoding="utf-8")
