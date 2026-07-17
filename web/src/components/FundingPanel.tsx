@@ -131,6 +131,7 @@ export function FundingPanel({
     canCheckFunding ? "checking" : "unavailable",
   );
   const [boundTarget, setBoundTarget] = useState<BoundFundingTarget | null>(null);
+  const [walletLaunchIdentity, setWalletLaunchIdentity] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const monotonicCutoffRef = useRef<number | null>(null);
   const clientWallStartedRef = useRef<number | null>(null);
@@ -167,6 +168,7 @@ export function FundingPanel({
     monotonicCutoffRef.current = null;
     cancelCopyState();
     setBoundTarget(null);
+    setWalletLaunchIdentity(null);
     setCopied(false);
     setFundingVisibility("unavailable");
     if (deadlineClosed && actionCutoffTimestamp !== null) latestObservedRef.current = actionCutoffTimestamp;
@@ -177,6 +179,7 @@ export function FundingPanel({
     requestControllerRef.current = null;
     cancelCopyState();
     setBoundTarget(null);
+    setWalletLaunchIdentity(null);
     setCopied(false);
     setFundingVisibility(canCheckFunding ? "checking" : "unavailable");
     if (!canCheckFunding || actionCutoffTimestamp === null || observedTimestamp === null
@@ -207,8 +210,10 @@ export function FundingPanel({
 
     let controller: AbortController | null = null;
     const checkTarget = () => {
+      requestControllerRef.current?.abort();
       controller?.abort();
       setBoundTarget(null);
+      setWalletLaunchIdentity(null);
       setCopied(false);
       setFundingVisibility("checking");
       controller = new AbortController();
@@ -316,18 +321,30 @@ export function FundingPanel({
   }
 
   async function openWallet(event: MouseEvent<HTMLAnchorElement>) {
-    event.preventDefault();
     const clickedTarget = boundTarget;
-    if (!clickedTarget || clickedTarget.bindingKey !== bindingKeyRef.current) return;
+    const clickedIdentity = clickedTarget
+      ? JSON.stringify([clickedTarget.bindingKey, clickedTarget.target.address])
+      : null;
+    if (!clickedTarget || clickedTarget.bindingKey !== bindingKeyRef.current) {
+      event.preventDefault();
+      return;
+    }
     if (cutoffReached()) {
+      event.preventDefault();
       expireFunding(true);
       return;
     }
+    if (walletLaunchIdentity === clickedIdentity) {
+      setWalletLaunchIdentity(null);
+      return;
+    }
+    event.preventDefault();
 
     requestControllerRef.current?.abort();
     const controller = new AbortController();
     requestControllerRef.current = controller;
     setBoundTarget(null);
+    setWalletLaunchIdentity(null);
     setCopied(false);
     setFundingVisibility("checking");
     try {
@@ -341,7 +358,8 @@ export function FundingPanel({
       const parsed = parseFundingTargetResponse(await response.json(), slug);
       const responseObserved = parsedTimestamp(parsed?.serverObservedAt ?? null);
       const responseFinalized = parsedTimestamp(parsed?.finalizedObservedAt ?? null);
-      if (controller.signal.aborted || bindingKeyRef.current !== clickedTarget.bindingKey
+      if (controller.signal.aborted || requestControllerRef.current !== controller
+        || bindingKeyRef.current !== clickedTarget.bindingKey
         || !parsed || !parsed.target || parsed.remainingCapWei === "0"
         || parsed.authorizationExpiresAt !== authorizationExpiresAt
         || parsed.fundingDeadline !== fundingDeadline
@@ -357,12 +375,9 @@ export function FundingPanel({
       }
 
       latestObservedRef.current = responseObserved;
-      const launch = document.createElement("a");
-      launch.href = parsed.target.walletUri;
-      launch.hidden = true;
-      document.body.append(launch);
-      launch.click();
-      launch.remove();
+      setBoundTarget(clickedTarget);
+      setWalletLaunchIdentity(clickedIdentity);
+      setFundingVisibility("available");
     } catch {
       if (!controller.signal.aborted) expireFunding(false);
     } finally {
@@ -401,7 +416,7 @@ export function FundingPanel({
           <div className="address-line">
             <code>{target.address}</code>
             <a className="copy-button" href={target.walletUri} onClick={openWallet} aria-label={`Fund ${label ?? "sponsor pool"} with ${target.asset}`}>
-              fund {target.asset}
+              {walletLaunchIdentity === targetIdentity ? "open wallet" : `fund ${target.asset}`}
             </a>
             <button className="copy-button" type="button" onClick={copyAddress} aria-label="Copy sponsor pool address">
               {copied ? "copied" : "copy"}

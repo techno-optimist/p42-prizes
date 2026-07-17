@@ -440,10 +440,9 @@ describe("FundingPanel deadline reconciliation", () => {
     expectTargetUnavailable();
   });
 
-  it("revalidates the exact target after click before launching the wallet", async () => {
+  it("revalidates the exact target, then requires a second trusted click to launch", async () => {
     await renderAndReveal();
     const walletLink = document.querySelector(`a[href="${WALLET_URI}"]`)!;
-    const launch = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
 
     expect(fireEvent.click(walletLink)).toBe(false);
     expectTargetClearedFromDom();
@@ -454,31 +453,48 @@ describe("FundingPanel deadline reconciliation", () => {
       cache: "no-store",
       credentials: "same-origin",
     }));
-    expect(launch).toHaveBeenCalledOnce();
+    expectTargetVisible();
+    const confirmedLink = screen.getByRole("link", { name: "Fund Test pool with ETH" });
+    expect(confirmedLink.textContent).toBe("open wallet");
+    expect(fireEvent.click(confirmedLink)).toBe(true);
   });
 
   it("does not launch when click-time revalidation observes an exhausted cap", async () => {
     await renderAndReveal();
     vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ remainingCapWei: "0", target: false })));
-    const launch = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
 
     expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
     expectTargetClearedFromDom();
     await flushResponse();
 
-    expect(launch).not.toHaveBeenCalled();
     expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 
   it("does not launch when click-time revalidation changes the target identity", async () => {
     await renderAndReveal();
     vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ address: B_ADDRESS })));
-    const launch = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
 
     expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
     await flushResponse();
 
-    expect(launch).not.toHaveBeenCalled();
     expectTargetClearedFromDom();
+  });
+
+  it("cannot arm an older click response after focus starts a newer reconciliation", async () => {
+    await renderAndReveal();
+    const staleClick = deferredResponse();
+    const focusRefresh = deferredResponse();
+    vi.mocked(fetch).mockReturnValueOnce(staleClick.promise).mockReturnValueOnce(focusRefresh.promise);
+
+    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    fireEvent(window, new Event("focus"));
+    staleClick.resolve(okResponse());
+    await flushResponse();
+    expectTargetClearedFromDom();
+
+    focusRefresh.resolve(okResponse(responseBody({ remainingCapWei: "0", target: false })));
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 });
