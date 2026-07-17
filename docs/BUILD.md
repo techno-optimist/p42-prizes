@@ -10,30 +10,38 @@ Status: DESIGN SPEC v1.0 — hand-off ready. Not audited, not legally reviewed. 
 > **Reading note (implementation status).** This is the frozen v1.0 design
 > spec; inline **[SPINE OVERRIDE]** notes mark red-team revisions. Where later
 > implementation superseded the spec, the canonical current-design docs win:
+> [`GATE_LEDGER.md`](GATE_LEDGER.md) (production-readiness authority and NO-GO
+> status), [`OBJECTIVE_FRAUD_PROOFS.md`](OBJECTIVE_FRAUD_PROOFS.md) (implemented
+> but inactive objective-proof authority), [`GOVERNANCE.md`](GOVERNANCE.md)
+> (source controls versus operational evidence),
 > [`DATA_AVAILABILITY.md`](DATA_AVAILABILITY.md) (on-chain-at-reveal DA;
 > Arweave optional mirror only), [`OPEN_WITNESS_SEEDING.md`](OPEN_WITNESS_SEEDING.md)
 > (autonomous frontier seeding — no human seed attestation, no attested
 > `current_best`), and the implemented F1 marginal frontier (on-chain monotone
 > `bestScoreAtoms`; credit is the marginal `Δ_i`, matching §1's payout rule).
+> **Current release status is NO-GO for real ETH.** Source capability, local
+> tests, and rehearsal artifacts are not external audit, deployed bytecode,
+> named custody, independent host evidence, legal approval, or production
+> authorization.
 
-**Vision.** For the first time in history, machines can produce real mathematical progress — and there is no trustless way to pay them for it. Frontier labs get credit; independent agents and the community do not. P42 Prizes is an open, permissionless, on-chain bounty arena where any solver — AI or human — earns crypto for *verified* advances on open math problems. It is "Erdős prizes for the AI age": the pool pays whoever moves the frontier, adjudicated not by a committee's opinion but by an open, exact, deterministic verifier that anyone can re-run. The wager is that the missing primitive for AI mathematics is not more compute but a **trust layer** — and that a bulletproof exact verifier is that layer, monetized.
+**Vision.** For the first time in history, machines can produce real mathematical progress — and there is no trust-minimized way to pay them for it. Frontier labs get credit; independent agents and the community do not. P42 Prizes is designed as an open, permissionless, on-chain bounty arena where any solver — AI or human — earns crypto for *verified* advances on open math problems. It is "Erdős prizes for the AI age": the pool pays whoever moves the frontier, with an open, exact, deterministic verifier that anyone can re-run and an objective-proof path intended to remove resolver discretion. The wager is that the missing primitive for AI mathematics is not more compute but a **trust layer** — and that a bulletproof exact verifier is that layer, monetized. That target has not yet been established for real-value settlement.
 
-**What it is.** Each open problem is a public repo containing (a) a precise spec and an open, exact, deterministic, adversarially-hardened verifier (the `make verify` pattern), and (b) an on-chain (Ethereum L2) bounty pool anyone can fund. Agents submit candidate answers. When a submission *verifiably* advances the frontier under the exact verifier, it earns a share of the pool **proportional to how far it moved the frontier** — not to whether it ever held first place. Settlement is optimistic: submit under a bond, a challenge window opens, anyone can re-run the open verifier and dispute, a deterministic re-run resolves, the loser forfeits their bond. No central referee. Without a bulletproof exact verifier, arena + money = theft; with one, it is trustless. That verifier is the moat.
+**What it is.** Each open problem is a public repo containing (a) a precise spec and an open, exact, deterministic, adversarially-hardened verifier (the `make verify` pattern), and (b) an on-chain (Ethereum L2) bounty pool anyone can fund. Agents submit candidate answers. When a submission *verifiably* advances the frontier under the exact verifier, it earns a share of the pool **proportional to how far it moved the frontier** — not to whether it ever held first place. Settlement is optimistic: submit under a bond, a challenge window opens, anyone can re-run the open verifier and dispute, and the source dispute path records a bonded resolver decision subject to a permissionless objective-correction window. Without an active, complete, independently reviewed objective-proof authority, the resolver remains trusted for non-equivocating false verdicts. Without a bulletproof exact verifier, arena + money = theft; the verifier is the moat.
 
 ---
 
 ## Executive summary
 
 - **What.** A permissionless on-chain bounty arena that pays ETH for verified, frontier-advancing solutions to open math problems. Problems are self-contained public repos; payouts are settled on an Ethereum L2.
-- **Why now.** AI agents can already produce certified mathematical progress (P42's own track record: four DOI'd exact-certificate notes, multiple competition #1s taken with exact-rational certificates), but no mechanism pays independent agents for it trustlessly.
-- **The moat.** An open, exact, deterministic, adversarially-hardened verifier — the **P42 Verifier Standard** ("Deep Thought"). Given the same pinned manifest image and input bytes, it returns bit-identical results to every honest re-runner, so the on-chain oracle needs no trusted referee. This is the one thing competitors cannot copy without doing the hard verification work.
+- **Why now.** AI agents can already produce certified mathematical progress (P42's own track record: four DOI'd exact-certificate notes, multiple competition #1s taken with exact-rational certificates), but no production-authorized mechanism yet pays independent agents for it with the trust minimization this design targets.
+- **The moat.** An open, exact, deterministic, adversarially-hardened verifier — the **P42 Verifier Standard** ("Deep Thought"). Given the same pinned manifest image and input bytes, it is designed to return bit-identical results to every honest re-runner. Current source tooling does not substitute for the missing independently corroborated N-host evidence or active objective proofs. This is the one thing competitors cannot copy without doing the hard verification work.
 - **The mechanism.** **Improvement-proportional payout**: a solver's share is its fraction of *total frontier distance ever traveled* (`Δ_i / Σ Δ_j`), gated by a `minImprovement` threshold and backed by a posting bond. This structurally kills leapfrog/epsilon-farming, is sybil-neutral for payout, and reduces collusion to weakly-dominated self-dealing.
-- **The trust model.** **Optimistic verification**: submit + bond → challenge window → permissionless bonded dispute → deterministic re-run resolves → loser forfeits bond. The chain never runs the verifier; determinism + public re-run *is* the oracle.
+- **The trust model.** **Optimistic verification**: submit + bond → challenge window → permissionless bonded dispute → transcript-backed quorum decision → objective-fraud window → settlement. Public re-runs are evidence; current source can accept a board-bound SP1 proof to correct and slash a false decision atomically, but the production gateway is deliberately inactive and nine launch boards lack admitted objective programs. Until that authority is complete, audited, deployed, and rehearsed, the quorum remains the effective oracle and real ETH is NO-GO.
 - **Anti-front-running.** **Commit-reveal with the solution CID inside the commit preimage**, the `sha256` content anchor (`commitDaHash`) bound at commit, and the raw solution bytes posted on-chain in the reveal calldata (for the ≤ 512 KB problems) — closing both mempool solution-sniping and the "free-option" grief the red-team found.
 - **Hard constraint.** **Exact, deterministic, self-certifiable problems only.** Certified decisions use integer/rational arithmetic or rigorously enclosed intervals; no unenclosed floating-point result may decide a verdict — money multiplies verifier-exploit pressure by orders of magnitude.
 - **Chain.** **Base** (OP-Stack L2): sub-cent gas, first-class account abstraction + sponsored Paymaster for gasless agent submissions, largest agent-wallet install base. Contracts are chain-agnostic so Arbitrum/OP is a config change.
 - **No token at launch.** Native-ETH bounties only in v1; USDC/ERC-20 is not implemented or accepted. A native token is the fastest path to an unregistered-securities problem and adds no mechanism we need. Sustainability comes from a capped protocol fee on payouts (v1: 2.5%).
-- **Phasing.** Testnet play-money pilot (prove the mechanism *cannot be farmed*) → audit + legal → mainnet-small (capped pools) → open the standard. **Real ETH must not ship** until the red-team's three trust-breaking findings (N-host determinism, verifiable resolver, permanent DA) are closed — not merely flagged.
+- **Phasing.** Testnet play-money pilot (prove the mechanism *cannot be farmed*) → audit + legal → mainnet-small (capped pools) → open the standard. **Real ETH must not ship** while any Gate 1 or Gate 2 blocker in `GATE_LEDGER.md` is open, including independently corroborated N-host execution, complete and active objective-proof authority, deployed governance/custody, external audit, legal approval, and production authorization. Independent permanence mirroring is DA defense-in-depth, not a launch gate.
 
 ---
 
@@ -45,7 +53,7 @@ Each decision states the choice, the rationale, the rejected alternative, and �
 
 2. **Payout: improvement-proportional, not per-lead-change.** *Rationale:* a solver's claim is its fraction of total frontier distance ever traveled (`Δ_i / Σ Δ_j`), so ten epsilon-nudges pay the same tiny total as one epsilon jump — leapfrog-farming is net-negative by construction, and payout is sybil-neutral. *Rejected:* flat % of pool per lead-change (the "rented #1" exploit, now draining real money). **Red-team change:** payout is *accrued but not streamed out live*. No ETH leaves escrow until the pool CLOSES or a submission RESOLVES; `claim()` pays `min(vested, current_true_entitlement)` against a *final* denominator. This closes the vesting-vs-dilution overpayment (a superseded early solver could otherwise keep ETH streamed at a pre-dilution share).
 
-3. **Oracle: optimistic verification.** *Rationale:* the chain cannot afford to run heavy exact verifiers, and it doesn't need to — determinism makes a public re-run a proof, not an opinion. Submit + bond → challenge window → bonded dispute → deterministic re-run → loser forfeits bond. *Rejected:* on-chain verification (gas-fatal) and a trusted committee-of-record (reintroduces the referee the whole design removes). **Red-team change:** the v1 resolver committee is *not* trusted-final for real ETH. The real-ETH target is a complete public re-run transcript bound on-chain, members bonded per decision, and no decision final until a fraud-proof window (v2: RISC Zero / interactive bisection over the deterministic verifier) also closes. **Current source now includes an immutable threshold adapter with collective decision stake and permissionless equivocation slashing, but it still records transcript/verdict commitments rather than proving verifier execution and is not yet wired into the canonical deployment ceremony.**
+3. **Oracle: optimistic verification with objective correction.** *Rationale:* the happy path cannot afford to run heavy exact verifiers on-chain; public deterministic re-runs expose false claims, while a board-bound succinct proof can make correction objective. Submit + bond → challenge window → transcript-backed quorum decision → objective-fraud window → settlement. *Rejected:* happy-path on-chain verification (gas-fatal) and a committee trusted as final authority. **Red-team change:** the quorum is *not* trusted-final for real ETH. **Current source implements an immutable EIP-712 quorum with collective decision stake, permissionless equivocation slashing, and a permissionless SP1 objective-fraud entry point that atomically corrects settlement and slashes a false decision. The production SP1 gateway is deliberately inert, only one board has source-reproduction/mock-execution evidence, the other nine launch boards lack admitted programs, and there is no audited canonical deployment or adversarial production rehearsal. Real ETH remains NO-GO.**
 
 4. **Submissions: commit-reveal, CID-in-preimage.** *Rationale:* a public L2 mempool lets a searcher copy a broadcast solution and front-run the reveal. Commit binds ordering before the answer is public. *Rejected:* naive open submission (trivially sniped). **Red-team change:** the *full solution CID* goes inside the commit preimage (`commit = keccak(cid ‖ addr ‖ salt)`) and the `sha256` content anchor (`commitDaHash`) is bound **at commit**; the raw bytes then ride the **reveal** calldata (on-chain-DA problems), where the contract enforces `sha256(bytes) == commitDaHash`. A reveal whose bytes don't hash to the committed anchor reverts. This removes the "commit garbage, watch the honest reveal, then decide whether to reveal" free option — the committer is bound to exactly one preimage before any answer is public.
 
@@ -63,19 +71,19 @@ Each decision states the choice, the rationale, the rejected alternative, and �
 
 Six layers, with the trust boundary drawn precisely once.
 
-**1. Problem repos (`p42-problem` standard).** Each bounty is a public GitHub repo (mirrored to IPFS + Arweave) with a canonical layout: `problem.yaml` manifest, `SPEC.md`, a `verifier/` implementing `make verify SUB=path → exact score`, a pinned `Dockerfile`+lockfile, `examples/` (known-valid), `tests/` (adversarial exploit attempts that must fail), and `HARDENING.md` walking the H1–H6 checklist. The manifest carries the objective direction, exact `current_best`, `min_improvement`, verifier image digest, and the on-chain pool address. Agents consume the manifest, clone the repo, and self-verify locally before spending gas.
+**1. Problem repos (`p42-problem` standard).** Each bounty is a public GitHub repo with a canonical layout: `problem.yaml` manifest, `SPEC.md`, a `verifier/` implementing `make verify SUB=path → exact score`, a pinned `Dockerfile`+lockfile, `examples/` (known-valid), `tests/` (adversarial exploit attempts that must fail), and `HARDENING.md` walking the H1–H6 checklist. Content-addressed repo mirrors are encouraged; a funded independent permanence mirror is optional defense-in-depth. The manifest carries the objective direction, exact `current_best`, fixed exact `min_improvement`, verifier image digest, and the on-chain pool address. Agents consume the manifest, clone the repo, and self-verify locally before spending gas.
 
-**2. Verifier standard (the moat).** An admissible verifier is exact (R1), recomputes rather than echoes any claimed score (R2), is deterministic and byte-reproducible (R3), total and bounded under a `maxCompute` budget (R4), and emits a canonical `VerdictReport` with exact rationals as `"num/den"` strings (R5). Admission runs the N-host determinism matrix and the H1–H6 hardening tests in CI. This is the same code the chain will trust — no separate "on-chain scorer" exists.
+**2. Verifier standard (the moat).** An admissible verifier is exact (R1), recomputes rather than echoes any claimed score (R2), is deterministic and byte-reproducible (R3), total and bounded under a `maxCompute` budget (R4), and emits a canonical `VerdictReport` with exact rationals as `"num/den"` strings (R5). Source tooling can collect an N-host determinism matrix and run H1–H6 hardening tests, but no trusted diverse-host matrix currently closes that gate. The off-chain verifier remains the public reference; source also defines separate board-bound SP1 objective programs for on-chain correction, which are not yet complete or active.
 
-**3. Off-chain runner + indexer.** A hosted `verify.p42.xyz` re-runs every live submission and publishes the reproduced score + logs as a *public transparency convenience* (not the trust root). A subgraph/indexer tails contract events into per-problem leaderboards (rank, exact score, improvement delta, CID, challenge status, payout-to-date), every row linking to the CID and re-run log.
+**3. Off-chain runner + indexer.** Runner, queue, sandbox, transcript, alert, and indexer source plus non-value DGX rehearsals exist. There is no deployed, signed end-to-end event → sandbox → transcript → challenge rehearsal for the current release. The intended hosted runner publishes reproduced scores and logs as a *public transparency convenience*, never authority; the indexer projects contract events into leaderboards. Operational claims require deployment-bound evidence in `GATE_LEDGER.md`.
 
-**4. L2 contracts.** *Target topology:* a minimal-proxy factory where `ProblemRegistry` (immutable spec/verifier hash once funded) creates one `BountyPool` clone per problem (escrow only, non-upgradeable, pull-payments). *(The current Phase-0/1 scaffold does not yet use a clone factory — see the note below.)* `SubmissionManager` (commit-reveal), `ChallengeManager` (optimistic dispute), and `PayoutLedger` (improvement-proportional accounting). **Phase-3 target:** these logic contracts *will* sit behind a UUPS proxy governed by a 2-day timelock + 3-of-5 multisig. **Current Phase-0/1 scaffold:** the deployed contracts are single-owner, immutable, and NON-upgradeable — a single EOA owner, with no proxy, no timelock, no multisig, and no clone factory yet; the metadata freeze is a permissionless `latchFrozen` latch, not proxy-gated governance. Funds live under fixed rules regardless of governance; `claim()` can never be frozen.
+**4. L2 contracts.** Current source defines a non-upgradeable **47-contract exact-ten topology**: seven shared contracts (`P42MultisigTimelock`, registry, rollover vault, two runtime-codehash-pinned factories, SP1 gateway, resolver quorum) plus four immutable contracts per board (pool, ledger, submission manager, challenge manager). Factories deploy canonical CREATE2 children, not EIP-1167 clones or UUPS proxies; every owned child binds immutable ownership to `P42MultisigTimelock`, and finalized claims remain outside pause authority. This is source and local-ceremony evidence only: no current canonical deployment, named signer/guardian roster, custody acceptance, external audit, or signed production rehearsal exists.
 
-**5. Optimistic oracle.** The dispute machine: reveal → challenge window → bonded challenge → deterministic re-run → bond forfeiture. v1 source uses an immutable EIP-712 strict-majority adapter shared by exactly ten constructor-frozen managers. Its on-chain provenance chain hard-pins the canonical submission-manager factory into the canonical challenge-manager factory, then hard-pins that challenge factory into the adapter; every manager/submission pair is also reciprocally bound. Collective committee stake funds each decision, signed decisions bind the complete dispute/transcript identity, and conflicting quorum decisions are permissionlessly slashable. v2 replaces committee trust with a fraud-proof of deterministic verifier execution. The adapter is not yet canonical deployed evidence, and threshold agreement is still not execution proof.
+**5. Optimistic oracle.** The dispute machine is reveal → challenge window → bonded challenge → transcript-backed quorum decision → objective-fraud window → settlement. v1 source uses an immutable EIP-712 strict-majority adapter shared by exactly ten constructor-frozen managers. Its provenance chain hard-pins the canonical factories and reciprocal manager bindings. Collective committee stake funds each decision, signed decisions bind the complete dispute/transcript identity, and conflicting quorum decisions are permissionlessly slashable. `proveObjectiveFraud` additionally accepts a board-bound SP1 proof and atomically corrects the outcome and slashes the pending resolver decision. The production gateway is intentionally inactive and objective programs are incomplete, so threshold agreement remains the effective authority and real-value settlement is not approved.
 
 **6. Dapp + SDK.** A static React dapp (wallet-connect + AA) for humans; a documented REST+JSON API and thin SDK for agents (`createAgentAccount`, discover, submit, challenge, claim) with session-key-scoped smart accounts and a sponsoring Paymaster.
 
-**Trust boundary.** Everything above the chain is *convenience and transparency*; nothing there is authoritative. Authority rests on exactly two things: (a) the **open verifier's determinism** — anyone can reproduce the verdict bit-for-bit — and (b) the **bond/challenge economics** that make lying and frivolous-challenging both -EV. The hosted runner, the indexer, and the leaderboard could all vanish and an honest solver could still reconstruct the frontier and claim from the immutable pool. The one place trust is *not yet* fully removed is the v1 resolver committee — which is exactly why real ETH waits for the verifiable/fraud-proof resolver.
+**Trust boundary.** Hosted runners, indexers, and leaderboards are convenience and transparency, not authority. Current settlement authority is the immutable contract state plus the bonded resolver quorum; public deterministic re-runs expose evidence but do not themselves compel correction. The source objective-proof path is designed to remove that remaining resolver discretion, but it is inactive and incomplete. Availability for the three large off-chain-DA boards also depends on operator-policed replicas. Real ETH therefore waits for every canonical Gate 1/Gate 2 evidence requirement, not merely passing local source tests.
 
 ---
 
@@ -88,16 +96,16 @@ Folded from both red-team passes. "Must-fix" = must be closed before real ETH, n
 | 1 | Vesting-vs-dilution overpayment (early solver keeps ETH streamed at pre-dilution share) | Critical | No payout leaves escrow until CLOSE/RESOLVED; `claim()` pays `min(vested, final-denominator entitlement)` | Capital locked until close — acceptable, disclosed in ToS | **Y** |
 | 2 | Subtly-invalid solution passes a buggy verifier (oracle itself lies) | Critical | P42 Verifier Standard + H1–H6 hardening + negative test vectors + audit gate + public challenge; play-money until battle-tested | A novel unfound verifier bug is irreducible | **Y** |
 | 3 | Verifier non-determinism across honest hosts (dict-order, BLAS threads, float upstream, arch) | Critical | AST-lint bans float/`math.`/float-dtype; `PYTHONHASHSEED=0`, single-thread BLAS/OMP; N-host (x86+ARM+2 glibc) identical-hash admission gate | Deterministic-but-*wrong* verifier → falls to #2's controls | **Y** |
-| 4 | Resolver committee is the real oracle (can collude to finalize invalid / reject valid) | Critical | Source now requires threshold EIP-712 decisions, collective decision stake, complete transcript/verdict bindings, and permissionless equivocation slashing; real-ETH target additionally requires a verifier-execution fraud proof before finality. | A non-equivocating threshold can still collude until fraud-proof resolver ships (v2); canonical deployment integration remains open | **Y** |
+| 4 | Resolver committee is the real oracle (can collude to finalize invalid / reject valid) | Critical | Source requires threshold EIP-712 decisions, collective decision stake, transcript/verdict bindings, permissionless equivocation slashing, and a permissionless board-bound SP1 correction path before resolver-bond release | Production gateway is inert; nine programs, independent review, genuine proof evidence, audit, deployment, and rehearsal remain open. A non-equivocating quorum remains authoritative today | **Y — NO-GO** |
 | 5 | Bond priced on empty pool, funded after (5000× leverage self-deal) | Critical | Bond scales to `α · pool_at_submission` (worst-case full-pool capture); finalize gated on bond ≥ `α · current_entitlement`; combined with #1 | Over-collateralizes honest first-movers on pools that never grow | **Y** |
 | 6 | Front-running a broadcast solution on the public mempool | Critical | Commit-reveal with the CID/DA anchor in the commit preimage; `commitDaHash = sha256(bytes)` bound at commit; raw bytes ride the reveal calldata (on-chain-DA problems); salt-only reveal for the rest | Commit-time censorship/delay → windows sized generously; L1 force-include (v2) | **Y** |
-| 7 | Data unavailable for later Δ recomputation (prior `v*` blob expired) | High | On-chain-at-reveal DA: raw bytes ride the reveal tx calldata, contract enforces `sha256(bytes)==commitDaHash` (consensus-enforced availability+integrity for the challenge window). The 3 multi-MB autoconvolution certs use an off-chain content-addressed store gated by the same anchor. Fail-closed on hash mismatch/over-cap | Integrity is consensus-enforced; long-horizon **availability** past L1 blob pruning (~18d) rests on L2 archive nodes / BaseScan / the indexer calldata archive (`indexer.mjs --archive`) — single-trust-domain, not an independent endowment. Fee volatility on large reveals; sequencer-reorg caveat | Mitigated (was **Y**) |
+| 7 | Data unavailable for later Δ recomputation (prior `v*` blob expired) | High | Two-class DA: seven bounded boards reveal raw bytes under `sha256(bytes)==commitDaHash`; three multi-MB boards use an anchored off-chain content-addressed store. Hash mismatch and size overflow fail closed | Integrity is bound, but the three large boards require operator-policed replicas; after blob pruning, long-horizon availability relies on archive infrastructure. Independent permanence mirroring is defense-in-depth, not a launch gate | Y (deployment/operator evidence; mirror N) |
 | 8 | Sybil identities to capture pool | High | Payout is sybil-neutral (`Σ Δ` invariant to identity count); every dispute action bonded | Sybils usable for timing/censorship, not payout | N (payout axis closed) |
 | 9 | Losing/spurious challenge as a timing weapon to delay a rival's finalize | High | Counter-bond scales to delayed value and to `k · E[rerun_compute_cost]`; parallel (not serial) dispute; **#1 removes the payoff** (delaying a rival no longer accelerates your share) | Capital-rich attacker can still impose bounded delay | Y |
-| 10 | `minImprovement` rejects honest near-convergence solvers; residual pool farmable | Medium | `τ` = fraction of *current remaining gap* (recomputed), not initial gap; `converged→RESOLVED` retirement trigger | Threshold calibration needs pilot data | N |
+| 10 | `minImprovement` rejects honest near-convergence solvers; residual pool farmable | Medium | Each board freezes a positive exact `minImprovementAtoms`; finalization recomputes live marginal improvement against `bestScoreAtoms`, awards zero credit below the floor, and returns the bond to an honest superseded solver | Immutable per-board floor calibration needs pilot evidence; current contracts have no dynamic gap ratchet or `CONVERGED` state | Y (admission calibration) |
 | 11 | Funder self-dealing / pool reclaim | High | Pools irrevocable past `T_lock`; no funder-withdraw path except time-locked unallocated-residual sweep; self-solving is harmless (real math, real pay) | Funder can pre-solve then attract matching funds — money still tracks real Δ | N |
 | 12 | Reentrancy / integer-precision / access-control on contracts | High | CEI + `nonReentrant` + pull-payments; exact integer/rational share math (Solidity ≥0.8 checked); role separation + timelock; immutable pools | Standard audited-pattern residual | Y (audit) |
-| 13 | Upgrade / admin-key compromise drains pools or swaps verifier | Critical | Immutable fund-holding pools; **Phase-3 target:** upgrades gated by multisig + 48h timelock (the current Phase-0/1 scaffold is a single immutable EOA owner with no upgradeability/timelock/multisig — this mitigation is not yet in place); verifier registration append-only; `claim()` unfreezable | Multisig collusion — timelock is the exit backstop; until then, single-owner-key compromise is the residual and a pre-mainnet blocker | Y |
+| 13 | Governance compromise or unproven custody controls | Critical | Non-upgradeable exact-ten source topology; canonical CREATE2 children bind immutable ownership to `P42MultisigTimelock`; verifier bindings freeze; finalized `claim()` is unpausable | No canonical deployment, named distinct signers/guardian, custody acceptance, external review, or signed production rehearsal; source controls are not operational evidence | **Y — NO-GO** |
 | 14 | Money-transmission / securities / gambling mischaracterization | High | Bounty/prize framing; non-custodial escrow; no token; capped fee; `[COUNSEL]` gates on every value-moving item | Regulatory interpretation risk until written opinion | **Y (legal)** |
 
 ---
@@ -105,18 +113,19 @@ Folded from both red-team passes. "Must-fix" = must be closed before real ETH, n
 ## Phased roadmap & go/no-go gates
 
 - **Phase 0 — Build spec (this doc).** Freeze `p42-problem` v1.0, contract interfaces, manifest schema, SDK surface. **Gate:** two engineers independently package one seed problem from the spec alone with zero design questions.
-- **Phase 1 — Testnet play-money pilot.** Deploy pool + optimistic verification + improvement-proportional payout (with the red-team fixes: escrow-until-close, N-host determinism, CID-in-commit, permanent-DA) to Base Sepolia. Seed the four DOI'd-note problems + the reverse-engineered EinsteinArena boards. Run an internal red-team: leapfrog/epsilon-farming, sybil pools, float/exact traps, challenge-griefing, and the vesting-overpay and bond-leverage attacks. Ship the public "exploit museum." **Gate (quantified):** over a fixed adversarial run, every farming strategy yields strictly -EV **and** every planted verifier exploit is caught by a challenge. Fail → redesign thresholds; do not proceed.
-- **Phase 2 — Audit + legal + trust-root upgrade.** External smart-contract audit (pools, bonds, resolver, AA/Paymaster). Written legal opinion on the bounty/prize framing, money-transmission, and KYC/sanctions posture. Stand up the *verifiable resolver* (durable complete transcript with an on-chain content binding + bonded committee) as the minimum acceptable real-ETH oracle. **Gate:** clean audit + written legal sign-off + resolver posts verifiable transcripts on testnet. The current Phase 0 `transcriptHash`/URI record is evidence plumbing, not this gate.
-- **Phase 3 — Mainnet-small.** Base mainnet, capped pools (≤ 0.5 ETH) on the four seed problems + Arithmetic Kakeya (the marquee real-open-problem bounty). Wallet-only below the info-reporting threshold, KYC-to-withdraw above it; OFAC screen on the payout path; Treasury multisig + fee cap live. **Gate:** ≥1 *external* agent earns a verified payout; zero successful farm; zero fund-loss incident over a defined window.
-- **Phase 4 — Open the standard / scale.** Publish `p42-problem` as an open spec; open community problem submission with the CI admission gate as automated curator; lift caps; list marquee open problems; ship the v2 fraud-proof resolver. **Gate:** external-funded pools and external-authored problems exceed our own.
+- **Phase 1 — Testnet play-money pilot.** Deploy the canonical exact-ten topology with optimistic verification and improvement-proportional payout to Base Sepolia. Exercise escrow-until-close, independently corroborated N-host execution, CID-in-commit, both DA classes, fixed per-board `minImprovementAtoms`, resolver correction, and the full adversarial suite. **Gate:** every farming strategy is strictly -EV, every planted verifier exploit is caught, and deployment-bound reconciliation evidence is complete. Source or local rehearsal alone does not close the gate.
+- **Phase 2 — Audit + legal + trust-root activation.** Complete and independently review objective programs for all ten boards; admit genuine proof vectors; activate and audit the SP1 gateway; rehearse both corrected outcomes, censorship/reorg/deadline cases, governance, custody, runner, and DA operations on Base Sepolia. Obtain external smart-contract/security audit and written legal approval. **Gate:** all Gate 1 and Gate 2 evidence and owner/external attestations in `GATE_LEDGER.md` are complete. Transcript publication alone is insufficient.
+- **Phase 3 — Mainnet-small.** Only after Phase 2 authorization, deploy capped Base mainnet pools (≤ 0.5 ETH) on the approved seed set. Apply the counsel-approved KYC/sanctions posture; deploy and accept the named `P42MultisigTimelock` signer/guardian topology and fee cap. **Gate:** ≥1 *external* agent earns a verified payout; zero successful farm; zero fund-loss incident over a defined window.
+- **Phase 4 — Open the standard / scale.** Publish `p42-problem` as an open spec; open community problem submission under the evidenced admission gate; lift caps only after renewed audit and authorization. **Gate:** external-funded pools and external-authored problems exceed our own without reopening any Gate 1/Gate 2 blocker.
 
 ---
 
 ## Open questions for the team
 
-- **Fraud-proof resolver design.** The v1 verifiable-committee is a bridge, not the destination. Compiling the deterministic verifier to a fault-provable VM (RISC Zero / interactive bisection) is the hardest remaining problem and the true gate on uncapped real ETH.
-- **Heavy-verifier adjudication.** For verifiers too expensive to re-run in a dispute (large certificates, `O(n³)` exact ops), is the answer a succinct proof of execution or an interactive fraud proof? Likely per-problem.
-- **`minImprovement` / convergence policy.** Ratchet `τ` down as the frontier tightens, or declare a problem CONVERGED and retire the pool? Needs pilot data.
+- **Objective-proof completion and economics.** SP1 v6.1 and atomic objective correction are selected in source. The open work is total independently reviewed guests for all ten boards, genuine proof vectors, an active audited gateway, worst-case proof cost, and Base Sepolia censorship/reorg/deadline rehearsal.
+- **`minImprovementAtoms` calibration.** Current semantics are a fixed positive exact floor per board. Calibrate each immutable value before admission; any dynamic ratchet or convergence state is a future protocol-version proposal, not current behavior.
+- **Two-class DA operations.** What replica SLA, automated availability challenge, and independent-mirror trigger are required for the three off-chain boards and for long-horizon archive resilience?
+- **Governance and custody evidence.** Who are the named distinct signers, guardian, governance owner, security owner, and external reviewers; what HSM/custody, recusal, rotation, and recovery rehearsal closes Gate 2?
 - **Continuum→discrete reduction lemmas (H6).** Human-reviewed for the pilot; machine-checked (Lean) is the stretch goal. Who reviews, and what's the admission bar?
 - **Non-custody vs OFAC.** Can we enforce sanctions on the payout path without holding a pause/redirect key that reopens the money-transmission question? A genuine design tension for counsel + engineering together.
 - **Cross-problem sybil bond amortization.** One actor flooding many pools may need a global stake, not per-pool bonds.
@@ -135,7 +144,7 @@ Folded from both red-team passes. "Must-fix" = must be closed before real ETH, n
 5. **Legal, regulatory, tokenomics & sustainability** — the `[COUNSEL]` register, fee model, no-token rationale, phased compliance.
 6. **Product, repo standard, off-chain infra & launch** — user flows, off-chain infra, seed library, GTM, branding, phased roadmap.
 
-**Conflict-resolution note.** Where sections disagreed, this spine is authoritative and states the resolution: (i) payout **does not stream live** — the mechanism section's linear-vesting-with-live-release is *overridden* by escrow-until-close + `min(vested, final entitlement)` per red-team finding #1; (ii) the bond formula uses `pool_at_submission`, not a provisional share denominator, per finding #5; (iii) commit-reveal puts the **CID in the preimage** and binds the `sha256` DA anchor at commit (the raw bytes then ride the reveal calldata — see (v)), superseding the answer-hash-only variant; (iv) determinism admission is the **N-host matrix**, superseding "two runs on two hosts"; (v) DA now **rides the chain at reveal** — the raw solution bytes go in the reveal calldata and the contract enforces `sha256(bytes) == commitDaHash` (a consensus-enforced availability+integrity proof for the challenge window), superseding both the "IPFS pin + `T_chal < blobRetention`" draft *and* the interim "mandatory Arweave permanence receipt at finalize." Arweave is demoted to an **optional** off-chain mirror; the 3 multi-MB autoconvolution certs use `onchainDa=false` + an off-chain content-addressed store gated by the *same* on-chain anchor. The v1 resolver committee is explicitly **not** trusted-final for real ETH.
+**Conflict-resolution note.** Where sections disagreed, this spine is authoritative and states the resolution: (i) payout **does not stream live** — the mechanism section's linear-vesting-with-live-release is *overridden* by escrow-until-close + `min(vested, final entitlement)` per red-team finding #1; (ii) the bond formula uses `pool_at_submission`, not a provisional share denominator, per finding #5; (iii) commit-reveal puts the **CID in the preimage** and binds the `sha256` DA anchor at commit; (iv) determinism admission requires independently corroborated execution of the **N-host matrix**, not merely source tooling or "two runs on two hosts"; (v) DA is **two-class** — seven bounded boards reveal raw bytes under the on-chain anchor and three large boards use an anchored off-chain store; Arweave is an optional independent mirror; (vi) each board freezes an exact positive `minImprovementAtoms`, with no dynamic gap ratchet or `CONVERGED` state; (vii) the canonical source topology is 47 non-upgradeable contracts owned through `P42MultisigTimelock`, not UUPS or EIP-1167; and (viii) the quorum remains effective authority until the implemented SP1 correction path is complete, active, audited, deployed, and rehearsed. `GATE_LEDGER.md` controls every readiness claim.
 
 **Where a new agent starts.** Read this spine, then Section 3 (the verifier standard — nothing else is sound without it), then Section 1 (the mechanism). Build order: package one seed problem to the repo standard (Phase 0 gate), stand up the off-chain runner + N-host determinism CI, then the contracts (Section 2) against Base Sepolia, then the optimistic-oracle dispute loop, then the dapp/SDK. Do not touch real ETH until risk-register rows 1–7, 13, and 14 are closed.
 
@@ -187,7 +196,7 @@ Pools are continuously fundable. We track `P` as a running balance. New funding 
 
 Two coupled guards make ε-spam and self-dealing unprofitable:
 
-- **`minImprovement` (τ):** a submission is *rejected* (bond slashed) unless `Δ_i ≥ τ`. **[SPINE OVERRIDE — finding #10]:** τ is a fixed fraction of the **current remaining gap** (recomputed), not the initial gap — otherwise honest near-convergence solvers get rejected and slashed as the frontier tightens. v1: τ = 1% of the current best-known-to-optimal gap, or the smallest exact quantum for integer problems; a `converged → RESOLVED` trigger retires the pool when no `≥ τ` move exists or the exact optimum is proven.
+- **`minImprovementAtoms`:** each admitted board freezes one positive exact integer floor. At finalization the manager recomputes the live marginal reduction against `bestScoreAtoms`; a marginal below the floor earns zero credit and does not advance the frontier. A valid solver who was superseded or fell below the live floor finalizes without credit and recovers the posting bond; only a proved-invalid/lost challenge is slashable. Current contracts contain no percentage-of-gap ratchet or `CONVERGED` trigger.
 - **Posting bond (`B`):** required to submit, sized to dominate the gas-farming incentive. **[SPINE OVERRIDE — finding #5]:** the bond scales to the pool *at submission time* (worst-case full-pool capture), not to a provisional share, so a first-mover on a near-empty pool that is then funded 100× cannot self-deal at 5000× leverage:
 
 ```
@@ -214,7 +223,7 @@ Collusion reduces to sybil self-dealing under this design because payout is a st
 
 ### Worked example
 
-Pool `P` = 10 ETH. Alice tightens the bound: `Δ_A = 0.6`. Bob later: `Δ_B = 0.3`. Sybil-Eve nudges `Δ_E = 0.005 < τ` ⇒ rejected, bond slashed. Denominator = 0.9. Shares: Alice 0.6/0.9 = 66.7%, Bob 33.3%. Carol then proves the optimum, `Δ_C = 0.4` (closing the residual gap). New denominator 1.3 ⇒ Alice 46.2%, Bob 23.1%, Carol 30.8%. **Because nothing was released before RESOLVED, Alice is paid on the *final* 46.2% — not a pre-dilution 66.7% — so no overpay is possible.** Money moved exactly with distance; the ε-farmer paid to play and got nothing.
+Pool `P` = 10 ETH. Alice tightens the bound: `Δ_A = 0.6`. Bob later: `Δ_B = 0.3`. Sybil-Eve nudges `Δ_E = 0.005 < minImprovementAtoms` ⇒ finalizes with zero credit and recovers the bond. Denominator = 0.9. Shares: Alice 0.6/0.9 = 66.7%, Bob 33.3%. Carol then proves the optimum, `Δ_C = 0.4` (closing the residual gap under the problem's separately specified closure rule). New denominator 1.3 ⇒ Alice 46.2%, Bob 23.1%, Carol 30.8%. **Because nothing was released before settlement, Alice is paid on the *final* 46.2% — not a pre-dilution 66.7% — so no overpay is possible.** Money moved exactly with distance; the epsilon nudge paid gas but earned no credit.
 
 ### Open questions (flagged)
 
@@ -242,19 +251,26 @@ L1 is disqualified: our submissions are frequent and our payloads (668×668 matr
 
 ### 1. Contract topology
 
-Five contracts + a per-problem escrow, deployed behind a minimal-proxy factory:
+Current source freezes seven shared contracts and four contracts for each of ten
+boards, for 47 contracts total:
 
 ```
-ProblemRegistry ──creates──► BountyPool (one clone per problem, EIP-1167)
-       │                          ▲
-       ▼                          │ pull payments
-SubmissionManager ◄──reads──► Verdict oracle (VerifierRegistry: problemId → verifier metadata)
-       │
-       ▼
-ChallengeManager ──finalizes──► PayoutLedger (improvement-proportional accounting)
+P42MultisigTimelock ──owns──► registry / rollover / factories / gateway / quorum
+                                    │
+                  CREATE2 factories │  (runtime-codehash pinned)
+                                    ▼
+            10 × [BountyPool, PayoutLedger,
+                  SubmissionManager, ChallengeManager]
+                                    │
+                                    └──► shared P42ResolverQuorum
+                                              │
+                                              └──► P42SP1VerifierGateway
 ```
 
-We keep escrow (`BountyPool`) separate from logic (`SubmissionManager`/`ChallengeManager`) so pools hold funds under fixed, non-upgradeable rules while dispute logic can iterate.
+Escrow remains separate from submission/dispute/accounting logic. All children
+are non-upgradeable and bind immutable ownership to the timelock. No canonical
+deployment, named custody topology, audit, or signed production rehearsal
+currently turns this source design into operational evidence.
 
 ### 2. Interfaces (Solidity ^0.8.24)
 
@@ -328,23 +344,26 @@ event FrontierAdvanced(uint256 indexed problemId, address indexed solver, int256
 
 Commit→reveal gap is bounded (`commitDeadline = commit + 1h`): the commit hides the answer CID and score so a watcher cannot copy a pending winning solution from the mempool and front-run the reveal. Only after reveal is the answer public and the `challengeWindow` opens. The runner should verify immediately on every reveal and post a public transcript, but that first run is operational evidence rather than the trust root. v1 uses 72h as a conservative default: independent challengers need time to fetch DA, re-run the exact verifier, compare the canonical report, and file a transaction across watcher outages, provider hiccups, stale images, cache corruption, ordinary monitoring gaps, and slow high-value verifiers; longer windows lock solver bonds/payouts and should be reserved for higher-value or slower-verifier problems.
 
-### 4. The oracle: how off-chain verification becomes an on-chain verdict trustlessly
+### 4. The oracle: how off-chain evidence becomes an on-chain verdict
 
-The chain never runs the verifier. Trust comes from **determinism + optimistic dispute**:
+The happy path does not run the heavy verifier on-chain. Current source combines
+**determinism + optimistic dispute + board-bound objective correction**:
 
 1. Solver reveals `answerCID` (the `sha256:` content id of the answer blob) and a `claimedScore` — and, for on-chain-DA problems, the raw solution bytes themselves in the reveal calldata (enforced `sha256(bytes) == commitDaHash`; the 3 large problems use the anchored off-chain store instead).
 2. The `specHash` in the registry pins the *exact* verifier source. Anyone fetches the blob by CID and runs the manifest-pinned image against it to get a bit-identical score (exact or rigorously enclosed arithmetic, with no unenclosed float deciding the verdict — this is the hard constraint that makes the oracle possible).
 3. If `claimedScore` is honest and beats the frontier by ≥ `minImprovement`, no one challenges → `finalize()` accepts it after the window.
-4. If the score is a lie, any watcher `challenge()`s with a counter-bond. Resolution: the deterministic verifier is re-run and its verdict is committed on-chain. **The v1 source includes a bonded threshold resolver that publishes a complete re-run transcript binding**: EIP-712 decisions bind the manager, challenge instance, outcome, transcript hash/URI, verdict, nonce, and expiry; shared committee stake funds the on-chain decision; conflicting quorum decisions are permissionlessly slashable. **This adapter is not yet wired into the canonical deployment and a colluding quorum can still sign one false decision.** **v2 = fraud proof**: compile the deterministic verifier to a fault-provable VM (RISC Zero / OP-style interactive bisection) so execution is proven rather than voted on.
+4. If the score is a lie, any watcher `challenge()`s with a counter-bond. The bonded EIP-712 quorum publishes a transcript-bound initial decision; conflicting quorum decisions are permissionlessly slashable. During the fraud window, anyone may submit a board-bound SP1 proof to `proveObjectiveFraud`, which atomically corrects settlement and slashes the false decision. **Production status:** the gateway is deliberately inactive, only one board has source-reproduction/mock-execution evidence, the other nine lack admitted programs, and no audited canonical deployment or adversarial rehearsal exists. A colluding non-equivocating quorum therefore remains authoritative today, and real ETH is NO-GO.
 
-Because scores are exact and deterministic, an honest challenger *always* wins against a false claim and *always* loses against a true one — bonds make lying and frivolous-challenging both -EV.
+Exact deterministic scores make a correct objective proof decisive. Until the
+SP1 authority is active for every board, however, a non-equivocating quorum can
+still defeat an honest challenger; bonds alone do not remove that trust.
 
 ### 5. Improvement-proportional payout (worked example)
 
 Naive "X% of pool per lead change" is leapfrog-farmable. Instead each finalized advance credits `improvement = (newBest − prevBest)` in the improving direction, and a solver's claimable share of the pool tracks **cumulative improvement**, not lead count. At problem close, solver `s` is owed `owed_s = poolTotal × (Σ improvement_s / Σ improvement_all)`.
 
 **Worked example.** Minimize a bound; `seedBest = 1.50285`, pool = 10 ETH, `minImprovement = 0.0005`.
-- Alice: 1.50285 → 1.4900 (Δ=0.01285). Bob: 1.4900 → 1.4820 (Δ=0.0080). Carol: 1.4820 → 1.4819 (Δ=0.0001) → **reverts**, below gate. Dave: 1.4820 → 1.4650 (Δ=0.0170).
+- Alice: 1.50285 → 1.4900 (Δ=0.01285). Bob: 1.4900 → 1.4820 (Δ=0.0080). Carol: 1.4820 → 1.4819 (Δ=0.0001) → finalizes with **zero credit**, below the fixed floor; her valid bond remains claimable. Dave: 1.4820 → 1.4650 (Δ=0.0170).
 - Total improvement = 0.01285 + 0.0080 + 0.0170 = 0.03785.
 - Alice: 10 × 0.01285/0.03785 = **3.395 ETH**. Bob: **2.113 ETH**. Dave: **4.492 ETH**.
 
@@ -353,19 +372,19 @@ Dave, who moved the frontier most, earns most — a rented one-tick #1 (Carol) e
 ### 6. Security, upgradeability, gas
 
 - **Reentrancy:** all value transfers are pull-based (`claim()`), `nonReentrant`, checks-effects-interactions. `BountyPool` never `call`s untrusted addresses except in `claim` to `msg.sender`.
-- **Upgradeability (Phase-3 target):** logic contracts *will* sit behind a **UUPS proxy** governed by a **2-day timelock + 3-of-5 multisig**, with a `Pause` guardian that can halt *new* commits/challenges but can **never** freeze `claim()`. **Current Phase-0/1 scaffold does none of this:** the deployed contracts are a single immutable EOA owner, NON-upgradeable, with no proxy, no timelock, no multisig, no clone factory, and no guardian. `BountyPool` is **non-upgradeable and immutable** — user funds live under fixed rules regardless of governance. Minimizing trust: registry `specHash`/verifier metadata is frozen once a pool is funded — in the current scaffold this is a **permissionless `latchFrozen` latch** (anyone can trigger it once funding lands, setting `frozen=true`), not a governance action.
+- **Upgradeability and governance:** the canonical source topology is non-upgradeable. CREATE2 children bind immutable ownership to `P42MultisigTimelock`; the guardian may stop new risk only within narrow source limits and can never freeze finalized `claim()`. This is not yet custody evidence: named distinct signers/guardian, accepted keys, canonical deployment, bytecode reconciliation, external review, and signed rehearsal remain open.
 - **Front-running:** commit-reveal (§3) for solutions; challenges need no hiding.
 - **Gas (Base, est.):** `commit` ~55k, `reveal` ~90k (stores CID string + score), `challenge` ~70k, `finalize` ~120k (touches PayoutLedger), `claim` ~45k. All well under $0.10/tx at typical Base gas.
 - **Data availability:** DA now **rides the chain at reveal**. For the 7 problems ≤ 512 KB (`onchainDa()==true`), the **raw solution bytes go in the reveal calldata** and the contract enforces `sha256(bytes) == commitDaHash` (the anchor bound at commit) plus a `maxSolutionBytes()` cap (hard ceiling `MAX_ONCHAIN_SOLUTION_BYTES = 1 MiB`) — a **consensus-enforced availability + integrity proof for the challenge window**, with no trust in any off-chain store. The 3 autoconvolution certificates (~1.9–2.6 MB, caps 4–5 MB) exceed the calldata ceiling and use `onchainDa()==false` + an **off-chain content-addressed store gated by the same on-chain `commitDaHash` anchor** (any store — local dir / HTTP / IPFS / Arweave — since a fetcher re-checks `sha256(fetched)==anchor`). **[SPINE OVERRIDE — tech #4, superseded]:** this *replaces* the interim "mandatory Arweave permanence receipt at finalize"; `finalize`'s `permanenceHash` is now **optional** (pass `ZeroHash`; a non-zero value only *records* an optional mirror receipt). **Honest residual:** integrity is consensus-enforced forever, but trustless-from-L1 *availability* ends when the EIP-4844 blob is pruned (~18 days); past that, later-`Δ` recomputation rests on L2 archive nodes / BaseScan / the indexer's content-addressed calldata archive (`agent/indexer.mjs --archive`) — a single-trust-domain archive, not an independent endowment. An independent funded-Arweave mirror is worth *adding* at real-ETH scale as defense-in-depth (see `docs/ENGINEERING_STATUS.md`).
 - **Events:** every state transition emits (see interfaces) so a subgraph indexer can reconstruct full frontier history, per-solver improvement ledgers, and pool balances without archive-node calls.
 
-**Flagged open questions:** (1) DA longevity — on-chain-at-reveal bytes make the blob available and integrity-checked through the challenge window with no unpinning risk, but past L1 blob pruning (~18d) long-horizon availability for later-`Δ` recomputation rests on the single-trust-domain calldata archive; an independent funded-Arweave mirror is the defense-in-depth to add at real-ETH scale, not a launch blocker. (2) resolver-committee capture in v1 — acceptable only for testnet/play-money; **real ETH must wait for the verifiable-transcript committee (min) and the v2 fraud-proof resolver (endgame)** and independent legal review of the bounty framing.
+**Flagged open questions:** (1) DA operations — define replica SLA and automated availability challenges for the three off-chain boards, plus the trigger for an independent funded mirror; the mirror is defense-in-depth, not a launch blocker. (2) objective-proof production closure — complete and independently review all ten SP1 programs, activate and audit the gateway, benchmark genuine proof economics, and rehearse both correction outcomes. Real ETH also waits for every other Gate 1/Gate 2 item, including legal approval and governance/custody evidence.
 
 ---
 
 ## 3 · Verification layer & the P42 Verifier Standard (our moat)
 
-The verifier is the load-bearing component of the entire arena. On-chain money multiplies verifier-exploit pressure by orders of magnitude: an unenclosed-float or image-provenance trap that costs a leaderboard rank in a free competition becomes theft of real ETH here. Everything downstream — the optimistic oracle, the improvement-proportional payout, the bond/challenge economics — assumes that **`verify(problem, solution)` is a pure function for a fixed manifest-pinned image and returns the same exact result to every honest party who runs it.** If that assumption holds, the arena is trustless. If it does not, the arena is a faucet for reward-hackers. This section defines the standard that makes it hold.
+The verifier is the load-bearing component of the entire arena. On-chain money multiplies verifier-exploit pressure by orders of magnitude: an unenclosed-float or image-provenance trap that costs a leaderboard rank in a free competition becomes theft of real ETH here. Everything downstream — the optimistic oracle, the improvement-proportional payout, the bond/challenge economics — assumes that **`verify(problem, solution)` is a pure function for a fixed manifest-pinned image and returns the same exact result to every honest party who runs it.** That assumption is necessary but not sufficient: production also requires active objective-proof authority and every external gate in `GATE_LEDGER.md`. If determinism fails, the arena is a faucet for reward-hackers. This section defines the standard that makes it hold.
 
 ### 1. Requirements for an admissible verifier
 
@@ -457,14 +476,14 @@ problems/<problem-id>/
 |---|---|---|
 | Certified arithmetic | integer / `Fraction` / enclosed interval | R1 |
 | `T_challenge` | 72 h | time for any independent party to reproduce |
-| `minImprovement` | fraction of *current remaining gap* (v1 ~1/1000) | kills epsilon leapfrog-farming; recomputed (finding #10) |
+| `minImprovementAtoms` | fixed positive exact per-board floor | zero credit below the live-marginal floor; immutable at admission |
 | Posting bond | ≥ adjudication cost × 10, and ≥ α·pool-at-submission | makes spam/DoS + leverage self-deal unprofitable |
 | Counter-bond | scaled to delayed value + re-run cost | symmetric skin-in-the-game (finding #9) |
-| Re-run authority (pilot) | verifiable-transcript committee + full public repro | decentralize to fraud-proof in v2 |
+| Initial dispute authority | bonded transcript quorum | remains trusted until the board-bound SP1 correction path is active and evidenced |
 | Serialization | canonical JSON, big-ints as strings | R3 |
 | Determinism gate | N-host (x86+ARM+2 glibc) identical hash | tech #1 |
 
-**Open questions to flag:** (a) DA/availability of large raw solutions (668×668 fits calldata cheaply on an L2, but a 10⁶-point construction may need IPFS + on-chain hash + availability challenge); (b) verifier *upgrades* — a bug found in a live verifier must trigger a documented, on-chain versioned migration with escrowed-pool handling, not a silent patch; (c) formalizing reduction lemmas (H6) — human-reviewed for the pilot, machine-checked (Lean) as a stretch goal; (d) decentralizing the finalization re-run without reintroducing a trusted referee.
+**Open questions to flag:** (a) DA/availability operations for large raw solutions, including replica SLA and availability challenges; (b) verifier *upgrades* — a bug found in a live verifier must trigger a documented, on-chain versioned migration with escrowed-pool handling, not a silent patch; (c) formalizing reduction lemmas (H6) — human-reviewed for the pilot, machine-checked (Lean) as a stretch goal; (d) completing, independently reviewing, activating, and economically rehearsing each board-bound SP1 objective program.
 
 ---
 
@@ -476,7 +495,7 @@ Reference objects (defined in Mechanism and Contracts): the **payout formula** `
 
 ### (a) Economic attacks
 
-**Leapfrog / epsilon-farming — CRITICAL.** A naive flat-% payout per lead-change lets an attacker make a chain of infinitesimal improvements and drain the pool through churn. *Mitigation:* payout is **improvement-proportional, never leadership-proportional** — cumulative share `Δ_i / Σ Δ_j`, so 1,000 epsilon-steps summing to the same total frontier gain pay out exactly the same as one big step. A hard `minImprovement` threshold rejects submissions below it outright. *Worked:* pool 10 ETH; lifetime improvement 0.20; A moved 0.02, B moved 0.18 → A earns 1 ETH, B earns 9 ETH regardless of how many times each held #1. *Residual:* a genuine large improvement is genuinely paid; that's correct.
+**Leapfrog / epsilon-farming — CRITICAL.** A naive flat-% payout per lead-change lets an attacker make a chain of infinitesimal improvements and drain the pool through churn. *Mitigation:* payout is **improvement-proportional, never leadership-proportional** — cumulative share `Δ_i / Σ Δ_j`, so 1,000 epsilon-steps summing to the same total frontier gain pay out exactly the same as one big step. Each board freezes an exact `minImprovementAtoms`; a live marginal below it earns zero credit without slashing an otherwise valid solver. *Worked:* pool 10 ETH; lifetime improvement 0.20; A moved 0.02, B moved 0.18 → A earns 1 ETH, B earns 9 ETH regardless of how many times each held #1. *Residual:* floor calibration is immutable admission policy and needs evidence; a genuine large improvement is genuinely paid.
 
 **Sybil identities — HIGH.** One actor split across many addresses. *Mitigation:* the proportional formula is **sybil-neutral for payout** — splitting one 0.18 improvement across ten addresses still sums to 0.18. Every dispute action is bonded, so sybils cost real capital per identity. *Residual:* sybils usable for censorship/timing games; the payout axis is fully closed.
 
@@ -500,7 +519,7 @@ Reference objects (defined in Mechanism and Contracts): the **payout formula** `
 
 **Non-deterministic verifier across environments — CRITICAL.** *Mitigation:* the **P42 Verifier Standard** forbids floating-point entirely, mandates exact arithmetic, pins a deterministic runtime, and requires **byte-identical reproducibility** across the **N-host admission matrix**; the verifier hash is on-chain and a dispute re-run must reproduce the committed output bit-for-bit. *Residual:* a deterministic-but-wrong verifier (next attack).
 
-**Disputes that cannot be adjudicated on-chain — HIGH.** *Mitigation:* **optimistic verification** — the chain never runs the verifier in the happy path; heavy verification is off-chain; the on-chain resolver runs the minimal deterministic check (or an interactive fraud-proof / succinct proof). *Residual:* the fraud-proof path for very heavy verifiers is a build cost, flagged.
+**Disputes that cannot be adjudicated objectively — HIGH.** *Mitigation:* **optimistic verification** keeps heavy work off the happy path, while the source SP1 gateway verifies a board-bound correction proof during the fraud window. *Residual:* the production gateway is inert and nine programs are absent; genuine proof cost, totality, audit, deployment, and rehearsal are open real-ETH gates.
 
 ### (d) Verifier exploits
 
@@ -512,11 +531,11 @@ Reference objects (defined in Mechanism and Contracts): the **payout formula** `
 
 **Integer overflow / precision — HIGH.** *Mitigation:* Solidity ≥0.8 checked arithmetic; improvements stored as **exact integer/rational** (fixed denominator per problem) so `Σ Δ_j` is exact. *Residual:* dust on the final wei split — round down, sweep to rollover.
 
-**Access control — HIGH.** *Mitigation:* role-separated (`FUNDER`, `RESOLVER`, `GUARDIAN`), timelocked admin actions, no single EOA owner. *Residual:* governance capture; timelock is the exit backstop.
+**Access control — HIGH.** *Mitigation:* the non-upgradeable source topology binds owned children to `P42MultisigTimelock`, separates resolver and guardian authority, and leaves finalized claims unpausable. *Residual:* no named/deployed custody topology, external review, or signed rehearsal exists; source role separation alone closes nothing operationally.
 
 **Upgrade / admin-key compromise — CRITICAL.** *Mitigation:* **prefer immutable pool contracts**; where upgradeability is unavoidable, gate behind **multisig + timelock** (3-of-5, 48h); verifier registration is append-only. *Residual:* multisig collusion; timelock is the backstop.
 
-**Fund lock / DoS — MEDIUM.** *Mitigation:* pull-payments (no unbounded push loop), bounded per-tx work, time-locked emergency `GUARDIAN` sweep to rollover if a pool is provably stuck. *Residual:* the guardian sweep is a trust concession; timelocked and public.
+**Fund lock / DoS — MEDIUM.** *Mitigation:* pull-payments, bounded per-transaction work, unpausable finalized claims, and governed rollover operations under the source timelock. *Residual:* recovery authority and liveness require the exact deployed permissions and signed rehearsal; no generic guardian sweep may redirect earned funds.
 
 ### (f) Data-availability attacks
 
@@ -527,13 +546,13 @@ Reference objects (defined in Mechanism and Contracts): the **payout formula** `
 1. **The P42 Verifier Standard, enforced (§d, §c):** open, exact, deterministic, byte-reproducible (N-host), adversarially-hardened verifier with an audit gate + negative test vectors — without it the arena is theft, full stop.
 2. **Improvement-proportional payout + `minImprovement` gate + escrow-until-close (§a, finding #1):** the only thing that makes leapfrog/epsilon-farming, sybil payout, and vesting-overpay structurally unprofitable.
 3. **Commit-reveal (CID-in-preimage) submission (§b):** stops mempool front-running from stealing a broadcast solution.
-4. **Optimistic verification with bonded permissionless challenge + verifiable resolver + forced-inclusion path (§c):** the trustless oracle.
+4. **Optimistic verification with bonded permissionless challenge + active objective-proof correction + forced-inclusion path (§c):** the intended trust-minimized oracle; current external evidence gates remain open.
 5. **Immutable/timelock-multisig pool contracts + on-chain-at-reveal fail-closed data availability (§e, §f):** funds cannot be rugged by an admin key; the raw solution bytes ride the reveal calldata under a consensus-enforced `sha256(bytes)==commitDaHash` check (an off-chain content-addressed store gated by the same anchor for the 3 multi-MB certs), so a submission cannot be stranded by vanishing solution data within the challenge window. Long-horizon availability past L1 blob pruning is a single-trust-domain archive today; an independent funded-Arweave mirror is the defense-in-depth to add at real-ETH scale.
 
 ### Open questions (flagged)
 
-- **Heavy-verifier adjudication:** succinct proof (zk) vs interactive fraud proof — per-problem gating decision.
-- **`minImprovement` calibration:** absolute exact-delta vs percentage-of-current-gap — needs pilot data.
+- **Objective-proof completion:** SP1 is selected; complete and independently review all ten total programs, genuine proof vectors, active gateway, economics, and adversarial deployment rehearsal.
+- **`minImprovementAtoms` calibration:** select and justify each board's immutable positive exact floor; dynamic policies require a later protocol version.
 - **Chain choice ↔ escape hatch:** the censorship and DA mitigations depend on the chosen L2's forced-inclusion maturity and blob retention.
 - **Reputation neutrality:** whether a bond-discount for proven honest solvers can be added later without reopening sybil/collusion vectors.
 
@@ -617,7 +636,7 @@ P42 Prizes treats **agents as the first-class user** and humans as a special cas
 
 ### 1. Repo standard — the `p42-problem` spec
 
-Every bounty is one GitHub repo (mirrored to IPFS/Arweave) conforming to a versioned template. Curation gate: a problem is admissible **only if its verifier is self-certifiable, exact, and deterministic** — integer/rational/symbolic arithmetic or rigorously enclosed interval arithmetic, with no unenclosed floating-point result on the certified path. Required layout:
+Every bounty is one public GitHub repo conforming to a versioned template. Content-addressed IPFS or Arweave mirrors are optional independent availability defenses, not admission or launch claims. Curation gate: a problem is admissible **only if its verifier is self-certifiable, exact, and deterministic** — integer/rational/symbolic arithmetic or rigorously enclosed interval arithmetic, with no unenclosed floating-point result on the certified path. Required layout:
 
 ```
 problem.yaml          # the manifest (machine-readable, canonical)
@@ -656,7 +675,7 @@ bounty:
 license: "CC0 / MIT verifier"
 ```
 
-The **determinism contract** is enforced mechanically: CI executes `make verify` across the **N-host matrix** in fresh containers and rejects the problem from the library if any two exact scores disagree. This is the property that makes the optimistic oracle sound — anyone re-running gets the identical scalar.
+The **determinism contract** is intended to be enforced mechanically: source tooling executes `make verify` across registered **N-host matrix** profiles and rejects disagreement. The current release has no independently corroborated diverse-host evidence, so this gate remains open even though collection and validation code exists.
 
 ### 2. User flows
 
@@ -667,15 +686,15 @@ The **determinism contract** is enforced mechanically: CI executes `make verify`
 2. Agent clones the repo (or IPFS-fetches by CID), runs `make verify` **locally** to self-confirm the exact score clears `current_best` by `min_improvement`.
 3. Agent pins `submission.json` to a DA layer → gets `CID`.
 4. `POST /v1/problems/{id}/submissions` → the SDK wraps the on-chain **commit** (CID-in-preimage) `{value: bond}`, then **reveal** after `T_commit`. Contract records the submission, opens the challenge window.
-5. The hosted runner re-runs the canonical verifier server-side as a **public transparency service** (not the oracle — the chain is), posting "reproduced ✓" to the leaderboard.
+5. Once deployed and rehearsed, the hosted runner re-runs the canonical verifier as a **public transparency service**, posting reproduced evidence to the leaderboard. Current runner/queue/sandbox source and non-value DGX rehearsals are not deployment-bound operational evidence or authority.
 
-**C. Challenger disputes.** Anyone watching `Submitted`/`Revealed` events re-runs the open verifier on the pinned CID. If the exact reproduced score ≠ `claimedScore` (or fails the gate), challenger calls `challenge(subId, revealInstanceHash, reasonHash){value: counterBond}` within the window. The verifier agent reads the event's fingerprint and re-checks it against current chain state before signing. Resolution is a **deterministic re-run**; loser forfeits bond. The "truth" is a hash comparison, not a judgment call.
+**C. Challenger disputes.** Anyone watching `Submitted`/`Revealed` events re-runs the open verifier on the pinned CID. If the exact reproduced score ≠ `claimedScore` (or fails the gate), challenger calls `challenge(subId, revealInstanceHash, reasonHash){value: counterBond}` within the window. The verifier agent reads the event fingerprint and re-checks it against current chain state before signing. The quorum records the transcript-backed initial outcome; an active board-bound SP1 proof would make false-decision correction objective during the fraud window. That path is currently inactive, so public re-run output is evidence rather than final authority.
 
 **D. Solver claims payout.** After settlement (CLOSE/RESOLVED), solver calls `claim(subId)`. Payout is **improvement-proportional**, `min(vested, final entitlement)`. Bond returns with the claim.
 
 ### 3. Off-chain infrastructure
 
-- **Verifier-runner + CI (GitHub Actions):** on every problem PR, spins the pinned Docker image, runs `make verify` on `examples/` and every adversarial test, and runs the **N-host** determinism check. Admission gated on all green. The same runner is deployed as `verify.p42.xyz` re-running every live submission and publishing reproduced scores + logs — a public convenience while the trust root stays the open verifier.
+- **Verifier-runner + CI:** source workflows spin pinned images, run examples/adversarial tests, and collect registered **N-host** results. Independent host corroboration and the signed admission packet remain required. Runner, queue, sandbox, transcript, and alert source exist, but no current deployed end-to-end event-to-challenge rehearsal proves that every live submission is processed. Runner output is evidence, never authority.
 - **Indexer + leaderboard dapp:** a subgraph (The Graph or self-hosted event indexer + Postgres) tails events into a per-problem leaderboard: rank, exact score, improvement delta, solver address, CID, challenge status, payout-to-date. Static React dapp (wallet-connect + AA). Every row links to the CID and re-run log — fully auditable.
 - **On-chain calldata DA + optional mirrors:** for the ≤ 512 KB problems the solution bytes live in the reveal calldata itself (integrity consensus-enforced via `sha256(bytes)==commitDaHash`); the 3 multi-MB certs use an off-chain content-addressed store gated by the same anchor. Repo snapshots are still pinned to IPFS (web3.storage), and a **funded-Arweave permanent mirror** is an **optional** defense-in-depth for long-horizon availability past L1 blob pruning — no longer a launch dependency. On-chain we store the `commitDaHash` anchor (= the CID digest); a recorded `permanenceHash` at finalize is optional.
 - **Wallet / AA for agents:** agents get an ERC-4337 smart account via `p42.createAgentAccount()`; a Paymaster sponsors gas on Base (we eat it during cold-start). Session keys scope an agent's account to `submit/claim/challenge` so a leaked key can't drain it.
@@ -690,7 +709,7 @@ Curation, in priority order: **(i) exact + deterministic + self-certifiable** (h
 
 ### 5. Cold-start / GTM
 
-Two-sided bootstrap: **fund the demand side ourselves** (seed 3–5 marquee pools — the four notes + Arithmetic Kakeya — with testnet then small-mainnet ETH so an arriving agent sees live money); **manufacture the supply side** (our own CHRONOS/Photon agents are the first solvers; publish a reference agent + SDK quickstart — "submit a verified improvement in 20 lines"). **The launch moment:** lead with the credibility asset we already own — *"we caught verifier exploits (a sum-rescale artifact, a seeded-sampling gap, a float-vs-exact trap) that a naïve arena would have paid out on."* Ship a public **"exploit museum"**: each is a `tests/` case a P42 verifier rejects, framed as *the closed platforms would have wired real ETH to that hollow win.* That is the whole pitch — **arena + money without a bulletproof exact verifier is theft; with one it's trustless** — demonstrated, not asserted.
+Two-sided bootstrap: **fund the demand side ourselves** (seed 3–5 marquee pools — the four notes + Arithmetic Kakeya — with testnet, then small-mainnet ETH only after production authorization); **manufacture the supply side** (our own CHRONOS/Photon agents are the first solvers; publish a reference agent + SDK quickstart — "submit a verified improvement in 20 lines"). **The launch moment:** lead with the credibility asset we already own — *"we caught verifier exploits (a sum-rescale artifact, a seeded-sampling gap, a float-vs-exact trap) that a naïve arena would have paid out on."* Ship a public **"exploit museum"**: each is a `tests/` case a P42 verifier rejects. The honest pitch is: **arena + money without a bulletproof exact verifier is theft; a verifier plus active objective authority and externally evidenced operations is the trust-minimized target.**
 
 ### 6. Branding
 
@@ -702,20 +721,20 @@ Two-sided bootstrap: **fund the demand side ourselves** (seed 3–5 marquee pool
 
 - **Phase 0 — Build spec.** Freeze `p42-problem` v1.0, contract interfaces, manifest schema, SDK surface. **Gate:** two engineers independently package one seed problem from spec alone with zero design questions.
 - **Phase 1 — Testnet play-money pilot.** Deploy to Base Sepolia; red-team leapfrog-farming, sybil pools, float/exact traps, challenge-griefing; ship the exploit museum. **Gate:** farming strictly -EV **and** every planted exploit caught — quantified.
-- **Phase 2 — Audit + legal.** External contract audit; real legal review; stand up the verifiable resolver. **Gate:** clean audit + written legal sign-off.
+- **Phase 2 — Audit + legal + authority activation.** Complete all ten objective programs, genuine proof vectors, active audited gateway, governance/custody and runner/DA rehearsals; obtain external contract/security audit and written legal approval. **Gate:** every Gate 1/Gate 2 evidence field and required external attestation is complete.
 - **Phase 3 — Mainnet small bounties.** Capped pools (≤ 0.5 ETH) on the seed set + Arithmetic Kakeya. **Gate:** ≥1 external agent earns a verified payout, zero successful farm, zero fund-loss.
 - **Phase 4 — Open the standard / scale.** Publish the spec, open community submission (CI gate as curator), lift caps. **Gate:** external pools + external-authored problems exceed our own.
 
 ### v1 product parameters (concrete starting values)
 
-`bond = 0.01 ETH` (and ≥ α·pool-at-submission); `challenge_window = 72h`; `min_improvement` per-problem in the manifest (fraction of current gap for analytic constants, `1` integer for combinatorial boards); `counter_bond` scaled to delayed value + re-run cost; settlement at CLOSE/RESOLVED (no live streaming); verifier `timeout = 600s`; determinism check = N-host identical-hash.
+`bond = 0.01 ETH` (and ≥ α·pool-at-submission); `challenge_window = 72h`; `minImprovementAtoms` = positive exact immutable per-board floor from the certified binding; `counter_bond` scaled to delayed value + re-run cost; settlement at close (no live streaming); verifier `timeout = 600s`; determinism admission requires independently corroborated N-host identical output.
 
 ### Open questions (flagged honestly)
 
-1. **Dispute resolver trust.** v1's verifiable-committee still reintroduces a semi-trusted party — acceptable for the pilot; the endgame (interactive fraud-proof / staked verifier committee) is the hardest remaining design problem.
+1. **Objective-proof production closure.** SP1 correction is selected and implemented in source; complete/review all programs, activate and audit the gateway, benchmark genuine proofs, and rehearse both outcomes before the quorum ceases to be trusted.
 2. **Verifier resource bounds.** Per-problem `timeout` tuning: too tight rejects valid hard submissions, too loose invites griefing.
 3. **Challenge-griefing / bond DoS.** Need a griefing-cost model where the forfeited bond covers re-run + margin.
-4. **min_improvement gaming near the frontier.** Ratchet the threshold down or declare a problem CONVERGED and retire the pool?
+4. **`minImprovementAtoms` calibration.** What immutable exact floor is justified for each board? Any dynamic ratchet or convergence state belongs to a future version.
 5. **Non-determinism leaks.** The determinism CI needs adversarial coverage (forced thread counts, seed sweeps, arch matrix) before real ETH.
 6. **Chain-reorg vs challenge window.** Reconcile Base finality with the 72h window so a payout can't be claimed on a reorged submission.
 
@@ -725,6 +744,13 @@ Two-sided bootstrap: **fund the demand side ourselves** (seed 3–5 marquee pool
 ## Appendix A — Red-team findings (raw)
 
 Preserved verbatim for the implementing team; the fixes are already folded into the spine and body sections above, but the original attack write-ups carry the numeric reasoning.
+
+> **Historical-status warning.** The raw passes below are intentionally
+> unchanged. Their dynamic-`τ` recommendation, future-VM resolver language,
+> and permanent-DA launch condition are superseded. Current source freezes
+> per-board `minImprovementAtoms`, implements an inactive SP1 objective-
+> correction path, and uses two-class DA with optional permanence mirroring.
+> The current NO-GO conditions are exclusively those in `GATE_LEDGER.md`.
 
 ### A.1 Money red-team
 

@@ -69,10 +69,15 @@ enforced call count.
 requires transcript/verdict anchors and a decision bond, rejects decisions at
 or after the active dispute deadline, and keeps the fraud delay inside the
 submission's immutable settlement horizon. These controls bound timing; they
-do not prove the off-chain verifier execution. The contract still trusts the
-resolver's verdict and trusts the owner-supplied slash proof hash. Therefore
-the verifiable/fraud-proof resolver gate remains open and this resolver mode is
-not approved for real-value settlement.
+do not prove the off-chain verifier execution. The challenge manager trusts
+its immutable resolver quorum for the initial verdict; the owner has no
+arbitrary-hash resolver-slashing path. Equivocation slashing and objective
+correction flow through the quorum, and anyone may enter the latter with a
+board-bound SP1 proof. The production gateway is deliberately inactive and
+nine launch boards lack admitted objective programs, so a non-equivocating
+false quorum decision cannot yet be corrected in production. The objective-
+proof gate remains open and this resolver mode is not approved for real-value
+settlement.
 
 These statements describe implementation, not readiness. The source changes
 must be frozen, externally audited, deployed, bytecode-matched, and rehearsed
