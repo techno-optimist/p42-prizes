@@ -91,6 +91,20 @@ problem requirement.
 
 ## Exact Blockers At This Snapshot
 
+- Portal checkpoint database upgrade: source now requires a durably pinned
+  schema, migration-owner-controlled exact-read and transition functions, and a
+  runtime role with no direct authority writes, `TRUNCATE`, or dangerous
+  `SET ROLE` path. Local PostgreSQL 16 evidence includes 18 migration/tamper
+  cases plus a 10,000-row, six-reader exact-read rehearsal with zero blocking
+  PIDs observed while all readers are in flight, a serialized transition
+  observably blocked only by held-reader PIDs, and a 2,000 ms post-barrier
+  completion ceiling; this is not production evidence. An operator must
+  provision the Render schema/roles, inspect the complete membership graph,
+  apply migration 002, run the production OID/function/ACL/privilege and
+  concurrent-lock rehearsal, retain the redacted evidence tail, and confirm the
+  web child cannot read `P42_PORTAL_MIGRATION_DATABASE_URL`. This has not been
+  performed live; local PostgreSQL evidence authorizes no funding activation.
+
 - Source control: the CI workflow is published, and the checked-in
   [`source-release receipt`](evidence/source-release-current.json) remains valid
   historical v2 evidence only. It is not current after the later source and

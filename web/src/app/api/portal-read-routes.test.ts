@@ -340,6 +340,33 @@ describe("chain portal API consumers", () => {
     expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
   });
 
+  it("serializes no target when the durable checkpoint gate returns a fail-closed local model", async () => {
+    const value = model();
+    value.source = "local-phase-0";
+    value.problems = value.problems.map((problem) => ({
+      ...problem,
+      source: "local-phase-0",
+      poolAddress: null,
+      funding: null,
+      pool: null,
+      donationWallet: { ...problem.donationWallet, address: null, status: "paused" },
+      chainProvenance: {
+        ...problem.chainProvenance,
+        poolAddress: null,
+        donationWalletAddress: null,
+      },
+    }));
+    vi.mocked(loadPortalReadModel).mockResolvedValue(value);
+
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({ fundingDeadline: null, serverObservedAt: null, target: null });
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
+  });
+
   it("fails closed when dedicated-route deadline metadata is malformed", async () => {
     const value = model();
     value.problems = value.problems.map((problem) => ({

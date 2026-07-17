@@ -6,7 +6,7 @@ services:
     runtime: node
     rootDir: ./web
     buildCommand: npm ci && npm run build:prizes
-    startCommand: npm run db:migrate && npm run start:prizes
+    startCommand: npm run db:migrate && unset P42_PORTAL_MIGRATION_DATABASE_URL && npm run start:prizes
     plan: starter
     region: oregon
     healthCheckPath: /prizes
@@ -19,6 +19,15 @@ services:
       # idempotent migration and refuses to start if the schema is not ready.
       - key: P42_PORTAL_DATABASE_URL
         sync: false
+      # Distinct schema-owner credential used only by the startup migration.
+      # The start command removes it before launching the web process. It must
+      # authenticate as a different role from P42_PORTAL_DATABASE_URL.
+      - key: P42_PORTAL_MIGRATION_DATABASE_URL
+        sync: false
+      # Preprovision this exact schema under the migration owner. Runtime has
+      # USAGE only; checkpoint relations/functions are OID-bound inside it.
+      - key: P42_PORTAL_DATABASE_SCHEMA
+        value: p42_portal
       - key: P42_PORTAL_DATABASE_REQUIRED
         value: "1"
       # Funding publication remains disabled until the complete activation
