@@ -14,6 +14,9 @@ cargo test --locked \
 cargo test --locked \
   --manifest-path edges-vs-triangles/Cargo.toml \
   -p p42-edges-objective-core
+cargo test --locked \
+  --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-core
 
 cargo build --locked \
   --manifest-path q6-intersecting-hypergraph/Cargo.toml \
@@ -21,11 +24,27 @@ cargo build --locked \
 cargo build --locked \
   --manifest-path edges-vs-triangles/Cargo.toml \
   -p p42-edges-objective-script
+cargo build --locked \
+  --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script
 
 q6_elf="q6-intersecting-hypergraph/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-q6-objective-program"
 edges_elf="edges-vs-triangles/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-edges-objective-program"
+arithmetic_kakeya_elf="arithmetic-kakeya/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-arithmetic-kakeya-objective-program"
 test -f "$q6_elf" && test ! -L "$q6_elf"
 test -f "$edges_elf" && test ! -L "$edges_elf"
+test -f "$arithmetic_kakeya_elf" && test ! -L "$arithmetic_kakeya_elf"
+
+cargo run --locked \
+  --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- \
+  identity-elf "$arithmetic_kakeya_elf" > "$audit/arithmetic-kakeya-identity.json"
+cargo run --locked \
+  --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- \
+  execute-fixture-elf "$arithmetic_kakeya_elf" \
+  "$root/problems/arithmetic-kakeya/examples/kt-2x2-forcing.json" \
+  > "$audit/arithmetic-kakeya-execution.json"
 
 mkdir "$audit/q6" "$audit/edges"
 cp "$q6_elf" "$audit/q6/program.elf"

@@ -285,6 +285,89 @@ describe("P42 objective journal conformance", () => {
     assert.equal(journalDigest, "0xfa233a06c0c886e004200dbdd524aa970605fce4cafe77e2172c61512b8586c4");
   });
 
+  it("matches the shared synthetic Kakeya vector across every Solidity ABI hash stage", () => {
+    const vector = JSON.parse(
+      readFileSync(
+        new URL(
+          "../../objective-programs/arithmetic-kakeya/fixtures/journal-conformance-synthetic.json",
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    assert.equal(vector.schema, "p42-arithmetic-kakeya-journal-conformance/v1");
+    assert.equal(vector.classification, "synthetic-byte-conformance-only");
+    assert.match(vector.caveat, /placeholders/);
+    assert.match(vector.caveat, /not a built ELF identity/);
+
+    const witness = vector.witness;
+    const expected = vector.hashes;
+    const solution = Buffer.from(witness.solutionUtf8, "utf8");
+    assert.deepEqual(
+      solution,
+      readFileSync(
+        new URL("../../problems/arithmetic-kakeya/examples/kt-2x2-forcing.json", import.meta.url),
+      ),
+    );
+    const solutionSha256 = `0x${createHash("sha256").update(solution).digest("hex")}`;
+    assert.equal(solutionSha256, expected.solutionSha256);
+    assert.equal(solutionSha256, witness.commitDaHash);
+    assert.equal(BigInt(witness.improvementAtoms), 0n);
+
+    const solutionCidHash = keccak256(toUtf8Bytes(witness.solutionCid));
+    assert.equal(solutionCidHash, expected.solutionCidHash);
+
+    const revealInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "address", "bytes32", "bytes32", "bytes32", "int256", "uint256", "uint64"],
+        [witness.submissionManager, BigInt(witness.chainId), BigInt(witness.submissionId), witness.solver, witness.commitment, witness.commitDaHash, solutionCidHash, BigInt(witness.claimedScoreAtoms), BigInt(witness.improvementAtoms), BigInt(witness.challengeEndsAt)],
+      ),
+    );
+    assert.equal(revealInstanceHash, expected.revealInstanceHash);
+
+    const challengeInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "bytes32", "address", "bytes32", "uint64", "uint64"],
+        [witness.manager, BigInt(witness.chainId), BigInt(witness.submissionId), revealInstanceHash, witness.challenger, witness.reasonHash, BigInt(witness.challengedAt), BigInt(witness.disputeEndsAt)],
+      ),
+    );
+    assert.equal(challengeInstanceHash, expected.challengeInstanceHash);
+
+    const transcriptUriHash = keccak256(toUtf8Bytes(witness.transcriptUri));
+    assert.equal(transcriptUriHash, expected.transcriptUriHash);
+    const pendingDecisionContext = keccak256(
+      coder.encode(
+        ["bytes32", "bytes32", "address", "bytes32", "bool", "bytes32", "bytes32", "bytes32"],
+        [challengeInstanceHash, revealInstanceHash, witness.challenger, witness.reasonHash, witness.pendingChallengerWins, witness.transcriptHash, transcriptUriHash, witness.verdictHash],
+      ),
+    );
+    assert.equal(pendingDecisionContext, expected.pendingDecisionContext);
+
+    const objectiveBindingContext = keccak256(
+      coder.encode(
+        ["address", "uint256", "bytes32", "bytes32", "bytes32"],
+        [witness.registry, BigInt(witness.problemId), witness.objectivePackageHash, witness.guestElfSha256, witness.programVKey],
+      ),
+    );
+    assert.equal(objectiveBindingContext, expected.objectiveBindingContext);
+
+    const contextHash = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "uint256", "bytes32"],
+        ["P42_OBJECTIVE_CHALLENGE_CONTEXT_V2", BigInt(witness.chainId), witness.manager, witness.submissionManager, objectiveBindingContext, BigInt(witness.submissionId), pendingDecisionContext],
+      ),
+    );
+    assert.equal(contextHash, expected.contextHash);
+
+    const journalDigest = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "bytes32", "bytes32", "bool", "address"],
+        ["P42_OBJECTIVE_VERDICT_JOURNAL_V2", BigInt(witness.chainId), witness.quorum, witness.manager, witness.guestElfSha256, witness.programVKey, contextHash, witness.correctedChallengerWins, witness.proofBeneficiary],
+      ),
+    );
+    assert.equal(journalDigest, expected.journalDigest);
+  });
+
   it("matches the isolated Rust/SP1 edges witness with signed maximize atoms", () => {
     const solution = readFileSync(
       new URL("../../problems/edges-vs-triangles/examples/rational-curve-sample.json", import.meta.url),

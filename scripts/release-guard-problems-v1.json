@@ -1,6 +1,6 @@
 {
   "schema_version": "p42-prizes-release-guard-problems-v1",
-  "projection_sha256": "sha256:17bc62038ad49a4b8766280d604ee177651bcef8f90497f2bac584166b8123e6",
+  "projection_sha256": "sha256:ec42d67bc8d67d3732fc363b371b6c2e4acffa256c107df887ad3501cb6a0137",
   "phase0": {
     "donationWallet": {
       "chain": "Base Sepolia",
@@ -83,7 +83,7 @@
       "minImprovement": "1/1000000000000",
       "bountyEth": "1.00",
       "challengeWindowHours": 168,
-      "verifierVersion": "0.1.1"
+      "verifierVersion": "0.2.0"
     },
     {
       "id": 5,

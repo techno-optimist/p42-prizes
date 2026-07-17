@@ -187,6 +187,8 @@ objective-core-test:
 candidate-objective-program-gates:
 	@PYTHONPATH=$(PYTHONPATH) $(PYTHON) -m pytest -q \
 		problems/q6-intersecting-hypergraph/tests/test_q6_intersecting_hypergraph.py \
+		problems/arithmetic-kakeya/tests/test_arithmetic_kakeya.py \
+		tests/test_arithmetic_kakeya_sp1_differential.py \
 		tests/test_edges_sp1_differential.py \
 		tests/test_sp1_objective_reproduction.py
 	@bash scripts/verify-candidate-objective-programs.sh
