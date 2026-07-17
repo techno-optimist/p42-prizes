@@ -94,6 +94,7 @@ def test_malformed_json_fails_closed() -> None:
     assert code != 0
     assert report["valid"] is False
     assert report["reason"] == "MALFORMED_JSON"
+    assert report["improvement"] == "0/1"
 
 
 def test_unknown_and_non_scalar_metadata_fail_closed(tmp_path: Path) -> None:
@@ -108,6 +109,7 @@ def test_unknown_and_non_scalar_metadata_fail_closed(tmp_path: Path) -> None:
         assert code != 0
         assert report["valid"] is False
         assert report["reason"] == "MALFORMED"
+        assert report["improvement"] == "0/1"
 
     without_source = {key: value for key, value in seed.items() if key != "source"}
     raw = (json.dumps(without_source, separators=(",", ":"))[:-1] + ',"source":"\\ud800"}').encode()

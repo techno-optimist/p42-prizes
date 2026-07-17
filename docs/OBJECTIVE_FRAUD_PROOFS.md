@@ -82,7 +82,7 @@ outcome is true.
 - Independently reproduce the Hadamard ELF/vkey under distinct operators and
   on x86 and ARM, then freeze a genuine positive Groth16 proof plus adversarial
   mutations. The current mock execution emits the exact expected 32-byte
-  journal in 53,335,905 RISC-V instructions but contains no proof bytes. CI
+  journal in 53,275,736 RISC-V instructions but contains no proof bytes. CI
   replays that execution exactly and verifies the deterministic input/work
   envelope; genuine proof timing, peak memory, and cost remain unmeasured.
 - Audit and rehearse a new active gateway release. The current production
