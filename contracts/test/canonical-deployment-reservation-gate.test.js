@@ -6,7 +6,10 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import { canonicalTopologyDescriptors } from "../../agent/canonical-topology.mjs";
-import { validateAndReserveCanonicalDeployment } from "../scripts/canonical-deployment-reservation-gate.js";
+import {
+  resolveCanonicalDeploymentStartNonce,
+  validateAndReserveCanonicalDeployment,
+} from "../scripts/canonical-deployment-reservation-gate.js";
 
 function preflight(definitions) {
   return {
@@ -22,6 +25,58 @@ function preflight(definitions) {
 }
 
 describe("canonical deployment reservation gate", () => {
+  it("validates definition topology before pending nonce lookup", async () => {
+    const definitions = canonicalTopologyDescriptors().map(({ id, name }) => ({ id, name }));
+    let nonceReads = 0;
+    const readPendingNonce = async () => {
+      nonceReads += 1;
+      return 12;
+    };
+
+    for (const testCase of [
+      {
+        canonicalDefinitions: definitions.slice(0, -1),
+        executableDefinitions: definitions,
+        expectedError: /canonical 47-contract topology/,
+      },
+      {
+        canonicalDefinitions: definitions,
+        executableDefinitions: definitions.slice(0, -1),
+        expectedError: /exactly 47 contract definitions/,
+      },
+      {
+        canonicalDefinitions: definitions,
+        executableDefinitions: definitions.map((definition, index) => (
+          index === 46 ? { ...definition, name: "WrongContract" } : definition
+        )),
+        expectedError: /deployment membership differ/,
+      },
+    ]) {
+      await assert.rejects(resolveCanonicalDeploymentStartNonce({
+        ...testCase,
+        boardCount: 10,
+        readPendingNonce,
+      }), testCase.expectedError);
+    }
+    assert.equal(nonceReads, 0);
+
+    assert.equal(await resolveCanonicalDeploymentStartNonce({
+      canonicalDefinitions: definitions,
+      executableDefinitions: definitions,
+      boardCount: 10,
+      readPendingNonce,
+    }), 12);
+    assert.equal(nonceReads, 1);
+    assert.equal(await resolveCanonicalDeploymentStartNonce({
+      canonicalDefinitions: definitions,
+      executableDefinitions: definitions,
+      boardCount: 10,
+      existingStartNonce: 9,
+      readPendingNonce,
+    }), 9);
+    assert.equal(nonceReads, 1);
+  });
+
   it("leaves no stale reservation on topology drift and accepts the corrected retry", async () => {
     const root = await mkdtemp(join(tmpdir(), "p42-canonical-reservation-"));
     try {

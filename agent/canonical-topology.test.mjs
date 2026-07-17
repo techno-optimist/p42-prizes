@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
+import { resolveCanonicalDeploymentStartNonce } from "../contracts/scripts/canonical-deployment-reservation-gate.js";
 import {
   CANONICAL_BOARD_CONTRACTS,
   CANONICAL_BOARD_COUNT,
@@ -47,12 +48,31 @@ test("production plan assertion rejects the legacy 43-contract plan", () => {
   ].includes(id))), /missing=submissionManagerFactory,challengeManagerFactory,objectiveVerifier,resolverQuorum/);
 });
 
-test("production deployer checks topology before reading the pending nonce", () => {
-  const source = readFileSync(new URL("../contracts/scripts/deploy-base-sepolia.js", import.meta.url), "utf8");
-  const preflightStart = source.indexOf("async function deployMultiBoardCeremony");
-  const topologyGuard = source.indexOf("assertCanonicalDeploymentPlan(canonicalManifestDefinitions", preflightStart);
-  const nonceRead = source.indexOf('getTransactionCount(deployer.address, "pending")', preflightStart);
-  assert.ok(preflightStart >= 0 && topologyGuard > preflightStart && nonceRead > topologyGuard);
+test("production topology preflight rejects drift before pending nonce lookup", async () => {
+  const definitions = canonicalTopologyDescriptors().map(({ id, name }) => ({ id, name }));
+  let nonceReads = 0;
+  const readPendingNonce = async () => {
+    nonceReads += 1;
+    return 12;
+  };
+
+  await assert.rejects(
+    resolveCanonicalDeploymentStartNonce({
+      canonicalDefinitions: definitions.slice(0, -1),
+      executableDefinitions: definitions,
+      boardCount: CANONICAL_BOARD_COUNT,
+      readPendingNonce,
+    }),
+    /canonical 47-contract topology/,
+  );
+  assert.equal(nonceReads, 0);
+  assert.equal(await resolveCanonicalDeploymentStartNonce({
+    canonicalDefinitions: definitions,
+    executableDefinitions: definitions,
+    boardCount: CANONICAL_BOARD_COUNT,
+    readPendingNonce,
+  }), 12);
+  assert.equal(nonceReads, 1);
 });
 
 test("packaged canonical topology projection is byte-identical to protocol authority", () => {

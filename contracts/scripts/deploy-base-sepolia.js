@@ -74,7 +74,10 @@ import {
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
-import { validateAndReserveCanonicalDeployment } from "./canonical-deployment-reservation-gate.js";
+import {
+  resolveCanonicalDeploymentStartNonce,
+  validateAndReserveCanonicalDeployment,
+} from "./canonical-deployment-reservation-gate.js";
 import {
   buildGovernanceOperationJournal,
   governanceOperationJournalPath,
@@ -781,7 +784,13 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const existingJournalPath = signedDeploymentJournalPath(output);
   const existingJournal = existsSync(existingJournalPath) ? readSignedDeploymentJournal(existingJournalPath) : null;
   if (existingJournal && (existingJournal.chainId !== Number(BASE_SEPOLIA_CHAIN_ID) || existingJournal.deployer.toLowerCase() !== deployer.address.toLowerCase())) throw new Error("existing signed deployment journal has chain/account drift before preflight");
-  const preflightStartNonce = existingJournal?.startNonce ?? await ethers.provider.getTransactionCount(deployer.address, "pending");
+  const preflightStartNonce = await resolveCanonicalDeploymentStartNonce({
+    canonicalDefinitions,
+    executableDefinitions: definitions,
+    boardCount: config.problems.length,
+    existingStartNonce: existingJournal?.startNonce,
+    readPendingNonce: () => ethers.provider.getTransactionCount(deployer.address, "pending"),
+  });
   const executablePreflight = await materializeCanonicalMultiBoardDeploymentPlan(
     ethers,
     deployer,
