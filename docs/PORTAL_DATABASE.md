@@ -22,20 +22,49 @@ suppresses every funding target.
 ## Provision and import
 
 1. Pause mutable traffic and preserve/checksum any current state export.
-2. In the same PostgreSQL database, provision a dedicated migration-owner
-   login and a distinct runtime login. The runtime must be `NOSUPERUSER
-   NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT`, must not own the database,
-   schema, tables, or function, and must have no direct or indirect `SET ROLE`
-   path to the migration owner or any role with dangerous attributes,
-   ownership, `CREATE`, high-water DML, or `TRIGGER`.
-3. Precreate one durable schema owned exactly by the migration role, revoke
-   `CREATE` from runtime and public roles, and set its name in
+2. From `web/`, inspect the read-only provisioning plan while authenticated as
+   the existing exact database owner. Pass the URL only through secret
+   environment injection, never command arguments:
+
+   ```sh
+   P42_PORTAL_MIGRATION_DATABASE_URL="$OWNER_SECRET_URL" \
+   P42_PORTAL_RUNTIME_ROLE=p42_portal_runtime \
+   P42_PORTAL_DATABASE_SCHEMA=p42_portal \
+   npm run db:provision -- --plan
+   ```
+
+   The canonical self-hashed JSON plan contains no URL or password. Review the
+   database, owner, runtime-role, schema, and `PUBLIC CREATE` fields. Then add
+   `P42_PORTAL_RUNTIME_PASSWORD="$GENERATED_SECRET"` through secret environment
+   injection and rerun with `--apply`. Apply is one transaction: it creates or
+   exactly verifies the distinct runtime `LOGIN`, rotates its password,
+   precreates the owner schema,
+   revokes ambient creation paths, pins default privileges and search path, and
+   verifies the committed catalog state. Any preexisting identity, attributes,
+   membership, settings, explicit `CREATE`, or object ownership drift aborts.
+   An exact rerun is allowed. The runtime is `NOSUPERUSER NOCREATEDB
+   NOCREATEROLE NOBYPASSRLS NOINHERIT NOREPLICATION`, owns nothing, and has no
+   role memberships or `SET ROLE` path. The receipt is provisioning evidence,
+   not a production-completion claim. Run `npm run db:provision-integration`
+   against the disposable local harness before the operator ceremony.
+
+   PostgreSQL 16 and later automatically give a non-superuser `CREATEROLE`
+   creator an inbound ADMIN membership in a role it creates; PostgreSQL records
+   the bootstrap superuser as grantor, so the creator cannot revoke that edge.
+   This does not make the runtime a member and grants it no `SET ROLE` path.
+   The ceremony therefore rejects every membership where the runtime is the
+   member, while the operator evidence must separately retain and review the
+   complete inbound and outbound graph. Password equality and plaintext cannot
+   be read back from PostgreSQL; an exact rerun rotates the stored verifier and
+   re-verifies every catalog property that PostgreSQL exposes.
+3. The ceremony precreates one durable schema owned exactly by the migration
+   role, revokes `CREATE` from runtime and public roles, and sets its name in
    `P42_PORTAL_DATABASE_SCHEMA`. Configure the runtime connection's default
    search path to that schema for the general portal store; checkpoint authority
    additionally forces `pg_catalog` and fully qualifies every object. Set the
    owner URL only as `P42_PORTAL_MIGRATION_DATABASE_URL` and runtime URL as
    `P42_PORTAL_DATABASE_URL`. Keep all three out of `NEXT_PUBLIC_*` values.
-4. From `web/`, run:
+4. Separately, from `web/`, run:
 
    ```sh
    P42_PORTAL_MIGRATION_DATABASE_URL=postgresql://<owner>@... \
@@ -91,11 +120,12 @@ suppresses every funding target.
 
 Source and local PostgreSQL rehearsal do not provision Render roles. Before any
 funding activation, an operator must provision the production schema and two
-roles, independently inspect the membership graph, apply migration/rehearsal
-against the production private database, retain redacted OID/function/ACL/role
-evidence and the rehearsal JSON, remove the owner credential from the web
-child, deploy the reviewed commit, and probe the live funding route. Until that
-tail is complete, funding remains fail-closed.
+roles with the reviewed ceremony, independently inspect the membership graph,
+apply migration/rehearsal against the production private database, retain
+redacted OID/function/ACL/role evidence plus the provisioning/rehearsal JSON,
+remove the owner credential from the web child, deploy the reviewed commit, and
+probe the live funding route. Until that tail is complete, funding remains
+fail-closed.
 
 ## Rollback
 
