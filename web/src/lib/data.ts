@@ -166,7 +166,7 @@ export const problems: Problem[] = [
     challengeWindowHours: 168,
     postingBondEth: "0.05",
     challengeBondEth: "0.05",
-    verifierVersion: "0.1.1",
+    verifierVersion: "0.2.0",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/arithmetic-kakeya",
