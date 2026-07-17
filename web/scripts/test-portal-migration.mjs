@@ -476,15 +476,19 @@ async function withRunnerDatabase(label, operation) {
   const runtimeName = `p42_acl_runtime_${suffix}`;
   const database = `p42_acl_db_${suffix}`;
   const schema = `p42_acl_${suffix}`;
+  const ownerPassword = `owner-${randomUUID()}`;
+  const runtimePassword = `runtime-${randomUUID()}`;
   const roles = [ownerName];
-  await admin.query(`CREATE ROLE ${quoteIdentifier(ownerName)} LOGIN CREATEROLE CREATEDB`);
+  await admin.query(`CREATE ROLE ${quoteIdentifier(ownerName)} LOGIN CREATEROLE CREATEDB
+    PASSWORD ${quoteLiteral(ownerPassword)}`);
   await admin.query(`CREATE DATABASE ${quoteIdentifier(database)} OWNER ${quoteIdentifier(ownerName)}`);
-  const ownerUrl = databaseUrl(ownerName, database);
-  const runtimeUrl = databaseUrl(runtimeName, database);
+  const ownerUrl = databaseUrl(ownerName, database, ownerPassword);
+  const runtimeUrl = databaseUrl(runtimeName, database, runtimePassword);
   const owner = new pg.Client({ connectionString: ownerUrl, connectionTimeoutMillis: 10_000 });
   try {
     await owner.connect();
     await owner.query(`CREATE ROLE ${quoteIdentifier(runtimeName)} LOGIN NOINHERIT NOSUPERUSER
+      PASSWORD ${quoteLiteral(runtimePassword)}
       NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
     roles.push(runtimeName);
     await owner.query(`CREATE SCHEMA ${quoteIdentifier(schema)} AUTHORIZATION ${quoteIdentifier(ownerName)}`);
@@ -530,12 +534,16 @@ function expectRunnerFailure(result, expectedMessage) {
   }
 }
 
-function databaseUrl(role, database) {
+function databaseUrl(role, database, password) {
   const url = new URL(connectionString);
   url.username = role;
-  url.password = "";
+  url.password = password;
   url.pathname = `/${database}`;
   return url.toString();
+}
+
+function quoteLiteral(value) {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function portalTables() {
