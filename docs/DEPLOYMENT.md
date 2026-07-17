@@ -120,6 +120,23 @@ without rewriting historical completion. The checkpoint attestation must then
 sign those exact v4 bytes. Checkpoint v2 and v3 remain readable for historical/non-activated
 replay, but the portal rejects them for funding publication; migrate by
 regenerating and re-attesting a v4 checkpoint, not by rewriting an old artifact.
+
+The portal deliberately does not open RPC connections from the browser or web
+request path. Its `p42-prizes/funding-target/v3` response is bounded by the
+fresh, finalized, independently attested v4 checkpoint and exposes the exact
+nonzero `fundingAuthorizationDigest`, `activationCompletionDigest`, checkpoint
+block, and activation-finalization block. The client strictly parses and
+revalidates those values, requires an explicit acknowledgement of their
+displayed abbreviations, then requires a second trusted click before following
+the wallet URI. A browser-visible target is not evidence that a browser made a
+live `eth_call`.
+
+The repository's safe dual-RPC implementation remains the indexer/activation
+pipeline described above. Adding an unrelated single-provider or ad hoc
+browser RPC path would weaken that authority model. Until a deployment adds a
+reviewed operator-distinct dual-RPC pre-sign read with equivalent provenance,
+the fresh finalized indexer checkpoint is the portal's current evidence
+boundary and a live pre-sign `eth_call` remains an explicit deployment gate.
 The production indexer canonicalizes and validates both credential-free HTTPS
 endpoint identities, rejects redirects, credentials, query strings, fragments,
 aliases, and profile substitutions, then constructs both RPC providers

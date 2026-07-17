@@ -2,33 +2,34 @@
 
 import { useEffect, useRef, useState, type MouseEvent } from "react";
 import { sitePath } from "@/lib/site-paths";
+import type { FundingTargetEnvelopeV3, FundingTargetV3 } from "@/lib/types";
 
 const MAX_TIMEOUT_MS = 2_147_000_000;
-const RESPONSE_SCHEMA = "p42-prizes/funding-target/v2";
+const RESPONSE_SCHEMA = "p42-prizes/funding-target/v3";
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const SHA256 = /^sha256:[0-9a-f]{64}$/;
+const ZERO_SHA256 = `sha256:${"0".repeat(64)}`;
 
-interface ClientFundingTarget {
-  address: string;
-  asset: "ETH";
-  chain: "Base Sepolia" | "Base";
-  chainId: 84532 | 8453;
-  explorerUrl: string;
-  walletUri: string;
-}
+type ClientFundingTarget = FundingTargetV3;
 
 interface BoundFundingTarget {
   bindingKey: string;
+  launchBindingKey: string;
   target: ClientFundingTarget;
 }
 
-interface FundingTargetResponse {
+type FundingTargetResponse = FundingTargetEnvelopeV3 & {
   authorizationExpiresAt: string;
   finalizedObservedAt: string;
   fundingDeadline: string;
   remainingCapWei: string;
   serverObservedAt: string;
-  target: ClientFundingTarget | null;
-}
+  fundingAuthorizationDigest: string;
+  activationCompletionDigest: string;
+  checkpointBlock: number;
+  checkpointDigest: string;
+  activationFinalizedBlock: number;
+};
 
 function parsedTimestamp(value: string | null): number | null {
   if (value === null) return null;
@@ -41,19 +42,57 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
   return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index]);
 }
 
+function validDigest(value: unknown): value is string {
+  return typeof value === "string" && SHA256.test(value) && value !== ZERO_SHA256;
+}
+
+function validBlock(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function abbreviatedDigest(value: string): string {
+  return `${value.slice(0, 15)}...${value.slice(-8)}`;
+}
+
+function launchBindingKey(response: FundingTargetResponse): string | null {
+  if (!response.target) return null;
+  return JSON.stringify([
+    response.authorizationExpiresAt,
+    response.finalizedObservedAt,
+    response.fundingDeadline,
+    response.fundingAuthorizationDigest,
+    response.activationCompletionDigest,
+    response.checkpointBlock,
+    response.checkpointDigest,
+    response.activationFinalizedBlock,
+    response.target.address,
+    response.target.asset,
+    response.target.chain,
+    response.target.chainId,
+    response.target.explorerUrl,
+    response.target.walletUri,
+  ]);
+}
+
 function parseFundingTargetResponse(value: unknown, slug: string): FundingTargetResponse | null {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
   const response = value as Record<string, unknown>;
   if (!exactKeys(response, [
-    "authorizationExpiresAt", "finalizedObservedAt", "fundingDeadline", "remainingCapWei",
-    "schema", "serverObservedAt", "slug", "target",
+    "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt",
+    "checkpointBlock", "checkpointDigest", "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline",
+    "remainingCapWei", "schema", "serverObservedAt", "slug", "target",
   ])
     || response.schema !== RESPONSE_SCHEMA || response.slug !== slug
     || typeof response.authorizationExpiresAt !== "string" || parsedTimestamp(response.authorizationExpiresAt) === null
     || typeof response.finalizedObservedAt !== "string" || parsedTimestamp(response.finalizedObservedAt) === null
     || typeof response.fundingDeadline !== "string" || parsedTimestamp(response.fundingDeadline) === null
     || typeof response.remainingCapWei !== "string" || !/^(0|[1-9][0-9]*)$/.test(response.remainingCapWei)
-    || typeof response.serverObservedAt !== "string" || parsedTimestamp(response.serverObservedAt) === null) return null;
+    || typeof response.serverObservedAt !== "string" || parsedTimestamp(response.serverObservedAt) === null
+    || !validDigest(response.fundingAuthorizationDigest)
+    || !validDigest(response.activationCompletionDigest)
+    || !validBlock(response.checkpointBlock) || !validBlock(response.activationFinalizedBlock)
+    || !validDigest(response.checkpointDigest)
+    || response.activationFinalizedBlock > response.checkpointBlock) return null;
   if (response.target === null) {
     return {
       authorizationExpiresAt: response.authorizationExpiresAt,
@@ -61,6 +100,13 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
       fundingDeadline: response.fundingDeadline,
       remainingCapWei: response.remainingCapWei,
       serverObservedAt: response.serverObservedAt,
+      fundingAuthorizationDigest: response.fundingAuthorizationDigest,
+      activationCompletionDigest: response.activationCompletionDigest,
+      checkpointBlock: response.checkpointBlock,
+      checkpointDigest: response.checkpointDigest,
+      activationFinalizedBlock: response.activationFinalizedBlock,
+      schema: RESPONSE_SCHEMA,
+      slug,
       target: null,
     };
   }
@@ -80,6 +126,13 @@ function parseFundingTargetResponse(value: unknown, slug: string): FundingTarget
     fundingDeadline: response.fundingDeadline,
     remainingCapWei: response.remainingCapWei,
     serverObservedAt: response.serverObservedAt,
+    fundingAuthorizationDigest: response.fundingAuthorizationDigest,
+    activationCompletionDigest: response.activationCompletionDigest,
+    checkpointBlock: response.checkpointBlock,
+    checkpointDigest: response.checkpointDigest,
+    activationFinalizedBlock: response.activationFinalizedBlock,
+    schema: RESPONSE_SCHEMA,
+    slug,
     target: target as unknown as ClientFundingTarget,
   };
 }
@@ -92,6 +145,11 @@ export interface FundingPanelProps {
   fundingDeadline: string | null;
   remainingCapWei: string | null;
   serverObservedAt: string | null;
+  fundingAuthorizationDigest: string | null;
+  activationCompletionDigest: string | null;
+  checkpointBlock: number | null;
+  checkpointDigest: string | null;
+  activationFinalizedBlock: number | null;
   label?: string;
   compact?: boolean;
 }
@@ -106,12 +164,18 @@ export function FundingPanel({
   fundingDeadline,
   remainingCapWei,
   serverObservedAt,
+  fundingAuthorizationDigest,
+  activationCompletionDigest,
+  checkpointBlock,
+  checkpointDigest,
+  activationFinalizedBlock,
   label,
   compact = false,
 }: FundingPanelProps) {
   const bindingKey = JSON.stringify([
     slug, authorizationExpiresAt, finalizedObservedAt, fundingDeadline,
-    remainingCapWei, serverObservedAt, fundingTargetDeployed,
+    remainingCapWei, serverObservedAt, fundingAuthorizationDigest, activationCompletionDigest,
+    checkpointBlock, checkpointDigest, activationFinalizedBlock, fundingTargetDeployed,
   ]);
   const bindingKeyRef = useRef(bindingKey);
   bindingKeyRef.current = bindingKey;
@@ -124,21 +188,30 @@ export function FundingPanel({
     ? null
     : Math.min(deadlineTimestamp, authorizationCutoffTimestamp);
   const validRemainingCap = typeof remainingCapWei === "string" && /^(0|[1-9][0-9]*)$/.test(remainingCapWei);
+  const validPolicyBinding = validDigest(fundingAuthorizationDigest) && validDigest(activationCompletionDigest)
+    && validBlock(checkpointBlock) && validBlock(activationFinalizedBlock)
+    && validDigest(checkpointDigest)
+    && activationFinalizedBlock <= checkpointBlock;
   const canCheckFunding = fundingTargetDeployed && actionCutoffTimestamp !== null
-    && finalizedTimestamp !== null && observedTimestamp !== null && validRemainingCap
+    && finalizedTimestamp !== null && observedTimestamp !== null && validRemainingCap && validPolicyBinding
     && remainingCapWei !== "0" && observedTimestamp < actionCutoffTimestamp;
   const [fundingVisibility, setFundingVisibility] = useState<FundingVisibility>(
     canCheckFunding ? "checking" : "unavailable",
   );
   const [boundTarget, setBoundTarget] = useState<BoundFundingTarget | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const [walletLaunchIdentity, setWalletLaunchIdentity] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copiedDigest, setCopiedDigest] = useState<"authorization" | "activation" | "checkpoint" | null>(null);
   const monotonicCutoffRef = useRef<number | null>(null);
   const clientWallStartedRef = useRef<number | null>(null);
   const latestObservedRef = useRef<number | null>(observedTimestamp);
   const requestControllerRef = useRef<AbortController | null>(null);
+  const invalidatedBindingRef = useRef<string | null>(null);
   const target = boundTarget?.bindingKey === bindingKey ? boundTarget.target : null;
-  const targetIdentity = target ? JSON.stringify([bindingKey, target.address]) : null;
+  const targetIdentity = boundTarget?.bindingKey === bindingKey
+    ? JSON.stringify([boundTarget.bindingKey, boundTarget.launchBindingKey])
+    : null;
   const targetIdentityRef = useRef(targetIdentity);
   targetIdentityRef.current = targetIdentity;
   const copyOperationRef = useRef(0);
@@ -168,8 +241,10 @@ export function FundingPanel({
     monotonicCutoffRef.current = null;
     cancelCopyState();
     setBoundTarget(null);
+    setAcknowledged(false);
     setWalletLaunchIdentity(null);
     setCopied(false);
+    setCopiedDigest(null);
     setFundingVisibility("unavailable");
     if (deadlineClosed && actionCutoffTimestamp !== null) latestObservedRef.current = actionCutoffTimestamp;
   }
@@ -179,8 +254,10 @@ export function FundingPanel({
     requestControllerRef.current = null;
     cancelCopyState();
     setBoundTarget(null);
+    setAcknowledged(false);
     setWalletLaunchIdentity(null);
     setCopied(false);
+    setCopiedDigest(null);
     setFundingVisibility(canCheckFunding ? "checking" : "unavailable");
     if (!canCheckFunding || actionCutoffTimestamp === null || observedTimestamp === null
       || authorizationExpiresAt === null || finalizedTimestamp === null || fundingDeadline === null) {
@@ -188,6 +265,7 @@ export function FundingPanel({
       return;
     }
     let active = true;
+    if (invalidatedBindingRef.current !== bindingKey) invalidatedBindingRef.current = null;
     latestObservedRef.current = observedTimestamp;
     clientWallStartedRef.current = Date.now();
     const duration = Math.min(actionCutoffTimestamp - observedTimestamp, actionCutoffTimestamp - Date.now());
@@ -213,9 +291,15 @@ export function FundingPanel({
       requestControllerRef.current?.abort();
       controller?.abort();
       setBoundTarget(null);
+      setAcknowledged(false);
       setWalletLaunchIdentity(null);
       setCopied(false);
+      setCopiedDigest(null);
       setFundingVisibility("checking");
+      if (invalidatedBindingRef.current === bindingKey) {
+        setFundingVisibility("unavailable");
+        return;
+      }
       controller = new AbortController();
       requestControllerRef.current = controller;
       const requestController = controller;
@@ -229,24 +313,39 @@ export function FundingPanel({
           });
           if (!response.ok) throw new Error("funding target request failed");
           const parsed = parseFundingTargetResponse(await response.json(), slug);
-          if (!active || requestController.signal.aborted || bindingKeyRef.current !== bindingKey
-            || !parsed || parsed.authorizationExpiresAt !== authorizationExpiresAt
-            || parsed.fundingDeadline !== fundingDeadline
-            || parsedTimestamp(parsed.finalizedObservedAt)! < finalizedTimestamp) {
+          if (!active || requestController.signal.aborted || bindingKeyRef.current !== bindingKey || !parsed) {
             if (active && !requestController.signal.aborted) expireFunding(false);
             return;
           }
           const responseObserved = parsedTimestamp(parsed.serverObservedAt)!;
+          if (responseObserved < (latestObservedRef.current ?? observedTimestamp)) {
+            expireFunding(false);
+            return;
+          }
+          if (parsed.authorizationExpiresAt !== authorizationExpiresAt
+            || parsed.fundingDeadline !== fundingDeadline
+            || parsed.fundingAuthorizationDigest !== fundingAuthorizationDigest
+            || parsed.activationCompletionDigest !== activationCompletionDigest
+            || parsed.checkpointBlock !== checkpointBlock
+            || parsed.checkpointDigest !== checkpointDigest
+            || parsed.activationFinalizedBlock !== activationFinalizedBlock
+            || parsedTimestamp(parsed.finalizedObservedAt)! < finalizedTimestamp) {
+            latestObservedRef.current = responseObserved;
+            invalidatedBindingRef.current = bindingKey;
+            expireFunding(false);
+            return;
+          }
           if (parsedTimestamp(parsed.finalizedObservedAt)! > responseObserved) {
             expireFunding(false);
             return;
           }
           if (parsed.target === null || parsed.remainingCapWei === "0") {
             latestObservedRef.current = responseObserved;
+            invalidatedBindingRef.current = bindingKey;
             expireFunding(responseObserved >= deadlineTimestamp!);
             return;
           }
-          if (responseObserved < observedTimestamp || cutoffReached(responseObserved)) {
+          if (cutoffReached(responseObserved)) {
             expireFunding(true);
             return;
           }
@@ -260,7 +359,12 @@ export function FundingPanel({
             expireFunding(true);
             return;
           }
-          setBoundTarget({ bindingKey, target: parsed.target });
+          const parsedLaunchBindingKey = launchBindingKey(parsed);
+          if (parsedLaunchBindingKey === null) {
+            expireFunding(false);
+            return;
+          }
+          setBoundTarget({ bindingKey, launchBindingKey: parsedLaunchBindingKey, target: parsed.target });
           setFundingVisibility("available");
         } catch {
           if (active && !requestController.signal.aborted) expireFunding(false);
@@ -296,9 +400,11 @@ export function FundingPanel({
     }
     cancelCopyState();
     setCopied(false);
+    setCopiedDigest(null);
     const operation = copyOperationRef.current;
     const copiedBindingKey = boundTarget.bindingKey;
-    const copiedTargetIdentity = JSON.stringify([copiedBindingKey, boundTarget.target.address]);
+    const copiedTargetIdentity = targetIdentityRef.current;
+    if (copiedTargetIdentity === null) return;
     const clipboard = navigator.clipboard;
     if (!clipboard || typeof clipboard.writeText !== "function") return;
     try {
@@ -320,12 +426,47 @@ export function FundingPanel({
     }
   }
 
+  async function copyPolicyDigest(kind: "authorization" | "activation" | "checkpoint", digest: string) {
+    if (!boundTarget || boundTarget.bindingKey !== bindingKeyRef.current || !validDigest(digest)) return;
+    if (cutoffReached()) {
+      expireFunding(true);
+      return;
+    }
+    cancelCopyState();
+    setCopied(false);
+    setCopiedDigest(null);
+    const operation = copyOperationRef.current;
+    const copiedBindingKey = boundTarget.bindingKey;
+    const copiedTargetIdentity = targetIdentityRef.current;
+    if (copiedTargetIdentity === null) return;
+    const clipboard = navigator.clipboard;
+    if (!clipboard || typeof clipboard.writeText !== "function") return;
+    try {
+      await clipboard.writeText(digest);
+      if (copyOperationRef.current !== operation
+        || bindingKeyRef.current !== copiedBindingKey
+        || targetIdentityRef.current !== copiedTargetIdentity
+        || cutoffReached()) return;
+      setCopiedDigest(kind);
+      const timeoutId = window.setTimeout(() => {
+        if (copyOperationRef.current === operation
+          && bindingKeyRef.current === copiedBindingKey
+          && targetIdentityRef.current === copiedTargetIdentity) setCopiedDigest(null);
+        if (copyResetTimerRef.current === timeoutId) copyResetTimerRef.current = null;
+      }, 1600);
+      copyResetTimerRef.current = timeoutId;
+    } catch {
+      // Clipboard unavailable in this browser context.
+    }
+  }
+
   async function openWallet(event: MouseEvent<HTMLAnchorElement>) {
     const clickedTarget = boundTarget;
     const clickedIdentity = clickedTarget
-      ? JSON.stringify([clickedTarget.bindingKey, clickedTarget.target.address])
+      ? JSON.stringify([clickedTarget.bindingKey, clickedTarget.launchBindingKey])
       : null;
-    if (!clickedTarget || clickedTarget.bindingKey !== bindingKeyRef.current) {
+    if (!acknowledged || !clickedTarget || clickedTarget.bindingKey !== bindingKeyRef.current
+      || invalidatedBindingRef.current === clickedTarget.bindingKey) {
       event.preventDefault();
       return;
     }
@@ -336,6 +477,7 @@ export function FundingPanel({
     }
     if (walletLaunchIdentity === clickedIdentity) {
       setWalletLaunchIdentity(null);
+      setAcknowledged(false);
       return;
     }
     event.preventDefault();
@@ -358,19 +500,36 @@ export function FundingPanel({
       const parsed = parseFundingTargetResponse(await response.json(), slug);
       const responseObserved = parsedTimestamp(parsed?.serverObservedAt ?? null);
       const responseFinalized = parsedTimestamp(parsed?.finalizedObservedAt ?? null);
-      if (controller.signal.aborted || requestControllerRef.current !== controller
-        || bindingKeyRef.current !== clickedTarget.bindingKey
-        || !parsed || !parsed.target || parsed.remainingCapWei === "0"
+      if (controller.signal.aborted || requestControllerRef.current !== controller) return;
+      if (bindingKeyRef.current !== clickedTarget.bindingKey || !parsed
+        || responseObserved === null || responseFinalized === null) {
+        expireFunding(false);
+        return;
+      }
+      if (responseObserved < (latestObservedRef.current ?? observedTimestamp!)) {
+        expireFunding(false);
+        return;
+      }
+      if (!parsed.target || parsed.remainingCapWei === "0"
         || parsed.authorizationExpiresAt !== authorizationExpiresAt
         || parsed.fundingDeadline !== fundingDeadline
-        || responseObserved === null || responseFinalized === null
+        || parsed.fundingAuthorizationDigest !== fundingAuthorizationDigest
+        || parsed.activationCompletionDigest !== activationCompletionDigest
+        || parsed.checkpointBlock !== checkpointBlock
+        || parsed.checkpointDigest !== checkpointDigest
+        || parsed.activationFinalizedBlock !== activationFinalizedBlock
         || responseFinalized < finalizedTimestamp! || responseFinalized > responseObserved
-        || responseObserved < (latestObservedRef.current ?? observedTimestamp!)
         || parsed.target.address !== clickedTarget.target.address
         || parsed.target.walletUri !== clickedTarget.target.walletUri
         || parsed.target.chainId !== clickedTarget.target.chainId
-        || cutoffReached(responseObserved)) {
-        if (!controller.signal.aborted) expireFunding(false);
+        || launchBindingKey(parsed) !== clickedTarget.launchBindingKey) {
+        latestObservedRef.current = responseObserved;
+        invalidatedBindingRef.current = clickedTarget.bindingKey;
+        expireFunding(false);
+        return;
+      }
+      if (cutoffReached(responseObserved)) {
+        expireFunding(true);
         return;
       }
 
@@ -415,14 +574,76 @@ export function FundingPanel({
         <>
           <div className="address-line">
             <code>{target.address}</code>
-            <a className="copy-button" href={target.walletUri} onClick={openWallet} aria-label={`Fund ${label ?? "sponsor pool"} with ${target.asset}`}>
-              {walletLaunchIdentity === targetIdentity ? "open wallet" : `fund ${target.asset}`}
-            </a>
+            {acknowledged ? (
+              <a className="copy-button" href={target.walletUri} onClick={openWallet} aria-label={`Fund ${label ?? "sponsor pool"} with ${target.asset}`}>
+                {walletLaunchIdentity === targetIdentity ? "open wallet" : `fund ${target.asset}`}
+              </a>
+            ) : (
+              <button className="copy-button" type="button" disabled aria-label={`Fund ${label ?? "sponsor pool"} with ${target.asset}`}>
+                fund {target.asset}
+              </button>
+            )}
             <button className="copy-button" type="button" onClick={copyAddress} aria-label="Copy sponsor pool address">
               {copied ? "copied" : "copy"}
             </button>
             <a className="ref" href={target.explorerUrl} target="_blank" rel="noreferrer">basescan</a>
           </div>
+          <div className="funding-policy-binding">
+            <span>authorization <code>{abbreviatedDigest(fundingAuthorizationDigest!)}</code></span>
+            <span>activation <code>{abbreviatedDigest(activationCompletionDigest!)}</code></span>
+            <span>checkpoint <code>#{checkpointBlock} · {abbreviatedDigest(checkpointDigest!)}</code></span>
+          </div>
+          <details className="funding-policy-details">
+            <summary>Inspect exact policy digests</summary>
+            <dl>
+              <dt>Funding authorization</dt>
+              <dd>
+                <code>{fundingAuthorizationDigest}</code>
+                <button
+                  className="copy-button funding-digest-copy"
+                  type="button"
+                  onClick={() => void copyPolicyDigest("authorization", fundingAuthorizationDigest!)}
+                  aria-label="Copy full funding authorization digest"
+                >
+                  {copiedDigest === "authorization" ? "copied" : "copy"}
+                </button>
+              </dd>
+              <dt>Activation completion</dt>
+              <dd>
+                <code>{activationCompletionDigest}</code>
+                <button
+                  className="copy-button funding-digest-copy"
+                  type="button"
+                  onClick={() => void copyPolicyDigest("activation", activationCompletionDigest!)}
+                  aria-label="Copy full activation completion digest"
+                >
+                  {copiedDigest === "activation" ? "copied" : "copy"}
+                </button>
+              </dd>
+              <dt>Checkpoint generation</dt>
+              <dd>
+                <code>{checkpointDigest}</code>
+                <button
+                  className="copy-button funding-digest-copy"
+                  type="button"
+                  onClick={() => void copyPolicyDigest("checkpoint", checkpointDigest!)}
+                  aria-label="Copy full checkpoint generation digest"
+                >
+                  {copiedDigest === "checkpoint" ? "copied" : "copy"}
+                </button>
+              </dd>
+            </dl>
+          </details>
+          <label className="funding-acknowledgement">
+            <input
+              type="checkbox"
+              checked={acknowledged}
+              onChange={(event) => setAcknowledged(event.currentTarget.checked)}
+            />
+            <span>
+              I acknowledge the exact authorization, activation, and checkpoint-generation values available in the policy digest disclosure and API for this funding target.
+            </span>
+          </label>
           <p className="testnet-warning">
             {target.chain === "Base Sepolia"
               ? "Base Sepolia testnet only — do not send mainnet ETH. Remaining capacity is observed, not reserved."
