@@ -60,6 +60,7 @@ contract P42SubmissionManager {
     error P42_BAD_SUBMISSION_STATUS(SubmissionStatus expected, SubmissionStatus actual);
     error P42_NOT_STRICT_IMPROVEMENT(int256 bestScoreAtoms, int256 claimedScoreAtoms);
     error P42_SCORE_ATOMS_OUT_OF_RANGE(int256 scoreAtoms);
+    error P42_IMPROVEMENT_ATOMS_MISMATCH(uint256 expected, uint256 actual);
     error P42_CHALLENGE_WINDOW_OPEN(uint64 endsAt, uint64 nowAt);
     error P42_OBJECTIVE_CHALLENGE_ALREADY_CLEARED();
     error P42_CHALLENGE_WINDOW_CLOSED(uint64 endsAt, uint64 nowAt);
@@ -167,8 +168,8 @@ contract P42SubmissionManager {
         uint256 bondWei;
         uint256 poolAtSubmissionWei;
         uint256 requiredBondWei;
-        /// Advisory display-only figure supplied at reveal. NEVER drives
-        /// payout: credit is derived from claimedScoreAtoms vs the live
+        /// Immutable-seed-relative display delta in 1e18 score atoms. NEVER
+        /// drives payout: credit is derived from claimedScoreAtoms vs the live
         /// frontier at finalization (F1).
         uint256 improvementAtoms;
         /// The submission's ABSOLUTE score in atoms (lower is better).
@@ -748,12 +749,13 @@ contract P42SubmissionManager {
 
     /// @param claimedScoreAtoms The submission's ABSOLUTE score in atoms
     /// (score_atoms = ceil(score * SCORE_ATOM_SCALE); lower is better). It
-    /// must strictly beat the CURRENT frontier (`bestScoreAtoms`) at reveal
-    /// time. Credit at finalization is the marginal reduction against the
-    /// live frontier, which may have advanced further by then.
-    /// @param improvementAtoms Advisory display value only. It does NOT drive
-    /// payout — credit is derived on-chain from `claimedScoreAtoms` vs the
-    /// live frontier.
+    /// must strictly beat the immutable seed (`seedScoreAtoms`) at reveal
+    /// time. Credit at finalization is the marginal reduction against the live
+    /// frontier, which may have advanced further by then.
+    /// @param improvementAtoms Immutable-seed-relative display delta in 1e18
+    /// score atoms. It MUST equal `seedScoreAtoms - claimedScoreAtoms`, but
+    /// does NOT drive payout — credit is derived on-chain from
+    /// `claimedScoreAtoms` vs the live frontier.
     /// @param solution The raw solution bytes. For on-chain-DA problems these
     /// ride this tx's calldata and the contract enforces sha256(solution) equals
     /// the `commitDaHash` anchor bound at commit — a consensus-enforced proof
@@ -799,6 +801,12 @@ contract P42SubmissionManager {
         // challenge views stay panic-free for adversarial claims.
         if (claimedScoreAtoms <= MIN_SCORE_ATOMS_BOUND) {
             revert P42_SCORE_ATOMS_OUT_OF_RANGE(claimedScoreAtoms);
+        }
+        // Canonical display metadata is relative to the immutable seed. The
+        // live payout remains marginal: bestScoreAtoms - claimedScoreAtoms.
+        uint256 expectedImprovementAtoms = uint256(seedScoreAtoms - claimedScoreAtoms);
+        if (improvementAtoms != expectedImprovementAtoms) {
+            revert P42_IMPROVEMENT_ATOMS_MISMATCH(expectedImprovementAtoms, improvementAtoms);
         }
 
         if (

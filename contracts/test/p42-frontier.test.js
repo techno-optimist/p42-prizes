@@ -205,7 +205,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
   }
 
   // Commit + reveal an ABSOLUTE claimed score for `solver`; returns the id.
-  async function commitReveal(fixture, solver, claimedScoreAtoms, { cid, salt, improvementAtoms = 1n } = {}) {
+  async function commitReveal(fixture, solver, claimedScoreAtoms, { cid, salt } = {}) {
     const { submissions } = fixture;
     const solutionCid = cid ?? `bafy-frontier-${solver.address.slice(2, 10)}-${claimedScoreAtoms}`;
     const revealSalt = salt ?? `salt-${solver.address.slice(2, 10)}-${claimedScoreAtoms}`;
@@ -218,6 +218,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     const bond = await submissions.requiredPostingBondNow();
     await submissions.connect(solver).commit(commitment, DA_HASH, { value: bond });
     const submissionId = await submissions.submissionCount();
+    const improvementAtoms = await submissions.seedScoreAtoms() - BigInt(claimedScoreAtoms);
     await submissions
       .connect(solver)
       .reveal(submissionId, solutionCid, claimedScoreAtoms, improvementAtoms, revealSalt, "0x");

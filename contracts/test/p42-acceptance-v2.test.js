@@ -169,7 +169,15 @@ async function commitOnly(fixture, solver, cid, salt) {
 
 async function commitReveal(fixture, solver, cid, score, salt) {
   const submissionId = await commitOnly(fixture, solver, cid, salt);
-  await fixture.submissions.connect(solver).reveal(submissionId, cid, score, 1, salt, "0x");
+  const improvementAtoms = await fixture.submissions.seedScoreAtoms() - BigInt(score);
+  await fixture.submissions.connect(solver).reveal(
+    submissionId,
+    cid,
+    score,
+    improvementAtoms,
+    salt,
+    "0x"
+  );
   return submissionId;
 }
 
@@ -315,13 +323,13 @@ describe("P42 second-pass contract acceptance", () => {
     const aliceId = await commitOnly(fixture, alice, cid, "alice-priority");
     const bobId = await commitOnly(fixture, bob, cid, "bob-copy");
 
-    await submissions.connect(bob).reveal(bobId, cid, 800_000, 1, "bob-copy", "0x");
+    await submissions.connect(bob).reveal(bobId, cid, 800_000, 200_000, "bob-copy", "0x");
     assert.equal(await submissions.prioritySubmissionOf(ethers.keccak256(ethers.toUtf8Bytes(cid))), bobId);
 
     const aliceCommit = await submissions.submissions(aliceId);
     // Leave enough room for the reveal block to mine before commit expiry.
     await advanceTo(aliceCommit.committedAt + WINDOW - 30n);
-    await submissions.connect(alice).reveal(aliceId, cid, 800_000, 1, "alice-priority", "0x");
+    await submissions.connect(alice).reveal(aliceId, cid, 800_000, 200_000, "alice-priority", "0x");
     assert.equal(await submissions.prioritySubmissionOf(ethers.keccak256(ethers.toUtf8Bytes(cid))), aliceId);
     assert.equal((await submissions.submissions(bobId)).status, 5n);
     assert.equal(await submissions.claimableBondWei(bob.address) > 0n, true);

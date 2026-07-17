@@ -5,10 +5,8 @@ import { network } from "hardhat";
 
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
-// Absolute-score frontier seed (F1). Each scenario submission claims
-// claimed = previousBest - improvementAtoms, so the on-chain marginal credit
-// equals the scenario's improvementAtoms and the seeded credit bookkeeping
-// below stays exact.
+// Absolute-score frontier seed (F1). Scenario generation chooses live marginal
+// reductions; reveal metadata is independently derived from the immutable seed.
 const SEED_SCORE_ATOMS = 1_000_000n;
 const PERMANENCE_HASH = ethers.keccak256(ethers.toUtf8Bytes("property permanence receipt"));
 const FUNDING_CAP = ethers.parseEther("100");
@@ -108,7 +106,7 @@ function scenarioFromSeed(seed) {
   for (let index = 0; index < submissionCount; index += 1) {
     submissions.push({
       solverIndex: Number(next() % 5n),
-      improvementAtoms: 1n + next() % 29n,
+      marginalAtoms: 1n + next() % 29n,
       donationBeforeFinalizeWei: index === 0 ? 2000n + (next() % 5000n) : next() % 400n
     });
   }
@@ -181,7 +179,7 @@ async function deployFixture({ alphaBps = 200n, minBond = 1n, feeBps = 0 } = {})
   return { owner, treasury, resolver, participants, pool, ledger, submissions, vault };
 }
 
-async function submitAndFinalize(fixture, solver, scenarioSeed, index, claimedScoreAtoms, improvementAtoms, donationBeforeFinalizeWei) {
+async function submitAndFinalize(fixture, solver, scenarioSeed, index, claimedScoreAtoms, expectedMarginalAtoms, donationBeforeFinalizeWei) {
   const { pool, ledger, submissions } = fixture;
   const solutionCid = `sha256:property-${scenarioSeed}-${index}`;
   const salt = `salt-${scenarioSeed}-${index}`;
@@ -196,14 +194,22 @@ async function submitAndFinalize(fixture, solver, scenarioSeed, index, claimedSc
 
   await submissions.connect(solver).commit(commitment, commitDaHash, { value: postingBond });
   const submissionId = await submissions.submissionCount();
-  await submissions.connect(solver).reveal(submissionId, solutionCid, claimedScoreAtoms, improvementAtoms, salt, "0x");
+  const seedRelativeImprovementAtoms = SEED_SCORE_ATOMS - claimedScoreAtoms;
+  await submissions.connect(solver).reveal(
+    submissionId,
+    solutionCid,
+    claimedScoreAtoms,
+    seedRelativeImprovementAtoms,
+    salt,
+    "0x"
+  );
 
   if (donationBeforeFinalizeWei > 0n) {
     await pool.fund({ value: donationBeforeFinalizeWei });
   }
   await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
 
-  const entitlement = await ledger.provisionalEntitlement(solver.address, improvementAtoms);
+  const entitlement = await ledger.provisionalEntitlement(solver.address, expectedMarginalAtoms);
   const requiredAtFinalize = await submissions.requiredPostingBondForPool(entitlement);
   const posted = (await submissions.submissions(submissionId)).bondWei;
   let undercovered = false;
@@ -239,27 +245,26 @@ describe("P42 contract property checks", function () {
       }
 
       const expectedCredits = new Map();
-      // Track the descending absolute-score frontier: each submission claims
-      // exactly improvementAtoms below the current best, so its finalized
-      // marginal credit equals improvementAtoms (F1).
+      // Track the descending live frontier. The generated value is marginal
+      // credit; the reveal field is the cumulative immutable-seed delta.
       let frontierScoreAtoms = SEED_SCORE_ATOMS;
       for (const [index, submission] of scenario.submissions.entries()) {
         const solver = participants[submission.solverIndex];
-        const claimedScoreAtoms = frontierScoreAtoms - submission.improvementAtoms;
+        const claimedScoreAtoms = frontierScoreAtoms - submission.marginalAtoms;
         const undercovered = await submitAndFinalize(
           fixture,
           solver,
           seed,
           index,
           claimedScoreAtoms,
-          submission.improvementAtoms,
+          submission.marginalAtoms,
           submission.donationBeforeFinalizeWei
         );
         frontierScoreAtoms = claimedScoreAtoms;
         if (undercovered) undercoveredCases += 1;
         expectedCredits.set(
           solver.address,
-          (expectedCredits.get(solver.address) ?? 0n) + submission.improvementAtoms
+          (expectedCredits.get(solver.address) ?? 0n) + submission.marginalAtoms
         );
       }
 

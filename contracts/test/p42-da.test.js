@@ -168,13 +168,13 @@ async function makeCommit(submissions, solver, solutionBytes, salt) {
   return { cid, commitDaHash, commitment, digest };
 }
 
-async function commitReveal(fixture, solutionBytes, salt, improvement, revealBytes) {
+async function commitReveal(fixture, solutionBytes, salt, revealBytes) {
   const { solver, submissions } = fixture;
   const { cid, commitDaHash, commitment } = await makeCommit(submissions, solver, solutionBytes, salt);
   const bond = await submissions.requiredPostingBondNow();
   await submissions.connect(solver).commit(commitment, commitDaHash, { value: bond });
   const id = await submissions.submissionCount();
-  const revealTx = submissions.connect(solver).reveal(id, cid, 0, improvement, salt, revealBytes);
+  const revealTx = submissions.connect(solver).reveal(id, cid, 0, SEED_SCORE_ATOMS, salt, revealBytes);
   return { id, cid, commitDaHash, revealTx };
 }
 
@@ -243,7 +243,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const fixture = await deploy(true, 4096);
       await fixture.pool.fund({ value: ethers.parseEther("0.01") });
       const solutionBytes = ethers.toUtf8Bytes(JSON.stringify({ witness: [1, -1, 1, -1], claim: "1/1" }));
-      const { id, commitDaHash, revealTx } = await commitReveal(fixture, solutionBytes, "s-ok", 1, solutionBytes);
+      const { id, commitDaHash, revealTx } = await commitReveal(fixture, solutionBytes, "s-ok", solutionBytes);
       const receipt = await (await revealTx).wait();
 
       // Bytes are recoverable from the reveal tx calldata and re-hash to the anchor.
@@ -259,7 +259,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const fixture = await deploy(true, 4096);
       await fixture.pool.fund({ value: ethers.parseEther("0.01") });
       const solutionBytes = ethers.toUtf8Bytes("abcdefghij"); // 10 bytes
-      const { revealTx } = await commitReveal(fixture, solutionBytes, "s-len", 1, solutionBytes);
+      const { revealTx } = await commitReveal(fixture, solutionBytes, "s-len", solutionBytes);
       const receipt = await (await revealTx).wait();
       const evt = receipt.logs
         .map((l) => { try { return fixture.submissions.interface.parseLog(l); } catch { return null; } })
@@ -273,7 +273,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       await fixture.pool.fund({ value: ethers.parseEther("0.01") });
       const committedBytes = ethers.toUtf8Bytes("the real solution");
       const differentBytes = ethers.toUtf8Bytes("a DIFFERENT solution");
-      const { revealTx } = await commitReveal(fixture, committedBytes, "s-mismatch", 1, differentBytes);
+      const { revealTx } = await commitReveal(fixture, committedBytes, "s-mismatch", differentBytes);
       await expectCustomError(revealTx, fixture.submissions, "P42_SOLUTION_HASH_MISMATCH");
     });
 
@@ -281,7 +281,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const fixture = await deploy(true, 4096);
       await fixture.pool.fund({ value: ethers.parseEther("0.01") });
       const solutionBytes = ethers.toUtf8Bytes("solution");
-      const { revealTx } = await commitReveal(fixture, solutionBytes, "s-empty", 1, "0x");
+      const { revealTx } = await commitReveal(fixture, solutionBytes, "s-empty", "0x");
       await expectCustomError(revealTx, fixture.submissions, "P42_EMPTY_SOLUTION_BYTES");
     });
 
@@ -290,7 +290,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const fixture = await deploy(true, cap);
       await fixture.pool.fund({ value: ethers.parseEther("0.01") });
       const solutionBytes = ethers.toUtf8Bytes("x".repeat(cap + 1)); // 65 > 64
-      const { revealTx } = await commitReveal(fixture, solutionBytes, "s-big", 1, solutionBytes);
+      const { revealTx } = await commitReveal(fixture, solutionBytes, "s-big", solutionBytes);
       await expectCustomError(revealTx, fixture.submissions, "P42_SOLUTION_TOO_LARGE");
     });
 
@@ -298,7 +298,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const fixture = await deploy(true, 4096);
       await fixture.pool.fund({ value: ethers.parseEther("0.01") });
       const solutionBytes = ethers.toUtf8Bytes("winning solution");
-      const { id, revealTx } = await commitReveal(fixture, solutionBytes, "s-final", 1, solutionBytes);
+      const { id, revealTx } = await commitReveal(fixture, solutionBytes, "s-final", solutionBytes);
       await (await revealTx).wait();
       await increaseTime(CHALLENGE_WINDOW + 1n);
       await fixture.submissions.connect(fixture.solver).finalize(id, ethers.ZeroHash);
@@ -313,7 +313,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const fixture = await deploy(false, 0);
       await fixture.pool.fund({ value: ethers.parseEther("0.01") });
       const solutionBytes = ethers.toUtf8Bytes("a big autoconvolution certificate");
-      const { id, commitDaHash, revealTx } = await commitReveal(fixture, solutionBytes, "s-off", 1, "0x");
+      const { id, commitDaHash, revealTx } = await commitReveal(fixture, solutionBytes, "s-off", "0x");
       await (await revealTx).wait();
       const sub = await fixture.submissions.submissions(id);
       assert.equal(sub.status, 2n); // Revealed
@@ -324,7 +324,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
       const fixture = await deploy(false, 0);
       await fixture.pool.fund({ value: ethers.parseEther("0.01") });
       const solutionBytes = ethers.toUtf8Bytes("should have gone off-chain");
-      const { revealTx } = await commitReveal(fixture, solutionBytes, "s-off2", 1, solutionBytes);
+      const { revealTx } = await commitReveal(fixture, solutionBytes, "s-off2", solutionBytes);
       await expectCustomError(revealTx, fixture.submissions, "P42_UNEXPECTED_ONCHAIN_BYTES");
     });
   });
