@@ -22,13 +22,15 @@ review, audit, authorization, and deployment gates listed below.
 The unbound `q6-intersecting-hypergraph` guest ports the complete finite Python
 predicate: bounded canonical JSON, 6-uniform distinct edges, every pair
 intersecting, and exhaustive depth-5 hitting-set rejection. Its host harness
-reconstructs the same objective-correction journal. Independent DGX source
-roots reproduce the candidate ELF after deterministic source-path remapping,
-and a scratch build has executed it in mock mode over the 18-edge PG(2,5)
-fixture. Those candidate observations are not release authority. Q6 remains
-`guest.status=missing` until the hosted dual-image gate, reproducible artifact
-ceremony, genuine proof vector, independent review, and production binding are
-complete.
+reconstructs the same objective-correction journal. Two DGX source roots agree
+with each other after source-path remapping, and two GitHub x86 images agree
+with each other, but the native-ARM and x86 candidate ELFs differ because the
+official host-specific SP1 toolchains embed different prebuilt-sysroot paths.
+The rejected hosted run retains both x86 bundles as untrusted forensics; it is
+not release authority or cross-architecture reproducibility evidence. Q6
+remains `guest.status=missing` until a clean hosted gate, a canonical
+cross-architecture artifact ceremony, genuine proof vector, independent
+review, and production binding are complete.
 
 This source does **not** activate production objective proofs. Ubuntu 22.04 and
 24.04 GitHub-hosted x86 runners now reproduce the same frozen ELF and vkey, and
