@@ -17,7 +17,12 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { atomsFromScore, chainScoreAtoms, recoverRevealCalldata } from "./lib.mjs";
+import {
+  assertSeedRelativeImprovementAtoms,
+  atomsFromScore,
+  chainScoreAtoms,
+  recoverRevealCalldata,
+} from "./lib.mjs";
 import {
   canonicalTranscriptArtifact,
   configuredTranscriptEndpoints,
@@ -2250,8 +2255,19 @@ function replaySubmissionEvent(state, event) {
       requireStatus(submission, "Committed", event, id);
       invariant(event.blockTimestamp !== undefined, `Revealed ${id} missing blockTimestamp`);
       submission.solutionCid = getArg(event, "solutionCid");
-      submission.improvementAtoms = asBigInt(getArg(event, "improvementAtoms"));
-      submission.claimedScoreAtoms = asBigInt(getArg(event, "claimedScoreAtoms"));
+      const improvementAtoms = asBigInt(getArg(event, "improvementAtoms"));
+      const claimedScoreAtoms = asBigInt(getArg(event, "claimedScoreAtoms"));
+      try {
+        assertSeedRelativeImprovementAtoms(
+          state.config.seedScoreAtoms,
+          claimedScoreAtoms,
+          improvementAtoms,
+        );
+      } catch (error) {
+        throw new ReplayError(`Revealed ${id} quarantined: ${error.message}`);
+      }
+      submission.improvementAtoms = improvementAtoms;
+      submission.claimedScoreAtoms = claimedScoreAtoms;
       submission.revealedAt = asBigInt(event.blockTimestamp);
       const revealInstanceHash = getArg(event, "revealInstanceHash");
       invariant(

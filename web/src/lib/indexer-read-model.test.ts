@@ -108,7 +108,7 @@ function projection(index: number) {
     },
     {
       submissionId: "2", solver: ADDRESS, status: "Voided", claimedScoreAtoms: String(7n * SCALE),
-      improvementAtoms: String(SCALE), creditAtoms: "0", originalCreditAtoms: String(SCALE),
+      improvementAtoms: String(3n * SCALE), creditAtoms: "0", originalCreditAtoms: String(SCALE),
       solutionCid: "ipfs://voided", committedAt: "120", revealedAt: "130", challengeEndsAt: "220",
       finalizedAt: "230", activeChallenge: {
         challenger: ADDRESS, reasonHash: HASH, challengeBondWei: String(SCALE), challengedAt: "140",
@@ -118,7 +118,7 @@ function projection(index: number) {
     },
     {
       submissionId: "3", solver: ADDRESS, status: "Finalized", claimedScoreAtoms: String(8n * SCALE),
-      improvementAtoms: String(SCALE), creditAtoms: String(SCALE), originalCreditAtoms: String(SCALE),
+      improvementAtoms: String(2n * SCALE), creditAtoms: String(SCALE), originalCreditAtoms: String(SCALE),
       solutionCid: "ipfs://three", committedAt: "130", revealedAt: "140", challengeEndsAt: "230",
       finalizedAt: "240", activeChallenge: null, sourceLogs: [sourceLog(events[2])],
     },
@@ -302,7 +302,7 @@ describe("atomic activation-bound portal read model", () => {
       { claimant: `0x${"3".repeat(40)}`, credit: "0/1", finalEntitlementEth: "0", challengeBondEth: "0.1", withdrawableBondEth: "0.1" },
     ]);
     expect(model.submissions[1]).toMatchObject({
-      state: "voided", credit: "0/1", originalCredit: "1/1", provisionalImprovement: "1/1", transcriptCid: "ipfs://transcript",
+      state: "voided", credit: "0/1", originalCredit: "1/1", provisionalImprovement: "3/1", transcriptCid: "ipfs://transcript",
       activeChallenge: { challengeBondEth: "1", resolved: true, challengerWins: true },
     });
   });
@@ -496,10 +496,41 @@ describe("atomic activation-bound portal read model", () => {
     const cohort = problems();
     const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
     const rows = sortLeaderboardRows(cohort[0].id, [...model.submissions]);
-    expect(rows.map((row) => row.id)).toEqual(["chain:1:1", "chain:1:2", "chain:1:3"]);
+    expect(rows.map((row) => row.id)).toEqual(["chain:1:1", "chain:1:3", "chain:1:2"]);
     expect(finalizedFrontierRows(model.problems[0], [...model.submissions]).map((row) => row.id))
       .toEqual(["chain:1:1", "chain:1:3"]);
     expect(frontierBest(model.problems[0], [...model.submissions])).toBe("8/1");
+  });
+
+  it("publishes an honest seed-relative 1e18 display delta", () => {
+    const cohort = problems();
+    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
+
+    expect(model.submissions.find((row) => row.id === "chain:1:1")).toMatchObject({
+      score: "9/1",
+      improvement: "1/1",
+      provisionalImprovement: "1/1",
+      credit: "1/1",
+    });
+  });
+
+  it("omits a uint256.max advisory improvement that the indexed seed and claim do not corroborate", () => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    const projected = (value.checkpoint.boards as any[])[0].portalProjection.submissions;
+    projected[0].improvementAtoms = (2n ** 256n - 1n).toString();
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.submissions.map((row) => row.id)).toEqual(["chain:1:2", "chain:1:3"]);
+  });
+
+  it("fails closed instead of interpreting a legacy 1e6 advisory delta as display atoms", () => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    (value.checkpoint.boards as any[])[0].portalProjection.submissions[0].improvementAtoms = "1000000";
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.submissions.some((row) => row.id === "chain:1:1")).toBe(false);
   });
 
   it("never mixes local rows into a passing chain cohort", () => {

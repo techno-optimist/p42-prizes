@@ -27,6 +27,7 @@ type JsonObject = Record<string, unknown>;
 const DEFAULT_CHECKPOINT_MAX_AGE_SECONDS = 300;
 const CHECKPOINT_FUTURE_TOLERANCE_SECONDS = 30;
 const FUNDING_WINDOW_BEFORE_CLOSE_SECONDS = 30n * 24n * 60n * 60n;
+const SCORE_ATOM_SCALE = 10n ** 18n;
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 export interface PortalReadModelClock {
@@ -294,13 +295,23 @@ function projectedSubmission(
   problem: Problem,
   registryId: string,
   scale: string,
+  seedScoreAtoms: string,
+  currentScoreAtoms: string,
   direction: Direction,
   value: unknown,
-): Submission {
+): Submission | null {
   const row = object(value, "portal projection submission");
   const state = submissionState(row.status);
   const currentCredit = integerString(row.creditAtoms, "live credit atoms", true);
   if (row.status === "Voided" && currentCredit !== "0") throw new Error("voided submission has nonzero live credit");
+  const claimedScoreAtoms = integerString(row.claimedScoreAtoms, "claimed score atoms");
+  const advisoryImprovementAtoms = integerString(row.improvementAtoms, "improvement atoms", true);
+  const corroboratedImprovementAtoms = BigInt(seedScoreAtoms) - BigInt(claimedScoreAtoms);
+  if (corroboratedImprovementAtoms <= 0n
+    || advisoryImprovementAtoms !== corroboratedImprovementAtoms.toString()
+    || (state === "finalized" && BigInt(claimedScoreAtoms) < BigInt(currentScoreAtoms))) {
+    return null;
+  }
   const logs = array(row.sourceLogs, "submission source logs").map(provenanceLog);
   const committed = logs.find((log) => log.source === "submissions" && log.eventName === "Committed");
   if (!committed) throw new Error("projected submission is missing its committed provenance log");
@@ -318,9 +329,9 @@ function projectedSubmission(
     source: "chain-p42-v1",
     settlementState: state === "finalized" ? "finalized" : ["rejected", "voided"].includes(state) ? "ineligible" : "unsettled",
     state,
-    score: scoreAtomsToRational(row.claimedScoreAtoms, scale, direction, "claimed score atoms"),
-    improvement: atomsToRational(row.improvementAtoms, scale, "improvement atoms"),
-    provisionalImprovement: atomsToRational(row.improvementAtoms, scale, "improvement atoms"),
+    score: scoreAtomsToRational(claimedScoreAtoms, scale, direction, "claimed score atoms"),
+    improvement: atomsToRational(corroboratedImprovementAtoms.toString(), SCORE_ATOM_SCALE.toString(), "corroborated improvement atoms"),
+    provisionalImprovement: atomsToRational(corroboratedImprovementAtoms.toString(), SCORE_ATOM_SCALE.toString(), "corroborated improvement atoms"),
     credit: atomsToRational(currentCredit, scale, "credit atoms"),
     originalCredit: atomsToRational(row.originalCreditAtoms, scale, "original credit atoms"),
     activeChallenge: challenge,
@@ -382,7 +393,7 @@ export function portalReadModelFromActivatedSnapshot(
     const objective = object(manifestProblem.certifiedObjective, "certified objective");
     const direction = objective.direction as Direction;
     const scale = integerString(manifestProblem.scoreAtomScale, "score atom scale", true);
-    if (BigInt(scale) <= 0n || direction !== problem.direction
+    if (scale !== SCORE_ATOM_SCALE.toString() || direction !== problem.direction
       || !equalRational(String(objective.seedBest), problem.seedBest)
       || !equalRational(String(objective.minImprovement), problem.minImprovement)
       || chainAtomsForScore(problem.seedBest, scale, direction) !== integerString(manifestProblem.seedScoreAtoms, "seed score atoms")) {
@@ -413,7 +424,16 @@ export function portalReadModelFromActivatedSnapshot(
     }
     replayEvents[problem.slug] = { digest: String(events.digest), total: Number(events.total) };
     submissions.push(...array(projection.submissions, "portal projection submissions")
-      .map((row) => projectedSubmission(problem, registryId, scale, direction, row)));
+      .map((row) => projectedSubmission(
+        problem,
+        registryId,
+        scale,
+        integerString(manifestProblem.seedScoreAtoms, "seed score atoms"),
+        integerString(frontier.currentAtoms, "frontier atoms"),
+        direction,
+        row,
+      ))
+      .filter((row): row is Submission => row !== null));
     const pool = poolReadModel(projection, scale);
     const funding = fundingReadModel(projection, pool.closed, fundingDeadline, effectiveTimestamp);
     return {

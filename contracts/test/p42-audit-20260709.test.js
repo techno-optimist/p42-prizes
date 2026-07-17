@@ -197,7 +197,7 @@ async function commitAndReveal(fixture, solver, { cid, salt, score = SCORE }) {
   const committed = await commitOnly(fixture, solver, { cid, salt });
   await fixture.submissions
     .connect(solver)
-    .reveal(committed.submissionId, cid, score, 1n, salt, "0x");
+    .reveal(committed.submissionId, cid, score, SEED_SCORE - BigInt(score), salt, "0x");
   return committed;
 }
 
@@ -276,7 +276,9 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(preCommitReceipt.blockNumber, preArmReceipt.blockNumber);
     assert.equal(await preArm.submissions.paidAtCommit(1), false);
     await preArm.pool.connect(preArm.owner).setAcceptingFunds(true);
-    await preArm.submissions.connect(preArm.owner).reveal(1, preCid, SCORE, 1n, preSalt, "0x");
+    await preArm.submissions.connect(preArm.owner).reveal(
+      1, preCid, SCORE, SEED_SCORE - SCORE, preSalt, "0x"
+    );
     await increaseTime(CHALLENGE_WINDOW + 1n);
     await preArm.submissions.connect(preArm.owner).finalize(1, PERMANENCE_HASH);
     assert.equal(await preArm.ledger.totalCreditAtoms(), 0n);
@@ -312,7 +314,9 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
     assert.equal(postArmReceipt.blockNumber, postCommitReceipt.blockNumber);
     assert.equal(await postArm.submissions.paidAtCommit(1), true);
     await postArm.pool.connect(postArm.owner).setAcceptingFunds(true);
-    await postArm.submissions.connect(postArm.owner).reveal(1, postCid, SCORE, 1n, postSalt, "0x");
+    await postArm.submissions.connect(postArm.owner).reveal(
+      1, postCid, SCORE, SEED_SCORE - SCORE, postSalt, "0x"
+    );
     await increaseTime(CHALLENGE_WINDOW + 1n);
     await postArm.submissions.connect(postArm.owner).finalize(1, PERMANENCE_HASH);
     assert.equal(await postArm.ledger.totalCreditAtoms(), SEED_SCORE - SCORE);
@@ -340,7 +344,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
         gasPrice: 100_000_000_000n,
       });
       copyRevealTx = await fixture.submissions.connect(fixture.bob).reveal(
-        2, cid, SCORE, 1n, salt, "0x",
+        2, cid, SCORE, SEED_SCORE - SCORE, salt, "0x",
         {
           nonce: bobNonce + 1,
           gasLimit: 1_000_000n,
@@ -348,7 +352,7 @@ describe("P42 2026-07-09 economic and lifecycle audit regressions", function () 
         }
       );
       originalRevealTx = await fixture.submissions.connect(fixture.alice).reveal(
-        original.submissionId, cid, SCORE, 1n, salt, "0x",
+        original.submissionId, cid, SCORE, SEED_SCORE - SCORE, salt, "0x",
         {
           nonce: aliceNonce,
           gasLimit: 1_000_000n,

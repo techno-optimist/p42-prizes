@@ -1,4 +1,5 @@
 import type { Problem, Submission } from "@/lib/types";
+import { compareRational, parseRational } from "@/lib/exact";
 
 function undeployedBaseSepoliaPool(note: string): Problem["donationWallet"] {
   return {
@@ -801,8 +802,22 @@ export function sortLeaderboardRows(problemId: number, rows: Submission[]): Subm
   return rows
     .filter((submission) => submission.problemId === problemId)
     .sort((a, b) => {
-      const left = BigInt(a.improvement.split("/")[0]) * BigInt(b.improvement.split("/")[1] ?? "1");
-      const right = BigInt(b.improvement.split("/")[0]) * BigInt(a.improvement.split("/")[1] ?? "1");
-      return left === right ? a.submittedAt.localeCompare(b.submittedAt) : left > right ? -1 : 1;
+      const aFinalized = a.source === "chain-p42-v1" && a.state === "finalized" && a.settlementState === "finalized";
+      const bFinalized = b.source === "chain-p42-v1" && b.state === "finalized" && b.settlementState === "finalized";
+      const aRank = aFinalized ? 0 : a.settlementState === "unsettled" ? 1 : 2;
+      const bRank = bFinalized ? 0 : b.settlementState === "unsettled" ? 1 : 2;
+      if (aRank !== bRank) return aRank - bRank;
+
+      if (aRank === 2) {
+        return a.submittedAt.localeCompare(b.submittedAt) || a.id.localeCompare(b.id);
+      }
+
+      const economicOrder = compareRational(
+        parseRational(aFinalized ? a.credit : a.provisionalImprovement ?? "0/1"),
+        parseRational(bFinalized ? b.credit : b.provisionalImprovement ?? "0/1"),
+      );
+      return economicOrder === 0
+        ? a.submittedAt.localeCompare(b.submittedAt) || a.id.localeCompare(b.id)
+        : -economicOrder;
     });
 }

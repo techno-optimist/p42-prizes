@@ -35,6 +35,7 @@ import {
   recoverRevealCalldata,
   resolveOperatorFinality,
   runtimePythonExecutable,
+  assertSeedRelativeImprovementAtoms,
   sha256Canonical,
   validateRegistryBinding,
   validateOperatorCursor,
@@ -200,7 +201,30 @@ let registryProblemId;
 let localProblem;
 let cursorBinding;
 let cursorState;
+let canonicalSeedScoreAtoms;
 const blockCache = new Map();
+
+export function validateRevealImprovementAtoms(eventArgs, seedScoreAtoms) {
+  return assertSeedRelativeImprovementAtoms(
+    seedScoreAtoms,
+    eventArgs.claimedScoreAtoms,
+    eventArgs.improvementAtoms,
+  );
+}
+
+async function loadCanonicalSeedScoreAtoms() {
+  const onchainSeed = BigInt(await subs.seedScoreAtoms());
+  if (
+    selectedManifestProblem?.seedScoreAtoms !== undefined
+    && onchainSeed !== BigInt(selectedManifestProblem.seedScoreAtoms)
+  ) {
+    throw new Error(
+      `manifest seedScoreAtoms ${selectedManifestProblem.seedScoreAtoms} does not match on-chain seed ${onchainSeed}`,
+    );
+  }
+  canonicalSeedScoreAtoms = onchainSeed;
+  return onchainSeed;
+}
 
 function registryBindingExpected() {
   return {
@@ -1041,6 +1065,16 @@ async function ingestReveal(event, chainTimestamp) {
   const paths = retryPaths(jobId);
   const submissionId = event.args.submissionId;
   const submission = await subs.submissions(submissionId);
+  if (canonicalSeedScoreAtoms === undefined) {
+    throw new Error("canonical on-chain seedScoreAtoms was not loaded");
+  }
+  validateRevealImprovementAtoms(event.args, canonicalSeedScoreAtoms);
+  if (
+    BigInt(submission.claimedScoreAtoms) !== BigInt(event.args.claimedScoreAtoms)
+    || BigInt(submission.improvementAtoms) !== BigInt(event.args.improvementAtoms)
+  ) {
+    throw new Error(`reveal #${submissionId} event score fields do not match on-chain submission storage`);
+  }
   const revealInstanceHash = String(event.args.revealInstanceHash).toLowerCase();
   if (!ethers.isHexString(revealInstanceHash, 32) || revealInstanceHash === ethers.ZeroHash) {
     throw new Error(`reveal #${submissionId} emitted an invalid instance hash`);
@@ -2206,6 +2240,7 @@ async function main() {
   // Fail startup before queueing or spending when the finalized registry cannot
   // attest this exact local verifier source/image identity.
   await currentRegistryBinding();
+  await loadCanonicalSeedScoreAtoms();
   cursorBinding = operatorCursorBinding({
     manifest,
     chainId,
