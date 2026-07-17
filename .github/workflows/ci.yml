@@ -197,6 +197,34 @@ jobs:
             --guest-sysroot "$guest_sysroot" \
             --cargo-home "$HOME/.cargo" \
             --capture-build-provenance "$RUNNER_TEMP/sp1-build-provenance.json"
+      - name: Enforce SP1 build disk budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          cleanup_paths=(
+            /usr/local/lib/android
+            /usr/share/dotnet
+            /opt/ghc
+            /usr/local/share/boost
+          )
+          for path in "${cleanup_paths[@]}"; do
+            if [[ ! -e "$path" ]]; then
+              continue
+            fi
+            if [[ ! -d "$path" || -L "$path" ]]; then
+              echo "refusing unsafe runner cleanup path: $path" >&2
+              exit 1
+            fi
+            sudo find "$path" -xdev -mindepth 1 -delete
+          done
+          available_kib="$(df -Pk "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+          required_kib=$((20 * 1024 * 1024))
+          printf 'SP1 build disk budget: available=%s KiB required=%s KiB\n' \
+            "$available_kib" "$required_kib"
+          if (( available_kib < required_kib )); then
+            echo "insufficient disk for isolated SP1 workspaces" >&2
+            exit 1
+          fi
       - name: Test objective predicate and Solidity ABI encoding
         working-directory: objective-programs
         shell: bash
