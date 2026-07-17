@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, createHmac, pbkdf2Sync, randomBytes } from "node:crypto";
 import process from "node:process";
 import pg from "pg";
 
@@ -8,6 +8,7 @@ const connectionString = process.env.P42_PORTAL_MIGRATION_DATABASE_URL?.trim();
 const runtimeRoleName = process.env.P42_PORTAL_RUNTIME_ROLE?.trim();
 const targetSchemaName = process.env.P42_PORTAL_DATABASE_SCHEMA?.trim();
 const runtimePassword = process.env.P42_PORTAL_RUNTIME_PASSWORD;
+delete process.env.P42_PORTAL_RUNTIME_PASSWORD;
 
 let client;
 try {
@@ -18,6 +19,9 @@ try {
   if (mode === "apply" && !runtimePassword) {
     throw ceremonyError("missing_runtime_password", "P42_PORTAL_RUNTIME_PASSWORD is required for apply mode");
   }
+  const runtimeVerifier = mode === "apply"
+    ? createScramVerifier(validateRuntimePassword(runtimePassword, runtimeRoleName, targetSchemaName))
+    : undefined;
 
   client = new pg.Client({
     connectionString,
@@ -26,7 +30,7 @@ try {
   });
   client.on("error", () => undefined);
   await client.connect();
-  const result = await provision(client, { mode, runtimeRoleName, targetSchemaName, runtimePassword });
+  const result = await provision(client, { mode, runtimeRoleName, targetSchemaName, runtimeVerifier });
   process.stdout.write(`${canonicalJson(withDigest(result))}\n`);
 } catch (error) {
   const safe = publicError(error, [connectionString, runtimePassword]);
@@ -37,7 +41,7 @@ try {
 }
 
 async function provision(db, options) {
-  const { mode: requestedMode, runtimeRoleName: runtimeName, targetSchemaName: schemaName, runtimePassword: password } = options;
+  const { mode: requestedMode, runtimeRoleName: runtimeName, targetSchemaName: schemaName, runtimeVerifier: verifier } = options;
   await db.query(requestedMode === "plan"
     ? "BEGIN ISOLATION LEVEL SERIALIZABLE READ ONLY"
     : "BEGIN ISOLATION LEVEL SERIALIZABLE");
@@ -47,7 +51,7 @@ async function provision(db, options) {
     assertSafeState(before, runtimeName, schemaName);
 
     if (requestedMode === "apply") {
-      await applyProvisioning(db, before, runtimeName, schemaName, password);
+      await applyProvisioning(db, before, runtimeName, schemaName, verifier);
       const after = await inspect(db, runtimeName, schemaName);
       assertExactResult(after, runtimeName, schemaName);
       await db.query("COMMIT");
@@ -74,7 +78,15 @@ async function inspect(db, runtimeName, schemaName) {
   const runtimeResult = await db.query(`SELECT r.oid::text AS oid, r.rolcanlogin, r.rolsuper,
     r.rolcreatedb, r.rolcreaterole, r.rolinherit, r.rolreplication, r.rolbypassrls,
     r.rolconnlimit, r.rolvaliduntil IS NULL AS no_expiry,
-    (SELECT count(*)::integer FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid) AS memberships,
+    (SELECT count(*)::integer FROM pg_catalog.pg_auth_members m WHERE m.member=r.oid) AS outbound_memberships,
+    coalesce((SELECT pg_catalog.jsonb_agg(pg_catalog.jsonb_build_object(
+      'roleOid',m.roleid::text,'memberOid',m.member::text,'memberName',member.rolname,
+      'grantorOid',m.grantor::text,'grantorName',grantor.rolname,'grantorSuperuser',grantor.rolsuper,
+      'adminOption',m.admin_option,'inheritOption',m.inherit_option,'setOption',m.set_option) ORDER BY m.oid)
+      FROM pg_catalog.pg_auth_members m
+      JOIN pg_catalog.pg_roles member ON member.oid=m.member
+      JOIN pg_catalog.pg_roles grantor ON grantor.oid=m.grantor
+      WHERE m.roleid=r.oid), '[]'::jsonb) AS inbound_memberships,
     (SELECT count(*)::integer FROM pg_catalog.pg_shdepend s
       WHERE s.refclassid='pg_catalog.pg_authid'::regclass AND s.refobjid=r.oid
         AND s.deptype='o') AS owned_objects,
@@ -93,14 +105,21 @@ async function inspect(db, runtimeName, schemaName) {
     EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(n.nspacl,pg_catalog.acldefault('n',n.nspowner))) a
       JOIN pg_catalog.pg_roles r ON r.oid=a.grantee WHERE r.rolname=$2 AND a.privilege_type='USAGE') AS runtime_usage,
     (SELECT count(*)::integer FROM (
-      SELECT c.relowner AS owner FROM pg_catalog.pg_class c WHERE c.relnamespace=n.oid
-      UNION ALL SELECT p.proowner FROM pg_catalog.pg_proc p WHERE p.pronamespace=n.oid
-      UNION ALL SELECT t.typowner FROM pg_catalog.pg_type t WHERE t.typnamespace=n.oid AND t.typrelid=0
-      UNION ALL SELECT o.oprowner FROM pg_catalog.pg_operator o WHERE o.oprnamespace=n.oid
-      UNION ALL SELECT c.collowner FROM pg_catalog.pg_collation c WHERE c.collnamespace=n.oid
-      UNION ALL SELECT c.conowner FROM pg_catalog.pg_conversion c WHERE c.connamespace=n.oid
-    ) owned WHERE owned.owner<>$3::oid) AS foreign_owned_objects
-    FROM pg_catalog.pg_namespace n WHERE n.nspname=$1`, [schemaName, runtimeName, identity.migration_owner_oid]);
+      SELECT c.oid FROM pg_catalog.pg_class c WHERE c.relnamespace=n.oid
+      UNION ALL SELECT p.oid FROM pg_catalog.pg_proc p WHERE p.pronamespace=n.oid
+      UNION ALL SELECT t.oid FROM pg_catalog.pg_type t WHERE t.typnamespace=n.oid AND t.typrelid=0
+      UNION ALL SELECT o.oid FROM pg_catalog.pg_operator o WHERE o.oprnamespace=n.oid
+      UNION ALL SELECT c.oid FROM pg_catalog.pg_collation c WHERE c.collnamespace=n.oid
+      UNION ALL SELECT c.oid FROM pg_catalog.pg_conversion c WHERE c.connamespace=n.oid
+      UNION ALL SELECT o.oid FROM pg_catalog.pg_opclass o WHERE o.opcnamespace=n.oid
+      UNION ALL SELECT o.oid FROM pg_catalog.pg_opfamily o WHERE o.opfnamespace=n.oid
+      UNION ALL SELECT p.oid FROM pg_catalog.pg_ts_parser p WHERE p.prsnamespace=n.oid
+      UNION ALL SELECT d.oid FROM pg_catalog.pg_ts_dict d WHERE d.dictnamespace=n.oid
+      UNION ALL SELECT t.oid FROM pg_catalog.pg_ts_template t WHERE t.tmplnamespace=n.oid
+      UNION ALL SELECT c.oid FROM pg_catalog.pg_ts_config c WHERE c.cfgnamespace=n.oid
+      UNION ALL SELECT s.oid FROM pg_catalog.pg_statistic_ext s WHERE s.stxnamespace=n.oid
+    ) objects) AS user_object_count
+    FROM pg_catalog.pg_namespace n WHERE n.nspname=$1`, [schemaName, runtimeName]);
   const publicSchema = (await db.query(`SELECT n.oid::text AS oid,
     EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(n.nspacl,pg_catalog.acldefault('n',n.nspowner))) a
       WHERE a.grantee=0 AND a.privilege_type='CREATE') AS public_create,
@@ -129,42 +148,58 @@ function assertSafeState(state, runtimeName, schemaName) {
   if (!identity.owner_can_create_role) throw ceremonyError("owner_cannot_create_role", "database owner lacks CREATEROLE");
   if (identity.migration_owner === runtimeName) throw ceremonyError("identity_overlap", "runtime role must differ from migration owner");
   if (!publicSchema) throw ceremonyError("public_schema_missing", "public schema is required for explicit hazard revocation");
-  if (runtime && !exactRuntimeAttributes(runtime, schemaName, identity.database_oid)) {
-    throw ceremonyError("runtime_role_drift", `preexisting runtime role drifted: ${runtimeDriftReasons(runtime, schemaName, identity.database_oid).join(",")}`);
+  if (runtime && !exactRuntimeAttributes(runtime, schemaName, identity)) {
+    throw ceremonyError("runtime_role_drift", `preexisting runtime role drifted: ${runtimeDriftReasons(runtime, schemaName, identity).join(",")}`);
   }
-  if (schema && (schema.owner_oid !== identity.migration_owner_oid || schema.foreign_owned_objects !== 0)) {
-    throw ceremonyError("schema_ownership_drift", `preexisting ${schemaName} schema or contained object ownership drifted`);
+  if (schema && schema.owner_oid !== identity.migration_owner_oid) {
+    throw ceremonyError("schema_ownership_drift", `preexisting ${schemaName} schema ownership drifted`);
+  }
+  if (schema && schema.user_object_count !== 0) {
+    throw ceremonyError("schema_not_empty", `preexisting ${schemaName} schema contains user objects`);
   }
   if (schema?.runtime_direct_create || publicSchema.runtime_direct_create || runtime?.direct_database_create) {
     throw ceremonyError("runtime_create_drift", "preexisting runtime role has a direct CREATE grant");
   }
 }
 
-function exactRuntimeAttributes(runtime, schemaName, databaseOid) {
+function exactRuntimeAttributes(runtime, schemaName, identity) {
   const settings = runtime.settings ?? [];
   const settingsSafe = settings.length === 0
-    || (settings.length === 1 && settings[0] === `${databaseOid}:search_path=${schemaName}, pg_catalog`);
+    || (settings.length === 1 && settings[0] === `${identity.database_oid}:search_path=${schemaName}, pg_catalog`);
   return runtime.rolcanlogin && !runtime.rolsuper && !runtime.rolcreatedb && !runtime.rolcreaterole
     && !runtime.rolinherit && !runtime.rolreplication && !runtime.rolbypassrls
-    && runtime.rolconnlimit === -1 && runtime.no_expiry && runtime.memberships === 0
+    && runtime.rolconnlimit === -1 && runtime.no_expiry && runtime.outbound_memberships === 0
+    && exactInboundMembership(runtime, identity)
     && runtime.owned_objects === 0 && !runtime.direct_database_create && settingsSafe;
 }
 
-function runtimeDriftReasons(runtime, schemaName, databaseOid) {
+function runtimeDriftReasons(runtime, schemaName, identity) {
   const checks = {
     login: runtime.rolcanlogin, nosuperuser: !runtime.rolsuper, nocreatedb: !runtime.rolcreatedb,
     nocreaterole: !runtime.rolcreaterole, noinherit: !runtime.rolinherit,
     noreplication: !runtime.rolreplication, nobypassrls: !runtime.rolbypassrls,
     connection_limit: runtime.rolconnlimit === -1, no_expiry: runtime.no_expiry,
-    no_memberships: runtime.memberships === 0, owns_nothing: runtime.owned_objects === 0,
+    no_outbound_memberships: runtime.outbound_memberships === 0,
+    exact_inbound_membership: exactInboundMembership(runtime, identity),
+    owns_nothing: runtime.owned_objects === 0,
     no_direct_database_create: !runtime.direct_database_create,
     settings: (runtime.settings ?? []).length === 0
-      || ((runtime.settings ?? []).length === 1 && runtime.settings[0] === `${databaseOid}:search_path=${schemaName}, pg_catalog`),
+      || ((runtime.settings ?? []).length === 1 && runtime.settings[0] === `${identity.database_oid}:search_path=${schemaName}, pg_catalog`),
   };
   return Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name);
 }
 
-async function applyProvisioning(db, before, runtimeName, schemaName, password) {
+function exactInboundMembership(runtime, identity) {
+  const edges = runtime.inbound_memberships ?? [];
+  if (edges.length !== 1) return false;
+  const edge = edges[0];
+  return edge.roleOid === runtime.oid && edge.memberOid === identity.migration_owner_oid
+    && edge.memberName === identity.migration_owner && edge.grantorOid === "10"
+    && edge.grantorSuperuser === true && edge.adminOption === true
+    && edge.inheritOption === false && edge.setOption === false;
+}
+
+async function applyProvisioning(db, before, runtimeName, schemaName, verifier) {
   const role = quoteIdentifier(runtimeName);
   const schema = quoteIdentifier(schemaName);
   const database = quoteIdentifier(before.identity.database_name);
@@ -172,10 +207,7 @@ async function applyProvisioning(db, before, runtimeName, schemaName, password) 
   if (!before.runtime) {
     await db.query(`CREATE ROLE ${role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT -1`);
   }
-  await db.query("SELECT pg_catalog.set_config('p42.provision_runtime_password',$1,true)", [password]);
-  await db.query(`DO $provision$ BEGIN EXECUTE pg_catalog.format('ALTER ROLE %I PASSWORD %L', ${quoteLiteral(runtimeName)},
-    pg_catalog.current_setting('p42.provision_runtime_password')); END $provision$`);
-  await db.query("SELECT pg_catalog.set_config('p42.provision_runtime_password','',true)");
+  await db.query(`ALTER ROLE ${role} PASSWORD ${quoteLiteral(verifier)}`);
   if (!before.schema) await db.query(`CREATE SCHEMA ${schema} AUTHORIZATION ${owner}`);
 
   await db.query(`REVOKE CREATE ON DATABASE ${database} FROM PUBLIC`);
@@ -218,8 +250,10 @@ function receipt(receiptMode, status, state, before) {
       existedBefore: Boolean(before.runtime),
       willCreate: !before.runtime,
       requiredAttributes: ["LOGIN", "NOSUPERUSER", "NOCREATEDB", "NOCREATEROLE", "NOBYPASSRLS", "NOINHERIT", "NOREPLICATION"],
+      credential: { scheme: "SCRAM-SHA-256", iterations: 4096, saltBytes: 18, plaintextEnteredDatabase: false },
       ownsNothing: state.runtime ? state.runtime.owned_objects === 0 : true,
-      memberships: state.runtime?.memberships ?? 0,
+      outboundMemberships: state.runtime?.outbound_memberships ?? 0,
+      pinnedInboundMembership: state.runtime?.inbound_memberships?.[0] ?? null,
     },
     targetSchema: {
       name: targetSchemaName,
@@ -227,6 +261,7 @@ function receipt(receiptMode, status, state, before) {
       existedBefore: Boolean(before.schema),
       willCreate: !before.schema,
       exactOwner: state.schema ? state.schema.owner_oid === state.identity.migration_owner_oid : true,
+      userObjectCount: state.schema?.user_object_count ?? 0,
     },
     publicHazards: {
       databaseCreate: state.hazards.publicDatabaseCreate,
@@ -261,6 +296,35 @@ function requireValue(value, name) {
 function requireName(value, name) {
   requireValue(value, name);
   if (!NAME.test(value)) throw ceremonyError("unsafe_identifier", `${name} must be a pinned lowercase PostgreSQL identifier`);
+}
+
+function validateRuntimePassword(password, runtimeName, schemaName) {
+  const characters = [...password];
+  const classes = [/[a-z]/u, /[A-Z]/u, /[0-9]/u, /[^A-Za-z0-9]/u].filter((pattern) => pattern.test(password)).length;
+  if (characters.length < 24 || Buffer.byteLength(password, "utf8") > 1024 || classes < 3
+    || /[\u0000-\u001f\u007f]/u.test(password) || password !== password.normalize("NFC")
+    || password === runtimeName || password === schemaName) {
+    throw ceremonyError("weak_runtime_password", "runtime password does not satisfy the non-secret minimum policy");
+  }
+  return password;
+}
+
+function createScramVerifier(password) {
+  const iterations = 4096;
+  const salt = randomBytes(18);
+  const passwordBytes = Buffer.from(password, "utf8");
+  const saltedPassword = pbkdf2Sync(passwordBytes, salt, iterations, 32, "sha256");
+  passwordBytes.fill(0);
+  const clientKey = createHmac("sha256", saltedPassword).update("Client Key", "utf8").digest();
+  const storedKey = createHash("sha256").update(clientKey).digest();
+  const serverKey = createHmac("sha256", saltedPassword).update("Server Key", "utf8").digest();
+  saltedPassword.fill(0);
+  clientKey.fill(0);
+  const verifier = `SCRAM-SHA-256$${iterations}:${salt.toString("base64")}$${storedKey.toString("base64")}:${serverKey.toString("base64")}`;
+  salt.fill(0);
+  storedKey.fill(0);
+  serverKey.fill(0);
+  return verifier;
 }
 
 function quoteIdentifier(value) { return `"${value.replaceAll('"', '""')}"`; }

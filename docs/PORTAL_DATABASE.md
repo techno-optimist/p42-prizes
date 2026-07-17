@@ -38,25 +38,32 @@ suppresses every funding target.
    `P42_PORTAL_RUNTIME_PASSWORD="$GENERATED_SECRET"` through secret environment
    injection and rerun with `--apply`. Apply is one transaction: it creates or
    exactly verifies the distinct runtime `LOGIN`, rotates its password,
-   precreates the owner schema,
+   precreates the empty owner schema,
    revokes ambient creation paths, pins default privileges and search path, and
    verifies the committed catalog state. Any preexisting identity, attributes,
-   membership, settings, explicit `CREATE`, or object ownership drift aborts.
+   membership, settings, explicit `CREATE`, schema object, or ownership drift
+   aborts.
    An exact rerun is allowed. The runtime is `NOSUPERUSER NOCREATEDB
    NOCREATEROLE NOBYPASSRLS NOINHERIT NOREPLICATION`, owns nothing, and has no
-   role memberships or `SET ROLE` path. The receipt is provisioning evidence,
-   not a production-completion claim. Run `npm run db:provision-integration`
-   against the disposable local harness before the operator ceremony.
+   outbound role memberships or `SET ROLE` path. Runtime passwords must be at
+   least 24 characters, use at least three character classes, be NFC-normalized,
+   and contain no control characters. Plaintext is converted client-side to a
+   fresh-salt PostgreSQL SCRAM-SHA-256 verifier before connecting; only the
+   verifier enters SQL. The receipt is provisioning evidence, not a
+   production-completion claim. Run `npm run db:provision-integration` against
+   the disposable local harness before the operator ceremony.
 
    PostgreSQL 16 and later automatically give a non-superuser `CREATEROLE`
    creator an inbound ADMIN membership in a role it creates; PostgreSQL records
    the bootstrap superuser as grantor, so the creator cannot revoke that edge.
    This does not make the runtime a member and grants it no `SET ROLE` path.
-   The ceremony therefore rejects every membership where the runtime is the
-   member, while the operator evidence must separately retain and review the
-   complete inbound and outbound graph. Password equality and plaintext cannot
-   be read back from PostgreSQL; an exact rerun rotates the stored verifier and
-   re-verifies every catalog property that PostgreSQL exposes.
+   The ceremony rejects every outbound edge and pins the sole permitted inbound
+   edge exactly: runtime role, migration-owner member, bootstrap-superuser
+   grantor OID 10, `ADMIN TRUE`, `INHERIT FALSE`, and `SET FALSE`. That complete
+   row is emitted in the JSON receipt; every additional or changed inbound edge
+   fails closed. Password equality and plaintext cannot be read back from
+   PostgreSQL; an exact pre-migration rerun rotates the stored verifier and
+   re-verifies every exposed catalog property.
 3. The ceremony precreates one durable schema owned exactly by the migration
    role, revokes `CREATE` from runtime and public roles, and sets its name in
    `P42_PORTAL_DATABASE_SCHEMA`. Configure the runtime connection's default
@@ -98,6 +105,13 @@ suppresses every funding target.
 8. Re-run the runtime privilege query after provisioning, restore, role change,
    or PostgreSQL upgrade. Confirm no non-internal trigger exists on authority,
    control, epoch, or acceptance tables.
+
+The provisioning ceremony is intentionally pre-migration only. Once migration
+has populated the target schema, rerunning it fails closed even when every
+object is owner-owned, because an unexpected owner-controlled object can change
+`IF NOT EXISTS` migration behavior. Any later runtime-password rotation needs a
+separate reviewed operation that derives and applies a client-side SCRAM
+verifier without rerunning schema provisioning.
 
 ## Epoch policy
 

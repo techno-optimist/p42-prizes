@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import pg from "pg";
@@ -14,14 +14,17 @@ const pgBin = process.env.P42_TEST_POSTGRES_BIN || [
 const root = mkdtempSync(path.join(tmpdir(), "p42-db-provisioning-"));
 const data = path.join(root, "data");
 const socket = path.join(root, "socket");
+const postgresLog = path.join(root, "postgres.log");
 const port = 55432 + Math.floor(Math.random() * 800);
 const container = `p42-db-provisioning-${process.pid}`;
 if (pgBin) {
   execFileSync("mkdir", [socket]);
   execFileSync(path.join(pgBin, "initdb"), ["-D", data, "-U", "postgres", "-A", "trust", "--no-locale", "--encoding=UTF8"], { stdio: "ignore" });
-  execFileSync(path.join(pgBin, "pg_ctl"), ["-D", data, "-o", `-F -p ${port} -k ${socket}`, "-w", "start"], { stdio: "ignore" });
+  execFileSync(path.join(pgBin, "pg_ctl"), ["-D", data, "-l", postgresLog,
+    "-o", `-F -p ${port} -k ${socket} -c log_statement=all -c log_min_error_statement=error`, "-w", "start"], { stdio: "ignore" });
 } else {
-  execFileSync("docker", ["run", "--name", container, "--rm", "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-p", `127.0.0.1:${port}:5432`, "-d", "postgres:18-alpine"], { stdio: "ignore" });
+  execFileSync("docker", ["run", "--name", container, "--rm", "-e", "POSTGRES_HOST_AUTH_METHOD=trust",
+    "-p", `127.0.0.1:${port}:5432`, "-d", "postgres:18-alpine", "-c", "log_statement=all", "-c", "log_min_error_statement=error"], { stdio: "ignore" });
 }
 
 const adminUrl = `postgresql://postgres@127.0.0.1:${port}/postgres`;
@@ -41,11 +44,14 @@ const createdDatabases = new Set();
 try {
   await testCleanAndIdempotent();
   await testHostileRole();
-  await testHostileSchemaAndObject();
-  await testMembership();
+  await testHostileSchemaOwner();
+  await testHostileOwnerOwnedObject();
+  await testOutboundMembership();
+  await testInboundSetRoleEdge();
   await testPublicCreateRevocation();
+  await testWeakPasswordPolicy();
   await testSecretRedactionAndRollback();
-  process.stdout.write(JSON.stringify({ schemaVersion: "p42-portal-db-provisioning-tests/v1", postgres: await serverVersion(), tests: 7, status: "passed" }) + "\n");
+  process.stdout.write(JSON.stringify({ schemaVersion: "p42-portal-db-provisioning-tests/v1", postgres: await serverVersion(), tests: 10, status: "passed" }) + "\n");
 } finally {
   await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ANY($1) AND pid<>pg_backend_pid()", [[...createdDatabases]]).catch(() => undefined);
   for (const database of createdDatabases) await admin.query(`DROP DATABASE IF EXISTS ${q(database)}`).catch(() => undefined);
@@ -57,13 +63,27 @@ try {
 
 async function testCleanAndIdempotent() {
   const fixture = await makeFixture("clean");
+  const pristine = await connect(fixture.ownerUrl);
+  assert.equal((await pristine.query("SELECT count(*)::integer AS n FROM pg_namespace WHERE nspname=$1", [fixture.schema])).rows[0].n, 0);
+  await pristine.end();
   const plan = run(fixture, "--plan");
-  assert.equal(plan.status, 0);
+  assert.equal(plan.status, 0, plan.stderr);
   assert.equal(json(plan.stdout).mode, "plan");
   assert.equal(json(plan.stdout).runtimeRole.willCreate, true);
   const first = run(fixture, "--apply");
   assert.equal(first.status, 0, first.stderr);
   verifyDigest(json(first.stdout));
+  const firstReceipt = json(first.stdout);
+  assert.deepEqual(firstReceipt.runtimeRole.pinnedInboundMembership, {
+    adminOption: true, grantorName: "postgres", grantorOid: "10", grantorSuperuser: true,
+    inheritOption: false, memberName: fixture.owner, memberOid: firstReceipt.migrationOwner.oid,
+    roleOid: firstReceipt.runtimeRole.oid, setOption: false,
+  });
+  await requireScramHostAuth(fixture.runtime);
+  const runtime = await connect(fixture.runtimeUrl);
+  assert.equal((await runtime.query("SELECT current_user AS role")).rows[0].role, fixture.runtime);
+  await runtime.end();
+  assert.equal(serverLog().includes(fixture.password), false, "plaintext runtime password reached PostgreSQL logging");
   const second = run(fixture, "--apply");
   assert.equal(second.status, 0, second.stderr);
   assert.equal(json(second.stdout).runtimeRole.existedBefore, true);
@@ -82,29 +102,47 @@ async function testHostileRole() {
   assert.equal(json(result.stderr).code, "runtime_role_drift");
 }
 
-async function testHostileSchemaAndObject() {
-  const fixture = await makeFixture("schema");
+async function testHostileSchemaOwner() {
+  const fixture = await makeFixture("schema_owner");
   const hostile = `${fixture.runtime}_owner`; await admin.query(`CREATE ROLE ${q(hostile)}`); createdRoles.add(hostile);
-  const db = await connect(fixture.ownerUrl);
-  await db.query(`CREATE SCHEMA ${q(fixture.schema)}`);
-  await db.query(`CREATE TABLE ${q(fixture.schema)}.hostile(value integer)`);
-  await db.end();
-  const superuser = await connect(`postgresql://postgres@127.0.0.1:${port}/${fixture.database}`);
-  await superuser.query(`ALTER TABLE ${q(fixture.schema)}.hostile OWNER TO ${q(hostile)}`);
+  const superuser = await connect(superuserUrl(fixture.database));
+  await superuser.query(`CREATE SCHEMA ${q(fixture.schema)} AUTHORIZATION ${q(hostile)}`);
   await superuser.end();
   const result = run(fixture, "--apply");
   assert.equal(result.status, 1);
   assert.equal(json(result.stderr).code, "schema_ownership_drift");
 }
 
-async function testMembership() {
+async function testHostileOwnerOwnedObject() {
+  const fixture = await makeFixture("schema_object");
+  const db = await connect(fixture.ownerUrl);
+  await db.query(`CREATE SCHEMA ${q(fixture.schema)}`);
+  await db.query(`CREATE TABLE ${q(fixture.schema)}.hostile(value integer)`);
+  await db.end();
+  const result = run(fixture, "--apply");
+  assert.equal(result.status, 1);
+  assert.equal(json(result.stderr).code, "schema_not_empty");
+}
+
+async function testOutboundMembership() {
   const fixture = await makeFixture("member");
-  await admin.query(`CREATE ROLE ${q(fixture.runtime)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS`); createdRoles.add(fixture.runtime);
+  assert.equal(run(fixture, "--apply").status, 0);
   const elevated = `${fixture.runtime}_elevated`; await admin.query(`CREATE ROLE ${q(elevated)} CREATEDB`); createdRoles.add(elevated);
   await admin.query(`GRANT ${q(elevated)} TO ${q(fixture.runtime)}`);
   const result = run(fixture, "--apply");
   assert.equal(result.status, 1);
   assert.equal(json(result.stderr).code, "runtime_role_drift");
+}
+
+async function testInboundSetRoleEdge() {
+  const fixture = await makeFixture("inbound");
+  assert.equal(run(fixture, "--apply").status, 0);
+  const unexpected = `${fixture.runtime}_member`; await admin.query(`CREATE ROLE ${q(unexpected)}`); createdRoles.add(unexpected);
+  await admin.query(`GRANT ${q(fixture.runtime)} TO ${q(unexpected)} WITH INHERIT FALSE, SET TRUE`);
+  const result = run(fixture, "--apply");
+  assert.equal(result.status, 1);
+  assert.equal(json(result.stderr).code, "runtime_role_drift");
+  assert.equal(json(result.stderr).message.includes("exact_inbound_membership"), true);
 }
 
 async function testPublicCreateRevocation() {
@@ -123,8 +161,8 @@ async function testPublicCreateRevocation() {
 
 async function testSecretRedactionAndRollback() {
   const fixture = await makeFixture("rollback");
-  const secret = "never-print-runtime-password";
-  const db = await connect(`postgresql://postgres@127.0.0.1:${port}/${fixture.database}`);
+  const secret = "Never-Print-Runtime-Password-42!";
+  const db = await connect(superuserUrl(fixture.database));
   await db.query(`CREATE FUNCTION public.fail_provisioning() RETURNS event_trigger LANGUAGE plpgsql AS $$ BEGIN
     IF tg_tag='CREATE SCHEMA' THEN RAISE EXCEPTION '${secret}'; END IF; END $$`);
   await db.query("CREATE EVENT TRIGGER fail_provisioning ON ddl_command_end EXECUTE FUNCTION public.fail_provisioning()");
@@ -137,7 +175,7 @@ async function testSecretRedactionAndRollback() {
   assert.equal((await verify.query("SELECT count(*)::integer AS n FROM pg_roles WHERE rolname=$1", [fixture.runtime])).rows[0].n, 0);
   assert.equal((await verify.query("SELECT count(*)::integer AS n FROM pg_namespace WHERE nspname=$1", [fixture.schema])).rows[0].n, 0);
   await verify.end();
-  const cleanup = await connect(`postgresql://postgres@127.0.0.1:${port}/${fixture.database}`);
+  const cleanup = await connect(superuserUrl(fixture.database));
   await cleanup.query("DROP EVENT TRIGGER fail_provisioning");
   await cleanup.query("DROP FUNCTION public.fail_provisioning()");
   await cleanup.end();
@@ -149,12 +187,26 @@ async function testSecretRedactionAndRollback() {
   assert.equal(`${bad.stdout}${bad.stderr}`.includes("postgresql://"), false);
 }
 
+async function testWeakPasswordPolicy() {
+  const fixture = await makeFixture("weak");
+  const weak = "weak-password";
+  const result = run({ ...fixture, password: weak }, "--apply");
+  assert.equal(result.status, 1);
+  assert.equal(json(result.stderr).code, "weak_runtime_password");
+  assert.equal(`${result.stdout}${result.stderr}`.includes(weak), false);
+}
+
 async function makeFixture(label) {
   const suffix = createHash("sha256").update(`${label}-${Math.random()}`).digest("hex").slice(0, 8);
   const owner = `p42_owner_${suffix}`; const runtime = `p42_runtime_${suffix}`; const database = `p42_db_${suffix}`; const schema = `p42_portal_${suffix}`;
-  await admin.query(`CREATE ROLE ${q(owner)} LOGIN CREATEROLE CREATEDB PASSWORD 'owner-test-password'`); createdRoles.add(owner);
+  await admin.query(`CREATE ROLE ${q(owner)} LOGIN CREATEROLE CREATEDB`); createdRoles.add(owner);
   await admin.query(`CREATE DATABASE ${q(database)} OWNER ${q(owner)}`); createdDatabases.add(database);
-  return { ownerUrl: `postgresql://${owner}:owner-test-password@127.0.0.1:${port}/${database}`, runtime, database, schema, password: `runtime-${suffix}-password` };
+  const password = `Runtime-${suffix}-Password-42!`;
+  return {
+    owner, ownerUrl: `postgresql://${owner}@127.0.0.1:${port}/${database}`,
+    runtime, runtimeUrl: `postgresql://${runtime}:${encodeURIComponent(password)}@127.0.0.1:${port}/${database}`,
+    database, schema, password,
+  };
 }
 
 function run(fixture, flag) {
@@ -177,6 +229,23 @@ function canonicalJson(value) {
 }
 async function connect(connectionString) { const client = new pg.Client({ connectionString }); client.on("error", () => undefined); await client.connect(); return client; }
 async function serverVersion() { return (await admin.query("SHOW server_version")).rows[0].server_version; }
+function superuserUrl(database) { return `postgresql://postgres@127.0.0.1:${port}/${database}`; }
+function serverLog() {
+  return pgBin ? readFileSync(postgresLog, "utf8") : execFileSync("docker", ["logs", container], { encoding: "utf8" });
+}
+async function requireScramHostAuth(role) {
+  const rule = `host all ${role} 127.0.0.1/32 scram-sha-256\n`;
+  if (pgBin) {
+    const hba = path.join(data, "pg_hba.conf");
+    writeFileSync(hba, rule + readFileSync(hba, "utf8"), { mode: 0o600 });
+    execFileSync(path.join(pgBin, "pg_ctl"), ["-D", data, "reload"], { stdio: "ignore" });
+  } else {
+    execFileSync("docker", ["exec", container, "sh", "-c",
+      `printf '${rule}' | cat - \"$PGDATA/pg_hba.conf\" > /tmp/pg_hba.conf && cat /tmp/pg_hba.conf > \"$PGDATA/pg_hba.conf\"`]);
+    execFileSync("docker", ["kill", "--signal=HUP", container], { stdio: "ignore" });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+}
 function q(value) { return `"${value.replaceAll('"', '""')}"`; }
 function exists(file) { try { execFileSync("test", ["-x", file]); return true; } catch { return false; } }
 function stopHarness() {
