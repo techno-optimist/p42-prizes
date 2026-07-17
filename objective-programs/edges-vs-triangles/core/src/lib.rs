@@ -521,82 +521,6 @@ fn json_number_equals(value: &serde_json::Number, expected: u64) -> bool {
 }
 
 #[derive(Debug)]
-struct StrictIgnoredAny;
-
-impl<'de> Deserialize<'de> for StrictIgnoredAny {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct IgnoredVisitor;
-
-        impl<'de> de::Visitor<'de> for IgnoredVisitor {
-            type Value = StrictIgnoredAny;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("any strict JSON value")
-            }
-
-            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_string<E>(self, _: String) -> Result<Self::Value, E> {
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_none<E>(self) -> Result<Self::Value, E> {
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_unit<E>(self) -> Result<Self::Value, E> {
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: de::SeqAccess<'de>,
-            {
-                while seq.next_element::<StrictIgnoredAny>()?.is_some() {}
-                Ok(StrictIgnoredAny)
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: de::MapAccess<'de>,
-            {
-                let mut seen = HashSet::new();
-                while let Some(key) = map.next_key::<String>()? {
-                    if !seen.insert(key.clone()) {
-                        return Err(de::Error::custom(format!("duplicate key: {key}")));
-                    }
-                    map.next_value::<StrictIgnoredAny>()?;
-                }
-                Ok(StrictIgnoredAny)
-            }
-        }
-
-        deserializer.deserialize_any(IgnoredVisitor)
-    }
-}
-
-#[derive(Debug)]
 struct BoundedRows(Vec<[u16; EDGES_ATOMS]>);
 
 impl<'de> Deserialize<'de> for BoundedRows {
@@ -664,8 +588,14 @@ impl<'de> Deserialize<'de> for EdgesSolution {
                         "atoms" => atoms = Some(map.next_value()?),
                         "row_sum" => row_sum = Some(map.next_value()?),
                         "rows" => rows = Some(map.next_value()?),
+                        "source" | "claimed_score" => {
+                            map.next_value::<String>()?;
+                        }
                         _ => {
-                            map.next_value::<StrictIgnoredAny>()?;
+                            return Err(de::Error::unknown_field(
+                                &key,
+                                &["atoms", "row_sum", "rows", "source", "claimed_score"],
+                            ))
                         }
                     }
                 }

@@ -119,7 +119,7 @@ export const problems: Problem[] = [
     challengeWindowHours: 72,
     postingBondEth: "0.02",
     challengeBondEth: "0.02",
-    verifierVersion: "0.1.1",
+    verifierVersion: "0.1.2",
     verifierImage: "sha256:local-dev",
     verifierCommand: "make verify SOLUTION=path",
     repoPath: "problems/edges-vs-triangles",

@@ -58,24 +58,29 @@
   ],
   "acceptance_vectors": [
     {
-      "name": "arbitrary-scalar-extra",
+      "name": "allowed-string-metadata",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"source\":\"shared-vector\",\"claimed_score\":\"-65/6\"}",
+      "accepted": true
+    },
+    {
+      "name": "unknown-shallow-extra",
       "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":17}",
-      "accepted": true
+      "accepted": false
     },
     {
-      "name": "arbitrary-object-extra",
-      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":{\"nested\":{\"ok\":true},\"null\":null}}",
-      "accepted": true
+      "name": "unknown-deep-extra",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":{\"nested\":[{\"deeper\":true}]}}",
+      "accepted": false
     },
     {
-      "name": "arbitrary-list-extra",
-      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":[1,\"two\",false,null,{\"three\":3}]}",
-      "accepted": true
+      "name": "source-nonstring",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"source\":{\"kind\":7}}",
+      "accepted": false
     },
     {
-      "name": "metadata-nonstrings",
-      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"source\":{\"kind\":7},\"claimed_score\":[false,3]}",
-      "accepted": true
+      "name": "claimed-score-nonstring",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"claimed_score\":[false,3]}",
+      "accepted": false
     },
     {
       "name": "float-constants",

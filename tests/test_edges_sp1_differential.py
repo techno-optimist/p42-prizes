@@ -56,7 +56,7 @@ def test_python_fraction_oracle_matches_shared_rust_vectors() -> None:
 def test_python_acceptance_matches_shared_rust_parity_vectors() -> None:
     verifier = load_verifier()
     document = json.loads(VECTORS.read_text(encoding="utf-8"))
-    assert len(document["acceptance_vectors"]) == 11
+    assert len(document["acceptance_vectors"]) == 12
     for vector in document["acceptance_vectors"]:
         try:
             verifier.parse_solution(vector["raw"].encode())
@@ -65,6 +65,22 @@ def test_python_acceptance_matches_shared_rust_parity_vectors() -> None:
         else:
             accepted = True
         assert accepted is vector["accepted"], vector["name"]
+
+
+def test_python_rejects_lone_surrogate_inside_unknown_extra() -> None:
+    verifier = load_verifier()
+    raw = (
+        b'{"atoms":20,"row_sum":1000,"rows":'
+        b'[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],'
+        b'"extra":{"text":"\\ud800"}}'
+    )
+    try:
+        verifier.parse_solution(raw)
+    except verifier.VerifierFailure as exc:
+        assert exc.reason == "MALFORMED"
+        assert exc.detail == "unknown solution field: extra"
+    else:
+        raise AssertionError("lone-surrogate unknown extra was accepted")
 
 
 def test_seed_atom_conversion_matches_production_maximize_binding() -> None:

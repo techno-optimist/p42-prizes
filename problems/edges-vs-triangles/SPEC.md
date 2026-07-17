@@ -61,8 +61,10 @@ Solutions are canonical JSON:
 }
 ```
 
-Submitter fields such as `claimed_score`, `claimed_area`, or `improvement` are
-ignored.
+The only optional root fields are `source` and `claimed_score`. Both must be
+JSON strings and are ignored when computing the score. Every other root field
+is forbidden, including `claimed_area` and `improvement`; duplicate keys are
+also invalid.
 
 ## Score And Improvement
 

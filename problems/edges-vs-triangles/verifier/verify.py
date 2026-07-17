@@ -16,12 +16,13 @@ from p42_prizes.verdict import (
 
 
 PROBLEM_ID = "edges-vs-triangles"
-VERIFIER_VERSION = "0.1.1"
+VERIFIER_VERSION = "0.1.2"
 VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
 ATOMS = 20
 ROW_SUM = 1000
 MAX_ROWS = 500
 MAX_SOLUTION_BYTES = 512 * 1024
+SOLUTION_FIELDS = frozenset({"atoms", "row_sum", "rows", "source", "claimed_score"})
 # Audit F1: the old seed -1/1 was a trivial floor, but the bundled rational
 # curve-sampling witness verifies to ~-0.71186 (higher is better here) — a
 # known achievable result the seed must be at least as good as, or
@@ -61,6 +62,15 @@ def parse_solution(raw: bytes) -> list[list[int]]:
 
     if not isinstance(data, dict):
         raise VerifierFailure("MALFORMED", "solution root must be an object")
+    unknown_fields = [field for field in data if field not in SOLUTION_FIELDS]
+    if unknown_fields:
+        raise VerifierFailure(
+            "MALFORMED",
+            f"unknown solution field: {unknown_fields[0]}",
+        )
+    for field in ("source", "claimed_score"):
+        if field in data and not isinstance(data[field], str):
+            raise VerifierFailure("MALFORMED", f"{field} must be a string")
     if data.get("atoms") != ATOMS:
         raise VerifierFailure("WRONG_ATOMS", "atoms must equal 20")
     if data.get("row_sum") != ROW_SUM:

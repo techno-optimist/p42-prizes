@@ -173,13 +173,13 @@
       },
       "problem_yaml": {
         "path": "problems/edges-vs-triangles/problem.yaml",
-        "sha256": "sha256:1f95f32f5fc896ec2652328024e0d3a6aafcbad2b50b707d3fd5d2e150afa50e"
+        "sha256": "sha256:d36d565a7c1bf01e5728522eec7f09ae1c9a7f89dce20b30d3b3c29562accadf"
       },
       "provenance": {
         "local_evidence": [
           {
             "path": "problems/edges-vs-triangles/SPEC.md",
-            "sha256": "sha256:22e689561dd7a696959025feae4d8c4777e4a26c96822843be0c48e14e5807ca"
+            "sha256": "sha256:2f329b7bcb2e8a26201f531b61cf7ec5e8d48cd635ad9f10a18e9690dd6f8f03"
           },
           {
             "path": "problems/edges-vs-triangles/HARDENING.md",
@@ -193,7 +193,7 @@
         ]
       },
       "seed": {
-        "canonical_verdict_sha256": "sha256:15e6c0607d4d8c15e4e9566e2a470f183f916a306da9a99ab088d5151835f204",
+        "canonical_verdict_sha256": "sha256:730c0ca65e2d62807e837f7f6bf0f0ebcf954b1d73e12582998fa9c958e9a429",
         "path": "problems/edges-vs-triangles/examples/rational-curve-sample.json",
         "sha256": "sha256:a662d18c930fbb2c351ca5987e78113be30657a04615cbff87e4781745969214",
         "verdict_reason": "NOT_STRICT_IMPROVEMENT",
@@ -208,12 +208,12 @@
       },
       "specification": {
         "path": "problems/edges-vs-triangles/SPEC.md",
-        "sha256": "sha256:22e689561dd7a696959025feae4d8c4777e4a26c96822843be0c48e14e5807ca"
+        "sha256": "sha256:2f329b7bcb2e8a26201f531b61cf7ec5e8d48cd635ad9f10a18e9690dd6f8f03"
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:243dc304c1f5e1447ca08dedb99a4c686eee1f652a6c89346fae299380be3ac8",
-        "version": "0.1.1"
+        "source_tree_sha256": "sha256:7b2052848bb158c6455a1582985ced942905dcb60e641410e5c832a3c60d7606",
+        "version": "0.1.2"
       }
     },
     {
