@@ -11,6 +11,8 @@ const migrationSql = await readFile(path.resolve("migrations/001_portal_store.sq
 const transferScript = path.resolve("scripts/transfer-legacy-portal-state.mjs");
 const admin = new pg.Client({ connectionString, connectionTimeoutMillis: 10_000 });
 await admin.connect();
+const runtimeRole = `p42_runtime_${randomUUID().replaceAll("-", "")}`;
+await admin.query(`CREATE ROLE ${quoteIdentifier(runtimeRole)} NOLOGIN`);
 
 const passed = [];
 const state = { marker: "sensitive-state-marker" };
@@ -47,6 +49,43 @@ try {
     if (markers.rowCount !== 1 || markers.rows[0].transfer_id !== reconciled.transferId) {
       throw new Error("reconciled receipt was not bound to the durable provenance row");
     }
+  });
+
+  await transferCase("ambiguous-commit-reconciliation-after-destination-advance", async ({ legacy, target }) => {
+    await expectFailure({
+      legacy, target, extraEnv: { P42_PORTAL_TEST_FAULT_AFTER_COMMIT: "ambiguous-ack" },
+    }, "commit-acknowledgment-ambiguous");
+    await admin.query(`UPDATE ${qualified(target, "p42_portal_state")}
+      SET revision=1, state='{"marker":"legitimate-advance"}'::jsonb, updated_at='2026-07-17T02:00:00Z'
+      WHERE singleton=true`);
+    const reconciled = assertSuccessResult(await runTransfer({ legacy, target }));
+    if (reconciled.status !== "reconciled" || reconciled.revision !== "0") {
+      throw new Error("advanced retry did not attest the historical transfer event");
+    }
+    const current = await admin.query(`SELECT revision::text AS revision, state::text AS state_text
+      FROM ${qualified(target, "p42_portal_state")}`);
+    if (current.rows[0]?.revision !== "1" || current.rows[0]?.state_text !== '{"marker": "legitimate-advance"}') {
+      throw new Error("reconciliation modified legitimately advanced destination state");
+    }
+  });
+
+  await transferCase("permissive-default-privileges-revoked", async ({ legacy, target }) => {
+    await admin.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA ${quoteIdentifier(target)}
+      GRANT ALL PRIVILEGES ON TABLES TO PUBLIC, ${quoteIdentifier(runtimeRole)}`);
+    const receipt = assertSuccessResult(await runTransfer({ legacy, target }));
+    if (receipt.status !== "transferred") throw new Error("default-ACL transfer did not complete");
+    await assertProvenanceAclClosed(target);
+  });
+
+  await transferCase("preexisting-provenance-runtime-dml-revoked", async ({ legacy, target }) => {
+    await createProvenanceTable(target);
+    await admin.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+      ${qualified(target, "p42_portal_state_transfer_provenance")} TO ${quoteIdentifier(runtimeRole)}`);
+    await admin.query(`GRANT SELECT (transfer_id), UPDATE (binding_json) ON TABLE
+      ${qualified(target, "p42_portal_state_transfer_provenance")} TO ${quoteIdentifier(runtimeRole)}`);
+    const receipt = assertSuccessResult(await runTransfer({ legacy, target }));
+    if (receipt.status !== "transferred") throw new Error("preexisting provenance transfer did not complete");
+    await assertProvenanceAclClosed(target);
   });
 
   await transferCase("empty-source", async ({ legacy, target }) => {
@@ -232,7 +271,7 @@ try {
         throw new Error("queued target writer did not commit before receipt emission");
       }
       if (receipt.destinationCurrentStateAttested !== false
-        || receipt.receiptScope !== "committed-transfer-event-and-provenance-row") {
+        || receipt.receiptScope !== "historical-committed-transfer-event-and-owner-controlled-provenance-row") {
         throw new Error("receipt falsely claims current destination state");
       }
     } finally {
@@ -266,10 +305,11 @@ try {
   process.stdout.write(`${JSON.stringify({
     cases: passed,
     postgresVersion,
-    schemaVersion: "p42-legacy-portal-state-transfer-test/v2",
+    schemaVersion: "p42-legacy-portal-state-transfer-test/v3",
     status: "passed",
   })}\n`);
 } finally {
+  await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(runtimeRole)}`).catch(() => {});
   await admin.end();
 }
 
@@ -320,6 +360,38 @@ async function createMigratedSchema(schema) {
   }
 }
 
+async function createProvenanceTable(schema) {
+  await admin.query(`CREATE TABLE ${qualified(schema, "p42_portal_state_transfer_provenance")} (
+    transfer_id text PRIMARY KEY CHECK (transfer_id ~ '^sha256:[0-9a-f]{64}$'),
+    binding_json text NOT NULL,
+    committed_at timestamp with time zone NOT NULL DEFAULT clock_timestamp()
+  )`);
+}
+
+async function assertProvenanceAclClosed(schema) {
+  const relation = `${schema}.p42_portal_state_transfer_provenance`;
+  const result = await admin.query(`SELECT
+      NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_class c,
+          LATERAL pg_catalog.aclexplode(COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))) acl
+        WHERE c.oid=$1::regclass AND acl.grantee<>c.relowner
+      ) AS table_acl_closed,
+      NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_attribute a
+        CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) acl
+        WHERE a.attrelid=$1::regclass AND a.attnum>0 AND NOT a.attisdropped
+          AND a.attacl IS NOT NULL AND acl.grantee<>(SELECT relowner FROM pg_catalog.pg_class WHERE oid=$1::regclass)
+      ) AS column_acl_closed,
+      NOT pg_catalog.has_table_privilege($2, $1, 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+        AS runtime_table_closed,
+      NOT pg_catalog.has_any_column_privilege($2, $1, 'SELECT,INSERT,UPDATE,REFERENCES')
+        AS runtime_column_closed`, [relation, runtimeRole]);
+  const row = result.rows[0];
+  if (!row?.table_acl_closed || !row.column_acl_closed || !row.runtime_table_closed || !row.runtime_column_closed) {
+    throw new Error("provenance ACL closure verification failed");
+  }
+}
+
 async function seed(schema, { importDigest = importSha256 } = {}) {
   await admin.query(`INSERT INTO ${qualified(schema, "p42_portal_state")}
     (singleton,schema_version,revision,state,import_sha256,imported_at,updated_at)
@@ -359,6 +431,7 @@ function runTransferProcess({
         P42_PORTAL_EXPECTED_STATE_SHA256: stateSha256,
         P42_PORTAL_EXPECTED_IMPORT_SHA256: expectedImport,
         P42_PORTAL_EXPECTED_REVISION: revision,
+        P42_PORTAL_RUNTIME_DATABASE_ROLE: runtimeRole,
         PGAPPNAME: "p42-legacy-portal-state-transfer",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -385,7 +458,13 @@ function assertSuccessResult(result) {
   if (value.receiptChecksumPurpose !== "accidental-corruption-check-only-not-authentication-or-evidence") {
     throw new Error("receipt checksum was not labeled non-authenticating");
   }
-  for (const key of ["databaseOid", "legacySchemaOid", "legacyRelationOid", "targetSchemaOid", "targetRelationOid"]) {
+  if (value.provenanceAuthority !== "database-owner-controlled-not-external-evidence"
+    || value.externalEvidenceRequirement !== "external-signed-receipt-capture-required"
+    || value.databaseOwnerRemainsAuthority !== true) {
+    throw new Error("receipt did not disclose its owner authority and external evidence boundary");
+  }
+  for (const key of ["databaseOid", "databaseOwnerRoleOid", "legacySchemaOid", "legacyRelationOid",
+    "targetSchemaOid", "targetRelationOid"]) {
     if (!/^[1-9][0-9]*$/.test(value[key])) throw new Error(`transfer result has invalid ${key}`);
   }
   return value;

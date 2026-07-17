@@ -17,7 +17,7 @@ class TransferError extends Error {
 
 main().catch((error) => {
   const code = error instanceof TransferError ? error.code : "database-operation-failed";
-  process.stderr.write(`${canonicalJson({ error: code, schemaVersion: "p42-legacy-portal-state-transfer-error/v2", status: "failed" })}\n`);
+  process.stderr.write(`${canonicalJson({ error: code, schemaVersion: "p42-legacy-portal-state-transfer-error/v3", status: "failed" })}\n`);
   process.exitCode = 1;
 });
 
@@ -28,6 +28,7 @@ async function main() {
   const expectedStateSha256 = digestEnv("P42_PORTAL_EXPECTED_STATE_SHA256");
   const expectedImportSha256 = digestEnv("P42_PORTAL_EXPECTED_IMPORT_SHA256");
   const expectedRevision = revisionEnv("P42_PORTAL_EXPECTED_REVISION");
+  const runtimeRoleName = roleEnv("P42_PORTAL_RUNTIME_DATABASE_ROLE");
   if (targetSchema === legacySchema) fail("source-destination-alias");
 
   const client = new pg.Client({ connectionString, connectionTimeoutMillis: 10_000 });
@@ -42,6 +43,7 @@ async function main() {
 
     const identity = await databaseIdentity(client);
     if (identity.roleOid !== identity.databaseOwnerOid) fail("database-owner-mismatch");
+    const runtimeRole = await resolveRuntimeRole(client, runtimeRoleName, identity.roleOid);
 
     const initial = await resolveRelations(client, targetSchema, legacySchema);
     if (initial.target.oid === initial.legacy.oid) fail("source-destination-alias");
@@ -64,17 +66,19 @@ async function main() {
     await testPause("P42_PORTAL_TEST_PAUSE_AFTER_RELATION_LOCK_MS");
     await createOidBoundPortalView(client, "p42_locked_legacy", locked.legacy);
     await createOidBoundPortalView(client, "p42_locked_target", locked.target);
-    await ensureProvenanceTable(client, locked.target, identity.roleOid);
+    await ensureProvenanceTable(client, locked.target, identity.roleOid, runtimeRole);
     const sourceRow = await readSingleton(client, "p42_locked_legacy", "source");
     verifyExpectedSource(sourceRow, { expectedImportSha256, expectedRevision, expectedStateSha256 });
 
     const binding = {
       databaseOid: identity.databaseOid,
+      databaseOwnerRoleOid: identity.roleOid,
       importSha256: expectedImportSha256,
       legacyRelationOid: locked.legacy.oid,
       legacySchemaOid: locked.legacy.schemaOid,
       portalSchemaVersion: EXPECTED_SCHEMA_VERSION,
       revision: expectedRevision,
+      runtimeRoleOid: runtimeRole.oid,
       sourceImportedAt: sourceRow.imported_at,
       sourceUpdatedAt: sourceRow.updated_at,
       stateSha256: expectedStateSha256,
@@ -83,11 +87,18 @@ async function main() {
     };
     const bindingJson = canonicalJson(binding);
     const transferId = sha256(bindingJson);
-    const destination = await client.query("SELECT count(*)::integer AS count FROM pg_temp.p42_locked_target");
     let status;
     let committedAt;
+    const existingMarker = await client.query(`SELECT binding_json, committed_at::text AS committed_at
+      FROM pg_temp.p42_locked_provenance WHERE transfer_id=$1`, [transferId]);
 
-    if (destination.rows[0]?.count === 0) {
+    if (existingMarker.rowCount === 1 && existingMarker.rows[0].binding_json === bindingJson) {
+      committedAt = existingMarker.rows[0].committed_at;
+      status = "reconciled";
+    } else {
+      if (existingMarker.rowCount !== 0) fail("destination-not-reconcilable");
+      const destination = await client.query("SELECT count(*)::integer AS count FROM pg_temp.p42_locked_target");
+      if (destination.rows[0]?.count !== 0) fail("destination-not-reconcilable");
       const inserted = await client.query(`INSERT INTO pg_temp.p42_locked_target
           (singleton, schema_version, revision, state, import_sha256, imported_at, updated_at)
         SELECT singleton, schema_version, revision, state, import_sha256, imported_at, updated_at
@@ -100,15 +111,6 @@ async function main() {
       if (marker.rowCount !== 1) fail("provenance-insert-count-mismatch");
       committedAt = marker.rows[0].committed_at;
       status = "transferred";
-    } else {
-      await verifyDestination(client, sourceRow, expectedStateSha256, "destination-not-reconcilable");
-      const marker = await client.query(`SELECT binding_json, committed_at::text AS committed_at
-        FROM pg_temp.p42_locked_provenance WHERE transfer_id=$1`, [transferId]);
-      if (marker.rowCount !== 1 || marker.rows[0].binding_json !== bindingJson) {
-        fail("destination-not-reconcilable");
-      }
-      committedAt = marker.rows[0].committed_at;
-      status = "reconciled";
     }
 
     await testPause("P42_PORTAL_TEST_PAUSE_BEFORE_COMMIT_MS");
@@ -122,10 +124,13 @@ async function main() {
     const result = {
       ...binding,
       committedAt,
+      databaseOwnerRemainsAuthority: true,
       destinationCurrentStateAttested: false,
+      externalEvidenceRequirement: "external-signed-receipt-capture-required",
+      provenanceAuthority: "database-owner-controlled-not-external-evidence",
       receiptChecksumPurpose: "accidental-corruption-check-only-not-authentication-or-evidence",
-      receiptScope: "committed-transfer-event-and-provenance-row",
-      schemaVersion: "p42-legacy-portal-state-transfer/v2",
+      receiptScope: "historical-committed-transfer-event-and-owner-controlled-provenance-row",
+      schemaVersion: "p42-legacy-portal-state-transfer/v3",
       status,
       transferId,
     };
@@ -150,6 +155,18 @@ async function databaseIdentity(client) {
     databaseOid: result.rows[0].database_oid,
     databaseOwnerOid: result.rows[0].database_owner_oid,
   };
+}
+
+async function resolveRuntimeRole(client, roleName, ownerOid) {
+  const result = await client.query(`SELECT oid::text AS oid, rolsuper, rolbypassrls,
+      pg_catalog.pg_has_role(oid, $2::oid, 'MEMBER') AS inherits_owner
+    FROM pg_catalog.pg_roles WHERE rolname=$1`, [roleName, ownerOid]);
+  if (result.rowCount !== 1) fail("runtime-role-missing");
+  const role = result.rows[0];
+  if (role.oid === ownerOid || role.rolsuper || role.rolbypassrls || role.inherits_owner) {
+    fail("runtime-role-not-separable-from-owner");
+  }
+  return { name: roleName, oid: role.oid };
 }
 
 async function resolveRelations(client, targetSchema, legacySchema) {
@@ -202,7 +219,7 @@ async function relationNameByOid(client, oid) {
   return { schema: result.rows[0].schema_name, table: result.rows[0].table_name };
 }
 
-async function ensureProvenanceTable(client, target, roleOid) {
+async function ensureProvenanceTable(client, target, roleOid, runtimeRole) {
   const namespace = await client.query(`SELECT nspname, nspowner::text AS owner_oid
     FROM pg_catalog.pg_namespace WHERE oid=$1::oid`, [target.schemaOid]);
   if (namespace.rowCount !== 1 || namespace.rows[0].owner_oid !== roleOid) fail("target-schema-identity-changed");
@@ -222,6 +239,8 @@ async function ensureProvenanceTable(client, target, roleOid) {
   await verifyAccessExclusiveLocks(client, [relation.oid], "provenance-lock-mismatch");
   await verifyProvenanceTableShape(client, relation);
   const current = await relationNameByOid(client, relation.oid);
+  await revokeProvenancePrivileges(client, current, runtimeRole.name);
+  await verifyProvenanceAclClosure(client, relation, roleOid, runtimeRole.oid);
   await client.query(`CREATE TEMP VIEW p42_locked_provenance AS
     SELECT transfer_id, binding_json, committed_at FROM ${qualified(current.schema, current.table)}`);
   const dependency = await client.query(`SELECT DISTINCT d.refobjid::text AS oid
@@ -231,6 +250,38 @@ async function ensureProvenanceTable(client, target, roleOid) {
     WHERE v.relnamespace=pg_my_temp_schema() AND v.relname='p42_locked_provenance' AND d.refobjid<>v.oid`);
   if (dependency.rowCount !== 1 || dependency.rows[0].oid !== relation.oid) fail("provenance-oid-binding-mismatch");
   return relation;
+}
+
+async function revokeProvenancePrivileges(client, relation, runtimeRoleName) {
+  const table = qualified(relation.schema, relation.table);
+  const grantees = `PUBLIC, ${quoteIdentifier(runtimeRoleName)}`;
+  await client.query(`REVOKE ALL PRIVILEGES ON TABLE ${table} FROM ${grantees}`);
+  await client.query(`REVOKE ALL PRIVILEGES
+    (transfer_id, binding_json, committed_at) ON TABLE ${table} FROM ${grantees}`);
+}
+
+async function verifyProvenanceAclClosure(client, relation, ownerOid, runtimeRoleOid) {
+  const result = await client.query(`SELECT
+      NOT EXISTS (
+        SELECT 1 FROM pg_catalog.aclexplode(
+          COALESCE(c.relacl, pg_catalog.acldefault('r', c.relowner))) AS acl
+        WHERE acl.grantee<>c.relowner
+      ) AS table_acl_closed,
+      NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_attribute AS a
+        CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) AS acl
+        WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped
+          AND a.attacl IS NOT NULL AND acl.grantee<>c.relowner
+      ) AS column_acl_closed,
+      NOT pg_catalog.has_table_privilege($2::oid, c.oid,
+        'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') AS runtime_table_closed,
+      NOT pg_catalog.has_any_column_privilege($2::oid, c.oid,
+        'SELECT,INSERT,UPDATE,REFERENCES') AS runtime_column_closed
+    FROM pg_catalog.pg_class AS c WHERE c.oid=$1::oid AND c.relowner=$3::oid`,
+  [relation.oid, runtimeRoleOid, ownerOid]);
+  const row = result.rows[0];
+  if (result.rowCount !== 1 || !row.table_acl_closed || !row.column_acl_closed
+    || !row.runtime_table_closed || !row.runtime_column_closed) fail("provenance-acl-not-closed");
 }
 
 async function verifyAccessExclusiveLocks(client, relationOids, code = "relation-lock-mismatch") {
@@ -289,19 +340,13 @@ function verifyExpectedSource(sourceRow, expected) {
   if (sha256(sourceRow.state_text) !== expected.expectedStateSha256) fail("source-state-digest-mismatch");
 }
 
-async function verifyDestination(client, sourceRow, expectedStateSha256, code = "destination-metadata-mismatch") {
-  let destinationRow;
-  try {
-    destinationRow = await readSingleton(client, "p42_locked_target", "destination-readback");
-  } catch (error) {
-    if (code === "destination-not-reconcilable" && error instanceof TransferError) fail(code);
-    throw error;
-  }
+async function verifyDestination(client, sourceRow, expectedStateSha256) {
+  const destinationRow = await readSingleton(client, "p42_locked_target", "destination-readback");
   if (destinationRow.schema_version !== sourceRow.schema_version || destinationRow.revision !== sourceRow.revision
     || destinationRow.import_sha256 !== sourceRow.import_sha256 || destinationRow.imported_at !== sourceRow.imported_at
-    || destinationRow.updated_at !== sourceRow.updated_at) fail(code);
+    || destinationRow.updated_at !== sourceRow.updated_at) fail("destination-metadata-mismatch");
   if (destinationRow.state_text !== sourceRow.state_text || sha256(destinationRow.state_text) !== expectedStateSha256) {
-    fail(code === "destination-not-reconcilable" ? code : "destination-state-digest-mismatch");
+    fail("destination-state-digest-mismatch");
   }
 }
 
@@ -370,6 +415,14 @@ function optionalSchemaEnv(name, fallback) {
   if (raw === undefined) return fallback;
   const value = raw.trim();
   if (!IDENTIFIER.test(value)) fail(`invalid-${name.toLowerCase().replaceAll("_", "-")}`);
+  return value;
+}
+
+function roleEnv(name) {
+  const value = requiredEnv(name);
+  if (value.includes("\0") || Buffer.byteLength(value, "utf8") > 63) {
+    fail(`invalid-${name.toLowerCase().replaceAll("_", "-")}`);
+  }
   return value;
 }
 
