@@ -53,6 +53,20 @@ def test_python_fraction_oracle_matches_shared_rust_vectors() -> None:
         assert atoms == int(vector["chain_atoms"])
 
 
+def test_python_acceptance_matches_shared_rust_parity_vectors() -> None:
+    verifier = load_verifier()
+    document = json.loads(VECTORS.read_text(encoding="utf-8"))
+    assert len(document["acceptance_vectors"]) == 11
+    for vector in document["acceptance_vectors"]:
+        try:
+            verifier.parse_solution(vector["raw"].encode())
+        except verifier.VerifierFailure:
+            accepted = False
+        else:
+            accepted = True
+        assert accepted is vector["accepted"], vector["name"]
+
+
 def test_seed_atom_conversion_matches_production_maximize_binding() -> None:
     from p42_prizes.verdict import chain_score_atoms
 

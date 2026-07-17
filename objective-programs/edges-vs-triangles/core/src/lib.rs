@@ -226,7 +226,9 @@ pub fn verify_edges_vs_triangles(raw: &[u8]) -> Option<EdgesScore> {
         return None;
     }
     let solution: EdgesSolution = serde_json::from_slice(raw).ok()?;
-    if solution.atoms != EDGES_ATOMS as u64 || solution.row_sum != EDGES_ROW_SUM as u64 {
+    if !json_number_equals(&solution.atoms, EDGES_ATOMS as u64)
+        || !json_number_equals(&solution.row_sum, EDGES_ROW_SUM as u64)
+    {
         return None;
     }
     if solution.rows.0.is_empty() {
@@ -315,7 +317,8 @@ pub fn verify_edges_vs_triangles(raw: &[u8]) -> Option<EdgesScore> {
 // 6*Y_SCALE^2), so every branch is integral at this scale. A segment is at
 // most its width, all widths sum to one, and the gap penalty is at most ten.
 // Thus area_scaled <= 6e18 and total_scaled <= 66e18. The largest seed or
-// improvement cross-product below is < 2.5e35, over 1,000 times below u128::MAX.
+// improvement cross-product below is <= 1.546875e36, about 220 times below
+// u128::MAX.
 fn segment_area_scaled(left: (u128, u128), right: (u128, u128)) -> Option<u128> {
     let width = right.0.checked_sub(left.0)?;
     if width == 0 {
@@ -503,9 +506,94 @@ pub fn word_i128(value: i128) -> Word {
 
 #[derive(Debug)]
 struct EdgesSolution {
-    atoms: u64,
-    row_sum: u64,
+    atoms: serde_json::Number,
+    row_sum: serde_json::Number,
     rows: BoundedRows,
+}
+
+fn json_number_equals(value: &serde_json::Number, expected: u64) -> bool {
+    if let Some(value) = value.as_u64() {
+        return value == expected;
+    }
+    value
+        .as_f64()
+        .is_some_and(|value| value.is_finite() && value == expected as f64)
+}
+
+#[derive(Debug)]
+struct StrictIgnoredAny;
+
+impl<'de> Deserialize<'de> for StrictIgnoredAny {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct IgnoredVisitor;
+
+        impl<'de> de::Visitor<'de> for IgnoredVisitor {
+            type Value = StrictIgnoredAny;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("any strict JSON value")
+            }
+
+            fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_string<E>(self, _: String) -> Result<Self::Value, E> {
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::SeqAccess<'de>,
+            {
+                while seq.next_element::<StrictIgnoredAny>()?.is_some() {}
+                Ok(StrictIgnoredAny)
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: de::MapAccess<'de>,
+            {
+                let mut seen = HashSet::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(de::Error::custom(format!("duplicate key: {key}")));
+                    }
+                    map.next_value::<StrictIgnoredAny>()?;
+                }
+                Ok(StrictIgnoredAny)
+            }
+        }
+
+        deserializer.deserialize_any(IgnoredVisitor)
+    }
 }
 
 #[derive(Debug)]
@@ -576,14 +664,8 @@ impl<'de> Deserialize<'de> for EdgesSolution {
                         "atoms" => atoms = Some(map.next_value()?),
                         "row_sum" => row_sum = Some(map.next_value()?),
                         "rows" => rows = Some(map.next_value()?),
-                        "source" | "claimed_score" => {
-                            map.next_value::<String>()?;
-                        }
                         _ => {
-                            return Err(de::Error::unknown_field(
-                                &key,
-                                &["atoms", "row_sum", "rows", "source", "claimed_score"],
-                            ));
+                            map.next_value::<StrictIgnoredAny>()?;
                         }
                     }
                 }
@@ -608,6 +690,7 @@ mod tests {
     struct DifferentialDocument {
         schema: String,
         vectors: Vec<DifferentialVector>,
+        acceptance_vectors: Vec<AcceptanceVector>,
     }
 
     #[derive(Deserialize)]
@@ -618,6 +701,13 @@ mod tests {
         area_scaled: String,
         max_gap_numerator: String,
         chain_atoms: String,
+    }
+
+    #[derive(Deserialize)]
+    struct AcceptanceVector {
+        name: String,
+        raw: String,
+        accepted: bool,
     }
 
     #[test]
@@ -680,6 +770,14 @@ mod tests {
                 vector.max_gap_numerator.parse::<u128>().unwrap()
             );
         }
+        for vector in document.acceptance_vectors {
+            assert_eq!(
+                verify_edges_vs_triangles(vector.raw.as_bytes()).is_some(),
+                vector.accepted,
+                "acceptance mismatch for {}",
+                vector.name,
+            );
+        }
     }
 
     #[test]
@@ -700,7 +798,6 @@ mod tests {
     fn strict_json_and_shape_boundaries_fail_closed() {
         for raw in [
             br#"{"atoms":20,"atoms":20,"row_sum":1000,"rows":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}"#.as_slice(),
-            br#"{"atoms":20,"row_sum":1000,"rows":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],"unknown":1}"#.as_slice(),
             br#"{"atoms":true,"row_sum":1000,"rows":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}"#.as_slice(),
             br#"{"atoms":20,"row_sum":1000,"rows":[]}"#.as_slice(),
             br#"{"atoms":20,"row_sum":1000,"rows":[[1001,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}"#.as_slice(),
@@ -709,6 +806,50 @@ mod tests {
             assert!(verify_edges_vs_triangles(raw).is_none());
         }
         assert!(verify_edges_vs_triangles(&vec![b' '; EDGES_MAX_SOLUTION_BYTES + 1]).is_none());
+    }
+
+    #[test]
+    fn exact_minimum_improvement_uses_scaled_delta_before_atom_rounding() {
+        const THRESHOLD: u128 = AREA_SCALE / MIN_IMPROVEMENT_DENOMINATOR;
+        assert_eq!(THRESHOLD, 6_000_000);
+        let below = AREA_SCALE - (THRESHOLD - 1);
+        let at = AREA_SCALE - THRESHOLD;
+        let above = AREA_SCALE - (THRESHOLD + 1);
+
+        assert!(!is_minimum_improvement(
+            below,
+            1,
+            1,
+            MIN_IMPROVEMENT_DENOMINATOR,
+        ));
+        assert!(is_minimum_improvement(
+            at,
+            1,
+            1,
+            MIN_IMPROVEMENT_DENOMINATOR,
+        ));
+        assert!(is_minimum_improvement(
+            above,
+            1,
+            1,
+            MIN_IMPROVEMENT_DENOMINATOR,
+        ));
+
+        let atoms = |total: u128| total.checked_add(5).unwrap() / 6;
+        assert_eq!(atoms(at), atoms(above));
+        assert_eq!(atoms(below), atoms(at) + 1);
+        assert_ne!(AREA_SCALE - at, AREA_SCALE - above);
+
+        let max_product = AREA_SCALE
+            .checked_mul(11)
+            .unwrap()
+            .checked_mul(SEED_DENOMINATOR)
+            .unwrap();
+        assert_eq!(
+            max_product,
+            1_546_875_000_000_000_000_000_000_000_000_000_000
+        );
+        assert!(u128::MAX / max_product >= 219);
     }
 
     #[test]

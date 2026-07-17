@@ -55,5 +55,62 @@
       "score": "-15373381/3000000",
       "chain_atoms": "5124460333333333334"
     }
+  ],
+  "acceptance_vectors": [
+    {
+      "name": "arbitrary-scalar-extra",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":17}",
+      "accepted": true
+    },
+    {
+      "name": "arbitrary-object-extra",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":{\"nested\":{\"ok\":true},\"null\":null}}",
+      "accepted": true
+    },
+    {
+      "name": "arbitrary-list-extra",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":[1,\"two\",false,null,{\"three\":3}]}",
+      "accepted": true
+    },
+    {
+      "name": "metadata-nonstrings",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"source\":{\"kind\":7},\"claimed_score\":[false,3]}",
+      "accepted": true
+    },
+    {
+      "name": "float-constants",
+      "raw": "{\"atoms\":20.0,\"row_sum\":1000.0,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}",
+      "accepted": true
+    },
+    {
+      "name": "matching-exponent-constants",
+      "raw": "{\"atoms\":2e1,\"row_sum\":1e3,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}",
+      "accepted": true
+    },
+    {
+      "name": "boolean-constant",
+      "raw": "{\"atoms\":true,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}",
+      "accepted": false
+    },
+    {
+      "name": "nonintegral-constant",
+      "raw": "{\"atoms\":20.5,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}",
+      "accepted": false
+    },
+    {
+      "name": "nonmatching-exponent-constant",
+      "raw": "{\"atoms\":2.01e1,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}",
+      "accepted": false
+    },
+    {
+      "name": "overflowed-exponent-constant",
+      "raw": "{\"atoms\":1e309,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]]}",
+      "accepted": false
+    },
+    {
+      "name": "duplicate-key-inside-ignored-extra",
+      "raw": "{\"atoms\":20,\"row_sum\":1000,\"rows\":[[1000,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]],\"extra\":{\"same\":1,\"same\":2}}",
+      "accepted": false
+    }
   ]
 }

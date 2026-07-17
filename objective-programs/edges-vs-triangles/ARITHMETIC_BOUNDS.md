@@ -17,9 +17,9 @@ sum to one, and the max-gap penalty is at most ten. Therefore:
   score atom fits in `i128` and is encoded as the positive signed ABI `int256`
   word `ceil((-raw_score)*10^18)`;
 - the minimum-improvement denominator `10^12` divides `AREA_SCALE`, so the
-  comparison is reduced before multiplication; the largest remaining seed
-  product is below `2.5*10^35`, while `u128::MAX` is approximately
-  `3.4*10^38`.
+  comparison is reduced before multiplication; the largest admitted product
+  is `66*10^18 * 23,437,500,000,000,000 = 1.546875*10^36`, giving about
+  `220x` headroom below `u128::MAX` (approximately `3.4*10^38`).
 
 Every multiplication, addition, subtraction, conversion, and division in the
 guest is nevertheless checked and fails closed. These bounds make bigint
