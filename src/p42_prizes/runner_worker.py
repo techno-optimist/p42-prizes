@@ -113,6 +113,7 @@ def run_next_job_once(
     policy: RunnerPolicy | None = None,
     now_utc: str | None = None,
     lease_seconds: int = 3600,
+    sandbox_staging_root: str | Path | None = None,
 ) -> dict[str, Any]:
     if lease_seconds < 60:
         raise RunnerWorkerError("lease_seconds must be at least 60")
@@ -211,6 +212,7 @@ def run_next_job_once(
                 policy=effective_policy,
                 manifest=job_manifest,
                 lease_failed=heartbeat_failed,
+                sandbox_staging_root=sandbox_staging_root,
             )
         run_error = None
         retryable_storage_error = False
@@ -394,6 +396,7 @@ def drain_runner_queue(
     max_iterations: int | None = None,
     max_jobs: int | None = None,
     sleep: Callable[[float], None] = time.sleep,
+    sandbox_staging_root: str | Path | None = None,
 ) -> dict[str, Any]:
     if poll_seconds < 0:
         raise RunnerWorkerError("poll_seconds must be >= 0")
@@ -418,6 +421,7 @@ def drain_runner_queue(
             memory=memory_provider(),
             policy=policy,
             lease_seconds=lease_seconds,
+            sandbox_staging_root=sandbox_staging_root,
         )
         iterations += 1
         event = _loop_event_from_result(result)
@@ -586,6 +590,7 @@ def _run_job(
     policy: RunnerPolicy,
     manifest: Mapping[str, Any] | None = None,
     lease_failed: threading.Event | None = None,
+    sandbox_staging_root: str | Path | None = None,
 ) -> dict[str, Any]:
     job_id = _require_string(job, "job_id")
     problem = Path(_require_string(job, "problem")).resolve()
@@ -680,6 +685,7 @@ def _run_job(
                 else None
             ),
             cancellation_event=lease_failed,
+            sandbox_staging_root=sandbox_staging_root,
         )
 
     if chain_claim is not None:
@@ -1161,6 +1167,7 @@ def _run_verifier_for_transcript(
     solution_max_bytes: int | None = None,
     expected_solution_hash: str | None = None,
     cancellation_event: threading.Event | None = None,
+    sandbox_staging_root: str | Path | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     wall_seconds = 30
@@ -1194,6 +1201,7 @@ def _run_verifier_for_transcript(
                     else _solution_byte_limit(problem)
                 ),
                 expected_sha256=expected_solution_hash,
+                staging_root=sandbox_staging_root,
             )
             if sandbox == "docker"
             else nullcontext(solution)

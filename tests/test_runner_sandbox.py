@@ -45,6 +45,8 @@ def test_build_sandbox_command_applies_all_hardening(monkeypatch: pytest.MonkeyP
         "--read-only",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
+        "--ulimit=core=0",
+        "--oom-kill-disable=false",
         "--user=65534:65534",   # non-root
         "--entrypoint=/usr/local/bin/python3",
     ):

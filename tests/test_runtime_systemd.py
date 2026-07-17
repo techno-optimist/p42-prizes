@@ -101,10 +101,34 @@ def test_runtime_systemd_templates_pass_static_verifier(tmp_path: Path) -> None:
             "--challenge-provisioning must be provided exactly once",
         ),
         (
+            "deployments/p42-operator@.service.example",
+            "  --sandbox-staging-root /var/lib/p42/operator/%i/sandbox-staging \\",
+            "  --sandbox-staging-root-removed /var/lib/p42/operator/%i/sandbox-staging \\",
+            "--sandbox-staging-root must be provided exactly once",
+        ),
+        (
+            "deployments/p42-operator@.service.example",
+            "  --operator-private-key-file ${CREDENTIALS_DIRECTORY}/operator-private-key \\",
+            "  --operator-private-key-file-removed ${CREDENTIALS_DIRECTORY}/operator-private-key \\",
+            "--operator-private-key-file must be provided exactly once",
+        ),
+        (
             "deployments/p42-resolver@.service.example",
             "  --quorum-signatures /var/lib/p42/resolver/%i/quorum-signatures \\",
             "  --quorum-signatures-removed /var/lib/p42/resolver/%i/quorum-signatures \\",
             "--quorum-signatures must be provided exactly once",
+        ),
+        (
+            "deployments/p42-resolver@.service.example",
+            "  --resolver-private-key-file ${CREDENTIALS_DIRECTORY}/resolver-private-key \\",
+            "  --resolver-private-key-file-removed ${CREDENTIALS_DIRECTORY}/resolver-private-key \\",
+            "--resolver-private-key-file must be provided exactly once",
+        ),
+        (
+            "deployments/p42-resolver@.service.example",
+            "  --arweave-jwk-file ${CREDENTIALS_DIRECTORY}/arweave-jwk \\",
+            "  --arweave-jwk-file-removed ${CREDENTIALS_DIRECTORY}/arweave-jwk \\",
+            "--arweave-jwk-file must be provided exactly once",
         ),
         (
             "deployments/p42-resolver@.service.example",

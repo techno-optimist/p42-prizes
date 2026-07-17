@@ -69,6 +69,7 @@ import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
 import { verifyRunnerTranscript } from "./runner-transcript.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
 import { assertProductionRuntimeContract } from "./runtime-cli-contract.mjs";
+import { readCredentialText } from "./runtime-credentials.mjs";
 
 const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
@@ -96,6 +97,8 @@ const CONFIRMATIONS_ARG = arg("confirmations", null);
 const REORG_OVERLAP_ARG = arg("reorg-overlap-blocks", null);
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 const RUNTIME = resolve(arg("runtime", join(HERE, "runtime")));
+const SANDBOX_STAGING_ROOT = resolve(arg("sandbox-staging-root", join(RUNTIME, "sandbox-staging")));
+const OPERATOR_PRIVATE_KEY_FILE = arg("operator-private-key-file", null);
 const COORDINATION_ROOT_ARG = arg("coordination-root", null);
 const COORDINATION_ROOT = resolve(COORDINATION_ROOT_ARG ?? join(RUNTIME, "coordination"));
 const CURSOR = resolve(arg("cursor", join(RUNTIME, "operator-cursor.json")));
@@ -163,9 +166,15 @@ if (NONCE_RPC_SECONDARY && new URL(NONCE_RPC_SECONDARY).host === new URL(RPC).ho
   console.error("primary and secondary nonce RPCs must use different hosts");
   process.exit(2);
 }
-const KEY = process.env.OPERATOR_PRIVATE_KEY;
+if (!LOCAL_TEST && OPERATOR_PRIVATE_KEY_FILE && process.env.OPERATOR_PRIVATE_KEY) {
+  console.error("production operator must not receive OPERATOR_PRIVATE_KEY when using a systemd credential file");
+  process.exit(2);
+}
+const KEY = OPERATOR_PRIVATE_KEY_FILE
+  ? readCredentialText(OPERATOR_PRIVATE_KEY_FILE, "operator private-key credential")
+  : process.env.OPERATOR_PRIVATE_KEY;
 if (!KEY) {
-  console.error("set OPERATOR_PRIVATE_KEY (use only a funded, revoked-capable operator/session key)");
+  console.error("provide --operator-private-key-file from a systemd LoadCredential (or OPERATOR_PRIVATE_KEY for local tests)");
   process.exit(2);
 }
 
@@ -1213,6 +1222,7 @@ function runWorkerOnce(chainTimestamp) {
       "--reserve-memory-mb", String(RESERVE_MEMORY_MB),
       "--max-swap-used-mb", String(MAX_SWAP_USED_MB),
       "--memory-safety-factor", String(MEMORY_SAFETY_FACTOR),
+      "--sandbox-staging-root", SANDBOX_STAGING_ROOT,
     );
   } finally {
     if (previous === undefined) delete process.env[RUNNER_CHAIN_TIMESTAMP_ENV];

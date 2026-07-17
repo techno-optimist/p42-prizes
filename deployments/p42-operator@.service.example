@@ -11,6 +11,8 @@ Type=simple
 User=p42-operator
 Group=p42-operator
 EnvironmentFile=/etc/p42/operator/%i/runtime.env
+LoadCredential=operator-private-key:/etc/p42/operator/%i/credentials/operator-private-key
+UnsetEnvironment=OPERATOR_PRIVATE_KEY P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE
 ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --runtime /usr/bin/node --journal /var/lib/p42/operator/%i/supervisor.jsonl \
   --cycle-timeout-ms 120000 --kill-grace-ms 10000 --max-failures 5 \
@@ -23,6 +25,8 @@ ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --repo-root /opt/p42 --runtime /var/lib/p42/operator/%i \
   --coordination-root /var/lib/p42/operator/coordination \
   --challenge-provisioning /etc/p42/operator/%i/challenge-provisioning.json \
+  --sandbox-staging-root /var/lib/p42/operator/%i/sandbox-staging \
+  --operator-private-key-file ${CREDENTIALS_DIRECTORY}/operator-private-key \
   --agent-wallet ${P42_AGENT_WALLET_ADDRESS} \
   --runner-health-public-key ${P42_RUNNER_HEALTH_PUBLIC_KEY} \
   --runner-recovery-public-key ${P42_RUNNER_RECOVERY_PUBLIC_KEY} \
@@ -32,6 +36,7 @@ Restart=on-failure
 RestartSec=15s
 RestartPreventExitStatus=64 70 78 143
 OOMPolicy=kill
+LimitCORE=0
 MemoryHigh=2G
 MemoryMax=3G
 MemorySwapMax=0

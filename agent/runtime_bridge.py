@@ -148,6 +148,7 @@ def _parser() -> argparse.ArgumentParser:
     work.add_argument("--memory-safety-factor", type=float, default=2.0)
     work.add_argument("--sandbox-pids-limit", type=int, default=256)
     work.add_argument("--sandbox-cpus", type=float, default=1.0)
+    work.add_argument("--sandbox-staging-root")
     work.add_argument("--total-memory-mb", type=int)
     work.add_argument("--available-memory-mb", type=int)
     work.add_argument("--swap-used-mb", type=int)
@@ -240,6 +241,7 @@ def main() -> int:
             memory=_memory(args),
             policy=policy,
             lease_seconds=args.lease_seconds,
+            sandbox_staging_root=args.sandbox_staging_root,
         )
     print(canonical_json(result))
     return 0

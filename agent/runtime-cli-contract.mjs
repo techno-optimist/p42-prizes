@@ -11,6 +11,8 @@ const CONTRACTS = Object.freeze({
       "--runtime",
       "--coordination-root",
       "--challenge-provisioning",
+      "--sandbox-staging-root",
+      "--operator-private-key-file",
       "--agent-wallet",
       "--runner-health-public-key",
       "--runner-recovery-public-key",
@@ -30,6 +32,8 @@ const CONTRACTS = Object.freeze({
       "--quorum-signatures",
       "--runtime",
       "--coordination-root",
+      "--resolver-private-key-file",
+      "--arweave-jwk-file",
       "--agent-wallet",
     ]),
     publisherOptions: Object.freeze(["--transcript-store", "--publication-receipts"]),
@@ -50,8 +54,29 @@ export function optionValues(argv, option) {
   return values;
 }
 
+function hasEnvironmentValue(env, name) {
+  return typeof env[name] === "string" && env[name].trim() !== "";
+}
+
 function optionOccurrences(argv, option) {
   return argv.filter((value) => value === option).length;
+}
+
+export function legacyTranscriptEnvironmentErrors(argv, env = process.env) {
+  const errors = [];
+  if (optionValues(argv, "--transcript-endpoint").length > 0
+      && hasEnvironmentValue(env, "P42_TRANSCRIPT_ENDPOINTS")) {
+    errors.push("P42_TRANSCRIPT_ENDPOINTS conflicts with explicit --transcript-endpoint values");
+  }
+  const publisherOccurrences = ["--transcript-store", "--publication-receipts"]
+    .reduce((count, option) => count + optionOccurrences(argv, option), 0);
+  if (publisherOccurrences > 0 && hasEnvironmentValue(env, "P42_TRANSCRIPT_RECEIPT_SPOOL")) {
+    errors.push("P42_TRANSCRIPT_RECEIPT_SPOOL conflicts with explicit transcript publisher CLI");
+  }
+  if (publisherOccurrences > 0 && hasEnvironmentValue(env, "P42_TRANSCRIPT_STORE")) {
+    errors.push("P42_TRANSCRIPT_STORE conflicts with explicit transcript publisher CLI");
+  }
+  return errors;
 }
 
 export function productionRuntimeContractErrors(role, argv, {
@@ -95,6 +120,7 @@ export function productionRuntimeContractErrors(role, argv, {
         !== optionValues(argv, contract.retrievalEndpointOption).length) {
       errors.push("each --transcript-endpoint must have a value");
     }
+    errors.push(...legacyTranscriptEnvironmentErrors(argv, env));
   }
   return errors;
 }

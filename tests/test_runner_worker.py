@@ -281,6 +281,45 @@ def test_sandbox_uses_manifest_repository_at_digest(tmp_path: Path, monkeypatch:
     assert f"P42_VERIFIER_IMAGE={image}" in command
 
 
+def test_worker_binds_staged_solution_below_explicit_runtime_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image = "sha256:" + "b" * 64
+    problem, solution = _write_problem(
+        tmp_path,
+        verifier_name="ok.py",
+        verifier_body="",
+        wall_seconds=10,
+        image=image,
+        image_repository="registry.example.com/p42/worker-fixture",
+    )
+    staging_root = tmp_path / "operator" / "sandbox-staging"
+    observed: dict[str, object] = {}
+    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda: True)
+
+    def fake_run(command, **_kwargs):
+        observed["command"] = command
+        return subprocess.CompletedProcess(command, 0, '{"valid":true}\n', "")
+
+    monkeypatch.setattr("p42_prizes.runner_worker._run_isolated_verifier", fake_run)
+    result = _run_verifier_for_transcript(
+        problem,
+        solution,
+        child_address_space_limit_mb=256,
+        sandbox="docker",
+        sandbox_memory_mb=256,
+        sandbox_staging_root=staging_root,
+    )
+
+    assert result["ok"] is True
+    command = observed["command"]
+    mount = command[command.index("-v") + 1]
+    staged_host_path = Path(mount.split(":", 1)[0])
+    assert staged_host_path != solution.resolve()
+    assert staged_host_path.is_relative_to(staging_root)
+    assert not any(staging_root.iterdir())
+
+
 def test_colliding_job_ids_write_distinct_transcripts(tmp_path: Path) -> None:
     # 'a/b' and 'a b' both collapse to 'a_b' under the lossy sanitizer; the
     # hashed transcript filename must keep the two transcripts separate.

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -62,12 +63,17 @@ for (const role of ["operator", "resolver"]) {
       const output = new PassThrough();
       let stdout = "";
       output.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+      const fixtureEnv = { ...process.env, P42_RUNTIME_SMOKE_PUBLISHER_OUTPUT: publisherOutput };
+      for (const name of [
+        "P42_TRANSCRIPT_ENDPOINTS", "P42_TRANSCRIPT_RECEIPT_SPOOL", "P42_TRANSCRIPT_STORE",
+        "OPERATOR_PRIVATE_KEY", "RESOLVER_PRIVATE_KEY", "ARWEAVE_JWK_JSON",
+      ]) delete fixtureEnv[name];
       const outcome = await runRuntimeCycle({
         runtime: process.execPath,
         runtimeArgs: [FIXTURE, ...substituteFixtureValues(argv, primary.endpoint, secondary.endpoint)],
         cycleTimeoutMs: supervisor.cycleTimeoutMs,
         killGraceMs: supervisor.killGraceMs,
-        env: { ...process.env, P42_RUNTIME_SMOKE_PUBLISHER_OUTPUT: publisherOutput },
+        env: fixtureEnv,
         stdout: output,
         stderr: output,
       });
@@ -85,3 +91,50 @@ for (const role of ["operator", "resolver"]) {
     }
   });
 }
+
+function productionArgs(role) {
+  if (role === "operator") {
+    return [
+      "--rpc", "https://rpc.example", "--nonce-rpc-secondary", "https://secondary.example",
+      "--manifest", "/etc/p42/manifest.json", "--problem", "/opt/p42/problems/fixture",
+      "--registry-problem-id", "1", "--repo-root", "/opt/p42", "--runtime", "/var/lib/p42/operator/fixture",
+      "--coordination-root", "/var/lib/p42/operator/coordination",
+      "--challenge-provisioning", "/etc/p42/challenge.json", "--sandbox-staging-root", "/var/lib/p42/operator/fixture/sandbox-staging",
+      "--operator-private-key-file", "/run/credentials/p42/operator-private-key", "--agent-wallet", "0x1111111111111111111111111111111111111111",
+      "--runner-health-public-key", "health", "--runner-recovery-public-key", "recovery",
+      "--runner-host-id", "host", "--runner-boot-id", "boot", "--runner-queue-id", "queue",
+    ];
+  }
+  return [
+    "--rpc", "https://rpc.example", "--manifest", "/etc/p42/manifest.json", "--problem-id", "fixture",
+    "--registry-problem-id", "1", "--transcripts", "/var/lib/p42/resolver/fixture/transcripts",
+    "--quorum-signatures", "/var/lib/p42/resolver/fixture/quorum-signatures", "--runtime", "/var/lib/p42/resolver/fixture",
+    "--coordination-root", "/var/lib/p42/resolver/coordination", "--resolver-private-key-file", "/run/credentials/p42/resolver-private-key",
+    "--arweave-jwk-file", "/run/credentials/p42/arweave-jwk", "--agent-wallet", "0x1111111111111111111111111111111111111111",
+    "--transcript-store", "arweave", "--transcript-endpoint", "https://one.example", "--transcript-endpoint", "https://two.test",
+  ];
+}
+
+test("exact production entrypoints reject incomplete credential/staging preflight", () => {
+  const operator = spawnSync(process.execPath, [join(ROOT, "agent", "operator.mjs"), ...productionArgs("operator").filter((value) => value !== "--sandbox-staging-root" && value !== "/var/lib/p42/operator/fixture/sandbox-staging")], {
+    cwd: ROOT, encoding: "utf8", env: { PATH: process.env.PATH },
+  });
+  assert.equal(operator.status, 2);
+  assert.match(operator.stderr, /--sandbox-staging-root must be provided exactly once/);
+
+  const resolver = spawnSync(process.execPath, [join(ROOT, "agent", "resolver.mjs"), ...productionArgs("resolver").filter((value) => value !== "--arweave-jwk-file" && value !== "/run/credentials/p42/arweave-jwk")], {
+    cwd: ROOT, encoding: "utf8", env: { PATH: process.env.PATH },
+  });
+  assert.equal(resolver.status, 1);
+  assert.match(resolver.stderr, /--arweave-jwk-file must be provided exactly once/);
+});
+
+test("exact resolver entrypoint rejects legacy publication environment conflicts", () => {
+  const resolver = spawnSync(process.execPath, [join(ROOT, "agent", "resolver.mjs"), ...productionArgs("resolver")], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, P42_TRANSCRIPT_ENDPOINTS: "https://legacy.one,https://legacy.two" },
+  });
+  assert.equal(resolver.status, 1);
+  assert.match(resolver.stderr, /P42_TRANSCRIPT_ENDPOINTS conflicts with explicit --transcript-endpoint values/);
+});

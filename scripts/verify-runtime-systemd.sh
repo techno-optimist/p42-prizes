@@ -17,6 +17,12 @@ require_exact() {
   [[ $count == 1 ]] || fail "$(basename "$file") must define $directive exactly once"
 }
 
+require_line() {
+  local file=$1 expected=$2 count
+  count=$(grep -c -F -x -- "$expected" "$file" || true)
+  [[ $count == 1 ]] || fail "$(basename "$file") must contain exactly: $expected"
+}
+
 reject_directive() {
   local file=$1 directive=$2
   ! grep -q -E "^${directive}=" "$file" || fail "$(basename "$file") must not define $directive"
@@ -43,6 +49,7 @@ for file in "$operator" "$resolver"; do
   require_exact "$file" RestartSec 'RestartSec=15s'
   require_exact "$file" RestartPreventExitStatus 'RestartPreventExitStatus=64 70 78 143'
   require_exact "$file" OOMPolicy 'OOMPolicy=kill'
+  require_exact "$file" LimitCORE 'LimitCORE=0'
   require_exact "$file" KillMode 'KillMode=mixed'
   require_exact "$file" TimeoutStopSec 'TimeoutStopSec=20s'
   require_exact "$file" SendSIGKILL 'SendSIGKILL=yes'
@@ -76,6 +83,8 @@ done
 require_exact "$operator" User 'User=p42-operator'
 require_exact "$operator" Group 'Group=p42-operator'
 require_exact "$operator" EnvironmentFile 'EnvironmentFile=/etc/p42/operator/%i/runtime.env'
+require_exact "$operator" LoadCredential 'LoadCredential=operator-private-key:/etc/p42/operator/%i/credentials/operator-private-key'
+require_exact "$operator" UnsetEnvironment 'UnsetEnvironment=OPERATOR_PRIVATE_KEY P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE'
 require_exact "$operator" ExecStart 'ExecStart=/usr/local/bin/p42-runtime-supervisor \'
 require_exact "$operator" StateDirectory 'StateDirectory=p42/operator/%i p42/operator/coordination'
 require_exact "$operator" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/operator/%i /opt/p42'
@@ -89,6 +98,9 @@ require_exact "$operator" TasksMax 'TasksMax=256'
 require_exact "$resolver" User 'User=p42-resolver'
 require_exact "$resolver" Group 'Group=p42-resolver'
 require_exact "$resolver" EnvironmentFile 'EnvironmentFile=/etc/p42/resolver/%i/runtime.env'
+require_line "$resolver" 'LoadCredential=resolver-private-key:/etc/p42/resolver/%i/credentials/resolver-private-key'
+require_line "$resolver" 'LoadCredential=arweave-jwk:/etc/p42/resolver/%i/credentials/arweave-jwk'
+require_exact "$resolver" UnsetEnvironment 'UnsetEnvironment=RESOLVER_PRIVATE_KEY ARWEAVE_JWK_JSON P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE'
 require_exact "$resolver" ExecStart 'ExecStart=/usr/local/bin/p42-runtime-supervisor \'
 require_exact "$resolver" StateDirectory 'StateDirectory=p42/resolver/%i p42/resolver/%i/transcripts p42/resolver/%i/quorum-signatures p42/resolver/coordination'
 require_exact "$resolver" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/resolver/%i /opt/p42'
@@ -108,6 +120,7 @@ require_exact "$failure" StandardOutput 'StandardOutput=append:/var/lib/p42/runt
 require_exact "$failure" StandardError 'StandardError=journal'
 require_exact "$failure" TimeoutStartSec 'TimeoutStartSec=30s'
 require_exact "$failure" TimeoutStopSec 'TimeoutStopSec=10s'
+require_exact "$failure" LimitCORE 'LimitCORE=0'
 require_exact "$failure" KillMode 'KillMode=mixed'
 require_exact "$failure" UMask 'UMask=0077'
 require_exact "$failure" StateDirectory 'StateDirectory=p42/runtime-evidence'

@@ -242,6 +242,7 @@ def build_sandbox_command(
       * ``--network=none``           — no network (no exfiltration, no nondeterminism source)
       * ``--memory`` / ``--memory-swap`` — cgroup memory cap with NO swap (aggregate, not per-process)
       * ``--pids-limit``             — caps total processes (fork-bomb / fork-to-multiply-RLIMIT defence)
+      * ``--oom-kill-disable=false`` / ``--ulimit=core=0`` — retain OOM killing and disable core dumps
       * ``--cpus``                   — CPU cap
       * ``--read-only`` + ``--tmpfs``— read-only rootfs, small writable /tmp only
       * ``--cap-drop=ALL`` + ``--security-opt=no-new-privileges`` + non-root user
@@ -288,6 +289,8 @@ def build_sandbox_command(
         f"--tmpfs=/tmp:rw,size={tmpfs_mb}m,mode=1777",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
+        "--ulimit=core=0",
+        "--oom-kill-disable=false",
         f"--user={SANDBOX_USER}",
         f"--entrypoint={SANDBOX_PYTHON_ENTRYPOINT}",
         "-v", f"{host_path}:{SANDBOX_SOLUTION_PATH}:ro",

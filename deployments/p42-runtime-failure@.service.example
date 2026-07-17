@@ -10,6 +10,7 @@ StandardOutput=append:/var/lib/p42/runtime-evidence/%i.properties
 StandardError=journal
 TimeoutStartSec=30s
 TimeoutStopSec=10s
+LimitCORE=0
 KillMode=mixed
 UMask=0077
 StateDirectory=p42/runtime-evidence
