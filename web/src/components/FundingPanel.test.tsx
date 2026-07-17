@@ -15,6 +15,8 @@ const OBSERVED_MS = DEADLINE_MS - 1_000;
 const AUTHORIZATION_EXPIRY_MS = DEADLINE_MS + 10_000;
 const FINALIZED_MS = OBSERVED_MS - 100;
 const WALLET_URI = `ethereum:${ADDRESS}@84532`;
+const FUNDING_AUTHORIZATION_DIGEST = `sha256:${"4".repeat(64)}`;
+const ACTIVATION_COMPLETION_DIGEST = `sha256:${"5".repeat(64)}`;
 
 function props(overrides: Partial<FundingPanelProps> = {}): FundingPanelProps {
   return {
@@ -25,6 +27,10 @@ function props(overrides: Partial<FundingPanelProps> = {}): FundingPanelProps {
     fundingDeadline: new Date(DEADLINE_MS).toISOString(),
     remainingCapWei: "1000000000000000000",
     serverObservedAt: new Date(OBSERVED_MS).toISOString(),
+    fundingAuthorizationDigest: FUNDING_AUTHORIZATION_DIGEST,
+    activationCompletionDigest: ACTIVATION_COMPLETION_DIGEST,
+    checkpointBlock: 100,
+    activationFinalizedBlock: 99,
     label: "Test pool",
     ...overrides,
   };
@@ -37,6 +43,10 @@ function responseBody({
   serverObservedAt = OBSERVED_MS,
   remainingCapWei = "1000000000000000000",
   target = true,
+  fundingAuthorizationDigest = FUNDING_AUTHORIZATION_DIGEST,
+  activationCompletionDigest = ACTIVATION_COMPLETION_DIGEST,
+  checkpointBlock = 100,
+  activationFinalizedBlock = 99,
 }: {
   slug?: string;
   address?: string;
@@ -44,15 +54,23 @@ function responseBody({
   serverObservedAt?: number;
   remainingCapWei?: string;
   target?: boolean;
+  fundingAuthorizationDigest?: unknown;
+  activationCompletionDigest?: unknown;
+  checkpointBlock?: unknown;
+  activationFinalizedBlock?: unknown;
 } = {}) {
   return {
-    schema: "p42-prizes/funding-target/v2",
+    schema: "p42-prizes/funding-target/v3",
     slug,
     authorizationExpiresAt: new Date(AUTHORIZATION_EXPIRY_MS).toISOString(),
     finalizedObservedAt: new Date(FINALIZED_MS).toISOString(),
     fundingDeadline: new Date(fundingDeadline).toISOString(),
     remainingCapWei,
     serverObservedAt: new Date(serverObservedAt).toISOString(),
+    fundingAuthorizationDigest,
+    activationCompletionDigest,
+    checkpointBlock,
+    activationFinalizedBlock,
     target: target ? {
       address,
       asset: "ETH",
@@ -91,7 +109,7 @@ async function renderAndReveal() {
 
 function expectTargetVisible(address = ADDRESS) {
   expect(screen.getByText(address)).toBeTruthy();
-  expect(document.querySelector(`a[href="ethereum:${address}@84532"]`)).not.toBeNull();
+  expect((screen.getByRole("button", { name: "Fund Test pool with ETH" }) as HTMLButtonElement).disabled).toBe(true);
 }
 
 function expectTargetClearedFromDom() {
@@ -99,6 +117,17 @@ function expectTargetClearedFromDom() {
   expect(document.querySelector(`a[href="${WALLET_URI}"]`)).toBeNull();
   expect(document.body.textContent).not.toContain(ADDRESS);
   expect(document.body.innerHTML).not.toContain(WALLET_URI);
+}
+
+function acknowledgePolicy() {
+  const acknowledgement = screen.getByRole("checkbox", { name: /I acknowledge the exact full authorization/ });
+  fireEvent.click(acknowledgement);
+  expect((acknowledgement as HTMLInputElement).checked).toBe(true);
+  return acknowledgement;
+}
+
+function walletLink(uri = WALLET_URI) {
+  return document.querySelector(`a[href="${uri}"]`)!;
 }
 
 function expectTargetUnavailable() {
@@ -221,6 +250,59 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 
+  it("exposes both full exact digests in an accessible collapsed disclosure", async () => {
+    await renderAndReveal();
+    const summary = screen.getByText("Inspect exact policy digests");
+    const details = summary.closest("details") as HTMLDetailsElement;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain(FUNDING_AUTHORIZATION_DIGEST);
+    expect(details.textContent).toContain(ACTIVATION_COMPLETION_DIGEST);
+    expect(screen.getByRole("checkbox", { name: /exact full authorization.*policy digest disclosure and API/i })).toBeTruthy();
+  });
+
+  it("copies the full exact policy digests rather than an abbreviation", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    await renderAndReveal();
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy full funding authorization digest" }));
+    await flushResponse();
+    expect(writeText).toHaveBeenCalledWith(FUNDING_AUTHORIZATION_DIGEST);
+    expect(screen.getByRole("button", { name: "Copy full funding authorization digest" }).textContent).toBe("copied");
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy full activation completion digest" }));
+    await flushResponse();
+    expect(writeText).toHaveBeenLastCalledWith(ACTIVATION_COMPLETION_DIGEST);
+    expect(screen.getByRole("button", { name: "Copy full activation completion digest" }).textContent).toBe("copied");
+  });
+
+  it.each([
+    ["missing", () => { const body = responseBody() as Record<string, unknown>; delete body.fundingAuthorizationDigest; return body; }],
+    ["zero", () => responseBody({ fundingAuthorizationDigest: `sha256:${"0".repeat(64)}` })],
+    ["malformed", () => responseBody({ fundingAuthorizationDigest: "sha256:not-a-digest" })],
+    ["changed", () => responseBody({ fundingAuthorizationDigest: `sha256:${"9".repeat(64)}` })],
+  ])("fails closed on a %s funding authorization digest", async (_label, body) => {
+    vi.mocked(fetch).mockResolvedValue(okResponse(body()));
+    render(<FundingPanel {...props()} />);
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
+  });
+
+  it.each([
+    ["missing", () => { const body = responseBody() as Record<string, unknown>; delete body.activationCompletionDigest; return body; }],
+    ["zero", () => responseBody({ activationCompletionDigest: `sha256:${"0".repeat(64)}` })],
+    ["malformed", () => responseBody({ activationCompletionDigest: "sha256:not-a-digest" })],
+    ["changed", () => responseBody({ activationCompletionDigest: `sha256:${"9".repeat(64)}` })],
+  ])("fails closed on a %s activation completion digest", async (_label, body) => {
+    vi.mocked(fetch).mockResolvedValue(okResponse(body()));
+    render(<FundingPanel {...props()} />);
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
+  });
+
   it("suppresses visible A synchronously while rerendered binding B is pending, then reveals B", async () => {
     const { rerender } = render(<FundingPanel {...props()} />);
     await flushResponse();
@@ -282,6 +364,7 @@ describe("FundingPanel deadline reconciliation", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
     const { rerender } = render(<FundingPanel {...props()} />);
     await flushResponse();
+    acknowledgePolicy();
     const staleLink = document.querySelector(`a[href="${WALLET_URI}"]`)!;
     const staleCopy = screen.getByRole("button", { name: "Copy sponsor pool address" });
     const linkPropsKey = Object.keys(staleLink).find((key) => key.startsWith("__reactProps$"))!;
@@ -419,6 +502,7 @@ describe("FundingPanel deadline reconciliation", () => {
 
   it("atomically hides a stale target while focus revalidation observes an exhausted cap", async () => {
     await renderAndReveal();
+    acknowledgePolicy();
     const pending = deferredResponse();
     vi.mocked(fetch).mockReturnValueOnce(pending.promise);
 
@@ -432,19 +516,44 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 
+  it("resets acknowledgement after a successful focus revalidation", async () => {
+    await renderAndReveal();
+    acknowledgePolicy();
+    fireEvent(window, new Event("focus"));
+    expectTargetClearedFromDom();
+    await flushResponse();
+    expectTargetVisible();
+    expect((screen.getByRole("checkbox", { name: /I acknowledge the exact full authorization/ }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it("resets acknowledgement when the policy binding changes", async () => {
+    const { rerender } = render(<FundingPanel {...props()} />);
+    await flushResponse();
+    acknowledgePolicy();
+    const nextDigest = `sha256:${"8".repeat(64)}`;
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ fundingAuthorizationDigest: nextDigest })));
+    rerender(<FundingPanel {...props({ fundingAuthorizationDigest: nextDigest })} />);
+    expectTargetClearedFromDom();
+    await flushResponse();
+    expectTargetVisible();
+    expect((screen.getByRole("checkbox", { name: /I acknowledge the exact full authorization/ }) as HTMLInputElement).checked).toBe(false);
+  });
+
   it("blocks and clears a wallet click at the exact boundary", async () => {
     await renderAndReveal();
-    const walletLink = document.querySelector(`a[href="${WALLET_URI}"]`)!;
+    acknowledgePolicy();
+    const link = walletLink();
     vi.setSystemTime(DEADLINE_MS);
-    expect(fireEvent.click(walletLink)).toBe(false);
+    expect(fireEvent.click(link)).toBe(false);
     expectTargetUnavailable();
   });
 
-  it("revalidates the exact target, then requires a second trusted click to launch", async () => {
+  it("requires acknowledgement, exact revalidation, and a second trusted click to launch", async () => {
     await renderAndReveal();
-    const walletLink = document.querySelector(`a[href="${WALLET_URI}"]`)!;
+    expect(document.querySelector(`a[href="${WALLET_URI}"]`)).toBeNull();
+    acknowledgePolicy();
 
-    expect(fireEvent.click(walletLink)).toBe(false);
+    expect(fireEvent.click(walletLink())).toBe(false);
     expectTargetClearedFromDom();
     await flushResponse();
 
@@ -453,7 +562,6 @@ describe("FundingPanel deadline reconciliation", () => {
       cache: "no-store",
       credentials: "same-origin",
     }));
-    expectTargetVisible();
     const confirmedLink = screen.getByRole("link", { name: "Fund Test pool with ETH" });
     expect(confirmedLink.textContent).toBe("open wallet");
     expect(fireEvent.click(confirmedLink)).toBe(true);
@@ -461,9 +569,10 @@ describe("FundingPanel deadline reconciliation", () => {
 
   it("does not launch when click-time revalidation observes an exhausted cap", async () => {
     await renderAndReveal();
+    acknowledgePolicy();
     vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ remainingCapWei: "0", target: false })));
 
-    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    expect(fireEvent.click(walletLink())).toBe(false);
     expectTargetClearedFromDom();
     await flushResponse();
 
@@ -472,21 +581,37 @@ describe("FundingPanel deadline reconciliation", () => {
 
   it("does not launch when click-time revalidation changes the target identity", async () => {
     await renderAndReveal();
+    acknowledgePolicy();
     vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ address: B_ADDRESS })));
 
-    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    expect(fireEvent.click(walletLink())).toBe(false);
     await flushResponse();
 
     expectTargetClearedFromDom();
   });
 
-  it("cannot arm an older click response after focus starts a newer reconciliation", async () => {
+  it.each([
+    ["funding authorization", { fundingAuthorizationDigest: `sha256:${"9".repeat(64)}` }],
+    ["activation completion", { activationCompletionDigest: `sha256:${"9".repeat(64)}` }],
+    ["checkpoint", { checkpointBlock: 101 }],
+  ])("does not arm wallet launch when click-time %s binding changes", async (_label, changed) => {
     await renderAndReveal();
+    acknowledgePolicy();
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody(changed)));
+    expect(fireEvent.click(walletLink())).toBe(false);
+    await flushResponse();
+    expectTargetClearedFromDom();
+    expect(screen.queryByText("open wallet")).toBeNull();
+  });
+
+  it("cannot arm an older acknowledged click after focus starts a newer reconciliation", async () => {
+    await renderAndReveal();
+    acknowledgePolicy();
     const staleClick = deferredResponse();
     const focusRefresh = deferredResponse();
     vi.mocked(fetch).mockReturnValueOnce(staleClick.promise).mockReturnValueOnce(focusRefresh.promise);
 
-    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    expect(fireEvent.click(walletLink())).toBe(false);
     fireEvent(window, new Event("focus"));
     staleClick.resolve(okResponse());
     await flushResponse();

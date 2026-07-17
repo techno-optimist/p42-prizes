@@ -106,6 +106,7 @@ function model(): PortalReadModel {
     provenance: {
       source: "chain-p42-v1", deploymentCommit: "a".repeat(40), checkpointBlock: 100,
       checkpointTimestamp: "2026-01-04T00:00:00.000Z",
+      fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
       activationCompletionDigest: `sha256:${"5".repeat(64)}`,
       replayEvents: {}, note: "exact-ten test checkpoint",
     },
@@ -241,9 +242,14 @@ describe("chain portal API consumers", () => {
       fundingDeadline: "2026-06-01T00:00:00.000Z",
       remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-06-01T00:00:00.000Z",
+      fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
+      activationCompletionDigest: `sha256:${"5".repeat(64)}`,
+      checkpointBlock: 100,
+      activationFinalizedBlock: 99,
     });
     expect(Object.keys(fundingPanel!.props).sort()).toEqual([
-      "authorizationExpiresAt", "finalizedObservedAt", "fundingDeadline", "fundingTargetDeployed",
+      "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt", "checkpointBlock",
+      "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline", "fundingTargetDeployed",
       "label", "remainingCapWei", "serverObservedAt", "slug",
     ]);
     const fundingMarkup = renderToStaticMarkup(createElement(
@@ -263,13 +269,14 @@ describe("chain portal API consumers", () => {
     expect(serializedPublicPayloads).not.toContain(`ethereum:${FUNDING_ADDRESS}`);
   });
 
-  it("keeps address, wallet, provenance, and chain material out of pre-deadline Flight props", async () => {
+  it("keeps address, wallet, and chain routing material out of pre-deadline Flight props", async () => {
     const page = await ProblemPage({ params: Promise.resolve({ slug: launchProblems[0].slug }) });
     const fundingPanel = findElement(page, FundingPanel);
     const flightFacingPayload = [JSON.stringify(fundingPanel?.props), ...payloadStrings(page)].join("\n");
 
     expect(Object.keys(fundingPanel!.props).sort()).toEqual([
-      "authorizationExpiresAt", "finalizedObservedAt", "fundingDeadline", "fundingTargetDeployed",
+      "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt", "checkpointBlock",
+      "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline", "fundingTargetDeployed",
       "label", "remainingCapWei", "serverObservedAt", "slug",
     ]);
     expect(fundingPanel?.props).toMatchObject({
@@ -280,6 +287,10 @@ describe("chain portal API consumers", () => {
       fundingDeadline: "2026-06-01T00:00:00.000Z",
       remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-01-04T00:00:00.000Z",
+      fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
+      activationCompletionDigest: `sha256:${"5".repeat(64)}`,
+      checkpointBlock: 100,
+      activationFinalizedBlock: 99,
     });
     expect(flightFacingPayload).not.toContain(FUNDING_ADDRESS);
     expect(flightFacingPayload).not.toContain("ethereum:");
@@ -302,13 +313,17 @@ describe("chain portal API consumers", () => {
     expect(fundingTargetRevalidate).toBe(0);
     expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
     expect(body).toEqual({
-      schema: "p42-prizes/funding-target/v2",
+      schema: "p42-prizes/funding-target/v3",
       slug: launchProblems[0].slug,
       authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
       finalizedObservedAt: "2026-01-04T00:00:00.000Z",
       fundingDeadline: "2026-06-01T00:00:00.000Z",
       remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-01-04T00:00:00.000Z",
+      fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
+      activationCompletionDigest: `sha256:${"5".repeat(64)}`,
+      checkpointBlock: 100,
+      activationFinalizedBlock: 99,
       target: {
         address: FUNDING_ADDRESS,
         asset: "ETH",
@@ -392,6 +407,16 @@ describe("chain portal API consumers", () => {
     ["missing cap", (value: PortalReadModel) => { delete (value.problems[0].funding as any).fundingCapWei; }],
     ["drifted remainder", (value: PortalReadModel) => { value.problems[0].funding!.remainingFundingCapWei = "1"; }],
     ["drifted finalized observation", (value: PortalReadModel) => { value.problems[0].funding!.finalizedObservedAt = "2026-01-03T00:00:00.000Z"; }],
+    ["missing authorization digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.fundingAuthorizationDigest = null; }],
+    ["zero authorization digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.fundingAuthorizationDigest = `sha256:${"0".repeat(64)}`; }],
+    ["malformed authorization digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.fundingAuthorizationDigest = "sha256:no"; }],
+    ["changed authorization digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.fundingAuthorizationDigest = `sha256:${"9".repeat(64)}`; }],
+    ["missing completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = null; }],
+    ["zero completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = `sha256:${"0".repeat(64)}`; }],
+    ["malformed completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = "sha256:no"; }],
+    ["changed completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = `sha256:${"9".repeat(64)}`; }],
+    ["checkpoint block drift", (value: PortalReadModel) => { value.problems[0].chainProvenance.checkpointBlock = 101; }],
+    ["activation block after checkpoint", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationFinalizedBlock = 101; }],
   ])("fails closed for %s in the dedicated funding projection", async (_label, mutate) => {
     const value = model();
     mutate(value);

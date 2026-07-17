@@ -386,6 +386,10 @@ $ make verify SOLUTION=examples/valid-4.json`}
             fundingDeadline={funding?.fundingDeadline ?? null}
             remainingCapWei={funding?.remainingFundingCapWei ?? null}
             serverObservedAt={funding?.publicationObservedAt ?? null}
+            fundingAuthorizationDigest={chainProvenance.fundingAuthorizationDigest}
+            activationCompletionDigest={chainProvenance.activationCompletionDigest}
+            checkpointBlock={chainProvenance.checkpointBlock ?? null}
+            activationFinalizedBlock={chainProvenance.activationFinalizedBlock}
           />
 
           <div style={{ marginTop: 18 }}>

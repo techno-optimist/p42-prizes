@@ -2001,6 +2001,76 @@ h3 {
   border-bottom-color: var(--ink);
 }
 
+.copy-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.funding-policy-binding {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 10px;
+  color: var(--egg-muted);
+  font-size: 12px;
+}
+
+.funding-policy-binding code,
+.funding-acknowledgement code,
+.funding-policy-details code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.funding-policy-details {
+  margin-top: 8px;
+  color: var(--egg-muted);
+  font-size: 12px;
+}
+
+.funding-policy-details summary {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.funding-policy-details dl {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+}
+
+.funding-policy-details dd {
+  min-width: 0;
+  margin: 0 0 4px;
+}
+
+.funding-digest-copy {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.funding-policy-details code {
+  white-space: normal;
+  word-break: break-all;
+}
+
+.funding-acknowledgement {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--egg-soft);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.funding-acknowledgement input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+
 .testnet-warning {
   margin-top: 10px;
   font-size: 13px;

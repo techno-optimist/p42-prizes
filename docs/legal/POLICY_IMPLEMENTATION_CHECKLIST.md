@@ -122,6 +122,12 @@ proposed v1 economics.
 
 ## 5. Live On-Chain Funding Gate
 
+Source status: the portal v3 envelope and acknowledgement UI bind exact
+authorization/completion digests and finalized checkpoint identity. They do not
+perform or claim a browser live `eth_call`; the fresh operator-distinct dual-RPC
+indexer checkpoint is the current evidence boundary. The live pre-sign chain
+read items below remain deployment gates.
+
 - [ ] Keep all funding controls absent or disabled until a fresh read from the
       declared chain succeeds.
 - [ ] Validate chain ID, manifest, runtime bytecode at every bound address,

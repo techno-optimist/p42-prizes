@@ -229,6 +229,7 @@ export interface PortalReadModelProvenance {
   deploymentCommit: string | null;
   checkpointBlock: number | null;
   checkpointTimestamp: string | null;
+  fundingAuthorizationDigest: string | null;
   activationCompletionDigest: string | null;
   replayEvents: Readonly<Record<string, { digest: string; total: number }>>;
   note: string;
@@ -239,6 +240,30 @@ export interface PortalReadModel {
   problems: readonly PortalProblemReadModel[];
   submissions: readonly Submission[];
   provenance: PortalReadModelProvenance;
+}
+
+export interface FundingTargetV3 {
+  address: string;
+  asset: "ETH";
+  chain: "Base Sepolia" | "Base";
+  chainId: 84532 | 8453;
+  explorerUrl: string;
+  walletUri: string;
+}
+
+export interface FundingTargetEnvelopeV3 {
+  schema: "p42-prizes/funding-target/v3";
+  slug: string;
+  authorizationExpiresAt: string | null;
+  finalizedObservedAt: string | null;
+  fundingDeadline: string | null;
+  remainingCapWei: string | null;
+  serverObservedAt: string | null;
+  fundingAuthorizationDigest: string | null;
+  activationCompletionDigest: string | null;
+  checkpointBlock: number | null;
+  activationFinalizedBlock: number | null;
+  target: FundingTargetV3 | null;
 }
 
 export interface ActivityItem {
