@@ -17,7 +17,7 @@ from p42_prizes.verdict import (
 
 
 PROBLEM_ID = "arithmetic-kakeya"
-VERIFIER_VERSION = "0.1.1"
+VERIFIER_VERSION = "0.2.0"
 VERIFIER_IMAGE = verifier_image_identity("sha256:local-dev")
 GRID = (2, 2)
 TARGET = (1, -1)
@@ -31,6 +31,14 @@ TARGET = (1, -1)
 SEED_BEST = Fraction(7, 4)
 MIN_IMPROVEMENT = Fraction(1, 1000000000000)
 MAX_SOLUTION_BYTES = 32768
+MAX_SLOPES = 128
+MAX_EDGE_LABELS_PER_AXIS = 32
+MAX_FREE_VERTICES = 4
+MAX_RELATIONS = 128
+MAX_ABS_INTEGER = 2**255 - 1
+SOLUTION_FIELDS = {"grid", "slopes", "edge_labels", "free", "relations", "source", "claimed_score"}
+EDGE_LABEL_FIELDS = {"key", "slope"}
+RELATION_FIELDS = {"vertex", "slope"}
 
 
 class VerifierFailure(Exception):
@@ -43,6 +51,25 @@ class VerifierFailure(Exception):
 def require_int(value: Any, label: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise VerifierFailure("MALFORMED", f"{label} must be an integer")
+    if abs(value) > MAX_ABS_INTEGER:
+        raise VerifierFailure("RESOURCE_LIMIT", f"{label} exceeds the signed 255-bit magnitude bound")
+    return value
+
+
+def require_closed_object(value: Any, label: str, fields: set[str]) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise VerifierFailure("MALFORMED", f"{label} must be an object")
+    unknown = sorted(set(value) - fields)
+    if unknown:
+        raise VerifierFailure("UNKNOWN_FIELD", f"{label} has unknown field: {unknown[0]}")
+    return value
+
+
+def require_scalar_string(value: Any, label: str) -> str:
+    if not isinstance(value, str):
+        raise VerifierFailure("MALFORMED", f"{label} must be a string")
+    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise VerifierFailure("MALFORMED", f"{label} must contain only Unicode scalar values")
     return value
 
 
@@ -59,12 +86,17 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
             f"solution is {len(raw)} bytes; limit is {MAX_SOLUTION_BYTES}",
         )
     try:
-        data = strict_json_loads(raw)
+        text = raw.decode("utf-8")
+        if text.startswith("\ufeff"):
+            raise ValueError("UTF-8 BOM is not permitted")
+        data = strict_json_loads(text)
     except Exception as exc:
         raise VerifierFailure("MALFORMED_JSON", str(exc)) from exc
 
-    if not isinstance(data, dict):
-        raise VerifierFailure("MALFORMED", "solution root must be an object")
+    data = require_closed_object(data, "solution root", SOLUTION_FIELDS)
+    for metadata in ("source", "claimed_score"):
+        if metadata in data:
+            require_scalar_string(data[metadata], metadata)
     grid = tuple(require_int(value, f"grid[{index}]") for index, value in enumerate(data.get("grid", [])))
     if grid != GRID:
         raise VerifierFailure("WRONG_GRID", "grid must equal [2, 2]")
@@ -72,7 +104,12 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
     slopes_raw = data.get("slopes")
     if not isinstance(slopes_raw, list):
         raise VerifierFailure("MALFORMED", "slopes must be an array")
-    slopes = {parse_pair(value, f"slopes[{index}]") for index, value in enumerate(slopes_raw)}
+    if len(slopes_raw) > MAX_SLOPES:
+        raise VerifierFailure("RESOURCE_LIMIT", f"slopes exceeds {MAX_SLOPES} entries")
+    parsed_slopes = [parse_pair(value, f"slopes[{index}]") for index, value in enumerate(slopes_raw)]
+    if len(set(parsed_slopes)) != len(parsed_slopes):
+        raise VerifierFailure("DUPLICATE_SLOPE", "slopes contains a duplicate semantic entry")
+    slopes = set(parsed_slopes)
     if (0, 0) not in slopes:
         raise VerifierFailure("SLOPE_SET", "slopes must include [0, 0]")
     for slope in slopes:
@@ -87,6 +124,8 @@ def parse_solution(raw: bytes) -> dict[str, Any]:
     free_raw = data.get("free")
     if not isinstance(free_raw, list):
         raise VerifierFailure("MALFORMED", "free must be an array")
+    if len(free_raw) > MAX_FREE_VERTICES:
+        raise VerifierFailure("RESOURCE_LIMIT", f"free exceeds {MAX_FREE_VERTICES} entries")
     for index, raw_vertex in enumerate(free_raw):
         vertex = parse_pair(raw_vertex, f"free[{index}]")
         if vertex not in vertex_set:
@@ -116,11 +155,16 @@ def parse_edge_labels(raw: Any, slopes: set[tuple[int, int]]) -> list[list[tuple
     for axis_index, axis_labels in enumerate(raw):
         if not isinstance(axis_labels, list):
             raise VerifierFailure("MALFORMED", f"edge_labels[{axis_index}] must be an array")
+        if len(axis_labels) > MAX_EDGE_LABELS_PER_AXIS:
+            raise VerifierFailure(
+                "RESOURCE_LIMIT",
+                f"edge_labels[{axis_index}] exceeds {MAX_EDGE_LABELS_PER_AXIS} entries",
+            )
         axis_entries: list[tuple[tuple[int, ...], tuple[int, int]]] = []
+        seen_entries: set[tuple[tuple[int, ...], tuple[int, int]]] = set()
         expected_key_len = 1 if axis_index == 0 else 2
         for label_index, entry in enumerate(axis_labels):
-            if not isinstance(entry, dict):
-                raise VerifierFailure("MALFORMED", "edge label entry must be an object")
+            entry = require_closed_object(entry, f"edge_labels[{axis_index}][{label_index}]", EDGE_LABEL_FIELDS)
             key_raw = entry.get("key")
             if not isinstance(key_raw, list) or len(key_raw) != expected_key_len:
                 raise VerifierFailure("BAD_EDGE_KEY", "edge label key has wrong length")
@@ -128,7 +172,11 @@ def parse_edge_labels(raw: Any, slopes: set[tuple[int, int]]) -> list[list[tuple
             slope = parse_pair(entry.get("slope"), f"slope[{label_index}]")
             if slope not in slopes:
                 raise VerifierFailure("BAD_SLOPE", "edge label slope is not in slopes")
-            axis_entries.append((key, slope))
+            parsed_entry = (key, slope)
+            if parsed_entry in seen_entries:
+                raise VerifierFailure("DUPLICATE_EDGE_LABEL", "edge_labels contains a duplicate semantic entry")
+            seen_entries.add(parsed_entry)
+            axis_entries.append(parsed_entry)
         parsed.append(axis_entries)
     return parsed
 
@@ -140,17 +188,23 @@ def parse_relations(
 ) -> list[tuple[tuple[int, int], tuple[int, int]]]:
     if not isinstance(raw, list):
         raise VerifierFailure("MALFORMED", "relations must be an array")
+    if len(raw) > MAX_RELATIONS:
+        raise VerifierFailure("RESOURCE_LIMIT", f"relations exceeds {MAX_RELATIONS} entries")
     relations: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    seen_relations: set[tuple[tuple[int, int], tuple[int, int]]] = set()
     for index, entry in enumerate(raw):
-        if not isinstance(entry, dict):
-            raise VerifierFailure("MALFORMED", "relation entry must be an object")
+        entry = require_closed_object(entry, f"relations[{index}]", RELATION_FIELDS)
         vertex = parse_pair(entry.get("vertex"), f"relations[{index}].vertex")
         slope = parse_pair(entry.get("slope"), f"relations[{index}].slope")
         if vertex not in vertex_set:
             raise VerifierFailure("BAD_VERTEX", "relation vertex is outside the grid")
         if slope not in slopes:
             raise VerifierFailure("BAD_SLOPE", "relation slope is not in slopes")
-        relations.append((vertex, slope))
+        relation = (vertex, slope)
+        if relation in seen_relations:
+            raise VerifierFailure("DUPLICATE_RELATION", "relations contains a duplicate semantic entry")
+        seen_relations.add(relation)
+        relations.append(relation)
     return relations
 
 

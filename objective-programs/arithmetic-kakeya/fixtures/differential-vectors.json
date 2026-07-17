@@ -1,0 +1,32 @@
+{
+  "schema": "p42-arithmetic-kakeya-v0.2-differential/v1",
+  "base_fixture": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
+  "vectors": [
+    {"name": "seed", "mutation": "none", "accepted": true, "score": "7/4", "chain_atoms": "1750000000000000000"},
+    {"name": "incomplete-closure", "mutation": "remove-last-relation", "accepted": false},
+    {"name": "duplicate-root-key", "mutation": "duplicate-grid-key", "accepted": false},
+    {"name": "duplicate-json-key", "mutation": "duplicate-relation-slope-key", "accepted": false},
+    {"name": "duplicate-slope", "mutation": "duplicate-first-slope", "accepted": false},
+    {"name": "duplicate-edge-label", "mutation": "duplicate-first-edge-label", "accepted": false},
+    {"name": "duplicate-relation", "mutation": "duplicate-first-relation", "accepted": false},
+    {"name": "malformed-grid-bool", "mutation": "boolean-grid-coordinate", "accepted": false},
+    {"name": "unknown-root-field", "mutation": "unknown-root-field", "accepted": false},
+    {"name": "unknown-nested-field", "mutation": "unknown-relation-field", "accepted": false},
+    {"name": "utf8-bom", "mutation": "utf8-bom", "accepted": false},
+    {"name": "utf16-le", "mutation": "utf16-le", "accepted": false},
+    {"name": "utf32-be", "mutation": "utf32-be", "accepted": false},
+    {"name": "huge-slope-at-bound", "mutation": "integer-at-bound", "accepted": true, "score": "7/4", "chain_atoms": "1750000000000000000"},
+    {"name": "huge-slope-over-bound", "mutation": "integer-over-bound", "accepted": false},
+    {"name": "slopes-at-bound", "mutation": "slopes-at-bound", "accepted": true, "score": "7/4", "chain_atoms": "1750000000000000000"},
+    {"name": "slopes-over-bound", "mutation": "slopes-over-bound", "accepted": false}
+  ],
+  "threshold_vectors": [
+    {"name": "exact-minimum", "score": "1749999999999/1000000000000", "accepted": true, "chain_atoms": "1749999999999000000"},
+    {"name": "one-attounit-below-minimum", "score": "1749999999999000001/1000000000000000000", "accepted": false, "chain_atoms": "1749999999999000001"}
+  ],
+  "outcome_vectors": [
+    {"name": "production-seed-honest-claim-is-not-improvement", "seed": "7/4", "claimed_atoms": "1750000000000000000", "challenger_wins": true},
+    {"name": "relaxed-test-seed-honest-claim", "seed": "2/1", "claimed_atoms": "1750000000000000000", "challenger_wins": false},
+    {"name": "relaxed-test-seed-false-claim", "seed": "2/1", "claimed_atoms": "1750000000000000001", "challenger_wins": true}
+  ]
+}

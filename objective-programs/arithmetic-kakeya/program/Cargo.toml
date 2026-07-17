@@ -1,0 +1,10 @@
+[package]
+name = "p42-arithmetic-kakeya-objective-program"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+p42-arithmetic-kakeya-objective-core = { path = "../core" }
+sp1-zkvm.workspace = true

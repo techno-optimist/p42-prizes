@@ -241,17 +241,17 @@
       },
       "problem_yaml": {
         "path": "problems/arithmetic-kakeya/problem.yaml",
-        "sha256": "sha256:2c1bc3c70387915f0c0928fdc895514658bd06c9eb5cad58388536f66d3fa3fd"
+        "sha256": "sha256:407eb74562220a354e8e04fb0a9df1eeae6edfdab78108150cdaf484277779cc"
       },
       "provenance": {
         "local_evidence": [
           {
             "path": "problems/arithmetic-kakeya/SPEC.md",
-            "sha256": "sha256:cfb24db99f0c38da3d8d6d9ccd0491a22063aa4ef6b413671f78149e592cb08b"
+            "sha256": "sha256:60ce2afbd5962f38ec15645425f568949ef14227a295bd92b45be6896984a2d6"
           },
           {
             "path": "problems/arithmetic-kakeya/HARDENING.md",
-            "sha256": "sha256:024a709c92b5d957dd24a67056db6444d5ca2bd436fd90dc449fce11b56138c7"
+            "sha256": "sha256:21dc140512fbe24f0e2cdb668a31bdc726c94dfd6c82e5318e146fc5b01d7876"
           }
         ],
         "status": "incomplete",
@@ -261,7 +261,7 @@
         ]
       },
       "seed": {
-        "canonical_verdict_sha256": "sha256:3802918b374bd80e4ff2206c4d6fe85341cf71287380625d9a76500e703a865b",
+        "canonical_verdict_sha256": "sha256:18e14f2ce967baa8933e2e28cdf1ca6695c92a250b830e8000f3d9efe369ab3b",
         "path": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
         "sha256": "sha256:031865755a17795bf2a4c65a24986589b6a8d10085d6a062fae5293c38a7f118",
         "verdict_reason": "NOT_STRICT_IMPROVEMENT",
@@ -272,16 +272,16 @@
       "slug": "arithmetic-kakeya",
       "solution_schema": {
         "path": "problems/arithmetic-kakeya/solution.schema.json",
-        "sha256": "sha256:de3f854d04395db12d3cba970debac6ffd75aa0d3247b4dd8dc30966c9066d7c"
+        "sha256": "sha256:2b28df2d0748b99ca3a73cabe1dda77a1e36d8749e5fefc0ec4740deec7c4303"
       },
       "specification": {
         "path": "problems/arithmetic-kakeya/SPEC.md",
-        "sha256": "sha256:cfb24db99f0c38da3d8d6d9ccd0491a22063aa4ef6b413671f78149e592cb08b"
+        "sha256": "sha256:60ce2afbd5962f38ec15645425f568949ef14227a295bd92b45be6896984a2d6"
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:fb7201e6fa740caf976d0608b749c80a4476c8903f74e0da0e2e8fdbfef6bf02",
-        "version": "0.1.1"
+        "source_tree_sha256": "sha256:d6d2029d45ef811c523a7dd86169672d1f18b19b9786780b453f0b972cad1c89",
+        "version": "0.2.0"
       }
     },
     {
