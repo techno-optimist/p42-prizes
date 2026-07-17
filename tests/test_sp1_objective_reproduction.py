@@ -31,6 +31,14 @@ PROGRAMS = {
         "journal": "0x2de2ac88744bf1f14092829ecfbc306871977d69e305312c47cfe55bf10e5968",
         "instructions": 9_388_517,
     },
+    "edges-vs-triangles": {
+        "elf": None,
+        "vkey": "0x" + "56" * 32,
+        "journal": "0x" + "78" * 32,
+        "instructions": 12_345,
+        "resource_journal": "0x" + "9a" * 32,
+        "resource_instructions": 67_890,
+    },
 }
 Q6_SOURCE_PATHS = (
     "objective-programs/rust-toolchain.toml",
@@ -44,6 +52,29 @@ Q6_SOURCE_PATHS = (
     "objective-programs/q6-intersecting-hypergraph/script/build.rs",
     "objective-programs/q6-intersecting-hypergraph/script/src/main.rs",
 )
+EDGES_SOURCE_PATHS = (
+    "problems/edges-vs-triangles/problem.yaml",
+    "problems/edges-vs-triangles/solution.schema.json",
+    "problems/edges-vs-triangles/verifier/verify.py",
+    "problems/edges-vs-triangles/examples/rational-curve-sample.json",
+    "objective-programs/rust-toolchain.toml",
+    "objective-programs/edges-vs-triangles/Cargo.toml",
+    "objective-programs/edges-vs-triangles/Cargo.lock",
+    "objective-programs/edges-vs-triangles/ARITHMETIC_BOUNDS.md",
+    "objective-programs/edges-vs-triangles/core/Cargo.toml",
+    "objective-programs/edges-vs-triangles/core/src/lib.rs",
+    "objective-programs/edges-vs-triangles/fixtures/differential-vectors.json",
+    "objective-programs/edges-vs-triangles/fixtures/worst-case-500-rows.json",
+    "objective-programs/edges-vs-triangles/program/Cargo.toml",
+    "objective-programs/edges-vs-triangles/program/src/main.rs",
+    "objective-programs/edges-vs-triangles/script/Cargo.toml",
+    "objective-programs/edges-vs-triangles/script/build.rs",
+    "objective-programs/edges-vs-triangles/script/src/main.rs",
+)
+CANDIDATE_SOURCE_PATHS = {
+    "q6-intersecting-hypergraph": Q6_SOURCE_PATHS,
+    "edges-vs-triangles": EDGES_SOURCE_PATHS,
+}
 
 
 def build_bundle(root: Path, program: str) -> Path:
@@ -51,7 +82,7 @@ def build_bundle(root: Path, program: str) -> Path:
     bundle = root / program
     bundle.mkdir()
     if expected["elf"] is None:
-        (bundle / "program.elf").write_bytes(b"\x7fELFq6-candidate-fixture")
+        (bundle / "program.elf").write_bytes(b"\x7fELF" + program.encode())
         elf = hashlib.sha256((bundle / "program.elf").read_bytes()).hexdigest()
     else:
         source = ROOT / f"objective-programs/artifacts/{program}/v0.1.0/program.elf"
@@ -74,7 +105,13 @@ def build_bundle(root: Path, program: str) -> Path:
     }
     (bundle / "identity.json").write_text(json.dumps(identity), encoding="utf-8")
     (bundle / "execution.json").write_text(json.dumps(execution), encoding="utf-8")
-    if program == "q6-intersecting-hypergraph":
+    if program == "edges-vs-triangles":
+        resource = execution | {
+            "journalDigest": expected["resource_journal"],
+            "totalInstructionCount": expected["resource_instructions"],
+        }
+        (bundle / "resource.json").write_text(json.dumps(resource), encoding="utf-8")
+    if program in CANDIDATE_SOURCE_PATHS:
         source = {
             "schema": "p42-objective-source-closure/v1",
             "files": [
@@ -82,7 +119,7 @@ def build_bundle(root: Path, program: str) -> Path:
                     "path": relative,
                     "sha256": "sha256:" + hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(),
                 }
-                for relative in Q6_SOURCE_PATHS
+                for relative in CANDIDATE_SOURCE_PATHS[program]
             ],
         }
         (bundle / "source.json").write_text(json.dumps(source), encoding="utf-8")
@@ -131,30 +168,77 @@ def test_rejects_unexpected_files(tmp_path: Path) -> None:
     assert "unexpected file set" in result.stderr
 
 
-def test_candidate_rejects_identity_execution_vkey_disagreement(tmp_path: Path) -> None:
-    bundle = build_bundle(tmp_path, "q6-intersecting-hypergraph")
+@pytest.mark.parametrize("program", sorted(CANDIDATE_SOURCE_PATHS))
+def test_candidate_rejects_identity_execution_vkey_disagreement(
+    tmp_path: Path, program: str
+) -> None:
+    bundle = build_bundle(tmp_path, program)
     execution_path = bundle / "execution.json"
     execution = json.loads(execution_path.read_text(encoding="utf-8"))
     execution["programVKey"] = "0x" + "34" * 32
     execution_path.write_text(json.dumps(execution), encoding="utf-8")
-    assert verify(bundle, "q6-intersecting-hypergraph").returncode != 0
+    assert verify(bundle, program).returncode != 0
 
 
-def test_candidate_rejects_source_closure_drift(tmp_path: Path) -> None:
-    bundle = build_bundle(tmp_path, "q6-intersecting-hypergraph")
+@pytest.mark.parametrize("program", sorted(CANDIDATE_SOURCE_PATHS))
+def test_candidate_rejects_source_closure_drift(tmp_path: Path, program: str) -> None:
+    bundle = build_bundle(tmp_path, program)
     source_path = bundle / "source.json"
     source = json.loads(source_path.read_text(encoding="utf-8"))
     source["files"][0]["sha256"] = "sha256:" + "00" * 32
     source_path.write_text(json.dumps(source), encoding="utf-8")
-    result = verify(bundle, "q6-intersecting-hypergraph")
+    result = verify(bundle, program)
     assert result.returncode != 0
     assert "source closure mismatch" in result.stderr
 
 
-def test_candidate_writes_source_closure_once(tmp_path: Path) -> None:
-    bundle = build_bundle(tmp_path, "q6-intersecting-hypergraph")
+@pytest.mark.parametrize("program", sorted(CANDIDATE_SOURCE_PATHS))
+def test_candidate_writes_source_closure_once(tmp_path: Path, program: str) -> None:
+    bundle = build_bundle(tmp_path, program)
     (bundle / "source.json").unlink()
-    assert verify(bundle, "q6-intersecting-hypergraph", "--write-source-manifest").returncode == 0
-    result = verify(bundle, "q6-intersecting-hypergraph", "--write-source-manifest")
+    assert verify(bundle, program, "--write-source-manifest").returncode == 0
+    result = verify(bundle, program, "--write-source-manifest")
     assert result.returncode != 0
     assert "refusing to replace" in result.stderr
+
+
+def test_edges_candidate_rejects_malformed_resource_journal(tmp_path: Path) -> None:
+    bundle = build_bundle(tmp_path, "edges-vs-triangles")
+    resource_path = bundle / "resource.json"
+    resource = json.loads(resource_path.read_text(encoding="utf-8"))
+    resource["journalDigest"] = "0x00"
+    resource_path.write_text(json.dumps(resource), encoding="utf-8")
+    result = verify(bundle, "edges-vs-triangles")
+    assert result.returncode != 0
+    assert "resource journal is malformed" in result.stderr
+
+
+def test_edges_candidate_rejects_resource_reusing_seed_journal(tmp_path: Path) -> None:
+    bundle = build_bundle(tmp_path, "edges-vs-triangles")
+    execution = json.loads((bundle / "execution.json").read_text(encoding="utf-8"))
+    resource_path = bundle / "resource.json"
+    resource = json.loads(resource_path.read_text(encoding="utf-8"))
+    resource["journalDigest"] = execution["journalDigest"]
+    resource_path.write_text(json.dumps(resource), encoding="utf-8")
+    result = verify(bundle, "edges-vs-triangles")
+    assert result.returncode != 0
+    assert "must bind distinct solution bytes" in result.stderr
+
+
+def test_edges_source_expected_set_includes_toolchain_and_every_build_input() -> None:
+    expected = set(EDGES_SOURCE_PATHS)
+    discovered = {
+        "problems/edges-vs-triangles/problem.yaml",
+        "problems/edges-vs-triangles/solution.schema.json",
+        "problems/edges-vs-triangles/verifier/verify.py",
+        "problems/edges-vs-triangles/examples/rational-curve-sample.json",
+        "objective-programs/rust-toolchain.toml",
+        *{
+            path.relative_to(ROOT).as_posix()
+            for path in (ROOT / "objective-programs/edges-vs-triangles").rglob("*")
+            if path.is_file()
+            and "target" not in path.parts
+            and path.name not in {"source.json", "identity.json", "execution.json", "resource.json"}
+        },
+    }
+    assert discovered == expected

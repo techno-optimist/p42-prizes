@@ -32,6 +32,17 @@ remains `guest.status=missing` until a clean hosted gate, a canonical
 cross-architecture artifact ceremony, genuine proof vector, independent
 review, and production binding are complete.
 
+The isolated `edges-vs-triangles` nested workspace is likewise candidate-only.
+It reimplements the bounded 20-atom rational predicate with checked fixed-scale
+integer arithmetic, production maximize-score atom conversion, and the full
+beneficiary-bound journal chain. Shared Python/Rust vectors cover exact scores;
+the host harness mock-executes both the 499-row seed and a 500-row resource
+fixture. Ubuntu 22.04/24.04 jobs are configured to compare the ELF, derived
+vkey, both executions, and complete source closure, including
+`rust-toolchain.toml`. No candidate output is a proof or production identity.
+The canonical record remains `guest.status=missing`,
+`activation_eligible=false`, and `proof_kind=none`.
+
 This source does **not** activate production objective proofs. Ubuntu 22.04 and
 24.04 GitHub-hosted x86 runners now reproduce the same frozen ELF and vkey, and
 the deterministic resource envelope is machine-checked in
@@ -56,4 +67,9 @@ cargo test --locked --manifest-path q6-intersecting-hypergraph/Cargo.toml \
 cargo run --locked --manifest-path q6-intersecting-hypergraph/Cargo.toml \
   -p p42-q6-objective-script -- execute-fixture \
   ../problems/q6-intersecting-hypergraph/tests/seed-pg25.json
+cargo test --locked --manifest-path edges-vs-triangles/Cargo.toml \
+  -p p42-edges-objective-core
+cargo run --locked --manifest-path edges-vs-triangles/Cargo.toml \
+  -p p42-edges-objective-script -- execute-fixture \
+  ../problems/edges-vs-triangles/examples/rational-curve-sample.json
 ```

@@ -284,4 +284,66 @@ describe("P42 objective journal conformance", () => {
     );
     assert.equal(journalDigest, "0xfa233a06c0c886e004200dbdd524aa970605fce4cafe77e2172c61512b8586c4");
   });
+
+  it("matches the isolated Rust/SP1 edges witness with signed maximize atoms", () => {
+    const solution = readFileSync(
+      new URL("../../problems/edges-vs-triangles/examples/rational-curve-sample.json", import.meta.url),
+    );
+    const solutionSha256 = `0x${createHash("sha256").update(solution).digest("hex")}`;
+    assert.equal(solutionSha256, "0xa662d18c930fbb2c351ca5987e78113be30657a04615cbff87e4781745969214");
+
+    const chainId = 84_532n;
+    const quorum = address("11");
+    const manager = address("22");
+    const submissionManager = address("33");
+    const registry = address("44");
+    const submissionId = 7n;
+    const challenger = address("88");
+    const reasonHash = repeat("99");
+    const solutionCid = "ipfs://p42-edges-objective-fixture";
+    const transcriptUri = "ipfs://p42-edges-transcript";
+    const guestElfSha256 = repeat("dd");
+    const programVKey = repeat("ee");
+    // Production maps maximize scores by negation before ceil quantization.
+    const claimedScoreAtoms = 711_862_712_197_923_798n;
+
+    const revealInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "address", "bytes32", "bytes32", "bytes32", "int256", "uint256", "uint64"],
+        [submissionManager, chainId, submissionId, address("66"), repeat("77"), solutionSha256, keccak256(toUtf8Bytes(solutionCid)), claimedScoreAtoms, 1_000_000n, 2_000_000_300n],
+      ),
+    );
+    assert.equal(revealInstanceHash, "0x68398c481438385e73a5f8ab2c0e09ad4577b46651a79924544eb458461e5513");
+    const challengeInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "bytes32", "address", "bytes32", "uint64", "uint64"],
+        [manager, chainId, submissionId, revealInstanceHash, challenger, reasonHash, 2_000_000_100n, 2_000_000_200n],
+      ),
+    );
+    const pendingDecisionContext = keccak256(
+      coder.encode(
+        ["bytes32", "bytes32", "address", "bytes32", "bool", "bytes32", "bytes32", "bytes32"],
+        [challengeInstanceHash, revealInstanceHash, challenger, reasonHash, false, repeat("aa"), keccak256(toUtf8Bytes(transcriptUri)), repeat("bb")],
+      ),
+    );
+    const objectiveBindingContext = keccak256(
+      coder.encode(
+        ["address", "uint256", "bytes32", "bytes32", "bytes32"],
+        [registry, 3n, repeat("55"), guestElfSha256, programVKey],
+      ),
+    );
+    const contextHash = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "uint256", "bytes32"],
+        ["P42_OBJECTIVE_CHALLENGE_CONTEXT_V2", chainId, manager, submissionManager, objectiveBindingContext, submissionId, pendingDecisionContext],
+      ),
+    );
+    const journalDigest = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "bytes32", "bytes32", "bool", "address"],
+        ["P42_OBJECTIVE_VERDICT_JOURNAL_V2", chainId, quorum, manager, guestElfSha256, programVKey, contextHash, true, address("cc")],
+      ),
+    );
+    assert.equal(journalDigest, "0x7da3db058aa4c42dd54e590ce850e884c3504680dd29b25034046961f423033d");
+  });
 });
