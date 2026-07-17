@@ -1252,6 +1252,11 @@ def _validate_v2_source_release_evidence(
     if guard.get("requiredRoutes") != len(REQUIRED_PROBES) or guard.get("healthyRoutes") != len(REQUIRED_PROBES):
         raise SourceReleaseEvidenceError("releaseGuard route counts must equal the complete probe policy")
     head = _commit(command_runner(["git", "rev-parse", "HEAD"], root), "HEAD")
+    _ensure_complete_git_history(
+        root,
+        command_runner,
+        remote=SOURCE_RELEASE_REMOTE if online else "origin",
+    )
     try:
         committed_board_manifest = command_runner(
             ["git", "show", f"{observed_head}:{BOARD_MANIFEST_PATH.as_posix()}"], root
@@ -1266,11 +1271,6 @@ def _validate_v2_source_release_evidence(
             "releaseGuard.boardProjection must equal the committed board-manifest projection"
         )
 
-    _ensure_complete_git_history(
-        root,
-        command_runner,
-        remote=SOURCE_RELEASE_REMOTE if online else "origin",
-    )
     _git_commit_exists(deploy_commit, root, command_runner)
     _git_commit_exists(live_commit, root, command_runner)
     _git_commit_exists(observed_head, root, command_runner)

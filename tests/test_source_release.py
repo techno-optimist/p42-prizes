@@ -206,6 +206,14 @@ class FakeShallow(FakeGit):
         if command[:2] == ["git", "fetch"]:
             self.fetched = True
             return ""
+        if (
+            command[:2] == ["git", "show"]
+            and command[2].endswith("scripts/release-guard-problems-v1.json")
+            and not self.fetched
+        ):
+            raise SourceReleaseEvidenceError(
+                "history was not fetched before historical manifest validation"
+            )
         if command[:3] == ["git", "cat-file", "-e"] and not self.fetched:
             raise SourceReleaseEvidenceError("history was not fetched before ancestry validation")
         return super().__call__(command, cwd)
