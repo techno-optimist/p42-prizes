@@ -13,6 +13,8 @@
     "db:import-state": "node scripts/import-portal-state.mjs",
     "db:migration-integration": "node scripts/test-portal-migration.mjs",
     "db:rehearse": "node scripts/rehearse-portal-db.mjs",
+    "db:transfer-legacy": "node scripts/transfer-legacy-portal-state.mjs",
+    "db:transfer-legacy-integration": "node scripts/test-legacy-portal-state-transfer.mjs",
     "start": "next start",
     "start:prizes": "NEXT_PUBLIC_BASE_PATH=/prizes next start",
     "test": "vitest run"
