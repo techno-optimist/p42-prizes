@@ -439,4 +439,46 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(fireEvent.click(walletLink)).toBe(false);
     expectTargetUnavailable();
   });
+
+  it("revalidates the exact target after click before launching the wallet", async () => {
+    await renderAndReveal();
+    const walletLink = document.querySelector(`a[href="${WALLET_URI}"]`)!;
+    const launch = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    expect(fireEvent.click(walletLink)).toBe(false);
+    expectTargetClearedFromDom();
+    await flushResponse();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenLastCalledWith(`/api/problems/${SLUG}/funding-target`, expect.objectContaining({
+      cache: "no-store",
+      credentials: "same-origin",
+    }));
+    expect(launch).toHaveBeenCalledOnce();
+  });
+
+  it("does not launch when click-time revalidation observes an exhausted cap", async () => {
+    await renderAndReveal();
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ remainingCapWei: "0", target: false })));
+    const launch = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    expectTargetClearedFromDom();
+    await flushResponse();
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(screen.getByText("funding unavailable")).toBeTruthy();
+  });
+
+  it("does not launch when click-time revalidation changes the target identity", async () => {
+    await renderAndReveal();
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ address: B_ADDRESS })));
+    const launch = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+
+    expect(fireEvent.click(document.querySelector(`a[href="${WALLET_URI}"]`)!)).toBe(false);
+    await flushResponse();
+
+    expect(launch).not.toHaveBeenCalled();
+    expectTargetClearedFromDom();
+  });
 });

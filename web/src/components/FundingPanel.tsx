@@ -315,14 +315,59 @@ export function FundingPanel({
     }
   }
 
-  function openWallet(event: MouseEvent<HTMLAnchorElement>) {
-    if (!boundTarget || boundTarget.bindingKey !== bindingKeyRef.current) {
-      event.preventDefault();
+  async function openWallet(event: MouseEvent<HTMLAnchorElement>) {
+    event.preventDefault();
+    const clickedTarget = boundTarget;
+    if (!clickedTarget || clickedTarget.bindingKey !== bindingKeyRef.current) return;
+    if (cutoffReached()) {
+      expireFunding(true);
       return;
     }
-    if (!cutoffReached()) return;
-    event.preventDefault();
-    expireFunding(true);
+
+    requestControllerRef.current?.abort();
+    const controller = new AbortController();
+    requestControllerRef.current = controller;
+    setBoundTarget(null);
+    setCopied(false);
+    setFundingVisibility("checking");
+    try {
+      const response = await fetch(sitePath(`/api/problems/${encodeURIComponent(slug)}/funding-target`), {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("funding target request failed");
+      const parsed = parseFundingTargetResponse(await response.json(), slug);
+      const responseObserved = parsedTimestamp(parsed?.serverObservedAt ?? null);
+      const responseFinalized = parsedTimestamp(parsed?.finalizedObservedAt ?? null);
+      if (controller.signal.aborted || bindingKeyRef.current !== clickedTarget.bindingKey
+        || !parsed || !parsed.target || parsed.remainingCapWei === "0"
+        || parsed.authorizationExpiresAt !== authorizationExpiresAt
+        || parsed.fundingDeadline !== fundingDeadline
+        || responseObserved === null || responseFinalized === null
+        || responseFinalized < finalizedTimestamp! || responseFinalized > responseObserved
+        || responseObserved < (latestObservedRef.current ?? observedTimestamp!)
+        || parsed.target.address !== clickedTarget.target.address
+        || parsed.target.walletUri !== clickedTarget.target.walletUri
+        || parsed.target.chainId !== clickedTarget.target.chainId
+        || cutoffReached(responseObserved)) {
+        if (!controller.signal.aborted) expireFunding(false);
+        return;
+      }
+
+      latestObservedRef.current = responseObserved;
+      const launch = document.createElement("a");
+      launch.href = parsed.target.walletUri;
+      launch.hidden = true;
+      document.body.append(launch);
+      launch.click();
+      launch.remove();
+    } catch {
+      if (!controller.signal.aborted) expireFunding(false);
+    } finally {
+      if (requestControllerRef.current === controller) requestControllerRef.current = null;
+    }
   }
 
   const deadlineClosed = deadlineTimestamp !== null && latestObservedRef.current !== null
