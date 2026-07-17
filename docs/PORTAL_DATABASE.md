@@ -6,6 +6,12 @@ process uses `P42_PORTAL_DATABASE_URL`. `P42_PORTAL_DATABASE_SCHEMA` pins the
 preprovisioned schema by name and the migration records its database, schema,
 owner, relation, and function OIDs. In required mode, missing schema identity,
 same-role credentials, catalog drift, or authority overlap fails closed.
+`P42_PORTAL_RUNTIME_ROLE` and `P42_PORTAL_DATABASE_NAME` pin the authenticated
+runtime identity and database. Startup verifies both plus the untouched
+role/database default `search_path` before any migration or ACL mutation.
+Application pools also pass an explicit `search_path=<schema>,pg_catalog`
+connection option, so ambient role-default drift cannot redirect unqualified
+store queries.
 
 Only the migration-owner-controlled `SECURITY DEFINER` transition function may
 change checkpoint authority. A separately pinned read-only function handles an
@@ -82,6 +88,8 @@ suppresses every funding target.
    P42_PORTAL_MIGRATION_DATABASE_URL=postgresql://<owner>@... \
    P42_PORTAL_DATABASE_URL=postgresql://<runtime>@... \
    P42_PORTAL_DATABASE_SCHEMA=p42_portal \
+   P42_PORTAL_RUNTIME_ROLE=p42_portal_runtime \
+   P42_PORTAL_DATABASE_NAME=<database> \
    npm run db:migrate
    ```
 
@@ -100,6 +108,19 @@ suppresses every funding target.
    including nested effective access. The migration integration must also reject
    contiguous block/time regression and nonadjacent full-identity replay in
    preexisting history.
+
+   Before its first mutation the runner performs a read-only check of the exact
+   runtime identity, database, default search path, role attributes, and complete
+   inbound/outbound membership graph. A hostile initial graph therefore leaves
+   migration rows and ACLs untouched. A session advisory lock serializes
+   cooperating P42 migration runners, and the full graph is checked again after
+   grants. PostgreSQL does not let this database-owner ceremony permanently lock
+   the cluster-wide role graph against a provider superuser or another concurrent
+   role administrator; production provisioning must run under an exclusive
+   operator window, and later privileged drift remains outside the transaction's
+   guarantee. Runtime pool schema pinning prevents such drift from becoming a
+   false-ready schema selection, while checkpoint operations continue to re-attest
+   their authority on use.
 
    PostgreSQL superusers, including the provider-controlled audited OID 10 role,
    bypass ordinary ACL checks and cannot be constrained by this ceremony. That

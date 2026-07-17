@@ -304,6 +304,60 @@ try {
     if (Object.values(closed).some((value) => !value)) throw new Error("migration left unexpected direct or nested ACL authority");
   });
 
+  await withRunnerDatabase("runner-rejects-initial-hostile-membership-without-side-effects", async (fixture) => {
+    const dangerous = await fixture.createRole("initial_dangerous");
+    await admin.query(`GRANT ${quoteIdentifier(dangerous)} TO ${quoteIdentifier(fixture.runtimeName)} WITH INHERIT FALSE, SET TRUE`);
+    const before = await fixture.owner.query(`SELECT n.nspacl::text AS schema_acl,
+      d.datacl::text AS database_acl,
+      (SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(x) ORDER BY x.defaclobjtype,x.defaclnamespace,x.defaclacl::text)
+        FROM pg_catalog.pg_default_acl AS x WHERE x.defaclrole=current_user::regrole) AS default_acls
+      FROM pg_catalog.pg_namespace AS n CROSS JOIN pg_catalog.pg_database AS d
+      WHERE n.nspname=$1 AND d.datname=current_database()`, [fixture.schema]);
+    expectRunnerFailure(runMigrationRunner(fixture), "preflight");
+    const after = await fixture.owner.query(`SELECT n.nspacl::text AS schema_acl,
+      d.datacl::text AS database_acl,
+      (SELECT pg_catalog.jsonb_agg(pg_catalog.to_jsonb(x) ORDER BY x.defaclobjtype,x.defaclnamespace,x.defaclacl::text)
+        FROM pg_catalog.pg_default_acl AS x WHERE x.defaclrole=current_user::regrole) AS default_acls,
+      pg_catalog.to_regclass($2) AS migration_table
+      FROM pg_catalog.pg_namespace AS n CROSS JOIN pg_catalog.pg_database AS d
+      WHERE n.nspname=$1 AND d.datname=current_database()`, [fixture.schema, `${fixture.schema}.p42_schema_migration`]);
+    const { migration_table: migrationTable, ...afterCatalog } = after.rows[0];
+    if (migrationTable !== null || JSON.stringify(afterCatalog) !== JSON.stringify(before.rows[0])) {
+      throw new Error("hostile preflight persisted migration rows or privilege changes");
+    }
+  });
+
+  await withRunnerDatabase("runner-rejects-runtime-search-path-drift", async (fixture) => {
+    await fixture.owner.query(`ALTER ROLE ${quoteIdentifier(fixture.runtimeName)} IN DATABASE ${quoteIdentifier(fixture.database)}
+      SET search_path TO public,pg_catalog`);
+    expectRunnerFailure(runMigrationRunner(fixture), "search_path_matches");
+  });
+
+  await withRunnerDatabase("runner-rejects-configured-runtime-identity-drift", async (fixture) => {
+    expectRunnerFailure(runMigrationRunner({ ...fixture, expectedRuntimeRole: fixture.ownerName }), "exact configured role");
+    expectRunnerFailure(runMigrationRunner({ ...fixture, expectedDatabase: "wrong_database" }), "exact configured database");
+    const migration = await fixture.owner.query("SELECT pg_catalog.to_regclass($1) AS relation", [
+      `${fixture.schema}.p42_schema_migration`,
+    ]);
+    if (migration.rows[0].relation !== null) throw new Error("identity drift check applied a migration");
+  });
+
+  await withRunnerDatabase("runner-runtime-pool-schema-is-usable", async (fixture) => {
+    expectRunnerSuccess(runMigrationRunner(fixture));
+    const pool = new pg.Pool({ connectionString: fixture.runtimeUrl, max: 1,
+      options: `-c search_path=${fixture.schema},pg_catalog` });
+    try {
+      const row = (await pool.query(`SELECT current_user AS role,current_database() AS database,
+        current_setting('search_path') AS search_path,
+        (SELECT count(*)::integer FROM p42_schema_migration) AS migrations,
+        (SELECT count(*)::integer FROM p42_portal_state) AS state_rows`)).rows[0];
+      if (row.role !== fixture.runtimeName || row.database !== fixture.database
+        || row.search_path !== `${fixture.schema},pg_catalog` || row.migrations !== 2 || row.state_rows !== 0) {
+        throw new Error(`runtime pool could not use the pinned schema: ${JSON.stringify(row)}`);
+      }
+    } finally { await pool.end(); }
+  });
+
   await withRunnerDatabase("runner-rejects-nested-outbound-runtime-membership", async (fixture) => {
     expectRunnerSuccess(runMigrationRunner(fixture));
     const middle = await fixture.createRole("middle");
@@ -410,6 +464,8 @@ async function withRunnerDatabase(label, operation) {
       NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
     roles.push(runtimeName);
     await owner.query(`CREATE SCHEMA ${quoteIdentifier(schema)} AUTHORIZATION ${quoteIdentifier(ownerName)}`);
+    await owner.query(`ALTER ROLE ${quoteIdentifier(runtimeName)} IN DATABASE ${quoteIdentifier(database)}
+      SET search_path TO ${quoteIdentifier(schema)}, pg_catalog`);
     await owner.query(`SET search_path TO ${quoteIdentifier(schema)}`);
     const fixture = {
       owner, ownerName, ownerUrl, runtimeName, runtimeUrl, database, schema,
@@ -434,7 +490,9 @@ function runMigrationRunner(fixture) {
   return spawnSync(process.execPath, ["scripts/migrate-portal-db.mjs"], {
     cwd: path.resolve("."), encoding: "utf8",
     env: { ...process.env, P42_PORTAL_MIGRATION_DATABASE_URL: fixture.ownerUrl,
-      P42_PORTAL_DATABASE_URL: fixture.runtimeUrl, P42_PORTAL_DATABASE_SCHEMA: fixture.schema },
+      P42_PORTAL_DATABASE_URL: fixture.runtimeUrl, P42_PORTAL_DATABASE_SCHEMA: fixture.schema,
+      P42_PORTAL_RUNTIME_ROLE: fixture.expectedRuntimeRole ?? fixture.runtimeName,
+      P42_PORTAL_DATABASE_NAME: fixture.expectedDatabase ?? fixture.database },
   });
 }
 

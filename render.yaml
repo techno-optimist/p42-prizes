@@ -29,6 +29,12 @@ services:
       # USAGE only; checkpoint relations/functions are OID-bound inside it.
       - key: P42_PORTAL_DATABASE_SCHEMA
         value: p42_portal
+      # Exact provisioned identity and database. Startup rejects drift before
+      # applying migrations or changing ACLs.
+      - key: P42_PORTAL_RUNTIME_ROLE
+        value: p42_portal_runtime
+      - key: P42_PORTAL_DATABASE_NAME
+        sync: false
       - key: P42_PORTAL_DATABASE_REQUIRED
         value: "1"
       # Funding publication remains disabled until the complete activation

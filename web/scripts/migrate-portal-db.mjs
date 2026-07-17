@@ -6,10 +6,18 @@ import pg from "pg";
 const migrationUrl = process.env.P42_PORTAL_MIGRATION_DATABASE_URL?.trim();
 const runtimeUrl = process.env.P42_PORTAL_DATABASE_URL?.trim();
 const targetSchema = process.env.P42_PORTAL_DATABASE_SCHEMA?.trim();
+const expectedRuntimeRole = process.env.P42_PORTAL_RUNTIME_ROLE?.trim();
+const expectedDatabase = process.env.P42_PORTAL_DATABASE_NAME?.trim();
 if (!migrationUrl) throw new Error("P42_PORTAL_MIGRATION_DATABASE_URL is required for portal database migration");
 if (!runtimeUrl) throw new Error("P42_PORTAL_DATABASE_URL is required to provision and verify the runtime role");
 if (!targetSchema || !/^[a-z][a-z0-9_]{0,62}$/.test(targetSchema)) {
   throw new Error("P42_PORTAL_DATABASE_SCHEMA must name the preprovisioned production schema");
+}
+if (!expectedRuntimeRole || !/^[a-z][a-z0-9_]{0,62}$/.test(expectedRuntimeRole)) {
+  throw new Error("P42_PORTAL_RUNTIME_ROLE must name the exact provisioned runtime role");
+}
+if (!expectedDatabase || !/^[a-z][a-z0-9_]{0,62}$/.test(expectedDatabase)) {
+  throw new Error("P42_PORTAL_DATABASE_NAME must name the exact provisioned database");
 }
 if (migrationUrl === runtimeUrl) throw new Error("portal migration and runtime database URLs must be distinct");
 
@@ -33,11 +41,24 @@ try {
     throw new Error("portal migration and runtime connections must authenticate as different roles");
   }
   if (ownerIdentity.database !== runtimeIdentity.database) throw new Error("portal migration and runtime roles must use the same database");
+  if (ownerIdentity.database !== expectedDatabase) throw new Error("portal migration and runtime roles must use the exact configured database");
+  if (runtimeIdentity.role !== expectedRuntimeRole) throw new Error("portal runtime connection must authenticate as the exact configured role");
   if (ownerIdentity.database_owner_oid !== ownerIdentity.role_oid) throw new Error("migration role must own the pinned portal database");
 
   const schemaIdentity = await owner.query(`SELECT n.oid, n.nspowner FROM pg_catalog.pg_namespace AS n WHERE n.nspname=$1`, [targetSchema]);
   if (schemaIdentity.rowCount !== 1 || schemaIdentity.rows[0].nspowner !== ownerIdentity.role_oid) {
     throw new Error("migration role must own the preprovisioned portal schema");
+  }
+  await owner.query("SELECT pg_catalog.pg_advisory_lock(pg_catalog.hashtextextended($1,0))", [
+    `${expectedDatabase}:${expectedRuntimeRole}:${targetSchema}`,
+  ]);
+  const preflight = (await runtime.query(runtimePreflightSql(), [
+    expectedRuntimeRole, expectedDatabase, `${targetSchema}, pg_catalog`, ownerIdentity.role_oid,
+  ])).rows[0];
+  if (!preflight?.identity_matches || !preflight.safe_role || !preflight.membership_matches
+    || !preflight.search_path_matches) {
+    const failed = Object.entries(preflight ?? {}).filter(([, passed]) => !passed).map(([name]) => name).join(",");
+    throw new Error(`portal runtime identity, membership, or search_path preflight failed before migration: ${failed || "missing_result"}`);
   }
   await closeOwnerDefaultPrivileges(owner, ownerIdentity.role, ownerIdentity.role_oid, targetSchema);
   await closeCreationPrivileges(owner, ownerIdentity, targetSchema);
@@ -91,6 +112,22 @@ try {
 } finally {
   owner.release(); runtime.release();
   await runtimePool.end(); await ownerPool.end();
+}
+
+function runtimePreflightSql() {
+  return `WITH runtime AS (SELECT r.* FROM pg_catalog.pg_roles AS r WHERE r.rolname=CURRENT_USER)
+  SELECT CURRENT_USER=SESSION_USER AND CURRENT_USER=$1 AND current_database()=$2 AS identity_matches,
+    r.rolcanlogin AND NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole
+      AND NOT r.rolinherit AND NOT r.rolreplication AND NOT r.rolbypassrls AS safe_role,
+    NOT EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS outbound WHERE outbound.member=r.oid)
+      AND (SELECT count(*) FROM pg_catalog.pg_auth_members AS inbound WHERE inbound.roleid=r.oid)=1
+      AND EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members AS inbound
+        JOIN pg_catalog.pg_roles AS grantor ON grantor.oid=inbound.grantor
+        WHERE inbound.roleid=r.oid AND inbound.member=$4
+          AND inbound.grantor=10 AND grantor.rolsuper AND inbound.admin_option
+          AND NOT inbound.inherit_option AND NOT inbound.set_option) AS membership_matches,
+    current_setting('search_path')=$3 AS search_path_matches
+  FROM runtime AS r`;
 }
 
 function runtimeVerificationSql(schemaName) {
