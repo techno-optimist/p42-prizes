@@ -23,6 +23,7 @@ const runtime = await runtimePool.connect();
 const schema = quoteIdentifier(targetSchema);
 const relation = (name) => `${schema}.${name}`;
 const functionIdentity = `${schema}.p42_transition_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)`;
+const exactFunctionIdentity = `${schema}.p42_read_exact_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)`;
 
 try {
   const ownerIdentity = (await owner.query(`SELECT current_user AS role, current_user::regrole::oid AS role_oid,
@@ -58,12 +59,15 @@ try {
   await owner.query(`REVOKE ALL ON ${highWaterRelations} FROM ${runtimeRole}`);
   await owner.query(`REVOKE ALL ON FUNCTION ${functionIdentity} FROM PUBLIC`);
   await owner.query(`REVOKE ALL ON FUNCTION ${functionIdentity} FROM ${runtimeRole}`);
+  await owner.query(`REVOKE ALL ON FUNCTION ${exactFunctionIdentity} FROM PUBLIC`);
+  await owner.query(`REVOKE ALL ON FUNCTION ${exactFunctionIdentity} FROM ${runtimeRole}`);
   await owner.query(`GRANT USAGE ON SCHEMA ${schema} TO ${runtimeRole}`);
   await owner.query(`GRANT SELECT, INSERT, UPDATE ON ${relation("p42_portal_state")} TO ${runtimeRole}`);
   await owner.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ${relation("p42_rate_limit_bucket")} TO ${runtimeRole}`);
   await owner.query(`GRANT SELECT ON ${relation("p42_schema_migration")} TO ${runtimeRole}`);
   await owner.query(`GRANT SELECT ON ${highWaterRelations} TO ${runtimeRole}`);
   await owner.query(`GRANT EXECUTE ON FUNCTION ${functionIdentity} TO ${runtimeRole}`);
+  await owner.query(`GRANT EXECUTE ON FUNCTION ${exactFunctionIdentity} TO ${runtimeRole}`);
 
   await runtime.query("SELECT set_config('search_path','pg_catalog',false)");
   const verification = await runtime.query(runtimeVerificationSql(targetSchema), [targetSchema]);
@@ -88,11 +92,17 @@ function runtimeVerificationSql(schemaName) {
     SELECT p.*, n.oid AS actual_schema_oid, n.nspname AS actual_schema_name,
       f.proowner AS function_owner, f.prosecdef, f.provolatile, f.prokind, f.proconfig, f.prosrc,
       l.lanname, f.proisstrict, f.proleakproof, f.proparallel, f.proretset,
-      pg_catalog.pg_get_function_result(f.oid) AS function_result,
-      f.oid AS actual_function_oid
+      pg_catalog.pg_get_function_result(f.oid) AS function_result, f.oid AS actual_function_oid,
+      x.proowner AS exact_owner, x.prosecdef AS exact_secdef, x.provolatile AS exact_volatile,
+      x.prokind AS exact_kind, x.proconfig AS exact_config, x.prosrc AS actual_exact_source,
+      xl.lanname AS exact_language, x.proisstrict AS exact_strict, x.proleakproof AS exact_leakproof,
+      x.proparallel AS exact_parallel, x.proretset AS exact_retset,
+      pg_catalog.pg_get_function_result(x.oid) AS exact_result, x.oid AS actual_exact_oid
     FROM pinned AS p JOIN pg_catalog.pg_namespace AS n ON n.oid=p.schema_oid
     JOIN pg_catalog.pg_proc AS f ON f.oid=p.transition_function_oid
     JOIN pg_catalog.pg_language AS l ON l.oid=f.prolang
+    JOIN pg_catalog.pg_proc AS x ON x.oid=p.exact_read_function_oid
+    JOIN pg_catalog.pg_language AS xl ON xl.oid=x.prolang
   ), runtime AS (SELECT r.* FROM pg_catalog.pg_roles AS r WHERE r.rolname=CURRENT_USER)
   SELECT
     CURRENT_USER=SESSION_USER
@@ -108,24 +118,38 @@ function runtimeVerificationSql(schemaName) {
       AND o.authority_oid='${named("p42_indexer_checkpoint_authority")}'::regclass::oid
       AND o.control_oid='${named("p42_indexer_checkpoint_control")}'::regclass::oid
       AND o.epoch_oid='${named("p42_indexer_checkpoint_epoch")}'::regclass::oid
-      AND o.acceptance_oid='${named("p42_indexer_checkpoint_acceptance")}'::regclass::oid AS identity_matches,
+      AND o.acceptance_oid='${named("p42_indexer_checkpoint_acceptance")}'::regclass::oid
+      AND o.exact_read_function_oid=o.actual_exact_oid AS identity_matches,
     o.actual_function_oid='${named("p42_transition_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)")}'::regprocedure::oid
       AND o.function_owner=o.migration_owner_oid
       AND o.migration_owner_name::text=pg_catalog.pg_get_userbyid(o.function_owner)
       AND o.prosecdef AND o.provolatile='v' AND o.prokind='f'
       AND o.lanname='plpgsql' AND NOT o.proisstrict AND NOT o.proleakproof
       AND o.proparallel='u' AND o.proretset AND o.function_result='TABLE(transition_kind text, epoch_id bigint, release_binding_digest text, authorization_digest text, chain_id bigint, chain_name text, deployment_commit text, deployment_config_hash text, epoch_accepted_at timestamp with time zone, acceptance_id bigint, finalized_block_number bigint, finalized_block_hash text, checkpoint_digest text, checkpoint_timestamp bigint, acceptance_accepted_at timestamp with time zone, current_epoch bigint, current_acceptance bigint, next_epoch bigint, next_acceptance bigint, control_updated_at timestamp with time zone)'
-      AND o.proconfig=ARRAY['search_path=pg_catalog']::text[] AND o.prosrc=o.transition_function_source AS function_matches,
+      AND o.proconfig=ARRAY['search_path=pg_catalog']::text[] AND o.prosrc=o.transition_function_source
+      AND o.actual_exact_oid='${named("p42_read_exact_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)")}'::regprocedure::oid
+      AND o.exact_owner=o.migration_owner_oid AND o.exact_secdef AND o.exact_volatile='v' AND o.exact_kind='f'
+      AND o.exact_language='plpgsql' AND NOT o.exact_strict AND NOT o.exact_leakproof
+      AND o.exact_parallel='u' AND o.exact_retset AND o.exact_result=o.function_result
+      AND o.exact_config=ARRAY['search_path=pg_catalog']::text[]
+      AND o.actual_exact_source=o.exact_read_function_source AS function_matches,
     pg_catalog.has_function_privilege(CURRENT_USER,o.actual_function_oid,'EXECUTE')
       AND NOT pg_catalog.has_function_privilege('public',o.actual_function_oid,'EXECUTE')
+      AND pg_catalog.has_function_privilege(CURRENT_USER,o.actual_exact_oid,'EXECUTE')
+      AND NOT pg_catalog.has_function_privilege('public',o.actual_exact_oid,'EXECUTE')
       AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(
         (SELECT p.proacl FROM pg_catalog.pg_proc AS p WHERE p.oid=o.actual_function_oid),
         pg_catalog.acldefault('f',o.function_owner))) AS acl
-        WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>ALL(ARRAY[o.function_owner,r.oid])) AS acl_matches,
+        WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>ALL(ARRAY[o.function_owner,r.oid]))
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(
+        (SELECT p.proacl FROM pg_catalog.pg_proc AS p WHERE p.oid=o.actual_exact_oid),
+        pg_catalog.acldefault('f',o.exact_owner))) AS acl
+        WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>ALL(ARRAY[o.exact_owner,r.oid])) AS acl_matches,
     NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolbypassrls
       AND (SELECT d.datdba<>r.oid FROM pg_catalog.pg_database AS d WHERE d.oid=o.database_oid)
       AND (SELECT n.nspowner<>r.oid FROM pg_catalog.pg_namespace AS n WHERE n.oid=o.schema_oid)
-      AND r.oid<>ALL(ARRAY[(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.control_oid),
+      AND r.oid<>ALL(ARRAY[(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.authority_oid),
+        (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.control_oid),
         (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.epoch_oid),
         (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.acceptance_oid)])
       AND NOT pg_catalog.has_database_privilege(r.oid,o.database_oid,'CREATE')
@@ -141,7 +165,7 @@ function runtimeVerificationSql(schemaName) {
           OR candidate.oid=(SELECT n.nspowner FROM pg_catalog.pg_namespace AS n WHERE n.oid=o.schema_oid)
           OR ${dangerousTablePrivileges("candidate.oid", "o")})) AS no_dangerous_set_role,
     NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger AS t
-      WHERE t.tgrelid IN(o.control_oid,o.epoch_oid,o.acceptance_oid) AND NOT t.tgisinternal) AS no_external_triggers,
+      WHERE t.tgrelid IN(o.authority_oid,o.control_oid,o.epoch_oid,o.acceptance_oid) AND NOT t.tgisinternal) AS no_external_triggers,
     (SELECT count(*)::integer FROM ${q}.p42_indexer_checkpoint_control WHERE singleton=true) AS control_rows,
     (SELECT name FROM ${q}.p42_schema_migration WHERE version=1) AS migration_1_name,
     (SELECT name FROM ${q}.p42_schema_migration WHERE version=2) AS migration_2_name
@@ -149,8 +173,8 @@ function runtimeVerificationSql(schemaName) {
 }
 
 function dangerousTablePrivileges(role, objects) {
-  return ["control", "epoch", "acceptance"].flatMap((table) =>
-    ["INSERT", "UPDATE", "DELETE", "TRIGGER"].map((privilege) =>
+  return ["authority", "control", "epoch", "acceptance"].flatMap((table) =>
+    ["INSERT", "UPDATE", "DELETE", "TRUNCATE", "TRIGGER"].map((privilege) =>
       `pg_catalog.has_table_privilege(${role},${objects}.${table}_oid,'${privilege}')`),
   ).join(" OR ");
 }

@@ -8,13 +8,16 @@ owner, relation, and function OIDs. In required mode, missing schema identity,
 same-role credentials, catalog drift, or authority overlap fails closed.
 
 Only the migration-owner-controlled `SECURITY DEFINER` transition function may
-change checkpoint authority. It has `search_path=pg_catalog`, uses fully
-qualified pinned relations, locks control, proves pointer=max over contiguous
-immutable history, applies the monotonic epoch rules, and returns the exact
-persisted tuple for application validation before commit. Runtime has `SELECT`
-and function `EXECUTE`, with no direct high-water `INSERT`, `UPDATE`, `DELETE`,
-or `TRIGGER`. Any database, role graph, schema/OID, function/ACL/source, trigger,
-history, or readback mismatch suppresses every funding target.
+change checkpoint authority. A separately pinned read-only function handles an
+exact unchanged checkpoint with a compatible `FOR SHARE` lock and indexed
+maximum lookups. On a miss, the app rolls that transaction back, re-attests all
+authority in a new transaction, and calls the exclusive transition function.
+Both force `search_path=pg_catalog`, use fully qualified pinned relations, and
+return the exact persisted tuple for validation before commit. Runtime has
+`SELECT` and only those function `EXECUTE` grants, with no direct high-water
+`INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, or `TRIGGER`. Any database, role graph,
+schema/OID, function/ACL/source, trigger, history, or readback mismatch
+suppresses every funding target.
 
 ## Provision and import
 
@@ -44,19 +47,23 @@ history, or readback mismatch suppresses every funding target.
    The runner applies migrations as the owner, verifies ownership, grants only
    the declared runtime operations, reconnects as runtime, and verifies exact
    function owner/source/config/ACL, pinned OIDs, privileges, and `SET ROLE`
-   closure.
+   closure. The migration integration must also reject contiguous block/time
+   regression and nonadjacent full-identity replay in preexisting history.
 5. Import state through the runtime URL exactly once with
    `P42_PORTAL_IMPORT_SHA256`; compare JSONB readback before commit.
 6. Run `npm run db:migration-integration` with the migration URL, then run
    `npm run db:rehearse` with both URLs. Save the JSON tail. It must show two
    checkpoint connections, lock attribution, accepted block `101`, stale block
-   `100`, direct-mutation denial, and `staleCheckpointRejectedAfterLock: true`.
+   `100`, direct mutation and truncate denial, and
+   `staleCheckpointRejectedAfterLock: true`. The current bounded-read fixture
+   also requires `largeHistoryAcceptances: 10000`, concurrent exact readers,
+   and `exactReadBlockingPids: 0`.
 7. Configure both secret URLs and `P42_PORTAL_DATABASE_REQUIRED=1` on Render.
    The blueprint runs migration first and unsets the owner URL before starting
    Next.js. Confirm the running process cannot read the owner credential.
 8. Re-run the runtime privilege query after provisioning, restore, role change,
-   or PostgreSQL upgrade. Confirm no non-internal trigger exists on control,
-   epoch, or acceptance tables.
+   or PostgreSQL upgrade. Confirm no non-internal trigger exists on authority,
+   control, epoch, or acceptance tables.
 
 ## Epoch policy
 
@@ -71,7 +78,9 @@ history, or readback mismatch suppresses every funding target.
   Block heights are not compared across chains.
 - Runtime cannot directly mutate control or history. The owner function rejects
   a control pointer that differs from immutable history maxima, gaps, orphaned
-  epochs, historical identity replay, and forged high history.
+  epochs, adjacent semantic regression, nonadjacent historical identity replay,
+  and forged high history. Exact unchanged reads do not scan full history;
+  actual transitions retain the serialized full-history integrity check.
 
 ## External tail
 

@@ -48,7 +48,7 @@ function acceptance(candidate: IndexerCheckpointHighWaterCandidate, acceptanceId
   };
 }
 
-function database(options: { authorityFailure?: string; returningMismatch?: boolean } = {}) {
+function database(options: { authorityFailure?: string; returningMismatch?: boolean; exactMatch?: boolean } = {}) {
   const queries: string[] = [];
   const client: PortalDatabaseClient = {
     async query<R extends QueryResultRow>(text: string, values?: unknown[]) {
@@ -61,9 +61,10 @@ function database(options: { authorityFailure?: string; returningMismatch?: bool
         if (options.authorityFailure) authority[options.authorityFailure as keyof typeof authority] = false;
         return result([authority as unknown as R]);
       }
-      if (sql.includes("p42_transition_indexer_checkpoint")) {
+      if (sql.includes("p42_read_exact_indexer_checkpoint") && !options.exactMatch) return result([] as R[]);
+      if (sql.includes("p42_transition_indexer_checkpoint") || sql.includes("p42_read_exact_indexer_checkpoint")) {
         const row = {
-          transition_kind: "first", epoch_id: "1", release_binding_digest: String(values![4]),
+          transition_kind: options.exactMatch ? "same" : "first", epoch_id: "1", release_binding_digest: String(values![4]),
           authorization_digest: String(values![5]), chain_id: String(values![6]), chain_name: String(values![7]),
           deployment_commit: String(values![8]), deployment_config_hash: String(values![9]),
           epoch_accepted_at: "2026-01-01T00:00:00.000Z", acceptance_id: "1",
@@ -104,6 +105,27 @@ describe("database-enforced indexer checkpoint epoch gate", () => {
     expect(queries.some((query) => query.includes('FROM "p42_portal".p42_transition_indexer_checkpoint'))).toBe(true);
     expect(queries.some((query) => /INSERT INTO|UPDATE p42_indexer/.test(query))).toBe(false);
     expect(queries.at(-2)).toBe("COMMIT");
+  });
+
+  it("returns an exact unchanged checkpoint without invoking the serialized transition", async () => {
+    process.env.P42_PORTAL_DATABASE_SCHEMA = "p42_portal";
+    const queries = database({ exactMatch: true });
+    await enforceIndexerCheckpointHighWater(snapshot());
+    expect(queries.some((query) => query.includes('FROM "p42_portal".p42_read_exact_indexer_checkpoint'))).toBe(true);
+    expect(queries.some((query) => query.includes('FROM "p42_portal".p42_transition_indexer_checkpoint'))).toBe(false);
+    expect(queries.filter((query) => query === "BEGIN")).toHaveLength(1);
+    expect(queries).not.toContain("ROLLBACK");
+  });
+
+  it("releases the shared exact-read transaction before entering serialized transition", async () => {
+    process.env.P42_PORTAL_DATABASE_SCHEMA = "p42_portal";
+    const queries = database();
+    await enforceIndexerCheckpointHighWater(snapshot());
+    const exact = queries.findIndex((query) => query.includes('FROM "p42_portal".p42_read_exact_indexer_checkpoint'));
+    const rollback = queries.indexOf("ROLLBACK");
+    const transition = queries.findIndex((query) => query.includes('FROM "p42_portal".p42_transition_indexer_checkpoint'));
+    expect(exact).toBeLessThan(rollback); expect(rollback).toBeLessThan(transition);
+    expect(queries.filter((query) => query === "BEGIN")).toHaveLength(2);
   });
 
   it.each(["identity_matches", "function_matches", "acl_matches", "safe_role", "no_direct_writes", "no_dangerous_set_role", "no_external_triggers"])(

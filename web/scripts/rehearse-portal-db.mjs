@@ -65,9 +65,14 @@ try {
     concurrentCheckpointConnections: 2,
     migrationRuntimeRolesDistinct: highWater.ownerRole !== highWater.runtimeRole,
     runtimeHistoryMutationDenied: true,
+    runtimeHistoryTruncateDenied: true,
     acceptedCheckpointBlock: highWater.acceptedBlock,
     staleCheckpointBlock: highWater.staleBlock,
     staleCheckpointRejectedAfterLock: true,
+    largeHistoryAcceptances: highWater.largeHistoryAcceptances,
+    concurrentExactReaders: highWater.concurrentExactReaders,
+    exactReadBlockingPids: highWater.exactReadBlockingPids,
+    exactReadMaxMilliseconds: highWater.exactReadMaxMilliseconds,
     concurrentRateIncrements: increments,
   })}\n`);
 } finally {
@@ -103,6 +108,8 @@ async function rehearseHighWaterLock() {
       p42_indexer_checkpoint_epoch,p42_indexer_checkpoint_acceptance TO ${quoteIdentifier(runtimeRole)}`);
     await migrator.query(`GRANT EXECUTE ON FUNCTION p42_transition_indexer_checkpoint(
       bigint,text,text,bigint,text,text,bigint,text,text,text) TO ${quoteIdentifier(runtimeRole)}`);
+    await migrator.query(`GRANT EXECUTE ON FUNCTION p42_read_exact_indexer_checkpoint(
+      bigint,text,text,bigint,text,text,bigint,text,text,text) TO ${quoteIdentifier(runtimeRole)}`);
     await holder.query("SET search_path TO pg_catalog");
     await waiter.query("SET search_path TO pg_catalog");
 
@@ -110,6 +117,7 @@ async function rehearseHighWaterLock() {
     await expectPermissionDenied(holder, `INSERT INTO ${identifier}.p42_indexer_checkpoint_epoch VALUES(
       99,'sha256:${"6".repeat(64)}','sha256:${"7".repeat(64)}',84532,'baseSepolia',
       '${"b".repeat(40)}','0x${"8".repeat(64)}',clock_timestamp())`);
+    await expectPermissionDenied(holder, `TRUNCATE ${identifier}.p42_indexer_checkpoint_acceptance`);
     await holder.query("BEGIN");
     await holder.query("SET LOCAL lock_timeout = '5s'");
     await holder.query("SET LOCAL statement_timeout = '15s'");
@@ -148,7 +156,46 @@ async function rehearseHighWaterLock() {
     catch (error) { if (!(error instanceof Error) || !error.message.includes("finalized block regression")) throw error; }
     waiterCall = undefined;
     await waiter.query("ROLLBACK");
-    return {acceptedBlock,staleBlock,runtimeRole,ownerRole};
+
+    const largeHistoryAcceptances = 10_000;
+    await migrator.query(`INSERT INTO ${identifier}.p42_indexer_checkpoint_acceptance (
+      acceptance_id,epoch_id,finalized_block_number,finalized_block_hash,checkpoint_digest,
+      checkpoint_timestamp,accepted_at)
+      SELECT value,1,100+value,'0x'||lpad(to_hex(value),64,'0'),
+        'sha256:'||lpad(to_hex(value),64,'0'),1000+value,clock_timestamp()
+      FROM generate_series(2,$1::integer) AS value`, [largeHistoryAcceptances]);
+    await migrator.query(`UPDATE ${identifier}.p42_indexer_checkpoint_control SET
+      current_acceptance=$1::bigint,next_acceptance=$1::bigint+1,updated_at=clock_timestamp() WHERE singleton=true`,
+    [largeHistoryAcceptances]);
+
+    const concurrentExactReaders = 6;
+    const readers = await Promise.all(Array.from({length:concurrentExactReaders},async()=>runtimePool.connect()));
+    let exactReadBlockingPids = 0;
+    let exactReadMaxMilliseconds = 0;
+    try {
+      await Promise.all(readers.map(async(reader)=>{
+        await reader.query("BEGIN"); await reader.query("SET LOCAL lock_timeout='2s'");
+        await reader.query("SET LOCAL statement_timeout='2s'"); await reader.query("SET LOCAL search_path=pg_catalog");
+      }));
+      const started=Date.now();
+      const exactRows=await Promise.all(readers.map(reader=>callExact(reader,identifier,largeHistoryAcceptances)));
+      exactReadMaxMilliseconds=Date.now()-started;
+      for(const exact of exactRows) if(exact.rowCount!==1||exact.rows[0].transition_kind!=="same"
+        ||Number(exact.rows[0].acceptance_id)!==largeHistoryAcceptances) {
+        throw new Error("large-history exact read did not return the indexed current checkpoint");
+      }
+      const pids=await Promise.all(readers.map(async reader=>(await reader.query("SELECT pg_backend_pid() AS pid")).rows[0].pid));
+      const blocking=await runtimePool.query(`SELECT coalesce(sum(cardinality(pg_blocking_pids(pid))),0)::integer AS total
+        FROM unnest($1::integer[]) AS pid`,[pids]);
+      exactReadBlockingPids=blocking.rows[0].total;
+      if(exactReadBlockingPids!==0) throw new Error("concurrent exact checkpoint readers formed a lock queue");
+      await Promise.all(readers.map(reader=>reader.query("COMMIT")));
+    } finally {
+      await Promise.all(readers.map(reader=>reader.query("ROLLBACK").catch(()=>{})));
+      readers.forEach(reader=>reader.release());
+    }
+    return {acceptedBlock,staleBlock,runtimeRole,ownerRole,largeHistoryAcceptances,
+      concurrentExactReaders,exactReadBlockingPids,exactReadMaxMilliseconds};
   } finally {
     await holder.query("ROLLBACK").catch(() => {});
     if (waiterCall) await waiterCall.catch(() => {});
@@ -175,6 +222,16 @@ function callTransition(client, schema, block, hashDigit, digestDigit, timestamp
     block, `0x${hashDigit.repeat(64)}`, `sha256:${digestDigit.repeat(64)}`, timestamp,
     `sha256:${"3".repeat(64)}`, `sha256:${"4".repeat(64)}`, "84532", "baseSepolia",
     "a".repeat(40), `0x${"5".repeat(64)}`,
+  ]);
+}
+
+function callExact(client,schema,acceptanceId) {
+  const hex=acceptanceId.toString(16).padStart(64,"0");
+  return client.query(`SELECT * FROM ${schema}.p42_read_exact_indexer_checkpoint(
+    $1::bigint,$2::text,$3::text,$4::bigint,$5::text,$6::text,$7::bigint,$8::text,$9::text,$10::text)`,[
+    String(100+acceptanceId),`0x${hex}`,`sha256:${hex}`,String(1000+acceptanceId),
+    `sha256:${"3".repeat(64)}`,`sha256:${"4".repeat(64)}`,"84532","baseSepolia",
+    "a".repeat(40),`0x${"5".repeat(64)}`,
   ]);
 }
 

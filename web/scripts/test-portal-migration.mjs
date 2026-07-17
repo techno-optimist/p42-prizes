@@ -104,6 +104,8 @@ try {
     await applyMigrations(client);
     await client.query(`ALTER FUNCTION p42_transition_indexer_checkpoint(
       bigint,text,text,bigint,text,text,bigint,text,text,text) SET search_path=public`);
+    await client.query(`ALTER FUNCTION p42_read_exact_indexer_checkpoint(
+      bigint,text,text,bigint,text,text,bigint,text,text,text) SET search_path=public`);
     await applyMigrations(client);
     const functionRow = await client.query(`SELECT prosecdef, proconfig,
       pg_get_userbyid(proowner)=current_user AS exact_owner,
@@ -113,6 +115,14 @@ try {
     if (!row?.prosecdef || !row.exact_owner || !row.exact_source
       || JSON.stringify(row.proconfig) !== JSON.stringify(["search_path=pg_catalog"])) {
       throw new Error("migration did not restore the exact transition function authority");
+    }
+    const exactRow = (await client.query(`SELECT prosecdef,proconfig,
+      pg_get_userbyid(proowner)=current_user AS exact_owner,
+      prosrc=(SELECT exact_read_function_source FROM p42_indexer_checkpoint_authority WHERE singleton=true) AS exact_source
+      FROM pg_proc WHERE oid='p42_read_exact_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)'::regprocedure`)).rows[0];
+    if(!exactRow?.prosecdef||!exactRow.exact_owner||!exactRow.exact_source
+      ||JSON.stringify(exactRow.proconfig)!==JSON.stringify(["search_path=pg_catalog"])) {
+      throw new Error("migration did not restore the exact read function authority");
     }
   });
 
@@ -127,6 +137,38 @@ try {
     await expectQueryFailure(() => callTransition(client, checkpoint("101", "b", "c", "1001")), "not contiguous and complete");
   });
 
+  await inTemporarySchema("regressed-contiguous-upgrade-rejected", async (client) => {
+    await applyMigrations(client);
+    await callTransition(client, checkpoint("100", "1", "2", "1000"));
+    await client.query(`INSERT INTO p42_indexer_checkpoint_acceptance(
+      acceptance_id,epoch_id,finalized_block_number,finalized_block_hash,
+      checkpoint_digest,checkpoint_timestamp,accepted_at)
+      VALUES(2,1,50,$1,$2,900,clock_timestamp())`,
+    [`0x${"6".repeat(64)}`, `sha256:${"7".repeat(64)}`]);
+    await client.query(`UPDATE p42_indexer_checkpoint_control SET
+      current_acceptance=2,next_acceptance=3,updated_at=clock_timestamp() WHERE singleton=true`);
+    await expectMigrationFailure(client, migration2Sql, "semantic history regresses at acceptance 2");
+  });
+
+  await inTemporarySchema("nonadjacent-full-identity-replay-upgrade-rejected", async (client) => {
+    await applyMigrations(client);
+    const identityA = checkpoint("100", "1", "2", "1000");
+    await callTransition(client, identityA);
+    const identityB = checkpoint("101", "3", "6", "1001");
+    identityB[4]=`sha256:${"7".repeat(64)}`; identityB[5]=`sha256:${"8".repeat(64)}`;
+    identityB[8]="b".repeat(40); identityB[9]=`0x${"9".repeat(64)}`;
+    await callTransition(client, identityB);
+    await client.query("ALTER TABLE p42_indexer_checkpoint_epoch DROP CONSTRAINT p42_indexer_checkpoint_epoch_identity_key");
+    await client.query(`INSERT INTO p42_indexer_checkpoint_epoch VALUES(
+      3,$1,$2,84532,'baseSepolia',$3,$4,clock_timestamp())`,
+    [identityA[4],identityA[5],identityA[8],identityA[9]]);
+    await client.query(`INSERT INTO p42_indexer_checkpoint_acceptance VALUES(
+      3,3,102,$1,$2,1002,clock_timestamp())`,[`0x${"a".repeat(64)}`,`sha256:${"b".repeat(64)}`]);
+    await client.query(`UPDATE p42_indexer_checkpoint_control SET current_epoch=3,current_acceptance=3,
+      next_epoch=4,next_acceptance=4,updated_at=clock_timestamp() WHERE singleton=true`);
+    await expectMigrationFailure(client,migration2Sql,"historical full identity replay");
+  });
+
   await inTemporarySchema("runtime-direct-rollback-denied", async (client, schema) => {
     await applyMigrations(client);
     const runtimeRole = `p42_runtime_${randomUUID().replaceAll("-", "")}`;
@@ -138,12 +180,15 @@ try {
         p42_indexer_checkpoint_epoch,p42_indexer_checkpoint_acceptance TO ${role}`);
       await client.query(`GRANT EXECUTE ON FUNCTION p42_transition_indexer_checkpoint(
         bigint,text,text,bigint,text,text,bigint,text,text,text) TO ${role}`);
+      await client.query(`GRANT EXECUTE ON FUNCTION p42_read_exact_indexer_checkpoint(
+        bigint,text,text,bigint,text,text,bigint,text,text,text) TO ${role}`);
       await client.query(`SET ROLE ${role}`);
       await callTransition(client, checkpoint("100", "1", "2", "1000"));
       await expectQueryFailure(() => client.query("UPDATE p42_indexer_checkpoint_control SET current_epoch=NULL"), "permission denied");
       await expectQueryFailure(() => client.query(`INSERT INTO p42_indexer_checkpoint_epoch VALUES(
         99,$1,$2,84532,'baseSepolia',$3,$4,clock_timestamp())`,
       [`sha256:${"6".repeat(64)}`, `sha256:${"7".repeat(64)}`, "b".repeat(40), `0x${"8".repeat(64)}`]), "permission denied");
+      await expectQueryFailure(() => client.query("TRUNCATE p42_indexer_checkpoint_acceptance"), "permission denied");
       await client.query("RESET ROLE");
     } finally {
       await client.query("RESET ROLE").catch(() => {});

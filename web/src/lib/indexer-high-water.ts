@@ -121,24 +121,30 @@ function assertTransition(row:TransitionRow|undefined,c:IndexerCheckpointHighWat
   }
 }
 
-export async function enforceIndexerCheckpointHighWater(snapshot:ActivatedIndexerSnapshot):Promise<void> {
-  const c=indexerCheckpointHighWaterCandidate(snapshot); const schema=checkpointSchema(); const q=quoted(schema);
-  const client=await portalDatabasePool().connect(); let committed=false;
-  try { const timeouts=portalDatabaseTimeouts(); await client.query("BEGIN");
-    await client.query("SELECT set_config('lock_timeout',$1,true)",[`${timeouts.lockMs}ms`]); await client.query("SELECT set_config('statement_timeout',$1,true)",[`${timeouts.statementMs}ms`]);
-    await client.query("SELECT set_config('search_path','pg_catalog',true)");
-    const authority=await client.query<RuntimeAuthorityRow>(`WITH pinned AS (
+function runtimeAuthoritySql(schema:string,q:string):string { return `WITH pinned AS (
       SELECT * FROM ${q}.p42_indexer_checkpoint_authority WHERE singleton=true
     ), objects AS (
       SELECT p.*, n.oid AS actual_schema_oid, n.nspname AS actual_schema_name,
-        f.proowner AS function_owner, f.prosecdef, f.provolatile, f.prokind, f.proconfig, f.prosrc,
-        l.lanname, f.proisstrict, f.proleakproof, f.proparallel, f.proretset,
-        pg_catalog.pg_get_function_result(f.oid) AS function_result,
-        f.oid AS actual_function_oid
+        tf.proowner AS transition_owner, tf.prosecdef AS transition_secdef,
+        tf.provolatile AS transition_volatile, tf.prokind AS transition_kind,
+        tf.proconfig AS transition_config, tf.prosrc AS actual_transition_source,
+        tl.lanname AS transition_language, tf.proisstrict AS transition_strict,
+        tf.proleakproof AS transition_leakproof, tf.proparallel AS transition_parallel,
+        tf.proretset AS transition_retset, pg_catalog.pg_get_function_result(tf.oid) AS transition_result,
+        tf.oid AS actual_transition_oid,
+        ef.proowner AS exact_owner, ef.prosecdef AS exact_secdef,
+        ef.provolatile AS exact_volatile, ef.prokind AS exact_kind,
+        ef.proconfig AS exact_config, ef.prosrc AS actual_exact_source,
+        el.lanname AS exact_language, ef.proisstrict AS exact_strict,
+        ef.proleakproof AS exact_leakproof, ef.proparallel AS exact_parallel,
+        ef.proretset AS exact_retset, pg_catalog.pg_get_function_result(ef.oid) AS exact_result,
+        ef.oid AS actual_exact_oid
       FROM pinned AS p
       JOIN pg_catalog.pg_namespace AS n ON n.oid=p.schema_oid
-      JOIN pg_catalog.pg_proc AS f ON f.oid=p.transition_function_oid
-      JOIN pg_catalog.pg_language AS l ON l.oid=f.prolang
+      JOIN pg_catalog.pg_proc AS tf ON tf.oid=p.transition_function_oid
+      JOIN pg_catalog.pg_language AS tl ON tl.oid=tf.prolang
+      JOIN pg_catalog.pg_proc AS ef ON ef.oid=p.exact_read_function_oid
+      JOIN pg_catalog.pg_language AS el ON el.oid=ef.prolang
     ), runtime AS (
       SELECT r.* FROM pg_catalog.pg_roles AS r WHERE r.rolname=CURRENT_USER
     ) SELECT
@@ -155,38 +161,65 @@ export async function enforceIndexerCheckpointHighWater(snapshot:ActivatedIndexe
         AND o.authority_oid='${schema}.p42_indexer_checkpoint_authority'::pg_catalog.regclass::oid
         AND o.control_oid='${schema}.p42_indexer_checkpoint_control'::pg_catalog.regclass::oid
         AND o.epoch_oid='${schema}.p42_indexer_checkpoint_epoch'::pg_catalog.regclass::oid
-        AND o.acceptance_oid='${schema}.p42_indexer_checkpoint_acceptance'::pg_catalog.regclass::oid AS identity_matches,
-      o.actual_function_oid='${schema}.p42_transition_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)'::pg_catalog.regprocedure::oid
-        AND o.function_owner=o.migration_owner_oid AND o.migration_owner_name::text=pg_catalog.pg_get_userbyid(o.function_owner)
-        AND o.prosecdef AND o.provolatile='v' AND o.prokind='f'
-        AND o.lanname='plpgsql' AND NOT o.proisstrict AND NOT o.proleakproof
-        AND o.proparallel='u' AND o.proretset AND o.function_result='TABLE(transition_kind text, epoch_id bigint, release_binding_digest text, authorization_digest text, chain_id bigint, chain_name text, deployment_commit text, deployment_config_hash text, epoch_accepted_at timestamp with time zone, acceptance_id bigint, finalized_block_number bigint, finalized_block_hash text, checkpoint_digest text, checkpoint_timestamp bigint, acceptance_accepted_at timestamp with time zone, current_epoch bigint, current_acceptance bigint, next_epoch bigint, next_acceptance bigint, control_updated_at timestamp with time zone)'
-        AND o.proconfig=ARRAY['search_path=pg_catalog']::text[] AND o.prosrc=o.transition_function_source AS function_matches,
-      pg_catalog.has_function_privilege(CURRENT_USER,o.actual_function_oid,'EXECUTE')
-        AND NOT pg_catalog.has_function_privilege('public',o.actual_function_oid,'EXECUTE')
+        AND o.acceptance_oid='${schema}.p42_indexer_checkpoint_acceptance'::pg_catalog.regclass::oid
+        AND o.actual_transition_oid='${schema}.p42_transition_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)'::pg_catalog.regprocedure::oid
+        AND o.actual_exact_oid='${schema}.p42_read_exact_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)'::pg_catalog.regprocedure::oid AS identity_matches,
+      o.transition_owner=o.migration_owner_oid AND o.exact_owner=o.migration_owner_oid
+        AND o.migration_owner_name::text=pg_catalog.pg_get_userbyid(o.transition_owner)
+        AND o.transition_secdef AND o.exact_secdef
+        AND o.transition_volatile='v' AND o.exact_volatile='v'
+        AND o.transition_kind='f' AND o.exact_kind='f'
+        AND o.transition_language='plpgsql' AND o.exact_language='plpgsql'
+        AND NOT o.transition_strict AND NOT o.exact_strict
+        AND NOT o.transition_leakproof AND NOT o.exact_leakproof
+        AND o.transition_parallel='u' AND o.exact_parallel='u'
+        AND o.transition_retset AND o.exact_retset
+        AND o.transition_result=o.exact_result
+        AND o.transition_result='TABLE(transition_kind text, epoch_id bigint, release_binding_digest text, authorization_digest text, chain_id bigint, chain_name text, deployment_commit text, deployment_config_hash text, epoch_accepted_at timestamp with time zone, acceptance_id bigint, finalized_block_number bigint, finalized_block_hash text, checkpoint_digest text, checkpoint_timestamp bigint, acceptance_accepted_at timestamp with time zone, current_epoch bigint, current_acceptance bigint, next_epoch bigint, next_acceptance bigint, control_updated_at timestamp with time zone)'
+        AND o.transition_config=ARRAY['search_path=pg_catalog']::text[]
+        AND o.exact_config=ARRAY['search_path=pg_catalog']::text[]
+        AND o.actual_transition_source=o.transition_function_source
+        AND o.actual_exact_source=o.exact_read_function_source AS function_matches,
+      pg_catalog.has_function_privilege(CURRENT_USER,o.actual_transition_oid,'EXECUTE')
+        AND pg_catalog.has_function_privilege(CURRENT_USER,o.actual_exact_oid,'EXECUTE')
+        AND NOT pg_catalog.has_function_privilege('public',o.actual_transition_oid,'EXECUTE')
+        AND NOT pg_catalog.has_function_privilege('public',o.actual_exact_oid,'EXECUTE')
         AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(
-          (SELECT p.proacl FROM pg_catalog.pg_proc AS p WHERE p.oid=o.actual_function_oid),
-          pg_catalog.acldefault('f',o.function_owner))) AS acl
-          WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>ALL(ARRAY[o.function_owner,r.oid])) AS acl_matches,
+          (SELECT p.proacl FROM pg_catalog.pg_proc AS p WHERE p.oid=o.actual_transition_oid),
+          pg_catalog.acldefault('f',o.transition_owner))) AS acl
+          WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>ALL(ARRAY[o.transition_owner,r.oid]))
+        AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(
+          (SELECT p.proacl FROM pg_catalog.pg_proc AS p WHERE p.oid=o.actual_exact_oid),
+          pg_catalog.acldefault('f',o.exact_owner))) AS acl
+          WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>ALL(ARRAY[o.exact_owner,r.oid])) AS acl_matches,
       NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolbypassrls
         AND (SELECT d.datdba<>r.oid FROM pg_catalog.pg_database AS d WHERE d.oid=o.database_oid)
         AND (SELECT n.nspowner<>r.oid FROM pg_catalog.pg_namespace AS n WHERE n.oid=o.schema_oid)
-        AND r.oid<>ALL(ARRAY[(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.control_oid),
+        AND r.oid<>ALL(ARRAY[(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.authority_oid),
+          (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.control_oid),
           (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.epoch_oid),
           (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.acceptance_oid)])
         AND NOT pg_catalog.has_database_privilege(r.oid,o.database_oid,'CREATE')
         AND NOT pg_catalog.has_schema_privilege(r.oid,o.schema_oid,'CREATE') AS safe_role,
-      NOT (pg_catalog.has_table_privilege(r.oid,o.control_oid,'INSERT')
+      NOT (pg_catalog.has_table_privilege(r.oid,o.authority_oid,'INSERT')
+        OR pg_catalog.has_table_privilege(r.oid,o.authority_oid,'UPDATE')
+        OR pg_catalog.has_table_privilege(r.oid,o.authority_oid,'DELETE')
+        OR pg_catalog.has_table_privilege(r.oid,o.authority_oid,'TRUNCATE')
+        OR pg_catalog.has_table_privilege(r.oid,o.authority_oid,'TRIGGER')
+        OR pg_catalog.has_table_privilege(r.oid,o.control_oid,'INSERT')
         OR pg_catalog.has_table_privilege(r.oid,o.control_oid,'UPDATE')
         OR pg_catalog.has_table_privilege(r.oid,o.control_oid,'DELETE')
+        OR pg_catalog.has_table_privilege(r.oid,o.control_oid,'TRUNCATE')
         OR pg_catalog.has_table_privilege(r.oid,o.control_oid,'TRIGGER')
         OR pg_catalog.has_table_privilege(r.oid,o.epoch_oid,'INSERT')
         OR pg_catalog.has_table_privilege(r.oid,o.epoch_oid,'UPDATE')
         OR pg_catalog.has_table_privilege(r.oid,o.epoch_oid,'DELETE')
+        OR pg_catalog.has_table_privilege(r.oid,o.epoch_oid,'TRUNCATE')
         OR pg_catalog.has_table_privilege(r.oid,o.epoch_oid,'TRIGGER')
         OR pg_catalog.has_table_privilege(r.oid,o.acceptance_oid,'INSERT')
         OR pg_catalog.has_table_privilege(r.oid,o.acceptance_oid,'UPDATE')
         OR pg_catalog.has_table_privilege(r.oid,o.acceptance_oid,'DELETE')
+        OR pg_catalog.has_table_privilege(r.oid,o.acceptance_oid,'TRUNCATE')
         OR pg_catalog.has_table_privilege(r.oid,o.acceptance_oid,'TRIGGER')) AS no_direct_writes,
       NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles AS candidate
         WHERE candidate.oid<>r.oid AND pg_catalog.pg_has_role(r.oid,candidate.oid,'SET')
@@ -196,26 +229,62 @@ export async function enforceIndexerCheckpointHighWater(snapshot:ActivatedIndexe
             OR pg_catalog.has_schema_privilege(candidate.oid,o.schema_oid,'CREATE')
             OR candidate.oid=(SELECT d.datdba FROM pg_catalog.pg_database AS d WHERE d.oid=o.database_oid)
             OR candidate.oid=(SELECT n.nspowner FROM pg_catalog.pg_namespace AS n WHERE n.oid=o.schema_oid)
+            OR pg_catalog.has_table_privilege(candidate.oid,o.authority_oid,'INSERT')
+            OR pg_catalog.has_table_privilege(candidate.oid,o.authority_oid,'UPDATE')
+            OR pg_catalog.has_table_privilege(candidate.oid,o.authority_oid,'DELETE')
+            OR pg_catalog.has_table_privilege(candidate.oid,o.authority_oid,'TRUNCATE')
+            OR pg_catalog.has_table_privilege(candidate.oid,o.authority_oid,'TRIGGER')
             OR pg_catalog.has_table_privilege(candidate.oid,o.control_oid,'INSERT')
             OR pg_catalog.has_table_privilege(candidate.oid,o.control_oid,'UPDATE')
             OR pg_catalog.has_table_privilege(candidate.oid,o.control_oid,'DELETE')
+            OR pg_catalog.has_table_privilege(candidate.oid,o.control_oid,'TRUNCATE')
             OR pg_catalog.has_table_privilege(candidate.oid,o.control_oid,'TRIGGER')
             OR pg_catalog.has_table_privilege(candidate.oid,o.epoch_oid,'INSERT')
             OR pg_catalog.has_table_privilege(candidate.oid,o.epoch_oid,'UPDATE')
             OR pg_catalog.has_table_privilege(candidate.oid,o.epoch_oid,'DELETE')
+            OR pg_catalog.has_table_privilege(candidate.oid,o.epoch_oid,'TRUNCATE')
             OR pg_catalog.has_table_privilege(candidate.oid,o.epoch_oid,'TRIGGER')
             OR pg_catalog.has_table_privilege(candidate.oid,o.acceptance_oid,'INSERT')
             OR pg_catalog.has_table_privilege(candidate.oid,o.acceptance_oid,'UPDATE')
             OR pg_catalog.has_table_privilege(candidate.oid,o.acceptance_oid,'DELETE')
+            OR pg_catalog.has_table_privilege(candidate.oid,o.acceptance_oid,'TRUNCATE')
             OR pg_catalog.has_table_privilege(candidate.oid,o.acceptance_oid,'TRIGGER'))) AS no_dangerous_set_role,
       NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger AS t
-        WHERE t.tgrelid IN(o.control_oid,o.epoch_oid,o.acceptance_oid) AND NOT t.tgisinternal) AS no_external_triggers
-      FROM objects AS o CROSS JOIN runtime AS r`,[schema]);
+        WHERE t.tgrelid IN(o.authority_oid,o.control_oid,o.epoch_oid,o.acceptance_oid) AND NOT t.tgisinternal) AS no_external_triggers
+      FROM objects AS o CROSS JOIN runtime AS r`; }
+
+async function beginCheckpointTransaction(client:PortalDatabaseClient):Promise<void> {
+  const timeouts=portalDatabaseTimeouts(); await client.query("BEGIN");
+  await client.query("SELECT set_config('lock_timeout',$1,true)",[`${timeouts.lockMs}ms`]);
+  await client.query("SELECT set_config('statement_timeout',$1,true)",[`${timeouts.statementMs}ms`]);
+  await client.query("SELECT set_config('search_path','pg_catalog',true)");
+}
+async function attestRuntimeAuthority(client:PortalDatabaseClient,schema:string,q:string):Promise<void> {
+  const authority=await client.query<RuntimeAuthorityRow>(runtimeAuthoritySql(schema,q),[schema]);
     if(authority.rowCount!==1) throw new Error("checkpoint runtime authority row is missing"); assertRuntimeAuthority(authority.rows[0]);
+}
+function candidateValues(c:IndexerCheckpointHighWaterCandidate):string[] { return [c.finalizedBlockNumber,c.finalizedBlockHash,c.checkpointDigest,c.checkpointTimestamp,
+  c.releaseBindingDigest,c.authorizationDigest,c.chainId,c.chainName,c.deploymentCommit,c.deploymentConfigHash]; }
+
+export async function enforceIndexerCheckpointHighWater(snapshot:ActivatedIndexerSnapshot):Promise<void> {
+  const c=indexerCheckpointHighWaterCandidate(snapshot); const schema=checkpointSchema(); const q=quoted(schema);
+  const client=await portalDatabasePool().connect(); let committed=false;
+  try {
+    await beginCheckpointTransaction(client); await attestRuntimeAuthority(client,schema,q);
+    const exact=await client.query<TransitionRow>(`SELECT * FROM ${q}.p42_read_exact_indexer_checkpoint(
+      $1::bigint,$2::text,$3::text,$4::bigint,$5::text,$6::text,$7::bigint,$8::text,$9::text,$10::text
+    )`,candidateValues(c));
+    if(exact.rowCount===1) {
+      assertTransition(exact.rows[0],c);
+      if(exact.rows[0]?.transition_kind!=="same") throw new Error("checkpoint exact read returned a transition");
+      await client.query("COMMIT"); committed=true; return;
+    }
+    if(exact.rowCount!==0) throw new Error("checkpoint exact read returned multiple persisted states");
+    await client.query("ROLLBACK");
+    await beginCheckpointTransaction(client); await attestRuntimeAuthority(client,schema,q);
     const transitioned=await client.query<TransitionRow>(`SELECT * FROM ${q}.p42_transition_indexer_checkpoint(
       $1::bigint,$2::text,$3::text,$4::bigint,$5::text,$6::text,$7::bigint,$8::text,$9::text,$10::text
-    )`,[c.finalizedBlockNumber,c.finalizedBlockHash,c.checkpointDigest,c.checkpointTimestamp,
-      c.releaseBindingDigest,c.authorizationDigest,c.chainId,c.chainName,c.deploymentCommit,c.deploymentConfigHash]);
+    )`,candidateValues(c));
     if(transitioned.rowCount!==1) throw new Error("checkpoint transition did not return one persisted state"); assertTransition(transitioned.rows[0],c);
     await client.query("COMMIT");committed=true;
   } finally {if(!committed) await rollback(client);client.release();}

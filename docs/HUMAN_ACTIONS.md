@@ -92,8 +92,11 @@ problem requirement.
 ## Exact Blockers At This Snapshot
 
 - Portal checkpoint database upgrade: source now requires a durably pinned
-  schema, a migration-owner-controlled transition function, and a runtime role
-  with no direct authority writes or dangerous `SET ROLE` path. An operator must
+  schema, migration-owner-controlled exact-read and transition functions, and a
+  runtime role with no direct authority writes, `TRUNCATE`, or dangerous
+  `SET ROLE` path. Local PostgreSQL 16 evidence includes 18 migration/tamper
+  cases plus a 10,000-row, six-reader exact-read rehearsal with zero blocking
+  PIDs; this is not production evidence. An operator must
   provision the Render schema/roles, inspect the complete membership graph,
   apply migration 002, run the production OID/function/ACL/privilege and
   concurrent-lock rehearsal, retain the redacted evidence tail, and confirm the
