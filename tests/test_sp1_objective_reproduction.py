@@ -28,8 +28,8 @@ PROGRAMS = {
     "q6-intersecting-hypergraph": {
         "elf": None,
         "vkey": "0x" + "12" * 32,
-        "journal": "0x33f88c0a230786fe647984244fa59e51253056f688fd9a97431d2f597d576206",
-        "instructions": 9_388_507,
+        "journal": "0x2de2ac88744bf1f14092829ecfbc306871977d69e305312c47cfe55bf10e5968",
+        "instructions": 9_388_517,
     },
 }
 Q6_SOURCE_PATHS = (
