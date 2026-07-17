@@ -540,6 +540,25 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(screen.getByText("funding unavailable")).toBeTruthy();
   });
 
+  it("cannot resurrect a Flight binding after a newer checkpoint generation invalidates it", async () => {
+    await renderAndReveal();
+    const newerGeneration = responseBody({
+      checkpointDigest: `sha256:${"9".repeat(64)}`,
+      serverObservedAt: OBSERVED_MS + 1_000,
+    });
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(newerGeneration));
+
+    fireEvent(window, new Event("focus"));
+    await flushResponse();
+    expectTargetUnavailable();
+
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ serverObservedAt: OBSERVED_MS + 2_000 })));
+    fireEvent(window, new Event("focus"));
+    await flushResponse();
+    expectTargetUnavailable();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("does not resurrect funding from a sequentially older focus observation", async () => {
     await renderAndReveal();
     vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({

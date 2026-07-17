@@ -264,6 +264,7 @@ export function FundingPanel({
       return;
     }
     let active = true;
+    let bindingInvalidated = false;
     latestObservedRef.current = observedTimestamp;
     clientWallStartedRef.current = Date.now();
     const duration = Math.min(actionCutoffTimestamp - observedTimestamp, actionCutoffTimestamp - Date.now());
@@ -294,6 +295,10 @@ export function FundingPanel({
       setCopied(false);
       setCopiedDigest(null);
       setFundingVisibility("checking");
+      if (bindingInvalidated) {
+        setFundingVisibility("unavailable");
+        return;
+      }
       controller = new AbortController();
       requestControllerRef.current = controller;
       const requestController = controller;
@@ -307,8 +312,16 @@ export function FundingPanel({
           });
           if (!response.ok) throw new Error("funding target request failed");
           const parsed = parseFundingTargetResponse(await response.json(), slug);
-          if (!active || requestController.signal.aborted || bindingKeyRef.current !== bindingKey
-            || !parsed || parsed.authorizationExpiresAt !== authorizationExpiresAt
+          if (!active || requestController.signal.aborted || bindingKeyRef.current !== bindingKey || !parsed) {
+            if (active && !requestController.signal.aborted) expireFunding(false);
+            return;
+          }
+          const responseObserved = parsedTimestamp(parsed.serverObservedAt)!;
+          if (responseObserved < (latestObservedRef.current ?? observedTimestamp)) {
+            expireFunding(false);
+            return;
+          }
+          if (parsed.authorizationExpiresAt !== authorizationExpiresAt
             || parsed.fundingDeadline !== fundingDeadline
             || parsed.fundingAuthorizationDigest !== fundingAuthorizationDigest
             || parsed.activationCompletionDigest !== activationCompletionDigest
@@ -316,20 +329,22 @@ export function FundingPanel({
             || parsed.checkpointDigest !== checkpointDigest
             || parsed.activationFinalizedBlock !== activationFinalizedBlock
             || parsedTimestamp(parsed.finalizedObservedAt)! < finalizedTimestamp) {
-            if (active && !requestController.signal.aborted) expireFunding(false);
+            latestObservedRef.current = responseObserved;
+            bindingInvalidated = true;
+            expireFunding(false);
             return;
           }
-          const responseObserved = parsedTimestamp(parsed.serverObservedAt)!;
           if (parsedTimestamp(parsed.finalizedObservedAt)! > responseObserved) {
             expireFunding(false);
             return;
           }
           if (parsed.target === null || parsed.remainingCapWei === "0") {
             latestObservedRef.current = responseObserved;
+            bindingInvalidated = true;
             expireFunding(responseObserved >= deadlineTimestamp!);
             return;
           }
-          if (responseObserved < (latestObservedRef.current ?? observedTimestamp) || cutoffReached(responseObserved)) {
+          if (cutoffReached(responseObserved)) {
             expireFunding(true);
             return;
           }
