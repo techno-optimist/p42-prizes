@@ -228,7 +228,7 @@ jobs:
               sha256sum "$rebuilt"
               host_paths="$(strings "$rebuilt" | grep --extended-regexp '/home/runner/(work/p42-prizes|\.cargo|\.rustup)|/opt/hostedtoolcache|/private/tmp/p42' || true)"
               # The pinned SP1 guest sysroot itself carries this canonical hashbrown source path.
-              unexpected_paths="$(printf '%s\n' "$host_paths" | grep --invert-match --fixed-strings '/home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.16.1/src/raw/mod.rs' || true)"
+              unexpected_paths="$(printf '%s\n' "$host_paths" | grep --invert-match --fixed-strings --line-regexp '/home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/hashbrown-0.16.1/src/raw/mod.rs' || true)"
               if [[ -n "$unexpected_paths" ]]; then
                 printf '%s\n' "$unexpected_paths"
                 echo "guest ELF leaked a host-specific source path: $rebuilt" >&2
