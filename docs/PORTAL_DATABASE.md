@@ -1,11 +1,18 @@
 # Portal database cutover
 
-Production uses two PostgreSQL identities. `P42_PORTAL_MIGRATION_DATABASE_URL`
-authenticates as the schema owner and runs only during migration. The web
-process uses `P42_PORTAL_DATABASE_URL`. `P42_PORTAL_DATABASE_SCHEMA` pins the
-preprovisioned schema by name and the migration records its database, schema,
-owner, relation, and function OIDs. In required mode, missing schema identity,
-same-role credentials, catalog drift, or authority overlap fails closed.
+The target production design uses two PostgreSQL identities.
+`P42_PORTAL_MIGRATION_DATABASE_URL` authenticates as the schema owner and runs
+only during migration. The web process uses `P42_PORTAL_DATABASE_URL`.
+`P42_PORTAL_DATABASE_SCHEMA` pins the preprovisioned schema by name and the
+migration records its database, schema, owner, relation, and function OIDs. In
+required mode, missing schema identity, same-role credentials, catalog drift,
+or authority overlap fails closed. This is candidate source/local design, not a
+claim that the identities or hardened authority are provisioned live.
+
+The live starting database has legacy tables in `public` and no `p42_portal`
+schema. Its historical legacy-database check passed, but the hardened checkpoint
+authority cutover remains pending. PR #142 is a draft/source provisioning
+candidate, not merged. No transfer repair is merged.
 
 Only the migration-owner-controlled `SECURITY DEFINER` transition function may
 change checkpoint authority. A separately pinned read-only function handles an
@@ -19,9 +26,10 @@ return the exact persisted tuple for validation before commit. Runtime has
 schema/OID, function/ACL/source, trigger, history, or readback mismatch
 suppresses every funding target.
 
-## Provision and import
+## Provision and exact transfer
 
-1. Pause mutable traffic and preserve/checksum any current state export.
+1. Pause mutable traffic and preserve/checksum the legacy `public` tables and an
+   exact current state export.
 2. In the same PostgreSQL database, provision a dedicated migration-owner
    login and a distinct runtime login. The runtime must be `NOSUPERUSER
    NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT`, must not own the database,
@@ -49,8 +57,12 @@ suppresses every funding target.
    function owner/source/config/ACL, pinned OIDs, privileges, and `SET ROLE`
    closure. The migration integration must also reject contiguous block/time
    regression and nonadjacent full-identity replay in preexisting history.
-5. Import state through the runtime URL exactly once with
-   `P42_PORTAL_IMPORT_SHA256`; compare JSONB readback before commit.
+5. Perform the exact legacy-to-pinned-schema transfer ceremony and bind its
+   source table identities, export hash, destination OIDs, row counts, and JSONB
+   readback before commit. This authority-preserving cutover is not the ordinary
+   one-time runtime import. `P42_PORTAL_IMPORT_SHA256` remains the ordinary import
+   path for an empty non-legacy store and must not be used as evidence that the
+   legacy production transfer occurred.
 6. Run `npm run db:migration-integration` with the migration URL, then run
    `npm run db:rehearse` with both URLs. Save the JSON tail. It must show two
    checkpoint connections, lock attribution, accepted block `101`, stale block
@@ -89,13 +101,16 @@ suppresses every funding target.
 
 ## External tail
 
-Source and local PostgreSQL rehearsal do not provision Render roles. Before any
-funding activation, an operator must provision the production schema and two
-roles, independently inspect the membership graph, apply migration/rehearsal
-against the production private database, retain redacted OID/function/ACL/role
-evidence and the rehearsal JSON, remove the owner credential from the web
-child, deploy the reviewed commit, and probe the live funding route. Until that
-tail is complete, funding remains fail-closed.
+Source and local PostgreSQL rehearsal do not provision Render roles. PR #142 is
+only a draft/source candidate and does not prove a merged transfer repair or live
+cutover. Before any funding activation, an operator must provision the production
+schema and two roles, independently inspect the membership graph, perform the
+exact transfer from the legacy public tables, apply migration/rehearsal against
+the production private database, retain redacted OID/function/ACL/role and
+transfer evidence plus the rehearsal JSON, remove the owner credential from the
+web child, deploy the reviewed commit, and probe the live funding route. Until
+that tail is complete, funding remains not activated and live targets stay
+`null`; candidate targets are local-only.
 
 ## Rollback
 
