@@ -1254,12 +1254,12 @@ def _validate_v2_source_release_evidence(
     head = _commit(command_runner(["git", "rev-parse", "HEAD"], root), "HEAD")
     try:
         committed_board_manifest = command_runner(
-            ["git", "show", f"{head}:{BOARD_MANIFEST_PATH.as_posix()}"], root
+            ["git", "show", f"{observed_head}:{BOARD_MANIFEST_PATH.as_posix()}"], root
         )
         expected_projection = json.loads(committed_board_manifest)["projection_sha256"]
     except (OSError, KeyError, json.JSONDecodeError) as exc:
         raise SourceReleaseEvidenceError(
-            "committed release-guard board manifest is unreadable"
+            "observed-head release-guard board manifest is unreadable"
         ) from exc
     if guard.get("boardProjection") != expected_projection:
         raise SourceReleaseEvidenceError(
