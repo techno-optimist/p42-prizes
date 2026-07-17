@@ -11,6 +11,7 @@ const migrationSql = await readFile(path.resolve("migrations/001_portal_store.sq
 const transferScript = path.resolve("scripts/transfer-legacy-portal-state.mjs");
 const admin = new pg.Client({ connectionString, connectionTimeoutMillis: 10_000 });
 await admin.connect();
+const databaseName = (await admin.query("SELECT current_database() AS name")).rows[0].name;
 const runtimeRole = `p42_runtime_${randomUUID().replaceAll("-", "")}`;
 await admin.query(`CREATE ROLE ${quoteIdentifier(runtimeRole)} NOLOGIN NOSUPERUSER NOINHERIT
   NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
@@ -28,6 +29,7 @@ try {
       imported_at::text AS imported_at, updated_at::text AS updated_at FROM ${qualified(target, "p42_portal_state")}`);
     if (rows.rowCount !== 1 || rows.rows[0].revision !== "0" || rows.rows[0].import_sha256 !== importSha256
       || digest(rows.rows[0].state_text) !== stateDigest()) throw new Error("successful transfer readback mismatch");
+    await assertPortalAclsExact(legacy, target);
   });
 
   await transferCase("source-destination-alias", async ({ legacy }) => {
@@ -87,6 +89,35 @@ try {
     const receipt = assertSuccessResult(await runTransfer({ legacy, target }));
     if (receipt.status !== "transferred") throw new Error("preexisting provenance transfer did not complete");
     await assertProvenanceAclClosed(target);
+  });
+
+  await transferCase("public-target-update-revoked", async ({ legacy, target }) => {
+    await admin.query(`GRANT UPDATE ON TABLE ${qualified(target, "p42_portal_state")} TO PUBLIC`);
+    const receipt = assertSuccessResult(await runTransfer({ legacy, target }));
+    if (receipt.status !== "transferred") throw new Error("PUBLIC ACL normalization did not transfer");
+    await assertPortalAclsExact(legacy, target);
+  });
+
+  await transferCase("nested-role-target-dml-rejected", async ({ legacy, target }) => {
+    const first = `p42_dml_first_${randomUUID().replaceAll("-", "")}`;
+    const second = `p42_dml_second_${randomUUID().replaceAll("-", "")}`;
+    await createRestrictedRole(first);
+    await createRestrictedRole(second);
+    try {
+      await admin.query(`GRANT UPDATE ON TABLE ${qualified(target, "p42_portal_state")}
+        TO ${quoteIdentifier(second)}`);
+      await admin.query(`GRANT ${quoteIdentifier(second)} TO ${quoteIdentifier(first)}
+        WITH INHERIT TRUE, SET TRUE`);
+      await admin.query(`GRANT ${quoteIdentifier(first)} TO ${quoteIdentifier(runtimeRole)}
+        WITH INHERIT TRUE, SET TRUE`);
+      await expectFailure({ legacy, target }, "runtime-role-dangerous-set-closure");
+      await assertEmpty(target);
+    } finally {
+      await admin.query(`REVOKE ${quoteIdentifier(first)} FROM ${quoteIdentifier(runtimeRole)}`).catch(() => {});
+      await admin.query(`REVOKE ${quoteIdentifier(second)} FROM ${quoteIdentifier(first)}`).catch(() => {});
+      await admin.query(`DROP OWNED BY ${quoteIdentifier(second)}`).catch(() => {});
+      await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(first)}, ${quoteIdentifier(second)}`).catch(() => {});
+    }
   });
 
   await transferCase("safe-benign-set-role-memberships", async ({ legacy, target }) => {
@@ -157,6 +188,27 @@ try {
     }
   });
 
+  for (const [label, importedAt, updatedAt] of [
+    ["non-finite-source-timestamps-positive-negative", "infinity", "-infinity"],
+    ["non-finite-source-timestamps-negative-positive", "-infinity", "infinity"],
+  ]) {
+    await transferCase(label, async ({ legacy, target }) => {
+      await admin.query(`UPDATE ${qualified(legacy, "p42_portal_state")}
+        SET imported_at=$1::timestamptz, updated_at=$2::timestamptz`, [importedAt, updatedAt]);
+      await expectFailure({ legacy, target }, "source-non-finite-timestamp");
+      await assertEmpty(target);
+    });
+  }
+
+  await transferCase("non-finite-provenance-commit-timestamp", async ({ legacy, target }) => {
+    await expectFailure({
+      legacy, target, extraEnv: { P42_PORTAL_TEST_FAULT_AFTER_COMMIT: "ambiguous-ack" },
+    }, "commit-acknowledgment-ambiguous");
+    await admin.query(`UPDATE ${qualified(target, "p42_portal_state_transfer_provenance")}
+      SET committed_at='infinity'::timestamptz`);
+    await expectFailure({ legacy, target }, "provenance-non-finite-timestamp");
+  });
+
   await transferCase("empty-source", async ({ legacy, target }) => {
     await admin.query(`DELETE FROM ${qualified(legacy, "p42_portal_state")}`);
     await expectFailure({ legacy, target }, "source-not-singleton");
@@ -215,6 +267,53 @@ try {
     } finally {
       await admin.query(`REVOKE ${role} FROM CURRENT_USER`).catch(() => {});
       await admin.query(`DROP ROLE IF EXISTS ${role}`).catch(() => {});
+    }
+  });
+
+  await transferCase("postcommit-transitive-superuser-grant-fails-closed", async ({ legacy, target }) => {
+    const intermediary = `p42_postcheck_intermediary_${randomUUID().replaceAll("-", "")}`;
+    const elevated = `p42_postcheck_elevated_${randomUUID().replaceAll("-", "")}`;
+    await createRestrictedRole(intermediary);
+    await admin.query(`CREATE ROLE ${quoteIdentifier(elevated)} NOLOGIN SUPERUSER`);
+    const child = runTransferProcess({
+      legacy, target, extraEnv: { P42_PORTAL_TEST_PAUSE_BEFORE_POSTCHECK_MS: "1500" },
+    });
+    try {
+      await waitForMarker(target);
+      await admin.query(`GRANT ${quoteIdentifier(elevated)} TO ${quoteIdentifier(intermediary)}
+        WITH INHERIT FALSE, SET TRUE`);
+      await admin.query(`GRANT ${quoteIdentifier(intermediary)} TO ${quoteIdentifier(runtimeRole)}
+        WITH INHERIT FALSE, SET TRUE`);
+      await expectCompletedFailure(child, "postcommit-authority-check-failed");
+      await admin.query(`REVOKE ${quoteIdentifier(intermediary)} FROM ${quoteIdentifier(runtimeRole)}`);
+      await admin.query(`REVOKE ${quoteIdentifier(elevated)} FROM ${quoteIdentifier(intermediary)}`);
+      const receipt = assertSuccessResult(await runTransfer({ legacy, target }));
+      if (receipt.status !== "reconciled") throw new Error("role-DDL remediation did not reconcile marker");
+    } finally {
+      await child.catch(() => {});
+      await admin.query(`REVOKE ${quoteIdentifier(intermediary)} FROM ${quoteIdentifier(runtimeRole)}`).catch(() => {});
+      await admin.query(`REVOKE ${quoteIdentifier(elevated)} FROM ${quoteIdentifier(intermediary)}`).catch(() => {});
+      await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(intermediary)}, ${quoteIdentifier(elevated)}`).catch(() => {});
+    }
+  });
+
+  await transferCase("postcommit-database-owner-change-fails-closed", async ({ legacy, target }) => {
+    const alternateOwner = `p42_database_owner_${randomUUID().replaceAll("-", "")}`;
+    await createRestrictedRole(alternateOwner);
+    const child = runTransferProcess({
+      legacy, target, extraEnv: { P42_PORTAL_TEST_PAUSE_BEFORE_POSTCHECK_MS: "1500" },
+    });
+    try {
+      await waitForMarker(target);
+      await admin.query(`ALTER DATABASE ${quoteIdentifier(databaseName)} OWNER TO ${quoteIdentifier(alternateOwner)}`);
+      await expectCompletedFailure(child, "postcommit-authority-check-failed");
+      await admin.query(`ALTER DATABASE ${quoteIdentifier(databaseName)} OWNER TO CURRENT_USER`);
+      const receipt = assertSuccessResult(await runTransfer({ legacy, target }));
+      if (receipt.status !== "reconciled") throw new Error("database-owner remediation did not reconcile marker");
+    } finally {
+      await child.catch(() => {});
+      await admin.query(`ALTER DATABASE ${quoteIdentifier(databaseName)} OWNER TO CURRENT_USER`).catch(() => {});
+      await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(alternateOwner)}`).catch(() => {});
     }
   });
 
@@ -374,7 +473,7 @@ try {
   process.stdout.write(`${JSON.stringify({
     cases: passed,
     postgresVersion,
-    schemaVersion: "p42-legacy-portal-state-transfer-test/v4",
+    schemaVersion: "p42-legacy-portal-state-transfer-test/v5",
     status: "passed",
   })}\n`);
 } finally {
@@ -483,6 +582,26 @@ async function assertProvenanceAclClosed(schema) {
   }
 }
 
+async function assertPortalAclsExact(legacy, target) {
+  const result = await admin.query(`SELECT
+      NOT pg_catalog.has_table_privilege('public',$1::regclass,'UPDATE') AS no_public_target_update,
+      pg_catalog.has_table_privilege($3,$1,'SELECT')
+        AND pg_catalog.has_table_privilege($3,$1,'INSERT')
+        AND pg_catalog.has_table_privilege($3,$1,'UPDATE')
+        AND NOT pg_catalog.has_table_privilege($3,$1,'DELETE')
+        AND NOT pg_catalog.has_table_privilege($3,$1,'TRUNCATE')
+        AND NOT pg_catalog.has_table_privilege($3,$1,'TRIGGER') AS runtime_target_exact,
+      NOT pg_catalog.has_table_privilege($3,$2,
+        'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER') AS runtime_source_closed,
+      NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c,
+        LATERAL pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) acl
+        WHERE c.oid=$2::regclass AND acl.grantee<>c.relowner) AS source_owner_only`,
+  [`${target}.p42_portal_state`, `${legacy}.p42_portal_state`, runtimeRole]);
+  const row = result.rows[0];
+  if (!row?.no_public_target_update || !row.runtime_target_exact
+    || !row.runtime_source_closed || !row.source_owner_only) throw new Error("portal ACLs were not exact");
+}
+
 async function seed(schema, { importDigest = importSha256 } = {}) {
   await admin.query(`INSERT INTO ${qualified(schema, "p42_portal_state")}
     (singleton,schema_version,revision,state,import_sha256,imported_at,updated_at)
@@ -493,6 +612,16 @@ async function expectFailure(options, expectedCode) {
   const result = await runTransferProcess(options);
   if (result.code === 0) throw new Error(`transfer unexpectedly succeeded; expected ${expectedCode}`);
   if (result.stdout !== "") throw new Error("failed transfer emitted stdout");
+  const failure = JSON.parse(result.stderr);
+  if (failure.error !== expectedCode || failure.status !== "failed") {
+    throw new Error(`expected ${expectedCode}, received ${failure.error}`);
+  }
+  return result;
+}
+
+async function expectCompletedFailure(promise, expectedCode) {
+  const result = await promise;
+  if (result.code === 0 || result.stdout !== "") throw new Error(`transfer unexpectedly succeeded; expected ${expectedCode}`);
   const failure = JSON.parse(result.stderr);
   if (failure.error !== expectedCode || failure.status !== "failed") {
     throw new Error(`expected ${expectedCode}, received ${failure.error}`);
@@ -552,7 +681,13 @@ function assertSuccessResult(result) {
   if (value.provenanceAuthority !== "database-owner-controlled-not-external-evidence"
     || value.externalEvidenceRequirement !== "external-signed-receipt-capture-required"
     || value.databaseOwnerRemainsAuthority !== true
-    || value.timestampEncoding !== "utc-iso8601-microseconds") {
+    || value.timestampEncoding !== "utc-iso8601-microseconds"
+    || value.ceremonyAdvisoryLockKey !== "5783287920924061778"
+    || value.roleDdlQuiescenceRequired !== true
+    || value.postCommitAuthorityCheckScope
+      !== "fresh-transaction-under-session-advisory-lock-database-schema-table-provenance-acl-and-set-role-closure"
+    || value.postCheckRaceBoundary
+      !== "authority-ddl-after-postcheck-remains-database-owner-trust-boundary") {
     throw new Error("receipt did not disclose its owner authority and external evidence boundary");
   }
   for (const key of ["databaseOid", "databaseOwnerRoleOid", "legacySchemaOid", "legacyRelationOid",
@@ -576,6 +711,19 @@ async function waitForTransferPid() {
     await delay(20);
   }
   throw new Error("transfer connection was not observed");
+}
+
+async function waitForMarker(schema) {
+  for (let attempt = 0; attempt < 150; attempt += 1) {
+    const result = await admin.query(`SELECT EXISTS (
+      SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname=$1 AND c.relname='p42_portal_state_transfer_provenance'
+        AND EXISTS (SELECT 1 FROM ${qualified(schema, "p42_portal_state_transfer_provenance")})
+    ) AS present`, [schema]).catch(() => ({ rows: [] }));
+    if (result.rows[0]?.present) return;
+    await delay(20);
+  }
+  throw new Error("committed transfer marker was not observed");
 }
 
 async function assertEmpty(schema) {
