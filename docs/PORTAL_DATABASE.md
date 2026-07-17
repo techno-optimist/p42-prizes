@@ -87,9 +87,25 @@ suppresses every funding target.
 
    The runner applies migrations as the owner, verifies ownership, grants only
    the declared runtime operations, reconnects as runtime, and verifies exact
-   function owner/source/config/ACL, pinned OIDs, privileges, and `SET ROLE`
-   closure. The migration integration must also reject contiguous block/time
-   regression and nonadjacent full-identity replay in preexisting history.
+   function owner/source/config/ACL, pinned OIDs, privileges, and role-graph
+   closure. Before creating objects it removes non-owner global and schema-local
+   default privileges and closes database/public/target-schema `CREATE`. After
+   migration it removes every non-owner table, column, and function grant, then
+   grants the documented runtime matrix and proves the resulting ACLs exactly:
+   state `SELECT/INSERT/UPDATE`, rate-limit `SELECT/INSERT/UPDATE/DELETE`,
+   migration and checkpoint tables `SELECT`, and the two pinned functions
+   `EXECUTE`. `PUBLIC` and unrelated roles retain no portal DML, function
+   execution, or creation path. Every outbound runtime membership and every
+   inbound edge except the audited PostgreSQL 18 creator-admin row fails closed,
+   including nested effective access. The migration integration must also reject
+   contiguous block/time regression and nonadjacent full-identity replay in
+   preexisting history.
+
+   PostgreSQL superusers, including the provider-controlled audited OID 10 role,
+   bypass ordinary ACL checks and cannot be constrained by this ceremony. That
+   provider authority remains an explicit operational precondition; the exact
+   application owner/runtime ACL closure does not claim to remove superuser
+   access.
 5. Import state through the runtime URL exactly once with
    `P42_PORTAL_IMPORT_SHA256`; compare JSONB readback before commit.
 6. Run `npm run db:migration-integration` with the migration URL, then run
