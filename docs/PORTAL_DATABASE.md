@@ -8,7 +8,10 @@ owner, relation, and function OIDs. In required mode, missing schema identity,
 same-role credentials, catalog drift, or authority overlap fails closed.
 `P42_PORTAL_RUNTIME_ROLE` and `P42_PORTAL_DATABASE_NAME` pin the authenticated
 runtime identity and database. Startup verifies both plus the untouched
-role/database default `search_path` before any migration or ACL mutation.
+role/database default `search_path` through its exact `pg_db_role_setting`
+catalog row before any migration or ACL mutation. It separately checks the
+session's effective `current_setting`, so connection-level overrides cannot
+mask a missing or drifted role default.
 Application pools also pass an explicit `search_path=<schema>,pg_catalog`
 connection option, so ambient role-default drift cannot redirect unqualified
 store queries.
@@ -110,9 +113,10 @@ suppresses every funding target.
    preexisting history.
 
    Before its first mutation the runner performs a read-only check of the exact
-   runtime identity, database, default search path, role attributes, and complete
-   inbound/outbound membership graph. A hostile initial graph therefore leaves
-   migration rows and ACLs untouched. A session advisory lock serializes
+   runtime identity, database, exact role/database settings row, effective search
+   path, role attributes, and complete inbound/outbound membership graph. A
+   hostile initial graph therefore leaves migration rows and ACLs untouched. A
+   session advisory lock serializes
    cooperating P42 migration runners, and the full graph is checked again after
    grants. PostgreSQL does not let this database-owner ceremony permanently lock
    the cluster-wide role graph against a provider superuser or another concurrent

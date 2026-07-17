@@ -53,6 +53,8 @@ describe("portal database migration", () => {
     expect(runner).toContain("P42_PORTAL_RUNTIME_ROLE");
     expect(runner).toContain("P42_PORTAL_DATABASE_NAME");
     expect(runner.indexOf("runtimePreflightSql()")).toBeLessThan(runner.indexOf("closeOwnerDefaultPrivileges"));
+    expect(runner).toContain("pg_catalog.pg_db_role_setting");
+    expect(runner).toContain("AS database_settings_match");
     expect(runner).toContain("current_setting('search_path')=$3 AS search_path_matches");
     expect(runner).toContain("REVOKE ALL ON ${highWaterRelations} FROM ${runtimeRole}");
     expect(runner).toContain("GRANT EXECUTE ON FUNCTION ${functionIdentity} TO ${runtimeRole}");

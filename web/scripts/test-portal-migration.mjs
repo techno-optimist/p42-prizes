@@ -333,6 +333,24 @@ try {
     expectRunnerFailure(runMigrationRunner(fixture), "search_path_matches");
   });
 
+  await withRunnerDatabase("runner-rejects-role-default-drift-masked-by-session-options", async (fixture) => {
+    await fixture.owner.query(`ALTER ROLE ${quoteIdentifier(fixture.runtimeName)} IN DATABASE ${quoteIdentifier(fixture.database)}
+      SET search_path TO public,pg_catalog`);
+    const runtimeUrl = new URL(fixture.runtimeUrl);
+    runtimeUrl.searchParams.set("options", `-c search_path=${fixture.schema},pg_catalog`);
+    const masked = new pg.Client({ connectionString: runtimeUrl.toString(), connectionTimeoutMillis: 10_000 });
+    try {
+      await masked.connect();
+      const setting = (await masked.query("SELECT current_setting('search_path') AS value")).rows[0]?.value;
+      if (setting !== `${fixture.schema},pg_catalog`) throw new Error("session-options fixture did not mask the hostile role default");
+    } finally { await masked.end().catch(() => {}); }
+    expectRunnerFailure(runMigrationRunner({ ...fixture, runtimeUrl: runtimeUrl.toString() }), "database_settings_match");
+    const migration = await fixture.owner.query("SELECT pg_catalog.to_regclass($1) AS relation", [
+      `${fixture.schema}.p42_schema_migration`,
+    ]);
+    if (migration.rows[0].relation !== null) throw new Error("masked role-default drift applied a migration");
+  });
+
   await withRunnerDatabase("runner-rejects-configured-runtime-identity-drift", async (fixture) => {
     expectRunnerFailure(runMigrationRunner({ ...fixture, expectedRuntimeRole: fixture.ownerName }), "exact configured role");
     expectRunnerFailure(runMigrationRunner({ ...fixture, expectedDatabase: "wrong_database" }), "exact configured database");

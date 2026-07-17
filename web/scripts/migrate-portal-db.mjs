@@ -56,9 +56,9 @@ try {
     expectedRuntimeRole, expectedDatabase, `${targetSchema}, pg_catalog`, ownerIdentity.role_oid,
   ])).rows[0];
   if (!preflight?.identity_matches || !preflight.safe_role || !preflight.membership_matches
-    || !preflight.search_path_matches) {
+    || !preflight.database_settings_match || !preflight.search_path_matches) {
     const failed = Object.entries(preflight ?? {}).filter(([, passed]) => !passed).map(([name]) => name).join(",");
-    throw new Error(`portal runtime identity, membership, or search_path preflight failed before migration: ${failed || "missing_result"}`);
+    throw new Error(`portal runtime identity, membership, settings, or search_path preflight failed before migration: ${failed || "missing_result"}`);
   }
   await closeOwnerDefaultPrivileges(owner, ownerIdentity.role, ownerIdentity.role_oid, targetSchema);
   await closeCreationPrivileges(owner, ownerIdentity, targetSchema);
@@ -99,7 +99,7 @@ try {
   const verification = await runtime.query(runtimeVerificationSql(targetSchema), [targetSchema]);
   const row = verification.rows[0];
   if (verification.rowCount !== 1 || !row.identity_matches || !row.function_matches || !row.acl_matches
-    || !row.safe_role || !row.membership_matches || !row.no_direct_writes
+    || !row.safe_role || !row.membership_matches || !row.database_settings_match || !row.no_direct_writes
     || !row.no_dangerous_set_role || !row.no_external_triggers
     || row.control_rows !== 1 || row.migration_1_name !== "portal_store"
     || row.migration_2_name !== "indexer_checkpoint_epoch_high_water") {
@@ -126,6 +126,11 @@ function runtimePreflightSql() {
         WHERE inbound.roleid=r.oid AND inbound.member=$4
           AND inbound.grantor=10 AND grantor.rolsuper AND inbound.admin_option
           AND NOT inbound.inherit_option AND NOT inbound.set_option) AS membership_matches,
+    (SELECT count(*) FROM pg_catalog.pg_db_role_setting AS s WHERE s.setrole=r.oid)=1
+      AND EXISTS (SELECT 1 FROM pg_catalog.pg_db_role_setting AS s
+        WHERE s.setrole=r.oid
+          AND s.setdatabase=(SELECT d.oid FROM pg_catalog.pg_database AS d WHERE d.datname=current_database())
+          AND s.setconfig=ARRAY['search_path=' || $3]::text[]) AS database_settings_match,
     current_setting('search_path')=$3 AS search_path_matches
   FROM runtime AS r`;
 }
@@ -208,6 +213,10 @@ function runtimeVerificationSql(schemaName) {
         WHERE inbound.roleid=r.oid AND inbound.member=o.migration_owner_oid
           AND inbound.grantor=10 AND grantor.rolsuper AND inbound.admin_option
           AND NOT inbound.inherit_option AND NOT inbound.set_option) AS membership_matches,
+    (SELECT count(*) FROM pg_catalog.pg_db_role_setting AS s WHERE s.setrole=r.oid)=1
+      AND EXISTS (SELECT 1 FROM pg_catalog.pg_db_role_setting AS s
+        WHERE s.setrole=r.oid AND s.setdatabase=o.database_oid
+          AND s.setconfig=ARRAY['search_path=' || $1 || ', pg_catalog']::text[]) AS database_settings_match,
     NOT (${dangerousTablePrivileges("r.oid", "o")}) AS no_direct_writes,
     NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles AS candidate
       WHERE candidate.oid<>r.oid AND pg_catalog.pg_has_role(r.oid,candidate.oid,'SET')
