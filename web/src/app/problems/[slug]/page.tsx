@@ -381,7 +381,10 @@ $ make verify SOLUTION=examples/valid-4.json`}
             slug={problem.slug}
             label={problem.title}
             fundingTargetDeployed={chainProvenance.fundingTargetDeployed === true}
+            authorizationExpiresAt={funding?.authorizationExpiresAt ?? null}
+            finalizedObservedAt={funding?.finalizedObservedAt ?? null}
             fundingDeadline={funding?.fundingDeadline ?? null}
+            remainingCapWei={funding?.remainingFundingCapWei ?? null}
             serverObservedAt={funding?.publicationObservedAt ?? null}
           />
 

@@ -81,8 +81,11 @@ function model(): PortalReadModel {
       chainProvenance: provenance(index),
       pool: pool(),
       funding: {
-        acceptingFunds: true, fundingArmed: true, authorizationExpiresAt: "2026-01-01T00:00:00.000Z",
+        acceptingFunds: true, fundingArmed: true, authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
+        authorizationExpired: false,
+        fundingCapWei: "10000000000000000000", remainingFundingCapWei: "7000000000000000000",
         fundingDeadline: "2026-06-01T00:00:00.000Z", fundingDeadlineReached: false,
+        finalizedObservedAt: "2026-01-04T00:00:00.000Z",
         publicationObservedAt: "2026-01-04T00:00:00.000Z",
         ledgerPausedNewActions: false, submissionsPausedNewActions: false, submissionsPausedAll: false,
         challengesPausedNewActions: false, canFund: true, canSubmit: true, canChallenge: true,
@@ -233,11 +236,15 @@ describe("chain portal API consumers", () => {
     expect(fundingPanel?.props).toMatchObject({
       slug: launchProblems[0].slug,
       fundingTargetDeployed: true,
+      authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
+      finalizedObservedAt: "2026-01-04T00:00:00.000Z",
       fundingDeadline: "2026-06-01T00:00:00.000Z",
+      remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-06-01T00:00:00.000Z",
     });
     expect(Object.keys(fundingPanel!.props).sort()).toEqual([
-      "fundingDeadline", "fundingTargetDeployed", "label", "serverObservedAt", "slug",
+      "authorizationExpiresAt", "finalizedObservedAt", "fundingDeadline", "fundingTargetDeployed",
+      "label", "remainingCapWei", "serverObservedAt", "slug",
     ]);
     const fundingMarkup = renderToStaticMarkup(createElement(
       FundingPanel,
@@ -262,12 +269,16 @@ describe("chain portal API consumers", () => {
     const flightFacingPayload = [JSON.stringify(fundingPanel?.props), ...payloadStrings(page)].join("\n");
 
     expect(Object.keys(fundingPanel!.props).sort()).toEqual([
-      "fundingDeadline", "fundingTargetDeployed", "label", "serverObservedAt", "slug",
+      "authorizationExpiresAt", "finalizedObservedAt", "fundingDeadline", "fundingTargetDeployed",
+      "label", "remainingCapWei", "serverObservedAt", "slug",
     ]);
     expect(fundingPanel?.props).toMatchObject({
       slug: launchProblems[0].slug,
       fundingTargetDeployed: true,
+      authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
+      finalizedObservedAt: "2026-01-04T00:00:00.000Z",
       fundingDeadline: "2026-06-01T00:00:00.000Z",
+      remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-01-04T00:00:00.000Z",
     });
     expect(flightFacingPayload).not.toContain(FUNDING_ADDRESS);
@@ -291,9 +302,12 @@ describe("chain portal API consumers", () => {
     expect(fundingTargetRevalidate).toBe(0);
     expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
     expect(body).toEqual({
-      schema: "p42-prizes/funding-target/v1",
+      schema: "p42-prizes/funding-target/v2",
       slug: launchProblems[0].slug,
+      authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
+      finalizedObservedAt: "2026-01-04T00:00:00.000Z",
       fundingDeadline: "2026-06-01T00:00:00.000Z",
+      remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-01-04T00:00:00.000Z",
       target: {
         address: FUNDING_ADDRESS,
@@ -325,6 +339,70 @@ describe("chain portal API consumers", () => {
     );
     const body = await response.json();
     expect(body).toMatchObject({ serverObservedAt, target: null });
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
+    expect(JSON.stringify(body)).not.toContain("ethereum:");
+  });
+
+  it.each([
+    ["at authorization expiry", "2026-01-05T00:00:00.000Z", true],
+    ["one second after authorization expiry", "2026-01-05T00:00:01.000Z", false],
+  ])("applies Solidity authorization expiry %s", async (_label, serverObservedAt, publishes) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(serverObservedAt);
+    const value = model();
+    value.problems = value.problems.map((problem) => ({
+      ...problem,
+      funding: problem.funding && {
+        ...problem.funding,
+        authorizationExpiresAt: "2026-01-05T00:00:00.000Z",
+        publicationObservedAt: serverObservedAt,
+      },
+    }));
+    vi.mocked(loadPortalReadModel).mockResolvedValue(value);
+
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body.target?.address ?? null).toBe(publishes ? FUNDING_ADDRESS : null);
+    expect(JSON.stringify(body).includes("ethereum:")).toBe(publishes);
+  });
+
+  it("redacts every target field when the finalized cap remainder is zero", async () => {
+    const value = model();
+    value.problems = value.problems.map((problem) => ({
+      ...problem,
+      pool: problem.pool && { ...problem.pool, accountedBalanceWei: "10000000000000000000" },
+      funding: problem.funding && { ...problem.funding, remainingFundingCapWei: "0" },
+    }));
+    vi.mocked(loadPortalReadModel).mockResolvedValue(value);
+
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({ remainingCapWei: "0", target: null });
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
+    expect(JSON.stringify(body)).not.toContain("ethereum:");
+  });
+
+  it.each([
+    ["missing cap", (value: PortalReadModel) => { delete (value.problems[0].funding as any).fundingCapWei; }],
+    ["drifted remainder", (value: PortalReadModel) => { value.problems[0].funding!.remainingFundingCapWei = "1"; }],
+    ["drifted finalized observation", (value: PortalReadModel) => { value.problems[0].funding!.finalizedObservedAt = "2026-01-03T00:00:00.000Z"; }],
+  ])("fails closed for %s in the dedicated funding projection", async (_label, mutate) => {
+    const value = model();
+    mutate(value);
+    vi.mocked(loadPortalReadModel).mockResolvedValue(value);
+
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({ remainingCapWei: null, target: null });
     expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
     expect(JSON.stringify(body)).not.toContain("ethereum:");
   });
