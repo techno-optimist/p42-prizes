@@ -291,6 +291,13 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
 
 def test_workflow_enforces_bounded_disk_budget_before_candidate_builds() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    objective_job = workflow[
+        workflow.index("  objective-program:") : workflow.index(
+            "  objective-program-reproducibility:"
+        )
+    ]
+    assert "timeout-minutes: 120" in objective_job
+    assert "timeout-minutes: 90" not in objective_job
     disk_gate = workflow[
         workflow.index("Enforce SP1 build disk budget") : workflow.index(
             "Test objective predicate and Solidity ABI encoding"
