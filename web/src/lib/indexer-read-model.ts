@@ -6,6 +6,7 @@ import {
   loadActivatedIndexerSnapshot,
   type ActivatedIndexerSnapshot,
 } from "@/lib/indexer-provenance";
+import { enforceIndexerCheckpointHighWater } from "@/lib/indexer-high-water";
 import { allSubmissionsShared } from "@/lib/portal-state";
 import type {
   Direction,
@@ -531,6 +532,25 @@ export function resolvePortalReadModel(
   }
 }
 
+export async function gateActivatedPortalReadModel(
+  problems: readonly Problem[],
+  snapshot: ActivatedIndexerSnapshot,
+  chainCandidate: PortalReadModel,
+): Promise<PortalReadModel> {
+  if (chainCandidate.source !== "chain-p42-v1") return chainCandidate;
+  try {
+    await enforceIndexerCheckpointHighWater(snapshot);
+    return chainCandidate;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "durable checkpoint gate failure";
+    return localPortalReadModel(
+      problems,
+      [],
+      `Durable checkpoint high-water gate rejected (${reason}); serving local-only rows.`,
+    );
+  }
+}
+
 export async function loadPortalReadModel(
   problems: readonly Problem[] = launchProblems,
 ): Promise<PortalReadModel> {
@@ -543,7 +563,7 @@ export async function loadPortalReadModel(
   }
   const chainCandidate = resolvePortalReadModel(problems, snapshot, [], { nowSeconds });
   const model = chainCandidate.source === "chain-p42-v1"
-    ? chainCandidate
+    ? await gateActivatedPortalReadModel(problems, snapshot, chainCandidate)
     : resolvePortalReadModel(problems, snapshot, await allSubmissionsShared(), { nowSeconds });
   console.info("p42.portal.read-model", model.provenance);
   return model;

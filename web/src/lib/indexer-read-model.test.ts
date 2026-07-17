@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import type { QueryResult, QueryResultRow } from "pg";
 import { keccak256, toUtf8Bytes } from "ethers";
 import { launchProblems, sortLeaderboardRows } from "@/lib/data";
 import { finalizedFrontierRows, frontierBest } from "@/lib/frontier";
@@ -6,7 +7,12 @@ import { publishedDonationTarget } from "@/lib/chain-provenance";
 import {
   portalReadModelFromActivatedSnapshot,
   resolvePortalReadModel,
+  gateActivatedPortalReadModel,
 } from "@/lib/indexer-read-model";
+import {
+  setPortalDatabasePoolForTests,
+  type PortalDatabaseClient,
+} from "@/lib/portal-db";
 import type { ActivatedIndexerSnapshot } from "@/lib/indexer-provenance";
 import type { ChainProvenance, Problem, Submission } from "@/lib/types";
 
@@ -181,12 +187,30 @@ function snapshot(inputProblems = problems()): ActivatedIndexerSnapshot {
     manifest: { problems: manifestProblems },
     checkpoint: {
       schema: "p42-prizes/indexer-checkpoint/v4",
-      range: { toBlockTimestamp: CHECKPOINT_TIMESTAMP },
+      range: { toBlock: 999, toBlockHash: HASH, toBlockTimestamp: CHECKPOINT_TIMESTAMP },
       boards,
     },
     provenance: new Map(inputProblems.map((problem, index) => [problem.slug, provenance(problem, index)])),
+    highWaterIdentity: {
+      checkpointDigest: `sha256:${"5".repeat(64)}`,
+      releaseBindingDigest: `sha256:${"6".repeat(64)}`,
+      authorizationDigest: `sha256:${"3".repeat(64)}`,
+      chainId: 84532,
+      chainName: "baseSepolia",
+      deploymentCommit: "a".repeat(40),
+      deploymentConfigHash: `0x${"7".repeat(64)}`,
+    },
   };
 }
+
+function queryResult<R extends QueryResultRow>(rows: R[]): QueryResult<R> {
+  return { rows, rowCount: rows.length, command: "SELECT", oid: 0, fields: [] };
+}
+
+afterEach(() => {
+  setPortalDatabasePoolForTests();
+  delete process.env.P42_PORTAL_DATABASE_URL;
+});
 
 function localRow(problem: Problem, source: Submission["source"]): Submission {
   return {
@@ -198,6 +222,56 @@ function localRow(problem: Problem, source: Submission["source"]): Submission {
 }
 
 describe("atomic activation-bound portal read model", () => {
+  it("returns an activated funding model only after the durable high-water commit", async () => {
+    const queries: string[] = [];
+    const client: PortalDatabaseClient = {
+      async query<R extends QueryResultRow>(text: string) {
+        const compact = text.replace(/\s+/g, " ").trim();
+        queries.push(compact);
+        if (compact.endsWith("FOR UPDATE")) {
+          return queryResult([{
+            finalized_block_number: null, finalized_block_hash: null, checkpoint_digest: null,
+            checkpoint_timestamp: null, release_binding_digest: null, authorization_digest: null,
+            chain_id: null, chain_name: null, deployment_commit: null, deployment_config_hash: null,
+          } as unknown as R]);
+        }
+        if (compact.startsWith("UPDATE p42_indexer_checkpoint_high_water")) {
+          return queryResult([{} as unknown as R]);
+        }
+        return queryResult([] as R[]);
+      },
+      release() {},
+    };
+    setPortalDatabasePoolForTests({ connect: async () => client, query: async () => queryResult([]) });
+    const cohort = problems();
+    const value = snapshot(cohort);
+    const candidate = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+
+    const published = await gateActivatedPortalReadModel(cohort, value, candidate);
+
+    expect(published.source).toBe("chain-p42-v1");
+    expect(published.problems[1].funding?.canFund).toBe(true);
+    expect(queries.at(-1)).toBe("COMMIT");
+  });
+
+  it("fails closed with no funding target when the durable database is unavailable", async () => {
+    setPortalDatabasePoolForTests({
+      connect: async () => { throw new Error("database unavailable"); },
+      query: async () => queryResult([]),
+    });
+    const cohort = problems();
+    const value = snapshot(cohort);
+    const candidate = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+
+    const rejected = await gateActivatedPortalReadModel(cohort, value, candidate);
+
+    expect(rejected.source).toBe("local-phase-0");
+    expect(rejected.provenance.note).toContain("database unavailable");
+    expect(rejected.problems.every((problem) => problem.poolAddress === null
+      && problem.donationWallet.address === null
+      && problem.funding === null)).toBe(true);
+  });
+
   it("consumes all ten boards with exact score atoms and complete economic state", () => {
     const cohort = problems();
     const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });

@@ -522,6 +522,15 @@ describe("indexer provenance v2", () => {
     };
     const activatedSnapshot = activatedIndexerSnapshotFromArtifacts(launchProblems, activatedArtifacts);
     expect(activatedSnapshot.provenance).toHaveLength(10);
+    expect(activatedSnapshot.highWaterIdentity).toEqual({
+      checkpointDigest,
+      releaseBindingDigest: base.manifest.releaseEvidence.releaseBindingDigest,
+      authorizationDigest,
+      chainId: base.manifest.network.chainId,
+      chainName: base.manifest.network.name,
+      deploymentCommit: base.manifest.deploymentCommit,
+      deploymentConfigHash: base.manifest.deploymentConfigHash,
+    });
     const substitutedRegistry = clone(rpcRegistry);
     substitutedRegistry.profiles[0].endpointOrigin = "https://substitute.example";
     substitutedRegistry.profiles[0].endpointProfileDigest = canonicalDigest({

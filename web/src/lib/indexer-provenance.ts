@@ -23,6 +23,17 @@ export interface ActivatedIndexerSnapshot {
   manifest: Readonly<JsonObject>;
   checkpoint: Readonly<JsonObject>;
   provenance: ReadonlyMap<string, ChainProvenance>;
+  highWaterIdentity: Readonly<ActivatedIndexerHighWaterIdentity>;
+}
+
+export interface ActivatedIndexerHighWaterIdentity {
+  checkpointDigest: string;
+  releaseBindingDigest: string;
+  authorizationDigest: string;
+  chainId: number;
+  chainName: string;
+  deploymentCommit: string;
+  deploymentConfigHash: string;
 }
 
 interface ActivatedArtifactBundle {
@@ -972,10 +983,21 @@ export function activatedIndexerSnapshotFromArtifacts(
     );
     return [problem.slug, provenance] as const;
   });
+  const network = object(artifacts.manifest.network, "activated manifest network");
+  const releaseEvidence = object(artifacts.manifest.releaseEvidence, "activated manifest release evidence");
   return {
     manifest: artifacts.manifest,
     checkpoint: artifacts.checkpoint,
     provenance: new Map(entries),
+    highWaterIdentity: {
+      checkpointDigest: sha256Bytes(artifacts.checkpointBytes),
+      releaseBindingDigest: String(releaseEvidence.releaseBindingDigest),
+      authorizationDigest: String(artifacts.authorization.authorization_digest),
+      chainId: Number(network.chainId),
+      chainName: String(network.name),
+      deploymentCommit: String(artifacts.manifest.deploymentCommit),
+      deploymentConfigHash: String(artifacts.manifest.deploymentConfigHash),
+    },
   };
 }
 

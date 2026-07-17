@@ -19,4 +19,23 @@ describe("portal database migration", () => {
     expect(sql).toContain("index_meta.indpred IS NULL");
     expect(sql).toContain("index_meta.indexprs IS NULL");
   });
+
+  it("preseeds and strictly validates the durable checkpoint lock row", () => {
+    const sql = readFileSync(resolve("migrations/002_indexer_checkpoint_high_water.sql"), "utf8");
+
+    expect(sql).toContain("INSERT INTO p42_indexer_checkpoint_high_water (singleton)");
+    expect(sql).toContain("p42_indexer_checkpoint_high_water_complete");
+    expect(sql).toContain("existing P42 indexer checkpoint high-water table does not match migration 2");
+    expect(sql).toContain("version = 2 AND name = 'indexer_checkpoint_high_water'");
+  });
+
+  it("applies and verifies both migrations in production order", () => {
+    const runner = readFileSync(resolve("scripts/migrate-portal-db.mjs"), "utf8");
+
+    expect(runner).toContain('"001_portal_store.sql"');
+    expect(runner).toContain('"002_indexer_checkpoint_high_water.sql"');
+    expect(runner).toContain("for (const migration of migrations) await pool.query(migration.sql)");
+    expect(runner).toContain("row.migration_2_name !== \"indexer_checkpoint_high_water\"");
+    expect(runner).toContain("row.high_water_rows !== 1");
+  });
 });
