@@ -48,10 +48,9 @@ current `@actions/http-client` so the dev toolchain has zero npm audit findings.
 
 ## Base Sepolia Governance Ceremony
 
-`npm run deploy:base-sepolia` has two modes. The default `deploy` mode uses one
-deployer key to deploy `P42MultisigTimelock` and the current per-problem
-contracts. Every child receives the timelock as its immutable owner. The
-deployer never wires or registers a child directly.
+`npm run deploy:base-sepolia` is fixed to the canonical 47-contract, exact-ten
+production planner. It has no default or environment-selectable legacy topology;
+mode mismatch fails before RPC access or any reservation, signing, or broadcast.
 
 ```bash
 BASE_SEPOLIA_RPC_URL=https://primary.example \
@@ -61,6 +60,10 @@ P42_SECONDARY_RPC_OPERATOR_ID=secondary-operator \
 BASE_SEPOLIA_PRIVATE_KEY=... \
 npm run deploy:base-sepolia
 ```
+
+The seven-contract single-board path is available only as
+`npm run deploy:test-only-legacy-base-sepolia` and always writes
+`test-only-legacy-p42-prizes.json`, which is noncanonical evidence.
 
 The RPC URLs must normalize to distinct hosts and origins, and the operator IDs
 must identify distinct infrastructure operators.

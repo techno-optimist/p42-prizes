@@ -92,6 +92,9 @@ import {
   verifyMultiBoardPredeploymentGovernancePhase,
   MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT,
 } from "./multiboard-deployment-plan.js";
+import {
+  dispatchBaseSepoliaDeployment,
+} from "./base-sepolia-deployment-entrypoint.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const PINNED_SUBMISSION_FACTORY_RUNTIME_HASH = "0xa356f1af95140515395a23ca624afdf97a92e2a602054d01378b9fdc02071783";
@@ -129,6 +132,10 @@ function manifestPath() {
   return process.env.P42_DEPLOYMENT_MANIFEST
     ? resolve(process.env.P42_DEPLOYMENT_MANIFEST)
     : resolve(process.cwd(), "../deployments/base-sepolia/p42-prizes.json");
+}
+
+function legacyTestManifestPath() {
+  return resolve(process.cwd(), "../deployments/base-sepolia/test-only-legacy-p42-prizes.json");
 }
 
 function multiBoardCeremonyConfigPath() {
@@ -523,7 +530,7 @@ async function assertPinnedSubmissionFactoryRuntime(ethers) {
   if (!challengeArtifact.deployedBytecode.toLowerCase().includes(PINNED_SUBMISSION_FACTORY_RUNTIME_HASH.slice(2))) throw new Error("compiled challenge factory runtime does not contain its submission factory hash pin");
 }
 
-async function deployCeremony(ethers) {
+async function deployLegacyTestOnlyCeremony(ethers) {
   requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
   const [deployer] = await ethers.getSigners();
   if (deployer === undefined) throw new Error("No deployer signer available");
@@ -537,7 +544,7 @@ async function deployCeremony(ethers) {
   const repoRoot = resolve(process.cwd(), "..");
   assertCleanGitTree(repoRoot);
   const deploymentCommit = gitCommit(repoRoot);
-  const output = manifestPath();
+  const output = legacyTestManifestPath();
   const reservationIdentity = createDeploymentReservationIdentity(output, {
     deploymentCommit,
     network: "baseSepolia",
@@ -1753,14 +1760,7 @@ async function continueCeremony(ethers) {
   }
 }
 
-const libraryImportRequested = globalThis[Symbol.for("p42-prizes.deploy-base-sepolia.library-import")] === true;
-if (!libraryImportRequested) {
-const mode = (process.env.P42_DEPLOY_MODE ?? "deploy").trim().toLowerCase();
-if (mode !== "deploy" && mode !== "deploy-multiboard-production" && mode !== "continue" && mode !== "inspect-reservation") {
-  throw new Error("P42_DEPLOY_MODE must be deploy, deploy-multiboard-production, continue, or inspect-reservation");
-}
-
-if (mode === "inspect-reservation") {
+async function inspectReservation() {
   const repoRoot = resolve(process.cwd(), "..");
   assertCleanGitTree(repoRoot);
   const deploymentCommit = gitCommit(repoRoot);
@@ -1779,20 +1779,39 @@ if (mode === "inspect-reservation") {
     capsuleDigest: release.capsule.capsuleDigest,
   } });
   console.log(jsonStringify((await readManifestOutputReservation(reservationIdentity)).record));
-} else {
-  requiredEnv("BASE_SEPOLIA_RPC_URL");
-  const connection = await network.create("baseSepolia");
-  try {
-    const { ethers } = connection;
-    const chain = await ethers.provider.getNetwork();
-    if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
-      throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
-    }
-    if (mode === "deploy") await deployCeremony(ethers);
-    else if (mode === "deploy-multiboard-production") await deployMultiBoardCeremony(ethers, "production");
-    else await continueCeremony(ethers);
-  } finally {
-    await connection.close();
-  }
 }
+
+export async function runBaseSepoliaDeployment({ mode, networkApi = network } = {}) {
+  return dispatchBaseSepoliaDeployment({
+    requestedMode: mode,
+    requireRpc: () => requiredEnv("BASE_SEPOLIA_RPC_URL"),
+    inspectReservation,
+    connectRpc: () => networkApi.create("baseSepolia"),
+    deployProduction: async ({ ethers }) => {
+      const chain = await ethers.provider.getNetwork();
+      if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+        throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+      }
+      return deployMultiBoardCeremony(ethers, "production");
+    },
+    deployLegacyTestOnly: async ({ ethers }) => {
+      const chain = await ethers.provider.getNetwork();
+      if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+        throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+      }
+      return deployLegacyTestOnlyCeremony(ethers);
+    },
+    continueDeployment: async ({ ethers }) => {
+      const chain = await ethers.provider.getNetwork();
+      if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+        throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+      }
+      return continueCeremony(ethers);
+    },
+  });
+}
+
+const libraryImportRequested = globalThis[Symbol.for("p42-prizes.deploy-base-sepolia.library-import")] === true;
+if (!libraryImportRequested) {
+  await runBaseSepoliaDeployment({ mode: process.env.P42_DEPLOY_MODE });
 }

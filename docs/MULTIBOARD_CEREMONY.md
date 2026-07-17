@@ -37,8 +37,8 @@ operation tries to register a different ID.
 
 ## Typed Input
 
-`P42_DEPLOY_MODE=deploy-multiboard-production` reads a strict JSON file named by
-`P42_MULTIBOARD_CEREMONY_CONFIG`. Its root shape is:
+`npm run deploy:base-sepolia` uses the production-only entry point and reads a
+strict JSON file named by `P42_MULTIBOARD_CEREMONY_CONFIG`. Its root shape is:
 
 ```json
 {
@@ -206,7 +206,6 @@ its final index fails before broadcast.
 
 ```bash
 cd contracts
-P42_DEPLOY_MODE=deploy-multiboard-production \
 P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/ceremony.json \
 P42_PRODUCTION_SLATE_PATH=/absolute/path/out/slates/<digest>.slate.json \
 P42_RELEASE_CAPSULE=/absolute/path/out/capsules/<digest>.json \
