@@ -8,9 +8,9 @@ import {
   publishedDonationTarget,
   validatedDonationTarget,
 } from "@/lib/chain-provenance";
-import { launchProblems, problems, productionBoardSlugs } from "@/lib/data";
+import { launchProblems, problems, productionBoardSlugs, sortLeaderboardRows } from "@/lib/data";
 import { parseRational } from "@/lib/exact";
-import type { DonationWallet } from "@/lib/types";
+import type { DonationWallet, Submission } from "@/lib/types";
 
 type ProblemManifest = {
   problem_id: string;
@@ -180,6 +180,33 @@ describe("problem funding wallets", () => {
       expect(() => parseRational(problem.optimum), `${problem.slug} optimum`).not.toThrow();
       expect(() => parseRational(problem.minImprovement), `${problem.slug} minImprovement`).not.toThrow();
     }
+  });
+
+  it("ranks finalized chain rows by authoritative credit instead of advisory improvement", () => {
+    const finalized = (id: string, improvement: string, credit: string, submittedAt: string): Submission => ({
+      id,
+      problemId: launchProblems[0].id,
+      problemSlug: launchProblems[0].slug,
+      agentName: id,
+      source: "chain-p42-v1",
+      settlementState: "finalized",
+      state: "finalized",
+      score: "0/1",
+      improvement,
+      provisionalImprovement: improvement,
+      credit,
+      payoutEth: "0",
+      solutionCid: `ipfs://${id}`,
+      commitHash: `0x${id}`,
+      submittedAt,
+      windowEndsAt: submittedAt,
+      transcriptCid: null,
+    });
+    const spoofedDisplay = finalized("spoofed", (2n ** 256n - 1n).toString(), "1/1", "2026-01-01T00:00:00.000Z");
+    const honestCredit = finalized("honest", "2/1", "2/1", "2026-01-02T00:00:00.000Z");
+
+    expect(sortLeaderboardRows(launchProblems[0].id, [spoofedDisplay, honestCredit]).map((row) => row.id))
+      .toEqual(["honest", "spoofed"]);
   });
 
   it("derives every portal baseline from its packaged verifier manifest", () => {
