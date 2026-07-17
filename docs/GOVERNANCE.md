@@ -73,9 +73,11 @@ do not prove the off-chain verifier execution. The challenge manager trusts
 its immutable resolver quorum for the initial verdict; the owner has no
 arbitrary-hash resolver-slashing path. Equivocation slashing and objective
 correction flow through the quorum, and anyone may enter the latter with a
-board-bound SP1 proof. The production gateway is deliberately inactive and
-nine launch boards lack admitted objective programs, so a non-equivocating
-false quorum decision cannot yet be corrected in production. The objective-
+board-bound SP1 proof. The production gateway is deliberately inactive;
+Hadamard and A11 have source-side mock evidence, but only Hadamard is
+production-bound and nine canonical launch-board guest records
+remain missing. A non-equivocating false quorum decision therefore cannot yet
+be corrected in production. The objective-
 proof gate remains open and this resolver mode is not approved for real-value
 settlement.
 
