@@ -207,6 +207,7 @@ export function FundingPanel({
   const clientWallStartedRef = useRef<number | null>(null);
   const latestObservedRef = useRef<number | null>(observedTimestamp);
   const requestControllerRef = useRef<AbortController | null>(null);
+  const invalidatedBindingRef = useRef<string | null>(null);
   const target = boundTarget?.bindingKey === bindingKey ? boundTarget.target : null;
   const targetIdentity = boundTarget?.bindingKey === bindingKey
     ? JSON.stringify([boundTarget.bindingKey, boundTarget.launchBindingKey])
@@ -264,7 +265,7 @@ export function FundingPanel({
       return;
     }
     let active = true;
-    let bindingInvalidated = false;
+    if (invalidatedBindingRef.current !== bindingKey) invalidatedBindingRef.current = null;
     latestObservedRef.current = observedTimestamp;
     clientWallStartedRef.current = Date.now();
     const duration = Math.min(actionCutoffTimestamp - observedTimestamp, actionCutoffTimestamp - Date.now());
@@ -295,7 +296,7 @@ export function FundingPanel({
       setCopied(false);
       setCopiedDigest(null);
       setFundingVisibility("checking");
-      if (bindingInvalidated) {
+      if (invalidatedBindingRef.current === bindingKey) {
         setFundingVisibility("unavailable");
         return;
       }
@@ -330,7 +331,7 @@ export function FundingPanel({
             || parsed.activationFinalizedBlock !== activationFinalizedBlock
             || parsedTimestamp(parsed.finalizedObservedAt)! < finalizedTimestamp) {
             latestObservedRef.current = responseObserved;
-            bindingInvalidated = true;
+            invalidatedBindingRef.current = bindingKey;
             expireFunding(false);
             return;
           }
@@ -340,7 +341,7 @@ export function FundingPanel({
           }
           if (parsed.target === null || parsed.remainingCapWei === "0") {
             latestObservedRef.current = responseObserved;
-            bindingInvalidated = true;
+            invalidatedBindingRef.current = bindingKey;
             expireFunding(responseObserved >= deadlineTimestamp!);
             return;
           }
@@ -464,7 +465,8 @@ export function FundingPanel({
     const clickedIdentity = clickedTarget
       ? JSON.stringify([clickedTarget.bindingKey, clickedTarget.launchBindingKey])
       : null;
-    if (!acknowledged || !clickedTarget || clickedTarget.bindingKey !== bindingKeyRef.current) {
+    if (!acknowledged || !clickedTarget || clickedTarget.bindingKey !== bindingKeyRef.current
+      || invalidatedBindingRef.current === clickedTarget.bindingKey) {
       event.preventDefault();
       return;
     }
@@ -498,9 +500,17 @@ export function FundingPanel({
       const parsed = parseFundingTargetResponse(await response.json(), slug);
       const responseObserved = parsedTimestamp(parsed?.serverObservedAt ?? null);
       const responseFinalized = parsedTimestamp(parsed?.finalizedObservedAt ?? null);
-      if (controller.signal.aborted || requestControllerRef.current !== controller
-        || bindingKeyRef.current !== clickedTarget.bindingKey
-        || !parsed || !parsed.target || parsed.remainingCapWei === "0"
+      if (controller.signal.aborted || requestControllerRef.current !== controller) return;
+      if (bindingKeyRef.current !== clickedTarget.bindingKey || !parsed
+        || responseObserved === null || responseFinalized === null) {
+        expireFunding(false);
+        return;
+      }
+      if (responseObserved < (latestObservedRef.current ?? observedTimestamp!)) {
+        expireFunding(false);
+        return;
+      }
+      if (!parsed.target || parsed.remainingCapWei === "0"
         || parsed.authorizationExpiresAt !== authorizationExpiresAt
         || parsed.fundingDeadline !== fundingDeadline
         || parsed.fundingAuthorizationDigest !== fundingAuthorizationDigest
@@ -508,15 +518,18 @@ export function FundingPanel({
         || parsed.checkpointBlock !== checkpointBlock
         || parsed.checkpointDigest !== checkpointDigest
         || parsed.activationFinalizedBlock !== activationFinalizedBlock
-        || responseObserved === null || responseFinalized === null
         || responseFinalized < finalizedTimestamp! || responseFinalized > responseObserved
-        || responseObserved < (latestObservedRef.current ?? observedTimestamp!)
         || parsed.target.address !== clickedTarget.target.address
         || parsed.target.walletUri !== clickedTarget.target.walletUri
         || parsed.target.chainId !== clickedTarget.target.chainId
-        || launchBindingKey(parsed) !== clickedTarget.launchBindingKey
-        || cutoffReached(responseObserved)) {
-        if (!controller.signal.aborted) expireFunding(false);
+        || launchBindingKey(parsed) !== clickedTarget.launchBindingKey) {
+        latestObservedRef.current = responseObserved;
+        invalidatedBindingRef.current = clickedTarget.bindingKey;
+        expireFunding(false);
+        return;
+      }
+      if (cutoffReached(responseObserved)) {
+        expireFunding(true);
         return;
       }
 

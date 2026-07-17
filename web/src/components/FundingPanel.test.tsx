@@ -665,6 +665,25 @@ describe("FundingPanel deadline reconciliation", () => {
     expect(screen.queryByText("open wallet")).toBeNull();
   });
 
+  it("cannot resurrect a Flight binding after click-time observes a newer checkpoint generation", async () => {
+    await renderAndReveal();
+    acknowledgePolicy();
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({
+      checkpointDigest: `sha256:${"9".repeat(64)}`,
+      serverObservedAt: OBSERVED_MS + 1_000,
+    })));
+
+    expect(fireEvent.click(walletLink())).toBe(false);
+    await flushResponse();
+    expectTargetUnavailable();
+
+    vi.mocked(fetch).mockResolvedValueOnce(okResponse(responseBody({ serverObservedAt: OBSERVED_MS + 2_000 })));
+    fireEvent(window, new Event("focus"));
+    await flushResponse();
+    expectTargetUnavailable();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("cannot arm an older acknowledged click after focus starts a newer reconciliation", async () => {
     await renderAndReveal();
     acknowledgePolicy();
