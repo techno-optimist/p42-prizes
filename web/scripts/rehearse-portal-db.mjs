@@ -17,6 +17,7 @@ const ownerPool = new pg.Pool({ connectionString: migrationUrl, max: 3, connecti
 const policyId = `p42-db-rehearsal-${randomUUID()}`;
 const subject = "concurrent-probe";
 const startedAt = new Date().toISOString();
+const exactReadReleaseLatencyCeilingMilliseconds = 2_000;
 let cleanupComplete = false;
 const migration1Sql = await readFile(path.resolve("migrations/001_portal_store.sql"), "utf8");
 const migration2Sql = await readFile(path.resolve("migrations/002_indexer_checkpoint_high_water.sql"), "utf8");
@@ -72,7 +73,10 @@ try {
     largeHistoryAcceptances: highWater.largeHistoryAcceptances,
     concurrentExactReaders: highWater.concurrentExactReaders,
     exactReadBlockingPids: highWater.exactReadBlockingPids,
-    exactReadMaxMilliseconds: highWater.exactReadMaxMilliseconds,
+    exactReadersObservedInFlight: highWater.exactReadersObservedInFlight,
+    transitionBlockedByExactReaders: highWater.transitionBlockedByExactReaders,
+    exactReadReleaseMilliseconds: highWater.exactReadReleaseMilliseconds,
+    exactReadReleaseLatencyCeilingMilliseconds,
     concurrentRateIncrements: increments,
   })}\n`);
 } finally {
@@ -170,32 +174,90 @@ async function rehearseHighWaterLock() {
 
     const concurrentExactReaders = 6;
     const readers = await Promise.all(Array.from({length:concurrentExactReaders},async()=>runtimePool.connect()));
+    const barrier = await runtimePool.connect();
+    const barrierKey = 42_002n;
     let exactReadBlockingPids = 0;
-    let exactReadMaxMilliseconds = 0;
+    let exactReadersObservedInFlight = 0;
+    let transitionBlockedByExactReaders = 0;
+    let exactReadReleaseMilliseconds = 0;
+    let exactCalls;
+    let blockedTransition;
     try {
+      await barrier.query("SELECT pg_advisory_lock($1::bigint)",[barrierKey.toString()]);
+      const barrierPid=(await barrier.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
       await Promise.all(readers.map(async(reader)=>{
         await reader.query("BEGIN"); await reader.query("SET LOCAL lock_timeout='2s'");
-        await reader.query("SET LOCAL statement_timeout='2s'"); await reader.query("SET LOCAL search_path=pg_catalog");
+        await reader.query("SET LOCAL statement_timeout='10s'"); await reader.query("SET LOCAL search_path=pg_catalog");
       }));
-      const started=Date.now();
-      const exactRows=await Promise.all(readers.map(reader=>callExact(reader,identifier,largeHistoryAcceptances)));
-      exactReadMaxMilliseconds=Date.now()-started;
+      const readerPids=await Promise.all(readers.map(async reader=>(await reader.query("SELECT pg_backend_pid() AS pid")).rows[0].pid));
+      exactCalls=readers.map(reader=>callExactHeld(reader,identifier,largeHistoryAcceptances,barrierKey));
+      exactCalls.forEach(call=>call.catch(()=>{}));
+      let readerActivity=[];
+      for(let attempt=0;attempt<100;attempt+=1) {
+        const activity=await runtimePool.query(`SELECT pid,state,wait_event_type,wait_event,pg_blocking_pids(pid) AS blockers
+          FROM pg_catalog.pg_stat_activity WHERE pid=ANY($1::integer[]) ORDER BY pid`,[readerPids]);
+        readerActivity=activity.rows;
+        if(readerActivity.length===concurrentExactReaders&&readerActivity.every(row=>row.state==="active"
+          &&row.wait_event_type==="Lock"&&row.wait_event==="advisory"
+          &&row.blockers.includes(barrierPid))) break;
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      exactReadersObservedInFlight=readerActivity.filter(row=>row.state==="active"
+        &&row.wait_event_type==="Lock"&&row.wait_event==="advisory"
+        &&row.blockers.includes(barrierPid)).length;
+      if(exactReadersObservedInFlight!==concurrentExactReaders) {
+        throw new Error("not every exact checkpoint reader reached the held in-flight barrier");
+      }
+      exactReadBlockingPids=readerActivity.reduce((total,row)=>total
+        +row.blockers.filter(pid=>readerPids.includes(pid)).length,0);
+      if(exactReadBlockingPids!==0) throw new Error("concurrent exact checkpoint readers blocked one another");
+
+      await waiter.query("BEGIN"); await waiter.query("SET LOCAL lock_timeout='5s'");
+      await waiter.query("SET LOCAL statement_timeout='10s'");
+      blockedTransition=callTransition(waiter,identifier,String(101+largeHistoryAcceptances),"c","d",String(1001+largeHistoryAcceptances));
+      blockedTransition.catch(()=>{});
+      let transitionBlockers=[];
+      for(let attempt=0;attempt<100;attempt+=1) {
+        const observed=await runtimePool.query("SELECT pg_blocking_pids($1::integer) AS blockers",[waiterPid]);
+        transitionBlockers=observed.rows[0].blockers;
+        if(transitionBlockers.length>0&&transitionBlockers.every(pid=>readerPids.includes(pid))) break;
+        await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      transitionBlockedByExactReaders=transitionBlockers.filter(pid=>readerPids.includes(pid)).length;
+      if(transitionBlockedByExactReaders<1||transitionBlockers.some(pid=>!readerPids.includes(pid))) {
+        throw new Error("serialized checkpoint transition was not blocked by a held exact reader");
+      }
+
+      const releasedAt=Date.now();
+      const unlocked=await barrier.query("SELECT pg_advisory_unlock($1::bigint) AS unlocked",[barrierKey.toString()]);
+      if(!unlocked.rows[0]?.unlocked) throw new Error("exact-read rehearsal barrier was not released");
+      const exactRows=await Promise.all(exactCalls); exactCalls=undefined;
+      exactReadReleaseMilliseconds=Date.now()-releasedAt;
+      if(exactReadReleaseMilliseconds>exactReadReleaseLatencyCeilingMilliseconds) {
+        throw new Error(`exact checkpoint readers exceeded ${exactReadReleaseLatencyCeilingMilliseconds}ms release ceiling`);
+      }
       for(const exact of exactRows) if(exact.rowCount!==1||exact.rows[0].transition_kind!=="same"
         ||Number(exact.rows[0].acceptance_id)!==largeHistoryAcceptances) {
         throw new Error("large-history exact read did not return the indexed current checkpoint");
       }
-      const pids=await Promise.all(readers.map(async reader=>(await reader.query("SELECT pg_backend_pid() AS pid")).rows[0].pid));
-      const blocking=await runtimePool.query(`SELECT coalesce(sum(cardinality(pg_blocking_pids(pid))),0)::integer AS total
-        FROM unnest($1::integer[]) AS pid`,[pids]);
-      exactReadBlockingPids=blocking.rows[0].total;
-      if(exactReadBlockingPids!==0) throw new Error("concurrent exact checkpoint readers formed a lock queue");
       await Promise.all(readers.map(reader=>reader.query("COMMIT")));
+      const transition=await blockedTransition; blockedTransition=undefined;
+      if(transition.rowCount!==1||transition.rows[0].transition_kind!=="advance"
+        ||Number(transition.rows[0].acceptance_id)!==largeHistoryAcceptances+1) {
+        throw new Error("held exact readers did not release the serialized transition correctly");
+      }
+      await waiter.query("COMMIT");
     } finally {
+      await barrier.query("SELECT pg_advisory_unlock($1::bigint)",[barrierKey.toString()]).catch(()=>{});
+      if(exactCalls) await Promise.all(exactCalls.map(call=>call.catch(()=>{})));
       await Promise.all(readers.map(reader=>reader.query("ROLLBACK").catch(()=>{})));
+      if(blockedTransition) await blockedTransition.catch(()=>{});
       readers.forEach(reader=>reader.release());
+      barrier.release();
     }
     return {acceptedBlock,staleBlock,runtimeRole,ownerRole,largeHistoryAcceptances,
-      concurrentExactReaders,exactReadBlockingPids,exactReadMaxMilliseconds};
+      concurrentExactReaders,exactReadBlockingPids,exactReadersObservedInFlight,
+      transitionBlockedByExactReaders,exactReadReleaseMilliseconds};
   } finally {
     await holder.query("ROLLBACK").catch(() => {});
     if (waiterCall) await waiterCall.catch(() => {});
@@ -225,13 +287,15 @@ function callTransition(client, schema, block, hashDigit, digestDigit, timestamp
   ]);
 }
 
-function callExact(client,schema,acceptanceId) {
+function callExactHeld(client,schema,acceptanceId,barrierKey) {
   const hex=acceptanceId.toString(16).padStart(64,"0");
-  return client.query(`SELECT * FROM ${schema}.p42_read_exact_indexer_checkpoint(
-    $1::bigint,$2::text,$3::text,$4::bigint,$5::text,$6::text,$7::bigint,$8::text,$9::text,$10::text)`,[
+  return client.query(`WITH exact AS MATERIALIZED (SELECT * FROM ${schema}.p42_read_exact_indexer_checkpoint(
+    $1::bigint,$2::text,$3::text,$4::bigint,$5::text,$6::text,$7::bigint,$8::text,$9::text,$10::text))
+    SELECT exact.* FROM exact CROSS JOIN LATERAL
+      (SELECT pg_advisory_xact_lock_shared($11::bigint+(exact.acceptance_id-exact.acceptance_id))) AS held`,[
     String(100+acceptanceId),`0x${hex}`,`sha256:${hex}`,String(1000+acceptanceId),
     `sha256:${"3".repeat(64)}`,`sha256:${"4".repeat(64)}`,"84532","baseSepolia",
-    "a".repeat(40),`0x${"5".repeat(64)}`,
+    "a".repeat(40),`0x${"5".repeat(64)}`,barrierKey.toString(),
   ]);
 }
 

@@ -57,7 +57,12 @@ suppresses every funding target.
    `100`, direct mutation and truncate denial, and
    `staleCheckpointRejectedAfterLock: true`. The current bounded-read fixture
    also requires `largeHistoryAcceptances: 10000`, concurrent exact readers,
-   and `exactReadBlockingPids: 0`.
+   `exactReadersObservedInFlight: 6`, `exactReadBlockingPids: 0`, and
+   `transitionBlockedByExactReaders` of at least one. PostgreSQL may report only
+   a subset of a row-lock MultiXact through `pg_blocking_pids`; every reported
+   transition blocker must be one of the six held readers. After the barrier is
+   released, all exact reads must finish within the enforced conservative
+   `exactReadReleaseLatencyCeilingMilliseconds: 2000` bound.
 7. Configure both secret URLs and `P42_PORTAL_DATABASE_REQUIRED=1` on Render.
    The blueprint runs migration first and unsets the owner URL before starting
    Next.js. Confirm the running process cannot read the owner credential.

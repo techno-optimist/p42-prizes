@@ -1,3 +1,5 @@
+-- Migration 002 is new relative to release base e083f94; unpublished draft
+-- schemas are intentionally not accepted as production upgrade inputs.
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS p42_indexer_checkpoint_epoch (

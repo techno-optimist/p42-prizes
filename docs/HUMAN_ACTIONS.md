@@ -96,7 +96,9 @@ problem requirement.
   runtime role with no direct authority writes, `TRUNCATE`, or dangerous
   `SET ROLE` path. Local PostgreSQL 16 evidence includes 18 migration/tamper
   cases plus a 10,000-row, six-reader exact-read rehearsal with zero blocking
-  PIDs; this is not production evidence. An operator must
+  PIDs observed while all readers are in flight, a serialized transition
+  observably blocked only by held-reader PIDs, and a 2,000 ms post-barrier
+  completion ceiling; this is not production evidence. An operator must
   provision the Render schema/roles, inspect the complete membership graph,
   apply migration 002, run the production OID/function/ACL/privilege and
   concurrent-lock rehearsal, retain the redacted evidence tail, and confirm the

@@ -71,4 +71,14 @@ describe("portal database migration", () => {
     expect(exact).not.toContain("count(*)");
     expect(exact).not.toContain("FOR UPDATE");
   });
+
+  it("observes held exact reads in flight and enforces their release ceiling", () => {
+    const rehearsal = readFileSync(resolve("scripts/rehearse-portal-db.mjs"), "utf8");
+    expect(rehearsal).toContain("pg_advisory_xact_lock_shared");
+    expect(rehearsal).toContain("pg_stat_activity");
+    expect(rehearsal).toContain("transitionBlockedByExactReaders<1");
+    expect(rehearsal).toContain("exactReadBlockingPids!==0");
+    expect(rehearsal).toContain("exactReadReleaseLatencyCeilingMilliseconds = 2_000");
+    expect(rehearsal).toContain("exactReadReleaseMilliseconds>exactReadReleaseLatencyCeilingMilliseconds");
+  });
 });
