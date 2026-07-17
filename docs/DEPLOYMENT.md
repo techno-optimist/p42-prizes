@@ -221,10 +221,11 @@ For a fresh public prize deployment, the only canonical route is
 `npm run deploy:base-sepolia` and the typed procedure in
 [MULTIBOARD_CEREMONY.md](MULTIBOARD_CEREMONY.md). It refuses to broadcast until
 every board passes local `admit-ready` and the resulting admission-matrix digest
-is bound to the registry hash. The command uses a production-specific entry
-point fixed internally to `deploy-multiboard-production`; missing or substituted
-mode selection fails before RPC access, nonce or output reservation, signing,
-or broadcast.
+is bound to the registry hash. The npm command unconditionally selects the
+production-specific `deploy-multiboard-production` entry point, ignoring any
+caller-supplied `P42_DEPLOY_MODE`; direct invocation of that entry point rejects
+a missing or non-production mode before importing deployment code. No supported
+production command can select the legacy topology.
 
 ### Exclusive Manifest Reservation And Recovery
 

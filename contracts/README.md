@@ -50,7 +50,9 @@ current `@actions/http-client` so the dev toolchain has zero npm audit findings.
 
 `npm run deploy:base-sepolia` is fixed to the canonical 47-contract, exact-ten
 production planner. It has no default or environment-selectable legacy topology;
-mode mismatch fails before RPC access or any reservation, signing, or broadcast.
+the npm command overwrites any caller-supplied mode with the production mode,
+while direct wrapper invocation rejects a missing or mismatched mode before
+importing deployment code. Neither path can select the legacy topology.
 
 ```bash
 BASE_SEPOLIA_RPC_URL=https://primary.example \

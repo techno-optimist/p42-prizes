@@ -27,9 +27,10 @@ manifest says they are shared.
 
 **Current implementation boundary.** The production deployer constructs the
 seven shared roots, including the capsule-attested objective-verifier gateway,
-plus forty board contracts. It must fail before reading the pending nonce,
-reserving addresses, signing a journal, or broadcasting if that exact topology
-or any downstream evidence consumer has drifted.
+plus forty board contracts. Canonical-definition drift fails before the
+read-only pending-nonce lookup. The nonce-dependent executable payloads and all
+downstream setup operations are then fully materialized and validated before
+any durable output reservation, signing, or broadcast.
 
 Registry IDs are not operator-selected. Board array position `n` is required to
 use registry ID `n`, and `registerExpected` reverts if an out-of-order timelock
