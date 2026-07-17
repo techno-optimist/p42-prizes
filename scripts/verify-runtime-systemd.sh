@@ -32,9 +32,10 @@ operator="$deployments/p42-operator@.service.example"
 resolver="$deployments/p42-resolver@.service.example"
 rootless="$deployments/p42-docker-rootless@.service.example"
 rootless_config="$deployments/p42-docker-rootless-daemon.json"
+rootless_preflight="$repo_root/scripts/p42_rootless_docker_preflight.py"
 failure="$deployments/p42-runtime-failure@.service.example"
 sysusers="$deployments/p42-runtime.sysusers.example"
-for file in "$operator" "$resolver" "$rootless" "$rootless_config" "$failure" "$sysusers"; do
+for file in "$operator" "$resolver" "$rootless" "$rootless_config" "$rootless_preflight" "$failure" "$sysusers"; do
   [[ -f $file ]] || fail "missing ${file#"$repo_root"/}"
 done
 
@@ -86,14 +87,15 @@ require_exact "$rootless" User 'User=p42-operator'
 require_exact "$rootless" Group 'Group=p42-operator'
 require_exact "$rootless" Conflicts 'Conflicts=docker.service docker.socket'
 require_line "$rootless" 'ConditionPathExists=/usr/bin/rootlesskit'
+require_line "$rootless" 'ConditionPathExists=/usr/bin/unshare'
 require_line "$rootless" 'ConditionPathExists=/sys/fs/cgroup/cgroup.controllers'
 require_line "$rootless" 'ConditionPathExists=!/run/docker.sock'
 require_line "$rootless" 'ConditionPathExists=!/var/run/docker.sock'
 require_line "$rootless" 'Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock'
 require_exact "$rootless" ExecStart 'ExecStart=/usr/bin/dockerd-rootless.sh --host=unix:///run/p42-docker-%i/docker.sock --config-file=/etc/p42/docker/rootless-daemon.json --data-root=/var/lib/p42/docker-%i'
-require_line "$rootless" 'ExecStartPre=/usr/bin/grep -Eq '\''^p42-operator:[0-9]+:65536$'\'' /etc/subuid'
-require_line "$rootless" 'ExecStartPre=/usr/bin/grep -Eq '\''^p42-operator:[0-9]+:65536$'\'' /etc/subgid'
-require_line "$rootless" 'ExecStartPre=/usr/bin/sh -c '\''test "$(/usr/bin/cat /proc/sys/user/max_user_namespaces)" -gt 0'\'''
+require_line "$rootless" 'ExecStartPre=/usr/bin/test -x /usr/bin/newuidmap'
+require_line "$rootless" 'ExecStartPre=/usr/bin/test -x /usr/bin/newgidmap'
+require_line "$rootless" 'ExecStartPre=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_preflight.py p42-operator'
 require_line "$rootless" 'ExecStartPre=/usr/bin/test ! -S /run/docker.sock'
 require_line "$rootless" 'ExecStartPre=/usr/bin/test ! -S /var/run/docker.sock'
 require_exact "$rootless" RuntimeDirectory 'RuntimeDirectory=p42-docker-%i'
@@ -103,6 +105,10 @@ require_exact "$rootless" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/docker'
 require_exact "$rootless" ReadWritePaths 'ReadWritePaths=/var/lib/p42/docker-%i /var/lib/p42/docker-home-%i /run/p42-docker-%i'
 require_exact "$rootless" MemorySwapMax 'MemorySwapMax=0'
 require_exact "$rootless" LimitCORE 'LimitCORE=0'
+grep -Fq 'def validate_subordinate_id_file' "$rootless_preflight" || fail "rootless preflight must validate subordinate-ID ranges"
+grep -Fq 'ranges overlap' "$rootless_preflight" || fail "rootless preflight must reject overlapping subordinate-ID ranges"
+grep -Fq '"--user"' "$rootless_preflight" || fail "rootless preflight must probe a user namespace"
+grep -Fq '"--map-root-user"' "$rootless_preflight" || fail "rootless preflight must map the current service user"
 grep -Fqx '{' "$rootless_config" || fail "rootless Docker config must be JSON"
 grep -Fqx '  "iptables": false,' "$rootless_config" || fail "rootless Docker config must disable iptables"
 grep -Fqx '  "ip6tables": false,' "$rootless_config" || fail "rootless Docker config must disable ip6tables"

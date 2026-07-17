@@ -13,6 +13,7 @@ from p42_prizes.runner_sandbox import (
     build_sandbox_command,
     compose_immutable_image_ref,
     docker_available,
+    parse_rootless_docker_info,
     stage_sandbox_solution,
     validate_rootless_docker_host,
 )
@@ -141,7 +142,9 @@ def test_docker_available_uses_only_the_bound_rootless_endpoint(tmp_path: Path, 
     client.write_text(
         "#!/bin/sh\n"
         "test \"$1\" = \"--host=unix:///run/p42-docker-fixture/docker.sock\" || exit 7\n"
-        "test \"$2\" = info\n",
+        "test \"$2\" = info || exit 8\n"
+        "test \"$3\" = '--format={{json .}}' || exit 8\n"
+        "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42-fixture\",\"ServerVersion\":\"27.0\",\"SecurityOptions\":[\"name=seccomp\",\"name=rootless\"]}'\n",
         encoding="utf-8",
     )
     client.chmod(0o700)
@@ -151,6 +154,30 @@ def test_docker_available_uses_only_the_bound_rootless_endpoint(tmp_path: Path, 
     assert docker_available(str(client), "unix:///run/docker.sock") is False
     monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
     assert docker_available(str(client)) is False
+
+
+def test_rootless_docker_info_requires_identity_and_security_proof():
+    valid = '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"]}'
+    assert parse_rootless_docker_info(valid)["Name"] == "p42"
+    for missing_proof in (
+        '{"Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"]}',
+        '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=seccomp"]}',
+        '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0"}',
+        "not-json",
+    ):
+        with pytest.raises(RunnerSandboxError):
+            parse_rootless_docker_info(missing_proof)
+
+
+def test_docker_available_rejects_a_daemon_without_rootless_security(tmp_path: Path):
+    client = tmp_path / "docker"
+    client.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42-fixture\",\"ServerVersion\":\"27.0\",\"SecurityOptions\":[\"name=seccomp\"]}'\n",
+        encoding="utf-8",
+    )
+    client.chmod(0o700)
+    assert docker_available(str(client), "unix:///run/p42-docker-fixture/docker.sock") is False
 
 
 def test_stage_sandbox_solution_preserves_private_source(tmp_path: Path):

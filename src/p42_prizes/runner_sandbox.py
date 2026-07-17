@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -75,6 +76,33 @@ def validate_rootless_docker_host(docker_host: str | None) -> str:
     return docker_host
 
 
+def parse_rootless_docker_info(payload: str | bytes) -> dict[str, object]:
+    """Prove that the bound Docker daemon identifies itself as rootless.
+
+    A private-looking Unix socket is only an endpoint convention.  The daemon
+    response must carry a stable identity and Docker's explicit rootless
+    security option before it can be used for untrusted verifier execution.
+    """
+
+    try:
+        info = json.loads(payload)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RunnerSandboxError("Docker info did not return JSON") from exc
+    if not isinstance(info, dict):
+        raise RunnerSandboxError("Docker info JSON must be an object")
+    identity_fields = ("ID", "Name", "ServerVersion")
+    if not all(isinstance(info.get(field), str) and info[field].strip() for field in identity_fields):
+        raise RunnerSandboxError("Docker info is missing daemon identity")
+    security_options = info.get("SecurityOptions")
+    if not isinstance(security_options, list) or not all(
+        isinstance(option, str) for option in security_options
+    ):
+        raise RunnerSandboxError("Docker info is missing daemon security options")
+    if not any(option.strip().lower() == "name=rootless" for option in security_options):
+        raise RunnerSandboxError("Docker daemon did not prove rootless security mode")
+    return info
+
+
 def compose_immutable_image_ref(repository: str, digest: str) -> str:
     """Return the registry-qualified immutable reference for a manifest image.
 
@@ -109,12 +137,17 @@ def docker_available(binary: str = "docker", docker_host: str | None = None) -> 
         return False
     try:
         result = subprocess.run(
-            [binary, f"--host={docker_host}", "info"],
+            [binary, f"--host={docker_host}", "info", "--format={{json .}}"],
             capture_output=True,
             timeout=10,
             check=False,
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+        parse_rootless_docker_info(result.stdout)
+        return True
+    except RunnerSandboxError:
+        return False
     except (OSError, subprocess.SubprocessError):
         return False
 

@@ -152,6 +152,15 @@ test("npm pack installs complete runnable agent binaries", () => {
   assert.doesNotMatch(fallbackAlert.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
   assert.match(fallbackAlert.stderr, /p42-censorship-fallback-alert-outcome\/v1/);
   assert.match(fallbackAlert.stderr, /terminal-error/);
+  const runtimeSupervisor = spawnSync(
+    join(installDir, "node_modules", ".bin", "p42-runtime-supervisor"),
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(runtimeSupervisor.status, 70, runtimeSupervisor.stderr);
+  assert.doesNotMatch(runtimeSupervisor.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
+  assert.match(runtimeSupervisor.stderr, /runtime supervisor failed/);
+  assert.match(runtimeSupervisor.stderr, /requires -- before runtime arguments/);
   const installedIndexer = pathToFileURL(join(installDir, "node_modules", "p42-agent", "indexer.mjs")).href;
   const schemaProbe = spawnSync(process.execPath, ["--input-type=module", "-e", `
     const { validateManifestEvidence } = await import(${JSON.stringify(installedIndexer)});

@@ -8,6 +8,7 @@ ConditionPathExists=/usr/bin/dockerd-rootless.sh
 ConditionPathExists=/usr/bin/rootlesskit
 ConditionPathExists=/usr/bin/newuidmap
 ConditionPathExists=/usr/bin/newgidmap
+ConditionPathExists=/usr/bin/unshare
 ConditionPathExists=/etc/subuid
 ConditionPathExists=/etc/subgid
 ConditionPathExists=/proc/sys/user/max_user_namespaces
@@ -25,9 +26,9 @@ Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=/run/p42-docker-%i/rootlesskit
 ExecStartPre=/usr/bin/test ! -S /run/docker.sock
 ExecStartPre=/usr/bin/test ! -S /var/run/docker.sock
-ExecStartPre=/usr/bin/grep -Eq '^p42-operator:[0-9]+:65536$' /etc/subuid
-ExecStartPre=/usr/bin/grep -Eq '^p42-operator:[0-9]+:65536$' /etc/subgid
-ExecStartPre=/usr/bin/sh -c 'test "$(/usr/bin/cat /proc/sys/user/max_user_namespaces)" -gt 0'
+ExecStartPre=/usr/bin/test -x /usr/bin/newuidmap
+ExecStartPre=/usr/bin/test -x /usr/bin/newgidmap
+ExecStartPre=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_preflight.py p42-operator
 ExecStart=/usr/bin/dockerd-rootless.sh --host=unix:///run/p42-docker-%i/docker.sock --config-file=/etc/p42/docker/rootless-daemon.json --data-root=/var/lib/p42/docker-%i
 Restart=on-failure
 RestartSec=5s

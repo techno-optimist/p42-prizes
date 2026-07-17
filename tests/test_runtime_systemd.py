@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PREFLIGHT_SPEC = importlib.util.spec_from_file_location(
+    "p42_rootless_docker_preflight",
+    ROOT / "scripts/p42_rootless_docker_preflight.py",
+)
+assert PREFLIGHT_SPEC and PREFLIGHT_SPEC.loader
+PREFLIGHT = importlib.util.module_from_spec(PREFLIGHT_SPEC)
+sys.modules[PREFLIGHT_SPEC.name] = PREFLIGHT
+PREFLIGHT_SPEC.loader.exec_module(PREFLIGHT)
 FILES = (
     "deployments/p42-runtime.sysusers.example",
     "deployments/p42-operator@.service.example",
@@ -19,6 +30,7 @@ FILES = (
     "agent/runtime-supervisor.mjs",
     "scripts/verify-runtime-execstart.mjs",
     "scripts/verify-runtime-systemd.sh",
+    "scripts/p42_rootless_docker_preflight.py",
 )
 
 
@@ -52,6 +64,56 @@ def test_runtime_systemd_templates_pass_static_verifier(tmp_path: Path) -> None:
     result = run_verifier(copy_fixture(tmp_path))
     assert result.returncode == 0, result.stderr
     assert "runtime systemd templates verified" in result.stdout
+
+
+def test_rootless_preflight_rejects_overlapping_subordinate_ranges(tmp_path: Path) -> None:
+    subuid = tmp_path / "subuid"
+    subgid = tmp_path / "subgid"
+    subuid.write_text("p42-operator:100000:65536\nother:120000:65536\n", encoding="utf-8")
+    subgid.write_text("p42-operator:100000:65536\n", encoding="utf-8")
+
+    with pytest.raises(PREFLIGHT.RootlessDockerPreflightError, match="ranges overlap"):
+        PREFLIGHT.validate_subordinate_id_files(subuid, subgid, "p42-operator")
+
+    subuid.write_text("p42-operator:100000:65536\n", encoding="utf-8")
+    subgid.write_text("p42-operator:200000:65536\nother:220000:65536\n", encoding="utf-8")
+    with pytest.raises(PREFLIGHT.RootlessDockerPreflightError, match="ranges overlap"):
+        PREFLIGHT.validate_subordinate_id_files(subuid, subgid, "p42-operator")
+
+
+def test_rootless_preflight_probes_user_namespace_as_current_service_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subuid = tmp_path / "subuid"
+    subgid = tmp_path / "subgid"
+    subuid.write_text("p42-operator:100000:65536\n", encoding="utf-8")
+    subgid.write_text("p42-operator:200000:65536\n", encoding="utf-8")
+    max_user_namespaces = tmp_path / "max-user-namespaces"
+    max_user_namespaces.write_text("1\n", encoding="ascii")
+    observed_uid = tmp_path / "probe-uid"
+    fake_unshare = tmp_path / "unshare"
+    fake_unshare.write_text(
+        "#!/bin/sh\n"
+        "test \"$1\" = --user || exit 11\n"
+        "test \"$2\" = --map-root-user || exit 12\n"
+        "test \"$3\" = --mount || exit 13\n"
+        "test \"$4\" = --mount-proc=/proc || exit 14\n"
+        "printf '%s' \"$(id -u)\" > \"$P42_PROBE_UID_FILE\"\n"
+        "test \"$5\" = /usr/bin/true || exit 15\n",
+        encoding="utf-8",
+    )
+    fake_unshare.chmod(0o700)
+    monkeypatch.setenv("P42_PROBE_UID_FILE", str(observed_uid))
+
+    PREFLIGHT.run_preflight(
+        "p42-operator",
+        subuid=subuid,
+        subgid=subgid,
+        unshare=fake_unshare,
+        max_user_namespaces=max_user_namespaces,
+    )
+
+    assert observed_uid.read_text(encoding="ascii") == str(os.geteuid())
 
 
 @pytest.mark.parametrize(

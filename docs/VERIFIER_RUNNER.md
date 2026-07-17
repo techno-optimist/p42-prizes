@@ -522,8 +522,18 @@ requires that unit and checks the socket before its first poll. The rootless
 unit conflicts with `docker.service`/`docker.socket`, rejects a rootful socket,
 uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
 `/etc/subuid` and `/etc/subgid` ranges, enabled unprivileged user namespaces,
-and cgroup v2 for `p42-operator`. The worker passes the validated socket to
-every Docker `info`, `run`, and cleanup invocation; it never falls back to
+and cgroup v2 for `p42-operator`. Its preflight parses every subordinate-ID
+file entry and rejects interval overlap, then runs `unshare --user
+--map-root-user --mount --mount-proc=/proc /usr/bin/true` as the service user;
+it does not merely grep for a matching row. Install
+`scripts/p42_rootless_docker_preflight.py` as
+`/usr/local/libexec/p42_rootless_docker_preflight.py` before enabling the unit.
+The `deployments/p42-runtime.sysusers.example` fragment creates accounts only;
+host administration must install rootlesskit, setuid ID helpers, subordinate
+IDs, user-namespace policy, and cgroup support. The worker passes the validated
+socket to every Docker `info`, `run`, and cleanup invocation, and accepts the
+daemon only when structured `docker info` includes daemon identity plus the
+explicit `name=rootless` security option; it never falls back to
 `/var/run/docker.sock`.
 
 The resolver environment must provide `P42_PROBLEM_SLUG`,
@@ -574,10 +584,10 @@ stages the solution below the explicit operator root, uses only the bound
 rootless endpoint, refuses to lease before Docker responds, and that the Docker
 command contains per-container memory/PID/OOM/core controls. These are the
 maximum feasible source and credential-free fixture preflight checks on this
-host; they do not attest an installed Linux rootless daemon, subordinate-ID
-configuration, live Docker cgroups, live jobs, live RPC independence, funded
-Arweave publication, signer custody, queue latency under load, or an on-chain
-poll.
+host; they do not attest an installed Linux rootless daemon, the installed
+preflight helper, host subordinate-ID configuration, live Docker identity or
+cgroups, live jobs, live RPC independence, funded Arweave publication, signer
+custody, queue latency under load, or an on-chain poll.
 
 ## Portal Shortcut Guard
 
