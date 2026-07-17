@@ -30,7 +30,7 @@ export function portalDatabasePool(): PortalDatabasePool {
   const schema = portalDatabaseSchema();
   globalPortalDb.__p42PortalPool ??= new Pool({
     connectionString,
-    options: `-c search_path=${schema},pg_catalog`,
+    options: `-c search_path=${schema},pg_catalog,pg_temp`,
     max: boundedInteger("P42_PORTAL_DATABASE_POOL_SIZE", 10, 1, 50),
     connectionTimeoutMillis: boundedInteger("P42_PORTAL_DATABASE_CONNECT_TIMEOUT_MS", 5_000, 500, 30_000),
     idleTimeoutMillis: boundedInteger("P42_PORTAL_DATABASE_IDLE_TIMEOUT_MS", 30_000, 1_000, 300_000),
@@ -63,4 +63,11 @@ function boundedInteger(name: string, fallback: number, minimum: number, maximum
 
 export function setPortalDatabasePoolForTests(pool?: PortalDatabasePool): void {
   globalPortalDb.__p42PortalPoolOverride = pool;
+}
+
+export async function resetPortalDatabasePoolForTests(): Promise<void> {
+  const pool = globalPortalDb.__p42PortalPool;
+  delete globalPortalDb.__p42PortalPool;
+  delete globalPortalDb.__p42PortalPoolOverride;
+  if (pool) await pool.end();
 }

@@ -12,9 +12,13 @@ role/database default `search_path` through its exact `pg_db_role_setting`
 catalog row before any migration or ACL mutation. It separately checks the
 session's effective `current_setting`, so connection-level overrides cannot
 mask a missing or drifted role default.
-Application pools also pass an explicit `search_path=<schema>,pg_catalog`
-connection option, so ambient role-default drift cannot redirect unqualified
-store queries.
+Application pools pass an explicit
+`search_path=<schema>,pg_catalog,pg_temp` connection option, so ambient
+role-default drift cannot redirect unqualified store queries and a temporary
+relation cannot shadow a portal table. The provisioned catalog default remains
+exactly `<schema>, pg_catalog` as the independently attested startup baseline;
+it is not the application query path. The pool names `pg_temp` last because
+PostgreSQL implicitly searches it first when it is omitted from `search_path`.
 
 Only the migration-owner-controlled `SECURITY DEFINER` transition function may
 change checkpoint authority. A separately pinned read-only function handles an
@@ -116,15 +120,18 @@ suppresses every funding target.
    runtime identity, database, exact role/database settings row, effective search
    path, role attributes, and complete inbound/outbound membership graph. A
    hostile initial graph therefore leaves migration rows and ACLs untouched. A
-   session advisory lock serializes
-   cooperating P42 migration runners, and the full graph is checked again after
-   grants. PostgreSQL does not let this database-owner ceremony permanently lock
-   the cluster-wide role graph against a provider superuser or another concurrent
-   role administrator; production provisioning must run under an exclusive
+   session advisory lock serializes cooperating P42 migration runners, and the
+   full graph is checked again after grants. That side-effect-free claim applies
+   only to hostility present at preflight. The migrations contain their own
+   transactions, so if a provider superuser or another role administrator changes
+   membership concurrently after preflight, the final check can reject only after
+   migration and ACL changes have committed; that failure is not a rollback
+   receipt. PostgreSQL does not let this database-owner ceremony constrain those
+   external authorities. Production provisioning therefore requires an exclusive
    operator window, and later privileged drift remains outside the transaction's
-   guarantee. Runtime pool schema pinning prevents such drift from becoming a
-   false-ready schema selection, while checkpoint operations continue to re-attest
-   their authority on use.
+   guarantee. Runtime pool schema pinning prevents search-path drift from becoming
+   a false-ready schema selection, while checkpoint operations continue to
+   re-attest their authority on use.
 
    PostgreSQL superusers, including the provider-controlled audited OID 10 role,
    bypass ordinary ACL checks and cannot be constrained by this ceremony. That

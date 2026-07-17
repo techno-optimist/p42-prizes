@@ -363,15 +363,21 @@ try {
   await withRunnerDatabase("runner-runtime-pool-schema-is-usable", async (fixture) => {
     expectRunnerSuccess(runMigrationRunner(fixture));
     const pool = new pg.Pool({ connectionString: fixture.runtimeUrl, max: 1,
-      options: `-c search_path=${fixture.schema},pg_catalog` });
+      options: `-c search_path=${fixture.schema},pg_catalog,pg_temp` });
     try {
       const row = (await pool.query(`SELECT current_user AS role,current_database() AS database,
         current_setting('search_path') AS search_path,
         (SELECT count(*)::integer FROM p42_schema_migration) AS migrations,
         (SELECT count(*)::integer FROM p42_portal_state) AS state_rows`)).rows[0];
       if (row.role !== fixture.runtimeName || row.database !== fixture.database
-        || row.search_path !== `${fixture.schema},pg_catalog` || row.migrations !== 2 || row.state_rows !== 0) {
+        || row.search_path !== `${fixture.schema},pg_catalog,pg_temp` || row.migrations !== 2 || row.state_rows !== 0) {
         throw new Error(`runtime pool could not use the pinned schema: ${JSON.stringify(row)}`);
+      }
+      await pool.query("CREATE TEMP TABLE p42_schema_migration(version integer)");
+      await pool.query("INSERT INTO pg_temp.p42_schema_migration VALUES (999)");
+      const unqualified = await pool.query("SELECT count(*)::integer AS migrations FROM p42_schema_migration");
+      if (unqualified.rows[0]?.migrations !== 2) {
+        throw new Error("temporary relation shadowed the schema-pinned migration table");
       }
     } finally { await pool.end(); }
   });
