@@ -76,7 +76,7 @@ fn execute_fixture(elf: Elf, solution: Vec<u8>) -> Result<(), String> {
         commit_da_hash: sha256(&solution),
         solution_cid: b"ipfs://p42-kakeya-fixture".to_vec(),
         claimed_score_atoms: word_u128(score.chain_atoms),
-        improvement_atoms: word_u128(1),
+        improvement_atoms: word_u128(0),
         challenge_ends_at: word_u128(2_000_000_300),
         challenger: [0x88; 20],
         reason_hash: [0x99; 32],

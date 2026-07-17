@@ -1,4 +1,4 @@
-use num_bigint::BigInt;
+use num_bigint::{BigInt, Sign};
 use num_rational::BigRational;
 use num_traits::{Signed, ToPrimitive, Zero};
 use serde::{de, Deserialize, Deserializer, Serialize};
@@ -60,6 +60,8 @@ pub enum ObjectiveError {
     SolutionAnchorMismatch,
     SolutionCidOutOfBounds { got: usize },
     TranscriptUriOutOfBounds { got: usize },
+    ImprovementAtomsMismatch { expected: Word, supplied: Word },
+    ImprovementComputationOutOfRange,
     CorrectedOutcomeMismatch { expected: bool, supplied: bool },
     NonContradictoryOutcome,
 }
@@ -75,6 +77,18 @@ impl fmt::Display for ObjectiveError {
             }
             Self::TranscriptUriOutOfBounds { got } => {
                 write!(formatter, "transcript URI length out of bounds: {got}")
+            }
+            Self::ImprovementAtomsMismatch { .. } => {
+                write!(
+                    formatter,
+                    "improvement atoms do not match seed score atoms minus claimed score atoms"
+                )
+            }
+            Self::ImprovementComputationOutOfRange => {
+                write!(
+                    formatter,
+                    "seed-minus-claimed improvement does not fit a canonical uint256 word"
+                )
             }
             Self::CorrectedOutcomeMismatch { expected, supplied } => write!(
                 formatter,
@@ -125,6 +139,19 @@ fn verify_arithmetic_kakeya_and_journal_against_seed(
     }
     if sha256(&witness.solution) != witness.commit_da_hash {
         return Err(ObjectiveError::SolutionAnchorMismatch);
+    }
+
+    let expected_improvement_atoms = canonical_claimed_improvement_atoms(
+        witness.claimed_score_atoms,
+        seed_numerator,
+        seed_denominator,
+    )
+    .ok_or(ObjectiveError::ImprovementComputationOutOfRange)?;
+    if witness.improvement_atoms != expected_improvement_atoms {
+        return Err(ObjectiveError::ImprovementAtomsMismatch {
+            expected: expected_improvement_atoms,
+            supplied: witness.improvement_atoms,
+        });
     }
 
     let expected_score = verify_arithmetic_kakeya(&witness.solution)
@@ -573,6 +600,41 @@ fn is_minimum_improvement(
         .is_some_and(|scaled| scaled >= seed_denominator * score_denominator)
 }
 
+fn canonical_claimed_improvement_atoms(
+    claimed_score_atoms: Word,
+    seed_numerator: u128,
+    seed_denominator: u128,
+) -> Option<Word> {
+    if seed_denominator == 0 {
+        return None;
+    }
+    let denominator = BigInt::from(seed_denominator);
+    let scaled_seed = BigInt::from(seed_numerator) * SCORE_ATOM_SCALE;
+    let seed_score_atoms = (&scaled_seed + &denominator - 1u8) / denominator;
+    let max_int256 = (BigInt::from(1u8) << 255usize) - 1u8;
+    if seed_score_atoms > max_int256 {
+        return None;
+    }
+
+    let unsigned_claim = BigInt::from_bytes_be(Sign::Plus, &claimed_score_atoms);
+    let claimed_score_atoms = if claimed_score_atoms[0] & 0x80 == 0 {
+        unsigned_claim
+    } else {
+        unsigned_claim - (BigInt::from(1u8) << 256usize)
+    };
+    let improvement_atoms = seed_score_atoms - claimed_score_atoms;
+    if improvement_atoms.is_negative() {
+        return None;
+    }
+    let (_, bytes) = improvement_atoms.to_bytes_be();
+    if bytes.len() > 32 {
+        return None;
+    }
+    let mut word = [0u8; 32];
+    word[32 - bytes.len()..].copy_from_slice(&bytes);
+    Some(word)
+}
+
 fn deserialize_solution_cid<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Vec<u8>, D::Error> {
@@ -692,6 +754,7 @@ mod tests {
         schema: String,
         base_fixture: String,
         minimum_improvement: String,
+        improvement_scale: String,
         atom_scale: String,
         solution_vectors: Vec<SolutionVector>,
         threshold_vectors: Vec<ThresholdVector>,
@@ -731,6 +794,7 @@ mod tests {
         name: String,
         seed: String,
         claimed_atoms: String,
+        improvement_atoms: String,
         challenger_wins: bool,
     }
 
@@ -903,6 +967,10 @@ mod tests {
         );
         assert_eq!(document.minimum_improvement, "1/1000000000000");
         assert_eq!(
+            document.improvement_scale.parse::<u128>().unwrap(),
+            SCORE_ATOM_SCALE
+        );
+        assert_eq!(
             document.atom_scale.parse::<u128>().unwrap(),
             SCORE_ATOM_SCALE
         );
@@ -969,6 +1037,19 @@ mod tests {
             let (seed_numerator, seed_denominator) = parse_fraction(&vector.seed);
             let mut witness = witness(base.clone());
             witness.claimed_score_atoms = word_u128(vector.claimed_atoms.parse().unwrap());
+            let expected_improvement_atoms = canonical_claimed_improvement_atoms(
+                witness.claimed_score_atoms,
+                seed_numerator,
+                seed_denominator,
+            )
+            .unwrap();
+            assert_eq!(
+                expected_improvement_atoms,
+                word_u128(vector.improvement_atoms.parse().unwrap()),
+                "{}",
+                vector.name,
+            );
+            witness.improvement_atoms = word_u128(vector.improvement_atoms.parse().unwrap());
             witness.pending_challenger_wins = !vector.challenger_wins;
             witness.corrected_challenger_wins = vector.challenger_wins;
             assert!(
@@ -1002,6 +1083,18 @@ mod tests {
         (numerator.parse().unwrap(), denominator.parse().unwrap())
     }
 
+    fn word_from_hex(value: &str) -> Word {
+        let bytes = value.as_bytes();
+        assert_eq!(bytes.len(), 64);
+        std::array::from_fn(|index| {
+            u8::from_str_radix(
+                std::str::from_utf8(&bytes[2 * index..2 * index + 2]).unwrap(),
+                16,
+            )
+            .unwrap()
+        })
+    }
+
     fn witness(solution: Vec<u8>) -> ObjectiveWitness {
         ObjectiveWitness {
             chain_id: word_u128(84_532),
@@ -1019,7 +1112,7 @@ mod tests {
             commit_da_hash: sha256(&solution),
             solution_cid: b"ipfs://p42-kakeya-fixture".to_vec(),
             claimed_score_atoms: word_u128(1_750_000_000_000_000_000),
-            improvement_atoms: word_u128(1),
+            improvement_atoms: word_u128(0),
             challenge_ends_at: word_u128(2_000_000_300),
             challenger: [0x88; 20],
             reason_hash: [0x99; 32],
@@ -1033,5 +1126,89 @@ mod tests {
             proof_beneficiary: [0xcc; 20],
             solution,
         }
+    }
+
+    #[test]
+    fn production_seed_requires_zero_claim_relative_improvement_atoms() {
+        let honest = witness(
+            repo_root()
+                .join("problems/arithmetic-kakeya/examples/kt-2x2-forcing.json")
+                .read_bytes(),
+        );
+        assert_eq!(
+            verify_arithmetic_kakeya_and_journal(&honest),
+            Ok(word_from_hex(
+                "c35c5ff9ccf4047ef46dee665e7e679ee988c97315ea28cf25ce02f1fb15836f",
+            )),
+        );
+
+        let mut inflated = honest;
+        inflated.improvement_atoms = word_u128(1);
+        assert_eq!(
+            verify_arithmetic_kakeya_and_journal(&inflated),
+            Err(ObjectiveError::ImprovementAtomsMismatch {
+                expected: word_u128(0),
+                supplied: word_u128(1),
+            })
+        );
+    }
+
+    #[test]
+    fn relaxed_seed_rejects_inflated_and_deflated_improvement_atoms() {
+        let solution = repo_root()
+            .join("problems/arithmetic-kakeya/examples/kt-2x2-forcing.json")
+            .read_bytes();
+        let mut honest = witness(solution);
+        honest.improvement_atoms = word_u128(250_000_000_000_000_000);
+        honest.pending_challenger_wins = true;
+        honest.corrected_challenger_wins = false;
+        assert!(verify_arithmetic_kakeya_and_journal_against_seed(&honest, 2, 1).is_ok());
+
+        for supplied in [249_999_999_999_999_999, 250_000_000_000_000_001] {
+            let mut dishonest = honest.clone();
+            dishonest.improvement_atoms = word_u128(supplied);
+            assert_eq!(
+                verify_arithmetic_kakeya_and_journal_against_seed(&dishonest, 2, 1),
+                Err(ObjectiveError::ImprovementAtomsMismatch {
+                    expected: word_u128(250_000_000_000_000_000),
+                    supplied: word_u128(supplied),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn dishonest_claim_with_matching_improvement_still_produces_correction() {
+        let solution = repo_root()
+            .join("problems/arithmetic-kakeya/examples/kt-2x2-forcing.json")
+            .read_bytes();
+        let mut dishonest = witness(solution);
+        dishonest.claimed_score_atoms = word_u128(1_700_000_000_000_000_000);
+        dishonest.improvement_atoms = word_u128(50_000_000_000_000_000);
+        assert!(verify_arithmetic_kakeya_and_journal(&dishonest).is_ok());
+    }
+
+    #[test]
+    fn claimed_score_word_uses_signed_int256_semantics() {
+        let solution = repo_root()
+            .join("problems/arithmetic-kakeya/examples/kt-2x2-forcing.json")
+            .read_bytes();
+        let mut negative_claim = witness(solution);
+        negative_claim.claimed_score_atoms = [0xff; 32];
+        negative_claim.improvement_atoms = word_u128(1_750_000_000_000_000_001);
+        assert!(verify_arithmetic_kakeya_and_journal(&negative_claim).is_ok());
+    }
+
+    #[test]
+    fn claimed_score_above_seed_fails_closed_before_journaling() {
+        let solution = repo_root()
+            .join("problems/arithmetic-kakeya/examples/kt-2x2-forcing.json")
+            .read_bytes();
+        let mut invalid_direction = witness(solution);
+        invalid_direction.claimed_score_atoms = word_u128(1_750_000_000_000_000_001);
+        assert_eq!(
+            verify_arithmetic_kakeya_and_journal(&invalid_direction),
+            Err(ObjectiveError::ImprovementComputationOutOfRange),
+        );
     }
 }

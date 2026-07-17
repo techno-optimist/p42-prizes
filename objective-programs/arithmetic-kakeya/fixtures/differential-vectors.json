@@ -2,6 +2,7 @@
   "schema": "p42-arithmetic-kakeya-v0.2-differential/v2",
   "base_fixture": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
   "minimum_improvement": "1/1000000000000",
+  "improvement_scale": "1000000000000000000",
   "atom_scale": "1000000000000000000",
   "solution_vectors": [
     {"name":"seed","mutation":"none","expected":{"result":"accept","score":"7/4","chain_atoms":"1750000000000000000","rounds":[[[2,2]],[[1,1],[1,2],[2,1]]] }},
@@ -37,8 +38,8 @@
     {"name":"one-attounit-below-minimum","seed":"7/4","score":"1749999999999000001/1000000000000000000","accepted":false,"chain_atoms":"1749999999999000001"}
   ],
   "outcome_vectors": [
-    {"name":"production-seed-honest-claim-is-not-improvement","seed":"7/4","claimed_atoms":"1750000000000000000","challenger_wins":true},
-    {"name":"relaxed-test-seed-honest-claim","seed":"2/1","claimed_atoms":"1750000000000000000","challenger_wins":false},
-    {"name":"relaxed-test-seed-false-claim","seed":"2/1","claimed_atoms":"1750000000000000001","challenger_wins":true}
+    {"name":"production-seed-honest-claim-is-not-improvement","seed":"7/4","claimed_atoms":"1750000000000000000","improvement_atoms":"0","challenger_wins":true},
+    {"name":"relaxed-test-seed-honest-claim","seed":"2/1","claimed_atoms":"1750000000000000000","improvement_atoms":"250000000000000000","challenger_wins":false},
+    {"name":"relaxed-test-seed-false-claim","seed":"2/1","claimed_atoms":"1750000000000000001","improvement_atoms":"249999999999999999","challenger_wins":true}
   ]
 }

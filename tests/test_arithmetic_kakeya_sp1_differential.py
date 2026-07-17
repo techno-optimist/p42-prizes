@@ -106,6 +106,7 @@ def load_vectors(verifier):
             "schema",
             "base_fixture",
             "minimum_improvement",
+            "improvement_scale",
             "atom_scale",
             "solution_vectors",
             "threshold_vectors",
@@ -125,13 +126,21 @@ def load_vectors(verifier):
     for vector in document["threshold_vectors"]:
         require_keys(vector, {"name", "seed", "score", "accepted", "chain_atoms"}, vector.get("name", "threshold vector"))
     for vector in document["outcome_vectors"]:
-        require_keys(vector, {"name", "seed", "claimed_atoms", "challenger_wins"}, vector.get("name", "outcome vector"))
+        require_keys(
+            vector,
+            {"name", "seed", "claimed_atoms", "improvement_atoms", "challenger_wins"},
+            vector.get("name", "outcome vector"),
+        )
     return document
 
 
-def chain_atoms(score: Fraction, document: dict) -> int:
-    scaled = score * int(document["atom_scale"])
+def scaled_atoms(score: Fraction, scale: int) -> int:
+    scaled = score * scale
     return (scaled.numerator + scaled.denominator - 1) // scaled.denominator
+
+
+def chain_atoms(score: Fraction, document: dict) -> int:
+    return scaled_atoms(score, int(document["atom_scale"]))
 
 
 def test_python_exact_oracle_matches_shared_v02_vectors() -> None:
@@ -174,7 +183,12 @@ def test_corrected_outcomes_match_shared_vectors() -> None:
     score_atoms = chain_atoms(score, document)
     minimum = Fraction(document["minimum_improvement"])
     for vector in document["outcome_vectors"]:
-        qualifies = Fraction(vector["seed"]) - score >= minimum
+        seed_atoms = scaled_atoms(Fraction(vector["seed"]), int(document["improvement_scale"]))
+        expected_improvement_atoms = seed_atoms - int(vector["claimed_atoms"])
+        assert expected_improvement_atoms >= 0, vector["name"]
+        assert expected_improvement_atoms == int(vector["improvement_atoms"]), vector["name"]
+        improvement = max(Fraction(0), Fraction(vector["seed"]) - score)
+        qualifies = improvement >= minimum
         challenger_wins = not qualifies or int(vector["claimed_atoms"]) != score_atoms
         assert challenger_wins is vector["challenger_wins"], vector["name"]
 

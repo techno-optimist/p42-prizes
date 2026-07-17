@@ -285,6 +285,71 @@ describe("P42 objective journal conformance", () => {
     assert.equal(journalDigest, "0xfa233a06c0c886e004200dbdd524aa970605fce4cafe77e2172c61512b8586c4");
   });
 
+  it("matches the Kakeya claim-relative improvement witness across the Solidity ABI hash chain", () => {
+    const solution = readFileSync(
+      new URL("../../problems/arithmetic-kakeya/examples/kt-2x2-forcing.json", import.meta.url),
+    );
+    const solutionSha256 = `0x${createHash("sha256").update(solution).digest("hex")}`;
+    assert.equal(solutionSha256, "0x031865755a17795bf2a4c65a24986589b6a8d10085d6a062fae5293c38a7f118");
+
+    const chainId = 84_532n;
+    const quorum = address("11");
+    const manager = address("22");
+    const submissionManager = address("33");
+    const registry = address("44");
+    const submissionId = 7n;
+    const challenger = address("88");
+    const reasonHash = repeat("99");
+    const solutionCid = "ipfs://p42-kakeya-fixture";
+    const transcriptUri = "ipfs://p42-kakeya-transcript";
+    const guestElfSha256 = repeat("dd");
+    const programVKey = repeat("ee");
+    const claimedScoreAtoms = 1_750_000_000_000_000_000n;
+    // The claimed score atoms equal the 7/4 seed atoms, so their canonical
+    // uint256 difference is zero even though the guest verifies separately.
+    const improvementAtoms = 0n;
+
+    const revealInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "address", "bytes32", "bytes32", "bytes32", "int256", "uint256", "uint64"],
+        [submissionManager, chainId, submissionId, address("66"), repeat("77"), solutionSha256, keccak256(toUtf8Bytes(solutionCid)), claimedScoreAtoms, improvementAtoms, 2_000_000_300n],
+      ),
+    );
+    assert.equal(revealInstanceHash, "0xa1337e4b80f0d18cff14f78c595053311f208051a7e93c211c38f6b7dee61477");
+
+    const challengeInstanceHash = keccak256(
+      coder.encode(
+        ["address", "uint256", "uint256", "bytes32", "address", "bytes32", "uint64", "uint64"],
+        [manager, chainId, submissionId, revealInstanceHash, challenger, reasonHash, 2_000_000_100n, 2_000_000_200n],
+      ),
+    );
+    const pendingDecisionContext = keccak256(
+      coder.encode(
+        ["bytes32", "bytes32", "address", "bytes32", "bool", "bytes32", "bytes32", "bytes32"],
+        [challengeInstanceHash, revealInstanceHash, challenger, reasonHash, false, repeat("aa"), keccak256(toUtf8Bytes(transcriptUri)), repeat("bb")],
+      ),
+    );
+    const objectiveBindingContext = keccak256(
+      coder.encode(
+        ["address", "uint256", "bytes32", "bytes32", "bytes32"],
+        [registry, 4n, repeat("55"), guestElfSha256, programVKey],
+      ),
+    );
+    const contextHash = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "uint256", "bytes32"],
+        ["P42_OBJECTIVE_CHALLENGE_CONTEXT_V2", chainId, manager, submissionManager, objectiveBindingContext, submissionId, pendingDecisionContext],
+      ),
+    );
+    const journalDigest = keccak256(
+      coder.encode(
+        ["string", "uint256", "address", "address", "bytes32", "bytes32", "bytes32", "bool", "address"],
+        ["P42_OBJECTIVE_VERDICT_JOURNAL_V2", chainId, quorum, manager, guestElfSha256, programVKey, contextHash, true, address("cc")],
+      ),
+    );
+    assert.equal(journalDigest, "0xc35c5ff9ccf4047ef46dee665e7e679ee988c97315ea28cf25ce02f1fb15836f");
+  });
+
   it("matches the isolated Rust/SP1 edges witness with signed maximize atoms", () => {
     const solution = readFileSync(
       new URL("../../problems/edges-vs-triangles/examples/rational-curve-sample.json", import.meta.url),
