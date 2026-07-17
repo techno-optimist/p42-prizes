@@ -6,7 +6,7 @@ services:
     runtime: node
     rootDir: ./web
     buildCommand: npm ci && npm run build:prizes
-    startCommand: npm run db:migrate && unset P42_PORTAL_MIGRATION_DATABASE_URL && npm run start:prizes
+    startCommand: npm run db:migrate && exec env -u P42_PORTAL_MIGRATION_DATABASE_URL npm run start:prizes
     plan: starter
     region: oregon
     healthCheckPath: /prizes
@@ -20,8 +20,9 @@ services:
       - key: P42_PORTAL_DATABASE_URL
         sync: false
       # Distinct schema-owner credential used only by the startup migration.
-      # The start command removes it before launching the web process. It must
-      # authenticate as a different role from P42_PORTAL_DATABASE_URL.
+      # The start command replaces its migration shell with an environment that
+      # omits this value before launching the web process. It must authenticate
+      # as a different role from P42_PORTAL_DATABASE_URL.
       - key: P42_PORTAL_MIGRATION_DATABASE_URL
         sync: false
       # Preprovision this exact schema under the migration owner. Runtime has

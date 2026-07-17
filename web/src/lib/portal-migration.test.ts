@@ -61,6 +61,15 @@ describe("portal database migration", () => {
     expect(runner).toContain("row.control_rows !== 1");
   });
 
+  it("replaces the migration shell before starting the runtime process", () => {
+    const render = readFileSync(resolve("../render.yaml"), "utf8");
+
+    expect(render).toContain(
+      "startCommand: npm run db:migrate && exec env -u P42_PORTAL_MIGRATION_DATABASE_URL npm run start:prizes",
+    );
+    expect(render).not.toContain("&& unset P42_PORTAL_MIGRATION_DATABASE_URL &&");
+  });
+
   it("keeps unchanged checkpoint reads on indexed maxima without history scans", () => {
     const sql = readFileSync(resolve("migrations/002_indexer_checkpoint_high_water.sql"), "utf8");
     const exact = sql.split("CREATE OR REPLACE FUNCTION %1$I.p42_read_exact_indexer_checkpoint")[1]
