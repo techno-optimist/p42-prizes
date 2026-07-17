@@ -68,8 +68,17 @@ def require_closed_object(value: Any, label: str, fields: set[str]) -> dict[str,
 def require_scalar_string(value: Any, label: str) -> str:
     if not isinstance(value, str):
         raise VerifierFailure("MALFORMED", f"{label} must be a string")
-    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
-        raise VerifierFailure("MALFORMED", f"{label} must contain only Unicode scalar values")
+    index = 0
+    while index < len(value):
+        codepoint = ord(value[index])
+        if 0xD800 <= codepoint <= 0xDBFF:
+            if index + 1 >= len(value) or not 0xDC00 <= ord(value[index + 1]) <= 0xDFFF:
+                raise VerifierFailure("MALFORMED", f"{label} contains an unpaired surrogate")
+            index += 2
+            continue
+        if 0xDC00 <= codepoint <= 0xDFFF:
+            raise VerifierFailure("MALFORMED", f"{label} contains an unpaired surrogate")
+        index += 1
     return value
 
 

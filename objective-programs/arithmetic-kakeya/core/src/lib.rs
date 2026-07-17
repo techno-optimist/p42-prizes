@@ -1,6 +1,6 @@
 use num_bigint::BigInt;
 use num_rational::BigRational;
-use num_traits::{Signed, Zero};
+use num_traits::{Signed, ToPrimitive, Zero};
 use serde::{de, Deserialize, Deserializer, Serialize};
 use sha2::{Digest as ShaDigest, Sha256};
 use std::{collections::HashSet, fmt, str::FromStr};
@@ -93,6 +93,12 @@ pub struct KakeyaScore {
     pub numerator: u64,
     pub denominator: u64,
     pub chain_atoms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KakeyaEvaluation {
+    pub score: KakeyaScore,
+    pub rounds: Vec<Vec<[u8; 2]>>,
 }
 
 pub fn verify_arithmetic_kakeya_and_journal(
@@ -202,6 +208,10 @@ fn verify_arithmetic_kakeya_and_journal_against_seed(
 }
 
 pub fn verify_arithmetic_kakeya(raw: &[u8]) -> Option<KakeyaScore> {
+    verify_arithmetic_kakeya_detailed(raw).map(|evaluation| evaluation.score)
+}
+
+pub fn verify_arithmetic_kakeya_detailed(raw: &[u8]) -> Option<KakeyaEvaluation> {
     if raw.len() > MAX_SOLUTION_BYTES || raw.starts_with(&[0xef, 0xbb, 0xbf]) {
         return None;
     }
@@ -477,13 +487,14 @@ fn can_force(target: &IntPair, free: &HashSet<IntPair>, generators: &[Generator]
     is_consistent(equations)
 }
 
-fn evaluate(parsed: &ParsedSolution) -> Option<KakeyaScore> {
+fn evaluate(parsed: &ParsedSolution) -> Option<KakeyaEvaluation> {
     let generators = build_generators(parsed)?;
     let vertices: Vec<_> = [(1, 1), (1, 2), (2, 1), (2, 2)]
         .into_iter()
         .map(|(a, b)| (BigInt::from(a), BigInt::from(b)))
         .collect();
     let mut free: HashSet<_> = parsed.free.iter().cloned().collect();
+    let mut rounds = Vec::new();
     while free.len() < vertices.len() {
         let newly_forced: Vec<_> = vertices
             .iter()
@@ -493,6 +504,12 @@ fn evaluate(parsed: &ParsedSolution) -> Option<KakeyaScore> {
         if newly_forced.is_empty() {
             break;
         }
+        rounds.push(
+            newly_forced
+                .iter()
+                .map(|(first, second)| Some([first.to_u8()?, second.to_u8()?]))
+                .collect::<Option<Vec<_>>>()?,
+        );
         free.extend(newly_forced);
     }
     if free.len() != vertices.len() {
@@ -516,10 +533,13 @@ fn evaluate(parsed: &ParsedSolution) -> Option<KakeyaScore> {
     let numerator = (numerator / divisor) as u64;
     let denominator = (denominator / divisor) as u64;
     let chain_atoms = (u128::from(numerator) * SCORE_ATOM_SCALE).div_ceil(u128::from(denominator));
-    Some(KakeyaScore {
-        numerator,
-        denominator,
-        chain_atoms,
+    Some(KakeyaEvaluation {
+        score: KakeyaScore {
+            numerator,
+            denominator,
+            chain_atoms,
+        },
+        rounds,
     })
 }
 
@@ -657,12 +677,6 @@ mod tests {
     use serde::Deserialize;
     use std::path::PathBuf;
 
-    fn fixture() -> Vec<u8> {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../problems/arithmetic-kakeya/examples/kt-2x2-forcing.json")
-            .read_bytes()
-    }
-
     trait ReadBytes {
         fn read_bytes(&self) -> Vec<u8>;
     }
@@ -673,19 +687,51 @@ mod tests {
     }
 
     #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
     struct DifferentialDocument {
         schema: String,
         base_fixture: String,
-        vectors: Vec<DifferentialVector>,
+        minimum_improvement: String,
+        atom_scale: String,
+        solution_vectors: Vec<SolutionVector>,
+        threshold_vectors: Vec<ThresholdVector>,
+        outcome_vectors: Vec<OutcomeVector>,
     }
 
     #[derive(Deserialize)]
-    struct DifferentialVector {
+    #[serde(deny_unknown_fields)]
+    struct SolutionVector {
         name: String,
         mutation: String,
-        accepted: bool,
+        expected: SolutionExpected,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct SolutionExpected {
+        result: String,
         score: Option<String>,
         chain_atoms: Option<String>,
+        rounds: Option<Vec<Vec<[u8; 2]>>>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct ThresholdVector {
+        name: String,
+        seed: String,
+        score: String,
+        accepted: bool,
+        chain_atoms: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OutcomeVector {
+        name: String,
+        seed: String,
+        claimed_atoms: String,
+        challenger_wins: bool,
     }
 
     fn repo_root() -> PathBuf {
@@ -729,6 +775,31 @@ mod tests {
                 .flat_map(|character| u32::from(character).to_be_bytes())
                 .collect();
         }
+        let raw_mutation = match mutation {
+            "json-plus-sign" => Some((r#""grid":[2,2]"#, r#""grid":[+2,2]"#)),
+            "json-leading-zero" => Some((r#""grid":[2,2]"#, r#""grid":[02,2]"#)),
+            "json-decimal-integer" => Some((r#""grid":[2,2]"#, r#""grid":[2.0,2]"#)),
+            "json-exponent-integer" => Some((r#""grid":[2,2]"#, r#""grid":[2e0,2]"#)),
+            "json-negative-zero" => Some((r#""slopes":[[0,0]"#, r#""slopes":[[-0,0]"#)),
+            _ => None,
+        };
+        if let Some((before, after)) = raw_mutation {
+            return std::str::from_utf8(base)
+                .unwrap()
+                .replacen(before, after, 1)
+                .into_bytes();
+        }
+        if mutation.starts_with("escaped-") {
+            let text = std::str::from_utf8(base).unwrap();
+            let source = text.find(r#""source":"#).unwrap();
+            let replacement = match mutation {
+                "escaped-valid-surrogate-pair" => r#""source":"\ud83d\ude00"}"#,
+                "escaped-lone-high-surrogate" => r#""source":"\ud800"}"#,
+                "escaped-lone-low-surrogate" => r#""source":"\udfff"}"#,
+                _ => unreachable!(),
+            };
+            return format!("{}{}", &text[..source], replacement).into_bytes();
+        }
         let mut value: serde_json::Value = serde_json::from_slice(base).unwrap();
         let root = value.as_object_mut().unwrap();
         match mutation {
@@ -762,6 +833,34 @@ mod tests {
                 root,
                 "57896044618658097711785492504343953926634992332820282019728792003956564819968",
             ),
+            "reflect-grid-certificate" => {
+                for relation in root["relations"].as_array_mut().unwrap() {
+                    let vertex = relation["vertex"].as_array_mut().unwrap();
+                    for coordinate in vertex {
+                        *coordinate = (3 - coordinate.as_i64().unwrap()).into();
+                    }
+                }
+                root["edge_labels"].as_array_mut().unwrap()[1]
+                    .as_array_mut()
+                    .unwrap()
+                    .reverse();
+            }
+            "active-worst-case-rational-integers" => {
+                let maximum = BigInt::from(1u8) << 255usize;
+                let maximum = maximum - 1u8;
+                let almost = &maximum - 1u8;
+                let first: serde_json::Value =
+                    serde_json::from_str(&format!("[{maximum},{almost}]")).unwrap();
+                let second: serde_json::Value =
+                    serde_json::from_str(&format!("[{almost},{maximum}]")).unwrap();
+                root["slopes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend([first.clone(), second.clone()]);
+                let relations = root["relations"].as_array_mut().unwrap();
+                relations.insert(0, serde_json::json!({"slope": second, "vertex": [2, 2]}));
+                relations.insert(0, serde_json::json!({"slope": first, "vertex": [1, 1]}));
+            }
             "slopes-at-bound" | "slopes-over-bound" => {
                 let slopes = root.get_mut("slopes").unwrap().as_array_mut().unwrap();
                 for index in 2..125 {
@@ -800,48 +899,107 @@ mod tests {
         .unwrap();
         assert_eq!(
             document.schema,
-            "p42-arithmetic-kakeya-v0.2-differential/v1"
+            "p42-arithmetic-kakeya-v0.2-differential/v2"
+        );
+        assert_eq!(document.minimum_improvement, "1/1000000000000");
+        assert_eq!(
+            document.atom_scale.parse::<u128>().unwrap(),
+            SCORE_ATOM_SCALE
         );
         let base = repo_root().join(document.base_fixture).read_bytes();
-        for vector in document.vectors {
-            let observed = verify_arithmetic_kakeya(&mutate(&base, &vector.mutation));
-            assert_eq!(observed.is_some(), vector.accepted, "{}", vector.name);
-            if let Some(score) = observed {
+        for vector in document.solution_vectors {
+            let observed = verify_arithmetic_kakeya_detailed(&mutate(&base, &vector.mutation));
+            assert_eq!(
+                observed.is_some(),
+                vector.expected.result == "accept",
+                "{}",
+                vector.name
+            );
+            if let Some(evaluation) = observed {
                 assert_eq!(
-                    format!("{}/{}", score.numerator, score.denominator),
-                    vector.score.unwrap()
+                    format!(
+                        "{}/{}",
+                        evaluation.score.numerator, evaluation.score.denominator
+                    ),
+                    vector.expected.score.unwrap(),
+                    "{}",
+                    vector.name,
                 );
-                assert_eq!(score.chain_atoms.to_string(), vector.chain_atoms.unwrap());
+                assert_eq!(
+                    evaluation.score.chain_atoms.to_string(),
+                    vector.expected.chain_atoms.unwrap(),
+                    "{}",
+                    vector.name,
+                );
+                assert_eq!(
+                    evaluation.rounds,
+                    vector.expected.rounds.unwrap(),
+                    "{}",
+                    vector.name
+                );
+            } else {
+                assert_eq!(vector.expected.result, "reject", "{}", vector.name);
+                assert!(vector.expected.score.is_none(), "{}", vector.name);
+                assert!(vector.expected.chain_atoms.is_none(), "{}", vector.name);
+                assert!(vector.expected.rounds.is_none(), "{}", vector.name);
             }
+        }
+        for vector in document.threshold_vectors {
+            let (seed_numerator, seed_denominator) = parse_fraction(&vector.seed);
+            let (numerator, denominator) = parse_fraction(&vector.score);
+            let score = KakeyaScore {
+                numerator: numerator.try_into().unwrap(),
+                denominator: denominator.try_into().unwrap(),
+                chain_atoms: (numerator * SCORE_ATOM_SCALE).div_ceil(denominator),
+            };
+            assert_eq!(
+                score.chain_atoms.to_string(),
+                vector.chain_atoms,
+                "{}",
+                vector.name
+            );
+            assert_eq!(
+                is_minimum_improvement(score, seed_numerator, seed_denominator),
+                vector.accepted,
+                "{}",
+                vector.name,
+            );
+        }
+        for vector in document.outcome_vectors {
+            let (seed_numerator, seed_denominator) = parse_fraction(&vector.seed);
+            let mut witness = witness(base.clone());
+            witness.claimed_score_atoms = word_u128(vector.claimed_atoms.parse().unwrap());
+            witness.pending_challenger_wins = !vector.challenger_wins;
+            witness.corrected_challenger_wins = vector.challenger_wins;
+            assert!(
+                verify_arithmetic_kakeya_and_journal_against_seed(
+                    &witness,
+                    seed_numerator,
+                    seed_denominator,
+                )
+                .is_ok(),
+                "{}",
+                vector.name,
+            );
+            witness.corrected_challenger_wins = !vector.challenger_wins;
+            assert!(
+                matches!(
+                    verify_arithmetic_kakeya_and_journal_against_seed(
+                        &witness,
+                        seed_numerator,
+                        seed_denominator,
+                    ),
+                    Err(ObjectiveError::CorrectedOutcomeMismatch { .. })
+                ),
+                "{}",
+                vector.name,
+            );
         }
     }
 
-    #[test]
-    fn seed_score_and_atoms_are_exact() {
-        assert_eq!(
-            verify_arithmetic_kakeya(&fixture()),
-            Some(KakeyaScore {
-                numerator: 7,
-                denominator: 4,
-                chain_atoms: 1_750_000_000_000_000_000,
-            })
-        );
-    }
-
-    #[test]
-    fn exact_threshold_has_no_atom_rounding_shortcut() {
-        let exact = KakeyaScore {
-            numerator: 1_749_999_999_999,
-            denominator: 1_000_000_000_000,
-            chain_atoms: 1_749_999_999_999_000_000,
-        };
-        let below = KakeyaScore {
-            numerator: 1_749_999_999_999_000_001,
-            denominator: 1_000_000_000_000_000_000,
-            chain_atoms: 1_749_999_999_999_000_001,
-        };
-        assert!(is_minimum_improvement(exact, 7, 4));
-        assert!(!is_minimum_improvement(below, 7, 4));
+    fn parse_fraction(value: &str) -> (u128, u128) {
+        let (numerator, denominator) = value.split_once('/').unwrap();
+        (numerator.parse().unwrap(), denominator.parse().unwrap())
     }
 
     fn witness(solution: Vec<u8>) -> ObjectiveWitness {
@@ -875,28 +1033,5 @@ mod tests {
             proof_beneficiary: [0xcc; 20],
             solution,
         }
-    }
-
-    #[test]
-    fn seed_is_not_a_strict_improvement_and_false_outcome_fails_closed() {
-        let witness = witness(fixture());
-        assert!(verify_arithmetic_kakeya_and_journal(&witness).is_ok());
-        let mut false_outcome = witness.clone();
-        false_outcome.corrected_challenger_wins = false;
-        assert_eq!(
-            verify_arithmetic_kakeya_and_journal(&false_outcome),
-            Err(ObjectiveError::CorrectedOutcomeMismatch {
-                expected: true,
-                supplied: false
-            })
-        );
-    }
-
-    #[test]
-    fn honest_relaxed_seed_outcome_is_supported_without_changing_production_seed() {
-        let mut witness = witness(fixture());
-        witness.pending_challenger_wins = true;
-        witness.corrected_challenger_wins = false;
-        assert!(verify_arithmetic_kakeya_and_journal_against_seed(&witness, 2, 1).is_ok());
     }
 }

@@ -1,32 +1,44 @@
 {
-  "schema": "p42-arithmetic-kakeya-v0.2-differential/v1",
+  "schema": "p42-arithmetic-kakeya-v0.2-differential/v2",
   "base_fixture": "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
-  "vectors": [
-    {"name": "seed", "mutation": "none", "accepted": true, "score": "7/4", "chain_atoms": "1750000000000000000"},
-    {"name": "incomplete-closure", "mutation": "remove-last-relation", "accepted": false},
-    {"name": "duplicate-root-key", "mutation": "duplicate-grid-key", "accepted": false},
-    {"name": "duplicate-json-key", "mutation": "duplicate-relation-slope-key", "accepted": false},
-    {"name": "duplicate-slope", "mutation": "duplicate-first-slope", "accepted": false},
-    {"name": "duplicate-edge-label", "mutation": "duplicate-first-edge-label", "accepted": false},
-    {"name": "duplicate-relation", "mutation": "duplicate-first-relation", "accepted": false},
-    {"name": "malformed-grid-bool", "mutation": "boolean-grid-coordinate", "accepted": false},
-    {"name": "unknown-root-field", "mutation": "unknown-root-field", "accepted": false},
-    {"name": "unknown-nested-field", "mutation": "unknown-relation-field", "accepted": false},
-    {"name": "utf8-bom", "mutation": "utf8-bom", "accepted": false},
-    {"name": "utf16-le", "mutation": "utf16-le", "accepted": false},
-    {"name": "utf32-be", "mutation": "utf32-be", "accepted": false},
-    {"name": "huge-slope-at-bound", "mutation": "integer-at-bound", "accepted": true, "score": "7/4", "chain_atoms": "1750000000000000000"},
-    {"name": "huge-slope-over-bound", "mutation": "integer-over-bound", "accepted": false},
-    {"name": "slopes-at-bound", "mutation": "slopes-at-bound", "accepted": true, "score": "7/4", "chain_atoms": "1750000000000000000"},
-    {"name": "slopes-over-bound", "mutation": "slopes-over-bound", "accepted": false}
+  "minimum_improvement": "1/1000000000000",
+  "atom_scale": "1000000000000000000",
+  "solution_vectors": [
+    {"name":"seed","mutation":"none","expected":{"result":"accept","score":"7/4","chain_atoms":"1750000000000000000","rounds":[[[2,2]],[[1,1],[1,2],[2,1]]] }},
+    {"name":"incomplete-closure","mutation":"remove-last-relation","expected":{"result":"reject"}},
+    {"name":"duplicate-root-key","mutation":"duplicate-grid-key","expected":{"result":"reject"}},
+    {"name":"duplicate-json-key","mutation":"duplicate-relation-slope-key","expected":{"result":"reject"}},
+    {"name":"duplicate-slope","mutation":"duplicate-first-slope","expected":{"result":"reject"}},
+    {"name":"duplicate-edge-label","mutation":"duplicate-first-edge-label","expected":{"result":"reject"}},
+    {"name":"duplicate-relation","mutation":"duplicate-first-relation","expected":{"result":"reject"}},
+    {"name":"malformed-grid-bool","mutation":"boolean-grid-coordinate","expected":{"result":"reject"}},
+    {"name":"unknown-root-field","mutation":"unknown-root-field","expected":{"result":"reject"}},
+    {"name":"unknown-nested-field","mutation":"unknown-relation-field","expected":{"result":"reject"}},
+    {"name":"utf8-bom","mutation":"utf8-bom","expected":{"result":"reject"}},
+    {"name":"utf16-le","mutation":"utf16-le","expected":{"result":"reject"}},
+    {"name":"utf32-be","mutation":"utf32-be","expected":{"result":"reject"}},
+    {"name":"json-plus-sign","mutation":"json-plus-sign","expected":{"result":"reject"}},
+    {"name":"json-leading-zero","mutation":"json-leading-zero","expected":{"result":"reject"}},
+    {"name":"json-decimal-integer","mutation":"json-decimal-integer","expected":{"result":"reject"}},
+    {"name":"json-exponent-integer","mutation":"json-exponent-integer","expected":{"result":"reject"}},
+    {"name":"json-negative-zero","mutation":"json-negative-zero","expected":{"result":"accept","score":"7/4","chain_atoms":"1750000000000000000","rounds":[[[2,2]],[[1,1],[1,2],[2,1]]] }},
+    {"name":"escaped-valid-surrogate-pair","mutation":"escaped-valid-surrogate-pair","expected":{"result":"accept","score":"7/4","chain_atoms":"1750000000000000000","rounds":[[[2,2]],[[1,1],[1,2],[2,1]]] }},
+    {"name":"escaped-lone-high-surrogate","mutation":"escaped-lone-high-surrogate","expected":{"result":"reject"}},
+    {"name":"escaped-lone-low-surrogate","mutation":"escaped-lone-low-surrogate","expected":{"result":"reject"}},
+    {"name":"simultaneous-not-sequential-closure","mutation":"reflect-grid-certificate","expected":{"result":"accept","score":"7/4","chain_atoms":"1750000000000000000","rounds":[[[1,1]],[[1,2],[2,1],[2,2]]] }},
+    {"name":"huge-slope-at-bound","mutation":"integer-at-bound","expected":{"result":"accept","score":"7/4","chain_atoms":"1750000000000000000","rounds":[[[2,2]],[[1,1],[1,2],[2,1]]] }},
+    {"name":"huge-slope-over-bound","mutation":"integer-over-bound","expected":{"result":"reject"}},
+    {"name":"active-worst-case-rational-integers","mutation":"active-worst-case-rational-integers","expected":{"result":"accept","score":"9/4","chain_atoms":"2250000000000000000","rounds":[[[1,1],[1,2],[2,1],[2,2]]] }},
+    {"name":"slopes-at-bound","mutation":"slopes-at-bound","expected":{"result":"accept","score":"7/4","chain_atoms":"1750000000000000000","rounds":[[[2,2]],[[1,1],[1,2],[2,1]]] }},
+    {"name":"slopes-over-bound","mutation":"slopes-over-bound","expected":{"result":"reject"}}
   ],
   "threshold_vectors": [
-    {"name": "exact-minimum", "score": "1749999999999/1000000000000", "accepted": true, "chain_atoms": "1749999999999000000"},
-    {"name": "one-attounit-below-minimum", "score": "1749999999999000001/1000000000000000000", "accepted": false, "chain_atoms": "1749999999999000001"}
+    {"name":"exact-minimum","seed":"7/4","score":"1749999999999/1000000000000","accepted":true,"chain_atoms":"1749999999999000000"},
+    {"name":"one-attounit-below-minimum","seed":"7/4","score":"1749999999999000001/1000000000000000000","accepted":false,"chain_atoms":"1749999999999000001"}
   ],
   "outcome_vectors": [
-    {"name": "production-seed-honest-claim-is-not-improvement", "seed": "7/4", "claimed_atoms": "1750000000000000000", "challenger_wins": true},
-    {"name": "relaxed-test-seed-honest-claim", "seed": "2/1", "claimed_atoms": "1750000000000000000", "challenger_wins": false},
-    {"name": "relaxed-test-seed-false-claim", "seed": "2/1", "claimed_atoms": "1750000000000000001", "challenger_wins": true}
+    {"name":"production-seed-honest-claim-is-not-improvement","seed":"7/4","claimed_atoms":"1750000000000000000","challenger_wins":true},
+    {"name":"relaxed-test-seed-honest-claim","seed":"2/1","claimed_atoms":"1750000000000000000","challenger_wins":false},
+    {"name":"relaxed-test-seed-false-claim","seed":"2/1","claimed_atoms":"1750000000000000001","challenger_wins":true}
   ]
 }

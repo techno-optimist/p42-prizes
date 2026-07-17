@@ -280,7 +280,7 @@
       },
       "verifier": {
         "command": "python3 verifier/verify.py --solution {solution}",
-        "source_tree_sha256": "sha256:d6d2029d45ef811c523a7dd86169672d1f18b19b9786780b453f0b972cad1c89",
+        "source_tree_sha256": "sha256:1a38a6066ce9f1d86725da2692ae55d97b8684bbc3c924417a95031f0ba6a6e2",
         "version": "0.2.0"
       }
     },
