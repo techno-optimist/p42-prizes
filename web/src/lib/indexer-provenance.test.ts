@@ -341,7 +341,8 @@ describe("indexer provenance v2", () => {
     base.manifest.deploymentConfigHash = computePortalDeploymentConfigHash(base.manifest);
     base.checkpoint.manifestBinding.deploymentConfigHash = base.manifest.deploymentConfigHash;
     base.checkpoint.manifestBinding.boards = Object.fromEntries(manifestProblems.map((item) => [item.problemId, Object.fromEntries(boardKeys.map((key) => [key, { address: item.contracts[key].address, deployedCodeHash: item.contracts[key].deployedCodeHash, abiHash: item.contracts[key].abiHash }]))]));
-    const expires = 2_000_000_000; const issuedAt = new Date((expires - 1000) * 1000).toISOString();
+    const expires = Number(base.checkpoint.range.toBlockTimestamp) + 1_000;
+    const issuedAt = new Date((Number(base.checkpoint.range.toBlockTimestamp) - 1_000) * 1000).toISOString();
     const roles = ["production-launch-authority", "independent-security-authority", "governance-authority"];
     const signers = roles.map((role, index) => {
       const pair = generateKeyPairSync("ed25519");
@@ -385,7 +386,7 @@ describe("indexer provenance v2", () => {
     const checkpointPublicKey = `ed25519:${checkpointSigner.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex")}`;
     const checkpointSignedAt = new Date().toISOString();
     const trustRegistry = { schema_version: "p42-attestation-trust-registry/v1", environment: "production", registry_id: "portal-test", created_at_utc: "2026-01-01T00:00:00.000Z", registrations: [
-      ...signers.map(({ role, index, publicKey }) => ({ attestation_class: "p42-production-launch-authorization/v1", signer_role: role, public_key: publicKey, identity: { name: `Signer ${index}`, organization: "P42 Test", professional_email: `signer${index}@example.org` }, valid_from_utc: new Date((expires - 1500) * 1000).toISOString(), valid_until_utc: null })),
+      ...signers.map(({ role, index, publicKey }) => ({ attestation_class: "p42-production-launch-authorization/v1", signer_role: role, public_key: publicKey, identity: { name: `Signer ${index}`, organization: "P42 Test", professional_email: `signer${index}@example.org` }, valid_from_utc: new Date((expires - 2500) * 1000).toISOString(), valid_until_utc: null })),
       { attestation_class: "p42-indexer-checkpoint-attestation/v1", signer_role: "indexer-checkpoint-authority", public_key: checkpointPublicKey, identity: { name: "Indexer Signer", organization: "P42 Test", professional_email: "indexer@example.org" }, valid_from_utc: "2026-01-01T00:00:00.000Z", valid_until_utc: null },
     ] };
     const authorizationBytes = Buffer.from(JSON.stringify(authorization));
@@ -508,14 +509,15 @@ describe("indexer provenance v2", () => {
       manifest: base.manifest, manifestBytes, checkpoint: base.checkpoint, checkpointBytes,
       authorization, authorizationBytes, productionPolicy, trustRegistry, checkpointAttestation, activationSignatures, plan, completion, rpcRegistry,
     };
-    const withSignedCheckpoint = (mutate: (value: any) => void) => {
+    const withSignedCheckpoint = (mutate: (value: any) => void, signedAtSeconds?: number) => {
       const checkpoint = clone(base.checkpoint); mutate(checkpoint);
       const checkpointBytes = Buffer.from(JSON.stringify(checkpoint));
       const checkpointDigest = `sha256:${createHash("sha256").update(checkpointBytes).digest("hex")}`;
-      const message = Buffer.from(`P42-ATTESTATION-V2\np42-indexer-checkpoint-attestation/v1\nindexer-checkpoint-authority\n${checkpointDigest}\n${checkpointSignedAt}`, "ascii");
+      const signedAtUtc = signedAtSeconds === undefined ? checkpointSignedAt : new Date(signedAtSeconds * 1000).toISOString();
+      const message = Buffer.from(`P42-ATTESTATION-V2\np42-indexer-checkpoint-attestation/v1\nindexer-checkpoint-authority\n${checkpointDigest}\n${signedAtUtc}`, "ascii");
       const checkpointAttestation = {
         schema: "p42-indexer-checkpoint-attestation/v1", signerRole: "indexer-checkpoint-authority",
-        publicKey: checkpointPublicKey, checkpointDigest, signedAtUtc: checkpointSignedAt,
+        publicKey: checkpointPublicKey, checkpointDigest, signedAtUtc,
         signature: `ed25519:${sign(null, message, checkpointSigner.privateKey).toString("hex")}`,
       };
       return { ...activatedArtifacts, checkpoint, checkpointBytes, checkpointAttestation };
@@ -531,6 +533,27 @@ describe("indexer provenance v2", () => {
       deploymentCommit: base.manifest.deploymentCommit,
       deploymentConfigHash: base.manifest.deploymentConfigHash,
     });
+    expect(activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...activatedArtifacts,
+      nowSeconds: expires + 1,
+      checkpointMaxAgeSeconds: 2_000,
+    }).provenance).toHaveLength(10);
+
+    const lateCompletion = clone(completion);
+    lateCompletion.finalizedBlockTimestamp = expires + 1;
+    const { completionDigest: _lateDigest, ...lateCompletionBody } = lateCompletion;
+    lateCompletion.completionDigest = canonicalDigest(lateCompletionBody);
+    const lateCheckpoint = withSignedCheckpoint((value) => {
+      value.range.toBlockTimestamp = expires + 2;
+      value.activationEvidence.completionAnchor.blockTimestamp = lateCompletion.finalizedBlockTimestamp;
+      value.activationEvidence.completionAnchor.completionDigest = lateCompletion.completionDigest;
+    }, expires + 2);
+    expect(() => activatedIndexerSnapshotFromArtifacts(launchProblems, {
+      ...lateCheckpoint,
+      completion: lateCompletion,
+      nowSeconds: expires + 2,
+      checkpointMaxAgeSeconds: 300,
+    })).toThrow();
     const substitutedRegistry = clone(rpcRegistry);
     substitutedRegistry.profiles[0].endpointOrigin = "https://substitute.example";
     substitutedRegistry.profiles[0].endpointProfileDigest = canonicalDigest({

@@ -228,34 +228,19 @@ describe("atomic activation-bound portal read model", () => {
       async query<R extends QueryResultRow>(text: string, values?: unknown[]) {
         const compact = text.replace(/\s+/g, " ").trim();
         queries.push(compact);
-        if (compact.includes("AS owns_control")) return queryResult([{
-          runtime_user: "runtime", owns_control: false, owns_epoch: false, owns_acceptance: false, can_create: false,
-          can_trigger_control: false, can_trigger_epoch: false, can_trigger_acceptance: false, external_triggers: false,
+        if (compact.includes("WITH pinned AS")) return queryResult([{
+          identity_matches:true,function_matches:true,acl_matches:true,safe_role:true,
+          no_direct_writes:true,no_dangerous_set_role:true,no_external_triggers:true,
         } as unknown as R]);
-        if (compact.includes("FROM p42_indexer_checkpoint_control") && compact.endsWith("FOR UPDATE")) {
-          return queryResult([{
-            current_epoch: null, current_acceptance:null,next_epoch:"1",next_acceptance:"1",updated_at:null,
-          } as unknown as R]);
-        }
-        if (compact.includes("FROM p42_indexer_checkpoint_epoch ORDER BY")) return queryResult([] as R[]);
-        if (compact.startsWith("INSERT INTO p42_indexer_checkpoint_epoch")) {
-          return queryResult([{
-            epoch_id:"1",release_binding_digest:String(values![1]),authorization_digest:String(values![2]),
-            chain_id:String(values![3]),chain_name:String(values![4]),deployment_commit:String(values![5]),
-            deployment_config_hash:String(values![6]),accepted_at:"2026-01-01T00:00:00.000Z",
-          } as unknown as R]);
-        }
-        if(compact.startsWith("INSERT INTO p42_indexer_checkpoint_acceptance")) return queryResult([{
-          acceptance_id:"1",epoch_id:"1",finalized_block_number:String(values![2]),
-          finalized_block_hash:String(values![3]),checkpoint_digest:String(values![4]),
-          checkpoint_timestamp:String(values![5]),accepted_at:"2026-01-01T00:00:00.000Z",
+        if(compact.includes("p42_transition_indexer_checkpoint")) return queryResult([{
+          transition_kind:"first",epoch_id:"1",release_binding_digest:String(values![4]),authorization_digest:String(values![5]),
+          chain_id:String(values![6]),chain_name:String(values![7]),deployment_commit:String(values![8]),
+          deployment_config_hash:String(values![9]),epoch_accepted_at:"2026-01-01T00:00:00.000Z",
+          acceptance_id:"1",finalized_block_number:String(values![0]),finalized_block_hash:String(values![1]),
+          checkpoint_digest:String(values![2]),checkpoint_timestamp:String(values![3]),
+          acceptance_accepted_at:"2026-01-01T00:00:00.000Z",current_epoch:"1",current_acceptance:"1",
+          next_epoch:"2",next_acceptance:"2",control_updated_at:"2026-01-01T00:00:01.000Z",
         } as unknown as R]);
-        if (compact.startsWith("UPDATE p42_indexer_checkpoint_control")) {
-          return queryResult([{
-            current_epoch:"1",current_acceptance:"1",next_epoch:"2",next_acceptance:"2",
-            updated_at:"2026-01-01T00:00:01.000Z",
-          } as unknown as R]);
-        }
         return queryResult([] as R[]);
       },
       release() {},

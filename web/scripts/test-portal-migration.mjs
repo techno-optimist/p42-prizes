@@ -90,6 +90,109 @@ try {
     await expectMigrationFailure(client, migration2Sql, "does not match migration 2");
   });
 
+  await inTemporarySchema("authority-same-name-check-true", async (client) => {
+    await applyMigrations(client);
+    await client.query(
+      `ALTER TABLE p42_indexer_checkpoint_authority
+         DROP CONSTRAINT p42_indexer_checkpoint_authority_oids_positive,
+         ADD CONSTRAINT p42_indexer_checkpoint_authority_oids_positive CHECK (true)`,
+    );
+    await expectMigrationFailure(client, migration2Sql, "authority schema does not match migration 2");
+  });
+
+  await inTemporarySchema("security-definer-definition-restored", async (client) => {
+    await applyMigrations(client);
+    await client.query(`ALTER FUNCTION p42_transition_indexer_checkpoint(
+      bigint,text,text,bigint,text,text,bigint,text,text,text) SET search_path=public`);
+    await applyMigrations(client);
+    const functionRow = await client.query(`SELECT prosecdef, proconfig,
+      pg_get_userbyid(proowner)=current_user AS exact_owner,
+      prosrc=(SELECT transition_function_source FROM p42_indexer_checkpoint_authority WHERE singleton=true) AS exact_source
+      FROM pg_proc WHERE oid='p42_transition_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)'::regprocedure`);
+    const row = functionRow.rows[0];
+    if (!row?.prosecdef || !row.exact_owner || !row.exact_source
+      || JSON.stringify(row.proconfig) !== JSON.stringify(["search_path=pg_catalog"])) {
+      throw new Error("migration did not restore the exact transition function authority");
+    }
+  });
+
+  await inTemporarySchema("forged-high-history-rejected", async (client) => {
+    await applyMigrations(client);
+    await callTransition(client, checkpoint("100", "1", "2", "1000"));
+    await client.query(`INSERT INTO p42_indexer_checkpoint_epoch VALUES(
+      99,$1,$2,84532,'baseSepolia',$3,$4,clock_timestamp())`,
+    [`sha256:${"6".repeat(64)}`, `sha256:${"7".repeat(64)}`, "b".repeat(40), `0x${"8".repeat(64)}`]);
+    await client.query(`INSERT INTO p42_indexer_checkpoint_acceptance VALUES(
+      99,99,999,$1,$2,1999,clock_timestamp())`, [`0x${"9".repeat(64)}`, `sha256:${"a".repeat(64)}`]);
+    await expectQueryFailure(() => callTransition(client, checkpoint("101", "b", "c", "1001")), "not contiguous and complete");
+  });
+
+  await inTemporarySchema("runtime-direct-rollback-denied", async (client, schema) => {
+    await applyMigrations(client);
+    const runtimeRole = `p42_runtime_${randomUUID().replaceAll("-", "")}`;
+    const role = quoteIdentifier(runtimeRole);
+    try {
+      await admin.query(`CREATE ROLE ${role} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`);
+      await client.query(`GRANT USAGE ON SCHEMA ${quoteIdentifier(schema)} TO ${role}`);
+      await client.query(`GRANT SELECT ON p42_indexer_checkpoint_authority,p42_indexer_checkpoint_control,
+        p42_indexer_checkpoint_epoch,p42_indexer_checkpoint_acceptance TO ${role}`);
+      await client.query(`GRANT EXECUTE ON FUNCTION p42_transition_indexer_checkpoint(
+        bigint,text,text,bigint,text,text,bigint,text,text,text) TO ${role}`);
+      await client.query(`SET ROLE ${role}`);
+      await callTransition(client, checkpoint("100", "1", "2", "1000"));
+      await expectQueryFailure(() => client.query("UPDATE p42_indexer_checkpoint_control SET current_epoch=NULL"), "permission denied");
+      await expectQueryFailure(() => client.query(`INSERT INTO p42_indexer_checkpoint_epoch VALUES(
+        99,$1,$2,84532,'baseSepolia',$3,$4,clock_timestamp())`,
+      [`sha256:${"6".repeat(64)}`, `sha256:${"7".repeat(64)}`, "b".repeat(40), `0x${"8".repeat(64)}`]), "permission denied");
+      await client.query("RESET ROLE");
+    } finally {
+      await client.query("RESET ROLE").catch(() => {});
+      await admin.query(`DROP OWNED BY ${role}`).catch(() => {});
+      await admin.query(`DROP ROLE IF EXISTS ${role}`);
+    }
+  });
+
+  await inTemporarySchema("noinherit-set-role-path-detected", async (client) => {
+    await applyMigrations(client);
+    const suffix = randomUUID().replaceAll("-", "");
+    const runtimeName = `p42_runtime_${suffix}`; const dangerousName = `p42_danger_${suffix}`;
+    const runtimeRole = quoteIdentifier(runtimeName); const dangerousRole = quoteIdentifier(dangerousName);
+    try {
+      await admin.query(`CREATE ROLE ${dangerousRole} NOLOGIN`);
+      await admin.query(`CREATE ROLE ${runtimeRole} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`);
+      await client.query(`GRANT UPDATE ON p42_indexer_checkpoint_control TO ${dangerousRole}`);
+      await admin.query(`GRANT ${dangerousRole} TO ${runtimeRole} WITH INHERIT FALSE, SET TRUE`);
+      const detected = await client.query(`SELECT pg_has_role($1,$2,'SET')
+        AND has_table_privilege($2,'p42_indexer_checkpoint_control','UPDATE') AS dangerous`, [runtimeName, dangerousName]);
+      if (!detected.rows[0]?.dangerous) throw new Error("NOINHERIT SET ROLE authority path was not detected");
+    } finally {
+      await admin.query(`REVOKE ${dangerousRole} FROM ${runtimeRole}`).catch(() => {});
+      await admin.query(`DROP OWNED BY ${dangerousRole}`).catch(() => {});
+      await admin.query(`DROP OWNED BY ${runtimeRole}`).catch(() => {});
+      await admin.query(`DROP ROLE IF EXISTS ${runtimeRole}`).catch(() => {});
+      await admin.query(`DROP ROLE IF EXISTS ${dangerousRole}`).catch(() => {});
+    }
+  });
+
+  await inTemporarySchema("alternate-search-path-cannot-reset-authority", async (client, schema) => {
+    await applyMigrations(client);
+    await callTransition(client, checkpoint("100", "1", "2", "1000"));
+    const alternate = `p42_parallel_${randomUUID().replaceAll("-", "")}`;
+    try {
+      await admin.query(`CREATE SCHEMA ${quoteIdentifier(alternate)}`);
+      await client.query(`SET search_path TO ${quoteIdentifier(alternate)}`);
+      await applyMigrations(client);
+      await client.query(`SET search_path TO ${quoteIdentifier(alternate)},pg_catalog`);
+      const original = await callTransition(client, checkpoint("101", "3", "4", "1001"), schema);
+      if (original.rows[0]?.transition_kind !== "advance") {
+        throw new Error("alternate search_path reset the pinned authority to epoch 1");
+      }
+    } finally {
+      await client.query(`SET search_path TO ${quoteIdentifier(schema)}`);
+      await admin.query(`DROP SCHEMA IF EXISTS ${quoteIdentifier(alternate)} CASCADE`);
+    }
+  });
+
   await inTemporarySchema("high-water-wrong-migration-name", async (client) => {
     await client.query(migration1Sql);
     await client.query("INSERT INTO p42_schema_migration (version, name) VALUES (2, 'wrong_name')");
@@ -129,12 +232,32 @@ async function inTemporarySchema(label, operation) {
   try {
     await client.connect();
     await client.query(`SET search_path TO ${identifier}`);
-    await operation(client);
+    await operation(client, schema);
     passed.push(label);
   } finally {
     await client.end().catch(() => {});
     await admin.query(`DROP SCHEMA IF EXISTS ${identifier} CASCADE`);
   }
+}
+
+function checkpoint(block, hashDigit, digestDigit, timestamp) {
+  return [block, `0x${hashDigit.repeat(64)}`, `sha256:${digestDigit.repeat(64)}`, timestamp,
+    `sha256:${"3".repeat(64)}`, `sha256:${"4".repeat(64)}`, "84532", "baseSepolia",
+    "a".repeat(40), `0x${"5".repeat(64)}`];
+}
+
+async function callTransition(client, values, schema) {
+  const prefix = schema ? `${quoteIdentifier(schema)}.` : "";
+  return client.query(`SELECT * FROM ${prefix}p42_transition_indexer_checkpoint(
+    $1::bigint,$2::text,$3::text,$4::bigint,$5::text,$6::text,$7::bigint,$8::text,$9::text,$10::text)`, values);
+}
+
+async function expectQueryFailure(operation, expectedMessage) {
+  try { await operation(); } catch (error) {
+    if (error instanceof Error && error.message.includes(expectedMessage)) return;
+    throw error;
+  }
+  throw new Error(`query unexpectedly succeeded; expected ${expectedMessage}`);
 }
 
 async function applyMigrations(client) {

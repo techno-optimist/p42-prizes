@@ -818,9 +818,12 @@ export function activatedProvenanceFromArtifacts(
   requireBinding(plan.authorizationBytesDigest === sha256Bytes(authorizationBytes)
     && completion.authorizationBytesDigest === plan.authorizationBytesDigest);
   const authorizationExpiry = Date.parse(String(authorization.expires_at_utc)) / 1000;
-  requireBinding(Number.isSafeInteger(authorizationExpiry) && nowSeconds <= authorizationExpiry
+  const authorizationIssuedAt = Date.parse(String(authorization.issued_at_utc)) / 1000;
+  requireBinding(Number.isSafeInteger(authorizationExpiry) && Number.isSafeInteger(authorizationIssuedAt)
+    && authorizationIssuedAt <= authorizationExpiry
     && authorizationExpiry === plan.authorizationExpiresAt && authorizationExpiry === completion.authorizationExpiresAt);
   requireBinding(Number.isSafeInteger(completion.finalizedBlockTimestamp)
+    && authorizationIssuedAt <= Number(completion.finalizedBlockTimestamp)
     && Number(completion.finalizedBlockTimestamp) <= authorizationExpiry);
   requireBinding(completion.planDigest === plan.planDigest && completion.chainId === plan.chainId && completion.chainId === object(manifest.network, "manifest.network").chainId);
   const releaseBinding = object(authorization.release_binding, "authorization.release_binding");

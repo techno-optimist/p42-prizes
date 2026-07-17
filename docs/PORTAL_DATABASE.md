@@ -2,44 +2,55 @@
 
 Production uses two PostgreSQL identities. `P42_PORTAL_MIGRATION_DATABASE_URL`
 authenticates as the schema owner and runs only during migration. The web
-process uses `P42_PORTAL_DATABASE_URL`, whose role has no table ownership,
-schema `CREATE`, table `TRIGGER`, or non-internal trigger path. In required
-mode the migration refuses missing, identical, or same-role credentials.
+process uses `P42_PORTAL_DATABASE_URL`. `P42_PORTAL_DATABASE_SCHEMA` pins the
+preprovisioned schema by name and the migration records its database, schema,
+owner, relation, and function OIDs. In required mode, missing schema identity,
+same-role credentials, catalog drift, or authority overlap fails closed.
 
-The checkpoint publication gate locks the preseeded
-`p42_indexer_checkpoint_control` row. Identity epochs and accepted checkpoint
-watermarks are append-only tables: the runtime role has `SELECT, INSERT` but no
-`UPDATE` or `DELETE` on either history table. Every insert and control update is
-checked through `RETURNING` before commit. A database, privilege, trigger,
-history, or readback failure returns a local-only portal model with no funding
-target.
+Only the migration-owner-controlled `SECURITY DEFINER` transition function may
+change checkpoint authority. It has `search_path=pg_catalog`, uses fully
+qualified pinned relations, locks control, proves pointer=max over contiguous
+immutable history, applies the monotonic epoch rules, and returns the exact
+persisted tuple for application validation before commit. Runtime has `SELECT`
+and function `EXECUTE`, with no direct high-water `INSERT`, `UPDATE`, `DELETE`,
+or `TRIGGER`. Any database, role graph, schema/OID, function/ACL/source, trigger,
+history, or readback mismatch suppresses every funding target.
 
 ## Provision and import
 
 1. Pause mutable traffic and preserve/checksum any current state export.
-2. In the same PostgreSQL database, provision a non-login-equivalent schema
-   owner and a distinct runtime login. The runtime must be `NOSUPERUSER
-   NOCREATEDB NOCREATEROLE`, must not own the database/schema/tables, and must
-   not inherit a role with `CREATE` or `TRIGGER`.
-3. Set the owner URL only as `P42_PORTAL_MIGRATION_DATABASE_URL`; set the runtime
-   URL as `P42_PORTAL_DATABASE_URL`. Keep both out of `NEXT_PUBLIC_*` values.
+2. In the same PostgreSQL database, provision a dedicated migration-owner
+   login and a distinct runtime login. The runtime must be `NOSUPERUSER
+   NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT`, must not own the database,
+   schema, tables, or function, and must have no direct or indirect `SET ROLE`
+   path to the migration owner or any role with dangerous attributes,
+   ownership, `CREATE`, high-water DML, or `TRIGGER`.
+3. Precreate one durable schema owned exactly by the migration role, revoke
+   `CREATE` from runtime and public roles, and set its name in
+   `P42_PORTAL_DATABASE_SCHEMA`. Configure the runtime connection's default
+   search path to that schema for the general portal store; checkpoint authority
+   additionally forces `pg_catalog` and fully qualifies every object. Set the
+   owner URL only as `P42_PORTAL_MIGRATION_DATABASE_URL` and runtime URL as
+   `P42_PORTAL_DATABASE_URL`. Keep all three out of `NEXT_PUBLIC_*` values.
 4. From `web/`, run:
 
    ```sh
    P42_PORTAL_MIGRATION_DATABASE_URL=postgresql://<owner>@... \
    P42_PORTAL_DATABASE_URL=postgresql://<runtime>@... \
+   P42_PORTAL_DATABASE_SCHEMA=p42_portal \
    npm run db:migrate
    ```
 
    The runner applies migrations as the owner, verifies ownership, grants only
-   the declared runtime operations, reconnects as runtime, and rejects role or
-   privilege overlap.
+   the declared runtime operations, reconnects as runtime, and verifies exact
+   function owner/source/config/ACL, pinned OIDs, privileges, and `SET ROLE`
+   closure.
 5. Import state through the runtime URL exactly once with
    `P42_PORTAL_IMPORT_SHA256`; compare JSONB readback before commit.
 6. Run `npm run db:migration-integration` with the migration URL, then run
    `npm run db:rehearse` with both URLs. Save the JSON tail. It must show two
    checkpoint connections, lock attribution, accepted block `101`, stale block
-   `100`, and `staleCheckpointRejectedAfterLock: true`.
+   `100`, direct-mutation denial, and `staleCheckpointRejectedAfterLock: true`.
 7. Configure both secret URLs and `P42_PORTAL_DATABASE_REQUIRED=1` on Render.
    The blueprint runs migration first and unsets the owner URL before starting
    Next.js. Confirm the running process cannot read the owner credential.
@@ -58,16 +69,19 @@ target.
   be historically unseen, timestamp must strictly advance, and release,
   authorization, and deployment-configuration identities must all change.
   Block heights are not compared across chains.
-- Prior epoch and acceptance rows are never updated or deleted by runtime.
+- Runtime cannot directly mutate control or history. The owner function rejects
+  a control pointer that differs from immutable history maxima, gaps, orphaned
+  epochs, historical identity replay, and forged high history.
 
 ## External tail
 
 Source and local PostgreSQL rehearsal do not provision Render roles. Before any
-funding activation, an operator must provision the two production roles, run
-migration/rehearsal against the production private database, retain redacted
-role/privilege/catalog evidence and the rehearsal JSON, deploy the reviewed
-commit, and probe the live funding route. Until that tail is complete, funding
-remains fail-closed.
+funding activation, an operator must provision the production schema and two
+roles, independently inspect the membership graph, apply migration/rehearsal
+against the production private database, retain redacted OID/function/ACL/role
+evidence and the rehearsal JSON, remove the owner credential from the web
+child, deploy the reviewed commit, and probe the live funding route. Until that
+tail is complete, funding remains fail-closed.
 
 ## Rollback
 

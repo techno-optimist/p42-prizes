@@ -5,79 +5,154 @@ import pg from "pg";
 
 const migrationUrl = process.env.P42_PORTAL_MIGRATION_DATABASE_URL?.trim();
 const runtimeUrl = process.env.P42_PORTAL_DATABASE_URL?.trim();
+const targetSchema = process.env.P42_PORTAL_DATABASE_SCHEMA?.trim();
 if (!migrationUrl) throw new Error("P42_PORTAL_MIGRATION_DATABASE_URL is required for portal database migration");
 if (!runtimeUrl) throw new Error("P42_PORTAL_DATABASE_URL is required to provision and verify the runtime role");
+if (!targetSchema || !/^[a-z][a-z0-9_]{0,62}$/.test(targetSchema)) {
+  throw new Error("P42_PORTAL_DATABASE_SCHEMA must name the preprovisioned production schema");
+}
 if (migrationUrl === runtimeUrl) throw new Error("portal migration and runtime database URLs must be distinct");
 
 const migrations = await Promise.all([
   "001_portal_store.sql", "002_indexer_checkpoint_high_water.sql",
 ].map(async (name) => ({ name, sql: await readFile(path.resolve("migrations", name), "utf8") })));
-const owner = new pg.Pool({ connectionString: migrationUrl, max: 1, connectionTimeoutMillis: 10_000 });
-const runtime = new pg.Pool({ connectionString: runtimeUrl, max: 1, connectionTimeoutMillis: 10_000 });
+const ownerPool = new pg.Pool({ connectionString: migrationUrl, max: 1, connectionTimeoutMillis: 10_000 });
+const runtimePool = new pg.Pool({ connectionString: runtimeUrl, max: 1, connectionTimeoutMillis: 10_000 });
+const owner = await ownerPool.connect();
+const runtime = await runtimePool.connect();
+const schema = quoteIdentifier(targetSchema);
+const relation = (name) => `${schema}.${name}`;
+const functionIdentity = `${schema}.p42_transition_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)`;
+
 try {
-  for (const migration of migrations) await owner.query(migration.sql);
-  const ownerIdentity = (await owner.query("SELECT current_user AS role, current_schema() AS schema")).rows[0];
-  const runtimeIdentity = (await runtime.query("SELECT current_user AS role")).rows[0];
+  const ownerIdentity = (await owner.query(`SELECT current_user AS role, current_user::regrole::oid AS role_oid,
+    current_database() AS database, (SELECT datdba FROM pg_catalog.pg_database WHERE datname=current_database()) AS database_owner_oid`)).rows[0];
+  const runtimeIdentity = (await runtime.query("SELECT current_user AS role, current_user::regrole::oid AS role_oid, current_database() AS database")).rows[0];
   if (!ownerIdentity?.role || !runtimeIdentity?.role || ownerIdentity.role === runtimeIdentity.role) {
     throw new Error("portal migration and runtime connections must authenticate as different roles");
   }
-  const ownership = await owner.query(`SELECT count(*)::integer AS owned
-    FROM pg_class WHERE oid IN (
-      'p42_portal_state'::regclass, 'p42_rate_limit_bucket'::regclass,
-      'p42_schema_migration'::regclass, 'p42_indexer_checkpoint_control'::regclass,
-      'p42_indexer_checkpoint_epoch'::regclass, 'p42_indexer_checkpoint_acceptance'::regclass
-    ) AND pg_get_userbyid(relowner) = current_user`);
-  if (ownership.rows[0]?.owned !== 6) throw new Error("migration role must own every portal table");
+  if (ownerIdentity.database !== runtimeIdentity.database) throw new Error("portal migration and runtime roles must use the same database");
+  if (ownerIdentity.database_owner_oid !== ownerIdentity.role_oid) throw new Error("migration role must own the pinned portal database");
+
+  const schemaIdentity = await owner.query(`SELECT n.oid, n.nspowner FROM pg_catalog.pg_namespace AS n WHERE n.nspname=$1`, [targetSchema]);
+  if (schemaIdentity.rowCount !== 1 || schemaIdentity.rows[0].nspowner !== ownerIdentity.role_oid) {
+    throw new Error("migration role must own the preprovisioned portal schema");
+  }
+  await owner.query("SELECT set_config('search_path',$1,false)", [schema]);
+  for (const migration of migrations) await owner.query(migration.sql);
+
+  const ownedObjects = await owner.query(`SELECT count(*)::integer AS owned FROM pg_catalog.pg_class AS c
+    WHERE c.oid IN (${[
+      "p42_portal_state", "p42_rate_limit_bucket", "p42_schema_migration",
+      "p42_indexer_checkpoint_authority", "p42_indexer_checkpoint_control",
+      "p42_indexer_checkpoint_epoch", "p42_indexer_checkpoint_acceptance",
+    ].map((name) => `'${targetSchema}.${name}'::regclass`).join(",")}) AND c.relowner=$1`, [ownerIdentity.role_oid]);
+  if (ownedObjects.rows[0]?.owned !== 7) throw new Error("migration role must own every pinned portal table");
 
   const runtimeRole = quoteIdentifier(runtimeIdentity.role);
-  const schema = quoteIdentifier(ownerIdentity.schema);
+  const highWaterRelations = [
+    relation("p42_indexer_checkpoint_authority"), relation("p42_indexer_checkpoint_control"),
+    relation("p42_indexer_checkpoint_epoch"), relation("p42_indexer_checkpoint_acceptance"),
+  ].join(", ");
+  await owner.query(`REVOKE ALL ON ${highWaterRelations} FROM PUBLIC`);
+  await owner.query(`REVOKE ALL ON ${highWaterRelations} FROM ${runtimeRole}`);
+  await owner.query(`REVOKE ALL ON FUNCTION ${functionIdentity} FROM PUBLIC`);
+  await owner.query(`REVOKE ALL ON FUNCTION ${functionIdentity} FROM ${runtimeRole}`);
   await owner.query(`GRANT USAGE ON SCHEMA ${schema} TO ${runtimeRole}`);
-  await owner.query(`GRANT SELECT, INSERT, UPDATE ON p42_portal_state TO ${runtimeRole}`);
-  await owner.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON p42_rate_limit_bucket TO ${runtimeRole}`);
-  await owner.query(`GRANT SELECT ON p42_schema_migration TO ${runtimeRole}`);
-  await owner.query(`GRANT SELECT, UPDATE ON p42_indexer_checkpoint_control TO ${runtimeRole}`);
-  await owner.query(`GRANT SELECT, INSERT ON p42_indexer_checkpoint_epoch TO ${runtimeRole}`);
-  await owner.query(`GRANT SELECT, INSERT ON p42_indexer_checkpoint_acceptance TO ${runtimeRole}`);
+  await owner.query(`GRANT SELECT, INSERT, UPDATE ON ${relation("p42_portal_state")} TO ${runtimeRole}`);
+  await owner.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON ${relation("p42_rate_limit_bucket")} TO ${runtimeRole}`);
+  await owner.query(`GRANT SELECT ON ${relation("p42_schema_migration")} TO ${runtimeRole}`);
+  await owner.query(`GRANT SELECT ON ${highWaterRelations} TO ${runtimeRole}`);
+  await owner.query(`GRANT EXECUTE ON FUNCTION ${functionIdentity} TO ${runtimeRole}`);
 
-  const verification = await runtime.query(`SELECT
-    to_regclass('p42_portal_state') IS NOT NULL AS state_table,
-    to_regclass('p42_rate_limit_bucket') IS NOT NULL AS rate_table,
-    to_regclass('p42_indexer_checkpoint_control') IS NOT NULL AS control_table,
-    to_regclass('p42_indexer_checkpoint_epoch') IS NOT NULL AS epoch_table,
-    to_regclass('p42_indexer_checkpoint_acceptance') IS NOT NULL AS acceptance_table,
-    (SELECT name FROM p42_schema_migration WHERE version=1) AS migration_1_name,
-    (SELECT name FROM p42_schema_migration WHERE version=2) AS migration_2_name,
-    (SELECT count(*)::integer FROM p42_indexer_checkpoint_control WHERE singleton=true) AS control_rows,
-    has_schema_privilege(current_user, current_schema(), 'CREATE') AS can_create,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_control', 'TRIGGER') AS can_trigger_control,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_epoch', 'TRIGGER') AS can_trigger_epoch,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_acceptance', 'TRIGGER') AS can_trigger_acceptance,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_epoch', 'UPDATE') AS can_update_epoch,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_acceptance', 'UPDATE') AS can_update_acceptance,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_control', 'INSERT') AS can_insert_control,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_control', 'DELETE') AS can_delete_control,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_epoch', 'DELETE') AS can_delete_epoch,
-    has_table_privilege(current_user, 'p42_indexer_checkpoint_acceptance', 'DELETE') AS can_delete_acceptance,
-    EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid IN (
-      'p42_indexer_checkpoint_control'::regclass, 'p42_indexer_checkpoint_epoch'::regclass,
-      'p42_indexer_checkpoint_acceptance'::regclass
-    ) AND NOT tgisinternal) AS external_triggers,
-    EXISTS (SELECT 1 FROM pg_class WHERE oid IN (
-      'p42_indexer_checkpoint_control'::regclass, 'p42_indexer_checkpoint_epoch'::regclass,
-      'p42_indexer_checkpoint_acceptance'::regclass
-    ) AND pg_get_userbyid(relowner)=current_user) AS owns_high_water`);
+  await runtime.query("SELECT set_config('search_path','pg_catalog',false)");
+  const verification = await runtime.query(runtimeVerificationSql(targetSchema), [targetSchema]);
   const row = verification.rows[0];
-  if (!row?.state_table || !row?.rate_table || !row?.control_table || !row?.epoch_table || !row?.acceptance_table
-    || row.migration_1_name !== "portal_store" || row.migration_2_name !== "indexer_checkpoint_epoch_high_water"
-    || row.control_rows !== 1 || row.can_create || row.can_trigger_control || row.can_trigger_epoch
-    || row.can_trigger_acceptance || row.can_update_epoch || row.can_update_acceptance
-    || row.can_insert_control || row.can_delete_control || row.can_delete_epoch || row.can_delete_acceptance
-    || row.external_triggers || row.owns_high_water) {
-    throw new Error("portal runtime role failed least-privilege schema verification");
+  if (verification.rowCount !== 1 || !row.identity_matches || !row.function_matches || !row.acl_matches
+    || !row.safe_role || !row.no_direct_writes || !row.no_dangerous_set_role || !row.no_external_triggers
+    || row.control_rows !== 1 || row.migration_1_name !== "portal_store"
+    || row.migration_2_name !== "indexer_checkpoint_epoch_high_water") {
+    throw new Error("portal runtime role failed pinned least-privilege authority verification");
   }
-  process.stdout.write("portal database schema and least-privilege runtime grants are ready\n");
+  process.stdout.write("portal database schema and pinned least-privilege transition authority are ready\n");
 } finally {
-  await runtime.end(); await owner.end();
+  owner.release(); runtime.release();
+  await runtimePool.end(); await ownerPool.end();
+}
+
+function runtimeVerificationSql(schemaName) {
+  const q = quoteIdentifier(schemaName);
+  const named = (name) => `${schemaName}.${name}`;
+  return `WITH pinned AS (SELECT * FROM ${q}.p42_indexer_checkpoint_authority WHERE singleton=true),
+  objects AS (
+    SELECT p.*, n.oid AS actual_schema_oid, n.nspname AS actual_schema_name,
+      f.proowner AS function_owner, f.prosecdef, f.provolatile, f.prokind, f.proconfig, f.prosrc,
+      l.lanname, f.proisstrict, f.proleakproof, f.proparallel, f.proretset,
+      pg_catalog.pg_get_function_result(f.oid) AS function_result,
+      f.oid AS actual_function_oid
+    FROM pinned AS p JOIN pg_catalog.pg_namespace AS n ON n.oid=p.schema_oid
+    JOIN pg_catalog.pg_proc AS f ON f.oid=p.transition_function_oid
+    JOIN pg_catalog.pg_language AS l ON l.oid=f.prolang
+  ), runtime AS (SELECT r.* FROM pg_catalog.pg_roles AS r WHERE r.rolname=CURRENT_USER)
+  SELECT
+    CURRENT_USER=SESSION_USER
+      AND o.database_oid=(SELECT d.oid FROM pg_catalog.pg_database AS d WHERE d.datname=current_database())
+      AND o.database_name::text=current_database() AND o.schema_oid=o.actual_schema_oid
+      AND o.schema_name::text=$1 AND o.actual_schema_name=$1
+      AND o.migration_owner_oid=(SELECT d.datdba FROM pg_catalog.pg_database AS d WHERE d.oid=o.database_oid)
+      AND o.migration_owner_oid=(SELECT n.nspowner FROM pg_catalog.pg_namespace AS n WHERE n.oid=o.schema_oid)
+      AND o.migration_owner_oid=(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.authority_oid)
+      AND o.migration_owner_oid=(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.control_oid)
+      AND o.migration_owner_oid=(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.epoch_oid)
+      AND o.migration_owner_oid=(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.acceptance_oid)
+      AND o.authority_oid='${named("p42_indexer_checkpoint_authority")}'::regclass::oid
+      AND o.control_oid='${named("p42_indexer_checkpoint_control")}'::regclass::oid
+      AND o.epoch_oid='${named("p42_indexer_checkpoint_epoch")}'::regclass::oid
+      AND o.acceptance_oid='${named("p42_indexer_checkpoint_acceptance")}'::regclass::oid AS identity_matches,
+    o.actual_function_oid='${named("p42_transition_indexer_checkpoint(bigint,text,text,bigint,text,text,bigint,text,text,text)")}'::regprocedure::oid
+      AND o.function_owner=o.migration_owner_oid
+      AND o.migration_owner_name::text=pg_catalog.pg_get_userbyid(o.function_owner)
+      AND o.prosecdef AND o.provolatile='v' AND o.prokind='f'
+      AND o.lanname='plpgsql' AND NOT o.proisstrict AND NOT o.proleakproof
+      AND o.proparallel='u' AND o.proretset AND o.function_result='TABLE(transition_kind text, epoch_id bigint, release_binding_digest text, authorization_digest text, chain_id bigint, chain_name text, deployment_commit text, deployment_config_hash text, epoch_accepted_at timestamp with time zone, acceptance_id bigint, finalized_block_number bigint, finalized_block_hash text, checkpoint_digest text, checkpoint_timestamp bigint, acceptance_accepted_at timestamp with time zone, current_epoch bigint, current_acceptance bigint, next_epoch bigint, next_acceptance bigint, control_updated_at timestamp with time zone)'
+      AND o.proconfig=ARRAY['search_path=pg_catalog']::text[] AND o.prosrc=o.transition_function_source AS function_matches,
+    pg_catalog.has_function_privilege(CURRENT_USER,o.actual_function_oid,'EXECUTE')
+      AND NOT pg_catalog.has_function_privilege('public',o.actual_function_oid,'EXECUTE')
+      AND NOT EXISTS (SELECT 1 FROM pg_catalog.aclexplode(coalesce(
+        (SELECT p.proacl FROM pg_catalog.pg_proc AS p WHERE p.oid=o.actual_function_oid),
+        pg_catalog.acldefault('f',o.function_owner))) AS acl
+        WHERE acl.privilege_type='EXECUTE' AND acl.grantee<>ALL(ARRAY[o.function_owner,r.oid])) AS acl_matches,
+    NOT r.rolsuper AND NOT r.rolcreatedb AND NOT r.rolcreaterole AND NOT r.rolbypassrls
+      AND (SELECT d.datdba<>r.oid FROM pg_catalog.pg_database AS d WHERE d.oid=o.database_oid)
+      AND (SELECT n.nspowner<>r.oid FROM pg_catalog.pg_namespace AS n WHERE n.oid=o.schema_oid)
+      AND r.oid<>ALL(ARRAY[(SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.control_oid),
+        (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.epoch_oid),
+        (SELECT c.relowner FROM pg_catalog.pg_class AS c WHERE c.oid=o.acceptance_oid)])
+      AND NOT pg_catalog.has_database_privilege(r.oid,o.database_oid,'CREATE')
+      AND NOT pg_catalog.has_schema_privilege(r.oid,o.schema_oid,'CREATE') AS safe_role,
+    NOT (${dangerousTablePrivileges("r.oid", "o")}) AS no_direct_writes,
+    NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles AS candidate
+      WHERE candidate.oid<>r.oid AND pg_catalog.pg_has_role(r.oid,candidate.oid,'SET')
+        AND (candidate.oid=o.migration_owner_oid OR candidate.rolsuper OR candidate.rolcreatedb
+          OR candidate.rolcreaterole OR candidate.rolbypassrls
+          OR pg_catalog.has_database_privilege(candidate.oid,o.database_oid,'CREATE')
+          OR pg_catalog.has_schema_privilege(candidate.oid,o.schema_oid,'CREATE')
+          OR candidate.oid=(SELECT d.datdba FROM pg_catalog.pg_database AS d WHERE d.oid=o.database_oid)
+          OR candidate.oid=(SELECT n.nspowner FROM pg_catalog.pg_namespace AS n WHERE n.oid=o.schema_oid)
+          OR ${dangerousTablePrivileges("candidate.oid", "o")})) AS no_dangerous_set_role,
+    NOT EXISTS (SELECT 1 FROM pg_catalog.pg_trigger AS t
+      WHERE t.tgrelid IN(o.control_oid,o.epoch_oid,o.acceptance_oid) AND NOT t.tgisinternal) AS no_external_triggers,
+    (SELECT count(*)::integer FROM ${q}.p42_indexer_checkpoint_control WHERE singleton=true) AS control_rows,
+    (SELECT name FROM ${q}.p42_schema_migration WHERE version=1) AS migration_1_name,
+    (SELECT name FROM ${q}.p42_schema_migration WHERE version=2) AS migration_2_name
+  FROM objects AS o CROSS JOIN runtime AS r`;
+}
+
+function dangerousTablePrivileges(role, objects) {
+  return ["control", "epoch", "acceptance"].flatMap((table) =>
+    ["INSERT", "UPDATE", "DELETE", "TRIGGER"].map((privilege) =>
+      `pg_catalog.has_table_privilege(${role},${objects}.${table}_oid,'${privilege}')`),
+  ).join(" OR ");
 }
 
 function quoteIdentifier(value) { return `"${value.replaceAll('"', '""')}"`; }

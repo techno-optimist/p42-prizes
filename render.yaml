@@ -24,6 +24,10 @@ services:
       # authenticate as a different role from P42_PORTAL_DATABASE_URL.
       - key: P42_PORTAL_MIGRATION_DATABASE_URL
         sync: false
+      # Preprovision this exact schema under the migration owner. Runtime has
+      # USAGE only; checkpoint relations/functions are OID-bound inside it.
+      - key: P42_PORTAL_DATABASE_SCHEMA
+        value: p42_portal
       - key: P42_PORTAL_DATABASE_REQUIRED
         value: "1"
       # Funding publication remains disabled until the complete activation

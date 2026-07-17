@@ -26,6 +26,11 @@ describe("portal database migration", () => {
     expect(sql).toContain("INSERT INTO p42_indexer_checkpoint_control (singleton)");
     expect(sql).toContain("p42_indexer_checkpoint_control_state_complete:CHECK");
     expect(sql).toContain("p42_indexer_checkpoint_acceptance_block_hash_format:CHECK");
+    expect(sql).toContain("SECURITY DEFINER");
+    expect(sql).toContain("SET search_path = pg_catalog");
+    expect(sql).toContain("transition_function_source");
+    expect(sql).toContain("checkpoint control does not match immutable history maxima");
+    expect(sql).toContain("has_function_privilege('public', function_row.function_oid, 'EXECUTE')");
     expect(sql).toContain("existing P42 indexer checkpoint epoch schema does not match migration 2");
     expect(sql).toContain("version=2 AND name='indexer_checkpoint_epoch_high_water'");
   });
@@ -38,10 +43,12 @@ describe("portal database migration", () => {
     expect(runner).toContain("for (const migration of migrations) await owner.query(migration.sql)");
     expect(runner).toContain("P42_PORTAL_MIGRATION_DATABASE_URL");
     expect(runner).toContain("ownerIdentity.role === runtimeIdentity.role");
-    expect(runner).toContain("GRANT SELECT, INSERT ON p42_indexer_checkpoint_epoch");
-    expect(runner).toContain("GRANT SELECT, INSERT ON p42_indexer_checkpoint_acceptance");
-    expect(runner).toContain("AS can_update_epoch");
-    expect(runner).toContain("AS external_triggers");
+    expect(runner).toContain("P42_PORTAL_DATABASE_SCHEMA");
+    expect(runner).toContain("REVOKE ALL ON ${highWaterRelations} FROM ${runtimeRole}");
+    expect(runner).toContain("GRANT EXECUTE ON FUNCTION ${functionIdentity} TO ${runtimeRole}");
+    expect(runner).toContain("pg_catalog.pg_has_role(r.oid,candidate.oid,'SET')");
+    expect(runner).toContain("AS no_direct_writes");
+    expect(runner).toContain("AS no_external_triggers");
     expect(runner).toContain("row.migration_2_name !== \"indexer_checkpoint_epoch_high_water\"");
     expect(runner).toContain("row.control_rows !== 1");
   });
