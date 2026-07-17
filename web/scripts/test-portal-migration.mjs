@@ -4,8 +4,8 @@ import path from "node:path";
 import process from "node:process";
 import pg from "pg";
 
-const connectionString = process.env.P42_PORTAL_DATABASE_URL?.trim();
-if (!connectionString) throw new Error("P42_PORTAL_DATABASE_URL is required for migration integration tests");
+const connectionString = process.env.P42_PORTAL_MIGRATION_DATABASE_URL?.trim();
+if (!connectionString) throw new Error("P42_PORTAL_MIGRATION_DATABASE_URL is required for migration integration tests");
 const migration1Sql = await readFile(path.resolve("migrations/001_portal_store.sql"), "utf8");
 const migration2Sql = await readFile(path.resolve("migrations/002_indexer_checkpoint_high_water.sql"), "utf8");
 const admin = new pg.Client({ connectionString, connectionTimeoutMillis: 10_000 });
@@ -17,13 +17,11 @@ try {
     await applyMigrations(client);
     await applyMigrations(client);
     const highWater = await client.query(
-      `SELECT count(*)::integer AS rows,
-              count(finalized_block_number)::integer AS initialized
-         FROM p42_indexer_checkpoint_high_water
-        WHERE singleton = true`,
+      `SELECT (SELECT count(*)::integer FROM p42_indexer_checkpoint_control WHERE singleton=true) AS controls,
+              (SELECT count(*)::integer FROM p42_indexer_checkpoint_epoch) AS epochs`,
     );
-    if (highWater.rows[0].rows !== 1 || highWater.rows[0].initialized !== 0) {
-      throw new Error("fresh high-water singleton was not preseeded in the uninitialized state");
+    if (highWater.rows[0].controls !== 1 || highWater.rows[0].epochs !== 0) {
+      throw new Error("fresh epoch control was not preseeded with empty history");
     }
   });
 
@@ -64,21 +62,30 @@ try {
     }
   });
 
-  await inTemporarySchema("high-water-missing-completeness-constraint", async (client) => {
+  await inTemporarySchema("epoch-control-missing-completeness-constraint", async (client) => {
     await applyMigrations(client);
     await client.query(
-      "ALTER TABLE p42_indexer_checkpoint_high_water DROP CONSTRAINT p42_indexer_checkpoint_high_water_complete",
+      "ALTER TABLE p42_indexer_checkpoint_control DROP CONSTRAINT p42_indexer_checkpoint_control_state_complete",
     );
     await expectMigrationFailure(client, migration2Sql, "does not match migration 2");
   });
 
-  await inTemporarySchema("high-water-weakened-hash-constraint", async (client) => {
+  await inTemporarySchema("acceptance-history-same-name-check-true", async (client) => {
     await applyMigrations(client);
     await client.query(
-      `ALTER TABLE p42_indexer_checkpoint_high_water
-         DROP CONSTRAINT p42_indexer_checkpoint_high_water_finalized_block_hash_check,
-         ADD CONSTRAINT p42_indexer_checkpoint_high_water_finalized_block_hash_check
-           CHECK (finalized_block_hash IS NULL OR length(finalized_block_hash) > 0)`,
+      `ALTER TABLE p42_indexer_checkpoint_acceptance
+         DROP CONSTRAINT p42_indexer_checkpoint_acceptance_block_hash_format,
+         ADD CONSTRAINT p42_indexer_checkpoint_acceptance_block_hash_format CHECK (true)`,
+    );
+    await expectMigrationFailure(client, migration2Sql, "does not match migration 2");
+  });
+
+  await inTemporarySchema("epoch-control-same-name-check-true", async (client) => {
+    await applyMigrations(client);
+    await client.query(
+      `ALTER TABLE p42_indexer_checkpoint_control
+         DROP CONSTRAINT p42_indexer_checkpoint_control_state_complete,
+         ADD CONSTRAINT p42_indexer_checkpoint_control_state_complete CHECK (true)`,
     );
     await expectMigrationFailure(client, migration2Sql, "does not match migration 2");
   });
@@ -91,16 +98,16 @@ try {
 
   await inTemporarySchema("high-water-failure-rolls-back", async (client) => {
     await client.query(migration1Sql);
-    await client.query("CREATE TABLE p42_indexer_checkpoint_high_water (singleton boolean PRIMARY KEY)");
+    await client.query("CREATE TABLE p42_indexer_checkpoint_epoch (epoch_id bigint PRIMARY KEY)");
     await expectMigrationFailure(client, migration2Sql, "does not match migration 2");
     const result = await client.query(
       `SELECT count(*)::integer AS columns,
               (SELECT count(*)::integer FROM p42_schema_migration WHERE version = 2) AS migration_rows
          FROM information_schema.columns
-        WHERE table_schema = current_schema() AND table_name = 'p42_indexer_checkpoint_high_water'`,
+        WHERE table_schema = current_schema() AND table_name = 'p42_indexer_checkpoint_epoch'`,
     );
     if (result.rows[0].columns !== 1 || result.rows[0].migration_rows !== 0) {
-      throw new Error("failed high-water migration left partial schema behind");
+      throw new Error("failed epoch migration left partial schema behind");
     }
   });
 

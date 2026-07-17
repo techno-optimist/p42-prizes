@@ -91,6 +91,14 @@ problem requirement.
 
 ## Exact Blockers At This Snapshot
 
+- Portal checkpoint database upgrade: source now requires distinct migration-owner
+  and least-privilege runtime PostgreSQL roles plus append-only epoch/acceptance
+  history. An operator must provision those roles in Render, apply migration 002,
+  run the production privilege/catalog and concurrent-lock rehearsal, retain the
+  redacted evidence tail, and confirm the web child process does not retain
+  `P42_PORTAL_MIGRATION_DATABASE_URL`. This has not been performed on the live
+  database; no funding activation is authorized by the local rehearsal.
+
 - Source control: the CI workflow is published, and the checked-in
   [`source-release receipt`](evidence/source-release-current.json) remains valid
   historical v2 evidence only. It is not current after the later source and

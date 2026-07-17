@@ -20,13 +20,14 @@ describe("portal database migration", () => {
     expect(sql).toContain("index_meta.indexprs IS NULL");
   });
 
-  it("preseeds and strictly validates the durable checkpoint lock row", () => {
+  it("preseeds control and exactly validates control and append-only history constraints", () => {
     const sql = readFileSync(resolve("migrations/002_indexer_checkpoint_high_water.sql"), "utf8");
 
-    expect(sql).toContain("INSERT INTO p42_indexer_checkpoint_high_water (singleton)");
-    expect(sql).toContain("p42_indexer_checkpoint_high_water_complete");
-    expect(sql).toContain("existing P42 indexer checkpoint high-water table does not match migration 2");
-    expect(sql).toContain("version = 2 AND name = 'indexer_checkpoint_high_water'");
+    expect(sql).toContain("INSERT INTO p42_indexer_checkpoint_control (singleton)");
+    expect(sql).toContain("p42_indexer_checkpoint_control_state_complete:CHECK");
+    expect(sql).toContain("p42_indexer_checkpoint_acceptance_block_hash_format:CHECK");
+    expect(sql).toContain("existing P42 indexer checkpoint epoch schema does not match migration 2");
+    expect(sql).toContain("version=2 AND name='indexer_checkpoint_epoch_high_water'");
   });
 
   it("applies and verifies both migrations in production order", () => {
@@ -34,8 +35,14 @@ describe("portal database migration", () => {
 
     expect(runner).toContain('"001_portal_store.sql"');
     expect(runner).toContain('"002_indexer_checkpoint_high_water.sql"');
-    expect(runner).toContain("for (const migration of migrations) await pool.query(migration.sql)");
-    expect(runner).toContain("row.migration_2_name !== \"indexer_checkpoint_high_water\"");
-    expect(runner).toContain("row.high_water_rows !== 1");
+    expect(runner).toContain("for (const migration of migrations) await owner.query(migration.sql)");
+    expect(runner).toContain("P42_PORTAL_MIGRATION_DATABASE_URL");
+    expect(runner).toContain("ownerIdentity.role === runtimeIdentity.role");
+    expect(runner).toContain("GRANT SELECT, INSERT ON p42_indexer_checkpoint_epoch");
+    expect(runner).toContain("GRANT SELECT, INSERT ON p42_indexer_checkpoint_acceptance");
+    expect(runner).toContain("AS can_update_epoch");
+    expect(runner).toContain("AS external_triggers");
+    expect(runner).toContain("row.migration_2_name !== \"indexer_checkpoint_epoch_high_water\"");
+    expect(runner).toContain("row.control_rows !== 1");
   });
 });
