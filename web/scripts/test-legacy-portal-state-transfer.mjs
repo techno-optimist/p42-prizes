@@ -12,8 +12,11 @@ const transferScript = path.resolve("scripts/transfer-legacy-portal-state.mjs");
 const admin = new pg.Client({ connectionString, connectionTimeoutMillis: 10_000 });
 await admin.connect();
 const databaseName = (await admin.query("SELECT current_database() AS name")).rows[0].name;
+const ownerPassword = connectionPassword(connectionString);
 const runtimeRole = `p42_runtime_${randomUUID().replaceAll("-", "")}`;
-await admin.query(`CREATE ROLE ${quoteIdentifier(runtimeRole)} NOLOGIN NOSUPERUSER NOINHERIT
+const runtimePassword = `runtime-${randomUUID()}`;
+await admin.query(`CREATE ROLE ${quoteIdentifier(runtimeRole)} LOGIN PASSWORD ${quoteLiteral(runtimePassword)}
+  NOSUPERUSER NOINHERIT
   NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS`);
 
 const passed = [];
@@ -30,6 +33,25 @@ try {
     if (rows.rowCount !== 1 || rows.rows[0].revision !== "0" || rows.rows[0].import_sha256 !== importSha256
       || digest(rows.rows[0].state_text) !== stateDigest()) throw new Error("successful transfer readback mismatch");
     await assertPortalAclsExact(legacy, target);
+    await assertRuntimeSelect(target);
+  });
+
+  await transferCase("jsonb-text-digest-encoding-bound", async ({ legacy, target }) => {
+    const first = '{"z":[3,2,1],"a":{"b":true,"a":null},"n":1.2300}';
+    const equivalent = '{ "n": 1.2300, "a": { "a": null, "b": true }, "z": [3, 2, 1] }';
+    const encoded = await admin.query(`SELECT $1::jsonb::text AS first, $2::jsonb::text AS equivalent`,
+      [first, equivalent]);
+    if (encoded.rows[0]?.first !== encoded.rows[0]?.equivalent || encoded.rows[0]?.first === first) {
+      throw new Error("jsonb text encoding probe was not canonical within PostgreSQL 18.4");
+    }
+    await admin.query(`DELETE FROM ${qualified(legacy, "p42_portal_state")}`);
+    await seed(legacy, { stateText: first });
+    const receipt = assertSuccessResult(await runTransfer({
+      legacy, target, stateSha256: digest(encoded.rows[0].first),
+    }));
+    if (receipt.stateSha256 !== digest(encoded.rows[0].equivalent)) {
+      throw new Error("receipt state digest was not reproducible from the bound jsonb text encoding");
+    }
   });
 
   await transferCase("source-destination-alias", async ({ legacy }) => {
@@ -449,16 +471,16 @@ try {
   });
 
   await transferCase("rollback-and-secret-redaction", async ({ legacy, target }) => {
-    const secret = `secret-${randomUUID()}`;
     const result = await runTransferProcess({
       legacy, target, importSha256: `sha256:${"3".repeat(64)}`,
-      connectionString: withPassword(connectionString, secret),
+      connectionString,
     });
     if (result.code === 0 || !result.stderr.includes("source-import-digest-mismatch")) {
       throw new Error("redaction probe did not reach the expected failure");
     }
     const combined = `${result.stdout}\n${result.stderr}`;
-    if (combined.includes(secret) || combined.includes(connectionString) || combined.includes(JSON.stringify(state))
+    if (combined.includes(ownerPassword) || combined.includes(encodeURIComponent(ownerPassword))
+      || combined.includes(connectionString) || combined.includes(JSON.stringify(state))
       || combined.includes('{"marker": "sensitive-state-marker"}')) {
       throw new Error("transfer output exposed secret material");
     }
@@ -473,7 +495,7 @@ try {
   process.stdout.write(`${JSON.stringify({
     cases: passed,
     postgresVersion,
-    schemaVersion: "p42-legacy-portal-state-transfer-test/v5",
+    schemaVersion: "p42-legacy-portal-state-transfer-test/v6",
     status: "passed",
   })}\n`);
 } finally {
@@ -584,6 +606,13 @@ async function assertProvenanceAclClosed(schema) {
 
 async function assertPortalAclsExact(legacy, target) {
   const result = await admin.query(`SELECT
+      pg_catalog.has_schema_privilege($3,$4::regnamespace,'USAGE')
+        AND NOT pg_catalog.has_schema_privilege($3,$4::regnamespace,'CREATE') AS runtime_schema_exact,
+      (SELECT count(*)=1 FROM pg_catalog.pg_namespace n,
+        LATERAL pg_catalog.aclexplode(COALESCE(n.nspacl,pg_catalog.acldefault('n',n.nspowner))) acl
+        WHERE n.oid=$4::regnamespace AND acl.grantee=(SELECT oid FROM pg_catalog.pg_roles WHERE rolname=$3)
+          AND acl.grantor=n.nspowner AND acl.privilege_type='USAGE' AND NOT acl.is_grantable)
+        AS runtime_schema_acl_exact,
       NOT pg_catalog.has_table_privilege('public',$1::regclass,'UPDATE') AS no_public_target_update,
       pg_catalog.has_table_privilege($3,$1,'SELECT')
         AND pg_catalog.has_table_privilege($3,$1,'INSERT')
@@ -596,16 +625,35 @@ async function assertPortalAclsExact(legacy, target) {
       NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c,
         LATERAL pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) acl
         WHERE c.oid=$2::regclass AND acl.grantee<>c.relowner) AS source_owner_only`,
-  [`${target}.p42_portal_state`, `${legacy}.p42_portal_state`, runtimeRole]);
+  [`${target}.p42_portal_state`, `${legacy}.p42_portal_state`, runtimeRole, target]);
   const row = result.rows[0];
-  if (!row?.no_public_target_update || !row.runtime_target_exact
+  if (!row?.runtime_schema_exact || !row.runtime_schema_acl_exact
+    || !row.no_public_target_update || !row.runtime_target_exact
     || !row.runtime_source_closed || !row.source_owner_only) throw new Error("portal ACLs were not exact");
 }
 
-async function seed(schema, { importDigest = importSha256 } = {}) {
+async function assertRuntimeSelect(target) {
+  const runtime = new pg.Client({
+    connectionString: withCredentials(connectionString, runtimeRole, runtimePassword),
+    connectionTimeoutMillis: 10_000,
+  });
+  await runtime.connect();
+  try {
+    const result = await runtime.query(`SELECT current_user AS role, revision::text AS revision,
+      state::text AS state_text FROM ${qualified(target, "p42_portal_state")}`);
+    if (result.rowCount !== 1 || result.rows[0]?.role !== runtimeRole || result.rows[0]?.revision !== "0"
+      || digest(result.rows[0]?.state_text) !== stateDigest()) {
+      throw new Error("runtime password-authenticated SELECT did not read the transferred state");
+    }
+  } finally {
+    await runtime.end().catch(() => {});
+  }
+}
+
+async function seed(schema, { importDigest = importSha256, stateText = JSON.stringify(state) } = {}) {
   await admin.query(`INSERT INTO ${qualified(schema, "p42_portal_state")}
     (singleton,schema_version,revision,state,import_sha256,imported_at,updated_at)
-    VALUES(true,1,0,$1::jsonb,$2,'2026-07-17T00:00:00Z','2026-07-17T01:00:00Z')`, [JSON.stringify(state), importDigest]);
+    VALUES(true,1,0,$1::jsonb,$2,'2026-07-17T00:00:00Z','2026-07-17T01:00:00Z')`, [stateText, importDigest]);
 }
 
 async function expectFailure(options, expectedCode) {
@@ -681,6 +729,9 @@ function assertSuccessResult(result) {
   if (value.provenanceAuthority !== "database-owner-controlled-not-external-evidence"
     || value.externalEvidenceRequirement !== "external-signed-receipt-capture-required"
     || value.databaseOwnerRemainsAuthority !== true
+    || value.stateDigestEncoding !== "postgresql-jsonb-text-utf8"
+    || value.serverEncoding !== "UTF8"
+    || value.postgresqlVersionNum !== "180004"
     || value.timestampEncoding !== "utc-iso8601-microseconds"
     || value.ceremonyAdvisoryLockKey !== "5783287920924061778"
     || value.roleDdlQuiescenceRequired !== true
@@ -735,11 +786,19 @@ function stateDigest() {
   return digest('{"marker": "sensitive-state-marker"}');
 }
 
-function withPassword(value, password) {
-  const encoded = encodeURIComponent(password);
-  const updated = value.replace(/^(postgres(?:ql)?:\/\/)([^:@/?#]+)(?::[^@/?#]*)?@/, `$1$2:${encoded}@`);
-  if (updated === value) throw new Error("test database URL must contain a username for credential redaction");
-  return updated;
+function connectionPassword(value) {
+  const parsed = new URL(value);
+  if (!parsed.username || !parsed.password) {
+    throw new Error("test database URL must contain standard password credentials");
+  }
+  return decodeURIComponent(parsed.password);
+}
+
+function withCredentials(value, username, password) {
+  const parsed = new URL(value);
+  parsed.username = username;
+  parsed.password = password;
+  return parsed.toString();
 }
 
 function digest(value) {
@@ -752,6 +811,10 @@ function qualified(schema, table) {
 
 function quoteIdentifier(value) {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+function quoteLiteral(value) {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function canonicalJson(value) {

@@ -8,6 +8,7 @@ const TABLE = "p42_portal_state";
 const PROVENANCE_TABLE = "p42_portal_state_transfer_provenance";
 const EXPECTED_SCHEMA_VERSION = 1;
 const CEREMONY_ADVISORY_LOCK_KEY = "5783287920924061778";
+const STATE_DIGEST_ENCODING = "postgresql-jsonb-text-utf8";
 
 class TransferError extends Error {
   constructor(code) {
@@ -18,7 +19,7 @@ class TransferError extends Error {
 
 main().catch((error) => {
   const code = error instanceof TransferError ? error.code : "database-operation-failed";
-  process.stderr.write(`${canonicalJson({ error: code, schemaVersion: "p42-legacy-portal-state-transfer-error/v5", status: "failed" })}\n`);
+  process.stderr.write(`${canonicalJson({ error: code, schemaVersion: "p42-legacy-portal-state-transfer-error/v6", status: "failed" })}\n`);
   process.exitCode = 1;
 });
 
@@ -72,6 +73,7 @@ async function main() {
     await createOidBoundPortalView(client, "p42_locked_target", locked.target);
     const provenance = await ensureProvenanceTable(client, locked.target, identity.roleOid, runtimeRole);
     await verifyRuntimeRoleClosure(client, runtimeRole.oid, identity, locked, provenance);
+    await grantRuntimeTargetSchemaUsage(client, locked.target, runtimeRole);
     await normalizePortalAcls(client, locked, identity.roleOid, runtimeRole);
     await verifyPortalAclClosure(client, locked, identity.roleOid, runtimeRole.oid);
     await verifyRuntimeRoleClosure(client, runtimeRole.oid, identity, locked, provenance);
@@ -87,8 +89,11 @@ async function main() {
       portalSchemaVersion: EXPECTED_SCHEMA_VERSION,
       revision: expectedRevision,
       runtimeRoleOid: runtimeRole.oid,
+      postgresqlVersionNum: identity.postgresqlVersionNum,
+      serverEncoding: identity.serverEncoding,
       sourceImportedAt: sourceRow.imported_at,
       sourceUpdatedAt: sourceRow.updated_at,
+      stateDigestEncoding: STATE_DIGEST_ENCODING,
       stateSha256: expectedStateSha256,
       targetRelationOid: locked.target.oid,
       targetSchemaOid: locked.target.schemaOid,
@@ -156,7 +161,7 @@ async function main() {
       roleDdlQuiescenceRequired: true,
       postCommitAuthorityCheckScope: "fresh-transaction-under-session-advisory-lock-database-schema-table-provenance-acl-and-set-role-closure",
       postCheckRaceBoundary: "authority-ddl-after-postcheck-remains-database-owner-trust-boundary",
-      schemaVersion: "p42-legacy-portal-state-transfer/v5",
+      schemaVersion: "p42-legacy-portal-state-transfer/v6",
       status,
       transferId,
     };
@@ -176,13 +181,18 @@ async function main() {
 
 async function databaseIdentity(client) {
   const result = await client.query(`SELECT current_user::regrole::oid::text AS role_oid,
-    d.oid::text AS database_oid, d.datdba::text AS database_owner_oid
+    d.oid::text AS database_oid, d.datdba::text AS database_owner_oid,
+    pg_catalog.current_setting('server_version_num') AS postgresql_version_num,
+    pg_catalog.current_setting('server_encoding') AS server_encoding
     FROM pg_catalog.pg_database AS d WHERE d.datname = current_database()`);
   if (result.rowCount !== 1) fail("database-identity-mismatch");
+  if (result.rows[0].server_encoding !== "UTF8") fail("unsupported-server-encoding");
   return {
     roleOid: result.rows[0].role_oid,
     databaseOid: result.rows[0].database_oid,
     databaseOwnerOid: result.rows[0].database_owner_oid,
+    postgresqlVersionNum: result.rows[0].postgresql_version_num,
+    serverEncoding: result.rows[0].server_encoding,
   };
 }
 
@@ -234,6 +244,11 @@ async function normalizePortalAcls(client, relations, ownerOid, runtimeRole) {
   await normalizeRelationAcl(client, relations.target, ownerOid, runtimeRole);
 }
 
+async function grantRuntimeTargetSchemaUsage(client, target, runtimeRole) {
+  await client.query(`GRANT USAGE ON SCHEMA ${quoteIdentifier(target.schema)}
+    TO ${quoteIdentifier(runtimeRole.name)}`);
+}
+
 async function normalizeRelationAcl(client, relation, ownerOid, allowedRole) {
   const current = await relationNameByOid(client, relation.oid);
   const table = qualified(current.schema, current.table);
@@ -265,6 +280,15 @@ async function normalizeRelationAcl(client, relation, ownerOid, allowedRole) {
 }
 
 async function verifyPortalAclClosure(client, relations, ownerOid, runtimeRoleOid) {
+  const schema = await client.query(`SELECT
+      pg_catalog.has_schema_privilege($2::oid,n.oid,'USAGE')
+        AND NOT pg_catalog.has_schema_privilege($2::oid,n.oid,'CREATE') AS runtime_effective_exact,
+      (SELECT count(*)=1
+        FROM pg_catalog.aclexplode(COALESCE(n.nspacl,pg_catalog.acldefault('n',n.nspowner))) AS acl
+        WHERE acl.grantee=$2::oid AND acl.grantor=$3::oid
+          AND acl.privilege_type='USAGE' AND NOT acl.is_grantable) AS runtime_acl_exact
+    FROM pg_catalog.pg_namespace AS n WHERE n.oid=$1::oid AND n.nspowner=$3::oid`,
+  [relations.target.schemaOid, runtimeRoleOid, ownerOid]);
   const target = await client.query(`SELECT
       NOT EXISTS (
         SELECT 1 FROM pg_catalog.aclexplode(COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) acl
@@ -313,7 +337,9 @@ async function verifyPortalAclClosure(client, relations, ownerOid, runtimeRoleOi
   [relations.legacy.oid, ownerOid, runtimeRoleOid]);
   const targetRow = target.rows[0];
   const sourceRow = source.rows[0];
-  if (target.rowCount !== 1 || !targetRow.table_acl_exact || !targetRow.runtime_acl_exact
+  const schemaRow = schema.rows[0];
+  if (schema.rowCount !== 1 || !schemaRow.runtime_effective_exact || !schemaRow.runtime_acl_exact
+    || target.rowCount !== 1 || !targetRow.table_acl_exact || !targetRow.runtime_acl_exact
     || !targetRow.column_acl_exact || !targetRow.runtime_effective_exact
     || source.rowCount !== 1 || !sourceRow.table_acl_exact || !sourceRow.column_acl_exact
     || !sourceRow.runtime_effective_closed) fail("portal-acl-not-exact");
@@ -330,7 +356,9 @@ async function postCommitAuthorityCheck(client, expected) {
     const identity = await databaseIdentity(client);
     if (identity.roleOid !== expected.identity.roleOid
       || identity.databaseOid !== expected.identity.databaseOid
-      || identity.databaseOwnerOid !== expected.identity.databaseOwnerOid) fail("postcheck-database-authority-changed");
+      || identity.databaseOwnerOid !== expected.identity.databaseOwnerOid
+      || identity.postgresqlVersionNum !== expected.identity.postgresqlVersionNum
+      || identity.serverEncoding !== expected.identity.serverEncoding) fail("postcheck-database-authority-changed");
     const relations = await resolveRelations(client, expected.locked.target.schema, expected.locked.legacy.schema);
     if (relations.target.oid !== expected.locked.target.oid || relations.legacy.oid !== expected.locked.legacy.oid
       || relations.target.schemaOid !== expected.locked.target.schemaOid
