@@ -33,6 +33,7 @@ PROGRAMS = {
     },
 }
 Q6_SOURCE_PATHS = (
+    "objective-programs/rust-toolchain.toml",
     "objective-programs/q6-intersecting-hypergraph/Cargo.toml",
     "objective-programs/q6-intersecting-hypergraph/Cargo.lock",
     "objective-programs/q6-intersecting-hypergraph/core/Cargo.toml",
