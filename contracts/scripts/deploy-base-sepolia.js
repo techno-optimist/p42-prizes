@@ -64,7 +64,7 @@ import {
   readContractsConfigJson,
 } from "./strict-json-helper.js";
 import {
-  buildDeploymentNoncePlan,
+  buildExecutableDeploymentNoncePlan,
   buildTrustedRpcEvidence,
   persistSignedDeployment,
   readSignedDeploymentJournal,
@@ -79,6 +79,7 @@ import {
   validateAndReserveCanonicalDeployment,
 } from "./canonical-deployment-reservation-gate.js";
 import {
+  bindGovernanceOperationPlan,
   buildGovernanceOperationJournal,
   governanceOperationJournalPath,
   observeGovernanceOperation,
@@ -333,6 +334,7 @@ export async function executeSignedDeploymentPlan(
     rpcEvidence: suppliedRpcEvidence,
     chainId: executionChainId = BASE_SEPOLIA_CHAIN_ID,
     networkName = "baseSepolia",
+    prevalidatedNoncePlan = null,
   } = {},
 ) {
   const liveNetwork = await ethers.provider.getNetwork();
@@ -390,22 +392,17 @@ export async function executeSignedDeploymentPlan(
     const artifact = capsuleContracts.get(step.name);
     if (!artifact || !step.expectedInitCode.startsWith(artifact.creationCode)) throw new Error(`${step.name} initcode is not bound to the attested release capsule`);
   }
-  const expected = buildDeploymentNoncePlan(ethers, {
+  const expected = buildExecutableDeploymentNoncePlan(ethers, {
     identityDigest: reservationIdentity.identityDigest,
     network: networkName,
     chainId: Number(executionChainId),
     deployer: deployer.address,
     rpcEvidence,
     startNonce,
-    steps: steps.map((step) => ({
-      name: step.id, kind: step.kind, constructorArgsHash: step.constructorArgsHash, expectedInitCode: step.expectedInitCode,
-      ...(step.kind === "factory-call-create2" ? {
-        factoryAddress: step.factoryAddress, salt: step.salt, configurationHash: step.configurationHash,
-        configurationReadCalldata: step.configurationReadCalldata,
-        deploymentEventTopic: step.deploymentEventTopic, expectedCalldata: step.expectedCalldata, expectedValue: 0,
-      } : {}),
-    })),
-  });
+  }, steps, addresses);
+  if (prevalidatedNoncePlan && prevalidatedNoncePlan.planDigest !== expected.planDigest) {
+    throw new Error("deployment payload bytes differ from the canonical pre-reservation plan");
+  }
   reserveDeploymentNoncePlan(journalPath, expected);
 
   const deployments = {};
@@ -808,16 +805,36 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const preflightInterfaces = Object.fromEntries(await Promise.all(Object.entries({ timelock: CONTRACT_NAMES.timelock, registry: CONTRACT_NAMES.registry, ...BOARD_CONTRACT_NAMES }).map(async ([key, name]) => [key, (await ethers.getContractFactory(name)).interface])));
   const preflightOperations = buildMultiBoardSetupOperations({ ethers, chainId: BASE_SEPOLIA_CHAIN_ID, timelockAddress: executablePreflight.addresses.timelock, registryAddress: executablePreflight.addresses.registry, config, boards: preflightBoards, interfaces: preflightInterfaces });
   const operationPlan = validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
-  const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(preflightOperations);
-  const { frozenPreflight, reservation } = await validateAndReserveCanonicalDeployment({
+  const deploymentRpcEvidence = buildTrustedRpcEvidence({
+    primaryUrl: requiredEnv("BASE_SEPOLIA_RPC_URL"),
+    secondaryUrl: requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"),
+    primaryOperatorId: requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID"),
+    secondaryOperatorId: requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"),
+  });
+  const {
+    frozenPreflight,
+    frozenSetupOperations,
+    validatedDeploymentPlan,
+    reservation,
+  } = await validateAndReserveCanonicalDeployment({
     canonicalDefinitions,
     executableDefinitions: definitions,
     boardCount: config.problems.length,
     executablePreflight,
     setupOperations: preflightOperations,
     expectedOperationCount: operationPlan.expectedOperations,
+    validateDeploymentPlan: (plan) => buildExecutableDeploymentNoncePlan(ethers, {
+      identityDigest: reservationIdentity.identityDigest,
+      network: "baseSepolia",
+      chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+      deployer: deployer.address,
+      rpcEvidence: deploymentRpcEvidence,
+      startNonce: plan.startNonce,
+    }, plan.steps, plan.addresses),
+    validateSetupOperations: bindGovernanceOperationPlan,
     reserve: () => ensureManifestReservation(reservationIdentity),
   });
+  const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(frozenSetupOperations);
   console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
 
   const executed = await executeSignedDeploymentPlan(
@@ -829,6 +846,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     release?.capsule ?? null,
     frozenPreflight,
     {
+      prevalidatedNoncePlan: validatedDeploymentPlan,
       beforeStep: async ({ index, deployments, addresses, secondaryProvider, rpcEvidence }) => {
         if (index !== MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT) return;
         const timelock = deployments.timelock?.contract;
@@ -906,19 +924,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     return { problem, deployments, addresses };
   });
 
-  const setupTransactions = buildMultiBoardSetupOperations({
-    ethers,
-    chainId: BASE_SEPOLIA_CHAIN_ID,
-    timelockAddress: rootAddresses.timelock,
-    registryAddress: rootAddresses.registry,
-    config,
-    boards: boards.map(({ problem, addresses }) => ({ problem, addresses })),
-    interfaces: contractInterfaces({
-      timelock: rootDeployments.timelock,
-      registry: rootDeployments.registry,
-      ...boards[0].deployments,
-    }),
-  });
+  const setupTransactions = frozenSetupOperations;
   const firstBlock = Math.min(
     ...Object.values(rootDeployments).map((entry) => entry.manifest.blockNumber),
     ...boards.flatMap(({ deployments }) => Object.values(deployments).map((entry) => entry.manifest.blockNumber)),
