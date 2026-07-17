@@ -17,15 +17,29 @@ const OBJECTIVE_ARTIFACT = JSON.parse(readFileSync(
   "utf8",
 ));
 const OBJECTIVE_ARTIFACT_BYTES = Buffer.from(`${JSON.stringify(OBJECTIVE_ARTIFACT)}\n`);
+const SP1_BINDING = {
+  schema: "p42-prizes/sp1-external-runtime-attestation/v1", evidenceDigest: `sha256:${"e".repeat(64)}`,
+  capturedAt: "2026-07-17T15:12:28Z", expiresAt: "2026-07-18T15:12:28Z",
+  chains: [8453, 84532].map((chainId) => ({
+    chainId, network: chainId === 8453 ? "base" : "base-sepolia", address: "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2",
+    anchorMode: "agreed-finalized", finalizedSkewBlocks: 0,
+    providers: [
+      { operator: "base-foundation", endpointOrigin: chainId === 8453 ? "https://mainnet.base.org" : "https://sepolia.base.org", finalizedAnchor: { blockNumber: 1, blockHash: `0x${"1".repeat(64)}`, blockTimestamp: 1 } },
+      { operator: "tenderly", endpointOrigin: chainId === 8453 ? "https://base.gateway.tenderly.co" : "https://base-sepolia.gateway.tenderly.co", finalizedAnchor: { blockNumber: 1, blockHash: `0x${"1".repeat(64)}`, blockTimestamp: 1 } },
+    ],
+    runtime: { byteLength: 6741, keccak256: "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd" },
+  })),
+};
 
 async function fixture(operation) {
   const parent = await mkdtemp(join(tmpdir(), "p42-release-prepare-"));
   const repoRoot = join(parent, "repo"); const outputRoot = join(parent, "output"); const evidenceRoot = join(parent, "evidence");
   await mkdir(join(repoRoot, "contracts", "node_modules", ".bin"), { recursive: true });
   const imagePath = join(evidenceRoot, "release", "images.json"); await mkdir(join(evidenceRoot, "release"), { recursive: true }); await writeFile(imagePath, "image-bytes\n");
+  const runtimeAttestationPath = join(evidenceRoot, "release", "sp1-runtime.json"); await writeFile(runtimeAttestationPath, "runtime-attestation\n");
   const objectiveVerifierPath = join(evidenceRoot, "release", "objective-verifier.json");
   await writeFile(objectiveVerifierPath, `${JSON.stringify(OBJECTIVE_ARTIFACT)}\n`);
-  try { await operation({ repoRoot, outputRoot, evidenceRoot, imagePath, objectiveVerifierPath }); } finally { await rm(parent, { recursive: true, force: true }); }
+  try { await operation({ repoRoot, outputRoot, evidenceRoot, imagePath, objectiveVerifierPath, runtimeAttestationPath }); } finally { await rm(parent, { recursive: true, force: true }); }
 }
 
 function dependencies(events, { preflightError, publishSlateError, dirtyAtStatusCall, builtArtifactMismatch = false } = {}) {
@@ -48,6 +62,7 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
       };
       return { value: { dossier: true }, bytes: Buffer.from("image-bytes\n") };
     },
+    verifyRuntimeAttestation() { events.push("verify-runtime-attestation"); return SP1_BINDING; },
     parseCeremony() { events.push("parse-ceremony"); return { roles: { objectiveVerifierCodehash: `0x${"1".repeat(64)}` }, problems: Array(10).fill({}) }; },
     async createCapsule() { events.push("create-capsule"); return { capsuleDigest: `sha256:${"b".repeat(64)}` }; },
     validateCapsule() { events.push("validate-capsule"); },
@@ -71,6 +86,7 @@ function argumentsFor(paths, overrides = {}) {
   return {
     ethers: {}, repoRoot: paths.repoRoot, ceremonyConfigPath: join(paths.evidenceRoot, "ceremony.json"),
     imageDossierPath: paths.imagePath, objectiveVerifierArtifactPath: paths.objectiveVerifierPath,
+    sp1RuntimeAttestationPath: paths.runtimeAttestationPath,
     evidenceRoot: paths.evidenceRoot, expectedDeployer: `0x${"1".repeat(40)}`,
     generatedAt: "2026-07-12T00:00:00Z", outputRoot: paths.outputRoot, ...overrides,
   };
@@ -90,7 +106,7 @@ describe("production release preparation", () => {
 
   it("publishes only after force-build, attestation, full preflight, and clean recheck", async () => fixture(async (paths) => {
     const events = []; const result = await prepareProductionRelease({ ...argumentsFor(paths), ...dependencies(events) });
-    assert.deepEqual(events, ["parse-ceremony", "force-compile", "create-capsule", "validate-capsule", "attest-capsule", "create-slate", "preflight-slate", "publish-capsule", "publish-slate", "create-index", "publish-index"]);
+    assert.deepEqual(events, ["parse-ceremony", "verify-runtime-attestation", "force-compile", "create-capsule", "validate-capsule", "attest-capsule", "create-slate", "preflight-slate", "publish-capsule", "publish-slate", "create-index", "publish-index"]);
     assert.equal(result.commit, COMMIT);
   }));
 
@@ -129,6 +145,7 @@ describe("production release preparation", () => {
     const complete = {
       P42_MULTIBOARD_CEREMONY_CONFIG: "ceremony.json", P42_PRODUCTION_IMAGE_DOSSIER_PATH: "images.json",
       P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH: "objective-verifier.json",
+      P42_SP1_RUNTIME_ATTESTATION_PATH: "sp1-runtime.json",
       P42_RELEASE_EVIDENCE_ROOT: "/tmp/evidence",
       P42_EXPECTED_DEPLOYER_ADDRESS: `0x${"1".repeat(40)}`, P42_RELEASE_GENERATED_AT: "2026-07-12T00:00:00Z",
       P42_RELEASE_OUTPUT_ROOT: "/tmp/release",

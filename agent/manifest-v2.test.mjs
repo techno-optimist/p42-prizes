@@ -41,6 +41,19 @@ function digestHash(value) {
   return ethers.keccak256(ethers.toUtf8Bytes(value));
 }
 const sha = (label) => `sha256:${createHash("sha256").update(label).digest("hex")}`;
+const SP1_BINDING = {
+  schema: "p42-prizes/sp1-external-runtime-attestation/v1", evidenceDigest: digest("e"),
+  capturedAt: "2026-07-17T15:12:28Z", expiresAt: "2026-07-18T15:12:28Z",
+  chains: [8453, 84532].map((chainId) => ({
+    chainId, network: chainId === 8453 ? "base" : "base-sepolia", address: "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2",
+    anchorMode: "agreed-finalized", finalizedSkewBlocks: 0,
+    providers: [
+      { operator: "base-foundation", endpointOrigin: chainId === 8453 ? "https://mainnet.base.org" : "https://sepolia.base.org", finalizedAnchor: { blockNumber: 1, blockHash: `0x${"1".repeat(64)}`, blockTimestamp: 1 } },
+      { operator: "tenderly", endpointOrigin: chainId === 8453 ? "https://base.gateway.tenderly.co" : "https://base-sepolia.gateway.tenderly.co", finalizedAnchor: { blockNumber: 1, blockHash: `0x${"1".repeat(64)}`, blockTimestamp: 1 } },
+    ],
+    runtime: { byteLength: 6741, keccak256: "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd" },
+  })),
+};
 
 function boardContracts(contracts, offset = 0) {
   return Object.fromEntries(BOARD_KEYS.map((key, index) => [
@@ -437,7 +450,7 @@ function productionManifest(capsule) {
 }
 
 test("production indexer validation recomputes exact-ten release evidence and runtime bindings", async () => {
-  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40) });
+  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40), sp1RuntimeAttestation: SP1_BINDING });
   const optionsFor = (slate) => ({ productionSlate: slate, capsuleResolver: () => capsule, blockTimestampResolver: ({ entry }) => entry.deploymentBlockTimestamp });
   {
     const { manifest, slate } = productionManifest(capsule);
@@ -489,7 +502,7 @@ test("production indexer validation recomputes exact-ten release evidence and ru
 });
 
 test("explorer dossier verifies the canonical ordered 47 with factory-child provenance", async () => {
-  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40) });
+  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40), sp1RuntimeAttestation: SP1_BINDING });
   const { manifest } = productionManifest(capsule);
   const artifacts = new Map(capsule.contracts.map((entry) => [entry.name, entry]));
   const infos = new Map(capsule.buildInfos.map((entry) => [entry.id, entry]));
@@ -567,7 +580,7 @@ test("explorer dossier verifies the canonical ordered 47 with factory-child prov
 });
 
 test("fixture validation is test-only and rejects production identity collisions", async () => {
-  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40) });
+  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40), sp1RuntimeAttestation: SP1_BINDING });
   const { manifest: fixture, slate } = productionManifest(capsule); fixture.releaseMode = "fixture"; fixture.releaseEvidence = null; rebind(fixture);
   assert.throws(() => validateManifestEvidence(fixture), /test-only/);
   assert.throws(() => validateManifestEvidence(fixture, { allowFixture: true, productionSlate: slate }), /collides/);

@@ -15,6 +15,7 @@ import {
   attestReleaseCapsuleAgainstCheckout,
   createReleaseCapsule,
   publishReleaseCapsule,
+  verifySP1RuntimeAttestation,
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
 import { readContractsArtifactJsonWithBytes, readContractsConfigJsonWithBytes } from "./strict-json-helper.js";
@@ -67,6 +68,7 @@ export async function prepareProductionRelease({
   ceremonyConfigPath,
   imageDossierPath,
   objectiveVerifierArtifactPath,
+  sp1RuntimeAttestationPath,
   evidenceRoot,
   expectedDeployer,
   generatedAt,
@@ -79,6 +81,7 @@ export async function prepareProductionRelease({
   createCapsule = createReleaseCapsule,
   validateCapsule = validateReleaseCapsule,
   attestCapsule = attestReleaseCapsuleAgainstCheckout,
+  verifyRuntimeAttestation = verifySP1RuntimeAttestation,
   createSlate = createProductionReleaseSlate,
   createIndex = createProductionReleaseIndex,
   preflightSlate = validateProductionSlatePreflight,
@@ -93,6 +96,7 @@ export async function prepareProductionRelease({
   const commit = assertCleanCheckout(root, null, run);
   rootRelativePath(evidence, ceremonyConfigPath, "ceremony config");
   rootRelativePath(evidence, objectiveVerifierArtifactPath, "objective verifier artifact");
+  rootRelativePath(evidence, sp1RuntimeAttestationPath, "SP1 runtime attestation");
   const [ceremonyInput, dossierInput, objectiveVerifierInput] = await Promise.all([
     readConfig(resolve(ceremonyConfigPath ?? ""), { trustedRoot: evidence }),
     readDossier(resolve(imageDossierPath ?? ""), { trustedRoot: evidence }),
@@ -101,6 +105,12 @@ export async function prepareProductionRelease({
   const { value: imageDossier, bytes: imageBytes } = dossierInput;
   assertProductionObjectiveVerifierArtifact(objectiveVerifierInput.value);
   const config = parseCeremony(ethers, ceremonyInput.value, { deployerAddress: expectedDeployer });
+  const sp1RuntimeAttestation = verifyRuntimeAttestation({
+    repoRoot: root,
+    evidenceRoot: evidence,
+    evidencePath: sp1RuntimeAttestationPath,
+    run,
+  });
   const imageRegistryPath = rootRelativePath(evidence, imageDossierPath, "image dossier");
   const objectiveVerifierArtifactRelativePath = rootRelativePath(evidence, objectiveVerifierArtifactPath, "objective verifier artifact");
   const hardhat = join(root, "contracts", "node_modules", ".bin", "hardhat");
@@ -114,7 +124,7 @@ export async function prepareProductionRelease({
   if (!Buffer.from(objectiveVerifierInput.bytes).equals(Buffer.from(builtObjectiveVerifierInput.bytes))) {
     throw new Error("objective verifier artifact is not the exact force-built release artifact");
   }
-  const capsule = await createCapsule({ contractsRoot: join(root, "contracts"), gitCommit: commit });
+  const capsule = await createCapsule({ contractsRoot: join(root, "contracts"), gitCommit: commit, sp1RuntimeAttestation });
   validateCapsule(capsule);
   await attestCapsule(capsule, { repoRoot: root, expectedGitCommit: commit, run });
   const slate = createSlate({
@@ -147,6 +157,7 @@ export function requiredReleaseEnvironment(env = process.env) {
     "P42_MULTIBOARD_CEREMONY_CONFIG",
     "P42_PRODUCTION_IMAGE_DOSSIER_PATH",
     "P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH",
+    "P42_SP1_RUNTIME_ATTESTATION_PATH",
     "P42_RELEASE_EVIDENCE_ROOT",
     "P42_EXPECTED_DEPLOYER_ADDRESS",
     "P42_RELEASE_GENERATED_AT",

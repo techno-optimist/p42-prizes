@@ -51,9 +51,11 @@ import {
 } from "./multiboard-ceremony-helper.js";
 import {
   attestReleaseCapsuleAgainstCheckout,
+  assertSP1RuntimeAttestationMatches,
   immutableValuesFromConstructor,
   readReleaseBuildJson,
   reconstructExpectedRuntime,
+  verifySP1RuntimeAttestation,
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
 import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
@@ -154,6 +156,10 @@ async function productionReleaseInputs(repoRoot, deploymentCommit) {
   const slatePath = withinOutput("P42_PRODUCTION_SLATE_PATH");
   const capsulePath = withinOutput("P42_RELEASE_CAPSULE");
   const indexPath = withinOutput("P42_PRODUCTION_RELEASE_INDEX_PATH");
+  const evidenceRoot = resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT"));
+  const runtimeAttestationPath = resolve(requiredEnv("P42_SP1_RUNTIME_ATTESTATION_PATH"));
+  const evidenceRelative = relative(evidenceRoot, runtimeAttestationPath);
+  if (!evidenceRelative || evidenceRelative === ".." || evidenceRelative.startsWith(`..${sep}`)) throw new Error("P42_SP1_RUNTIME_ATTESTATION_PATH must be below P42_RELEASE_EVIDENCE_ROOT");
   const [slate, capsule, index] = await Promise.all([
     readContractsArtifactJsonTrustedPublic(slatePath, outputRoot),
     readContractsArtifactJsonTrustedPublic(capsulePath, outputRoot),
@@ -164,8 +170,9 @@ async function productionReleaseInputs(repoRoot, deploymentCommit) {
   validateReleaseCapsule(capsule);
   validateProductionReleaseIndex(index);
   if (index.sourceCommit !== deploymentCommit || index.generatedAt !== slate.generatedAt || index.slate.digest !== slate.slateDigest || index.capsule.digest !== capsule.capsuleDigest) throw new Error("production release index does not bind the selected commit, timestamp, slate, and capsule");
+  const verifiedRuntimeAttestation = verifySP1RuntimeAttestation({ repoRoot, evidenceRoot, evidencePath: runtimeAttestationPath });
+  assertSP1RuntimeAttestationMatches(capsule, verifiedRuntimeAttestation);
   await attestReleaseCapsuleAgainstCheckout(capsule, { repoRoot, expectedGitCommit: deploymentCommit });
-  const evidenceRoot = resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT"));
   const objectiveVerifierArtifactPath = resolve(evidenceRoot, slate.objectiveVerifier.artifactPath);
   const objectiveVerifierRelative = relative(evidenceRoot, objectiveVerifierArtifactPath);
   if (!objectiveVerifierRelative || objectiveVerifierRelative === ".." || objectiveVerifierRelative.startsWith(`..${sep}`)) {

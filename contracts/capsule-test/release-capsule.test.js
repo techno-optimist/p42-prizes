@@ -22,6 +22,20 @@ import {
 } from "../scripts/release-capsule-helper.js";
 const contractsRoot = resolve(import.meta.dirname, "..");
 const COMMIT = "d6e96ce83eb89af01e6c090c4ff50eed8e214f3d";
+const SP1_BINDING = {
+  schema: "p42-prizes/sp1-external-runtime-attestation/v1", evidenceDigest: `sha256:${"e".repeat(64)}`,
+  capturedAt: "2026-07-17T15:12:28Z", expiresAt: "2026-07-18T15:12:28Z",
+  chains: [8453, 84532].map((chainId) => ({
+    chainId, network: chainId === 8453 ? "base" : "base-sepolia", address: "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2",
+    anchorMode: "agreed-finalized", finalizedSkewBlocks: 0,
+    providers: [
+      { operator: "base-foundation", endpointOrigin: chainId === 8453 ? "https://mainnet.base.org" : "https://sepolia.base.org", finalizedAnchor: { blockNumber: 1, blockHash: `0x${"1".repeat(64)}`, blockTimestamp: 1 } },
+      { operator: "tenderly", endpointOrigin: chainId === 8453 ? "https://base.gateway.tenderly.co" : "https://base-sepolia.gateway.tenderly.co", finalizedAnchor: { blockNumber: 1, blockHash: `0x${"1".repeat(64)}`, blockTimestamp: 1 } },
+    ],
+    runtime: { byteLength: 6741, keccak256: "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd" },
+  })),
+};
+const createTestCapsule = () => createReleaseCapsule({ contractsRoot, gitCommit: COMMIT, sp1RuntimeAttestation: SP1_BINDING });
 const clone = (value) => structuredClone(value);
 const reseal = (capsule) => {
   const { capsuleDigest: _discard, ...body } = capsule;
@@ -59,7 +73,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("binds exactly the eleven production artifacts to exact compiler inputs and outputs", async () => {
-    const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const capsule = await createTestCapsule();
     assert.deepEqual(capsule.contracts.map(({ name }) => name), PRODUCTION_CONTRACTS);
     assert.deepEqual(capsule.externalDependencies, PRODUCTION_EXTERNAL_DEPENDENCIES);
     assert.equal(validateReleaseCapsule(capsule), capsule);
@@ -68,7 +82,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("rejects every mutation of the pinned upstream SP1 dependency", async () => {
-    const original = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const original = await createTestCapsule();
     const paths = [
       ["releaseTag", "v6.1.1"],
       ["commit", "f".repeat(40)],
@@ -90,7 +104,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("rejects the historical SP1 address typo at the capsule schema boundary", async () => {
-    const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const capsule = await createTestCapsule();
     const schema = JSON.parse(await readFile(resolve(contractsRoot, "../schemas/release-capsule.schema.json"), "utf8"));
     const validate = new Ajv2020({ strict: false }).compile(schema);
     assert.equal(validate(capsule), true);
@@ -102,8 +116,22 @@ describe("closed immutable release capsule", () => {
     assert.throws(() => validateReleaseCapsule(changed), /external dependency/);
   });
 
+  it("rejects resealed SP1 runtime provider aliases at the capsule schema boundary", async () => {
+    const capsule = await createTestCapsule();
+    const schema = JSON.parse(await readFile(resolve(contractsRoot, "../schemas/release-capsule.schema.json"), "utf8"));
+    const validate = new Ajv2020({ strict: false }).compile(schema);
+    for (const mutate of [
+      (changed) => { changed.sp1RuntimeAttestation.chains[0].providers[0].operator = "foundation"; },
+      (changed) => { changed.sp1RuntimeAttestation.chains[0].providers[1].endpointOrigin = "https://attacker.example"; },
+    ]) {
+      const changed = clone(capsule); mutate(changed); reseal(changed);
+      assert.equal(validate(changed), false);
+      assert.throws(() => validateReleaseCapsule(changed), /exact pinned pairs/);
+    }
+  });
+
   it("rejects one-byte artifact/runtime and build-info mutations, wrong build-info, and compiler drift", async () => {
-    const original = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const original = await createTestCapsule();
     const flipLastByte = (value) => `${value.slice(0, -2)}${value.endsWith("00") ? "01" : "00"}`;
     for (const mutate of [
       (c) => { c.contracts[0].creationCode = flipLastByte(c.contracts[0].creationCode); },
@@ -119,7 +147,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("rejects immutable overlap, out-of-bounds ranges, and unknown AST IDs", async () => {
-    const original = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const original = await createTestCapsule();
     const source = original.contracts.find(({ immutableBindings }) => immutableBindings.length >= 2);
     for (const mutate of [
       (c) => { c.immutableBindings[1].ranges[0].start = c.immutableBindings[0].ranges[0].start; c.immutableReferences[c.immutableBindings[1].astId] = c.immutableBindings[1].ranges; },
@@ -132,7 +160,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("distinguishes mutations outside and inside immutable ranges", async () => {
-    const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const capsule = await createTestCapsule();
     const contract = capsule.contracts.find(({ immutableBindings }) => immutableBindings.length);
     const values = valuesFor(contract, 7n);
     const expected = reconstructExpectedRuntime(contract, values);
@@ -147,7 +175,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("binds constructor values and deployment block timestamps for P42SubmissionManager", async () => {
-    const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const capsule = await createTestCapsule();
     const contract = capsule.contracts.find(({ name }) => name === "P42SubmissionManager");
     const args = [
       [
@@ -175,7 +203,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("derives and reconstructs explicit immutable semantics for every production contract", async () => {
-    const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const capsule = await createTestCapsule();
     for (const contract of capsule.contracts) {
       const args = constructorArgs(contract);
       const options = contract.name === "P42SubmissionManager" ? { blockTimestamp: 1_800_000_000 } : {};
@@ -192,7 +220,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("separates structural consistency from trusted checkout provenance", async () => {
-    const original = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const original = await createTestCapsule();
     const forged = clone(original);
     forged.buildInfos[0].output.reviewForgery = true;
     forged.buildInfos[0].outputDigest = canonicalDigest(forged.buildInfos[0].output);
@@ -217,7 +245,7 @@ describe("closed immutable release capsule", () => {
   });
 
   it("derives a closed rebuild-attestation body outside legal validation", async () => {
-    const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const capsule = await createTestCapsule();
     const body = createCapsuleRebuildAttestationBody({
       capsule,
       capsuleBytes: Buffer.from(canonicalJson(capsule)),
@@ -257,7 +285,7 @@ describe("closed immutable release capsule", () => {
   it("publishes immutable canonical bytes at a durable content-addressed path", async () => {
     const directory = await mkdtemp(join(tmpdir(), "p42-release-capsule-"));
     try {
-      const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+      const capsule = await createTestCapsule();
       const first = await publishReleaseCapsule(capsule, directory, { trustedRoot: directory });
       const second = await publishReleaseCapsule(capsule, directory, { trustedRoot: directory });
       assert.deepEqual(first, second);
@@ -269,7 +297,7 @@ describe("closed immutable release capsule", () => {
   it("rejects a symlink at an existing content address", async () => {
     const directory = await mkdtemp(join(tmpdir(), "p42-release-capsule-link-"));
     try {
-      const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+      const capsule = await createTestCapsule();
       const target = join(directory, `${capsule.capsuleDigest.slice(7)}.json`);
       await symlink("missing", target);
       await assert.rejects(() => publishReleaseCapsule(capsule, directory, { trustedRoot: directory }), /ELOOP|regular|metadata|no such file/i);
@@ -279,7 +307,7 @@ describe("closed immutable release capsule", () => {
   it("detects concurrent publication-parent substitution", async () => {
     const directory = await mkdtemp(join(tmpdir(), "p42-release-capsule-race-"));
     try {
-      const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+      const capsule = await createTestCapsule();
       let substituted = false;
       const storage = {
         open, link, unlink, readFile,
@@ -299,7 +327,7 @@ describe("closed immutable release capsule", () => {
   it("rejects target replacement during the final parent-check/fsync boundary", async () => {
     const directory = await mkdtemp(join(tmpdir(), "p42-release-capsule-final-race-"));
     try {
-      const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+      const capsule = await createTestCapsule();
       await assert.rejects(
         () => publishReleaseCapsule(capsule, directory, {
           trustedRoot: directory,

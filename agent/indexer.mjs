@@ -29,6 +29,7 @@ import {
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
 import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance.mjs";
+import { validateSP1RuntimeAttestationBinding } from "../contracts/scripts/release-capsule-helper.js";
 import {
   CANONICAL_BOARD_CONTRACTS,
   CANONICAL_CONTRACT_COUNT,
@@ -75,6 +76,7 @@ function capsuleDigest(value) { return `sha256:${createHash("sha256").update(cap
 
 export function validateReleaseCapsule(capsule) {
   if (!capsule || capsule.schema !== "p42-prizes/release-capsule/v2" || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !Array.isArray(capsule.contracts) || !Array.isArray(capsule.externalDependencies) || !Array.isArray(capsule.buildInfos)) throw new Error("trusted release capsule is malformed");
+  validateSP1RuntimeAttestationBinding(capsule.sp1RuntimeAttestation);
   if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CAPSULE_CONTRACTS.join("\0")) throw new Error("trusted release capsule contract set is incomplete or reordered");
   if (capsuleCanonical(capsule.externalDependencies) !== capsuleCanonical(PRODUCTION_EXTERNAL_DEPENDENCIES)) throw new Error("trusted release capsule external dependency policy mismatch");
   const infos = new Set(capsule.buildInfos.map(({ id }) => id));

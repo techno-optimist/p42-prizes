@@ -11,6 +11,7 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import pytest
+import jsonschema
 
 from p42_prizes.sp1_runtime_attestation import (
     DEFAULT_RPCS,
@@ -207,12 +208,29 @@ def test_capture_rejects_wrong_chain_id() -> None:
         )
 
 
+def test_capture_rejects_provider_aliases_even_when_origins_are_distinct() -> None:
+    fixture = _fixture()
+    endpoints = {
+        **DEFAULT_RPCS,
+        8453: (("base-foundation-alias", "https://mainnet.base.org"), DEFAULT_RPCS[8453][1]),
+    }
+
+    with pytest.raises(SP1RuntimeAttestationError, match="exact pinned operator/origin pairs"):
+        capture(
+            PROTOCOL.relative_to(ROOT),
+            SCHEMA,
+            endpoints,
+            now=_captured_time(fixture),
+            opener=_mock_opener(fixture),
+        )
+
+
 def test_verify_rejects_resealed_runtime_length_tamper() -> None:
     evidence = _fixture()
     evidence["chains"][0]["providers"][0]["runtime"]["byteLength"] += 1
     _reseal(evidence)
 
-    with pytest.raises(SP1RuntimeAttestationError, match="runtime length or codehash"):
+    with pytest.raises((SP1RuntimeAttestationError, jsonschema.ValidationError)):
         verify(evidence, PROTOCOL.relative_to(ROOT), SCHEMA, now=_captured_time(evidence))
 
 
@@ -241,5 +259,26 @@ def test_verify_rejects_resealed_provider_provenance_alias() -> None:
     evidence["chains"][0]["providers"][1]["endpointOrigin"] = evidence["chains"][0]["providers"][0]["endpointOrigin"]
     _reseal(evidence)
 
-    with pytest.raises(SP1RuntimeAttestationError, match="not operator-distinct"):
+    with pytest.raises((SP1RuntimeAttestationError, jsonschema.ValidationError)):
         verify(evidence, PROTOCOL.relative_to(ROOT), SCHEMA, now=_captured_time(evidence))
+
+
+def test_verify_rejects_resealed_provider_origin_alias() -> None:
+    evidence = _fixture()
+    evidence["chains"][1]["providers"][1]["endpointOrigin"] = "https://attacker.example"
+    _reseal(evidence)
+
+    with pytest.raises((SP1RuntimeAttestationError, jsonschema.ValidationError)):
+        verify(evidence, PROTOCOL.relative_to(ROOT), SCHEMA, now=_captured_time(evidence))
+
+
+def test_schema_rejects_resealed_provider_label_and_origin_aliases() -> None:
+    evidence = _fixture()
+    validator = jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text(encoding="utf-8")))
+    validator.validate(evidence)
+    for field, value in (("operator", "foundation"), ("endpointOrigin", "https://attacker.example")):
+        changed = deepcopy(evidence)
+        changed["chains"][0]["providers"][0][field] = value
+        _reseal(changed)
+        with pytest.raises(jsonschema.ValidationError):
+            validator.validate(changed)

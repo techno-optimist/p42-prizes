@@ -44,6 +44,16 @@ DEFAULT_RPCS = {
         ("tenderly", "https://base-sepolia.gateway.tenderly.co"),
     ),
 }
+PINNED_RPC_PROVIDERS = {
+    8453: (
+        ("base-foundation", "https://mainnet.base.org"),
+        ("tenderly", "https://base.gateway.tenderly.co"),
+    ),
+    84532: (
+        ("base-foundation", "https://sepolia.base.org"),
+        ("tenderly", "https://base-sepolia.gateway.tenderly.co"),
+    ),
+}
 CHAIN_NAMES = {8453: "base", 84532: "base-sepolia"}
 
 
@@ -277,6 +287,15 @@ def _capture_provider(
     }
 
 
+def _require_pinned_provider_pairs(chain_id: int, endpoints: Sequence[tuple[str, str]]) -> None:
+    observed = tuple((operator, _origin(url)) for operator, url in endpoints)
+    expected = tuple((operator, _origin(url)) for operator, url in PINNED_RPC_PROVIDERS[chain_id])
+    if len(observed) != len(expected) or set(observed) != set(expected):
+        raise SP1RuntimeAttestationError(
+            f"chain {chain_id} RPC providers must use the exact pinned operator/origin pairs"
+        )
+
+
 def capture(
     protocol_path: Path,
     schema_path: Path,
@@ -304,10 +323,7 @@ def capture(
         endpoints = rpc_endpoints.get(chain_id, ())
         if len(endpoints) != 2:
             raise SP1RuntimeAttestationError(f"chain {chain_id} requires exactly two RPC providers")
-        operators = [item[0] for item in endpoints]
-        origins = [_origin(item[1]) for item in endpoints]
-        if len(set(operators)) != 2 or len(set(origins)) != 2:
-            raise SP1RuntimeAttestationError(f"chain {chain_id} RPC providers are not operator-distinct")
+        _require_pinned_provider_pairs(chain_id, endpoints)
         address = deployments[chain_id]["address"].lower()
         providers = [
             _capture_provider(chain_id, address, operator, url, captured_at, opener)
@@ -444,8 +460,14 @@ def verify(
         if chain["network"] != CHAIN_NAMES[chain_id] or chain["address"] != address:
             raise SP1RuntimeAttestationError(f"chain {chain_id} identity or address does not match protocol")
         providers = chain["providers"]
-        if len({item["operator"] for item in providers}) != 2 or len({item["endpointOrigin"] for item in providers}) != 2:
-            raise SP1RuntimeAttestationError(f"chain {chain_id} providers are not operator-distinct")
+        expected_pairs = {
+            (operator, _origin(url)) for operator, url in PINNED_RPC_PROVIDERS[chain_id]
+        }
+        observed_pairs = {(item["operator"], item["endpointOrigin"]) for item in providers}
+        if observed_pairs != expected_pairs or len(providers) != len(expected_pairs):
+            raise SP1RuntimeAttestationError(
+                f"chain {chain_id} providers must use the exact pinned operator/origin pairs"
+            )
         replayed: list[tuple[dict[str, int | str], dict[str, int | str]]] = []
         for provider in providers:
             requests = provider["requests"]
@@ -493,8 +515,18 @@ def verify(
         "chains": [
             {
                 "chainId": item["chainId"],
+                "network": CHAIN_NAMES[item["chainId"]],
                 "address": item["address"],
                 "anchorMode": item["anchorMode"],
+                "finalizedSkewBlocks": item["finalizedSkewBlocks"],
+                "providers": [
+                    {
+                        "operator": provider["operator"],
+                        "endpointOrigin": provider["endpointOrigin"],
+                        "finalizedAnchor": provider["finalizedAnchor"],
+                    }
+                    for provider in item["providers"]
+                ],
                 "runtime": item["providers"][0]["runtime"],
             }
             for item in evidence["chains"]

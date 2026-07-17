@@ -37,8 +37,7 @@
       "items": { "$ref": "#/$defs/descriptor" }
     },
     "chains": {
-      "type": "array", "minItems": 2, "maxItems": 2,
-      "items": { "$ref": "#/$defs/chain" }
+      "type": "array", "prefixItems": [{ "$ref": "#/$defs/baseChain" }, { "$ref": "#/$defs/baseSepoliaChain" }], "items": false
     },
     "evidenceDigest": { "$ref": "#/$defs/digest" }
   },
@@ -46,7 +45,7 @@
     "timestamp": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
     "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "bytes32": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
-    "address": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
+    "address": { "const": "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2" },
     "origin": { "type": "string", "pattern": "^https://[a-z0-9.-]+(?::[0-9]+)?$" },
     "descriptor": {
       "type": "object", "additionalProperties": false,
@@ -94,13 +93,14 @@
           "type": "object", "additionalProperties": false,
           "required": ["byteLength", "keccak256"],
           "properties": {
-            "byteLength": { "type": "integer", "minimum": 1 },
-            "keccak256": { "$ref": "#/$defs/bytes32" }
+            "byteLength": { "const": 6741 },
+            "keccak256": { "const": "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd" }
           }
         }
       }
     },
-    "chain": {
+    "chain": { "oneOf": [{ "$ref": "#/$defs/baseChain" }, { "$ref": "#/$defs/baseSepoliaChain" }] },
+    "chainBase": {
       "type": "object", "additionalProperties": false,
       "required": ["chainId", "network", "address", "anchorMode", "finalizedSkewBlocks", "providers"],
       "properties": {
@@ -111,6 +111,42 @@
         "finalizedSkewBlocks": { "type": "integer", "minimum": 0, "maximum": 128 },
         "providers": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/provider" } }
       }
+    },
+    "baseChain": {
+      "allOf": [
+        { "$ref": "#/$defs/chainBase" },
+        {
+          "type": "object",
+          "properties": {
+            "chainId": { "const": 8453 },
+            "network": { "const": "base" },
+            "providers": {
+              "allOf": [
+                { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "base-foundation" }, "endpointOrigin": { "const": "https://mainnet.base.org" } } }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "tenderly" }, "endpointOrigin": { "const": "https://base.gateway.tenderly.co" } } }, "minContains": 1, "maxContains": 1 }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "baseSepoliaChain": {
+      "allOf": [
+        { "$ref": "#/$defs/chainBase" },
+        {
+          "type": "object",
+          "properties": {
+            "chainId": { "const": 84532 },
+            "network": { "const": "base-sepolia" },
+            "providers": {
+              "allOf": [
+                { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "base-foundation" }, "endpointOrigin": { "const": "https://sepolia.base.org" } } }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "tenderly" }, "endpointOrigin": { "const": "https://base-sepolia.gateway.tenderly.co" } } }, "minContains": 1, "maxContains": 1 }
+              ]
+            }
+          }
+        }
+      ]
     }
   }
 }
