@@ -96,3 +96,27 @@ entries, implementation-dependent Python integer magnitudes, and inputs whose
 consensus language suitable for an SP1 guest. They are rejected in v0.2; the
 2x2 generators, simultaneous forcing rule, score formula, seed `7/4`, and
 minimum improvement `1/10^12` are unchanged.
+
+## Journal Conformance (CHRONOS E2)
+
+CHRONOS obligation E2 is closed only at the committed source-byte conformance
+layer. The shared fixture
+`objective-programs/arithmetic-kakeya/fixtures/journal-conformance-synthetic.json`
+contains the exact UTF-8 solution bytes, complete objective witness inputs, and
+expected hashes for the solution/commit DA anchor, solution CID, reveal,
+challenge, transcript URI, pending-decision context, objective binding,
+challenge context, and final 32-byte journal digest. It also pins the canonical
+claim-relative `improvementAtoms` value to zero for the `7/4` seed and `7/4`
+claim.
+
+The Rust core test parses that fixture, revalidates the witness, and recomputes
+every hash stage. The ethers conformance test independently parses the same
+fixture and recomputes each Solidity `abi.encode`/Keccak stage. The fixture is
+explicitly synthetic: `guestElfSha256 = 0xdd...dd` and
+`programVKey = 0xee...ee` are placeholders, not a built ELF identity or a real
+SP1 verification key.
+
+This E2 closure does not assert guest build reproducibility, SP1 execution or
+proof generation, a deployed verifier/gateway, objective registration, or
+funding activation. Activation and CHRONOS obligations E1 and E3-E6 remain
+open.

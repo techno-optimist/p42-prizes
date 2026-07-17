@@ -115,6 +115,18 @@ pub struct KakeyaEvaluation {
     pub rounds: Vec<Vec<[u8; 2]>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct JournalHashes {
+    solution_cid_hash: Word,
+    reveal_instance_hash: Word,
+    challenge_instance_hash: Word,
+    transcript_uri_hash: Word,
+    pending_decision_context: Word,
+    objective_binding_context: Word,
+    context_hash: Word,
+    journal_digest: Word,
+}
+
 pub fn verify_arithmetic_kakeya_and_journal(
     witness: &ObjectiveWitness,
 ) -> Result<Word, ObjectiveError> {
@@ -169,6 +181,11 @@ fn verify_arithmetic_kakeya_and_journal_against_seed(
         return Err(ObjectiveError::NonContradictoryOutcome);
     }
 
+    Ok(journal_hashes(witness).journal_digest)
+}
+
+fn journal_hashes(witness: &ObjectiveWitness) -> JournalHashes {
+    let solution_cid_hash = keccak256(&witness.solution_cid);
     let reveal_instance_hash = keccak_words(&[
         word_address(witness.submission_manager),
         witness.chain_id,
@@ -176,7 +193,7 @@ fn verify_arithmetic_kakeya_and_journal_against_seed(
         word_address(witness.solver),
         witness.commitment,
         witness.commit_da_hash,
-        keccak256(&witness.solution_cid),
+        solution_cid_hash,
         witness.claimed_score_atoms,
         witness.improvement_atoms,
         witness.challenge_ends_at,
@@ -191,6 +208,7 @@ fn verify_arithmetic_kakeya_and_journal_against_seed(
         witness.challenged_at,
         witness.dispute_ends_at,
     ]);
+    let transcript_uri_hash = keccak256(&witness.transcript_uri);
     let pending_decision_context = keccak_words(&[
         challenge_instance_hash,
         reveal_instance_hash,
@@ -198,7 +216,7 @@ fn verify_arithmetic_kakeya_and_journal_against_seed(
         witness.reason_hash,
         word_bool(witness.pending_challenger_wins),
         witness.transcript_hash,
-        keccak256(&witness.transcript_uri),
+        transcript_uri_hash,
         witness.verdict_hash,
     ]);
     let objective_binding_context = keccak_words(&[
@@ -219,7 +237,7 @@ fn verify_arithmetic_kakeya_and_journal_against_seed(
             pending_decision_context,
         ],
     );
-    Ok(keccak_tagged(
+    let journal_digest = keccak_tagged(
         b"P42_OBJECTIVE_VERDICT_JOURNAL_V2",
         &[
             witness.chain_id,
@@ -231,7 +249,17 @@ fn verify_arithmetic_kakeya_and_journal_against_seed(
             word_bool(witness.corrected_challenger_wins),
             word_address(witness.proof_beneficiary),
         ],
-    ))
+    );
+    JournalHashes {
+        solution_cid_hash,
+        reveal_instance_hash,
+        challenge_instance_hash,
+        transcript_uri_hash,
+        pending_decision_context,
+        objective_binding_context,
+        context_hash,
+        journal_digest,
+    }
 }
 
 pub fn verify_arithmetic_kakeya(raw: &[u8]) -> Option<KakeyaScore> {
@@ -798,6 +826,63 @@ mod tests {
         challenger_wins: bool,
     }
 
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct JournalFixture {
+        schema: String,
+        classification: String,
+        caveat: String,
+        witness: JournalFixtureWitness,
+        hashes: JournalFixtureHashes,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct JournalFixtureWitness {
+        chain_id: String,
+        quorum: String,
+        manager: String,
+        submission_manager: String,
+        registry: String,
+        problem_id: String,
+        objective_package_hash: String,
+        guest_elf_sha256: String,
+        program_v_key: String,
+        submission_id: String,
+        solver: String,
+        commitment: String,
+        commit_da_hash: String,
+        solution_cid: String,
+        claimed_score_atoms: String,
+        improvement_atoms: String,
+        challenge_ends_at: String,
+        challenger: String,
+        reason_hash: String,
+        challenged_at: String,
+        dispute_ends_at: String,
+        pending_challenger_wins: bool,
+        transcript_hash: String,
+        transcript_uri: String,
+        verdict_hash: String,
+        corrected_challenger_wins: bool,
+        proof_beneficiary: String,
+        solution_utf8: String,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct JournalFixtureHashes {
+        solution_sha256: String,
+        solution_cid_hash: String,
+        reveal_instance_hash: String,
+        challenge_instance_hash: String,
+        transcript_uri_hash: String,
+        pending_decision_context: String,
+        objective_binding_context: String,
+        context_hash: String,
+        journal_digest: String,
+    }
+
     fn repo_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..")
     }
@@ -1084,6 +1169,7 @@ mod tests {
     }
 
     fn word_from_hex(value: &str) -> Word {
+        let value = value.strip_prefix("0x").unwrap_or(value);
         let bytes = value.as_bytes();
         assert_eq!(bytes.len(), 64);
         std::array::from_fn(|index| {
@@ -1093,6 +1179,126 @@ mod tests {
             )
             .unwrap()
         })
+    }
+
+    fn address_from_hex(value: &str) -> Address {
+        let value = value.strip_prefix("0x").unwrap_or(value);
+        let bytes = value.as_bytes();
+        assert_eq!(bytes.len(), 40);
+        std::array::from_fn(|index| {
+            u8::from_str_radix(
+                std::str::from_utf8(&bytes[2 * index..2 * index + 2]).unwrap(),
+                16,
+            )
+            .unwrap()
+        })
+    }
+
+    fn decimal_word(value: &str) -> Word {
+        word_u128(value.parse().unwrap())
+    }
+
+    #[test]
+    fn shared_synthetic_journal_vector_matches_every_hash_stage() {
+        let fixture: JournalFixture = serde_json::from_slice(
+            &repo_root()
+                .join(
+                    "objective-programs/arithmetic-kakeya/fixtures/journal-conformance-synthetic.json",
+                )
+                .read_bytes(),
+        )
+        .unwrap();
+        assert_eq!(
+            fixture.schema,
+            "p42-arithmetic-kakeya-journal-conformance/v1"
+        );
+        assert_eq!(fixture.classification, "synthetic-byte-conformance-only");
+        assert!(fixture.caveat.contains("placeholders"));
+        assert!(fixture.caveat.contains("not a built ELF identity"));
+
+        let input = fixture.witness;
+        let solution = input.solution_utf8.into_bytes();
+        assert_eq!(
+            solution,
+            repo_root()
+                .join("problems/arithmetic-kakeya/examples/kt-2x2-forcing.json")
+                .read_bytes(),
+        );
+        let witness = ObjectiveWitness {
+            chain_id: decimal_word(&input.chain_id),
+            quorum: address_from_hex(&input.quorum),
+            manager: address_from_hex(&input.manager),
+            submission_manager: address_from_hex(&input.submission_manager),
+            registry: address_from_hex(&input.registry),
+            problem_id: decimal_word(&input.problem_id),
+            objective_package_hash: word_from_hex(&input.objective_package_hash),
+            guest_elf_sha256: word_from_hex(&input.guest_elf_sha256),
+            program_vkey: word_from_hex(&input.program_v_key),
+            submission_id: decimal_word(&input.submission_id),
+            solver: address_from_hex(&input.solver),
+            commitment: word_from_hex(&input.commitment),
+            commit_da_hash: word_from_hex(&input.commit_da_hash),
+            solution_cid: input.solution_cid.into_bytes(),
+            claimed_score_atoms: decimal_word(&input.claimed_score_atoms),
+            improvement_atoms: decimal_word(&input.improvement_atoms),
+            challenge_ends_at: decimal_word(&input.challenge_ends_at),
+            challenger: address_from_hex(&input.challenger),
+            reason_hash: word_from_hex(&input.reason_hash),
+            challenged_at: decimal_word(&input.challenged_at),
+            dispute_ends_at: decimal_word(&input.dispute_ends_at),
+            pending_challenger_wins: input.pending_challenger_wins,
+            transcript_hash: word_from_hex(&input.transcript_hash),
+            transcript_uri: input.transcript_uri.into_bytes(),
+            verdict_hash: word_from_hex(&input.verdict_hash),
+            corrected_challenger_wins: input.corrected_challenger_wins,
+            proof_beneficiary: address_from_hex(&input.proof_beneficiary),
+            solution,
+        };
+        let expected = fixture.hashes;
+        assert_eq!(
+            sha256(&witness.solution),
+            word_from_hex(&expected.solution_sha256)
+        );
+        assert_eq!(
+            witness.commit_da_hash,
+            word_from_hex(&expected.solution_sha256)
+        );
+        assert_eq!(witness.improvement_atoms, word_u128(0));
+
+        let observed = journal_hashes(&witness);
+        assert_eq!(
+            observed.solution_cid_hash,
+            word_from_hex(&expected.solution_cid_hash)
+        );
+        assert_eq!(
+            observed.reveal_instance_hash,
+            word_from_hex(&expected.reveal_instance_hash)
+        );
+        assert_eq!(
+            observed.challenge_instance_hash,
+            word_from_hex(&expected.challenge_instance_hash)
+        );
+        assert_eq!(
+            observed.transcript_uri_hash,
+            word_from_hex(&expected.transcript_uri_hash)
+        );
+        assert_eq!(
+            observed.pending_decision_context,
+            word_from_hex(&expected.pending_decision_context)
+        );
+        assert_eq!(
+            observed.objective_binding_context,
+            word_from_hex(&expected.objective_binding_context)
+        );
+        assert_eq!(observed.context_hash, word_from_hex(&expected.context_hash));
+        assert_eq!(
+            observed.journal_digest,
+            word_from_hex(&expected.journal_digest)
+        );
+        assert_eq!(
+            verify_arithmetic_kakeya_and_journal(&witness),
+            Ok(observed.journal_digest)
+        );
     }
 
     fn witness(solution: Vec<u8>) -> ObjectiveWitness {
