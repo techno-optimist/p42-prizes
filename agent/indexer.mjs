@@ -29,7 +29,6 @@ import {
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
 import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance.mjs";
-import { validateSP1RuntimeAttestationBinding } from "../contracts/scripts/release-capsule-helper.js";
 import {
   CANONICAL_BOARD_CONTRACTS,
   CANONICAL_CONTRACT_COUNT,
@@ -65,6 +64,13 @@ const PRODUCTION_CAPSULE_CONTRACTS = [
   "P42ChallengeManager",
   "P42ProblemRegistry",
 ];
+const SP1_RUNTIME_ATTESTATION_SCHEMA = "p42-prizes/sp1-external-runtime-attestation/v1";
+const SP1_OFFICIAL_ADDRESS = "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2";
+const SP1_RUNTIME_CODEHASH = "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd";
+const SP1_CHAINS = Object.freeze([
+  Object.freeze({ chainId: 8453, network: "base", providers: Object.freeze(["base-foundation\0https://mainnet.base.org", "tenderly\0https://base.gateway.tenderly.co"]) }),
+  Object.freeze({ chainId: 84532, network: "base-sepolia", providers: Object.freeze(["base-foundation\0https://sepolia.base.org", "tenderly\0https://base-sepolia.gateway.tenderly.co"]) }),
+]);
 
 function capsuleCanonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -73,6 +79,35 @@ function capsuleCanonical(value) {
 }
 
 function capsuleDigest(value) { return `sha256:${createHash("sha256").update(capsuleCanonical(value)).digest("hex")}`; }
+
+function exactCapsuleKeys(value, keys, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || capsuleCanonical(Object.keys(value).sort()) !== capsuleCanonical([...keys].sort())) throw new Error(`${label} is malformed`);
+}
+
+function validateSP1RuntimeAttestationBinding(binding) {
+  exactCapsuleKeys(binding, ["schema", "evidenceDigest", "capturedAt", "expiresAt", "chains"], "trusted SP1 runtime attestation binding");
+  if (binding.schema !== SP1_RUNTIME_ATTESTATION_SCHEMA || !/^sha256:[0-9a-f]{64}$/.test(binding.evidenceDigest)) throw new Error("trusted SP1 runtime attestation identity is invalid");
+  for (const [field, value] of [["capturedAt", binding.capturedAt], ["expiresAt", binding.expiresAt]]) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) || Number.isNaN(Date.parse(value))) throw new Error(`trusted SP1 runtime attestation ${field} is invalid`);
+  }
+  if (Date.parse(binding.expiresAt) <= Date.parse(binding.capturedAt) || !Array.isArray(binding.chains) || capsuleCanonical(binding.chains.map(({ chainId }) => chainId)) !== capsuleCanonical(SP1_CHAINS.map(({ chainId }) => chainId))) throw new Error("trusted SP1 runtime attestation must bind Base then Base Sepolia in canonical order");
+  binding.chains.forEach((chain, index) => {
+    const expected = SP1_CHAINS[index];
+    exactCapsuleKeys(chain, ["chainId", "network", "address", "anchorMode", "finalizedSkewBlocks", "providers", "runtime"], "trusted SP1 runtime attestation chain");
+    if (chain.chainId !== expected.chainId || chain.network !== expected.network || chain.address !== SP1_OFFICIAL_ADDRESS || !["agreed-finalized", "provider-specific-finalized"].includes(chain.anchorMode) || !Number.isSafeInteger(chain.finalizedSkewBlocks) || chain.finalizedSkewBlocks < 0 || chain.finalizedSkewBlocks > 128 || !Array.isArray(chain.providers) || chain.providers.length !== 2) throw new Error("trusted SP1 runtime attestation chain identity is invalid");
+    const observedProviders = chain.providers.map(({ operator, endpointOrigin }) => `${operator}\0${endpointOrigin}`);
+    if (new Set(observedProviders).size !== 2 || expected.providers.some((provider) => !observedProviders.includes(provider))) throw new Error("trusted SP1 runtime attestation providers are invalid");
+    for (const provider of chain.providers) {
+      exactCapsuleKeys(provider, ["operator", "endpointOrigin", "finalizedAnchor"], "trusted SP1 runtime attestation provider");
+      exactCapsuleKeys(provider.finalizedAnchor, ["blockNumber", "blockHash", "blockTimestamp"], "trusted SP1 runtime attestation anchor");
+      const anchor = provider.finalizedAnchor;
+      if (!Number.isSafeInteger(anchor.blockNumber) || anchor.blockNumber < 1 || !/^0x[0-9a-f]{64}$/.test(anchor.blockHash) || !Number.isSafeInteger(anchor.blockTimestamp) || anchor.blockTimestamp < 1) throw new Error("trusted SP1 runtime attestation anchor is invalid");
+    }
+    exactCapsuleKeys(chain.runtime, ["byteLength", "keccak256"], "trusted SP1 runtime attestation runtime");
+    if (chain.runtime.byteLength !== 6741 || chain.runtime.keccak256 !== SP1_RUNTIME_CODEHASH) throw new Error("trusted SP1 runtime attestation runtime identity is invalid");
+  });
+  return binding;
+}
 
 export function validateReleaseCapsule(capsule) {
   if (!capsule || capsule.schema !== "p42-prizes/release-capsule/v2" || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !Array.isArray(capsule.contracts) || !Array.isArray(capsule.externalDependencies) || !Array.isArray(capsule.buildInfos)) throw new Error("trusted release capsule is malformed");

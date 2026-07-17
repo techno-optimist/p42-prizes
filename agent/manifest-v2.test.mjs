@@ -14,6 +14,7 @@ import {
   MANIFEST_SCHEMA_V2,
   manifestProblemContracts,
   manifestProblemForRegistryId,
+  validateReleaseCapsule,
   validateManifestEvidence,
   validatePreBroadcastManifestPlan,
 } from "./indexer.mjs";
@@ -54,6 +55,12 @@ const SP1_BINDING = {
     runtime: { byteLength: 6741, keccak256: "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd" },
   })),
 };
+
+function resealCapsule(capsule) {
+  const { capsuleDigest: _discard, ...body } = capsule;
+  capsule.capsuleDigest = canonicalDigest(body);
+  return capsule;
+}
 
 function boardContracts(contracts, offset = 0) {
   return Object.fromEntries(BOARD_KEYS.map((key, index) => [
@@ -586,4 +593,15 @@ test("fixture validation is test-only and rejects production identity collisions
   assert.throws(() => validateManifestEvidence(fixture, { allowFixture: true, productionSlate: slate }), /collides/);
   const { manifest: implicit } = productionManifest(capsule); delete implicit.releaseMode; rebind(implicit);
   assert.throws(() => validateManifestEvidence(implicit), /releaseMode|explicit production or fixture/);
+});
+
+test("agent rejects resealed capsules with SP1 runtime length or chain-order drift", async () => {
+  const capsule = await createReleaseCapsule({ contractsRoot: resolve(REPO_ROOT, "contracts"), gitCommit: "0".repeat(40), sp1RuntimeAttestation: SP1_BINDING });
+  const wrongLength = deepCopy(capsule);
+  wrongLength.sp1RuntimeAttestation.chains[0].runtime.byteLength = 6740;
+  assert.throws(() => validateReleaseCapsule(resealCapsule(wrongLength)), /runtime identity/);
+
+  const reordered = deepCopy(capsule);
+  reordered.sp1RuntimeAttestation.chains.reverse();
+  assert.throws(() => validateReleaseCapsule(resealCapsule(reordered)), /canonical order/);
 });

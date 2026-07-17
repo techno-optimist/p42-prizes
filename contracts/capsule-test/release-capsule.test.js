@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, link, lstat, mkdtemp, open, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
@@ -18,7 +18,9 @@ import {
   publishReleaseCapsule,
   readReleaseBuildJson,
   reconstructExpectedRuntime,
+  sha256,
   validateReleaseCapsule,
+  verifySP1RuntimeAttestation,
 } from "../scripts/release-capsule-helper.js";
 const contractsRoot = resolve(import.meta.dirname, "..");
 const COMMIT = "d6e96ce83eb89af01e6c090c4ff50eed8e214f3d";
@@ -42,6 +44,32 @@ const reseal = (capsule) => {
   capsule.capsuleDigest = canonicalDigest(body);
   return capsule;
 };
+
+async function freshSP1Evidence() {
+  const evidence = JSON.parse(await readFile(resolve(contractsRoot, "../docs/evidence/sp1-external-runtime-current.json"), "utf8"));
+  const capturedSeconds = Math.floor(Date.now() / 1000) - 1;
+  const blockTimestamp = capturedSeconds - 60;
+  const timestamp = (seconds) => new Date(seconds * 1000).toISOString().replace(".000Z", "Z");
+  evidence.capturedAt = timestamp(capturedSeconds);
+  evidence.expiresAt = timestamp(capturedSeconds + evidence.freshnessPolicy.maxAgeSeconds);
+  for (const descriptor of evidence.upstreamDescriptors) descriptor.fetchedAt = evidence.capturedAt;
+  for (const chain of evidence.chains) {
+    for (const provider of chain.providers) {
+      provider.capturedAt = evidence.capturedAt;
+      provider.finalizedAnchor.blockTimestamp = blockTimestamp;
+      for (const request of provider.requests.filter(({ method }) => method === "eth_getBlockByNumber")) {
+        const response = JSON.parse(Buffer.from(request.responseBase64, "base64").toString("utf8"));
+        response.result.timestamp = `0x${blockTimestamp.toString(16)}`;
+        const bytes = Buffer.from(canonicalJson(response));
+        request.responseBase64 = bytes.toString("base64");
+        request.responseSha256 = sha256(bytes);
+      }
+    }
+  }
+  const { evidenceDigest: _discard, ...body } = evidence;
+  evidence.evidenceDigest = canonicalDigest(body);
+  return evidence;
+}
 
 function valuesFor(contract, fill = 1n) {
   return Object.fromEntries(contract.immutableBindings.map(({ name }) => [name, fill]));
@@ -128,6 +156,44 @@ describe("closed immutable release capsule", () => {
       assert.equal(validate(changed), false);
       assert.throws(() => validateReleaseCapsule(changed), /exact pinned pairs/);
     }
+  });
+
+  it("verifies canonical SP1 evidence through the real confined Python helper", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "p42-sp1-runtime-evidence-"));
+    try {
+      const evidencePath = join(directory, "sp1-runtime.json");
+      await writeFile(evidencePath, `${canonicalJson(await freshSP1Evidence())}\n`, { mode: 0o444 });
+      await chmod(evidencePath, 0o444);
+      const binding = verifySP1RuntimeAttestation({
+        repoRoot: resolve(contractsRoot, ".."),
+        evidenceRoot: directory,
+        evidencePath,
+      });
+      assert.deepEqual(binding.chains.map(({ chainId }) => chainId), [8453, 84532]);
+      assert.ok(binding.chains.every(({ runtime }) => runtime.byteLength === 6741));
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+
+  it("rejects an SP1 evidence path escaping through a symlinked trusted-root ancestor", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "p42-sp1-runtime-escape-"));
+    try {
+      const evidenceRoot = join(directory, "evidence");
+      const outside = join(directory, "outside");
+      await mkdir(evidenceRoot);
+      await mkdir(outside);
+      const outsidePath = join(outside, "sp1-runtime.json");
+      await writeFile(outsidePath, "{}\n", { mode: 0o444 });
+      await chmod(outsidePath, 0o444);
+      await symlink(outside, join(evidenceRoot, "release"));
+      assert.throws(
+        () => verifySP1RuntimeAttestation({
+          repoRoot: resolve(contractsRoot, ".."),
+          evidenceRoot,
+          evidencePath: join(evidenceRoot, "release", "sp1-runtime.json"),
+        }),
+        /symlink|not a directory|Command failed|ELOOP/i,
+      );
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 
   it("rejects one-byte artifact/runtime and build-info mutations, wrong build-info, and compiler drift", async () => {

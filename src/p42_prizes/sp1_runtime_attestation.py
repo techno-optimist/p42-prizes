@@ -535,7 +535,19 @@ def verify(
 
 
 def _load_evidence(path: Path) -> Mapping[str, Any]:
-    evidence = read_strict_json_file(path, max_bytes=MAX_HTTP_BYTES, max_depth=128, canonical=True, trailing_newline="require")
+    if path == Path("-"):
+        raw = sys.stdin.buffer.read(MAX_HTTP_BYTES + 1)
+        if len(raw) > MAX_HTTP_BYTES:
+            raise SP1RuntimeAttestationError("evidence exceeds size limit")
+        evidence = loads_strict_json(
+            raw,
+            max_bytes=MAX_HTTP_BYTES,
+            max_depth=128,
+            canonical=True,
+            trailing_newline="require",
+        )
+    else:
+        evidence = read_strict_json_file(path, max_bytes=MAX_HTTP_BYTES, max_depth=128, canonical=True, trailing_newline="require")
     if not isinstance(evidence, Mapping):
         raise SP1RuntimeAttestationError("evidence must be an object")
     return evidence

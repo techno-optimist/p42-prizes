@@ -2,10 +2,10 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { constants } from "node:fs";
 import { link, lstat, open, unlink } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readStrictJsonFile, readStrictJsonFileSync } from "../../agent/strict-json.mjs";
+import { readStrictJsonFile, readStrictJsonFileSync, readStrictJsonFileSyncWithBytes } from "../../agent/strict-json.mjs";
 
 export const RELEASE_CAPSULE_SCHEMA = "p42-prizes/release-capsule/v2";
 export const SP1_RUNTIME_ATTESTATION_SCHEMA = "p42-prizes/sp1-external-runtime-attestation/v1";
@@ -56,6 +56,7 @@ const SP1_RPC_PAIRS = Object.freeze({
   ]),
 });
 const SP1_OFFICIAL_ADDRESS = "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2";
+const SP1_RUNTIME_BYTE_LENGTH = 6741;
 const SP1_RUNTIME_CODEHASH = "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd";
 
 const IMMUTABLE_SEMANTICS = Object.freeze({
@@ -351,7 +352,7 @@ export function validateSP1RuntimeAttestationBinding(binding) {
   assertUtcTimestamp(binding.capturedAt, "SP1 runtime attestation capturedAt");
   assertUtcTimestamp(binding.expiresAt, "SP1 runtime attestation expiresAt");
   if (Date.parse(binding.expiresAt) <= Date.parse(binding.capturedAt)) throw new Error("SP1 runtime attestation expiry must follow capture");
-  if (!Array.isArray(binding.chains) || binding.chains.length !== 2 || new Set(binding.chains.map(({ chainId }) => chainId)).size !== 2) throw new Error("SP1 runtime attestation must bind exactly Base and Base Sepolia");
+  if (!Array.isArray(binding.chains) || canonical(binding.chains.map(({ chainId }) => chainId)) !== canonical([8453, 84532])) throw new Error("SP1 runtime attestation must bind Base then Base Sepolia in canonical order");
   for (const chain of binding.chains) {
     exactKeys(chain, ["chainId", "network", "address", "anchorMode", "finalizedSkewBlocks", "providers", "runtime"], "SP1 runtime attestation chain");
     const expectedNetwork = chain.chainId === 8453 ? "base" : chain.chainId === 84532 ? "base-sepolia" : null;
@@ -366,7 +367,7 @@ export function validateSP1RuntimeAttestationBinding(binding) {
       validateSP1Anchor(provider.finalizedAnchor, "SP1 runtime attestation finalized anchor");
     }
     exactKeys(chain.runtime, ["byteLength", "keccak256"], "SP1 runtime attestation runtime");
-    if (!Number.isSafeInteger(chain.runtime.byteLength) || chain.runtime.byteLength < 1 || chain.runtime.keccak256 !== SP1_RUNTIME_CODEHASH) throw new Error("SP1 runtime attestation runtime identity is invalid");
+    if (chain.runtime.byteLength !== SP1_RUNTIME_BYTE_LENGTH || chain.runtime.keccak256 !== SP1_RUNTIME_CODEHASH) throw new Error("SP1 runtime attestation runtime identity is invalid");
   }
   return binding;
 }
@@ -384,10 +385,19 @@ export function verifySP1RuntimeAttestation({ repoRoot, evidenceRoot, evidencePa
   const selected = resolve(evidencePath ?? "");
   const rel = relative(evidence, selected);
   if (!repoRoot || !evidenceRoot || !evidencePath || !rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("SP1 runtime attestation must be an explicit artifact inside the trusted evidence root");
-  const output = run(python, ["-m", "p42_prizes.sp1_runtime_attestation", "verify", "--evidence", selected], {
+  const { bytes: evidenceBytes } = readStrictJsonFileSyncWithBytes(selected, {
+    maxBytes: 2 * 1024 * 1024,
+    maxDepth: 128,
+    canonicalBytes: true,
+    trailingNewline: "require",
+    trustedRoot: evidence,
+    publicFile: true,
+  });
+  const output = run(python, ["-m", "p42_prizes.sp1_runtime_attestation", "verify", "--evidence", "-"], {
     cwd: root,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+    input: evidenceBytes,
+    stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, PYTHONPATH: [join(root, "src"), process.env.PYTHONPATH].filter(Boolean).join(sep) },
   });
   let report;
