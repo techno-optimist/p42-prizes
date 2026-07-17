@@ -13,13 +13,13 @@
       "deployments": [
         {
           "chainId": "8453",
-          "address": "0xb69f2584cbcf99a58c4e7002e8b89af54a6f4e2",
+          "address": "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2",
           "descriptorPath": "contracts/deployments/8453.json",
           "descriptorDigest": "sha256:986dfd4176ac17f151021daea8f1bbabae845aa39604cd87db4dfacff62071fd"
         },
         {
           "chainId": "84532",
-          "address": "0xb69f2584cbcf99a58c4e7002e8b89af54a6f4e2",
+          "address": "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2",
           "descriptorPath": "contracts/deployments/84532.json",
           "descriptorDigest": "sha256:604df423679e8f09cc24aaf14e50039e95e0671a24d7db30afaead4f2709ac8b"
         }

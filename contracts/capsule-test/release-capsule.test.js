@@ -3,6 +3,7 @@ import { chmod, link, lstat, mkdtemp, open, readFile, rename, rm, symlink, unlin
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, it } from "node:test";
+import Ajv2020 from "ajv/dist/2020.js";
 
 import {
   PRODUCTION_CONTRACTS,
@@ -86,6 +87,19 @@ describe("closed immutable release capsule", () => {
       reseal(changed);
       assert.throws(() => validateReleaseCapsule(changed), /external dependency/);
     }
+  });
+
+  it("rejects the historical SP1 address typo at the capsule schema boundary", async () => {
+    const capsule = await createReleaseCapsule({ contractsRoot, gitCommit: COMMIT });
+    const schema = JSON.parse(await readFile(resolve(contractsRoot, "../schemas/release-capsule.schema.json"), "utf8"));
+    const validate = new Ajv2020({ strict: false }).compile(schema);
+    assert.equal(validate(capsule), true);
+
+    const changed = clone(capsule);
+    changed.externalDependencies[0].deployments[0].address = "0xb69f2584cbcf99a58c4e7002e8b89af54a6f4e2";
+    reseal(changed);
+    assert.equal(validate(changed), false);
+    assert.throws(() => validateReleaseCapsule(changed), /external dependency/);
   });
 
   it("rejects one-byte artifact/runtime and build-info mutations, wrong build-info, and compiler drift", async () => {

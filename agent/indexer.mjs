@@ -44,7 +44,7 @@ import {
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
-const EXPECTED_EXTERNAL_DEPENDENCIES_SHA256 = "157af4e5831ba4084136fba0f9cf838bfbeaa7dcde4f36b95b8f6b94b13b774f";
+const EXPECTED_EXTERNAL_DEPENDENCIES_SHA256 = "7a34c28447954c222d20f5e39a1db488f4b680068c470ee8fa2a1663fb82f359";
 const externalDependenciesUrl = new URL("./external-dependencies-v1.json", import.meta.url);
 const externalDependenciesBytes = readFileSync(externalDependenciesUrl);
 if (createHash("sha256").update(externalDependenciesBytes).digest("hex") !== EXPECTED_EXTERNAL_DEPENDENCIES_SHA256) {
