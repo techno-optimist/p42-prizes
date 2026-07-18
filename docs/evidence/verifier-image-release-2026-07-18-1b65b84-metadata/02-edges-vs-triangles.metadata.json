@@ -1,0 +1,90 @@
+{
+  "buildx.build.provenance/linux/amd64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Famd64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "edges-vs-triangles",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "edges-vs-triangles",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:643a2c6d7c1cc759ed09eefb247f008d10e67d77daaf72e5bb2a4f90823682b2",
+          "build-arg:VERIFIER_VERSION": "0.1.2"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.provenance/linux/arm64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Farm64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "edges-vs-triangles",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "edges-vs-triangles",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:643a2c6d7c1cc759ed09eefb247f008d10e67d77daaf72e5bb2a4f90823682b2",
+          "build-arg:VERIFIER_VERSION": "0.1.2"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.ref": "default/default/8bicsfuc2aqyos6kgdck677ab",
+  "containerimage.descriptor": {
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "digest": "sha256:dbf5fb9205cdb63f1b56fe30ee4324c9349841d1038e10e35c8108ac8d8e3cb1",
+    "size": 647
+  },
+  "containerimage.digest": "sha256:dbf5fb9205cdb63f1b56fe30ee4324c9349841d1038e10e35c8108ac8d8e3cb1",
+  "image.name": "ghcr.io/techno-optimist/p42-prizes-verifiers/edges-vs-triangles:1b65b84b13dbe350339bcd985b44b5224e6c6df7"
+}

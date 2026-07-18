@@ -1,0 +1,90 @@
+{
+  "buildx.build.provenance/linux/amd64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Famd64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "q6-intersecting-hypergraph",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "q6-intersecting-hypergraph",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:6e8f656a886eec2eb7a1af7bb76872bcbeca43035f72974442b3a81d3e096a33",
+          "build-arg:VERIFIER_VERSION": "0.1.0"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.provenance/linux/arm64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Farm64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "q6-intersecting-hypergraph",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "q6-intersecting-hypergraph",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:6e8f656a886eec2eb7a1af7bb76872bcbeca43035f72974442b3a81d3e096a33",
+          "build-arg:VERIFIER_VERSION": "0.1.0"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.ref": "default/default/j0bhhfno3yi3rp2qv7rrsalwe",
+  "containerimage.descriptor": {
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "digest": "sha256:45a5facdd3e3f3602d16aebf4307dcc95e49dc312cdd61362407ec9f2e89f786",
+    "size": 647
+  },
+  "containerimage.digest": "sha256:45a5facdd3e3f3602d16aebf4307dcc95e49dc312cdd61362407ec9f2e89f786",
+  "image.name": "ghcr.io/techno-optimist/p42-prizes-verifiers/q6-intersecting-hypergraph:1b65b84b13dbe350339bcd985b44b5224e6c6df7"
+}

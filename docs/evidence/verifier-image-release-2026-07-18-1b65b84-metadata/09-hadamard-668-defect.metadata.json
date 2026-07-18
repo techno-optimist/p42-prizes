@@ -1,0 +1,90 @@
+{
+  "buildx.build.provenance/linux/amd64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Famd64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "hadamard-668-defect",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "hadamard-668-defect",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:691354bc2ae779083bfae28ca36de3d719d635e16bda1e29d22c77e3bc553c93",
+          "build-arg:VERIFIER_VERSION": "0.1.2"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.provenance/linux/arm64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Farm64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "hadamard-668-defect",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "hadamard-668-defect",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:691354bc2ae779083bfae28ca36de3d719d635e16bda1e29d22c77e3bc553c93",
+          "build-arg:VERIFIER_VERSION": "0.1.2"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.ref": "default/default/9yjxsng2zdqtalr1hmlq8l87f",
+  "containerimage.descriptor": {
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "digest": "sha256:bf9df80077ab0f21a24448d4717b2329c9bce31a7ab025c8009b1dd7d34280c5",
+    "size": 647
+  },
+  "containerimage.digest": "sha256:bf9df80077ab0f21a24448d4717b2329c9bce31a7ab025c8009b1dd7d34280c5",
+  "image.name": "ghcr.io/techno-optimist/p42-prizes-verifiers/hadamard-668-defect:1b65b84b13dbe350339bcd985b44b5224e6c6df7"
+}

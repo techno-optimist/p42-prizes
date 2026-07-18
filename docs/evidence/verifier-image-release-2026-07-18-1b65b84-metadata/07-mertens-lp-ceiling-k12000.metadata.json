@@ -1,0 +1,90 @@
+{
+  "buildx.build.provenance/linux/amd64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Famd64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "mertens-lp-ceiling-k12000",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "mertens-lp-ceiling-k12000",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:a4ac0e169cc82352c109edefb6bb5b7447282ae0832fbe3e55a3f0695eaef942",
+          "build-arg:VERIFIER_VERSION": "0.1.1"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.provenance/linux/arm64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Farm64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "mertens-lp-ceiling-k12000",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "mertens-lp-ceiling-k12000",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:a4ac0e169cc82352c109edefb6bb5b7447282ae0832fbe3e55a3f0695eaef942",
+          "build-arg:VERIFIER_VERSION": "0.1.1"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.ref": "default/default/c8gzmq60waiz6u6m8v6ejtwn4",
+  "containerimage.descriptor": {
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "digest": "sha256:502b9b093bbe4dddfb8644e9d3b3d77dcf04bce74bb1d3a87c9d69c55379e4ff",
+    "size": 647
+  },
+  "containerimage.digest": "sha256:502b9b093bbe4dddfb8644e9d3b3d77dcf04bce74bb1d3a87c9d69c55379e4ff",
+  "image.name": "ghcr.io/techno-optimist/p42-prizes-verifiers/mertens-lp-ceiling-k12000:1b65b84b13dbe350339bcd985b44b5224e6c6df7"
+}

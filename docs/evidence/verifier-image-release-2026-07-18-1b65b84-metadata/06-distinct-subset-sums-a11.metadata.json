@@ -1,0 +1,90 @@
+{
+  "buildx.build.provenance/linux/amd64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Famd64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "distinct-subset-sums-a11",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "distinct-subset-sums-a11",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:64bb0041420f37f0e8eb3379beb52f544a55407bc2a55521c2071bc90ed02a9b",
+          "build-arg:VERIFIER_VERSION": "0.1.0"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.provenance/linux/arm64": {
+    "builder": {
+      "id": ""
+    },
+    "buildType": "https://mobyproject.org/buildkit@v1",
+    "materials": [
+      {
+        "uri": "pkg:docker/python@3.14.2-slim?digest=sha256:1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925\u0026platform=linux%2Farm64",
+        "digest": {
+          "sha256": "1a3c6dbfd2173971abba880c3cc2ec4643690901f6ad6742d0827bae6cefc925"
+        }
+      }
+    ],
+    "invocation": {
+      "configSource": {
+        "entryPoint": "Dockerfile.verifier"
+      },
+      "parameters": {
+        "frontend": "dockerfile.v0",
+        "args": {
+          "build-arg:PROBLEM": "distinct-subset-sums-a11",
+          "build-arg:SOURCE_COMMIT": "1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+          "build-arg:VERIFIER_PROBLEM_ID": "distinct-subset-sums-a11",
+          "build-arg:VERIFIER_SOURCE_SHA256": "sha256:64bb0041420f37f0e8eb3379beb52f544a55407bc2a55521c2071bc90ed02a9b",
+          "build-arg:VERIFIER_VERSION": "0.1.0"
+        },
+        "locals": [
+          {
+            "name": "context"
+          },
+          {
+            "name": "dockerfile"
+          }
+        ]
+      },
+      "environment": {
+        "platform": "linux/arm64"
+      }
+    }
+  },
+  "buildx.build.ref": "default/default/0qp38nn4ekyscs9khp4vxxmwx",
+  "containerimage.descriptor": {
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "digest": "sha256:e89f814139a7e76c8959f58bfcf5cc07926097ca89f1b335bf1732dc22d90ba7",
+    "size": 647
+  },
+  "containerimage.digest": "sha256:e89f814139a7e76c8959f58bfcf5cc07926097ca89f1b335bf1732dc22d90ba7",
+  "image.name": "ghcr.io/techno-optimist/p42-prizes-verifiers/distinct-subset-sums-a11:1b65b84b13dbe350339bcd985b44b5224e6c6df7"
+}
