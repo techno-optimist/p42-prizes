@@ -25,9 +25,36 @@ sys.path.insert(0, str(ROOT / "src"))
 from p42_prizes.verdict import canonical_json  # noqa: E402
 from p42_prizes.verifier_executor import (  # noqa: E402
     BoardExecution, DockerAuthority, ExecutorPolicy, VerifierExecutor, VerifierExecutorError, acquire_singleton_lock,
+    host_capacity_snapshot,
 )
 
 MAX_REQUEST_BYTES = 16 * 1024
+
+
+def send_response(connection: socket.socket, response: dict) -> bool:
+    """Best-effort reply: a disconnected client must not terminate a worker."""
+    try:
+        connection.sendall((canonical_json(response) + "\n").encode())
+        return True
+    except (BrokenPipeError, ConnectionError, OSError):
+        return False
+
+
+def read_request_frame(connection: socket.socket, timeout_seconds: float) -> bytes:
+    connection.settimeout(timeout_seconds)
+    chunks = bytearray()
+    try:
+        while b"\n" not in chunks and len(chunks) <= MAX_REQUEST_BYTES:
+            chunk = connection.recv(min(4096, MAX_REQUEST_BYTES + 1 - len(chunks)))
+            if not chunk:
+                break
+            chunks.extend(chunk)
+    except socket.timeout as exc:
+        raise VerifierExecutorError("executor IPC read deadline exceeded") from exc
+    payload = bytes(chunks)
+    if len(payload) > MAX_REQUEST_BYTES or payload.count(b"\n") != 1 or not payload.endswith(b"\n"):
+        raise VerifierExecutorError("invalid executor IPC frame")
+    return payload
 
 
 def load_boards(path: Path) -> dict[str, BoardExecution]:
@@ -54,6 +81,10 @@ def load_boards(path: Path) -> dict[str, BoardExecution]:
 
 
 def serve(args: argparse.Namespace) -> None:
+    if not 0 < args.ipc_read_timeout_seconds <= 60:
+        raise VerifierExecutorError("executor IPC read deadline must be in (0, 60] seconds")
+    if not Path(args.oom_events_path).is_absolute():
+        raise VerifierExecutorError("executor OOM events path must be absolute")
     expected_uid = pwd.getpwnam(args.operator_user).pw_uid
     submit_group = grp.getgrnam(args.submit_group).gr_gid
     singleton_lock_fd = acquire_singleton_lock(Path(args.lock))
@@ -64,6 +95,7 @@ def serve(args: argparse.Namespace) -> None:
         policy=ExecutorPolicy(reserve_memory_mb=args.reserve_memory_mb,
                                    max_swap_used_mb=args.max_swap_used_mb,
                                    memory_safety_factor=args.memory_safety_factor),
+        capacity_reader=lambda: host_capacity_snapshot(Path(args.oom_events_path)),
     )
     executor.recover()
     socket_path = Path(args.socket)
@@ -142,7 +174,7 @@ def serve(args: argparse.Namespace) -> None:
             except Exception as error:
                 response = {"ok": False, "error": str(error)[:512]}
             try:
-                connection.sendall((canonical_json(response) + "\n").encode())
+                send_response(connection, response)
             finally:
                 request_id = request.get("request_id")
                 if isinstance(request_id, str):
@@ -166,7 +198,10 @@ def serve(args: argparse.Namespace) -> None:
                 )
                 if process.stdout.readline() != "READY\n":
                     raise VerifierExecutorError("authorization fence failed")
-                connection.sendall(b"READY\n")
+                try:
+                    connection.sendall(b"READY\n")
+                except (BrokenPipeError, ConnectionError, OSError) as exc:
+                    raise VerifierExecutorError("authorization fence client disconnected") from exc
                 if connection.recv(1) != b"R":
                     raise VerifierExecutorError("authorization fence release missing")
                 process.stdin.write("R"); process.stdin.flush()
@@ -178,7 +213,7 @@ def serve(args: argparse.Namespace) -> None:
         except Exception as error:
             response = {"ok": False, "error": str(error)[:512]}
         try:
-            connection.sendall((canonical_json(response) + "\n").encode())
+            send_response(connection, response)
         finally:
             connection.close()
             auxiliary_slots.release()
@@ -190,25 +225,16 @@ def serve(args: argparse.Namespace) -> None:
             pid, uid, _gid = struct.unpack("3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
             if uid != expected_uid or pid < 1:
                 raise VerifierExecutorError("unauthorized executor IPC peer")
-            chunks = bytearray()
-            while b"\n" not in chunks and len(chunks) <= MAX_REQUEST_BYTES:
-                chunk = connection.recv(min(4096, MAX_REQUEST_BYTES + 1 - len(chunks)))
-                if not chunk:
-                    break
-                chunks.extend(chunk)
-            payload = bytes(chunks)
-            if len(payload) > MAX_REQUEST_BYTES or payload.count(b"\n") != 1 or not payload.endswith(b"\n"):
-                raise VerifierExecutorError("invalid executor IPC frame")
-            request = json.loads(payload)
+            request = json.loads(read_request_frame(connection, args.ipc_read_timeout_seconds))
             if request.get("operation") == "execute":
                 request_id = request.get("request_id")
                 if not isinstance(request_id, str):
                     raise VerifierExecutorError("execute request has no request id")
                 with active_request_ids_lock:
                     if request_id in active_request_ids:
-                        connection.sendall((canonical_json({"ok": True, "result": {
+                        send_response(connection, {"ok": True, "result": {
                             "reason": "executor_request_already_pending", "selected_job_id": None,
-                        }}) + "\n").encode())
+                        }})
                         connection.close()
                         continue
                     active_request_ids.add(request_id)
@@ -223,7 +249,7 @@ def serve(args: argparse.Namespace) -> None:
                     raise VerifierExecutorError("too many concurrent executor control requests")
                 threading.Thread(target=auxiliary, args=(connection, request), daemon=True).start()
         except Exception as error:
-            connection.sendall((canonical_json({"ok": False, "error": str(error)[:512]}) + "\n").encode())
+            send_response(connection, {"ok": False, "error": str(error)[:512]})
             connection.close()
     os.close(singleton_lock_fd)
 
@@ -237,6 +263,8 @@ def main() -> None:
     parser.add_argument("--reserve-memory-mb", type=int, default=8192)
     parser.add_argument("--max-swap-used-mb", type=int, default=1024)
     parser.add_argument("--memory-safety-factor", type=float, default=2.0)
+    parser.add_argument("--ipc-read-timeout-seconds", type=float, default=5.0)
+    parser.add_argument("--oom-events-path", default="/sys/fs/cgroup/memory.events")
     serve(parser.parse_args())
 
 

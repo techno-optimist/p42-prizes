@@ -26,8 +26,9 @@ Restart=on-failure
 RestartSec=5s
 OOMPolicy=kill
 LimitCORE=0
-MemoryHigh=1G
-MemoryMax=2G
+# Largest authorized board is 4 GiB; retain 2 GiB for daemon/runtime overhead.
+MemoryHigh=5G
+MemoryMax=6G
 MemorySwapMax=0
 TasksMax=512
 KillMode=mixed

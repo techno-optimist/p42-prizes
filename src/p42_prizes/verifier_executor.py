@@ -58,9 +58,9 @@ def read_boot_id(path: Path = Path("/proc/sys/kernel/random/boot_id")) -> str:
     return value
 
 
-def host_capacity_snapshot() -> HostCapacity:
+def host_capacity_snapshot(oom_events_path: Path = Path("/sys/fs/cgroup/memory.events")) -> HostCapacity:
     values = {}
-    for line in Path("/sys/fs/cgroup/memory.events").read_text(encoding="ascii").splitlines():
+    for line in oom_events_path.read_text(encoding="ascii").splitlines():
         parts = line.split()
         if len(parts) == 2 and parts[1].isdigit():
             values[parts[0]] = int(parts[1])

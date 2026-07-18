@@ -45,6 +45,7 @@ FILES = (
     "deployments/p42-indexer.service.example",
     "deployments/p42-verifier-docker.service.example",
     "deployments/p42-verifier-executor.service.example",
+    "deployments/p42-verifier-executor-boards.json.example",
     "deployments/p42-docker-rootless-daemon.json",
     "deployments/p42-rootless-runtime.apparmor.example",
     "deployments/p42-runtime-failure@.service.example",
@@ -220,6 +221,18 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
             "Conflicts=docker.service docker.socket",
             "Conflicts=docker.service",
             "Conflicts=docker.service docker.socket",
+        ),
+        (
+            "deployments/p42-verifier-docker.service.example",
+            "MemoryMax=6G",
+            "MemoryMax=2G",
+            "MemoryMax=6G",
+        ),
+        (
+            "deployments/p42-verifier-executor.service.example",
+            "--oom-events-path /sys/fs/cgroup/system.slice/p42-verifier-docker.service/memory.events",
+            "--oom-events-path /sys/fs/cgroup/memory.events",
+            "p42-verifier-docker.service/memory.events",
         ),
             (
                 "deployments/p42-verifier-docker.service.example",

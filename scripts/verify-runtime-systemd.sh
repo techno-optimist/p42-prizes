@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+PYTHON=${PYTHON:-python3}
 fail(){ printf 'runtime systemd verification failed: %s\n' "$*" >&2; exit 1; }
 line(){ [[ $(grep -Fxc -- "$2" "$1" || true) == 1 ]] || fail "$(basename "$1") must contain exactly: $2"; }
 absent(){ ! grep -Eq -- "$2" "$1" || fail "$(basename "$1") $3"; }
@@ -13,7 +14,8 @@ resolver="$root/deployments/p42-resolver@.service.example"
 indexer="$root/deployments/p42-indexer.service.example"
 failure="$root/deployments/p42-runtime-failure@.service.example"
 sysusers="$root/deployments/p42-runtime.sysusers.example"
-for f in "$operator" "$executor" "$docker" "$resolver" "$indexer" "$failure" "$sysusers"; do [[ -f $f ]] || fail "missing $f"; done
+boards="$root/deployments/p42-verifier-executor-boards.json.example"
+for f in "$operator" "$executor" "$docker" "$resolver" "$indexer" "$failure" "$sysusers" "$boards"; do [[ -f $f ]] || fail "missing $f"; done
 
 line "$operator" 'User=p42-operator'
 line "$operator" 'Group=p42-operator'
@@ -32,6 +34,7 @@ line "$executor" 'Requires=p42-verifier-docker.service'
 line "$executor" 'StateDirectoryMode=0700'
 line "$executor" 'RuntimeDirectoryMode=0710'
 line "$executor" '  --docker-host unix:///run/p42-verifier-docker/docker.sock'
+line "$executor" '  --oom-events-path /sys/fs/cgroup/system.slice/p42-verifier-docker.service/memory.events \'
 line "$executor" 'ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42'
 line "$docker" 'User=p42-verifier-executor'
 line "$docker" 'Group=p42-verifier-executor'
@@ -47,6 +50,11 @@ line "$docker" 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'
 line "$docker" 'Environment=DOCKER_HOST=unix:///run/p42-verifier-docker/docker.sock'
 line "$docker" 'StateDirectoryMode=0700'
 line "$docker" 'MemorySwapMax=0'
+line "$docker" 'MemoryHigh=5G'
+line "$docker" 'MemoryMax=6G'
+max_board_memory=$($PYTHON -c 'import json,sys; print(max(b["required_memory_mb"] for b in json.load(open(sys.argv[1]))["boards"]))' "$boards" 2>/dev/null) \
+  || fail 'verifier board memory policy must be valid JSON'
+(( max_board_memory <= 4096 )) || fail 'verifier board memory policy exceeds the Docker service cgroup budget'
 line "$docker" 'ConditionPathExists=!/run/docker.sock'
 line "$docker" 'ConditionPathExists=!/var/run/docker.sock'
 

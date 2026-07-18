@@ -11,6 +11,7 @@ from p42_prizes.runner_queue import MemorySnapshot
 from p42_prizes.verifier_executor import (
     BoardExecution, ExecutorPolicy, HostCapacity, VerifierExecutor, VerifierExecutorError,
     acquire_singleton_lock, holder_expired,
+    host_capacity_snapshot,
 )
 
 
@@ -32,6 +33,15 @@ def test_split_brain_executor_is_rejected_by_os_lock(tmp_path: Path) -> None:
         os.close(first)
     second = acquire_singleton_lock(tmp_path / "executor.lock")
     os.close(second)
+
+
+def test_capacity_reads_delegated_docker_cgroup_oom_counter(tmp_path: Path, monkeypatch) -> None:
+    events = tmp_path / "docker-memory.events"
+    events.write_text("low 0\nhigh 2\noom 3\noom_kill 4\n", encoding="ascii")
+    monkeypatch.setattr("p42_prizes.verifier_executor.memory_snapshot_from_proc",
+                        lambda: MemorySnapshot(10_000, 9_000, 0))
+    monkeypatch.setattr("p42_prizes.verifier_executor.read_boot_id", lambda: "boot-a")
+    assert host_capacity_snapshot(events).oom_kills == 4
 
 
 class FakeDocker:
