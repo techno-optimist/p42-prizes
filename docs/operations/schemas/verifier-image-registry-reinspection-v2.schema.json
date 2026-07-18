@@ -1,0 +1,204 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.org/schemas/verifier-image-registry-reinspection-v2.schema.json",
+  "title": "P42 verifier image registry reinspection report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "format_relationship", "observed_at_utc", "sealed_dossier", "source_checkout", "validator_checkout", "registry_client", "registry_base", "credential_handling", "output_publication", "byte_claims", "boards", "report_hash"],
+  "properties": {
+    "schema_version": {"const": "p42-verifier-image-registry-reinspection/v2"},
+    "format_relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["predecessor_schema_version", "compatibility", "migration", "v1_evidence"],
+      "properties": {
+        "predecessor_schema_version": {"const": "p42-verifier-image-registry-reinspection/v1"},
+        "compatibility": {"const": "incompatible_successor"},
+        "migration": {"const": "regenerate_from_sealed_release_dossier"},
+        "v1_evidence": {"const": "preserved_not_reinterpreted"}
+      }
+    },
+    "observed_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "sealed_dossier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_digest", "dossier_hash"],
+      "properties": {
+        "file_digest": {"$ref": "#/$defs/digest"},
+        "dossier_hash": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "source_checkout": {"$ref": "#/$defs/checkout"},
+    "validator_checkout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "dirty_state", "clean_exact_commit", "artifacts"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/commit"},
+        "dirty_state": {"const": "clean"},
+        "clean_exact_commit": {"const": true},
+        "artifacts": {
+          "type": "array",
+          "prefixItems": [
+            {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "validator_script"}, "path": {"const": "scripts/reinspect_verifier_image_registry.py"}}}]},
+            {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "release_script"}, "path": {"const": "scripts/release_verifier_images.py"}}}]},
+            {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "reinspection_schema"}, "path": {"const": "docs/operations/schemas/verifier-image-registry-reinspection-v2.schema.json"}}}]},
+            {"allOf": [{"$ref": "#/$defs/artifact"}, {"properties": {"role": {"const": "release_schema"}, "path": {"const": "schemas/verifier-image-release.schema.json"}}}]}
+          ],
+          "items": false,
+          "minItems": 4,
+          "maxItems": 4
+        }
+      }
+    },
+    "registry_client": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["supplied_absolute_path", "resolved_absolute_path", "sha256", "size", "owner", "execution"],
+      "properties": {
+        "supplied_absolute_path": {"type": "string", "pattern": "^/"},
+        "resolved_absolute_path": {"type": "string", "pattern": "^/"},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 2},
+        "owner": {"enum": ["root", "current_user"]},
+        "execution": {"const": "private_hashed_copy_guarded_per_invocation"}
+      }
+    },
+    "registry_base": {"$ref": "#/$defs/registry"},
+    "credential_handling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "credentials_in_argv", "credentials_in_report", "subprocess_environment", "ephemeral_workspace_cleanup"],
+      "properties": {
+        "mode": {"enum": ["anonymous", "isolated-credential-file"]},
+        "credentials_in_argv": {"const": false},
+        "credentials_in_report": {"const": false},
+        "subprocess_environment": {"const": "minimal_fixed_without_path"},
+        "ephemeral_workspace_cleanup": {"const": "verified_complete"}
+      }
+    },
+    "output_publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "successful_return_state", "prelink_failure_state", "postlink_failure_state", "automatic_final_unlink_after_link"],
+      "properties": {
+        "method": {"const": "private_temp_fsync_then_noreplace_hardlink"},
+        "successful_return_state": {"const": "terminal_verified"},
+        "prelink_failure_state": {"const": "retryable_no_final_link"},
+        "postlink_failure_state": {"const": "terminal_ambiguous_manual_cleanup_required"},
+        "automatic_final_unlink_after_link": {"const": false}
+      }
+    },
+    "byte_claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_child_config", "publication_commit_tag", "layer_blobs", "layer_blob_availability"],
+      "properties": {
+        "index_child_config": {"const": "downloaded_and_hashed"},
+        "publication_commit_tag": {"const": "downloaded_hashed_and_equal_to_digest_reference"},
+        "layer_blobs": {"const": "not_downloaded_or_hashed"},
+        "layer_blob_availability": {"const": "not_claimed"}
+      }
+    },
+    "boards": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/board"}
+    },
+    "report_hash": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "registry": {"type": "string", "pattern": "^(?:localhost|[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?)/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$"},
+    "checkout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "dirty_state", "clean_exact_commit"],
+      "properties": {
+        "commit": {"$ref": "#/$defs/commit"},
+        "dirty_state": {"const": "clean"},
+        "clean_exact_commit": {"const": true}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "sha256", "size"],
+      "properties": {
+        "role": {"enum": ["validator_script", "release_script", "reinspection_schema", "release_schema"]},
+        "path": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 2}
+      }
+    },
+    "downloaded_descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "size", "bytes"],
+      "properties": {
+        "digest": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 1},
+        "bytes": {"const": "downloaded_and_hashed"}
+      }
+    },
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mediaType", "digest", "size", "bytes", "availability"],
+      "properties": {
+        "mediaType": {"enum": ["application/vnd.oci.image.layer.v1.tar", "application/vnd.oci.image.layer.v1.tar+gzip", "application/vnd.oci.image.layer.v1.tar+zstd"]},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 1},
+        "bytes": {"const": "not_downloaded_or_hashed"},
+        "availability": {"const": "not_claimed"}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "child_manifest", "config", "layers"],
+      "properties": {
+        "platform": {"enum": ["linux/amd64", "linux/arm64"]},
+        "child_manifest": {"$ref": "#/$defs/downloaded_descriptor"},
+        "config": {"$ref": "#/$defs/downloaded_descriptor"},
+        "layers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/layer"}}
+      }
+    },
+    "index": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "size", "digest_reference_bytes", "publication_tag_bytes", "tag_resolves_to_same_index"],
+      "properties": {
+        "digest": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 1},
+        "digest_reference_bytes": {"const": "downloaded_and_hashed"},
+        "publication_tag_bytes": {"const": "downloaded_and_hashed"},
+        "tag_resolves_to_same_index": {"const": true}
+      }
+    },
+    "board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "repository", "immutable_reference", "publication_tag", "index", "platforms"],
+      "properties": {
+        "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "repository": {"$ref": "#/$defs/registry"},
+        "immutable_reference": {"type": "string", "pattern": "^(?:localhost|[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?)/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$"},
+        "publication_tag": {"type": "string", "pattern": "^(?:localhost|[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?)/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*:[0-9a-f]{40}$"},
+        "index": {"$ref": "#/$defs/index"},
+        "platforms": {
+          "type": "array",
+          "prefixItems": [
+            {"allOf": [{"$ref": "#/$defs/platform"}, {"properties": {"platform": {"const": "linux/amd64"}}}]},
+            {"allOf": [{"$ref": "#/$defs/platform"}, {"properties": {"platform": {"const": "linux/arm64"}}}]}
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    }
+  }
+}
