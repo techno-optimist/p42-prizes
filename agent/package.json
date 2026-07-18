@@ -41,6 +41,7 @@
     "resolver-quorum.mjs",
     "runner-transcript.mjs",
     "runtime_bridge.py",
+    "setup-operation-plan.mjs",
     "secure_path_bridge.py",
     "signed-transaction.mjs",
     "solver-manifest.mjs",

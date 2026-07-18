@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import { ethers } from "ethers";
 
 import { canonicalTopologyDescriptors } from "../../agent/canonical-topology.mjs";
+import { assertExactSetupOperations } from "../../agent/setup-operation-plan.mjs";
 import {
   resolveCanonicalDeploymentStartNonce,
   validateAndReserveCanonicalDeployment,
@@ -148,6 +149,7 @@ describe("canonical deployment reservation gate", () => {
       let reservationCalls = 0;
       let deploymentValidationCalls = 0;
       let setupValidationCalls = 0;
+      const canonicalSetupOperations = setupOperations();
       const reserve = async () => {
         reservationCalls += 1;
         await writeFile(reservationPath, "reserved\n", { flag: "wx" });
@@ -159,13 +161,14 @@ describe("canonical deployment reservation gate", () => {
       };
       const validateSetupOperations = (operations) => {
         setupValidationCalls += 1;
+        assertExactSetupOperations(canonicalSetupOperations, operations);
         return bindGovernanceOperationPlan(operations);
       };
       const common = {
         boardCount: 10,
         executableDefinitions: definitions,
         executablePreflight: preflight(definitions),
-        setupOperations: setupOperations(),
+        setupOperations: structuredClone(canonicalSetupOperations),
         expectedOperationCount: 110,
         validateDeploymentPlan,
         validateSetupOperations,
@@ -221,11 +224,30 @@ describe("canonical deployment reservation gate", () => {
 
       const alteredOperations = setupOperations();
       alteredOperations[109] = { ...alteredOperations[109], data: "0xffff" };
+      assert.throws(() => bindGovernanceOperationPlan(alteredOperations), /operation id does not match payload/);
+
+      const internallyValidNoncanonical = setupOperations();
+      internallyValidNoncanonical[109] = {
+        ...internallyValidNoncanonical[109],
+        data: "0xffff",
+      };
+      internallyValidNoncanonical[109].operationId = ethers.keccak256(
+        ethers.AbiCoder.defaultAbiCoder().encode(
+          ["address", "uint256", "bytes", "bytes32"],
+          [
+            internallyValidNoncanonical[109].target,
+            0,
+            internallyValidNoncanonical[109].data,
+            internallyValidNoncanonical[109].salt,
+          ],
+        ),
+      );
+      assert.doesNotThrow(() => bindGovernanceOperationPlan(internallyValidNoncanonical));
       await assert.rejects(validateAndReserveCanonicalDeployment({
         ...common,
         canonicalDefinitions: definitions,
-        setupOperations: alteredOperations,
-      }), /operation id does not match payload/);
+        setupOperations: internallyValidNoncanonical,
+      }), /does not match the exact derived governance operation/);
 
       assert.equal(reservationCalls, 0);
       assert.equal(existsSync(reservationPath), false);

@@ -73,6 +73,7 @@ import {
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
+import { assertExactSetupOperations } from "../../agent/setup-operation-plan.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
 import {
   resolveCanonicalDeploymentStartNonce,
@@ -831,7 +832,19 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       rpcEvidence: deploymentRpcEvidence,
       startNonce: plan.startNonce,
     }, plan.steps, plan.addresses),
-    validateSetupOperations: bindGovernanceOperationPlan,
+    validateSetupOperations: (operations) => {
+      const canonicalOperations = buildMultiBoardSetupOperations({
+        ethers,
+        chainId: BASE_SEPOLIA_CHAIN_ID,
+        timelockAddress: executablePreflight.addresses.timelock,
+        registryAddress: executablePreflight.addresses.registry,
+        config,
+        boards: preflightBoards,
+        interfaces: preflightInterfaces,
+      });
+      assertExactSetupOperations(canonicalOperations, operations);
+      return bindGovernanceOperationPlan(operations);
+    },
     reserve: () => ensureManifestReservation(reservationIdentity),
   });
   const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(frozenSetupOperations);
