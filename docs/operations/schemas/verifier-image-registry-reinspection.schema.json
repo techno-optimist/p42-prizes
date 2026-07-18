@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://projectforty2.org/schemas/verifier-image-registry-reinspection.schema.json",
+  "title": "P42 verifier image registry reinspection report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "observed_at_utc", "sealed_dossier", "source_checkout", "registry_base", "credential_handling", "byte_claims", "boards", "report_hash"],
+  "properties": {
+    "schema_version": {"const": "p42-verifier-image-registry-reinspection/v1"},
+    "observed_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
+    "sealed_dossier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file_digest", "dossier_hash"],
+      "properties": {
+        "file_digest": {"$ref": "#/$defs/digest"},
+        "dossier_hash": {"$ref": "#/$defs/digest"}
+      }
+    },
+    "source_checkout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "clean_exact_commit"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "clean_exact_commit": {"const": true}
+      }
+    },
+    "registry_base": {"$ref": "#/$defs/registry"},
+    "credential_handling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "credentials_in_argv", "credentials_in_report", "subprocess_home", "ephemeral_workspace_cleanup"],
+      "properties": {
+        "mode": {"enum": ["anonymous", "isolated-credential-file"]},
+        "credentials_in_argv": {"const": false},
+        "credentials_in_report": {"const": false},
+        "subprocess_home": {"const": "isolated_ephemeral"},
+        "ephemeral_workspace_cleanup": {"const": "verified_complete"}
+      }
+    },
+    "byte_claims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index_child_config", "layer_blobs", "layer_blob_availability"],
+      "properties": {
+        "index_child_config": {"const": "downloaded_and_hashed"},
+        "layer_blobs": {"const": "not_downloaded_or_hashed"},
+        "layer_blob_availability": {"const": "not_claimed"}
+      }
+    },
+    "boards": {
+      "type": "array",
+      "minItems": 10,
+      "maxItems": 10,
+      "items": {"$ref": "#/$defs/board"}
+    },
+    "report_hash": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "registry": {"type": "string", "pattern": "^(?:localhost|[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?)/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$"},
+    "byte_state": {"const": "downloaded_and_hashed"},
+    "downloaded_descriptor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["digest", "size", "bytes"],
+      "properties": {
+        "digest": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 1},
+        "bytes": {"$ref": "#/$defs/byte_state"}
+      }
+    },
+    "layer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mediaType", "digest", "size", "bytes", "availability"],
+      "properties": {
+        "mediaType": {"enum": ["application/vnd.oci.image.layer.v1.tar", "application/vnd.oci.image.layer.v1.tar+gzip", "application/vnd.oci.image.layer.v1.tar+zstd"]},
+        "digest": {"$ref": "#/$defs/digest"},
+        "size": {"type": "integer", "minimum": 1},
+        "bytes": {"const": "not_downloaded_or_hashed"},
+        "availability": {"const": "not_claimed"}
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["platform", "child_manifest", "config", "layers"],
+      "properties": {
+        "platform": {"enum": ["linux/amd64", "linux/arm64"]},
+        "child_manifest": {"$ref": "#/$defs/downloaded_descriptor"},
+        "config": {"$ref": "#/$defs/downloaded_descriptor"},
+        "layers": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/layer"}}
+      }
+    },
+    "board": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "repository", "immutable_reference", "index", "platforms"],
+      "properties": {
+        "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "repository": {"$ref": "#/$defs/registry"},
+        "immutable_reference": {"type": "string", "pattern": "^(?:localhost|[a-z0-9]+(?:[.-][a-z0-9]+)*(?::[0-9]{1,5})?)/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*@sha256:[0-9a-f]{64}$"},
+        "index": {"$ref": "#/$defs/downloaded_descriptor"},
+        "platforms": {
+          "type": "array",
+          "prefixItems": [
+            {"allOf": [{"$ref": "#/$defs/platform"}, {"properties": {"platform": {"const": "linux/amd64"}}}]},
+            {"allOf": [{"$ref": "#/$defs/platform"}, {"properties": {"platform": {"const": "linux/arm64"}}}]}
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        }
+      }
+    }
+  }
+}
