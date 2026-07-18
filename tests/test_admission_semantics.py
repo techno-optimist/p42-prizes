@@ -51,9 +51,13 @@ def test_strict_json_loads_has_deterministic_container_depth_limit() -> None:
 
 
 def test_strict_json_loads_has_deterministic_integer_digit_limit() -> None:
-    accepted = "-" + "9" * MAX_JSON_INTEGER_DIGITS
+    digits = "9" * MAX_JSON_INTEGER_DIGITS
+    accepted = "-" + digits
     rejected = "9" * (MAX_JSON_INTEGER_DIGITS + 1)
-    assert strict_json_loads(accepted) == -int("9" * MAX_JSON_INTEGER_DIGITS)
+    expected = 0
+    for digit in digits:
+        expected = expected * 10 + (ord(digit) - ord("0"))
+    assert strict_json_loads(accepted) == -expected
     with pytest.raises(ValueError, match="JSON integer exceeds"):
         strict_json_loads(rejected)
 
