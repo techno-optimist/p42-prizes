@@ -524,10 +524,20 @@ uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
 `/etc/subuid` and `/etc/subgid` ranges, enabled unprivileged user namespaces,
 and cgroup v2 for `p42-operator`. Its preflight parses every subordinate-ID
 file entry and rejects interval overlap, then runs `unshare --user
---map-root-user --mount --mount-proc=/proc /usr/bin/true` as the service user;
+--map-root-user --mount --pid --fork --mount-proc=/proc /usr/bin/true` as the
+service user;
 it does not merely grep for a matching row. Install
 `scripts/p42_rootless_docker_preflight.py` as
 `/usr/local/libexec/p42_rootless_docker_preflight.py` before enabling the unit.
+Ubuntu 24.04 hosts with
+`kernel.apparmor_restrict_unprivileged_userns=1` must also install
+`deployments/p42-rootless-runtime.apparmor.example` as
+`/etc/apparmor.d/p42-rootless-runtime` and load it with
+`apparmor_parser -r /etc/apparmor.d/p42-rootless-runtime`. Systemd applies the
+named profile only to `p42-docker-rootless@.service`; it grants that bounded
+service process tree the `userns` permission needed by both the same-user
+preflight and rootlesskit. Do not disable the host restriction globally or
+grant it to generic `/usr/bin/unshare`.
 The `deployments/p42-runtime.sysusers.example` fragment creates accounts only;
 host administration must install rootlesskit, setuid ID helpers, subordinate
 IDs, user-namespace policy, and cgroup support. The worker passes the validated

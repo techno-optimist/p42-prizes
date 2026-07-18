@@ -25,6 +25,7 @@ FILES = (
     "deployments/p42-resolver@.service.example",
     "deployments/p42-docker-rootless@.service.example",
     "deployments/p42-docker-rootless-daemon.json",
+    "deployments/p42-rootless-runtime.apparmor.example",
     "deployments/p42-runtime-failure@.service.example",
     "agent/runtime-cli-contract.mjs",
     "agent/runtime-supervisor.mjs",
@@ -97,9 +98,11 @@ def test_rootless_preflight_probes_user_namespace_as_current_service_user(
         "test \"$1\" = --user || exit 11\n"
         "test \"$2\" = --map-root-user || exit 12\n"
         "test \"$3\" = --mount || exit 13\n"
-        "test \"$4\" = --mount-proc=/proc || exit 14\n"
+        "test \"$4\" = --pid || exit 14\n"
+        "test \"$5\" = --fork || exit 15\n"
+        "test \"$6\" = --mount-proc=/proc || exit 16\n"
         "printf '%s' \"$(id -u)\" > \"$P42_PROBE_UID_FILE\"\n"
-        "test \"$5\" = /usr/bin/true || exit 15\n",
+        "test \"$7\" = /usr/bin/true || exit 17\n",
         encoding="utf-8",
     )
     fake_unshare.chmod(0o700)

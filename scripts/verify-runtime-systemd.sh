@@ -32,10 +32,11 @@ operator="$deployments/p42-operator@.service.example"
 resolver="$deployments/p42-resolver@.service.example"
 rootless="$deployments/p42-docker-rootless@.service.example"
 rootless_config="$deployments/p42-docker-rootless-daemon.json"
+rootless_apparmor="$deployments/p42-rootless-runtime.apparmor.example"
 rootless_preflight="$repo_root/scripts/p42_rootless_docker_preflight.py"
 failure="$deployments/p42-runtime-failure@.service.example"
 sysusers="$deployments/p42-runtime.sysusers.example"
-for file in "$operator" "$resolver" "$rootless" "$rootless_config" "$rootless_preflight" "$failure" "$sysusers"; do
+for file in "$operator" "$resolver" "$rootless" "$rootless_config" "$rootless_apparmor" "$rootless_preflight" "$failure" "$sysusers"; do
   [[ -f $file ]] || fail "missing ${file#"$repo_root"/}"
 done
 
@@ -85,6 +86,7 @@ done
 
 require_exact "$rootless" User 'User=p42-operator'
 require_exact "$rootless" Group 'Group=p42-operator'
+require_exact "$rootless" AppArmorProfile 'AppArmorProfile=p42-rootless-runtime'
 require_exact "$rootless" Conflicts 'Conflicts=docker.service docker.socket'
 require_line "$rootless" 'ConditionPathExists=/usr/bin/rootlesskit'
 require_line "$rootless" 'ConditionPathExists=/usr/bin/unshare'
@@ -109,6 +111,11 @@ grep -Fq 'def validate_subordinate_id_file' "$rootless_preflight" || fail "rootl
 grep -Fq 'ranges overlap' "$rootless_preflight" || fail "rootless preflight must reject overlapping subordinate-ID ranges"
 grep -Fq '"--user"' "$rootless_preflight" || fail "rootless preflight must probe a user namespace"
 grep -Fq '"--map-root-user"' "$rootless_preflight" || fail "rootless preflight must map the current service user"
+grep -Fq '"--pid"' "$rootless_preflight" || fail "rootless preflight must create a PID namespace"
+grep -Fq '"--fork"' "$rootless_preflight" || fail "rootless preflight must fork into the PID namespace"
+require_line "$rootless_apparmor" 'profile p42-rootless-runtime flags=(unconfined) {'
+require_line "$rootless_apparmor" '  userns,'
+[[ $(grep -c -F 'userns,' "$rootless_apparmor") == 1 ]] || fail "rootless runtime AppArmor profile must grant userns exactly once"
 grep -Fqx '{' "$rootless_config" || fail "rootless Docker config must be JSON"
 grep -Fqx '  "iptables": false,' "$rootless_config" || fail "rootless Docker config must disable iptables"
 grep -Fqx '  "ip6tables": false,' "$rootless_config" || fail "rootless Docker config must disable ip6tables"

@@ -20,6 +20,7 @@ ConditionPathExists=!/var/run/docker.sock
 Type=notify
 User=p42-operator
 Group=p42-operator
+AppArmorProfile=p42-rootless-runtime
 Environment=HOME=/var/lib/p42/docker-home-%i
 Environment=XDG_RUNTIME_DIR=/run/p42-docker-%i
 Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock
