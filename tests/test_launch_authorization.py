@@ -12,6 +12,8 @@ import p42_prizes.launch_authorization as launch_module
 from p42_prizes.launch_authorization import (
     LaunchAuthorizationError,
     MATH_REVIEW_SCHEMA_VERSION,
+    _normalize_gate_report,
+    _require_production_governance_signoff,
     _validate_math_review,
     _validate_problem_reviews,
     _require_production_legal_memo,
@@ -22,6 +24,11 @@ from p42_prizes.cli import _enforce_gate_schema
 from p42_prizes.legal import build_attestation_context
 from p42_prizes.security_audit import normalize_security_audit
 from p42_prizes.verdict import canonical_json, sha256_bytes
+from test_governance import (
+    add_hostile_nested_governance_fields,
+    resign_governance_report,
+    valid_governance_report,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -172,6 +179,58 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
 def test_launch_composition_rejects_historical_v1_legal_memo() -> None:
     with pytest.raises(LaunchAuthorizationError, match="p42-legal-memo/v2"):
         _require_production_legal_memo({"schema_version": "p42-legal-memo/v1"})
+
+
+def test_launch_composition_rejects_historical_v1_governance_signoff() -> None:
+    with pytest.raises(LaunchAuthorizationError, match="p42-governance-signoff/v2"):
+        _require_production_governance_signoff(
+            {"schema_version": "p42-governance-signoff/v1"}
+        )
+
+
+def test_launch_composition_rejects_resigned_v2_with_extra_nested_fields(
+    tmp_path: Path,
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    add_hostile_nested_governance_fields(report)
+    resign_governance_report(report)
+
+    with pytest.raises(
+        LaunchAuthorizationError,
+        match="governance_signoff failed independent validation:.*schema validation",
+    ):
+        _normalize_gate_report(
+            "governance_signoff",
+            report,
+            trust_registry=registry,
+            artifact_root=fixture.root,
+            chain_reader=fixture.chain_reader,
+        )
+
+
+@pytest.mark.parametrize(
+    "hash_value", [pytest.param(None, id="null"), pytest.param("missing", id="missing")]
+)
+def test_launch_composition_requires_typed_governance_hash(
+    tmp_path: Path, hash_value: str | None
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    if hash_value == "missing":
+        report.pop("governance_hash")
+    else:
+        report["governance_hash"] = hash_value
+
+    with pytest.raises(
+        LaunchAuthorizationError,
+        match="governance_signoff failed independent validation:.*governance_hash must be a required string",
+    ):
+        _normalize_gate_report(
+            "governance_signoff",
+            report,
+            trust_registry=registry,
+            artifact_root=fixture.root,
+            chain_reader=fixture.chain_reader,
+        )
 
 
 def test_launch_authorization_requires_independently_validated_security_audit() -> None:
@@ -896,6 +955,8 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         }
         if name == "legal_memo":
             report["schema_version"] = "p42-legal-memo/v2"
+        if name == "governance_signoff":
+            report["schema_version"] = "p42-governance-signoff/v2"
         if name == "operational_controls":
             report["window_completed_at_utc"] = report.pop("completed_at_utc")
         artifacts[name] = fixture.artifact(name, content=report)

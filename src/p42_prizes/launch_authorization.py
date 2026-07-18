@@ -14,7 +14,10 @@ import jsonschema
 
 from p42_prizes.adversarial import normalize_adversarial_campaign_report
 from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
-from p42_prizes.governance import normalize_governance_signoff
+from p42_prizes.governance import (
+    PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+    normalize_governance_signoff,
+)
 from p42_prizes.incident import normalize_incident_drill_report
 from p42_prizes.legal import (
     AttestationValidationContext,
@@ -144,19 +147,15 @@ def normalize_launch_authorization(
         raise LaunchAuthorizationError("artifacts must contain the exact launch evidence set")
     normalized_gate_hashes: dict[str, str] = {}
     latest_gate_time: datetime | None = None
-    for name, normalizer in GATE_NORMALIZERS.items():
+    for name in GATE_NORMALIZERS:
         report = _read_json_artifact(artifacts[name], f"authorization.artifacts.{name}", context)
-        try:
-            normalized = normalizer(
-                report,
-                trust_registry=trust_registry,
-                artifact_root=artifact_root,
-                chain_reader=chain_reader,
-            )
-        except ValueError as exc:
-            raise LaunchAuthorizationError(f"{name} failed independent validation: {exc}") from exc
-        if name == "legal_memo":
-            _require_production_legal_memo(normalized)
+        normalized = _normalize_gate_report(
+            name,
+            report,
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
         if normalized.get("release_binding") != release_binding:
             raise LaunchAuthorizationError(f"{name} release_binding does not exactly match authorization")
         normalized_gate_hashes[name] = normalized[GATE_HASH_FIELDS[name]]
@@ -274,6 +273,38 @@ def _require_production_legal_memo(report: Mapping[str, Any]) -> None:
         raise LaunchAuthorizationError(
             f"legal_memo must use {PRODUCTION_LEGAL_MEMO_SCHEMA_VERSION} for production launch composition"
         )
+
+
+def _require_production_governance_signoff(report: Mapping[str, Any]) -> None:
+    if report.get("schema_version") != PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
+        raise LaunchAuthorizationError(
+            "governance_signoff must use "
+            f"{PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION} for Gate 2 launch composition"
+        )
+
+
+def _normalize_gate_report(
+    name: str,
+    report: Mapping[str, Any],
+    *,
+    trust_registry: Mapping[str, Any],
+    artifact_root: str | Path,
+    chain_reader: ChainReader | None,
+) -> dict[str, Any]:
+    try:
+        normalized = GATE_NORMALIZERS[name](
+            report,
+            trust_registry=trust_registry,
+            artifact_root=artifact_root,
+            chain_reader=chain_reader,
+        )
+    except ValueError as exc:
+        raise LaunchAuthorizationError(f"{name} failed independent validation: {exc}") from exc
+    if name == "legal_memo":
+        _require_production_legal_memo(normalized)
+    if name == "governance_signoff":
+        _require_production_governance_signoff(normalized)
+    return normalized
 
 
 def _read_json_artifact(value: Any, prefix: str, context: AttestationValidationContext) -> dict[str, Any]:
