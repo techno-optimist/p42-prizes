@@ -57,22 +57,37 @@ def encode_raw_json(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--canonical-root", type=Path, required=True)
-    args = parser.parse_args()
-    subprocess.run(
-        [
-            "git",
-            "diff",
-            "--quiet",
-            AUTHORITY_COMMIT,
-            "--",
-            "src/p42_prizes/verdict.py",
-            "problems/erdos-min-overlap/verifier/verify.py",
-            "problems/autoconvolution-c1-upper/verifier/verify.py",
-            "problems/autoconvolution-c2-lower/verifier/verify.py",
-        ],
-        cwd=args.canonical_root,
-        check=True,
+    parser.add_argument(
+        "--source-mode",
+        choices=("exact-base", "current"),
+        default="exact-base",
     )
+    args = parser.parse_args()
+    authority_label = AUTHORITY_COMMIT
+    if args.source_mode == "exact-base":
+        subprocess.run(
+            [
+                "git",
+                "diff",
+                "--quiet",
+                AUTHORITY_COMMIT,
+                "--",
+                "src/p42_prizes/verdict.py",
+                "problems/erdos-min-overlap/verifier/verify.py",
+                "problems/autoconvolution-c1-upper/verifier/verify.py",
+                "problems/autoconvolution-c2-lower/verifier/verify.py",
+            ],
+            cwd=args.canonical_root,
+            check=True,
+        )
+    else:
+        authority_label = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=args.canonical_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
     sys.path.insert(0, str(args.canonical_root / "src"))
     from p42_prizes.verdict import strict_json_loads  # noqa: PLC0415
 
@@ -223,7 +238,7 @@ def main() -> int:
         ),
         "deep-metadata-10000": (
             ('{"n":2,"meta":' + "[" * 10_000 + "0" + "]" * 10_000 + "}").encode(),
-            True,
+            args.source_mode == "exact-base",
         ),
     }
     for name, (raw, expected) in generated.items():
@@ -250,7 +265,7 @@ def main() -> int:
         + len(generated)
         + 6
     )
-    print(f"python authority vectors: {total} passed at {AUTHORITY_COMMIT}")
+    print(f"python authority vectors: {total} passed at {authority_label}")
     return 0
 
 

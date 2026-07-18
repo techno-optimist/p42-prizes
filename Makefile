@@ -205,6 +205,8 @@ candidate-objective-program-gates:
 		tests/test_arithmetic_kakeya_sp1_differential.py \
 		tests/test_edges_sp1_differential.py \
 		tests/test_sp1_objective_reproduction.py
+	@$(PYTHON) objective-programs/erdos-min-overlap/objective-shared/tests/test_python_authority.py \
+		--canonical-root . --source-mode current
 	@bash scripts/verify-candidate-objective-programs.sh
 
 objective-program-gates: objective-core-test \
