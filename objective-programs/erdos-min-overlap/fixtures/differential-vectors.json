@@ -1,0 +1,15 @@
+{
+  "schema": "p42-objective-python-rust-differential/v1",
+  "python_verifier": "/private/tmp/p42-gate-ledger-live-truth/problems/erdos-min-overlap/verifier/verify.py@1b65b84:v0.1.1",
+  "vectors": [
+    {
+      "name": "bundled-frontier",
+      "solution": "problems/erdos-min-overlap/examples/hyra-upper.json",
+      "score": "1424992289798782609633201801352767458976314440679252577/3741444197802851304404516484910431627947663875649308401",
+      "argmax": -92,
+      "aux": "5802843938985922938555908853",
+      "n": 2400,
+      "qualifies": false
+    }
+  ]
+}

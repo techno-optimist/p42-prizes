@@ -12,6 +12,7 @@ from p42_prizes.readiness import (
 )
 from p42_prizes.runner_worker import _chain_score_atoms as runner_chain_score_atoms
 from p42_prizes.verdict import (
+    MAX_JSON_CONTAINER_DEPTH,
     MAX_SCORE_ATOMS_BOUND,
     MAX_UINT256,
     MIN_SCORE_ATOMS_BOUND,
@@ -25,6 +26,27 @@ from p42_prizes.verdict import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_strict_json_loads_has_deterministic_container_depth_limit() -> None:
+    accepted = (
+        '{"meta":'
+        + "[" * (MAX_JSON_CONTAINER_DEPTH - 1)
+        + "0"
+        + "]" * (MAX_JSON_CONTAINER_DEPTH - 1)
+        + "}"
+    )
+    rejected = (
+        '{"meta":'
+        + "[" * MAX_JSON_CONTAINER_DEPTH
+        + "0"
+        + "]" * MAX_JSON_CONTAINER_DEPTH
+        + "}"
+    )
+    strict_json_loads(accepted)
+    with pytest.raises(ValueError, match="JSON container depth exceeds"):
+        strict_json_loads(rejected)
+
 
 # Duplicated cross-language goldens for agent/lib.mjs atomsFromScore and
 # chainScoreAtoms. The runner assertions pin the existing Python execution path

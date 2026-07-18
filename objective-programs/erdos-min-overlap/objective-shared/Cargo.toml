@@ -1,0 +1,16 @@
+[package]
+name = "p42-three-objective-shared"
+version = "0.1.0-candidate"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[dependencies]
+p42-objective-core = { path = "../../p42-objective-core" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["arbitrary_precision", "unbounded_depth"] }
+serde_stacker = "0.1.12"
+stacker = "0.1.22"
+
+[dev-dependencies]
+hex = "0.4.3"

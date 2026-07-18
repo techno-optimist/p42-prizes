@@ -1,0 +1,23 @@
+[workspace]
+members = ["core", "objective-shared"]
+exclude = ["program", "script"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0-candidate"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+num-bigint = { version = "0.4.8", features = ["serde"] }
+num-integer = "0.1.46"
+num-traits = "0.2.19"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["arbitrary_precision"] }
+sha2 = "0.10.9"
+p42-objective-core = { path = "../p42-objective-core" }
+p42-three-objective-shared = { path = "objective-shared" }
+
+[profile.release]
+lto = "thin"

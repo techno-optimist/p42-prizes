@@ -25,6 +25,7 @@ MIN_SCORE_ATOMS_BOUND = -(2**254)
 MAX_SCORE_ATOMS_BOUND = 2**254
 MAX_UINT256 = 2**256 - 1
 MAX_SAFE_JSON_INTEGER = 2**53 - 1
+MAX_JSON_CONTAINER_DEPTH = 256
 
 
 def _reject_json_constant(value: str) -> NoReturn:
@@ -40,14 +41,32 @@ def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any
     return value
 
 
+def _reject_excessive_json_depth(value: Any) -> None:
+    if not isinstance(value, (dict, list)):
+        return
+    stack = [(value, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > MAX_JSON_CONTAINER_DEPTH:
+            raise ValueError(
+                f"JSON container depth exceeds {MAX_JSON_CONTAINER_DEPTH}"
+            )
+        children = current.values() if isinstance(current, dict) else current
+        for child in children:
+            if isinstance(child, (dict, list)):
+                stack.append((child, depth + 1))
+
+
 def strict_json_loads(value: str | bytes | bytearray) -> Any:
     """Parse JSON without non-standard constants or duplicate object keys."""
 
-    return json.loads(
+    parsed = json.loads(
         value,
         parse_constant=_reject_json_constant,
         object_pairs_hook=_reject_duplicate_object_keys,
     )
+    _reject_excessive_json_depth(parsed)
+    return parsed
 
 
 def _validate_json_value(value: Any, path: str = "$") -> None:

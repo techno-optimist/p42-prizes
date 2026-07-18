@@ -1,0 +1,20 @@
+{
+  "authority": "/private/tmp/p42-gate-ledger-live-truth@1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+  "vectors": [
+    {"name":"utf8","encoding":"utf-8","payload":"{\"n\":2,\"denominator_power\":0,\"values\":[1,1]}","accepted":true,"integer_n":2},
+    {"name":"utf8-bom","encoding":"utf-8-sig","payload":"{\"n\":2,\"values\":[1,1]}","accepted":true,"integer_n":2},
+    {"name":"utf16le-bom","encoding":"utf-16-le-bom","payload":"{\"n\":2,\"values\":[1,1]}","accepted":true,"integer_n":2},
+    {"name":"utf16be-no-bom","encoding":"utf-16-be","payload":"{\"n\":2,\"values\":[1,1]}","accepted":true,"integer_n":2},
+    {"name":"utf32le-no-bom","encoding":"utf-32-le","payload":"{\"n\":2,\"values\":[1,1]}","accepted":true,"integer_n":2},
+    {"name":"utf32be-no-bom","encoding":"utf-32-be","payload":"{\"n\":2,\"values\":[1,1]}","accepted":true,"integer_n":2},
+    {"name":"duplicate-root-rejected","encoding":"utf-8","payload":"{\"n\":false,\"n\":2,\"values\":[1,1]}","accepted":false,"integer_n":null},
+    {"name":"duplicate-nested-rejected","encoding":"utf-8","payload":"{\"n\":2,\"values\":[1,1],\"meta\":{\"x\":1,\"x\":2}}","accepted":false,"integer_n":null},
+    {"name":"escaped-equivalent-duplicate-rejected","encoding":"utf-8","payload":"{\"n\":2,\"values\":[1,1],\"meta\":{\"name\":1,\"\\u006eame\":2}}","accepted":false,"integer_n":null},
+    {"name":"surrogate-pair-equivalent-duplicate-rejected","encoding":"utf-8","payload":"{\"n\":2,\"values\":[1,1],\"meta\":{\"\\ud83d\\ude00\":1,\"😀\":2}}","accepted":false,"integer_n":null},
+    {"name":"exponent-is-not-integer","encoding":"utf-8","payload":"{\"n\":2e0,\"values\":[1,1]}","accepted":true,"integer_n":null},
+    {"name":"decimal-is-not-python-int","encoding":"utf-8","payload":"{\"n\":2.0,\"values\":[1,1]}","accepted":true,"integer_n":null},
+    {"name":"boolean-is-not-integer","encoding":"utf-8","payload":"{\"n\":true,\"values\":[1,1]}","accepted":true,"integer_n":null},
+    {"name":"ignored-hostile-metadata","encoding":"utf-8","payload":"{\"n\":2,\"values\":[1,1],\"exponent\":1e9999,\"surrogate\":\"\\ud800\",\"boolean\":false}","accepted":true,"integer_n":2},
+    {"name":"nan-extension-rejected","encoding":"utf-8","payload":"{\"n\":2,\"values\":[1,1],\"meta\":NaN}","accepted":false,"integer_n":null}
+  ]
+}

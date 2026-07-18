@@ -1,0 +1,16 @@
+[package]
+name = "p42-autoconvolution-c2-lower-objective-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+num-bigint.workspace = true
+num-integer.workspace = true
+num-traits.workspace = true
+p42-objective-core.workspace = true
+p42-three-objective-shared.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true

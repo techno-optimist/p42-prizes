@@ -1,0 +1,13 @@
+{
+  "schema": "p42-objective-python-rust-differential/v1",
+  "python_verifier": "/private/tmp/p42-gate-ledger-live-truth/problems/autoconvolution-c1-upper/verifier/verify.py@1b65b84:v0.1.1",
+  "vectors": [
+    {
+      "name": "bundled-frontier",
+      "solution": "problems/autoconvolution-c1-upper/examples/hyra-upper.json",
+      "score": "15041971118343665197137380984232095998912388144895190342004000000000000/10008961702715850455872036862958802052289156042841554837278437518918769",
+      "argmax": 116347,
+      "aux": "752098555917183259856869049211604799945619407244759517100200000000"
+    }
+  ]
+}
