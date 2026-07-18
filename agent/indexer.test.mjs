@@ -184,15 +184,17 @@ it("activation checkpoint validation rejects a missing or mismatched SP1 report"
 });
 
 it("activation checkpoint validation remains blocked by the current SP1 report", async () => {
+  const repoRoot = realpathSync(new URL("..", import.meta.url));
+  const reportPath = realpathSync(join(repoRoot, "docs", "evidence", "sp1-dependency-security-current.json"));
   const options = activationIndexerValidatorFixture({
-    expectedReportBytes: readFileSync(realpathSync(join(process.cwd(), "..", "docs", "evidence", "sp1-dependency-security-current.json"))),
+    expectedReportBytes: readFileSync(reportPath),
   });
   options.activationPython = realpathSync(execFileSync(
     "python3", ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" },
   ).trim());
-  options.activationRepoRoot = realpathSync(join(process.cwd(), ".."));
-  options.activationArtifactRoot = realpathSync(process.cwd());
-  options.sp1SecurityReportPath = realpathSync(join(process.cwd(), "..", "docs", "evidence", "sp1-dependency-security-current.json"));
+  options.activationRepoRoot = repoRoot;
+  options.activationArtifactRoot = realpathSync(new URL(".", import.meta.url));
+  options.sp1SecurityReportPath = reportPath;
   await assert.rejects(
     () => runIndexer(options),
     /SP1 dependency security gate blocks production launch authorization/,
