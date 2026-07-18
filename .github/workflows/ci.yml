@@ -174,7 +174,7 @@ jobs:
         with:
           path: |
             ~/.cargo/registry
-          key: sp1-v6.1-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('objective-programs/Cargo.lock', 'objective-programs/q6-intersecting-hypergraph/Cargo.lock', 'objective-programs/edges-vs-triangles/Cargo.lock') }}
+          key: sp1-v6.1-${{ matrix.os }}-${{ runner.arch }}-${{ hashFiles('objective-programs/Cargo.lock', 'objective-programs/q6-intersecting-hypergraph/Cargo.lock', 'objective-programs/edges-vs-triangles/Cargo.lock', 'objective-programs/arithmetic-kakeya/Cargo.lock') }}
       - name: Capture untrusted SP1 build-input observation
         shell: bash
         run: |
@@ -258,6 +258,10 @@ jobs:
             "$HOME/.cargo/bin/cargo" test --locked \
             --manifest-path edges-vs-triangles/Cargo.toml \
             -p p42-edges-objective-core
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            "$HOME/.cargo/bin/cargo" test --locked \
+            --manifest-path arithmetic-kakeya/Cargo.toml \
+            -p p42-arithmetic-kakeya-objective-core
       - name: Build objective guests on x86 Linux
         working-directory: objective-programs
         shell: bash
@@ -274,11 +278,15 @@ jobs:
           "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
             --manifest-path edges-vs-triangles/Cargo.toml \
             -p p42-edges-objective-script
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" build --locked \
+            --manifest-path arithmetic-kakeya/Cargo.toml \
+            -p p42-arithmetic-kakeya-objective-script
           for rebuilt in \
             target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-hadamard-668-objective-program \
             target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-distinct-subset-sums-a11-objective-program \
             q6-intersecting-hypergraph/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-q6-objective-program \
-            edges-vs-triangles/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-edges-objective-program; do
+            edges-vs-triangles/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-edges-objective-program \
+            arithmetic-kakeya/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-arithmetic-kakeya-objective-program; do
               sha256sum "$rebuilt"
               host_paths="$(strings "$rebuilt" | grep --extended-regexp '/home/runner/(work/p42-prizes|\.cargo|\.rustup)|/opt/hostedtoolcache|/private/tmp/p42' || true)"
               # The pinned SP1 guest sysroot itself carries this canonical hashbrown source path.
@@ -343,6 +351,28 @@ jobs:
             --program edges-vs-triangles \
             --directory "$edges_audit" \
             --write-source-manifest
+          kakeya_elf=arithmetic-kakeya/target/elf-compilation/riscv64im-succinct-zkvm-elf/release/p42-arithmetic-kakeya-objective-program
+          kakeya_audit=target/arithmetic-kakeya-reproducibility
+          mkdir -p "$kakeya_audit"
+          cp "$kakeya_elf" "$kakeya_audit/program.elf"
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked \
+            --manifest-path arithmetic-kakeya/Cargo.toml \
+            -p p42-arithmetic-kakeya-objective-script -- \
+            identity-elf "$kakeya_elf" > "$kakeya_audit/identity.json"
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked \
+            --manifest-path arithmetic-kakeya/Cargo.toml \
+            -p p42-arithmetic-kakeya-objective-script -- \
+            execute-fixture-elf "$kakeya_elf" ../problems/arithmetic-kakeya/examples/kt-2x2-forcing.json \
+            > "$kakeya_audit/execution.json"
+          "${clean_env[@]}" "$HOME/.cargo/bin/cargo" run --locked \
+            --manifest-path arithmetic-kakeya/Cargo.toml \
+            -p p42-arithmetic-kakeya-objective-script -- \
+            execute-fixture-elf "$kakeya_elf" arithmetic-kakeya/fixtures/resource-active-255-bit.json \
+            > "$kakeya_audit/resource.json"
+          "${clean_env[@]}" /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
+            --program arithmetic-kakeya \
+            --directory "$kakeya_audit" \
+            --write-source-manifest
       - name: Capture candidate Hadamard mock execution
         working-directory: objective-programs
         shell: bash
@@ -386,6 +416,14 @@ jobs:
           path: objective-programs/target/edges-reproducibility
           if-no-files-found: warn
           retention-days: 7
+      - name: Retain untrusted Arithmetic Kakeya candidate forensics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-untrusted-arithmetic-kakeya-candidate-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/arithmetic-kakeya-reproducibility
+          if-no-files-found: warn
+          retention-days: 7
       - name: Validate program-scoped reproduction bundles
         working-directory: objective-programs
         shell: bash
@@ -403,6 +441,9 @@ jobs:
           /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
             /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
             --program edges-vs-triangles --directory target/edges-reproducibility
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            /usr/bin/python3 ../scripts/verify-sp1-objective-reproduction.py \
+            --program arithmetic-kakeya --directory target/arithmetic-kakeya-reproducibility
       - name: Enforce frozen guest identity
         working-directory: objective-programs
         shell: bash
@@ -467,6 +508,13 @@ jobs:
           path: objective-programs/target/edges-reproducibility
           if-no-files-found: error
           retention-days: 7
+      - name: Retain validated Arithmetic Kakeya candidate evidence for cross-image audit
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: p42-validated-arithmetic-kakeya-candidate-${{ matrix.os }}-${{ github.run_id }}
+          path: objective-programs/target/arithmetic-kakeya-reproducibility
+          if-no-files-found: error
+          retention-days: 7
       - name: Retain validated SP1 build provenance for cross-image audit
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
@@ -509,6 +557,10 @@ jobs:
           path: objective-programs/reproduced-edges
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
+          pattern: p42-validated-arithmetic-kakeya-candidate-*-${{ github.run_id }}
+          path: objective-programs/reproduced-arithmetic-kakeya
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
           pattern: p42-validated-sp1-build-provenance-*-${{ github.run_id }}
           path: objective-programs/reproduced-provenance
       - name: Compare dual-image objective guests
@@ -526,12 +578,12 @@ jobs:
             test "${#guests[@]}" -eq 2
             test "${#identities[@]}" -eq 2
             test "${#executions[@]}" -eq 2
-            if [[ "$program" == q6-intersecting-hypergraph || "$program" == edges-vs-triangles ]]; then
+            if [[ "$program" == q6-intersecting-hypergraph || "$program" == edges-vs-triangles || "$program" == arithmetic-kakeya ]]; then
               test "${#sources[@]}" -eq 2
             else
               test "${#sources[@]}" -eq 0
             fi
-            if [[ "$program" == edges-vs-triangles ]]; then
+            if [[ "$program" == edges-vs-triangles || "$program" == arithmetic-kakeya ]]; then
               test "${#resources[@]}" -eq 2
             else
               test "${#resources[@]}" -eq 0
@@ -555,6 +607,7 @@ jobs:
           compare_pair objective-programs/reproduced-a11 distinct-subset-sums-a11
           compare_pair objective-programs/reproduced-q6 q6-intersecting-hypergraph
           compare_pair objective-programs/reproduced-edges edges-vs-triangles
+          compare_pair objective-programs/reproduced-arithmetic-kakeya arithmetic-kakeya
           mapfile -t provenances < <(find objective-programs/reproduced-provenance -type f -name sp1-build-provenance.json | sort)
           test "${#provenances[@]}" -eq 2
           cmp --silent "${provenances[0]}" "${provenances[1]}"

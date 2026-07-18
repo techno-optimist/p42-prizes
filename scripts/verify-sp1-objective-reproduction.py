@@ -41,10 +41,31 @@ EDGES_SOURCE_PATHS = (
     "objective-programs/edges-vs-triangles/script/build.rs",
     "objective-programs/edges-vs-triangles/script/src/main.rs",
 )
+ARITHMETIC_KAKEYA_SOURCE_PATHS = (
+    "problems/arithmetic-kakeya/problem.yaml",
+    "problems/arithmetic-kakeya/solution.schema.json",
+    "problems/arithmetic-kakeya/verifier/verify.py",
+    "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
+    "objective-programs/rust-toolchain.toml",
+    "objective-programs/arithmetic-kakeya/Cargo.toml",
+    "objective-programs/arithmetic-kakeya/Cargo.lock",
+    "objective-programs/arithmetic-kakeya/core/Cargo.toml",
+    "objective-programs/arithmetic-kakeya/core/src/lib.rs",
+    "objective-programs/arithmetic-kakeya/fixtures/differential-vectors.json",
+    "objective-programs/arithmetic-kakeya/fixtures/journal-conformance-synthetic.json",
+    "objective-programs/arithmetic-kakeya/fixtures/resource-active-255-bit.json",
+    "objective-programs/arithmetic-kakeya/program/Cargo.toml",
+    "objective-programs/arithmetic-kakeya/program/src/main.rs",
+    "objective-programs/arithmetic-kakeya/script/Cargo.toml",
+    "objective-programs/arithmetic-kakeya/script/build.rs",
+    "objective-programs/arithmetic-kakeya/script/src/main.rs",
+)
 CANDIDATE_SOURCE_PATHS = {
     "q6-intersecting-hypergraph": Q6_SOURCE_PATHS,
     "edges-vs-triangles": EDGES_SOURCE_PATHS,
+    "arithmetic-kakeya": ARITHMETIC_KAKEYA_SOURCE_PATHS,
 }
+RESOURCE_PROGRAMS = {"edges-vs-triangles", "arithmetic-kakeya"}
 
 PROGRAMS = {
     "hadamard-668-defect": {
@@ -79,6 +100,13 @@ PROGRAMS = {
         "journal": None,
         # Candidate resource counts are accepted only when positive here;
         # the dual-image job then requires exact seed and worst-case equality.
+        "instructions": None,
+        "resource_journal": None,
+    },
+    "arithmetic-kakeya": {
+        "elf": None,
+        "vkey": None,
+        "journal": None,
         "instructions": None,
         "resource_journal": None,
     },
@@ -156,7 +184,7 @@ def main() -> None:
     expected_names = {"program.elf", "identity.json", "execution.json"}
     if args.program in CANDIDATE_SOURCE_PATHS:
         expected_names.add("source.json")
-    if args.program == "edges-vs-triangles":
+    if args.program in RESOURCE_PROGRAMS:
         expected_names.add("resource.json")
     if names != expected_names:
         fail("reproduction directory has an unexpected file set")
@@ -218,30 +246,30 @@ def main() -> None:
         expected_execution["totalInstructionCount"] = instruction_count
     if execution != expected_execution:
         fail(f"{args.program} execution mismatch")
-    if args.program == "edges-vs-triangles":
+    if args.program in RESOURCE_PROGRAMS:
         resource = strict_json(regular_file(directory, "resource.json"))
         resource_journal = resource.get("journalDigest")
         if expected["resource_journal"] is None:
             if not isinstance(resource_journal, str) or len(resource_journal) != 66:
-                fail("edges-vs-triangles resource journal is malformed")
+                fail(f"{args.program} resource journal is malformed")
             try:
                 if resource_journal != "0x" + bytes.fromhex(resource_journal[2:]).hex():
-                    fail("edges-vs-triangles resource journal is non-canonical")
+                    fail(f"{args.program} resource journal is non-canonical")
             except ValueError:
-                fail("edges-vs-triangles resource journal is malformed")
+                fail(f"{args.program} resource journal is malformed")
         expected_resource = expected_execution | {
             "journalDigest": expected["resource_journal"] or resource_journal,
             "totalInstructionCount": resource.get("totalInstructionCount"),
         }
         resource_count = resource.get("totalInstructionCount")
         if isinstance(resource_count, bool) or not isinstance(resource_count, int) or resource_count <= 0:
-            fail("edges-vs-triangles resource instruction count is invalid")
+            fail(f"{args.program} resource instruction count is invalid")
         if resource_count < expected_execution["totalInstructionCount"]:
-            fail("edges-vs-triangles resource instruction count is below seed execution")
+            fail(f"{args.program} resource instruction count is below seed execution")
         if resource_journal == candidate_journal:
-            fail("edges-vs-triangles resource journal must bind distinct solution bytes")
+            fail(f"{args.program} resource journal must bind distinct solution bytes")
         if resource != expected_resource:
-            fail("edges-vs-triangles resource execution mismatch")
+            fail(f"{args.program} resource execution mismatch")
     if args.program in CANDIDATE_SOURCE_PATHS:
         source = strict_json(regular_file(directory, "source.json"))
         if source != source_manifest(args.program):
