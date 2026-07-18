@@ -11,6 +11,7 @@ import {
   collectResolverQuorumSignatures,
 } from "../../agent/resolver-quorum.mjs";
 import { challengeManagerEffectiveSalt } from "../scripts/deployment-ceremony-helper.js";
+import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW = 72n * 60n * 60n;
@@ -24,10 +25,12 @@ const SHA = (digit) => `sha256:${digit.repeat(64)}`;
 const BOARD_SET_DIGEST = ethers.id("p42-resolver-quorum-board-set");
 const RELEASE_BINDING_DIGEST = ethers.id("p42-resolver-quorum-release-binding");
 
-function fundingAuthorizationConfig(authorities) {
+function fundingAuthorizationConfig(authorities, capability) {
   return {
     boardSetDigest: BOARD_SET_DIGEST,
     releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    objectiveVerifier: capability.objectiveVerifier,
+    objectiveVerifierCodehash: capability.objectiveVerifierCodehash,
     productionLaunchAuthority: authorities[0].address,
     independentSecurityAuthority: authorities[1].address,
     governanceAuthority: authorities[2].address,
@@ -123,6 +126,9 @@ async function deployFixture(options = {}) {
   const Registry = await ethers.getContractFactory("P42ProblemRegistry");
   const registry = await Registry.deploy(owner.address);
   await registry.waitForDeployment();
+  const capability = await deployActiveObjectiveProofCapability(ethers);
+  const objectiveVerifier = capability.gateway;
+  const objectiveVerifierCodehash = capability.objectiveVerifierCodehash;
 
   const Submissions = await ethers.getContractFactory("P42SubmissionManager");
   const SubmissionFactory = await ethers.getContractFactory("P42SubmissionManagerFactory");
@@ -140,7 +146,7 @@ async function deployFixture(options = {}) {
           challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: false, maxSolutionBytes: 0,
           seedScoreAtoms: 1_000_000, minImprovementAtoms: 1,
         },
-        fundingAuthorization: fundingAuthorizationConfig(fundingAuthorities),
+        fundingAuthorization: fundingAuthorizationConfig(fundingAuthorities, capability),
       },
       Submissions.bytecode,
     );
@@ -158,12 +164,6 @@ async function deployFixture(options = {}) {
   const factory = await Factory.deploy();
   await factory.waitForDeployment();
   const Manager = await ethers.getContractFactory("P42ChallengeManager");
-  const ObjectiveVerifier = await ethers.getContractFactory("MockObjectiveVerifierGateway");
-  const objectiveVerifier = await ObjectiveVerifier.deploy();
-  await objectiveVerifier.waitForDeployment();
-  const objectiveVerifierCodehash = ethers.keccak256(
-    await ethers.provider.getCode(await objectiveVerifier.getAddress()),
-  );
   const startNonce = await ethers.provider.getTransactionCount(owner.address);
   const predictedQuorum = ethers.getCreateAddress({ from: owner.address, nonce: startNonce + MANAGER_COUNT * 2 });
   const managers = [];
@@ -235,7 +235,7 @@ async function deployFixture(options = {}) {
 
   return {
     owner, treasury, signerA, signerB, signerC, solver, challenger, relayer, beneficiary, outsider,
-    quorum, factory, submissionFactory, objectiveVerifier, objectiveBindings, registry, pool, ledger, managers, submissions, submissionId,
+    quorum, factory, submissionFactory, objectiveVerifier, capability, objectiveBindings, registry, pool, ledger, managers, submissions, submissionId,
   };
 }
 
@@ -445,7 +445,7 @@ describe("P42ResolverQuorum", function () {
       owner: fixture.owner.address, treasury: fixture.treasury.address, alphaBps: 200,
       minPostingBondWei: ethers.parseEther("0.01"), challengeWindowSeconds: CHALLENGE_WINDOW,
       onchainDa: false, maxSolutionBytes: 0, seedScoreAtoms: 1_000_000, minImprovementAtoms: 1,
-    }, fundingAuthorizationConfig([fixture.signerA, fixture.signerB, fixture.signerC]));
+    }, fundingAuthorizationConfig([fixture.signerA, fixture.signerB, fixture.signerC], fixture.capability));
     await spoof.waitForDeployment();
     await expectCustomError(
       fixture.factory.deployManager(
@@ -479,7 +479,7 @@ describe("P42ResolverQuorum", function () {
           challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: false, maxSolutionBytes: 0,
           seedScoreAtoms: 1_000_000, minImprovementAtoms: 1,
         },
-        fundingAuthorization: fundingAuthorizationConfig([fixture.signerA, fixture.signerB, fixture.signerC]),
+        fundingAuthorization: fundingAuthorizationConfig([fixture.signerA, fixture.signerB, fixture.signerC], fixture.capability),
       },
       (await ethers.getContractFactory("P42SubmissionManager")).bytecode,
     );

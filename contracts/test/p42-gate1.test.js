@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
+import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 
 const { ethers } = await network.create();
 const CHALLENGE_WINDOW_SECONDS = 72n * 60n * 60n;
@@ -17,8 +18,9 @@ const FUNDING_TYPES = { FundingAuthorization: [
   { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
 ] };
 
-function fundingAuthorizationConfig(authorities) {
+function fundingAuthorizationConfig(authorities, capability) {
   return { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    objectiveVerifier: capability.objectiveVerifier, objectiveVerifierCodehash: capability.objectiveVerifierCodehash,
     productionLaunchAuthority: authorities[0].address, independentSecurityAuthority: authorities[1].address,
     governanceAuthority: authorities[2].address };
 }
@@ -103,6 +105,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     mockRecorder = false,
   } = {}) {
     const [owner, treasury, resolver, alice, bob, challenger, ...authorities] = await ethers.getSigners();
+    const capability = await deployActiveObjectiveProofCapability(ethers);
     const Pool = await ethers.getContractFactory("P42BountyPool");
     const pool = await Pool.deploy(owner.address, FUNDING_CAP);
     await pool.waitForDeployment();
@@ -121,7 +124,7 @@ describe("P42 Gate 1 contract scaffold", function () {
       treasury: treasury.address, alphaBps, minPostingBondWei: minBond,
       challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS, onchainDa: false, maxSolutionBytes: 0,
       seedScoreAtoms: SEED_SCORE_ATOMS, minImprovementAtoms: 1n,
-    }, fundingAuthorizationConfig(authorities));
+    }, fundingAuthorizationConfig(authorities, capability));
     await submissions.waitForDeployment();
     let fundingManager = submissions;
     let creditRecorder = submissions;

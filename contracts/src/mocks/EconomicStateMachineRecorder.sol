@@ -9,6 +9,7 @@ interface IEconomicStateMachineLedger {
 /// @notice Test-only credit recorder with explicit close-guard controls.
 contract EconomicStateMachineRecorder {
     bool public fundingArmed = true;
+    bool public objectiveProofCapabilityActive = true;
     uint64 public fundingAuthorizationExpiresAt = type(uint64).max;
     bool public pausedAll;
     uint64 public creditRecoveryEndsAt;
@@ -16,6 +17,10 @@ contract EconomicStateMachineRecorder {
 
     function setFundingArmed(bool armed) external {
         fundingArmed = armed;
+    }
+
+    function setObjectiveProofCapabilityActive(bool active) external {
+        objectiveProofCapabilityActive = active;
     }
 
     function setCloseGuard(uint256 openCount, bool allPaused, uint64 recoveryEndsAt) external {

@@ -973,6 +973,8 @@ function openWitnessFixture() {
     "function fundingAuthorizationNonce() view returns (uint256)",
     "function boardSetDigest() view returns (bytes32)",
     "function releaseBindingDigest() view returns (bytes32)",
+    "function objectiveVerifier() view returns (address)",
+    "function objectiveVerifierCodehash() view returns (bytes32)",
     "function productionLaunchAuthority() view returns (address)",
     "function independentSecurityAuthority() view returns (address)",
     "function governanceAuthority() view returns (address)",
@@ -1038,6 +1040,8 @@ function openWitnessFixture() {
         if (parsed.name === "fundingAuthorizationNonce") return submissionStateInterface.encodeFunctionResult(parsed.name, [replay.fundingAuthorizationNonce]);
         if (parsed.name === "boardSetDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [CONFIG.boardSetDigest]);
         if (parsed.name === "releaseBindingDigest") return submissionStateInterface.encodeFunctionResult(parsed.name, [CONFIG.releaseBindingDigest]);
+        if (parsed.name === "objectiveVerifier") return submissionStateInterface.encodeFunctionResult(parsed.name, [manifest.roles.objectiveVerifier]);
+        if (parsed.name === "objectiveVerifierCodehash") return submissionStateInterface.encodeFunctionResult(parsed.name, [manifest.roles.objectiveVerifierCodehash]);
         if (parsed.name === "productionLaunchAuthority") return submissionStateInterface.encodeFunctionResult(parsed.name, [address(991)]);
         if (parsed.name === "independentSecurityAuthority") return submissionStateInterface.encodeFunctionResult(parsed.name, [address(992)]);
         if (parsed.name === "governanceAuthority") return submissionStateInterface.encodeFunctionResult(parsed.name, [address(993)]);

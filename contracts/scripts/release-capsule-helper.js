@@ -68,7 +68,7 @@ const IMMUTABLE_SEMANTICS = Object.freeze({
   P42ResolverQuorum: Object.freeze(["owner", "expectedTreasury", "expectedDecisionBondWei", "managerFactory", "objectiveVerifier", "objectiveVerifierCodehash"]),
   P42BountyPool: Object.freeze(["owner", "fundingCap"]),
   P42PayoutLedger: Object.freeze(["owner", "pool", "treasury", "feeBps", "earliestCloseTimestamp", "closeByTimestamp"]),
-  P42SubmissionManager: Object.freeze(["owner", "treasury", "fundingAuthorizer", "boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority", "independentSecurityAuthority", "governanceAuthority", "pool", "ledger", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "deployedAt", "armNotBefore", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"]),
+  P42SubmissionManager: Object.freeze(["owner", "treasury", "fundingAuthorizer", "boardSetDigest", "releaseBindingDigest", "objectiveVerifier", "objectiveVerifierCodehash", "productionLaunchAuthority", "independentSecurityAuthority", "governanceAuthority", "pool", "ledger", "alphaBps", "minPostingBondWei", "challengeWindowSeconds", "deployedAt", "armNotBefore", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms"]),
   P42ChallengeManager: Object.freeze(["owner", "resolver", "treasury", "submissionManager", "challengeWindowSeconds", "betaBps", "rerunCostMultiplierBps", "minCounterBondWei", "rerunCostWei", "resolverDecisionBondWei", "resolverFraudWindowSeconds"]),
   P42ProblemRegistry: Object.freeze(["owner"]),
 });
@@ -477,7 +477,7 @@ export function immutableValuesFromConstructor(contract, constructorArgs, { bloc
       "challengeWindowSeconds", "onchainDa", "maxSolutionBytes", "seedScoreAtoms", "minImprovementAtoms",
     ].entries()) values[name] = field(deployment, index, name);
     for (const [index, name] of [
-      "boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority",
+      "boardSetDigest", "releaseBindingDigest", "objectiveVerifier", "objectiveVerifierCodehash", "productionLaunchAuthority",
       "independentSecurityAuthority", "governanceAuthority",
     ].entries()) values[name] = field(funding, index, name);
     values.deployedAt = blockTimestamp;

@@ -11,6 +11,7 @@ import {
 import {
   readMultiBoardCeremonyConfig,
 } from "../scripts/multiboard-ceremony-helper.js";
+import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 
 const { ethers } = await network.create();
 const BOARD_SET_DIGEST = ethers.id("p42-multiboard-test-board-set");
@@ -185,12 +186,18 @@ describe("multi-board governance ceremony integration", () => {
       ],
     };
     const config = readMultiBoardCeremonyConfig(ethers, input, { deployerAddress: deployer.address });
+    const capability = await deployActiveObjectiveProofCapability(ethers);
+    config.roles.objectiveVerifier = capability.objectiveVerifier;
+    config.roles.objectiveVerifierCodehash = capability.objectiveVerifierCodehash;
     const timelock = await deployContract(
       deployer,
       "P42MultisigTimelock",
       constructorArgsFor("P42MultisigTimelock", config),
     );
-    const rootAddresses = { timelock: await timelock.getAddress() };
+    const rootAddresses = {
+      timelock: await timelock.getAddress(),
+      objectiveVerifier: capability.objectiveVerifier,
+    };
     const registry = await deployContract(
       deployer,
       "P42ProblemRegistry",

@@ -14,7 +14,10 @@
 //   P42_ONCHAIN_DA                (default "true")
 //   P42_MAX_SOLUTION_BYTES        (default 524288)
 //   P42_RESOLVER_ADDRESS          (default deployer)
-//   P42_TREASURY_ADDRESS          (default deployer)
+//   P42_TREASURY_ADDRESS          (required, distinct from deployer)
+//   P42_PRODUCTION_LAUNCH_AUTHORITY_ADDRESS, P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS,
+//   P42_FUNDING_GOVERNANCE_AUTHORITY_ADDRESS (required distinct EOAs)
+//   P42_FUNDING_BOARD_SET_DIGEST, P42_FUNDING_RELEASE_BINDING_DIGEST (required bytes32)
 import { writeFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { network } from "hardhat";
@@ -71,8 +74,24 @@ const maxSolutionBytes = BigInt(env("P42_MAX_SOLUTION_BYTES", String(512 * 1024)
 const seedScoreAtoms = resolveSeedScoreAtoms();
 const minImprovementAtoms = BigInt(env("P42_MIN_IMPROVEMENT_ATOMS", "1"));
 const owner = deployer.address;
-const treasury = env("P42_TREASURY_ADDRESS", owner);
+const treasury = env("P42_TREASURY_ADDRESS", null);
+if (!treasury) throw new Error("set P42_TREASURY_ADDRESS");
 const resolver = env("P42_RESOLVER_ADDRESS", owner);
+const productionLaunchAuthority = env("P42_PRODUCTION_LAUNCH_AUTHORITY_ADDRESS", null);
+const independentSecurityAuthority = env("P42_INDEPENDENT_SECURITY_AUTHORITY_ADDRESS", null);
+const governanceAuthority = env("P42_FUNDING_GOVERNANCE_AUTHORITY_ADDRESS", null);
+const boardSetDigest = env("P42_FUNDING_BOARD_SET_DIGEST", null);
+const releaseBindingDigest = env("P42_FUNDING_RELEASE_BINDING_DIGEST", null);
+if (!productionLaunchAuthority || !independentSecurityAuthority || !governanceAuthority) {
+  throw new Error("set all three funding authority addresses");
+}
+if (!ethers.isHexString(boardSetDigest, 32) || boardSetDigest === ethers.ZeroHash
+    || !ethers.isHexString(releaseBindingDigest, 32) || releaseBindingDigest === ethers.ZeroHash) {
+  throw new Error("set nonzero P42_FUNDING_BOARD_SET_DIGEST and P42_FUNDING_RELEASE_BINDING_DIGEST");
+}
+const authoritySet = [owner, treasury, productionLaunchAuthority, independentSecurityAuthority, governanceAuthority]
+  .map((value) => ethers.getAddress(value));
+if (new Set(authoritySet).size !== authoritySet.length) throw new Error("owner, treasury, and funding authorities must be distinct");
 
 console.log(`deployer/owner: ${owner}`);
 console.log(`DA mode: ${onchainDa ? `on-chain (maxSolutionBytes=${maxSolutionBytes})` : "off-chain"}  window=${challengeWindow}s`);
@@ -87,14 +106,29 @@ async function deploy(name, args) {
   return { c, addr };
 }
 
-const pool = await deploy("P42BountyPool", [owner]);
-const ledger = await deploy("P42PayoutLedger", [pool.addr, owner, treasury, DEMO.feeBps]);
+const latest = await ethers.provider.getBlock("latest");
+const fundingCapWei = BigInt(env("P42_FUNDING_CAP_WEI", ethers.parseEther("1").toString()));
+const earliestCloseTimestamp = BigInt(latest.timestamp) + 31n * 24n * 60n * 60n;
+const closeByTimestamp = BigInt(latest.timestamp) + 181n * 24n * 60n * 60n;
+const pool = await deploy("P42BountyPool", [owner, fundingCapWei]);
+const ledger = await deploy("P42PayoutLedger", [
+  pool.addr, owner, treasury, DEMO.feeBps, earliestCloseTimestamp, closeByTimestamp,
+]);
 await (await pool.c.setLedger(ledger.addr)).wait();
+const objectiveVerifier = await deploy("P42SP1VerifierGateway", []);
+const objectiveVerifierCodehash = ethers.keccak256(await ethers.provider.getCode(objectiveVerifier.addr));
 const subs = await deploy("P42SubmissionManager", [
-  pool.addr, ledger.addr, owner, treasury,
-  DEMO.alphaBps, DEMO.minPostingBondWei, challengeWindow,
-  onchainDa, maxSolutionBytes,
-  seedScoreAtoms, minImprovementAtoms,
+  {
+    pool: pool.addr, ledger: ledger.addr, owner, treasury,
+    alphaBps: DEMO.alphaBps, minPostingBondWei: DEMO.minPostingBondWei,
+    challengeWindowSeconds: challengeWindow, onchainDa, maxSolutionBytes,
+    seedScoreAtoms, minImprovementAtoms,
+  },
+  {
+    boardSetDigest, releaseBindingDigest, objectiveVerifier: objectiveVerifier.addr,
+    objectiveVerifierCodehash, productionLaunchAuthority, independentSecurityAuthority,
+    governanceAuthority,
+  },
 ]);
 await (await ledger.c.setCreditRecorder(subs.addr)).wait();
 // Open-witness-phase wiring: the pool refuses deposits until the manager is
@@ -120,7 +154,11 @@ const manifest = {
   // Scanners (operator/indexer) start here so a from-block-0 getLogs never hits
   // the public RPC's range cap.
   indexer: { startBlock },
-  roles: { deployer: deployer.address, owner, treasury, resolver },
+  roles: {
+    deployer: deployer.address, owner, treasury, resolver, productionLaunchAuthority,
+    independentSecurityAuthority, governanceAuthority, objectiveVerifier: objectiveVerifier.addr,
+    objectiveVerifierCodehash,
+  },
   da: { onchainDa, maxSolutionBytes: Number(maxSolutionBytes) },
   // The frontier seed this SubmissionManager was constructed with:
   // bestScoreAtoms starts here and only strictly lower scores can earn credit.
@@ -145,6 +183,7 @@ const manifest = {
     ledger: { address: ledger.addr },
     submissions: { address: subs.addr },
     challenges: { address: chal.addr },
+    objectiveVerifier: { address: objectiveVerifier.addr },
   },
 };
 await mkdir(dirname(resolve(OUT)), { recursive: true });

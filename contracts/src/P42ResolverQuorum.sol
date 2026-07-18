@@ -100,7 +100,7 @@ contract P42ResolverQuorum {
     uint256 public constant REQUIRED_MANAGER_COUNT = 10;
     // Set from the independently compiled P42ChallengeManagerFactory runtime.
     bytes32 public constant CANONICAL_MANAGER_FACTORY_CODEHASH =
-        0x9c6e20c3a2bae1ccf7d1b530b69eac78859cc0259012f04f5dc49d819909e715;
+        0xd5d2e67dcf102bccb43e75f3e4adef82ca7e6f6ef715123a6f9634a685b09d95;
     bytes32 public constant DECISION_TYPEHASH = keccak256(
         "Decision(uint256 chainId,address adapter,address manager,uint256 submissionId,bytes32 challengeInstanceHash,bool challengerWins,bytes32 transcriptHash,bytes32 transcriptURIHash,bytes32 verdictHash,address bondBeneficiary,uint256 nonce,uint64 expiry,uint64 signerEpoch)"
     );

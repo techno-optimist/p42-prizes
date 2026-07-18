@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
+import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 
 const { ethers } = await network.create();
 const DAY = 24n * 60n * 60n;
@@ -19,8 +20,9 @@ const FUNDING_TYPES = { FundingAuthorization: [
   { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
 ] };
 
-function fundingAuthorizationConfig(authorities) {
+function fundingAuthorizationConfig(authorities, capability) {
   return { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    objectiveVerifier: capability.objectiveVerifier, objectiveVerifierCodehash: capability.objectiveVerifierCodehash,
     productionLaunchAuthority: authorities[0].address, independentSecurityAuthority: authorities[1].address,
     governanceAuthority: authorities[2].address };
 }
@@ -86,6 +88,7 @@ async function closeTimes() {
 
 async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10") } = {}) {
   const [owner, treasury, resolver, alice, bob, carol, ...authorities] = await ethers.getSigners();
+  const capability = await deployActiveObjectiveProofCapability(ethers);
   const Pool = await ethers.getContractFactory("P42BountyPool");
   const pool = await Pool.deploy(owner.address, FUNDING_CAP);
   await pool.waitForDeployment();
@@ -104,7 +107,7 @@ async function deployProtocol({ seed = 1_000_000n, fund = ethers.parseEther("10"
     treasury: treasury.address, alphaBps: 200, minPostingBondWei: ethers.parseEther("0.01"),
     challengeWindowSeconds: WINDOW, onchainDa: false, maxSolutionBytes: 0,
     seedScoreAtoms: seed, minImprovementAtoms: 1,
-  }, fundingAuthorizationConfig(authorities));
+  }, fundingAuthorizationConfig(authorities, capability));
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
   await pool.connect(owner).setSubmissionManager(await submissions.getAddress());

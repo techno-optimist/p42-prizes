@@ -102,6 +102,7 @@ export async function buildCanonicalMultiBoardDeploymentDefinitions({
     const boardConfig = {
       ...boardCeremonyConfig(config, problem),
       fundingAuthorization: { boardSetDigest, releaseBindingDigest },
+      roles: { ...config.roles, objectiveVerifierCodehash: objectiveVerifierRuntimeCodehash },
     };
     const boardAddressView = (plannedAddresses) => ({
       timelock: plannedAddresses.timelock,
@@ -111,6 +112,7 @@ export async function buildCanonicalMultiBoardDeploymentDefinitions({
       ledger: plannedAddresses[`board-${problem.problemId}-ledger`],
       submissions: plannedAddresses[`board-${problem.problemId}-submissions`],
       challenges: plannedAddresses[`board-${problem.problemId}-challenges`],
+      objectiveVerifier: plannedAddresses.objectiveVerifier,
     });
     for (const [key, name] of Object.entries({
       pool: MULTIBOARD_BOARD_CONTRACT_NAMES.pool,

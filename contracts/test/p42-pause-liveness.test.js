@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
+import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 
 const { ethers } = await network.create();
 
@@ -71,6 +72,7 @@ async function deployFixture() {
   await pool.connect(owner).setLedger(await ledger.getAddress());
 
   const Submissions = await ethers.getContractFactory("P42SubmissionManager");
+  const capability = await deployActiveObjectiveProofCapability(ethers);
   const submissions = await Submissions.deploy({
     pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
     treasury: treasury.address, alphaBps: 200, minPostingBondWei: MIN_BOND,
@@ -79,6 +81,8 @@ async function deployFixture() {
   }, {
     boardSetDigest: ethers.id("pause-liveness-board-set"),
     releaseBindingDigest: ethers.id("pause-liveness-release"),
+    objectiveVerifier: capability.objectiveVerifier,
+    objectiveVerifierCodehash: capability.objectiveVerifierCodehash,
     productionLaunchAuthority: productionLaunch.address,
     independentSecurityAuthority: independentSecurity.address,
     governanceAuthority: governance.address,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
+import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 
 const { ethers } = await network.create();
 
@@ -39,10 +40,12 @@ const FUNDING_TYPES = {
   ],
 };
 
-function fundingAuthorizationConfig(authorities) {
+function fundingAuthorizationConfig(authorities, capability) {
   return {
     boardSetDigest: BOARD_SET_DIGEST,
     releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    objectiveVerifier: capability.objectiveVerifier,
+    objectiveVerifierCodehash: capability.objectiveVerifierCodehash,
     productionLaunchAuthority: authorities[0].address,
     independentSecurityAuthority: authorities[1].address,
     governanceAuthority: authorities[2].address,
@@ -139,6 +142,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     advanceCompetition = true,
   } = {}) {
     const [owner, treasury, resolver, alice, bob, carol, ...authorities] = await ethers.getSigners();
+    const capability = await deployActiveObjectiveProofCapability(ethers);
     const Pool = await ethers.getContractFactory("P42BountyPool");
     const pool = await Pool.deploy(owner.address, FUNDING_CAP);
     await pool.waitForDeployment();
@@ -164,7 +168,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
       maxSolutionBytes: 0,
       seedScoreAtoms,
       minImprovementAtoms,
-    }, fundingAuthorizationConfig(authorities));
+    }, fundingAuthorizationConfig(authorities, capability));
     await submissions.waitForDeployment();
     await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
@@ -201,7 +205,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     }
     if (advanceCompetition) await increaseTime(MIN_COMPETITION_SECONDS + 1_001n);
 
-    return { owner, treasury, resolver, alice, bob, carol, authorities, pool, ledger, submissions, vault, minBond };
+    return { owner, treasury, resolver, alice, bob, carol, authorities, capability, pool, ledger, submissions, vault, minBond };
   }
 
   // Commit + reveal an ABSOLUTE claimed score for `solver`; returns the id.
@@ -339,7 +343,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
         owner: owner.address, treasury: treasury.address, alphaBps: 200n,
         minPostingBondWei: fixture.minBond, challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
         onchainDa: false, maxSolutionBytes: 0, seedScoreAtoms: BOUND, minImprovementAtoms: 1n,
-      }, fundingAuthorizationConfig(authorities)),
+      }, fundingAuthorizationConfig(authorities, fixture.capability)),
       submissions,
       "P42_SCORE_ATOMS_OUT_OF_RANGE"
     );
@@ -349,7 +353,7 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
         owner: owner.address, treasury: treasury.address, alphaBps: 200n,
         minPostingBondWei: fixture.minBond, challengeWindowSeconds: CHALLENGE_WINDOW_SECONDS,
         onchainDa: false, maxSolutionBytes: 0, seedScoreAtoms: 1000n * SCALE, minImprovementAtoms: 1n,
-      }, { ...fundingAuthorizationConfig(authorities), productionLaunchAuthority: owner.address }),
+      }, { ...fundingAuthorizationConfig(authorities, fixture.capability), productionLaunchAuthority: owner.address }),
       /P42_FUNDING_AUTHORITIES_NOT_DISTINCT/
     );
   });

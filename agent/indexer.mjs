@@ -174,7 +174,7 @@ function immutableValuesFromConstructor(contract, constructorArgs, { blockTimest
         "minImprovementAtoms",
       ]) values[name] = tupleValue("config_", name);
       for (const name of [
-        "boardSetDigest", "releaseBindingDigest", "productionLaunchAuthority",
+        "boardSetDigest", "releaseBindingDigest", "objectiveVerifier", "objectiveVerifierCodehash", "productionLaunchAuthority",
         "independentSecurityAuthority", "governanceAuthority",
       ]) values[name] = tupleValue("fundingAuthorizationConfig_", name);
     }
@@ -908,6 +908,8 @@ function boardReplayConfig(manifest, problem) {
     fundingAuthorizationV2: true,
     boardSetDigest: manifest.releaseEvidence?.boardSetDigest,
     releaseBindingDigest: manifest.releaseEvidence?.releaseBindingDigest,
+    objectiveVerifier: view.roles.objectiveVerifier,
+    objectiveVerifierCodehash: view.roles.objectiveVerifierCodehash,
     owner: view.roles.owner,
     productionLaunchAuthority: view.roles.productionLaunchAuthority,
     independentSecurityAuthority: view.roles.independentSecurityAuthority,
@@ -1191,6 +1193,10 @@ export function validateManifestEvidence(manifest, { allowFixture = false, produ
         if (String(values.boardSetDigest).toLowerCase() !== expectedBoardSetDigest
             || String(values.releaseBindingDigest).toLowerCase() !== expectedReleaseBindingDigest) {
           throw new Error(`${descriptor.path} funding authorization digests do not match production release evidence`);
+        }
+        if (ethers.getAddress(values.objectiveVerifier) !== ethers.getAddress(manifest.roles.objectiveVerifier)
+            || String(values.objectiveVerifierCodehash).toLowerCase() !== String(manifest.roles.objectiveVerifierCodehash).toLowerCase()) {
+          throw new Error(`${descriptor.path} objective proof capability binding does not match manifest roles`);
         }
         for (const [field, role] of [
           ["productionLaunchAuthority", "productionLaunchAuthority"],
@@ -1625,6 +1631,8 @@ function replayConfig(manifestOrConfig) {
         ? undefined
         : deploymentDigestBytes32(fundingEvidence.releaseBindingDigest, "releaseEvidence.releaseBindingDigest"),
       owner: manifestOrConfig.roles.owner,
+      objectiveVerifier: manifestOrConfig.roles.objectiveVerifier,
+      objectiveVerifierCodehash: manifestOrConfig.roles.objectiveVerifierCodehash,
       productionLaunchAuthority: manifestOrConfig.roles.productionLaunchAuthority,
       independentSecurityAuthority: manifestOrConfig.roles.independentSecurityAuthority,
       governanceAuthority: manifestOrConfig.roles.governanceAuthority,
@@ -1658,6 +1666,8 @@ function replayConfig(manifestOrConfig) {
       ? undefined
       : deploymentDigestBytes32(manifestOrConfig.releaseBindingDigest, "releaseBindingDigest"),
     owner: manifestOrConfig.owner,
+    objectiveVerifier: manifestOrConfig.objectiveVerifier,
+    objectiveVerifierCodehash: manifestOrConfig.objectiveVerifierCodehash,
     productionLaunchAuthority: manifestOrConfig.productionLaunchAuthority,
     independentSecurityAuthority: manifestOrConfig.independentSecurityAuthority,
     governanceAuthority: manifestOrConfig.governanceAuthority,
@@ -3169,6 +3179,10 @@ export function compareReplayToSnapshot(state, snapshot, manifestOrConfig) {
     ...(config.releaseBindingDigest === undefined ? [] : [
       check("submissions.releaseBindingDigest", config.releaseBindingDigest, snapshot.releaseBindingDigest),
     ]),
+    ...(config.objectiveVerifier === undefined ? [] : [
+      check("submissions.objectiveVerifier", addressKey(config.objectiveVerifier), addressKey(snapshot.objectiveVerifier)),
+      check("submissions.objectiveVerifierCodehash", config.objectiveVerifierCodehash, snapshot.objectiveVerifierCodehash),
+    ]),
     ...(config.productionLaunchAuthority === undefined ? [] : [
       check("submissions.productionLaunchAuthority", addressKey(config.productionLaunchAuthority), addressKey(snapshot.productionLaunchAuthority)),
       check("submissions.independentSecurityAuthority", addressKey(config.independentSecurityAuthority), addressKey(snapshot.independentSecurityAuthority)),
@@ -3603,6 +3617,8 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     fundingAuthorizationNonce,
     boardSetDigest,
     releaseBindingDigest,
+    objectiveVerifier,
+    objectiveVerifierCodehash,
     productionLaunchAuthority,
     independentSecurityAuthority,
     governanceAuthority,
@@ -3622,6 +3638,8 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     submissions.fundingAuthorizationNonce(...atBlock),
     submissions.boardSetDigest(...atBlock),
     submissions.releaseBindingDigest(...atBlock),
+    submissions.objectiveVerifier(...atBlock),
+    submissions.objectiveVerifierCodehash(...atBlock),
     submissions.productionLaunchAuthority(...atBlock),
     submissions.independentSecurityAuthority(...atBlock),
     submissions.governanceAuthority(...atBlock),
@@ -3643,6 +3661,8 @@ export async function collectOnchainSnapshot(contracts, replay, blockTag = undef
     fundingAuthorizationNonce,
     boardSetDigest,
     releaseBindingDigest,
+    objectiveVerifier,
+    objectiveVerifierCodehash,
     productionLaunchAuthority,
     independentSecurityAuthority,
     governanceAuthority,
