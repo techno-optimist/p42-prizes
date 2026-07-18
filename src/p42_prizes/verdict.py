@@ -26,6 +26,7 @@ MAX_SCORE_ATOMS_BOUND = 2**254
 MAX_UINT256 = 2**256 - 1
 MAX_SAFE_JSON_INTEGER = 2**53 - 1
 MAX_JSON_CONTAINER_DEPTH = 256
+MAX_JSON_INTEGER_DIGITS = 4_300
 
 
 def _reject_json_constant(value: str) -> NoReturn:
@@ -39,6 +40,21 @@ def _reject_duplicate_object_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any
             raise ValueError(f"duplicate JSON object key: {key!r}")
         value[key] = item
     return value
+
+
+def _parse_bounded_json_integer(value: str) -> int:
+    digits = value[1:] if value.startswith("-") else value
+    if len(digits) > MAX_JSON_INTEGER_DIGITS:
+        raise ValueError(
+            f"JSON integer exceeds {MAX_JSON_INTEGER_DIGITS} digits"
+        )
+
+    # Do not call int(value): CPython's process-wide digit limit is
+    # host-configurable and can otherwise make admission disagree with Rust.
+    magnitude = 0
+    for digit in digits:
+        magnitude = magnitude * 10 + (ord(digit) - ord("0"))
+    return -magnitude if value.startswith("-") else magnitude
 
 
 def _reject_excessive_json_depth(value: Any) -> None:
@@ -63,6 +79,7 @@ def strict_json_loads(value: str | bytes | bytearray) -> Any:
     parsed = json.loads(
         value,
         parse_constant=_reject_json_constant,
+        parse_int=_parse_bounded_json_integer,
         object_pairs_hook=_reject_duplicate_object_keys,
     )
     _reject_excessive_json_depth(parsed)
