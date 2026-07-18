@@ -353,8 +353,6 @@ def parse_child_manifest(raw: str) -> dict[str, Any]:
     if not isinstance(layers, list) or not layers:
         raise ReleaseError("OCI child manifest must contain layers")
     checked_layers = [_validate_blob_descriptor(layer, media_types=LAYER_MEDIA_TYPES, label="OCI layer") for layer in layers]
-    if len({layer["digest"] for layer in checked_layers}) != len(checked_layers):
-        raise ReleaseError("OCI child manifest contains duplicate layer digests")
     return {"config": config, "layers": checked_layers}
 
 
