@@ -166,7 +166,28 @@ def _synthetic_capsule(git_commit: str) -> tuple[dict[str, Any], dict[str, str]]
         contracts.append({"name": name, "sourceName": source_name, "buildInfoId": build_id, "artifactDigest": _digest(artifact), "abi": abi, "creationCode": "0x6000", "runtimeTemplate": runtime, "immutableReferences": references, "immutableBindings": bindings, "linkReferences": {}, "deployedLinkReferences": {}})
         build_infos.append({"id": build_id, "inputDigest": _digest(build_input), "outputDigest": _digest(build_output), "compiler": {"version": "0.8.24", "longVersion": "0.8.24+commit.e11b9ed9"}, "settings": settings, "input": build_input, "output": build_output})
     external = json.loads((Path(__file__).resolve().parents[1] / "protocol" / "external-dependencies-v1.json").read_text())["dependencies"]
-    body = {"schema": "p42-prizes/release-capsule/v2", "gitCommit": git_commit, "contracts": contracts, "externalDependencies": external, "buildInfos": sorted(build_infos, key=lambda item: item["id"])}
+    sp1_runtime_attestation = {
+        "schema": "p42-prizes/sp1-external-runtime-attestation/v1",
+        "evidenceDigest": "sha256:" + "e" * 64,
+        "capturedAt": "2026-07-17T15:12:28Z",
+        "expiresAt": "2026-07-18T15:12:28Z",
+        "chains": [
+            {
+                "chainId": chain_id,
+                "network": network,
+                "address": "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2",
+                "anchorMode": "agreed-finalized",
+                "finalizedSkewBlocks": 0,
+                "providers": [
+                    {"operator": "base-foundation", "endpointOrigin": "https://mainnet.base.org" if chain_id == 8453 else "https://sepolia.base.org", "finalizedAnchor": {"blockNumber": 1, "blockHash": "0x" + "1" * 64, "blockTimestamp": 1}},
+                    {"operator": "tenderly", "endpointOrigin": "https://base.gateway.tenderly.co" if chain_id == 8453 else "https://base-sepolia.gateway.tenderly.co", "finalizedAnchor": {"blockNumber": 1, "blockHash": "0x" + "1" * 64, "blockTimestamp": 1}},
+                ],
+                "runtime": {"byteLength": 6741, "keccak256": "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd"},
+            }
+            for chain_id, network in [(8453, "base"), (84532, "base-sepolia")]
+        ],
+    }
+    body = {"schema": "p42-prizes/release-capsule/v2", "gitCommit": git_commit, "contracts": contracts, "externalDependencies": external, "sp1RuntimeAttestation": sp1_runtime_attestation, "buildInfos": sorted(build_infos, key=lambda item: item["id"])}
     return {**body, "capsuleDigest": _digest(body)}, sources
 
 

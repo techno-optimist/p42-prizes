@@ -256,12 +256,13 @@ P42_RELEASE_CAPSULE=... \
 P42_PRODUCTION_RELEASE_INDEX_PATH=... \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 P42_RELEASE_OUTPUT_ROOT=/absolute/path/release-output \
+P42_SP1_RUNTIME_ATTESTATION_PATH=/absolute/path/release-evidence/sp1-external-runtime-current.json \
 npm run inspect:base-sepolia-reservation
 ```
 
 Inspect mode independently reconstructs the expected identity from the clean
 frozen checkout, exact ceremony config, release slate, release capsule,
-expected deployer, and manifest path before opening the private sibling
+fresh SP1 runtime attestation, expected deployer, and manifest path before opening the private sibling
 reservation. It does not trust identity fields recovered from the journal. A
 wrong checkout or input, malformed, relocated, permissive, linked, or
 identity-tampered journal fails closed. Do not remove the reservation to make a

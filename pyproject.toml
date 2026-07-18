@@ -19,6 +19,7 @@ dev = [
 
 [project.scripts]
 p42-prizes = "p42_prizes.cli:main"
+p42-sp1-runtime-attestation = "p42_prizes.sp1_runtime_attestation:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

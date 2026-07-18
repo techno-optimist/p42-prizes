@@ -10,7 +10,9 @@ import {
 } from "./multiboard-ceremony-helper.js";
 import {
   attestReleaseCapsuleAgainstCheckout,
+  assertSP1RuntimeAttestationMatches,
   canonicalDigest,
+  verifySP1RuntimeAttestation,
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
 import { readContractsArtifactJsonTrustedPublic, readContractsConfigJsonWithBytes } from "./strict-json-helper.js";
@@ -66,6 +68,7 @@ export async function verifyProductionRelease({
   capsulePath,
   slatePath,
   releaseIndexPath,
+  sp1RuntimeAttestationPath,
   expectedDeployer,
   run = execFileSync,
   readConfig = readContractsConfigJsonWithBytes,
@@ -76,6 +79,8 @@ export async function verifyProductionRelease({
   validateSlate = validateProductionReleaseSlate,
   validateIndex = validateProductionReleaseIndex,
   attestCapsule = attestReleaseCapsuleAgainstCheckout,
+  verifyRuntimeAttestation = verifySP1RuntimeAttestation,
+  assertRuntimeAttestationMatches = assertSP1RuntimeAttestationMatches,
   preflightSlate = validateProductionSlatePreflight,
   assertObjectiveVerifierBinding = assertObjectiveVerifierCapsuleBinding,
 } = {}) {
@@ -87,6 +92,7 @@ export async function verifyProductionRelease({
   const selectedCapsulePath = requireWithin(output, capsulePath, "release capsule");
   const selectedSlatePath = requireWithin(output, slatePath, "production slate");
   const selectedIndexPath = requireWithin(output, releaseIndexPath, "production release index");
+  const selectedAttestationPath = requireWithin(evidence, sp1RuntimeAttestationPath, "SP1 runtime attestation");
   const commit = assertCleanCheckout(root, null, run);
   const [ceremonyInput, capsule, slate, index] = await Promise.all([
     readConfig(configPath, { trustedRoot: evidence }),
@@ -98,6 +104,13 @@ export async function verifyProductionRelease({
   validateCapsule(capsule);
   validateSlate(slate, config.problems);
   validateIndex(index);
+  const verifiedRuntimeAttestation = verifyRuntimeAttestation({
+    repoRoot: root,
+    evidenceRoot: evidence,
+    evidencePath: selectedAttestationPath,
+    run,
+  });
+  assertRuntimeAttestationMatches(capsule, verifiedRuntimeAttestation);
   if (capsule.gitCommit !== commit || slate.sourceCommit !== commit || index.sourceCommit !== commit || index.generatedAt !== slate.generatedAt || index.capsule.digest !== capsule.capsuleDigest || index.slate.digest !== slate.slateDigest) throw new Error("release index does not bind the exact checkout, timestamp, capsule, and slate");
   await attestCapsule(capsule, { repoRoot: root, expectedGitCommit: commit, run });
   const objectiveVerifierArtifactPath = requireWithin(
@@ -116,6 +129,7 @@ export async function verifyProductionRelease({
     sourceCommit: commit,
     generatedAt: slate.generatedAt,
     capsuleDigest: capsule.capsuleDigest,
+    sp1RuntimeAttestationDigest: capsule.sp1RuntimeAttestation.evidenceDigest,
     slateDigest: slate.slateDigest,
     releaseIndexDigest: index.indexDigest,
     ceremonyConfigDigest: `sha256:${createHash("sha256").update(ceremonyInput.bytes).digest("hex")}`,
@@ -133,6 +147,7 @@ export function requiredReleaseVerificationEnvironment(env = process.env) {
     "P42_RELEASE_CAPSULE",
     "P42_PRODUCTION_SLATE_PATH",
     "P42_PRODUCTION_RELEASE_INDEX_PATH",
+    "P42_SP1_RUNTIME_ATTESTATION_PATH",
     "P42_EXPECTED_DEPLOYER_ADDRESS",
   ];
   return Object.fromEntries(required.map((name) => {
