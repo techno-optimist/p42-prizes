@@ -1,0 +1,27 @@
+{
+  "authority": "/private/tmp/p42-gate-ledger-live-truth@1b65b84b13dbe350339bcd985b44b5224e6c6df7",
+  "encodings": [
+    "utf-8",
+    "utf-8-sig",
+    "utf-16-le",
+    "utf-16-le-bom",
+    "utf-16-be",
+    "utf-16-be-bom",
+    "utf-32-le",
+    "utf-32-le-bom",
+    "utf-32-be",
+    "utf-32-be-bom"
+  ],
+  "unit_vectors": [
+    {"name": "lone-high", "units": [55296], "accepted": true},
+    {"name": "lone-low", "units": [56320], "accepted": true},
+    {"name": "high-edge", "units": [56319], "accepted": true},
+    {"name": "low-edge", "units": [57343], "accepted": true},
+    {"name": "minimum-high-low-pair", "units": [55296, 56320], "accepted": true},
+    {"name": "high-low-pair", "units": [55357, 56832], "accepted": true},
+    {"name": "maximum-high-low-pair", "units": [56319, 57343], "accepted": true},
+    {"name": "low-high-reversed", "units": [56832, 55357], "accepted": true},
+    {"name": "high-high-adjacent", "units": [55296, 55296], "accepted": true},
+    {"name": "low-low-adjacent", "units": [56320, 56320], "accepted": true}
+  ]
+}

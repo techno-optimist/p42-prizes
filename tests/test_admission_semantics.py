@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fractions import Fraction
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -12,6 +13,8 @@ from p42_prizes.readiness import (
 )
 from p42_prizes.runner_worker import _chain_score_atoms as runner_chain_score_atoms
 from p42_prizes.verdict import (
+    MAX_JSON_CONTAINER_DEPTH,
+    MAX_JSON_INTEGER_DIGITS,
     MAX_SCORE_ATOMS_BOUND,
     MAX_UINT256,
     MIN_SCORE_ATOMS_BOUND,
@@ -25,6 +28,56 @@ from p42_prizes.verdict import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_strict_json_loads_has_deterministic_container_depth_limit() -> None:
+    accepted = (
+        '{"meta":'
+        + "[" * (MAX_JSON_CONTAINER_DEPTH - 1)
+        + "0"
+        + "]" * (MAX_JSON_CONTAINER_DEPTH - 1)
+        + "}"
+    )
+    rejected = (
+        '{"meta":'
+        + "[" * MAX_JSON_CONTAINER_DEPTH
+        + "0"
+        + "]" * MAX_JSON_CONTAINER_DEPTH
+        + "}"
+    )
+    strict_json_loads(accepted)
+    with pytest.raises(ValueError, match="JSON container depth exceeds"):
+        strict_json_loads(rejected)
+
+
+def test_strict_json_loads_has_deterministic_integer_digit_limit() -> None:
+    digits = "9" * MAX_JSON_INTEGER_DIGITS
+    accepted = "-" + digits
+    rejected = "9" * (MAX_JSON_INTEGER_DIGITS + 1)
+    expected = 0
+    for digit in digits:
+        expected = expected * 10 + (ord(digit) - ord("0"))
+    assert strict_json_loads(accepted) == -expected
+    with pytest.raises(ValueError, match="JSON integer exceeds"):
+        strict_json_loads(rejected)
+
+
+@pytest.mark.skipif(
+    not hasattr(sys, "set_int_max_str_digits"),
+    reason="interpreter has no configurable integer conversion limit",
+)
+def test_strict_json_integer_limit_ignores_cpython_process_setting() -> None:
+    previous_limit = sys.get_int_max_str_digits()
+    sys.set_int_max_str_digits(640)
+    try:
+        digits = "9" * 641
+        expected = 0
+        for digit in digits:
+            expected = expected * 10 + (ord(digit) - ord("0"))
+        assert strict_json_loads(digits) == expected
+    finally:
+        sys.set_int_max_str_digits(previous_limit)
+
 
 # Duplicated cross-language goldens for agent/lib.mjs atomsFromScore and
 # chainScoreAtoms. The runner assertions pin the existing Python execution path

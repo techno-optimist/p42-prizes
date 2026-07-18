@@ -258,6 +258,22 @@ jobs:
             "$HOME/.cargo/bin/cargo" test --locked \
             --manifest-path edges-vs-triangles/Cargo.toml \
             -p p42-edges-objective-core
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            "$HOME/.cargo/bin/cargo" test --locked \
+            --manifest-path erdos-min-overlap/Cargo.toml \
+            -p p42-three-objective-shared \
+            -p p42-erdos-min-overlap-objective-core
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            "$HOME/.cargo/bin/cargo" test --locked \
+            --manifest-path autoconvolution-c1-upper/Cargo.toml \
+            -p p42-autoconvolution-c1-upper-objective-core
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" CARGO_INCREMENTAL=0 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+            "$HOME/.cargo/bin/cargo" test --locked \
+            --manifest-path autoconvolution-c2-lower/Cargo.toml \
+            -p p42-autoconvolution-c2-lower-objective-core
+          /usr/bin/env -i HOME="$HOME" PATH="$clean_path" PYTHONPATH="$GITHUB_WORKSPACE/src" \
+            /usr/bin/python3 erdos-min-overlap/objective-shared/tests/test_python_authority.py \
+            --canonical-root "$GITHUB_WORKSPACE" --source-mode current
       - name: Build objective guests on x86 Linux
         working-directory: objective-programs
         shell: bash

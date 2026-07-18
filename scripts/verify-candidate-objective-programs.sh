@@ -17,6 +17,16 @@ cargo test --locked \
 cargo test --locked \
   --manifest-path arithmetic-kakeya/Cargo.toml \
   -p p42-arithmetic-kakeya-objective-core
+cargo test --locked \
+  --manifest-path erdos-min-overlap/Cargo.toml \
+  -p p42-three-objective-shared \
+  -p p42-erdos-min-overlap-objective-core
+cargo test --locked \
+  --manifest-path autoconvolution-c1-upper/Cargo.toml \
+  -p p42-autoconvolution-c1-upper-objective-core
+cargo test --locked \
+  --manifest-path autoconvolution-c2-lower/Cargo.toml \
+  -p p42-autoconvolution-c2-lower-objective-core
 
 cargo build --locked \
   --manifest-path q6-intersecting-hypergraph/Cargo.toml \
