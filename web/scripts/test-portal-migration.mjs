@@ -417,7 +417,7 @@ try {
     expectRunnerSuccess(runMigrationRunner(fixture));
     const inheritor = await fixture.createRole("inheritor");
     const nested = await fixture.createRole("nested_inheritor");
-    await admin.query(`GRANT ${quoteIdentifier(fixture.runtimeName)} TO ${quoteIdentifier(inheritor)} WITH INHERIT TRUE, SET TRUE`);
+    await fixture.owner.query(`GRANT ${quoteIdentifier(fixture.runtimeName)} TO ${quoteIdentifier(inheritor)} WITH INHERIT TRUE, SET TRUE`);
     await admin.query(`GRANT ${quoteIdentifier(inheritor)} TO ${quoteIdentifier(nested)} WITH INHERIT TRUE, SET TRUE`);
     const effective = (await fixture.owner.query(`SELECT pg_catalog.has_table_privilege($1,
       'p42_portal_state','UPDATE') AS inherited`, [nested])).rows[0]?.inherited;
