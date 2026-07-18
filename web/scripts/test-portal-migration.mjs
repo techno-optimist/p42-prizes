@@ -11,6 +11,7 @@ const migration1Sql = await readFile(path.resolve("migrations/001_portal_store.s
 const migration2Sql = await readFile(path.resolve("migrations/002_indexer_checkpoint_high_water.sql"), "utf8");
 const admin = new pg.Client({ connectionString, connectionTimeoutMillis: 10_000 });
 await admin.connect();
+const adminRoleName = (await admin.query("SELECT current_user AS role")).rows[0].role;
 
 const passed = [];
 try {
@@ -517,14 +518,18 @@ async function withRunnerDatabase(label, operation) {
   const schema = `p42_acl_${suffix}`;
   const ownerPassword = `owner-${randomUUID()}`;
   const runtimePassword = `runtime-${randomUUID()}`;
-  const roles = [ownerName];
-  await admin.query(`CREATE ROLE ${quoteIdentifier(ownerName)} LOGIN CREATEROLE CREATEDB
-    PASSWORD ${quoteLiteral(ownerPassword)}`);
-  await admin.query(`CREATE DATABASE ${quoteIdentifier(database)} OWNER ${quoteIdentifier(ownerName)}`);
+  const roles = [];
+  let databaseCreated = false;
   const ownerUrl = databaseUrl(ownerName, database, ownerPassword);
   const runtimeUrl = databaseUrl(runtimeName, database, runtimePassword);
   const owner = new pg.Client({ connectionString: ownerUrl, connectionTimeoutMillis: 10_000 });
   try {
+    await admin.query(`CREATE ROLE ${quoteIdentifier(ownerName)} LOGIN CREATEROLE CREATEDB
+      PASSWORD ${quoteLiteral(ownerPassword)}`);
+    roles.push(ownerName);
+    await admin.query(`GRANT ${quoteIdentifier(ownerName)} TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`);
+    await admin.query(`CREATE DATABASE ${quoteIdentifier(database)} OWNER ${quoteIdentifier(ownerName)}`);
+    databaseCreated = true;
     await owner.connect();
     await owner.query(`CREATE ROLE ${quoteIdentifier(runtimeName)} LOGIN NOINHERIT NOSUPERUSER
       PASSWORD ${quoteLiteral(runtimePassword)}
@@ -546,10 +551,17 @@ async function withRunnerDatabase(label, operation) {
     await operation(fixture);
     passed.push(label);
   } finally {
+    if (roles.includes(runtimeName)) {
+      await owner.query(`GRANT ${quoteIdentifier(runtimeName)} TO ${quoteIdentifier(adminRoleName)}
+        WITH ADMIN TRUE, INHERIT FALSE, SET FALSE`);
+    }
     await owner.end().catch(() => {});
-    await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [database]).catch(() => {});
-    await admin.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(database)}`).catch(() => {});
-    for (const role of roles.reverse()) await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(role)}`).catch(() => {});
+    if (databaseCreated) {
+      await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [database]);
+      await admin.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(database)}`);
+    }
+    for (const role of roles.reverse()) await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(role)}`);
+    await assertRolesAbsent(...roles);
   }
 }
 
