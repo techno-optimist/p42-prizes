@@ -183,7 +183,15 @@ function reclaimDeadOwner(
     throw error;
   }
   try {
-    const current = readPortalStateLockOwner(lockPath);
+    let current: PortalStateLockOwner;
+    try {
+      current = readPortalStateLockOwner(lockPath);
+    } catch (error) {
+      // Another lock holder may have completed release or reclamation before
+      // this contender acquired the reclaim mutex. Retry normal acquisition.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
     if (!sameOwner(current, observed)
       || !ownerIsDeadOnThisHost(current, identityProbe, livenessProbe)) return false;
     const tombstone = `${lockPath}.dead.${current.token}`;
