@@ -94,7 +94,7 @@ problem requirement.
 - Portal checkpoint database upgrade: source now requires a durably pinned
   schema, migration-owner-controlled exact-read and transition functions, and a
   runtime role with no direct authority writes, `TRUNCATE`, or dangerous
-  `SET ROLE` path. Local PostgreSQL 16 evidence includes 18 migration/tamper
+  `SET ROLE` path. Local PostgreSQL 18.4 evidence includes 26 migration/tamper
   cases plus a 10,000-row, six-reader exact-read rehearsal with zero blocking
   PIDs observed while all readers are in flight, a serialized transition
   observably blocked only by held-reader PIDs, and a 2,000 ms post-barrier
