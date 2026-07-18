@@ -494,7 +494,7 @@ jobs:
   objective-program-reproducibility:
     name: SP1 objective-program reproducibility
     needs: objective-program
-    if: ${{ always() }}
+    if: ${{ always() && needs.objective-program.result != 'cancelled' }}
     runs-on: ubuntu-24.04
     env:
       PRODUCER_RESULT: ${{ needs.objective-program.result }}
