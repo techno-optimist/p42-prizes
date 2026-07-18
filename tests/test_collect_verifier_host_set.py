@@ -76,7 +76,8 @@ def _runtime_report(
         "verifier_version": "1.0.0",
     }
     return {
-        "source_commit": "a" * 40,
+        "verifier_source_commit": "a" * 40,
+        "release_config_commit": "b" * 40,
         "execution_nonce": sha256_bytes(f"nonce-{slug}-{platform}".encode()).removeprefix("sha256:"),
         "board": {"slug": slug, "source_hash": DIGEST_C},
         "solution_sha256": solution,
@@ -277,7 +278,12 @@ def _signed_host_set(tmp_path: Path):
         "board_set": {"sha256": DIGEST_C},
         "fixtures": [],
     }
-    dossier = {"dossier_hash": DIGEST_B, "source_commit": "a" * 40, "boards": []}
+    dossier = {
+        "dossier_hash": DIGEST_B,
+        "verifier_source_commit": "a" * 40,
+        "release_config_commit": "b" * 40,
+        "boards": [],
+    }
     artifacts = {}
     board_index = []
     for position in range(10):
@@ -308,13 +314,14 @@ def _signed_host_set(tmp_path: Path):
             "evidence_hash": evidence["evidence_hash"],
         })
     index = {
-        "schema_version": "p42-admission-host-set/v1",
+        "schema_version": "p42-admission-host-set/v2",
         "generated_at_utc": "2026-07-14T00:00:00Z",
         "dossier": {
             "path": "/independent/release.json",
             "file_sha256": DIGEST_A,
             "dossier_hash": DIGEST_B,
-            "source_commit": "a" * 40,
+            "verifier_source_commit": "a" * 40,
+            "release_config_commit": "b" * 40,
         },
         "fixtures": {
             "path": "/independent/fixtures.json",

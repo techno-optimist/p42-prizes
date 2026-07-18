@@ -35,7 +35,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 
 
 FIXTURE_SCHEMA_VERSION = "p42-production-verifier-fixtures/v1"
-HOST_SET_SCHEMA_VERSION = "p42-admission-host-set/v1"
+HOST_SET_SCHEMA_VERSION = "p42-admission-host-set/v2"
 REPORTS_PER_BOARD = 2
 MAX_JSON_BYTES = 8 * 1024 * 1024
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -212,8 +212,8 @@ def validate_clean_source(root: Path, dossier: Mapping[str, Any]) -> None:
     """Recompute dossier source hashes from the clean committed source cohort."""
 
     head = validate_clean_checkout(root)
-    if head != dossier.get("source_commit"):
-        raise RuntimeAdmissionError("checkout HEAD does not match the pinned dossier source commit")
+    if head != dossier.get("release_config_commit"):
+        raise RuntimeAdmissionError("checkout HEAD does not match the pinned release-config commit")
 
     with tempfile.TemporaryDirectory(prefix="p42-source-cohort-") as directory:
         archive_path = Path(directory) / "source.tar"
@@ -271,7 +271,8 @@ def _stable_report_identity(report: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "verdict": report["execution"]["verdict"],
         "solution_sha256": report["solution_sha256"],
-        "source_commit": report["source_commit"],
+        "verifier_source_commit": report["verifier_source_commit"],
+        "release_config_commit": report["release_config_commit"],
         "source_hash": report["board"]["source_hash"],
         "index_digest": report["image"]["index_digest"],
         "config_digest": report["image"]["expected_config_digest"],
@@ -370,7 +371,7 @@ def build_host_evidence_from_pair(
             "image_os": os_name,
         },
         "source": {
-            "commit": reports[0]["source_commit"],
+            "commit": reports[0]["verifier_source_commit"],
             "tree_hash_algorithm": SOURCE_HASH_ALGORITHM,
             "tree_hash": reports[0]["board"]["source_hash"],
         },
@@ -445,7 +446,8 @@ def build_host_set(
             "path": str(dossier_path),
             "file_sha256": dossier_sha256,
             "dossier_hash": dossier["dossier_hash"],
-            "source_commit": dossier["source_commit"],
+            "verifier_source_commit": dossier["verifier_source_commit"],
+            "release_config_commit": dossier["release_config_commit"],
         },
         "fixtures": {
             "path": str(fixture_path),
@@ -526,7 +528,8 @@ def validate_host_set(
     if not isinstance(dossier_pin, Mapping) or (
         dossier_pin.get("file_sha256") != dossier_sha256
         or dossier_pin.get("dossier_hash") != dossier.get("dossier_hash")
-        or dossier_pin.get("source_commit") != dossier.get("source_commit")
+        or dossier_pin.get("verifier_source_commit") != dossier.get("verifier_source_commit")
+        or dossier_pin.get("release_config_commit") != dossier.get("release_config_commit")
     ):
         raise RuntimeAdmissionError("host-set dossier binding does not match the independent release input")
     if not isinstance(fixture_pin, Mapping) or (
@@ -573,7 +576,7 @@ def validate_host_set(
             or validated.get("problem_id") != expected_slug
             or validated.get("solution_hash") != fixture.get("sha256")
             or validated.get("verifier_image") != release_board.get("index_digest")
-            or validated.get("source", {}).get("commit") != dossier.get("source_commit")
+            or validated.get("source", {}).get("commit") != dossier.get("verifier_source_commit")
             or validated.get("source", {}).get("tree_hash") != release_board.get("source_hash")
             or validated.get("host") != index.get("host")
             or validated.get("execution", {}).get("runtime") != expected_runtime

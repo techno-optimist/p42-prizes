@@ -103,9 +103,10 @@ After the all-ten image release dossier exists, every production runner host
 must prove that it can execute the published bytes without rebuilding or using
 a mutable tag. The published mode of `scripts/rehearse_verifier_image.py`:
 
-- requires canonical, schema-valid `p42-verifier-image-release/v1` dossier
+- requires canonical, schema-valid `p42-verifier-image-release/v2` dossier
   bytes, an independently supplied digest of those bytes, and the exact fully
-  clean source commit named by that dossier;
+  clean release-config commit named by that dossier, while OCI labels bind the
+  distinct verifier-source commit;
 - selects the board's `repository@sha256:<OCI-index>` reference from the
   dossier rather than accepting an image reference from the caller;
 - runs only `docker pull` and `docker image inspect` before execution. It never

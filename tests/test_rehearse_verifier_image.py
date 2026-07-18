@@ -172,17 +172,21 @@ def _release_dossier(smoke) -> dict:
             "repository": repository,
             "index_digest": index_digest,
             "immutable_reference": f"{repository}@{index_digest}",
+            "release_manifest_path": f"problems/{slug}/problem.yaml",
+            "release_manifest_sha256": "sha256:" + "9" * 64,
             "platform_manifests": records,
         })
     return smoke.image_release._finalize_dossier({
         "schema_version": smoke.image_release.SCHEMA_VERSION,
         "published_at_utc": "2026-07-14T00:00:00Z",
-        "source_commit": commit,
-        "source_archive_digest": "sha256:" + "c" * 64,
+        "identity_model": smoke.image_release.IDENTITY_MODEL,
+        "verifier_source_commit": commit,
+        "verifier_source_archive_digest": "sha256:" + "c" * 64,
+        "release_config_commit": "e" * 40,
+        "release_config_archive_digest": "sha256:" + "a" * 64,
         "registry_base": registry,
         "platforms": list(smoke.image_release.PLATFORMS),
         "boards": boards,
-        "manifest_mutation": "none",
         "publication_journal_hash": "sha256:" + "d" * 64,
     })
 
@@ -229,7 +233,7 @@ def test_pulled_image_must_match_index_config_labels_platform_and_runtime() -> N
         "workdir": record["runtime"]["workdir"],
     }
     violations, platform = smoke._pulled_image_violations(
-        inspected, board=board, source_commit=dossier["source_commit"]
+        inspected, board=board, verifier_source_commit=dossier["verifier_source_commit"]
     )
     assert platform == "linux/amd64"
     assert violations == []
@@ -238,7 +242,7 @@ def test_pulled_image_must_match_index_config_labels_platform_and_runtime() -> N
     bad["labels"] = {}
     bad["workdir"] = "/wrong"
     violations, _ = smoke._pulled_image_violations(
-        bad, board=board, source_commit=dossier["source_commit"]
+        bad, board=board, verifier_source_commit=dossier["verifier_source_commit"]
     )
     assert "pulled RepoDigests do not contain the requested immutable reference" in violations
     assert "pulled image ID does not match the platform config digest" in violations
@@ -261,8 +265,10 @@ def _runtime_report(smoke) -> dict:
         "execution_nonce": None,
         "scope": "single-host-pull-rehearsal",
         "not_launch_evidence": True,
-        "source_commit": dossier["source_commit"],
-        "source_archive_digest": dossier["source_archive_digest"],
+        "verifier_source_commit": dossier["verifier_source_commit"],
+        "verifier_source_archive_digest": dossier["verifier_source_archive_digest"],
+        "release_config_commit": dossier["release_config_commit"],
+        "release_config_archive_digest": dossier["release_config_archive_digest"],
         "dossier_hash": dossier["dossier_hash"],
         "dossier_file_sha256": "sha256:" + "9" * 64,
         "publication_journal_hash": dossier["publication_journal_hash"],

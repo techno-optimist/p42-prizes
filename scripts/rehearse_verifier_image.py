@@ -33,6 +33,7 @@ from p42_prizes.admission import (
     SOURCE_HASH_ALGORITHM_LABEL,
     VERIFIER_VERSION_LABEL,
     compute_source_hash,
+    validate_problem_image_release_binding,
     validate_report_shape,
 )
 from p42_prizes.bounded_process import OutputLimitExceeded, run_bounded_process
@@ -55,7 +56,7 @@ import release_verifier_images as image_release  # noqa: E402
 
 
 SMOKE_SCHEMA_VERSION = "p42-verifier-image-smoke/v1"
-RUNTIME_SCHEMA_VERSION = "p42-verifier-image-runtime-rehearsal/v1"
+RUNTIME_SCHEMA_VERSION = "p42-verifier-image-runtime-rehearsal/v2"
 IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 RUNTIME_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schemas" / "verifier-image-runtime-rehearsal.schema.json"
 RELEASE_SCHEMA_PATH = Path(__file__).resolve().parents[1] / "schemas" / "verifier-image-release.schema.json"
@@ -356,7 +357,7 @@ def _pulled_image_violations(
     inspected: Mapping[str, Any],
     *,
     board: Mapping[str, Any],
-    source_commit: str,
+    verifier_source_commit: str,
 ) -> tuple[list[str], str | None]:
     violations: list[str] = []
     os_name = inspected.get("os")
@@ -382,7 +383,7 @@ def _pulled_image_violations(
     else:
         violations.extend(_image_label_violations(
             labels,
-            source_commit=source_commit,
+            source_commit=verifier_source_commit,
             source_hash=board["source_hash"],
             problem_id=board["problem_id"],
             verifier_version=board["version"],
@@ -459,7 +460,7 @@ def validate_runtime_report(
     if not image["immutable_reference"].endswith("@" + image["index_digest"]):
         raise SmokeError("runtime rehearsal immutable reference contradicts its index digest")
     expected_labels = {
-        OCI_REVISION_LABEL: normalized["source_commit"],
+        OCI_REVISION_LABEL: normalized["verifier_source_commit"],
         SOURCE_HASH_LABEL: normalized["board"]["source_hash"],
         SOURCE_HASH_ALGORITHM_LABEL: SOURCE_HASH_ALGORITHM,
         PROBLEM_ID_LABEL: normalized["board"]["problem_id"],
@@ -467,8 +468,10 @@ def validate_runtime_report(
     }
     if (
         normalized["dossier_hash"] != dossier.get("dossier_hash")
-        or normalized["source_commit"] != dossier.get("source_commit")
-        or normalized["source_archive_digest"] != dossier.get("source_archive_digest")
+        or normalized["verifier_source_commit"] != dossier.get("verifier_source_commit")
+        or normalized["verifier_source_archive_digest"] != dossier.get("verifier_source_archive_digest")
+        or normalized["release_config_commit"] != dossier.get("release_config_commit")
+        or normalized["release_config_archive_digest"] != dossier.get("release_config_archive_digest")
         or normalized["publication_journal_hash"] != dossier.get("publication_journal_hash")
     ):
         raise SmokeError("runtime rehearsal report does not match the pinned release dossier")
@@ -530,7 +533,7 @@ def validate_runtime_report(
         else:
             expected_image_violations.extend(_image_label_violations(
                 observed_labels,
-                source_commit=normalized["source_commit"],
+                source_commit=normalized["verifier_source_commit"],
                 source_hash=normalized["board"]["source_hash"],
                 problem_id=normalized["board"]["problem_id"],
                 verifier_version=normalized["board"]["version"],
@@ -619,9 +622,12 @@ def validate_runtime_report_file(
     problem = problem_path.resolve()
     root = repo_root_from_problem(problem)
     _require_clean_checkout(root)
-    source_commit = _run_checked(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout.strip()
-    if source_commit != value.get("source_commit") or source_commit != dossier.get("source_commit"):
-        raise SmokeError("runtime rehearsal validator checkout does not match the report source")
+    release_config_commit = _run_checked(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout.strip()
+    if (
+        release_config_commit != value.get("release_config_commit")
+        or release_config_commit != dossier.get("release_config_commit")
+    ):
+        raise SmokeError("runtime rehearsal validator checkout does not match the release-config commit")
     if problem.name != value.get("board", {}).get("slug"):
         raise SmokeError("runtime rehearsal validator problem does not match the report board")
     manifest = load_manifest(problem)
@@ -852,9 +858,9 @@ def rehearse_published(
     dossier = _load_release_dossier(dossier_path, expected_sha256=expected_dossier_sha256)
     board = _select_release_board(dossier, board_slug)
     _require_clean_checkout(root)
-    source_commit = _run_checked(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout.strip()
-    if source_commit != dossier["source_commit"]:
-        raise SmokeError("checked-out source commit does not match the published release dossier")
+    release_config_commit = _run_checked(["git", "-C", str(root), "rev-parse", "HEAD"]).stdout.strip()
+    if release_config_commit != dossier["release_config_commit"]:
+        raise SmokeError("checked-out commit does not match the published release configuration")
 
     manifest = load_manifest(problem)
     verifier = manifest.get("verifier")
@@ -867,6 +873,9 @@ def rehearse_published(
     source_hash = compute_source_hash(problem)
     if source_hash != board["source_hash"]:
         raise SmokeError("local verifier source does not match the published board source hash")
+    binding_errors = validate_problem_image_release_binding(problem, dossier)
+    if binding_errors:
+        raise SmokeError("local release binding is invalid: " + "; ".join(binding_errors))
     command_template = verifier.get("command")
     max_compute = verifier.get("max_compute")
     if not isinstance(command_template, str) or not command_template or not isinstance(max_compute, Mapping):
@@ -901,7 +910,7 @@ def rehearse_published(
     image_violations, platform = _pulled_image_violations(
         inspected,
         board=board,
-        source_commit=source_commit,
+        verifier_source_commit=dossier["verifier_source_commit"],
     )
 
     container_name = f"p42-runtime-{board_slug}-{uuid4().hex[:12]}"
@@ -977,8 +986,10 @@ def rehearse_published(
         "execution_nonce": execution_nonce,
         "scope": "single-host-pull-rehearsal",
         "not_launch_evidence": True,
-        "source_commit": source_commit,
-        "source_archive_digest": dossier["source_archive_digest"],
+        "verifier_source_commit": dossier["verifier_source_commit"],
+        "verifier_source_archive_digest": dossier["verifier_source_archive_digest"],
+        "release_config_commit": release_config_commit,
+        "release_config_archive_digest": dossier["release_config_archive_digest"],
         "dossier_hash": dossier["dossier_hash"],
         "dossier_file_sha256": expected_dossier_sha256,
         "publication_journal_hash": dossier["publication_journal_hash"],

@@ -12,9 +12,11 @@ from p42_prizes.admission import (
     REQUIRED_ARCHITECTURES,
     SOURCE_HASH_ALGORITHM,
     compute_source_hash,
+    load_image_release_dossier,
     load_evidence_file,
     ssh_public_key_fingerprint,
     validate_admission_matrix,
+    validate_problem_image_release_binding,
 )
 from p42_prizes.problem import load_manifest, validate_problem
 from p42_prizes.runner_sandbox import RunnerSandboxError, compose_immutable_image_ref
@@ -323,4 +325,27 @@ def validate_fundable_admission(problem_dir: str | Path, matrix_path: str | Path
         if len(observed_fingerprints) < MIN_MATRIX_HOSTS:
             errors.append(f"admission matrix: requires {MIN_MATRIX_HOSTS} distinct manifest-trusted host keys")
 
+    return errors
+
+
+def validate_fundable_release_admission(
+    problem_dir: str | Path,
+    matrix_path: str | Path | Mapping[str, Any],
+    dossier_path: str | Path,
+    dossier_file_sha256: str,
+) -> list[str]:
+    """Production gate: matrix admission plus exact v2 image adoption."""
+
+    errors = validate_fundable_admission(problem_dir, matrix_path)
+    try:
+        dossier = load_image_release_dossier(
+            dossier_path, expected_file_sha256=dossier_file_sha256,
+        )
+    except AdmissionError as exc:
+        errors.append(f"image dossier: {exc}")
+        return errors
+    errors.extend(
+        f"image dossier: {error}"
+        for error in validate_problem_image_release_binding(problem_dir, dossier)
+    )
     return errors

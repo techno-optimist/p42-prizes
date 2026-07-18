@@ -134,15 +134,15 @@ verifier environment. It then writes a
 `p42-prizes/deployment-manifest/v2` only after the independent manifest
 validator accepts it.
 
-The production slate's `imageRegistry` is the exact canonical
-`p42-verifier-image-release/v1` dossier emitted by
-`scripts/release_verifier_images.py --publish`, not an operator-authored
-projection. Preflight hashes its raw bytes, verifies its canonical
-`dossier_hash`, exact source commit and ten-board order, and requires every
-board's verifier version, source digest, multi-platform index digest, OCI
-labels, immutable reference, and runtime identity to match the ceremony. The
-configured `verifierImageDigest` is the published multi-platform
-`boards[].index_digest`.
+The contract ceremony currently parses the historical
+`p42-verifier-image-release/v1` shape and runs matrix-only `admit-ready`.
+That path is not activation-grade after the self-reference fix. Before funding,
+the ceremony must consume the exact canonical `p42-verifier-image-release/v2`
+dossier and invoke `admit-release-ready`, binding its independently pinned raw
+bytes, `dossier_hash`, verifier-source commit, release-config commit, final
+manifest hashes, ten-board order, OCI labels, and immutable index digests. The
+image/admission tooling fails closed until those identities agree; this document
+does not treat the pending contract-side parser change as complete.
 
 Prepare the closed release set only with the canonical command from
 the clean frozen checkout:

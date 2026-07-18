@@ -37,6 +37,8 @@ from p42_prizes.verdict import (
 
 HOST_SCHEMA_VERSION = "p42-admission-host/v3"
 MATRIX_SCHEMA_VERSION = "p42-admission-matrix/v3"
+IMAGE_RELEASE_SCHEMA_VERSION = "p42-verifier-image-release/v2"
+IMAGE_RELEASE_IDENTITY_MODEL = "p42-verifier-source-release-config/v1"
 REQUIRED_ARCHITECTURES = ("aarch64", "x86_64")
 MIN_MATRIX_HOSTS = 4
 MIN_GLIBC_VERSIONS = 2
@@ -1087,3 +1089,226 @@ def load_evidence_file(path: str | Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise AdmissionError(f"{path}: evidence must be a JSON object")
     return data
+
+
+def load_image_release_dossier(
+    path: str | Path, *, expected_file_sha256: str,
+) -> dict[str, Any]:
+    dossier_path = Path(path)
+    if not SOLUTION_HASH_RE.fullmatch(expected_file_sha256):
+        raise AdmissionError("image dossier file digest must be canonical sha256:<64 lowercase hex>")
+    try:
+        metadata = dossier_path.lstat()
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or dossier_path.is_symlink()
+            or metadata.st_nlink != 1
+            or metadata.st_size < 2
+            or metadata.st_size > 8 * 1024 * 1024
+        ):
+            raise AdmissionError("image dossier must be a bounded singly linked regular file")
+        descriptor = os.open(dossier_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            opened = os.fstat(descriptor)
+            if opened.st_ino != metadata.st_ino or opened.st_dev != metadata.st_dev:
+                raise AdmissionError("image dossier changed while opening")
+            payload = b""
+            while len(payload) < opened.st_size:
+                chunk = os.read(descriptor, opened.st_size - len(payload))
+                if not chunk:
+                    raise AdmissionError("image dossier was truncated while reading")
+                payload += chunk
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise AdmissionError(f"{dossier_path}: could not read image dossier") from exc
+    if sha256_bytes(payload) != expected_file_sha256:
+        raise AdmissionError("image dossier bytes do not match the independently supplied digest")
+    try:
+        value = strict_json_loads(payload)
+    except (TypeError, ValueError) as exc:
+        raise AdmissionError("image dossier is not strict UTF-8 JSON") from exc
+    if not isinstance(value, dict) or payload != (canonical_json(value) + "\n").encode("utf-8"):
+        raise AdmissionError("image dossier bytes must be canonical JSON with one trailing LF")
+    return validate_image_release_dossier(value)
+
+
+def validate_image_release_dossier(dossier: Mapping[str, Any]) -> dict[str, Any]:
+    if dossier.get("schema_version") == "p42-verifier-image-release/v1":
+        raise AdmissionError(
+            "v1 image dossiers are historical-only and cannot prove release-config adoption"
+        )
+    if dossier.get("schema_version") != IMAGE_RELEASE_SCHEMA_VERSION:
+        raise AdmissionError(f"image dossier schema must be {IMAGE_RELEASE_SCHEMA_VERSION}")
+    root_keys = {
+        "schema_version", "published_at_utc", "identity_model",
+        "verifier_source_commit", "verifier_source_archive_digest",
+        "release_config_commit", "release_config_archive_digest",
+        "registry_base", "platforms", "boards", "publication_journal_hash",
+        "dossier_hash",
+    }
+    if set(dossier) != root_keys:
+        raise AdmissionError("image dossier root keys are invalid")
+    if dossier.get("identity_model") != IMAGE_RELEASE_IDENTITY_MODEL:
+        raise AdmissionError("image dossier identity model is invalid")
+    if not re.fullmatch(
+        r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z",
+        dossier.get("published_at_utc") or "",
+    ):
+        raise AdmissionError("image dossier publication timestamp is invalid")
+    if dossier.get("platforms") != ["linux/amd64", "linux/arm64"]:
+        raise AdmissionError("image dossier platform cohort is invalid")
+    registry_base = dossier.get("registry_base")
+    if (
+        not isinstance(registry_base, str)
+        or not registry_base
+        or registry_base != registry_base.lower().strip()
+        or any(character in registry_base for character in "@?# ")
+    ):
+        raise AdmissionError("image dossier registry base is invalid")
+    for key in ("verifier_source_commit", "release_config_commit"):
+        if not SOURCE_COMMIT_RE.fullmatch(dossier.get(key) or ""):
+            raise AdmissionError(f"image dossier {key} is not an exact commit")
+    for key in (
+        "verifier_source_archive_digest", "release_config_archive_digest",
+        "publication_journal_hash", "dossier_hash",
+    ):
+        if not SOLUTION_HASH_RE.fullmatch(dossier.get(key) or ""):
+            raise AdmissionError(f"image dossier {key} is not a canonical digest")
+    body = dict(dossier)
+    body.pop("dossier_hash", None)
+    if dossier.get("dossier_hash") != sha256_bytes(canonical_json(body).encode("utf-8")):
+        raise AdmissionError("image dossier self-hash mismatch")
+    boards = dossier.get("boards")
+    if not isinstance(boards, list) or len(boards) != 10:
+        raise AdmissionError("image dossier must contain exactly ten boards")
+    slugs: set[str] = set()
+    for index, board in enumerate(boards):
+        if not isinstance(board, Mapping):
+            raise AdmissionError(f"image dossier board {index} must be an object")
+        if set(board) != {
+            "slug", "problem_id", "version", "source_hash", "repository",
+            "index_digest", "immutable_reference", "release_manifest_path",
+            "release_manifest_sha256", "platform_manifests",
+        }:
+            raise AdmissionError(f"image dossier board {index} keys are invalid")
+        slug = board.get("slug")
+        if not isinstance(slug, str) or not slug or slug in slugs:
+            raise AdmissionError("image dossier board slugs must be non-empty and unique")
+        slugs.add(slug)
+        if board.get("problem_id") != slug:
+            raise AdmissionError(f"image dossier board {slug} problem identity mismatch")
+        if not isinstance(board.get("version"), str) or not board["version"]:
+            raise AdmissionError(f"image dossier board {slug} verifier version is invalid")
+        for key in ("source_hash", "index_digest", "release_manifest_sha256"):
+            if not SOLUTION_HASH_RE.fullmatch(board.get(key) or ""):
+                raise AdmissionError(f"image dossier board {slug} {key} is invalid")
+        repository = board.get("repository")
+        if (
+            not isinstance(repository, str)
+            or repository != f"{registry_base}/{slug}"
+            or board.get("immutable_reference") != f"{repository}@{board['index_digest']}"
+        ):
+            raise AdmissionError(f"image dossier board {slug} immutable reference mismatch")
+        if board.get("release_manifest_path") != f"problems/{slug}/problem.yaml":
+            raise AdmissionError(f"image dossier board {slug} manifest path mismatch")
+        platforms = board.get("platform_manifests")
+        if (
+            not isinstance(platforms, list)
+            or [item.get("platform") if isinstance(item, Mapping) else None for item in platforms]
+            != ["linux/amd64", "linux/arm64"]
+        ):
+            raise AdmissionError(f"image dossier board {slug} platform evidence is incomplete")
+        for platform in platforms:
+            if set(platform) != {
+                "platform", "manifest_digest", "manifest_size", "config_digest",
+                "config_size", "layer_count", "labels", "runtime",
+            }:
+                raise AdmissionError(f"image dossier board {slug} platform keys are invalid")
+            for key in ("manifest_digest", "config_digest"):
+                if not SOLUTION_HASH_RE.fullmatch(platform.get(key) or ""):
+                    raise AdmissionError(f"image dossier board {slug} platform digest is invalid")
+            for key in ("manifest_size", "config_size", "layer_count"):
+                if not isinstance(platform.get(key), int) or isinstance(platform.get(key), bool) or platform[key] <= 0:
+                    raise AdmissionError(f"image dossier board {slug} platform size is invalid")
+            labels = platform.get("labels") if isinstance(platform, Mapping) else None
+            expected = {
+                OCI_REVISION_LABEL: dossier["verifier_source_commit"],
+                SOURCE_HASH_LABEL: board["source_hash"],
+                SOURCE_HASH_ALGORITHM_LABEL: SOURCE_HASH_ALGORITHM,
+                PROBLEM_ID_LABEL: slug,
+                VERIFIER_VERSION_LABEL: board.get("version"),
+            }
+            if labels != expected:
+                raise AdmissionError(f"image dossier board {slug} provenance labels mismatch")
+            runtime = platform.get("runtime")
+            if (
+                not isinstance(runtime, Mapping)
+                or set(runtime) != {"user", "workdir", "entrypoint", "cmd"}
+                or runtime.get("workdir") != f"/repo/problems/{slug}"
+                or runtime.get("entrypoint") is not None
+                or runtime.get("cmd") != []
+                or runtime.get("user") not in (
+                    "inherited-root-overridden-by-runner", "65534", "65534:65534",
+                )
+            ):
+                raise AdmissionError(f"image dossier board {slug} runtime binding is invalid")
+    return dict(dossier)
+
+
+def validate_problem_image_release_binding(
+    problem_dir: str | Path, dossier: Mapping[str, Any],
+) -> list[str]:
+    """Bind one final problem manifest to a v2 image dossier."""
+
+    errors: list[str] = []
+    try:
+        checked = validate_image_release_dossier(dossier)
+    except AdmissionError as exc:
+        return [str(exc)]
+    problem = Path(problem_dir).resolve()
+    root = repo_root_from_problem(problem)
+    try:
+        board_set = read_strict_json_file(root / "protocol" / "production-board-set-v1.json")
+    except Exception as exc:
+        return [f"production board set could not be loaded: {exc}"]
+    expected_slugs = board_set.get("boards") if isinstance(board_set, Mapping) else None
+    observed_slugs = [item.get("slug") for item in checked["boards"]]
+    if expected_slugs != observed_slugs:
+        errors.append("image dossier board order does not match the frozen production cohort")
+    manifest_path = problem / "problem.yaml"
+    try:
+        manifest = load_manifest(problem)
+    except Exception as exc:
+        return [f"problem.yaml could not be loaded: {exc}"]
+    slug = manifest.get("problem_id")
+    board = next((item for item in checked["boards"] if item.get("slug") == slug), None)
+    if board is None:
+        return [f"image dossier does not contain problem {slug!r}"]
+    verifier = manifest.get("verifier")
+    if not isinstance(verifier, Mapping):
+        return ["problem.yaml:verifier must be an object"]
+    if verifier.get("version") != board.get("version"):
+        errors.append("image dossier verifier version does not match problem.yaml")
+    if verifier.get("image_repository") != board.get("repository"):
+        errors.append("image dossier repository does not match problem.yaml")
+    if verifier.get("image") != board.get("index_digest"):
+        errors.append("image dossier digest does not match problem.yaml")
+    try:
+        if _sha256_path(manifest_path) != board.get("release_manifest_sha256"):
+            errors.append("image dossier release-manifest hash is stale or mismatched")
+        if compute_source_hash(problem) != board.get("source_hash"):
+            errors.append("verifier source changed after image publication; rebuild required")
+    except (OSError, AdmissionError, ValueError) as exc:
+        errors.append(f"image dossier binding could not be recomputed: {exc}")
+    if _git_head(problem) != checked.get("release_config_commit"):
+        errors.append("image dossier release-config commit does not match the checked-out commit")
+    return errors
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
