@@ -178,6 +178,7 @@ try {
     try {
       await admin.query(`CREATE ROLE ${role} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`);
       roleCreated = true;
+      await admin.query(`GRANT ${role} TO CURRENT_USER WITH INHERIT FALSE, SET TRUE`);
       await client.query(`GRANT USAGE ON SCHEMA ${quoteIdentifier(schema)} TO ${role}`);
       await client.query(`GRANT SELECT ON p42_indexer_checkpoint_authority,p42_indexer_checkpoint_control,
         p42_indexer_checkpoint_epoch,p42_indexer_checkpoint_acceptance TO ${role}`);
