@@ -552,8 +552,18 @@ async function withRunnerDatabase(label, operation) {
     passed.push(label);
   } finally {
     if (roles.includes(runtimeName)) {
-      await owner.query(`GRANT ${quoteIdentifier(runtimeName)} TO ${quoteIdentifier(adminRoleName)}
-        WITH ADMIN TRUE, INHERIT FALSE, SET FALSE`);
+      const adminAuthority = await admin.query(`SELECT administrator.rolsuper OR EXISTS (
+        SELECT 1 FROM pg_catalog.pg_auth_members AS membership
+        JOIN pg_catalog.pg_roles AS target ON target.oid=membership.roleid
+        JOIN pg_catalog.pg_roles AS member ON member.oid=membership.member
+        WHERE target.rolname=$1 AND member.rolname=$2 AND membership.admin_option
+      ) AS can_admin FROM pg_catalog.pg_roles AS administrator WHERE administrator.rolname=$2`,
+      [runtimeName, adminRoleName]);
+      if (adminAuthority.rowCount !== 1) throw new Error("fixture administrator role is missing");
+      if (!adminAuthority.rows[0].can_admin) {
+        await owner.query(`GRANT ${quoteIdentifier(runtimeName)} TO ${quoteIdentifier(adminRoleName)}
+          WITH ADMIN TRUE, INHERIT FALSE, SET FALSE`);
+      }
     }
     await owner.end().catch(() => {});
     if (databaseCreated) {
