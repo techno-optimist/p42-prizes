@@ -21,7 +21,9 @@ from p42_prizes.legal import (
     ChainReader,
     _require_utc,
     _validate_artifact_reference,
+    _validate_capsule_structure,
     _validate_identity,
+    _validate_json_schema,
     _validate_signature,
     build_attestation_context,
     normalize_legal_memo,
@@ -169,7 +171,13 @@ def normalize_launch_authorization(
         "authorization.artifacts.production_release_verification",
         context,
     )
-    _validate_release_report(release_report, release_binding)
+    capsule = _read_json_artifact(artifacts["release_capsule"], "authorization.artifacts.release_capsule", context)
+    expected_sp1_runtime_attestation_digest = _validated_release_capsule_sp1_runtime_attestation_digest(capsule)
+    _validate_release_report(
+        release_report,
+        release_binding,
+        expected_sp1_runtime_attestation_digest=expected_sp1_runtime_attestation_digest,
+    )
     release_slate = _read_json_artifact(
         artifacts["production_release_slate"],
         "authorization.artifacts.production_release_slate",
@@ -189,7 +197,6 @@ def normalize_launch_authorization(
         context,
     )
     _validate_reconciliation_report(reconciliation, manifest)
-    capsule = _read_json_artifact(artifacts["release_capsule"], "authorization.artifacts.release_capsule", context)
     dossier = _read_json_artifact(artifacts["explorer_dossier"], "authorization.artifacts.explorer_dossier", context)
     operator_policy = _read_json_artifact(artifacts["explorer_operator_policy"], "authorization.artifacts.explorer_operator_policy", context)
     rpc_operator_registry = _read_protected_activation_rpc_registry(
@@ -399,7 +406,24 @@ def _canonical_activation_rpc_origin(value: Any) -> str:
     return rendered
 
 
-def _validate_release_report(report: Mapping[str, Any], release_binding: Mapping[str, Any]) -> None:
+def _validated_release_capsule_sp1_runtime_attestation_digest(capsule: Mapping[str, Any]) -> str:
+    prefix = "authorization.artifacts.release_capsule"
+    _validate_json_schema(
+        capsule,
+        "release-capsule.schema.json",
+        prefix,
+        LaunchAuthorizationError,
+    )
+    _validate_capsule_structure(capsule, prefix, LaunchAuthorizationError)
+    return capsule["sp1RuntimeAttestation"]["evidenceDigest"]
+
+
+def _validate_release_report(
+    report: Mapping[str, Any],
+    release_binding: Mapping[str, Any],
+    *,
+    expected_sp1_runtime_attestation_digest: str,
+) -> None:
     expected_keys = {
         "schema", "status", "sourceCommit", "generatedAt", "capsuleDigest", "sp1RuntimeAttestationDigest",
         "slateDigest", "releaseIndexDigest", "ceremonyConfigDigest", "objectiveProofsActive", "admittedBoards",
@@ -414,6 +438,10 @@ def _validate_release_report(report: Mapping[str, Any], release_binding: Mapping
     unsigned = {key: value for key, value in report.items() if key != "verificationReportDigest"}
     if report.get("verificationReportDigest") != sha256_bytes(canonical_json(unsigned).encode("utf-8")):
         raise LaunchAuthorizationError("production release verification digest is not canonical")
+    if report.get("sp1RuntimeAttestationDigest") != expected_sp1_runtime_attestation_digest:
+        raise LaunchAuthorizationError(
+            "production release verification SP1 runtime attestation digest does not match release capsule"
+        )
     if report.get("sourceCommit") != release_binding.get("deployment_commit"):
         raise LaunchAuthorizationError(
             "production release source commit does not match release_binding.deployment_commit"

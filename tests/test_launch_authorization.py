@@ -7,7 +7,7 @@ from pathlib import Path
 import jsonschema
 import pytest
 
-from attestation_helpers import AttestationFixture, attach_signatures
+from attestation_helpers import AttestationFixture, _synthetic_capsule, attach_signatures
 import p42_prizes.launch_authorization as launch_module
 from p42_prizes.launch_authorization import (
     LaunchAuthorizationError,
@@ -217,7 +217,19 @@ def test_launch_authorization_accepts_producer_shaped_release_report_before_acti
     jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(report)
 
     with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
-        launch_module._validate_release_report(report, {"deployment_commit": report["sourceCommit"]})
+        launch_module._validate_release_report(
+            report,
+            {"deployment_commit": report["sourceCommit"]},
+            expected_sp1_runtime_attestation_digest=report["sp1RuntimeAttestationDigest"],
+        )
+
+
+def test_launch_authorization_reads_sp1_runtime_digest_from_validated_release_capsule() -> None:
+    capsule, _sources = _synthetic_capsule("a" * 40)
+
+    assert launch_module._validated_release_capsule_sp1_runtime_attestation_digest(capsule) == (
+        capsule["sp1RuntimeAttestation"]["evidenceDigest"]
+    )
 
 
 @pytest.mark.parametrize("mutation", ["missing", "extra"])
@@ -232,29 +244,48 @@ def test_launch_authorization_requires_exact_sp1_runtime_attestation_digest_fiel
     )
 
     with pytest.raises(LaunchAuthorizationError, match="unexpected or missing fields"):
-        launch_module._validate_release_report(report, {"deployment_commit": report["sourceCommit"]})
+        launch_module._validate_release_report(
+            report,
+            {"deployment_commit": report["sourceCommit"]},
+            expected_sp1_runtime_attestation_digest="sha256:" + "1" * 64,
+        )
 
 
-def test_launch_authorization_binds_sp1_runtime_attestation_digest() -> None:
+def test_launch_authorization_rejects_rehashed_sp1_runtime_digest_capsule_mismatch() -> None:
     report = producer_release_verification_report()
     report["sp1RuntimeAttestationDigest"] = "sha256:" + "2" * 64
+    report["verificationReportDigest"] = sha256_bytes(
+        canonical_json({key: value for key, value in report.items() if key != "verificationReportDigest"}).encode()
+    )
 
-    with pytest.raises(LaunchAuthorizationError, match="digest is not canonical"):
-        launch_module._validate_release_report(report, {"deployment_commit": report["sourceCommit"]})
+    with pytest.raises(LaunchAuthorizationError, match="does not match release capsule"):
+        launch_module._validate_release_report(
+            report,
+            {"deployment_commit": report["sourceCommit"]},
+            expected_sp1_runtime_attestation_digest="sha256:" + "1" * 64,
+        )
 
 
 def test_launch_authorization_rejects_inactive_objective_proofs() -> None:
     report = producer_release_verification_report(objective_proofs_active=False)
     release_binding = {"deployment_commit": report["sourceCommit"]}
     with pytest.raises(LaunchAuthorizationError, match="objective proofs are inactive"):
-        launch_module._validate_release_report(report, release_binding)
+        launch_module._validate_release_report(
+            report,
+            release_binding,
+            expected_sp1_runtime_attestation_digest=report["sp1RuntimeAttestationDigest"],
+        )
 
 
 def test_launch_authorization_rejects_self_asserted_active_v1_report() -> None:
     report = producer_release_verification_report()
     release_binding = {"deployment_commit": report["sourceCommit"]}
     with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
-        launch_module._validate_release_report(report, release_binding)
+        launch_module._validate_release_report(
+            report,
+            release_binding,
+            expected_sp1_runtime_attestation_digest=report["sp1RuntimeAttestationDigest"],
+        )
 
 
 def test_launch_authorization_rejects_evidence_commit_as_deployment_source() -> None:
@@ -266,7 +297,11 @@ def test_launch_authorization_rejects_evidence_commit_as_deployment_source() -> 
     )
 
     with pytest.raises(LaunchAuthorizationError, match="deployment_commit"):
-        launch_module._validate_release_report(report, release_binding)
+        launch_module._validate_release_report(
+            report,
+            release_binding,
+            expected_sp1_runtime_attestation_digest=report["sp1RuntimeAttestationDigest"],
+        )
 
 
 def test_reconciliation_rejects_boolean_only_completion_claim() -> None:
@@ -806,8 +841,22 @@ def test_composed_authorization_rejects_future_validity_window(tmp_path: Path) -
         )
 
 
+@pytest.mark.parametrize(
+    ("capsule_case", "expected_error"),
+    [
+        ("valid", "future independently validated"),
+        ("invalid-schema", "is not schema-valid"),
+        ("self-hash", "capsule digest mismatch"),
+        ("sp1-digest-mismatch", "does not match release capsule"),
+        ("missing-attestation-field", "is not schema-valid"),
+        ("extra-attestation-field", "is not schema-valid"),
+    ],
+)
 def test_composed_authorization_fails_closed_until_active_release_schema_exists(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsule_case: str,
+    expected_error: str,
 ) -> None:
     fixture = AttestationFixture(tmp_path)
     reviewer = fixture.identity(
@@ -855,6 +904,25 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             name,
             lambda value, **kwargs: dict(value),
         )
+    capsule, _sources = _synthetic_capsule(release_binding["git_commit"])
+    report_sp1_digest = capsule["sp1RuntimeAttestation"]["evidenceDigest"]
+    if capsule_case == "invalid-schema":
+        capsule = {"schema": "test-capsule"}
+    elif capsule_case == "self-hash":
+        capsule["sp1RuntimeAttestation"]["capturedAt"] = "2026-07-17T15:12:29Z"
+    elif capsule_case == "sp1-digest-mismatch":
+        capsule["sp1RuntimeAttestation"]["evidenceDigest"] = "sha256:" + "2" * 64
+        body = {key: value for key, value in capsule.items() if key != "capsuleDigest"}
+        capsule["capsuleDigest"] = sha256_bytes(canonical_json(body).encode("utf-8"))
+    elif capsule_case == "missing-attestation-field":
+        del capsule["sp1RuntimeAttestation"]["capturedAt"]
+        body = {key: value for key, value in capsule.items() if key != "capsuleDigest"}
+        capsule["capsuleDigest"] = sha256_bytes(canonical_json(body).encode("utf-8"))
+    elif capsule_case == "extra-attestation-field":
+        capsule["sp1RuntimeAttestation"]["unexpected"] = True
+        body = {key: value for key, value in capsule.items() if key != "capsuleDigest"}
+        capsule["capsuleDigest"] = sha256_bytes(canonical_json(body).encode("utf-8"))
+
     boards = [
         {
             "problemId": str(index),
@@ -868,8 +936,8 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         "status": "verified",
         "sourceCommit": release_binding["git_commit"],
         "generatedAt": "2026-07-08T16:00:00Z",
-        "capsuleDigest": "sha256:" + "c" * 64,
-        "sp1RuntimeAttestationDigest": "sha256:" + "1" * 64,
+        "capsuleDigest": capsule.get("capsuleDigest", "sha256:" + "c" * 64),
+        "sp1RuntimeAttestationDigest": report_sp1_digest,
         "slateDigest": "sha256:" + "d" * 64,
         "releaseIndexDigest": "sha256:" + "e" * 64,
         "ceremonyConfigDigest": "sha256:" + "f" * 64,
@@ -900,9 +968,7 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             "records": [],
         },
     )
-    artifacts["release_capsule"] = fixture.artifact(
-        "release-capsule", content={"schema": "test-capsule"}
-    )
+    artifacts["release_capsule"] = fixture.artifact("release-capsule", content=capsule)
     next_address = iter("0x" + f"{index:040x}" for index in range(1, 48))
 
     def direct_contract(name: str) -> dict:
@@ -1073,7 +1139,7 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         signers=authorization_signers,
     )
 
-    with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
+    with pytest.raises(LaunchAuthorizationError, match=expected_error):
         normalize_launch_authorization(
             authorization,
             trust_registry=registry,
