@@ -104,7 +104,7 @@ import {
 } from "./base-sepolia-deployment-entrypoint.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
-const PINNED_SUBMISSION_FACTORY_RUNTIME_HASH = "0xa356f1af95140515395a23ca624afdf97a92e2a602054d01378b9fdc02071783";
+const PINNED_SUBMISSION_FACTORY_RUNTIME_HASH = "0xd1242748020f966c3bbed2de0e3f9a988dbb015f6661fc5ebce14580e1d2c0cb";
 const CONTRACT_NAMES = Object.freeze({
   timelock: "P42MultisigTimelock",
   rolloverVault: "P42RolloverVault",

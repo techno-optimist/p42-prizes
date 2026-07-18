@@ -141,6 +141,20 @@ describe("P42 payout hardening", function () {
     assert.equal(await fixture.pool.acceptingFunds(), false);
   });
 
+  it("stops deposits if objective proof capability becomes inactive after opening", async function () {
+    const fixture = await deployFixture();
+    await fixture.submissionManager.setObjectiveProofCapabilityActive(false);
+    const before = await fixture.pool.totalFunded();
+
+    await expectCustomError(
+      fixture.pool.connect(fixture.caller).fund({ value: ethers.parseEther("1") }),
+      fixture.pool,
+      "P42_OBJECTIVE_PROOF_CAPABILITY_INACTIVE"
+    );
+    assert.equal(await fixture.pool.totalFunded(), before);
+    assert.equal(await fixture.pool.accountedBalance(), 0n);
+  });
+
   it("lets a rejecting solver redirect exactly its entitlement with claimTo", async function () {
     const fixture = await deployFixture();
     const RejectingSolver = await ethers.getContractFactory("RejectingPayoutSolver");

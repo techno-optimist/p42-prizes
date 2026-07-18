@@ -383,6 +383,36 @@ describe("P42 production funding authorization v2", function () {
     assert.equal(await manager.fundingArmed(), false);
   });
 
+  it("treats reverting and malformed capability probes as inactive without state changes", async function () {
+    for (const contractName of ["RevertingObjectiveProofCapability", "MalformedObjectiveProofCapability"]) {
+      const valid = await fixture();
+      const Manager = await ethers.getContractFactory("P42SubmissionManager");
+      const Capability = await ethers.getContractFactory(contractName);
+      const capability = await Capability.deploy();
+      await capability.waitForDeployment();
+      const capabilityAddress = await capability.getAddress();
+      const manager = await Manager.deploy(valid.parameters.deployment, {
+        ...valid.parameters.fundingAuthorization,
+        objectiveVerifier: capabilityAddress,
+        objectiveVerifierCodehash: ethers.keccak256(await ethers.provider.getCode(capabilityAddress)),
+      });
+      await manager.waitForDeployment();
+      const f = { ...valid, manager };
+      const latest = await ethers.provider.getBlock("latest");
+      const expiresAt = BigInt(latest.timestamp) + 1_000n;
+      const signed = await signatures(f, AUTHORIZATION_DIGEST, expiresAt, 0n);
+
+      assert.equal(await manager.objectiveProofCapabilityActive(), false);
+      await expectCustomError(
+        authorize(manager, valid.treasury, AUTHORIZATION_DIGEST, expiresAt, 0n, signed),
+        manager,
+        "P42_OBJECTIVE_PROOF_CAPABILITY_INACTIVE",
+      );
+      assert.equal(await manager.authorizedFundingDigest(), ethers.ZeroHash);
+      assert.equal(await manager.fundingAuthorizationNonce(), 0n);
+    }
+  });
+
   it("pins externally supplied manager creation code in the compact CREATE2 factory", async function () {
     const valid = await fixture();
     assert.equal(

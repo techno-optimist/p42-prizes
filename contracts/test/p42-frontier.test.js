@@ -1106,6 +1106,20 @@ describe("P42 frontier marginal-credit accounting (F1)", function () {
     assert.equal(await pool.funded(), ethers.parseEther("1.5"));
   });
 
+  it("stops paid commits if objective proof capability becomes inactive after arming", async function () {
+    const fixture = await deployFixture();
+    await fixture.capability.gateway.setObjectiveProofsActive(false);
+    const commitment = ethers.id("capability-loss-commitment");
+    const bond = await fixture.submissions.requiredPostingBondNow();
+
+    await expectCustomError(
+      fixture.submissions.connect(fixture.alice).commit(commitment, DA_HASH, { value: bond }),
+      fixture.submissions,
+      "P42_OBJECTIVE_PROOF_CAPABILITY_INACTIVE"
+    );
+    assert.equal(await fixture.submissions.submissionCount(), 0n);
+  });
+
   it("open phase: free witness postings advance the frontier but record zero credit — the pool pays nothing for pre-arm work", async function () {
     const fixture = await deployFixture({ arm: false, feeBps: 0 });
     const { alice, bob, pool, ledger, submissions } = fixture;

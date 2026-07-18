@@ -699,11 +699,15 @@ contract P42SubmissionManager {
     function objectiveProofCapabilityActive() public view returns (bool) {
         address verifier = objectiveVerifier;
         if (verifier.codehash != objectiveVerifierCodehash) return false;
-        try IP42ObjectiveProofCapability(verifier).objectiveProofsActive() returns (bool active) {
-            return active;
-        } catch {
-            return false;
+        (bool ok, bytes memory result) = verifier.staticcall(
+            abi.encodeCall(IP42ObjectiveProofCapability.objectiveProofsActive, ())
+        );
+        if (!ok || result.length != 32) return false;
+        uint256 active;
+        assembly ("memory-safe") {
+            active := mload(add(result, 32))
         }
+        return active == 1;
     }
 
     function _requireObjectiveProofCapabilityActive() internal view {
@@ -739,6 +743,7 @@ contract P42SubmissionManager {
 
         uint256 poolAtSubmission = pool.funded();
         bool isPaidCommit = fundingArmed;
+        if (isPaidCommit) _requireObjectiveProofCapabilityActive();
         uint256 required = requiredPostingBondForPool(isPaidCommit ? pool.fundingCap() : poolAtSubmission);
         if (msg.value < required) revert P42_INSUFFICIENT_POSTING_BOND(required, msg.value);
 

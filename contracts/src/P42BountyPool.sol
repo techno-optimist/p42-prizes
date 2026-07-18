@@ -405,6 +405,9 @@ contract P42BountyPool {
         if (manager == address(0) || !ISubmissionManagerArmed(manager).fundingArmed()) {
             revert P42_FUNDING_NOT_ARMED();
         }
+        if (!ISubmissionManagerArmed(manager).objectiveProofCapabilityActive()) {
+            revert P42_OBJECTIVE_PROOF_CAPABILITY_INACTIVE();
+        }
         if (!acceptingFunds) revert P42_NOT_ACCEPTING_FUNDS();
         address registry_ = registry;
         if (registry_ == address(0)) revert P42_REGISTRY_NOT_SET();
