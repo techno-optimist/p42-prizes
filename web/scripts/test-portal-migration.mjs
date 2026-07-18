@@ -558,7 +558,12 @@ async function withRunnerDatabase(label, operation) {
     await owner.end().catch(() => {});
     if (databaseCreated) {
       await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()", [database]);
-      await admin.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(database)}`);
+      await admin.query(`SET ROLE ${quoteIdentifier(ownerName)}`);
+      try {
+        await admin.query(`DROP DATABASE IF EXISTS ${quoteIdentifier(database)}`);
+      } finally {
+        await admin.query("RESET ROLE");
+      }
     }
     for (const role of roles.reverse()) await admin.query(`DROP ROLE IF EXISTS ${quoteIdentifier(role)}`);
     await assertRolesAbsent(...roles);
