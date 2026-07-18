@@ -184,37 +184,18 @@ def test_launch_authorization_requires_independently_validated_security_audit() 
     assert launch_module.GATE_HASH_FIELDS["security_audit"] == "audit_hash"
 
 
-def test_launch_authorization_rejects_inactive_objective_proofs() -> None:
-    release_binding = {"deployment_commit": "a" * 40}
+def producer_release_verification_report(*, objective_proofs_active: bool = True) -> dict:
     report = {
         "schema": "p42-prizes/production-release-verification/v1",
         "status": "verified",
-        "sourceCommit": release_binding["deployment_commit"],
+        "sourceCommit": "a" * 40,
         "generatedAt": "2026-07-08T16:00:00Z",
         "capsuleDigest": "sha256:" + "b" * 64,
+        "sp1RuntimeAttestationDigest": "sha256:" + "1" * 64,
         "slateDigest": "sha256:" + "c" * 64,
         "releaseIndexDigest": "sha256:" + "d" * 64,
         "ceremonyConfigDigest": "sha256:" + "e" * 64,
-        "objectiveProofsActive": False,
-        "admittedBoards": [],
-    }
-    report["verificationReportDigest"] = sha256_bytes(canonical_json(report).encode())
-    with pytest.raises(LaunchAuthorizationError, match="objective proofs are inactive"):
-        launch_module._validate_release_report(report, release_binding)
-
-
-def test_launch_authorization_rejects_self_asserted_active_v1_report() -> None:
-    release_binding = {"deployment_commit": "a" * 40}
-    report = {
-        "schema": "p42-prizes/production-release-verification/v1",
-        "status": "verified",
-        "sourceCommit": release_binding["deployment_commit"],
-        "generatedAt": "2026-07-08T16:00:00Z",
-        "capsuleDigest": "sha256:" + "b" * 64,
-        "slateDigest": "sha256:" + "c" * 64,
-        "releaseIndexDigest": "sha256:" + "d" * 64,
-        "ceremonyConfigDigest": "sha256:" + "e" * 64,
-        "objectiveProofsActive": True,
+        "objectiveProofsActive": objective_proofs_active,
         "admittedBoards": [
             {
                 "problemId": str(index),
@@ -225,32 +206,64 @@ def test_launch_authorization_rejects_self_asserted_active_v1_report() -> None:
         ],
     }
     report["verificationReportDigest"] = sha256_bytes(canonical_json(report).encode())
+    return report
+
+
+def test_launch_authorization_accepts_producer_shaped_release_report_before_active_v1_rejection() -> None:
+    report = producer_release_verification_report()
+    schema = json.loads(
+        (ROOT / "schemas" / "production-release-verification.schema.json").read_text()
+    )
+    jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(report)
+
+    with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
+        launch_module._validate_release_report(report, {"deployment_commit": report["sourceCommit"]})
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra"])
+def test_launch_authorization_requires_exact_sp1_runtime_attestation_digest_field(mutation: str) -> None:
+    report = producer_release_verification_report()
+    if mutation == "missing":
+        del report["sp1RuntimeAttestationDigest"]
+    else:
+        report["sp1RuntimeAttestationHash"] = report["sp1RuntimeAttestationDigest"]
+    report["verificationReportDigest"] = sha256_bytes(
+        canonical_json({key: value for key, value in report.items() if key != "verificationReportDigest"}).encode()
+    )
+
+    with pytest.raises(LaunchAuthorizationError, match="unexpected or missing fields"):
+        launch_module._validate_release_report(report, {"deployment_commit": report["sourceCommit"]})
+
+
+def test_launch_authorization_binds_sp1_runtime_attestation_digest() -> None:
+    report = producer_release_verification_report()
+    report["sp1RuntimeAttestationDigest"] = "sha256:" + "2" * 64
+
+    with pytest.raises(LaunchAuthorizationError, match="digest is not canonical"):
+        launch_module._validate_release_report(report, {"deployment_commit": report["sourceCommit"]})
+
+
+def test_launch_authorization_rejects_inactive_objective_proofs() -> None:
+    report = producer_release_verification_report(objective_proofs_active=False)
+    release_binding = {"deployment_commit": report["sourceCommit"]}
+    with pytest.raises(LaunchAuthorizationError, match="objective proofs are inactive"):
+        launch_module._validate_release_report(report, release_binding)
+
+
+def test_launch_authorization_rejects_self_asserted_active_v1_report() -> None:
+    report = producer_release_verification_report()
+    release_binding = {"deployment_commit": report["sourceCommit"]}
     with pytest.raises(LaunchAuthorizationError, match="future independently validated"):
         launch_module._validate_release_report(report, release_binding)
 
 
 def test_launch_authorization_rejects_evidence_commit_as_deployment_source() -> None:
     release_binding = {"deployment_commit": "a" * 40, "git_commit": "b" * 40}
-    report = {
-        "schema": "p42-prizes/production-release-verification/v1",
-        "status": "verified",
-        "sourceCommit": release_binding["git_commit"],
-        "generatedAt": "2026-07-08T16:00:00Z",
-        "capsuleDigest": "sha256:" + "b" * 64,
-        "slateDigest": "sha256:" + "c" * 64,
-        "releaseIndexDigest": "sha256:" + "d" * 64,
-        "ceremonyConfigDigest": "sha256:" + "e" * 64,
-        "objectiveProofsActive": True,
-        "admittedBoards": [
-            {
-                "problemId": str(index),
-                "problemSlug": f"problem-{index}",
-                "matrixDigest": "sha256:" + f"{index:064x}",
-            }
-            for index in range(1, 11)
-        ],
-    }
-    report["verificationReportDigest"] = sha256_bytes(canonical_json(report).encode())
+    report = producer_release_verification_report()
+    report["sourceCommit"] = release_binding["git_commit"]
+    report["verificationReportDigest"] = sha256_bytes(
+        canonical_json({key: value for key, value in report.items() if key != "verificationReportDigest"}).encode()
+    )
 
     with pytest.raises(LaunchAuthorizationError, match="deployment_commit"):
         launch_module._validate_release_report(report, release_binding)
@@ -856,6 +869,7 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         "sourceCommit": release_binding["git_commit"],
         "generatedAt": "2026-07-08T16:00:00Z",
         "capsuleDigest": "sha256:" + "c" * 64,
+        "sp1RuntimeAttestationDigest": "sha256:" + "1" * 64,
         "slateDigest": "sha256:" + "d" * 64,
         "releaseIndexDigest": "sha256:" + "e" * 64,
         "ceremonyConfigDigest": "sha256:" + "f" * 64,

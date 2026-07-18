@@ -401,8 +401,9 @@ def _canonical_activation_rpc_origin(value: Any) -> str:
 
 def _validate_release_report(report: Mapping[str, Any], release_binding: Mapping[str, Any]) -> None:
     expected_keys = {
-        "schema", "status", "sourceCommit", "generatedAt", "capsuleDigest", "slateDigest",
-        "releaseIndexDigest", "ceremonyConfigDigest", "objectiveProofsActive", "admittedBoards", "verificationReportDigest",
+        "schema", "status", "sourceCommit", "generatedAt", "capsuleDigest", "sp1RuntimeAttestationDigest",
+        "slateDigest", "releaseIndexDigest", "ceremonyConfigDigest", "objectiveProofsActive", "admittedBoards",
+        "verificationReportDigest",
     }
     if set(report) != expected_keys:
         raise LaunchAuthorizationError("production release verification has unexpected or missing fields")
