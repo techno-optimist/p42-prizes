@@ -1191,12 +1191,26 @@ def _run_verifier_for_transcript(
     cancellation_event: threading.Event | None = None,
     sandbox_staging_root: str | Path | None = None,
     docker_host: str | None = None,
+    docker_host_validator: Callable[[str | None], str] | None = None,
+    docker_available_probe: Callable[[str | None], bool] | None = None,
+    docker_cleanup: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     wall_seconds = 30
     container_name: str | None = None
     verifier_image: str | None = None
     verifier_command: str | None = None
+    authority_validator = docker_host_validator or validate_rootless_docker_host
+    availability_probe = docker_available_probe or (
+        lambda host: docker_available(docker_host=host)
+    )
+
+    def cleanup_container(name: str) -> None:
+        if docker_cleanup is not None:
+            docker_cleanup(name)
+        else:
+            force_remove_container(name, docker_host=docker_host)
+
     try:
         pinned_manifest = copy.deepcopy(manifest) if manifest is not None else load_manifest(problem)
         command_template = pinned_manifest["verifier"]["command"]
@@ -1205,7 +1219,7 @@ def _run_verifier_for_transcript(
         wall_seconds = int(pinned_manifest["verifier"].get("max_compute", {}).get("wall_seconds", 30))
         if sandbox == "docker":
             try:
-                validate_rootless_docker_host(docker_host)
+                authority_validator(docker_host)
             except RunnerSandboxError as exc:
                 return {
                     "ok": False,
@@ -1218,7 +1232,7 @@ def _run_verifier_for_transcript(
                     "verifier_image": verifier_image,
                     "verifier_command": verifier_command,
                 }
-        if sandbox == "docker" and not docker_available(docker_host=docker_host):
+        if sandbox == "docker" and not availability_probe(docker_host):
             return {
                 "ok": False,
                 "valid": False,
@@ -1276,7 +1290,7 @@ def _run_verifier_for_transcript(
             )
     except LeaseHeartbeatError as exc:
         if container_name is not None:
-            force_remove_container(container_name, docker_host=docker_host)
+            cleanup_container(container_name)
         return {
             "ok": False,
             "valid": False,
@@ -1290,7 +1304,7 @@ def _run_verifier_for_transcript(
         }
     except OutputLimitExceeded as exc:
         if container_name is not None:
-            force_remove_container(container_name, docker_host=docker_host)
+            cleanup_container(container_name)
         return {
             "ok": False,
             "valid": False,
@@ -1304,7 +1318,7 @@ def _run_verifier_for_transcript(
         }
     except subprocess.TimeoutExpired:
         if container_name is not None:
-            force_remove_container(container_name, docker_host=docker_host)
+            cleanup_container(container_name)
         return {
             "ok": False,
             "valid": False,
@@ -1316,7 +1330,7 @@ def _run_verifier_for_transcript(
         }
     except (OSError, ValueError, KeyError, RunnerSandboxError) as exc:
         if container_name is not None:
-            force_remove_container(container_name, docker_host=docker_host)
+            cleanup_container(container_name)
         result = {
             "ok": False,
             "valid": False,
