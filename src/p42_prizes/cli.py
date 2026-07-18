@@ -42,6 +42,10 @@ from p42_prizes.launch_authorization import (
     LaunchAuthorizationError,
     normalize_launch_authorization,
 )
+from p42_prizes.launch_authority_roster import (
+    LaunchAuthorityRosterError,
+    normalize_launch_authority_roster,
+)
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
 from p42_prizes.operational_controls import (
@@ -999,6 +1003,36 @@ def _cmd_production_launch_authorization_validate(args: argparse.Namespace) -> i
     return 0
 
 
+def _cmd_launch_authority_roster_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
+        now_utc = (
+            datetime.fromisoformat(args.now_utc.replace("Z", "+00:00"))
+            if args.now_utc
+            else None
+        )
+        predecessor = load_evidence_file(args.predecessor) if args.predecessor else None
+        roster = normalize_launch_authority_roster(
+            load_evidence_file(args.roster),
+            trust_registry=trust_registry,
+            predecessor=predecessor,
+            now_utc=now_utc,
+        )
+    except (
+        AdmissionError,
+        LaunchAuthorityRosterError,
+        jsonschema.ValidationError,
+        ValueError,
+    ) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(roster, args.output)
+    return 0
+
+
 def _cmd_source_release_evidence_validate(args: argparse.Namespace) -> int:
     try:
         report = load_evidence_file(args.report)
@@ -1406,6 +1440,21 @@ def build_parser() -> argparse.ArgumentParser:
     launch_authorization.set_defaults(
         func=_cmd_production_launch_authorization_validate
     )
+
+    authority_roster = subparsers.add_parser(
+        "launch-authority-roster-validate",
+        help="validate a release-bound authority roster for future launch-authorization v2",
+    )
+    authority_roster.add_argument("--roster", required=True)
+    authority_roster.add_argument(
+        "--predecessor",
+        help="immediate predecessor roster; mandatory for every non-initial rotation",
+    )
+    authority_roster.add_argument("--trust-registry", required=True)
+    authority_roster.add_argument("--allow-test-trust-registry", action="store_true")
+    authority_roster.add_argument("--now-utc")
+    authority_roster.add_argument("--output")
+    authority_roster.set_defaults(func=_cmd_launch_authority_roster_validate)
 
     source_release = subparsers.add_parser(
         "source-release-evidence-validate",

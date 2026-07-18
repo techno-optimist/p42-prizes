@@ -63,6 +63,7 @@
             "p42-math-review/v1",
             "p42-math-review/v2",
             "p42-production-launch-authorization/v1",
+            "p42-launch-authority-roster/v1",
             "p42-capsule-rebuild-attestation/v1",
             "p42-indexer-checkpoint-attestation/v1",
               "p42-open-witness-launch/v1",
@@ -79,6 +80,27 @@
         "valid_until_utc": { "type": "string", "format": "date-time" }
       },
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "attestation_class": { "const": "p42-launch-authority-roster/v1" }
+            },
+            "required": ["attestation_class"]
+          },
+          "then": {
+            "required": ["key_id"],
+            "properties": {
+              "signer_role": {
+                "enum": [
+                  "launch-authority-roster-owner",
+                  "production-launch-authority",
+                  "independent-security-authority",
+                  "governance-authority"
+                ]
+              }
+            }
+          }
+        },
         {
           "if": {
             "properties": {
