@@ -42,6 +42,7 @@ FILES = (
     "deployments/p42-runtime.sysusers.example",
     "deployments/p42-operator@.service.example",
     "deployments/p42-resolver@.service.example",
+    "deployments/p42-indexer.service.example",
     "deployments/p42-docker-rootless@.service.example",
     "deployments/p42-docker-rootless-daemon.json",
     "deployments/p42-rootless-runtime.apparmor.example",
@@ -231,6 +232,12 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
             "ReadWritePaths=/var/lib/p42/resolver /etc/p42",
             "ReadWritePaths=/var/lib/p42/resolver/%i",
         ),
+        (
+            "deployments/p42-indexer.service.example",
+            "User=p42-indexer",
+            "User=root",
+            "User=p42-indexer",
+        ),
         ("deployments/p42-operator@.service.example", "ProtectSystem=strict", "ProtectSystem=full", "ProtectSystem=strict"),
         ("deployments/p42-resolver@.service.example", "StartLimitBurst=5", "StartLimitBurst=0", "StartLimitBurst=5"),
         (
@@ -274,6 +281,18 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
             "  --sandbox-staging-root /var/lib/p42/operator/%i/sandbox-staging \\",
             "  --sandbox-staging-root-removed /var/lib/p42/operator/%i/sandbox-staging \\",
             "--sandbox-staging-root must be provided exactly once",
+        ),
+        (
+            "deployments/p42-operator@.service.example",
+            "  --host-scheduler /var/lib/p42/operator/host-scheduler/state.json",
+            "  --host-scheduler-removed /var/lib/p42/operator/host-scheduler/state.json",
+            "--host-scheduler must be provided exactly once",
+        ),
+        (
+            "deployments/p42-indexer.service.example",
+            "  --health /var/lib/p42/indexer/health.json \\",
+            "  --health-removed /var/lib/p42/indexer/health.json \\",
+            "--health /var/lib/p42/indexer/health.json",
         ),
         (
             "deployments/p42-operator@.service.example",

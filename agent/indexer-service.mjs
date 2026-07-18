@@ -1,0 +1,313 @@
+#!/usr/bin/env node
+
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import {
+  configureIndexerTranscripts,
+  runIndexer,
+  stableStringify,
+  validateMultiBoardCheckpoint,
+  writeFileAtomicSync,
+} from "./indexer.mjs";
+import { readCredentialUrl } from "./runtime-credentials.mjs";
+import { readStrictJsonFileSync } from "./strict-json.mjs";
+
+
+const CHECKPOINT_LIMITS = Object.freeze({
+  maxBytes: 64 * 1024 * 1024,
+  maxDepth: 128,
+  canonicalBytes: true,
+  trailingNewline: "require",
+  privateFile: true,
+});
+const SERVICE_SCHEMA = "p42-prizes/indexer-service-health/v1";
+const CHECKPOINT_SCHEMAS = new Set([
+  "p42-prizes/indexer-checkpoint/v2",
+  "p42-prizes/indexer-checkpoint/v3",
+  "p42-prizes/indexer-checkpoint/v4",
+]);
+
+
+function requirePositiveInteger(value, label) {
+  if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${label} must be a positive safe integer`);
+  return value;
+}
+
+
+function iso(now) {
+  return new Date(now).toISOString().replace(".000Z", "Z");
+}
+
+
+function sanitizedError(error) {
+  const raw = String(error?.shortMessage ?? error?.message ?? error ?? "unknown indexer failure");
+  return raw
+    .replace(/https?:\/\/[^\s"']+/gi, "[redacted-url]")
+    .replace(/[\r\n\t]+/g, " ")
+    .slice(0, 512);
+}
+
+
+function checkpointSummary(checkpoint) {
+  return checkpoint ? {
+    schema: checkpoint.schema,
+    from_block: checkpoint.range.fromBlock,
+    to_block: checkpoint.range.toBlock,
+    to_block_hash: checkpoint.range.toBlockHash,
+    to_block_timestamp: checkpoint.range.toBlockTimestamp,
+    board_count: checkpoint.boards.length,
+    reconstruction_ok: checkpoint.reconstruction.ok,
+  } : null;
+}
+
+
+function validatePublicationCheckpoint(checkpoint, validator = validateMultiBoardCheckpoint) {
+  if (!checkpoint || typeof checkpoint !== "object" || Array.isArray(checkpoint)) {
+    throw new Error("indexer service checkpoint must be an object");
+  }
+  if (!CHECKPOINT_SCHEMAS.has(checkpoint.schema)) {
+    throw new Error("indexer service publishes only multi-board checkpoint schemas v2-v4");
+  }
+  validator(checkpoint);
+  if (checkpoint.reconstruction?.complete !== true || checkpoint.reconstruction?.ok !== true) {
+    throw new Error("indexer service refuses to publish an incomplete or failed reconstruction");
+  }
+  return checkpoint;
+}
+
+
+export function monotonicCheckpointDecision(candidate, current = null) {
+  if (current === null) return { decision: "advance", priorBlock: null, nextBlock: candidate.range.toBlock };
+  if (candidate.schema !== current.schema) {
+    throw new Error("indexer service checkpoint schema changed; use an explicit publication cutover");
+  }
+  if (stableStringify(candidate.manifestBinding) !== stableStringify(current.manifestBinding)) {
+    throw new Error("indexer service checkpoint deployment binding changed");
+  }
+  if (candidate.range.toBlock < current.range.toBlock) {
+    throw new Error(
+      `indexer service refuses finalized-range regression ${current.range.toBlock} -> ${candidate.range.toBlock}`,
+    );
+  }
+  if (candidate.range.toBlock === current.range.toBlock) {
+    if (candidate.range.toBlockHash.toLowerCase() !== current.range.toBlockHash.toLowerCase()) {
+      throw new Error("indexer service detected a conflicting hash at the published finalized height");
+    }
+    if (stableStringify(candidate) !== stableStringify(current)) {
+      throw new Error("indexer service detected non-deterministic checkpoint bytes at the same finalized height");
+    }
+    return { decision: "unchanged", priorBlock: current.range.toBlock, nextBlock: candidate.range.toBlock };
+  }
+  return { decision: "advance", priorBlock: current.range.toBlock, nextBlock: candidate.range.toBlock };
+}
+
+
+export function publishMonotonicCheckpointSync({
+  candidatePath,
+  outputPath,
+  validator = validateMultiBoardCheckpoint,
+  writer = writeFileAtomicSync,
+} = {}) {
+  const candidate = validatePublicationCheckpoint(
+    readStrictJsonFileSync(resolve(candidatePath), CHECKPOINT_LIMITS),
+    validator,
+  );
+  const current = existsSync(resolve(outputPath))
+    ? validatePublicationCheckpoint(readStrictJsonFileSync(resolve(outputPath), CHECKPOINT_LIMITS), validator)
+    : null;
+  const decision = monotonicCheckpointDecision(candidate, current);
+  if (decision.decision === "advance") {
+    writer(resolve(outputPath), `${stableStringify(candidate)}\n`);
+  }
+  return { ...decision, checkpoint: candidate };
+}
+
+
+export function buildIndexerServiceHealth({
+  serviceId,
+  startedAtMs,
+  observedAtMs,
+  lastAttemptAtMs = null,
+  lastSuccessAtMs = null,
+  consecutiveFailures = 0,
+  maxStaleSeconds,
+  checkpoint = null,
+  latestError = null,
+}) {
+  requirePositiveInteger(maxStaleSeconds, "maxStaleSeconds");
+  const ageSeconds = lastSuccessAtMs === null
+    ? Math.max(0, Math.floor((observedAtMs - startedAtMs) / 1000))
+    : Math.max(0, Math.floor((observedAtMs - lastSuccessAtMs) / 1000));
+  let status = "starting";
+  if (lastSuccessAtMs !== null) status = consecutiveFailures === 0 ? "healthy" : "degraded";
+  else if (consecutiveFailures > 0) status = "degraded";
+  if (ageSeconds > maxStaleSeconds) status = "stale";
+  return {
+    schema: SERVICE_SCHEMA,
+    service_id: serviceId,
+    status,
+    observed_at_utc: iso(observedAtMs),
+    started_at_utc: iso(startedAtMs),
+    last_attempt_at_utc: lastAttemptAtMs === null ? null : iso(lastAttemptAtMs),
+    last_success_at_utc: lastSuccessAtMs === null ? null : iso(lastSuccessAtMs),
+    last_success_age_seconds: ageSeconds,
+    max_stale_seconds: maxStaleSeconds,
+    consecutive_failures: consecutiveFailures,
+    checkpoint: checkpointSummary(checkpoint),
+    latest_error: latestError,
+  };
+}
+
+
+export async function runIndexerService(options, dependencies = {}) {
+  const {
+    serviceId = "p42-indexer",
+    candidatePath,
+    outputPath,
+    healthPath,
+    intervalMs = 30_000,
+    maxStaleSeconds = 300,
+    maxConsecutiveFailures = 5,
+    once = false,
+    indexerOptions,
+  } = options ?? {};
+  requirePositiveInteger(intervalMs, "intervalMs");
+  requirePositiveInteger(maxStaleSeconds, "maxStaleSeconds");
+  requirePositiveInteger(maxConsecutiveFailures, "maxConsecutiveFailures");
+  if (!candidatePath || !outputPath || !healthPath || !indexerOptions) {
+    throw new Error("indexer service requires candidatePath, outputPath, healthPath, and indexerOptions");
+  }
+  const resolvedCandidate = resolve(candidatePath);
+  const resolvedOutput = resolve(outputPath);
+  const resolvedHealth = resolve(healthPath);
+  if (new Set([resolvedCandidate, resolvedOutput, resolvedHealth]).size !== 3) {
+    throw new Error("indexer service candidate, output, and health paths must be distinct");
+  }
+  const runIndexerImpl = dependencies.runIndexerImpl ?? runIndexer;
+  const publishImpl = dependencies.publishImpl ?? publishMonotonicCheckpointSync;
+  const writeHealthImpl = dependencies.writeHealthImpl
+    ?? ((health) => writeFileAtomicSync(resolvedHealth, `${stableStringify(health)}\n`));
+  const nowImpl = dependencies.nowImpl ?? Date.now;
+  const sleepImpl = dependencies.sleepImpl ?? ((milliseconds) => new Promise((done) => setTimeout(done, milliseconds)));
+  const startedAtMs = nowImpl();
+  let lastAttemptAtMs = null;
+  let lastSuccessAtMs = null;
+  let consecutiveFailures = 0;
+  let checkpoint = null;
+  let latestError = null;
+
+  const publishHealth = () => writeHealthImpl(buildIndexerServiceHealth({
+    serviceId,
+    startedAtMs,
+    observedAtMs: nowImpl(),
+    lastAttemptAtMs,
+    lastSuccessAtMs,
+    consecutiveFailures,
+    maxStaleSeconds,
+    checkpoint,
+    latestError,
+  }));
+  publishHealth();
+
+  for (;;) {
+    lastAttemptAtMs = nowImpl();
+    try {
+      const generated = await runIndexerImpl({ ...indexerOptions, outPath: resolvedCandidate });
+      if (generated.reconstruction?.complete !== true || generated.reconstruction?.ok !== true) {
+        throw new Error("indexer cycle reconstruction was incomplete or failed");
+      }
+      const publication = publishImpl({ candidatePath: resolvedCandidate, outputPath: resolvedOutput });
+      checkpoint = publication.checkpoint;
+      lastSuccessAtMs = nowImpl();
+      consecutiveFailures = 0;
+      latestError = null;
+      publishHealth();
+    } catch (error) {
+      consecutiveFailures += 1;
+      latestError = { message: sanitizedError(error), failed_at_utc: iso(nowImpl()) };
+      publishHealth();
+      if (once || consecutiveFailures >= maxConsecutiveFailures) throw error;
+    }
+    if (once) return checkpoint;
+    await sleepImpl(intervalMs);
+  }
+}
+
+
+function optionValues(argv, name) {
+  const values = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] !== `--${name}`) continue;
+    const value = argv[index + 1];
+    if (!value || value.startsWith("--")) throw new Error(`--${name} requires a value`);
+    values.push(value);
+  }
+  return values;
+}
+
+
+function option(argv, name, fallback = null, { required = false } = {}) {
+  const values = optionValues(argv, name);
+  if (values.length > 1) throw new Error(`--${name} may be provided only once`);
+  if (required && values.length !== 1) throw new Error(`--${name} is required`);
+  return values[0] ?? fallback;
+}
+
+
+export async function cli(argv = process.argv, env = process.env) {
+  const manifestPath = option(argv, "manifest", null, { required: true });
+  const outputPath = option(argv, "out", null, { required: true });
+  const candidatePath = option(argv, "candidate", null, { required: true });
+  const healthPath = option(argv, "health", null, { required: true });
+  const rpcUrlFile = option(argv, "rpc-url-file", null, { required: true });
+  const secondaryRpcUrlFile = option(argv, "secondary-rpc-url-file");
+  const archivePath = option(argv, "archive");
+  const transcriptConfig = configureIndexerTranscripts(argv, env);
+  const activationNames = [
+    "activation-plan", "activation-completion", "activation-authorization", "activation-trust-registry",
+    "activation-artifact-root", "activation-python", "activation-repo-root", "activation-rpc-registry",
+    "activation-rpc-registry-trusted-root",
+  ];
+  const activation = Object.fromEntries(activationNames.map((name) => [name, option(argv, name)]));
+  const indexerOptions = {
+    manifestPath,
+    rpcUrl: readCredentialUrl(rpcUrlFile, "indexer primary RPC URL credential"),
+    archivePath,
+    transcriptEndpoints: transcriptConfig.endpoints,
+    transcriptFetchClient: transcriptConfig.fetchClient,
+    activationPlanPath: activation["activation-plan"],
+    activationCompletionPath: activation["activation-completion"],
+    activationAuthorizationPath: activation["activation-authorization"],
+    activationTrustRegistryPath: activation["activation-trust-registry"],
+    activationArtifactRoot: activation["activation-artifact-root"],
+    activationPython: activation["activation-python"],
+    activationRepoRoot: activation["activation-repo-root"],
+    activationRpcRegistryPath: activation["activation-rpc-registry"],
+    activationRpcRegistryTrustedRoot: activation["activation-rpc-registry-trusted-root"],
+    secondaryRpcUrl: secondaryRpcUrlFile
+      ? readCredentialUrl(secondaryRpcUrlFile, "indexer secondary RPC URL credential")
+      : null,
+  };
+  return runIndexerService({
+    serviceId: option(argv, "service-id", "p42-indexer"),
+    candidatePath,
+    outputPath,
+    healthPath,
+    intervalMs: Number(option(argv, "interval-ms", "30000")),
+    maxStaleSeconds: Number(option(argv, "max-stale-seconds", "300")),
+    maxConsecutiveFailures: Number(option(argv, "max-consecutive-failures", "5")),
+    once: argv.includes("--once"),
+    indexerOptions,
+  });
+}
+
+
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : null;
+if (invokedPath === import.meta.url) {
+  cli().catch((error) => {
+    console.error(`FAILED: ${sanitizedError(error)}`);
+    process.exitCode = 1;
+  });
+}

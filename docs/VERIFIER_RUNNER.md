@@ -223,6 +223,22 @@ not memory pressure. Queue, plan, and transcript schemas live at
 - Queue depth/bytes, archive count, oldest queued age/deadline, active lease,
   reserved admission/memory headroom, and swap usage are alerting metrics.
 
+The per-board queues do not independently authorize execution. Every production
+operator must also use the same host scheduler state at
+`/var/lib/p42/operator/host-scheduler/state.json`. The scheduler assigns durable
+FIFO tickets across all board instances and grants exactly one host lease. Its
+separate fence process heartbeats while the synchronous worker runs; an OS
+`flock` serializes state mutations and is released by the kernel after a crash.
+Dead holder/request records are reaped only after their configured stale
+windows, and the holder window exceeds that board's verifier wall limit by 120
+seconds so a lost fence cannot authorize an overlapping verifier. Host admission
+rechecks the same reserve/safety-factor memory equation, swap ceiling, and the
+host cgroup's cumulative `oom_kill` counter. A new OOM kill blocks every board
+until an idle, exact-current-count `host-scheduler-ack-oom` operation through
+`agent/runtime_bridge.py` records the incident acknowledgement;
+counter or boot substitutions fail closed. A reboot
+discards prior-process tickets and establishes the new boot's OOM baseline.
+
 The canonical queue admits ordinary work only through 896 active entries and
 deadline-bearing chain work through 960, leaving 64 operational slots plus 64 KiB of
 serialized-state headroom for leases and terminal metadata. Access to those 64
@@ -497,10 +513,11 @@ startup reject it before scanning. A current deployment must produce a new
 manifest and reconciliation report; agents must not rewrite stale addresses or
 tx hashes into a fake current release.
 
-## Operator And Resolver Systemd Templates
+## Operator, Resolver, And Indexer Systemd Templates
 
-The source templates are `deployments/p42-operator@.service.example` and
-`deployments/p42-resolver@.service.example`. Install them only after replacing
+The source templates are `deployments/p42-operator@.service.example`,
+`deployments/p42-resolver@.service.example`, and
+`deployments/p42-indexer.service.example`. Install them only after replacing
 the example configuration with a deployment-specific manifest, immutable
 challenge provisioning, accepted session keys, runner-health identities, and
 publisher credentials. The per-instance environment files are private files at
@@ -519,6 +536,10 @@ must be private authenticated HTTPS URLs. Its manifest, immutable
 matching private configuration directory. `--sandbox-staging-root` points the
 worker at the writable `/var/lib/p42/operator/<instance>/sandbox-staging`
 directory.
+
+All operator instances on one verifier host must share the template's
+`p42/operator/host-scheduler` state directory. Per-instance scheduler paths are
+prohibited: they would restore one verifier allowance per board.
 
 Production verifier execution has one Docker authority: the same unprivileged
 `p42-operator` account runs `p42-docker-rootless@<instance>.service`, with
@@ -603,6 +624,20 @@ the explicit publisher and endpoint CLI options. The units also remove those
 legacy variables from the service environment. This makes an old environment
 file fail closed rather than silently adding a second publisher or retrieval
 set to the production command.
+
+The indexer unit runs one multi-board service, not one instance per board. It
+loads the primary RPC URL through `LoadCredential`, regenerates a private
+candidate every 30 seconds, and promotes only complete, reconstruction-green,
+same-deployment checkpoints whose finalized height does not regress. Equal
+height requires the same finalized hash and byte-identical deterministic
+checkpoint; schema changes require an explicit cutover. Candidate, public
+checkpoint, archive, and `health.json` live below `/var/lib/p42/indexer` and are
+published with file fsync, atomic rename, and parent-directory fsync. Health
+reports startup, healthy, degraded, or stale using the last successful
+publication; five consecutive cycle failures exit for systemd restart and the
+account-separated failure recorder. The original one-shot
+`node agent/indexer.mjs ...` command remains available for ceremonies and
+rehearsals.
 
 For shared DGX operation, the operator unit uses `MemoryHigh=2G`,
 `MemoryMax=3G`, `MemorySwapMax=0`, and `TasksMax=256`; the resolver uses 1G, 2G,

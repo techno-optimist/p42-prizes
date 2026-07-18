@@ -38,7 +38,8 @@ ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --runner-health-public-key ${P42_RUNNER_HEALTH_PUBLIC_KEY} \
   --runner-recovery-public-key ${P42_RUNNER_RECOVERY_PUBLIC_KEY} \
   --runner-host-id ${P42_RUNNER_HOST_ID} --runner-boot-id ${P42_RUNNER_BOOT_ID} \
-  --runner-queue-id ${P42_RUNNER_QUEUE_ID}
+  --runner-queue-id ${P42_RUNNER_QUEUE_ID} \
+  --host-scheduler /var/lib/p42/operator/host-scheduler/state.json
 Restart=on-failure
 RestartSec=15s
 RestartPreventExitStatus=64 70 78 143
@@ -52,7 +53,7 @@ KillMode=mixed
 TimeoutStopSec=20s
 SendSIGKILL=yes
 UMask=0077
-StateDirectory=p42/operator/%i p42/operator/coordination
+StateDirectory=p42/operator/%i p42/operator/coordination p42/operator/host-scheduler
 StateDirectoryMode=0700
 NoNewPrivileges=true
 CapabilityBoundingSet=
@@ -69,7 +70,7 @@ ProtectClock=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadOnlyPaths=/etc/p42/operator/%i /opt/p42
-ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination
+ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination /var/lib/p42/operator/host-scheduler
 InaccessiblePaths=/etc/p42/resolver /etc/p42/runtime-evidence /var/lib/p42/resolver /var/lib/p42/runtime-evidence
 
 [Install]

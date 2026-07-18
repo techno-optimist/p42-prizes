@@ -122,6 +122,8 @@ const RUNNER_RECOVERY_PUBLIC_KEY = arg("runner-recovery-public-key", null);
 const RUNNER_HOST_ID = arg("runner-host-id", null);
 const RUNNER_BOOT_ID = arg("runner-boot-id", null);
 const RUNNER_QUEUE_ID = arg("runner-queue-id", null);
+const HOST_SCHEDULER_ARG = arg("host-scheduler", null);
+const HOST_SCHEDULER = HOST_SCHEDULER_ARG ? resolve(HOST_SCHEDULER_ARG) : null;
 const CHALLENGE_PROVISIONING = resolve(arg("challenge-provisioning", join(RUNTIME, "challenge-provisioning.json")));
 const AUTO_CLAIM_BOND = arg("auto-claim-bond", true) !== "false";
 const MAX_JOBS_PER_SCAN = Number(arg("max-jobs-per-scan", "1"));
@@ -160,6 +162,10 @@ if (!Number.isInteger(MAX_JOBS_PER_SCAN) || MAX_JOBS_PER_SCAN < 1) {
 }
 if (!LOCAL_TEST && (!RUNNER_HEALTH_PUBLIC_KEY || !RUNNER_RECOVERY_PUBLIC_KEY || !RUNNER_HOST_ID || !RUNNER_BOOT_ID || !RUNNER_QUEUE_ID)) {
   console.error("production runner-health v2 requires signer, host, boot, and queue identity bindings");
+  process.exit(2);
+}
+if (!LOCAL_TEST && !HOST_SCHEDULER_ARG) {
+  console.error("production operator requires --host-scheduler shared by every board instance on this verifier host");
   process.exit(2);
 }
 if (!LOCAL_TEST && !COORDINATION_ROOT_ARG) {
@@ -355,6 +361,88 @@ async function acquireRunnerAuthorizationFence() {
   let released = false;
   return () => {
     if (released) return; released = true; child.stdin.end("R");
+  };
+}
+
+async function acquireHostVerifierSlot() {
+  if (LOCAL_TEST && !HOST_SCHEDULER) return { acquired: true, release: () => {} };
+  const env = { ...process.env, PYTHONPATH: `${REPO_ROOT}/src` };
+  for (const name of Object.keys(env)) {
+    if (/(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD|RPC_URL)/i.test(name)) delete env[name];
+  }
+  const requestId = sha256Canonical({
+    schema_version: "p42-host-verifier-request/v1",
+    host_id: RUNNER_HOST_ID,
+    chain_id: chainId,
+    registry_problem_id: registryProblemId,
+    queue_id: RUNNER_QUEUE_ID,
+  });
+  const child = spawn(runtimePythonExecutable(env), [
+    `${REPO_ROOT}/agent/runtime_bridge.py`, "host-scheduler-fence",
+    "--state", HOST_SCHEDULER,
+    "--host-id", RUNNER_HOST_ID,
+    "--request-id", requestId,
+    "--board-id", `${chainId}:${registryProblemId}:${runnerConfig.problemId}`,
+    "--required-memory-mb", String(runnerConfig.requiredMemoryMb),
+    "--reserve-memory-mb", String(RESERVE_MEMORY_MB),
+    "--max-swap-used-mb", String(MAX_SWAP_USED_MB),
+    "--memory-safety-factor", String(MEMORY_SAFETY_FACTOR),
+    "--holder-stale-seconds", String(runnerConfig.wallSeconds + 120),
+  ], { cwd: REPO_ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = "";
+  let stdout = "";
+  let acquired = false;
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.stdout.setEncoding("utf8");
+  const decision = await new Promise((resolveDecision, rejectDecision) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      rejectDecision(new Error("host verifier scheduler decision timeout"));
+    }, 10_000);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+      const newline = stdout.indexOf("\n");
+      if (newline === -1) return;
+      const firstLine = stdout.slice(0, newline);
+      if (!firstLine.startsWith("READY ")) return;
+      clearTimeout(timeout);
+      acquired = true;
+      try {
+        resolveDecision(parseStrictJsonText(`${firstLine.slice("READY ".length)}\n`, {
+          maxBytes: 64 * 1024, maxDepth: 16, canonicalBytes: true, trailingNewline: "require",
+        }));
+      } catch (error) {
+        child.kill("SIGKILL");
+        rejectDecision(error);
+      }
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timeout);
+      if (acquired) return;
+      if (code !== 0) {
+        rejectDecision(new Error((stderr || `host verifier scheduler exited ${code}`).trim()));
+        return;
+      }
+      try {
+        resolveDecision(parseStrictJsonText(stdout, {
+          maxBytes: 64 * 1024, maxDepth: 16, canonicalBytes: true, trailingNewline: "require",
+        }));
+      } catch (error) {
+        rejectDecision(error);
+      }
+    });
+  });
+  if (!acquired) return { acquired: false, decision, release: () => {} };
+  let released = false;
+  return {
+    acquired: true,
+    decision,
+    release: () => {
+      if (released) return;
+      released = true;
+      child.stdin.end("R");
+    },
   };
 }
 
@@ -1224,7 +1312,9 @@ async function ingestReveal(event, chainTimestamp) {
   return result.created;
 }
 
-function runWorkerOnce(chainTimestamp) {
+async function runWorkerOnce(chainTimestamp) {
+  const hostSlot = await acquireHostVerifierSlot();
+  if (!hostSlot.acquired) return hostSlot.decision;
   const previous = process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
   process.env[RUNNER_CHAIN_TIMESTAMP_ENV] = String(chainTimestamp);
   try {
@@ -1239,6 +1329,7 @@ function runWorkerOnce(chainTimestamp) {
       ...(DOCKER_HOST_ARG ? ["--docker-host", DOCKER_HOST_ARG] : []),
     );
   } finally {
+    hostSlot.release();
     if (previous === undefined) delete process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
     else process.env[RUNNER_CHAIN_TIMESTAMP_ENV] = previous;
   }
@@ -2194,7 +2285,7 @@ async function scanOnce() {
 
   await refreshRetryableJobs(finalizedBlock);
   for (let index = 0; index < MAX_JOBS_PER_SCAN; index += 1) {
-    const result = runWorkerOnce(finalizedBlock.timestamp);
+    const result = await runWorkerOnce(finalizedBlock.timestamp);
     if (result.terminal_disposition) continue;
     if (result.schema_version === "p42-runner-transcript/v1") {
       log(`  worker completed ${result.job_id}: ${result.verifier.challenge_candidate?.action || "legacy"}`);
@@ -2289,7 +2380,7 @@ async function main() {
 
   log(`P42 operator ${wallet.address} chain=${chainId} mode=${executionMode.mode}`);
   log(`queue=${QUEUE} cursor=${CURSOR} finality=${finalityConfirmations} overlap=${reorgOverlapBlocks}`);
-  log(`sandbox=docker max_running=1 max_bond=${ethers.formatEther(challengeLimits.perChallengeWei)} ETH`);
+  log(`sandbox=docker host_global_max_running=1 max_bond=${ethers.formatEther(challengeLimits.perChallengeWei)} ETH`);
   await reconcileTerminalAlerts();
   await consumeCandidates();
   await reconcileTerminalAlerts();

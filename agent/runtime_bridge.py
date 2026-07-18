@@ -34,6 +34,12 @@ from p42_prizes.runner_queue import (  # noqa: E402
 from p42_prizes.secure_json import read_strict_json_file  # noqa: E402
 from p42_prizes.runner_worker import run_next_job_once  # noqa: E402
 from p42_prizes.verdict import canonical_json  # noqa: E402
+from p42_prizes.host_scheduler import (  # noqa: E402
+    HostSchedulerPolicy,
+    acknowledge_oom_count,
+    host_capacity_snapshot,
+    run_host_scheduler_fence,
+)
 
 
 def _load_object(path: str) -> dict[str, Any]:
@@ -181,6 +187,28 @@ def _parser() -> argparse.ArgumentParser:
     quarantine.add_argument("--reason", required=True)
     fence = commands.add_parser("authorization-fence")
     fence.add_argument("--queue", required=True)
+    host_fence = commands.add_parser("host-scheduler-fence")
+    host_fence.add_argument("--state", required=True)
+    host_fence.add_argument("--host-id", required=True)
+    host_fence.add_argument("--request-id", required=True)
+    host_fence.add_argument("--board-id", required=True)
+    host_fence.add_argument("--required-memory-mb", type=int, required=True)
+    host_fence.add_argument("--reserve-memory-mb", type=int, default=8192)
+    host_fence.add_argument("--max-swap-used-mb", type=int, default=1024)
+    host_fence.add_argument("--memory-safety-factor", type=float, default=2.0)
+    host_fence.add_argument("--request-stale-seconds", type=int, default=300)
+    host_fence.add_argument("--holder-stale-seconds", type=int, default=60)
+    host_fence.add_argument("--heartbeat-seconds", type=float, default=10.0)
+    host_fence.add_argument("--meminfo-path", default="/proc/meminfo")
+    host_fence.add_argument("--oom-events-path", default="/sys/fs/cgroup/memory.events")
+    host_fence.add_argument("--boot-id-path", default="/proc/sys/kernel/random/boot_id")
+    host_ack = commands.add_parser("host-scheduler-ack-oom")
+    host_ack.add_argument("--state", required=True)
+    host_ack.add_argument("--host-id", required=True)
+    host_ack.add_argument("--expected-oom-kills", type=int, required=True)
+    host_ack.add_argument("--meminfo-path", default="/proc/meminfo")
+    host_ack.add_argument("--oom-events-path", default="/sys/fs/cgroup/memory.events")
+    host_ack.add_argument("--boot-id-path", default="/proc/sys/kernel/random/boot_id")
     return parser
 
 
@@ -226,6 +254,42 @@ def main() -> int:
             if sys.stdin.buffer.read(1) != b"R":
                 raise ValueError("authorization fence release token missing")
         return 0
+    elif args.command == "host-scheduler-fence":
+        capacity_reader = lambda: host_capacity_snapshot(
+            meminfo_path=args.meminfo_path,
+            oom_events_path=args.oom_events_path,
+            boot_id_path=args.boot_id_path,
+        )
+        result = run_host_scheduler_fence(
+            args.state,
+            host_id=args.host_id,
+            request_id=args.request_id,
+            board_id=args.board_id,
+            required_memory_mb=args.required_memory_mb,
+            policy=HostSchedulerPolicy(
+                reserve_memory_mb=args.reserve_memory_mb,
+                max_swap_used_mb=args.max_swap_used_mb,
+                memory_safety_factor=args.memory_safety_factor,
+                request_stale_seconds=args.request_stale_seconds,
+                holder_stale_seconds=args.holder_stale_seconds,
+            ),
+            capacity_reader=capacity_reader,
+            heartbeat_seconds=args.heartbeat_seconds,
+        )
+        if result["decision"] == "acquired":
+            return 0
+    elif args.command == "host-scheduler-ack-oom":
+        capacity = host_capacity_snapshot(
+            meminfo_path=args.meminfo_path,
+            oom_events_path=args.oom_events_path,
+            boot_id_path=args.boot_id_path,
+        )
+        result = acknowledge_oom_count(
+            args.state,
+            host_id=args.host_id,
+            expected_oom_kills=args.expected_oom_kills,
+            capacity=capacity,
+        )
     else:
         policy = RunnerPolicy(
             max_running=1,

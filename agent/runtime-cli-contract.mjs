@@ -20,6 +20,7 @@ const CONTRACTS = Object.freeze({
       "--runner-host-id",
       "--runner-boot-id",
       "--runner-queue-id",
+      "--host-scheduler",
     ]),
     forbiddenValueOptions: Object.freeze(["--rpc", "--nonce-rpc-secondary"]),
     forbiddenEnvironmentNames: Object.freeze(["P42_RPC_URL", "P42_NONCE_RPC_SECONDARY_URL"]),

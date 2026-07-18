@@ -146,6 +146,18 @@ aliases, and profile substitutions, then constructs both RPC providers
 internally. This is provenance-preserving quorum evidence, not a claim that any
 currently configured pair is independently operated.
 
+For continuous non-activated checkpointing, install
+`deployments/p42-indexer.service.example` with a current immutable manifest and
+private RPC credential. The service keeps `agent/indexer.mjs` as the one-cycle
+reconstruction engine, writes each cycle to `candidate.json`, and atomically
+promotes only a complete same-binding checkpoint with a nondecreasing finalized
+height. Monitor `/var/lib/p42/indexer/health.json`; `degraded` records a failed
+cycle while retaining the last good checkpoint, and `stale` means no successful
+publication within the configured 300-second ceiling. Activation-bound v4 use
+also requires the secondary RPC credential and every release-bound activation
+artifact named by the one-shot command above; do not silently downgrade that
+path to the single-RPC v3 service configuration.
+
 Disk:
 
 ```bash

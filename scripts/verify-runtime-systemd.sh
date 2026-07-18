@@ -30,6 +30,7 @@ reject_directive() {
 
 operator="$deployments/p42-operator@.service.example"
 resolver="$deployments/p42-resolver@.service.example"
+indexer="$deployments/p42-indexer.service.example"
 rootless="$deployments/p42-docker-rootless@.service.example"
 rootless_config="$deployments/p42-docker-rootless-daemon.json"
 rootless_apparmor="$deployments/p42-rootless-runtime.apparmor.example"
@@ -38,16 +39,17 @@ rootless_ready="$repo_root/scripts/p42_rootless_docker_ready.py"
 rootless_launch="$repo_root/scripts/p42_rootless_docker_launch.py"
 failure="$deployments/p42-runtime-failure@.service.example"
 sysusers="$deployments/p42-runtime.sysusers.example"
-for file in "$operator" "$resolver" "$rootless" "$rootless_config" "$rootless_apparmor" "$rootless_preflight" "$rootless_ready" "$rootless_launch" "$failure" "$sysusers"; do
+for file in "$operator" "$resolver" "$indexer" "$rootless" "$rootless_config" "$rootless_apparmor" "$rootless_preflight" "$rootless_ready" "$rootless_launch" "$failure" "$sysusers"; do
   [[ -f $file ]] || fail "missing ${file#"$repo_root"/}"
 done
 
-[[ $(wc -l < "$sysusers" | tr -d ' ') == 3 ]] || fail "sysusers file must define exactly three accounts"
+[[ $(wc -l < "$sysusers" | tr -d ' ') == 4 ]] || fail "sysusers file must define exactly four accounts"
 grep -Fqx 'u p42-operator - "P42 operator runtime" /var/lib/p42/operator /usr/sbin/nologin' "$sysusers" || fail "operator account is not pinned"
 grep -Fqx 'u p42-resolver - "P42 resolver runtime" /var/lib/p42/resolver /usr/sbin/nologin' "$sysusers" || fail "resolver account is not pinned"
+grep -Fqx 'u p42-indexer - "P42 indexer runtime" /var/lib/p42/indexer /usr/sbin/nologin' "$sysusers" || fail "indexer account is not pinned"
 grep -Fqx 'u p42-runtime-evidence - "P42 runtime failure evidence recorder" /var/lib/p42/runtime-evidence /usr/sbin/nologin' "$sysusers" || fail "evidence account is not pinned"
 
-for file in "$operator" "$resolver"; do
+for file in "$operator" "$resolver" "$indexer"; do
   require_exact "$file" OnFailure 'OnFailure=p42-runtime-failure@%n.service'
   require_exact "$file" StartLimitIntervalSec 'StartLimitIntervalSec=30min'
   require_exact "$file" StartLimitBurst 'StartLimitBurst=5'
@@ -158,9 +160,9 @@ require_exact "$operator" UnsetEnvironment 'UnsetEnvironment=OPERATOR_PRIVATE_KE
 require_exact "$operator" Environment 'Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock'
 require_exact "$operator" ExecStartPre 'ExecStartPre=/usr/bin/test -S /run/p42-docker-%i/docker.sock'
 require_exact "$operator" ExecStart 'ExecStart=/usr/local/bin/p42-runtime-supervisor \'
-require_exact "$operator" StateDirectory 'StateDirectory=p42/operator/%i p42/operator/coordination'
+require_exact "$operator" StateDirectory 'StateDirectory=p42/operator/%i p42/operator/coordination p42/operator/host-scheduler'
 require_exact "$operator" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/operator/%i /opt/p42'
-require_exact "$operator" ReadWritePaths 'ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination'
+require_exact "$operator" ReadWritePaths 'ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination /var/lib/p42/operator/host-scheduler'
 require_exact "$operator" InaccessiblePaths 'InaccessiblePaths=/etc/p42/resolver /etc/p42/runtime-evidence /var/lib/p42/resolver /var/lib/p42/runtime-evidence'
 require_exact "$operator" MemoryHigh 'MemoryHigh=2G'
 require_exact "$operator" MemoryMax 'MemoryMax=3G'
@@ -183,6 +185,33 @@ require_exact "$resolver" MemoryHigh 'MemoryHigh=1G'
 require_exact "$resolver" MemoryMax 'MemoryMax=2G'
 require_exact "$resolver" MemorySwapMax 'MemorySwapMax=0'
 require_exact "$resolver" TasksMax 'TasksMax=128'
+
+require_exact "$indexer" User 'User=p42-indexer'
+require_exact "$indexer" Group 'Group=p42-indexer'
+require_exact "$indexer" EnvironmentFile 'EnvironmentFile=/etc/p42/indexer/runtime.env'
+require_line "$indexer" 'LoadCredential=rpc-primary-url:/etc/p42/indexer/credentials/rpc-primary-url'
+require_exact "$indexer" UnsetEnvironment 'UnsetEnvironment=P42_RPC_URL P42_TRANSCRIPT_ENDPOINTS'
+require_exact "$indexer" ExecStart 'ExecStart=/usr/bin/node /opt/p42/agent/indexer-service.mjs \'
+require_exact "$indexer" StateDirectory 'StateDirectory=p42/indexer p42/indexer/archive'
+require_exact "$indexer" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/indexer /opt/p42'
+require_exact "$indexer" ReadWritePaths 'ReadWritePaths=/var/lib/p42/indexer'
+require_exact "$indexer" InaccessiblePaths 'InaccessiblePaths=/etc/p42/operator /etc/p42/resolver /var/lib/p42/operator /var/lib/p42/resolver'
+require_exact "$indexer" MemoryHigh 'MemoryHigh=2G'
+require_exact "$indexer" MemoryMax 'MemoryMax=3G'
+require_exact "$indexer" MemorySwapMax 'MemorySwapMax=0'
+require_exact "$indexer" TasksMax 'TasksMax=256'
+for required in \
+    '--rpc-url-file ${CREDENTIALS_DIRECTORY}/rpc-primary-url \' \
+    '--manifest /etc/p42/indexer/manifest.json \' \
+    '--out /var/lib/p42/indexer/checkpoint.json \' \
+    '--candidate /var/lib/p42/indexer/candidate.json \' \
+    '--health /var/lib/p42/indexer/health.json \' \
+    '--archive /var/lib/p42/indexer/archive \' \
+    '--transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_PRIMARY} \' \
+    '--transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_SECONDARY} \' \
+    '--interval-ms 30000 --max-stale-seconds 300 --max-consecutive-failures 5'; do
+  require_line "$indexer" "  $required"
+done
 
 node "$repo_root/scripts/verify-runtime-execstart.mjs" "$operator" "$resolver"
 
@@ -229,14 +258,18 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   trap 'rm -rf "$scratch"' EXIT
   operator_unit="$scratch/p42-operator@test.service"
   resolver_unit="$scratch/p42-resolver@test.service"
+  indexer_unit="$scratch/p42-indexer.service"
   rootless_unit="$scratch/p42-docker-rootless@test.service"
   operator_failure="$scratch/p42-runtime-failure@p42-operator@test.service.service"
   resolver_failure="$scratch/p42-runtime-failure@p42-resolver@test.service.service"
+  indexer_failure="$scratch/p42-runtime-failure@p42-indexer.service.service"
   cp "$operator" "$operator_unit"
   cp "$resolver" "$resolver_unit"
+  cp "$indexer" "$indexer_unit"
   cp "$rootless" "$rootless_unit"
   cp "$failure" "$operator_failure"
   cp "$failure" "$resolver_failure"
+  cp "$failure" "$indexer_failure"
   user=$(id -un)
   group=$(id -gn)
   sed -i \
@@ -244,7 +277,7 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     -e 's#^EnvironmentFile=.*#EnvironmentFile=-/dev/null#' \
     -e 's#^ExecStart=.*#ExecStart=/bin/true#' -e '/^  /d' \
     -e 's#^ExecStartPre=.*#ExecStartPre=/bin/true#' \
-    "$operator_unit" "$resolver_unit"
+    "$operator_unit" "$resolver_unit" "$indexer_unit"
   sed -i \
     -e "s/^User=.*/User=$user/" -e "s/^Group=.*/Group=$group/" \
     -e 's#^ExecStart=.*#ExecStart=/bin/true#' \
@@ -254,11 +287,11 @@ if command -v systemd-analyze >/dev/null 2>&1; then
   sed -i \
     -e "s/^User=.*/User=$user/" -e "s/^Group=.*/Group=$group/" \
     -e 's#^ExecStart=.*#ExecStart=/bin/true#' \
-    "$operator_failure" "$resolver_failure"
+    "$operator_failure" "$resolver_failure" "$indexer_failure"
   output="$scratch/systemd-analyze.log"
   unit_path="$scratch:/usr/local/lib/systemd/system:/usr/lib/systemd/system:/lib/systemd/system"
   if ! SYSTEMD_UNIT_PATH="$unit_path" systemd-analyze verify \
-      "$operator_unit" "$resolver_unit" "$rootless_unit" "$operator_failure" "$resolver_failure" >"$output" 2>&1; then
+      "$operator_unit" "$resolver_unit" "$indexer_unit" "$rootless_unit" "$operator_failure" "$resolver_failure" "$indexer_failure" >"$output" 2>&1; then
     cat "$output" >&2
     exit 1
   fi
