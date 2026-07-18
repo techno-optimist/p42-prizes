@@ -13,7 +13,9 @@ from p42_prizes.runner_sandbox import (
     build_sandbox_command,
     compose_immutable_image_ref,
     docker_available,
+    parse_rootless_docker_info,
     stage_sandbox_solution,
+    validate_rootless_docker_host,
 )
 from p42_prizes.runner_worker import _run_verifier_for_transcript
 
@@ -33,8 +35,9 @@ def test_build_sandbox_command_applies_all_hardening(monkeypatch: pytest.MonkeyP
         memory_mb=128,
         pids_limit=64,
         cpus=1.5,
+        docker_host="unix:///run/p42-docker-fixture/docker.sock",
     )
-    assert cmd[:3] == ["docker", "run", "--rm"]
+    assert cmd[:4] == ["docker", "--host=unix:///run/p42-docker-fixture/docker.sock", "run", "--rm"]
     for flag in (
         "--network=none",
         "--add-host=host.docker.internal:host-gateway",
@@ -45,6 +48,8 @@ def test_build_sandbox_command_applies_all_hardening(monkeypatch: pytest.MonkeyP
         "--read-only",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
+        "--ulimit=core=0",
+        "--oom-kill-disable=false",
         "--user=65534:65534",   # non-root
         "--entrypoint=/usr/local/bin/python3",
     ):
@@ -125,6 +130,57 @@ def test_docker_available_returns_bool_without_raising():
     assert isinstance(docker_available(), bool)
 
 
+def test_rootless_docker_authority_rejects_rootful_sockets():
+    for endpoint in (None, "tcp://127.0.0.1:2375", "unix:///run/docker.sock", "unix:///var/run/docker.sock"):
+        with pytest.raises(RunnerSandboxError):
+            validate_rootless_docker_host(endpoint)
+    assert validate_rootless_docker_host("unix:///run/p42-docker-fixture/docker.sock")
+
+
+def test_docker_available_uses_only_the_bound_rootless_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    client = tmp_path / "docker"
+    client.write_text(
+        "#!/bin/sh\n"
+        "test \"$1\" = \"--host=unix:///run/p42-docker-fixture/docker.sock\" || exit 7\n"
+        "test \"$2\" = info || exit 8\n"
+        "test \"$3\" = '--format={{json .}}' || exit 8\n"
+        "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42-fixture\",\"ServerVersion\":\"27.0\",\"SecurityOptions\":[\"name=seccomp\",\"name=rootless\"],\"CgroupDriver\":\"systemd\"}'\n",
+        encoding="utf-8",
+    )
+    client.chmod(0o700)
+    endpoint = "unix:///run/p42-docker-fixture/docker.sock"
+    assert docker_available(str(client), endpoint) is True
+    assert docker_available(str(client)) is False
+    assert docker_available(str(client), "unix:///run/docker.sock") is False
+    monkeypatch.setenv("DOCKER_HOST", "unix:///var/run/docker.sock")
+    assert docker_available(str(client)) is False
+
+
+def test_rootless_docker_info_requires_identity_and_security_proof():
+    valid = '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"],"CgroupDriver":"systemd"}'
+    assert parse_rootless_docker_info(valid)["Name"] == "p42"
+    for missing_proof in (
+        '{"Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"]}',
+        '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=seccomp"]}',
+        '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0"}',
+        '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"],"CgroupDriver":"none"}',
+        "not-json",
+    ):
+        with pytest.raises(RunnerSandboxError):
+            parse_rootless_docker_info(missing_proof)
+
+
+def test_docker_available_rejects_a_daemon_without_rootless_security(tmp_path: Path):
+    client = tmp_path / "docker"
+    client.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42-fixture\",\"ServerVersion\":\"27.0\",\"SecurityOptions\":[\"name=seccomp\"]}'\n",
+        encoding="utf-8",
+    )
+    client.chmod(0o700)
+    assert docker_available(str(client), "unix:///run/p42-docker-fixture/docker.sock") is False
+
+
 def test_stage_sandbox_solution_preserves_private_source(tmp_path: Path):
     source = tmp_path / "solution.json"
     source.write_bytes(b'{"answer":42}\n')
@@ -195,8 +251,9 @@ def test_sandbox_docker_fails_closed_when_no_runtime():
         sandbox="docker",
         sandbox_memory_mb=128,
         job_id="sandbox-fail-closed",
+        docker_host="unix:///run/p42-docker-fixture/docker.sock",
     )
     assert result["ok"] is False
     assert result["valid"] is False
     assert result["sandbox"] == "docker"
-    assert "container runtime" in result["error"]
+    assert "rootless Docker endpoint unavailable" in result["error"]

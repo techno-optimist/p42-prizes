@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 
-from p42_prizes.runner_sandbox import docker_available
 from p42_prizes.runner_worker import _run_verifier_for_transcript
 
 
@@ -36,6 +35,36 @@ def sandbox_workdir() -> Path:
 
 def run_checked(argv: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, check=True, text=True, capture_output=True, **kwargs)
+
+
+def ci_rootful_docker_available(_docker_host: str | None) -> bool:
+    """Probe the hosted CI daemon without asserting production rootless policy."""
+
+    result = subprocess.run(
+        ["docker", "info"],
+        check=False,
+        text=True,
+        capture_output=True,
+        timeout=10,
+    )
+    return result.returncode == 0
+
+
+def ci_rootful_docker_authority(_docker_host: str | None) -> str:
+    """Mark the test-only default Docker socket as the CI rootful authority."""
+
+    return "ci-rootful-default-socket"
+
+
+def ci_rootful_docker_cleanup(container_name: str) -> None:
+    """Remove CI containers through the same explicitly scoped raw daemon."""
+
+    subprocess.run(
+        ["docker", "container", "rm", "-f", container_name],
+        check=False,
+        capture_output=True,
+        timeout=10,
+    )
 
 
 @contextmanager
@@ -104,11 +133,20 @@ def run_mode(
         job_id=f"sandbox-live-{mode}",
         manifest=manifest(repository, digest, wall_seconds=wall_seconds),
         solution_max_bytes=1024 * 1024,
+        docker_host_validator=ci_rootful_docker_authority,
+        docker_available_probe=ci_rootful_docker_available,
+        docker_cleanup=ci_rootful_docker_cleanup,
     )
 
 
-def test_live_docker_sandbox_enforces_hostile_boundaries(sandbox_workdir: Path) -> None:
-    if not docker_available():
+def test_live_docker_sandbox_enforces_hostile_boundaries(
+    sandbox_workdir: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The hosted runner intentionally uses Docker's rootful default socket for
+    # this boundary campaign. Production worker calls leave the two injection
+    # points above unset and therefore require the rootless authority contract.
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    if not ci_rootful_docker_available(None):
         if os.environ.get("CI", "").lower() == "true":
             pytest.fail("CI requires a reachable Docker daemon for live sandbox enforcement")
         pytest.skip("live Docker sandbox gate requires a reachable daemon")

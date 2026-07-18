@@ -1,0 +1,7 @@
+{
+  "iptables": false,
+  "ip6tables": false,
+  "userland-proxy": false,
+  "log-driver": "local",
+  "live-restore": false
+}

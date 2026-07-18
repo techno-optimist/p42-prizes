@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
 """
-GUARD_PROGRAM = b"fixture committed 12-probe deep guard"
+GUARD_PROGRAM = b"fixture committed 32-probe deep guard"
 GUARD_MANIFEST = b'{"projection_sha256":"' + BOARD_HASH.encode() + b'"}'
 FIXTURE_GIT_ENTRIES = (
     ("100644", "blob", WORKFLOW_BLOB, ".github/workflows/ci.yml"),
@@ -130,9 +130,27 @@ def _guard_material() -> tuple[list[dict], dict[str, bytes], dict[str, str]]:
         "skill": b"# P42 agent skill",
     }
     for route, origin, url in REQUIRED_V3_PROBES:
-        body = route_bodies[route]
+        if route.startswith("funding-target-"):
+            slug = route.removeprefix("funding-target-")
+            body = canonical_json({
+                "schema": "p42-prizes/funding-target/v3",
+                "slug": slug,
+                "authorizationExpiresAt": None,
+                "finalizedObservedAt": None,
+                "fundingDeadline": None,
+                "remainingCapWei": None,
+                "serverObservedAt": None,
+                "fundingAuthorizationDigest": None,
+                "activationCompletionDigest": None,
+                "checkpointBlock": None,
+                "checkpointDigest": None,
+                "activationFinalizedBlock": None,
+                "target": None,
+            }).encode()
+        else:
+            body = route_bodies[route]
         bodies[url] = body
-        is_json = route in {"problems", "capabilities"}
+        is_json = route in {"problems", "capabilities"} or route.startswith("funding-target-")
         content_type = "application/json" if is_json else (
             "text/plain; charset=utf-8" if route == "skill" else "text/html; charset=utf-8"
         )
@@ -150,7 +168,11 @@ def _guard_material() -> tuple[list[dict], dict[str, bytes], dict[str, str]]:
                 "standings": "Standings",
                 "skill": "# P42",
             }[route]],
-            "jsonRequiredKeys": [route] if is_json else [],
+            "jsonRequiredKeys": (
+                ["schema", "slug", "target"]
+                if route.startswith("funding-target-")
+                else [route] if is_json else []
+            ),
             "equivalenceGroup": route if origin in {"render", "public"} and route not in {"standings", "skill"} else None,
         })
     return rules, bodies, content_types
@@ -329,7 +351,7 @@ class CurrentFixture:
         self.workflow = WORKFLOW
         self.closure_listing = _tree_listing()
         self.guard_program = GUARD_PROGRAM
-        self.guard_output = f"board projection: {BOARD_HASH}\nroutes: 12/12 healthy"
+        self.guard_output = f"board projection: {BOARD_HASH}\nroutes: 32/32 healthy"
         self.genesis = _genesis_receipt()
         self.policy_path = tmp_path / "protected-policy.json"
         self.trust_root_path = tmp_path / "protected-root.json"
@@ -467,8 +489,8 @@ class CurrentFixture:
                 "command": "node scripts/verify-render-release.mjs",
                 "status": "passed",
                 "boardProjection": BOARD_HASH,
-                "healthyRoutes": 12,
-                "requiredRoutes": 12,
+                "healthyRoutes": 32,
+                "requiredRoutes": 32,
                 "probes": [{
                     "routeId": route,
                     "origin": origin,
@@ -1893,12 +1915,12 @@ def test_repository_tree_closure_covers_run_commands_in_current_ci() -> None:
 def test_guard_command_is_bound_to_committed_deep_check_program(
     current: CurrentFixture,
 ) -> None:
-    current.guard_program = b"process.stdout.write('routes: 12/12 healthy')"
+    current.guard_program = b"process.stdout.write('routes: 32/32 healthy')"
     with pytest.raises(SourceReleaseEvidenceError, match="committed guard file"):
         current.validate()
     current.guard_program = GUARD_PROGRAM
     current.guard_output = "Render release verified."
-    with pytest.raises(SourceReleaseEvidenceError, match="12-probe deep-check policy"):
+    with pytest.raises(SourceReleaseEvidenceError, match="32-probe deep-check policy"):
         current.validate()
 
 

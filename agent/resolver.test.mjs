@@ -257,16 +257,18 @@ test("resolver production configuration requires receipts and trusted retrieval 
     /URI templates cannot publish transcripts/,
   );
   const spool = mkdtempSync(join(tmpdir(), "p42-resolver-receipts-"));
+  const jwkFile = join(mkdtempSync(join(tmpdir(), "p42-resolver-jwk-")), "arweave-jwk.json");
+  writeFileSync(jwkFile, '{"kty":"RSA","n":"n","e":"AQAB"}\n', { mode: 0o600 });
   const configured = configureResolverPublication(
-    ["--publication-receipts", spool],
-    { P42_TRANSCRIPT_ENDPOINTS: endpoints.join(",") },
+    ["--publication-receipts", spool, "--transcript-endpoint", endpoints[0], "--transcript-endpoint", endpoints[1]],
+    {},
     { fetchClient },
   );
   assert.equal(typeof configured.publisher.publishTranscript, "function");
   assert.deepEqual(configured.endpoints, endpoints);
   const arweave = configureResolverPublication(
-    ["--transcript-store", "arweave"],
-    { P42_TRANSCRIPT_ENDPOINTS: endpoints.join(",") },
+    ["--transcript-store", "arweave", "--arweave-jwk-file", jwkFile, "--transcript-endpoint", endpoints[0], "--transcript-endpoint", endpoints[1]],
+    {},
     {
       fetchClient,
       arweaveOptions: {
@@ -280,11 +282,27 @@ test("resolver production configuration requires receipts and trusted retrieval 
   assert.equal(typeof arweave.publisher.publishTranscript, "function");
   assert.throws(
     () => configureResolverPublication(
-      ["--transcript-store", "arweave", "--publication-receipts", spool],
-      { P42_TRANSCRIPT_ENDPOINTS: endpoints.join(",") },
+      ["--transcript-store", "arweave", "--publication-receipts", spool, "--transcript-endpoint", endpoints[0], "--transcript-endpoint", endpoints[1]],
+      {},
       { fetchClient },
     ),
     /exactly one transcript publisher mode/,
+  );
+  assert.throws(
+    () => configureResolverPublication(
+      ["--transcript-store", "arweave", "--transcript-endpoint", endpoints[0], "--transcript-endpoint", endpoints[1]],
+      { P42_TRANSCRIPT_RECEIPT_SPOOL: spool },
+      { fetchClient, arweaveOptions: { owner: "w".repeat(43) } },
+    ),
+    /P42_TRANSCRIPT_RECEIPT_SPOOL conflicts with explicit transcript publisher CLI/,
+  );
+  assert.throws(
+    () => configureResolverPublication(
+      ["--transcript-store", "arweave", "--transcript-endpoint", endpoints[0], "--transcript-endpoint", endpoints[1]],
+      { P42_TRANSCRIPT_ENDPOINTS: endpoints.join(",") },
+      { fetchClient, arweaveOptions: { owner: "w".repeat(43) } },
+    ),
+    /P42_TRANSCRIPT_ENDPOINTS conflicts with explicit --transcript-endpoint values/,
   );
 });
 

@@ -40,6 +40,8 @@
     "resolver-signer.mjs",
     "resolver-quorum.mjs",
     "runner-transcript.mjs",
+    "runtime-cli-contract.mjs",
+    "runtime-credentials.mjs",
     "runtime_bridge.py",
     "setup-operation-plan.mjs",
     "secure_path_bridge.py",

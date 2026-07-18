@@ -152,6 +152,7 @@ cd contracts
 P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/ceremony.json \
 P42_PRODUCTION_IMAGE_DOSSIER_PATH=../release-evidence/verifier-images.json \
 P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH=../release-evidence/objective-verifier.json \
+P42_SP1_RUNTIME_ATTESTATION_PATH=../release-evidence/sp1-external-runtime-current.json \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
 P42_RELEASE_GENERATED_AT=YYYY-MM-DDTHH:MM:SSZ \
@@ -165,7 +166,7 @@ evidence root, which is outside the frozen repository because this evidence is
 generated after the source commit is fixed. The ceremony config is evidence too
 and must be beneath that same root. The output root must be outside
 both roots. The command force-compiles the canonical production contracts, builds
-and independently re-attests the release capsule, derives the exact-ten slate,
+and independently re-attests the fresh SP1 runtime artifact and release capsule, derives the exact-ten slate,
 runs every real `admit-ready` check, and rechecks the clean commit before and
 after publication. The gateway runtime codehash is derived from the artifact's
 `deployedBytecode`; every program ID is derived as `keccak256(exact program
@@ -187,11 +188,13 @@ P42_RELEASE_OUTPUT_ROOT=/absolute/path/release-output \
 P42_RELEASE_CAPSULE=/absolute/path/release-output/capsules/<digest>.json \
 P42_PRODUCTION_SLATE_PATH=/absolute/path/release-output/slates/<digest>.slate.json \
 P42_PRODUCTION_RELEASE_INDEX_PATH=/absolute/path/release-output/releases/<digest>.release.json \
+P42_SP1_RUNTIME_ATTESTATION_PATH=/absolute/path/release-evidence/sp1-external-runtime-current.json \
 P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
 npm run release:verify
 ```
 
-This force-rebuilds and re-attests the capsule, verifies the final index binds
+This force-rebuilds and re-attests the capsule, invokes the SP1 verifier against
+the supplied fresh artifact, and verifies the final index binds
 the exact commit/timestamp/capsule/slate tuple, reruns all ten real
 `admit-ready` checks, and emits a
 `p42-prizes/production-release-verification/v1` report. The command has no
@@ -213,6 +216,7 @@ P42_RELEASE_CAPSULE=/absolute/path/out/capsules/<digest>.json \
 P42_PRODUCTION_RELEASE_INDEX_PATH=/absolute/path/out/releases/<digest>.release.json \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 P42_RELEASE_OUTPUT_ROOT=/absolute/path/out \
+P42_SP1_RUNTIME_ATTESTATION_PATH=/absolute/path/release-evidence/sp1-external-runtime-current.json \
 P42_DEPLOYMENT_MANIFEST=/absolute/path/private/p42-prizes.json \
 BASE_SEPOLIA_RPC_URL=https://... \
 P42_PRIMARY_RPC_OPERATOR_ID=... \

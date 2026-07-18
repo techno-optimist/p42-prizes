@@ -46,6 +46,34 @@ function result(routeId, origin, body, semanticBody = body) {
   return { route: { id: routeId }, origin, body, semanticBody };
 }
 
+function validFundingTarget(slug) {
+  return {
+    schema: "p42-prizes/funding-target/v3",
+    slug,
+    authorizationExpiresAt: null,
+    finalizedObservedAt: null,
+    fundingDeadline: null,
+    remainingCapWei: null,
+    serverObservedAt: null,
+    fundingAuthorizationDigest: null,
+    activationCompletionDigest: null,
+    checkpointBlock: null,
+    checkpointDigest: null,
+    activationFinalizedBlock: null,
+    target: null,
+  };
+}
+
+function fundingTargetResults() {
+  return EXPECTED_BOARD_MANIFEST.boards.flatMap(({ slug }) => {
+    const payload = validFundingTarget(slug);
+    return [
+      result(`funding-target-${slug}`, "render", "render json", payload),
+      result(`funding-target-${slug}`, "public", "public json", structuredClone(payload)),
+    ];
+  });
+}
+
 function ancestry(...pairs) {
   const relations = new Set(pairs.map(([ancestor, descendant]) => `${ancestor}:${descendant}`));
   return async (ancestor, descendant) => (
@@ -174,7 +202,8 @@ test("release ancestry accepts the exact branch head as live", async () => {
 });
 
 test("probeUrls retains the standalone and proxied prize paths", () => {
-  assert.deepEqual(probeUrls("https://render.example/", "https://public.example/"), [
+  const urls = probeUrls("https://render.example/", "https://public.example/");
+  assert.deepEqual(urls.slice(0, 12), [
     "https://render.example/prizes",
     "https://public.example/prizes",
     "https://render.example/prizes/intro",
@@ -188,7 +217,16 @@ test("probeUrls retains the standalone and proxied prize paths", () => {
     "https://public.example/prizes/standings",
     "https://public.example/prizes/skill.md",
   ]);
-  assert.equal(probeUrls("https://render.example/", "https://public.example/").length, 12);
+  const fundingUrls = urls.slice(12);
+  assert.equal(fundingUrls.length, 20);
+  for (const { slug } of EXPECTED_BOARD_MANIFEST.boards) {
+    assert.ok(fundingUrls.includes(
+      `https://render.example/prizes/api/problems/${slug}/funding-target`,
+    ));
+    assert.ok(fundingUrls.includes(
+      `https://public.example/prizes/api/problems/${slug}/funding-target`,
+    ));
+  }
 });
 
 test("page probes require stable identity markers", () => {
@@ -306,6 +344,27 @@ test("capabilities probe requires the secret-free fail-closed production state",
   );
 });
 
+test("funding-target probes require exact fail-closed v3 envelopes", () => {
+  const slug = EXPECTED_BOARD_MANIFEST.boards[0].slug;
+  const routeId = `funding-target-${slug}`;
+  const expected = validFundingTarget(slug);
+  assert.deepEqual(
+    validateProbeBody(routeId, JSON.stringify(expected), contentTypes.json),
+    expected,
+  );
+  assert.throws(
+    () => validateProbeBody(routeId, JSON.stringify({
+      ...expected,
+      target: { address: "0x0000000000000000000000000000000000000042" },
+    }), contentTypes.json),
+    /exact fail-closed v3 envelope with target null/,
+  );
+  assert.throws(
+    () => validateProbeBody(routeId, JSON.stringify({ ...expected, slug: "forged" }), contentTypes.json),
+    /exact fail-closed v3 envelope with target null/,
+  );
+});
+
 test("paired direct and proxy probes reject body and semantic divergence", () => {
   const sameProblems = [validProblem()];
   const sameCapabilities = {
@@ -323,6 +382,7 @@ test("paired direct and proxy probes reject body and semantic divergence", () =>
     result("problems", "public", "public json", structuredClone(sameProblems)),
     result("capabilities", "render", "render json", sameCapabilities),
     result("capabilities", "public", "public json", structuredClone(sameCapabilities)),
+    ...fundingTargetResults(),
   ];
   assert.doesNotThrow(() => assertProbeEquivalence(matching));
   assert.throws(

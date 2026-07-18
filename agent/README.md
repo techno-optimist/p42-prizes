@@ -63,14 +63,17 @@ terminal, while an RPC outage or temporary transaction absence is retried.
 
 ```bash
 cd agent
-OPERATOR_PRIVATE_KEY=0x... node operator.mjs \
-  --rpc https://sepolia.base.org \
-  --nonce-rpc-secondary https://independent-base-sepolia.example \
+node operator.mjs \
+  --rpc-url-file /run/credentials/p42/operator/rpc-primary-url \
+  --nonce-rpc-secondary-url-file /run/credentials/p42/operator/rpc-secondary-url \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem ../problems/hadamard-mini \
   --registry-problem-id 1 \
   --runtime /var/lib/p42/operator/hadamard-mini \
   --coordination-root /var/lib/p42/operator-coordination \
+  --sandbox-staging-root /var/lib/p42/operator/hadamard-mini/sandbox-staging \
+  --docker-host unix:///run/p42-docker-hadamard-mini/docker.sock \
+  --operator-private-key-file /run/credentials/p42/operator-private-key \
   --agent-wallet 0x... \
   --challenge-provisioning /var/lib/p42/operator/hadamard-mini/challenge-provisioning.json
 ```
@@ -225,11 +228,9 @@ instance. A `quarantine` candidate is never converted into an on-chain verdict.
 
 ```bash
 cd agent
-ARWEAVE_JWK_JSON='{"kty":"RSA",...}' \
 P42_ARWEAVE_OWNER='<43-character funded wallet address>' \
-P42_TRANSCRIPT_ENDPOINTS='https://arweave.net,https://arweave.dev' \
-RESOLVER_PRIVATE_KEY=0x... node resolver.mjs \
-  --rpc https://sepolia.base.org \
+node resolver.mjs \
+  --rpc-url-file /run/credentials/p42/resolver/rpc-primary-url \
   --manifest ../deployments/base-sepolia/p42-prizes.json \
   --problem-id hadamard-mini \
   --registry-problem-id 1 \
@@ -237,8 +238,12 @@ RESOLVER_PRIVATE_KEY=0x... node resolver.mjs \
   --runtime /var/lib/p42/resolver/hadamard-mini \
   --coordination-root /var/lib/p42/resolver-coordination \
   --quorum-signatures /var/lib/p42/resolver-quorum-signatures \
+  --resolver-private-key-file /run/credentials/p42/resolver-private-key \
+  --arweave-jwk-file /run/credentials/p42/arweave-jwk \
   --agent-wallet 0x... \
-  --transcript-store arweave
+  --transcript-store arweave \
+  --transcript-endpoint https://arweave.net \
+  --transcript-endpoint https://arweave.dev
 ```
 
 The runtime scans from the manifest's deployment start block and only processes

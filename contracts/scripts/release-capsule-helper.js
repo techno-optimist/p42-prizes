@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { constants } from "node:fs";
 import { link, lstat, open, unlink } from "node:fs/promises";
-import { basename, join, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { readStrictJsonFile, readStrictJsonFileSync } from "../../agent/strict-json.mjs";
+import { readStrictJsonFile, readStrictJsonFileSync, readStrictJsonFileSyncWithBytes } from "../../agent/strict-json.mjs";
 
 export const RELEASE_CAPSULE_SCHEMA = "p42-prizes/release-capsule/v2";
+export const SP1_RUNTIME_ATTESTATION_SCHEMA = "p42-prizes/sp1-external-runtime-attestation/v1";
 export const CAPSULE_REBUILD_ATTESTATION_SCHEMA = "p42-capsule-rebuild-attestation/v1";
 export const CANONICAL_REPOSITORY_URI = "https://github.com/techno-optimist/p42-prizes";
 export const CAPSULE_REBUILD_POLICY = Object.freeze({
@@ -44,6 +45,19 @@ const BUILD_INFO_KEYS = ["id", "inputDigest", "outputDigest", "compiler", "setti
 const BINDING_KEYS = ["astId", "name", "type", "ranges"];
 const RANGE_KEYS = ["start", "length"];
 const STRICT_JSON = Object.freeze({ maxBytes: 8 * 1024 * 1024, maxDepth: 256, trailingNewline: "allow" });
+const SP1_RPC_PAIRS = Object.freeze({
+  8453: Object.freeze([
+    Object.freeze({ operator: "base-foundation", endpointOrigin: "https://mainnet.base.org" }),
+    Object.freeze({ operator: "tenderly", endpointOrigin: "https://base.gateway.tenderly.co" }),
+  ]),
+  84532: Object.freeze([
+    Object.freeze({ operator: "base-foundation", endpointOrigin: "https://sepolia.base.org" }),
+    Object.freeze({ operator: "tenderly", endpointOrigin: "https://base-sepolia.gateway.tenderly.co" }),
+  ]),
+});
+const SP1_OFFICIAL_ADDRESS = "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2";
+const SP1_RUNTIME_BYTE_LENGTH = 6741;
+const SP1_RUNTIME_CODEHASH = "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd";
 
 const IMMUTABLE_SEMANTICS = Object.freeze({
   P42MultisigTimelock: Object.freeze(["delay", "overrideDelay", "operationGracePeriod"]),
@@ -178,8 +192,9 @@ export function validateContractArtifact(artifact, buildInput, buildOutput, { ex
   return immutableBindings(artifact, buildOutput);
 }
 
-export async function createReleaseCapsule({ contractsRoot = process.cwd(), gitCommit } = {}) {
+export async function createReleaseCapsule({ contractsRoot = process.cwd(), gitCommit, sp1RuntimeAttestation } = {}) {
   if (!/^[0-9a-f]{40}$/.test(gitCommit ?? "")) throw new Error("release capsule requires a full lowercase git commit");
+  validateSP1RuntimeAttestationBinding(sp1RuntimeAttestation);
   const entries = [];
   const buildInfos = new Map();
   for (const name of PRODUCTION_CONTRACTS) {
@@ -205,6 +220,7 @@ export async function createReleaseCapsule({ contractsRoot = process.cwd(), gitC
     gitCommit,
     contracts: entries,
     externalDependencies: structuredClone(PRODUCTION_EXTERNAL_DEPENDENCIES),
+    sp1RuntimeAttestation: structuredClone(sp1RuntimeAttestation),
     buildInfos: [...buildInfos.values()].sort((a, b) => a.id.localeCompare(b.id)),
   };
   return { ...body, capsuleDigest: canonicalDigest(body) };
@@ -291,10 +307,11 @@ function validateRanges(contract) {
 }
 
 export function validateReleaseCapsule(capsule) {
-  exactKeys(capsule, ["schema", "gitCommit", "contracts", "externalDependencies", "buildInfos", "capsuleDigest"], "release capsule");
+  exactKeys(capsule, ["schema", "gitCommit", "contracts", "externalDependencies", "sp1RuntimeAttestation", "buildInfos", "capsuleDigest"], "release capsule");
   if (capsule.schema !== RELEASE_CAPSULE_SCHEMA || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !DIGEST_RE.test(capsule.capsuleDigest)) throw new Error("invalid release capsule identity");
   if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CONTRACTS.join("\0")) throw new Error("release capsule must contain exactly the eleven production artifacts in canonical order");
   if (canonical(capsule.externalDependencies) !== canonical(PRODUCTION_EXTERNAL_DEPENDENCIES)) throw new Error("release capsule external dependency policy mismatch");
+  validateSP1RuntimeAttestationBinding(capsule.sp1RuntimeAttestation);
   const infos = new Map(capsule.buildInfos.map((info) => [info.id, info]));
   if (infos.size !== capsule.buildInfos.length) throw new Error("duplicate build-info identity");
   for (const info of capsule.buildInfos) {
@@ -318,6 +335,82 @@ export function validateReleaseCapsule(capsule) {
   const { capsuleDigest, ...body } = capsule;
   if (canonicalDigest(body) !== capsuleDigest) throw new Error("release capsule digest mismatch");
   return capsule;
+}
+
+function assertUtcTimestamp(value, label) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) || Number.isNaN(Date.parse(value))) throw new Error(`${label} must be a canonical UTC timestamp`);
+}
+
+function validateSP1Anchor(anchor, label) {
+  exactKeys(anchor, ["blockNumber", "blockHash", "blockTimestamp"], label);
+  if (!Number.isSafeInteger(anchor.blockNumber) || anchor.blockNumber < 1 || !/^0x[0-9a-f]{64}$/.test(anchor.blockHash) || !Number.isSafeInteger(anchor.blockTimestamp) || anchor.blockTimestamp < 1) throw new Error(`${label} is malformed`);
+}
+
+export function validateSP1RuntimeAttestationBinding(binding) {
+  exactKeys(binding, ["schema", "evidenceDigest", "capturedAt", "expiresAt", "chains"], "SP1 runtime attestation binding");
+  if (binding.schema !== SP1_RUNTIME_ATTESTATION_SCHEMA || !DIGEST_RE.test(binding.evidenceDigest)) throw new Error("SP1 runtime attestation binding identity is invalid");
+  assertUtcTimestamp(binding.capturedAt, "SP1 runtime attestation capturedAt");
+  assertUtcTimestamp(binding.expiresAt, "SP1 runtime attestation expiresAt");
+  if (Date.parse(binding.expiresAt) <= Date.parse(binding.capturedAt)) throw new Error("SP1 runtime attestation expiry must follow capture");
+  if (!Array.isArray(binding.chains) || canonical(binding.chains.map(({ chainId }) => chainId)) !== canonical([8453, 84532])) throw new Error("SP1 runtime attestation must bind Base then Base Sepolia in canonical order");
+  for (const chain of binding.chains) {
+    exactKeys(chain, ["chainId", "network", "address", "anchorMode", "finalizedSkewBlocks", "providers", "runtime"], "SP1 runtime attestation chain");
+    const expectedNetwork = chain.chainId === 8453 ? "base" : chain.chainId === 84532 ? "base-sepolia" : null;
+    if (!expectedNetwork || chain.network !== expectedNetwork || chain.address !== SP1_OFFICIAL_ADDRESS || !["agreed-finalized", "provider-specific-finalized"].includes(chain.anchorMode) || !Number.isSafeInteger(chain.finalizedSkewBlocks) || chain.finalizedSkewBlocks < 0 || chain.finalizedSkewBlocks > 128) throw new Error("SP1 runtime attestation chain identity is invalid");
+    if (!Array.isArray(chain.providers) || chain.providers.length !== 2) throw new Error("SP1 runtime attestation chain provider count is invalid");
+    const expectedPairs = SP1_RPC_PAIRS[chain.chainId].map(({ operator, endpointOrigin }) => `${operator}\0${endpointOrigin}`);
+    const observedPairs = chain.providers.map(({ operator, endpointOrigin }) => `${operator}\0${endpointOrigin}`);
+    if (new Set(observedPairs).size !== 2 || expectedPairs.some((pair) => !observedPairs.includes(pair))) throw new Error("SP1 runtime attestation chain providers are not the exact pinned pairs");
+    for (const provider of chain.providers) {
+      exactKeys(provider, ["operator", "endpointOrigin", "finalizedAnchor"], "SP1 runtime attestation provider");
+      if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(provider.operator) || !/^https:\/\/[a-z0-9.-]+(?::[0-9]+)?$/.test(provider.endpointOrigin)) throw new Error("SP1 runtime attestation provider identity is invalid");
+      validateSP1Anchor(provider.finalizedAnchor, "SP1 runtime attestation finalized anchor");
+    }
+    exactKeys(chain.runtime, ["byteLength", "keccak256"], "SP1 runtime attestation runtime");
+    if (chain.runtime.byteLength !== SP1_RUNTIME_BYTE_LENGTH || chain.runtime.keccak256 !== SP1_RUNTIME_CODEHASH) throw new Error("SP1 runtime attestation runtime identity is invalid");
+  }
+  return binding;
+}
+
+export function assertSP1RuntimeAttestationMatches(capsule, verifiedBinding) {
+  validateReleaseCapsule(capsule);
+  validateSP1RuntimeAttestationBinding(verifiedBinding);
+  if (canonical(capsule.sp1RuntimeAttestation) !== canonical(verifiedBinding)) throw new Error("release capsule SP1 runtime attestation does not match the freshly verified artifact");
+  return capsule.sp1RuntimeAttestation;
+}
+
+export function verifySP1RuntimeAttestation({ repoRoot, evidenceRoot, evidencePath, run = execFileSync, python = process.env.P42_PYTHON || "python3" } = {}) {
+  const root = resolve(repoRoot ?? "");
+  const evidence = resolve(evidenceRoot ?? "");
+  const selected = resolve(evidencePath ?? "");
+  const rel = relative(evidence, selected);
+  if (!repoRoot || !evidenceRoot || !evidencePath || !rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("SP1 runtime attestation must be an explicit artifact inside the trusted evidence root");
+  const { bytes: evidenceBytes } = readStrictJsonFileSyncWithBytes(selected, {
+    maxBytes: 2 * 1024 * 1024,
+    maxDepth: 128,
+    canonicalBytes: true,
+    trailingNewline: "require",
+    trustedRoot: evidence,
+    publicFile: true,
+  });
+  const output = run(python, ["-m", "p42_prizes.sp1_runtime_attestation", "verify", "--evidence", "-"], {
+    cwd: root,
+    encoding: "utf8",
+    input: evidenceBytes,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, PYTHONPATH: [join(root, "src"), process.env.PYTHONPATH].filter(Boolean).join(sep) },
+  });
+  let report;
+  try { report = JSON.parse(String(output).trim()); } catch (error) { throw new Error(`SP1 runtime attestation verifier returned invalid JSON: ${error.message}`); }
+  if (report?.ok !== true || report?.schema !== SP1_RUNTIME_ATTESTATION_SCHEMA) throw new Error("SP1 runtime attestation verifier did not return a verified report");
+  const binding = {
+    schema: report.schema,
+    evidenceDigest: report.evidenceDigest,
+    capturedAt: report.capturedAt,
+    expiresAt: report.expiresAt,
+    chains: report.chains,
+  };
+  return validateSP1RuntimeAttestationBinding(binding);
 }
 
 function encodedWord(value, type, length) {

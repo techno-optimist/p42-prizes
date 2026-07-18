@@ -1,19 +1,58 @@
 from __future__ import annotations
 
+import importlib.util
+import os
 from pathlib import Path
+import pwd
 import shutil
+import socket
 import subprocess
+import sys
+import tempfile
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PREFLIGHT_SPEC = importlib.util.spec_from_file_location(
+    "p42_rootless_docker_preflight",
+    ROOT / "scripts/p42_rootless_docker_preflight.py",
+)
+assert PREFLIGHT_SPEC and PREFLIGHT_SPEC.loader
+PREFLIGHT = importlib.util.module_from_spec(PREFLIGHT_SPEC)
+sys.modules[PREFLIGHT_SPEC.name] = PREFLIGHT
+PREFLIGHT_SPEC.loader.exec_module(PREFLIGHT)
+READY_SPEC = importlib.util.spec_from_file_location(
+    "p42_rootless_docker_ready",
+    ROOT / "scripts/p42_rootless_docker_ready.py",
+)
+assert READY_SPEC and READY_SPEC.loader
+READY = importlib.util.module_from_spec(READY_SPEC)
+sys.modules[READY_SPEC.name] = READY
+READY_SPEC.loader.exec_module(READY)
+LAUNCH_SPEC = importlib.util.spec_from_file_location(
+    "p42_rootless_docker_launch",
+    ROOT / "scripts/p42_rootless_docker_launch.py",
+)
+assert LAUNCH_SPEC and LAUNCH_SPEC.loader
+LAUNCH = importlib.util.module_from_spec(LAUNCH_SPEC)
+sys.modules[LAUNCH_SPEC.name] = LAUNCH
+LAUNCH_SPEC.loader.exec_module(LAUNCH)
 FILES = (
     "deployments/p42-runtime.sysusers.example",
     "deployments/p42-operator@.service.example",
     "deployments/p42-resolver@.service.example",
+    "deployments/p42-docker-rootless@.service.example",
+    "deployments/p42-docker-rootless-daemon.json",
+    "deployments/p42-rootless-runtime.apparmor.example",
     "deployments/p42-runtime-failure@.service.example",
+    "agent/runtime-cli-contract.mjs",
+    "agent/runtime-supervisor.mjs",
+    "scripts/verify-runtime-execstart.mjs",
     "scripts/verify-runtime-systemd.sh",
+    "scripts/p42_rootless_docker_preflight.py",
+    "scripts/p42_rootless_docker_ready.py",
+    "scripts/p42_rootless_docker_launch.py",
 )
 
 
@@ -49,10 +88,143 @@ def test_runtime_systemd_templates_pass_static_verifier(tmp_path: Path) -> None:
     assert "runtime systemd templates verified" in result.stdout
 
 
+def test_rootless_preflight_rejects_overlapping_subordinate_ranges(tmp_path: Path) -> None:
+    subuid = tmp_path / "subuid"
+    subgid = tmp_path / "subgid"
+    subuid.write_text("p42-operator:100000:65536\nother:120000:65536\n", encoding="utf-8")
+    subgid.write_text("p42-operator:100000:65536\n", encoding="utf-8")
+
+    with pytest.raises(PREFLIGHT.RootlessDockerPreflightError, match="ranges overlap"):
+        PREFLIGHT.validate_subordinate_id_files(subuid, subgid, "p42-operator")
+
+    subuid.write_text("p42-operator:100000:65536\n", encoding="utf-8")
+    subgid.write_text("p42-operator:200000:65536\nother:220000:65536\n", encoding="utf-8")
+    with pytest.raises(PREFLIGHT.RootlessDockerPreflightError, match="ranges overlap"):
+        PREFLIGHT.validate_subordinate_id_files(subuid, subgid, "p42-operator")
+
+
+def test_rootless_preflight_probes_user_namespace_as_current_service_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subuid = tmp_path / "subuid"
+    subgid = tmp_path / "subgid"
+    subuid.write_text("p42-operator:100000:65536\n", encoding="utf-8")
+    subgid.write_text("p42-operator:200000:65536\n", encoding="utf-8")
+    max_user_namespaces = tmp_path / "max-user-namespaces"
+    max_user_namespaces.write_text("1\n", encoding="ascii")
+    observed_uid = tmp_path / "probe-uid"
+    fake_unshare = tmp_path / "unshare"
+    fake_unshare.write_text(
+        "#!/bin/sh\n"
+        "test \"$1\" = --user || exit 11\n"
+        "test \"$2\" = --map-root-user || exit 12\n"
+        "test \"$3\" = --mount || exit 13\n"
+        "test \"$4\" = --pid || exit 14\n"
+        "test \"$5\" = --fork || exit 15\n"
+        "printf '%s' \"$(id -u)\" > \"$P42_PROBE_UID_FILE\"\n"
+        "test \"$6\" = /usr/bin/true || exit 16\n",
+        encoding="utf-8",
+    )
+    fake_unshare.chmod(0o700)
+    monkeypatch.setenv("P42_PROBE_UID_FILE", str(observed_uid))
+
+    PREFLIGHT.run_preflight(
+        "p42-operator",
+        subuid=subuid,
+        subgid=subgid,
+        unshare=fake_unshare,
+        max_user_namespaces=max_user_namespaces,
+    )
+
+    assert observed_uid.read_text(encoding="ascii") == str(os.geteuid())
+
+
+def test_rootless_readiness_requires_identity_and_rootless_security() -> None:
+    valid = '{"ID":"daemon-id","Name":"p42","ServerVersion":"29.2.1","SecurityOptions":["name=seccomp","name=rootless"],"CgroupDriver":"systemd"}'
+    assert READY.validate_docker_info(valid)["ID"] == "daemon-id"
+    with pytest.raises(READY.RootlessDockerReadyError, match="name=rootless"):
+        READY.validate_docker_info(valid.replace(',"name=rootless"', ""))
+    with pytest.raises(READY.RootlessDockerReadyError, match="nonempty ID"):
+        READY.validate_docker_info(valid.replace("daemon-id", ""))
+    with pytest.raises(READY.RootlessDockerReadyError, match="systemd cgroup"):
+        READY.validate_docker_info(valid.replace('"systemd"', '"none"'))
+
+
+def test_rootless_readiness_binds_socket_owner_and_exact_endpoint() -> None:
+    with tempfile.TemporaryDirectory(prefix="p42-ready-", dir="/tmp") as directory:
+        root = Path(directory)
+        endpoint = root / "docker.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(endpoint))
+        docker = root / "docker"
+        observed = root / "args"
+        docker.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$@\" > {observed}\n"
+            "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42\",\"ServerVersion\":\"29.2.1\",\"SecurityOptions\":[\"name=rootless\"],\"CgroupDriver\":\"systemd\"}'\n",
+            encoding="utf-8",
+        )
+        docker.chmod(0o700)
+        try:
+            assert READY.probe_ready(endpoint, docker, os.getuid())["Name"] == "p42"
+        finally:
+            listener.close()
+        assert observed.read_text(encoding="utf-8").splitlines() == [
+            "--host",
+            f"unix://{endpoint}",
+            "info",
+            "--format",
+            "{{json .}}",
+        ]
+
+
+def test_rootless_launcher_requires_private_user_manager_authority() -> None:
+    with tempfile.TemporaryDirectory(prefix="p42-launch-", dir="/tmp") as directory:
+        root = Path(directory)
+        record = pwd.getpwuid(os.getuid())
+        runtime = root / str(record.pw_uid)
+        runtime.mkdir(mode=0o700)
+        bus = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        bus.bind(str(runtime / "bus"))
+        try:
+            resolved, resolved_runtime, resolved_bus = LAUNCH.resolve_user_runtime(record.pw_name, root)
+            assert resolved.pw_uid == record.pw_uid
+            assert resolved_runtime == runtime
+            assert resolved_bus == runtime / "bus"
+            runtime.chmod(0o755)
+            with pytest.raises(LAUNCH.RootlessDockerLaunchError, match="group/world accessible"):
+                LAUNCH.resolve_user_runtime(record.pw_name, root)
+        finally:
+            bus.close()
+
+
+def test_rootless_launcher_rejects_an_unbound_command() -> None:
+    with pytest.raises(LAUNCH.RootlessDockerLaunchError, match="launcher command"):
+        LAUNCH.launch("unused", ["/usr/bin/true"])
+
+
 @pytest.mark.parametrize(
     ("relative", "old", "new", "error"),
     [
         ("deployments/p42-operator@.service.example", "User=p42-operator", "User=root", "User=p42-operator"),
+        (
+            "deployments/p42-docker-rootless@.service.example",
+            "User=p42-operator",
+            "User=root",
+            "User=p42-operator",
+        ),
+        (
+            "deployments/p42-docker-rootless@.service.example",
+            "Conflicts=docker.service docker.socket",
+            "Conflicts=docker.service",
+            "Conflicts=docker.service docker.socket",
+        ),
+            (
+                "deployments/p42-docker-rootless@.service.example",
+                "/usr/bin/dockerd-rootless.sh --host",
+                "/usr/bin/dockerd --host",
+                "dockerd-rootless.sh",
+            ),
         (
             "deployments/p42-resolver@.service.example",
             "ReadWritePaths=/var/lib/p42/resolver/%i /var/lib/p42/resolver/coordination",
@@ -84,6 +256,54 @@ def test_runtime_systemd_templates_pass_static_verifier(tmp_path: Path) -> None:
             "ExecStart=/usr/local/bin/p42-runtime-supervisor",
             "ExecStart=+/usr/local/bin/p42-runtime-supervisor",
             "must not use privileged command prefixes",
+        ),
+        (
+            "deployments/p42-operator@.service.example",
+            "  --agent-wallet ${P42_AGENT_WALLET_ADDRESS} \\",
+            "  --agent-wallet-removed ${P42_AGENT_WALLET_ADDRESS} \\",
+            "--agent-wallet must be provided exactly once",
+        ),
+        (
+            "deployments/p42-operator@.service.example",
+            "  --challenge-provisioning /etc/p42/operator/%i/challenge-provisioning.json \\",
+            "  --challenge-provisioning-removed /etc/p42/operator/%i/challenge-provisioning.json \\",
+            "--challenge-provisioning must be provided exactly once",
+        ),
+        (
+            "deployments/p42-operator@.service.example",
+            "  --sandbox-staging-root /var/lib/p42/operator/%i/sandbox-staging \\",
+            "  --sandbox-staging-root-removed /var/lib/p42/operator/%i/sandbox-staging \\",
+            "--sandbox-staging-root must be provided exactly once",
+        ),
+        (
+            "deployments/p42-operator@.service.example",
+            "  --operator-private-key-file ${CREDENTIALS_DIRECTORY}/operator-private-key \\",
+            "  --operator-private-key-file-removed ${CREDENTIALS_DIRECTORY}/operator-private-key \\",
+            "--operator-private-key-file must be provided exactly once",
+        ),
+        (
+            "deployments/p42-resolver@.service.example",
+            "  --quorum-signatures /var/lib/p42/resolver/%i/quorum-signatures \\",
+            "  --quorum-signatures-removed /var/lib/p42/resolver/%i/quorum-signatures \\",
+            "--quorum-signatures must be provided exactly once",
+        ),
+        (
+            "deployments/p42-resolver@.service.example",
+            "  --resolver-private-key-file ${CREDENTIALS_DIRECTORY}/resolver-private-key \\",
+            "  --resolver-private-key-file-removed ${CREDENTIALS_DIRECTORY}/resolver-private-key \\",
+            "--resolver-private-key-file must be provided exactly once",
+        ),
+        (
+            "deployments/p42-resolver@.service.example",
+            "  --arweave-jwk-file ${CREDENTIALS_DIRECTORY}/arweave-jwk \\",
+            "  --arweave-jwk-file-removed ${CREDENTIALS_DIRECTORY}/arweave-jwk \\",
+            "--arweave-jwk-file must be provided exactly once",
+        ),
+        (
+            "deployments/p42-resolver@.service.example",
+            "  --transcript-store arweave \\",
+            "  --transcript-store-removed arweave \\",
+            "configure exactly one of --transcript-store or --publication-receipts",
         ),
     ],
 )

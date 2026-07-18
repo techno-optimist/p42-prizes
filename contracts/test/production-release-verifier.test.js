@@ -32,6 +32,7 @@ function args(paths, overrides = {}) {
     capsulePath: join(paths.outputRoot, "capsules", "capsule.json"),
     slatePath: join(paths.outputRoot, "slates", "slate.json"),
     releaseIndexPath: join(paths.outputRoot, "releases", "index.json"),
+    sp1RuntimeAttestationPath: join(paths.evidenceRoot, "sp1-runtime.json"),
     expectedDeployer: `0x${"1".repeat(40)}`,
     ...overrides,
   };
@@ -39,7 +40,7 @@ function args(paths, overrides = {}) {
 
 function dependencies(events, { dirtyAtStatusCall, indexCapsuleDigest = CAPSULE, boardCount = 10 } = {}) {
   let statusCalls = 0;
-  const capsule = { gitCommit: COMMIT, capsuleDigest: CAPSULE };
+  const capsule = { gitCommit: COMMIT, capsuleDigest: CAPSULE, sp1RuntimeAttestation: { evidenceDigest: `sha256:${"e".repeat(64)}` } };
   const slate = {
     sourceCommit: COMMIT,
     generatedAt: "2026-07-12T00:00:00Z",
@@ -61,6 +62,8 @@ function dependencies(events, { dirtyAtStatusCall, indexCapsuleDigest = CAPSULE,
     validateSlate() { events.push("validate-slate"); },
     validateIndex() { events.push("validate-index"); },
     async attestCapsule() { events.push("attest-capsule"); },
+    verifyRuntimeAttestation() { events.push("verify-runtime-attestation"); return { verified: true }; },
+    assertRuntimeAttestationMatches() { events.push("bind-runtime-attestation"); },
     assertObjectiveVerifierBinding() { events.push("bind-objective-verifier"); },
     preflightSlate() {
       events.push("preflight-slate");
@@ -73,9 +76,10 @@ describe("offline production release verification", () => {
   it("re-attests and admits the exact indexed release without deployment credentials", async () => fixture(async (paths) => {
     const events = [];
     const report = await verifyProductionRelease({ ...args(paths), ...dependencies(events) });
-    assert.deepEqual(events, ["parse-ceremony", "validate-capsule", "validate-slate", "validate-index", "attest-capsule", "bind-objective-verifier", "preflight-slate"]);
+    assert.deepEqual(events, ["parse-ceremony", "validate-capsule", "validate-slate", "validate-index", "verify-runtime-attestation", "bind-runtime-attestation", "attest-capsule", "bind-objective-verifier", "preflight-slate"]);
     assert.equal(report.status, "verified");
     assert.equal(report.releaseIndexDigest, INDEX);
+    assert.equal(report.sp1RuntimeAttestationDigest, `sha256:${"e".repeat(64)}`);
     assert.match(report.ceremonyConfigDigest, /^sha256:[0-9a-f]{64}$/);
     assert.match(report.verificationReportDigest, /^sha256:[0-9a-f]{64}$/);
     assert.equal(report.objectiveProofsActive, false);
@@ -131,6 +135,7 @@ describe("offline production release verification", () => {
       P42_MULTIBOARD_CEREMONY_CONFIG: "ceremony.json", P42_RELEASE_EVIDENCE_ROOT: "/evidence",
       P42_RELEASE_OUTPUT_ROOT: "/output", P42_RELEASE_CAPSULE: "capsule.json",
       P42_PRODUCTION_SLATE_PATH: "slate.json", P42_PRODUCTION_RELEASE_INDEX_PATH: "index.json",
+      P42_SP1_RUNTIME_ATTESTATION_PATH: "sp1-runtime.json",
       P42_EXPECTED_DEPLOYER_ADDRESS: `0x${"1".repeat(40)}`,
     };
     assert.deepEqual(requiredReleaseVerificationEnvironment(complete), complete);

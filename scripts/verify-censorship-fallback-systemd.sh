@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-command -v systemd-analyze >/dev/null
+if command -v systemd-analyze >/dev/null 2>&1; then
 
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
@@ -37,3 +37,9 @@ if grep -Eqi 'ignor(ed|ing)|unknown lvalue|has no effect|not an absolute path|fa
   exit 1
 fi
 cat "$output"
+else
+  printf 'systemd-analyze unavailable; skipped native censorship unit parse\n'
+fi
+
+# This script is the systemd aggregate already invoked by the agent CI job.
+bash "$repo_root/scripts/verify-runtime-systemd.sh"
