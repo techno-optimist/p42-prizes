@@ -68,8 +68,8 @@ function fundingTargetResults() {
   return EXPECTED_BOARD_MANIFEST.boards.flatMap(({ slug }) => {
     const payload = validFundingTarget(slug);
     return [
-      result(`funding-target:${slug}`, "render", "render json", payload),
-      result(`funding-target:${slug}`, "public", "public json", structuredClone(payload)),
+      result(`funding-target-${slug}`, "render", "render json", payload),
+      result(`funding-target-${slug}`, "public", "public json", structuredClone(payload)),
     ];
   });
 }
@@ -346,7 +346,7 @@ test("capabilities probe requires the secret-free fail-closed production state",
 
 test("funding-target probes require exact fail-closed v3 envelopes", () => {
   const slug = EXPECTED_BOARD_MANIFEST.boards[0].slug;
-  const routeId = `funding-target:${slug}`;
+  const routeId = `funding-target-${slug}`;
   const expected = validFundingTarget(slug);
   assert.deepEqual(
     validateProbeBody(routeId, JSON.stringify(expected), contentTypes.json),

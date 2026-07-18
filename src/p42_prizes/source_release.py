@@ -41,9 +41,9 @@ GUARD_COMMAND = ("node", "scripts/verify-render-release.mjs")
 GUARD_PROGRAM_PATH = "scripts/verify-render-release.mjs"
 WORKFLOW_CLOSURE_ALGORITHM = "p42-git-ls-tree-closure/v1"
 WORKFLOW_CLOSURE_ROOTS = (".",)
-GUARD_POLICY_EXPORT_SCRIPT = """import { PROBE_ROUTES } from './scripts/verify-render-release.mjs';
+GUARD_POLICY_EXPORT_SCRIPT = """import { releaseGuardRoutes } from './scripts/verify-render-release.mjs';
 const origins = {render: 'https://p42-prizes.onrender.com', public: 'https://projectforty2.ai'};
-const rows = PROBE_ROUTES.flatMap((route) => route.origins.map((origin) => ({
+const rows = releaseGuardRoutes().flatMap((route) => route.origins.map((origin) => ({
   routeId: route.id, origin, url: new URL(route.path, origins[origin]).toString()
 })));
 process.stdout.write(JSON.stringify(rows));"""
@@ -77,7 +77,31 @@ REQUIRED_V3_PROBES = (
     ("intro", "render", "https://p42-prizes.onrender.com/prizes/intro"),
     ("intro", "public", "https://projectforty2.ai/prizes/intro"),
     *REQUIRED_PROBES[2:],
+    *(
+        (
+            f"funding-target-{slug}",
+            origin,
+            f"{base}/prizes/api/problems/{slug}/funding-target",
+        )
+        for slug in (
+            "q6-intersecting-hypergraph",
+            "erdos-min-overlap",
+            "edges-vs-triangles",
+            "arithmetic-kakeya",
+            "autoconvolution-c1-upper",
+            "autoconvolution-c2-lower",
+            "distinct-subset-sums-a11",
+            "mertens-lp-ceiling-k12000",
+            "pnt-sparse-mertens-construction",
+            "hadamard-668-defect",
+        )
+        for origin, base in (
+            ("render", "https://p42-prizes.onrender.com"),
+            ("public", "https://projectforty2.ai"),
+        )
+    ),
 )
+SOURCE_RELEASE_V3_PROBE_COUNT = len(REQUIRED_V3_PROBES)
 DEPLOY_RELEVANT_PATHS = ("web", "render.yaml")
 BOARD_MANIFEST_PATH = Path("scripts/release-guard-problems-v1.json")
 GUARD_SUPPORT_PATHS = (BOARD_MANIFEST_PATH.as_posix(),)
@@ -1555,7 +1579,9 @@ def _validate_trust_policy(
         for route, origin, url in REQUIRED_V3_PROBES
     ]
     if probe_rows != expected_probe_rows:
-        raise SourceReleaseEvidenceError("trust policy must pin the exact 12-probe policy")
+        raise SourceReleaseEvidenceError(
+            f"trust policy must pin the exact {SOURCE_RELEASE_V3_PROBE_COUNT}-probe policy"
+        )
     workflow = _mapping(policy.get("workflow"), "trust policy workflow")
     _require_exact_keys(
         workflow,
@@ -2380,10 +2406,17 @@ def _validate_v3_probes(
             raise SourceReleaseEvidenceError("every v3 release probe must bind a content type")
         if not isinstance(probe.get("finalUrl"), str) or not probe["finalUrl"]:
             raise SourceReleaseEvidenceError("every v3 release probe must bind a final URL")
-    if identities != expected or len(probes) != 12:
-        raise SourceReleaseEvidenceError("v3 releaseGuard must contain the exact ordered 12-probe policy")
-    if guard.get("requiredRoutes") != 12 or guard.get("healthyRoutes") != 12:
-        raise SourceReleaseEvidenceError("v3 releaseGuard route counts must equal 12")
+    if identities != expected or len(probes) != SOURCE_RELEASE_V3_PROBE_COUNT:
+        raise SourceReleaseEvidenceError(
+            f"v3 releaseGuard must contain the exact ordered {SOURCE_RELEASE_V3_PROBE_COUNT}-probe policy"
+        )
+    if (
+        guard.get("requiredRoutes") != SOURCE_RELEASE_V3_PROBE_COUNT
+        or guard.get("healthyRoutes") != SOURCE_RELEASE_V3_PROBE_COUNT
+    ):
+        raise SourceReleaseEvidenceError(
+            f"v3 releaseGuard route counts must equal {SOURCE_RELEASE_V3_PROBE_COUNT}"
+        )
 
 
 def _validate_live_guard_semantics(
@@ -2589,16 +2622,16 @@ def _validate_v3_online(
         ) from exc
     if exported_probe_policy != policy["requiredProbes"]:
         raise SourceReleaseEvidenceError(
-            "committed guard routes differ from the signed 12-probe policy"
+            f"committed guard routes differ from the signed {SOURCE_RELEASE_V3_PROBE_COUNT}-probe policy"
         )
     guard_output = command_runner(list(GUARD_COMMAND), root)
     expected_guard_lines = {
-        "routes: 12/12 healthy",
+        f"routes: {SOURCE_RELEASE_V3_PROBE_COUNT}/{SOURCE_RELEASE_V3_PROBE_COUNT} healthy",
         f"board projection: {report['releaseGuard']['boardProjection']}",
     }
     if any(expected not in guard_output for expected in expected_guard_lines):
         raise SourceReleaseEvidenceError(
-            "committed canonical guard did not attest its 12-probe deep-check policy"
+            f"committed canonical guard did not attest its {SOURCE_RELEASE_V3_PROBE_COUNT}-probe deep-check policy"
         )
     _validate_live_guard_semantics(report, policy, detailed_url_reader)
 

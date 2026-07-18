@@ -244,7 +244,7 @@ export function probeUrls(renderOrigin, publicOrigin) {
 
 function fundingTargetRoutes() {
   return EXPECTED_BOARD_MANIFEST.boards.map((board) => Object.freeze({
-    id: `funding-target:${board.slug}`,
+    id: `funding-target-${board.slug}`,
     path: `/prizes/api/problems/${encodeURIComponent(board.slug)}/funding-target`,
     kind: "funding-target-json",
     slug: board.slug,
@@ -252,13 +252,13 @@ function fundingTargetRoutes() {
   }));
 }
 
-function configuredRoutes() {
+export function releaseGuardRoutes() {
   return [...PROBE_ROUTES, ...fundingTargetRoutes()];
 }
 
 function configuredProbes(renderOrigin, publicOrigin) {
   const origins = { render: renderOrigin, public: publicOrigin };
-  return configuredRoutes().flatMap((route) => route.origins.map((origin) => ({
+  return releaseGuardRoutes().flatMap((route) => route.origins.map((origin) => ({
     route,
     origin,
     url: new URL(route.path, origins[origin]).toString(),
@@ -454,7 +454,7 @@ function parseJson(body, route) {
 }
 
 export function validateProbeBody(routeId, body, contentType) {
-  const route = configuredRoutes().find((candidate) => candidate.id === routeId);
+  const route = releaseGuardRoutes().find((candidate) => candidate.id === routeId);
   if (!route) {
     throw new Error(`Unknown probe route: ${routeId}`);
   }
@@ -493,7 +493,7 @@ export function validateProbeBody(routeId, body, contentType) {
 }
 
 export function assertProbeEquivalence(results) {
-  for (const route of configuredRoutes().filter((candidate) => candidate.origins.length === 2)) {
+  for (const route of releaseGuardRoutes().filter((candidate) => candidate.origins.length === 2)) {
     const render = results.find((result) => result.route.id === route.id && result.origin === "render");
     const publicResult = results.find(
       (result) => result.route.id === route.id && result.origin === "public",
