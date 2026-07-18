@@ -29,6 +29,9 @@ function args(paths, overrides = {}) {
   return {
     ethers: {}, ...paths,
     ceremonyConfigPath: join(paths.evidenceRoot, "ceremony.json"),
+    imageDossierSha256: `sha256:${"f".repeat(64)}`,
+    publicationJournalPath: join(paths.evidenceRoot, "publication-journal.json"),
+    publicationJournalSha256: `sha256:${"9".repeat(64)}`,
     capsulePath: join(paths.outputRoot, "capsules", "capsule.json"),
     slatePath: join(paths.outputRoot, "slates", "slate.json"),
     releaseIndexPath: join(paths.outputRoot, "releases", "index.json"),
@@ -133,6 +136,9 @@ describe("offline production release verification", () => {
   it("requires every explicit verification input but no private key", () => {
     const complete = {
       P42_MULTIBOARD_CEREMONY_CONFIG: "ceremony.json", P42_RELEASE_EVIDENCE_ROOT: "/evidence",
+      P42_PRODUCTION_IMAGE_DOSSIER_SHA256: `sha256:${"f".repeat(64)}`,
+      P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH: "publication-journal.json",
+      P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256: `sha256:${"9".repeat(64)}`,
       P42_RELEASE_OUTPUT_ROOT: "/output", P42_RELEASE_CAPSULE: "capsule.json",
       P42_PRODUCTION_SLATE_PATH: "slate.json", P42_PRODUCTION_RELEASE_INDEX_PATH: "index.json",
       P42_SP1_RUNTIME_ATTESTATION_PATH: "sp1-runtime.json",

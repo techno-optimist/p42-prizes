@@ -154,9 +154,10 @@ PYTHONPATH=src python3 -m p42_prizes.cli admit-release-ready \
   --publication-journal-sha256 sha256:<independent-journal-file-digest>
 ```
 
-`admit-ready` remains the matrix-only preflight used by the current ceremony;
-it is not sufficient to activate a v2 image release. Integration must switch
-the ceremony to `admit-release-ready` before funding can rely on this model.
+`admit-ready` remains a matrix-only preflight and is not sufficient to activate
+a v2 image release. Canonical contract release preparation, offline
+verification, and production deployment use `admit-release-ready` with both
+independent file pins and the exact `R` checkout.
 
 `admit-ready` permanently rejects the `hadamard-mini` Phase 0 demo fixture and
 the current signed C3 package, even if a caller supplies an immutable image and

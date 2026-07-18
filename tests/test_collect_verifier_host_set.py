@@ -75,7 +75,7 @@ def _runtime_report(
         "verifier_image": DIGEST_A,
         "verifier_version": "1.0.0",
     }
-    return {
+    report = {
         "verifier_source_commit": "a" * 40,
         "release_config_commit": "b" * 40,
         "execution_nonce": sha256_bytes(f"nonce-{slug}-{platform}".encode()).removeprefix("sha256:"),
@@ -96,8 +96,23 @@ def _runtime_report(
             },
         },
         "execution": {"verdict": verdict},
-        "rehearsal_hash": sha256_bytes(f"{slug}-{platform}".encode()),
+        "result": {"succeeded": True},
     }
+    report["rehearsal_hash"] = sha256_bytes(canonical_json(report).encode())
+    return report
+
+
+def _reseal_runtime_report(report: dict) -> None:
+    report.pop("rehearsal_hash", None)
+    report["rehearsal_hash"] = sha256_bytes(canonical_json(report).encode())
+
+
+def _validate_synthetic_runtime_report(report, _release_board):
+    body = copy.deepcopy(report)
+    supplied = body.pop("rehearsal_hash", None)
+    if supplied != sha256_bytes(canonical_json(body).encode()):
+        raise RuntimeAdmissionError("synthetic runtime rehearsal hash mismatch")
+    return report
 
 
 def _evidence(
@@ -309,8 +324,8 @@ def _signed_host_set(tmp_path: Path):
         fixture = {"slug": slug, "path": f"problems/{slug}/fixture.json", "sha256": fixture_sha}
         first = _runtime_report(slug=slug, solution=fixture_sha)
         second = copy.deepcopy(first)
-        second["rehearsal_hash"] = sha256_bytes(f"second-{slug}".encode())
         second["execution_nonce"] = sha256_bytes(f"second-nonce-{slug}".encode()).removeprefix("sha256:")
+        _reseal_runtime_report(second)
         evidence = build_host_evidence_from_pair(
             fixture,
             [first, second],
@@ -323,15 +338,24 @@ def _signed_host_set(tmp_path: Path):
         fixtures["fixtures"].append(fixture)
         dossier["boards"].append({"slug": slug, "source_hash": DIGEST_C, "index_digest": DIGEST_A})
         artifacts[filename] = evidence
+        rehearsal_refs = []
+        for run_index, report in enumerate((first, second), start=1):
+            report_path = f"{slug}.runtime-rehearsal-{run_index}.json"
+            artifacts[report_path] = report
+            rehearsal_refs.append({
+                "path": report_path,
+                "file_sha256": sha256_bytes((canonical_json(report) + "\n").encode()),
+                "rehearsal_hash": report["rehearsal_hash"],
+            })
         board_index.append({
             "slug": slug,
             "fixture": {"path": fixture["path"], "sha256": fixture_sha},
-            "rehearsal_hashes": [first["rehearsal_hash"], second["rehearsal_hash"]],
+            "runtime_rehearsals": rehearsal_refs,
             "evidence_path": filename,
             "evidence_hash": evidence["evidence_hash"],
         })
     index = {
-        "schema_version": "p42-admission-host-set/v2",
+        "schema_version": "p42-admission-host-set/v3",
         "generated_at_utc": "2026-07-14T00:00:00Z",
         "dossier": {
             "path": "/independent/release.json",
@@ -374,6 +398,7 @@ def test_validate_host_set_rederives_all_ten_external_bindings(tmp_path: Path) -
         expected_host=index["host"],
         expected_key_fingerprint=index["attestation"]["key_fingerprint"],
         expected_runtime="docker",
+        runtime_report_validator=_validate_synthetic_runtime_report,
     )
 
     tampered_fixtures = copy.deepcopy(fixtures)
@@ -390,6 +415,7 @@ def test_validate_host_set_rederives_all_ten_external_bindings(tmp_path: Path) -
             expected_host=index["host"],
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
     oversized_dossier = copy.deepcopy(dossier)
@@ -406,6 +432,7 @@ def test_validate_host_set_rederives_all_ten_external_bindings(tmp_path: Path) -
             expected_host=index["host"],
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
 
@@ -423,6 +450,7 @@ def test_reconcile_accepts_only_complete_existing_signed_bundle(tmp_path: Path) 
         expected_host=index["host"],
         expected_key_fingerprint=index["attestation"]["key_fingerprint"],
         expected_runtime="docker",
+        runtime_report_validator=_validate_synthetic_runtime_report,
     ) == index
 
     wrong_host = dict(index["host"])
@@ -438,6 +466,7 @@ def test_reconcile_accepts_only_complete_existing_signed_bundle(tmp_path: Path) 
             expected_host=wrong_host,
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
     with pytest.raises(RuntimeAdmissionError, match="requested admission key"):
         reconcile_published_host_set(
@@ -450,6 +479,7 @@ def test_reconcile_accepts_only_complete_existing_signed_bundle(tmp_path: Path) 
             expected_host=index["host"],
             expected_key_fingerprint="SHA256:not-the-host-key",
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
     (output / "unexpected").write_text("not evidence", encoding="utf-8")
@@ -464,12 +494,13 @@ def test_reconcile_accepts_only_complete_existing_signed_bundle(tmp_path: Path) 
             expected_host=index["host"],
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
 
 def test_validate_host_set_rejects_rehashed_unsigned_index_mutation(tmp_path: Path) -> None:
     index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
-    index["boards"][0]["rehearsal_hashes"][0] = DIGEST_C
+    index["boards"][0]["runtime_rehearsals"][0]["rehearsal_hash"] = DIGEST_C
     payload = dict(index)
     payload.pop("host_set_hash")
     payload.pop("attestation")
@@ -487,6 +518,91 @@ def test_validate_host_set_rejects_rehashed_unsigned_index_mutation(tmp_path: Pa
             expected_host=index["host"],
             expected_key_fingerprint=index["attestation"]["key_fingerprint"],
             expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+def test_validate_host_set_rejects_missing_raw_rehearsal(tmp_path: Path) -> None:
+    index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
+    missing = index["boards"][3]["runtime_rehearsals"][1]["path"]
+    artifacts.pop(missing)
+    with pytest.raises(RuntimeAdmissionError, match="raw rehearsal is missing"):
+        validate_host_set(
+            index, artifacts, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+def test_validate_host_set_rejects_tampered_raw_rehearsal(tmp_path: Path) -> None:
+    index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
+    path = index["boards"][4]["runtime_rehearsals"][0]["path"]
+    artifacts[path]["execution"]["verdict"]["score"] = "999/1"
+    with pytest.raises(RuntimeAdmissionError, match="file hash mismatch"):
+        validate_host_set(
+            index, artifacts, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+def test_validate_host_set_rejects_orphan_raw_rehearsal(tmp_path: Path) -> None:
+    index, artifacts, dossier, fixtures = _signed_host_set(tmp_path)
+    artifacts["orphan.runtime-rehearsal-1.json"] = copy.deepcopy(
+        artifacts[index["boards"][0]["runtime_rehearsals"][0]["path"]]
+    )
+    with pytest.raises(RuntimeAdmissionError, match="orphan or unindexed"):
+        validate_host_set(
+            index, artifacts, root=ROOT, dossier=dossier, fixtures=fixtures,
+            dossier_sha256=DIGEST_A, fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
+        )
+
+
+@pytest.mark.parametrize("attack", ["missing", "tampered", "orphan"])
+def test_reconcile_rejects_invalid_published_raw_rehearsal(
+    tmp_path: Path, attack: str,
+) -> None:
+    work = tmp_path / attack
+    work.mkdir()
+    index, artifacts, dossier, fixtures = _signed_host_set(work)
+    output = work / "published-host-set"
+    publish_host_set(output, list(artifacts.items()), index)
+    raw_path = index["boards"][2]["runtime_rehearsals"][0]["path"]
+    if attack == "missing":
+        (output / raw_path).unlink()
+        expected = "unexpected file set"
+    elif attack == "tampered":
+        report = copy.deepcopy(artifacts[raw_path])
+        report["execution"]["verdict"]["score"] = "999/1"
+        (output / raw_path).write_text(canonical_json(report) + "\n", encoding="utf-8")
+        expected = "file hash mismatch"
+    else:
+        (output / "orphan.runtime-rehearsal-1.json").write_text(
+            canonical_json(artifacts[raw_path]) + "\n", encoding="utf-8"
+        )
+        expected = "unexpected file set"
+    with pytest.raises(RuntimeAdmissionError, match=expected):
+        reconcile_published_host_set(
+            output,
+            root=ROOT,
+            dossier=dossier,
+            fixtures=fixtures,
+            dossier_sha256=DIGEST_A,
+            fixture_sha256=DIGEST_B,
+            expected_host=index["host"],
+            expected_key_fingerprint=index["attestation"]["key_fingerprint"],
+            expected_runtime="docker",
+            runtime_report_validator=_validate_synthetic_runtime_report,
         )
 
 

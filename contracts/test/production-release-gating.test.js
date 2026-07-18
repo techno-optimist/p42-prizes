@@ -8,7 +8,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { keccak256, toUtf8Bytes } from "ethers";
 
-import { PRODUCTION_LAUNCH_SLUGS, bindReleaseMode, createProductionReleaseIndex, createProductionReleaseSlate, publishProductionReleaseIndex, publishProductionReleaseSlate, releaseBoardIdentity, validateProductionBoardEvidence, validateProductionReleaseIndex, validateProductionReleaseSlate, validateProductionSlatePreflight, validateVerifierImageReleaseDossier } from "../scripts/multiboard-ceremony-helper.js";
+import { PRODUCTION_LAUNCH_SLUGS, bindReleaseMode, createProductionReleaseIndex, createProductionReleaseSlate, publishProductionReleaseIndex, publishProductionReleaseSlate, releaseBoardIdentity, runAdmitReleaseReadyCommand, validateProductionBoardEvidence, validateProductionReleaseIndex, validateProductionReleaseSlate, validateProductionSlatePreflight, validateVerifierImageReleaseDossier } from "../scripts/multiboard-ceremony-helper.js";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const fixture = JSON.parse(readFileSync(resolve(ROOT, "contracts/test/fixtures/multiboard-ceremony-10.json"), "utf8"));
@@ -48,11 +48,15 @@ const syntheticSlate = () => reseal({
 });
 const clone = structuredClone;
 const imageDossier = (slate) => {
+  const verifierSourceCommit = "a".repeat(40);
   const body = {
-    schema_version: "p42-verifier-image-release/v1",
+    schema_version: "p42-verifier-image-release/v2",
     published_at_utc: "2026-07-11T00:00:00Z",
-    source_commit: slate.sourceCommit,
-    source_archive_digest: digest("archive"),
+    identity_model: "verifier-source-plus-release-config/v1",
+    verifier_source_commit: verifierSourceCommit,
+    verifier_source_archive_digest: digest("source-archive"),
+    release_config_commit: slate.sourceCommit,
+    release_config_archive_digest: digest("release-archive"),
     registry_base: "registry.example/p42/verifiers",
     platforms: ["linux/amd64", "linux/arm64"],
     boards: slate.boards.map((board) => ({
@@ -71,7 +75,7 @@ const imageDossier = (slate) => {
         config_size: 200 + index,
         layer_count: 1,
         labels: {
-          "org.opencontainers.image.revision": slate.sourceCommit,
+          "org.opencontainers.image.revision": verifierSourceCommit,
           "io.projectforty2.verifier.source-sha256": board.verifierSourceDigest,
           "io.projectforty2.verifier.source-algorithm": "p42-source-tree-sha256/v2",
           "io.projectforty2.verifier.problem-id": board.problemSlug,
@@ -79,12 +83,18 @@ const imageDossier = (slate) => {
         },
         runtime: { user: "65534:65534", workdir: `/repo/problems/${board.problemSlug}`, entrypoint: null, cmd: [] },
       })),
+      release_manifest_path: `problems/${board.problemSlug}/problem.yaml`,
+      release_manifest_sha256: digest(`${board.problemSlug}-problem-yaml`),
     })),
-    manifest_mutation: "none",
     publication_journal_hash: digest("journal"),
   };
   return { ...body, dossier_hash: digest(canonical(body)) };
 };
+const publicationJournal = (dossier) => ({
+  schema_version: "p42-verifier-image-publish-journal/v2",
+  verifier_source_commit: dossier.verifier_source_commit,
+  journal_hash: dossier.publication_journal_hash,
+});
 
 describe("exact-ten production release slate", () => {
   it("loads the one frozen source-cohort authority", () => {
@@ -154,6 +164,10 @@ describe("exact-ten production release slate", () => {
       await writeFile(join(evidenceRoot, slate.imageRegistry.path), registryBytes);
       await chmod(join(evidenceRoot, slate.imageRegistry.path), 0o600);
       slate.imageRegistry.digest = `sha256:${createHash("sha256").update(registryBytes).digest("hex")}`;
+      const journalPath = "release/publication-journal.json";
+      const journalBytes = Buffer.from(`${canonical(publicationJournal(registry))}\n`);
+      await writeFile(join(evidenceRoot, journalPath), journalBytes);
+      await chmod(join(evidenceRoot, journalPath), 0o600);
       await writeFile(join(evidenceRoot, slate.objectiveVerifier.artifactPath), objectiveVerifierArtifactBytes);
       await chmod(join(evidenceRoot, slate.objectiveVerifier.artifactPath), 0o600);
       for (const board of slate.boards) {
@@ -164,30 +178,39 @@ describe("exact-ten production release slate", () => {
         await chmod(join(evidenceRoot, board.objectiveGuestElfPath), 0o600);
       }
       const ready = reseal(slate); const config = { roles: { objectiveVerifierCodehash: objectiveVerifierRuntimeCodehash }, problems: ready.boards.map(releaseBoardIdentity) };
-      assert.equal(validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }).length, 10);
+      const preflightOptions = {
+        repoRoot,
+        evidenceRoot,
+        imageDossierSha256: slate.imageRegistry.digest,
+        publicationJournalPath: journalPath,
+        publicationJournalSha256: `sha256:${createHash("sha256").update(journalBytes).digest("hex")}`,
+      };
+      assert.equal(validateProductionSlatePreflight({}, ready, config, { ...preflightOptions, runAdmitReleaseReady: () => {} }).length, 10);
       await writeFile(join(evidenceRoot, ready.boards[0].objectiveGuestElfPath), "substituted-program");
-      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }), /guest ELF digest mismatch/);
+      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { ...preflightOptions, runAdmitReleaseReady: () => {} }), /guest ELF digest mismatch/);
       await writeFile(join(evidenceRoot, ready.boards[0].objectiveGuestElfPath), "objective-program-bytes-0");
       await writeFile(join(evidenceRoot, ready.objectiveVerifier.artifactPath), '{"deployedBytecode":"0x6001"}\n');
-      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }), /objective verifier artifact digest mismatch/);
+      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { ...preflightOptions, runAdmitReleaseReady: () => {} }), /objective verifier artifact digest mismatch/);
       const unrelatedGatewayBytes = Buffer.from('{"deployedBytecode":"0x6001"}\n');
       const unrelatedGatewaySlate = structuredClone(ready);
       unrelatedGatewaySlate.objectiveVerifier.artifactDigest = `sha256:${createHash("sha256").update(unrelatedGatewayBytes).digest("hex")}`;
-      assert.throws(() => validateProductionSlatePreflight({}, reseal(unrelatedGatewaySlate), config, { repoRoot, evidenceRoot, runAdmitReady: () => {} }), /runtime codehash is not derived/);
+      assert.throws(() => validateProductionSlatePreflight({}, reseal(unrelatedGatewaySlate), config, { ...preflightOptions, runAdmitReleaseReady: () => {} }), /runtime codehash is not derived/);
       await writeFile(join(evidenceRoot, ready.objectiveVerifier.artifactPath), objectiveVerifierArtifactBytes);
       const unrelatedProgramSlate = structuredClone(ready);
       unrelatedProgramSlate.boards[0].objectiveProgramVKey = keccak256(toUtf8Bytes("unrelated-program-id"));
       const unrelatedProgramConfig = structuredClone(config);
       unrelatedProgramConfig.problems[0].objectiveProgramVKey = unrelatedProgramSlate.boards[0].objectiveProgramVKey;
       assert.equal(
-        validateProductionSlatePreflight({}, reseal(unrelatedProgramSlate), unrelatedProgramConfig, { repoRoot, evidenceRoot, runAdmitReady: () => {} }).length,
+        validateProductionSlatePreflight({}, reseal(unrelatedProgramSlate), unrelatedProgramConfig, { ...preflightOptions, runAdmitReleaseReady: () => {} }).length,
         10,
       );
-      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { repoRoot, evidenceRoot, runAdmitReady: ({ matrixPath }) => { if (matrixPath.endsWith("matrix-10.json")) throw new Error("not certified"); } }), /not certified/);
+      assert.throws(() => validateProductionSlatePreflight({}, ready, config, { ...preflightOptions, runAdmitReleaseReady: ({ matrixPath }) => { if (matrixPath.endsWith("matrix-10.json")) throw new Error("not certified"); } }), /not certified/);
       assert.equal(validateProductionSlatePreflight({}, ready, config, {
-        repoRoot, evidenceRoot,
-        runAdmitReady: ({ matrixPath, matrixBytes }) => {
+        ...preflightOptions,
+        runAdmitReleaseReady: ({ matrixPath, matrixBytes, imageDossierSha256, publicationJournalSha256 }) => {
           assert.ok(matrixBytes.length > 0);
+          assert.equal(imageDossierSha256, preflightOptions.imageDossierSha256);
+          assert.equal(publicationJournalSha256, preflightOptions.publicationJournalSha256);
           if (matrixPath.endsWith("matrix-10.json")) writeFileSync(matrixPath, JSON.stringify({ forged: true }), { mode: 0o600 });
         },
       }).length, 10);
@@ -198,9 +221,14 @@ describe("exact-ten production release slate", () => {
     const slate = syntheticSlate();
     const problems = slate.boards.map(releaseBoardIdentity);
     const dossier = imageDossier(slate);
-    assert.equal(validateVerifierImageReleaseDossier(dossier, { sourceCommit: slate.sourceCommit, problems }), dossier);
+    assert.equal(validateVerifierImageReleaseDossier(dossier, { releaseCommit: slate.sourceCommit, problems }), dossier);
+    assert.throws(
+      () => validateVerifierImageReleaseDossier({ schema_version: "p42-verifier-image-release/v1" }),
+      /keys mismatch|schema is invalid/,
+    );
     for (const mutate of [
-      (value) => { value.source_commit = "c".repeat(40); },
+      (value) => { value.release_config_commit = "c".repeat(40); },
+      (value) => { value.boards[0].platform_manifests[0].labels["org.opencontainers.image.revision"] = value.release_config_commit; },
       (value) => { value.boards[2].index_digest = digest("substitute"); },
       (value) => { value.boards[4].platform_manifests[1].labels["io.projectforty2.verifier.version"] = "9.9.9"; },
       (value) => { value.boards[6].platform_manifests.reverse(); },
@@ -208,12 +236,12 @@ describe("exact-ten production release slate", () => {
       (value) => { value.dossier_hash = digest("forged"); },
     ]) {
       const forged = clone(dossier); mutate(forged);
-      assert.throws(() => validateVerifierImageReleaseDossier(forged, { sourceCommit: slate.sourceCommit, problems }), /mismatch|invalid|hash/);
+      assert.throws(() => validateVerifierImageReleaseDossier(forged, { releaseCommit: slate.sourceCommit, problems }), /mismatch|invalid|hash/);
     }
     for (const published_at_utc of ["2026-02-30T00:00:00Z", "2026-07-11T24:00:00Z", "2026-07-13T00:00:00Z"]) {
       const forged = clone(dossier); forged.published_at_utc = published_at_utc;
       const { dossier_hash: _, ...body } = forged; forged.dossier_hash = digest(canonical(body));
-      assert.throws(() => validateVerifierImageReleaseDossier(forged, { sourceCommit: slate.sourceCommit, problems, now: Date.parse("2026-07-12T00:00:00Z") }), /timestamp/);
+      assert.throws(() => validateVerifierImageReleaseDossier(forged, { releaseCommit: slate.sourceCommit, problems, now: Date.parse("2026-07-12T00:00:00Z") }), /timestamp/);
     }
     for (const registry_base of ["registry..example/p42/verifiers", "registry.example/p42//verifiers", "registry.example/p42/verifiers/", `r/${"a".repeat(253)}`]) {
       const forged = clone(dossier); forged.registry_base = registry_base;
@@ -222,8 +250,29 @@ describe("exact-ten production release slate", () => {
         board.immutable_reference = `${board.repository}@${board.index_digest}`;
       });
       const { dossier_hash: _, ...body } = forged; forged.dossier_hash = digest(canonical(body));
-      assert.throws(() => validateVerifierImageReleaseDossier(forged, { sourceCommit: slate.sourceCommit, problems }), /registry|canonical identity/);
+      assert.throws(() => validateVerifierImageReleaseDossier(forged, { releaseCommit: slate.sourceCommit, problems }), /registry|canonical identity/);
     }
+  });
+
+  it("invokes release-bound admission with every independently pinned input", () => {
+    let invocation;
+    runAdmitReleaseReadyCommand({
+      repoRoot: "/repo",
+      problemPath: "/repo/problems/q6-intersecting-hypergraph",
+      matrixPath: "/evidence/matrix.json",
+      matrixBytes: Buffer.from("{}\n"),
+      imageDossierPath: "/evidence/dossier.json",
+      imageDossierSha256: digest("dossier-file"),
+      publicationJournalPath: "/evidence/journal.json",
+      publicationJournalSha256: digest("journal-file"),
+      pythonExecutable: "python-exact",
+      run(program, args, options) { invocation = { program, args, options }; },
+    });
+    assert.equal(invocation.program, "python-exact");
+    assert.deepEqual(invocation.args.slice(0, 3), ["-m", "p42_prizes.cli", "admit-release-ready"]);
+    assert.equal(invocation.args.includes("admit-ready"), false);
+    for (const flag of ["--matrix-stdin", "--image-dossier", "--image-dossier-sha256", "--publication-journal", "--publication-journal-sha256"]) assert.equal(invocation.args.includes(flag), true);
+    assert.deepEqual(invocation.options.input, Buffer.from("{}\n"));
   });
 
   it("constructs a ready slate only from exact image bytes and ceremony identities", () => {

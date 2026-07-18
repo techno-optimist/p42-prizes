@@ -65,6 +65,9 @@ export async function verifyProductionRelease({
   evidenceRoot,
   outputRoot,
   ceremonyConfigPath,
+  imageDossierSha256,
+  publicationJournalPath,
+  publicationJournalSha256,
   capsulePath,
   slatePath,
   releaseIndexPath,
@@ -120,7 +123,13 @@ export async function verifyProductionRelease({
   );
   const objectiveVerifierArtifact = await readArtifact(objectiveVerifierArtifactPath, evidence);
   assertObjectiveVerifierBinding(ethers, capsule, slate, objectiveVerifierArtifact);
-  const boards = preflightSlate(ethers, slate, config, { repoRoot: root, evidenceRoot: evidence });
+  const boards = preflightSlate(ethers, slate, config, {
+    repoRoot: root,
+    evidenceRoot: evidence,
+    imageDossierSha256,
+    publicationJournalPath,
+    publicationJournalSha256,
+  });
   if (!Array.isArray(boards) || boards.length !== 10) throw new Error("offline release verification requires exactly ten admitted boards");
   assertCleanCheckout(root, commit, run);
   const report = {
@@ -142,6 +151,9 @@ export async function verifyProductionRelease({
 export function requiredReleaseVerificationEnvironment(env = process.env) {
   const required = [
     "P42_MULTIBOARD_CEREMONY_CONFIG",
+    "P42_PRODUCTION_IMAGE_DOSSIER_SHA256",
+    "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH",
+    "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256",
     "P42_RELEASE_EVIDENCE_ROOT",
     "P42_RELEASE_OUTPUT_ROOT",
     "P42_RELEASE_CAPSULE",

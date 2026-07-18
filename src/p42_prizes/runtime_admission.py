@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import jsonschema
 
@@ -35,7 +35,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes, sha256_file
 
 
 FIXTURE_SCHEMA_VERSION = "p42-production-verifier-fixtures/v1"
-HOST_SET_SCHEMA_VERSION = "p42-admission-host-set/v2"
+HOST_SET_SCHEMA_VERSION = "p42-admission-host-set/v3"
 REPORTS_PER_BOARD = 2
 MAX_JSON_BYTES = 8 * 1024 * 1024
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -438,12 +438,24 @@ def build_host_set(
             signing_key=signing_key,
             generated_at_utc=timestamp,
         )
+        rehearsal_refs = []
+        for run_index, (_source_path, report) in enumerate(pairs, start=1):
+            report_filename = f"{slug}.runtime-rehearsal-{run_index}.json"
+            report_file_sha256 = sha256_bytes(
+                (canonical_json(report) + "\n").encode("utf-8")
+            )
+            rehearsal_refs.append({
+                "path": report_filename,
+                "file_sha256": report_file_sha256,
+                "rehearsal_hash": report["rehearsal_hash"],
+            })
+            artifacts.append((report_filename, report))
         filename = f"{slug}.admission-host.json"
         artifacts.append((filename, evidence))
         board_index.append({
             "slug": slug,
             "fixture": {"path": fixture["path"], "sha256": fixture["sha256"]},
-            "rehearsal_hashes": [item[1]["rehearsal_hash"] for item in pairs],
+            "runtime_rehearsals": rehearsal_refs,
             "evidence_path": filename,
             "evidence_hash": evidence["evidence_hash"],
         })
@@ -503,6 +515,7 @@ def validate_host_set(
     expected_host: Mapping[str, str],
     expected_key_fingerprint: str,
     expected_runtime: str,
+    runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> None:
     """Validate a host set against independently pinned release and fixture inputs."""
 
@@ -562,6 +575,17 @@ def validate_host_set(
         or len(expected_boards) != 10
     ):
         raise RuntimeAdmissionError("independent inputs must contain exactly the all-ten cohort")
+    if runtime_report_validator is None:
+        rehearsal = _load_rehearsal_module(root)
+
+        def runtime_report_validator(
+            report: Mapping[str, Any], release_board: Mapping[str, Any]
+        ) -> Mapping[str, Any]:
+            slug = release_board["slug"]
+            manifest = load_manifest(root / "problems" / slug)
+            return rehearsal.validate_runtime_report(report, dossier=dossier, manifest=manifest)
+
+    expected_artifact_names: set[str] = set()
     for position, board in enumerate(boards):
         fixture = expected_fixtures[position]
         release_board = expected_boards[position]
@@ -574,9 +598,64 @@ def validate_host_set(
         ):
             raise RuntimeAdmissionError(f"host-set external board binding is invalid at board {position}")
         filename = board.get("evidence_path") if isinstance(board, Mapping) else None
+        rehearsal_refs = board.get("runtime_rehearsals") if isinstance(board, Mapping) else None
+        if (
+            not isinstance(rehearsal_refs, list)
+            or len(rehearsal_refs) != REPORTS_PER_BOARD
+        ):
+            raise RuntimeAdmissionError(f"host-set raw rehearsal index is invalid at board {position}")
         evidence = artifacts.get(filename) if isinstance(filename, str) else None
         if not isinstance(evidence, Mapping):
             raise RuntimeAdmissionError(f"host-set evidence is missing at board {position}")
+        expected_artifact_names.add(filename)
+        raw_reports: list[Mapping[str, Any]] = []
+        for run_index, rehearsal_ref in enumerate(rehearsal_refs, start=1):
+            if not isinstance(rehearsal_ref, Mapping):
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal reference is invalid at board {position} run {run_index}"
+                )
+            report_path = rehearsal_ref.get("path")
+            if not isinstance(report_path, str) or Path(report_path).name != report_path:
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal path is invalid at board {position} run {run_index}"
+                )
+            report = artifacts.get(report_path)
+            if not isinstance(report, Mapping):
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal is missing at board {position} run {run_index}"
+                )
+            expected_artifact_names.add(report_path)
+            observed_file_hash = sha256_bytes(
+                (canonical_json(report) + "\n").encode("utf-8")
+            )
+            if observed_file_hash != rehearsal_ref.get("file_sha256"):
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal file hash mismatch at board {position} run {run_index}"
+                )
+            try:
+                validated_report = runtime_report_validator(report, release_board)
+            except Exception as exc:
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal is invalid at board {position} run {run_index}: {exc}"
+                ) from exc
+            if (
+                validated_report.get("rehearsal_hash") != rehearsal_ref.get("rehearsal_hash")
+                or validated_report.get("board", {}).get("slug") != expected_slug
+                or not validated_report.get("result", {}).get("succeeded")
+            ):
+                raise RuntimeAdmissionError(
+                    f"host-set raw rehearsal binding is invalid at board {position} run {run_index}"
+                )
+            raw_reports.append(validated_report)
+        if _stable_report_identity(raw_reports[0]) != _stable_report_identity(raw_reports[1]):
+            raise RuntimeAdmissionError(f"host-set raw rehearsal pair disagrees at board {position}")
+        if (
+            raw_reports[0].get("rehearsal_hash") == raw_reports[1].get("rehearsal_hash")
+            or raw_reports[0].get("execution_nonce") == raw_reports[1].get("execution_nonce")
+        ):
+            raise RuntimeAdmissionError(
+                f"host-set raw rehearsal pair is not independently challenged at board {position}"
+            )
         validated, signed = _validate_host_evidence(evidence, position)
         if (
             not signed
@@ -592,6 +671,8 @@ def validate_host_set(
             != attestation.get("key_fingerprint")
         ):
             raise RuntimeAdmissionError(f"host-set evidence binding is invalid at board {position}")
+    if len(expected_artifact_names) != 30 or set(artifacts) != expected_artifact_names:
+        raise RuntimeAdmissionError("host-set contains orphan or unindexed artifacts")
 
 
 def _write_exclusive_file(directory_fd: int, name: str, value: Mapping[str, Any]) -> None:
@@ -653,6 +734,7 @@ def reconcile_published_host_set(
     expected_host: Mapping[str, str],
     expected_key_fingerprint: str,
     expected_runtime: str,
+    runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Accept an existing bundle only after complete independent revalidation."""
 
@@ -667,11 +749,20 @@ def reconcile_published_host_set(
     boards = index.get("boards")
     if not isinstance(boards, list):
         raise RuntimeAdmissionError("existing host-set index boards are invalid")
-    artifact_names = [board.get("evidence_path") for board in boards if isinstance(board, Mapping)]
+    artifact_names = []
+    for board in boards:
+        if not isinstance(board, Mapping):
+            continue
+        artifact_names.append(board.get("evidence_path"))
+        rehearsals = board.get("runtime_rehearsals")
+        if isinstance(rehearsals, list):
+            artifact_names.extend(
+                item.get("path") for item in rehearsals if isinstance(item, Mapping)
+            )
     if (
-        len(artifact_names) != 10
+        len(artifact_names) != 30
         or any(not isinstance(name, str) or Path(name).name != name for name in artifact_names)
-        or len(set(artifact_names)) != 10
+        or len(set(artifact_names)) != 30
     ):
         raise RuntimeAdmissionError("existing host-set artifact paths are invalid")
     expected_names = {"host-set.json", *artifact_names}
@@ -692,6 +783,7 @@ def reconcile_published_host_set(
         expected_host=expected_host,
         expected_key_fingerprint=expected_key_fingerprint,
         expected_runtime=expected_runtime,
+        runtime_report_validator=runtime_report_validator,
     )
     return index
 

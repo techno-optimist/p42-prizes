@@ -149,7 +149,11 @@ Each admission host then runs the all-ten collector locally. The command has no
 offline-report mode: it launches both pull-only rehearsals itself, binds a fresh
 collector challenge into each report, signs each board artifact and the complete
 ordered host-set index with the same host key, and publishes through an atomic
-no-replace directory operation.
+no-replace directory operation. The v3 bundle contains all 20 canonical raw
+runtime rehearsals as well as the ten signed board summaries. Each raw receipt
+is indexed by its path, exact canonical-file SHA-256, and rehearsal self-hash;
+reconciliation independently reruns the semantic validator and rejects missing,
+tampered, duplicate, or orphan files before accepting an existing bundle.
 
 ```bash
 PYTHONPATH=src python3 scripts/collect_verifier_host_set.py \

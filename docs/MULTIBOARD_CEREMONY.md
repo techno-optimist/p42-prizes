@@ -125,7 +125,7 @@ in the manifest; the manifest records its canonical `sha256:` digest, durable
 
 The deployer refuses a dirty worktree, reserves the output path before the
 first broadcast, and journals each root and board deployment. Before it reserves
-the output, it runs `p42-prizes admit-ready` for every board from the clean
+the output, it runs `p42-prizes admit-release-ready` for every board from the clean
 release checkout, then checks that the validated matrix's `matrix_hash` equals
 the configured digest and that the derived on-chain anchor matches. Set
 `P42_ADMISSION_PYTHON` (or the existing `P42_RUNTIME_PYTHON`) to the explicitly
@@ -134,18 +134,17 @@ verifier environment. It then writes a
 `p42-prizes/deployment-manifest/v2` only after the independent manifest
 validator accepts it.
 
-The contract ceremony currently parses the historical
-`p42-verifier-image-release/v1` shape and runs matrix-only `admit-ready`.
-That path is not activation-grade after the self-reference fix. Before funding,
-the ceremony must consume the exact canonical `p42-verifier-image-release/v2`
-dossier and invoke `admit-release-ready`, binding its independently pinned raw
+The canonical contract preparation, offline verification, and production
+deployment paths reject the historical `p42-verifier-image-release/v1` shape.
+They consume the exact canonical `p42-verifier-image-release/v2` dossier and
+invoke `admit-release-ready`, binding its independently pinned raw
 bytes, `dossier_hash`, verifier-source commit, release-config commit, final
 manifest hashes, ten-board order, OCI labels, and immutable index digests. It
 must also supply the completed publication journal and its independently pinned
 file hash so the portable checkout validator can recompute both commit archives
-and replay the exact-ten bindings. The image/admission tooling fails closed
-until those identities agree; this document does not treat the pending
-contract-side parser change as complete.
+and replay the exact-ten bindings. OCI revision labels bind `S`; the clean
+checkout and release slate bind `R`. The image/admission tooling fails closed
+until those identities agree.
 
 Prepare the closed release set only with the canonical command from
 the clean frozen checkout:
@@ -154,6 +153,9 @@ the clean frozen checkout:
 cd contracts
 P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/ceremony.json \
 P42_PRODUCTION_IMAGE_DOSSIER_PATH=../release-evidence/verifier-images.json \
+P42_PRODUCTION_IMAGE_DOSSIER_SHA256=sha256:<independent-dossier-file-digest> \
+P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH=../release-evidence/verifier-image-publication.journal.json \
+P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256=sha256:<independent-journal-file-digest> \
 P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH=../release-evidence/objective-verifier.json \
 P42_SP1_RUNTIME_ATTESTATION_PATH=../release-evidence/sp1-external-runtime-current.json \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
@@ -163,14 +165,14 @@ P42_RELEASE_OUTPUT_ROOT=/absolute/path/outside-the-repository \
 npm run release:prepare
 ```
 
-The image dossier, objective-verifier artifact, all ten exact objective-program
+The image dossier, publication journal, objective-verifier artifact, all ten exact objective-program
 files, and all admission matrices must be inside the explicit
 evidence root, which is outside the frozen repository because this evidence is
 generated after the source commit is fixed. The ceremony config is evidence too
 and must be beneath that same root. The output root must be outside
 both roots. The command force-compiles the canonical production contracts, builds
 and independently re-attests the fresh SP1 runtime artifact and release capsule, derives the exact-ten slate,
-runs every real `admit-ready` check, and rechecks the clean commit before and
+runs every real `admit-release-ready` check, and rechecks the clean commit before and
 after publication. The gateway runtime codehash is derived from the artifact's
 `deployedBytecode`; every program ID is derived as `keccak256(exact program
 bytes)`. Capsule and slate files are mode `0444` and content
@@ -186,6 +188,9 @@ private key or RPC endpoint, from a separate clean checkout of the exact commit:
 ```bash
 cd contracts
 P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/release-evidence/ceremony.json \
+P42_PRODUCTION_IMAGE_DOSSIER_SHA256=sha256:<independent-dossier-file-digest> \
+P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH=/absolute/path/release-evidence/verifier-image-publication.journal.json \
+P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256=sha256:<independent-journal-file-digest> \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 P42_RELEASE_OUTPUT_ROOT=/absolute/path/release-output \
 P42_RELEASE_CAPSULE=/absolute/path/release-output/capsules/<digest>.json \
@@ -199,7 +204,7 @@ npm run release:verify
 This force-rebuilds and re-attests the capsule, invokes the SP1 verifier against
 the supplied fresh artifact, and verifies the final index binds
 the exact commit/timestamp/capsule/slate tuple, reruns all ten real
-`admit-ready` checks, and emits a
+`admit-release-ready` checks, and emits a
 `p42-prizes/production-release-verification/v1` report. The command has no
 deployer key, sends no transaction, and does not make an unattested release
 fundable. The report self-hashes its complete body and binds the canonical

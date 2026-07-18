@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -36,10 +37,11 @@ async function fixture(operation) {
   const repoRoot = join(parent, "repo"); const outputRoot = join(parent, "output"); const evidenceRoot = join(parent, "evidence");
   await mkdir(join(repoRoot, "contracts", "node_modules", ".bin"), { recursive: true });
   const imagePath = join(evidenceRoot, "release", "images.json"); await mkdir(join(evidenceRoot, "release"), { recursive: true }); await writeFile(imagePath, "image-bytes\n");
+  const journalPath = join(evidenceRoot, "release", "publication-journal.json"); await writeFile(journalPath, "journal-bytes\n");
   const runtimeAttestationPath = join(evidenceRoot, "release", "sp1-runtime.json"); await writeFile(runtimeAttestationPath, "runtime-attestation\n");
   const objectiveVerifierPath = join(evidenceRoot, "release", "objective-verifier.json");
   await writeFile(objectiveVerifierPath, `${JSON.stringify(OBJECTIVE_ARTIFACT)}\n`);
-  try { await operation({ repoRoot, outputRoot, evidenceRoot, imagePath, objectiveVerifierPath, runtimeAttestationPath }); } finally { await rm(parent, { recursive: true, force: true }); }
+  try { await operation({ repoRoot, outputRoot, evidenceRoot, imagePath, journalPath, objectiveVerifierPath, runtimeAttestationPath }); } finally { await rm(parent, { recursive: true, force: true }); }
 }
 
 function dependencies(events, { preflightError, publishSlateError, dirtyAtStatusCall, builtArtifactMismatch = false } = {}) {
@@ -60,6 +62,7 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
         value: OBJECTIVE_ARTIFACT,
         bytes: builtArtifactMismatch ? Buffer.from("substituted-artifact\n") : OBJECTIVE_ARTIFACT_BYTES,
       };
+      if (path.endsWith("publication-journal.json")) return { value: { journal: true }, bytes: Buffer.from("journal-bytes\n") };
       return { value: { dossier: true }, bytes: Buffer.from("image-bytes\n") };
     },
     verifyRuntimeAttestation() { events.push("verify-runtime-attestation"); return SP1_BINDING; },
@@ -74,7 +77,13 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
       assert.ok(Buffer.isBuffer(args.objectiveVerifierArtifactBytes));
       return { slateDigest: `sha256:${"c".repeat(64)}` };
     },
-    preflightSlate() { events.push("preflight-slate"); if (preflightError) throw preflightError; },
+    preflightSlate(_ethers, _slate, _config, options) {
+      events.push("preflight-slate");
+      assert.match(options.imageDossierSha256, /^sha256:[0-9a-f]{64}$/);
+      assert.equal(options.publicationJournalPath, "release/publication-journal.json");
+      assert.match(options.publicationJournalSha256, /^sha256:[0-9a-f]{64}$/);
+      if (preflightError) throw preflightError;
+    },
     async publishCapsule() { events.push("publish-capsule"); return { digest: `sha256:${"b".repeat(64)}`, uri: `sha256://${"b".repeat(64)}`, path: "capsule" }; },
     async publishSlate() { events.push("publish-slate"); if (publishSlateError) throw publishSlateError; return { digest: `sha256:${"c".repeat(64)}`, uri: `sha256://${"c".repeat(64)}`, path: "slate" }; },
     createIndex() { events.push("create-index"); return { indexDigest: `sha256:${"d".repeat(64)}` }; },
@@ -85,7 +94,11 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
 function argumentsFor(paths, overrides = {}) {
   return {
     ethers: {}, repoRoot: paths.repoRoot, ceremonyConfigPath: join(paths.evidenceRoot, "ceremony.json"),
-    imageDossierPath: paths.imagePath, objectiveVerifierArtifactPath: paths.objectiveVerifierPath,
+    imageDossierPath: paths.imagePath,
+    imageDossierSha256: `sha256:${createHash("sha256").update("image-bytes\n").digest("hex")}`,
+    publicationJournalPath: paths.journalPath,
+    publicationJournalSha256: `sha256:${createHash("sha256").update("journal-bytes\n").digest("hex")}`,
+    objectiveVerifierArtifactPath: paths.objectiveVerifierPath,
     sp1RuntimeAttestationPath: paths.runtimeAttestationPath,
     evidenceRoot: paths.evidenceRoot, expectedDeployer: `0x${"1".repeat(40)}`,
     generatedAt: "2026-07-12T00:00:00Z", outputRoot: paths.outputRoot, ...overrides,
@@ -144,6 +157,9 @@ describe("production release preparation", () => {
   it("requires every explicit operator input", () => {
     const complete = {
       P42_MULTIBOARD_CEREMONY_CONFIG: "ceremony.json", P42_PRODUCTION_IMAGE_DOSSIER_PATH: "images.json",
+      P42_PRODUCTION_IMAGE_DOSSIER_SHA256: `sha256:${"a".repeat(64)}`,
+      P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH: "publication-journal.json",
+      P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256: `sha256:${"b".repeat(64)}`,
       P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH: "objective-verifier.json",
       P42_SP1_RUNTIME_ATTESTATION_PATH: "sp1-runtime.json",
       P42_RELEASE_EVIDENCE_ROOT: "/tmp/evidence",

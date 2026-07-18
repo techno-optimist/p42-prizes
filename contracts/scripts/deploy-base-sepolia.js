@@ -754,7 +754,13 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const release = releaseMode === "production" ? await productionReleaseInputs(repoRoot, deploymentCommit) : null;
   config = bindReleaseMode(config, { releaseMode, slate: release?.slate });
   const admissionPreflight = release
-    ? validateProductionSlatePreflight(ethers, release.slate, config, { repoRoot, evidenceRoot: resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT")) })
+    ? validateProductionSlatePreflight(ethers, release.slate, config, {
+      repoRoot,
+      evidenceRoot: resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT")),
+      imageDossierSha256: requiredEnv("P42_PRODUCTION_IMAGE_DOSSIER_SHA256"),
+      publicationJournalPath: requiredEnv("P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH"),
+      publicationJournalSha256: requiredEnv("P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256"),
+    })
     : validateMultiBoardAdmissionPreflight(ethers, config, { repoRoot });
   console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);
   const output = manifestPath();

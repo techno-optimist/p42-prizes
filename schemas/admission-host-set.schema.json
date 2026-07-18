@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "generated_at_utc", "dossier", "fixtures", "host", "boards", "host_set_hash", "attestation"],
   "properties": {
-    "schema_version": {"const": "p42-admission-host-set/v2"},
+    "schema_version": {"const": "p42-admission-host-set/v3"},
     "generated_at_utc": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"},
     "dossier": {
       "type": "object", "additionalProperties": false,
@@ -33,14 +33,25 @@
       "type": "array", "minItems": 10, "maxItems": 10,
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["slug", "fixture", "rehearsal_hashes", "evidence_path", "evidence_hash"],
+        "required": ["slug", "fixture", "runtime_rehearsals", "evidence_path", "evidence_hash"],
         "properties": {
           "slug": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
           "fixture": {
             "type": "object", "additionalProperties": false, "required": ["path", "sha256"],
             "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/digest"}}
           },
-          "rehearsal_hashes": {"type": "array", "minItems": 2, "maxItems": 2, "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}},
+          "runtime_rehearsals": {
+            "type": "array", "minItems": 2, "maxItems": 2,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["path", "file_sha256", "rehearsal_hash"],
+              "properties": {
+                "path": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.runtime-rehearsal-[12]\\.json$"},
+                "file_sha256": {"$ref": "#/$defs/digest"},
+                "rehearsal_hash": {"$ref": "#/$defs/digest"}
+              }
+            }
+          },
           "evidence_path": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.admission-host\\.json$"},
           "evidence_hash": {"$ref": "#/$defs/digest"}
         }
