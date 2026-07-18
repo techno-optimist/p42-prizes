@@ -174,8 +174,10 @@ try {
     await applyMigrations(client);
     const runtimeRole = `p42_runtime_${randomUUID().replaceAll("-", "")}`;
     const role = quoteIdentifier(runtimeRole);
+    let roleCreated = false;
     try {
       await admin.query(`CREATE ROLE ${role} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`);
+      roleCreated = true;
       await client.query(`GRANT USAGE ON SCHEMA ${quoteIdentifier(schema)} TO ${role}`);
       await client.query(`GRANT SELECT ON p42_indexer_checkpoint_authority,p42_indexer_checkpoint_control,
         p42_indexer_checkpoint_epoch,p42_indexer_checkpoint_acceptance TO ${role}`);
@@ -193,30 +195,47 @@ try {
       await client.query("RESET ROLE");
     } finally {
       await client.query("RESET ROLE").catch(() => {});
-      await admin.query(`DROP OWNED BY ${role}`).catch(() => {});
-      await admin.query(`DROP ROLE IF EXISTS ${role}`);
+      if (roleCreated) {
+        await revokeTemporaryRolePrivileges(client, schema, role);
+        await admin.query(`DROP ROLE IF EXISTS ${role}`);
+        await assertRolesAbsent(runtimeRole);
+      }
     }
   });
 
-  await inTemporarySchema("noinherit-set-role-path-detected", async (client) => {
+  await inTemporarySchema("noinherit-set-role-path-detected", async (client, schema) => {
     await applyMigrations(client);
     const suffix = randomUUID().replaceAll("-", "");
     const runtimeName = `p42_runtime_${suffix}`; const dangerousName = `p42_danger_${suffix}`;
     const runtimeRole = quoteIdentifier(runtimeName); const dangerousRole = quoteIdentifier(dangerousName);
+    let dangerousCreated = false;
+    let runtimeCreated = false;
     try {
       await admin.query(`CREATE ROLE ${dangerousRole} NOLOGIN`);
+      dangerousCreated = true;
       await admin.query(`CREATE ROLE ${runtimeRole} NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS`);
+      runtimeCreated = true;
       await client.query(`GRANT UPDATE ON p42_indexer_checkpoint_control TO ${dangerousRole}`);
       await admin.query(`GRANT ${dangerousRole} TO ${runtimeRole} WITH INHERIT FALSE, SET TRUE`);
       const detected = await client.query(`SELECT pg_has_role($1,$2,'SET')
         AND has_table_privilege($2,'p42_indexer_checkpoint_control','UPDATE') AS dangerous`, [runtimeName, dangerousName]);
       if (!detected.rows[0]?.dangerous) throw new Error("NOINHERIT SET ROLE authority path was not detected");
     } finally {
-      await admin.query(`REVOKE ${dangerousRole} FROM ${runtimeRole}`).catch(() => {});
-      await admin.query(`DROP OWNED BY ${dangerousRole}`).catch(() => {});
-      await admin.query(`DROP OWNED BY ${runtimeRole}`).catch(() => {});
-      await admin.query(`DROP ROLE IF EXISTS ${runtimeRole}`).catch(() => {});
-      await admin.query(`DROP ROLE IF EXISTS ${dangerousRole}`).catch(() => {});
+      if (runtimeCreated && dangerousCreated) {
+        await admin.query(`REVOKE ${dangerousRole} FROM ${runtimeRole}`).catch(() => {});
+      }
+      if (runtimeCreated) {
+        await revokeTemporaryRolePrivileges(client, schema, runtimeRole);
+        await admin.query(`DROP ROLE IF EXISTS ${runtimeRole}`);
+      }
+      if (dangerousCreated) {
+        await revokeTemporaryRolePrivileges(client, schema, dangerousRole);
+        await admin.query(`DROP ROLE IF EXISTS ${dangerousRole}`);
+      }
+      await assertRolesAbsent(...[
+        runtimeCreated ? runtimeName : null,
+        dangerousCreated ? dangerousName : null,
+      ].filter(Boolean));
     }
   });
 
@@ -468,6 +487,25 @@ async function expectMigrationFailure(client, sql, expectedMessage) {
 
 function quoteIdentifier(value) {
   return `"${value.replaceAll('"', '""')}"`;
+}
+
+async function revokeTemporaryRolePrivileges(client, schema, role) {
+  const identifier = quoteIdentifier(schema);
+  await client.query(`REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${identifier} FROM ${role}`);
+  await client.query(`REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA ${identifier} FROM ${role}`);
+  await client.query(`REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA ${identifier} FROM ${role}`);
+  await client.query(`REVOKE ALL PRIVILEGES ON SCHEMA ${identifier} FROM ${role}`);
+}
+
+async function assertRolesAbsent(...roles) {
+  if (roles.length === 0) return;
+  const remaining = await admin.query(
+    "SELECT rolname FROM pg_catalog.pg_roles WHERE rolname = ANY($1::text[])",
+    [roles],
+  );
+  if (remaining.rowCount > 0) {
+    throw new Error(`temporary role cleanup failed: ${remaining.rows.map((row) => row.rolname).join(",")}`);
+  }
 }
 
 async function withRunnerDatabase(label, operation) {
