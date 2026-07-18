@@ -13,9 +13,21 @@
     "activationEvidence": { "$ref": "#/$defs/activationEvidence" },
     "boards": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 10,
       "maxItems": 10,
-      "items": { "$ref": "#/$defs/board" }
+      "prefixItems": [
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "1" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "2" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "3" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "4" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "5" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "6" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "7" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "8" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "9" } } }] },
+        { "allOf": [{ "$ref": "#/$defs/board" }, { "properties": { "problemId": { "const": "10" } } }] }
+      ],
+      "items": false
     },
     "reconstruction": { "$ref": "#/$defs/reconstruction" }
   },
@@ -328,8 +340,20 @@
         },
         "boards": {
           "type": "object",
-          "minProperties": 1,
-          "additionalProperties": { "$ref": "#/$defs/boardContractBindings" }
+          "additionalProperties": false,
+          "required": ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+          "properties": {
+            "1": { "$ref": "#/$defs/boardContractBindings" },
+            "2": { "$ref": "#/$defs/boardContractBindings" },
+            "3": { "$ref": "#/$defs/boardContractBindings" },
+            "4": { "$ref": "#/$defs/boardContractBindings" },
+            "5": { "$ref": "#/$defs/boardContractBindings" },
+            "6": { "$ref": "#/$defs/boardContractBindings" },
+            "7": { "$ref": "#/$defs/boardContractBindings" },
+            "8": { "$ref": "#/$defs/boardContractBindings" },
+            "9": { "$ref": "#/$defs/boardContractBindings" },
+            "10": { "$ref": "#/$defs/boardContractBindings" }
+          }
         }
       }
     },
