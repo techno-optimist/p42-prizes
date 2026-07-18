@@ -20,6 +20,7 @@
     "hardhat": "3.9.1"
   },
   "overrides": {
-    "@actions/http-client": "3.0.2"
+    "@actions/http-client": "3.0.2",
+    "adm-zip": "0.6.0"
   }
 }
