@@ -1,0 +1,14 @@
+{
+  "boards": [
+    {
+      "alerts": "/var/lib/p42/verifier-executor/boards/1/ALERTS.log",
+      "board_id": "8453:1:hadamard-mini",
+      "deadline_seconds": 3720,
+      "queue": "/var/lib/p42/verifier-executor/boards/1/runner-queue.json",
+      "required_memory_mb": 4096,
+      "staging": "/var/lib/p42/verifier-executor/boards/1/sandbox-staging",
+      "transcripts": "/var/lib/p42/verifier-executor/boards/1/transcripts"
+    }
+  ],
+  "schema_version": "p42-verifier-executor-config/v1"
+}

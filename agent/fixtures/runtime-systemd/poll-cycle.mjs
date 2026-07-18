@@ -42,10 +42,11 @@ if (role === "operator" && !optionValues(argv, "--sandbox-staging-root")[0]?.end
 
 await rpcPoll(credentialUrl(optionValues(argv, "--rpc-url-file")[0]));
 if (role === "operator") {
-  const dockerHost = optionValues(argv, "--docker-host")[0];
-  if (!dockerHost?.startsWith("unix:///run/p42-docker-")) {
-    throw new Error("fixture requires the rootless p42 Docker endpoint");
+  const executorSocket = optionValues(argv, "--executor-socket")[0];
+  if (executorSocket !== "/run/p42-verifier-executor/executor.sock") {
+    throw new Error("fixture requires the host-global verifier executor endpoint");
   }
+  if (optionValues(argv, "--docker-host").length) throw new Error("operator must not receive Docker access");
   await rpcPoll(credentialUrl(optionValues(argv, "--nonce-rpc-secondary-url-file")[0]));
 }
 

@@ -223,21 +223,20 @@ not memory pressure. Queue, plan, and transcript schemas live at
 - Queue depth/bytes, archive count, oldest queued age/deadline, active lease,
   reserved admission/memory headroom, and swap usage are alerting metrics.
 
-The per-board queues do not independently authorize execution. Every production
-operator must also use the same host scheduler state at
-`/var/lib/p42/operator/host-scheduler/state.json`. The scheduler assigns durable
-FIFO tickets across all board instances and grants exactly one host lease. Its
-separate fence process heartbeats while the synchronous worker runs; an OS
-`flock` serializes state mutations and is released by the kernel after a crash.
-Dead holder/request records are reaped only after their configured stale
-windows, and the holder window exceeds that board's verifier wall limit by 120
-seconds so a lost fence cannot authorize an overlapping verifier. Host admission
-rechecks the same reserve/safety-factor memory equation, swap ceiling, and the
-host cgroup's cumulative `oom_kill` counter. A new OOM kill blocks every board
-until an idle, exact-current-count `host-scheduler-ack-oom` operation through
-`agent/runtime_bridge.py` records the incident acknowledgement;
-counter or boot substitutions fail closed. A reboot
-discards prior-process tickets and establishes the new boot's OOM baseline.
+Per-board queues do not authorize execution. Every production operator submits
+only a board ID, request ID, and canonical chain timestamp to the private
+`p42-verifier-executor` Unix socket. One FIFO executor daemon holds the host
+singleton `flock`, owns the only Docker socket, and resolves all queue paths and
+limits from its administrator-owned board allowlist. Operators cannot read or
+write executor state and have no Docker environment, socket path, or group.
+Before and after every worker, the executor forcibly reconciles all
+`p42-verify-*` containers. An outer process-group deadline bounds the worker in
+addition to the verifier's manifest deadline; successful orphan reconciliation
+must complete before the next FIFO request can lease work. Capacity is checked
+again at that boundary. OOM counter changes and reboot changes fail closed.
+Persisted holder deadlines use `CLOCK_MONOTONIC` nanoseconds bound to the kernel
+boot ID, never adjustable wall time. Reboot recovery establishes a new OOM
+baseline only after Docker reconciliation.
 
 The canonical queue admits ordinary work only through 896 active entries and
 deadline-bearing chain work through 960, leaving 64 operational slots plus 64 KiB of
@@ -537,18 +536,19 @@ matching private configuration directory. `--sandbox-staging-root` points the
 worker at the writable `/var/lib/p42/operator/<instance>/sandbox-staging`
 directory.
 
-All operator instances on one verifier host must share the template's
-`p42/operator/host-scheduler` state directory. Per-instance scheduler paths are
-prohibited: they would restore one verifier allowance per board.
+All operator instances on one verifier host connect to
+`/run/p42-verifier-executor/executor.sock`. The socket is writable only by the
+executor and connectable by the submitters group; `/var/lib/p42/verifier-executor`
+and `/run/p42-verifier-docker` remain executor-only.
 
-Production verifier execution has one Docker authority: the same unprivileged
-`p42-operator` account runs `p42-docker-rootless@<instance>.service`, with
-`DOCKER_HOST=unix:///run/p42-docker-<instance>/docker.sock`. The operator
-requires that unit and checks the socket before its first poll. The rootless
+Production verifier execution has one Docker authority: the dedicated
+`p42-verifier-executor` account runs `p42-verifier-docker.service`, with
+`DOCKER_HOST=unix:///run/p42-verifier-docker/docker.sock`. Only
+`p42-verifier-executor.service` receives that endpoint. The rootless
 unit conflicts with `docker.service`/`docker.socket`, rejects a rootful socket,
 uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
 `/etc/subuid` and `/etc/subgid` ranges, enabled unprivileged user namespaces,
-and cgroup v2 for `p42-operator`. Its preflight parses every subordinate-ID
+and cgroup v2 for `p42-verifier-executor`. Its preflight parses every subordinate-ID
 file entry and rejects interval overlap, then runs `unshare --user
 --map-root-user --mount --pid --fork /usr/bin/true` as the service user;
 it does not merely grep for a matching row. Install
@@ -562,8 +562,8 @@ requires structured Docker identity, the explicit `name=rootless` security
 option, and `CgroupDriver=systemd` before dependents can start.
 Install `scripts/p42_rootless_docker_launch.py` as
 `/usr/local/libexec/p42_rootless_docker_launch.py`. Before first startup, run
-`loginctl enable-linger p42-operator` and prove `user@$(id -u
-p42-operator).service` is active. The launcher resolves that dynamic UID,
+`loginctl enable-linger p42-verifier-executor` and prove `user@$(id -u
+p42-verifier-executor).service` is active. The launcher resolves that dynamic UID,
 rejects a missing, misowned, or broadly accessible `/run/user/<uid>` and user
 bus, then binds Docker to that exact user manager. This is required for the
 systemd cgroup driver to enforce each verifier container's memory and PID
@@ -573,7 +573,7 @@ Ubuntu 24.04 hosts with
 `deployments/p42-rootless-runtime.apparmor.example` as
 `/etc/apparmor.d/p42-rootless-runtime` and load it with
 `apparmor_parser -r /etc/apparmor.d/p42-rootless-runtime`. Systemd applies the
-named profile only to `p42-docker-rootless@.service`; it grants that bounded
+named profile only to `p42-verifier-docker.service`; it grants that bounded
 service process tree the `userns` permission needed by both the same-user
 preflight and rootlesskit. Do not disable the host restriction globally or
 grant it to generic `/usr/bin/unshare`.

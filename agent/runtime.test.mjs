@@ -1468,14 +1468,13 @@ test("operator binds enqueue urgency to the policy-finalized block timestamp", (
   assert.doesNotMatch(source, /ingestReveal\(event\);/);
 });
 
-test("operator holds the shared host scheduler fence across each verifier worker call", () => {
+test("operator submits verifier work only through the host executor IPC", () => {
   const source = readFileSync(join(HERE, "operator.mjs"), "utf8");
   const worker = source.indexOf("async function runWorkerOnce");
-  const acquire = source.indexOf("await acquireHostVerifierSlot()", worker);
-  const execute = source.indexOf('"work-once"', acquire);
-  const release = source.indexOf("hostSlot.release()", execute);
-  assert.ok(worker >= 0 && acquire > worker && execute > acquire && release > execute);
-  assert.match(source, /production operator requires --host-scheduler shared by every board instance/);
+  const execute = source.indexOf("executeVerifierJob(chainTimestamp)", worker);
+  assert.ok(worker >= 0 && execute > worker);
+  assert.match(source, /production operator requires --executor-socket for the host-global verifier authority/);
+  assert.match(source, /production operators must not receive Docker socket access/);
 });
 
 test("operator durably quarantines an invalid transcript and alerts once", async () => {

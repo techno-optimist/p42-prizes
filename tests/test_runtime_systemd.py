@@ -43,7 +43,8 @@ FILES = (
     "deployments/p42-operator@.service.example",
     "deployments/p42-resolver@.service.example",
     "deployments/p42-indexer.service.example",
-    "deployments/p42-docker-rootless@.service.example",
+    "deployments/p42-verifier-docker.service.example",
+    "deployments/p42-verifier-executor.service.example",
     "deployments/p42-docker-rootless-daemon.json",
     "deployments/p42-rootless-runtime.apparmor.example",
     "deployments/p42-runtime-failure@.service.example",
@@ -209,19 +210,19 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
     [
         ("deployments/p42-operator@.service.example", "User=p42-operator", "User=root", "User=p42-operator"),
         (
-            "deployments/p42-docker-rootless@.service.example",
-            "User=p42-operator",
+            "deployments/p42-verifier-docker.service.example",
+            "User=p42-verifier-executor",
             "User=root",
-            "User=p42-operator",
+            "User=p42-verifier-executor",
         ),
         (
-            "deployments/p42-docker-rootless@.service.example",
+            "deployments/p42-verifier-docker.service.example",
             "Conflicts=docker.service docker.socket",
             "Conflicts=docker.service",
             "Conflicts=docker.service docker.socket",
         ),
             (
-                "deployments/p42-docker-rootless@.service.example",
+                "deployments/p42-verifier-docker.service.example",
                 "/usr/bin/dockerd-rootless.sh --host",
                 "/usr/bin/dockerd --host",
                 "dockerd-rootless.sh",
@@ -284,9 +285,9 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
         ),
         (
             "deployments/p42-operator@.service.example",
-            "  --host-scheduler /var/lib/p42/operator/host-scheduler/state.json",
-            "  --host-scheduler-removed /var/lib/p42/operator/host-scheduler/state.json",
-            "--host-scheduler must be provided exactly once",
+            "  --executor-socket /run/p42-verifier-executor/executor.sock \\",
+            "  --executor-socket-removed /run/p42-verifier-executor/executor.sock \\",
+            "--executor-socket must be provided exactly once",
         ),
         (
             "deployments/p42-indexer.service.example",

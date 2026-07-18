@@ -1,0 +1,60 @@
+[Unit]
+Description=P42 singleton rootless Docker authority for host verifier executor
+After=network-online.target systemd-user-sessions.service
+Wants=network-online.target
+Before=p42-verifier-executor.service
+Conflicts=docker.service docker.socket
+ConditionPathExists=/usr/bin/dockerd-rootless.sh
+ConditionPathExists=!/run/docker.sock
+ConditionPathExists=!/var/run/docker.sock
+
+[Service]
+Type=exec
+User=p42-verifier-executor
+Group=p42-verifier-executor
+AppArmorProfile=p42-rootless-runtime
+Environment=HOME=/var/lib/p42/verifier-docker-home
+Environment=DOCKER_HOST=unix:///run/p42-verifier-docker/docker.sock
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=/run/p42-verifier-docker/rootlesskit
+ExecStartPre=/usr/bin/test ! -S /run/docker.sock
+ExecStartPre=/usr/bin/test ! -S /var/run/docker.sock
+ExecStartPre=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_preflight.py p42-verifier-executor
+ExecStart=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_launch.py p42-verifier-executor /usr/bin/dockerd-rootless.sh --host=unix:///run/p42-verifier-docker/docker.sock --config-file=/etc/p42/docker/rootless-daemon.json --data-root=/var/lib/p42/verifier-docker
+ExecStartPost=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_ready.py verifier --socket-path=/run/p42-verifier-docker/docker.sock --timeout-seconds 60
+TimeoutStartSec=75s
+Restart=on-failure
+RestartSec=5s
+OOMPolicy=kill
+LimitCORE=0
+MemoryHigh=1G
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=512
+KillMode=mixed
+TimeoutStopSec=30s
+SendSIGKILL=yes
+UMask=0077
+RuntimeDirectory=p42-verifier-docker
+RuntimeDirectoryMode=0700
+StateDirectory=p42/verifier-docker p42/verifier-docker-home
+StateDirectoryMode=0700
+Delegate=yes
+NoNewPrivileges=false
+PrivateTmp=true
+PrivateDevices=true
+BindPaths=/dev/net/tun
+DeviceAllow=/dev/net/tun rw
+ProtectSystem=strict
+ProtectHome=false
+ProtectKernelTunables=false
+ProtectKernelModules=true
+ProtectKernelLogs=false
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+ReadOnlyPaths=/etc/p42/docker
+ReadWritePaths=/var/lib/p42/verifier-docker /var/lib/p42/verifier-docker-home /run/p42-verifier-docker /run/user
+
+[Install]
+WantedBy=multi-user.target

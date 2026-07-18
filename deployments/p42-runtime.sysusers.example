@@ -1,4 +1,8 @@
+g p42-verifier-submitters -
 u p42-operator - "P42 operator runtime" /var/lib/p42/operator /usr/sbin/nologin
+u p42-verifier-executor - "P42 host verifier executor" /var/lib/p42/verifier-executor /usr/sbin/nologin
 u p42-resolver - "P42 resolver runtime" /var/lib/p42/resolver /usr/sbin/nologin
 u p42-indexer - "P42 indexer runtime" /var/lib/p42/indexer /usr/sbin/nologin
 u p42-runtime-evidence - "P42 runtime failure evidence recorder" /var/lib/p42/runtime-evidence /usr/sbin/nologin
+m p42-operator p42-verifier-submitters
+m p42-verifier-executor p42-verifier-submitters

@@ -44,6 +44,8 @@
     "runtime-cli-contract.mjs",
     "runtime-credentials.mjs",
     "runtime_bridge.py",
+    "verifier-executor.py",
+    "verifier-executor-client.py",
     "setup-operation-plan.mjs",
     "secure_path_bridge.py",
     "signed-transaction.mjs",

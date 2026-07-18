@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
   buildIndexerServiceHealth,
+  acquireIndexerSingletonLock,
   monotonicCheckpointDecision,
+  publishGenerationSync,
   publishMonotonicCheckpointSync,
   runIndexerService,
 } from "./indexer-service.mjs";
@@ -100,6 +102,50 @@ describe("durable indexer publication", () => {
       /incomplete or failed reconstruction/,
     );
   });
+
+  it("binds archive and checkpoint to one generation and quarantines rejected anchors", () => {
+    const root = mkdtempSync(join(tmpdir(), "p42-indexer-generation-"));
+    const stage = (name, value, archiveValue) => {
+      const path = join(root, "staging", name);
+      mkdirSync(join(path, "archive"), { recursive: true });
+      writePrivateJson(join(path, "checkpoint.json"), value);
+      writeFileSync(join(path, "archive", "board.json"), archiveValue, { mode: 0o600 });
+      return path;
+    };
+    const accepted = publishGenerationSync({ publicationRoot: root, stagingPath: stage("accepted", checkpoint(120), "accepted") , validator: (v) => v });
+    const pointerBefore = readFileSync(join(root, "current.json"), "utf8");
+    const acceptedArchive = join(root, "generations", accepted.generationId, "archive", "board.json");
+    assert.equal(readFileSync(acceptedArchive, "utf8"), "accepted");
+    assert.throws(() => publishGenerationSync({ publicationRoot: root,
+      stagingPath: stage("reorg", checkpoint(119), "rejected"), validator: (v) => v }), /regression/);
+    assert.equal(readFileSync(join(root, "current.json"), "utf8"), pointerBefore);
+    assert.equal(readFileSync(acceptedArchive, "utf8"), "accepted");
+    assert.equal(readdirSync(join(root, "quarantine")).length, 1);
+  });
+
+  it("rolls back a deterministic duplicate publisher without changing current", () => {
+    const root = mkdtempSync(join(tmpdir(), "p42-indexer-duplicate-"));
+    const makeStage = (name) => {
+      const path = join(root, "staging", name); mkdirSync(join(path, "archive"), { recursive: true });
+      writePrivateJson(join(path, "checkpoint.json"), checkpoint(120));
+      return path;
+    };
+    publishGenerationSync({ publicationRoot: root, stagingPath: makeStage("first"), validator: (v) => v });
+    const before = readFileSync(join(root, "current.json"), "utf8");
+    const duplicate = makeStage("duplicate");
+    assert.equal(publishGenerationSync({ publicationRoot: root, stagingPath: duplicate, validator: (v) => v }).decision, "unchanged");
+    assert.equal(existsSync(duplicate), false);
+    assert.equal(readFileSync(join(root, "current.json"), "utf8"), before);
+  });
+
+  it("rejects a duplicate publisher while the generation lock is held", async () => {
+    const root = mkdtempSync(join(tmpdir(), "p42-indexer-lock-"));
+    const release = await acquireIndexerSingletonLock(join(root, "publisher.lock"));
+    await assert.rejects(() => acquireIndexerSingletonLock(join(root, "publisher.lock")), /singleton lock unavailable/);
+    await release();
+    const releaseAfter = await acquireIndexerSingletonLock(join(root, "publisher.lock"));
+    await releaseAfter();
+  });
 });
 
 
@@ -121,6 +167,19 @@ describe("indexer service health", () => {
     assert.equal(buildIndexerServiceHealth({
       ...base, lastSuccessAtMs: 9_000, checkpoint: checkpoint(120),
     }).checkpoint.to_block, 120);
+  });
+
+  it("degrades a frozen successful RPC/finalized head independently", () => {
+    const health = buildIndexerServiceHealth({ serviceId: "p42-indexer", startedAtMs: 0,
+      observedAtMs: 40_000, lastSuccessAtMs: 40_000, publicationLastSuccessAtMs: 40_000,
+      headLastAdvancedAtMs: 1_000, maxHeadStallSeconds: 30, maxStaleSeconds: 300,
+      checkpoint: checkpoint(120, { range: { ...checkpoint(120).range, toBlockTimestamp: 40 } }) });
+    assert.equal(health.status, "degraded");
+    assert.equal(health.components.process.status, "running");
+    assert.equal(health.components.rpc.status, "degraded");
+    assert.equal(health.components.rpc.frozen, true);
+    assert.equal(health.components.finalized_head.status, "degraded");
+    assert.equal(health.components.publication.status, "healthy");
   });
 
   it("promotes a complete cycle and preserves one-shot behavior", async () => {

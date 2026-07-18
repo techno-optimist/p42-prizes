@@ -4,6 +4,7 @@
 
 import { ethers } from "ethers";
 import { spawn, spawnSync } from "node:child_process";
+import { createConnection } from "node:net";
 import {
   appendFileSync,
   closeSync,
@@ -101,7 +102,8 @@ const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 const RUNTIME = resolve(arg("runtime", join(HERE, "runtime")));
 const SANDBOX_STAGING_ROOT = resolve(arg("sandbox-staging-root", join(RUNTIME, "sandbox-staging")));
 const OPERATOR_PRIVATE_KEY_FILE = arg("operator-private-key-file", null);
-const DOCKER_HOST_ARG = arg("docker-host", process.env.DOCKER_HOST ?? null);
+const EXECUTOR_SOCKET_ARG = arg("executor-socket", null);
+const EXECUTOR_SOCKET = EXECUTOR_SOCKET_ARG ? resolve(EXECUTOR_SOCKET_ARG) : null;
 const COORDINATION_ROOT_ARG = arg("coordination-root", null);
 const COORDINATION_ROOT = resolve(COORDINATION_ROOT_ARG ?? join(RUNTIME, "coordination"));
 const CURSOR = resolve(arg("cursor", join(RUNTIME, "operator-cursor.json")));
@@ -122,8 +124,6 @@ const RUNNER_RECOVERY_PUBLIC_KEY = arg("runner-recovery-public-key", null);
 const RUNNER_HOST_ID = arg("runner-host-id", null);
 const RUNNER_BOOT_ID = arg("runner-boot-id", null);
 const RUNNER_QUEUE_ID = arg("runner-queue-id", null);
-const HOST_SCHEDULER_ARG = arg("host-scheduler", null);
-const HOST_SCHEDULER = HOST_SCHEDULER_ARG ? resolve(HOST_SCHEDULER_ARG) : null;
 const CHALLENGE_PROVISIONING = resolve(arg("challenge-provisioning", join(RUNTIME, "challenge-provisioning.json")));
 const AUTO_CLAIM_BOND = arg("auto-claim-bond", true) !== "false";
 const MAX_JOBS_PER_SCAN = Number(arg("max-jobs-per-scan", "1"));
@@ -164,8 +164,8 @@ if (!LOCAL_TEST && (!RUNNER_HEALTH_PUBLIC_KEY || !RUNNER_RECOVERY_PUBLIC_KEY || 
   console.error("production runner-health v2 requires signer, host, boot, and queue identity bindings");
   process.exit(2);
 }
-if (!LOCAL_TEST && !HOST_SCHEDULER_ARG) {
-  console.error("production operator requires --host-scheduler shared by every board instance on this verifier host");
+if (!LOCAL_TEST && !EXECUTOR_SOCKET_ARG) {
+  console.error("production operator requires --executor-socket for the host-global verifier authority");
   process.exit(2);
 }
 if (!LOCAL_TEST && !COORDINATION_ROOT_ARG) {
@@ -176,9 +176,8 @@ if (!LOCAL_TEST && !NONCE_RPC_SECONDARY) {
   console.error("production operator requires --nonce-rpc-secondary-url-file from an independent RPC credential");
   process.exit(2);
 }
-if (!LOCAL_TEST && (!DOCKER_HOST_ARG || !String(DOCKER_HOST_ARG).startsWith("unix://")
-    || ["unix:///run/docker.sock", "unix:///var/run/docker.sock"].includes(String(DOCKER_HOST_ARG)))) {
-  console.error("production operator requires a rootless unix:// Docker socket, never the rootful /run/docker.sock");
+if (!LOCAL_TEST && (arg("docker-host", null) || process.env.DOCKER_HOST)) {
+  console.error("production operators must not receive Docker socket access");
   process.exit(2);
 }
 if (NONCE_RPC_SECONDARY && new URL(NONCE_RPC_SECONDARY).host === new URL(RPC).host) {
@@ -329,7 +328,14 @@ function bridge(...args) {
   for (const name of Object.keys(env)) {
     if (/(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD|RPC_URL)/i.test(name)) delete env[name];
   }
-  const completed = spawnSync(runtimePythonExecutable(env), [`${REPO_ROOT}/agent/runtime_bridge.py`, ...args], {
+  const executable = EXECUTOR_SOCKET
+    ? `${REPO_ROOT}/agent/verifier-executor-client.py`
+    : `${REPO_ROOT}/agent/runtime_bridge.py`;
+  const clientArgs = EXECUTOR_SOCKET
+    ? ["--socket", EXECUTOR_SOCKET, "--board-id", `${chainId}:${registryProblemId}:${runnerConfig.problemId}`,
+      "--transcript-dir", TRANSCRIPTS, "--", ...args]
+    : args;
+  const completed = spawnSync(runtimePythonExecutable(env), [executable, ...clientArgs], {
     cwd: REPO_ROOT,
     encoding: "utf8",
     env,
@@ -351,7 +357,12 @@ function bridge(...args) {
 async function acquireRunnerAuthorizationFence() {
   const env = { ...process.env, PYTHONPATH: `${REPO_ROOT}/src` };
   for (const name of Object.keys(env)) if (/(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD|RPC_URL)/i.test(name)) delete env[name];
-  const child = spawn(runtimePythonExecutable(env), [`${REPO_ROOT}/agent/runtime_bridge.py`, "authorization-fence", "--queue", QUEUE], { cwd: REPO_ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
+  const command = EXECUTOR_SOCKET
+    ? [`${REPO_ROOT}/agent/verifier-executor-client.py`, "--socket", EXECUTOR_SOCKET,
+      "--board-id", `${chainId}:${registryProblemId}:${runnerConfig.problemId}`, "--transcript-dir", TRANSCRIPTS,
+      "--fence", "--", "authorization-fence"]
+    : [`${REPO_ROOT}/agent/runtime_bridge.py`, "authorization-fence", "--queue", QUEUE];
+  const child = spawn(runtimePythonExecutable(env), command, { cwd: REPO_ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
   let stderr = ""; child.stderr.setEncoding("utf8"); child.stderr.on("data", (chunk) => { stderr += chunk; });
   await new Promise((resolveReady, rejectReady) => {
     let stdout = ""; const timeout = setTimeout(() => { child.kill("SIGKILL"); rejectReady(new Error("runner authorization fence timeout")); }, 5000);
@@ -364,86 +375,53 @@ async function acquireRunnerAuthorizationFence() {
   };
 }
 
-async function acquireHostVerifierSlot() {
-  if (LOCAL_TEST && !HOST_SCHEDULER) return { acquired: true, release: () => {} };
-  const env = { ...process.env, PYTHONPATH: `${REPO_ROOT}/src` };
-  for (const name of Object.keys(env)) {
-    if (/(PRIVATE_KEY|API_KEY|TOKEN|SECRET|PASSWORD|RPC_URL)/i.test(name)) delete env[name];
+async function executeVerifierJob(chainTimestamp) {
+  if (LOCAL_TEST && !EXECUTOR_SOCKET) {
+    const previous = process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
+    process.env[RUNNER_CHAIN_TIMESTAMP_ENV] = String(chainTimestamp);
+    try {
+      return bridge("work-once", "--queue", QUEUE, "--transcripts", TRANSCRIPTS,
+        "--reserve-memory-mb", String(RESERVE_MEMORY_MB), "--max-swap-used-mb", String(MAX_SWAP_USED_MB),
+        "--memory-safety-factor", String(MEMORY_SAFETY_FACTOR), "--sandbox-staging-root", SANDBOX_STAGING_ROOT);
+    } finally {
+      if (previous === undefined) delete process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
+      else process.env[RUNNER_CHAIN_TIMESTAMP_ENV] = previous;
+    }
   }
   const requestId = sha256Canonical({
-    schema_version: "p42-host-verifier-request/v1",
+    schema_version: "p42-verifier-executor-request/v1",
     host_id: RUNNER_HOST_ID,
     chain_id: chainId,
     registry_problem_id: registryProblemId,
     queue_id: RUNNER_QUEUE_ID,
   });
-  const child = spawn(runtimePythonExecutable(env), [
-    `${REPO_ROOT}/agent/runtime_bridge.py`, "host-scheduler-fence",
-    "--state", HOST_SCHEDULER,
-    "--host-id", RUNNER_HOST_ID,
-    "--request-id", requestId,
-    "--board-id", `${chainId}:${registryProblemId}:${runnerConfig.problemId}`,
-    "--required-memory-mb", String(runnerConfig.requiredMemoryMb),
-    "--reserve-memory-mb", String(RESERVE_MEMORY_MB),
-    "--max-swap-used-mb", String(MAX_SWAP_USED_MB),
-    "--memory-safety-factor", String(MEMORY_SAFETY_FACTOR),
-    "--holder-stale-seconds", String(runnerConfig.wallSeconds + 120),
-  ], { cwd: REPO_ROOT, env, stdio: ["pipe", "pipe", "pipe"] });
-  let stderr = "";
-  let stdout = "";
-  let acquired = false;
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  child.stdout.setEncoding("utf8");
-  const decision = await new Promise((resolveDecision, rejectDecision) => {
-    const timeout = setTimeout(() => {
-      child.kill("SIGKILL");
-      rejectDecision(new Error("host verifier scheduler decision timeout"));
-    }, 10_000);
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-      const newline = stdout.indexOf("\n");
-      if (newline === -1) return;
-      const firstLine = stdout.slice(0, newline);
-      if (!firstLine.startsWith("READY ")) return;
-      clearTimeout(timeout);
-      acquired = true;
-      try {
-        resolveDecision(parseStrictJsonText(`${firstLine.slice("READY ".length)}\n`, {
-          maxBytes: 64 * 1024, maxDepth: 16, canonicalBytes: true, trailingNewline: "require",
-        }));
-      } catch (error) {
-        child.kill("SIGKILL");
-        rejectDecision(error);
-      }
+  const request = canonicalJson({
+    schema_version: "p42-verifier-executor-request/v1", operation: "execute", request_id: requestId,
+    board_id: `${chainId}:${registryProblemId}:${runnerConfig.problemId}`,
+    chain_timestamp: String(chainTimestamp),
+  });
+  return new Promise((resolveResult, rejectResult) => {
+    const client = createConnection(EXECUTOR_SOCKET);
+    let response = "";
+    const timeout = setTimeout(() => client.destroy(new Error("verifier executor response timeout")),
+      (runnerConfig.wallSeconds + 180) * 1000);
+    client.setEncoding("utf8");
+    client.once("connect", () => client.end(`${request}\n`));
+    client.on("data", (chunk) => {
+      response += chunk;
+      if (response.length > 16 * 1024 * 1024) client.destroy(new Error("verifier executor response too large"));
     });
-    child.once("exit", (code) => {
+    client.once("error", (error) => { clearTimeout(timeout); rejectResult(error); });
+    client.once("end", () => {
       clearTimeout(timeout);
-      if (acquired) return;
-      if (code !== 0) {
-        rejectDecision(new Error((stderr || `host verifier scheduler exited ${code}`).trim()));
-        return;
-      }
       try {
-        resolveDecision(parseStrictJsonText(stdout, {
-          maxBytes: 64 * 1024, maxDepth: 16, canonicalBytes: true, trailingNewline: "require",
-        }));
-      } catch (error) {
-        rejectDecision(error);
-      }
+        const envelope = parseStrictJsonText(response, { maxBytes: 16 * 1024 * 1024, maxDepth: 64,
+          canonicalBytes: true, trailingNewline: "require" });
+        if (envelope.ok !== true) throw new Error(`verifier executor rejected request: ${envelope.error}`);
+        resolveResult(envelope.result);
+      } catch (error) { rejectResult(error); }
     });
   });
-  if (!acquired) return { acquired: false, decision, release: () => {} };
-  let released = false;
-  return {
-    acquired: true,
-    decision,
-    release: () => {
-      if (released) return;
-      released = true;
-      child.stdin.end("R");
-    },
-  };
 }
 
 function readQueue() {
@@ -1313,26 +1291,7 @@ async function ingestReveal(event, chainTimestamp) {
 }
 
 async function runWorkerOnce(chainTimestamp) {
-  const hostSlot = await acquireHostVerifierSlot();
-  if (!hostSlot.acquired) return hostSlot.decision;
-  const previous = process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
-  process.env[RUNNER_CHAIN_TIMESTAMP_ENV] = String(chainTimestamp);
-  try {
-    return bridge(
-      "work-once",
-      "--queue", QUEUE,
-      "--transcripts", TRANSCRIPTS,
-      "--reserve-memory-mb", String(RESERVE_MEMORY_MB),
-      "--max-swap-used-mb", String(MAX_SWAP_USED_MB),
-      "--memory-safety-factor", String(MEMORY_SAFETY_FACTOR),
-      "--sandbox-staging-root", SANDBOX_STAGING_ROOT,
-      ...(DOCKER_HOST_ARG ? ["--docker-host", DOCKER_HOST_ARG] : []),
-    );
-  } finally {
-    hostSlot.release();
-    if (previous === undefined) delete process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
-    else process.env[RUNNER_CHAIN_TIMESTAMP_ENV] = previous;
-  }
+  return executeVerifierJob(chainTimestamp);
 }
 
 function recordAction(

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -22,7 +24,7 @@ const CHECKPOINT_LIMITS = Object.freeze({
   trailingNewline: "require",
   privateFile: true,
 });
-const SERVICE_SCHEMA = "p42-prizes/indexer-service-health/v1";
+const SERVICE_SCHEMA = "p42-prizes/indexer-service-health/v2";
 const CHECKPOINT_SCHEMAS = new Set([
   "p42-prizes/indexer-checkpoint/v2",
   "p42-prizes/indexer-checkpoint/v3",
@@ -125,6 +127,108 @@ export function publishMonotonicCheckpointSync({
 }
 
 
+export async function acquireIndexerSingletonLock(lockPath, { spawnImpl = spawn } = {}) {
+  mkdirSync(resolve(lockPath, ".."), { recursive: true, mode: 0o700 });
+  const script = "import fcntl,sys; f=open(sys.argv[1],'a+'); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB); print('READY',flush=True); sys.stdin.buffer.read(1)";
+  const child = spawnImpl("/usr/bin/python3", ["-c", script, resolve(lockPath)], { stdio: ["pipe", "pipe", "pipe"] });
+  return new Promise((resolveLock, rejectLock) => {
+    let output = "";
+    let errors = "";
+    const timer = setTimeout(() => { child.kill("SIGKILL"); rejectLock(new Error("indexer singleton lock timeout")); }, 5000);
+    child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { errors += chunk; });
+    child.stdout.on("data", (chunk) => {
+      output += chunk;
+      if (output === "READY\n") {
+        clearTimeout(timer);
+        let released = false;
+        resolveLock(async () => {
+          if (released) return;
+          released = true;
+          child.stdin.end("R");
+          await new Promise((done) => child.once("exit", done));
+        });
+      }
+    });
+    child.once("exit", (code) => {
+      clearTimeout(timer);
+      if (output !== "READY\n") rejectLock(new Error(`indexer singleton lock unavailable: ${errors.trim() || code}`));
+    });
+  });
+}
+
+
+function generationId(checkpoint) {
+  const digest = createHash("sha256").update(stableStringify(checkpoint)).digest("hex");
+  return `${String(checkpoint.range.toBlock).padStart(16, "0")}-${digest}`;
+}
+
+
+function syncDirectory(path) {
+  const descriptor = openSync(path, "r");
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
+
+function readCurrentGeneration(root, validator) {
+  const pointer = join(root, "current.json");
+  if (!existsSync(pointer)) return null;
+  const current = readStrictJsonFileSync(pointer, CHECKPOINT_LIMITS);
+  if (current.schema_version !== "p42-indexer-generation-pointer/v1"
+      || basename(current.generation_id) !== current.generation_id) {
+    throw new Error("invalid accepted indexer generation pointer");
+  }
+  const checkpointPath = join(root, "generations", current.generation_id, "checkpoint.json");
+  return { pointer: current, checkpoint: validatePublicationCheckpoint(
+    readStrictJsonFileSync(checkpointPath, CHECKPOINT_LIMITS), validator,
+  ) };
+}
+
+
+export function publishGenerationSync({ publicationRoot, stagingPath, validator = validateMultiBoardCheckpoint } = {}) {
+  const root = resolve(publicationRoot);
+  const stage = resolve(stagingPath);
+  const candidatePath = join(stage, "checkpoint.json");
+  mkdirSync(join(root, "generations"), { recursive: true, mode: 0o700 });
+  mkdirSync(join(root, "quarantine"), { recursive: true, mode: 0o700 });
+  const current = readCurrentGeneration(root, validator);
+  let candidate;
+  let decision;
+  try {
+    candidate = validatePublicationCheckpoint(readStrictJsonFileSync(candidatePath, CHECKPOINT_LIMITS), validator);
+    if (!statSync(join(stage, "archive")).isDirectory()) throw new Error("indexer generation archive is absent");
+    decision = monotonicCheckpointDecision(candidate, current?.checkpoint ?? null);
+  } catch (error) {
+    const rejected = join(root, "quarantine", `${Date.now()}-${randomBytes(8).toString("hex")}`);
+    writeFileSync(join(stage, "quarantine.json"), `${stableStringify({
+      schema_version: "p42-indexer-quarantine/v1", reason: sanitizedError(error),
+      rejected_at_utc: iso(Date.now()), accepted_generation_id: current?.pointer.generation_id ?? null,
+    })}\n`, { mode: 0o600 });
+    renameSync(stage, rejected);
+    syncDirectory(join(root, "quarantine"));
+    throw error;
+  }
+  if (decision.decision === "unchanged") {
+    rmSync(stage, { recursive: true, force: true });
+    return { ...decision, checkpoint: candidate, generationId: current.pointer.generation_id };
+  }
+  const id = generationId(candidate);
+  const destination = join(root, "generations", id);
+  if (existsSync(destination)) throw new Error("indexer generation already exists without an accepted pointer");
+  writeFileSync(join(stage, "generation.json"), `${stableStringify({
+    schema_version: "p42-indexer-generation/v1", generation_id: id,
+    checkpoint_sha256: createHash("sha256").update(readFileSync(candidatePath)).digest("hex"),
+    previous_generation_id: current?.pointer.generation_id ?? null,
+  })}\n`, { mode: 0o600 });
+  renameSync(stage, destination);
+  syncDirectory(join(root, "generations"));
+  const pointer = { schema_version: "p42-indexer-generation-pointer/v1", generation_id: id,
+    checkpoint_path: `generations/${id}/checkpoint.json`, archive_path: `generations/${id}/archive` };
+  writeFileAtomicSync(join(root, "current.json"), `${stableStringify(pointer)}\n`);
+  return { ...decision, checkpoint: candidate, generationId: id };
+}
+
+
 export function buildIndexerServiceHealth({
   serviceId,
   startedAtMs,
@@ -135,6 +239,10 @@ export function buildIndexerServiceHealth({
   maxStaleSeconds,
   checkpoint = null,
   latestError = null,
+  headLastAdvancedAtMs = lastSuccessAtMs,
+  publicationLastSuccessAtMs = lastSuccessAtMs,
+  rpcLastSuccessAtMs = lastSuccessAtMs,
+  maxHeadStallSeconds = maxStaleSeconds,
 }) {
   requirePositiveInteger(maxStaleSeconds, "maxStaleSeconds");
   const ageSeconds = lastSuccessAtMs === null
@@ -144,6 +252,13 @@ export function buildIndexerServiceHealth({
   if (lastSuccessAtMs !== null) status = consecutiveFailures === 0 ? "healthy" : "degraded";
   else if (consecutiveFailures > 0) status = "degraded";
   if (ageSeconds > maxStaleSeconds) status = "stale";
+  const headLagSeconds = headLastAdvancedAtMs === null ? ageSeconds
+    : Math.max(0, Math.floor((observedAtMs - headLastAdvancedAtMs) / 1000));
+  const checkpointAgeSeconds = checkpoint?.range?.toBlockTimestamp
+    ? Math.max(0, Math.floor(observedAtMs / 1000) - checkpoint.range.toBlockTimestamp) : null;
+  const frozen = lastSuccessAtMs !== null && headLagSeconds > maxHeadStallSeconds;
+  if (frozen && status === "healthy") status = "degraded";
+  if (checkpointAgeSeconds !== null && checkpointAgeSeconds > maxStaleSeconds) status = "stale";
   return {
     schema: SERVICE_SCHEMA,
     service_id: serviceId,
@@ -157,6 +272,16 @@ export function buildIndexerServiceHealth({
     consecutive_failures: consecutiveFailures,
     checkpoint: checkpointSummary(checkpoint),
     latest_error: latestError,
+    components: {
+      process: { status: consecutiveFailures >= 5 ? "failed" : "running", consecutive_failures: consecutiveFailures },
+      rpc: { status: rpcLastSuccessAtMs === null ? "degraded" : (frozen ? "degraded" : "healthy"), frozen: frozen,
+        last_success_at_utc: rpcLastSuccessAtMs === null ? null : iso(rpcLastSuccessAtMs) },
+      publication: { status: publicationLastSuccessAtMs === null ? "starting" : "healthy",
+        last_success_at_utc: publicationLastSuccessAtMs === null ? null : iso(publicationLastSuccessAtMs) },
+      finalized_head: { status: frozen ? "degraded" : "healthy", advancement_lag_seconds: headLagSeconds },
+      checkpoint: { status: checkpointAgeSeconds !== null && checkpointAgeSeconds > maxStaleSeconds ? "stale" : "healthy",
+        age_seconds: checkpointAgeSeconds, publication_age_seconds: ageSeconds },
+    },
   };
 }
 
@@ -166,6 +291,7 @@ export async function runIndexerService(options, dependencies = {}) {
     serviceId = "p42-indexer",
     candidatePath,
     outputPath,
+    publicationRoot,
     healthPath,
     intervalMs = 30_000,
     maxStaleSeconds = 300,
@@ -176,13 +302,14 @@ export async function runIndexerService(options, dependencies = {}) {
   requirePositiveInteger(intervalMs, "intervalMs");
   requirePositiveInteger(maxStaleSeconds, "maxStaleSeconds");
   requirePositiveInteger(maxConsecutiveFailures, "maxConsecutiveFailures");
-  if (!candidatePath || !outputPath || !healthPath || !indexerOptions) {
-    throw new Error("indexer service requires candidatePath, outputPath, healthPath, and indexerOptions");
+  if ((!publicationRoot && (!candidatePath || !outputPath)) || !healthPath || !indexerOptions) {
+    throw new Error("indexer service requires publicationRoot (or legacy candidate/output), healthPath, and indexerOptions");
   }
-  const resolvedCandidate = resolve(candidatePath);
-  const resolvedOutput = resolve(outputPath);
+  const resolvedRoot = publicationRoot ? resolve(publicationRoot) : null;
+  const resolvedCandidate = candidatePath ? resolve(candidatePath) : null;
+  const resolvedOutput = outputPath ? resolve(outputPath) : null;
   const resolvedHealth = resolve(healthPath);
-  if (new Set([resolvedCandidate, resolvedOutput, resolvedHealth]).size !== 3) {
+  if (!resolvedRoot && new Set([resolvedCandidate, resolvedOutput, resolvedHealth]).size !== 3) {
     throw new Error("indexer service candidate, output, and health paths must be distinct");
   }
   const runIndexerImpl = dependencies.runIndexerImpl ?? runIndexer;
@@ -197,6 +324,10 @@ export async function runIndexerService(options, dependencies = {}) {
   let consecutiveFailures = 0;
   let checkpoint = null;
   let latestError = null;
+  let lastHead = null;
+  let headLastAdvancedAtMs = null;
+  let rpcLastSuccessAtMs = null;
+  let publicationLastSuccessAtMs = null;
 
   const publishHealth = () => writeHealthImpl(buildIndexerServiceHealth({
     serviceId,
@@ -208,19 +339,40 @@ export async function runIndexerService(options, dependencies = {}) {
     maxStaleSeconds,
     checkpoint,
     latestError,
+    headLastAdvancedAtMs,
+    rpcLastSuccessAtMs,
+    publicationLastSuccessAtMs,
   }));
   publishHealth();
 
   for (;;) {
     lastAttemptAtMs = nowImpl();
+    const releaseLock = resolvedRoot
+      ? await (dependencies.acquireLockImpl ?? acquireIndexerSingletonLock)(join(resolvedRoot, "publisher.lock"))
+      : async () => {};
     try {
-      const generated = await runIndexerImpl({ ...indexerOptions, outPath: resolvedCandidate });
+      let cycleCandidate = resolvedCandidate;
+      let stage = null;
+      if (resolvedRoot) {
+        mkdirSync(join(resolvedRoot, "staging"), { recursive: true, mode: 0o700 });
+        stage = join(resolvedRoot, "staging", `${process.pid}-${randomBytes(8).toString("hex")}`);
+        mkdirSync(join(stage, "archive"), { recursive: true, mode: 0o700 });
+        cycleCandidate = join(stage, "checkpoint.json");
+      }
+      const generated = await runIndexerImpl({ ...indexerOptions, outPath: cycleCandidate,
+        ...(resolvedRoot ? { archivePath: join(stage, "archive") } : {}) });
       if (generated.reconstruction?.complete !== true || generated.reconstruction?.ok !== true) {
         throw new Error("indexer cycle reconstruction was incomplete or failed");
       }
-      const publication = publishImpl({ candidatePath: resolvedCandidate, outputPath: resolvedOutput });
+      rpcLastSuccessAtMs = nowImpl();
+      if (lastHead === null || generated.range.toBlock > lastHead) headLastAdvancedAtMs = rpcLastSuccessAtMs;
+      lastHead = generated.range.toBlock;
+      const publication = resolvedRoot
+        ? (dependencies.publishGenerationImpl ?? publishGenerationSync)({ publicationRoot: resolvedRoot, stagingPath: stage })
+        : publishImpl({ candidatePath: resolvedCandidate, outputPath: resolvedOutput });
       checkpoint = publication.checkpoint;
       lastSuccessAtMs = nowImpl();
+      publicationLastSuccessAtMs = lastSuccessAtMs;
       consecutiveFailures = 0;
       latestError = null;
       publishHealth();
@@ -229,6 +381,8 @@ export async function runIndexerService(options, dependencies = {}) {
       latestError = { message: sanitizedError(error), failed_at_utc: iso(nowImpl()) };
       publishHealth();
       if (once || consecutiveFailures >= maxConsecutiveFailures) throw error;
+    } finally {
+      await releaseLock();
     }
     if (once) return checkpoint;
     await sleepImpl(intervalMs);
@@ -258,12 +412,10 @@ function option(argv, name, fallback = null, { required = false } = {}) {
 
 export async function cli(argv = process.argv, env = process.env) {
   const manifestPath = option(argv, "manifest", null, { required: true });
-  const outputPath = option(argv, "out", null, { required: true });
-  const candidatePath = option(argv, "candidate", null, { required: true });
+  const publicationRoot = option(argv, "publication-root", null, { required: true });
   const healthPath = option(argv, "health", null, { required: true });
   const rpcUrlFile = option(argv, "rpc-url-file", null, { required: true });
   const secondaryRpcUrlFile = option(argv, "secondary-rpc-url-file");
-  const archivePath = option(argv, "archive");
   const transcriptConfig = configureIndexerTranscripts(argv, env);
   const activationNames = [
     "activation-plan", "activation-completion", "activation-authorization", "activation-trust-registry",
@@ -274,7 +426,6 @@ export async function cli(argv = process.argv, env = process.env) {
   const indexerOptions = {
     manifestPath,
     rpcUrl: readCredentialUrl(rpcUrlFile, "indexer primary RPC URL credential"),
-    archivePath,
     transcriptEndpoints: transcriptConfig.endpoints,
     transcriptFetchClient: transcriptConfig.fetchClient,
     activationPlanPath: activation["activation-plan"],
@@ -292,8 +443,7 @@ export async function cli(argv = process.argv, env = process.env) {
   };
   return runIndexerService({
     serviceId: option(argv, "service-id", "p42-indexer"),
-    candidatePath,
-    outputPath,
+    publicationRoot,
     healthPath,
     intervalMs: Number(option(argv, "interval-ms", "30000")),
     maxStaleSeconds: Number(option(argv, "max-stale-seconds", "300")),

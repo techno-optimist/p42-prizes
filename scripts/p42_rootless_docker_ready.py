@@ -103,11 +103,23 @@ def wait_for_ready(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("instance")
+    parser.add_argument("--socket-path", type=Path)
     parser.add_argument("--docker", type=Path, default=Path("/usr/bin/docker"))
     parser.add_argument("--timeout-seconds", type=float, default=60)
     args = parser.parse_args()
     try:
-        info = wait_for_ready(args.instance, docker=args.docker, timeout_seconds=args.timeout_seconds)
+        if args.socket_path is None:
+            info = wait_for_ready(args.instance, docker=args.docker, timeout_seconds=args.timeout_seconds)
+        else:
+            deadline = time.monotonic() + args.timeout_seconds
+            while True:
+                try:
+                    info = probe_ready(args.socket_path, args.docker, os.getuid())
+                    break
+                except RootlessDockerReadyError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.25)
     except RootlessDockerReadyError as exc:
         parser.error(str(exc))
     print(

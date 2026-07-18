@@ -1,0 +1,56 @@
+[Unit]
+Description=P42 host-global verifier executor
+Requires=p42-verifier-docker.service
+After=p42-verifier-docker.service
+Before=p42-operator@.service
+OnFailure=p42-runtime-failure@%n.service
+StartLimitIntervalSec=30min
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=p42-verifier-executor
+Group=p42-verifier-submitters
+ExecStartPre=/usr/bin/test -S /run/p42-verifier-docker/docker.sock
+ExecStart=/usr/bin/python3 /opt/p42/agent/verifier-executor.py \
+  --config /etc/p42/verifier-executor/boards.json \
+  --socket /run/p42-verifier-executor/executor.sock \
+  --state /var/lib/p42/verifier-executor/state.json \
+  --lock /var/lib/p42/verifier-executor/executor.lock \
+  --docker-host unix:///run/p42-verifier-docker/docker.sock
+Restart=on-failure
+RestartSec=15s
+OOMPolicy=kill
+LimitCORE=0
+MemoryHigh=2G
+MemoryMax=3G
+MemorySwapMax=0
+TasksMax=512
+KillMode=mixed
+TimeoutStopSec=30s
+SendSIGKILL=yes
+UMask=0007
+RuntimeDirectory=p42-verifier-executor
+RuntimeDirectoryMode=0710
+StateDirectory=p42/verifier-executor
+StateDirectoryMode=0700
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42
+ReadWritePaths=/var/lib/p42/verifier-executor /run/p42-verifier-executor
+InaccessiblePaths=/etc/p42/operator /etc/p42/resolver /var/lib/p42/resolver /var/lib/p42/runtime-evidence
+
+[Install]
+WantedBy=multi-user.target

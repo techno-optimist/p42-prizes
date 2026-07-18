@@ -16,10 +16,8 @@ UnsetEnvironment=P42_RPC_URL P42_TRANSCRIPT_ENDPOINTS
 ExecStart=/usr/bin/node /opt/p42/agent/indexer-service.mjs \
   --rpc-url-file ${CREDENTIALS_DIRECTORY}/rpc-primary-url \
   --manifest /etc/p42/indexer/manifest.json \
-  --out /var/lib/p42/indexer/checkpoint.json \
-  --candidate /var/lib/p42/indexer/candidate.json \
+  --publication-root /var/lib/p42/indexer/publication \
   --health /var/lib/p42/indexer/health.json \
-  --archive /var/lib/p42/indexer/archive \
   --transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_PRIMARY} \
   --transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_SECONDARY} \
   --interval-ms 30000 --max-stale-seconds 300 --max-consecutive-failures 5
@@ -36,7 +34,7 @@ KillMode=mixed
 TimeoutStopSec=20s
 SendSIGKILL=yes
 UMask=0077
-StateDirectory=p42/indexer p42/indexer/archive
+StateDirectory=p42/indexer p42/indexer/publication
 StateDirectoryMode=0700
 NoNewPrivileges=true
 CapabilityBoundingSet=

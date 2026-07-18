@@ -1,7 +1,7 @@
 [Unit]
 Description=P42 operator runtime for %i
-Requires=p42-docker-rootless@%i.service
-After=network-online.target p42-docker-rootless@%i.service
+Requires=p42-verifier-executor.service
+After=network-online.target p42-verifier-executor.service
 Wants=network-online.target
 OnFailure=p42-runtime-failure@%n.service
 StartLimitIntervalSec=30min
@@ -15,12 +15,11 @@ EnvironmentFile=/etc/p42/operator/%i/runtime.env
 LoadCredential=operator-private-key:/etc/p42/operator/%i/credentials/operator-private-key
 LoadCredential=rpc-primary-url:/etc/p42/operator/%i/credentials/rpc-primary-url
 LoadCredential=rpc-secondary-url:/etc/p42/operator/%i/credentials/rpc-secondary-url
-UnsetEnvironment=OPERATOR_PRIVATE_KEY P42_RPC_URL P42_NONCE_RPC_SECONDARY_URL P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE
-Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock
-ExecStartPre=/usr/bin/test -S /run/p42-docker-%i/docker.sock
+UnsetEnvironment=OPERATOR_PRIVATE_KEY P42_RPC_URL P42_NONCE_RPC_SECONDARY_URL P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE DOCKER_HOST
+ExecStartPre=/usr/bin/test -S /run/p42-verifier-executor/executor.sock
 ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --runtime /usr/bin/node --journal /var/lib/p42/operator/%i/supervisor.jsonl \
-  --cycle-timeout-ms 120000 --kill-grace-ms 10000 --max-failures 5 \
+  --cycle-timeout-ms 22000000 --kill-grace-ms 10000 --max-failures 5 \
   --backoff-ms 1000 --max-backoff-ms 30000 -- \
   /opt/p42/agent/operator.mjs \
   --rpc-url-file ${CREDENTIALS_DIRECTORY}/rpc-primary-url \
@@ -32,14 +31,13 @@ ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --coordination-root /var/lib/p42/operator/coordination \
   --challenge-provisioning /etc/p42/operator/%i/challenge-provisioning.json \
   --sandbox-staging-root /var/lib/p42/operator/%i/sandbox-staging \
-  --docker-host ${DOCKER_HOST} \
+  --executor-socket /run/p42-verifier-executor/executor.sock \
   --operator-private-key-file ${CREDENTIALS_DIRECTORY}/operator-private-key \
   --agent-wallet ${P42_AGENT_WALLET_ADDRESS} \
   --runner-health-public-key ${P42_RUNNER_HEALTH_PUBLIC_KEY} \
   --runner-recovery-public-key ${P42_RUNNER_RECOVERY_PUBLIC_KEY} \
   --runner-host-id ${P42_RUNNER_HOST_ID} --runner-boot-id ${P42_RUNNER_BOOT_ID} \
-  --runner-queue-id ${P42_RUNNER_QUEUE_ID} \
-  --host-scheduler /var/lib/p42/operator/host-scheduler/state.json
+  --runner-queue-id ${P42_RUNNER_QUEUE_ID}
 Restart=on-failure
 RestartSec=15s
 RestartPreventExitStatus=64 70 78 143
@@ -53,7 +51,7 @@ KillMode=mixed
 TimeoutStopSec=20s
 SendSIGKILL=yes
 UMask=0077
-StateDirectory=p42/operator/%i p42/operator/coordination p42/operator/host-scheduler
+StateDirectory=p42/operator/%i p42/operator/coordination
 StateDirectoryMode=0700
 NoNewPrivileges=true
 CapabilityBoundingSet=
@@ -70,8 +68,8 @@ ProtectClock=true
 RestrictSUIDSGID=true
 LockPersonality=true
 ReadOnlyPaths=/etc/p42/operator/%i /opt/p42
-ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination /var/lib/p42/operator/host-scheduler
-InaccessiblePaths=/etc/p42/resolver /etc/p42/runtime-evidence /var/lib/p42/resolver /var/lib/p42/runtime-evidence
+ReadWritePaths=/var/lib/p42/operator/%i /var/lib/p42/operator/coordination
+InaccessiblePaths=/etc/p42/resolver /etc/p42/runtime-evidence /etc/p42/verifier-executor /var/lib/p42/resolver /var/lib/p42/runtime-evidence /var/lib/p42/verifier-executor /run/p42-verifier-docker
 
 [Install]
 WantedBy=multi-user.target
