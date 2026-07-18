@@ -268,8 +268,12 @@ def test_board_source_is_rechecked_against_clean_exact_commit(monkeypatch):
 def test_build_command_is_exact_multiarch_push_without_credentials():
     manifest = {"problem_id": "hadamard-mini", "verifier": {"version": "0.1.1"}}
     argv = release.buildx_command(ROOT, "ghcr.io/projectforty2/verifiers/hadamard-mini", COMMIT, manifest, SOURCE, Path("/tmp/metadata.json"))
-    assert argv[:6] == ["docker", "buildx", "build", "--platform", "linux/amd64,linux/arm64", "--push"]
+    assert argv[:7] == [
+        "docker", "buildx", "build", "--platform", "linux/amd64,linux/arm64",
+        "--output", "type=registry,oci-mediatypes=true",
+    ]
     assert "--file" in argv
+    assert "--push" not in argv
     assert "--load" not in argv
     assert "--provenance=false" in argv and "--metadata-file" in argv
     assert not any("secret" in item or "password" in item or "token" in item for item in argv)
@@ -384,7 +388,8 @@ def test_publish_mock_writes_canonical_self_hashed_schema_valid_dossier(monkeypa
     schema = json.loads((ROOT / "schemas" / "verifier-image-release.schema.json").read_text())
     jsonschema.Draft202012Validator(schema).validate(dossier)
     builds = [call for call in calls if call[:3] == ["docker", "buildx", "build"]]
-    assert len(builds) == 10 and all("--push" in call for call in builds)
+    assert len(builds) == 10
+    assert all("type=registry,oci-mediatypes=true" in call for call in builds)
     assert all(board["immutable_reference"].endswith(board["index_digest"]) for board in dossier["boards"])
     assert release.validate_release_dossier(dossier) == dossier
     forged = json.loads(json.dumps(dossier))

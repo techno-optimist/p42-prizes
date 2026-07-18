@@ -362,7 +362,8 @@ def buildx_command(root: Path, repository: str, commit: str, manifest: Mapping[s
     verifier = manifest["verifier"]
     problem_id = manifest["problem_id"]
     return [
-        "docker", "buildx", "build", "--platform", ",".join(PLATFORMS), "--push", "--provenance=false",
+        "docker", "buildx", "build", "--platform", ",".join(PLATFORMS),
+        "--output", "type=registry,oci-mediatypes=true", "--provenance=false",
         "--metadata-file", str(metadata_file),
         "--file", str(root / "Dockerfile.verifier"),
         "--build-arg", f"PROBLEM={problem_id}",
