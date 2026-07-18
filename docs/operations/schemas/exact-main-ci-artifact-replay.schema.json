@@ -118,30 +118,114 @@
       "required": ["generator", "schema", "bindingStatement"],
       "properties": {
         "generator": { "allOf": [{ "$ref": "#/$defs/toolFile" }, { "properties": { "path": { "const": "scripts/replay_exact_main_ci_artifacts.py" } } }] },
-        "schema": { "allOf": [{ "$ref": "#/$defs/toolFile" }, { "properties": { "path": { "const": "schemas/exact-main-ci-artifact-replay.schema.json" } } }] },
+        "schema": { "allOf": [{ "$ref": "#/$defs/toolFile" }, { "properties": { "path": { "const": "docs/operations/schemas/exact-main-ci-artifact-replay.schema.json" } } }] },
         "bindingStatement": { "const": "Hashes are computed from the exact external generator and schema bytes; neither file embeds its own expected hash, and both hashes are covered by the receipt self-hash." }
       }
     },
-    "sourceRecord": {
+    "sourceRecordBase": {
       "type": "object",
-      "required": ["endpoint", "record", "recordSha256"],
+      "required": ["endpoint", "recordSha256"],
       "properties": {
         "endpoint": { "type": "string", "pattern": "^https://api[.]github[.]com/repos/techno-optimist/p42-prizes/actions/" },
-        "record": { "type": "object" },
         "recordSha256": { "$ref": "#/$defs/digest" }
       }
     },
-    "plainSourceRecord": {
-      "allOf": [{ "$ref": "#/$defs/sourceRecord" }],
+    "repositoryApiRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "nodeId", "name", "fullName", "private"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "nodeId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "fullName": { "type": "string", "minLength": 1 },
+        "private": { "type": "boolean" }
+      }
+    },
+    "runApiRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "runNumber", "runAttempt", "workflowId", "workflowPath", "event", "status", "conclusion", "headBranch", "headSha", "createdAt", "updatedAt", "repository"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "runNumber": { "type": "integer", "minimum": 1 },
+        "runAttempt": { "type": "integer", "minimum": 1 },
+        "workflowId": { "type": "integer", "minimum": 1 },
+        "workflowPath": { "type": "string", "minLength": 1 },
+        "event": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "conclusion": { "type": "string", "minLength": 1 },
+        "headBranch": { "type": "string", "minLength": 1 },
+        "headSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "createdAt": { "type": "string", "minLength": 1 },
+        "updatedAt": { "type": "string", "minLength": 1 },
+        "repository": { "$ref": "#/$defs/repositoryApiRecord" }
+      }
+    },
+    "workflowApiRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "nodeId", "name", "path", "state", "createdAt", "updatedAt"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "nodeId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "state": { "type": "string", "minLength": 1 },
+        "createdAt": { "type": "string", "minLength": 1 },
+        "updatedAt": { "type": "string", "minLength": 1 }
+      }
+    },
+    "workflowRunApiRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "repositoryId", "headRepositoryId", "headBranch", "headSha"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "repositoryId": { "type": "integer", "minimum": 1 },
+        "headRepositoryId": { "type": "integer", "minimum": 1 },
+        "headBranch": { "type": "string", "minLength": 1 },
+        "headSha": { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+      }
+    },
+    "artifactApiRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "nodeId", "name", "sizeInBytes", "digest", "createdAt", "updatedAt", "expiresAt", "workflowRun"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 1 },
+        "nodeId": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "sizeInBytes": { "type": "integer", "minimum": 1 },
+        "digest": { "$ref": "#/$defs/digest" },
+        "createdAt": { "type": "string", "minLength": 1 },
+        "updatedAt": { "type": "string", "minLength": 1 },
+        "expiresAt": { "type": "string", "minLength": 1 },
+        "workflowRun": { "$ref": "#/$defs/workflowRunApiRecord" }
+      }
+    },
+    "runSourceRecord": {
+      "allOf": [
+        { "$ref": "#/$defs/sourceRecordBase" },
+        { "type": "object", "required": ["record"], "properties": { "record": { "$ref": "#/$defs/runApiRecord" } } }
+      ],
+      "unevaluatedProperties": false
+    },
+    "workflowSourceRecord": {
+      "allOf": [
+        { "$ref": "#/$defs/sourceRecordBase" },
+        { "type": "object", "required": ["record"], "properties": { "record": { "$ref": "#/$defs/workflowApiRecord" } } }
+      ],
       "unevaluatedProperties": false
     },
     "artifactSourceRecord": {
       "allOf": [
-        { "$ref": "#/$defs/sourceRecord" },
+        { "$ref": "#/$defs/sourceRecordBase" },
         {
           "type": "object",
-          "required": ["downloadedArchiveSha256", "githubDigestMatchedDownloadedArchive"],
+          "required": ["record", "downloadedArchiveSha256", "githubDigestMatchedDownloadedArchive"],
           "properties": {
+            "record": { "$ref": "#/$defs/artifactApiRecord" },
             "downloadedArchiveSha256": { "$ref": "#/$defs/digest" },
             "githubDigestMatchedDownloadedArchive": { "const": true }
           }
@@ -156,8 +240,8 @@
       "properties": {
         "capturedAt": { "const": "2026-07-18T15:30:54Z" },
         "captureMethod": { "const": "authenticated gh api reads plus streamed archive SHA-256 and extraction comparison" },
-        "run": { "$ref": "#/$defs/plainSourceRecord" },
-        "workflow": { "$ref": "#/$defs/plainSourceRecord" },
+        "run": { "$ref": "#/$defs/runSourceRecord" },
+        "workflow": { "$ref": "#/$defs/workflowSourceRecord" },
         "artifacts": { "type": "array", "minItems": 10, "maxItems": 10, "items": { "$ref": "#/$defs/artifactSourceRecord" } },
         "limitations": { "const": "These canonical retained API observations and downloaded archive digests remain reviewable after expiry, but the receipt does not retain the ZIP archives, cannot make GitHub serve expired artifacts, and is not a GitHub-signed or transparency-log attestation." }
       }

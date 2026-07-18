@@ -9,7 +9,7 @@ That successful `CI` push run is fixed to repository `techno-optimist/p42-prizes
 
 The checked receipt is
 `docs/evidence/exact-main-ci-artifact-replay-29645758684.json`. Its closed schema
-is `schemas/exact-main-ci-artifact-replay.schema.json`.
+is `docs/operations/schemas/exact-main-ci-artifact-replay.schema.json`.
 
 ## What the replay proves
 

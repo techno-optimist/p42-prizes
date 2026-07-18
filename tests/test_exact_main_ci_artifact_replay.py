@@ -14,7 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/replay_exact_main_ci_artifacts.py"
-SCHEMA = ROOT / "schemas/exact-main-ci-artifact-replay.schema.json"
+SCHEMA = ROOT / "docs/operations/schemas/exact-main-ci-artifact-replay.schema.json"
 RECEIPT = ROOT / "docs/evidence/exact-main-ci-artifact-replay-29645758684.json"
 
 
@@ -24,6 +24,10 @@ def load_replay_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_replay_schema_is_not_a_canonical_verifier_build_input() -> None:
+    assert SCHEMA.relative_to(ROOT).parts[:3] == ("docs", "operations", "schemas")
 
 
 def test_checked_receipt_is_canonical_closed_self_hashed_and_credential_free() -> None:
@@ -51,6 +55,21 @@ def test_checked_receipt_is_canonical_closed_self_hashed_and_credential_free() -
     hostile["run"]["credential"] = "secret"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.Draft202012Validator(schema).validate(hostile)
+    for record in ("run", "workflow", "artifact", "repository", "workflowRun"):
+        nested = deepcopy(receipt)
+        if record == "run":
+            target = nested["githubSourceRecords"]["run"]["record"]
+        elif record == "workflow":
+            target = nested["githubSourceRecords"]["workflow"]["record"]
+        elif record == "artifact":
+            target = nested["githubSourceRecords"]["artifacts"][0]["record"]
+        elif record == "repository":
+            target = nested["githubSourceRecords"]["run"]["record"]["repository"]
+        else:
+            target = nested["githubSourceRecords"]["artifacts"][0]["record"]["workflowRun"]
+        target["unexpected"] = True
+        with pytest.raises(jsonschema.ValidationError, match="unexpected"):
+            jsonschema.Draft202012Validator(schema).validate(nested)
 
 
 def test_artifact_root_requires_exact_fixed_ten_directories(tmp_path: Path) -> None:
