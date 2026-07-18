@@ -3,9 +3,12 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import pwd
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -19,6 +22,22 @@ assert PREFLIGHT_SPEC and PREFLIGHT_SPEC.loader
 PREFLIGHT = importlib.util.module_from_spec(PREFLIGHT_SPEC)
 sys.modules[PREFLIGHT_SPEC.name] = PREFLIGHT
 PREFLIGHT_SPEC.loader.exec_module(PREFLIGHT)
+READY_SPEC = importlib.util.spec_from_file_location(
+    "p42_rootless_docker_ready",
+    ROOT / "scripts/p42_rootless_docker_ready.py",
+)
+assert READY_SPEC and READY_SPEC.loader
+READY = importlib.util.module_from_spec(READY_SPEC)
+sys.modules[READY_SPEC.name] = READY
+READY_SPEC.loader.exec_module(READY)
+LAUNCH_SPEC = importlib.util.spec_from_file_location(
+    "p42_rootless_docker_launch",
+    ROOT / "scripts/p42_rootless_docker_launch.py",
+)
+assert LAUNCH_SPEC and LAUNCH_SPEC.loader
+LAUNCH = importlib.util.module_from_spec(LAUNCH_SPEC)
+sys.modules[LAUNCH_SPEC.name] = LAUNCH
+LAUNCH_SPEC.loader.exec_module(LAUNCH)
 FILES = (
     "deployments/p42-runtime.sysusers.example",
     "deployments/p42-operator@.service.example",
@@ -32,6 +51,8 @@ FILES = (
     "scripts/verify-runtime-execstart.mjs",
     "scripts/verify-runtime-systemd.sh",
     "scripts/p42_rootless_docker_preflight.py",
+    "scripts/p42_rootless_docker_ready.py",
+    "scripts/p42_rootless_docker_launch.py",
 )
 
 
@@ -100,9 +121,8 @@ def test_rootless_preflight_probes_user_namespace_as_current_service_user(
         "test \"$3\" = --mount || exit 13\n"
         "test \"$4\" = --pid || exit 14\n"
         "test \"$5\" = --fork || exit 15\n"
-        "test \"$6\" = --mount-proc=/proc || exit 16\n"
         "printf '%s' \"$(id -u)\" > \"$P42_PROBE_UID_FILE\"\n"
-        "test \"$7\" = /usr/bin/true || exit 17\n",
+        "test \"$6\" = /usr/bin/true || exit 16\n",
         encoding="utf-8",
     )
     fake_unshare.chmod(0o700)
@@ -117,6 +137,68 @@ def test_rootless_preflight_probes_user_namespace_as_current_service_user(
     )
 
     assert observed_uid.read_text(encoding="ascii") == str(os.geteuid())
+
+
+def test_rootless_readiness_requires_identity_and_rootless_security() -> None:
+    valid = '{"ID":"daemon-id","Name":"p42","ServerVersion":"29.2.1","SecurityOptions":["name=seccomp","name=rootless"]}'
+    assert READY.validate_docker_info(valid)["ID"] == "daemon-id"
+    with pytest.raises(READY.RootlessDockerReadyError, match="name=rootless"):
+        READY.validate_docker_info(valid.replace(',"name=rootless"', ""))
+    with pytest.raises(READY.RootlessDockerReadyError, match="nonempty ID"):
+        READY.validate_docker_info(valid.replace("daemon-id", ""))
+
+
+def test_rootless_readiness_binds_socket_owner_and_exact_endpoint() -> None:
+    with tempfile.TemporaryDirectory(prefix="p42-ready-", dir="/tmp") as directory:
+        root = Path(directory)
+        endpoint = root / "docker.sock"
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(endpoint))
+        docker = root / "docker"
+        observed = root / "args"
+        docker.write_text(
+            "#!/bin/sh\n"
+            f"printf '%s\\n' \"$@\" > {observed}\n"
+            "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42\",\"ServerVersion\":\"29.2.1\",\"SecurityOptions\":[\"name=rootless\"]}'\n",
+            encoding="utf-8",
+        )
+        docker.chmod(0o700)
+        try:
+            assert READY.probe_ready(endpoint, docker, os.getuid())["Name"] == "p42"
+        finally:
+            listener.close()
+        assert observed.read_text(encoding="utf-8").splitlines() == [
+            "--host",
+            f"unix://{endpoint}",
+            "info",
+            "--format",
+            "{{json .}}",
+        ]
+
+
+def test_rootless_launcher_requires_private_user_manager_authority() -> None:
+    with tempfile.TemporaryDirectory(prefix="p42-launch-", dir="/tmp") as directory:
+        root = Path(directory)
+        record = pwd.getpwuid(os.getuid())
+        runtime = root / str(record.pw_uid)
+        runtime.mkdir(mode=0o700)
+        bus = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        bus.bind(str(runtime / "bus"))
+        try:
+            resolved, resolved_runtime, resolved_bus = LAUNCH.resolve_user_runtime(record.pw_name, root)
+            assert resolved.pw_uid == record.pw_uid
+            assert resolved_runtime == runtime
+            assert resolved_bus == runtime / "bus"
+            runtime.chmod(0o755)
+            with pytest.raises(LAUNCH.RootlessDockerLaunchError, match="group/world accessible"):
+                LAUNCH.resolve_user_runtime(record.pw_name, root)
+        finally:
+            bus.close()
+
+
+def test_rootless_launcher_rejects_an_unbound_command() -> None:
+    with pytest.raises(LAUNCH.RootlessDockerLaunchError, match="launcher command"):
+        LAUNCH.launch("unused", ["/usr/bin/true"])
 
 
 @pytest.mark.parametrize(
@@ -135,12 +217,12 @@ def test_rootless_preflight_probes_user_namespace_as_current_service_user(
             "Conflicts=docker.service",
             "Conflicts=docker.service docker.socket",
         ),
-        (
-            "deployments/p42-docker-rootless@.service.example",
-            "ExecStart=/usr/bin/dockerd-rootless.sh",
-            "ExecStart=/usr/bin/dockerd",
-            "dockerd-rootless.sh",
-        ),
+            (
+                "deployments/p42-docker-rootless@.service.example",
+                "/usr/bin/dockerd-rootless.sh --host",
+                "/usr/bin/dockerd --host",
+                "dockerd-rootless.sh",
+            ),
         (
             "deployments/p42-resolver@.service.example",
             "ReadWritePaths=/var/lib/p42/resolver/%i /var/lib/p42/resolver/coordination",

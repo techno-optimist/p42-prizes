@@ -34,9 +34,11 @@ rootless="$deployments/p42-docker-rootless@.service.example"
 rootless_config="$deployments/p42-docker-rootless-daemon.json"
 rootless_apparmor="$deployments/p42-rootless-runtime.apparmor.example"
 rootless_preflight="$repo_root/scripts/p42_rootless_docker_preflight.py"
+rootless_ready="$repo_root/scripts/p42_rootless_docker_ready.py"
+rootless_launch="$repo_root/scripts/p42_rootless_docker_launch.py"
 failure="$deployments/p42-runtime-failure@.service.example"
 sysusers="$deployments/p42-runtime.sysusers.example"
-for file in "$operator" "$resolver" "$rootless" "$rootless_config" "$rootless_apparmor" "$rootless_preflight" "$failure" "$sysusers"; do
+for file in "$operator" "$resolver" "$rootless" "$rootless_config" "$rootless_apparmor" "$rootless_preflight" "$rootless_ready" "$rootless_launch" "$failure" "$sysusers"; do
   [[ -f $file ]] || fail "missing ${file#"$repo_root"/}"
 done
 
@@ -86,15 +88,21 @@ done
 
 require_exact "$rootless" User 'User=p42-operator'
 require_exact "$rootless" Group 'Group=p42-operator'
+require_exact "$rootless" Type 'Type=exec'
 require_exact "$rootless" AppArmorProfile 'AppArmorProfile=p42-rootless-runtime'
 require_exact "$rootless" Conflicts 'Conflicts=docker.service docker.socket'
 require_line "$rootless" 'ConditionPathExists=/usr/bin/rootlesskit'
 require_line "$rootless" 'ConditionPathExists=/usr/bin/unshare'
+require_line "$rootless" 'ConditionPathExists=/usr/bin/docker'
+require_line "$rootless" 'ConditionPathExists=/usr/local/libexec/p42_rootless_docker_ready.py'
+require_line "$rootless" 'ConditionPathExists=/usr/local/libexec/p42_rootless_docker_launch.py'
 require_line "$rootless" 'ConditionPathExists=/sys/fs/cgroup/cgroup.controllers'
 require_line "$rootless" 'ConditionPathExists=!/run/docker.sock'
 require_line "$rootless" 'ConditionPathExists=!/var/run/docker.sock'
 require_line "$rootless" 'Environment=DOCKER_HOST=unix:///run/p42-docker-%i/docker.sock'
-require_exact "$rootless" ExecStart 'ExecStart=/usr/bin/dockerd-rootless.sh --host=unix:///run/p42-docker-%i/docker.sock --config-file=/etc/p42/docker/rootless-daemon.json --data-root=/var/lib/p42/docker-%i'
+require_exact "$rootless" ExecStart 'ExecStart=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_launch.py p42-operator /usr/bin/dockerd-rootless.sh --host=unix:///run/p42-docker-%i/docker.sock --config-file=/etc/p42/docker/rootless-daemon.json --data-root=/var/lib/p42/docker-%i'
+require_exact "$rootless" ExecStartPost 'ExecStartPost=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_ready.py %i --timeout-seconds 60'
+require_exact "$rootless" TimeoutStartSec 'TimeoutStartSec=75s'
 require_line "$rootless" 'ExecStartPre=/usr/bin/test -x /usr/bin/newuidmap'
 require_line "$rootless" 'ExecStartPre=/usr/bin/test -x /usr/bin/newgidmap'
 require_line "$rootless" 'ExecStartPre=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_preflight.py p42-operator'
@@ -103,8 +111,14 @@ require_line "$rootless" 'ExecStartPre=/usr/bin/test ! -S /var/run/docker.sock'
 require_exact "$rootless" RuntimeDirectory 'RuntimeDirectory=p42-docker-%i'
 require_exact "$rootless" Delegate 'Delegate=yes'
 require_exact "$rootless" NoNewPrivileges 'NoNewPrivileges=false'
+require_exact "$rootless" RestrictAddressFamilies 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'
+require_exact "$rootless" BindPaths 'BindPaths=/dev/net/tun'
+require_exact "$rootless" DeviceAllow 'DeviceAllow=/dev/net/tun rw'
+require_exact "$rootless" ProtectKernelTunables 'ProtectKernelTunables=false'
+require_exact "$rootless" ProtectKernelLogs 'ProtectKernelLogs=false'
+require_exact "$rootless" ProtectHome 'ProtectHome=false'
 require_exact "$rootless" ReadOnlyPaths 'ReadOnlyPaths=/etc/p42/docker'
-require_exact "$rootless" ReadWritePaths 'ReadWritePaths=/var/lib/p42/docker-%i /var/lib/p42/docker-home-%i /run/p42-docker-%i'
+require_exact "$rootless" ReadWritePaths 'ReadWritePaths=/var/lib/p42/docker-%i /var/lib/p42/docker-home-%i /run/p42-docker-%i /run/user'
 require_exact "$rootless" MemorySwapMax 'MemorySwapMax=0'
 require_exact "$rootless" LimitCORE 'LimitCORE=0'
 grep -Fq 'def validate_subordinate_id_file' "$rootless_preflight" || fail "rootless preflight must validate subordinate-ID ranges"
@@ -113,6 +127,13 @@ grep -Fq '"--user"' "$rootless_preflight" || fail "rootless preflight must probe
 grep -Fq '"--map-root-user"' "$rootless_preflight" || fail "rootless preflight must map the current service user"
 grep -Fq '"--pid"' "$rootless_preflight" || fail "rootless preflight must create a PID namespace"
 grep -Fq '"--fork"' "$rootless_preflight" || fail "rootless preflight must fork into the PID namespace"
+if grep -Fq '"--mount-proc=/proc"' "$rootless_preflight"; then
+  fail "rootless preflight must not remount proc beneath systemd kernel protections"
+fi
+grep -Fq '"name=rootless"' "$rootless_ready" || fail "rootless readiness must require explicit rootless security proof"
+grep -Fq 'metadata.st_uid != expected_uid' "$rootless_ready" || fail "rootless readiness must bind socket ownership to the service UID"
+grep -Fq 'runtime_metadata.st_mode & 0o077' "$rootless_launch" || fail "rootless launcher must reject a broadly accessible user runtime"
+grep -Fq 'DBUS_SESSION_BUS_ADDRESS' "$rootless_launch" || fail "rootless launcher must bind Docker to the service user manager"
 require_line "$rootless_apparmor" 'profile p42-rootless-runtime flags=(unconfined) {'
 require_line "$rootless_apparmor" '  userns,'
 [[ $(grep -c -F 'userns,' "$rootless_apparmor") == 1 ]] || fail "rootless runtime AppArmor profile must grant userns exactly once"

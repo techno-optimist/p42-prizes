@@ -524,11 +524,24 @@ uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
 `/etc/subuid` and `/etc/subgid` ranges, enabled unprivileged user namespaces,
 and cgroup v2 for `p42-operator`. Its preflight parses every subordinate-ID
 file entry and rejects interval overlap, then runs `unshare --user
---map-root-user --mount --pid --fork --mount-proc=/proc /usr/bin/true` as the
-service user;
+--map-root-user --mount --pid --fork /usr/bin/true` as the service user;
 it does not merely grep for a matching row. Install
 `scripts/p42_rootless_docker_preflight.py` as
 `/usr/local/libexec/p42_rootless_docker_preflight.py` before enabling the unit.
+Install `scripts/p42_rootless_docker_ready.py` as
+`/usr/local/libexec/p42_rootless_docker_ready.py` too. Rootlesskit does not
+forward Docker's systemd readiness notification, so the unit uses `Type=exec`
+and an `ExecStartPost` gate that binds the private socket to the service UID and
+requires structured Docker identity plus the explicit `name=rootless` security
+option before dependents can start.
+Install `scripts/p42_rootless_docker_launch.py` as
+`/usr/local/libexec/p42_rootless_docker_launch.py`. Before first startup, run
+`loginctl enable-linger p42-operator` and prove `user@$(id -u
+p42-operator).service` is active. The launcher resolves that dynamic UID,
+rejects a missing, misowned, or broadly accessible `/run/user/<uid>` and user
+bus, then binds Docker to that exact user manager. This is required for the
+systemd cgroup driver to enforce each verifier container's memory and PID
+limits; daemon-level limits alone are not sufficient evidence.
 Ubuntu 24.04 hosts with
 `kernel.apparmor_restrict_unprivileged_userns=1` must also install
 `deployments/p42-rootless-runtime.apparmor.example` as
@@ -538,6 +551,25 @@ named profile only to `p42-docker-rootless@.service`; it grants that bounded
 service process tree the `userns` permission needed by both the same-user
 preflight and rootlesskit. Do not disable the host restriction globally or
 grant it to generic `/usr/bin/unshare`.
+The rootless authority's address-family allowlist includes `AF_NETLINK` only so
+rootlesskit can configure its namespaced TAP interface; it still excludes raw
+packet sockets and does not grant a host network namespace.
+`PrivateDevices=true` remains enabled; the unit binds only `/dev/net/tun` into
+that private device namespace and grants only that device read/write access.
+The unit explicitly leaves `ProtectKernelTunables` and `ProtectKernelLogs`
+disabled because Docker must write network tunables inside its unprivileged
+user/network namespace. The service UID cannot write host tunables; AppArmor,
+the user namespace, `ProtectKernelModules`, and the remaining systemd sandbox
+continue to protect the host boundary.
+`ProtectHome` is also disabled because systemd otherwise masks the service's
+own `/run/user/<uid>` bus. The dedicated nologin UID and 0700 runtime ownership
+still block other user homes and runtimes, while `ProtectSystem=strict` and the
+explicit write paths retain the filesystem boundary.
+When migrating a host from rootful Docker, stop both `docker.service` and
+`docker.socket`, prove both units inactive and prove no listener owns
+`/run/docker.sock`, then explicitly remove the stale socket node before
+starting the P42 unit. On Ubuntu, stopping the socket unit can leave that node
+behind; the P42 unit intentionally refuses to delete or reuse it.
 The `deployments/p42-runtime.sysusers.example` fragment creates accounts only;
 host administration must install rootlesskit, setuid ID helpers, subordinate
 IDs, user-namespace policy, and cgroup support. The worker passes the validated

@@ -98,7 +98,6 @@ def probe_same_user_user_namespace(unshare: Path = Path("/usr/bin/unshare")) -> 
                 "--mount",
                 "--pid",
                 "--fork",
-                "--mount-proc=/proc",
                 "/usr/bin/true",
             ],
             capture_output=True,
