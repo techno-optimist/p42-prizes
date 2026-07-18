@@ -431,6 +431,22 @@ def test_child_manifest_and_config_are_verified_through_digest_and_size():
         release.verify_descriptor_bytes(blobs[config["digest"]] + " ", digest=config["digest"], size=config["size"], label="config")
 
 
+def test_child_manifest_allows_content_addressed_layer_reuse():
+    layer = {
+        "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+        "digest": DIGEST_A,
+        "size": 42,
+    }
+    manifest = json.dumps({
+        "schemaVersion": 2,
+        "mediaType": release.MANIFEST_MEDIA_TYPE,
+        "config": {"mediaType": release.CONFIG_MEDIA_TYPE, "digest": DIGEST_B, "size": 100},
+        "layers": [layer, layer],
+    }, separators=(",", ":"))
+    parsed = release.parse_child_manifest(manifest)
+    assert parsed["layers"] == [layer, layer]
+
+
 def test_command_failure_does_not_echo_registry_output_or_argv_secret():
     def runner(argv, **kwargs):
         return subprocess.CompletedProcess(argv, 1, "token=supersecret", "password=hunter2")
