@@ -492,6 +492,146 @@ startup reject it before scanning. A current deployment must produce a new
 manifest and reconciliation report; agents must not rewrite stale addresses or
 tx hashes into a fake current release.
 
+## Operator And Resolver Systemd Templates
+
+The source templates are `deployments/p42-operator@.service.example` and
+`deployments/p42-resolver@.service.example`. Install them only after replacing
+the example configuration with a deployment-specific manifest, immutable
+challenge provisioning, accepted session keys, runner-health identities, and
+publisher credentials. The per-instance environment files are private files at
+`/etc/p42/operator/<instance>/runtime.env` and
+`/etc/p42/resolver/<instance>/runtime.env`.
+
+The operator environment must provide `P42_PROBLEM_SLUG`,
+`P42_REGISTRY_PROBLEM_ID`, `P42_AGENT_WALLET_ADDRESS`, and all five
+`P42_RUNNER_*` identity/public-key values named by the template. It must not
+provide `P42_RPC_URL`, `P42_NONCE_RPC_SECONDARY_URL`, or a Docker socket
+override. The unit loads `credentials/operator-private-key`,
+`credentials/rpc-primary-url`, and `credentials/rpc-secondary-url`; do not put
+signing or RPC URL material in the environment file. The RPC credential files
+must be private authenticated HTTPS URLs. Its manifest, immutable
+`challenge-provisioning.json`, and credential sources must be installed in the
+matching private configuration directory. `--sandbox-staging-root` points the
+worker at the writable `/var/lib/p42/operator/<instance>/sandbox-staging`
+directory.
+
+Production verifier execution has one Docker authority: the same unprivileged
+`p42-operator` account runs `p42-docker-rootless@<instance>.service`, with
+`DOCKER_HOST=unix:///run/p42-docker-<instance>/docker.sock`. The operator
+requires that unit and checks the socket before its first poll. The rootless
+unit conflicts with `docker.service`/`docker.socket`, rejects a rootful socket,
+uses no `docker` group, and requires `newuidmap`/`newgidmap` plus 65,536-entry
+`/etc/subuid` and `/etc/subgid` ranges, enabled unprivileged user namespaces,
+and cgroup v2 for `p42-operator`. Its preflight parses every subordinate-ID
+file entry and rejects interval overlap, then runs `unshare --user
+--map-root-user --mount --pid --fork /usr/bin/true` as the service user;
+it does not merely grep for a matching row. Install
+`scripts/p42_rootless_docker_preflight.py` as
+`/usr/local/libexec/p42_rootless_docker_preflight.py` before enabling the unit.
+Install `scripts/p42_rootless_docker_ready.py` as
+`/usr/local/libexec/p42_rootless_docker_ready.py` too. Rootlesskit does not
+forward Docker's systemd readiness notification, so the unit uses `Type=exec`
+and an `ExecStartPost` gate that binds the private socket to the service UID and
+requires structured Docker identity, the explicit `name=rootless` security
+option, and `CgroupDriver=systemd` before dependents can start.
+Install `scripts/p42_rootless_docker_launch.py` as
+`/usr/local/libexec/p42_rootless_docker_launch.py`. Before first startup, run
+`loginctl enable-linger p42-operator` and prove `user@$(id -u
+p42-operator).service` is active. The launcher resolves that dynamic UID,
+rejects a missing, misowned, or broadly accessible `/run/user/<uid>` and user
+bus, then binds Docker to that exact user manager. This is required for the
+systemd cgroup driver to enforce each verifier container's memory and PID
+limits; daemon-level limits alone are not sufficient evidence.
+Ubuntu 24.04 hosts with
+`kernel.apparmor_restrict_unprivileged_userns=1` must also install
+`deployments/p42-rootless-runtime.apparmor.example` as
+`/etc/apparmor.d/p42-rootless-runtime` and load it with
+`apparmor_parser -r /etc/apparmor.d/p42-rootless-runtime`. Systemd applies the
+named profile only to `p42-docker-rootless@.service`; it grants that bounded
+service process tree the `userns` permission needed by both the same-user
+preflight and rootlesskit. Do not disable the host restriction globally or
+grant it to generic `/usr/bin/unshare`.
+The rootless authority's address-family allowlist includes `AF_NETLINK` only so
+rootlesskit can configure its namespaced TAP interface; it still excludes raw
+packet sockets and does not grant a host network namespace.
+`PrivateDevices=true` remains enabled; the unit binds only `/dev/net/tun` into
+that private device namespace and grants only that device read/write access.
+The unit explicitly leaves `ProtectKernelTunables` and `ProtectKernelLogs`
+disabled because Docker must write network tunables inside its unprivileged
+user/network namespace. The service UID cannot write host tunables; AppArmor,
+the user namespace, `ProtectKernelModules`, and the remaining systemd sandbox
+continue to protect the host boundary.
+`ProtectHome` is also disabled because systemd otherwise masks the service's
+own `/run/user/<uid>` bus. The dedicated nologin UID and 0700 runtime ownership
+still block other user homes and runtimes, while `ProtectSystem=strict` and the
+explicit write paths retain the filesystem boundary.
+When migrating a host from rootful Docker, stop both `docker.service` and
+`docker.socket`, prove both units inactive and prove no listener owns
+`/run/docker.sock`, then explicitly remove the stale socket node before
+starting the P42 unit. On Ubuntu, stopping the socket unit can leave that node
+behind; the P42 unit intentionally refuses to delete or reuse it.
+The `deployments/p42-runtime.sysusers.example` fragment creates accounts only;
+host administration must install rootlesskit, setuid ID helpers, subordinate
+IDs, user-namespace policy, and cgroup support. The worker passes the validated
+socket to every Docker `info`, `run`, and cleanup invocation, and accepts the
+daemon only when structured `docker info` includes daemon identity, the
+explicit `name=rootless` security option, and the systemd cgroup driver; it
+never falls back to
+`/var/run/docker.sock`.
+
+The resolver environment must provide `P42_PROBLEM_SLUG`,
+`P42_REGISTRY_PROBLEM_ID`, `P42_AGENT_WALLET_ADDRESS`, `P42_ARWEAVE_OWNER`, and
+two independently operated HTTPS origins in
+`P42_TRANSCRIPT_ENDPOINT_PRIMARY` and `P42_TRANSCRIPT_ENDPOINT_SECONDARY`. The
+unit loads `credentials/resolver-private-key`, `credentials/arweave-jwk`, and
+`credentials/rpc-primary-url` with `LoadCredential`; do not put
+`P42_RPC_URL`, `RESOLVER_PRIVATE_KEY`, or `ARWEAVE_JWK_JSON` in the environment
+file. The RPC credential must be a private authenticated HTTPS URL. The shipped
+command explicitly selects the Arweave publisher and two CLI retrieval origins.
+A missing or invalid owner fails startup; a missing, invalid, or owner-mismatched
+funded JWK fails closed when an upload is needed. There is no implicit
+receipt-only fallback.
+
+The resolver executable rejects `P42_TRANSCRIPT_RECEIPT_SPOOL`,
+`P42_TRANSCRIPT_STORE`, or `P42_TRANSCRIPT_ENDPOINTS` when they conflict with
+the explicit publisher and endpoint CLI options. The units also remove those
+legacy variables from the service environment. This makes an old environment
+file fail closed rather than silently adding a second publisher or retrieval
+set to the production command.
+
+For shared DGX operation, the operator unit uses `MemoryHigh=2G`,
+`MemoryMax=3G`, `MemorySwapMax=0`, and `TasksMax=256`; the resolver uses 1G, 2G,
+0, and 128 respectively. `MemoryHigh` introduces reclaim before the hard limit,
+while the templates intentionally impose no CPU quota or sleep beyond the
+runtime's existing 12-second poll cadence. `LimitCORE=0` disables service core
+dumps. These limits apply to the supervisor and its direct service process
+tree; they do **not** contain verifier containers created by a separate Docker
+daemon. The verifier's own Docker command carries its per-container memory,
+no-swap, PID, OOM-kill, and core-dump settings. A host using a delegated
+container manager must verify Docker daemon cgroup placement and live
+enforcement before treating either layer as operational evidence.
+
+Run the local aggregate used by the agent CI lane:
+
+```bash
+bash scripts/verify-censorship-fallback-systemd.sh
+```
+
+It runs `systemd-analyze verify` where available and invokes
+`scripts/verify-runtime-systemd.sh`, which parses both complete `ExecStart`
+commands against the CLIs' shared production option contract and checks the
+rootless daemon unit/configuration. Agent tests exercise the exact expanded
+unit shape with private credential files, staging, rootless socket binding,
+stub RPC, and publisher behavior. Python tests verify that the real worker
+stages the solution below the explicit operator root, uses only the bound
+rootless endpoint, refuses to lease before Docker responds, and that the Docker
+command contains per-container memory/PID/OOM/core controls. These are the
+maximum feasible source and credential-free fixture preflight checks on this
+host; they do not attest an installed Linux rootless daemon, the installed
+preflight helper, host subordinate-ID configuration, live Docker identity or
+cgroups, live jobs, live RPC independence, funded Arweave publication, signer
+custody, queue latency under load, or an on-chain poll.
+
 ## Portal Shortcut Guard
 
 The Render portal still has a Phase 0 developer shortcut that invokes the local

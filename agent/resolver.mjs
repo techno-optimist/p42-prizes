@@ -61,6 +61,11 @@ import {
   assertSignedTransactionRecord,
 } from "./signed-transaction.mjs";
 import { readStrictJsonFileSync } from "./strict-json.mjs";
+import {
+  assertProductionRuntimeContract,
+  legacyTranscriptEnvironmentErrors,
+} from "./runtime-cli-contract.mjs";
+import { readCredentialJson, readCredentialText, readCredentialUrl } from "./runtime-credentials.mjs";
 
 const RUNTIME_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...RUNTIME_JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
@@ -2056,6 +2061,8 @@ export async function buildResolverContext(argv, clients = {}) {
   const agentWalletAddress = arg(argv, "agent-wallet", null);
   const quorumSignaturesArg = arg(argv, "quorum-signatures", null);
   const coordinationRootArg = arg(argv, "coordination-root", null);
+  const resolverPrivateKeyFile = arg(argv, "resolver-private-key-file", null);
+  const rpcUrlFile = arg(argv, "rpc-url-file", null);
   if (!manifestPath || !problemId || !registryProblemIdArg || !transcriptsArg) {
     throw new Error("required: --manifest <path> --problem-id <slug> --registry-problem-id <numeric id> --transcripts <dir>");
   }
@@ -2069,10 +2076,25 @@ export async function buildResolverContext(argv, clients = {}) {
   if (!localTest && !coordinationRootArg) {
     throw new Error("production resolver requires one shared --coordination-root for all boards");
   }
+  if (!localTest) {
+    assertProductionRuntimeContract("resolver", argv, {
+      env: process.env,
+      publisherProvided: Boolean(clients.publisher),
+      endpointsProvided: clients.endpoints ?? [],
+    });
+  }
   const publicationClients = configureResolverPublication(argv, process.env, clients);
-  const privateKey = process.env.RESOLVER_PRIVATE_KEY;
-  if (!privateKey) throw new Error("set RESOLVER_PRIVATE_KEY to the resolver session key");
-  const provider = new ethers.JsonRpcProvider(arg(argv, "rpc", "https://sepolia.base.org"));
+  if (!localTest && resolverPrivateKeyFile && process.env.RESOLVER_PRIVATE_KEY) {
+    throw new Error("production resolver must not receive RESOLVER_PRIVATE_KEY when using a systemd credential file");
+  }
+  const privateKey = resolverPrivateKeyFile
+    ? readCredentialText(resolverPrivateKeyFile, "resolver private-key credential")
+    : process.env.RESOLVER_PRIVATE_KEY;
+  if (!privateKey) throw new Error("provide --resolver-private-key-file from a systemd LoadCredential (or RESOLVER_PRIVATE_KEY for local tests)");
+  const rpcUrl = rpcUrlFile
+    ? readCredentialUrl(rpcUrlFile, "primary RPC URL credential")
+    : arg(argv, "rpc", "https://sepolia.base.org");
+  const provider = new ethers.JsonRpcProvider(rpcUrl);
   const manifest = readStrictJsonFileSync(resolve(manifestPath), RUNTIME_JSON_LIMITS);
   validateManifestEvidence(manifest, await loadProductionValidationContext(manifest, { provider }));
   const wallet = new ethers.Wallet(privateKey, provider);
@@ -2178,17 +2200,21 @@ export async function buildResolverContext(argv, clients = {}) {
 }
 
 export function configureResolverPublication(argv = [], env = process.env, clients = {}) {
+  const legacyErrors = legacyTranscriptEnvironmentErrors(argv, env);
+  if (legacyErrors.length) throw new Error(legacyErrors.join("; "));
   const endpoints = clients.endpoints
     ? configuredTranscriptEndpoints([], { P42_TRANSCRIPT_ENDPOINTS: clients.endpoints.join(",") })
     : configuredTranscriptEndpoints(argv, env);
   const spool = arg(argv, "publication-receipts", env.P42_TRANSCRIPT_RECEIPT_SPOOL);
   const store = arg(argv, "transcript-store", env.P42_TRANSCRIPT_STORE);
+  const arweaveJwkFile = arg(argv, "arweave-jwk-file", env.P42_ARWEAVE_JWK_FILE);
   if (spool && store) throw new Error("configure exactly one transcript publisher mode");
   if (store && store !== "arweave") throw new Error("--transcript-store must be arweave");
   const publisher = clients.publisher
     ?? (store === "arweave"
       ? arweaveTranscriptPublisher({
         owner: env.P42_ARWEAVE_OWNER,
+        wallet: arweaveJwkFile ? readCredentialJson(arweaveJwkFile, "Arweave JWK credential") : undefined,
         ...clients.arweaveOptions,
       })
       : spool

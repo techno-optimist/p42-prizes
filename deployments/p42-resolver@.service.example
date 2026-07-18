@@ -11,21 +11,37 @@ Type=simple
 User=p42-resolver
 Group=p42-resolver
 EnvironmentFile=/etc/p42/resolver/%i/runtime.env
+LoadCredential=resolver-private-key:/etc/p42/resolver/%i/credentials/resolver-private-key
+LoadCredential=arweave-jwk:/etc/p42/resolver/%i/credentials/arweave-jwk
+LoadCredential=rpc-primary-url:/etc/p42/resolver/%i/credentials/rpc-primary-url
+UnsetEnvironment=RESOLVER_PRIVATE_KEY ARWEAVE_JWK_JSON P42_RPC_URL P42_TRANSCRIPT_RECEIPT_SPOOL P42_TRANSCRIPT_ENDPOINTS P42_TRANSCRIPT_STORE
 ExecStart=/usr/local/bin/p42-runtime-supervisor \
   --runtime /usr/bin/node --journal /var/lib/p42/resolver/%i/supervisor.jsonl \
   --cycle-timeout-ms 120000 --kill-grace-ms 10000 --max-failures 5 \
   --backoff-ms 1000 --max-backoff-ms 30000 -- \
   /opt/p42/agent/resolver.mjs \
-  --rpc ${P42_RPC_URL} --manifest /etc/p42/resolver/%i/manifest.json \
+  --rpc-url-file ${CREDENTIALS_DIRECTORY}/rpc-primary-url \
+  --manifest /etc/p42/resolver/%i/manifest.json \
   --problem-id ${P42_PROBLEM_SLUG} --registry-problem-id ${P42_REGISTRY_PROBLEM_ID} \
   --transcripts /var/lib/p42/resolver/%i/transcripts \
   --quorum-signatures /var/lib/p42/resolver/%i/quorum-signatures \
   --runtime /var/lib/p42/resolver/%i \
-  --coordination-root /var/lib/p42/resolver/coordination
+  --coordination-root /var/lib/p42/resolver/coordination \
+  --resolver-private-key-file ${CREDENTIALS_DIRECTORY}/resolver-private-key \
+  --arweave-jwk-file ${CREDENTIALS_DIRECTORY}/arweave-jwk \
+  --agent-wallet ${P42_AGENT_WALLET_ADDRESS} \
+  --transcript-store arweave \
+  --transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_PRIMARY} \
+  --transcript-endpoint ${P42_TRANSCRIPT_ENDPOINT_SECONDARY}
 Restart=on-failure
 RestartSec=15s
 RestartPreventExitStatus=64 70 78 143
 OOMPolicy=kill
+LimitCORE=0
+MemoryHigh=1G
+MemoryMax=2G
+MemorySwapMax=0
+TasksMax=128
 KillMode=mixed
 TimeoutStopSec=20s
 SendSIGKILL=yes

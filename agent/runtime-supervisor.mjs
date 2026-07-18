@@ -209,6 +209,7 @@ export function runRuntimeCycle({
   runtimeArgs,
   cycleTimeoutMs,
   killGraceMs,
+  env = process.env,
   signal,
   spawn = nodeSpawn,
   stdout = process.stdout,
@@ -233,7 +234,7 @@ export function runRuntimeCycle({
     try {
       child = spawn(runtime, [...runtimeArgs, "--once"], {
         stdio: ["ignore", "pipe", "pipe"],
-        env: process.env,
+        env,
       });
     } catch (error) {
       resolve({

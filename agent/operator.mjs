@@ -68,6 +68,8 @@ import {
 import { parseStrictJsonText, readStrictJsonFileSync } from "./strict-json.mjs";
 import { verifyRunnerTranscript } from "./runner-transcript.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
+import { assertProductionRuntimeContract } from "./runtime-cli-contract.mjs";
+import { readCredentialText, readCredentialUrl } from "./runtime-credentials.mjs";
 
 const JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const IMMUTABLE_JSON_LIMITS = Object.freeze({ ...JSON_LIMITS, canonicalBytes: true, trailingNewline: "require" });
@@ -81,8 +83,10 @@ function arg(name, def = undefined) {
   return value && !value.startsWith("--") ? value : true;
 }
 
-const RPC = arg("rpc", "https://sepolia.base.org");
-const NONCE_RPC_SECONDARY = arg("nonce-rpc-secondary", null);
+const RPC_URL_FILE = arg("rpc-url-file", null);
+const NONCE_RPC_SECONDARY_URL_FILE = arg("nonce-rpc-secondary-url-file", null);
+let RPC = arg("rpc", "https://sepolia.base.org");
+let NONCE_RPC_SECONDARY = arg("nonce-rpc-secondary", null);
 const MANIFEST = arg("manifest");
 const PROBLEM = arg("problem");
 const REGISTRY_PROBLEM_ID = arg("registry-problem-id");
@@ -95,6 +99,9 @@ const CONFIRMATIONS_ARG = arg("confirmations", null);
 const REORG_OVERLAP_ARG = arg("reorg-overlap-blocks", null);
 const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 const RUNTIME = resolve(arg("runtime", join(HERE, "runtime")));
+const SANDBOX_STAGING_ROOT = resolve(arg("sandbox-staging-root", join(RUNTIME, "sandbox-staging")));
+const OPERATOR_PRIVATE_KEY_FILE = arg("operator-private-key-file", null);
+const DOCKER_HOST_ARG = arg("docker-host", process.env.DOCKER_HOST ?? null);
 const COORDINATION_ROOT_ARG = arg("coordination-root", null);
 const COORDINATION_ROOT = resolve(COORDINATION_ROOT_ARG ?? join(RUNTIME, "coordination"));
 const CURSOR = resolve(arg("cursor", join(RUNTIME, "operator-cursor.json")));
@@ -125,6 +132,20 @@ const MEMORY_SAFETY_FACTOR = Number(arg("memory-safety-factor", "2"));
 const RUNNER_CHAIN_TIMESTAMP_ENV = "P42_RUNNER_CHAIN_TIMESTAMP";
 const RETRY_BACKOFF_MS = 15_000;
 
+if (!LOCAL_TEST) {
+  try {
+    assertProductionRuntimeContract("operator", process.argv.slice(2));
+  } catch (error) {
+    console.error(error.message);
+    process.exit(2);
+  }
+}
+
+if (RPC_URL_FILE) RPC = readCredentialUrl(RPC_URL_FILE, "primary RPC URL credential");
+if (NONCE_RPC_SECONDARY_URL_FILE) {
+  NONCE_RPC_SECONDARY = readCredentialUrl(NONCE_RPC_SECONDARY_URL_FILE, "secondary RPC URL credential");
+}
+
 if (!MANIFEST || !PROBLEM || !REGISTRY_PROBLEM_ID) {
   console.error("required: --manifest <path> --problem <dir> --registry-problem-id <positive numeric id>");
   process.exit(2);
@@ -146,16 +167,27 @@ if (!LOCAL_TEST && !COORDINATION_ROOT_ARG) {
   process.exit(2);
 }
 if (!LOCAL_TEST && !NONCE_RPC_SECONDARY) {
-  console.error("production operator requires --nonce-rpc-secondary from an independent RPC host");
+  console.error("production operator requires --nonce-rpc-secondary-url-file from an independent RPC credential");
+  process.exit(2);
+}
+if (!LOCAL_TEST && (!DOCKER_HOST_ARG || !String(DOCKER_HOST_ARG).startsWith("unix://")
+    || ["unix:///run/docker.sock", "unix:///var/run/docker.sock"].includes(String(DOCKER_HOST_ARG)))) {
+  console.error("production operator requires a rootless unix:// Docker socket, never the rootful /run/docker.sock");
   process.exit(2);
 }
 if (NONCE_RPC_SECONDARY && new URL(NONCE_RPC_SECONDARY).host === new URL(RPC).host) {
   console.error("primary and secondary nonce RPCs must use different hosts");
   process.exit(2);
 }
-const KEY = process.env.OPERATOR_PRIVATE_KEY;
+if (!LOCAL_TEST && OPERATOR_PRIVATE_KEY_FILE && process.env.OPERATOR_PRIVATE_KEY) {
+  console.error("production operator must not receive OPERATOR_PRIVATE_KEY when using a systemd credential file");
+  process.exit(2);
+}
+const KEY = OPERATOR_PRIVATE_KEY_FILE
+  ? readCredentialText(OPERATOR_PRIVATE_KEY_FILE, "operator private-key credential")
+  : process.env.OPERATOR_PRIVATE_KEY;
 if (!KEY) {
-  console.error("set OPERATOR_PRIVATE_KEY (use only a funded, revoked-capable operator/session key)");
+  console.error("provide --operator-private-key-file from a systemd LoadCredential (or OPERATOR_PRIVATE_KEY for local tests)");
   process.exit(2);
 }
 
@@ -1203,6 +1235,8 @@ function runWorkerOnce(chainTimestamp) {
       "--reserve-memory-mb", String(RESERVE_MEMORY_MB),
       "--max-swap-used-mb", String(MAX_SWAP_USED_MB),
       "--memory-safety-factor", String(MEMORY_SAFETY_FACTOR),
+      "--sandbox-staging-root", SANDBOX_STAGING_ROOT,
+      ...(DOCKER_HOST_ARG ? ["--docker-host", DOCKER_HOST_ARG] : []),
     );
   } finally {
     if (previous === undefined) delete process.env[RUNNER_CHAIN_TIMESTAMP_ENV];
