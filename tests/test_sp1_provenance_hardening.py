@@ -13,6 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/verify-sp1-objective-artifact.py"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+CANDIDATE_GATE = ROOT / "scripts/verify-candidate-objective-programs.sh"
 FROZEN_OBJECTIVE_CORE = ROOT / "objective-programs/p42-objective-core/src/lib.rs"
 FROZEN_OBJECTIVE_CORE_SHA256 = (
     "73cb9b4b83738bc8a55d057d68b4011ceb2d757873b1eaedb6cd8dce84f19e85"
@@ -264,6 +265,8 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     assert "pattern: p42-validated-q6-candidate" in workflow
     assert "p42-untrusted-edges-candidate-" in workflow
     assert "pattern: p42-validated-edges-candidate" in workflow
+    assert "p42-untrusted-arithmetic-kakeya-candidate-" in workflow
+    assert "pattern: p42-validated-arithmetic-kakeya-candidate" in workflow
     assert "pattern: p42-untrusted" not in workflow
     assert workflow.index("Capture untrusted SP1 build-input observation") < workflow.index(
         "Validate clean SP1 build-input provenance"
@@ -287,6 +290,53 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     ]
     assert "objective-programs/target" not in cache
     assert "~/.cargo/git" not in cache
+
+
+def test_workflow_covers_every_candidate_source_bundle_end_to_end() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    validation = workflow.index("Validate program-scoped reproduction bundles")
+    comparison = workflow.index("Compare dual-image objective guests")
+    candidates = {
+        "q6-intersecting-hypergraph": ("q6", False),
+        "edges-vs-triangles": ("edges", True),
+        "arithmetic-kakeya": ("arithmetic-kakeya", True),
+    }
+    for program, (artifact_slug, has_resource) in candidates.items():
+        manifest = f"--manifest-path {program}/Cargo.toml"
+        audit = f"target/{artifact_slug}-reproducibility"
+        untrusted = f"p42-untrusted-{artifact_slug}-candidate-"
+        validated = f"p42-validated-{artifact_slug}-candidate-"
+        reproduced = f"objective-programs/reproduced-{artifact_slug}"
+        assert workflow.count(manifest) >= 3
+        assert workflow.count(audit) >= 3
+        assert workflow.index(untrusted) < validation < workflow.index(validated)
+        assert f"pattern: {validated}" in workflow
+        assert reproduced in workflow
+        assert f"compare_pair {reproduced} {program}" in workflow
+        source_condition = (
+            '"$program" == q6-intersecting-hypergraph || '
+            '"$program" == edges-vs-triangles || '
+            '"$program" == arithmetic-kakeya'
+        )
+        assert source_condition in workflow
+        if has_resource:
+            resource_condition = (
+                '"$program" == edges-vs-triangles || '
+                '"$program" == arithmetic-kakeya'
+            )
+            assert resource_condition in workflow
+    assert comparison > validation
+
+
+def test_local_candidate_gate_validates_kakeya_source_and_resource_bundle() -> None:
+    gate = CANDIDATE_GATE.read_text(encoding="utf-8")
+    assert 'mkdir "$audit/q6" "$audit/edges" "$audit/arithmetic-kakeya"' in gate
+    assert 'cp "$arithmetic_kakeya_elf" "$audit/arithmetic-kakeya/program.elf"' in gate
+    assert "arithmetic-kakeya/fixtures/resource-active-255-bit.json" in gate
+    assert '"$audit/arithmetic-kakeya/resource.json"' in gate
+    assert "--program arithmetic-kakeya" in gate
+    assert '--directory "$audit/arithmetic-kakeya"' in gate
+    assert "--write-source-manifest" in gate
 
 
 def test_workflow_enforces_bounded_disk_budget_before_candidate_builds() -> None:

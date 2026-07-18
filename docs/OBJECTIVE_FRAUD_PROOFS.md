@@ -12,10 +12,44 @@ conformance vector for the full Solidity hash chain, and a successful mock
 execution over all 222,778 row pairs. The dual builds share one operator and
 architecture. This is source-reproduction and local-execution evidence only:
 it is not a genuine Groth16 proof, independent hardware attestation, audit, or
-production activation. A11 has an unbound frozen mock artifact, and Q6 now has
-an unbound source-level guest plus a DGX mock execution; neither is a genuine
-proof or production-board binding. The remaining seven launch boards have no
-objective program yet.
+production activation. A11 has an unbound frozen mock artifact. Q6, edges, and
+Arithmetic Kakeya have unbound source-level candidate guests and mock-execution
+paths; none is a genuine proof or production-board binding. Arithmetic Kakeya's
+dual-Ubuntu candidate job validates and compares a seed execution, a distinct
+active signed-255-bit resource execution, and the exact source closure without
+freezing or promoting the observed ELF or vkey. Five launch boards have no
+objective-program source.
+
+## Arithmetic Kakeya candidate scope
+
+The canonical local gate is `make candidate-objective-program-gates`. Its
+Arithmetic Kakeya source-level checks run from `objective-programs/` as:
+
+```bash
+cargo test --locked --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-core
+cargo run --locked --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- execute-fixture \
+  ../problems/arithmetic-kakeya/examples/kt-2x2-forcing.json
+cargo run --locked --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- execute-fixture \
+  arithmetic-kakeya/fixtures/resource-active-255-bit.json
+```
+
+The final Arithmetic Kakeya candidate scope explicitly includes
+`objective-programs/arithmetic-kakeya/fixtures/resource-active-255-bit.json` in
+the source-closure manifest and seed/resource cross-image comparison bundle.
+
+CI runs those checks while building in isolated Ubuntu 22.04 and 24.04 x86
+jobs. Each producer validates the ELF-derived identity, both mock executions,
+and source manifest before uploading or retaining a `validated-candidate`
+bundle for exact cross-image comparison. A separate always-run untrusted-
+forensics retention path may preserve incomplete or rejected candidate bytes;
+it carries no validation claim. `validated-candidate` means only that those
+source-CI checks passed; it is not a frozen identity, proof artifact,
+production binding, authorization, or activation eligibility. The canonical
+Arithmetic Kakeya guest remains `missing`, activation-ineligible, and
+proof-free.
 
 ## Frozen authority chain
 
@@ -74,9 +108,10 @@ outcome is true.
 
 ## Remaining production gates
 
-- Freeze, independently reproduce, and review the A11 and Q6 guests, then
+- Freeze, independently reproduce, and review the A11, Q6, edges, and Arithmetic
+  Kakeya guests, then
   implement and independently review exact submitted-witness proof programs
-  for the remaining seven admitted boards. Each guest must re-run the complete
+  for the remaining five admitted boards. Each guest must re-run the complete
   bounded verifier predicate and corrected outcome, including malformed-input
   behavior; it does not purport to prove global optimality of the open problem.
 - Independently reproduce the Hadamard ELF/vkey under distinct operators and

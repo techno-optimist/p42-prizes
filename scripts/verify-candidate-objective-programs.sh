@@ -35,18 +35,7 @@ test -f "$q6_elf" && test ! -L "$q6_elf"
 test -f "$edges_elf" && test ! -L "$edges_elf"
 test -f "$arithmetic_kakeya_elf" && test ! -L "$arithmetic_kakeya_elf"
 
-cargo run --locked \
-  --manifest-path arithmetic-kakeya/Cargo.toml \
-  -p p42-arithmetic-kakeya-objective-script -- \
-  identity-elf "$arithmetic_kakeya_elf" > "$audit/arithmetic-kakeya-identity.json"
-cargo run --locked \
-  --manifest-path arithmetic-kakeya/Cargo.toml \
-  -p p42-arithmetic-kakeya-objective-script -- \
-  execute-fixture-elf "$arithmetic_kakeya_elf" \
-  "$root/problems/arithmetic-kakeya/examples/kt-2x2-forcing.json" \
-  > "$audit/arithmetic-kakeya-execution.json"
-
-mkdir "$audit/q6" "$audit/edges"
+mkdir "$audit/q6" "$audit/edges" "$audit/arithmetic-kakeya"
 cp "$q6_elf" "$audit/q6/program.elf"
 cargo run --locked \
   --manifest-path q6-intersecting-hypergraph/Cargo.toml \
@@ -83,4 +72,26 @@ cargo run --locked \
 python3 "$root/scripts/verify-sp1-objective-reproduction.py" \
   --program edges-vs-triangles \
   --directory "$audit/edges" \
+  --write-source-manifest
+
+cp "$arithmetic_kakeya_elf" "$audit/arithmetic-kakeya/program.elf"
+cargo run --locked \
+  --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- \
+  identity-elf "$arithmetic_kakeya_elf" > "$audit/arithmetic-kakeya/identity.json"
+cargo run --locked \
+  --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- \
+  execute-fixture-elf "$arithmetic_kakeya_elf" \
+  "$root/problems/arithmetic-kakeya/examples/kt-2x2-forcing.json" \
+  > "$audit/arithmetic-kakeya/execution.json"
+cargo run --locked \
+  --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- \
+  execute-fixture-elf "$arithmetic_kakeya_elf" \
+  arithmetic-kakeya/fixtures/resource-active-255-bit.json \
+  > "$audit/arithmetic-kakeya/resource.json"
+python3 "$root/scripts/verify-sp1-objective-reproduction.py" \
+  --program arithmetic-kakeya \
+  --directory "$audit/arithmetic-kakeya" \
   --write-source-manifest

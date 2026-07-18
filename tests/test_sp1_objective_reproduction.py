@@ -39,6 +39,14 @@ PROGRAMS = {
         "resource_journal": "0x" + "9a" * 32,
         "resource_instructions": 67_890,
     },
+    "arithmetic-kakeya": {
+        "elf": None,
+        "vkey": "0x" + "ab" * 32,
+        "journal": "0x" + "cd" * 32,
+        "instructions": 23_456,
+        "resource_journal": "0x" + "ef" * 32,
+        "resource_instructions": 78_901,
+    },
 }
 Q6_SOURCE_PATHS = (
     "objective-programs/rust-toolchain.toml",
@@ -71,10 +79,31 @@ EDGES_SOURCE_PATHS = (
     "objective-programs/edges-vs-triangles/script/build.rs",
     "objective-programs/edges-vs-triangles/script/src/main.rs",
 )
+ARITHMETIC_KAKEYA_SOURCE_PATHS = (
+    "problems/arithmetic-kakeya/problem.yaml",
+    "problems/arithmetic-kakeya/solution.schema.json",
+    "problems/arithmetic-kakeya/verifier/verify.py",
+    "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
+    "objective-programs/rust-toolchain.toml",
+    "objective-programs/arithmetic-kakeya/Cargo.toml",
+    "objective-programs/arithmetic-kakeya/Cargo.lock",
+    "objective-programs/arithmetic-kakeya/core/Cargo.toml",
+    "objective-programs/arithmetic-kakeya/core/src/lib.rs",
+    "objective-programs/arithmetic-kakeya/fixtures/differential-vectors.json",
+    "objective-programs/arithmetic-kakeya/fixtures/journal-conformance-synthetic.json",
+    "objective-programs/arithmetic-kakeya/fixtures/resource-active-255-bit.json",
+    "objective-programs/arithmetic-kakeya/program/Cargo.toml",
+    "objective-programs/arithmetic-kakeya/program/src/main.rs",
+    "objective-programs/arithmetic-kakeya/script/Cargo.toml",
+    "objective-programs/arithmetic-kakeya/script/build.rs",
+    "objective-programs/arithmetic-kakeya/script/src/main.rs",
+)
 CANDIDATE_SOURCE_PATHS = {
     "q6-intersecting-hypergraph": Q6_SOURCE_PATHS,
     "edges-vs-triangles": EDGES_SOURCE_PATHS,
+    "arithmetic-kakeya": ARITHMETIC_KAKEYA_SOURCE_PATHS,
 }
+RESOURCE_PROGRAMS = {"edges-vs-triangles", "arithmetic-kakeya"}
 
 
 def build_bundle(root: Path, program: str) -> Path:
@@ -105,7 +134,7 @@ def build_bundle(root: Path, program: str) -> Path:
     }
     (bundle / "identity.json").write_text(json.dumps(identity), encoding="utf-8")
     (bundle / "execution.json").write_text(json.dumps(execution), encoding="utf-8")
-    if program == "edges-vs-triangles":
+    if program in RESOURCE_PROGRAMS:
         resource = execution | {
             "journalDigest": expected["resource_journal"],
             "totalInstructionCount": expected["resource_instructions"],
@@ -202,25 +231,27 @@ def test_candidate_writes_source_closure_once(tmp_path: Path, program: str) -> N
     assert "refusing to replace" in result.stderr
 
 
-def test_edges_candidate_rejects_malformed_resource_journal(tmp_path: Path) -> None:
-    bundle = build_bundle(tmp_path, "edges-vs-triangles")
+@pytest.mark.parametrize("program", sorted(RESOURCE_PROGRAMS))
+def test_candidate_rejects_malformed_resource_journal(tmp_path: Path, program: str) -> None:
+    bundle = build_bundle(tmp_path, program)
     resource_path = bundle / "resource.json"
     resource = json.loads(resource_path.read_text(encoding="utf-8"))
     resource["journalDigest"] = "0x00"
     resource_path.write_text(json.dumps(resource), encoding="utf-8")
-    result = verify(bundle, "edges-vs-triangles")
+    result = verify(bundle, program)
     assert result.returncode != 0
     assert "resource journal is malformed" in result.stderr
 
 
-def test_edges_candidate_rejects_resource_reusing_seed_journal(tmp_path: Path) -> None:
-    bundle = build_bundle(tmp_path, "edges-vs-triangles")
+@pytest.mark.parametrize("program", sorted(RESOURCE_PROGRAMS))
+def test_candidate_rejects_resource_reusing_seed_journal(tmp_path: Path, program: str) -> None:
+    bundle = build_bundle(tmp_path, program)
     execution = json.loads((bundle / "execution.json").read_text(encoding="utf-8"))
     resource_path = bundle / "resource.json"
     resource = json.loads(resource_path.read_text(encoding="utf-8"))
     resource["journalDigest"] = execution["journalDigest"]
     resource_path.write_text(json.dumps(resource), encoding="utf-8")
-    result = verify(bundle, "edges-vs-triangles")
+    result = verify(bundle, program)
     assert result.returncode != 0
     assert "must bind distinct solution bytes" in result.stderr
 
@@ -239,6 +270,26 @@ def test_edges_source_expected_set_includes_toolchain_and_every_build_input() ->
             if path.is_file()
             and "target" not in path.parts
             and path.name not in {"source.json", "identity.json", "execution.json", "resource.json"}
+        },
+    }
+    assert discovered == expected
+
+
+def test_arithmetic_kakeya_source_expected_set_includes_every_build_input() -> None:
+    expected = set(ARITHMETIC_KAKEYA_SOURCE_PATHS)
+    discovered = {
+        "problems/arithmetic-kakeya/problem.yaml",
+        "problems/arithmetic-kakeya/solution.schema.json",
+        "problems/arithmetic-kakeya/verifier/verify.py",
+        "problems/arithmetic-kakeya/examples/kt-2x2-forcing.json",
+        "objective-programs/rust-toolchain.toml",
+        *{
+            path.relative_to(ROOT).as_posix()
+            for path in (ROOT / "objective-programs/arithmetic-kakeya").rglob("*")
+            if path.is_file()
+            and "target" not in path.parts
+            and path.name
+            not in {".gitignore", "source.json", "identity.json", "execution.json", "resource.json"}
         },
     }
     assert discovered == expected

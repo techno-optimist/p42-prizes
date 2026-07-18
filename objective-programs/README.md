@@ -43,17 +43,33 @@ vkey, both executions, and complete source closure, including
 The canonical record remains `guest.status=missing`,
 `activation_eligible=false`, and `proof_kind=none`.
 
+The isolated `arithmetic-kakeya` nested workspace is also candidate-only. It
+ports the bounded v0.2 2x2 forcing predicate and beneficiary-bound correction
+journal, with Python/Rust differential vectors for canonical parsing, exact
+rational arithmetic, threshold rounding, and corrected outcomes. Candidate CI
+mock-executes both the `7/4` seed and a distinct active signed-255-bit arithmetic
+resource fixture. Ubuntu 22.04/24.04 jobs compare the ELF, derived vkey, seed
+execution, resource execution, and complete source closure. These observations
+do not freeze or promote an identity, prove a production statement, or alter
+the canonical `guest.status=missing`, `activation_eligible=false`, and
+`proof_kind=none` record.
+
 This source does **not** activate production objective proofs. Ubuntu 22.04 and
 24.04 GitHub-hosted x86 runners now reproduce the same frozen ELF and vkey, and
 the deterministic resource envelope is machine-checked in
 `resource-profile.json`. These are same-operator builds, not independent
-hardware attestation. The same runners also compare the unbound A11 and Q6 ELF,
-derived vkey, and mock execution across both images before any source binding.
+hardware attestation. The same runners also compare the unbound A11, Q6, edges,
+and Arithmetic Kakeya candidate bundles across both images before any production
+binding. Five launch boards still have no objective-program source.
 Activation still requires a genuine Groth16 proof and cost benchmark,
 independent operator/hardware reproduction, all ten board programs, audit, and
 Base Sepolia rehearsal under a new release/gateway/authorization version.
 
 With the SP1 v6.1 toolchain installed:
+
+The root command `make candidate-objective-program-gates` runs the complete
+candidate suite, including Kakeya's source and resource bundle validation. Its
+Kakeya commands are:
 
 ```bash
 cd objective-programs
@@ -72,4 +88,12 @@ cargo test --locked --manifest-path edges-vs-triangles/Cargo.toml \
 cargo run --locked --manifest-path edges-vs-triangles/Cargo.toml \
   -p p42-edges-objective-script -- execute-fixture \
   ../problems/edges-vs-triangles/examples/rational-curve-sample.json
+cargo test --locked --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-core
+cargo run --locked --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- execute-fixture \
+  ../problems/arithmetic-kakeya/examples/kt-2x2-forcing.json
+cargo run --locked --manifest-path arithmetic-kakeya/Cargo.toml \
+  -p p42-arithmetic-kakeya-objective-script -- execute-fixture \
+  arithmetic-kakeya/fixtures/resource-active-255-bit.json
 ```
