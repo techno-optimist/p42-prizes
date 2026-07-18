@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { setPortalDatabasePoolForTests, type PortalDatabaseClient, type PortalDatabasePool } from "@/lib/portal-db";
+import {
+  portalDatabasePool,
+  portalDatabaseSchema,
+  resetPortalDatabasePoolForTests,
+  setPortalDatabasePoolForTests,
+  type PortalDatabaseClient,
+  type PortalDatabasePool,
+} from "@/lib/portal-db";
 import { enforceRateLimitShared } from "@/lib/rate-limit";
 import { readPortalStateShared, updatePortalStateShared, type PortalStateSnapshot } from "@/lib/portal-store";
 
@@ -17,13 +24,25 @@ function result(rows: unknown[]) {
   return { rows, rowCount: rows.length, command: "SELECT", oid: 0, fields: [] } as never;
 }
 
-afterEach(() => {
-  setPortalDatabasePoolForTests();
+afterEach(async () => {
+  await resetPortalDatabasePoolForTests();
   delete process.env.P42_PORTAL_DATABASE_URL;
   delete process.env.P42_PORTAL_DATABASE_REQUIRED;
+  delete process.env.P42_PORTAL_DATABASE_SCHEMA;
 });
 
 describe("shared PostgreSQL portal state", () => {
+  it("requires the exact validated schema for production pool connections", () => {
+    expect(() => portalDatabaseSchema()).toThrow("validated portal schema");
+    process.env.P42_PORTAL_DATABASE_SCHEMA = "public, hostile";
+    expect(() => portalDatabaseSchema()).toThrow("validated portal schema");
+    process.env.P42_PORTAL_DATABASE_SCHEMA = "p42_portal";
+    expect(portalDatabaseSchema()).toBe("p42_portal");
+
+    process.env.P42_PORTAL_DATABASE_URL = "postgresql://runtime@example.invalid/portal";
+    const pool = portalDatabasePool() as PortalDatabasePool & { options: { options?: string } };
+    expect(pool.options.options).toBe("-c search_path=p42_portal,pg_catalog,pg_temp");
+  });
   it("fails closed when the configured singleton is absent", async () => {
     setPortalDatabasePoolForTests({
       connect: async () => { throw new Error("unused"); },

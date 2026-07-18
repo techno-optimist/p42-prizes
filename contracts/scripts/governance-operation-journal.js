@@ -98,14 +98,25 @@ function immutableView(record) {
   };
 }
 
-export function assertGovernanceOperationJournal(record) {
-  if (record?.schema !== GOVERNANCE_OPERATION_JOURNAL_SCHEMA || !Number.isSafeInteger(record.chainId) || record.chainId < 1 || !Array.isArray(record.operations) || record.operations.length < 1) throw new Error("malformed governance operation journal");
-  assertHex(record.timelock, 20, "timelock");
-  assertHex(record.deploymentConfigHash, 32, "deployment config hash");
-  assertHex(record.expectedTimelockCodeHash, 32, "expected timelock code hash");
-  if (!/^sha256:[0-9a-f]{64}$/.test(record.releaseBindingDigest ?? "")) throw new Error("governance journal release binding is malformed");
+function plannedOperationRecords(operations) {
+  if (!Array.isArray(operations)) throw new Error("governance operation plan must be an array");
+  return operations.map((operation) => ({
+    sequence: operation.sequence, label: operation.label, operationClass: operation.operationClass,
+    target: operation.target, value: operation.value, data: operation.data, salt: operation.salt,
+    operationId: operation.operationId, fallbackOperationId: operation.overrideFallback?.operationId ?? null,
+    dependsOn: [...(operation.dependsOn ?? [])],
+    requiredConfirmations: operation.requiredConfirmations, delaySeconds: operation.delaySeconds,
+    transactionBuilderDigest: digest(operation.transactionBuilder),
+    overrideFallbackDigest: operation.overrideFallback === null ? null : digest(operation.overrideFallback),
+    state: "planned", observedOperationId: null, scheduleTxHash: null,
+    executeTxHash: null, blockNumber: null, blockHash: null,
+  }));
+}
+
+function assertGovernanceOperations(operations) {
+  if (!Array.isArray(operations) || operations.length < 1) throw new Error("malformed governance operation plan");
   const ids = new Set();
-  for (const [index, operation] of record.operations.entries()) {
+  for (const [index, operation] of operations.entries()) {
     if (operation.sequence !== index + 1 || typeof operation.label !== "string" || operation.label.length < 1 || !["standard", "override"].includes(operation.operationClass)) throw new Error("governance operation sequence or class drift");
     assertHex(operation.target, 20, "operation target"); assertHex(operation.data, (operation.data.length - 2) / 2, "operation calldata"); assertHex(operation.salt, 32, "operation salt"); assertHex(operation.operationId, 32, "operation id");
     const computedId = keccak256(AbiCoder.defaultAbiCoder().encode(["address", "uint256", "bytes", "bytes32"], [operation.target, operation.value, operation.data, operation.salt]));
@@ -126,6 +137,16 @@ export function assertGovernanceOperationJournal(record) {
       if (!Number.isSafeInteger(operation.blockNumber) || operation.blockNumber < 0) throw new Error("executed governance operation lacks block number");
     }
   }
+  return operations;
+}
+
+export function assertGovernanceOperationJournal(record) {
+  if (record?.schema !== GOVERNANCE_OPERATION_JOURNAL_SCHEMA || !Number.isSafeInteger(record.chainId) || record.chainId < 1 || !Array.isArray(record.operations) || record.operations.length < 1) throw new Error("malformed governance operation journal");
+  assertHex(record.timelock, 20, "timelock");
+  assertHex(record.deploymentConfigHash, 32, "deployment config hash");
+  assertHex(record.expectedTimelockCodeHash, 32, "expected timelock code hash");
+  if (!/^sha256:[0-9a-f]{64}$/.test(record.releaseBindingDigest ?? "")) throw new Error("governance journal release binding is malformed");
+  assertGovernanceOperations(record.operations);
   if (record.planDigest !== digest(immutableView(record))) throw new Error("governance operation plan digest mismatch");
   if (!Number.isSafeInteger(record.generation) || record.generation < 0) throw new Error("governance operation generation is invalid");
   return record;
@@ -135,20 +156,15 @@ export function buildGovernanceOperationJournal({ chainId, timelock, deploymentC
   const record = {
     schema: GOVERNANCE_OPERATION_JOURNAL_SCHEMA, chainId: Number(chainId), timelock,
     deploymentConfigHash, releaseBindingDigest, expectedTimelockCodeHash,
-    generation: 0, operations: operations.map((operation) => ({
-      sequence: operation.sequence, label: operation.label, operationClass: operation.operationClass,
-      target: operation.target, value: operation.value, data: operation.data, salt: operation.salt,
-      operationId: operation.operationId, fallbackOperationId: operation.overrideFallback?.operationId ?? null,
-      dependsOn: [...operation.dependsOn],
-      requiredConfirmations: operation.requiredConfirmations, delaySeconds: operation.delaySeconds,
-      transactionBuilderDigest: digest(operation.transactionBuilder),
-      overrideFallbackDigest: operation.overrideFallback === null ? null : digest(operation.overrideFallback),
-      state: "planned", observedOperationId: null, scheduleTxHash: null,
-      executeTxHash: null, blockNumber: null, blockHash: null,
-    })),
+    generation: 0, operations: plannedOperationRecords(operations),
   };
   record.planDigest = digest(immutableView(record));
   return assertGovernanceOperationJournal(record);
+}
+
+export function bindGovernanceOperationPlan(operations) {
+  const planned = assertGovernanceOperations(plannedOperationRecords(operations));
+  return Object.freeze({ operationCount: planned.length, operationsDigest: digest(planned) });
 }
 
 export function governanceOperationJournalPath(manifestPath) {

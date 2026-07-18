@@ -6,20 +6,6 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { ethers } from "ethers";
 import { parseStrictJsonText } from "./strict-json.mjs";
 
-// Rational "improvement" -> integer atoms over a fixed 1e6 denominator.
-// Single-solver-safe; solver and operator MUST agree on this scale so the
-// operator can detect an inflated claim.
-// NOTE: since the absolute-score frontier landed (audit F1/F6), improvementAtoms
-// is informational only — the payout credit is driven by claimedScoreAtoms
-// (see atomsFromScore / SCORE_SCALE below), whose 1e18 scale is fine enough for
-// every problem's MIN_IMPROVEMENT (the 1e6 scale here was a million x too coarse).
-export const IMPROVEMENT_SCALE = 1_000_000n;
-
-export function atomsFromImprovement(improvement) {
-  const [num, den = "1"] = String(improvement).split("/");
-  return (BigInt(num) * IMPROVEMENT_SCALE) / BigInt(den);
-}
-
 // SHARED FIXED-POINT CONVENTION (must match P42SubmissionManager.SCORE_ATOM_SCALE
 // and the deploy scripts): every verifier reports an ABSOLUTE minimization score
 // (lower is better) as an exact rational; on chain it is encoded as
@@ -28,6 +14,33 @@ export function atomsFromImprovement(improvement) {
 // (previous bestScoreAtoms - new score_atoms) is never over-stated —
 // conservative on the money side. For integer scores the encoding is exact.
 export const SCORE_SCALE = 1_000_000_000_000_000_000n; // 1e18
+export const UINT256_MAX = (1n << 256n) - 1n;
+
+// improvementAtoms is canonical display metadata in the same 1e18 score-atom
+// units as claimedScoreAtoms. It is always relative to the immutable on-chain
+// seed; live payout credit remains the marginal reduction from the frontier at
+// finalization time.
+export function seedRelativeImprovementAtoms(seedScoreAtoms, claimedScoreAtoms) {
+  const seed = BigInt(seedScoreAtoms);
+  const claim = BigInt(claimedScoreAtoms);
+  const improvement = seed - claim;
+  if (improvement <= 0n) {
+    throw new Error(`claimed score ${claim} does not strictly improve immutable seed ${seed}`);
+  }
+  if (improvement > UINT256_MAX) {
+    throw new Error(`seed-relative improvement ${improvement} exceeds uint256`);
+  }
+  return improvement;
+}
+
+export function assertSeedRelativeImprovementAtoms(seedScoreAtoms, claimedScoreAtoms, improvementAtoms) {
+  const expected = seedRelativeImprovementAtoms(seedScoreAtoms, claimedScoreAtoms);
+  const observed = BigInt(improvementAtoms);
+  if (observed !== expected) {
+    throw new Error(`improvementAtoms mismatch: expected ${expected}, observed ${observed}`);
+  }
+  return expected;
+}
 export const VERIFIER_IMAGE_HASH_ALGORITHM = "keccak256-utf8/v1";
 export const VERIFIER_SOURCE_DIGEST_ALGORITHM = "p42-source-tree-sha256/v2";
 export const VERIFIER_SOURCE_HASH_ALGORITHM = "keccak256-utf8/v1";

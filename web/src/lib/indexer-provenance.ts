@@ -23,6 +23,17 @@ export interface ActivatedIndexerSnapshot {
   manifest: Readonly<JsonObject>;
   checkpoint: Readonly<JsonObject>;
   provenance: ReadonlyMap<string, ChainProvenance>;
+  highWaterIdentity: Readonly<ActivatedIndexerHighWaterIdentity>;
+}
+
+export interface ActivatedIndexerHighWaterIdentity {
+  checkpointDigest: string;
+  releaseBindingDigest: string;
+  authorizationDigest: string;
+  chainId: number;
+  chainName: string;
+  deploymentCommit: string;
+  deploymentConfigHash: string;
 }
 
 interface ActivatedArtifactBundle {
@@ -807,9 +818,12 @@ export function activatedProvenanceFromArtifacts(
   requireBinding(plan.authorizationBytesDigest === sha256Bytes(authorizationBytes)
     && completion.authorizationBytesDigest === plan.authorizationBytesDigest);
   const authorizationExpiry = Date.parse(String(authorization.expires_at_utc)) / 1000;
-  requireBinding(Number.isSafeInteger(authorizationExpiry) && nowSeconds <= authorizationExpiry
+  const authorizationIssuedAt = Date.parse(String(authorization.issued_at_utc)) / 1000;
+  requireBinding(Number.isSafeInteger(authorizationExpiry) && Number.isSafeInteger(authorizationIssuedAt)
+    && authorizationIssuedAt <= authorizationExpiry
     && authorizationExpiry === plan.authorizationExpiresAt && authorizationExpiry === completion.authorizationExpiresAt);
   requireBinding(Number.isSafeInteger(completion.finalizedBlockTimestamp)
+    && authorizationIssuedAt <= Number(completion.finalizedBlockTimestamp)
     && Number(completion.finalizedBlockTimestamp) <= authorizationExpiry);
   requireBinding(completion.planDigest === plan.planDigest && completion.chainId === plan.chainId && completion.chainId === object(manifest.network, "manifest.network").chainId);
   const releaseBinding = object(authorization.release_binding, "authorization.release_binding");
@@ -972,10 +986,21 @@ export function activatedIndexerSnapshotFromArtifacts(
     );
     return [problem.slug, provenance] as const;
   });
+  const network = object(artifacts.manifest.network, "activated manifest network");
+  const releaseEvidence = object(artifacts.manifest.releaseEvidence, "activated manifest release evidence");
   return {
     manifest: artifacts.manifest,
     checkpoint: artifacts.checkpoint,
     provenance: new Map(entries),
+    highWaterIdentity: {
+      checkpointDigest: sha256Bytes(artifacts.checkpointBytes),
+      releaseBindingDigest: String(releaseEvidence.releaseBindingDigest),
+      authorizationDigest: String(artifacts.authorization.authorization_digest),
+      chainId: Number(network.chainId),
+      chainName: String(network.name),
+      deploymentCommit: String(artifacts.manifest.deploymentCommit),
+      deploymentConfigHash: String(artifacts.manifest.deploymentConfigHash),
+    },
   };
 }
 

@@ -2,6 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://p42.xyz/problems/arithmetic-kakeya/solution.schema.json",
   "x-p42-max-bytes": 32768,
+  "x-p42-canonical-encoding": "utf-8-no-bom",
+  "x-p42-duplicate-keys": "reject-recursively",
   "type": "object",
   "required": ["grid", "slopes", "edge_labels", "free", "relations"],
   "additionalProperties": false,
@@ -14,12 +16,13 @@
     },
     "slopes": {
       "type": "array",
-      "maxItems": 1024,
+      "maxItems": 128,
+      "uniqueItems": true,
       "items": {
         "type": "array",
         "minItems": 2,
         "maxItems": 2,
-        "items": { "type": "integer" }
+        "items": { "$ref": "#/$defs/boundedInteger" }
       }
     },
     "edge_labels": {
@@ -28,7 +31,8 @@
       "maxItems": 2,
       "items": {
         "type": "array",
-        "maxItems": 256,
+        "maxItems": 32,
+        "uniqueItems": true,
         "items": {
           "type": "object",
           "required": ["key", "slope"],
@@ -38,13 +42,13 @@
               "type": "array",
               "minItems": 1,
               "maxItems": 2,
-              "items": { "type": "integer" }
+              "items": { "$ref": "#/$defs/boundedInteger" }
             },
             "slope": {
               "type": "array",
               "minItems": 2,
               "maxItems": 2,
-              "items": { "type": "integer" }
+              "items": { "$ref": "#/$defs/boundedInteger" }
             }
           }
         }
@@ -53,16 +57,18 @@
     "free": {
       "type": "array",
       "maxItems": 4,
+      "uniqueItems": true,
       "items": {
         "type": "array",
         "minItems": 2,
         "maxItems": 2,
-        "items": { "type": "integer" }
+        "items": { "$ref": "#/$defs/boundedInteger" }
       }
     },
     "relations": {
       "type": "array",
-      "maxItems": 1024,
+      "maxItems": 128,
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "required": ["vertex", "slope"],
@@ -72,18 +78,25 @@
             "type": "array",
             "minItems": 2,
             "maxItems": 2,
-            "items": { "type": "integer" }
+            "items": { "$ref": "#/$defs/boundedInteger" }
           },
           "slope": {
             "type": "array",
             "minItems": 2,
             "maxItems": 2,
-            "items": { "type": "integer" }
+            "items": { "$ref": "#/$defs/boundedInteger" }
           }
         }
       }
     },
-    "source": { "type": "string" },
-    "claimed_score": { "type": "string" }
+    "source": { "type": "string", "pattern": "^[^\\uD800-\\uDFFF]*$" },
+    "claimed_score": { "type": "string", "pattern": "^[^\\uD800-\\uDFFF]*$" }
+  },
+  "$defs": {
+    "boundedInteger": {
+      "type": "integer",
+      "minimum": -57896044618658097711785492504343953926634992332820282019728792003956564819967,
+      "maximum": 57896044618658097711785492504343953926634992332820282019728792003956564819967
+    }
   }
 }

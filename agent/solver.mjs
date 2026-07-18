@@ -13,12 +13,12 @@ import {
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  atomsFromImprovement,
   buildSignedTransactionRecord,
   chainScoreAtoms,
   problemRunnerConfig,
   problemObjective,
   runVerifier,
+  seedRelativeImprovementAtoms,
   sha256Canonical,
   solverLifecycleDecision,
   submissionIdFromCommittedReceipt,
@@ -54,7 +54,7 @@ const DONATE_WINNINGS_TO_POOL = arg("donate-winnings-to-pool", null);
 const DA_DIR = arg("da-dir", null);
 const ARWEAVE = arg("arweave", false);
 const FORCE = arg("force", false);
-const IMPROVEMENT_OVERRIDE = arg("improvement", null);
+const LEGACY_IMPROVEMENT_OVERRIDE = arg("improvement", null);
 const SCORE_ATOMS_OVERRIDE = arg("claim-score-atoms", null);
 const SUBMIT_ONLY = arg("submit-only", false);
 const STATE_ARG = arg("state", null);
@@ -64,6 +64,10 @@ const REPO_ROOT = resolve(arg("repo-root", resolve(HERE, "..")));
 
 if (!MANIFEST || !PROBLEM || !SOLUTION) {
   console.error("required: --manifest <path> --problem <dir> --solution <file> [--registry-problem-id <id>]");
+  process.exit(2);
+}
+if (LEGACY_IMPROVEMENT_OVERRIDE !== null) {
+  console.error("--improvement is disabled; improvementAtoms is derived from the immutable on-chain seed");
   process.exit(2);
 }
 if (!Number.isInteger(MAX_CONSECUTIVE_ERRORS) || MAX_CONSECUTIVE_ERRORS < 1 || POLL_MS < 0) {
@@ -478,15 +482,22 @@ async function main() {
   const verdict = runVerifier(resolve(PROBLEM), resolve(SOLUTION), REPO_ROOT);
   if (!verdict.valid && !FORCE) throw new Error("local exact verifier rejected the solution (use --force only for adversarial testing)");
   const objective = problemObjective(resolve(PROBLEM));
-  const claimedImprovement = IMPROVEMENT_OVERRIDE || verdict.improvement;
-  const improvementAtoms = atomsFromImprovement(claimedImprovement);
   const trueScoreAtoms = chainScoreAtoms(verdict.score, objective.direction);
   const claimedScoreAtoms = SCORE_ATOMS_OVERRIDE === null ? trueScoreAtoms : BigInt(SCORE_ATOMS_OVERRIDE);
   const solutionBytes = readFileSync(resolve(SOLUTION));
   const daHash = ethers.sha256(solutionBytes);
   const cid = `sha256:${daHash.slice(2)}`;
-  const network = await provider.getNetwork();
-  const onchainDa = await subs.onchainDa();
+  const [network, onchainDa, seedScoreAtoms] = await Promise.all([
+    provider.getNetwork(),
+    subs.onchainDa(),
+    subs.seedScoreAtoms(),
+  ]);
+  if (manifestProblem?.seedScoreAtoms !== undefined && seedScoreAtoms !== BigInt(manifestProblem.seedScoreAtoms)) {
+    throw new Error(`manifest seedScoreAtoms ${manifestProblem.seedScoreAtoms} does not match on-chain seed ${seedScoreAtoms}`);
+  }
+  // Force/adversarial score claims remain available, but their display field is
+  // never independently caller-controlled.
+  const improvementAtoms = seedRelativeImprovementAtoms(seedScoreAtoms, claimedScoreAtoms);
   const identity = {
     chain_id: Number(network.chainId),
     registry_problem_id: manifestProblem?.problemId ?? null,
@@ -498,6 +509,7 @@ async function main() {
     commit_da_hash: daHash,
     claimed_score_atoms: claimedScoreAtoms.toString(),
     claimed_improvement_atoms: improvementAtoms.toString(),
+    seed_score_atoms: seedScoreAtoms.toString(),
   };
   const stateKey = sha256Canonical(identity).slice(7, 23);
   loadState(identity, join(HERE, "runtime", `solver-${stateKey}.json`));

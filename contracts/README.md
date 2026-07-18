@@ -48,10 +48,11 @@ current `@actions/http-client` so the dev toolchain has zero npm audit findings.
 
 ## Base Sepolia Governance Ceremony
 
-`npm run deploy:base-sepolia` has two modes. The default `deploy` mode uses one
-deployer key to deploy `P42MultisigTimelock` and the current per-problem
-contracts. Every child receives the timelock as its immutable owner. The
-deployer never wires or registers a child directly.
+`npm run deploy:base-sepolia` is fixed to the canonical 47-contract, exact-ten
+production planner. It has no default or environment-selectable legacy topology;
+the npm command overwrites any caller-supplied mode with the production mode,
+while direct wrapper invocation rejects a missing or mismatched mode before
+importing deployment code. Neither path can select the legacy topology.
 
 ```bash
 BASE_SEPOLIA_RPC_URL=https://primary.example \
@@ -61,6 +62,10 @@ P42_SECONDARY_RPC_OPERATOR_ID=secondary-operator \
 BASE_SEPOLIA_PRIVATE_KEY=... \
 npm run deploy:base-sepolia
 ```
+
+The seven-contract single-board path is available only as
+`npm run deploy:test-only-legacy-base-sepolia` and always writes
+`test-only-legacy-p42-prizes.json`, which is noncanonical evidence.
 
 The RPC URLs must normalize to distinct hosts and origins, and the operator IDs
 must identify distinct infrastructure operators.
@@ -87,8 +92,8 @@ are transaction-building instructions, not claims that setup ran. Each standard
 operation also binds a distinct override-fallback ID and calldata for the F17
 case where the guardian cancels its primary operation.
 
-Run the same command with `P42_DEPLOY_MODE=continue` and no deployer key for the
-read-only continuation. It checks runtime code, ABI/constructor/config pins,
+Run `npm run continue:base-sepolia` with no deployer key for the read-only
+continuation. It checks runtime code, ABI/constructor/config pins,
 governance, child ownership, wiring, registry hashes/freeze, pause targets, and
 each finalized timelock execution event. It refuses to mark the manifest
 `governance-setup-complete` if any check or transaction evidence is missing.

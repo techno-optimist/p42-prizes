@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.dev/schemas/sp1-external-runtime-attestation.schema.json",
+  "title": "P42 SP1 external runtime attestation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "status", "capturedAt", "expiresAt", "freshnessPolicy", "protocol", "upstreamDescriptors", "chains", "evidenceDigest"],
+  "properties": {
+    "schema": { "const": "p42-prizes/sp1-external-runtime-attestation/v1" },
+    "status": { "const": "runtime-address-observed" },
+    "capturedAt": { "$ref": "#/$defs/timestamp" },
+    "expiresAt": { "$ref": "#/$defs/timestamp" },
+    "freshnessPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxAgeSeconds", "maxFinalizedSkewBlocks"],
+      "properties": {
+        "maxAgeSeconds": { "type": "integer", "minimum": 1, "maximum": 604800 },
+        "maxFinalizedSkewBlocks": { "type": "integer", "minimum": 0, "maximum": 128 }
+      }
+    },
+    "protocol": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "sha256", "schema", "dependencyName", "repository", "releaseTag", "commit", "runtimeCodehash"],
+      "properties": {
+        "path": { "const": "protocol/external-dependencies-v1.json" },
+        "sha256": { "$ref": "#/$defs/digest" },
+        "schema": { "const": "p42-prizes/external-contract-dependencies/v1" },
+        "dependencyName": { "const": "SP1VerifierGroth16V6_1_0" },
+        "repository": { "const": "https://github.com/succinctlabs/sp1-contracts" },
+        "releaseTag": { "const": "v6.1.0" },
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "runtimeCodehash": { "$ref": "#/$defs/bytes32" }
+      }
+    },
+    "upstreamDescriptors": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": { "$ref": "#/$defs/descriptor" }
+    },
+    "chains": {
+      "type": "array", "prefixItems": [{ "$ref": "#/$defs/baseChain" }, { "$ref": "#/$defs/baseSepoliaChain" }], "items": false
+    },
+    "evidenceDigest": { "$ref": "#/$defs/digest" }
+  },
+  "$defs": {
+    "timestamp": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "bytes32": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "address": { "const": "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2" },
+    "origin": { "type": "string", "pattern": "^https://[a-z0-9.-]+(?::[0-9]+)?$" },
+    "descriptor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["chainId", "descriptorPath", "descriptorKey", "fetchedAt", "endpointOrigin", "responseSha256", "responseBase64", "address"],
+      "properties": {
+        "chainId": { "enum": [8453, 84532] },
+        "descriptorPath": { "type": "string", "pattern": "^contracts/deployments/(8453|84532)\\.json$" },
+        "descriptorKey": { "const": "V6_1_0_SP1_VERIFIER_GROTH16" },
+        "fetchedAt": { "$ref": "#/$defs/timestamp" },
+        "endpointOrigin": { "const": "https://raw.githubusercontent.com" },
+        "responseSha256": { "$ref": "#/$defs/digest" },
+        "responseBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$", "maxLength": 100000 },
+        "address": { "$ref": "#/$defs/address" }
+      }
+    },
+    "request": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "method", "params", "responseSha256", "responseBase64"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "method": { "enum": ["eth_chainId", "eth_getBlockByNumber", "eth_getCode"] },
+        "params": { "type": "array", "maxItems": 2 },
+        "responseSha256": { "$ref": "#/$defs/digest" },
+        "responseBase64": { "type": "string", "pattern": "^[A-Za-z0-9+/]*={0,2}$", "maxLength": 1000000 }
+      }
+    },
+    "provider": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operator", "endpointOrigin", "capturedAt", "requests", "finalizedAnchor", "runtime"],
+      "properties": {
+        "operator": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" },
+        "endpointOrigin": { "$ref": "#/$defs/origin" },
+        "capturedAt": { "$ref": "#/$defs/timestamp" },
+        "requests": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "$ref": "#/$defs/request" } },
+        "finalizedAnchor": {
+          "type": "object", "additionalProperties": false,
+          "required": ["blockNumber", "blockHash", "blockTimestamp"],
+          "properties": {
+            "blockNumber": { "type": "integer", "minimum": 1 },
+            "blockHash": { "$ref": "#/$defs/bytes32" },
+            "blockTimestamp": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "runtime": {
+          "type": "object", "additionalProperties": false,
+          "required": ["byteLength", "keccak256"],
+          "properties": {
+            "byteLength": { "const": 6741 },
+            "keccak256": { "const": "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd" }
+          }
+        }
+      }
+    },
+    "chain": { "oneOf": [{ "$ref": "#/$defs/baseChain" }, { "$ref": "#/$defs/baseSepoliaChain" }] },
+    "chainBase": {
+      "type": "object", "additionalProperties": false,
+      "required": ["chainId", "network", "address", "anchorMode", "finalizedSkewBlocks", "providers"],
+      "properties": {
+        "chainId": { "enum": [8453, 84532] },
+        "network": { "enum": ["base", "base-sepolia"] },
+        "address": { "$ref": "#/$defs/address" },
+        "anchorMode": { "enum": ["agreed-finalized", "provider-specific-finalized"] },
+        "finalizedSkewBlocks": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "providers": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/provider" } }
+      }
+    },
+    "baseChain": {
+      "allOf": [
+        { "$ref": "#/$defs/chainBase" },
+        {
+          "type": "object",
+          "properties": {
+            "chainId": { "const": 8453 },
+            "network": { "const": "base" },
+            "providers": {
+              "allOf": [
+                { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "base-foundation" }, "endpointOrigin": { "const": "https://mainnet.base.org" } } }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "tenderly" }, "endpointOrigin": { "const": "https://base.gateway.tenderly.co" } } }, "minContains": 1, "maxContains": 1 }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "baseSepoliaChain": {
+      "allOf": [
+        { "$ref": "#/$defs/chainBase" },
+        {
+          "type": "object",
+          "properties": {
+            "chainId": { "const": 84532 },
+            "network": { "const": "base-sepolia" },
+            "providers": {
+              "allOf": [
+                { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "base-foundation" }, "endpointOrigin": { "const": "https://sepolia.base.org" } } }, "minContains": 1, "maxContains": 1 },
+                { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "tenderly" }, "endpointOrigin": { "const": "https://base-sepolia.gateway.tenderly.co" } } }, "minContains": 1, "maxContains": 1 }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

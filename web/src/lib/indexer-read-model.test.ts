@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import type { QueryResult, QueryResultRow } from "pg";
 import { keccak256, toUtf8Bytes } from "ethers";
 import { launchProblems, sortLeaderboardRows } from "@/lib/data";
 import { finalizedFrontierRows, frontierBest } from "@/lib/frontier";
@@ -6,7 +7,12 @@ import { publishedDonationTarget } from "@/lib/chain-provenance";
 import {
   portalReadModelFromActivatedSnapshot,
   resolvePortalReadModel,
+  gateActivatedPortalReadModel,
 } from "@/lib/indexer-read-model";
+import {
+  setPortalDatabasePoolForTests,
+  type PortalDatabaseClient,
+} from "@/lib/portal-db";
 import type { ActivatedIndexerSnapshot } from "@/lib/indexer-provenance";
 import type { ChainProvenance, Problem, Submission } from "@/lib/types";
 
@@ -15,6 +21,7 @@ const HASH = `0x${"1".repeat(64)}`;
 const ADDRESS = `0x${"2".repeat(40)}`;
 const DESTINATION_ADDRESS = `0x${"4".repeat(40)}`;
 const CHECKPOINT_TIMESTAMP = 1_000;
+const AUTHORIZATION_EXPIRES_AT = 2_500;
 const FUNDING_DEADLINE = 2_000;
 const CLOSE_BY_TIMESTAMP = FUNDING_DEADLINE + 30 * 24 * 60 * 60;
 
@@ -102,7 +109,7 @@ function projection(index: number) {
     },
     {
       submissionId: "2", solver: ADDRESS, status: "Voided", claimedScoreAtoms: String(7n * SCALE),
-      improvementAtoms: String(SCALE), creditAtoms: "0", originalCreditAtoms: String(SCALE),
+      improvementAtoms: String(3n * SCALE), creditAtoms: "0", originalCreditAtoms: String(SCALE),
       solutionCid: "ipfs://voided", committedAt: "120", revealedAt: "130", challengeEndsAt: "220",
       finalizedAt: "230", activeChallenge: {
         challenger: ADDRESS, reasonHash: HASH, challengeBondWei: String(SCALE), challengedAt: "140",
@@ -112,14 +119,14 @@ function projection(index: number) {
     },
     {
       submissionId: "3", solver: ADDRESS, status: "Finalized", claimedScoreAtoms: String(8n * SCALE),
-      improvementAtoms: String(SCALE), creditAtoms: String(SCALE), originalCreditAtoms: String(SCALE),
+      improvementAtoms: String(2n * SCALE), creditAtoms: String(SCALE), originalCreditAtoms: String(SCALE),
       solutionCid: "ipfs://three", committedAt: "130", revealedAt: "140", challengeEndsAt: "230",
       finalizedAt: "240", activeChallenge: null, sourceLogs: [sourceLog(events[2])],
     },
   ] : [];
   return {
     schema: "p42-prizes/portal-projection/v2",
-    replayConfig: { closeByTimestamp: String(CLOSE_BY_TIMESTAMP) },
+    replayConfig: { fundingCapWei: String(10n * SCALE), closeByTimestamp: String(CLOSE_BY_TIMESTAMP) },
     frontier: { currentAtoms: String(current) },
     submissions,
     solvers: [
@@ -148,7 +155,7 @@ function projection(index: number) {
       }],
     },
     funding: {
-      acceptingFunds: true, fundingArmed: true, authorizationExpiresAt: "900",
+      acceptingFunds: true, fundingArmed: true, authorizationExpiresAt: String(AUTHORIZATION_EXPIRES_AT),
       ledgerPausedNewActions: false, submissionsPausedNewActions: false,
       submissionsPausedAll: false, challengesPausedNewActions: false,
     },
@@ -165,6 +172,7 @@ function projection(index: number) {
 function snapshot(inputProblems = problems()): ActivatedIndexerSnapshot {
   const manifestProblems = inputProblems.map((problem, index) => ({
     problemId: String(index + 1), problemSlug: problem.slug, scoreAtomScale: String(SCALE),
+    fundingCapWei: String(10n * SCALE),
     seedScoreAtoms: String(problem.direction === "maximize" ? -10n * SCALE : 10n * SCALE),
     certifiedObjective: { seedBest: "10/1", direction: problem.direction, minImprovement: "1/1" },
   }));
@@ -172,7 +180,12 @@ function snapshot(inputProblems = problems()): ActivatedIndexerSnapshot {
     const portalProjection = projection(index);
     return {
       problemId: String(index + 1), problemSlug: problem.slug,
-      onchain: { bestScoreAtoms: portalProjection.frontier.currentAtoms },
+      onchain: {
+        bestScoreAtoms: portalProjection.frontier.currentAtoms,
+        poolAcceptingFunds: portalProjection.funding.acceptingFunds,
+        fundingArmed: portalProjection.funding.fundingArmed,
+        fundingAuthorizationExpiresAt: portalProjection.funding.authorizationExpiresAt,
+      },
       events: { digest: HASH, total: portalProjection.eventProvenance.total },
       portalProjection,
     };
@@ -181,12 +194,30 @@ function snapshot(inputProblems = problems()): ActivatedIndexerSnapshot {
     manifest: { problems: manifestProblems },
     checkpoint: {
       schema: "p42-prizes/indexer-checkpoint/v4",
-      range: { toBlockTimestamp: CHECKPOINT_TIMESTAMP },
+      range: { toBlock: 999, toBlockHash: HASH, toBlockTimestamp: CHECKPOINT_TIMESTAMP },
       boards,
     },
     provenance: new Map(inputProblems.map((problem, index) => [problem.slug, provenance(problem, index)])),
+    highWaterIdentity: {
+      checkpointDigest: `sha256:${"5".repeat(64)}`,
+      releaseBindingDigest: `sha256:${"6".repeat(64)}`,
+      authorizationDigest: `sha256:${"3".repeat(64)}`,
+      chainId: 84532,
+      chainName: "baseSepolia",
+      deploymentCommit: "a".repeat(40),
+      deploymentConfigHash: `0x${"7".repeat(64)}`,
+    },
   };
 }
+
+function queryResult<R extends QueryResultRow>(rows: R[]): QueryResult<R> {
+  return { rows, rowCount: rows.length, command: "SELECT", oid: 0, fields: [] };
+}
+
+afterEach(() => {
+  setPortalDatabasePoolForTests();
+  delete process.env.P42_PORTAL_DATABASE_URL;
+});
 
 function localRow(problem: Problem, source: Submission["source"]): Submission {
   return {
@@ -198,6 +229,59 @@ function localRow(problem: Problem, source: Submission["source"]): Submission {
 }
 
 describe("atomic activation-bound portal read model", () => {
+  it("returns an activated funding model only after the durable high-water commit", async () => {
+    const queries: string[] = [];
+    const client: PortalDatabaseClient = {
+      async query<R extends QueryResultRow>(text: string, values?: unknown[]) {
+        const compact = text.replace(/\s+/g, " ").trim();
+        queries.push(compact);
+        if (compact.includes("WITH pinned AS")) return queryResult([{
+          identity_matches:true,function_matches:true,acl_matches:true,safe_role:true,
+          no_direct_writes:true,no_dangerous_set_role:true,no_external_triggers:true,
+        } as unknown as R]);
+        if(compact.includes("p42_transition_indexer_checkpoint")) return queryResult([{
+          transition_kind:"first",epoch_id:"1",release_binding_digest:String(values![4]),authorization_digest:String(values![5]),
+          chain_id:String(values![6]),chain_name:String(values![7]),deployment_commit:String(values![8]),
+          deployment_config_hash:String(values![9]),epoch_accepted_at:"2026-01-01T00:00:00.000Z",
+          acceptance_id:"1",finalized_block_number:String(values![0]),finalized_block_hash:String(values![1]),
+          checkpoint_digest:String(values![2]),checkpoint_timestamp:String(values![3]),
+          acceptance_accepted_at:"2026-01-01T00:00:00.000Z",current_epoch:"1",current_acceptance:"1",
+          next_epoch:"2",next_acceptance:"2",control_updated_at:"2026-01-01T00:00:01.000Z",
+        } as unknown as R]);
+        return queryResult([] as R[]);
+      },
+      release() {},
+    };
+    setPortalDatabasePoolForTests({ connect: async () => client, query: async () => queryResult([]) });
+    const cohort = problems();
+    const value = snapshot(cohort);
+    const candidate = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+
+    const published = await gateActivatedPortalReadModel(cohort, value, candidate);
+
+    expect(published.source).toBe("chain-p42-v1");
+    expect(published.problems[1].funding?.canFund).toBe(true);
+    expect(queries.at(-1)).toBe("COMMIT");
+  });
+
+  it("fails closed with no funding target when the durable database is unavailable", async () => {
+    setPortalDatabasePoolForTests({
+      connect: async () => { throw new Error("database unavailable"); },
+      query: async () => queryResult([]),
+    });
+    const cohort = problems();
+    const value = snapshot(cohort);
+    const candidate = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+
+    const rejected = await gateActivatedPortalReadModel(cohort, value, candidate);
+
+    expect(rejected.source).toBe("local-phase-0");
+    expect(rejected.provenance.note).toContain("database unavailable");
+    expect(rejected.problems.every((problem) => problem.poolAddress === null
+      && problem.donationWallet.address === null
+      && problem.funding === null)).toBe(true);
+  });
+
   it("consumes all ten boards with exact score atoms and complete economic state", () => {
     const cohort = problems();
     const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
@@ -225,23 +309,76 @@ describe("atomic activation-bound portal read model", () => {
       { claimant: `0x${"3".repeat(40)}`, credit: "0/1", finalEntitlementEth: "0", challengeBondEth: "0.1", withdrawableBondEth: "0.1" },
     ]);
     expect(model.submissions[1]).toMatchObject({
-      state: "voided", credit: "0/1", originalCredit: "1/1", provisionalImprovement: "1/1", transcriptCid: "ipfs://transcript",
+      state: "voided", credit: "0/1", originalCredit: "1/1", provisionalImprovement: "3/1", transcriptCid: "ipfs://transcript",
       activeChallenge: { challengeBondEth: "1", resolved: true, challengerWins: true },
     });
   });
 
-  it("does not reuse the one-time arm authorization expiry as an ongoing action gate", () => {
+  it.each([
+    ["at authorization expiry", AUTHORIZATION_EXPIRES_AT, true],
+    ["one second after authorization expiry", AUTHORIZATION_EXPIRES_AT + 1, false],
+  ])("applies ongoing Solidity funding authorization %s", (_label, nowSeconds, expectedCanFund) => {
     const cohort = problems();
-    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
-    expect(model.provenance.checkpointTimestamp).toBe("1970-01-01T00:16:40.000Z");
+    const value = snapshot(cohort);
+    (value.checkpoint.range as Record<string, unknown>).toBlockTimestamp = nowSeconds;
+    for (const board of value.checkpoint.boards as any[]) {
+      board.portalProjection.replayConfig.closeByTimestamp = String(
+        AUTHORIZATION_EXPIRES_AT + 1_000 + 30 * 24 * 60 * 60,
+      );
+    }
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds });
     expect(model.problems[1].funding).toMatchObject({
-      authorizationExpiresAt: "1970-01-01T00:15:00.000Z",
-      fundingDeadline: "1970-01-01T00:33:20.000Z",
+      authorizationExpiresAt: "1970-01-01T00:41:40.000Z",
+      authorizationExpired: !expectedCanFund,
+      fundingDeadline: "1970-01-01T00:58:20.000Z",
       fundingDeadlineReached: false,
       fundingArmed: true,
-      canFund: true,
+      canFund: expectedCanFund,
       canSubmit: true,
     });
+    expect(model.problems[1]).toMatchObject({
+      poolAddress: expectedCanFund ? ADDRESS : null,
+      donationWallet: { address: expectedCanFund ? ADDRESS : null },
+      chainProvenance: {
+        poolAddress: expectedCanFund ? ADDRESS : null,
+        donationWalletAddress: expectedCanFund ? ADDRESS : null,
+      },
+    });
+  });
+
+  it("derives exact remaining cap from accounted balance and suppresses an exhausted pool", () => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    ((value.checkpoint.boards as any[])[1].portalProjection.pool).accountedBalanceWei = String(10n * SCALE);
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.problems[1].funding).toMatchObject({
+      fundingCapWei: String(10n * SCALE),
+      remainingFundingCapWei: "0",
+      canFund: false,
+    });
+    expect(model.problems[1]).toMatchObject({
+      poolAddress: null,
+      donationWallet: { address: null },
+      chainProvenance: { poolAddress: null, donationWalletAddress: null },
+    });
+  });
+
+  it.each([
+    ["missing manifest cap", (value: ActivatedIndexerSnapshot) => { delete (value.manifest.problems as any[])[0].fundingCapWei; }],
+    ["drifted projected cap", (value: ActivatedIndexerSnapshot) => { ((value.checkpoint.boards as any[])[0].portalProjection.replayConfig).fundingCapWei = "1"; }],
+    ["missing projected balance", (value: ActivatedIndexerSnapshot) => { delete ((value.checkpoint.boards as any[])[0].portalProjection.pool).accountedBalanceWei; }],
+    ["drifted authorization expiry", (value: ActivatedIndexerSnapshot) => { ((value.checkpoint.boards as any[])[0].onchain).fundingAuthorizationExpiresAt = "1499"; }],
+  ])("fails the atomic cohort closed for %s", (_label, mutate) => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    mutate(value);
+
+    const model = resolvePortalReadModel(cohort, value, [], { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.source).toBe("local-phase-0");
+    expect(model.problems.every((problem) => problem.poolAddress === null
+      && problem.donationWallet.address === null && problem.funding === null)).toBe(true);
   });
 
   it("keeps funding open through a ledger pause while pausing new submissions", () => {
@@ -333,6 +470,7 @@ describe("atomic activation-bound portal read model", () => {
     expect(actionable.problems[1].pool?.winningsDonations[0].destinationPool).toBe(DESTINATION_ADDRESS);
 
     ((value.checkpoint.boards as any[])[2].portalProjection.funding).acceptingFunds = false;
+    ((value.checkpoint.boards as any[])[2].onchain).poolAcceptingFunds = false;
     const unavailable = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
     expect(unavailable.problems[1].pool?.winningsDonations[0].destinationPool).toBeNull();
     expect(unavailable.problems[2].chainProvenance).toMatchObject({
@@ -359,6 +497,7 @@ describe("atomic activation-bound portal read model", () => {
     const cohort = problems();
     const value = snapshot(cohort);
     ((value.checkpoint.boards as any[])[1].portalProjection.funding).acceptingFunds = false;
+    ((value.checkpoint.boards as any[])[1].onchain).poolAcceptingFunds = false;
 
     const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
     expect(model.problems[1]).toMatchObject({
@@ -419,10 +558,41 @@ describe("atomic activation-bound portal read model", () => {
     const cohort = problems();
     const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
     const rows = sortLeaderboardRows(cohort[0].id, [...model.submissions]);
-    expect(rows.map((row) => row.id)).toEqual(["chain:1:1", "chain:1:2", "chain:1:3"]);
+    expect(rows.map((row) => row.id)).toEqual(["chain:1:1", "chain:1:3", "chain:1:2"]);
     expect(finalizedFrontierRows(model.problems[0], [...model.submissions]).map((row) => row.id))
       .toEqual(["chain:1:1", "chain:1:3"]);
     expect(frontierBest(model.problems[0], [...model.submissions])).toBe("8/1");
+  });
+
+  it("publishes an honest seed-relative 1e18 display delta", () => {
+    const cohort = problems();
+    const model = portalReadModelFromActivatedSnapshot(cohort, snapshot(cohort), { nowSeconds: CHECKPOINT_TIMESTAMP });
+
+    expect(model.submissions.find((row) => row.id === "chain:1:1")).toMatchObject({
+      score: "9/1",
+      improvement: "1/1",
+      provisionalImprovement: "1/1",
+      credit: "1/1",
+    });
+  });
+
+  it("omits a uint256.max advisory improvement that the indexed seed and claim do not corroborate", () => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    const projected = (value.checkpoint.boards as any[])[0].portalProjection.submissions;
+    projected[0].improvementAtoms = (2n ** 256n - 1n).toString();
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.submissions.map((row) => row.id)).toEqual(["chain:1:2", "chain:1:3"]);
+  });
+
+  it("fails closed instead of interpreting a legacy 1e6 advisory delta as display atoms", () => {
+    const cohort = problems();
+    const value = snapshot(cohort);
+    (value.checkpoint.boards as any[])[0].portalProjection.submissions[0].improvementAtoms = "1000000";
+
+    const model = portalReadModelFromActivatedSnapshot(cohort, value, { nowSeconds: CHECKPOINT_TIMESTAMP });
+    expect(model.submissions.some((row) => row.id === "chain:1:1")).toBe(false);
   });
 
   it("never mixes local rows into a passing chain cohort", () => {

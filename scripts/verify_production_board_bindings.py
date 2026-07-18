@@ -4,10 +4,12 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
 import sys
+import tempfile
 from typing import Any, Mapping
 
 import jsonschema
@@ -331,17 +333,72 @@ def verify_board_bindings(root: Path, dossier_path: Path) -> None:
                 raise BoardBindingError(f"{prefix}.seed.{field} does not match exact verifier output")
 
 
+def refresh_source_digests(root: Path, dossier_path: Path) -> None:
+    """Refresh only source digests, then require a complete exact replay.
+
+    This is the sanctioned rebinding path after a reviewed shared-verifier
+    change. All non-source fields remain byte-for-byte semantic inputs to the
+    normal verifier; the atomic replacement is committed only after the full
+    exact-ten replay succeeds.
+    """
+
+    root = root.resolve()
+    dossier = _load_json(dossier_path, "production board bindings")
+    records = dossier.get("records") if isinstance(dossier, Mapping) else None
+    if not isinstance(records, list) or len(records) != 10:
+        raise BoardBindingError("source digest refresh requires exactly ten binding records")
+    for record in records:
+        if not isinstance(record, Mapping) or not isinstance(record.get("slug"), str):
+            raise BoardBindingError("source digest refresh encountered an invalid binding record")
+        verifier = record.get("verifier")
+        if not isinstance(verifier, dict):
+            raise BoardBindingError(f"{record['slug']}.verifier is invalid")
+        verifier["source_tree_sha256"] = compute_source_hash(root / "problems" / record["slug"])
+
+    dossier_path = dossier_path.resolve()
+    if dossier_path.is_symlink() or not dossier_path.is_file():
+        raise BoardBindingError("production board bindings path must be a regular file")
+    fd, temporary_name = tempfile.mkstemp(
+        dir=dossier_path.parent,
+        prefix=f".{dossier_path.name}.",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(dossier, ensure_ascii=False, indent=2, sort_keys=True))
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary_name, dossier_path.stat().st_mode & 0o777)
+        os.replace(temporary_name, dossier_path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+    verify_board_bindings(root, dossier_path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Verify the exact-ten production board source dossier")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--dossier", default="protocol/production-board-bindings-v1.json")
+    parser.add_argument(
+        "--refresh-source-digests",
+        action="store_true",
+        help="refresh only reviewed shared source digests, then replay all ten bindings",
+    )
     args = parser.parse_args()
     root = Path(args.repo_root).resolve()
     dossier = Path(args.dossier)
     if not dossier.is_absolute():
         dossier = root / dossier
     try:
-        verify_board_bindings(root, dossier)
+        if args.refresh_source_digests:
+            refresh_source_digests(root, dossier)
+            print("REFRESHED: exact-ten production board source digests")
+        else:
+            verify_board_bindings(root, dossier)
     except (BoardBindingError, KeyError, TypeError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

@@ -6,7 +6,7 @@ services:
     runtime: node
     rootDir: ./web
     buildCommand: npm ci && npm run build:prizes
-    startCommand: npm run db:migrate && npm run start:prizes
+    startCommand: npm run db:migrate && exec env -u P42_PORTAL_MIGRATION_DATABASE_URL npm run start:prizes
     plan: starter
     region: oregon
     healthCheckPath: /prizes
@@ -18,6 +18,22 @@ services:
       # Operator-provided Render internal PostgreSQL URL. Startup runs the
       # idempotent migration and refuses to start if the schema is not ready.
       - key: P42_PORTAL_DATABASE_URL
+        sync: false
+      # Distinct schema-owner credential used only by the startup migration.
+      # The start command replaces its migration shell with an environment that
+      # omits this value before launching the web process. It must authenticate
+      # as a different role from P42_PORTAL_DATABASE_URL.
+      - key: P42_PORTAL_MIGRATION_DATABASE_URL
+        sync: false
+      # Preprovision this exact schema under the migration owner. Runtime has
+      # USAGE only; checkpoint relations/functions are OID-bound inside it.
+      - key: P42_PORTAL_DATABASE_SCHEMA
+        value: p42_portal
+      # Exact provisioned identity and database. Startup rejects drift before
+      # applying migrations or changing ACLs.
+      - key: P42_PORTAL_RUNTIME_ROLE
+        value: p42_portal_runtime
+      - key: P42_PORTAL_DATABASE_NAME
         sync: false
       - key: P42_PORTAL_DATABASE_REQUIRED
         value: "1"

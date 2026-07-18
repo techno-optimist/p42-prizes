@@ -58,7 +58,7 @@ async function expectCustomError(action, contract, errorName) {
     if (data !== undefined) {
       const parsed = contract.interface.parseError(data);
       assert.equal(parsed?.name, errorName);
-      return;
+      return parsed;
     }
     assert.match(String(error), new RegExp(errorName));
     return;
@@ -230,7 +230,8 @@ describe("P42 Gate 1 contract scaffold", function () {
     const salt = overrides.salt ?? "challenge-salt";
     const solver = overrides.solver ?? fixture.alice;
     const claimedScoreAtoms = overrides.claimedScoreAtoms ?? 1000;
-    const improvementAtoms = overrides.improvementAtoms ?? 1;
+    const improvementAtoms = overrides.improvementAtoms
+      ?? SEED_SCORE_ATOMS - BigInt(claimedScoreAtoms);
     const commitment = await fixture.submissions["computeCommitment(string,address,bytes32,string)"](
       solutionCid,
       solver.address,
@@ -460,7 +461,7 @@ describe("P42 Gate 1 contract scaffold", function () {
 
     assert.equal(await submissions.bondCoversEntitlement(1, ethers.parseEther("100")), true);
     await submissions.requireFinalizeBond(1, ethers.parseEther("100"));
-    await submissions.connect(alice).reveal(1, solutionCid, 100, 1, salt, "0x");
+    await submissions.connect(alice).reveal(1, solutionCid, 100, SEED_SCORE_ATOMS - 100n, salt, "0x");
     await increaseTime(CHALLENGE_WINDOW_SECONDS + 1n);
     await submissions.connect(alice).finalize(1, PERMANENCE_HASH);
   });
@@ -487,12 +488,12 @@ describe("P42 Gate 1 contract scaffold", function () {
     });
 
     await expectCustomError(
-      submissions.connect(bob).reveal(1, solutionCid, 123, 7, salt, "0x"),
+      submissions.connect(bob).reveal(1, solutionCid, 123, SEED_SCORE_ATOMS - 123n, salt, "0x"),
       submissions,
       "P42_NOT_SOLVER"
     );
     await expectCustomError(
-      submissions.connect(alice).reveal(1, solutionCid, 123, 7, "wrong-salt", "0x"),
+      submissions.connect(alice).reveal(1, solutionCid, 123, SEED_SCORE_ATOMS - 123n, "wrong-salt", "0x"),
       submissions,
       "P42_BAD_COMMITMENT_REVEAL"
     );
@@ -515,13 +516,86 @@ describe("P42 Gate 1 contract scaffold", function () {
       "P42_NOT_STRICT_IMPROVEMENT"
     );
 
-    await submissions.connect(alice).reveal(1, solutionCid, 123, 7, salt, "0x");
+    const canonicalImprovement = SEED_SCORE_ATOMS - 123n;
+    await submissions.connect(alice).reveal(1, solutionCid, 123, canonicalImprovement, salt, "0x");
     const revealed = await submissions.submissions(1);
     assert.equal(revealed.solutionCid, solutionCid);
     assert.equal(revealed.claimedScoreAtoms, 123n);
-    assert.equal(revealed.improvementAtoms, 7n);
+    assert.equal(revealed.improvementAtoms, canonicalImprovement);
     assert.equal(revealed.status, 2n);
     assert.equal(revealed.challengeEndsAt - revealed.revealedAt, CHALLENGE_WINDOW_SECONDS);
+  });
+
+  it("requires the exact immutable-seed display delta and preserves reveal-hash conformance", async function () {
+    const { alice, submissions } = await deployFixture();
+    const solutionCid = "bafy-canonical-improvement";
+    const salt = "canonical-improvement-salt";
+    const claimedScoreAtoms = 123n;
+    const exactImprovementAtoms = SEED_SCORE_ATOMS - claimedScoreAtoms;
+    const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
+      solutionCid,
+      alice.address,
+      DA_HASH,
+      salt
+    );
+    await submissions.connect(alice).commit(commitment, DA_HASH, {
+      value: await submissions.requiredPostingBondNow(),
+    });
+
+    for (const mutatedImprovementAtoms of [0n, exactImprovementAtoms + 1n, ethers.MaxUint256]) {
+      const parsed = await expectCustomError(
+        submissions.connect(alice).reveal(
+          1,
+          solutionCid,
+          claimedScoreAtoms,
+          mutatedImprovementAtoms,
+          salt,
+          "0x"
+        ),
+        submissions,
+        "P42_IMPROVEMENT_ATOMS_MISMATCH"
+      );
+      assert.equal(parsed.args.expected, exactImprovementAtoms);
+      assert.equal(parsed.args.actual, mutatedImprovementAtoms);
+    }
+
+    await submissions.connect(alice).reveal(
+      1,
+      solutionCid,
+      claimedScoreAtoms,
+      exactImprovementAtoms,
+      salt,
+      "0x"
+    );
+    const revealed = await submissions.submissions(1);
+    const { chainId } = await ethers.provider.getNetwork();
+    const expectedRevealHash = ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
+      ["address", "uint256", "uint256", "address", "bytes32", "bytes32", "bytes32", "int256", "uint256", "uint64"],
+      [
+        await submissions.getAddress(),
+        chainId,
+        1n,
+        alice.address,
+        commitment,
+        DA_HASH,
+        ethers.keccak256(ethers.toUtf8Bytes(solutionCid)),
+        claimedScoreAtoms,
+        exactImprovementAtoms,
+        revealed.challengeEndsAt,
+      ]
+    ));
+    assert.equal(await submissions.revealInstanceHashOf(1), expectedRevealHash);
+  });
+
+  it("allows an unverified claimed score when its seed-relative display delta is honest", async function () {
+    const fixture = await deployFixture();
+    const claimedScoreAtoms = 42n;
+    const { submissionId } = await commitAndReveal(fixture, { claimedScoreAtoms });
+    const submission = await fixture.submissions.submissions(submissionId);
+
+    assert.equal(submission.claimedScoreAtoms, claimedScoreAtoms);
+    assert.equal(submission.improvementAtoms, SEED_SCORE_ATOMS - claimedScoreAtoms);
+    assert.equal(submission.status, 2n);
   });
 
   it("finalizes after the challenge window, records credit, then claims after close", async function () {
@@ -538,7 +612,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
     const required = await submissions.requiredPostingBondNow();
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: required });
-    await submissions.connect(alice).reveal(1, solutionCid, 1000, 25, salt, "0x");
+    await submissions.connect(alice).reveal(1, solutionCid, 1000, SEED_SCORE_ATOMS - 1000n, salt, "0x");
     await pool.fund({ value: ethers.parseEther("1") });
 
     await expectCustomError(
@@ -676,7 +750,14 @@ describe("P42 Gate 1 contract scaffold", function () {
     );
     const bond = await submissions.requiredPostingBondNow();
     await attacker.connect(alice).commit(await submissions.getAddress(), commitment, DA_HASH, { value: bond });
-    await attacker.reveal(await submissions.getAddress(), 1, cid, 1, 1000, salt);
+    await attacker.reveal(
+      await submissions.getAddress(),
+      1,
+      cid,
+      1,
+      SEED_SCORE_ATOMS - 1n,
+      salt
+    );
     await advanceToEffectiveClose(ledger);
 
     await expectCustomError(
@@ -1023,7 +1104,7 @@ describe("P42 Gate 1 contract scaffold", function () {
   it("routes the losing challenge bond to treasury when the solver wins", async function () {
     const fixture = await deployFixture();
     const { alice, treasury, resolver, challenger, ledger, submissions, challenges } = fixture;
-    const { submissionId } = await commitAndReveal(fixture, { improvementAtoms: 5 });
+    const { submissionId } = await commitAndReveal(fixture);
     const required = await challenges.requiredChallengeBond(0);
     await openChallenge(
       fixture,
@@ -1070,7 +1151,7 @@ describe("P42 Gate 1 contract scaffold", function () {
     const fixture = await deployFixture({ feeBps: 0 });
     const { alice, challenger, pool, ledger, submissions, challenges } = fixture;
     await pool.fund({ value: ethers.parseEther("1") });
-    const { submissionId } = await commitAndReveal(fixture, { improvementAtoms: 5 });
+    const { submissionId } = await commitAndReveal(fixture);
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
     await openChallenge(
       fixture,
@@ -1123,7 +1204,7 @@ describe("P42 Gate 1 contract scaffold", function () {
   it("pays a winning challenger more than their posted counter-bond (M2)", async function () {
     const fixture = await deployFixture();
     const { treasury, resolver, challenger, submissions, challenges } = fixture;
-    const { submissionId, bond } = await commitAndReveal(fixture, { improvementAtoms: 3 });
+    const { submissionId, bond } = await commitAndReveal(fixture);
     const required = await challenges.requiredChallengeBond(await submissions.disputedEntitlementWei(submissionId));
     await openChallenge(
       fixture,

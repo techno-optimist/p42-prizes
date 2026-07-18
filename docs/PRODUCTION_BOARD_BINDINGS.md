@@ -92,6 +92,15 @@ exact seed verifier outputs with:
 make verify-production-board-bindings
 ```
 
+After a reviewed shared verifier change, refresh only the source-tree digest
+field through the repository command below; it atomically rewrites the dossier
+and immediately replays all ten records before succeeding:
+
+```bash
+make refresh-production-board-bindings
+make verify-production-board-bindings
+```
+
 For schema-only inspection:
 
 ```bash

@@ -12,8 +12,10 @@ conformance vector for the full Solidity hash chain, and a successful mock
 execution over all 222,778 row pairs. The dual builds share one operator and
 architecture. This is source-reproduction and local-execution evidence only:
 it is not a genuine Groth16 proof, independent hardware attestation, audit, or
-production activation, and the other nine launch boards have no objective
-program yet.
+production activation. A11 has an unbound frozen mock artifact, and Q6 now has
+an unbound source-level guest plus a DGX mock execution; neither is a genuine
+proof or production-board binding. The remaining seven launch boards have no
+objective program yet.
 
 ## Frozen authority chain
 
@@ -72,12 +74,15 @@ outcome is true.
 
 ## Remaining production gates
 
-- Implement and independently review a total proof program for the other nine
-  admitted boards, including malformed-input and resource-bound behavior.
+- Freeze, independently reproduce, and review the A11 and Q6 guests, then
+  implement and independently review exact submitted-witness proof programs
+  for the remaining seven admitted boards. Each guest must re-run the complete
+  bounded verifier predicate and corrected outcome, including malformed-input
+  behavior; it does not purport to prove global optimality of the open problem.
 - Independently reproduce the Hadamard ELF/vkey under distinct operators and
   on x86 and ARM, then freeze a genuine positive Groth16 proof plus adversarial
   mutations. The current mock execution emits the exact expected 32-byte
-  journal in 53,335,905 RISC-V instructions but contains no proof bytes. CI
+  journal in 53,275,736 RISC-V instructions but contains no proof bytes. CI
   replays that execution exactly and verifies the deterministic input/work
   envelope; genuine proof timing, peak memory, and cost remain unmeasured.
 - Audit and rehearse a new active gateway release. The current production

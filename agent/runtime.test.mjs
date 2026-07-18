@@ -25,12 +25,15 @@ import {
   buildOperatorCursor,
   buildSignedTransactionRecord,
   canonicalJson,
+  chainScoreAtoms,
   nextOperatorScanRange,
   operatorCursorBinding,
   localProblemRuntimeIdentity,
   recoverRevealCalldata,
   runtimePythonExecutable,
   resolveOperatorFinality,
+  SCORE_SCALE,
+  seedRelativeImprovementAtoms,
   sha256Canonical,
   solverLifecycleDecision,
   submissionIdFromCommittedReceipt,
@@ -39,6 +42,7 @@ import {
   validateOperatorExecutionMode,
   verifierImageHashForDigest,
   verifierSourceHashForDigest,
+  UINT256_MAX,
 } from "./lib.mjs";
 import {
   assertApprovedJournalPath,
@@ -56,6 +60,36 @@ const submissionInterface = new ethers.Interface([
 const walletInterface = new ethers.Interface([
   "function execute(address target,uint256 value,bytes data) returns (bytes)",
 ]);
+
+test("derives canonical 1e18 seed-relative improvement for minimize and maximize scores", () => {
+  assert.equal(seedRelativeImprovementAtoms(SCORE_SCALE, 3n * SCORE_SCALE / 4n), SCORE_SCALE / 4n);
+
+  const maximizeSeed = chainScoreAtoms("1/2", "maximize");
+  const maximizeClaim = chainScoreAtoms("3/4", "maximize");
+  assert.equal(maximizeSeed, -SCORE_SCALE / 2n);
+  assert.equal(maximizeClaim, -3n * SCORE_SCALE / 4n);
+  assert.equal(seedRelativeImprovementAtoms(maximizeSeed, maximizeClaim), SCORE_SCALE / 4n);
+});
+
+test("seed-relative improvement enforces strict improvement and uint256 bounds", () => {
+  assert.equal(seedRelativeImprovementAtoms(0n, -UINT256_MAX), UINT256_MAX);
+  assert.throws(() => seedRelativeImprovementAtoms(1n, 1n), /strictly improve/);
+  assert.throws(() => seedRelativeImprovementAtoms(1n, 2n), /strictly improve/);
+  assert.throws(() => seedRelativeImprovementAtoms(0n, -(UINT256_MAX + 1n)), /exceeds uint256/);
+});
+
+test("solver disables the legacy free-form improvement override before production startup", () => {
+  const result = spawnSync(process.execPath, [
+    join(HERE, "solver.mjs"),
+    "--manifest", "missing.json",
+    "--problem", "missing-problem",
+    "--solution", "missing-solution",
+    "--improvement", "999999999",
+  ], { encoding: "utf8" });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--improvement is disabled/);
+  assert.doesNotMatch(result.stderr, /AGENT_PRIVATE_KEY|ENOENT/);
+});
 
 test("npm pack installs complete runnable agent binaries", () => {
   const packDir = mkdtempSync(join(tmpdir(), "p42-pack-"));
@@ -118,6 +152,15 @@ test("npm pack installs complete runnable agent binaries", () => {
   assert.doesNotMatch(fallbackAlert.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
   assert.match(fallbackAlert.stderr, /p42-censorship-fallback-alert-outcome\/v1/);
   assert.match(fallbackAlert.stderr, /terminal-error/);
+  const runtimeSupervisor = spawnSync(
+    join(installDir, "node_modules", ".bin", "p42-runtime-supervisor"),
+    [],
+    { encoding: "utf8" },
+  );
+  assert.equal(runtimeSupervisor.status, 70, runtimeSupervisor.stderr);
+  assert.doesNotMatch(runtimeSupervisor.stderr, /ERR_MODULE_NOT_FOUND|ENOENT/);
+  assert.match(runtimeSupervisor.stderr, /runtime supervisor failed/);
+  assert.match(runtimeSupervisor.stderr, /requires -- before runtime arguments/);
   const installedIndexer = pathToFileURL(join(installDir, "node_modules", "p42-agent", "indexer.mjs")).href;
   const schemaProbe = spawnSync(process.execPath, ["--input-type=module", "-e", `
     const { validateManifestEvidence } = await import(${JSON.stringify(installedIndexer)});
@@ -940,6 +983,7 @@ test("operator retries reveal payloads and creates idempotent generation-bound r
       recordWalletNonceSignedLocked,
       reserveWalletNonceLocked,
       retryableJobIsEligible,
+      validateRevealImprovementAtoms,
       walletNonceBroadcastDecisionLocked,
       withWalletActionLock,
     } = await import(operatorUrl);
@@ -954,6 +998,26 @@ test("operator retries reveal payloads and creates idempotent generation-bound r
       },
     };
     const submission = { commitDaHash: ethers.sha256(bytes) };
+
+    assert.equal(validateRevealImprovementAtoms({
+      claimedScoreAtoms: 800n,
+      improvementAtoms: 200n,
+    }, 1000n), 200n);
+    assert.throws(() => validateRevealImprovementAtoms({
+      claimedScoreAtoms: 800n,
+      improvementAtoms: 999n,
+    }, 1000n), /improvementAtoms mismatch/);
+    const operatorSource = readFileSync(join(HERE, "operator.mjs"), "utf8");
+    const ingestStart = operatorSource.indexOf("async function ingestReveal");
+    const improvementValidation = operatorSource.indexOf("validateRevealImprovementAtoms", ingestStart);
+    const payloadRecovery = operatorSource.indexOf("recoverPayload(payloadEvent", ingestStart);
+    const queueRead = operatorSource.indexOf("const queue = readQueue()", ingestStart);
+    assert.ok(
+      ingestStart >= 0
+      && improvementValidation > ingestStart
+      && improvementValidation < queueRead
+      && improvementValidation < payloadRecovery,
+    );
 
     const first = await recoverPayload(event, submission);
     assert.equal(first.daFailure.kind, "calldata_unavailable");

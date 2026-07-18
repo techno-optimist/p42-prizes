@@ -120,6 +120,23 @@ without rewriting historical completion. The checkpoint attestation must then
 sign those exact v4 bytes. Checkpoint v2 and v3 remain readable for historical/non-activated
 replay, but the portal rejects them for funding publication; migrate by
 regenerating and re-attesting a v4 checkpoint, not by rewriting an old artifact.
+
+The portal deliberately does not open RPC connections from the browser or web
+request path. Its `p42-prizes/funding-target/v3` response is bounded by the
+fresh, finalized, independently attested v4 checkpoint and exposes the exact
+nonzero `fundingAuthorizationDigest`, `activationCompletionDigest`, checkpoint
+block, and activation-finalization block. The client strictly parses and
+revalidates those values, requires an explicit acknowledgement of their
+displayed abbreviations, then requires a second trusted click before following
+the wallet URI. A browser-visible target is not evidence that a browser made a
+live `eth_call`.
+
+The repository's safe dual-RPC implementation remains the indexer/activation
+pipeline described above. Adding an unrelated single-provider or ad hoc
+browser RPC path would weaken that authority model. Until a deployment adds a
+reviewed operator-distinct dual-RPC pre-sign read with equivalent provenance,
+the fresh finalized indexer checkpoint is the portal's current evidence
+boundary and a live pre-sign `eth_call` remains an explicit deployment gate.
 The production indexer canonicalizes and validates both credential-free HTTPS
 endpoint identities, rejects redirects, credentials, query strings, fragments,
 aliases, and profile substitutions, then constructs both RPC providers
@@ -160,10 +177,12 @@ It fails closed unless all of the following agree:
 3. The Render origin and `projectforty2.ai` proxy return success for all prize
    routes required by the portal.
 
-The guard currently makes 12 HTTP probes: paired Render/public checks for the
-portal home, cinematic intro, Build Week archive, problems API, and capability
-API, plus public checks for standings and the agent skill. HTML probes require
-stable page identity markers, and every paired response must be equivalent.
+The guard makes 32 HTTP probes: paired Render/public checks for the portal
+home, cinematic intro, Build Week archive, problems API, capability API, and
+every exact-ten funding-target route, plus public checks for standings and the
+agent skill. Every funding-target response must be the exact fail-closed v3
+envelope with `target: null`. HTML probes require stable page identity markers,
+and every paired response must be equivalent.
 
 The guard requires an authenticated `render` CLI and the canonical `origin`
 remote. An isolated checkout can pass its GitHub remote explicitly:
@@ -200,13 +219,15 @@ deployment creates governance-owned contracts and pending operation bundles;
 independent governance signers schedule, confirm, and execute those bundles;
 then a keyless continuation verifies finalized on-chain completion.
 
-For a fresh public prize deployment, the canonical route is
-`P42_DEPLOY_MODE=deploy-multiboard-production` and the typed procedure in
+For a fresh public prize deployment, the only canonical route is
+`npm run deploy:base-sepolia` and the typed procedure in
 [MULTIBOARD_CEREMONY.md](MULTIBOARD_CEREMONY.md). It refuses to broadcast until
 every board passes local `admit-ready` and the resulting admission-matrix digest
-is bound to the registry hash. The environment-variable single-board route
-below remains a legacy rehearsal path only; it is never launch, funding, or
-Gate 1 evidence.
+is bound to the registry hash. The npm command unconditionally selects the
+production-specific `deploy-multiboard-production` entry point, ignoring any
+caller-supplied `P42_DEPLOY_MODE`; direct invocation of that entry point rejects
+a missing or non-production mode before importing deployment code. No supported
+production command can select the legacy topology.
 
 ### Exclusive Manifest Reservation And Recovery
 
@@ -217,12 +238,18 @@ transaction as the ceremony progresses. A second deploy invocation refuses to
 run while that reservation exists, so it cannot silently create a competing
 set of contracts and then lose the manifest write race.
 
+Before creating that durable reservation, production validates the digest-pinned
+canonical topology, exact executable membership, all 47 materialized
+initcode/calldata payloads, and all 110 setup operations, then freezes the
+preflight plan used by execution. Topology or plan drift therefore leaves no
+reservation behind; a corrected invocation can retry without stale-reservation
+recovery.
+
 If a ceremony stops before its manifest is written, do not restart it. Inspect
 the retained journal first; it may describe already-broadcast deployment
 transactions:
 
 ```bash
-P42_DEPLOY_MODE=inspect-reservation \
 P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
 P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
 P42_MULTIBOARD_CEREMONY_CONFIG=... \
@@ -231,12 +258,13 @@ P42_RELEASE_CAPSULE=... \
 P42_PRODUCTION_RELEASE_INDEX_PATH=... \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 P42_RELEASE_OUTPUT_ROOT=/absolute/path/release-output \
-npx hardhat run scripts/deploy-base-sepolia.js
+P42_SP1_RUNTIME_ATTESTATION_PATH=/absolute/path/release-evidence/sp1-external-runtime-current.json \
+npm run inspect:base-sepolia-reservation
 ```
 
 Inspect mode independently reconstructs the expected identity from the clean
 frozen checkout, exact ceremony config, release slate, release capsule,
-expected deployer, and manifest path before opening the private sibling
+fresh SP1 runtime attestation, expected deployer, and manifest path before opening the private sibling
 reservation. It does not trust identity fields recovered from the journal. A
 wrong checkout or input, malformed, relocated, permissive, linked, or
 identity-tampered journal fails closed. Do not remove the reservation to make a
@@ -254,7 +282,7 @@ crashes while holding this lock, stop every ceremony runner, preserve and
 inspect the reservation plus lock record, and remove the lock only as an
 explicit recovery action before resuming reconciliation.
 
-### 1. Legacy Single-Board Rehearsal Inputs
+### 1. Test-Only Legacy Single-Board Rehearsal Inputs
 
 The deploy command requires all constructor policy to be explicit. No economic
 or DA default is accepted.
@@ -302,9 +330,12 @@ P42_ADMISSION_MATRIX_HASH=0x... \
 P42_METADATA_URI=ipfs://... \
 P42_SEED_SCORE_ATOMS=... \
 P42_MIN_IMPROVEMENT_ATOMS=... \
-P42_DEPLOY_MODE=deploy \
-npm run deploy:base-sepolia
+npm run deploy:test-only-legacy-base-sepolia
 ```
+
+This explicit test-only command always writes the noncanonical
+`deployments/base-sepolia/test-only-legacy-p42-prizes.json`; it cannot write the
+canonical production manifest and is never launch, funding, or Gate 1 evidence.
 
 Deployment requires two independently operated Base Sepolia RPC endpoints. The
 primary and secondary URLs must normalize to different origins and hostnames,
@@ -416,8 +447,7 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES=0x...,0x... \
   P42_ROLE_ACCEPTANCE_PACKET=... \
   ETHERSCAN_API_KEY=... \
-  P42_DEPLOY_MODE=continue \
-  npm run deploy:base-sepolia
+  npm run continue:base-sepolia
 ```
 
 Continuation is read-only on chain. It requires two operator-distinct RPCs to

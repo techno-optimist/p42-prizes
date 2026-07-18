@@ -16,6 +16,7 @@ try {
     capsulePath: env.P42_RELEASE_CAPSULE,
     slatePath: env.P42_PRODUCTION_SLATE_PATH,
     releaseIndexPath: env.P42_PRODUCTION_RELEASE_INDEX_PATH,
+    sp1RuntimeAttestationPath: env.P42_SP1_RUNTIME_ATTESTATION_PATH,
     expectedDeployer: env.P42_EXPECTED_DEPLOYER_ADDRESS,
   });
   console.log(JSON.stringify(result));

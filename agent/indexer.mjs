@@ -17,7 +17,12 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { atomsFromScore, chainScoreAtoms, recoverRevealCalldata } from "./lib.mjs";
+import {
+  assertSeedRelativeImprovementAtoms,
+  atomsFromScore,
+  chainScoreAtoms,
+  recoverRevealCalldata,
+} from "./lib.mjs";
 import {
   canonicalTranscriptArtifact,
   configuredTranscriptEndpoints,
@@ -29,6 +34,7 @@ import {
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
 import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance.mjs";
+import { assertExactSetupOperations, deriveBoardSetupOperations } from "./setup-operation-plan.mjs";
 import {
   CANONICAL_BOARD_CONTRACTS,
   CANONICAL_CONTRACT_COUNT,
@@ -44,7 +50,7 @@ import {
 
 const MANIFEST_JSON_LIMITS = Object.freeze({ maxBytes: 4 * 1024 * 1024, maxDepth: 64 });
 const CHECKPOINT_JSON_LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 96, canonicalBytes: true, trailingNewline: "require" });
-const EXPECTED_EXTERNAL_DEPENDENCIES_SHA256 = "157af4e5831ba4084136fba0f9cf838bfbeaa7dcde4f36b95b8f6b94b13b774f";
+const EXPECTED_EXTERNAL_DEPENDENCIES_SHA256 = "7a34c28447954c222d20f5e39a1db488f4b680068c470ee8fa2a1663fb82f359";
 const externalDependenciesUrl = new URL("./external-dependencies-v1.json", import.meta.url);
 const externalDependenciesBytes = readFileSync(externalDependenciesUrl);
 if (createHash("sha256").update(externalDependenciesBytes).digest("hex") !== EXPECTED_EXTERNAL_DEPENDENCIES_SHA256) {
@@ -64,6 +70,13 @@ const PRODUCTION_CAPSULE_CONTRACTS = [
   "P42ChallengeManager",
   "P42ProblemRegistry",
 ];
+const SP1_RUNTIME_ATTESTATION_SCHEMA = "p42-prizes/sp1-external-runtime-attestation/v1";
+const SP1_OFFICIAL_ADDRESS = "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2";
+const SP1_RUNTIME_CODEHASH = "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd";
+const SP1_CHAINS = Object.freeze([
+  Object.freeze({ chainId: 8453, network: "base", providers: Object.freeze(["base-foundation\0https://mainnet.base.org", "tenderly\0https://base.gateway.tenderly.co"]) }),
+  Object.freeze({ chainId: 84532, network: "base-sepolia", providers: Object.freeze(["base-foundation\0https://sepolia.base.org", "tenderly\0https://base-sepolia.gateway.tenderly.co"]) }),
+]);
 
 function capsuleCanonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -73,8 +86,38 @@ function capsuleCanonical(value) {
 
 function capsuleDigest(value) { return `sha256:${createHash("sha256").update(capsuleCanonical(value)).digest("hex")}`; }
 
+function exactCapsuleKeys(value, keys, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value) || capsuleCanonical(Object.keys(value).sort()) !== capsuleCanonical([...keys].sort())) throw new Error(`${label} is malformed`);
+}
+
+function validateSP1RuntimeAttestationBinding(binding) {
+  exactCapsuleKeys(binding, ["schema", "evidenceDigest", "capturedAt", "expiresAt", "chains"], "trusted SP1 runtime attestation binding");
+  if (binding.schema !== SP1_RUNTIME_ATTESTATION_SCHEMA || !/^sha256:[0-9a-f]{64}$/.test(binding.evidenceDigest)) throw new Error("trusted SP1 runtime attestation identity is invalid");
+  for (const [field, value] of [["capturedAt", binding.capturedAt], ["expiresAt", binding.expiresAt]]) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) || Number.isNaN(Date.parse(value))) throw new Error(`trusted SP1 runtime attestation ${field} is invalid`);
+  }
+  if (Date.parse(binding.expiresAt) <= Date.parse(binding.capturedAt) || !Array.isArray(binding.chains) || capsuleCanonical(binding.chains.map(({ chainId }) => chainId)) !== capsuleCanonical(SP1_CHAINS.map(({ chainId }) => chainId))) throw new Error("trusted SP1 runtime attestation must bind Base then Base Sepolia in canonical order");
+  binding.chains.forEach((chain, index) => {
+    const expected = SP1_CHAINS[index];
+    exactCapsuleKeys(chain, ["chainId", "network", "address", "anchorMode", "finalizedSkewBlocks", "providers", "runtime"], "trusted SP1 runtime attestation chain");
+    if (chain.chainId !== expected.chainId || chain.network !== expected.network || chain.address !== SP1_OFFICIAL_ADDRESS || !["agreed-finalized", "provider-specific-finalized"].includes(chain.anchorMode) || !Number.isSafeInteger(chain.finalizedSkewBlocks) || chain.finalizedSkewBlocks < 0 || chain.finalizedSkewBlocks > 128 || !Array.isArray(chain.providers) || chain.providers.length !== 2) throw new Error("trusted SP1 runtime attestation chain identity is invalid");
+    const observedProviders = chain.providers.map(({ operator, endpointOrigin }) => `${operator}\0${endpointOrigin}`);
+    if (new Set(observedProviders).size !== 2 || expected.providers.some((provider) => !observedProviders.includes(provider))) throw new Error("trusted SP1 runtime attestation providers are invalid");
+    for (const provider of chain.providers) {
+      exactCapsuleKeys(provider, ["operator", "endpointOrigin", "finalizedAnchor"], "trusted SP1 runtime attestation provider");
+      exactCapsuleKeys(provider.finalizedAnchor, ["blockNumber", "blockHash", "blockTimestamp"], "trusted SP1 runtime attestation anchor");
+      const anchor = provider.finalizedAnchor;
+      if (!Number.isSafeInteger(anchor.blockNumber) || anchor.blockNumber < 1 || !/^0x[0-9a-f]{64}$/.test(anchor.blockHash) || !Number.isSafeInteger(anchor.blockTimestamp) || anchor.blockTimestamp < 1) throw new Error("trusted SP1 runtime attestation anchor is invalid");
+    }
+    exactCapsuleKeys(chain.runtime, ["byteLength", "keccak256"], "trusted SP1 runtime attestation runtime");
+    if (chain.runtime.byteLength !== 6741 || chain.runtime.keccak256 !== SP1_RUNTIME_CODEHASH) throw new Error("trusted SP1 runtime attestation runtime identity is invalid");
+  });
+  return binding;
+}
+
 export function validateReleaseCapsule(capsule) {
   if (!capsule || capsule.schema !== "p42-prizes/release-capsule/v2" || !/^[0-9a-f]{40}$/.test(capsule.gitCommit) || !Array.isArray(capsule.contracts) || !Array.isArray(capsule.externalDependencies) || !Array.isArray(capsule.buildInfos)) throw new Error("trusted release capsule is malformed");
+  validateSP1RuntimeAttestationBinding(capsule.sp1RuntimeAttestation);
   if (capsule.contracts.map(({ name }) => name).join("\0") !== PRODUCTION_CAPSULE_CONTRACTS.join("\0")) throw new Error("trusted release capsule contract set is incomplete or reordered");
   if (capsuleCanonical(capsule.externalDependencies) !== capsuleCanonical(PRODUCTION_EXTERNAL_DEPENDENCIES)) throw new Error("trusted release capsule external dependency policy mismatch");
   const infos = new Set(capsule.buildInfos.map(({ id }) => id));
@@ -1073,86 +1116,25 @@ export function deriveExactSetupOperations(manifest) {
       rolloverVault: manifest.contracts.rolloverVault.address,
       ...Object.fromEntries(BOARD_CONTRACT_KEYS.map((key) => [key, contracts[key].address])),
     };
-    const prefix = isMultiBoardManifest(manifest) ? `board/${problem.problemId}.` : "";
-    const label = (suffix) => `${prefix}${suffix}`;
-    const registryConfig = {
-      specHash: problem.specHash,
-      verifierSourceHash: problem.verifierSourceHash,
-      verifierImageHash: problem.verifierImageHash,
-      admissionMatrixHash: problem.admissionMatrixHash,
-      metadataURI: problem.metadataURI,
-      pool: addresses.pool,
-      ledger: addresses.ledger,
-      submissionManager: addresses.submissions,
-      challengeManager: addresses.challenges,
-      challengeWindowSeconds: manifest.parameters.challengeWindowSeconds,
-      minImprovementAtoms: problem.minImprovementAtoms,
-    };
-    const definitions = [
-      ["pool.setLedger", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setLedger", [addresses.ledger]), []],
-      ["ledger.setCreditRecorder", "standard", addresses.ledger, interfaces.ledger.encodeFunctionData("setCreditRecorder", [addresses.submissions]), []],
-      ["pool.setSubmissionManager", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setSubmissionManager", [addresses.submissions]), ["pool.setLedger"]],
-      ["submissions.setChallengeManager", "standard", addresses.submissions, interfaces.submissions.encodeFunctionData("setChallengeManager", [addresses.challenges]), ["ledger.setCreditRecorder"]],
-      ["registry.register", "standard", addresses.registry, interfaces.registry.encodeFunctionData("registerExpected", [registryConfig, problem.problemId]), ["pool.setLedger", "ledger.setCreditRecorder", "pool.setSubmissionManager", "submissions.setChallengeManager"]],
-      ["pool.setRegistry", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setRegistry", [addresses.registry, problem.problemId]), ["registry.register"]],
-      ["ledger.setRolloverDestination", "standard", addresses.ledger, interfaces.ledger.encodeFunctionData("setRolloverDestination", [addresses.rolloverVault]), ["pool.setRegistry"]],
-      ["registry.freeze", "standard", addresses.registry, interfaces.registry.encodeFunctionData("freeze", [problem.problemId]), ["registry.register", "pool.setRegistry", "ledger.setRolloverDestination"]],
-      ...["ledger", "submissions", "challenges"].map((key) => [`timelock.setPauseTarget.${key}`, "override", addresses.timelock, interfaces.timelock.encodeFunctionData("setPauseTarget", [addresses[key], true]), ["registry.freeze"]]),
-    ];
-    const byLabel = new Map();
-    for (const [offset, definition] of definitions.entries()) {
-      const [suffix, operationClass, target, data, dependencies] = definition;
-      const sequence = boardIndex * BOARD_SETUP_LABEL_SUFFIXES.length + offset + 1;
-      const fullLabel = label(suffix);
-      const saltFor = (saltLabel) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-        ["string", "uint256", "uint256", "string", "address", "bytes32"],
-        ["p42-prizes/governance-setup/v1", manifest.network.chainId, sequence, saltLabel, target, ethers.keccak256(data)],
-      ));
-      const idFor = (salt) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-        ["address", "uint256", "bytes", "bytes32"], [target, 0n, data, salt],
-      ));
-      const builderFor = (scheduleFunction, salt, id) => ({
-        schedule: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData(scheduleFunction, [target, 0n, data, salt]) },
-        confirm: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("confirm", [id]) },
-        execute: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("execute", [target, 0n, data, salt]) },
-      });
-      const salt = saltFor(fullLabel);
-      const operationId = idFor(salt);
-      const fallbackSalt = operationClass === "standard" ? saltFor(`${fullLabel}.override-fallback`) : null;
-      const fallbackId = fallbackSalt ? idFor(fallbackSalt) : null;
-      const derived = {
-        sequence, label: fullLabel, operationClass, target, value: "0", data, salt, operationId,
-        dependsOn: dependencies.map((dependency) => byLabel.get(label(dependency)).operationId),
-        requiredConfirmations: String(operationClass === "override" ? manifest.governance.overrideThreshold : manifest.governance.threshold),
-        delaySeconds: String(operationClass === "override" ? manifest.governance.overrideDelaySeconds : manifest.governance.delaySeconds),
-        transactionBuilder: builderFor(operationClass === "override" ? "scheduleOverride" : "schedule", salt, operationId),
-        overrideFallback: fallbackSalt ? {
-          operationId: fallbackId, salt: fallbackSalt,
-          requiredConfirmations: String(manifest.governance.overrideThreshold),
-          delaySeconds: String(manifest.governance.overrideDelaySeconds),
-          transactionBuilder: builderFor("scheduleOverride", fallbackSalt, fallbackId),
-        } : null,
-      };
-      byLabel.set(fullLabel, derived);
-      expected.push(derived);
-    }
+    expected.push(...deriveBoardSetupOperations({
+      ethers,
+      chainId: manifest.network.chainId,
+      timelockAddress: addresses.timelock,
+      addresses,
+      governance: manifest.governance,
+      parameters: manifest.parameters,
+      problem,
+      interfaces,
+      problemId: problem.problemId,
+      labelPrefix: isMultiBoardManifest(manifest) ? `board/${problem.problemId}` : "",
+      sequenceOffset: boardIndex * BOARD_SETUP_LABEL_SUFFIXES.length,
+    }));
   }
   return expected;
 }
 
 function validateExactSetupOperations(manifest) {
-  const expected = deriveExactSetupOperations(manifest);
-  const fields = ["sequence", "label", "operationClass", "target", "value", "data", "salt", "operationId", "dependsOn", "requiredConfirmations", "delaySeconds", "transactionBuilder", "overrideFallback"];
-  if (expected.length !== manifest.setupTransactions.length) {
-    throw new Error(`setupTransactions must contain exactly ${expected.length} derived operations`);
-  }
-  for (const [index, derived] of expected.entries()) {
-    const actual = Object.fromEntries(fields.map((field) => [field, manifest.setupTransactions[index][field]]));
-    const selected = Object.fromEntries(fields.map((field) => [field, derived[field]]));
-    if (stableStringify(actual) !== stableStringify(selected)) {
-      throw new Error(`setupTransactions[${index}] does not match the exact derived governance operation`);
-    }
-  }
+  assertExactSetupOperations(deriveExactSetupOperations(manifest), manifest.setupTransactions);
 }
 
 export function validateManifestEvidence(manifest, { allowFixture = false, productionSlate, capsuleResolver, blockTimestampResolver, explorerDossierResolver } = {}) {
@@ -2250,8 +2232,19 @@ function replaySubmissionEvent(state, event) {
       requireStatus(submission, "Committed", event, id);
       invariant(event.blockTimestamp !== undefined, `Revealed ${id} missing blockTimestamp`);
       submission.solutionCid = getArg(event, "solutionCid");
-      submission.improvementAtoms = asBigInt(getArg(event, "improvementAtoms"));
-      submission.claimedScoreAtoms = asBigInt(getArg(event, "claimedScoreAtoms"));
+      const improvementAtoms = asBigInt(getArg(event, "improvementAtoms"));
+      const claimedScoreAtoms = asBigInt(getArg(event, "claimedScoreAtoms"));
+      try {
+        assertSeedRelativeImprovementAtoms(
+          state.config.seedScoreAtoms,
+          claimedScoreAtoms,
+          improvementAtoms,
+        );
+      } catch (error) {
+        throw new ReplayError(`Revealed ${id} quarantined: ${error.message}`);
+      }
+      submission.improvementAtoms = improvementAtoms;
+      submission.claimedScoreAtoms = claimedScoreAtoms;
       submission.revealedAt = asBigInt(event.blockTimestamp);
       const revealInstanceHash = getArg(event, "revealInstanceHash");
       invariant(

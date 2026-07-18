@@ -6,6 +6,7 @@ import {
   loadActivatedIndexerSnapshot,
   type ActivatedIndexerSnapshot,
 } from "@/lib/indexer-provenance";
+import { enforceIndexerCheckpointHighWater } from "@/lib/indexer-high-water";
 import { allSubmissionsShared } from "@/lib/portal-state";
 import type {
   Direction,
@@ -26,6 +27,7 @@ type JsonObject = Record<string, unknown>;
 const DEFAULT_CHECKPOINT_MAX_AGE_SECONDS = 300;
 const CHECKPOINT_FUTURE_TOLERANCE_SECONDS = 30;
 const FUNDING_WINDOW_BEFORE_CLOSE_SECONDS = 30n * 24n * 60n * 60n;
+const SCORE_ATOM_SCALE = 10n ** 18n;
 const EVM_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 
 export interface PortalReadModelClock {
@@ -213,31 +215,55 @@ function poolReadModel(projection: JsonObject, scale: string): PortalPoolReadMod
 
 function fundingReadModel(
   projection: JsonObject,
+  onchain: JsonObject,
+  pool: PortalPoolReadModel,
+  fundingCapWei: string,
   closed: boolean,
   fundingDeadline: bigint,
+  finalizedTimestamp: number,
   effectiveTimestamp: number,
 ): PortalFundingReadModel {
   const funding = object(projection.funding, "portal projection funding");
   const authorizationExpiresAt = integerString(funding.authorizationExpiresAt, "funding authorization expiry", true);
+  const onchainAuthorizationExpiresAt = integerString(
+    onchain.fundingAuthorizationExpiresAt,
+    "onchain funding authorization expiry",
+    true,
+  );
+  if (authorizationExpiresAt !== onchainAuthorizationExpiresAt
+    || funding.acceptingFunds !== onchain.poolAcceptingFunds
+    || funding.fundingArmed !== onchain.fundingArmed) {
+    throw new Error("portal projection funding state mismatch");
+  }
   const acceptingFunds = funding.acceptingFunds === true;
   const fundingArmed = funding.fundingArmed === true;
   const ledgerPausedNewActions = funding.ledgerPausedNewActions === true;
   const submissionsPausedNewActions = funding.submissionsPausedNewActions === true;
   const submissionsPausedAll = funding.submissionsPausedAll === true;
   const challengesPausedNewActions = funding.challengesPausedNewActions === true;
+  const cap = BigInt(fundingCapWei);
+  const accountedBalance = BigInt(pool.accountedBalanceWei);
+  if (accountedBalance > cap) throw new Error("pool accounted balance exceeds funding cap");
+  const remainingFundingCapWei = (cap - accountedBalance).toString();
+  const authorizationExpired = BigInt(effectiveTimestamp) > BigInt(authorizationExpiresAt);
   const fundingDeadlineReached = BigInt(effectiveTimestamp) >= fundingDeadline;
   return {
     acceptingFunds,
     fundingArmed,
     authorizationExpiresAt: unixSecondsToIso(authorizationExpiresAt, "funding authorization expiry"),
+    authorizationExpired,
+    fundingCapWei,
+    remainingFundingCapWei,
     fundingDeadline: unixSecondsToIso(fundingDeadline.toString(), "funding deadline"),
     fundingDeadlineReached,
+    finalizedObservedAt: unixSecondsToIso(finalizedTimestamp, "funding finalized observation timestamp"),
     publicationObservedAt: unixSecondsToIso(effectiveTimestamp, "funding publication observation timestamp"),
     ledgerPausedNewActions,
     submissionsPausedNewActions,
     submissionsPausedAll,
     challengesPausedNewActions,
-    canFund: !closed && !fundingDeadlineReached && fundingArmed && acceptingFunds,
+    canFund: !closed && !authorizationExpired && !fundingDeadlineReached
+      && remainingFundingCapWei !== "0" && fundingArmed && acceptingFunds,
     canSubmit: !closed && fundingArmed && !ledgerPausedNewActions && !submissionsPausedNewActions && !submissionsPausedAll,
     canChallenge: !closed && !challengesPausedNewActions && !submissionsPausedAll,
   };
@@ -293,13 +319,23 @@ function projectedSubmission(
   problem: Problem,
   registryId: string,
   scale: string,
+  seedScoreAtoms: string,
+  currentScoreAtoms: string,
   direction: Direction,
   value: unknown,
-): Submission {
+): Submission | null {
   const row = object(value, "portal projection submission");
   const state = submissionState(row.status);
   const currentCredit = integerString(row.creditAtoms, "live credit atoms", true);
   if (row.status === "Voided" && currentCredit !== "0") throw new Error("voided submission has nonzero live credit");
+  const claimedScoreAtoms = integerString(row.claimedScoreAtoms, "claimed score atoms");
+  const advisoryImprovementAtoms = integerString(row.improvementAtoms, "improvement atoms", true);
+  const corroboratedImprovementAtoms = BigInt(seedScoreAtoms) - BigInt(claimedScoreAtoms);
+  if (corroboratedImprovementAtoms <= 0n
+    || advisoryImprovementAtoms !== corroboratedImprovementAtoms.toString()
+    || (state === "finalized" && BigInt(claimedScoreAtoms) < BigInt(currentScoreAtoms))) {
+    return null;
+  }
   const logs = array(row.sourceLogs, "submission source logs").map(provenanceLog);
   const committed = logs.find((log) => log.source === "submissions" && log.eventName === "Committed");
   if (!committed) throw new Error("projected submission is missing its committed provenance log");
@@ -317,9 +353,9 @@ function projectedSubmission(
     source: "chain-p42-v1",
     settlementState: state === "finalized" ? "finalized" : ["rejected", "voided"].includes(state) ? "ineligible" : "unsettled",
     state,
-    score: scoreAtomsToRational(row.claimedScoreAtoms, scale, direction, "claimed score atoms"),
-    improvement: atomsToRational(row.improvementAtoms, scale, "improvement atoms"),
-    provisionalImprovement: atomsToRational(row.improvementAtoms, scale, "improvement atoms"),
+    score: scoreAtomsToRational(claimedScoreAtoms, scale, direction, "claimed score atoms"),
+    improvement: atomsToRational(corroboratedImprovementAtoms.toString(), SCORE_ATOM_SCALE.toString(), "corroborated improvement atoms"),
+    provisionalImprovement: atomsToRational(corroboratedImprovementAtoms.toString(), SCORE_ATOM_SCALE.toString(), "corroborated improvement atoms"),
     credit: atomsToRational(currentCredit, scale, "credit atoms"),
     originalCredit: atomsToRational(row.originalCreditAtoms, scale, "original credit atoms"),
     activeChallenge: challenge,
@@ -381,7 +417,7 @@ export function portalReadModelFromActivatedSnapshot(
     const objective = object(manifestProblem.certifiedObjective, "certified objective");
     const direction = objective.direction as Direction;
     const scale = integerString(manifestProblem.scoreAtomScale, "score atom scale", true);
-    if (BigInt(scale) <= 0n || direction !== problem.direction
+    if (scale !== SCORE_ATOM_SCALE.toString() || direction !== problem.direction
       || !equalRational(String(objective.seedBest), problem.seedBest)
       || !equalRational(String(objective.minImprovement), problem.minImprovement)
       || chainAtomsForScore(problem.seedBest, scale, direction) !== integerString(manifestProblem.seedScoreAtoms, "seed score atoms")) {
@@ -390,6 +426,11 @@ export function portalReadModelFromActivatedSnapshot(
     const projection = object(board.portalProjection, "board portal projection");
     if (projection.schema !== "p42-prizes/portal-projection/v2") throw new Error("unsupported portal projection schema");
     const replayConfig = object(projection.replayConfig, "portal projection replay config");
+    const fundingCapWei = integerString(manifestProblem.fundingCapWei, "manifest funding cap", true);
+    const projectedFundingCapWei = integerString(replayConfig.fundingCapWei, "projected funding cap", true);
+    if (fundingCapWei === "0" || projectedFundingCapWei !== fundingCapWei) {
+      throw new Error("portal funding cap binding mismatch");
+    }
     const closeByTimestamp = BigInt(integerString(replayConfig.closeByTimestamp, "close-by timestamp", true));
     if (closeByTimestamp < FUNDING_WINDOW_BEFORE_CLOSE_SECONDS) {
       throw new Error("close-by timestamp cannot encode the canonical funding deadline");
@@ -412,9 +453,27 @@ export function portalReadModelFromActivatedSnapshot(
     }
     replayEvents[problem.slug] = { digest: String(events.digest), total: Number(events.total) };
     submissions.push(...array(projection.submissions, "portal projection submissions")
-      .map((row) => projectedSubmission(problem, registryId, scale, direction, row)));
+      .map((row) => projectedSubmission(
+        problem,
+        registryId,
+        scale,
+        integerString(manifestProblem.seedScoreAtoms, "seed score atoms"),
+        integerString(frontier.currentAtoms, "frontier atoms"),
+        direction,
+        row,
+      ))
+      .filter((row): row is Submission => row !== null));
     const pool = poolReadModel(projection, scale);
-    const funding = fundingReadModel(projection, pool.closed, fundingDeadline, effectiveTimestamp);
+    const funding = fundingReadModel(
+      projection,
+      onchain,
+      pool,
+      fundingCapWei,
+      pool.closed,
+      fundingDeadline,
+      checkpointTimestamp,
+      effectiveTimestamp,
+    );
     return {
       ...problem,
       status: pool.closed ? "resolved" : "open",
@@ -431,9 +490,13 @@ export function portalReadModelFromActivatedSnapshot(
         explorerUrl: null,
         note: funding.canFund
           ? "Chain-derived funding target from the activated P42 checkpoint."
-          : funding.fundingDeadlineReached
-            ? `The portal conservatively stops publishing funding targets at ${funding.fundingDeadline}; the contract funding function rejects transactions after that timestamp.`
-            : "The chain pool is not currently actionable for funding.",
+          : funding.authorizationExpired
+            ? `The portal stops publishing funding targets after authorization expiry at ${funding.authorizationExpiresAt}.`
+            : funding.remainingFundingCapWei === "0"
+              ? "The pool has no remaining funding capacity at the finalized observation."
+              : funding.fundingDeadlineReached
+                ? `The portal conservatively stops publishing funding targets at ${funding.fundingDeadline}; the contract funding function rejects transactions after that timestamp.`
+                : "The chain pool is not currently actionable for funding.",
       },
       source: "chain-p42-v1",
       chainProvenance: provenance,
@@ -473,7 +536,9 @@ export function portalReadModelFromActivatedSnapshot(
       source: "chain-p42-v1",
       deploymentCommit: firstProvenance.deploymentCommit,
       checkpointBlock: firstProvenance.checkpointBlock ?? null,
+      checkpointDigest: snapshot.highWaterIdentity.checkpointDigest,
       checkpointTimestamp: unixSecondsToIso(range.toBlockTimestamp, "checkpoint timestamp"),
+      fundingAuthorizationDigest: firstProvenance.fundingAuthorizationDigest,
       activationCompletionDigest: firstProvenance.activationCompletionDigest,
       replayEvents,
       note: "All ten rows derive from one activated, freshly attested P42 checkpoint generation.",
@@ -502,7 +567,9 @@ export function localPortalReadModel(
       source: "local-phase-0",
       deploymentCommit: null,
       checkpointBlock: null,
+      checkpointDigest: null,
       checkpointTimestamp: null,
+      fundingAuthorizationDigest: null,
       activationCompletionDigest: null,
       replayEvents: {},
       note,
@@ -531,6 +598,25 @@ export function resolvePortalReadModel(
   }
 }
 
+export async function gateActivatedPortalReadModel(
+  problems: readonly Problem[],
+  snapshot: ActivatedIndexerSnapshot,
+  chainCandidate: PortalReadModel,
+): Promise<PortalReadModel> {
+  if (chainCandidate.source !== "chain-p42-v1") return chainCandidate;
+  try {
+    await enforceIndexerCheckpointHighWater(snapshot);
+    return chainCandidate;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "durable checkpoint gate failure";
+    return localPortalReadModel(
+      problems,
+      [],
+      `Durable checkpoint high-water gate rejected (${reason}); serving local-only rows.`,
+    );
+  }
+}
+
 export async function loadPortalReadModel(
   problems: readonly Problem[] = launchProblems,
 ): Promise<PortalReadModel> {
@@ -543,7 +629,7 @@ export async function loadPortalReadModel(
   }
   const chainCandidate = resolvePortalReadModel(problems, snapshot, [], { nowSeconds });
   const model = chainCandidate.source === "chain-p42-v1"
-    ? chainCandidate
+    ? await gateActivatedPortalReadModel(problems, snapshot, chainCandidate)
     : resolvePortalReadModel(problems, snapshot, await allSubmissionsShared(), { nowSeconds });
   console.info("p42.portal.read-model", model.provenance);
   return model;

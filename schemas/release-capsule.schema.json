@@ -4,11 +4,12 @@
   "title": "P42 closed production contract release capsule",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "gitCommit", "contracts", "externalDependencies", "buildInfos", "capsuleDigest"],
+  "required": ["schema", "gitCommit", "contracts", "externalDependencies", "sp1RuntimeAttestation", "buildInfos", "capsuleDigest"],
   "properties": {
     "schema": { "const": "p42-prizes/release-capsule/v2" },
     "gitCommit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "capsuleDigest": { "$ref": "#/$defs/digest" },
+    "sp1RuntimeAttestation": { "$ref": "#/$defs/sp1RuntimeAttestation" },
     "contracts": { "type": "array", "prefixItems": [{ "$ref": "#/$defs/timelock" }, { "$ref": "#/$defs/challengeFactory" }, { "$ref": "#/$defs/submissionFactory" }, { "$ref": "#/$defs/rollover" }, { "$ref": "#/$defs/sp1Gateway" }, { "$ref": "#/$defs/quorum" }, { "$ref": "#/$defs/pool" }, { "$ref": "#/$defs/ledger" }, { "$ref": "#/$defs/submissions" }, { "$ref": "#/$defs/challenges" }, { "$ref": "#/$defs/registry" }], "items": false },
     "externalDependencies": { "type": "array", "prefixItems": [{ "$ref": "#/$defs/sp1Dependency" }], "items": false },
     "buildInfos": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/buildInfo" } }
@@ -19,8 +20,61 @@
     "range": { "type": "object", "additionalProperties": false, "required": ["start", "length"], "properties": { "start": { "type": "integer", "minimum": 0 }, "length": { "type": "integer", "minimum": 1 } } },
     "binding": { "type": "object", "additionalProperties": false, "required": ["astId", "name", "type", "ranges"], "properties": { "astId": { "type": "string", "pattern": "^[0-9]+$" }, "name": { "type": "string", "minLength": 1 }, "type": { "type": "string", "minLength": 1 }, "ranges": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/range" } } } },
     "immutableReferences": { "type": "object", "propertyNames": { "pattern": "^[0-9]+$" }, "additionalProperties": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/range" } } },
-    "deployment": { "type": "object", "additionalProperties": false, "required": ["chainId", "address", "descriptorPath", "descriptorDigest"], "properties": { "chainId": { "enum": ["8453", "84532"] }, "address": { "const": "0xb69f2584cbcf99a58c4e7002e8b89af54a6f4e2" }, "descriptorPath": { "enum": ["contracts/deployments/8453.json", "contracts/deployments/84532.json"] }, "descriptorDigest": { "$ref": "#/$defs/digest" } } },
+    "deployment": { "type": "object", "additionalProperties": false, "required": ["chainId", "address", "descriptorPath", "descriptorDigest"], "properties": { "chainId": { "enum": ["8453", "84532"] }, "address": { "const": "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2" }, "descriptorPath": { "enum": ["contracts/deployments/8453.json", "contracts/deployments/84532.json"] }, "descriptorDigest": { "$ref": "#/$defs/digest" } } },
     "sp1Dependency": { "type": "object", "additionalProperties": false, "required": ["name", "repository", "releaseTag", "commit", "license", "interfaceSignature", "interfaceSelector", "runtimeCodehash", "deployments"], "properties": { "name": { "const": "SP1VerifierGroth16V6_1_0" }, "repository": { "const": "https://github.com/succinctlabs/sp1-contracts" }, "releaseTag": { "const": "v6.1.0" }, "commit": { "const": "2ac5ecbbe473421a963d67e55f182e9a36576f7c" }, "license": { "const": "MIT" }, "interfaceSignature": { "const": "verifyProof(bytes32,bytes,bytes)" }, "interfaceSelector": { "const": "0x41493c60" }, "runtimeCodehash": { "const": "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd" }, "deployments": { "type": "array", "prefixItems": [{ "$ref": "#/$defs/deployment" }, { "$ref": "#/$defs/deployment" }], "items": false } } },
+    "sp1RuntimeAttestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "evidenceDigest", "capturedAt", "expiresAt", "chains"],
+      "properties": {
+        "schema": { "const": "p42-prizes/sp1-external-runtime-attestation/v1" },
+        "evidenceDigest": { "$ref": "#/$defs/digest" },
+        "capturedAt": { "$ref": "#/$defs/timestamp" },
+        "expiresAt": { "$ref": "#/$defs/timestamp" },
+        "chains": { "type": "array", "prefixItems": [{ "$ref": "#/$defs/sp1BaseChain" }, { "$ref": "#/$defs/sp1BaseSepoliaChain" }], "items": false }
+      }
+    },
+    "timestamp": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$" },
+    "sp1Chain": { "oneOf": [{ "$ref": "#/$defs/sp1BaseChain" }, { "$ref": "#/$defs/sp1BaseSepoliaChain" }] },
+    "sp1ChainBase": {
+      "type": "object", "additionalProperties": false,
+      "required": ["chainId", "network", "address", "anchorMode", "finalizedSkewBlocks", "providers", "runtime"],
+      "properties": {
+        "chainId": { "enum": [8453, 84532] },
+        "network": { "enum": ["base", "base-sepolia"] },
+        "address": { "const": "0xb69f2584cbcff99a58c4e7002e8b89af54a6f4e2" },
+        "anchorMode": { "enum": ["agreed-finalized", "provider-specific-finalized"] },
+        "finalizedSkewBlocks": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "providers": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/sp1Provider" } },
+        "runtime": { "type": "object", "additionalProperties": false, "required": ["byteLength", "keccak256"], "properties": { "byteLength": { "const": 6741 }, "keccak256": { "const": "0xcceb864cd8a5a36b2073a8f2b32a773835cd2dd2c78a56f8e6fdb942feff04dd" } } }
+      }
+    },
+    "sp1BaseChain": {
+      "allOf": [
+        { "$ref": "#/$defs/sp1ChainBase" },
+        { "type": "object", "properties": { "chainId": { "const": 8453 }, "network": { "const": "base" }, "providers": { "allOf": [
+          { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "base-foundation" }, "endpointOrigin": { "const": "https://mainnet.base.org" } } }, "minContains": 1, "maxContains": 1 },
+          { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "tenderly" }, "endpointOrigin": { "const": "https://base.gateway.tenderly.co" } } }, "minContains": 1, "maxContains": 1 }
+        ] } } }
+      ]
+    },
+    "sp1BaseSepoliaChain": {
+      "allOf": [
+        { "$ref": "#/$defs/sp1ChainBase" },
+        { "type": "object", "properties": { "chainId": { "const": 84532 }, "network": { "const": "base-sepolia" }, "providers": { "allOf": [
+          { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "base-foundation" }, "endpointOrigin": { "const": "https://sepolia.base.org" } } }, "minContains": 1, "maxContains": 1 },
+          { "contains": { "required": ["operator", "endpointOrigin"], "properties": { "operator": { "const": "tenderly" }, "endpointOrigin": { "const": "https://base-sepolia.gateway.tenderly.co" } } }, "minContains": 1, "maxContains": 1 }
+        ] } } }
+      ]
+    },
+    "sp1Provider": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operator", "endpointOrigin", "finalizedAnchor"],
+      "properties": {
+        "operator": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{1,63}$" },
+        "endpointOrigin": { "type": "string", "pattern": "^https://[a-z0-9.-]+(?::[0-9]+)?$" },
+        "finalizedAnchor": { "type": "object", "additionalProperties": false, "required": ["blockNumber", "blockHash", "blockTimestamp"], "properties": { "blockNumber": { "type": "integer", "minimum": 1 }, "blockHash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" }, "blockTimestamp": { "type": "integer", "minimum": 1 } } }
+      }
+    },
     "contract": { "type": "object", "additionalProperties": false, "required": ["name", "sourceName", "buildInfoId", "artifactDigest", "abi", "creationCode", "runtimeTemplate", "immutableReferences", "immutableBindings", "linkReferences", "deployedLinkReferences"], "properties": { "name": { "enum": ["P42MultisigTimelock", "P42ChallengeManagerFactory", "P42SubmissionManagerFactory", "P42RolloverVault", "P42SP1VerifierGateway", "P42ResolverQuorum", "P42BountyPool", "P42PayoutLedger", "P42SubmissionManager", "P42ChallengeManager", "P42ProblemRegistry"] }, "sourceName": { "type": "string", "pattern": "^src/P42[^/]+\\.sol$" }, "buildInfoId": { "type": "string", "minLength": 1 }, "artifactDigest": { "$ref": "#/$defs/digest" }, "abi": { "type": "array" }, "creationCode": { "$ref": "#/$defs/hex" }, "runtimeTemplate": { "$ref": "#/$defs/hex" }, "immutableReferences": { "$ref": "#/$defs/immutableReferences" }, "immutableBindings": { "type": "array", "items": { "$ref": "#/$defs/binding" } }, "linkReferences": { "type": "object", "maxProperties": 0 }, "deployedLinkReferences": { "type": "object", "maxProperties": 0 } } },
     "timelock": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42MultisigTimelock" } } }] },
     "challengeFactory": { "allOf": [{ "$ref": "#/$defs/contract" }, { "properties": { "name": { "const": "P42ChallengeManagerFactory" } } }] },

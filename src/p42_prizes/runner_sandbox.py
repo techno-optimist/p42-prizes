@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from contextlib import AbstractContextManager
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -53,6 +54,56 @@ SANDBOX_DETERMINISM_ENV = (
     "OPENBLAS_NUM_THREADS=1",
     "MKL_NUM_THREADS=1",
 )
+ROOTLESS_DOCKER_SOCKET_PREFIX = "/run/p42-docker-"
+ROOTFUL_DOCKER_SOCKETS = frozenset({"/run/docker.sock", "/var/run/docker.sock"})
+
+
+def validate_rootless_docker_host(docker_host: str | None) -> str:
+    """Require the production runner's private rootless Unix socket authority."""
+    if not isinstance(docker_host, str) or not docker_host.startswith("unix://"):
+        raise RunnerSandboxError("Docker requires an explicit rootless unix:// socket endpoint")
+    socket_path = docker_host[len("unix://"):]
+    if socket_path in ROOTFUL_DOCKER_SOCKETS:
+        raise RunnerSandboxError("rootful Docker sockets are forbidden; use the p42 rootless socket")
+    if (
+        not socket_path.startswith(ROOTLESS_DOCKER_SOCKET_PREFIX)
+        or not socket_path.endswith("/docker.sock")
+        or ".." in Path(socket_path).parts
+    ):
+        raise RunnerSandboxError(
+            f"Docker socket must be below {ROOTLESS_DOCKER_SOCKET_PREFIX}<instance>/docker.sock"
+        )
+    return docker_host
+
+
+def parse_rootless_docker_info(payload: str | bytes) -> dict[str, object]:
+    """Prove that the bound Docker daemon identifies itself as rootless.
+
+    A private-looking Unix socket is only an endpoint convention.  The daemon
+    response must carry a stable identity, Docker's explicit rootless security
+    option, and the systemd cgroup driver before it can be used for untrusted
+    verifier execution.
+    """
+
+    try:
+        info = json.loads(payload)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RunnerSandboxError("Docker info did not return JSON") from exc
+    if not isinstance(info, dict):
+        raise RunnerSandboxError("Docker info JSON must be an object")
+    identity_fields = ("ID", "Name", "ServerVersion")
+    if not all(isinstance(info.get(field), str) and info[field].strip() for field in identity_fields):
+        raise RunnerSandboxError("Docker info is missing daemon identity")
+    security_options = info.get("SecurityOptions")
+    if not isinstance(security_options, list) or not all(
+        isinstance(option, str) for option in security_options
+    ):
+        raise RunnerSandboxError("Docker info is missing daemon security options")
+    if not any(option.strip().lower() == "name=rootless" for option in security_options):
+        raise RunnerSandboxError("Docker daemon did not prove rootless security mode")
+    if info.get("CgroupDriver") != "systemd":
+        raise RunnerSandboxError("Docker daemon did not prove the systemd cgroup driver")
+    return info
 
 
 def compose_immutable_image_ref(repository: str, digest: str) -> str:
@@ -77,16 +128,29 @@ def compose_immutable_image_ref(repository: str, digest: str) -> str:
     return f"{repository}@{digest}"
 
 
-def docker_available(binary: str = "docker") -> bool:
+def docker_available(binary: str = "docker", docker_host: str | None = None) -> bool:
     """True only if a container runtime daemon is actually reachable."""
+    if docker_host is None:
+        docker_host = os.environ.get("DOCKER_HOST")
+    if docker_host is None:
+        return False
+    try:
+        validate_rootless_docker_host(docker_host)
+    except RunnerSandboxError:
+        return False
     try:
         result = subprocess.run(
-            [binary, "info"],
+            [binary, f"--host={docker_host}", "info", "--format={{json .}}"],
             capture_output=True,
             timeout=10,
             check=False,
         )
-        return result.returncode == 0
+        if result.returncode != 0:
+            return False
+        parse_rootless_docker_info(result.stdout)
+        return True
+    except RunnerSandboxError:
+        return False
     except (OSError, subprocess.SubprocessError):
         return False
 
@@ -234,6 +298,7 @@ def build_sandbox_command(
     tmpfs_mb: int = 64,
     container_name: str | None = None,
     binary: str = "docker",
+    docker_host: str | None = None,
 ) -> list[str]:
     """Build the hardened ``docker run`` argv that executes the verifier on the
     untrusted solution inside a locked-down container.
@@ -242,6 +307,7 @@ def build_sandbox_command(
       * ``--network=none``           — no network (no exfiltration, no nondeterminism source)
       * ``--memory`` / ``--memory-swap`` — cgroup memory cap with NO swap (aggregate, not per-process)
       * ``--pids-limit``             — caps total processes (fork-bomb / fork-to-multiply-RLIMIT defence)
+      * ``--oom-kill-disable=false`` / ``--ulimit=core=0`` — retain OOM killing and disable core dumps
       * ``--cpus``                   — CPU cap
       * ``--read-only`` + ``--tmpfs``— read-only rootfs, small writable /tmp only
       * ``--cap-drop=ALL`` + ``--security-opt=no-new-privileges`` + non-root user
@@ -276,8 +342,14 @@ def build_sandbox_command(
     inner_command = inner_command[1:]
     host_path = str(Path(host_solution).resolve())
 
-    args = [
-        binary, "run", "--rm",
+    if docker_host is None:
+        docker_host = os.environ.get("DOCKER_HOST")
+    args = [binary]
+    if docker_host is not None:
+        validate_rootless_docker_host(docker_host)
+        args.append(f"--host={docker_host}")
+    args += [
+        "run", "--rm",
         "--network=none",
         "--add-host=host.docker.internal:host-gateway",
         f"--memory={memory_mb}m",
@@ -288,6 +360,8 @@ def build_sandbox_command(
         f"--tmpfs=/tmp:rw,size={tmpfs_mb}m,mode=1777",
         "--cap-drop=ALL",
         "--security-opt=no-new-privileges",
+        "--ulimit=core=0",
+        "--oom-kill-disable=false",
         f"--user={SANDBOX_USER}",
         f"--entrypoint={SANDBOX_PYTHON_ENTRYPOINT}",
         "-v", f"{host_path}:{SANDBOX_SOLUTION_PATH}:ro",
@@ -304,9 +378,20 @@ def build_sandbox_command(
     return args
 
 
-def force_remove_container(name: str, binary: str = "docker") -> None:
+def force_remove_container(name: str, binary: str = "docker", docker_host: str | None = None) -> None:
     """Best-effort hard-stop of a named container (used on timeout)."""
+    if docker_host is None:
+        return
     try:
-        subprocess.run([binary, "rm", "-f", name], capture_output=True, timeout=15, check=False)
+        validate_rootless_docker_host(docker_host)
+    except RunnerSandboxError:
+        return
+    try:
+        subprocess.run(
+            [binary, f"--host={docker_host}", "rm", "-f", name],
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
     except (OSError, subprocess.SubprocessError):
         pass

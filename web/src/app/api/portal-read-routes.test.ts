@@ -81,8 +81,11 @@ function model(): PortalReadModel {
       chainProvenance: provenance(index),
       pool: pool(),
       funding: {
-        acceptingFunds: true, fundingArmed: true, authorizationExpiresAt: "2026-01-01T00:00:00.000Z",
+        acceptingFunds: true, fundingArmed: true, authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
+        authorizationExpired: false,
+        fundingCapWei: "10000000000000000000", remainingFundingCapWei: "7000000000000000000",
         fundingDeadline: "2026-06-01T00:00:00.000Z", fundingDeadlineReached: false,
+        finalizedObservedAt: "2026-01-04T00:00:00.000Z",
         publicationObservedAt: "2026-01-04T00:00:00.000Z",
         ledgerPausedNewActions: false, submissionsPausedNewActions: false, submissionsPausedAll: false,
         challengesPausedNewActions: false, canFund: true, canSubmit: true, canChallenge: true,
@@ -102,7 +105,9 @@ function model(): PortalReadModel {
     ],
     provenance: {
       source: "chain-p42-v1", deploymentCommit: "a".repeat(40), checkpointBlock: 100,
+      checkpointDigest: `sha256:${"6".repeat(64)}`,
       checkpointTimestamp: "2026-01-04T00:00:00.000Z",
+      fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
       activationCompletionDigest: `sha256:${"5".repeat(64)}`,
       replayEvents: {}, note: "exact-ten test checkpoint",
     },
@@ -233,11 +238,21 @@ describe("chain portal API consumers", () => {
     expect(fundingPanel?.props).toMatchObject({
       slug: launchProblems[0].slug,
       fundingTargetDeployed: true,
+      authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
+      finalizedObservedAt: "2026-01-04T00:00:00.000Z",
       fundingDeadline: "2026-06-01T00:00:00.000Z",
+      remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-06-01T00:00:00.000Z",
+      fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
+      activationCompletionDigest: `sha256:${"5".repeat(64)}`,
+      checkpointBlock: 100,
+      checkpointDigest: `sha256:${"6".repeat(64)}`,
+      activationFinalizedBlock: 99,
     });
     expect(Object.keys(fundingPanel!.props).sort()).toEqual([
-      "fundingDeadline", "fundingTargetDeployed", "label", "serverObservedAt", "slug",
+      "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt", "checkpointBlock", "checkpointDigest",
+      "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline", "fundingTargetDeployed",
+      "label", "remainingCapWei", "serverObservedAt", "slug",
     ]);
     const fundingMarkup = renderToStaticMarkup(createElement(
       FundingPanel,
@@ -256,19 +271,29 @@ describe("chain portal API consumers", () => {
     expect(serializedPublicPayloads).not.toContain(`ethereum:${FUNDING_ADDRESS}`);
   });
 
-  it("keeps address, wallet, provenance, and chain material out of pre-deadline Flight props", async () => {
+  it("keeps address, wallet, and chain routing material out of pre-deadline Flight props", async () => {
     const page = await ProblemPage({ params: Promise.resolve({ slug: launchProblems[0].slug }) });
     const fundingPanel = findElement(page, FundingPanel);
     const flightFacingPayload = [JSON.stringify(fundingPanel?.props), ...payloadStrings(page)].join("\n");
 
     expect(Object.keys(fundingPanel!.props).sort()).toEqual([
-      "fundingDeadline", "fundingTargetDeployed", "label", "serverObservedAt", "slug",
+      "activationCompletionDigest", "activationFinalizedBlock", "authorizationExpiresAt", "checkpointBlock", "checkpointDigest",
+      "finalizedObservedAt", "fundingAuthorizationDigest", "fundingDeadline", "fundingTargetDeployed",
+      "label", "remainingCapWei", "serverObservedAt", "slug",
     ]);
     expect(fundingPanel?.props).toMatchObject({
       slug: launchProblems[0].slug,
       fundingTargetDeployed: true,
+      authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
+      finalizedObservedAt: "2026-01-04T00:00:00.000Z",
       fundingDeadline: "2026-06-01T00:00:00.000Z",
+      remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-01-04T00:00:00.000Z",
+      fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
+      activationCompletionDigest: `sha256:${"5".repeat(64)}`,
+      checkpointBlock: 100,
+      checkpointDigest: `sha256:${"6".repeat(64)}`,
+      activationFinalizedBlock: 99,
     });
     expect(flightFacingPayload).not.toContain(FUNDING_ADDRESS);
     expect(flightFacingPayload).not.toContain("ethereum:");
@@ -291,10 +316,18 @@ describe("chain portal API consumers", () => {
     expect(fundingTargetRevalidate).toBe(0);
     expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
     expect(body).toEqual({
-      schema: "p42-prizes/funding-target/v1",
+      schema: "p42-prizes/funding-target/v3",
       slug: launchProblems[0].slug,
+      authorizationExpiresAt: "2026-12-01T00:00:00.000Z",
+      finalizedObservedAt: "2026-01-04T00:00:00.000Z",
       fundingDeadline: "2026-06-01T00:00:00.000Z",
+      remainingCapWei: "7000000000000000000",
       serverObservedAt: "2026-01-04T00:00:00.000Z",
+      fundingAuthorizationDigest: `sha256:${"4".repeat(64)}`,
+      activationCompletionDigest: `sha256:${"5".repeat(64)}`,
+      checkpointBlock: 100,
+      checkpointDigest: `sha256:${"6".repeat(64)}`,
+      activationFinalizedBlock: 99,
       target: {
         address: FUNDING_ADDRESS,
         asset: "ETH",
@@ -329,6 +362,83 @@ describe("chain portal API consumers", () => {
     expect(JSON.stringify(body)).not.toContain("ethereum:");
   });
 
+  it.each([
+    ["at authorization expiry", "2026-01-05T00:00:00.000Z", true],
+    ["one second after authorization expiry", "2026-01-05T00:00:01.000Z", false],
+  ])("applies Solidity authorization expiry %s", async (_label, serverObservedAt, publishes) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(serverObservedAt);
+    const value = model();
+    value.problems = value.problems.map((problem) => ({
+      ...problem,
+      funding: problem.funding && {
+        ...problem.funding,
+        authorizationExpiresAt: "2026-01-05T00:00:00.000Z",
+        publicationObservedAt: serverObservedAt,
+      },
+    }));
+    vi.mocked(loadPortalReadModel).mockResolvedValue(value);
+
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body.target?.address ?? null).toBe(publishes ? FUNDING_ADDRESS : null);
+    expect(JSON.stringify(body).includes("ethereum:")).toBe(publishes);
+  });
+
+  it("redacts every target field when the finalized cap remainder is zero", async () => {
+    const value = model();
+    value.problems = value.problems.map((problem) => ({
+      ...problem,
+      pool: problem.pool && { ...problem.pool, accountedBalanceWei: "10000000000000000000" },
+      funding: problem.funding && { ...problem.funding, remainingFundingCapWei: "0" },
+    }));
+    vi.mocked(loadPortalReadModel).mockResolvedValue(value);
+
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({ remainingCapWei: "0", target: null });
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
+    expect(JSON.stringify(body)).not.toContain("ethereum:");
+  });
+
+  it.each([
+    ["missing cap", (value: PortalReadModel) => { delete (value.problems[0].funding as any).fundingCapWei; }],
+    ["drifted remainder", (value: PortalReadModel) => { value.problems[0].funding!.remainingFundingCapWei = "1"; }],
+    ["drifted finalized observation", (value: PortalReadModel) => { value.problems[0].funding!.finalizedObservedAt = "2026-01-03T00:00:00.000Z"; }],
+    ["missing authorization digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.fundingAuthorizationDigest = null; }],
+    ["zero authorization digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.fundingAuthorizationDigest = `sha256:${"0".repeat(64)}`; }],
+    ["malformed authorization digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.fundingAuthorizationDigest = "sha256:no"; }],
+    ["changed authorization digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.fundingAuthorizationDigest = `sha256:${"9".repeat(64)}`; }],
+    ["missing completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = null; }],
+    ["zero completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = `sha256:${"0".repeat(64)}`; }],
+    ["malformed completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = "sha256:no"; }],
+    ["changed completion digest", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationCompletionDigest = `sha256:${"9".repeat(64)}`; }],
+    ["missing checkpoint digest", (value: PortalReadModel) => { value.provenance.checkpointDigest = null; }],
+    ["zero checkpoint digest", (value: PortalReadModel) => { value.provenance.checkpointDigest = `sha256:${"0".repeat(64)}`; }],
+    ["malformed checkpoint digest", (value: PortalReadModel) => { value.provenance.checkpointDigest = "sha256:no"; }],
+    ["checkpoint block drift", (value: PortalReadModel) => { value.problems[0].chainProvenance.checkpointBlock = 101; }],
+    ["activation block after checkpoint", (value: PortalReadModel) => { value.problems[0].chainProvenance.activationFinalizedBlock = 101; }],
+  ])("fails closed for %s in the dedicated funding projection", async (_label, mutate) => {
+    const value = model();
+    mutate(value);
+    vi.mocked(loadPortalReadModel).mockResolvedValue(value);
+
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({ remainingCapWei: null, target: null });
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
+    expect(JSON.stringify(body)).not.toContain("ethereum:");
+  });
+
   it("fails closed when the dedicated route cannot load a valid model", async () => {
     vi.mocked(loadPortalReadModel).mockRejectedValueOnce(new Error("unavailable"));
     const response = await fundingTargetGet(
@@ -338,6 +448,33 @@ describe("chain portal API consumers", () => {
     expect(response.status).toBe(503);
     await expect(response.json()).resolves.toMatchObject({ target: null });
     expect(response.headers.get("cache-control")).toBe("no-store, max-age=0");
+  });
+
+  it("serializes no target when the durable checkpoint gate returns a fail-closed local model", async () => {
+    const value = model();
+    value.source = "local-phase-0";
+    value.problems = value.problems.map((problem) => ({
+      ...problem,
+      source: "local-phase-0",
+      poolAddress: null,
+      funding: null,
+      pool: null,
+      donationWallet: { ...problem.donationWallet, address: null, status: "paused" },
+      chainProvenance: {
+        ...problem.chainProvenance,
+        poolAddress: null,
+        donationWalletAddress: null,
+      },
+    }));
+    vi.mocked(loadPortalReadModel).mockResolvedValue(value);
+
+    const response = await fundingTargetGet(
+      new Request(`http://localhost/api/problems/${launchProblems[0].slug}/funding-target`),
+      { params: Promise.resolve({ slug: launchProblems[0].slug }) },
+    );
+    const body = await response.json();
+    expect(body).toMatchObject({ fundingDeadline: null, serverObservedAt: null, target: null });
+    expect(JSON.stringify(body)).not.toContain(FUNDING_ADDRESS);
   });
 
   it("fails closed when dedicated-route deadline metadata is malformed", async () => {

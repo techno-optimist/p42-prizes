@@ -30,6 +30,7 @@ const EXPECTED_CAPABILITIES = Object.freeze({
     authentication: "unavailable",
   }),
 });
+const FUNDING_TARGET_SCHEMA = "p42-prizes/funding-target/v3";
 
 const BOARD_MANIFEST_SCHEMA = "p42-prizes-release-guard-problems-v1";
 const ALLOWED_BOARD_VALUES = Object.freeze({
@@ -241,13 +242,48 @@ export function probeUrls(renderOrigin, publicOrigin) {
   return configuredProbes(renderOrigin, publicOrigin).map((probe) => probe.url);
 }
 
+function fundingTargetRoutes() {
+  return EXPECTED_BOARD_MANIFEST.boards.map((board) => Object.freeze({
+    id: `funding-target-${board.slug}`,
+    path: `/prizes/api/problems/${encodeURIComponent(board.slug)}/funding-target`,
+    kind: "funding-target-json",
+    slug: board.slug,
+    origins: Object.freeze(["render", "public"]),
+  }));
+}
+
+export function releaseGuardRoutes() {
+  return [...PROBE_ROUTES, ...fundingTargetRoutes()];
+}
+
 function configuredProbes(renderOrigin, publicOrigin) {
   const origins = { render: renderOrigin, public: publicOrigin };
-  return PROBE_ROUTES.flatMap((route) => route.origins.map((origin) => ({
+  return releaseGuardRoutes().flatMap((route) => route.origins.map((origin) => ({
     route,
     origin,
     url: new URL(route.path, origins[origin]).toString(),
   })));
+}
+
+function validateFundingTarget(payload, route) {
+  const expected = {
+    schema: FUNDING_TARGET_SCHEMA,
+    slug: route.slug,
+    authorizationExpiresAt: null,
+    finalizedObservedAt: null,
+    fundingDeadline: null,
+    remainingCapWei: null,
+    serverObservedAt: null,
+    fundingAuthorizationDigest: null,
+    activationCompletionDigest: null,
+    checkpointBlock: null,
+    checkpointDigest: null,
+    activationFinalizedBlock: null,
+    target: null,
+  };
+  if (!isDeepStrictEqual(payload, expected)) {
+    describe(route, "must return the exact fail-closed v3 envelope with target null.");
+  }
 }
 
 function describe(route, message) {
@@ -418,7 +454,7 @@ function parseJson(body, route) {
 }
 
 export function validateProbeBody(routeId, body, contentType) {
-  const route = PROBE_ROUTES.find((candidate) => candidate.id === routeId);
+  const route = releaseGuardRoutes().find((candidate) => candidate.id === routeId);
   if (!route) {
     throw new Error(`Unknown probe route: ${routeId}`);
   }
@@ -433,6 +469,8 @@ export function validateProbeBody(routeId, body, contentType) {
     const payload = parseJson(body, route);
     if (route.kind === "problems-json") {
       validateProblems(payload, route);
+    } else if (route.kind === "funding-target-json") {
+      validateFundingTarget(payload, route);
     } else if (!isDeepStrictEqual(payload, EXPECTED_CAPABILITIES)) {
       describe(
         route,
@@ -455,7 +493,7 @@ export function validateProbeBody(routeId, body, contentType) {
 }
 
 export function assertProbeEquivalence(results) {
-  for (const route of PROBE_ROUTES.filter((candidate) => candidate.origins.length === 2)) {
+  for (const route of releaseGuardRoutes().filter((candidate) => candidate.origins.length === 2)) {
     const render = results.find((result) => result.route.id === route.id && result.origin === "render");
     const publicResult = results.find(
       (result) => result.route.id === route.id && result.origin === "public",
@@ -552,8 +590,8 @@ Read-only release guard. It verifies that Render is configured for the expected
 branch, its single live deployment is on that exact branch history and contains
 the latest portal/config change,
 and the Render origin plus the ProjectForty2 proxy return the expected portal,
-versioned board projection, fail-closed capabilities, and equivalent paired
-responses.
+versioned board projection, fail-closed capabilities, exact null funding targets
+for all ten boards, and equivalent paired responses.
 
 The service builds from web/, so documentation-only and release-tooling-only
 commits do not require a no-op Render deploy. The guard treats web/ and

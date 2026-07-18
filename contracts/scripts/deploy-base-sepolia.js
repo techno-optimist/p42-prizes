@@ -51,9 +51,11 @@ import {
 } from "./multiboard-ceremony-helper.js";
 import {
   attestReleaseCapsuleAgainstCheckout,
+  assertSP1RuntimeAttestationMatches,
   immutableValuesFromConstructor,
   readReleaseBuildJson,
   reconstructExpectedRuntime,
+  verifySP1RuntimeAttestation,
   validateReleaseCapsule,
 } from "./release-capsule-helper.js";
 import { liveRequeryExplorerVerification, readExplorerDossierExact, validateExplorerVerificationDossier } from "./explorer-verification-helper.js";
@@ -64,7 +66,7 @@ import {
   readContractsConfigJson,
 } from "./strict-json-helper.js";
 import {
-  buildDeploymentNoncePlan,
+  buildExecutableDeploymentNoncePlan,
   buildTrustedRpcEvidence,
   persistSignedDeployment,
   readSignedDeploymentJournal,
@@ -73,9 +75,14 @@ import {
   signedDeploymentJournalPath,
 } from "./signed-deployment-journal.js";
 import { loadProductionValidationContext } from "../../agent/production-validation-context.mjs";
-import { assertCanonicalDeploymentPlan } from "../../agent/canonical-topology.mjs";
+import { assertExactSetupOperations } from "../../agent/setup-operation-plan.mjs";
 import { BASE_SEPOLIA_FINALITY_POLICY, collectCanonicalFinalizedBlockEvidence, collectFinalityAnchor, recheckFinalityAnchor } from "./finality-anchor.js";
 import {
+  resolveCanonicalDeploymentStartNonce,
+  validateAndReserveCanonicalDeployment,
+} from "./canonical-deployment-reservation-gate.js";
+import {
+  bindGovernanceOperationPlan,
   buildGovernanceOperationJournal,
   governanceOperationJournalPath,
   observeGovernanceOperation,
@@ -92,6 +99,9 @@ import {
   verifyMultiBoardPredeploymentGovernancePhase,
   MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT,
 } from "./multiboard-deployment-plan.js";
+import {
+  dispatchBaseSepoliaDeployment,
+} from "./base-sepolia-deployment-entrypoint.js";
 
 const BASE_SEPOLIA_CHAIN_ID = 84532n;
 const PINNED_SUBMISSION_FACTORY_RUNTIME_HASH = "0xa356f1af95140515395a23ca624afdf97a92e2a602054d01378b9fdc02071783";
@@ -131,6 +141,10 @@ function manifestPath() {
     : resolve(process.cwd(), "../deployments/base-sepolia/p42-prizes.json");
 }
 
+function legacyTestManifestPath() {
+  return resolve(process.cwd(), "../deployments/base-sepolia/test-only-legacy-p42-prizes.json");
+}
+
 function multiBoardCeremonyConfigPath() {
   return resolve(requiredEnv("P42_MULTIBOARD_CEREMONY_CONFIG"));
 }
@@ -154,6 +168,10 @@ async function productionReleaseInputs(repoRoot, deploymentCommit) {
   const slatePath = withinOutput("P42_PRODUCTION_SLATE_PATH");
   const capsulePath = withinOutput("P42_RELEASE_CAPSULE");
   const indexPath = withinOutput("P42_PRODUCTION_RELEASE_INDEX_PATH");
+  const evidenceRoot = resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT"));
+  const runtimeAttestationPath = resolve(requiredEnv("P42_SP1_RUNTIME_ATTESTATION_PATH"));
+  const evidenceRelative = relative(evidenceRoot, runtimeAttestationPath);
+  if (!evidenceRelative || evidenceRelative === ".." || evidenceRelative.startsWith(`..${sep}`)) throw new Error("P42_SP1_RUNTIME_ATTESTATION_PATH must be below P42_RELEASE_EVIDENCE_ROOT");
   const [slate, capsule, index] = await Promise.all([
     readContractsArtifactJsonTrustedPublic(slatePath, outputRoot),
     readContractsArtifactJsonTrustedPublic(capsulePath, outputRoot),
@@ -164,8 +182,9 @@ async function productionReleaseInputs(repoRoot, deploymentCommit) {
   validateReleaseCapsule(capsule);
   validateProductionReleaseIndex(index);
   if (index.sourceCommit !== deploymentCommit || index.generatedAt !== slate.generatedAt || index.slate.digest !== slate.slateDigest || index.capsule.digest !== capsule.capsuleDigest) throw new Error("production release index does not bind the selected commit, timestamp, slate, and capsule");
+  const verifiedRuntimeAttestation = verifySP1RuntimeAttestation({ repoRoot, evidenceRoot, evidencePath: runtimeAttestationPath });
+  assertSP1RuntimeAttestationMatches(capsule, verifiedRuntimeAttestation);
   await attestReleaseCapsuleAgainstCheckout(capsule, { repoRoot, expectedGitCommit: deploymentCommit });
-  const evidenceRoot = resolve(requiredEnv("P42_RELEASE_EVIDENCE_ROOT"));
   const objectiveVerifierArtifactPath = resolve(evidenceRoot, slate.objectiveVerifier.artifactPath);
   const objectiveVerifierRelative = relative(evidenceRoot, objectiveVerifierArtifactPath);
   if (!objectiveVerifierRelative || objectiveVerifierRelative === ".." || objectiveVerifierRelative.startsWith(`..${sep}`)) {
@@ -323,6 +342,7 @@ export async function executeSignedDeploymentPlan(
     rpcEvidence: suppliedRpcEvidence,
     chainId: executionChainId = BASE_SEPOLIA_CHAIN_ID,
     networkName = "baseSepolia",
+    prevalidatedNoncePlan = null,
   } = {},
 ) {
   const liveNetwork = await ethers.provider.getNetwork();
@@ -380,22 +400,17 @@ export async function executeSignedDeploymentPlan(
     const artifact = capsuleContracts.get(step.name);
     if (!artifact || !step.expectedInitCode.startsWith(artifact.creationCode)) throw new Error(`${step.name} initcode is not bound to the attested release capsule`);
   }
-  const expected = buildDeploymentNoncePlan(ethers, {
+  const expected = buildExecutableDeploymentNoncePlan(ethers, {
     identityDigest: reservationIdentity.identityDigest,
     network: networkName,
     chainId: Number(executionChainId),
     deployer: deployer.address,
     rpcEvidence,
     startNonce,
-    steps: steps.map((step) => ({
-      name: step.id, kind: step.kind, constructorArgsHash: step.constructorArgsHash, expectedInitCode: step.expectedInitCode,
-      ...(step.kind === "factory-call-create2" ? {
-        factoryAddress: step.factoryAddress, salt: step.salt, configurationHash: step.configurationHash,
-        configurationReadCalldata: step.configurationReadCalldata,
-        deploymentEventTopic: step.deploymentEventTopic, expectedCalldata: step.expectedCalldata, expectedValue: 0,
-      } : {}),
-    })),
-  });
+  }, steps, addresses);
+  if (prevalidatedNoncePlan && prevalidatedNoncePlan.planDigest !== expected.planDigest) {
+    throw new Error("deployment payload bytes differ from the canonical pre-reservation plan");
+  }
   reserveDeploymentNoncePlan(journalPath, expected);
 
   const deployments = {};
@@ -523,7 +538,7 @@ async function assertPinnedSubmissionFactoryRuntime(ethers) {
   if (!challengeArtifact.deployedBytecode.toLowerCase().includes(PINNED_SUBMISSION_FACTORY_RUNTIME_HASH.slice(2))) throw new Error("compiled challenge factory runtime does not contain its submission factory hash pin");
 }
 
-async function deployCeremony(ethers) {
+async function deployLegacyTestOnlyCeremony(ethers) {
   requiredEnv("BASE_SEPOLIA_PRIVATE_KEY");
   const [deployer] = await ethers.getSigners();
   if (deployer === undefined) throw new Error("No deployer signer available");
@@ -537,7 +552,7 @@ async function deployCeremony(ethers) {
   const repoRoot = resolve(process.cwd(), "..");
   assertCleanGitTree(repoRoot);
   const deploymentCommit = gitCommit(repoRoot);
-  const output = manifestPath();
+  const output = legacyTestManifestPath();
   const reservationIdentity = createDeploymentReservationIdentity(output, {
     deploymentCommit,
     network: "baseSepolia",
@@ -666,7 +681,7 @@ async function deployCeremony(ethers) {
   console.log(`Timelock owner: ${addresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action.`);
   console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
-  console.log("Use P42_DEPLOY_MODE=continue without a private key to inspect operation calldata and verify completion.");
+  console.log("Run npm run continue:base-sepolia without a private key to inspect operation calldata and verify completion.");
 }
 
 function multiBoardManifestProblem(ethers, registryAddress, problem, deployments) {
@@ -747,8 +762,6 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const reservationIdentity = createDeploymentReservationIdentity(output, {
     deploymentCommit, network: "baseSepolia", chainId: Number(BASE_SEPOLIA_CHAIN_ID), deployer: deployer.address,
   }, { trustedRoot: dirname(output), configValue: { config: input.value, releaseMode, slateDigest: release?.slate.slateDigest ?? null, capsuleDigest: release?.capsule.capsuleDigest ?? null } });
-  const reservation = await ensureManifestReservation(reservationIdentity);
-  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
   const predeploymentJournalPath = predeploymentGovernanceJournalPath(output);
   const predeploymentReleaseBindingDigest = release
     ? productionReleaseBindingDigest({
@@ -772,23 +785,23 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     boardSetDigest: fundingBoardSetDigest,
     releaseBindingDigest: fundingReleaseBindingDigest,
   });
-  const canonicalManifestDefinitions = canonicalDefinitions;
-  assertCanonicalDeploymentPlan(canonicalManifestDefinitions, config.problems.length);
-  const canonicalMembers = canonicalDefinitions.map(({ id, name }) => `${id}:${name}`).sort();
-  const executableMembers = definitions.map(({ id, name }) => `${id}:${name}`).sort();
-  if (JSON.stringify(canonicalMembers) !== JSON.stringify(executableMembers)) throw new Error("canonical manifest and executable deployment membership differ");
   await assertPinnedSubmissionFactoryRuntime(ethers);
   const existingJournalPath = signedDeploymentJournalPath(output);
   const existingJournal = existsSync(existingJournalPath) ? readSignedDeploymentJournal(existingJournalPath) : null;
   if (existingJournal && (existingJournal.chainId !== Number(BASE_SEPOLIA_CHAIN_ID) || existingJournal.deployer.toLowerCase() !== deployer.address.toLowerCase())) throw new Error("existing signed deployment journal has chain/account drift before preflight");
-  const preflightStartNonce = existingJournal?.startNonce ?? await ethers.provider.getTransactionCount(deployer.address, "pending");
+  const preflightStartNonce = await resolveCanonicalDeploymentStartNonce({
+    canonicalDefinitions,
+    executableDefinitions: definitions,
+    boardCount: config.problems.length,
+    existingStartNonce: existingJournal?.startNonce,
+    readPendingNonce: () => ethers.provider.getTransactionCount(deployer.address, "pending"),
+  });
   const executablePreflight = await materializeCanonicalMultiBoardDeploymentPlan(
     ethers,
     deployer,
     preflightStartNonce,
     definitions,
   );
-  if (executablePreflight.steps.length !== 47 || executablePreflight.steps.some((step) => !step.expectedInitCode || !step.unsigned?.data)) throw new Error("multi-board executable preflight did not materialize all 47 initcode/calldata payloads");
   const preflightBoards = config.problems.map((problem) => ({
     problem,
     addresses: {
@@ -800,8 +813,49 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   const preflightInterfaces = Object.fromEntries(await Promise.all(Object.entries({ timelock: CONTRACT_NAMES.timelock, registry: CONTRACT_NAMES.registry, ...BOARD_CONTRACT_NAMES }).map(async ([key, name]) => [key, (await ethers.getContractFactory(name)).interface])));
   const preflightOperations = buildMultiBoardSetupOperations({ ethers, chainId: BASE_SEPOLIA_CHAIN_ID, timelockAddress: executablePreflight.addresses.timelock, registryAddress: executablePreflight.addresses.registry, config, boards: preflightBoards, interfaces: preflightInterfaces });
   const operationPlan = validatePreBroadcastManifestPlan(MULTIBOARD_MANIFEST_SCHEMA, config.problems.length);
-  if (preflightOperations.length !== operationPlan.expectedOperations) throw new Error("pre-broadcast v2 operation plan is incomplete");
-  const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(preflightOperations);
+  const deploymentRpcEvidence = buildTrustedRpcEvidence({
+    primaryUrl: requiredEnv("BASE_SEPOLIA_RPC_URL"),
+    secondaryUrl: requiredEnv("P42_SECONDARY_BASE_SEPOLIA_RPC_URL"),
+    primaryOperatorId: requiredEnv("P42_PRIMARY_RPC_OPERATOR_ID"),
+    secondaryOperatorId: requiredEnv("P42_SECONDARY_RPC_OPERATOR_ID"),
+  });
+  const {
+    frozenPreflight,
+    frozenSetupOperations,
+    validatedDeploymentPlan,
+    reservation,
+  } = await validateAndReserveCanonicalDeployment({
+    canonicalDefinitions,
+    executableDefinitions: definitions,
+    boardCount: config.problems.length,
+    executablePreflight,
+    setupOperations: preflightOperations,
+    expectedOperationCount: operationPlan.expectedOperations,
+    validateDeploymentPlan: (plan) => buildExecutableDeploymentNoncePlan(ethers, {
+      identityDigest: reservationIdentity.identityDigest,
+      network: "baseSepolia",
+      chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+      deployer: deployer.address,
+      rpcEvidence: deploymentRpcEvidence,
+      startNonce: plan.startNonce,
+    }, plan.steps, plan.addresses),
+    validateSetupOperations: (operations) => {
+      const canonicalOperations = buildMultiBoardSetupOperations({
+        ethers,
+        chainId: BASE_SEPOLIA_CHAIN_ID,
+        timelockAddress: executablePreflight.addresses.timelock,
+        registryAddress: executablePreflight.addresses.registry,
+        config,
+        boards: preflightBoards,
+        interfaces: preflightInterfaces,
+      });
+      assertExactSetupOperations(canonicalOperations, operations);
+      return bindGovernanceOperationPlan(operations);
+    },
+    reserve: () => ensureManifestReservation(reservationIdentity),
+  });
+  const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(frozenSetupOperations);
+  console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
 
   const executed = await executeSignedDeploymentPlan(
     ethers, deployer, output, reservationIdentity, definitions,
@@ -810,8 +864,9 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       : recordManifestOutputDeployment(reservationIdentity, definition.id, deployment),
     config.finalityPolicy.confirmations,
     release?.capsule ?? null,
-    executablePreflight,
+    frozenPreflight,
     {
+      prevalidatedNoncePlan: validatedDeploymentPlan,
       beforeStep: async ({ index, deployments, addresses, secondaryProvider, rpcEvidence }) => {
         if (index !== MULTIBOARD_PRECHALLENGE_DEPLOYMENT_COUNT) return;
         const timelock = deployments.timelock?.contract;
@@ -889,19 +944,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     return { problem, deployments, addresses };
   });
 
-  const setupTransactions = buildMultiBoardSetupOperations({
-    ethers,
-    chainId: BASE_SEPOLIA_CHAIN_ID,
-    timelockAddress: rootAddresses.timelock,
-    registryAddress: rootAddresses.registry,
-    config,
-    boards: boards.map(({ problem, addresses }) => ({ problem, addresses })),
-    interfaces: contractInterfaces({
-      timelock: rootDeployments.timelock,
-      registry: rootDeployments.registry,
-      ...boards[0].deployments,
-    }),
-  });
+  const setupTransactions = frozenSetupOperations;
   const firstBlock = Math.min(
     ...Object.values(rootDeployments).map((entry) => entry.manifest.blockNumber),
     ...boards.flatMap(({ deployments }) => Object.values(deployments).map((entry) => entry.manifest.blockNumber)),
@@ -1011,7 +1054,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   console.log(`Shared timelock owner: ${rootAddresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action across ${boards.length} boards.`);
   console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
-  console.log("Use P42_DEPLOY_MODE=continue without a private key to inspect operation calldata and verify completion.");
+  console.log("Run npm run continue:base-sepolia without a private key to inspect operation calldata and verify completion.");
 }
 
 async function readContractSet(ethers, manifest) {
@@ -1753,14 +1796,7 @@ async function continueCeremony(ethers) {
   }
 }
 
-const libraryImportRequested = globalThis[Symbol.for("p42-prizes.deploy-base-sepolia.library-import")] === true;
-if (!libraryImportRequested) {
-const mode = (process.env.P42_DEPLOY_MODE ?? "deploy").trim().toLowerCase();
-if (mode !== "deploy" && mode !== "deploy-multiboard-production" && mode !== "continue" && mode !== "inspect-reservation") {
-  throw new Error("P42_DEPLOY_MODE must be deploy, deploy-multiboard-production, continue, or inspect-reservation");
-}
-
-if (mode === "inspect-reservation") {
+async function inspectReservation() {
   const repoRoot = resolve(process.cwd(), "..");
   assertCleanGitTree(repoRoot);
   const deploymentCommit = gitCommit(repoRoot);
@@ -1779,20 +1815,47 @@ if (mode === "inspect-reservation") {
     capsuleDigest: release.capsule.capsuleDigest,
   } });
   console.log(jsonStringify((await readManifestOutputReservation(reservationIdentity)).record));
-} else {
-  requiredEnv("BASE_SEPOLIA_RPC_URL");
-  const connection = await network.create("baseSepolia");
-  try {
-    const { ethers } = connection;
-    const chain = await ethers.provider.getNetwork();
-    if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
-      throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
-    }
-    if (mode === "deploy") await deployCeremony(ethers);
-    else if (mode === "deploy-multiboard-production") await deployMultiBoardCeremony(ethers, "production");
-    else await continueCeremony(ethers);
-  } finally {
-    await connection.close();
-  }
 }
+
+export async function runBaseSepoliaDeployment({
+  mode,
+  networkApi = network,
+  planners = {
+    production: (ethers) => deployMultiBoardCeremony(ethers, "production"),
+    legacyTestOnly: deployLegacyTestOnlyCeremony,
+    continuation: continueCeremony,
+  },
+} = {}) {
+  return dispatchBaseSepoliaDeployment({
+    requestedMode: mode,
+    requireRpc: () => requiredEnv("BASE_SEPOLIA_RPC_URL"),
+    inspectReservation,
+    connectRpc: () => networkApi.create("baseSepolia"),
+    deployProduction: async ({ ethers }) => {
+      const chain = await ethers.provider.getNetwork();
+      if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+        throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+      }
+      return planners.production(ethers);
+    },
+    deployLegacyTestOnly: async ({ ethers }) => {
+      const chain = await ethers.provider.getNetwork();
+      if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+        throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+      }
+      return planners.legacyTestOnly(ethers);
+    },
+    continueDeployment: async ({ ethers }) => {
+      const chain = await ethers.provider.getNetwork();
+      if (chain.chainId !== BASE_SEPOLIA_CHAIN_ID) {
+        throw new Error(`Expected Base Sepolia chainId ${BASE_SEPOLIA_CHAIN_ID}, got ${chain.chainId}`);
+      }
+      return planners.continuation(ethers);
+    },
+  });
+}
+
+const libraryImportRequested = globalThis[Symbol.for("p42-prizes.deploy-base-sepolia.library-import")] === true;
+if (!libraryImportRequested) {
+  await runBaseSepoliaDeployment({ mode: process.env.P42_DEPLOY_MODE });
 }

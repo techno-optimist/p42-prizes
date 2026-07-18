@@ -250,7 +250,7 @@ $ make verify SOLUTION=examples/valid-4.json`}
                     <span className="num">
                       {compactRational(
                         row.settlementState === "finalized"
-                          ? row.improvement
+                          ? row.credit
                           : row.provisionalImprovement ?? "0/1",
                       )}
                     </span>.{" "}
@@ -381,8 +381,16 @@ $ make verify SOLUTION=examples/valid-4.json`}
             slug={problem.slug}
             label={problem.title}
             fundingTargetDeployed={chainProvenance.fundingTargetDeployed === true}
+            authorizationExpiresAt={funding?.authorizationExpiresAt ?? null}
+            finalizedObservedAt={funding?.finalizedObservedAt ?? null}
             fundingDeadline={funding?.fundingDeadline ?? null}
+            remainingCapWei={funding?.remainingFundingCapWei ?? null}
             serverObservedAt={funding?.publicationObservedAt ?? null}
+            fundingAuthorizationDigest={chainProvenance.fundingAuthorizationDigest}
+            activationCompletionDigest={chainProvenance.activationCompletionDigest}
+            checkpointBlock={chainProvenance.checkpointBlock ?? null}
+            checkpointDigest={readModel.provenance.checkpointDigest}
+            activationFinalizedBlock={chainProvenance.activationFinalizedBlock}
           />
 
           <div style={{ marginTop: 18 }}>

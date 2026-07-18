@@ -107,7 +107,7 @@ async function commitAndReveal(fixture) {
   );
   await submissions.connect(solver).commit(commitment, DA_HASH, { value: MIN_BOND });
   const submissionId = await submissions.submissionCount();
-  await submissions.connect(solver).reveal(submissionId, cid, 1n, 1n, salt, "0x");
+  await submissions.connect(solver).reveal(submissionId, cid, 1n, SEED_SCORE - 1n, salt, "0x");
   return submissionId;
 }
 
@@ -123,7 +123,7 @@ async function commitOnly(fixture, cid, salt) {
 async function revealCommitted(fixture, committed) {
   const { submissions, solver } = fixture;
   await submissions.connect(solver).reveal(
-    committed.submissionId, committed.cid, 1n, 1n, committed.salt, "0x"
+    committed.submissionId, committed.cid, 1n, SEED_SCORE - 1n, committed.salt, "0x"
   );
 }
 

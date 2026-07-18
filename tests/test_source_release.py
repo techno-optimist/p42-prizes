@@ -77,23 +77,42 @@ def receipt() -> dict:
 
 
 class FakeGit:
-    def __init__(self, report_text: str):
+    def __init__(
+        self,
+        report_text: str,
+        *,
+        head: str = HEAD,
+        observed_head: str = OBSERVED,
+        manifest_by_commit: dict[str, str] | None = None,
+    ):
         self.report_text = report_text
+        self.head = head
+        self.observed_head = observed_head
+        self.manifest_by_commit = (
+            {observed_head: json.dumps({"projection_sha256": HASH})}
+            if manifest_by_commit is None
+            else manifest_by_commit
+        )
+        self.manifest_specs: list[str] = []
 
     def __call__(self, command: list[str], cwd: Path) -> str:
         del cwd
         if command[:3] == ["git", "rev-parse", "HEAD"]:
-            return HEAD
+            return self.head
         if command[:3] == ["git", "rev-parse", "--is-shallow-repository"]:
             return "false"
         if command[:4] == ["git", "log", "--first-parent", "-1"]:
-            assert command[5] == OBSERVED
+            assert command[5] == self.observed_head
             return DEPLOY
         if command[:3] == ["git", "log", "-1"]:
             return PUBLICATION
         if command[:2] == ["git", "show"]:
             if command[2].endswith("scripts/release-guard-problems-v1.json"):
-                return json.dumps({"projection_sha256": HASH})
+                self.manifest_specs.append(command[2])
+                commit, _, _path = command[2].partition(":")
+                if commit not in self.manifest_by_commit:
+                    raise SourceReleaseEvidenceError("historical manifest unavailable")
+                return self.manifest_by_commit[commit]
             return self.report_text
         if command[:3] == ["git", "merge-base", "--is-ancestor"] and "7" * 40 in command:
             raise SourceReleaseEvidenceError("commit is not on the released source lineage")
@@ -187,6 +206,14 @@ class FakeShallow(FakeGit):
         if command[:2] == ["git", "fetch"]:
             self.fetched = True
             return ""
+        if (
+            command[:2] == ["git", "show"]
+            and command[2].endswith("scripts/release-guard-problems-v1.json")
+            and not self.fetched
+        ):
+            raise SourceReleaseEvidenceError(
+                "history was not fetched before historical manifest validation"
+            )
         if command[:3] == ["git", "cat-file", "-e"] and not self.fetched:
             raise SourceReleaseEvidenceError("history was not fetched before ancestry validation")
         return super().__call__(command, cwd)
@@ -212,6 +239,89 @@ def test_valid_receipt_derives_distinct_runtime_and_publication_commits(tmp_path
         "evidencePublicationCommit": PUBLICATION,
         "onlineVerified": False,
     }
+
+
+def test_historical_receipt_uses_observed_head_board_manifest(tmp_path: Path) -> None:
+    report = receipt()
+    path = tmp_path / "receipt.json"
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+    runner = FakeGit(
+        text,
+        manifest_by_commit={
+            OBSERVED: json.dumps({"projection_sha256": HASH}),
+            HEAD: json.dumps({"projection_sha256": "sha256:" + "d" * 64}),
+        },
+    )
+
+    validate_source_release_evidence(
+        report, repo_root=tmp_path, report_path=path, command_runner=runner
+    )
+
+    assert runner.manifest_specs == [
+        f"{OBSERVED}:scripts/release-guard-problems-v1.json"
+    ]
+
+
+def test_historical_receipt_rejects_projection_mismatch_at_observed_head(
+    tmp_path: Path,
+) -> None:
+    report = receipt()
+    path = tmp_path / "receipt.json"
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+    runner = FakeGit(
+        text,
+        manifest_by_commit={
+            OBSERVED: json.dumps({"projection_sha256": "sha256:" + "d" * 64}),
+        },
+    )
+
+    with pytest.raises(SourceReleaseEvidenceError, match="boardProjection"):
+        validate_source_release_evidence(
+            report, repo_root=tmp_path, report_path=path, command_runner=runner
+        )
+
+
+@pytest.mark.parametrize(
+    ("manifest_by_commit", "match"),
+    [
+        ({}, "historical manifest unavailable"),
+        ({OBSERVED: "{"}, "observed-head release-guard board manifest is unreadable"),
+    ],
+)
+def test_historical_receipt_rejects_missing_or_unreadable_observed_manifest(
+    tmp_path: Path, manifest_by_commit: dict[str, str], match: str,
+) -> None:
+    report = receipt()
+    path = tmp_path / "receipt.json"
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+    runner = FakeGit(text, manifest_by_commit=manifest_by_commit)
+
+    with pytest.raises(SourceReleaseEvidenceError, match=match):
+        validate_source_release_evidence(
+            report, repo_root=tmp_path, report_path=path, command_runner=runner
+        )
+
+
+def test_current_v2_receipt_uses_current_observed_head_manifest(tmp_path: Path) -> None:
+    report = receipt()
+    report["observedBranchHead"] = HEAD
+    report["ci"]["headSha"] = HEAD
+    report = seal_source_release_evidence(report)
+    path = tmp_path / "receipt.json"
+    text = json.dumps(report, sort_keys=True, separators=(",", ":")) + "\n"
+    path.write_text(text, encoding="utf-8")
+    runner = FakeGit(text, observed_head=HEAD)
+
+    validate_source_release_evidence(
+        report, repo_root=tmp_path, report_path=path, command_runner=runner
+    )
+
+    assert runner.manifest_specs == [
+        f"{HEAD}:scripts/release-guard-problems-v1.json"
+    ]
 
 
 def test_authenticated_api_trigger_is_schema_valid(tmp_path: Path) -> None:

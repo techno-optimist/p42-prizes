@@ -21,9 +21,13 @@ zero at every vertex outside the already-free set plus the target.
 
 The certificate passes when the closure reaches every vertex.
 
-## Solution Format
+## Solution Format (v0.2)
 
-Solutions are canonical JSON:
+Solutions are UTF-8 JSON without a byte-order mark. Duplicate JSON object keys
+are rejected recursively. The root, edge-label, and relation objects use closed
+field sets; unknown fields are rejected. Duplicate slopes, edge labels,
+relations, and free vertices are also rejected rather than silently changing or
+padding set semantics.
 
 ```json
 {
@@ -41,6 +45,21 @@ Solutions are canonical JSON:
   ]
 }
 ```
+
+The complete resource language is part of verifier version `0.2.0`:
+
+- the encoded solution is at most 32,768 bytes;
+- every integer satisfies `|x| <= 2^255 - 1`;
+- `slopes` has at most 128 entries;
+- each edge-label axis has at most 32 entries;
+- `free` has at most 4 entries and must leave at least one non-free vertex;
+- `relations` has at most 128 entries;
+- optional `source` and `claimed_score` metadata must be Unicode scalar strings.
+
+These are acceptance bounds, not arithmetic shortcuts. Generator construction,
+rank, closure, scoring, threshold comparison, and atom rounding use exact
+integer/rational semantics. Intermediate numerators and denominators are not
+truncated to the input magnitude bound.
 
 ## Score And Improvement
 
@@ -67,3 +86,37 @@ witness phase, not an attested published record. Under open-witness-phase
 seeding (`docs/OPEN_WITNESS_SEEDING.md`) the on-chain frontier
 self-establishes from free open-phase postings before `armFunding()` opens the
 paid phase.
+
+## Version Boundary
+
+Verifier v0.2 intentionally narrows the byte language accepted by v0.1. The old
+parser accepted BOM-detected UTF-16/32, unknown fields, duplicate semantic list
+entries, implementation-dependent Python integer magnitudes, and inputs whose
+`Fraction` work had no explicit resource envelope. Those behaviors are not a
+consensus language suitable for an SP1 guest. They are rejected in v0.2; the
+2x2 generators, simultaneous forcing rule, score formula, seed `7/4`, and
+minimum improvement `1/10^12` are unchanged.
+
+## Journal Conformance (CHRONOS E2)
+
+CHRONOS obligation E2 is closed only at the committed source-byte conformance
+layer. The shared fixture
+`objective-programs/arithmetic-kakeya/fixtures/journal-conformance-synthetic.json`
+contains the exact UTF-8 solution bytes, complete objective witness inputs, and
+expected hashes for the solution/commit DA anchor, solution CID, reveal,
+challenge, transcript URI, pending-decision context, objective binding,
+challenge context, and final 32-byte journal digest. It also pins the canonical
+claim-relative `improvementAtoms` value to zero for the `7/4` seed and `7/4`
+claim.
+
+The Rust core test parses that fixture, revalidates the witness, and recomputes
+every hash stage. The ethers conformance test independently parses the same
+fixture and recomputes each Solidity `abi.encode`/Keccak stage. The fixture is
+explicitly synthetic: `guestElfSha256 = 0xdd...dd` and
+`programVKey = 0xee...ee` are placeholders, not a built ELF identity or a real
+SP1 verification key.
+
+This E2 closure does not assert guest build reproducibility, SP1 execution or
+proof generation, a deployed verifier/gateway, objective registration, or
+funding activation. Activation and CHRONOS obligations E1 and E3-E6 remain
+open.

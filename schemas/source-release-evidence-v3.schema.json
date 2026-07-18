@@ -117,9 +117,9 @@
         "command": {"const": "node scripts/verify-render-release.mjs"},
         "status": {"const": "passed"},
         "boardProjection": {"$ref": "#/$defs/hash"},
-        "healthyRoutes": {"const": 12},
-        "requiredRoutes": {"const": 12},
-        "probes": {"type": "array", "minItems": 12, "maxItems": 12, "items": {"$ref": "#/$defs/probe"}}
+        "healthyRoutes": {"const": 32},
+        "requiredRoutes": {"const": 32},
+        "probes": {"type": "array", "minItems": 32, "maxItems": 32, "items": {"$ref": "#/$defs/probe"}}
       }
     },
     "portalProjection": {

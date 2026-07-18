@@ -205,7 +205,7 @@ async function deployFixture({
 
 // Drive commit + reveal for a submission whose solver is `solverAddr`, sending
 // the transactions from `sender` (either a signer or, via forwardExec, a mock).
-async function commitReveal(fixture, { solverAddr, sendCommit, sendReveal, improvementAtoms = 1n, cid = "bafy-redteam", salt = "redteam-salt" }) {
+async function commitReveal(fixture, { solverAddr, sendCommit, sendReveal, improvementAtoms = SEED_SCORE_ATOMS, cid = "bafy-redteam", salt = "redteam-salt" }) {
   const { submissions } = fixture;
   const commitment = await submissions["computeCommitment(string,address,bytes32,string)"](
     cid,
@@ -412,7 +412,7 @@ describe("P42 red-team attack coverage", function () {
     const capBond = await submissions.requiredPostingBondNow();
     assert.equal(capBond, ethers.parseEther("2"));
     await submissions.connect(alice).commit(commitment, DA_HASH, { value: capBond });
-    await submissions.connect(alice).reveal(1, cid, 0, 1, salt, "0x");
+    await submissions.connect(alice).reveal(1, cid, 0, SEED_SCORE_ATOMS, salt, "0x");
 
     // 2) Pool is now funded large. Naive payout would be 100 ETH on a 0.01 ETH
     //    bond — a 10,000x self-deal.
@@ -459,7 +459,9 @@ describe("P42 red-team attack coverage", function () {
 
     // (a) Bob cannot reveal Alice's submission — reveal is solver-gated.
     await expectCustomError(
-      submissions.connect(bob).reveal(aliceId, cid, 123, 7, salt, "0x"),
+      submissions.connect(bob).reveal(
+        aliceId, cid, 123, SEED_SCORE_ATOMS - 123n, salt, "0x"
+      ),
       submissions,
       "P42_NOT_SOLVER"
     );
@@ -470,13 +472,17 @@ describe("P42 red-team attack coverage", function () {
     await submissions.connect(bob).commit(commitment, DA_HASH, { value: bond });
     const bobId = await submissions.submissionCount();
     await expectCustomError(
-      submissions.connect(bob).reveal(bobId, cid, 123, 7, salt, "0x"),
+      submissions.connect(bob).reveal(
+        bobId, cid, 123, SEED_SCORE_ATOMS - 123n, salt, "0x"
+      ),
       submissions,
       "P42_BAD_COMMITMENT_REVEAL"
     );
 
     // The rightful solver still reveals normally.
-    await submissions.connect(alice).reveal(aliceId, cid, 123, 7, salt, "0x");
+    await submissions.connect(alice).reveal(
+      aliceId, cid, 123, SEED_SCORE_ATOMS - 123n, salt, "0x"
+    );
     assert.equal((await submissions.submissions(aliceId)).status, 2n);
     assert.equal((await submissions.submissions(aliceId)).solver, alice.address);
   });

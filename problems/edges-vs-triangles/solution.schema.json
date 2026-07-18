@@ -8,8 +8,8 @@
   "properties": {
     "atoms": { "const": 20 },
     "row_sum": { "const": 1000 },
-    "source": { "type": "string" },
-    "claimed_score": { "type": "string" },
+    "source": { "type": "string", "pattern": "^[^\\uD800-\\uDFFF]*$" },
+    "claimed_score": { "type": "string", "pattern": "^[^\\uD800-\\uDFFF]*$" },
     "rows": {
       "type": "array",
       "minItems": 1,

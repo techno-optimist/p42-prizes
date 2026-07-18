@@ -371,6 +371,7 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("P42_RUNNER_CHAIN_TIMESTAMP", "1784160000")
+    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda **_: True)
     queue = tmp_path / "queue.json"
     retry_solution = tmp_path / "retry-solution.json"
     job = _job(
@@ -389,6 +390,7 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
         tmp_path / "transcripts",
         memory=_runner_memory(),
         policy=RunnerPolicy(sandbox="docker"),
+        docker_host="unix:///run/p42-docker-fixture/docker.sock",
     )
 
     assert first["verifier"]["challenge_candidate"]["action"] == "retry"
@@ -410,6 +412,7 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
         memory=_runner_memory(),
         policy=RunnerPolicy(sandbox="docker"),
         now_utc="2030-01-01T00:00:00Z",
+        docker_host="unix:///run/p42-docker-fixture/docker.sock",
     )
 
     assert second["verifier"]["challenge_candidate"]["action"] == "none"
@@ -419,42 +422,23 @@ def test_retryable_calldata_failure_requeues_then_verifies_after_recovery(
     assert completed["challenge_candidate_hash"] == second["verifier"]["challenge_candidate"]["candidate_hash"]
 
 
-def test_unavailable_docker_requeues_then_succeeds_when_sandbox_returns(
+def test_unavailable_docker_fails_before_leasing_a_verifier_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("P42_RUNNER_CHAIN_TIMESTAMP", "1784160000")
     queue = tmp_path / "queue.json"
     enqueue_runner_job(queue, _job())
-    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda: False)
+    monkeypatch.setattr("p42_prizes.runner_worker.docker_available", lambda **_: False)
 
-    first = run_next_job_once(
-        queue,
-        tmp_path / "transcripts",
-        memory=_runner_memory(),
-        policy=RunnerPolicy(sandbox="docker"),
-    )
-
-    assert first["verifier"]["retryable"] is True
-    assert first["verifier"]["challenge_candidate"]["action"] == "retry"
-    queued = read_runner_queue(queue)["jobs"][0]
-    assert queued["status"] == "queued"
-    assert isinstance(queued["retry_not_before_utc"], str)
-    assert "challenge_candidate_hash" not in queued
-
-    monkeypatch.setattr("p42_prizes.runner_worker._run_verifier_for_transcript", _verified_verifier)
-    # As above, model the poll after the short retry backoff has elapsed.
-    second = run_next_job_once(
-        queue,
-        tmp_path / "transcripts",
-        memory=_runner_memory(),
-        policy=RunnerPolicy(sandbox="docker"),
-        now_utc="2030-01-01T00:00:00Z",
-    )
-
-    assert second["verifier"]["challenge_candidate"]["action"] == "none"
-    completed = read_runner_queue(queue)["jobs"][0]
-    assert completed["status"] == "succeeded"
-    assert "retry_not_before_utc" not in completed
+    with pytest.raises(RunnerWorkerError, match="before leasing jobs"):
+        run_next_job_once(
+            queue,
+            tmp_path / "transcripts",
+            memory=_runner_memory(),
+            policy=RunnerPolicy(sandbox="docker"),
+            docker_host="unix:///run/p42-docker-fixture/docker.sock",
+        )
+    assert read_runner_queue(queue)["jobs"][0]["status"] == "queued"
 
 
 def test_retry_stops_at_the_operator_canonical_challenge_expiry(
@@ -483,6 +467,7 @@ def test_retry_stops_at_the_operator_canonical_challenge_expiry(
         memory=_runner_memory(),
         policy=RunnerPolicy(sandbox="docker"),
         now_utc="2020-01-01T00:00:00Z",
+        docker_host="unix:///run/p42-docker-fixture/docker.sock",
     )
 
     assert result["verifier"]["challenge_candidate"]["action"] == "retry"

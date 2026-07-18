@@ -13,6 +13,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/verify-sp1-objective-artifact.py"
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+FROZEN_OBJECTIVE_CORE = ROOT / "objective-programs/p42-objective-core/src/lib.rs"
+FROZEN_OBJECTIVE_CORE_SHA256 = (
+    "73cb9b4b83738bc8a55d057d68b4011ceb2d757873b1eaedb6cd8dce84f19e85"
+)
+FROZEN_WORKSPACE_SHA256 = {
+    "Cargo.toml": "e0998dadb99d031220cc2e97913425028a4886fb5c0839cccb78cf3ea5d5f612",
+    "Cargo.lock": "cfaac0901bcb9ba1daf5e78403677468911f0eaf52f1977e4d8aa408edef41ff",
+}
 
 
 def load_verifier():
@@ -253,6 +261,9 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     assert "p42-untrusted-hadamard-candidate-" in workflow
     assert "pattern: p42-validated-distinct-subset-sums-a11" in workflow
     assert "pattern: p42-validated-hadamard-668" in workflow
+    assert "pattern: p42-validated-q6-candidate" in workflow
+    assert "p42-untrusted-edges-candidate-" in workflow
+    assert "pattern: p42-validated-edges-candidate" in workflow
     assert "pattern: p42-untrusted" not in workflow
     assert workflow.index("Capture untrusted SP1 build-input observation") < workflow.index(
         "Validate clean SP1 build-input provenance"
@@ -278,6 +289,38 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     assert "~/.cargo/git" not in cache
 
 
+def test_workflow_enforces_bounded_disk_budget_before_candidate_builds() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    objective_job = workflow[
+        workflow.index("  objective-program:") : workflow.index(
+            "  objective-program-reproducibility:"
+        )
+    ]
+    assert "timeout-minutes: 120" in objective_job
+    assert "timeout-minutes: 90" not in objective_job
+    disk_gate = workflow[
+        workflow.index("Enforce SP1 build disk budget") : workflow.index(
+            "Test objective predicate and Solidity ABI encoding"
+        )
+    ]
+    assert workflow.index("Validate clean SP1 build-input provenance") < workflow.index(
+        "Enforce SP1 build disk budget"
+    )
+    assert "cleanup_paths=(" in disk_gate
+    for path in (
+        "/usr/local/lib/android",
+        "/usr/share/dotnet",
+        "/opt/ghc",
+        "/usr/local/share/boost",
+    ):
+        assert path in disk_gate
+    assert '[[ ! -d "$path" || -L "$path" ]]' in disk_gate
+    assert 'find "$path" -xdev -mindepth 1 -delete' in disk_gate
+    assert "required_kib=$((20 * 1024 * 1024))" in disk_gate
+    assert "available_kib < required_kib" in disk_gate
+    assert "rm -rf" not in disk_gate
+
+
 def test_canonical_identities_and_arm_source_build_boundary_remain_frozen() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     verifier = SCRIPT.read_text(encoding="utf-8")
@@ -289,3 +332,9 @@ def test_canonical_identities_and_arm_source_build_boundary_remain_frozen() -> N
         "sha256:f5a1f269c845c0c47c0f6542ff3c5181ce6a5b7d73d59fd4448e6b3722aa72c5"
     )
     assert "f0ff2d9ec1e65ced44b5608419f02627c69a74fdcf4466d9f259ebc86bc7dc05" not in verifier
+    assert hashlib.sha256(FROZEN_OBJECTIVE_CORE.read_bytes()).hexdigest() == (
+        FROZEN_OBJECTIVE_CORE_SHA256
+    )
+    for name, expected in FROZEN_WORKSPACE_SHA256.items():
+        path = ROOT / "objective-programs" / name
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == expected

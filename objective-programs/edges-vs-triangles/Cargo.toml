@@ -1,0 +1,22 @@
+[workspace]
+members = ["core", "program", "script"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+hex = "0.4.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["arbitrary_precision"] }
+sha2 = "0.10.9"
+sp1-build = { git = "https://github.com/succinctlabs/sp1", rev = "d454975ac7c1126097e36eceda9bce2cb9899da4" }
+sp1-sdk = { git = "https://github.com/succinctlabs/sp1", rev = "d454975ac7c1126097e36eceda9bce2cb9899da4", features = ["blocking"] }
+sp1-zkvm = { git = "https://github.com/succinctlabs/sp1", rev = "d454975ac7c1126097e36eceda9bce2cb9899da4" }
+tiny-keccak = { version = "2.0.2", features = ["keccak"] }
+
+[profile.release]
+lto = "thin"
