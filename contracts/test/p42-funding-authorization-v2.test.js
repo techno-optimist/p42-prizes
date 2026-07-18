@@ -58,6 +58,11 @@ async function fixture(overrides = {}) {
     await ethers.getSigners();
   const Factory = await ethers.getContractFactory("P42SubmissionManagerFactory");
   const Manager = await ethers.getContractFactory("P42SubmissionManager");
+  const ObjectiveVerifier = await ethers.getContractFactory("MockObjectiveVerifierGateway");
+  const objectiveVerifier = await ObjectiveVerifier.deploy();
+  await objectiveVerifier.waitForDeployment();
+  const objectiveVerifierAddress = await objectiveVerifier.getAddress();
+  const objectiveVerifierCodehash = ethers.keccak256(await ethers.provider.getCode(objectiveVerifierAddress));
   const factory = await Factory.deploy();
   await factory.waitForDeployment();
   const parameters = {
@@ -77,6 +82,8 @@ async function fixture(overrides = {}) {
     fundingAuthorization: {
       boardSetDigest: BOARD_SET_DIGEST,
       releaseBindingDigest: RELEASE_BINDING_DIGEST,
+      objectiveVerifier: objectiveVerifierAddress,
+      objectiveVerifierCodehash,
       productionLaunchAuthority: productionLaunch.address,
       independentSecurityAuthority: independentSecurity.address,
       governanceAuthority: governance.address,
@@ -94,7 +101,7 @@ async function fixture(overrides = {}) {
   const manager = Manager.attach(deployed.args.submissionManager);
   return {
     owner, treasury, productionLaunch, independentSecurity, governance, outsider,
-    factory, manager, parameters, managerCreationCode: Manager.bytecode,
+    factory, manager, objectiveVerifier, parameters, managerCreationCode: Manager.bytecode,
   };
 }
 
@@ -297,6 +304,20 @@ describe("P42 production funding authorization v2", function () {
     );
     await expectCustomError(
       Manager.deploy(valid.parameters.deployment, {
+        ...valid.parameters.fundingAuthorization, objectiveVerifier: ethers.ZeroAddress,
+      }),
+      valid.manager,
+      "P42_OBJECTIVE_VERIFIER_ZERO",
+    );
+    await expectCustomError(
+      Manager.deploy(valid.parameters.deployment, {
+        ...valid.parameters.fundingAuthorization, objectiveVerifierCodehash: ethers.id("wrong-runtime"),
+      }),
+      valid.manager,
+      "P42_OBJECTIVE_VERIFIER_RUNTIME",
+    );
+    await expectCustomError(
+      Manager.deploy(valid.parameters.deployment, {
         ...valid.parameters.fundingAuthorization,
         independentSecurityAuthority: valid.productionLaunch.address,
       }),
@@ -331,6 +352,35 @@ describe("P42 production funding authorization v2", function () {
         );
       }
     }
+  });
+
+  it("keeps the inactive production proof topology non-fundable even with every valid authority signature", async function () {
+    const valid = await fixture();
+    const Manager = await ethers.getContractFactory("P42SubmissionManager");
+    const Gateway = await ethers.getContractFactory("P42SP1VerifierGateway");
+    const gateway = await Gateway.deploy();
+    await gateway.waitForDeployment();
+    const gatewayAddress = await gateway.getAddress();
+    const manager = await Manager.deploy(valid.parameters.deployment, {
+      ...valid.parameters.fundingAuthorization,
+      objectiveVerifier: gatewayAddress,
+      objectiveVerifierCodehash: ethers.keccak256(await ethers.provider.getCode(gatewayAddress)),
+    });
+    await manager.waitForDeployment();
+    const f = { ...valid, manager };
+    const latest = await ethers.provider.getBlock("latest");
+    const expiresAt = BigInt(latest.timestamp) + 1_000n;
+    const signed = await signatures(f, AUTHORIZATION_DIGEST, expiresAt, 0n);
+
+    assert.equal(await manager.objectiveProofCapabilityActive(), false);
+    await expectCustomError(
+      authorize(manager, valid.treasury, AUTHORIZATION_DIGEST, expiresAt, 0n, signed),
+      manager,
+      "P42_OBJECTIVE_PROOF_CAPABILITY_INACTIVE",
+    );
+    assert.equal(await manager.authorizedFundingDigest(), ethers.ZeroHash);
+    assert.equal(await manager.fundingAuthorizationNonce(), 0n);
+    assert.equal(await manager.fundingArmed(), false);
   });
 
   it("pins externally supplied manager creation code in the compact CREATE2 factory", async function () {

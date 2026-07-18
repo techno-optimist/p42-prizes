@@ -16,6 +16,10 @@ interface IP42CreditLedger {
     function fundingDeadline() external view returns (uint64);
 }
 
+interface IP42ObjectiveProofCapability {
+    function objectiveProofsActive() external view returns (bool);
+}
+
 /// @notice Commit/reveal/finalize scaffold for the Phase 1 testnet path.
 /// It makes the verifier-adjacent economic invariants executable before the
 /// full fraud-proof resolver lands.
@@ -38,6 +42,9 @@ contract P42SubmissionManager {
     error P42_FUNDING_AUTHORITY_NOT_EOA();
     error P42_FUNDING_AUTHORITIES_NOT_DISTINCT();
     error P42_FUNDING_BINDING_ZERO();
+    error P42_OBJECTIVE_VERIFIER_ZERO();
+    error P42_OBJECTIVE_VERIFIER_RUNTIME();
+    error P42_OBJECTIVE_PROOF_CAPABILITY_INACTIVE();
     error P42_INVALID_FUNDING_SIGNATURE();
     error P42_OPEN_WITNESS_WINDOW_OPEN(uint64 armNotBefore, uint64 nowAt);
     error P42_VOID_NOT_ADVANCE(int256 prevBestScoreAtoms, int256 claimedScoreAtoms);
@@ -185,6 +192,8 @@ contract P42SubmissionManager {
     struct FundingAuthorizationConfig {
         bytes32 boardSetDigest;
         bytes32 releaseBindingDigest;
+        address objectiveVerifier;
+        bytes32 objectiveVerifierCodehash;
         address productionLaunchAuthority;
         address independentSecurityAuthority;
         address governanceAuthority;
@@ -209,6 +218,8 @@ contract P42SubmissionManager {
     address public immutable fundingAuthorizer;
     bytes32 public immutable boardSetDigest;
     bytes32 public immutable releaseBindingDigest;
+    address public immutable objectiveVerifier;
+    bytes32 public immutable objectiveVerifierCodehash;
     address public immutable productionLaunchAuthority;
     address public immutable independentSecurityAuthority;
     address public immutable governanceAuthority;
@@ -430,6 +441,14 @@ contract P42SubmissionManager {
             fundingAuthorizationConfig_.boardSetDigest == bytes32(0)
                 || fundingAuthorizationConfig_.releaseBindingDigest == bytes32(0)
         ) revert P42_FUNDING_BINDING_ZERO();
+        address objectiveVerifier_ = fundingAuthorizationConfig_.objectiveVerifier;
+        bytes32 objectiveVerifierCodehash_ = fundingAuthorizationConfig_.objectiveVerifierCodehash;
+        if (objectiveVerifier_ == address(0) || objectiveVerifierCodehash_ == bytes32(0)) {
+            revert P42_OBJECTIVE_VERIFIER_ZERO();
+        }
+        if (objectiveVerifier_.codehash != objectiveVerifierCodehash_) {
+            revert P42_OBJECTIVE_VERIFIER_RUNTIME();
+        }
         address productionLaunchAuthority_ = fundingAuthorizationConfig_.productionLaunchAuthority;
         address independentSecurityAuthority_ = fundingAuthorizationConfig_.independentSecurityAuthority;
         address governanceAuthority_ = fundingAuthorizationConfig_.governanceAuthority;
@@ -467,6 +486,8 @@ contract P42SubmissionManager {
         fundingAuthorizer = treasury_;
         boardSetDigest = fundingAuthorizationConfig_.boardSetDigest;
         releaseBindingDigest = fundingAuthorizationConfig_.releaseBindingDigest;
+        objectiveVerifier = objectiveVerifier_;
+        objectiveVerifierCodehash = objectiveVerifierCodehash_;
         productionLaunchAuthority = productionLaunchAuthority_;
         independentSecurityAuthority = independentSecurityAuthority_;
         governanceAuthority = governanceAuthority_;
@@ -549,6 +570,7 @@ contract P42SubmissionManager {
         uint256 nonce,
         bytes[3] calldata signatures
     ) external {
+        _requireObjectiveProofCapabilityActive();
         if (msg.sender != fundingAuthorizer) revert P42_NOT_FUNDING_AUTHORIZER();
         if (authorizationDigest == bytes32(0)) revert P42_FUNDING_AUTHORIZATION_ZERO();
         if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
@@ -655,6 +677,7 @@ contract P42SubmissionManager {
     }
 
     function armFunding(bytes32 authorizationDigest) external onlyOwner {
+        _requireObjectiveProofCapabilityActive();
         if (fundingArmed) revert P42_FUNDING_ALREADY_ARMED();
         if (authorizationDigest == bytes32(0)) revert P42_FUNDING_AUTHORIZATION_ZERO();
         if (authorizationDigest != authorizedFundingDigest) {
@@ -671,6 +694,20 @@ contract P42SubmissionManager {
         armedAt = uint64(block.timestamp);
         fundingAuthorizationDigest = authorizationDigest;
         emit FundingArmed(uint64(block.timestamp), authorizationDigest);
+    }
+
+    function objectiveProofCapabilityActive() public view returns (bool) {
+        address verifier = objectiveVerifier;
+        if (verifier.codehash != objectiveVerifierCodehash) return false;
+        try IP42ObjectiveProofCapability(verifier).objectiveProofsActive() returns (bool active) {
+            return active;
+        } catch {
+            return false;
+        }
+    }
+
+    function _requireObjectiveProofCapabilityActive() internal view {
+        if (!objectiveProofCapabilityActive()) revert P42_OBJECTIVE_PROOF_CAPABILITY_INACTIVE();
     }
 
     function setChallengeManager(address challengeManager_) external onlyOwner {

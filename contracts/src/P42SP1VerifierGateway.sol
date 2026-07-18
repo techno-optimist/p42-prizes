@@ -22,7 +22,7 @@ abstract contract P42SP1VerifierGatewayBase {
     }
 
     function objectiveProofsActive() public view returns (bool) {
-        return _objectiveProofsActive();
+        return _objectiveProofsActive() && _sp1Verifier().codehash == _sp1VerifierCodehash();
     }
 
     function verify(bytes32 programVKey, bytes32 journalDigest, bytes calldata proof)
