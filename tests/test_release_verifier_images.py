@@ -582,6 +582,24 @@ def test_v1_dossier_is_explicitly_historical_only():
         release.validate_release_dossier({"schema_version": release.LEGACY_SCHEMA_VERSION})
 
 
+def test_finalize_rejects_symlinked_publication_journal(monkeypatch, tmp_path):
+    journal_path, _journal, _boards = completed_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        release, "require_clean_exact_commit", lambda *args, **kwargs: RELEASE_COMMIT,
+    )
+    symlink = tmp_path / "publication-link.json"
+    symlink.symlink_to(journal_path)
+    with pytest.raises((release.ReleaseError, OSError), match="symlink|regular|loop|follow|levels"):
+        release.finalize_release_dossier(
+            root=ROOT,
+            journal_path=symlink,
+            release_config_commit=RELEASE_COMMIT,
+            output=tmp_path / "must-not-exist.json",
+            runner=lambda argv, **kwargs: completed(argv, ""),
+            board_binding_verifier=lambda root: None,
+        )
+
+
 def test_build_metadata_and_raw_registry_bytes_must_agree():
     raw = index_json()
     digest = release.sha256_bytes(raw.encode())

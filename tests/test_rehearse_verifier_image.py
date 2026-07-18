@@ -233,7 +233,8 @@ def test_pulled_image_must_match_index_config_labels_platform_and_runtime() -> N
         "workdir": record["runtime"]["workdir"],
     }
     violations, platform = smoke._pulled_image_violations(
-        inspected, board=board, verifier_source_commit=dossier["verifier_source_commit"]
+        inspected, board=board, verifier_source_commit=dossier["verifier_source_commit"],
+        observed_source_hash=board["source_hash"],
     )
     assert platform == "linux/amd64"
     assert violations == []
@@ -242,12 +243,41 @@ def test_pulled_image_must_match_index_config_labels_platform_and_runtime() -> N
     bad["labels"] = {}
     bad["workdir"] = "/wrong"
     violations, _ = smoke._pulled_image_violations(
-        bad, board=board, verifier_source_commit=dossier["verifier_source_commit"]
+        bad, board=board, verifier_source_commit=dossier["verifier_source_commit"],
+        observed_source_hash=board["source_hash"],
     )
     assert "pulled RepoDigests do not contain the requested immutable reference" in violations
     assert "pulled image ID does not match the platform config digest" in violations
     assert "pulled image runtime metadata does not match the platform dossier" in violations
     assert len([item for item in violations if item.startswith("image label")]) == 5
+
+
+def test_matching_malicious_labels_cannot_hide_altered_image_source_files() -> None:
+    smoke = load_smoke_module()
+    dossier = _release_dossier(smoke)
+    board = dossier["boards"][0]
+    record = board["platform_manifests"][0]
+    inspected = {
+        "architecture": "amd64",
+        "cmd": [],
+        "entrypoint": None,
+        "id": record["config_digest"],
+        "labels": record["labels"],
+        "os": "linux",
+        "repo_digests": [board["immutable_reference"]],
+        "user": "",
+        "workdir": record["runtime"]["workdir"],
+    }
+    violations, platform = smoke._pulled_image_violations(
+        inspected,
+        board=board,
+        verifier_source_commit=dossier["verifier_source_commit"],
+        observed_source_hash="sha256:" + "0" * 64,
+    )
+    assert platform == "linux/amd64"
+    assert violations == [
+        "pulled image filesystem source does not match the verifier-source commit"
+    ]
 
 
 def _runtime_report(smoke) -> dict:
@@ -283,6 +313,7 @@ def _runtime_report(smoke) -> dict:
             "index_digest": board["index_digest"],
             "local_image_id": record["config_digest"],
             "expected_config_digest": record["config_digest"],
+            "observed_source_hash": board["source_hash"],
             "repo_digests": [board["immutable_reference"]],
             "observed_provenance_labels": record["labels"],
             "expected_provenance_labels": record["labels"],

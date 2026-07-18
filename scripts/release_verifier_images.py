@@ -1041,7 +1041,10 @@ def finalize_release_dossier(
     root = root.resolve()
     board_binding_verifier = board_binding_verifier or verify_production_board_bindings
     require_clean_exact_commit(root, release_config_commit, runner=runner)
-    journal = _validate_publish_journal(_read_canonical_private(journal_path.resolve()))
+    # Keep the caller's final path component intact so O_NOFOLLOW can reject a
+    # symlink. Path.resolve() here would silently turn that check into a read of
+    # the symlink target.
+    journal = _validate_publish_journal(_read_canonical_private(journal_path.absolute()))
     if any(board["state"] != "verified" for board in journal["boards"]):
         raise ReleaseError("cannot finalize an incomplete verifier image publication journal")
     verifier_source_commit = journal["verifier_source_commit"]

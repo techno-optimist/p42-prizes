@@ -431,6 +431,7 @@ def _cmd_admit_release_ready(args: argparse.Namespace) -> int:
             return 1
     errors = validate_fundable_release_admission(
         args.problem, matrix, args.image_dossier, args.image_dossier_sha256,
+        args.publication_journal, args.publication_journal_sha256,
     )
     if errors:
         for error in errors:
@@ -1179,6 +1180,8 @@ def build_parser() -> argparse.ArgumentParser:
     admit_release_matrix.add_argument("--matrix-stdin", action="store_true")
     admit_release_ready.add_argument("--image-dossier", required=True)
     admit_release_ready.add_argument("--image-dossier-sha256", required=True)
+    admit_release_ready.add_argument("--publication-journal", required=True)
+    admit_release_ready.add_argument("--publication-journal-sha256", required=True)
     admit_release_ready.set_defaults(func=_cmd_admit_release_ready)
 
     seed_check = subparsers.add_parser(

@@ -140,9 +140,12 @@ That path is not activation-grade after the self-reference fix. Before funding,
 the ceremony must consume the exact canonical `p42-verifier-image-release/v2`
 dossier and invoke `admit-release-ready`, binding its independently pinned raw
 bytes, `dossier_hash`, verifier-source commit, release-config commit, final
-manifest hashes, ten-board order, OCI labels, and immutable index digests. The
-image/admission tooling fails closed until those identities agree; this document
-does not treat the pending contract-side parser change as complete.
+manifest hashes, ten-board order, OCI labels, and immutable index digests. It
+must also supply the completed publication journal and its independently pinned
+file hash so the portable checkout validator can recompute both commit archives
+and replay the exact-ten bindings. The image/admission tooling fails closed
+until those identities agree; this document does not treat the pending
+contract-side parser change as complete.
 
 Prepare the closed release set only with the canonical command from
 the clean frozen checkout:

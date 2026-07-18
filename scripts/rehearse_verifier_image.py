@@ -33,6 +33,7 @@ from p42_prizes.admission import (
     SOURCE_HASH_ALGORITHM_LABEL,
     VERIFIER_VERSION_LABEL,
     compute_source_hash,
+    extract_image_source_hash,
     validate_problem_image_release_binding,
     validate_report_shape,
 )
@@ -358,6 +359,7 @@ def _pulled_image_violations(
     *,
     board: Mapping[str, Any],
     verifier_source_commit: str,
+    observed_source_hash: str,
 ) -> tuple[list[str], str | None]:
     violations: list[str] = []
     os_name = inspected.get("os")
@@ -397,6 +399,8 @@ def _pulled_image_violations(
     }
     if actual_runtime != expected_runtime:
         violations.append("pulled image runtime metadata does not match the platform dossier")
+    if observed_source_hash != board.get("source_hash"):
+        violations.append("pulled image filesystem source does not match the verifier-source commit")
     return violations, platform
 
 
@@ -484,6 +488,9 @@ def validate_runtime_report(
     }
     if normalized["board"] != expected_board:
         raise SmokeError("runtime rehearsal board does not match the pinned release dossier")
+    observed_source_hash = image.get("observed_source_hash")
+    if not isinstance(observed_source_hash, str):
+        raise SmokeError("runtime rehearsal has no observed image filesystem source hash")
     if (
         manifest.get("problem_id") != dossier_board["problem_id"]
         or not isinstance(manifest.get("verifier"), Mapping)
@@ -541,6 +548,10 @@ def validate_runtime_report(
         if image["observed_runtime"] != image["expected_runtime"]:
             expected_image_violations.append(
                 "pulled image runtime metadata does not match the platform dossier"
+            )
+        if observed_source_hash != normalized["board"]["source_hash"]:
+            expected_image_violations.append(
+                "pulled image filesystem source does not match the verifier-source commit"
             )
     if image_violations != expected_image_violations:
         raise SmokeError("runtime rehearsal stored image violations are not reproducible")
@@ -907,10 +918,20 @@ def rehearse_published(
     ).stdout.strip()
     _run_checked([runtime, "pull", "--quiet", immutable_reference], timeout=max(300, selected_wall + 120))
     inspected = _inspect_pulled_image(runtime, immutable_reference)
+    try:
+        observed_source_hash = extract_image_source_hash(
+            problem_id=board_slug,
+            image_ref=immutable_reference,
+            runtime=runtime,
+            build_policy_path=root / ".dockerignore",
+        )
+    except AdmissionError as exc:
+        raise SmokeError(f"could not inspect pulled image filesystem source: {exc}") from exc
     image_violations, platform = _pulled_image_violations(
         inspected,
         board=board,
         verifier_source_commit=dossier["verifier_source_commit"],
+        observed_source_hash=observed_source_hash,
     )
 
     container_name = f"p42-runtime-{board_slug}-{uuid4().hex[:12]}"
@@ -1006,6 +1027,7 @@ def rehearse_published(
             "index_digest": board["index_digest"],
             "local_image_id": inspected.get("id"),
             "expected_config_digest": platform_record.get("config_digest") if isinstance(platform_record, Mapping) else None,
+            "observed_source_hash": observed_source_hash,
             "repo_digests": sorted(inspected.get("repo_digests") or []),
             "observed_provenance_labels": inspected.get("labels") if isinstance(inspected.get("labels"), Mapping) else None,
             "expected_provenance_labels": platform_record.get("labels") if isinstance(platform_record, Mapping) else None,

@@ -16,9 +16,10 @@ from p42_prizes.admission import (
     load_evidence_file,
     ssh_public_key_fingerprint,
     validate_admission_matrix,
+    validate_image_release_checkout,
     validate_problem_image_release_binding,
 )
-from p42_prizes.problem import load_manifest, validate_problem
+from p42_prizes.problem import load_manifest, repo_root_from_problem, validate_problem
 from p42_prizes.runner_sandbox import RunnerSandboxError, compose_immutable_image_ref
 from p42_prizes.verdict import (
     MAX_SCORE_ATOMS_BOUND,
@@ -333,6 +334,8 @@ def validate_fundable_release_admission(
     matrix_path: str | Path | Mapping[str, Any],
     dossier_path: str | Path,
     dossier_file_sha256: str,
+    publication_journal_path: str | Path,
+    publication_journal_file_sha256: str,
 ) -> list[str]:
     """Production gate: matrix admission plus exact v2 image adoption."""
 
@@ -343,6 +346,16 @@ def validate_fundable_release_admission(
         )
     except AdmissionError as exc:
         errors.append(f"image dossier: {exc}")
+        return errors
+    try:
+        validate_image_release_checkout(
+            repo_root_from_problem(Path(problem_dir).resolve()),
+            dossier,
+            publication_journal_path=publication_journal_path,
+            publication_journal_file_sha256=publication_journal_file_sha256,
+        )
+    except AdmissionError as exc:
+        errors.append(f"image dossier checkout: {exc}")
         return errors
     errors.extend(
         f"image dossier: {error}"

@@ -86,6 +86,7 @@ def _runtime_report(
             "immutable_reference": f"ghcr.io/projectforty2/{slug}@{DIGEST_A}",
             "index_digest": DIGEST_A,
             "expected_config_digest": config,
+            "observed_source_hash": DIGEST_C,
             "local_image_id": config,
             "observed_runtime": {
                 "user": "inherited-root-overridden-by-runner",
@@ -164,6 +165,22 @@ def test_pair_rejects_fixture_solution_mismatch(tmp_path: Path) -> None:
     with pytest.raises(RuntimeAdmissionError, match="pinned fixture"):
         build_host_evidence_from_pair(
             {"slug": "q6-intersecting-hypergraph", "sha256": DIGEST_C},
+            reports,
+            host=_host("host-a"), runtime="docker", signing_key=key,
+            generated_at_utc="2026-07-14T00:00:00Z",
+        )
+
+
+def test_pair_rejects_matching_labels_with_altered_image_files(tmp_path: Path) -> None:
+    key = _make_signing_key(tmp_path, "altered-source")
+    reports = [_runtime_report(), _runtime_report()]
+    reports[1]["rehearsal_hash"] = sha256_bytes(b"second-altered-source")
+    reports[1]["execution_nonce"] = sha256_bytes(b"second-altered-source-nonce").removeprefix("sha256:")
+    for report in reports:
+        report["image"]["observed_source_hash"] = DIGEST_A
+    with pytest.raises(RuntimeAdmissionError, match="filesystem source"):
+        build_host_evidence_from_pair(
+            {"slug": "q6-intersecting-hypergraph", "sha256": DIGEST_B},
             reports,
             host=_host("host-a"), runtime="docker", signing_key=key,
             generated_at_utc="2026-07-14T00:00:00Z",

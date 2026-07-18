@@ -42,12 +42,13 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["immutable_reference", "index_digest", "local_image_id", "expected_config_digest", "repo_digests", "observed_provenance_labels", "expected_provenance_labels", "observed_runtime", "expected_runtime", "violations"],
+      "required": ["immutable_reference", "index_digest", "local_image_id", "expected_config_digest", "observed_source_hash", "repo_digests", "observed_provenance_labels", "expected_provenance_labels", "observed_runtime", "expected_runtime", "violations"],
       "properties": {
         "immutable_reference": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"},
         "index_digest": {"$ref": "#/$defs/digest"},
         "local_image_id": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
         "expected_config_digest": {"type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$"},
+        "observed_source_hash": {"$ref": "#/$defs/digest"},
         "repo_digests": {"type": "array", "items": {"type": "string", "pattern": "^[^@\\s]+@sha256:[0-9a-f]{64}$"}, "uniqueItems": true},
         "observed_provenance_labels": {"anyOf": [{"type": "object", "additionalProperties": {"type": "string"}}, {"type": "null"}]},
         "expected_provenance_labels": {"anyOf": [{"$ref": "#/$defs/labels"}, {"type": "null"}]},

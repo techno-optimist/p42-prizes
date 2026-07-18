@@ -96,8 +96,13 @@ does not create those hosts, prove hardware identity, or close Gate 2.
 
 Each runner can consume the finished dossier with the pull-only rehearsal in
 `docs/VERIFIER_RUNNER.md`. That path refuses tags and local builds, matches the
-resolved host-platform config digest and OCI labels to the dossier, executes a
-fixture under the production sandbox policy, and emits
+resolved host-platform config digest and OCI labels to the dossier, then uses
+the same bounded extraction path as local admission to hash the reviewed source
+files actually present under `/repo` in the pulled immutable image. The
+observed filesystem-source hash must equal the exact `S` source hash even when
+all labels claim the expected value. It is recorded in each raw rehearsal and
+the signed host summary before the fixture is executed under the production
+sandbox policy and the runner emits
 `p42-verifier-image-runtime-rehearsal/v2`. It deliberately remains marked
 single-host, non-launch evidence until the independent signed host matrix and
 deployment-specific rehearsal exist.
@@ -131,15 +136,22 @@ A problem may be marked fundable only when all of these match:
   then records `admissionMatrixDigest`, a durable `ipfs://` or `ar://` matrix
   URI, and on-chain `admissionMatrixHash = keccak256(utf8(admissionMatrixDigest))`.
 
-Run the release-bound local gate. The dossier file digest must be supplied from
-an independent release record, not calculated implicitly by the command:
+Run the release-bound local gate from a clean checkout at exact `R`. The dossier
+and completed publication-journal file digests must be supplied from independent
+release records, not calculated implicitly by the command. The portable gate
+proves `S` and `R` exist, proves `S` is an ancestor of `R`, recomputes both exact
+Git-archive digests, validates the pinned journal bytes and self-hash, and
+replays the exact-ten board set and generated source bindings from both commit
+snapshots before accepting any individual board:
 
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli admit-release-ready \
   --problem problems/<slug> \
   --matrix admission-matrix.json \
   --image-dossier verifier-image-release-v2.json \
-  --image-dossier-sha256 sha256:<independent-file-digest>
+  --image-dossier-sha256 sha256:<independent-dossier-file-digest> \
+  --publication-journal verifier-image-publication.journal.json \
+  --publication-journal-sha256 sha256:<independent-journal-file-digest>
 ```
 
 `admit-ready` remains the matrix-only preflight used by the current ceremony;

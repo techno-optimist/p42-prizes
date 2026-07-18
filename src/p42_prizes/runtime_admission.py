@@ -274,6 +274,7 @@ def _stable_report_identity(report: Mapping[str, Any]) -> dict[str, Any]:
         "verifier_source_commit": report["verifier_source_commit"],
         "release_config_commit": report["release_config_commit"],
         "source_hash": report["board"]["source_hash"],
+        "observed_source_hash": report["image"]["observed_source_hash"],
         "index_digest": report["image"]["index_digest"],
         "config_digest": report["image"]["expected_config_digest"],
         "local_image_id": report["image"]["local_image_id"],
@@ -338,6 +339,11 @@ def build_host_evidence_from_pair(
         raise RuntimeAdmissionError(f"paired runtime reports disagree for {slug}")
     if reports[0]["solution_sha256"] != fixture["sha256"]:
         raise RuntimeAdmissionError(f"runtime report solution does not match pinned fixture for {slug}")
+    observed_source_hash = reports[0]["image"].get("observed_source_hash")
+    if observed_source_hash != reports[0]["board"].get("source_hash"):
+        raise RuntimeAdmissionError(
+            f"pulled image filesystem source does not match the verifier-source commit for {slug}"
+        )
     verdict = reports[0]["execution"]["verdict"]
     if not isinstance(verdict, dict):
         raise RuntimeAdmissionError(f"runtime report has no VerdictReport for {slug}")
@@ -373,7 +379,9 @@ def build_host_evidence_from_pair(
         "source": {
             "commit": reports[0]["verifier_source_commit"],
             "tree_hash_algorithm": SOURCE_HASH_ALGORITHM,
-            "tree_hash": reports[0]["board"]["source_hash"],
+            # This value is the digest observed by bounded extraction from the
+            # pulled immutable image, not a copy of its OCI label.
+            "tree_hash": observed_source_hash,
         },
         "report": verdict,
     }
