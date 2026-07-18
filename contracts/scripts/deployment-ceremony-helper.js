@@ -7,6 +7,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { computeDeploymentConfigHash, writeFileAtomicSync } from "../../agent/indexer.mjs";
 import { atomsFromScore, chainScoreAtoms } from "../../agent/lib.mjs";
 import { parseStrictJsonBytes } from "../../agent/strict-json.mjs";
+import { deriveBoardSetupOperations } from "../../agent/setup-operation-plan.mjs";
 import { validateDeploymentRoleAcceptances } from "./role-acceptance-helper.js";
 
 export const MANIFEST_SCHEMA = "p42-prizes/deployment-manifest/v1";
@@ -681,31 +682,6 @@ export function assertTimelockOwnedConstructorArgs(timelockAddress, constructorA
   }
 }
 
-function operationSalt(ethers, chainId, sequence, label, target, data) {
-  return ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["string", "uint256", "uint256", "string", "address", "bytes32"],
-      [
-        "p42-prizes/governance-setup/v1",
-        chainId,
-        sequence,
-        label,
-        target,
-        ethers.keccak256(data)
-      ]
-    )
-  );
-}
-
-function operationId(ethers, target, value, data, salt) {
-  return ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ["address", "uint256", "bytes", "bytes32"],
-      [target, value, data, salt]
-    )
-  );
-}
-
 export function buildSetupOperations({
   ethers,
   chainId,
@@ -717,232 +693,18 @@ export function buildSetupOperations({
   labelPrefix = "",
   sequenceOffset = 0,
 }) {
-  const normalizedProblemId = BigInt(problemId);
-  if (normalizedProblemId < 1n) throw new Error("problemId must be positive");
-  if (!Number.isInteger(sequenceOffset) || sequenceOffset < 0) {
-    throw new Error("sequenceOffset must be a non-negative integer");
-  }
-  const labelFor = (suffix) => labelPrefix ? `${labelPrefix}.${suffix}` : suffix;
-  const labels = Object.freeze({
-    poolSetLedger: labelFor("pool.setLedger"),
-    ledgerSetCreditRecorder: labelFor("ledger.setCreditRecorder"),
-    ledgerSetRolloverDestination: labelFor("ledger.setRolloverDestination"),
-    poolSetSubmissionManager: labelFor("pool.setSubmissionManager"),
-    submissionsSetChallengeManager: labelFor("submissions.setChallengeManager"),
-    registryRegister: labelFor("registry.register"),
-    poolSetRegistry: labelFor("pool.setRegistry"),
-    registryFreeze: labelFor("registry.freeze"),
-  });
-  const registryConfig = {
-    specHash: config.problem.specHash,
-    verifierSourceHash: config.problem.verifierSourceHash,
-    verifierImageHash: config.problem.verifierImageHash,
-    admissionMatrixHash: config.problem.admissionMatrixHash,
-    metadataURI: config.problem.metadataURI,
-    pool: addresses.pool,
-    ledger: addresses.ledger,
-    submissionManager: addresses.submissions,
-    challengeManager: addresses.challenges,
-    challengeWindowSeconds: config.parameters.challengeWindowSeconds,
-    minImprovementAtoms: config.problem.minImprovementAtoms
-  };
-  const definitions = [
-    {
-      label: labels.poolSetLedger,
-      operationClass: "standard",
-      target: addresses.pool,
-      data: interfaces.pool.encodeFunctionData("setLedger", [addresses.ledger]),
-      dependsOnLabels: []
-    },
-    {
-      label: labels.ledgerSetCreditRecorder,
-      operationClass: "standard",
-      target: addresses.ledger,
-      data: interfaces.ledger.encodeFunctionData("setCreditRecorder", [addresses.submissions]),
-      dependsOnLabels: []
-    },
-    {
-      label: labels.poolSetSubmissionManager,
-      operationClass: "standard",
-      target: addresses.pool,
-      data: interfaces.pool.encodeFunctionData("setSubmissionManager", [addresses.submissions]),
-      dependsOnLabels: [labels.poolSetLedger]
-    },
-    {
-      label: labels.submissionsSetChallengeManager,
-      operationClass: "standard",
-      target: addresses.submissions,
-      data: interfaces.submissions.encodeFunctionData("setChallengeManager", [addresses.challenges]),
-      dependsOnLabels: [labels.ledgerSetCreditRecorder]
-    },
-    {
-      label: labels.registryRegister,
-      operationClass: "standard",
-      target: addresses.registry,
-      data: interfaces.registry.encodeFunctionData("registerExpected", [registryConfig, normalizedProblemId]),
-      dependsOnLabels: [
-        labels.poolSetLedger,
-        labels.ledgerSetCreditRecorder,
-        labels.poolSetSubmissionManager,
-        labels.submissionsSetChallengeManager
-      ]
-    },
-    {
-      label: labels.poolSetRegistry,
-      operationClass: "standard",
-      target: addresses.pool,
-      data: interfaces.pool.encodeFunctionData("setRegistry", [addresses.registry, normalizedProblemId]),
-      dependsOnLabels: [labels.registryRegister]
-    },
-    {
-      label: labels.ledgerSetRolloverDestination,
-      operationClass: "standard",
-      target: addresses.ledger,
-      data: interfaces.ledger.encodeFunctionData("setRolloverDestination", [addresses.rolloverVault]),
-      dependsOnLabels: [labels.poolSetRegistry]
-    },
-    {
-      label: labels.registryFreeze,
-      operationClass: "standard",
-      target: addresses.registry,
-      data: interfaces.registry.encodeFunctionData("freeze", [normalizedProblemId]),
-      dependsOnLabels: [labels.registryRegister, labels.poolSetRegistry, labels.ledgerSetRolloverDestination]
-    },
-    ...PAUSE_TARGET_KEYS.map((key) => ({
-      label: labelFor(`timelock.setPauseTarget.${key}`),
-      operationClass: "override",
-      target: timelockAddress,
-      data: interfaces.timelock.encodeFunctionData("setPauseTarget", [addresses[key], true]),
-      dependsOnLabels: [labels.registryFreeze]
-    }))
-  ];
-
-  const byLabel = new Map();
-  return definitions.map((definition, index) => {
-    const sequence = sequenceOffset + index + 1;
-    const value = 0n;
-    const salt = operationSalt(
-      ethers,
-      BigInt(chainId),
-      BigInt(sequence),
-      definition.label,
-      definition.target,
-      definition.data
-    );
-    const id = operationId(ethers, definition.target, value, definition.data, salt);
-    const scheduleFunction = definition.operationClass === "override" ? "scheduleOverride" : "schedule";
-    const overrideFallback = definition.operationClass === "standard"
-      ? (() => {
-          const fallbackSalt = operationSalt(
-            ethers,
-            BigInt(chainId),
-            BigInt(sequence),
-            `${definition.label}.override-fallback`,
-            definition.target,
-            definition.data
-          );
-          const fallbackId = operationId(
-            ethers,
-            definition.target,
-            value,
-            definition.data,
-            fallbackSalt
-          );
-          return {
-            operationId: fallbackId,
-            salt: fallbackSalt,
-            requiredConfirmations: config.governance.overrideThreshold.toString(),
-            delaySeconds: config.governance.overrideDelaySeconds.toString(),
-            transactionBuilder: {
-              schedule: {
-                to: timelockAddress,
-                value: "0",
-                data: interfaces.timelock.encodeFunctionData("scheduleOverride", [
-                  definition.target,
-                  value,
-                  definition.data,
-                  fallbackSalt
-                ])
-              },
-              confirm: {
-                to: timelockAddress,
-                value: "0",
-                data: interfaces.timelock.encodeFunctionData("confirm", [fallbackId])
-              },
-              execute: {
-                to: timelockAddress,
-                value: "0",
-                data: interfaces.timelock.encodeFunctionData("execute", [
-                  definition.target,
-                  value,
-                  definition.data,
-                  fallbackSalt
-                ])
-              }
-            }
-          };
-        })()
-      : null;
-    const operation = {
-      sequence,
-      label: definition.label,
-      operationClass: definition.operationClass,
-      status: "pending",
-      target: definition.target,
-      value: value.toString(),
-      data: definition.data,
-      salt,
-      operationId: id,
-      dependsOn: definition.dependsOnLabels.map((label) => {
-        const dependency = byLabel.get(label);
-        if (dependency === undefined) throw new Error(`Unknown operation dependency: ${label}`);
-        return dependency.operationId;
-      }),
-      requiredConfirmations: (
-        definition.operationClass === "override"
-          ? config.governance.overrideThreshold
-          : config.governance.threshold
-      ).toString(),
-      delaySeconds: (
-        definition.operationClass === "override"
-          ? config.governance.overrideDelaySeconds
-          : config.governance.delaySeconds
-      ).toString(),
-      transactionBuilder: {
-        schedule: {
-          to: timelockAddress,
-          value: "0",
-          data: interfaces.timelock.encodeFunctionData(scheduleFunction, [
-            definition.target,
-            value,
-            definition.data,
-            salt
-          ])
-        },
-        confirm: {
-          to: timelockAddress,
-          value: "0",
-          data: interfaces.timelock.encodeFunctionData("confirm", [id])
-        },
-        execute: {
-          to: timelockAddress,
-          value: "0",
-          data: interfaces.timelock.encodeFunctionData("execute", [
-            definition.target,
-            value,
-            definition.data,
-            salt
-          ])
-        }
-      },
-      overrideFallback,
-      executedOperationId: null,
-      executedOperationClass: null,
-      txHash: null,
-      blockNumber: null
-    };
-    byLabel.set(definition.label, operation);
-    return operation;
+  return deriveBoardSetupOperations({
+    ethers,
+    chainId,
+    timelockAddress,
+    addresses,
+    governance: config.governance,
+    parameters: config.parameters,
+    problem: config.problem,
+    interfaces,
+    problemId,
+    labelPrefix,
+    sequenceOffset,
   });
 }
 

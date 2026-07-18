@@ -247,6 +247,52 @@ export function buildDeploymentNoncePlan(ethers, { identityDigest, network, chai
   return assertJournal(record);
 }
 
+export function buildExecutableDeploymentNoncePlan(ethers, metadata, executableSteps, executableAddresses = null) {
+  const canonicalSteps = executableSteps.map((step) => {
+    const direct = step.kind === "direct-create";
+    const expectedKeys = direct ? ["data"] : ["data", "to", "value"];
+    if (!step.unsigned || Object.keys(step.unsigned).sort().join(",") !== expectedKeys.join(",")) {
+      throw new Error(`${step.id} unsigned deployment transaction shape is not canonical`);
+    }
+    if (direct) {
+      if (step.unsigned.data !== step.expectedInitCode) throw new Error(`${step.id} direct deployment bytes differ from expected initcode`);
+    } else if (
+      step.unsigned.data !== step.expectedCalldata
+      || String(step.unsigned.to).toLowerCase() !== String(step.factoryAddress).toLowerCase()
+      || BigInt(step.unsigned.value) !== 0n
+    ) {
+      throw new Error(`${step.id} factory deployment transaction differs from expected calldata`);
+    }
+    return {
+      name: step.id,
+      kind: step.kind,
+      constructorArgsHash: step.constructorArgsHash,
+      expectedInitCode: step.expectedInitCode,
+      ...(step.kind === "factory-call-create2" ? {
+        factoryAddress: step.factoryAddress,
+        salt: step.salt,
+        configurationHash: step.configurationHash,
+        configurationReadCalldata: step.configurationReadCalldata,
+        deploymentEventTopic: step.deploymentEventTopic,
+        expectedCalldata: step.expectedCalldata,
+        expectedValue: 0,
+      } : {}),
+    };
+  });
+  const plan = buildDeploymentNoncePlan(ethers, {
+    ...metadata,
+    steps: canonicalSteps,
+  });
+  if (executableAddresses !== null) {
+    for (const [index, step] of executableSteps.entries()) {
+      if (String(executableAddresses[step.addressKey]).toLowerCase() !== plan.steps[index].address.toLowerCase()) {
+        throw new Error(`${step.id} executable address differs from its canonical deployment payload`);
+      }
+    }
+  }
+  return plan;
+}
+
 export function reserveDeploymentNoncePlan(path, expected) {
   try {
     const existing = readJournal(path);

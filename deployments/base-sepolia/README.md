@@ -19,6 +19,11 @@ materializes seven shared roots, including the capsule-attested inactive SP1
 gateway, plus forty board contracts. It refuses any topology drift before
 nonce reservation or broadcast.
 
+The canonical command is `npm run deploy:base-sepolia` from `contracts/`; its
+production entry point cannot select the legacy planner. The legacy rehearsal is
+named `deploy:test-only-legacy-base-sepolia` and writes only
+`test-only-legacy-p42-prizes.json`.
+
 Fresh ceremonies require `P42_VERIFIER_IMAGE_DIGEST` to be the bare canonical
 `sha256:<64 lowercase hex>` digest, not a registry reference, tag, or
 `sha256:local-dev` placeholder. `P42_VERIFIER_IMAGE_HASH` must equal

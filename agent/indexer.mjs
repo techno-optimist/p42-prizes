@@ -34,6 +34,7 @@ import {
 import { parseStrictJsonBytes, readStrictJsonFileSync } from "./strict-json.mjs";
 import { loadProductionValidationContext } from "./production-validation-context.mjs";
 import { validateDeploymentRoleAcceptances, validateDurableRoleAcceptanceTimestamp } from "./role-acceptance.mjs";
+import { assertExactSetupOperations, deriveBoardSetupOperations } from "./setup-operation-plan.mjs";
 import {
   CANONICAL_BOARD_CONTRACTS,
   CANONICAL_CONTRACT_COUNT,
@@ -1078,86 +1079,25 @@ export function deriveExactSetupOperations(manifest) {
       rolloverVault: manifest.contracts.rolloverVault.address,
       ...Object.fromEntries(BOARD_CONTRACT_KEYS.map((key) => [key, contracts[key].address])),
     };
-    const prefix = isMultiBoardManifest(manifest) ? `board/${problem.problemId}.` : "";
-    const label = (suffix) => `${prefix}${suffix}`;
-    const registryConfig = {
-      specHash: problem.specHash,
-      verifierSourceHash: problem.verifierSourceHash,
-      verifierImageHash: problem.verifierImageHash,
-      admissionMatrixHash: problem.admissionMatrixHash,
-      metadataURI: problem.metadataURI,
-      pool: addresses.pool,
-      ledger: addresses.ledger,
-      submissionManager: addresses.submissions,
-      challengeManager: addresses.challenges,
-      challengeWindowSeconds: manifest.parameters.challengeWindowSeconds,
-      minImprovementAtoms: problem.minImprovementAtoms,
-    };
-    const definitions = [
-      ["pool.setLedger", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setLedger", [addresses.ledger]), []],
-      ["ledger.setCreditRecorder", "standard", addresses.ledger, interfaces.ledger.encodeFunctionData("setCreditRecorder", [addresses.submissions]), []],
-      ["pool.setSubmissionManager", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setSubmissionManager", [addresses.submissions]), ["pool.setLedger"]],
-      ["submissions.setChallengeManager", "standard", addresses.submissions, interfaces.submissions.encodeFunctionData("setChallengeManager", [addresses.challenges]), ["ledger.setCreditRecorder"]],
-      ["registry.register", "standard", addresses.registry, interfaces.registry.encodeFunctionData("registerExpected", [registryConfig, problem.problemId]), ["pool.setLedger", "ledger.setCreditRecorder", "pool.setSubmissionManager", "submissions.setChallengeManager"]],
-      ["pool.setRegistry", "standard", addresses.pool, interfaces.pool.encodeFunctionData("setRegistry", [addresses.registry, problem.problemId]), ["registry.register"]],
-      ["ledger.setRolloverDestination", "standard", addresses.ledger, interfaces.ledger.encodeFunctionData("setRolloverDestination", [addresses.rolloverVault]), ["pool.setRegistry"]],
-      ["registry.freeze", "standard", addresses.registry, interfaces.registry.encodeFunctionData("freeze", [problem.problemId]), ["registry.register", "pool.setRegistry", "ledger.setRolloverDestination"]],
-      ...["ledger", "submissions", "challenges"].map((key) => [`timelock.setPauseTarget.${key}`, "override", addresses.timelock, interfaces.timelock.encodeFunctionData("setPauseTarget", [addresses[key], true]), ["registry.freeze"]]),
-    ];
-    const byLabel = new Map();
-    for (const [offset, definition] of definitions.entries()) {
-      const [suffix, operationClass, target, data, dependencies] = definition;
-      const sequence = boardIndex * BOARD_SETUP_LABEL_SUFFIXES.length + offset + 1;
-      const fullLabel = label(suffix);
-      const saltFor = (saltLabel) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-        ["string", "uint256", "uint256", "string", "address", "bytes32"],
-        ["p42-prizes/governance-setup/v1", manifest.network.chainId, sequence, saltLabel, target, ethers.keccak256(data)],
-      ));
-      const idFor = (salt) => ethers.keccak256(ethers.AbiCoder.defaultAbiCoder().encode(
-        ["address", "uint256", "bytes", "bytes32"], [target, 0n, data, salt],
-      ));
-      const builderFor = (scheduleFunction, salt, id) => ({
-        schedule: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData(scheduleFunction, [target, 0n, data, salt]) },
-        confirm: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("confirm", [id]) },
-        execute: { to: addresses.timelock, value: "0", data: interfaces.timelock.encodeFunctionData("execute", [target, 0n, data, salt]) },
-      });
-      const salt = saltFor(fullLabel);
-      const operationId = idFor(salt);
-      const fallbackSalt = operationClass === "standard" ? saltFor(`${fullLabel}.override-fallback`) : null;
-      const fallbackId = fallbackSalt ? idFor(fallbackSalt) : null;
-      const derived = {
-        sequence, label: fullLabel, operationClass, target, value: "0", data, salt, operationId,
-        dependsOn: dependencies.map((dependency) => byLabel.get(label(dependency)).operationId),
-        requiredConfirmations: String(operationClass === "override" ? manifest.governance.overrideThreshold : manifest.governance.threshold),
-        delaySeconds: String(operationClass === "override" ? manifest.governance.overrideDelaySeconds : manifest.governance.delaySeconds),
-        transactionBuilder: builderFor(operationClass === "override" ? "scheduleOverride" : "schedule", salt, operationId),
-        overrideFallback: fallbackSalt ? {
-          operationId: fallbackId, salt: fallbackSalt,
-          requiredConfirmations: String(manifest.governance.overrideThreshold),
-          delaySeconds: String(manifest.governance.overrideDelaySeconds),
-          transactionBuilder: builderFor("scheduleOverride", fallbackSalt, fallbackId),
-        } : null,
-      };
-      byLabel.set(fullLabel, derived);
-      expected.push(derived);
-    }
+    expected.push(...deriveBoardSetupOperations({
+      ethers,
+      chainId: manifest.network.chainId,
+      timelockAddress: addresses.timelock,
+      addresses,
+      governance: manifest.governance,
+      parameters: manifest.parameters,
+      problem,
+      interfaces,
+      problemId: problem.problemId,
+      labelPrefix: isMultiBoardManifest(manifest) ? `board/${problem.problemId}` : "",
+      sequenceOffset: boardIndex * BOARD_SETUP_LABEL_SUFFIXES.length,
+    }));
   }
   return expected;
 }
 
 function validateExactSetupOperations(manifest) {
-  const expected = deriveExactSetupOperations(manifest);
-  const fields = ["sequence", "label", "operationClass", "target", "value", "data", "salt", "operationId", "dependsOn", "requiredConfirmations", "delaySeconds", "transactionBuilder", "overrideFallback"];
-  if (expected.length !== manifest.setupTransactions.length) {
-    throw new Error(`setupTransactions must contain exactly ${expected.length} derived operations`);
-  }
-  for (const [index, derived] of expected.entries()) {
-    const actual = Object.fromEntries(fields.map((field) => [field, manifest.setupTransactions[index][field]]));
-    const selected = Object.fromEntries(fields.map((field) => [field, derived[field]]));
-    if (stableStringify(actual) !== stableStringify(selected)) {
-      throw new Error(`setupTransactions[${index}] does not match the exact derived governance operation`);
-    }
-  }
+  assertExactSetupOperations(deriveExactSetupOperations(manifest), manifest.setupTransactions);
 }
 
 export function validateManifestEvidence(manifest, { allowFixture = false, productionSlate, capsuleResolver, blockTimestampResolver, explorerDossierResolver } = {}) {

@@ -88,7 +88,6 @@ describe("production deployment runbook command contract", () => {
       body: readFileSync(resolve(REPO_ROOT, path), "utf8"),
     }));
 
-    assert.match(executable, /mode === "deploy-multiboard-production"/);
     assert.match(executable, /async function productionReleaseInputs\(repoRoot, deploymentCommit\)/);
     assert.match(executable, /assertObjectiveVerifierCapsuleBinding\(ethersLibrary, capsule, slate, objectiveVerifierArtifact\)/);
     assert.doesNotMatch(executable, /productionReleaseInputs\(ethers,/);
@@ -128,8 +127,13 @@ describe("production deployment runbook command contract", () => {
     for (const runbook of runbooks) {
       assert.match(
         runbook.body,
-        /P42_DEPLOY_MODE=deploy-multiboard-production/,
-        `${runbook.path} must name the executable production mode`,
+        /npm run deploy:base-sepolia/,
+        `${runbook.path} must name the canonical production command`,
+      );
+      assert.match(
+        runbook.body,
+        /npm run continue:base-sepolia/,
+        `${runbook.path} must name the canonical continuation command`,
       );
       assert.doesNotMatch(
         runbook.body,

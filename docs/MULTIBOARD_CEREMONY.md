@@ -27,9 +27,10 @@ manifest says they are shared.
 
 **Current implementation boundary.** The production deployer constructs the
 seven shared roots, including the capsule-attested objective-verifier gateway,
-plus forty board contracts. It must fail before reading the pending nonce,
-reserving addresses, signing a journal, or broadcasting if that exact topology
-or any downstream evidence consumer has drifted.
+plus forty board contracts. Canonical-definition drift fails before the
+read-only pending-nonce lookup. The nonce-dependent executable payloads and all
+downstream setup operations are then fully materialized and validated before
+any durable output reservation, signing, or broadcast.
 
 Registry IDs are not operator-selected. Board array position `n` is required to
 use registry ID `n`, and `registerExpected` reverts if an out-of-order timelock
@@ -37,8 +38,8 @@ operation tries to register a different ID.
 
 ## Typed Input
 
-`P42_DEPLOY_MODE=deploy-multiboard-production` reads a strict JSON file named by
-`P42_MULTIBOARD_CEREMONY_CONFIG`. Its root shape is:
+`npm run deploy:base-sepolia` uses the production-only entry point and reads a
+strict JSON file named by `P42_MULTIBOARD_CEREMONY_CONFIG`. Its root shape is:
 
 ```json
 {
@@ -206,7 +207,6 @@ its final index fails before broadcast.
 
 ```bash
 cd contracts
-P42_DEPLOY_MODE=deploy-multiboard-production \
 P42_MULTIBOARD_CEREMONY_CONFIG=/absolute/path/ceremony.json \
 P42_PRODUCTION_SLATE_PATH=/absolute/path/out/slates/<digest>.slate.json \
 P42_RELEASE_CAPSULE=/absolute/path/out/capsules/<digest>.json \
@@ -238,7 +238,7 @@ transaction. It emits exactly eleven timelock operations per board:
 11. Challenge-manager pause-target authorization.
 
 For ten boards this is 110 independently confirmed operations. The only
-supported continuation command is `P42_DEPLOY_MODE=continue`. Production
+supported continuation command is `npm run continue:base-sepolia`. Production
 continuation requires two named, operator-distinct RPCs to agree on canonical
 Base Sepolia `finalized`/`safe` tags and OP Stack L1-origin/finality evidence.
 It reserves a private governance-operation journal bound to the authenticated

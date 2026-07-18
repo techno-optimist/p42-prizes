@@ -96,6 +96,12 @@ curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
 ## Safety Gates
 
 - Phase 0 is testnet and non-settlement.
+- `cd contracts && npm run deploy:base-sepolia` is the sole canonical Base
+  Sepolia deployment command. It is fixed to the exact-ten 47-contract planner.
+  Never add a mode-selectable or default legacy branch to that command; the
+  seven-contract rehearsal remains test-only and must use noncanonical output.
+  Canonical topology and the complete executable plan must validate and freeze
+  before the durable manifest reservation is created.
 - Build the product path as agent-operated by default: verifier reruns,
   transcript publication, queue draining, alert generation, and challenge
   candidate creation should not wait on a human approval step. External audit,
@@ -119,8 +125,10 @@ curl -fsS https://projectforty2.ai/prizes/skill.md >/dev/null
 
 ## Contract Gate
 
-The Base Sepolia deploy scaffold lives in `contracts/scripts/deploy-base-sepolia.js`.
-It writes `deployments/base-sepolia/p42-prizes.json` and requires real RPC,
+The canonical Base Sepolia executable lives in
+`contracts/scripts/deploy-base-sepolia-production.js` and delegates only to the
+production planner in `contracts/scripts/deploy-base-sepolia.js`. It writes
+`deployments/base-sepolia/p42-prizes.json` and requires real RPC,
 deployer, treasury, resolver, and frozen problem hash inputs. Do not mark Gate 1
 as deployed until that manifest contains real tx hashes, verified source links,
 and an indexer start block.

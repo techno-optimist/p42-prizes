@@ -217,13 +217,15 @@ deployment creates governance-owned contracts and pending operation bundles;
 independent governance signers schedule, confirm, and execute those bundles;
 then a keyless continuation verifies finalized on-chain completion.
 
-For a fresh public prize deployment, the canonical route is
-`P42_DEPLOY_MODE=deploy-multiboard-production` and the typed procedure in
+For a fresh public prize deployment, the only canonical route is
+`npm run deploy:base-sepolia` and the typed procedure in
 [MULTIBOARD_CEREMONY.md](MULTIBOARD_CEREMONY.md). It refuses to broadcast until
 every board passes local `admit-ready` and the resulting admission-matrix digest
-is bound to the registry hash. The environment-variable single-board route
-below remains a legacy rehearsal path only; it is never launch, funding, or
-Gate 1 evidence.
+is bound to the registry hash. The npm command unconditionally selects the
+production-specific `deploy-multiboard-production` entry point, ignoring any
+caller-supplied `P42_DEPLOY_MODE`; direct invocation of that entry point rejects
+a missing or non-production mode before importing deployment code. No supported
+production command can select the legacy topology.
 
 ### Exclusive Manifest Reservation And Recovery
 
@@ -234,12 +236,18 @@ transaction as the ceremony progresses. A second deploy invocation refuses to
 run while that reservation exists, so it cannot silently create a competing
 set of contracts and then lose the manifest write race.
 
+Before creating that durable reservation, production validates the digest-pinned
+canonical topology, exact executable membership, all 47 materialized
+initcode/calldata payloads, and all 110 setup operations, then freezes the
+preflight plan used by execution. Topology or plan drift therefore leaves no
+reservation behind; a corrected invocation can retry without stale-reservation
+recovery.
+
 If a ceremony stops before its manifest is written, do not restart it. Inspect
 the retained journal first; it may describe already-broadcast deployment
 transactions:
 
 ```bash
-P42_DEPLOY_MODE=inspect-reservation \
 P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
 P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
 P42_MULTIBOARD_CEREMONY_CONFIG=... \
@@ -248,7 +256,7 @@ P42_RELEASE_CAPSULE=... \
 P42_PRODUCTION_RELEASE_INDEX_PATH=... \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \
 P42_RELEASE_OUTPUT_ROOT=/absolute/path/release-output \
-npx hardhat run scripts/deploy-base-sepolia.js
+npm run inspect:base-sepolia-reservation
 ```
 
 Inspect mode independently reconstructs the expected identity from the clean
@@ -271,7 +279,7 @@ crashes while holding this lock, stop every ceremony runner, preserve and
 inspect the reservation plus lock record, and remove the lock only as an
 explicit recovery action before resuming reconciliation.
 
-### 1. Legacy Single-Board Rehearsal Inputs
+### 1. Test-Only Legacy Single-Board Rehearsal Inputs
 
 The deploy command requires all constructor policy to be explicit. No economic
 or DA default is accepted.
@@ -319,9 +327,12 @@ P42_ADMISSION_MATRIX_HASH=0x... \
 P42_METADATA_URI=ipfs://... \
 P42_SEED_SCORE_ATOMS=... \
 P42_MIN_IMPROVEMENT_ATOMS=... \
-P42_DEPLOY_MODE=deploy \
-npm run deploy:base-sepolia
+npm run deploy:test-only-legacy-base-sepolia
 ```
+
+This explicit test-only command always writes the noncanonical
+`deployments/base-sepolia/test-only-legacy-p42-prizes.json`; it cannot write the
+canonical production manifest and is never launch, funding, or Gate 1 evidence.
 
 Deployment requires two independently operated Base Sepolia RPC endpoints. The
 primary and secondary URLs must normalize to different origins and hostnames,
@@ -433,8 +444,7 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES=0x...,0x... \
   P42_ROLE_ACCEPTANCE_PACKET=... \
   ETHERSCAN_API_KEY=... \
-  P42_DEPLOY_MODE=continue \
-  npm run deploy:base-sepolia
+  npm run continue:base-sepolia
 ```
 
 Continuation is read-only on chain. It requires two operator-distinct RPCs to
