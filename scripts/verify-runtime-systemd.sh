@@ -131,6 +131,7 @@ if grep -Fq '"--mount-proc=/proc"' "$rootless_preflight"; then
   fail "rootless preflight must not remount proc beneath systemd kernel protections"
 fi
 grep -Fq '"name=rootless"' "$rootless_ready" || fail "rootless readiness must require explicit rootless security proof"
+grep -Fq 'info.get("CgroupDriver") != "systemd"' "$rootless_ready" || fail "rootless readiness must require the systemd cgroup driver"
 grep -Fq 'metadata.st_uid != expected_uid' "$rootless_ready" || fail "rootless readiness must bind socket ownership to the service UID"
 grep -Fq 'runtime_metadata.st_mode & 0o077' "$rootless_launch" || fail "rootless launcher must reject a broadly accessible user runtime"
 grep -Fq 'DBUS_SESSION_BUS_ADDRESS' "$rootless_launch" || fail "rootless launcher must bind Docker to the service user manager"

@@ -532,8 +532,8 @@ Install `scripts/p42_rootless_docker_ready.py` as
 `/usr/local/libexec/p42_rootless_docker_ready.py` too. Rootlesskit does not
 forward Docker's systemd readiness notification, so the unit uses `Type=exec`
 and an `ExecStartPost` gate that binds the private socket to the service UID and
-requires structured Docker identity plus the explicit `name=rootless` security
-option before dependents can start.
+requires structured Docker identity, the explicit `name=rootless` security
+option, and `CgroupDriver=systemd` before dependents can start.
 Install `scripts/p42_rootless_docker_launch.py` as
 `/usr/local/libexec/p42_rootless_docker_launch.py`. Before first startup, run
 `loginctl enable-linger p42-operator` and prove `user@$(id -u
@@ -574,8 +574,9 @@ The `deployments/p42-runtime.sysusers.example` fragment creates accounts only;
 host administration must install rootlesskit, setuid ID helpers, subordinate
 IDs, user-namespace policy, and cgroup support. The worker passes the validated
 socket to every Docker `info`, `run`, and cleanup invocation, and accepts the
-daemon only when structured `docker info` includes daemon identity plus the
-explicit `name=rootless` security option; it never falls back to
+daemon only when structured `docker info` includes daemon identity, the
+explicit `name=rootless` security option, and the systemd cgroup driver; it
+never falls back to
 `/var/run/docker.sock`.
 
 The resolver environment must provide `P42_PROBLEM_SLUG`,

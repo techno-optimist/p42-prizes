@@ -80,8 +80,9 @@ def parse_rootless_docker_info(payload: str | bytes) -> dict[str, object]:
     """Prove that the bound Docker daemon identifies itself as rootless.
 
     A private-looking Unix socket is only an endpoint convention.  The daemon
-    response must carry a stable identity and Docker's explicit rootless
-    security option before it can be used for untrusted verifier execution.
+    response must carry a stable identity, Docker's explicit rootless security
+    option, and the systemd cgroup driver before it can be used for untrusted
+    verifier execution.
     """
 
     try:
@@ -100,6 +101,8 @@ def parse_rootless_docker_info(payload: str | bytes) -> dict[str, object]:
         raise RunnerSandboxError("Docker info is missing daemon security options")
     if not any(option.strip().lower() == "name=rootless" for option in security_options):
         raise RunnerSandboxError("Docker daemon did not prove rootless security mode")
+    if info.get("CgroupDriver") != "systemd":
+        raise RunnerSandboxError("Docker daemon did not prove the systemd cgroup driver")
     return info
 
 

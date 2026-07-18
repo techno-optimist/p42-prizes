@@ -41,6 +41,8 @@ def validate_docker_info(raw: str) -> dict[str, Any]:
     security = info.get("SecurityOptions")
     if not isinstance(security, list) or "name=rootless" not in security:
         raise RootlessDockerReadyError("docker daemon did not prove name=rootless")
+    if info.get("CgroupDriver") != "systemd":
+        raise RootlessDockerReadyError("docker daemon did not prove the systemd cgroup driver")
     return info
 
 

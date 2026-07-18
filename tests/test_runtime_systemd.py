@@ -140,12 +140,14 @@ def test_rootless_preflight_probes_user_namespace_as_current_service_user(
 
 
 def test_rootless_readiness_requires_identity_and_rootless_security() -> None:
-    valid = '{"ID":"daemon-id","Name":"p42","ServerVersion":"29.2.1","SecurityOptions":["name=seccomp","name=rootless"]}'
+    valid = '{"ID":"daemon-id","Name":"p42","ServerVersion":"29.2.1","SecurityOptions":["name=seccomp","name=rootless"],"CgroupDriver":"systemd"}'
     assert READY.validate_docker_info(valid)["ID"] == "daemon-id"
     with pytest.raises(READY.RootlessDockerReadyError, match="name=rootless"):
         READY.validate_docker_info(valid.replace(',"name=rootless"', ""))
     with pytest.raises(READY.RootlessDockerReadyError, match="nonempty ID"):
         READY.validate_docker_info(valid.replace("daemon-id", ""))
+    with pytest.raises(READY.RootlessDockerReadyError, match="systemd cgroup"):
+        READY.validate_docker_info(valid.replace('"systemd"', '"none"'))
 
 
 def test_rootless_readiness_binds_socket_owner_and_exact_endpoint() -> None:
@@ -159,7 +161,7 @@ def test_rootless_readiness_binds_socket_owner_and_exact_endpoint() -> None:
         docker.write_text(
             "#!/bin/sh\n"
             f"printf '%s\\n' \"$@\" > {observed}\n"
-            "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42\",\"ServerVersion\":\"29.2.1\",\"SecurityOptions\":[\"name=rootless\"]}'\n",
+            "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42\",\"ServerVersion\":\"29.2.1\",\"SecurityOptions\":[\"name=rootless\"],\"CgroupDriver\":\"systemd\"}'\n",
             encoding="utf-8",
         )
         docker.chmod(0o700)

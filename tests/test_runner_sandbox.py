@@ -144,7 +144,7 @@ def test_docker_available_uses_only_the_bound_rootless_endpoint(tmp_path: Path, 
         "test \"$1\" = \"--host=unix:///run/p42-docker-fixture/docker.sock\" || exit 7\n"
         "test \"$2\" = info || exit 8\n"
         "test \"$3\" = '--format={{json .}}' || exit 8\n"
-        "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42-fixture\",\"ServerVersion\":\"27.0\",\"SecurityOptions\":[\"name=seccomp\",\"name=rootless\"]}'\n",
+        "printf '%s\\n' '{\"ID\":\"daemon-id\",\"Name\":\"p42-fixture\",\"ServerVersion\":\"27.0\",\"SecurityOptions\":[\"name=seccomp\",\"name=rootless\"],\"CgroupDriver\":\"systemd\"}'\n",
         encoding="utf-8",
     )
     client.chmod(0o700)
@@ -157,12 +157,13 @@ def test_docker_available_uses_only_the_bound_rootless_endpoint(tmp_path: Path, 
 
 
 def test_rootless_docker_info_requires_identity_and_security_proof():
-    valid = '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"]}'
+    valid = '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"],"CgroupDriver":"systemd"}'
     assert parse_rootless_docker_info(valid)["Name"] == "p42"
     for missing_proof in (
         '{"Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"]}',
         '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=seccomp"]}',
         '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0"}',
+        '{"ID":"daemon-id","Name":"p42","ServerVersion":"27.0","SecurityOptions":["name=rootless"],"CgroupDriver":"none"}',
         "not-json",
     ):
         with pytest.raises(RunnerSandboxError):
