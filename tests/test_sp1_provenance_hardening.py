@@ -289,6 +289,15 @@ def test_workflow_separates_untrusted_forensics_from_validated_evidence() -> Non
     assert "~/.cargo/git" not in cache
 
 
+def test_reproducibility_job_skips_cancelled_producers_but_rejects_failures() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    job = workflow[workflow.index("  objective-program-reproducibility:") :]
+    assert "if: ${{ always() && needs.objective-program.result != 'cancelled' }}" in job
+    assert 'if [[ "$PRODUCER_RESULT" != success ]]; then' in job
+    assert 'echo "objective-program producer validation failed: $PRODUCER_RESULT" >&2' in job
+    assert "exit 1" in job
+
+
 def test_workflow_enforces_bounded_disk_budget_before_candidate_builds() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     objective_job = workflow[
