@@ -8,13 +8,23 @@ not custody/governance signoff.
 
 ```bash
 PYTHONPATH=src python3 -m p42_prizes.cli governance-signoff-validate \
-  --report governance/base-mainnet-governance-signoff.json \
-  --output governance/base-mainnet-governance-signoff.normalized.json
+  --report governance/base-sepolia-governance-signoff-v2.json \
+  --trust-registry governance/attestation-trust-registry.json \
+  --artifact-root . \
+  --chain-rpc-url "$BASE_SEPOLIA_RPC_URL" \
+  --output governance/base-sepolia-governance-signoff-v2.normalized.json
 ```
 
-The `p42-governance-signoff/v1` packet must bind to the exact chain, frozen
-commit, deployment/configuration hashes, five contract addresses, contract
-source hashes, and runtime-bytecode hashes. It also requires:
+`p42-governance-signoff/v1` is the preserved historical five-contract packet.
+It may still be normalized and checked against its unchanged schema, but it is
+non-authorizing and cannot satisfy current Gate 2 or production launch
+composition.
+
+The current `p42-governance-signoff/v2` packet is Base-Sepolia-only and must
+bind the exact ordered 47-contract canonical topology, frozen deployment and
+evidence commits, canonical-topology and release-capsule artifacts,
+deployment/configuration artifacts, source bytes, and chain-verified runtime
+bytecode. It also requires:
 
 - distinct, evidenced identities and Ed25519 keys for the governance owner,
   security owner, pause guardian, and at least five multisig signers;
@@ -40,9 +50,11 @@ Remove `governance_hash` and `attestations`, canonicalize the remaining JSON,
 and sign:
 
 ```text
-P42-ATTESTATION-V1
-p42-governance-signoff/v1
+P42-ATTESTATION-V2
+p42-governance-signoff/v2
+<signer-role>
 sha256:<canonical-payload-digest>
+<signed-at-utc>
 ```
 
 Required signature roles are `governance-owner`, `security-owner`,
@@ -51,8 +63,8 @@ signer. Agents may prepare the payload but may not generate human signatures.
 
 ## Governance Rehearsal Checklist
 
-- Freeze the target release and verify all five deployed runtime-bytecode
-  hashes against the packet.
+- Freeze the target release and verify all 47 ordered topology slots and
+  deployed runtime-bytecode hashes against the packet.
 - Confirm on-chain signer roster, threshold, timelock, guardian, pauser,
   treasury, resolver, and target permissions from an independent RPC.
 - Schedule an ordinary operation; prove threshold and delay enforcement.
@@ -81,11 +93,11 @@ This handoff skeleton is intentionally incomplete and cannot validate.
 
 ```json
 {
-  "schema_version": "p42-governance-signoff/v1",
+  "schema_version": "p42-governance-signoff/v2",
   "signoff_id": "<REQUIRED_SIGNOFF_ID>",
   "completed_at_utc": "<REQUIRED_UTC_AFTER_REHEARSAL_AND_SIGNATURES>",
-  "network": "base-mainnet",
-  "release_binding": "<REQUIRED_CHAIN_CONTRACT_CONFIG_BINDING>",
+  "network": "base-sepolia",
+  "release_binding": "<REQUIRED_ORDERED_47_CONTRACT_CANONICAL_BINDING>",
   "governance_owner": {
     "name": "<REQUIRED_REAL_FULL_NAME>",
     "professional_email": "<REQUIRED_PROFESSIONAL_EMAIL>",

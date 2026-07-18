@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/launch-authority-roster-v1.schema.json",
+  "title": "P42 launch authority roster v1",
+  "description": "A release-bound, self-hashed roster for a future launch-authorization v2 protocol.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "roster_id",
+    "issued_at_utc",
+    "valid_from_utc",
+    "valid_until_utc",
+    "release_binding",
+    "rotation",
+    "roster_authority",
+    "role_holders",
+    "roster_digest",
+    "attestations"
+  ],
+  "properties": {
+    "schema_version": { "const": "p42-launch-authority-roster/v1" },
+    "roster_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{7,127}$" },
+    "issued_at_utc": { "type": "string", "format": "date-time" },
+    "valid_from_utc": { "type": "string", "format": "date-time" },
+    "valid_until_utc": { "type": "string", "format": "date-time" },
+    "release_binding": { "$ref": "#/$defs/releaseBinding" },
+    "rotation": { "$ref": "#/$defs/rotation" },
+    "roster_authority": { "$ref": "#/$defs/rosterAuthority" },
+    "role_holders": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/roleHolder" }
+    },
+    "roster_digest": { "$ref": "#/$defs/digest" },
+    "attestations": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/attestation" }
+    }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "evmAddress": { "type": "string", "pattern": "^0x[a-f0-9]{40}$" },
+    "keyId": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{2,127}$" },
+    "role": {
+      "enum": [
+        "production-launch-authority",
+        "independent-security-authority",
+        "governance-authority"
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "organization", "professional_email"],
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" }
+      }
+    },
+    "custodyPrincipal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["principal_id", "name", "organization", "professional_email"],
+      "properties": {
+        "principal_id": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{7,127}$" },
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" }
+      }
+    },
+    "releaseBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "release_id",
+        "repository_uri",
+        "source_commit",
+        "release_index_digest",
+        "deployment_manifest_digest",
+        "network",
+        "chain_id"
+      ],
+      "properties": {
+        "release_id": { "type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:/-]{7,127}$" },
+        "repository_uri": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "source_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "release_index_digest": { "$ref": "#/$defs/digest" },
+        "deployment_manifest_digest": { "$ref": "#/$defs/digest" },
+        "network": { "enum": ["base-sepolia", "base-mainnet"] },
+        "chain_id": { "type": "integer", "enum": [84532, 8453] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "network": { "const": "base-sepolia" } }, "required": ["network"] },
+          "then": { "properties": { "chain_id": { "const": 84532 } } }
+        },
+        {
+          "if": { "properties": { "network": { "const": "base-mainnet" } }, "required": ["network"] },
+          "then": { "properties": { "chain_id": { "const": 8453 } } }
+        }
+      ]
+    },
+    "rotation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "mode", "effective_at_utc", "supersedes_roster_digest", "reason"],
+          "properties": {
+            "sequence": { "const": 1 },
+            "mode": { "const": "initial" },
+            "effective_at_utc": { "type": "string", "format": "date-time" },
+            "supersedes_roster_digest": { "type": "null" },
+            "reason": { "const": "initial-appointment" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "mode", "effective_at_utc", "supersedes_roster_digest", "reason"],
+          "properties": {
+            "sequence": { "type": "integer", "minimum": 2 },
+            "mode": { "enum": ["planned", "emergency"] },
+            "effective_at_utc": { "type": "string", "format": "date-time" },
+            "supersedes_roster_digest": { "$ref": "#/$defs/digest" },
+            "reason": { "enum": ["scheduled-rotation", "custody-change", "role-change", "key-compromise", "authority-recovery"] }
+          }
+        }
+      ]
+    },
+    "rosterAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identity", "public_key", "trust_registry_key_id"],
+      "properties": {
+        "identity": { "$ref": "#/$defs/identity" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "trust_registry_key_id": { "$ref": "#/$defs/keyId" }
+      }
+    },
+    "roleHolder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "custody_principal", "ed25519_public_key", "evm_address", "trust_registry_key_id"],
+      "properties": {
+        "role": { "$ref": "#/$defs/role" },
+        "custody_principal": { "$ref": "#/$defs/custodyPrincipal" },
+        "ed25519_public_key": { "$ref": "#/$defs/publicKey" },
+        "evm_address": { "$ref": "#/$defs/evmAddress" },
+        "trust_registry_key_id": { "$ref": "#/$defs/keyId" }
+      }
+    },
+    "attestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": {
+          "enum": [
+            "launch-authority-roster-owner",
+            "production-launch-authority",
+            "independent-security-authority",
+            "governance-authority"
+          ]
+        },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/digest" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    }
+  }
+}

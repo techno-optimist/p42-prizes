@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime
+import json
 from pathlib import Path
 from typing import Any, Mapping
 
+import jsonschema
+
 from p42_prizes.legal import (
     AttestationValidationContext,
+    CANONICAL_BOARD_CONTRACTS,
+    CANONICAL_BOARD_COUNT,
+    CANONICAL_SHARED_CONTRACTS,
     ChainReader,
     build_attestation_context,
     _is_placeholder,
@@ -20,8 +26,16 @@ from p42_prizes.legal import (
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-GOVERNANCE_SIGNOFF_SCHEMA_VERSION = "p42-governance-signoff/v1"
+LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION = "p42-governance-signoff/v1"
+PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION = "p42-governance-signoff/v2"
+GOVERNANCE_SIGNOFF_SCHEMA_VERSIONS = {
+    LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+    PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+}
+# Backward-compatible name for callers that identify the historical packet.
+GOVERNANCE_SIGNOFF_SCHEMA_VERSION = LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION
 SIGNER_ROLES = {"treasury", "security", "engineering", "operations", "independent"}
+_SCHEMA_DIR = Path(__file__).resolve().parents[2] / "schemas"
 
 
 class GovernanceSignoffError(ValueError):
@@ -35,10 +49,14 @@ def normalize_governance_signoff(
     artifact_root: str | Path | None = None,
     chain_reader: ChainReader | None = None,
 ) -> dict[str, Any]:
-    if report.get("schema_version") != GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
-        raise GovernanceSignoffError(f"schema_version must be {GOVERNANCE_SIGNOFF_SCHEMA_VERSION}")
+    schema_version = report.get("schema_version")
+    if schema_version not in GOVERNANCE_SIGNOFF_SCHEMA_VERSIONS:
+        raise GovernanceSignoffError(
+            "schema_version must be one of "
+            + ", ".join(sorted(GOVERNANCE_SIGNOFF_SCHEMA_VERSIONS))
+        )
     context = build_attestation_context(
-        GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+        schema_version,
         trust_registry=trust_registry,
         artifact_root=artifact_root,
         chain_reader=chain_reader,
@@ -69,7 +87,10 @@ def normalize_governance_signoff(
     )
 
     normalized = dict(report)
-    provided_hash = normalized.pop("governance_hash", None)
+    provided_hash = normalized.get("governance_hash")
+    if not isinstance(provided_hash, str):
+        raise GovernanceSignoffError("report.governance_hash must be a required string")
+    normalized.pop("governance_hash")
     attestations = normalized.pop("attestations", None)
 
     for key in ("signoff_id", "completed_at_utc", "network"):
@@ -78,9 +99,21 @@ def normalize_governance_signoff(
     if normalized["network"] not in {"base-sepolia", "base-mainnet"}:
         raise GovernanceSignoffError("report.network must be base-sepolia or base-mainnet")
 
+    _require_versioned_release_binding_shape(normalized.get("release_binding"), schema_version)
     release_binding = _validate_release_binding(
-        normalized.get("release_binding"), "report.release_binding", GovernanceSignoffError, context
+        normalized.get("release_binding"),
+        "report.release_binding",
+        GovernanceSignoffError,
+        context,
+        require_canonical_topology=schema_version == PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+        require_legacy_topology=schema_version == LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
     )
+    if schema_version == PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
+        if normalized["network"] != "base-sepolia":
+            raise GovernanceSignoffError(
+                f"{PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION} is restricted to base-sepolia"
+            )
+        _require_canonical_topology_order(release_binding)
     if release_binding["network"] != normalized["network"]:
         raise GovernanceSignoffError("report.release_binding.network must match report.network")
 
@@ -149,7 +182,7 @@ def normalize_governance_signoff(
             raise GovernanceSignoffError(f"{prefix} must be on/after rehearsal completion and on/before report completion")
 
     governance_hash = sha256_bytes(canonical_json(normalized).encode("utf-8"))
-    if provided_hash is not None and provided_hash != governance_hash:
+    if provided_hash != governance_hash:
         raise GovernanceSignoffError(
             "governance_hash does not match canonical unsigned report bytes: "
             f"expected {governance_hash}, got {provided_hash}"
@@ -172,11 +205,109 @@ def normalize_governance_signoff(
         },
         context=context,
         completed_at=completed_at,
+        schema_version=schema_version,
     )
 
     normalized["attestations"] = [dict(attestation) for attestation in attestations]
     normalized["governance_hash"] = governance_hash
+    _validate_selected_governance_schema(normalized, schema_version)
     return normalized
+
+
+def governance_signoff_schema_name(schema_version: Any) -> str:
+    if schema_version == LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
+        return "governance-signoff.schema.json"
+    if schema_version == PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
+        return "governance-signoff-v2.schema.json"
+    raise GovernanceSignoffError(
+        "schema_version must be one of "
+        + ", ".join(sorted(GOVERNANCE_SIGNOFF_SCHEMA_VERSIONS))
+    )
+
+
+def _validate_selected_governance_schema(
+    report: Mapping[str, Any], schema_version: str
+) -> None:
+    schema_name = governance_signoff_schema_name(schema_version)
+    try:
+        schema = json.loads((_SCHEMA_DIR / schema_name).read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        errors = sorted(
+            jsonschema.Draft202012Validator(
+                schema, format_checker=jsonschema.FormatChecker()
+            ).iter_errors(report),
+            key=lambda item: tuple(str(part) for part in item.absolute_path),
+        )
+    except (OSError, json.JSONDecodeError, jsonschema.SchemaError) as exc:
+        raise GovernanceSignoffError(
+            f"{schema_version} schema could not be loaded"
+        ) from exc
+    if errors:
+        error = errors[0]
+        path = ".".join(str(part) for part in error.absolute_path)
+        location = f" at {path}" if path else ""
+        raise GovernanceSignoffError(
+            f"report failed {schema_version} schema validation{location}: {error.message}"
+        )
+
+
+def _require_versioned_release_binding_shape(value: Any, schema_version: str) -> None:
+    if not isinstance(value, Mapping):
+        raise GovernanceSignoffError("report.release_binding must be an object")
+    common_fields = {
+        "repository_uri",
+        "git_commit",
+        "network",
+        "chain_id",
+        "deployment_manifest",
+        "configuration_artifact",
+        "contracts",
+    }
+    legacy_contract_fields = {
+        "name",
+        "address",
+        "runtime_bytecode_hash",
+        "source_artifact",
+        "runtime_bytecode_artifact",
+        "chain_bytecode_artifact",
+    }
+    if schema_version == LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
+        binding_fields = common_fields
+        contract_fields = legacy_contract_fields
+    else:
+        binding_fields = common_fields | {
+            "binding_version",
+            "deployment_commit",
+            "canonical_topology",
+            "release_capsule",
+            "capsule_rebuild_attestation",
+        }
+        contract_fields = legacy_contract_fields | {"topology_key", "manifest_runtime_code_hash"}
+    if set(value) != binding_fields:
+        raise GovernanceSignoffError(
+            f"report.release_binding fields must exactly match {schema_version}"
+        )
+    contracts = value.get("contracts")
+    if not isinstance(contracts, list):
+        raise GovernanceSignoffError("report.release_binding.contracts must be an array")
+    for index, contract in enumerate(contracts):
+        if not isinstance(contract, Mapping) or set(contract) != contract_fields:
+            raise GovernanceSignoffError(
+                f"report.release_binding.contracts[{index}] fields must exactly match {schema_version}"
+            )
+
+
+def _require_canonical_topology_order(release_binding: Mapping[str, Any]) -> None:
+    expected = [f"shared.{key}" for key, _ in CANONICAL_SHARED_CONTRACTS]
+    expected.extend(
+        f"board.{board}.{key}"
+        for board in range(1, CANONICAL_BOARD_COUNT + 1)
+        for key, _ in CANONICAL_BOARD_CONTRACTS
+    )
+    if [contract["topology_key"] for contract in release_binding["contracts"]] != expected:
+        raise GovernanceSignoffError(
+            "report.release_binding.contracts must preserve canonical topology order"
+        )
 
 
 def _validate_multisig(
@@ -390,6 +521,7 @@ def _validate_attestations(
     expected_signed_at: Mapping[str, datetime],
     context: AttestationValidationContext,
     completed_at: datetime,
+    schema_version: str,
 ) -> None:
     attestations = _require_list(value, "report.attestations", min_items=len(signers) + 3)
     expected: dict[str, Mapping[str, Any]] = {
@@ -412,7 +544,7 @@ def _validate_attestations(
         _validate_signature(
             mapping,
             prefix,
-            schema_version=GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+            schema_version=schema_version,
             artifact_hash=governance_hash,
             identity=expected[role],
             expected_role=role,

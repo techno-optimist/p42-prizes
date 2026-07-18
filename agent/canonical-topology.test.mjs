@@ -85,6 +85,7 @@ test("packaged canonical topology projection is byte-identical to protocol autho
     "deployment-manifest.schema.json",
     "deployment-manifest-v2.schema.json",
     "indexer-checkpoint-v2.schema.json",
+    "indexer-checkpoint-v4.schema.json",
     "runner-health-v2.schema.json",
   ]) {
     assert.equal(

@@ -30,12 +30,21 @@ from p42_prizes.admission import (
 )
 from p42_prizes.adversarial import AdversarialCampaignError, normalize_adversarial_campaign_report
 from p42_prizes.da import DaEvidenceError, build_da_evidence, validate_da_evidence
-from p42_prizes.governance import GovernanceSignoffError, normalize_governance_signoff
+from p42_prizes.governance import (
+    GovernanceSignoffError,
+    PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+    governance_signoff_schema_name,
+    normalize_governance_signoff,
+)
 from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
 from p42_prizes.legal import ChainReader, LegalMemoError, normalize_legal_memo
 from p42_prizes.launch_authorization import (
     LaunchAuthorizationError,
     normalize_launch_authorization,
+)
+from p42_prizes.launch_authority_roster import (
+    LaunchAuthorityRosterError,
+    normalize_launch_authority_roster,
 )
 from p42_prizes.lint import lint_verifier
 from p42_prizes.mechanism import Credit, settle_pool
@@ -892,7 +901,12 @@ def _cmd_governance_signoff_validate(args: argparse.Namespace) -> int:
             artifact_root=artifact_root,
             chain_reader=chain_reader,
         )
-        _enforce_gate_schema(report, "governance-signoff.schema.json")
+        _enforce_gate_schema(report, governance_signoff_schema_name(report["schema_version"]))
+        if report["schema_version"] != PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION:
+            raise GovernanceSignoffError(
+                "historical p42-governance-signoff/v1 packets cannot authorize current Gate 2; "
+                f"use {PRODUCTION_GOVERNANCE_SIGNOFF_SCHEMA_VERSION}"
+            )
     except (AdmissionError, GovernanceSignoffError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -986,6 +1000,36 @@ def _cmd_production_launch_authorization_validate(args: argparse.Namespace) -> i
         print(str(exc), file=sys.stderr)
         return 1
     _write_or_print_json(report, args.output)
+    return 0
+
+
+def _cmd_launch_authority_roster_validate(args: argparse.Namespace) -> int:
+    try:
+        trust_registry = _load_pinned_trust_registry(
+            args.trust_registry,
+            allow_test=args.allow_test_trust_registry,
+        )
+        now_utc = (
+            datetime.fromisoformat(args.now_utc.replace("Z", "+00:00"))
+            if args.now_utc
+            else None
+        )
+        predecessor = load_evidence_file(args.predecessor) if args.predecessor else None
+        roster = normalize_launch_authority_roster(
+            load_evidence_file(args.roster),
+            trust_registry=trust_registry,
+            predecessor=predecessor,
+            now_utc=now_utc,
+        )
+    except (
+        AdmissionError,
+        LaunchAuthorityRosterError,
+        jsonschema.ValidationError,
+        ValueError,
+    ) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    _write_or_print_json(roster, args.output)
     return 0
 
 
@@ -1347,7 +1391,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     governance_signoff = subparsers.add_parser(
         "governance-signoff-validate",
-        help="validate and hash Gate 2 custody/governance signoff evidence",
+        help="validate and hash current v2 Gate 2 custody/governance signoff evidence",
     )
     governance_signoff.add_argument("--report", required=True)
     _add_attestation_validation_args(governance_signoff)
@@ -1396,6 +1440,21 @@ def build_parser() -> argparse.ArgumentParser:
     launch_authorization.set_defaults(
         func=_cmd_production_launch_authorization_validate
     )
+
+    authority_roster = subparsers.add_parser(
+        "launch-authority-roster-validate",
+        help="validate a release-bound authority roster for future launch-authorization v2",
+    )
+    authority_roster.add_argument("--roster", required=True)
+    authority_roster.add_argument(
+        "--predecessor",
+        help="immediate predecessor roster; mandatory for every non-initial rotation",
+    )
+    authority_roster.add_argument("--trust-registry", required=True)
+    authority_roster.add_argument("--allow-test-trust-registry", action="store_true")
+    authority_roster.add_argument("--now-utc")
+    authority_roster.add_argument("--output")
+    authority_roster.set_defaults(func=_cmd_launch_authority_roster_validate)
 
     source_release = subparsers.add_parser(
         "source-release-evidence-validate",
