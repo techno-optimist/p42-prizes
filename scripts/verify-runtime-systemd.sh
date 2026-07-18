@@ -35,6 +35,7 @@ line "$executor" 'StateDirectoryMode=0700'
 line "$executor" 'RuntimeDirectoryMode=0710'
 line "$executor" '  --docker-host unix:///run/p42-verifier-docker/docker.sock'
 line "$executor" '  --oom-events-path /sys/fs/cgroup/system.slice/p42-verifier-docker.service/memory.events \'
+line "$executor" '  --memory-safety-factor 2.0 \'
 line "$executor" 'ReadOnlyPaths=/etc/p42/verifier-executor /opt/p42'
 line "$docker" 'User=p42-verifier-executor'
 line "$docker" 'Group=p42-verifier-executor'
@@ -50,11 +51,23 @@ line "$docker" 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK'
 line "$docker" 'Environment=DOCKER_HOST=unix:///run/p42-verifier-docker/docker.sock'
 line "$docker" 'StateDirectoryMode=0700'
 line "$docker" 'MemorySwapMax=0'
-line "$docker" 'MemoryHigh=5G'
-line "$docker" 'MemoryMax=6G'
-max_board_memory=$($PYTHON -c 'import json,sys; print(max(b["required_memory_mb"] for b in json.load(open(sys.argv[1]))["boards"]))' "$boards" 2>/dev/null) \
-  || fail 'verifier board memory policy must be valid JSON'
-(( max_board_memory <= 4096 )) || fail 'verifier board memory policy exceeds the Docker service cgroup budget'
+line "$docker" 'Environment=P42_DOCKER_DAEMON_HEADROOM_MB=2048'
+line "$docker" 'MemoryHigh=9G'
+line "$docker" 'MemoryMax=10G'
+$PYTHON - "$boards" "$executor" "$docker" <<'PY' || fail 'effective verifier container memory plus daemon headroom exceeds the Docker service cgroup budget'
+import json, math, re, sys
+boards_path, executor_path, docker_path = sys.argv[1:]
+boards = json.load(open(boards_path, encoding="utf-8"))["boards"]
+executor = open(executor_path, encoding="utf-8").read()
+docker = open(docker_path, encoding="utf-8").read()
+factor = float(re.search(r"--memory-safety-factor\s+([0-9.]+)", executor).group(1))
+headroom = int(re.search(r"P42_DOCKER_DAEMON_HEADROOM_MB=(\d+)", docker).group(1))
+value, suffix = re.search(r"^MemoryMax=(\d+)([GM])$", docker, re.MULTILINE).groups()
+parent_mb = int(value) * (1024 if suffix == "G" else 1)
+effective_mb = math.ceil(max(board["required_memory_mb"] for board in boards) * factor) + headroom
+if effective_mb > parent_mb:
+    raise SystemExit(f"effective={effective_mb}MiB parent={parent_mb}MiB")
+PY
 line "$docker" 'ConditionPathExists=!/run/docker.sock'
 line "$docker" 'ConditionPathExists=!/var/run/docker.sock'
 

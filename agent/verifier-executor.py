@@ -18,6 +18,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -41,10 +42,14 @@ def send_response(connection: socket.socket, response: dict) -> bool:
 
 
 def read_request_frame(connection: socket.socket, timeout_seconds: float) -> bytes:
-    connection.settimeout(timeout_seconds)
+    deadline = time.monotonic() + timeout_seconds
     chunks = bytearray()
     try:
         while b"\n" not in chunks and len(chunks) <= MAX_REQUEST_BYTES:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VerifierExecutorError("executor IPC read deadline exceeded")
+            connection.settimeout(remaining)
             chunk = connection.recv(min(4096, MAX_REQUEST_BYTES + 1 - len(chunks)))
             if not chunk:
                 break

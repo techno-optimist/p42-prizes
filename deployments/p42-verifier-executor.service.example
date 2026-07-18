@@ -18,6 +18,7 @@ ExecStart=/usr/bin/python3 /opt/p42/agent/verifier-executor.py \
   --state /var/lib/p42/verifier-executor/state.json \
   --lock /var/lib/p42/verifier-executor/executor.lock \
   --oom-events-path /sys/fs/cgroup/system.slice/p42-verifier-docker.service/memory.events \
+  --memory-safety-factor 2.0 \
   --docker-host unix:///run/p42-verifier-docker/docker.sock
 Restart=on-failure
 RestartSec=15s

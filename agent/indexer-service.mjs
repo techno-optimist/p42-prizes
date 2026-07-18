@@ -2,7 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -128,54 +128,94 @@ export function publishMonotonicCheckpointSync({
 
 
 export async function acquireIndexerSingletonLock(lockPath, { spawnImpl = spawn } = {}) {
-  mkdirSync(resolve(lockPath, ".."), { recursive: true, mode: 0o700 });
-  const script = "import fcntl,sys; f=open(sys.argv[1],'a+'); fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB); print('READY',flush=True); sys.stdin.buffer.read(1)";
-  const child = spawnImpl("/usr/bin/python3", ["-c", script, resolve(lockPath)], { stdio: ["pipe", "pipe", "pipe"] });
+  const resolvedPath = resolve(lockPath);
+  mkdirSync(resolve(resolvedPath, ".."), { recursive: true, mode: 0o700 });
+  const descriptor = openSync(resolvedPath, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
+  const metadata = fstatSync(descriptor);
+  if (!metadata.isFile() || metadata.nlink !== 1) {
+    closeSync(descriptor);
+    throw new Error("indexer singleton lock must be a single-link regular file");
+  }
+  // flock follows the inherited open-file description. The helper may exit
+  // after acquisition without releasing the lock retained by this descriptor.
+  const script = "import fcntl; fcntl.flock(3,fcntl.LOCK_EX|fcntl.LOCK_NB); print('READY',flush=True)";
+  let child;
+  try {
+    child = spawnImpl("/usr/bin/python3", ["-c", script], { stdio: ["ignore", "pipe", "pipe", descriptor] });
+  } catch (error) {
+    closeSync(descriptor);
+    throw error;
+  }
   return new Promise((resolveLock, rejectLock) => {
     let output = "";
     let errors = "";
     let ready = false;
     let released = false;
-    let resolveLifetime;
-    let rejectLifetime;
-    const lifetime = new Promise((resolvePromise, rejectPromise) => {
-      resolveLifetime = resolvePromise;
-      rejectLifetime = rejectPromise;
-    });
-    const timer = setTimeout(() => { child.kill("SIGKILL"); rejectLock(new Error("indexer singleton lock timeout")); }, 5000);
+    let settled = false;
+    const reject = (error) => {
+      if (settled) return;
+      settled = true;
+      closeSync(descriptor);
+      rejectLock(error);
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("indexer singleton lock timeout"));
+    }, 5000);
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk) => { errors += chunk; });
     child.stdout.on("data", (chunk) => {
       output += chunk;
-      if (output === "READY\n") {
-        clearTimeout(timer);
-        ready = true;
-        const release = async () => {
-          if (released) return;
-          released = true;
-          child.stdin.end("R");
-          await lifetime;
-        };
-        release.lost = lifetime;
-        resolveLock(release);
-      }
+      if (output === "READY\n") ready = true;
     });
     child.once("exit", (code) => {
       clearTimeout(timer);
-      if (!ready) {
-        rejectLock(new Error(`indexer singleton lock unavailable: ${errors.trim() || code}`));
-      } else if (released && code === 0) {
-        resolveLifetime();
-      } else {
-        rejectLifetime(new Error(`indexer singleton lock lost: ${errors.trim() || `helper exited ${code}`}`));
+      if (!ready || code !== 0) {
+        reject(new Error(`indexer singleton lock unavailable: ${errors.trim() || code}`));
+        return;
       }
+      settled = true;
+      const release = async () => {
+        if (released) return;
+        released = true;
+        closeSync(descriptor);
+      };
+      release.assertOwned = () => {
+        if (released) throw new Error("indexer singleton publication ownership was lost");
+        fstatSync(descriptor);
+      };
+      resolveLock(release);
     });
+    child.once("error", (error) => reject(error));
   });
 }
 
 
-function generationId(checkpoint) {
-  const digest = createHash("sha256").update(stableStringify(checkpoint)).digest("hex");
+function archiveTreeDigest(path) {
+  const digest = createHash("sha256");
+  const visit = (relative) => {
+    const target = relative ? join(path, relative) : path;
+    const metadata = lstatSync(target);
+    if (metadata.isSymbolicLink()) throw new Error("indexer generation archive contains a symbolic link");
+    if (metadata.isDirectory()) {
+      digest.update(`directory\0${relative}\0`);
+      for (const entry of readdirSync(target).sort()) visit(relative ? join(relative, entry) : entry);
+      return;
+    }
+    if (!metadata.isFile()) throw new Error("indexer generation archive contains an unsupported filesystem entry");
+    const bytes = readFileSync(target);
+    digest.update(`file\0${relative}\0${bytes.length}\0`);
+    digest.update(bytes);
+  };
+  visit("");
+  return digest.digest("hex");
+}
+
+
+function generationId(checkpoint, archiveSha256) {
+  const digest = createHash("sha256")
+    .update(`${stableStringify(checkpoint)}\0${archiveSha256}`)
+    .digest("hex");
   return `${String(checkpoint.range.toBlock).padStart(16, "0")}-${digest}`;
 }
 
@@ -199,9 +239,20 @@ function readCurrentGeneration(root, validator) {
       || current.archive_path !== `generations/${current.generation_id}/archive`) {
     throw new Error("invalid accepted indexer generation pointer");
   }
-  return { pointer: current, checkpoint: validateGenerationDirectory(
-    join(root, "generations", current.generation_id), current.generation_id, validator,
-  ) };
+  const path = join(root, "generations", current.generation_id);
+  const checkpoint = validatePublicationCheckpoint(
+    readStrictJsonFileSync(join(path, "checkpoint.json"), CHECKPOINT_LIMITS), validator,
+  );
+  if (!/^\d{16}-[0-9a-f]{64}$/.test(current.generation_id)
+      || !current.generation_id.startsWith(`${String(checkpoint.range.toBlock).padStart(16, "0")}-`)) {
+    throw new Error("accepted indexer generation id does not bind its checkpoint height");
+  }
+  try {
+    const validated = validateGenerationDirectory(path, current.generation_id, validator);
+    return { pointer: current, checkpoint, metadata: validated.metadata, integrityError: null };
+  } catch (error) {
+    return { pointer: current, checkpoint, metadata: null, integrityError: error };
+  }
 }
 
 
@@ -212,21 +263,23 @@ function validateGenerationDirectory(path, id, validator) {
   const checkpoint = validatePublicationCheckpoint(
     readStrictJsonFileSync(checkpointPath, CHECKPOINT_LIMITS), validator,
   );
+  const archiveSha256 = archiveTreeDigest(join(path, "archive"));
   if (stableStringify(Object.keys(metadata).sort()) !== stableStringify([
-    "checkpoint_sha256", "generation_id", "previous_generation_id", "schema_version",
+    "archive_sha256", "checkpoint_sha256", "generation_id", "previous_generation_id", "schema_version",
   ])
-      || metadata.schema_version !== "p42-indexer-generation/v1"
+      || metadata.schema_version !== "p42-indexer-generation/v2"
       || metadata.generation_id !== id
       || (metadata.previous_generation_id !== null
         && (typeof metadata.previous_generation_id !== "string"
           || basename(metadata.previous_generation_id) !== metadata.previous_generation_id))
       || metadata.checkpoint_sha256 !== createHash("sha256").update(checkpointBytes).digest("hex")
-      || generationId(checkpoint) !== id
+      || metadata.archive_sha256 !== archiveSha256
+      || generationId(checkpoint, archiveSha256) !== id
       || !lstatSync(join(path, "archive")).isDirectory()
       || lstatSync(join(path, "archive")).isSymbolicLink()) {
     throw new Error("indexer generation metadata or archive binding is invalid");
   }
-  return checkpoint;
+  return { checkpoint, metadata };
 }
 
 
@@ -256,7 +309,10 @@ function assertMatchingGenerationTrees(left, right, relative = "") {
 }
 
 
-export function publishGenerationSync({ publicationRoot, stagingPath, validator = validateMultiBoardCheckpoint } = {}) {
+export function publishGenerationSync({
+  publicationRoot, stagingPath, validator = validateMultiBoardCheckpoint, ownership = null,
+} = {}) {
+  ownership?.assertOwned?.();
   const root = resolve(publicationRoot);
   const stage = resolve(stagingPath);
   const candidatePath = join(stage, "checkpoint.json");
@@ -279,31 +335,56 @@ export function publishGenerationSync({ publicationRoot, stagingPath, validator 
     syncDirectory(join(root, "quarantine"));
     throw error;
   }
-  if (decision.decision === "unchanged") {
-    rmSync(stage, { recursive: true, force: true });
-    return { ...decision, checkpoint: candidate, generationId: current.pointer.generation_id };
-  }
-  const id = generationId(candidate);
+  const archiveSha256 = archiveTreeDigest(join(stage, "archive"));
+  const id = generationId(candidate, archiveSha256);
   const destination = join(root, "generations", id);
+  const exactRetry = decision.decision === "unchanged" && current.pointer.generation_id === id;
   writeFileSync(join(stage, "generation.json"), `${stableStringify({
-    schema_version: "p42-indexer-generation/v1", generation_id: id,
+    schema_version: "p42-indexer-generation/v2", generation_id: id,
+    archive_sha256: archiveSha256,
     checkpoint_sha256: createHash("sha256").update(readFileSync(candidatePath)).digest("hex"),
-    previous_generation_id: current?.pointer.generation_id ?? null,
+    previous_generation_id: exactRetry
+      ? current.metadata?.previous_generation_id ?? null : current?.pointer.generation_id ?? null,
   })}\n`, { mode: 0o600 });
-  if (existsSync(destination)) {
-    const recovered = validateGenerationDirectory(destination, id, validator);
-    if (stableStringify(recovered) !== stableStringify(candidate)) {
-      throw new Error("recovered indexer generation checkpoint does not match regenerated candidate");
-    }
+  validateGenerationDirectory(stage, id, validator);
+  if (exactRetry && current.integrityError === null) {
     assertMatchingGenerationTrees(destination, stage);
     rmSync(stage, { recursive: true, force: true });
+    return { ...decision, checkpoint: candidate, generationId: id };
+  }
+  if (existsSync(destination)) {
+    if (exactRetry) {
+      const rejected = join(root, "quarantine", `${Date.now()}-${randomBytes(8).toString("hex")}`);
+      renameSync(destination, rejected);
+      try {
+        renameSync(stage, destination);
+      } catch (error) {
+        renameSync(rejected, destination);
+        throw error;
+      }
+      rmSync(rejected, { recursive: true, force: true });
+      syncDirectory(join(root, "generations"));
+      syncDirectory(join(root, "quarantine"));
+    } else {
+      const recovered = validateGenerationDirectory(destination, id, validator);
+      if (stableStringify(recovered.checkpoint) !== stableStringify(candidate)) {
+        throw new Error("recovered indexer generation checkpoint does not match regenerated candidate");
+      }
+      assertMatchingGenerationTrees(destination, stage);
+      rmSync(stage, { recursive: true, force: true });
+    }
   } else {
     renameSync(stage, destination);
     syncDirectory(join(root, "generations"));
   }
   const pointer = { schema_version: "p42-indexer-generation-pointer/v1", generation_id: id,
     checkpoint_path: `generations/${id}/checkpoint.json`, archive_path: `generations/${id}/archive` };
+  ownership?.assertOwned?.();
   writeFileAtomicSync(join(root, "current.json"), `${stableStringify(pointer)}\n`);
+  if (decision.decision === "unchanged" && current.pointer.generation_id !== id) {
+    rmSync(join(root, "generations", current.pointer.generation_id), { recursive: true, force: true });
+    syncDirectory(join(root, "generations"));
+  }
   return { ...decision, checkpoint: candidate, generationId: id };
 }
 
@@ -434,12 +515,8 @@ export async function runIndexerService(options, dependencies = {}) {
     const releaseLock = resolvedRoot
       ? await (dependencies.acquireLockImpl ?? acquireIndexerSingletonLock)(join(resolvedRoot, "publisher.lock"))
       : async () => {};
-    let lockHeld = true;
-    const lockLifetime = releaseLock.lost
-      ? releaseLock.lost.catch((error) => { lockHeld = false; throw error; })
-      : new Promise(() => {});
     try {
-      const cycle = async () => {
+      {
         let cycleCandidate = resolvedCandidate;
         let stage = null;
         if (resolvedRoot) {
@@ -453,13 +530,15 @@ export async function runIndexerService(options, dependencies = {}) {
         if (generated.reconstruction?.complete !== true || generated.reconstruction?.ok !== true) {
           throw new Error("indexer cycle reconstruction was incomplete or failed");
         }
-        if (!lockHeld) throw new Error("indexer singleton lock was lost before publication");
+        releaseLock.assertOwned?.();
         rpcLastSuccessAtMs = nowImpl();
         rpcCurrentFailure = false;
         if (lastHead === null || generated.range.toBlock > lastHead) headLastAdvancedAtMs = rpcLastSuccessAtMs;
         lastHead = generated.range.toBlock;
         const publication = resolvedRoot
-          ? (dependencies.publishGenerationImpl ?? publishGenerationSync)({ publicationRoot: resolvedRoot, stagingPath: stage })
+          ? (dependencies.publishGenerationImpl ?? publishGenerationSync)({
+            publicationRoot: resolvedRoot, stagingPath: stage, ownership: releaseLock,
+          })
           : publishImpl({ candidatePath: resolvedCandidate, outputPath: resolvedOutput });
         checkpoint = publication.checkpoint;
         lastSuccessAtMs = nowImpl();
@@ -467,13 +546,12 @@ export async function runIndexerService(options, dependencies = {}) {
         consecutiveFailures = 0;
         latestError = null;
         publishHealth();
-      };
-      await Promise.race([cycle(), lockLifetime]);
+      }
     } catch (error) {
       consecutiveFailures += 1;
       latestError = { message: sanitizedError(error), failed_at_utc: iso(nowImpl()) };
       publishHealth();
-      if (!lockHeld || once || consecutiveFailures >= maxConsecutiveFailures) throw error;
+      if (once || consecutiveFailures >= maxConsecutiveFailures) throw error;
     } finally {
       await releaseLock();
     }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import pwd
@@ -224,9 +225,9 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
         ),
         (
             "deployments/p42-verifier-docker.service.example",
-            "MemoryMax=6G",
+            "MemoryMax=10G",
             "MemoryMax=2G",
-            "MemoryMax=6G",
+            "MemoryMax=10G",
         ),
         (
             "deployments/p42-verifier-executor.service.example",
@@ -350,3 +351,14 @@ def test_verifier_rejects_widened_runtime_policy(
 
     assert result.returncode != 0
     assert error in result.stderr
+
+
+def test_static_gate_uses_effective_container_limit_and_daemon_headroom(tmp_path: Path) -> None:
+    root = copy_fixture(tmp_path)
+    boards = root / "deployments/p42-verifier-executor-boards.json.example"
+    value = json.loads(boards.read_text(encoding="utf-8"))
+    value["boards"][0]["required_memory_mb"] = 4097
+    boards.write_text(json.dumps(value), encoding="utf-8")
+    result = run_verifier(root)
+    assert result.returncode != 0
+    assert "effective verifier container memory plus daemon headroom" in result.stderr
