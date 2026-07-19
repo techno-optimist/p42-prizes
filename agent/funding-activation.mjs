@@ -9,7 +9,7 @@ import { ethers } from "ethers";
 import { assertCanonicalManifestTopology } from "./canonical-topology.mjs";
 
 import { manifestProblemContracts } from "./indexer.mjs";
-import { readStrictJsonFileSync, parseStrictJsonBytes } from "./strict-json.mjs";
+import { readStrictJsonFileSync, readStrictJsonFileSyncWithBytes, parseStrictJsonBytes } from "./strict-json.mjs";
 import { validateSolverManifest } from "./solver-manifest.mjs";
 import {
   assertActivationRpcAuthority,
@@ -20,6 +20,7 @@ import {
 
 const LIMITS = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 256, trailingNewline: "allow" });
 const AUTH_SCHEMA = "p42-production-launch-authorization/v1";
+const SP1_SECURITY_REPORT_SCHEMA = "p42-objective-dependency-security-report/v1";
 export const ACTIVATION_SIGNATURES_SCHEMA = "p42-funding-activation-signatures/v2";
 export const ACTIVATION_PLAN_SCHEMA = "p42-funding-activation-plan/v2";
 
@@ -62,7 +63,8 @@ export function serializeFundingActivationPlan(plan) {
 
 export function assertFundingActivationPlanTopology(plan) {
   if (!plan || !Array.isArray(plan.operations) || plan.operations.length !== 30
-      || plan.boardCount !== 10 || !/^sha256:[0-9a-f]{64}$/.test(plan.authorizationDigest ?? "")) {
+      || plan.boardCount !== 10 || !/^sha256:[0-9a-f]{64}$/.test(plan.authorizationDigest ?? "")
+      || !/^sha256:[0-9a-f]{64}$/.test(plan.dependencySecurityReportDigest ?? "")) {
     throw new Error("funding activation plan must contain the exact ordered 30-operation topology");
   }
   assertActivationRpcAuthority(plan.rpcAuthority);
@@ -308,6 +310,7 @@ export function runProductionAuthorizationValidator({
   authorizationPath,
   trustRegistryPath,
   artifactRoot,
+  sp1SecurityReportPath,
   chainRpcUrl,
   nowUtc = null,
   spawn = spawnSync,
@@ -317,8 +320,50 @@ export function runProductionAuthorizationValidator({
   const authorization = exactPath(authorizationPath, "authorization");
   const registry = exactPath(trustRegistryPath, "trust registry");
   const artifacts = exactPath(artifactRoot, "artifact root");
+  const securityReport = exactPath(sp1SecurityReportPath, "SP1 dependency security report");
   if (typeof chainRpcUrl !== "string" || !/^https:\/\//.test(chainRpcUrl)) {
     throw new Error("production authorization validation requires an explicit HTTPS chain RPC URL");
+  }
+  const validatorEnv = Object.fromEntries(
+    ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"]
+      .filter((name) => typeof process.env[name] === "string")
+      .map((name) => [name, process.env[name]]),
+  );
+  validatorEnv.PYTHONPATH = resolve(root, "src");
+  const scanner = exactPath(resolve(root, "scripts/check_sp1_dependency_security.py"), "SP1 dependency security scanner");
+  const policy = exactPath(resolve(root, "security/sp1-dependency-policy-v1.json"), "SP1 dependency security policy");
+  const expectedReport = readStrictJsonFileSyncWithBytes(securityReport, {
+    ...LIMITS, trailingNewline: "require", publicFile: true,
+  });
+  const securityResult = spawn(executable, [scanner, "--json", "--root", root, "--policy", policy], {
+    cwd: root,
+    env: validatorEnv,
+    encoding: null,
+    maxBuffer: LIMITS.maxBytes,
+    timeout: 15 * 60 * 1000,
+    killSignal: "SIGKILL",
+    shell: false,
+    windowsHide: true,
+  });
+  if (securityResult.error) throw new Error(`SP1 dependency security gate failed or timed out: ${securityResult.error.message}`);
+  if (securityResult.signal !== null && securityResult.signal !== undefined) {
+    throw new Error(`SP1 dependency security gate terminated by ${securityResult.signal}`);
+  }
+  if (![0, 1].includes(securityResult.status)) {
+    const stderr = Buffer.from(securityResult.stderr ?? Buffer.alloc(0)).subarray(0, 4096).toString("utf8").trim();
+    throw new Error(`SP1 dependency security gate could not produce an authoritative report${stderr ? `: ${stderr}` : ""}`);
+  }
+  const securityBytes = Buffer.from(securityResult.stdout ?? Buffer.alloc(0));
+  const securityValue = parseStrictJsonBytes(securityBytes, { ...LIMITS, trailingNewline: "require" });
+  if (securityValue?.schema !== SP1_SECURITY_REPORT_SCHEMA
+      || !securityBytes.equals(expectedReport.bytes)
+      || canonical(securityValue) !== canonical(expectedReport.value)) {
+    throw new Error("SP1 dependency security report is missing, changed, or not the exact fresh scanner output");
+  }
+  if (securityResult.status !== 0 || securityValue.result !== "pass"
+      || securityValue.summary?.highFindings !== 0 || securityValue.summary?.findings !== 0
+      || securityValue.summary?.trackedLockfiles !== 7 || securityValue.summary?.sp1Lockfiles !== 4) {
+    throw new Error("SP1 dependency security gate blocks production launch authorization");
   }
   const args = [
     "-m", "p42_prizes.cli", "production-launch-authorization-validate",
@@ -328,12 +373,6 @@ export function runProductionAuthorizationValidator({
     "--chain-rpc-url", chainRpcUrl,
   ];
   if (nowUtc !== null) args.push("--now-utc", nowUtc);
-  const validatorEnv = Object.fromEntries(
-    ["PATH", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"]
-      .filter((name) => typeof process.env[name] === "string")
-      .map((name) => [name, process.env[name]]),
-  );
-  validatorEnv.PYTHONPATH = resolve(root, "src");
   const result = spawn(executable, args, {
     cwd: root,
     env: validatorEnv,
@@ -357,7 +396,12 @@ export function runProductionAuthorizationValidator({
   if (value?.schema_version !== AUTH_SCHEMA || value.status !== "authorized") {
     throw new Error("production authorization validator returned an unexpected artifact");
   }
-  return Object.freeze({ value, validatedBytes: bytes, validatedBytesDigest: sha256(bytes) });
+  return Object.freeze({
+    value,
+    validatedBytes: bytes,
+    validatedBytesDigest: sha256(bytes),
+    dependencySecurityReportDigest: sha256(securityBytes),
+  });
 }
 
 export function buildFundingActivationPlan({
@@ -382,7 +426,8 @@ export function buildFundingActivationPlan({
     throw new Error("funding activation requires the exact manifest bytes digest");
   }
   const authorization = validatedAuthorization?.value;
-  if (!authorization || !/^sha256:[0-9a-f]{64}$/.test(validatedAuthorization.validatedBytesDigest ?? "")) {
+  if (!authorization || !/^sha256:[0-9a-f]{64}$/.test(validatedAuthorization.validatedBytesDigest ?? "")
+      || !/^sha256:[0-9a-f]{64}$/.test(validatedAuthorization.dependencySecurityReportDigest ?? "")) {
     throw new Error("funding activation requires validator-produced authorization bytes");
   }
   assertReleaseBinding(authorization, manifest, manifestBytesDigest);
@@ -505,6 +550,7 @@ export function buildFundingActivationPlan({
     authorizationDigest: authorization.authorization_digest,
     authorizationExpiresAt: expiresAt,
     authorizationBytesDigest: validatedAuthorization.validatedBytesDigest,
+    dependencySecurityReportDigest: validatedAuthorization.dependencySecurityReportDigest,
     rpcAuthority: checkedRpcAuthority,
     activationSignaturesDigest: sha256(Buffer.from(canonical(activationSignatures))),
     timelock: ethers.getAddress(manifest.contracts.timelock.address),
@@ -598,7 +644,7 @@ export function writePrivateActivationPlan(path, plan) {
 }
 
 export function fundingActivationPlanMain() {
-  const required = ["manifest", "authorization", "activation-signatures", "trust-registry", "artifact-root", "chain-rpc-url", "rpc-operator-registry", "rpc-registry-trusted-root", "primary-rpc", "secondary-rpc", "primary-rpc-operator-id", "secondary-rpc-operator-id", "python", "repo-root", "output"];
+  const required = ["manifest", "authorization", "activation-signatures", "trust-registry", "artifact-root", "sp1-security-report", "chain-rpc-url", "rpc-operator-registry", "rpc-registry-trusted-root", "primary-rpc", "secondary-rpc", "primary-rpc-operator-id", "secondary-rpc-operator-id", "python", "repo-root", "output"];
   const values = Object.fromEntries(required.map((name) => [name, arg(name)]));
   const missing = required.filter((name) => values[name] === null);
   if (missing.length > 0) throw new Error(`missing required activation arguments: ${missing.join(", ")}`);
@@ -609,6 +655,7 @@ export function fundingActivationPlanMain() {
     authorizationPath: values.authorization,
     trustRegistryPath: values["trust-registry"],
     artifactRoot: values["artifact-root"],
+    sp1SecurityReportPath: values["sp1-security-report"],
     chainRpcUrl: values["chain-rpc-url"],
   });
   const registryDigest = validatedAuthorization.value.artifacts?.activation_rpc_operator_registry?.sha256;

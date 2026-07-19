@@ -105,7 +105,9 @@ cross-chain, stale-nonce, role-swapped, high-s, and expired packets fail closed.
 
 `p42-funding-activation-plan` is the first fail-closed consumer stage. It invokes
 the production validator as a bounded argv-only subprocess, binds the exact
-authorization and manifest bytes, pins every target runtime hash, and emits a
+authorization and manifest bytes, co-gates that validation with exact fresh
+output from the reviewed seven-lock/four-SP1 dependency policy, pins every
+target runtime hash, and emits a
 private deterministic exact-ten plan. It rejects legacy packets and requires a
 canonical bundle of 30 verified signatures before encoding calldata. Its global
 barriers require all ten treasury relays before any arm operation and all ten
@@ -143,6 +145,9 @@ executed. Alternate salts, early state transitions, and partial barrier bypasses
 fail closed. The v2 completion artifact preserves both operation IDs and their
 executed states for every board, and consumers reject legacy or substituted
 completion evidence.
+It also repeats the full launch/SP1 validation immediately before its only
+broadcast callback, even for a signed transaction recovered from the journal;
+tool, policy, report, roster, or lock drift leaves broadcast unreachable.
 The activation runner does not trust `--plan` as an authority. Before any RPC
 snapshot or completion decision, it reconstructs the plan from the exact
 manifest bytes, freshly validated authorization, and verified activation

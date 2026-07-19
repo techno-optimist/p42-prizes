@@ -118,6 +118,7 @@ function plan() {
     chainId: 84532, network: "base-sepolia", boardCount: 10, authorizationDigest: digest,
     manifestBytesDigest: `sha256:${"c".repeat(64)}`, deploymentCommit: "d".repeat(40),
     authorizationBytesDigest: `sha256:${"7".repeat(64)}`,
+    dependencySecurityReportDigest: `sha256:${"8".repeat(64)}`,
     rpcAuthority: rpcAuthority(),
     deploymentConfigHash: `0x${"e".repeat(64)}`, releaseBindingDigest: `sha256:${"f".repeat(64)}`,
     authorizationExpiresAt: 2_000_000_000, treasury, timelock,
@@ -442,6 +443,48 @@ test("signing revalidates the exact plan and journals raw bytes before broadcast
   assert.equal(ethers.Transaction.from(observedRecord.raw_tx).to, activationRequest(inputPlan, action).to);
   assert.equal("address" in wallet, false);
   assert.equal("signingKey" in wallet, false);
+});
+
+test("a late security-gate block makes broadcast unreachable for new and journaled transactions", async () => {
+  const inputPlan = plan();
+  const action = nextFundingActivationAction(inputPlan, snapshot(inputPlan));
+  const signer = ethers.Wallet.createRandom();
+  inputPlan.treasury = signer.address;
+  action.signer = signer.address;
+  const wallet = {
+    getAddress: async () => signer.address,
+    provider: {},
+    populateTransaction: async (request) => ({ ...request, nonce: 0, gasLimit: 100_000n, gasPrice: 1n }),
+    signTransaction: (request) => signer.signTransaction(request),
+  };
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-activation-gate-block-")));
+  chmodSync(root, 0o700);
+  const journalPath = join(root, "journal.json");
+  await prepareActivationSigningRequest({
+    plan: inputPlan, action, signer: wallet, journalRoot: root, journalPath,
+    revalidate: async () => inputPlan, currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(0),
+  });
+  let validations = 0;
+  let broadcasts = 0;
+  const run = () => signAndBroadcastActivationAction({
+    plan: inputPlan, action, wallet, journalRoot: root, journalPath,
+    revalidate: async () => {
+      validations += 1;
+      if (validations >= 2) throw new Error("SP1 dependency security gate blocks production launch authorization");
+      return inputPlan;
+    },
+    currentTimestamp: async () => 1_900_000_000n,
+    nonceEvidence: nonceEvidence(0),
+    transactionReconciler: async () => {
+      broadcasts += 1;
+      return { status: "pending", transaction: {} };
+    },
+  });
+  await assert.rejects(run, /SP1 dependency security gate blocks/);
+  assert.equal(broadcasts, 0);
+  await assert.rejects(run, /SP1 dependency security gate blocks/);
+  assert.equal(broadcasts, 0);
 });
 
 test("an externally signed request is imported and broadcast without any local key", async () => {

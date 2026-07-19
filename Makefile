@@ -218,7 +218,7 @@ objective-program-gates: objective-core-test \
 # Activation gate. It intentionally fails while an objective lockfile retains
 # a known vulnerable proof-system dependency.
 objective-dependency-security-gate:
-	@$(PYTHON) scripts/check_sp1_dependency_security.py
+	@$(PYTHON) scripts/check_sp1_dependency_security.py --report docs/evidence/sp1-dependency-security-current.json
 
 verify-sp1-objective-artifact:
 	@test -n "$(P42_CARGO_PROVE)" || (echo "P42_CARGO_PROVE must name the pinned SP1 v6.1 cargo-prove binary" >&2; exit 2)

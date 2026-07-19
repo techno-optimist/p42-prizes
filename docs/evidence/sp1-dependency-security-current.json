@@ -1,0 +1,146 @@
+{
+  "lockfiles": [
+    {
+      "findings": [
+        {
+          "advisory": "GHSA-vj64-rjf3-w3v7",
+          "package": "p3-challenger",
+          "severity": "high",
+          "version": "0.3.2-succinct"
+        },
+        {
+          "advisory": "GHSA-3g92-f9ch-qjcm",
+          "package": "p3-symmetric",
+          "severity": "low",
+          "version": "0.3.2-succinct"
+        },
+        {
+          "advisory": "GHSA-rhfx-m35p-ff5j",
+          "package": "lru",
+          "severity": "low",
+          "version": "0.12.5"
+        }
+      ],
+      "lockfile": "objective-programs/Cargo.lock",
+      "sha256": "sha256:cfaac0901bcb9ba1daf5e78403677468911f0eaf52f1977e4d8aa408edef41ff",
+      "sp1Bearing": true,
+      "sp1Revision": "d454975ac7c1126097e36eceda9bce2cb9899da4"
+    },
+    {
+      "findings": [
+        {
+          "advisory": "GHSA-vj64-rjf3-w3v7",
+          "package": "p3-challenger",
+          "severity": "high",
+          "version": "0.3.2-succinct"
+        },
+        {
+          "advisory": "GHSA-3g92-f9ch-qjcm",
+          "package": "p3-symmetric",
+          "severity": "low",
+          "version": "0.3.2-succinct"
+        },
+        {
+          "advisory": "GHSA-rhfx-m35p-ff5j",
+          "package": "lru",
+          "severity": "low",
+          "version": "0.12.5"
+        }
+      ],
+      "lockfile": "objective-programs/arithmetic-kakeya/Cargo.lock",
+      "sha256": "sha256:928d957e5bb763069e99702aa4bccccc3f8b5961591ab4bf5b0c2879642f40c6",
+      "sp1Bearing": true,
+      "sp1Revision": "d454975ac7c1126097e36eceda9bce2cb9899da4"
+    },
+    {
+      "findings": [],
+      "lockfile": "objective-programs/autoconvolution-c1-upper/Cargo.lock",
+      "sha256": "sha256:b12ac3da9f95ade7a137cd1b3904a60abd512b42589c2283f47bc4e3f2392d80",
+      "sp1Bearing": false,
+      "sp1Revision": null
+    },
+    {
+      "findings": [],
+      "lockfile": "objective-programs/autoconvolution-c2-lower/Cargo.lock",
+      "sha256": "sha256:b40d0ead3c19d0127175f1c5a7db0a1f84dd2ad9ef5b68f76e248025c4af67b2",
+      "sp1Bearing": false,
+      "sp1Revision": null
+    },
+    {
+      "findings": [
+        {
+          "advisory": "GHSA-vj64-rjf3-w3v7",
+          "package": "p3-challenger",
+          "severity": "high",
+          "version": "0.3.2-succinct"
+        },
+        {
+          "advisory": "GHSA-3g92-f9ch-qjcm",
+          "package": "p3-symmetric",
+          "severity": "low",
+          "version": "0.3.2-succinct"
+        },
+        {
+          "advisory": "GHSA-rhfx-m35p-ff5j",
+          "package": "lru",
+          "severity": "low",
+          "version": "0.12.5"
+        }
+      ],
+      "lockfile": "objective-programs/edges-vs-triangles/Cargo.lock",
+      "sha256": "sha256:62377e9bf5bd46e847e058f725e5b65399140b133d6c0ec96b83b658e8ecf2c4",
+      "sp1Bearing": true,
+      "sp1Revision": "d454975ac7c1126097e36eceda9bce2cb9899da4"
+    },
+    {
+      "findings": [],
+      "lockfile": "objective-programs/erdos-min-overlap/Cargo.lock",
+      "sha256": "sha256:c51c36eb2209d281d0d15261f8ff064cd6f94aa4015789ebcba6c4fbc2c9863e",
+      "sp1Bearing": false,
+      "sp1Revision": null
+    },
+    {
+      "findings": [
+        {
+          "advisory": "GHSA-vj64-rjf3-w3v7",
+          "package": "p3-challenger",
+          "severity": "high",
+          "version": "0.3.2-succinct"
+        },
+        {
+          "advisory": "GHSA-3g92-f9ch-qjcm",
+          "package": "p3-symmetric",
+          "severity": "low",
+          "version": "0.3.2-succinct"
+        },
+        {
+          "advisory": "GHSA-rhfx-m35p-ff5j",
+          "package": "lru",
+          "severity": "low",
+          "version": "0.12.5"
+        }
+      ],
+      "lockfile": "objective-programs/q6-intersecting-hypergraph/Cargo.lock",
+      "sha256": "sha256:83963c93bb04c6fc82fa3a349a1cfe22aa4b10f4c36e7f3245a7d5aa2d752200",
+      "sp1Bearing": true,
+      "sp1Revision": "d454975ac7c1126097e36eceda9bce2cb9899da4"
+    }
+  ],
+  "policy": {
+    "path": "security/sp1-dependency-policy-v1.json",
+    "sha256": "sha256:0c0df0d8b77cce0f29e85923fbf3a9997b15badae804c947f5fe2a148884ebf0"
+  },
+  "result": "blocked",
+  "scanner": {
+    "path": "scripts/check_sp1_dependency_security.py",
+    "sha256": "sha256:46f2d0a4b5da60e1998e352591ba87970ac07367c0490bc42ae5dacc207ef498"
+  },
+  "schema": "p42-objective-dependency-security-report/v1",
+  "summary": {
+    "affectedLockfiles": 4,
+    "findings": 12,
+    "highFindings": 4,
+    "sp1Lockfiles": 4,
+    "trackedLockfiles": 7
+  }
+}

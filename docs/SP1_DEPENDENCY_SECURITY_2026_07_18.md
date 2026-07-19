@@ -2,65 +2,85 @@
 
 ## Decision
 
-Fail closed. Preserve the four existing objective-program lockfiles and frozen
-artifact identities. No released authoritative SP1 revision currently removes
-`GHSA-vj64-rjf3-w3v7`, and replacing individual Plonky3 crates beneath SP1 would
-be an unaudited proof-system fork.
+Funding activation is blocked. The closed scanner roster contains seven tracked
+objective workspaces and classifies exactly four as SP1-bearing. Those four
+locks each produce one high and two low advisory findings, for an exact current
+result of **4 high / 12 total**. This is a dependency-policy result, not a claim
+that an exploit has been demonstrated against a P42 proof.
 
-Run the activation gate with:
+The canonical machine report is
+[`docs/evidence/sp1-dependency-security-current.json`](evidence/sp1-dependency-security-current.json),
+SHA-256 `8ae48c07d31c559f58f10ba0682d97cf242800ebd9d07338feb254d5f80cde4c`.
+Run:
 
 ```bash
 make objective-dependency-security-gate
 ```
 
-It must remain red while a known vulnerable dependency is present. It scans
-every `Cargo.lock` below `objective-programs/`, verifies that each SP1 closure
-uses one full Git revision, and applies the published advisory ranges without
-mistaking a prerelease for its patched stable version.
+The command must exit nonzero while the findings remain. It also requires the
+committed report to match fresh scanner output byte for byte.
 
-## Upstream Evidence
+## Advisory Authority
 
-| SP1 tag | Commit | `p3-challenger` | Disposition |
-| --- | --- | --- | --- |
-| `v6.1.0` | `d454975ac7c1126097e36eceda9bce2cb9899da4` | `0.3.2-succinct` | High advisory applies |
-| `v6.2.0` / `v6.2.1` | `3772ff9...` / `98a376e...` | `0.3.3-succinct` | High advisory applies |
-| `v6.2.2` through `v6.3.1` | `150e629...` through `8252c29...` | `=0.4.3-succinct` | High advisory still applies because this prerelease is less than stable `0.4.3` |
+- [`GHSA-vj64-rjf3-w3v7`](https://github.com/advisories/GHSA-vj64-rjf3-w3v7)
+  is high severity for `p3-challenger` in `<0.4.3` and
+  `>=0.5.0,<0.5.3`; patched releases are `0.4.3` and `0.5.3`.
+- [`GHSA-3g92-f9ch-qjcm`](https://github.com/advisories/GHSA-3g92-f9ch-qjcm)
+  is low severity for `p3-symmetric <=0.5.2`; the advisory lists no
+  patched version.
+- [`GHSA-rhfx-m35p-ff5j`](https://github.com/advisories/GHSA-rhfx-m35p-ff5j)
+  is low severity for `lru >=0.9.0,<0.16.3`; the patched line begins at
+  `0.16.3`.
 
-GitHub's global advisory API returns `GHSA-vj64-rjf3-w3v7` for
-`p3-challenger@0.4.3-succinct` and no result for stable `0.4.3`. More
-importantly, the registry copies of `0.3.2-succinct` and `0.4.3-succinct` have
-the same vulnerable `src/multi_field_challenger.rs` SHA-256:
-`f0f8351c60f7636487c6f09ad0987cf7f9dc27986b7251e72fa31784b0c8b02c`.
-Stable `0.4.3` has SHA-256
-`b6dfd6ca82fb2ec5788a3dd442157dccc6e8b5b44b0d8e55affb9a2985362ae3`
-and contains the domain-separated absorb and injective squeeze redesign, but
-also changes the field and challenger APIs. It cannot be substituted into the
-released SP1 graph by lockfile surgery.
+The scanner implements SemVer precedence, including numeric and alphanumeric
+prerelease identifiers. Thus `0.4.3-succinct < 0.4.3`, while
+`0.5.0-rc.1 < 0.5.0` and is not incorrectly admitted through that range's
+inclusive lower bound.
 
-As of this review, SP1 `main` and the latest release `v6.3.1` still pin
-`=0.4.3-succinct`. The visible Dependabot branch that adds `p3-challenger
-0.6.1` is not merged, is not a release, and leaves the older `0.4.3-succinct`
-graph in the lockfile. It is not an authoritative remediation target.
+## Upstream SP1 Receipts
 
-The residual low alerts are also real release constraints:
+The four SP1-bearing lockfiles are pinned to SP1 `6.1.0` at the full upstream
+revision
+[`d454975ac7c1126097e36eceda9bce2cb9899da4`](https://github.com/succinctlabs/sp1/commit/d454975ac7c1126097e36eceda9bce2cb9899da4).
+The reviewed release-tag sequence and its `p3-challenger` lock entry is:
 
-- `p3-symmetric 0.3.2-succinct` matches `GHSA-3g92-f9ch-qjcm`; no patched
-  version is listed for the affected `<=0.5.2` range.
-- `lru 0.12.5` matches `GHSA-rhfx-m35p-ff5j`; the first patched version is
-  `0.16.3`, while every released SP1 line reviewed here retains the `0.12`
-  requirement.
+| SP1 tag | Full tag commit | Locked `p3-challenger` |
+| --- | --- | --- |
+| `v6.1.0` | [`d454975ac7c1126097e36eceda9bce2cb9899da4`](https://github.com/succinctlabs/sp1/blob/d454975ac7c1126097e36eceda9bce2cb9899da4/Cargo.lock) | `0.3.2-succinct` |
+| `v6.2.0` | [`3772ff967823e6e8fd5db0d876b46bde836831cf`](https://github.com/succinctlabs/sp1/blob/3772ff967823e6e8fd5db0d876b46bde836831cf/Cargo.lock) | `0.3.3-succinct` |
+| `v6.2.1` | [`98a376e87ec9dd5c3ae3495b98846bf921d6035b`](https://github.com/succinctlabs/sp1/blob/98a376e87ec9dd5c3ae3495b98846bf921d6035b/Cargo.lock) | `0.3.3-succinct` |
+| `v6.2.2` | [`150e6294959f40dbc3ba42eb21c8eccc14c95bc5`](https://github.com/succinctlabs/sp1/blob/150e6294959f40dbc3ba42eb21c8eccc14c95bc5/Cargo.lock) | `0.4.3-succinct` |
+| `v6.2.3` | [`4809e79aa41dc493e1487de902ebe8cee15b7fba`](https://github.com/succinctlabs/sp1/blob/4809e79aa41dc493e1487de902ebe8cee15b7fba/Cargo.lock) | `0.4.3-succinct` |
+| `v6.2.4` | [`cfb55443120fe5a13f63eaf60bdab6edc269c9a1`](https://github.com/succinctlabs/sp1/blob/cfb55443120fe5a13f63eaf60bdab6edc269c9a1/Cargo.lock) | `0.4.3-succinct` |
+| `v6.3.0` | [`ca8700effe99ef7331872cbb4f71f8e29be98c7a`](https://github.com/succinctlabs/sp1/blob/ca8700effe99ef7331872cbb4f71f8e29be98c7a/Cargo.lock) | `0.4.3-succinct` |
+| `v6.3.1` | [`8252c2905ce32964df68248117015c61ebb854db`](https://github.com/succinctlabs/sp1/blob/8252c2905ce32964df68248117015c61ebb854db/Cargo.lock) | `0.4.3-succinct` |
 
-## Frozen Artifact Boundary
+This establishes that the reviewed release locks remain inside the published
+high-severity range. It does not establish that every branch, unreleased
+commit, or future SP1 release is affected.
 
-No Cargo manifest, lockfile, guest ELF, vkey, execution record, source receipt,
-toolchain observation, or production-board binding changed in this lane. The
-existing artifacts remain historical SP1 `v6.1.0` evidence and remain
-activation-ineligible because of the open high advisory.
+## Closed Policy And Activation Binding
 
-When Succinct publishes a compatible release that clears the gate, remediation
-requires new versioned artifact directories and a full re-freeze: deterministic
-lockfile generation, semantic differential vectors, genuine proof verification,
-ELF and vkey derivation, source/provenance/toolchain rebinding, and independent
-review. Byte reproducibility may be claimed only after hosted x86 dual-image
-evidence for the exact upgraded source. Local macOS checks, Cargo metadata, or a
-single build cannot establish that claim.
+[`security/sp1-dependency-policy-v1.json`](../security/sp1-dependency-policy-v1.json)
+is the reviewed update surface. Its SHA-256 is
+`0c0df0d8b77cce0f29e85923fbf3a9997b15badae804c947f5fe2a148884ebf0`.
+It pins the seven-workspace roster, four SP1 classifications, exact 21-package
+SP1 set, version, full Git revision, source form, advisory URLs, and ranges.
+
+The production activation commands co-gate launch-authorization validation
+with the exact report, and plan construction binds its digest.
+`p42-funding-activate` regenerates and compares the report during that combined
+validation and redoes the full check immediately before its only broadcast
+callback, including when a signed transaction was recovered from the durable
+journal. Missing or changed
+Python, scanner, policy, report, workspace, lockfile, package, version, source,
+or revision fails closed before broadcast.
+
+## Remediation Boundary
+
+No lockfile, guest ELF, vkey, proof artifact, or frozen objective identity was
+changed here. A future upgrade is deliberate: review a new versioned policy,
+regenerate all affected lockfiles, produce a zero-finding report, then rerun the
+objective artifact and independent-release ceremonies before issuing a new
+launch authorization. Until then, historical SP1 `v6.1.0` evidence remains
+historical and funding-ineligible.

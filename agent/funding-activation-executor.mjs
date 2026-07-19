@@ -1194,6 +1194,9 @@ export async function signAndBroadcastActivationAction({
     throw new Error("refusing to broadcast an activation transaction after authorization expiry");
   }
   if (!provider) throw new Error("activation broadcast requires a provider");
+  // This is deliberately unconditional: persisted signed transactions must pass
+  // the same freshly regenerated authority gates immediately before broadcast.
+  await assertFreshPlanAndTime(plan, revalidate, currentTimestamp);
   const reconciled = await transactionReconciler(provider, record);
   const receipt = reconciled.receipt ?? null;
   if (receipt && receipt.status !== 1) throw new Error(`activation transaction ${label} reverted`);

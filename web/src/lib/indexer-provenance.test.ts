@@ -454,6 +454,7 @@ describe("indexer provenance v2", () => {
       capsuleDigest: base.manifest.releaseEvidence.capsuleDigest, slateDigest: base.manifest.releaseEvidence.slateDigest,
       releaseIndexDigest: base.manifest.releaseEvidence.releaseIndexDigest, authorizationDigest, authorizationExpiresAt: expires,
       authorizationBytesDigest: `sha256:${createHash("sha256").update(authorizationBytes).digest("hex")}`,
+      dependencySecurityReportDigest: digest("8"),
       rpcAuthority,
       activationSignaturesDigest: canonicalDigest(activationSignatures), timelock: getAddress(base.manifest.contracts.timelock.address),
       timelockRuntimeCodeHash: base.manifest.contracts.timelock.runtimeCodeHash, treasury: getAddress(base.manifest.roles.treasury),
