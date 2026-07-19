@@ -36,6 +36,7 @@ from p42_prizes.verifier_executor import (  # noqa: E402
 
 MAX_REQUEST_BYTES = 16 * 1024
 FENCE_RELEASE_FRAME = b"RELEASE\n"
+TERMINATION_REAP_GRACE_SECONDS = 1.0
 BRIDGE_COMMANDS = frozenset({
     "enqueue", "read", "record-action", "terminalize-local", "reconcile-terminal-alert",
     "quarantine-canonical",
@@ -94,9 +95,13 @@ def _terminate_and_reap(process: subprocess.Popen, deadline: float | None = None
             os.killpg(process.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-        remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else 1.0
-        if remaining <= 0:
-            return process.poll() is not None
+        # Protocol latency is deadline-bounded, but mandatory child cleanup gets
+        # a separate short grace period so slower hosts cannot retain the queue
+        # fence merely because the protocol budget expired before waitpid ran.
+        remaining = max(
+            TERMINATION_REAP_GRACE_SECONDS,
+            deadline - time.monotonic() if deadline is not None else 0.0,
+        )
         try:
             process.wait(timeout=remaining)
             return True
