@@ -753,6 +753,28 @@ class AttestationFixture:
         path.write_text(canonical_json(registry), encoding="utf-8")
         return path
 
+    def write_governance_rpc_policy(
+        self, rpc_urls: list[str], *, network: str = "base-sepolia", chain_id: int = 84532
+    ) -> tuple[Path, Path]:
+        policy = {
+            "schema_version": "p42-governance-rpc-policy/v1",
+            "environment": "test",
+            "network": network,
+            "chain_id": chain_id,
+            "rpc_quorum": 2,
+            "rpc_endpoints": [
+                {"provider_id": f"test-provider-{index + 1}", "url": url}
+                for index, url in enumerate(rpc_urls)
+            ],
+        }
+        policy_path = self.root / "governance-rpc-policy.json"
+        policy_path.write_text(canonical_json(policy), encoding="utf-8")
+        digest_path = self.root / "governance-rpc-policy.sha256"
+        digest_path.write_text(
+            sha256_bytes(canonical_json(policy).encode("utf-8")) + "\n", encoding="ascii"
+        )
+        return policy_path, digest_path
+
     def record_governance_state(
         self,
         *,
@@ -774,8 +796,46 @@ class AttestationFixture:
         return dict(self._chain_state[(chain_id, address_value.casefold(), block_number)])
 
     @contextmanager
-    def chain_rpc_server(self):
+    def chain_rpc_server(
+        self,
+        *,
+        finalized_block_number: int | None = None,
+        finalized_block_hash: str | None = None,
+        head_block_number: int | None = None,
+        head_block_hash: str | None = None,
+        governance_state_overrides: Mapping[str, Any] | None = None,
+        live_governance_state_overrides: Mapping[str, Any] | None = None,
+    ):
         fixture = self
+
+        recorded_numbers = [
+            block_number for chain_id, _address, block_number in self._chain_state
+            if chain_id == (self._chain_id or 0)
+        ]
+        default_tip = max(recorded_numbers, default=0)
+        finalized_number = finalized_block_number if finalized_block_number is not None else default_tip
+        head_number = head_block_number if head_block_number is not None else max(finalized_number, default_tip)
+
+        def recorded_hash(block_number: int) -> str | None:
+            match = next(
+                (
+                    state
+                    for (chain_id, _address, recorded_block), state in fixture._chain_state.items()
+                    if chain_id == fixture._chain_id and recorded_block == block_number
+                ),
+                None,
+            )
+            return str(match["block_hash"]) if match else None
+
+        final_hash = finalized_block_hash or recorded_hash(finalized_number) or (
+            "0x" + hashlib.sha256(f"fixture-finalized:{finalized_number}".encode()).hexdigest()
+        )
+        latest_hash = head_block_hash or (
+            final_hash
+            if head_number == finalized_number
+            else recorded_hash(head_number)
+            or "0x" + hashlib.sha256(f"fixture-head:{head_number}".encode()).hexdigest()
+        )
 
         class Handler(BaseHTTPRequestHandler):
             def do_POST(self) -> None:
@@ -787,16 +847,23 @@ class AttestationFixture:
                 if method == "eth_chainId":
                     result = hex(fixture._chain_id or 0)
                 elif method == "eth_getBlockByNumber":
-                    block_number = int(params[0], 16)
-                    match = next(
-                        (
-                            state
-                            for (chain_id, _, recorded_block), state in fixture._chain_state.items()
-                            if chain_id == fixture._chain_id and recorded_block == block_number
-                        ),
-                        None,
+                    tag = params[0]
+                    if tag == "finalized":
+                        block_number, block_hash = finalized_number, final_hash
+                    elif tag == "latest":
+                        block_number, block_hash = head_number, latest_hash
+                    else:
+                        block_number = int(tag, 16)
+                        block_hash = recorded_hash(block_number)
+                        if block_number == finalized_number:
+                            block_hash = final_hash
+                        if block_number == head_number:
+                            block_hash = latest_hash
+                    result = (
+                        {"number": hex(block_number), "hash": block_hash}
+                        if block_hash is not None
+                        else None
                     )
-                    result = {"hash": match["block_hash"]} if match else None
                 elif method == "eth_getCode":
                     address_value = str(params[0]).casefold()
                     block_number = int(params[1], 16)
@@ -809,6 +876,22 @@ class AttestationFixture:
                     block_number = int(params[1], 16)
                     state = fixture._chain_state.get((fixture._chain_id or 0, address_value, block_number))
                     governance = state.get("governance_state") if state else None
+                    if governance is None:
+                        governance = next(
+                            (
+                                item.get("governance_state")
+                                for (chain_id, recorded_address, _), item in fixture._chain_state.items()
+                                if chain_id == fixture._chain_id
+                                and recorded_address == address_value
+                                and isinstance(item.get("governance_state"), Mapping)
+                            ),
+                            None,
+                        )
+                    if isinstance(governance, Mapping):
+                        governance = dict(governance)
+                        governance.update(governance_state_overrides or {})
+                        if block_number == finalized_number:
+                            governance.update(live_governance_state_overrides or {})
                     selectors = {
                         ethereum_keccak256(signature.encode("ascii"))[:10]: signature
                         for signature in (
@@ -817,6 +900,7 @@ class AttestationFixture:
                             "threshold()",
                             "delay()",
                             "guardian()",
+                            "governanceEpoch()",
                         )
                     }
                     signature = selectors.get(data[:10])
@@ -834,6 +918,8 @@ class AttestationFixture:
                             value = governance.get("delay_seconds")
                         elif signature == "guardian()":
                             value = governance.get("guardian")
+                        elif signature == "governanceEpoch()":
+                            value = governance.get("governance_epoch")
                     if isinstance(value, int) and not isinstance(value, bool):
                         result = "0x" + value.to_bytes(32, "big").hex()
                     elif isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", value):

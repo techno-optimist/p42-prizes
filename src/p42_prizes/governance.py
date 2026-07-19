@@ -684,7 +684,7 @@ def _validate_deployed_governance_state(
             block_number,
         )
     except Exception as exc:
-        raise error_type("deployed timelock governance state could not be queried") from exc
+        raise error_type(f"deployed timelock governance state could not be queried: {exc}") from exc
     if not isinstance(queried, Mapping):
         raise error_type("deployed timelock governance state evidence is malformed")
     queried_block_hash = queried.get("block_hash")
@@ -697,10 +697,18 @@ def _validate_deployed_governance_state(
     state = queried.get("governance_state")
     if not isinstance(state, Mapping):
         raise error_type("ChainReader did not return deployed timelock governance state evidence")
+    _validate_live_governance_quorum(
+        queried,
+        completion_block=block_number,
+        completion_hash=block_hash,
+        completion_state=state,
+        error_type=error_type,
+    )
 
     signer_count = _require_chain_int(state.get("signer_count"), "signer_count", error_type)
     threshold = _require_chain_int(state.get("threshold"), "threshold", error_type)
     delay_seconds = _require_chain_int(state.get("delay_seconds"), "delay_seconds", error_type)
+    _require_chain_int(state.get("governance_epoch"), "governance_epoch", error_type)
     guardian = _require_manifest_address(state.get("guardian"), "chain guardian", error_type)
     state_signers = state.get("signers")
     if not isinstance(state_signers, list):
@@ -752,6 +760,69 @@ def _validate_deployed_governance_state(
     if report_delay_hours is not None:
         if delay_seconds % 3600 != 0 or delay_seconds // 3600 != report_delay_hours:
             raise error_type("report.timelock.min_delay_hours does not match deployed timelock delay")
+
+
+def _validate_live_governance_quorum(
+    queried: Mapping[str, Any],
+    *,
+    completion_block: int,
+    completion_hash: str,
+    completion_state: Mapping[str, Any],
+    error_type: type[ValueError],
+) -> None:
+    quorum = queried.get("rpc_quorum")
+    if not isinstance(quorum, Mapping):
+        raise error_type("production governance requires pinned independent RPC quorum evidence")
+    required = quorum.get("required")
+    provider_ids = quorum.get("provider_ids")
+    if (
+        not isinstance(required, int)
+        or isinstance(required, bool)
+        or required < 2
+        or not isinstance(provider_ids, list)
+        or len(provider_ids) < required
+        or any(not isinstance(provider_id, str) or not provider_id for provider_id in provider_ids)
+        or len(set(provider_ids)) != len(provider_ids)
+    ):
+        raise error_type("production governance RPC quorum must contain at least two distinct providers")
+
+    finalized = queried.get("live_finalized")
+    head = queried.get("live_head")
+    if not isinstance(finalized, Mapping) or not isinstance(head, Mapping):
+        raise error_type("production governance requires live finalized and head observations")
+    finalized_number = _require_chain_int(
+        finalized.get("block_number"), "live_finalized.block_number", error_type
+    )
+    head_number = _require_chain_int(head.get("block_number"), "live_head.block_number", error_type)
+    finalized_hash = _require_chain_block_hash(
+        finalized.get("block_hash"), "live_finalized.block_hash", error_type
+    )
+    head_hash = _require_chain_block_hash(head.get("block_hash"), "live_head.block_hash", error_type)
+    if finalized_number < completion_block:
+        raise error_type("governance completion block is not included in the live finalized chain")
+    if head_number < finalized_number:
+        raise error_type("governance RPC provider returned a head behind its finalized block")
+    if finalized_number == completion_block and finalized_hash.casefold() != completion_hash.casefold():
+        raise error_type("live finalized hash disagrees with the governance completion block")
+    if head_number == completion_block and head_hash.casefold() != completion_hash.casefold():
+        raise error_type("live head hash disagrees with the governance completion block")
+
+    live_state = queried.get("live_governance_state")
+    if not isinstance(live_state, Mapping):
+        raise error_type("production governance requires live finalized timelock state")
+    if canonical_json(dict(live_state)) != canonical_json(dict(completion_state)):
+        raise error_type("governance packet is stale after a finalized timelock rotation")
+
+
+def _require_chain_block_hash(value: Any, field: str, error_type: type[ValueError]) -> str:
+    if (
+        not isinstance(value, str)
+        or len(value) != 66
+        or not value.startswith("0x")
+        or any(character not in "0123456789abcdefABCDEF" for character in value[2:])
+    ):
+        raise error_type(f"deployed timelock governance state {field} must be a 32-byte hash")
+    return value
 
 
 def _validate_governance_completion_anchor(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from contextlib import ExitStack
 from pathlib import Path
 import subprocess
 from unittest.mock import patch
@@ -171,6 +172,7 @@ def valid_governance_report(
                 "threshold": 3,
                 "delay_seconds": 48 * 60 * 60,
                 "guardian": guardian["address"],
+                "governance_epoch": 0,
             },
         )
     report = {
@@ -261,7 +263,13 @@ def valid_governance_report(
     return report, fixture, fixture.trust_registry(schema_version, signer_roles)
 
 
-def governance_chain_reader(report: dict, fixture: AttestationFixture, **state_overrides):
+def governance_chain_reader(
+    report: dict,
+    fixture: AttestationFixture,
+    *,
+    live_state_overrides=None,
+    **state_overrides,
+):
     del report
     def read(network: str, chain_id: int, contract: str, block_number: int):
         return fixture.chain_reader(network, chain_id, contract, block_number)
@@ -270,7 +278,25 @@ def governance_chain_reader(report: dict, fixture: AttestationFixture, **state_o
         evidence = fixture.chain_reader(network, chain_id, contract, block_number)
         state = dict(evidence["governance_state"])
         state.update(state_overrides)
-        return {**evidence, "governance_state": state}
+        live_state = dict(state)
+        live_state.update(live_state_overrides or {})
+        return {
+            **evidence,
+            "governance_state": state,
+            "live_governance_state": live_state,
+            "live_finalized": {
+                "block_number": GOVERNANCE_COMPLETION_BLOCK,
+                "block_hash": GOVERNANCE_COMPLETION_HASH,
+            },
+            "live_head": {
+                "block_number": GOVERNANCE_COMPLETION_BLOCK,
+                "block_hash": GOVERNANCE_COMPLETION_HASH,
+            },
+            "rpc_quorum": {
+                "required": 2,
+                "provider_ids": ["test-provider-1", "test-provider-2"],
+            },
+        }
 
     read.read_governance_state = read_governance_state
 
@@ -418,6 +444,20 @@ def test_production_governance_rejects_completion_block_hash_mismatch_from_reade
         normalize(report, fixture, registry, chain_reader=reader)
 
 
+def test_production_governance_rejects_stale_packet_after_rotate_away_and_back(
+    tmp_path: Path,
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    reader = governance_chain_reader(
+        report,
+        fixture,
+        live_state_overrides={"governance_epoch": 2},
+    )
+
+    with pytest.raises(GovernanceSignoffError, match="stale.*rotation"):
+        normalize(report, fixture, registry, chain_reader=reader)
+
+
 @pytest.mark.parametrize("control", ["threshold", "signers", "guardian", "delay"])
 def test_production_governance_rejects_self_consistent_packet_mismatched_to_chain(
     tmp_path: Path, control: str
@@ -467,7 +507,9 @@ def test_governance_signoff_cli_outputs_normalized_report(tmp_path: Path) -> Non
     report_path.write_text(json.dumps(report), encoding="utf-8")
     registry_path = fixture.write_registry(registry)
 
-    with fixture.chain_rpc_server() as rpc_url:
+    with ExitStack() as stack:
+        rpc_urls = [stack.enter_context(fixture.chain_rpc_server()) for _ in range(2)]
+        policy_path, digest_path = fixture.write_governance_rpc_policy(rpc_urls)
         completed = run_cli(
             "governance-signoff-validate",
             "--report",
@@ -476,8 +518,10 @@ def test_governance_signoff_cli_outputs_normalized_report(tmp_path: Path) -> Non
             str(registry_path),
             "--artifact-root",
             str(tmp_path),
-            "--chain-rpc-url",
-            rpc_url,
+            "--governance-rpc-policy",
+            str(policy_path),
+            "--governance-rpc-policy-digest",
+            str(digest_path),
             "--allow-test-trust-registry",
         )
 
