@@ -18,10 +18,16 @@ from p42_prizes.legal import (
     _validate_signature,
     build_attestation_context,
 )
+from p42_prizes.governance import validate_production_binding
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
-OPERATIONAL_CONTROLS_SCHEMA_VERSION = "p42-operational-controls/v1"
+LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION = "p42-operational-controls/v1"
+OPERATIONAL_CONTROLS_SCHEMA_VERSION = "p42-operational-controls/v2"
+OPERATIONAL_CONTROLS_SCHEMA_VERSIONS = {
+    LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+    OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+}
 OWNER_ROLE = "operational-control-owner"
 REPORT_SIGNER_ROLE = "operational-controls-report-signer"
 EXECUTION_RUNNER_ROLE = "operational-control-execution-runner"
@@ -62,12 +68,13 @@ def normalize_operational_controls(
     artifact_root: str | Path | None = None,
     chain_reader: ChainReader | None = None,
 ) -> dict[str, Any]:
-    if report.get("schema_version") != OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+    schema_version = report.get("schema_version")
+    if schema_version not in OPERATIONAL_CONTROLS_SCHEMA_VERSIONS:
         raise OperationalControlsError(
-            f"schema_version must be {OPERATIONAL_CONTROLS_SCHEMA_VERSION}"
+            "schema_version must be one of " + ", ".join(sorted(OPERATIONAL_CONTROLS_SCHEMA_VERSIONS))
         )
     context = build_attestation_context(
-        OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version,
         trust_registry=trust_registry,
         artifact_root=artifact_root,
         chain_reader=chain_reader,
@@ -81,6 +88,7 @@ def normalize_operational_controls(
             "window_started_at_utc",
             "window_completed_at_utc",
             "release_binding",
+            "production_binding",
             "controls",
             "operational_controls_hash",
             "final_gate_claim",
@@ -117,12 +125,22 @@ def normalize_operational_controls(
         "report.release_binding",
         OperationalControlsError,
         context,
+        require_canonical_topology=schema_version == OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        require_legacy_topology=schema_version == LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION,
     )
     if release["network"] not in {"base-sepolia", "base-mainnet"}:
         raise OperationalControlsError("operational controls must bind to a deployed Base environment")
     release_hash = sha256_bytes(canonical_json(release).encode("utf-8"))
     deployment_hash = release["deployment_manifest"]["sha256"]
     configuration_hash = release["configuration_artifact"]["sha256"]
+    if schema_version == OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+        validate_production_binding(
+            normalized.get("production_binding"), release, context, OperationalControlsError
+        )
+    elif "production_binding" in normalized:
+        raise OperationalControlsError(
+            "historical p42-operational-controls/v1 packets cannot carry production_binding"
+        )
 
     controls = normalized.get("controls")
     if not isinstance(controls, list):
@@ -162,6 +180,7 @@ def normalize_operational_controls(
             release_hash=release_hash,
             deployment_hash=deployment_hash,
             configuration_hash=configuration_hash,
+            schema_version=schema_version,
             context=context,
             seen_artifact_paths=seen_artifact_paths,
             seen_artifact_hashes=seen_artifact_hashes,
@@ -187,7 +206,7 @@ def normalize_operational_controls(
     role_identities[REPORT_SIGNER_ROLE] = [report_signer]
     _validate_role_separation(role_identities)
     report_claim = {
-        "schema_version": OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "evidence_id": normalized["evidence_id"],
         "window_started_at_utc": normalized["window_started_at_utc"],
         "window_completed_at_utc": normalized["window_completed_at_utc"],
@@ -195,6 +214,10 @@ def normalize_operational_controls(
         "ordered_control_hashes": [control["control_hash"] for control in controls],
         "final_gate_claim": normalized["final_gate_claim"],
     }
+    if schema_version == OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+        report_claim["production_binding_hash"] = sha256_bytes(
+            canonical_json(normalized["production_binding"]).encode("utf-8")
+        )
     packet_hash = sha256_bytes(canonical_json(report_claim).encode("utf-8"))
     if provided_hash is not None and provided_hash != packet_hash:
         raise OperationalControlsError(
@@ -204,7 +227,7 @@ def normalize_operational_controls(
     validated_report_signature = _validate_signature(
         report_signature,
         "report.report_signature",
-        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version=schema_version,
         artifact_hash=packet_hash,
         identity=report_signer,
         expected_role=REPORT_SIGNER_ROLE,
@@ -236,6 +259,7 @@ def _validate_control(
     release_hash: str,
     deployment_hash: str,
     configuration_hash: str,
+    schema_version: str,
     context: AttestationValidationContext,
     seen_artifact_paths: set[str],
     seen_artifact_hashes: set[str],
@@ -311,6 +335,7 @@ def _validate_control(
         report_completed_at=completed_at,
         seen_artifact_paths=seen_artifact_paths,
         seen_artifact_hashes=seen_artifact_hashes,
+        schema_version=schema_version,
     )
     test_created_at = _require_utc(
         artifacts["test_artifact"]["created_at_utc"],
@@ -344,7 +369,7 @@ def _validate_control(
     validated_signature = _validate_signature(
         signature,
         prefix + ".owner_signature",
-        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version=schema_version,
         artifact_hash=control_hash,
         identity=owner,
         expected_role=OWNER_ROLE,
@@ -542,6 +567,7 @@ def _validate_execution_result(
     report_completed_at: datetime,
     seen_artifact_paths: set[str],
     seen_artifact_hashes: set[str],
+    schema_version: str,
 ) -> tuple[datetime, datetime, Mapping[str, Any]]:
     envelope = _parse_artifact_envelope(context, artifact, prefix=prefix)
     runner = _validate_identity(
@@ -613,7 +639,7 @@ def _validate_execution_result(
     validated = _validate_signature(
         runner_signature,
         prefix + ".runner_signature",
-        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version=schema_version,
         artifact_hash=expected_hash,
         identity=runner,
         expected_role=EXECUTION_RUNNER_ROLE,

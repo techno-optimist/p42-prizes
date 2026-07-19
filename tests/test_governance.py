@@ -9,7 +9,12 @@ import jsonschema
 import pytest
 
 from attestation_helpers import AttestationFixture, address, attach_signatures, unsigned_hash
-from p42_prizes.governance import GovernanceSignoffError, normalize_governance_signoff
+from p42_prizes.governance import (
+    GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+    LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION,
+    GovernanceSignoffError,
+    normalize_governance_signoff,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,8 +33,36 @@ def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def valid_governance_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
+def _production_binding(fixture: AttestationFixture, release: dict) -> dict:
+    manifest = json.loads((fixture.root / release["deployment_manifest"]["local_path"]).read_text())
+    evidence = manifest["releaseEvidence"]
+    contracts = [{
+        key: contract[key]
+        for key in ("topology_key", "name", "address", "runtime_bytecode_hash", "manifest_runtime_code_hash")
+    } for contract in release["contracts"]]
+    return {
+        "deployment_commit": release["deployment_commit"],
+        "capsule_digest": evidence["capsuleDigest"],
+        "slate_digest": evidence["slateDigest"],
+        "config_digest": evidence["configDigest"],
+        "release_binding_digest": evidence["releaseBindingDigest"],
+        "board_set_digest": evidence["boardSetDigest"],
+        "timelock_address": manifest["contracts"]["timelock"]["address"],
+        "treasury_address": manifest["roles"]["treasury"],
+        "resolver_quorum_address": manifest["contracts"]["resolverQuorum"]["address"],
+        "contracts": contracts,
+    }
+
+
+def valid_governance_report(
+    tmp_path: Path, *, legacy: bool = False
+) -> tuple[dict, AttestationFixture, dict]:
     fixture = AttestationFixture(tmp_path)
+    schema_version = (
+        LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION if legacy else GOVERNANCE_SIGNOFF_SCHEMA_VERSION
+    )
+    release = fixture.release_binding("base-mainnet") if legacy else fixture.canonical_release_binding()
+    production_binding = None if legacy else _production_binding(fixture, release)
     governance_owner = fixture.identity("governance-owner", "Morgan Rivera", "governance-owner")
     security_owner = fixture.identity("security-owner", "Riley Chen", "security-owner")
     signer_specs = [
@@ -61,11 +94,11 @@ def valid_governance_report(tmp_path: Path) -> tuple[dict, AttestationFixture, d
         }
     )
     report = {
-        "schema_version": "p42-governance-signoff/v1",
+        "schema_version": schema_version,
         "signoff_id": "base-mainnet-gate2-governance-2026-07",
         "completed_at_utc": "2026-07-08T21:00:00Z",
-        "network": "base-mainnet",
-        "release_binding": fixture.release_binding("base-mainnet"),
+        "network": release["network"],
+        "release_binding": release,
         "governance_owner": governance_owner,
         "security_owner": security_owner,
         "treasury_multisig": {
@@ -74,7 +107,7 @@ def valid_governance_report(tmp_path: Path) -> tuple[dict, AttestationFixture, d
             "signers": signers,
         },
         "timelock": {
-            "address": address("governance-timelock"),
+            "address": production_binding["timelock_address"] if production_binding else address("governance-timelock"),
             "min_delay_hours": 48,
             "applies_to_upgrades": True,
             "applies_to_fee_changes": True,
@@ -127,6 +160,8 @@ def valid_governance_report(tmp_path: Path) -> tuple[dict, AttestationFixture, d
             "statement": "We approve this Gate 2 custody and governance readiness packet for the bound release.",
         },
     }
+    if production_binding is not None:
+        report["production_binding"] = production_binding
     signer_roles = [
         ("governance-owner", governance_owner, "2026-07-08T20:00:00Z"),
         ("security-owner", security_owner, "2026-07-08T20:05:00Z"),
@@ -138,12 +173,12 @@ def valid_governance_report(tmp_path: Path) -> tuple[dict, AttestationFixture, d
     )
     attach_signatures(
         report,
-        schema_version="p42-governance-signoff/v1",
+        schema_version=schema_version,
         hash_field="governance_hash",
         signatures_field="attestations",
         signers=signer_roles,
     )
-    return report, fixture, fixture.trust_registry("p42-governance-signoff/v1", signer_roles)
+    return report, fixture, fixture.trust_registry(schema_version, signer_roles)
 
 
 def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict:
@@ -163,10 +198,48 @@ def test_governance_signoff_verifies_registered_signatures_resolved_bytes_and_sc
     jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
     assert normalized["governance_hash"] == unsigned_hash(normalized, "governance_hash", "attestations")
     assert len(normalized["attestations"]) == 8
+    assert len(normalized["production_binding"]["contracts"]) == 47
+
+
+def test_legacy_governance_packet_is_historical_only(tmp_path: Path) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path, legacy=True)
+    normalized = normalize(report, fixture, registry)
+    assert normalized["schema_version"] == LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION
+    assert "production_binding" not in normalized
+
+
+@pytest.mark.parametrize("mutation", ["order", "count", "substitution", "digest", "authority"])
+def test_production_governance_rejects_topology_and_authority_mutations(
+    tmp_path: Path, mutation: str
+) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    binding = report["production_binding"]
+    if mutation == "order":
+        binding["contracts"][0], binding["contracts"][1] = binding["contracts"][1], binding["contracts"][0]
+    elif mutation == "count":
+        binding["contracts"].pop()
+    elif mutation == "substitution":
+        binding["contracts"][0]["address"] = address("substituted-contract")
+    elif mutation == "digest":
+        binding["slate_digest"] = "sha256:" + "f" * 64
+    else:
+        binding["resolver_quorum_address"] = address("substituted-resolver")
+    with pytest.raises(GovernanceSignoffError, match="production|canonical|ordered 47|authority"):
+        normalize(report, fixture, registry)
+
+
+def test_legacy_governance_cannot_wrap_production_topology(tmp_path: Path) -> None:
+    report, fixture, registry = valid_governance_report(tmp_path)
+    report["schema_version"] = LEGACY_GOVERNANCE_SIGNOFF_SCHEMA_VERSION
+    with pytest.raises(GovernanceSignoffError, match="historical-only|cannot bind"):
+        normalize(report, fixture, registry)
 
 
 def test_governance_signoff_cli_outputs_normalized_report(tmp_path: Path) -> None:
-    report, fixture, registry = valid_governance_report(tmp_path)
+    # The shared trust-registry schema still lists v1 until the integration
+    # owner adds the new attestation classes; keep the CLI transport test on
+    # historical evidence while v2 behavior is covered directly above.
+    report, fixture, registry = valid_governance_report(tmp_path, legacy=True)
     report_path = tmp_path / "governance.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
     registry_path = fixture.write_registry(registry)

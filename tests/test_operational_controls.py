@@ -13,6 +13,7 @@ from p42_prizes.operational_controls import (
     ARTIFACT_ENVELOPE_SCHEMA_VERSION,
     EXECUTION_RUNNER_ROLE,
     OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+    LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION,
     REPORT_SIGNER_ROLE,
     REQUIRED_CONTROLS,
     SESSION_CONTROLS,
@@ -28,9 +29,32 @@ REPORT_SIGNED_AT = "2026-07-08T17:45:00Z"
 RUNNER_SIGNED_AT = "2026-07-08T17:00:00Z"
 
 
-def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
+def _production_binding(fixture: AttestationFixture, release: dict) -> dict:
+    manifest = json.loads((fixture.root / release["deployment_manifest"]["local_path"]).read_text())
+    evidence = manifest["releaseEvidence"]
+    return {
+        "deployment_commit": release["deployment_commit"],
+        "capsule_digest": evidence["capsuleDigest"],
+        "slate_digest": evidence["slateDigest"],
+        "config_digest": evidence["configDigest"],
+        "release_binding_digest": evidence["releaseBindingDigest"],
+        "board_set_digest": evidence["boardSetDigest"],
+        "timelock_address": manifest["contracts"]["timelock"]["address"],
+        "treasury_address": manifest["roles"]["treasury"],
+        "resolver_quorum_address": manifest["contracts"]["resolverQuorum"]["address"],
+        "contracts": [{
+            key: contract[key]
+            for key in ("topology_key", "name", "address", "runtime_bytecode_hash", "manifest_runtime_code_hash")
+        } for contract in release["contracts"]],
+    }
+
+
+def valid_report(tmp_path: Path, *, legacy: bool = False) -> tuple[dict, AttestationFixture, dict]:
     fixture = AttestationFixture(tmp_path)
-    release = fixture.release_binding("base-mainnet")
+    schema_version = (
+        LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION if legacy else OPERATIONAL_CONTROLS_SCHEMA_VERSION
+    )
+    release = fixture.release_binding("base-mainnet") if legacy else fixture.canonical_release_binding()
     owner = fixture.identity(
         "operations-owner", "Avery Nakamura", "operational-control-owner"
     )
@@ -140,7 +164,7 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
         }
         attach_signatures(
             execution_result,
-            schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+            schema_version=schema_version,
             hash_field="execution_result_hash",
             signatures_field="runner_signature",
             signers=[(EXECUTION_RUNNER_ROLE, runner, RUNNER_SIGNED_AT)],
@@ -160,10 +184,10 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
             ),
             "owner": copy.deepcopy(owner),
         }
-        _resign(control)
+        _resign(control, schema_version=schema_version)
         controls.append(control)
     report = {
-        "schema_version": OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "evidence_id": "base-mainnet-gate2-operational-controls-2026-07",
         "window_started_at_utc": "2026-07-08T16:00:00Z",
         "window_completed_at_utc": "2026-07-08T18:00:00Z",
@@ -172,9 +196,11 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
         "report_signer": report_signer,
         "final_gate_claim": "passed",
     }
+    if not legacy:
+        report["production_binding"] = _production_binding(fixture, release)
     _resign_report(report)
     registry = fixture.trust_registry(
-        OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version,
         [
             ("operational-control-owner", owner, SIGNED_AT),
             (REPORT_SIGNER_ROLE, report_signer, REPORT_SIGNED_AT),
@@ -184,12 +210,12 @@ def valid_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
     return report, fixture, registry
 
 
-def _resign(control: dict) -> None:
+def _resign(control: dict, *, schema_version: str = OPERATIONAL_CONTROLS_SCHEMA_VERSION) -> None:
     control.pop("control_hash", None)
     control.pop("owner_signature", None)
     attach_signatures(
         control,
-        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version=schema_version,
         hash_field="control_hash",
         signatures_field="owner_signature",
         signers=[("operational-control-owner", control["owner"], SIGNED_AT)],
@@ -199,8 +225,8 @@ def _resign(control: dict) -> None:
 
 def _report_claim(report: dict) -> dict:
     release_hash = sha256_bytes(canonical_json(report["release_binding"]).encode("utf-8"))
-    return {
-        "schema_version": OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+    claim = {
+        "schema_version": report["schema_version"],
         "evidence_id": report["evidence_id"],
         "window_started_at_utc": report["window_started_at_utc"],
         "window_completed_at_utc": report["window_completed_at_utc"],
@@ -208,13 +234,18 @@ def _report_claim(report: dict) -> dict:
         "ordered_control_hashes": [control["control_hash"] for control in report["controls"]],
         "final_gate_claim": "passed",
     }
+    if report["schema_version"] == OPERATIONAL_CONTROLS_SCHEMA_VERSION:
+        claim["production_binding_hash"] = sha256_bytes(
+            canonical_json(report["production_binding"]).encode("utf-8")
+        )
+    return claim
 
 
 def _resign_report(report: dict) -> None:
     claim = _report_claim(report)
     attach_signatures(
         claim,
-        schema_version=OPERATIONAL_CONTROLS_SCHEMA_VERSION,
+        schema_version=report["schema_version"],
         hash_field="operational_controls_hash",
         signatures_field="report_signature",
         signers=[(REPORT_SIGNER_ROLE, report["report_signer"], REPORT_SIGNED_AT)],
@@ -261,6 +292,41 @@ def test_validates_exact_controls_artifacts_release_and_signatures(tmp_path: Pat
     assert {item["control"] for item in normalized["controls"]} == REQUIRED_CONTROLS
     assert normalized["operational_controls_hash"].startswith("sha256:")
     assert normalized["final_gate_claim"] == "passed"
+    assert len(normalized["production_binding"]["contracts"]) == 47
+
+
+def test_legacy_operational_packet_is_historical_only(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path, legacy=True)
+    normalized = normalize(report, fixture, registry)
+    assert normalized["schema_version"] == LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION
+    assert "production_binding" not in normalized
+
+
+@pytest.mark.parametrize("mutation", ["order", "count", "substitution", "digest", "authority"])
+def test_production_operational_controls_reject_topology_and_authority_mutations(
+    tmp_path: Path, mutation: str
+) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    binding = report["production_binding"]
+    if mutation == "order":
+        binding["contracts"][0], binding["contracts"][1] = binding["contracts"][1], binding["contracts"][0]
+    elif mutation == "count":
+        binding["contracts"].pop()
+    elif mutation == "substitution":
+        binding["contracts"][0]["runtime_bytecode_hash"] = "sha256:" + "f" * 64
+    elif mutation == "digest":
+        binding["release_binding_digest"] = "sha256:" + "e" * 64
+    else:
+        binding["treasury_address"] = "0x" + "ab" * 20
+    with pytest.raises(OperationalControlsError, match="production|canonical|ordered 47|authority"):
+        normalize(report, fixture, registry)
+
+
+def test_legacy_operational_packet_cannot_wrap_production_topology(tmp_path: Path) -> None:
+    report, fixture, registry = valid_report(tmp_path)
+    report["schema_version"] = LEGACY_OPERATIONAL_CONTROLS_SCHEMA_VERSION
+    with pytest.raises(OperationalControlsError, match="historical-only|cannot bind"):
+        normalize(report, fixture, registry)
 
 
 @pytest.mark.parametrize("mode", ["missing", "duplicate", "unexpected"])
@@ -320,8 +386,8 @@ def test_rejects_time_window_violations(
     ("field", "value"),
     [
         ("class", "staging"),
-        ("network", "base-sepolia"),
-        ("chain_id", 84532),
+        ("network", "base-mainnet"),
+        ("chain_id", 8453),
         ("git_commit", "1" * 40),
         ("release_binding_hash", "sha256:" + "1" * 64),
         ("deployment_manifest_hash", "sha256:" + "2" * 64),
@@ -344,7 +410,7 @@ def test_rejects_cross_deployment_or_incomplete_session_evidence(tmp_path: Path,
     control = next(item for item in report["controls"] if item["control"] == "session_expiry")
     domain = control["environment"]["session_domain"]
     if mutation == "chain":
-        domain["chain_id"] = 84532
+        domain["chain_id"] = 8453
     elif mutation == "contracts":
         domain["contract_addresses"] = domain["contract_addresses"][:-1]
     elif mutation == "problem":
