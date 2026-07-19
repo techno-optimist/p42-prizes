@@ -139,7 +139,7 @@ function boardContracts(deployed, problemId) {
 }
 
 describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, function () {
-  it("deploys the canonical 47, executes 110 governed setup operations, and settles one challenged board", async function (t) {
+  it("deploys the canonical 47, executes 110 governed setup operations, and keeps inactive proofs non-fundable", async function (t) {
     const input = JSON.parse(await readFile(FIXTURE, "utf8"));
     const signers = await ethers.getSigners();
     const [
@@ -386,6 +386,9 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
         assert.equal(await contracts.ledger.owner(), plan.addresses.timelock);
         assert.equal(await contracts.submissions.owner(), plan.addresses.timelock);
         assert.equal(await contracts.challenges.owner(), plan.addresses.timelock);
+        assert.equal(await contracts.submissions.objectiveVerifier(), plan.addresses.objectiveVerifier);
+        assert.equal(await contracts.submissions.objectiveVerifierCodehash(), objectiveVerifierRuntimeCodehash);
+        assert.equal(await contracts.submissions.objectiveProofCapabilityActive(), false);
         assert.equal(await contracts.submissions.fundingArmed(), false);
         assert.equal(await contracts.pool.acceptingFunds(), false);
         assert.equal(await ethers.provider.getBalance(await contracts.pool.getAddress()), 0n);
@@ -424,23 +427,15 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
         independentSecurityAuthority.signTypedData(fundingDomain, fundingTypes, { ...common, role: ethers.id("independent-security-authority") }),
         governanceAuthority.signTypedData(fundingDomain, fundingTypes, { ...common, role: ethers.id("governance-authority") }),
       ]);
-      await active.submissions.connect(treasury).authorizeFunding(fundingDigest, expiresAt, 0n, fundingSignatures);
-      await executeGovernedCall(
-        timelock,
-        [signer1, signer2],
-        await active.submissions.getAddress(),
-        active.submissions.interface.encodeFunctionData("armFunding", [fundingDigest]),
-        "arm-board-1",
+      await assert.rejects(
+        active.submissions.connect(treasury).authorizeFunding(fundingDigest, expiresAt, 0n, fundingSignatures),
+        /P42_OBJECTIVE_PROOF_CAPABILITY_INACTIVE/,
       );
-      await executeGovernedCall(
-        timelock,
-        [signer1, signer2],
-        await active.pool.getAddress(),
-        active.pool.interface.encodeFunctionData("setAcceptingFunds", [true]),
-        "open-board-1",
-      );
-      const funded = 10_000n;
-      await active.pool.connect(sponsor).fund({ value: funded });
+      assert.equal(await active.submissions.authorizedFundingDigest(), ethers.ZeroHash);
+      assert.equal(await active.submissions.fundingAuthorizationNonce(), 0n);
+      assert.equal(await active.submissions.fundingArmed(), false);
+      assert.equal(await active.pool.acceptingFunds(), false);
+      await assert.rejects(active.pool.connect(sponsor).fund({ value: 1n }), /P42_FUNDING_NOT_ARMED/);
 
       const solutionBytes = ethers.toUtf8Bytes("production-shaped-local-solution");
       const daHash = ethers.sha256(solutionBytes);
@@ -511,15 +506,15 @@ describe("production-shaped exact-ten local ceremony", { timeout: 900_000 }, fun
       await active.challenges.finalizeResolution(submissionId, decision.challengeInstanceHash);
       await advanceTo((await active.submissions.submissions(submissionId)).challengeEndsAt);
       await active.submissions.connect(solver).finalize(submissionId, ethers.id("production-shaped-permanence"));
-      assert.equal(await active.ledger.creditAtomsOf(solver.address), improvement);
+      assert.equal(await active.ledger.creditAtomsOf(solver.address), 0n);
+      assert.equal(await active.submissions.claimableBondWei(solver.address), await active.submissions.minPostingBondWei());
 
       await advanceTo(await active.ledger.closeByTimestamp());
       await active.ledger.close();
-      assert.equal(await active.ledger.finalEntitlement(solver.address), funded);
-      await active.pool.connect(solver).claim();
-      assert.equal(await active.pool.totalFunded(), funded);
-      assert.equal(await active.pool.totalGrossClaimed(), funded);
-      assert.equal(await active.pool.totalClaimed(), funded);
+      assert.equal(await active.ledger.finalEntitlement(solver.address), 0n);
+      assert.equal(await active.pool.totalFunded(), 0n);
+      assert.equal(await active.pool.totalGrossClaimed(), 0n);
+      assert.equal(await active.pool.totalClaimed(), 0n);
       assert.equal(await active.pool.accountedBalance(), 0n);
       assert.equal(await ethers.provider.getBalance(await active.pool.getAddress()), 0n);
 

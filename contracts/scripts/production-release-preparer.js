@@ -20,7 +20,7 @@ import {
 } from "./release-capsule-helper.js";
 import { readContractsArtifactJsonWithBytes, readContractsConfigJsonWithBytes } from "./strict-json-helper.js";
 
-export const INACTIVE_OBJECTIVE_VERIFIER_RUNTIME_CODEHASH = "0x0309c52f57440cb15f805f5a180c726fc46ac4a73df7bb8ba5d541436d042f76";
+export const INACTIVE_OBJECTIVE_VERIFIER_RUNTIME_CODEHASH = "0xa276639252ffc304e61e0a3aaaf400f698184f816021267a18e1092156c44af3";
 
 function checkoutState(repoRoot, run) {
   return {

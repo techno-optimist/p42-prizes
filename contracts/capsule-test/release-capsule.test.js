@@ -255,8 +255,10 @@ describe("closed immutable release capsule", () => {
         `0x${"1".repeat(64)}`,
         `0x${"2".repeat(64)}`,
         "0x0000000000000000000000000000000000000005",
+        `0x${"3".repeat(64)}`,
         "0x0000000000000000000000000000000000000006",
         "0x0000000000000000000000000000000000000007",
+        "0x0000000000000000000000000000000000000008",
       ],
     ];
     const first = immutableValuesFromConstructor(contract, args, { blockTimestamp: 1_800_000_000 });

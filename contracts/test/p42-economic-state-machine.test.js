@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import { network } from "hardhat";
 import { EconomicReference, seeded } from "../test-support/economic-reference.js";
+import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 
 const { ethers } = await network.create();
 const DAY = 86_400n;
@@ -101,6 +102,7 @@ async function deployRealManagerFixture() {
   );
   await ledger.waitForDeployment();
   const Manager = await ethers.getContractFactory("P42SubmissionManager");
+  const capability = await deployActiveObjectiveProofCapability(ethers);
   const manager = await Manager.deploy({
     pool: await pool.getAddress(), ledger: await ledger.getAddress(), owner: owner.address,
     treasury: treasury.address, alphaBps: 200n, minPostingBondWei: 1n,
@@ -109,6 +111,8 @@ async function deployRealManagerFixture() {
   }, {
     boardSetDigest: ethers.id("economic-state-machine-board-set"),
     releaseBindingDigest: ethers.id("economic-state-machine-release"),
+    objectiveVerifier: capability.objectiveVerifier,
+    objectiveVerifierCodehash: capability.objectiveVerifierCodehash,
     productionLaunchAuthority: productionLaunch.address,
     independentSecurityAuthority: independentSecurity.address,
     governanceAuthority: governance.address,

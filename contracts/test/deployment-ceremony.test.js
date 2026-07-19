@@ -751,6 +751,8 @@ describe("deployment ceremony construction", () => {
     assert.deepEqual(args.submissions[1], {
       boardSetDigest: `0x${"6".repeat(64)}`,
       releaseBindingDigest: `0x${"7".repeat(64)}`,
+      objectiveVerifier: ADDRESSES.objectiveVerifier,
+      objectiveVerifierCodehash: `0x${"8".repeat(64)}`,
       productionLaunchAuthority: ADDRESSES.productionLaunchAuthority,
       independentSecurityAuthority: ethers.getAddress(ADDRESSES.independentSecurityAuthority),
       governanceAuthority: ADDRESSES.governanceAuthority,

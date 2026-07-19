@@ -11,6 +11,7 @@ interface IP42MockCreditLedger {
 /// full submission stack.
 contract MockFundingArmed {
     bool public fundingArmed;
+    bool public objectiveProofCapabilityActive = true;
     uint64 public fundingAuthorizationExpiresAt = type(uint64).max;
 
     constructor(bool armed) {
@@ -19,6 +20,10 @@ contract MockFundingArmed {
 
     function setFundingArmed(bool armed) external {
         fundingArmed = armed;
+    }
+
+    function setObjectiveProofCapabilityActive(bool active) external {
+        objectiveProofCapabilityActive = active;
     }
 
     function setFundingAuthorizationExpiresAt(uint64 expiresAt) external {

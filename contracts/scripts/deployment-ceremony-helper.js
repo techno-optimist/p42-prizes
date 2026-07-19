@@ -637,6 +637,8 @@ export function constructorArgsFor(name, config, addresses = {}) {
         {
           boardSetDigest: config.fundingAuthorization.boardSetDigest,
           releaseBindingDigest: config.fundingAuthorization.releaseBindingDigest,
+          objectiveVerifier: addresses.objectiveVerifier ?? config.roles.objectiveVerifier,
+          objectiveVerifierCodehash: config.roles.objectiveVerifierCodehash,
           productionLaunchAuthority: config.roles.productionLaunchAuthority,
           independentSecurityAuthority: config.roles.independentSecurityAuthority,
           governanceAuthority: config.roles.governanceAuthority,

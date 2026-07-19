@@ -419,6 +419,7 @@ function productionManifest(capsule) {
       ], [
         `0x${manifest.releaseEvidence.boardSetDigest.slice("sha256:".length)}`,
         `0x${manifest.releaseEvidence.releaseBindingDigest.slice("sha256:".length)}`,
+        manifest.roles.objectiveVerifier, manifest.roles.objectiveVerifierCodehash,
         manifest.roles.productionLaunchAuthority, manifest.roles.independentSecurityAuthority,
         manifest.roles.governanceAuthority,
       ]];

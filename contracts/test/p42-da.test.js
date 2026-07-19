@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { network } from "hardhat";
+import { deployActiveObjectiveProofCapability } from "../test-support/objective-proof-capability.js";
 
 const { ethers } = await network.create();
 
@@ -35,8 +36,9 @@ const FUNDING_TYPES = { FundingAuthorization: [
   { name: "expiresAt", type: "uint64" }, { name: "nonce", type: "uint256" },
 ] };
 
-function fundingAuthorizationConfig(authorities) {
+function fundingAuthorizationConfig(authorities, capability) {
   return { boardSetDigest: BOARD_SET_DIGEST, releaseBindingDigest: RELEASE_BINDING_DIGEST,
+    objectiveVerifier: capability.objectiveVerifier, objectiveVerifierCodehash: capability.objectiveVerifierCodehash,
     productionLaunchAuthority: authorities[0].address, independentSecurityAuthority: authorities[1].address,
     governanceAuthority: authorities[2].address };
 }
@@ -97,6 +99,7 @@ async function increaseTime(seconds) {
 // Deploy the full pool/ledger/submission stack for a given DA config.
 async function deploy(onchainDa, maxSolutionBytes) {
   const [owner, treasury, solver, other, ...authorities] = await ethers.getSigners();
+  const capability = await deployActiveObjectiveProofCapability(ethers);
 
   const Pool = await ethers.getContractFactory("P42BountyPool");
   const pool = await Pool.deploy(owner.address, FUNDING_CAP);
@@ -116,7 +119,7 @@ async function deploy(onchainDa, maxSolutionBytes) {
     treasury: treasury.address, alphaBps: ALPHA_BPS, minPostingBondWei: MIN_BOND,
     challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa, maxSolutionBytes,
     seedScoreAtoms: SEED_SCORE_ATOMS, minImprovementAtoms: MIN_IMPROVEMENT_ATOMS,
-  }, fundingAuthorizationConfig(authorities));
+  }, fundingAuthorizationConfig(authorities, capability));
   await submissions.waitForDeployment();
   await ledger.connect(owner).setCreditRecorder(await submissions.getAddress());
 
@@ -150,7 +153,7 @@ async function deploy(onchainDa, maxSolutionBytes) {
   await submissions.connect(owner).armFunding("0x" + "42".repeat(32));
   await pool.connect(owner).setAcceptingFunds(true);
 
-  return { owner, treasury, solver, other, pool, ledger, submissions };
+  return { owner, treasury, solver, other, capability, pool, ledger, submissions };
 }
 
 // Build a commit whose DA anchor is sha256(solutionBytes) — mirrors the agent:
@@ -181,7 +184,7 @@ async function commitReveal(fixture, solutionBytes, salt, revealBytes) {
 describe("P42 on-chain-at-reveal data availability", function () {
   describe("configuration", function () {
     it("rejects on-chain DA with a zero cap", async function () {
-      const { submissions } = await deploy(false, 0); // deploy something to get a factory-bound instance
+      const { submissions, capability } = await deploy(false, 0); // deploy something to get a factory-bound instance
       const Submissions = await ethers.getContractFactory("P42SubmissionManager");
       const [owner, treasury, , , ...authorities] = await ethers.getSigners();
       const Pool = await ethers.getContractFactory("P42BountyPool");
@@ -197,14 +200,14 @@ describe("P42 on-chain-at-reveal data availability", function () {
           treasury: treasury.address, alphaBps: ALPHA_BPS, minPostingBondWei: MIN_BOND,
           challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: true, maxSolutionBytes: 0,
           seedScoreAtoms: SEED_SCORE_ATOMS, minImprovementAtoms: MIN_IMPROVEMENT_ATOMS,
-        }, fundingAuthorizationConfig(authorities)),
+        }, fundingAuthorizationConfig(authorities, capability)),
         submissions,
         "P42_BAD_ONCHAIN_DA_CONFIG"
       );
     });
 
     it("rejects on-chain DA with a cap above the 1 MiB calldata ceiling", async function () {
-      const { submissions } = await deploy(false, 0);
+      const { submissions, capability } = await deploy(false, 0);
       const Submissions = await ethers.getContractFactory("P42SubmissionManager");
       const [owner, treasury, , , ...authorities] = await ethers.getSigners();
       const Pool = await ethers.getContractFactory("P42BountyPool");
@@ -220,7 +223,7 @@ describe("P42 on-chain-at-reveal data availability", function () {
           treasury: treasury.address, alphaBps: ALPHA_BPS, minPostingBondWei: MIN_BOND,
           challengeWindowSeconds: CHALLENGE_WINDOW, onchainDa: true, maxSolutionBytes: ONE_MIB + 1,
           seedScoreAtoms: SEED_SCORE_ATOMS, minImprovementAtoms: MIN_IMPROVEMENT_ATOMS,
-        }, fundingAuthorizationConfig(authorities)),
+        }, fundingAuthorizationConfig(authorities, capability)),
         submissions,
         "P42_BAD_ONCHAIN_DA_CONFIG"
       );

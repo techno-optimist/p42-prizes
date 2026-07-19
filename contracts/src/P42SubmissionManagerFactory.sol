@@ -16,7 +16,7 @@ contract P42SubmissionManagerFactory {
     mapping(address => bool) public isCanonicalSubmissionManager;
     mapping(address => bytes32) public configurationHashOf;
     bytes32 public constant MANAGER_CREATION_CODE_HASH =
-        0x27d00201922627ab5878c009a1ededa0a59c29581a2b7dca47576db3b7b532d2;
+        0xeae8f111c48dbfbdbd08cfbacc3b8c574e64dd7073484c25fc801ecbcd0b0ce7;
 
     event CanonicalSubmissionManagerDeployed(address indexed submissionManager, bytes32 indexed salt);
 
