@@ -10,11 +10,13 @@ import { ethers } from "ethers";
 import { canonicalJson, sha256Canonical, verifierImageHashForDigest, verifierSourceHashForDigest } from "./lib.mjs";
 import { buildResolverVerdictHash } from "./resolver.mjs";
 import { buildResolverQuorumDecisionPacket } from "./resolver-quorum.mjs";
+import { buildResolverRerunRequest } from "./resolver-rerun-executor.mjs";
 import {
   bindResolverRerunReceipt,
   issueResolverRerunChallenge,
   markResolverRerunAuthorization,
   markResolverRerunSignature,
+  persistResolverRerunRequest,
   resolverRerunReceiptSigningMessage,
 } from "./resolver-rerun-attestation.mjs";
 import { persistSignerAuthorization, verifyIndependentResolverDecision } from "./resolver-signer.mjs";
@@ -436,6 +438,38 @@ test("expired empty attempts renew with tombstones but accepted attempts cannot 
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("active preparation resumes the exact nonce and durable request after crashes", () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-resolver-prepare-resume-"));
+  try {
+    const base = fixture();
+    const first = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW, ttlMs: 60_000, randomBytes: () => Buffer.alloc(32, 0x44),
+      resumeActive: true,
+    });
+    const resumed = issueResolverRerunChallenge(root, base.packet, {
+      now: VERIFY_NOW + 1_000, randomBytes: () => Buffer.alloc(32, 0x55),
+      resumeActive: true,
+    });
+    assert.equal(resumed.resumed, true);
+    assert.deepEqual(resumed.challenge, first.challenge);
+
+    const requestValues = {
+      packet: base.packet, challenge: first.challenge,
+      boardId: "84532:1:hadamard-mini", manifestPath: "/opt/p42/release.json",
+      publishedTranscript: base.publishedTranscript, manifestRoot: "/opt/p42",
+      requestSignerPrivateKey: `0x${"42".repeat(32)}`,
+    };
+    const request = buildResolverRerunRequest({ ...requestValues, manifestBytes: Buffer.from("release-a") });
+    const requestPath = persistResolverRerunRequest(root, base.packet, first.challenge, request);
+    assert.equal(persistResolverRerunRequest(root, base.packet, resumed.challenge, request), requestPath);
+    const substituted = buildResolverRerunRequest({ ...requestValues, manifestBytes: Buffer.from("release-b") });
+    assert.throws(
+      () => persistResolverRerunRequest(root, base.packet, resumed.challenge, substituted),
+      /different content/,
+    );
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("renewal resumes after a tombstone crash with one deterministic replacement intent", () => {

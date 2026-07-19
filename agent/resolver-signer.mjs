@@ -28,6 +28,7 @@ import {
   loadResolverRerunExecutorTrust,
   markResolverRerunAuthorization,
   markResolverRerunSignature,
+  persistResolverRerunRequest,
   readResolverRerunChallenge,
   verifyResolverRerunReceipt,
 } from "./resolver-rerun-attestation.mjs";
@@ -465,7 +466,7 @@ export async function main(argv = process.argv.slice(2), clients = {}) {
     assertPrivateRoot(signatureRoot);
     const packet = validateResolverQuorumDecisionPacket(readStrictJsonFileSync(resolve(packetPath), JSON_LIMITS));
     const requestSignerPrivateKey = process.env.P42_RESOLVER_SIGNER_PRIVATE_KEY;
-    const issued = issueResolverRerunChallenge(signatureRoot, packet);
+    const issued = issueResolverRerunChallenge(signatureRoot, packet, { resumeActive: true });
     const manifestBytes = readFileSync(resolve(manifestPath));
     const manifest = readStrictJsonFileSync(resolve(manifestPath), { maxBytes: 8 * 1024 * 1024, maxDepth: 96 });
     const problem = manifestProblemForRegistryId(manifest, registryProblemId);
@@ -476,12 +477,8 @@ export async function main(argv = process.argv.slice(2), clients = {}) {
       manifestPath: resolve(manifestPath), manifestBytes, publishedTranscript,
       manifestRoot: clients.manifestRoot, requestSignerPrivateKey,
     });
-    const requests = join(signatureRoot, "rerun-requests");
-    assertPrivateRoot(requests);
-    const requestPath = join(requests, `${packet.packet_hash.slice(7)}-${issued.challenge.orchestrator_nonce.slice(2)}.json`);
-    if (!writeTrustedFileExclusiveSync(requestPath, signatureRoot, `${canonicalJson(request)}\n`)) {
-      throw new Error("resolver rerun request already exists for the issued nonce");
-    }
+    assertPrivateRoot(join(signatureRoot, "rerun-requests"));
+    const requestPath = persistResolverRerunRequest(signatureRoot, packet, issued.challenge, request);
     console.log(canonicalJson({ status: "rerun-challenge-issued", path: issued.path, challenge: issued.challenge, request_path: requestPath }));
     return;
   }

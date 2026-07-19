@@ -52,6 +52,11 @@ export function resolverRerunChallengePath(signatureRoot, packet) {
   return join(signatureRoot, "rerun-challenges", `${packetStateName(packet)}.json`);
 }
 
+export function resolverRerunRequestPath(signatureRoot, packet, nonce) {
+  if (!BYTES32_RE.test(nonce ?? "")) throw new Error("resolver rerun request nonce is invalid");
+  return join(signatureRoot, "rerun-requests", `${packetStateName(packet)}-${nonce.slice(2)}.json`);
+}
+
 export function resolverRerunConsumptionPath(signatureRoot, packet) {
   const challenge = readResolverRerunChallenge(signatureRoot, packet);
   return resolverRerunAttemptPaths(signatureRoot, packet, challenge.orchestrator_nonce).receipt;
@@ -84,6 +89,7 @@ export function issueResolverRerunChallenge(signatureRoot, packet, options = {})
     if (existsSync(path)) {
       const prior = readResolverRerunChallenge(signatureRoot, packet);
       if (now < Date.parse(prior.expires_at_utc)) {
+        if (options.resumeActive === true) return { challenge: prior, path, resumed: true };
         const currentRenewal = join(signatureRoot, "rerun-renewals", `current-${packetStateName(packet)}.json`);
         if (existsSync(currentRenewal)) {
           const intent = readStrictJsonFileSync(currentRenewal, { ...RECEIPT_LIMITS, trustedRoot: signatureRoot });
@@ -167,6 +173,36 @@ export function issueResolverRerunChallenge(signatureRoot, packet, options = {})
   } finally {
     releaseEnvelopeLock(lockPath, owner);
   }
+}
+
+export function persistResolverRerunRequest(signatureRoot, packet, challenge, request) {
+  const expected = normalizePacketIdentity(packet);
+  const unsigned = request && typeof request === "object" && !Array.isArray(request)
+    ? Object.fromEntries(Object.entries(request).filter(([key]) => !["request_hash", "request_authorization"].includes(key)))
+    : null;
+  if (request?.schema_version !== "p42-resolver-rerun-request/v1"
+      || request.packet_hash !== expected.packet_hash
+      || request.decision_digest !== expected.decision_digest
+      || request.challenge_instance_hash !== expected.challenge_instance_hash
+      || request.orchestrator_nonce !== challenge?.orchestrator_nonce
+      || challenge.packet_hash !== expected.packet_hash
+      || challenge.decision_digest !== expected.decision_digest
+      || challenge.challenge_instance_hash !== expected.challenge_instance_hash
+      || !SHA256_RE.test(request.request_hash ?? "")
+      || request.request_hash !== sha256Canonical(unsigned)) {
+    throw new Error("resolver rerun durable request does not bind the signer attempt");
+  }
+  const directory = join(signatureRoot, "rerun-requests");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const path = resolverRerunRequestPath(signatureRoot, packet, challenge.orchestrator_nonce);
+  const payload = `${canonicalJson(request)}\n`;
+  if (!writeTrustedFileExclusiveSync(path, signatureRoot, payload)) {
+    const existing = readStrictJsonFileSync(path, { ...RECEIPT_LIMITS, trustedRoot: signatureRoot });
+    if (`${canonicalJson(existing)}\n` !== payload) {
+      throw new Error("resolver rerun durable request already binds different content");
+    }
+  }
+  return path;
 }
 
 export function readResolverRerunChallenge(signatureRoot, packet) {
