@@ -4,7 +4,7 @@ import { test } from "node:test";
 import Ajv2020 from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 
-import { explorerContractEntries } from "../scripts/explorer-verification-helper.js";
+import { explorerContractEntries, queryOfficialSources } from "../scripts/explorer-verification-helper.js";
 
 function contract(name, ordinal) {
   return { name, address: `0x${ordinal.toString(16).padStart(40, "0")}` };
@@ -75,4 +75,50 @@ test("explorer dossier schema requires exactly 47 P42 contracts", () => {
   assert.equal(schema.properties.contracts.minItems, 47);
   assert.equal(schema.properties.contracts.maxItems, 47);
   assert.equal(schema.$defs.contract.properties.name.pattern, "^P42");
+});
+
+test("explorer evidence never persists or rethrows the Etherscan API key", async () => {
+  const secret = "p42-super-secret-etherscan-key";
+  const transported = [];
+  const fetchImpl = async (url) => {
+    transported.push(url.toString());
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const evidence = await queryOfficialSources({
+    fetchImpl, apiKey: secret, chainId: 84532,
+    address: "0x0000000000000000000000000000000000000042",
+    fetchedAt: "2026-07-19T00:00:00.000Z",
+  });
+  assert.equal(transported.some((value) => value.includes(secret)), true);
+  assert.equal(JSON.stringify(evidence).includes(secret), false);
+  assert.equal(new URL(evidence[0].url).searchParams.has("apikey"), false);
+  assert.equal(evidence[0].host, "api.etherscan.io");
+
+  await assert.rejects(
+    queryOfficialSources({
+      fetchImpl: async () => { throw new Error(`request failed for ?apikey=${secret}`); },
+      apiKey: secret, chainId: 84532,
+      address: "0x0000000000000000000000000000000000000042",
+      fetchedAt: "2026-07-19T00:00:00.000Z",
+    }),
+    (error) => error.message === "etherscan-v2-official request failed" && !String(error.stack).includes(secret),
+  );
+  await assert.rejects(
+    queryOfficialSources({
+      fetchImpl: async (url) => ({ status: 200, arrayBuffer: async () => { throw new Error(`stream failed for ${url}`); } }),
+      apiKey: secret, chainId: 84532,
+      address: "0x0000000000000000000000000000000000000042",
+      fetchedAt: "2026-07-19T00:00:00.000Z",
+    }),
+    (error) => error.message === "etherscan-v2-official response body read failed" && !String(error.stack).includes(secret),
+  );
+  await assert.rejects(
+    queryOfficialSources({
+      fetchImpl: async (url) => new Response(url.host === "api.etherscan.io" ? `echo:${url}` : "{}", { status: 200 }),
+      apiKey: secret, chainId: 84532,
+      address: "0x0000000000000000000000000000000000000042",
+      fetchedAt: "2026-07-19T00:00:00.000Z",
+    }),
+    (error) => error.message === "etherscan-v2-official response contained credential material" && !String(error.stack).includes(secret),
+  );
 });

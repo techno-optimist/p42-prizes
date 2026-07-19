@@ -452,6 +452,55 @@ The named signers review the manifest, then submit its `transactionBuilder`
 requests from their own wallets or multisig interface. Do not collect multiple
 private keys in one shell or environment file.
 
+The canonical production path requires five timelock signers, a strict-majority
+threshold of at least three, a guardian address distinct from every signer, a
+minimum 48-hour standard delay, and at least twice that delay for overrides.
+Identity and organizational independence remain part of the external governance
+signoff; address cardinality alone cannot prove them.
+
+The phased deploy intentionally exits at the first incomplete governance check
+after durably writing a private v2 journal with all 40 prerequisite builders.
+Before the first deployment transaction is signed or broadcast, production also
+reserves the exact final 110-operation journal from the frozen nonce/address
+plan and capsule-derived timelock runtime. Any missing, stale, substituted, or
+conflicting final-journal path therefore fails before gas is spent. A partial
+phase report hashes the journal only after recording every observation, so its
+reported digest always identifies the bytes left on disk.
+The journal's `deploymentConfigHash` is the immutable pre-broadcast ceremony
+input digest recorded as `releaseEvidence.configDigest`; it is intentionally
+distinct from the completed manifest's later hash over mined deployment
+evidence. The final exporter requires both bindings through the manifest.
+Export a no-key, no-RPC operator bundle without a deployment manifest:
+
+```bash
+P42_GOVERNANCE_OPERATION_JOURNAL=../deployments/base-sepolia/p42-prizes.json.predeployment-governance-operations.json \
+P42_GOVERNANCE_OPERATION_JOURNAL_SHA256=sha256:<independently-pinned-exact-bytes-digest> \
+P42_GOVERNANCE_REQUEST_OUTPUT_ROOT=/secure/p42/governance \
+P42_GOVERNANCE_REQUEST_OUTPUT=/secure/p42/governance/predeployment-40.json \
+npm run export:governance-requests
+```
+
+After the remaining eleven contracts are deployed and the pending manifest
+exists, export the final manifest-cross-checked 110-operation bundle:
+
+```bash
+P42_DEPLOYMENT_MANIFEST=../deployments/base-sepolia/p42-prizes.json \
+P42_GOVERNANCE_OPERATION_JOURNAL=../deployments/base-sepolia/p42-prizes.json.governance-operations.json \
+P42_GOVERNANCE_OPERATION_JOURNAL_SHA256=sha256:<independently-pinned-exact-bytes-digest> \
+P42_GOVERNANCE_REQUEST_OUTPUT_ROOT=/secure/p42/governance \
+P42_GOVERNANCE_REQUEST_OUTPUT=/secure/p42/governance/final-110.json \
+npm run export:governance-requests
+```
+
+Both artifacts are exclusive-created private files, preserve every complete
+schedule/confirm/execute request and deterministic override fallback, bind the
+release and deployment journal, and explicitly set `broadcastAuthorized=false`.
+The command contains no provider, wallet, signing, or broadcast path.
+The deploy/phase-check output reports the journal's exact-byte digest, but the
+signer workstation must receive and approve that digest through the protected
+release-authority channel; a digest copied only from the same untrusted journal
+directory is not an independent trust anchor.
+
 Execute operations in ascending `sequence` order and honor every `dependsOn`
 operation ID. Child wiring, registration, and freeze use standard operations.
 The timelock self-calls that register ledger, submission, and challenge pause

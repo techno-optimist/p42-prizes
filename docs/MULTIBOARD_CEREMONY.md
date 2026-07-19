@@ -45,8 +45,8 @@ strict JSON file named by `P42_MULTIBOARD_CEREMONY_CONFIG`. Its root shape is:
 {
   "schema": "p42-prizes/multi-board-ceremony/v1",
   "governance": {
-    "signers": ["0x...", "0x...", "0x..."],
-    "threshold": "2",
+    "signers": ["0x...", "0x...", "0x...", "0x...", "0x..."],
+    "threshold": "3",
     "delaySeconds": "172800",
     "guardian": "0x..."
   },
@@ -254,9 +254,17 @@ For ten boards this is 110 independently confirmed operations. The only
 supported continuation command is `npm run continue:base-sepolia`. Production
 continuation requires two named, operator-distinct RPCs to agree on canonical
 Base Sepolia `finalized`/`safe` tags and OP Stack L1-origin/finality evidence.
-It reserves a private governance-operation journal bound to the authenticated
-release, deployment-config hash, timelock address/runtime, and complete ordered
-operation builders. The continuation process has no governance signer keys and
+It reserves a private v2 governance-operation journal bound to the authenticated
+release, deployment commit, deployment-config hash, timelock address/runtime,
+five-signer policy, and complete ordered operation builders. The first phase
+contains the 40 prerequisite requests; the final journal contains all 110 and
+is exact-content reserved from the frozen preflight plan before any deployment
+transaction is signed or broadcast. Partial-phase handoffs recompute the
+exact-byte digest after all observation writes. The
+deployment-config field binds the immutable ceremony-input digest in
+`releaseEvidence.configDigest`, while the manifest retains its separate hash
+over mined deployment evidence. The
+continuation process has no governance signer keys and
 never schedules or confirms an operation. It only ingests execution evidence at
 the agreed finalized block, including a deterministic override fallback, and
 persists recovered observations through the same fenced, dead-owner-reclaiming

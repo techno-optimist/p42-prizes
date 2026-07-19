@@ -90,6 +90,7 @@ import {
   recordGovernanceObservation,
   reserveGovernanceOperationJournal,
 } from "./governance-operation-journal.js";
+import { assertProductionGovernancePolicy, governanceConfigHashFromManifest, governancePolicyView, reserveFinalGovernanceOperationJournal } from "./governance-operation-requests.js";
 import {
   buildCanonicalMultiBoardDeploymentDefinitions,
   materializeCanonicalMultiBoardDeploymentPlan,
@@ -742,6 +743,14 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
 
   const input = await readMultiBoardCeremonyInput();
   let config = readMultiBoardCeremonyConfig(ethers, input.value, { deployerAddress: deployer.address });
+  if (releaseMode === "production") assertProductionGovernancePolicy({
+    signers: config.governance.signers,
+    threshold: config.governance.threshold.toString(),
+    overrideThreshold: config.governance.overrideThreshold.toString(),
+    delaySeconds: config.governance.delaySeconds.toString(),
+    overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
+    guardian: config.governance.guardian,
+  });
   if (config.governance.signers.some((signer) => lower(signer) === lower(deployer.address))) {
     throw new Error("phased multi-board deployment requires the deployer account to be distinct from every governance signer");
   }
@@ -863,7 +872,31 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
     reserve: () => ensureManifestReservation(reservationIdentity),
   });
   const predeploymentOperations = multiBoardPredeploymentGovernanceOperations(frozenSetupOperations);
+  let preReservedFinalGovernanceJournal = null;
+  if (release) {
+    const timelockStep = executablePreflight.steps.find(({ id }) => id === "timelock");
+    const timelockCapsule = release.capsule.contracts.find(({ name }) => name === CONTRACT_NAMES.timelock);
+    if (!timelockStep || !timelockCapsule) throw new Error("production preflight is missing the timelock deployment identity");
+    const expectedTimelockCodeHash = ethers.keccak256(reconstructExpectedRuntime(
+      timelockCapsule,
+      immutableValuesFromConstructor(timelockCapsule, timelockStep.args),
+    ));
+    const journal = buildGovernanceOperationJournal({
+      chainId: Number(BASE_SEPOLIA_CHAIN_ID),
+      timelock: executablePreflight.addresses.timelock,
+      deploymentCommit,
+      governance: governancePolicyView(config.governance),
+      deploymentConfigHash: `0x${reservationIdentity.configDigest.slice("sha256:".length)}`,
+      releaseBindingDigest: predeploymentReleaseBindingDigest,
+      expectedTimelockCodeHash,
+      operations: frozenSetupOperations,
+    });
+    const path = governanceOperationJournalPath(output);
+    reserveGovernanceOperationJournal(path, journal);
+    preReservedFinalGovernanceJournal = { path, planDigest: journal.planDigest };
+  }
   console.log(`Reserved multi-board deployment manifest destination: ${reservation.path}`);
+  if (preReservedFinalGovernanceJournal) console.log(`Reserved final governance journal destination: ${preReservedFinalGovernanceJournal.path}`);
 
   const executed = await executeSignedDeploymentPlan(
     ethers, deployer, output, reservationIdentity, definitions,
@@ -906,6 +939,15 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
           timelockAddress: addresses.timelock,
           expectedTimelockCodeHash: deployments.timelock.manifest.runtimeCodeHash,
           deploymentConfigHash: `0x${reservationIdentity.configDigest.slice("sha256:".length)}`,
+          deploymentCommit,
+          governance: {
+            signers: config.governance.signers,
+            threshold: config.governance.threshold.toString(),
+            overrideThreshold: config.governance.overrideThreshold.toString(),
+            delaySeconds: config.governance.delaySeconds.toString(),
+            overrideDelaySeconds: config.governance.overrideDelaySeconds.toString(),
+            guardian: config.governance.guardian,
+          },
           releaseBindingDigest: predeploymentReleaseBindingDigest,
           fromBlock: timelockBlock,
           toBlock: checkedBlock,
@@ -1056,9 +1098,14 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
   });
 
   await mkdir(dirname(output), { recursive: true });
+  const finalGovernanceJournal = reserveFinalGovernanceOperationJournal(output, manifest);
+  if (preReservedFinalGovernanceJournal && finalGovernanceJournal.journal.planDigest !== preReservedFinalGovernanceJournal.planDigest) {
+    throw new Error("final governance journal differs from the pre-broadcast reservation");
+  }
   await writeManifestAtomically(output, manifest);
   await completeManifestOutputReservation(reservationIdentity);
   console.log(`Wrote pending multi-board governance ceremony manifest: ${output}`);
+  console.log(`Final governance journal: ${finalGovernanceJournal.path} (${finalGovernanceJournal.sha256})`);
   console.log(`Shared timelock owner: ${rootAddresses.timelock}`);
   console.log(`${setupTransactions.length} setup operations require independent signer action across ${boards.length} boards.`);
   console.log("No setup operation, armFunding, or setAcceptingFunds(true) transaction was sent.");
@@ -1680,7 +1727,8 @@ async function continueMultiBoardCeremony(ethers, path, manifest) {
   const governanceJournalPath = governanceOperationJournalPath(path);
   const expectedGovernanceJournal = buildGovernanceOperationJournal({
     chainId: Number(BASE_SEPOLIA_CHAIN_ID), timelock: manifest.contracts.timelock.address,
-    deploymentConfigHash: manifest.deploymentConfigHash,
+    deploymentCommit: manifest.deploymentCommit, governance: governancePolicyView(manifest.governance),
+    deploymentConfigHash: governanceConfigHashFromManifest(manifest),
     releaseBindingDigest: manifest.releaseEvidence.releaseBindingDigest,
     expectedTimelockCodeHash: manifest.contracts.timelock.runtimeCodeHash,
     operations: manifest.setupTransactions,

@@ -140,16 +140,42 @@ function compareParsed({ etherscan, sourcify, chainRuntime }, wanted, label, cre
   if (ethers.keccak256(sourcify.runtimeBytecode).toLowerCase() !== wanted.runtimeHash || ethers.keccak256(chainRuntime).toLowerCase() !== wanted.runtimeHash || sourcify.runtimeBytecode !== chainRuntime.toLowerCase()) throw new Error(`${label} Sourcify/on-chain runtime mismatch`);
 }
 
-async function fetchRaw(fetchImpl, url, provider, fetchedAt) {
-  const response = await fetchImpl(url, { redirect: "error", headers: { accept: "application/json" } }); const bytes = Buffer.from(await response.arrayBuffer()); if (bytes.length > MAX_RESPONSE_BYTES) throw new Error(`${provider} response exceeds limit`);
-  return { provider, url: url.toString(), host: url.host, httpStatus: response.status, fetchedAt, responseDigest: sha256(bytes), responseBase64: bytes.toString("base64") };
+function containsCredential(bytes, credential) {
+  if (!credential) return false;
+  const encoded = new URLSearchParams({ apikey: credential }).toString().slice("apikey=".length);
+  return [credential, encoded, encodeURIComponent(credential), encoded.toLowerCase(), encoded.toUpperCase()]
+    .some((candidate) => candidate && bytes.includes(Buffer.from(candidate)));
+}
+
+async function fetchRaw(fetchImpl, transportUrl, recordedUrl, provider, fetchedAt, credential = null) {
+  let response;
+  try {
+    response = await fetchImpl(transportUrl, { redirect: "error", headers: { accept: "application/json" } });
+  } catch {
+    // Transport errors commonly include the complete URL. Never retain a cause
+    // that can disclose a query-string credential to logs or ceremony output.
+    throw new Error(`${provider} request failed`);
+  }
+  let bytes;
+  try {
+    bytes = Buffer.from(await response.arrayBuffer());
+  } catch {
+    throw new Error(`${provider} response body read failed`);
+  }
+  if (bytes.length > MAX_RESPONSE_BYTES) throw new Error(`${provider} response exceeds limit`);
+  if (containsCredential(bytes, credential)) throw new Error(`${provider} response contained credential material`);
+  return { provider, url: recordedUrl.toString(), host: recordedUrl.host, httpStatus: response.status, fetchedAt, responseDigest: sha256(bytes), responseBase64: bytes.toString("base64") };
 }
 
 export async function queryOfficialSources({ fetchImpl = globalThis.fetch, apiKey, chainId, address, fetchedAt }) {
   if (!apiKey) throw new Error("Etherscan V2 API key is required");
   const etherscan = new URL(ETHERSCAN_V2_URL); etherscan.search = new URLSearchParams({ chainid: String(chainId), module: "contract", action: "getsourcecode", address, apikey: apiKey });
+  const recordedEtherscan = new URL(etherscan); recordedEtherscan.searchParams.delete("apikey");
   const sourcify = new URL(`/server/v2/contract/${chainId}/${address}?fields=all`, SOURCIFY_V2_ORIGIN);
-  return Promise.all([fetchRaw(fetchImpl, etherscan, "etherscan-v2-official", fetchedAt), fetchRaw(fetchImpl, sourcify, "sourcify-v2-independent", fetchedAt)]);
+  return Promise.all([
+    fetchRaw(fetchImpl, etherscan, recordedEtherscan, "etherscan-v2-official", fetchedAt, apiKey),
+    fetchRaw(fetchImpl, sourcify, sourcify, "sourcify-v2-independent", fetchedAt),
+  ]);
 }
 
 const DOMAIN = { name: "P42 Explorer Verification", version: "2" };

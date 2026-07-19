@@ -83,6 +83,10 @@ describe("production deployment runbook command contract", () => {
       resolve(REPO_ROOT, "contracts/scripts/deploy-base-sepolia.js"),
       "utf8",
     );
+    const phasedDeployment = readFileSync(
+      resolve(REPO_ROOT, "contracts/scripts/multiboard-deployment-plan.js"),
+      "utf8",
+    );
     const runbooks = ["docs/DEPLOYMENT.md", "docs/MULTIBOARD_CEREMONY.md"].map((path) => ({
       path,
       body: readFileSync(resolve(REPO_ROOT, path), "utf8"),
@@ -99,6 +103,13 @@ describe("production deployment runbook command contract", () => {
     assert.match(executable, /primaryOperatorId:\s*rpcEvidence\.primaryOperatorId/);
     assert.match(executable, /secondaryOperatorId:\s*rpcEvidence\.secondaryOperatorId/);
     assert.doesNotMatch(executable, /^\s+primaryOperatorId,\s*$/m);
+    const finalJournalReservation = executable.indexOf("reserveGovernanceOperationJournal(path, journal);");
+    const firstDeploymentExecution = executable.indexOf("const executed = await executeSignedDeploymentPlan(");
+    assert.ok(finalJournalReservation > 0, "production path must reserve the exact final governance journal");
+    assert.ok(finalJournalReservation < firstDeploymentExecution, "final governance journal must be reserved before the first deployment transaction");
+    const incompleteFailure = phasedDeployment.indexOf("if (incomplete.length > 0)");
+    const reportedJournalDigest = phasedDeployment.indexOf("const journalSha256 = governanceOperationJournalFileDigest(journalPath);", incompleteFailure);
+    assert.ok(reportedJournalDigest > incompleteFailure, "partial governance progress must be hashed after every journal mutation");
     for (const journal of [
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json",
       "deployments/base-sepolia/p42-prizes.json.deployment-reservation.json.lock",

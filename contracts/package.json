@@ -12,6 +12,7 @@
     "deploy:base-sepolia": "P42_DEPLOY_MODE=deploy-multiboard-production hardhat run scripts/deploy-base-sepolia-production.js --network baseSepolia",
     "deploy:test-only-legacy-base-sepolia": "P42_DEPLOY_MODE=test-only-legacy-single-board hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
     "continue:base-sepolia": "P42_DEPLOY_MODE=continue hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
+    "export:governance-requests": "node scripts/export-governance-operation-requests.js",
     "inspect:base-sepolia-reservation": "P42_DEPLOY_MODE=inspect-reservation hardhat run scripts/deploy-base-sepolia.js --network baseSepolia",
     "reconcile:base-sepolia": "hardhat run scripts/reconcile-base-sepolia.js --network baseSepolia"
   },
