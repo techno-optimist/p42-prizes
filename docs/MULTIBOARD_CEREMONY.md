@@ -203,6 +203,12 @@ P42_EXPECTED_DEPLOYER_ADDRESS=0x... \
 npm run release:verify
 ```
 
+`P42_ADMISSION_HOST_SET_BUNDLES_JSON` is mandatory for both `release:prepare`
+and `release:verify`; verification must receive the same four independently
+pinned host-set bundles used to build the release. Omitting the bundle set is
+not a credential-free mode and fails closed. Valid objective-promotion v2
+evidence remains non-activating and does not authorize deployment or funding.
+
 This force-rebuilds and re-attests the capsule, invokes the SP1 verifier against
 the supplied fresh artifact, and verifies the final index binds
 the exact commit/timestamp/capsule/slate tuple, reruns all ten real

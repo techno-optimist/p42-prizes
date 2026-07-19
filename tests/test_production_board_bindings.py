@@ -24,7 +24,10 @@ from scripts.verify_production_board_bindings import (
 
 ROOT = Path(__file__).resolve().parents[1]
 DOSSIER = ROOT / "protocol/production-board-bindings-v1.json"
+PROMOTION_EVIDENCE_SCHEMA = ROOT / "protocol/objective-proof-promotion-evidence-v2.schema.json"
 ARTIFACT_DIRECTORY = ROOT / "objective-programs/artifacts/hadamard-668-defect/v0.1.0"
+SOLIDITY_REPLAY_RUNTIME = bytes.fromhex("60006000")
+SOLIDITY_REPLAY_CODEHASH = "0x5e3ce470a8506d55e59815db7232a08774174ae0c7fdb2fbc81a49e4e242b0d6"
 
 
 def _digest_bytes(value: bytes) -> str:
@@ -199,13 +202,13 @@ def _synthetic_v2_dossier(tmp_path: Path) -> tuple[Path, Path, dict[str, object]
          "public_values_digest": public_values["artifact_hash"]},
     )
     proof_digest = proof["artifact_hash"]
-    runtime_bytecode = bytes.fromhex("60006000")
     solidity, solidity_ref = signed_evidence(
         "solidity", "p42-prizes/solidity-objective-replay/v2", "exact-match", "solidity",
         {"binding": binding, "proof_receipt_digest": proof_digest,
          "public_values_digest": public_values["artifact_hash"],
-         "contract_address": "0x" + "a" * 40, "runtime_bytecode_hex": "0x" + runtime_bytecode.hex(),
-         "contract_codehash": ethereum_keccak256(runtime_bytecode),
+         "contract_address": "0x" + "a" * 40,
+         "runtime_bytecode_hex": "0x" + SOLIDITY_REPLAY_RUNTIME.hex(),
+         "contract_codehash": SOLIDITY_REPLAY_CODEHASH,
          "chain_id": 84532},
     )
     measured = {"total_instruction_count": 100, "proof_generation_ms": 200, "peak_rss_bytes": 300,
@@ -356,6 +359,24 @@ def test_v2_rejects_non_rfc3339_signed_evidence_time(tmp_path: Path) -> None:
     dossier_path.write_text(json.dumps(dossier))
     with pytest.raises(BoardBindingError, match="RFC 3339|typed evidence validation failed"):
         verify_board_bindings(root, dossier_path)
+
+
+def test_v2_schema_pins_base_sepolia_and_ethereum_runtime_codehash() -> None:
+    schema = json.loads(PROMOTION_EVIDENCE_SCHEMA.read_text())
+    definitions = schema["$defs"]
+
+    assert definitions["baseSepoliaNetwork"] == {"const": "base-sepolia"}
+    assert definitions["baseSepoliaChainId"] == {"const": 84532}
+    assert definitions["binding"]["properties"]["network"] == {"$ref": "#/$defs/baseSepoliaNetwork"}
+    assert definitions["binding"]["properties"]["chain_id"] == {"$ref": "#/$defs/baseSepoliaChainId"}
+    assert definitions["solidityClaims"]["properties"]["chain_id"] == {
+        "$ref": "#/$defs/baseSepoliaChainId"
+    }
+    assert definitions["solidityClaims"]["properties"]["contract_codehash"] == {
+        "$ref": "#/$defs/evmCodehash"
+    }
+    assert ethereum_keccak256(SOLIDITY_REPLAY_RUNTIME) == SOLIDITY_REPLAY_CODEHASH
+    assert "0x" + hashlib.sha3_256(SOLIDITY_REPLAY_RUNTIME).hexdigest() != SOLIDITY_REPLAY_CODEHASH
 
 
 @pytest.mark.parametrize(
