@@ -35,13 +35,29 @@ def test_split_brain_executor_is_rejected_by_os_lock(tmp_path: Path) -> None:
     os.close(second)
 
 
-def test_capacity_reads_delegated_docker_cgroup_oom_counter(tmp_path: Path, monkeypatch) -> None:
-    events = tmp_path / "docker-memory.events"
-    events.write_text("low 0\nhigh 2\noom 3\noom_kill 4\n", encoding="ascii")
-    monkeypatch.setattr("p42_prizes.verifier_executor.memory_snapshot_from_proc",
-                        lambda: MemorySnapshot(10_000, 9_000, 0))
+def test_capacity_reads_attested_effective_cgroup_memory_and_oom_counter(tmp_path: Path, monkeypatch) -> None:
+    cgroup_root = tmp_path / "cgroup"
+    cgroup = cgroup_root / "user.slice/app.slice"
+    cgroup.mkdir(parents=True)
+    (cgroup / "memory.current").write_text(str(1024**3), encoding="ascii")
+    (cgroup / "memory.max").write_text(str(10 * 1024**3), encoding="ascii")
+    (cgroup / "memory.events").write_text("low 0\nhigh 2\noom 3\noom_kill 4\n", encoding="ascii")
+    attestation = tmp_path / "cgroup.json"
+    attestation.write_text(json.dumps({
+        "schema_version": "p42-rootless-docker-cgroup/v1", "boot_id": "boot-a",
+        "docker_id": "daemon-a", "cgroup_path": "/user.slice/app.slice",
+        "probe_cgroup_path": "/user.slice/app.slice/docker-probe.scope",
+        "memory_current": 1024**3, "memory_max": 10 * 1024**3, "oom_kill": 4,
+        "required_container_memory_mb": 8192, "daemon_headroom_mb": 2048,
+    }), encoding="utf-8")
     monkeypatch.setattr("p42_prizes.verifier_executor.read_boot_id", lambda: "boot-a")
-    assert host_capacity_snapshot(events).oom_kills == 4
+    capacity = host_capacity_snapshot(attestation, cgroup_root=cgroup_root)
+    assert capacity.oom_kills == 4
+    assert capacity.memory == MemorySnapshot(10 * 1024, 9 * 1024, 0)
+
+    (cgroup / "memory.max").write_text("max\n", encoding="ascii")
+    with pytest.raises(VerifierExecutorError, match="finite and numeric"):
+        host_capacity_snapshot(attestation, cgroup_root=cgroup_root)
 
 
 class FakeDocker:
@@ -98,6 +114,28 @@ def test_orphan_reconcile_failure_prevents_any_new_lease(tmp_path: Path, monkeyp
     with pytest.raises(VerifierExecutorError, match="orphans remain"):
         executor(tmp_path, FakeDocker(events, fail=True)).execute(request())
     assert events == ["reconcile"]
+
+
+def test_admission_uses_effective_cgroup_headroom_without_double_counting_daemon_reserve(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    events = []
+    commands = []
+
+    def popen(command, **_kwargs):
+        commands.append(command)
+        return FakeProcess(events)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    service = executor(tmp_path, FakeDocker(events))
+    service.capacity_reader = lambda: HostCapacity(MemorySnapshot(300, 199, 0), 0, "boot-a", 200, 100)
+    service._boot_id, service._acknowledged_oom_kills = "boot-a", 0
+    assert service.execute(request())["reason"] == "memory_guard_tripped"
+    service.capacity_reader = lambda: HostCapacity(MemorySnapshot(300, 200, 0), 0, "boot-a", 200, 100)
+    assert service.execute(request()) == {"reason": "queue_empty"}
+    command = commands[0]
+    assert command[command.index("--reserve-memory-mb") + 1] == "0"
+    assert command[command.index("--available-memory-mb") + 1] == "200"
 
 
 def test_holder_state_is_boot_bound_monotonic_not_wall_clock(tmp_path: Path, monkeypatch) -> None:

@@ -30,6 +30,7 @@ from p42_prizes.verifier_executor import (  # noqa: E402
 )
 
 MAX_REQUEST_BYTES = 16 * 1024
+FENCE_RELEASE_FRAME = b"RELEASE\n"
 
 
 def send_response(connection: socket.socket, response: dict) -> bool:
@@ -62,6 +63,54 @@ def read_request_frame(connection: socket.socket, timeout_seconds: float) -> byt
     return payload
 
 
+def _terminate_and_reap(process: subprocess.Popen) -> None:
+    if process.poll() is None:
+        process.kill()
+    try:
+        process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+
+
+def release_authorization_fence(
+    connection: socket.socket,
+    process: subprocess.Popen,
+    timeout_seconds: float,
+) -> None:
+    """Release the queue fence under one monotonic IPC/process deadline."""
+    deadline = time.monotonic() + timeout_seconds
+    frame = bytearray()
+    try:
+        while b"\n" not in frame and len(frame) <= len(FENCE_RELEASE_FRAME):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise VerifierExecutorError("authorization fence release deadline exceeded")
+            connection.settimeout(remaining)
+            try:
+                chunk = connection.recv(len(FENCE_RELEASE_FRAME) + 1 - len(frame))
+            except socket.timeout as exc:
+                raise VerifierExecutorError("authorization fence release deadline exceeded") from exc
+            if not chunk:
+                break
+            frame.extend(chunk)
+        if bytes(frame) != FENCE_RELEASE_FRAME:
+            raise VerifierExecutorError("authorization fence release protocol failure")
+        if process.stdin is None:
+            raise VerifierExecutorError("authorization fence child stdin is unavailable")
+        process.stdin.write("R")
+        process.stdin.flush()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise VerifierExecutorError("authorization fence release deadline exceeded")
+        if process.wait(timeout=remaining) != 0:
+            detail = process.stderr.read()[:512] if process.stderr is not None else ""
+            raise VerifierExecutorError(detail or "authorization fence child failed")
+    except Exception:
+        _terminate_and_reap(process)
+        raise
+
+
 def load_boards(path: Path) -> dict[str, BoardExecution]:
     metadata = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid not in {0, os.geteuid()} or metadata.st_mode & 0o022:
@@ -85,22 +134,42 @@ def load_boards(path: Path) -> dict[str, BoardExecution]:
     return result
 
 
+def validate_effective_cgroup_policy(
+    boards: dict[str, BoardExecution], capacity, memory_safety_factor: float, reserve_memory_mb: int,
+) -> None:
+    if not boards:
+        raise VerifierExecutorError("executor has no authorized boards")
+    required_container_mb = max(board.required_memory_mb for board in boards.values()) * memory_safety_factor
+    if (not required_container_mb.is_integer()
+            or capacity.required_container_memory_mb != int(required_container_mb)
+            or capacity.daemon_headroom_mb != reserve_memory_mb):
+        raise VerifierExecutorError("executor policy differs from effective cgroup readiness attestation")
+
+
 def serve(args: argparse.Namespace) -> None:
     if not 0 < args.ipc_read_timeout_seconds <= 60:
         raise VerifierExecutorError("executor IPC read deadline must be in (0, 60] seconds")
-    if not Path(args.oom_events_path).is_absolute():
-        raise VerifierExecutorError("executor OOM events path must be absolute")
+    if not 0 < args.authorization_fence_timeout_seconds <= 60:
+        raise VerifierExecutorError("authorization fence deadline must be in (0, 60] seconds")
+    if not Path(args.cgroup_attestation).is_absolute():
+        raise VerifierExecutorError("executor cgroup attestation path must be absolute")
     expected_uid = pwd.getpwnam(args.operator_user).pw_uid
     submit_group = grp.getgrnam(args.submit_group).gr_gid
     singleton_lock_fd = acquire_singleton_lock(Path(args.lock))
+    boards = load_boards(Path(args.config))
+    capacity_reader = lambda: host_capacity_snapshot(Path(args.cgroup_attestation))
+    startup_capacity = capacity_reader()
+    validate_effective_cgroup_policy(
+        boards, startup_capacity, args.memory_safety_factor, args.reserve_memory_mb,
+    )
     executor = VerifierExecutor(
-        boards=load_boards(Path(args.config)), state_path=Path(args.state),
+        boards=boards, state_path=Path(args.state),
         docker=DockerAuthority(args.docker_host), bridge_path=ROOT / "agent/runtime_bridge.py",
         python=sys.executable,
         policy=ExecutorPolicy(reserve_memory_mb=args.reserve_memory_mb,
                                    max_swap_used_mb=args.max_swap_used_mb,
                                    memory_safety_factor=args.memory_safety_factor),
-        capacity_reader=lambda: host_capacity_snapshot(Path(args.oom_events_path)),
+        capacity_reader=capacity_reader,
     )
     executor.recover()
     socket_path = Path(args.socket)
@@ -189,6 +258,7 @@ def serve(args: argparse.Namespace) -> None:
                 pending.task_done()
 
     def auxiliary(connection: socket.socket, request: dict) -> None:
+        fence_process = None
         try:
             if request.get("operation") == "bridge":
                 response = bridge_request(request)
@@ -201,17 +271,14 @@ def serve(args: argparse.Namespace) -> None:
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                     env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(ROOT / "src")},
                 )
+                fence_process = process
                 if process.stdout.readline() != "READY\n":
                     raise VerifierExecutorError("authorization fence failed")
                 try:
                     connection.sendall(b"READY\n")
                 except (BrokenPipeError, ConnectionError, OSError) as exc:
                     raise VerifierExecutorError("authorization fence client disconnected") from exc
-                if connection.recv(1) != b"R":
-                    raise VerifierExecutorError("authorization fence release missing")
-                process.stdin.write("R"); process.stdin.flush()
-                if process.wait(timeout=10) != 0:
-                    raise VerifierExecutorError(process.stderr.read()[:512])
+                release_authorization_fence(connection, process, args.authorization_fence_timeout_seconds)
                 response = {"ok": True, "result": {"released": True}}
             else:
                 raise VerifierExecutorError("unsupported executor operation")
@@ -220,6 +287,8 @@ def serve(args: argparse.Namespace) -> None:
         try:
             send_response(connection, response)
         finally:
+            if fence_process is not None and fence_process.poll() is None:
+                _terminate_and_reap(fence_process)
             connection.close()
             auxiliary_slots.release()
 
@@ -265,11 +334,12 @@ def main() -> None:
     parser.add_argument("--state", required=True); parser.add_argument("--lock", required=True)
     parser.add_argument("--docker-host", required=True); parser.add_argument("--operator-user", default="p42-operator")
     parser.add_argument("--submit-group", default="p42-verifier-submitters")
-    parser.add_argument("--reserve-memory-mb", type=int, default=8192)
+    parser.add_argument("--reserve-memory-mb", type=int, default=2048)
     parser.add_argument("--max-swap-used-mb", type=int, default=1024)
     parser.add_argument("--memory-safety-factor", type=float, default=2.0)
     parser.add_argument("--ipc-read-timeout-seconds", type=float, default=5.0)
-    parser.add_argument("--oom-events-path", default="/sys/fs/cgroup/memory.events")
+    parser.add_argument("--authorization-fence-timeout-seconds", type=float, default=30.0)
+    parser.add_argument("--cgroup-attestation", default="/run/p42-verifier-docker/cgroup-attestation.json")
     serve(parser.parse_args())
 
 

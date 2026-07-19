@@ -21,7 +21,7 @@ ExecStartPre=/usr/bin/test ! -S /run/docker.sock
 ExecStartPre=/usr/bin/test ! -S /var/run/docker.sock
 ExecStartPre=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_preflight.py p42-verifier-executor
 ExecStart=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_launch.py p42-verifier-executor /usr/bin/dockerd-rootless.sh --host=unix:///run/p42-verifier-docker/docker.sock --config-file=/etc/p42/docker/rootless-daemon.json --data-root=/var/lib/p42/verifier-docker
-ExecStartPost=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_ready.py verifier --socket-path=/run/p42-verifier-docker/docker.sock --timeout-seconds 60
+ExecStartPost=/usr/bin/python3 /usr/local/libexec/p42_rootless_docker_ready.py verifier --socket-path=/run/p42-verifier-docker/docker.sock --timeout-seconds 60 --probe-image-file=/etc/p42/docker/cgroup-probe-image --cgroup-attestation=/run/p42-verifier-docker/cgroup-attestation.json --required-container-memory-mb=8192 --daemon-headroom-mb=2048
 TimeoutStartSec=75s
 Restart=on-failure
 RestartSec=5s

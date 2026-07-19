@@ -19,7 +19,7 @@ def exchange(path: str, request: dict, *, fence: bool = False) -> dict:
         print("READY", flush=True)
         if sys.stdin.buffer.read(1) != b"R":
             raise ValueError("authorization fence release token missing")
-        connection.sendall(b"R")
+        connection.sendall(b"RELEASE\n")
         line = stream.readline(16 * 1024 * 1024 + 1)
     if not line or len(line) > 16 * 1024 * 1024:
         raise ValueError("invalid executor response frame")

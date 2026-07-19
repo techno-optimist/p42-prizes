@@ -18,7 +18,7 @@ import subprocess
 import time
 from typing import Any, Callable, Mapping
 
-from .runner_queue import MemorySnapshot, memory_snapshot_from_proc
+from .runner_queue import MemorySnapshot
 from .verdict import canonical_json
 
 
@@ -38,6 +38,8 @@ class HostCapacity:
     memory: MemorySnapshot
     oom_kills: int
     boot_id: str
+    required_container_memory_mb: int = 0
+    daemon_headroom_mb: int = 0
 
 
 @dataclass(frozen=True)
@@ -58,15 +60,56 @@ def read_boot_id(path: Path = Path("/proc/sys/kernel/random/boot_id")) -> str:
     return value
 
 
-def host_capacity_snapshot(oom_events_path: Path = Path("/sys/fs/cgroup/memory.events")) -> HostCapacity:
+def host_capacity_snapshot(
+    attestation_path: Path = Path("/run/p42-verifier-docker/cgroup-attestation.json"),
+    *,
+    cgroup_root: Path = Path("/sys/fs/cgroup"),
+) -> HostCapacity:
+    try:
+        attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise VerifierExecutorError("cannot read rootless Docker cgroup attestation") from exc
+    expected = {
+        "boot_id", "cgroup_path", "daemon_headroom_mb", "docker_id", "memory_current", "memory_max",
+        "oom_kill", "probe_cgroup_path", "required_container_memory_mb", "schema_version",
+    }
+    if (not isinstance(attestation, dict) or set(attestation) != expected
+            or attestation.get("schema_version") != "p42-rootless-docker-cgroup/v1"
+            or attestation.get("boot_id") != read_boot_id()
+            or not isinstance(attestation.get("docker_id"), str) or not attestation["docker_id"]):
+        raise VerifierExecutorError("invalid or stale rootless Docker cgroup attestation")
+    relative = attestation.get("cgroup_path")
+    if not isinstance(relative, str) or not relative.startswith("/") or ".." in Path(relative).parts:
+        raise VerifierExecutorError("invalid effective rootless Docker cgroup path")
+    cgroup = cgroup_root / relative.lstrip("/")
+    try:
+        cgroup.relative_to(cgroup_root)
+        current_text = (cgroup / "memory.current").read_text(encoding="ascii").strip()
+        maximum_text = (cgroup / "memory.max").read_text(encoding="ascii").strip()
+        event_lines = (cgroup / "memory.events").read_text(encoding="ascii").splitlines()
+    except (OSError, ValueError) as exc:
+        raise VerifierExecutorError("effective rootless Docker cgroup evidence is unavailable") from exc
+    if not current_text.isdecimal() or not maximum_text.isdecimal():
+        raise VerifierExecutorError("effective rootless Docker cgroup memory is not finite and numeric")
+    current, maximum = int(current_text), int(maximum_text)
+    if maximum != attestation.get("memory_max") or current > maximum:
+        raise VerifierExecutorError("effective rootless Docker cgroup limit changed after readiness")
+    required_mb = attestation.get("required_container_memory_mb")
+    daemon_mb = attestation.get("daemon_headroom_mb")
+    if (not isinstance(required_mb, int) or not isinstance(daemon_mb, int)
+            or required_mb < 1 or daemon_mb < 1
+            or maximum < (required_mb + daemon_mb) * 1024 * 1024):
+        raise VerifierExecutorError("effective rootless Docker cgroup policy binding is invalid")
     values = {}
-    for line in oom_events_path.read_text(encoding="ascii").splitlines():
+    for line in event_lines:
         parts = line.split()
         if len(parts) == 2 and parts[1].isdigit():
             values[parts[0]] = int(parts[1])
-    if "oom_kill" not in values:
-        raise VerifierExecutorError("host cgroup has no oom_kill counter")
-    return HostCapacity(memory_snapshot_from_proc(), values["oom_kill"], read_boot_id())
+    if not {"oom", "oom_kill"}.issubset(values):
+        raise VerifierExecutorError("effective rootless Docker cgroup cannot attribute OOM events")
+    mib = 1024 * 1024
+    memory = MemorySnapshot(maximum // mib, max(0, maximum - current) // mib, 0)
+    return HostCapacity(memory, values["oom_kill"], attestation["boot_id"], required_mb, daemon_mb)
 
 
 def holder_expired(holder: Mapping[str, Any], *, boot_id: str, monotonic_ns: int) -> bool:
@@ -221,7 +264,10 @@ class VerifierExecutor:
             raise VerifierExecutorError("host reboot detected; executor restart and reconciliation required")
         if capacity.oom_kills != self._acknowledged_oom_kills:
             return {"reason": "oom_guard_tripped", "selected_job_id": None}
-        minimum = board.required_memory_mb * self.policy.memory_safety_factor + self.policy.reserve_memory_mb
+        # The attested finite parent already reserves daemon headroom in its
+        # total limit. Admission therefore needs one verifier container's
+        # effective limit free, without counting that headroom a second time.
+        minimum = board.required_memory_mb * self.policy.memory_safety_factor
         if capacity.memory.available_mb < minimum:
             return {"reason": "memory_guard_tripped", "selected_job_id": None}
         if capacity.memory.swap_used_mb > self.policy.max_swap_used_mb:
@@ -241,9 +287,12 @@ class VerifierExecutor:
         command = [
             self.python, str(self.bridge_path), "work-once",
             "--queue", str(board.queue), "--transcripts", str(board.transcripts),
-            "--reserve-memory-mb", str(self.policy.reserve_memory_mb),
+            "--reserve-memory-mb", "0",
             "--max-swap-used-mb", str(self.policy.max_swap_used_mb),
             "--memory-safety-factor", str(self.policy.memory_safety_factor),
+            "--total-memory-mb", str(capacity.memory.total_mb),
+            "--available-memory-mb", str(capacity.memory.available_mb),
+            "--swap-used-mb", str(capacity.memory.swap_used_mb),
             "--sandbox-staging-root", str(board.staging), "--docker-host", self.docker.docker_host,
         ]
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(self.bridge_path.parents[1] / "src"),

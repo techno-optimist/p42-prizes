@@ -182,6 +182,74 @@ def test_rootless_readiness_binds_socket_owner_and_exact_endpoint() -> None:
         ]
 
 
+def make_cgroup_fixture(root: Path, *, current: int = 2 * 1024**3, maximum: int = 10 * 1024**3,
+                        delegated: bool = True) -> str:
+    leaf = "/user.slice/user-1000.slice/user@1000.service/app.slice/docker-probe.scope"
+    parent = root / "user.slice/user-1000.slice/user@1000.service/app.slice"
+    (parent / "docker-probe.scope").mkdir(parents=True)
+    (parent / "memory.current").write_text(f"{current}\n", encoding="ascii")
+    (parent / "memory.max").write_text(f"{maximum}\n", encoding="ascii")
+    (parent / "memory.events").write_text("low 0\nhigh 0\noom 3\noom_kill 2\n", encoding="ascii")
+    (parent / "cgroup.controllers").write_text("cpu memory pids\n", encoding="ascii")
+    (parent / "cgroup.subtree_control").write_text("cpu memory\n" if delegated else "cpu\n", encoding="ascii")
+    return leaf
+
+
+def test_rootless_readiness_attests_live_effective_cgroup_policy_boundaries(tmp_path: Path) -> None:
+    cgroups = tmp_path / "cgroup"
+    leaf = make_cgroup_fixture(cgroups)
+    evidence = READY.attest_effective_cgroup(
+        leaf, cgroup_root=cgroups, required_container_memory_mb=8192, daemon_headroom_mb=2048,
+    )
+    assert evidence["cgroup_path"].endswith("/app.slice")
+    assert evidence["memory_max"] == 10 * 1024**3
+    assert evidence["oom_kill"] == 2
+
+    insufficient = tmp_path / "insufficient"
+    leaf = make_cgroup_fixture(insufficient, current=2 * 1024**3 + 1)
+    with pytest.raises(READY.RootlessDockerReadyError, match="insufficient verifier container headroom"):
+        READY.attest_effective_cgroup(
+            leaf, cgroup_root=insufficient, required_container_memory_mb=8192, daemon_headroom_mb=2048,
+        )
+    finite = tmp_path / "finite"
+    leaf = make_cgroup_fixture(finite, maximum=10 * 1024**3 - 1)
+    with pytest.raises(READY.RootlessDockerReadyError, match="below verifier plus daemon policy"):
+        READY.attest_effective_cgroup(
+            leaf, cgroup_root=finite, required_container_memory_mb=8192, daemon_headroom_mb=2048,
+        )
+    undelegated = tmp_path / "undelegated"
+    leaf = make_cgroup_fixture(undelegated, delegated=False)
+    with pytest.raises(READY.RootlessDockerReadyError, match="not delegated"):
+        READY.attest_effective_cgroup(
+            leaf, cgroup_root=undelegated, required_container_memory_mb=8192, daemon_headroom_mb=2048,
+        )
+
+
+def test_rootless_readiness_derives_ancestry_from_controlled_probe_pid(tmp_path: Path) -> None:
+    proc = tmp_path / "proc"
+    (proc / "4242").mkdir(parents=True)
+    cgroups = tmp_path / "cgroup"
+    leaf = make_cgroup_fixture(cgroups)
+    (proc / "4242/cgroup").write_text(f"0::{leaf}\n", encoding="ascii")
+    calls: list[list[str]] = []
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        if "inspect" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="4242\n", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="probe-id\n", stderr="")
+
+    evidence = READY.probe_container_cgroup(
+        Path("/run/private/docker.sock"), Path("/usr/bin/docker"),
+        "registry.example/p42/cgroup-probe@sha256:" + "a" * 64,
+        proc_root=proc, cgroup_root=cgroups, required_container_memory_mb=8192,
+        daemon_headroom_mb=2048, run=run,
+    )
+    assert evidence["probe_cgroup_path"] == leaf
+    assert any("run" in command for command in calls)
+    assert "rm" in calls[-1] and "--force" in calls[-1]
+
+
 def test_rootless_launcher_requires_private_user_manager_authority() -> None:
     with tempfile.TemporaryDirectory(prefix="p42-launch-", dir="/tmp") as directory:
         root = Path(directory)
@@ -231,9 +299,9 @@ def test_rootless_launcher_rejects_an_unbound_command() -> None:
         ),
         (
             "deployments/p42-verifier-executor.service.example",
-            "--oom-events-path /sys/fs/cgroup/system.slice/p42-verifier-docker.service/memory.events",
-            "--oom-events-path /sys/fs/cgroup/memory.events",
-            "p42-verifier-docker.service/memory.events",
+            "--cgroup-attestation /run/p42-verifier-docker/cgroup-attestation.json",
+            "--cgroup-attestation /tmp/assumed.json",
+            "cgroup-attestation.json",
         ),
             (
                 "deployments/p42-verifier-docker.service.example",

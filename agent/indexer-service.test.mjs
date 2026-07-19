@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -12,7 +12,7 @@ import {
   publishMonotonicCheckpointSync,
   runIndexerService,
 } from "./indexer-service.mjs";
-import { stableStringify } from "./indexer.mjs";
+import { stableStringify, writeFileAtomicSync } from "./indexer.mjs";
 
 
 function checkpoint(toBlock, overrides = {}) {
@@ -253,6 +253,161 @@ describe("durable indexer publication", () => {
       assert.equal(existsSync(join(root, pointer.archive_path)), true);
       assert.equal(readFileSync(join(root, pointer.archive_path, "board.json"), "utf8"), "verified");
       assert.equal(readdirSync(join(root, "generations")).length, 1);
+      assert.equal(readdirSync(join(root, "quarantine")).length, 1);
+    }
+  });
+
+  it("orders file and directory fsync barriers before generation and pointer publication", () => {
+    const root = mkdtempSync(join(tmpdir(), "p42-indexer-durable-order-"));
+    const stage = join(root, "staging", "candidate");
+    mkdirSync(join(stage, "archive", "nested"), { recursive: true });
+    writePrivateJson(join(stage, "checkpoint.json"), checkpoint(120));
+    writeFileSync(join(stage, "archive", "nested", "board.json"), "verified", { mode: 0o600 });
+    const events = [];
+    const result = publishGenerationSync({
+      publicationRoot: root, stagingPath: stage, validator: (value) => value,
+      io: {
+        openSync, closeSync,
+        fsyncSync(descriptor, label, path) { events.push(`fsync:${label}:${path}`); fsyncSync(descriptor); },
+        writeFileSync(path, bytes, options) { events.push(`write:${path}`); writeFileSync(path, bytes, options); },
+        renameSync(from, to, label) { events.push(`rename:${label}`); renameSync(from, to); },
+      },
+      pointerWriter(path, bytes) { events.push("pointer"); writeFileSync(path, bytes, { mode: 0o600 }); },
+    });
+    const renameIndex = events.indexOf("rename:generation");
+    const pointerIndex = events.indexOf("pointer");
+    assert(renameIndex > 0 && pointerIndex > renameIndex);
+    for (const suffix of ["checkpoint.json", "archive/nested/board.json", "generation.json"]) {
+      assert(events.findIndex((event) => event.startsWith("fsync:file:") && event.endsWith(suffix)) < renameIndex);
+    }
+    assert(events.findIndex((event) => event.includes("staging-parent-before-generation-rename")) < renameIndex);
+    assert(events.findIndex((event) => event.includes("generations-parent-after-rename")) < pointerIndex);
+    assert.equal(JSON.parse(readFileSync(join(root, "current.json"), "utf8")).generation_id, result.generationId);
+  });
+
+  it("survives injected metadata write, tree fsync, and generation rename crashes on restart", () => {
+    for (const fault of ["write", "fsync", "rename"]) {
+      const root = mkdtempSync(join(tmpdir(), `p42-indexer-durable-${fault}-`));
+      const makeStage = (name) => {
+        const path = join(root, "staging", name);
+        mkdirSync(join(path, "archive"), { recursive: true });
+        writePrivateJson(join(path, "checkpoint.json"), checkpoint(120));
+        writeFileSync(join(path, "archive", "board.json"), "verified", { mode: 0o600 });
+        return path;
+      };
+      const candidate = makeStage("candidate");
+      let injected = false;
+      const io = {
+        writeFileSync(path, ...args) {
+          if (!injected && fault === "write" && path.endsWith("generation.json")) {
+            injected = true; throw new Error("injected durable write crash");
+          }
+          return writeFileSync(path, ...args);
+        },
+        fsyncSync(descriptor, label) {
+          if (!injected && fault === "fsync" && label === "file") {
+            injected = true; throw new Error("injected durable fsync crash");
+          }
+          return fsyncSync(descriptor);
+        },
+        renameSync(from, to, label) {
+          if (!injected && fault === "rename" && label === "generation") {
+            injected = true; throw new Error("injected durable rename crash");
+          }
+          return renameSync(from, to);
+        },
+      };
+      assert.throws(() => publishGenerationSync({ publicationRoot: root, stagingPath: candidate,
+        validator: (value) => value, io }), /injected durable/);
+      const restartStage = existsSync(candidate) ? candidate : makeStage("restart");
+      const recovered = publishGenerationSync({ publicationRoot: root, stagingPath: restartStage,
+        validator: (value) => value });
+      const pointer = JSON.parse(readFileSync(join(root, "current.json"), "utf8"));
+      assert.equal(pointer.generation_id, recovered.generationId);
+      assert.equal(readFileSync(join(root, pointer.archive_path, "board.json"), "utf8"), "verified");
+    }
+  });
+
+  it("restarts cleanly after injected pointer write, fsync, and rename crashes", () => {
+    for (const fault of ["write", "fsync", "rename"]) {
+      const root = mkdtempSync(join(tmpdir(), `p42-indexer-pointer-${fault}-`));
+      const makeStage = (name) => {
+        const path = join(root, "staging", name);
+        mkdirSync(join(path, "archive"), { recursive: true });
+        writePrivateJson(join(path, "checkpoint.json"), checkpoint(120));
+        writeFileSync(join(path, "archive", "board.json"), "verified", { mode: 0o600 });
+        return path;
+      };
+      let injected = false;
+      const pointerWriter = (path, bytes) => writeFileAtomicSync(path, bytes, {
+        writeFileSync(descriptor, payload) {
+          if (!injected && fault === "write") {
+            injected = true; throw new Error("injected pointer write crash");
+          }
+          return writeFileSync(descriptor, payload);
+        },
+        fsyncSync(descriptor) {
+          if (!injected && fault === "fsync") {
+            injected = true; throw new Error("injected pointer fsync crash");
+          }
+          return fsyncSync(descriptor);
+        },
+        renameSync(from, to) {
+          if (!injected && fault === "rename") {
+            injected = true; throw new Error("injected pointer rename crash");
+          }
+          return renameSync(from, to);
+        },
+      });
+      assert.throws(() => publishGenerationSync({ publicationRoot: root,
+        stagingPath: makeStage("crash"), validator: (value) => value, pointerWriter }), /injected pointer/);
+      assert.equal(existsSync(join(root, "current.json")), false);
+      const recovered = publishGenerationSync({ publicationRoot: root,
+        stagingPath: makeStage("restart"), validator: (value) => value });
+      const pointer = JSON.parse(readFileSync(join(root, "current.json"), "utf8"));
+      assert.equal(pointer.generation_id, recovered.generationId);
+      assert.equal(readdirSync(join(root, "generations")).length, 1);
+    }
+  });
+
+  it("survives injected quarantine metadata write, fsync, and rename crashes on restart", () => {
+    for (const fault of ["write", "fsync", "rename"]) {
+      const root = mkdtempSync(join(tmpdir(), `p42-indexer-quarantine-durable-${fault}-`));
+      const makeStage = (name, height) => {
+        const path = join(root, "staging", name);
+        mkdirSync(join(path, "archive"), { recursive: true });
+        writePrivateJson(join(path, "checkpoint.json"), checkpoint(height));
+        return path;
+      };
+      publishGenerationSync({ publicationRoot: root, stagingPath: makeStage("accepted", 120), validator: (v) => v });
+      const pointerBefore = readFileSync(join(root, "current.json"), "utf8");
+      const rejected = makeStage("rejected", 119);
+      let injected = false;
+      const io = {
+        writeFileSync(path, ...args) {
+          if (!injected && fault === "write" && path.endsWith("quarantine.json")) {
+            injected = true; throw new Error("injected quarantine write crash");
+          }
+          return writeFileSync(path, ...args);
+        },
+        fsyncSync(descriptor, label, path) {
+          if (!injected && fault === "fsync" && label === "file" && path.endsWith("quarantine.json")) {
+            injected = true; throw new Error("injected quarantine fsync crash");
+          }
+          return fsyncSync(descriptor);
+        },
+        renameSync(from, to, label) {
+          if (!injected && fault === "rename" && label === "quarantine-stage") {
+            injected = true; throw new Error("injected quarantine rename crash");
+          }
+          return renameSync(from, to);
+        },
+      };
+      assert.throws(() => publishGenerationSync({ publicationRoot: root, stagingPath: rejected,
+        validator: (value) => value, io }), /injected quarantine/);
+      assert.throws(() => publishGenerationSync({ publicationRoot: root, stagingPath: rejected,
+        validator: (value) => value }), /regression/);
+      assert.equal(readFileSync(join(root, "current.json"), "utf8"), pointerBefore);
       assert.equal(readdirSync(join(root, "quarantine")).length, 1);
     }
   });

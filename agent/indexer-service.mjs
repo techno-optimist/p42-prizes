@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -220,9 +220,27 @@ function generationId(checkpoint, archiveSha256) {
 }
 
 
-function syncDirectory(path) {
-  const descriptor = openSync(path, "r");
-  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+function syncPath(path, io, label) {
+  const descriptor = io.openSync(path, "r");
+  try { io.fsyncSync(descriptor, label, path); } finally { io.closeSync(descriptor); }
+}
+
+
+function syncDirectory(path, io, label = "directory") {
+  syncPath(path, io, label);
+}
+
+
+function syncTreePostorder(path, io) {
+  const metadata = lstatSync(path);
+  if (metadata.isSymbolicLink()) throw new Error("indexer durable tree contains a symbolic link");
+  if (metadata.isFile()) {
+    syncPath(path, io, "file");
+    return;
+  }
+  if (!metadata.isDirectory()) throw new Error("indexer durable tree contains an unsupported filesystem entry");
+  for (const entry of readdirSync(path).sort()) syncTreePostorder(join(path, entry), io);
+  syncDirectory(path, io, "directory");
 }
 
 
@@ -337,23 +355,37 @@ function assertMatchingGenerationTrees(left, right, relative = "") {
 
 export function publishGenerationSync({
   publicationRoot, stagingPath, validator = validateMultiBoardCheckpoint, ownership = null,
-  crashInjector = () => {}, pointerWriter = writeFileAtomicSync,
+  crashInjector = () => {}, pointerWriter = writeFileAtomicSync, io: injectedIo = {},
 } = {}) {
+  const io = {
+    closeSync: injectedIo.closeSync ?? closeSync,
+    fsyncSync: injectedIo.fsyncSync ?? fsyncSync,
+    openSync: injectedIo.openSync ?? openSync,
+    renameSync: injectedIo.renameSync ?? renameSync,
+    writeFileSync: injectedIo.writeFileSync ?? writeFileSync,
+  };
   ownership?.assertOwned?.();
   const root = resolve(publicationRoot);
   const stage = resolve(stagingPath);
   const candidatePath = join(stage, "checkpoint.json");
   mkdirSync(join(root, "generations"), { recursive: true, mode: 0o700 });
   mkdirSync(join(root, "quarantine"), { recursive: true, mode: 0o700 });
+  syncDirectory(join(root, "generations"), io, "generations-directory-ready");
+  syncDirectory(join(root, "quarantine"), io, "quarantine-directory-ready");
+  syncDirectory(root, io, "publication-root-ready");
   const current = readCurrentGeneration(root, validator);
   const quarantineStage = (error) => {
     const rejected = join(root, "quarantine", `${Date.now()}-${randomBytes(8).toString("hex")}`);
-    writeFileSync(join(stage, "quarantine.json"), `${stableStringify({
+    io.writeFileSync(join(stage, "quarantine.json"), `${stableStringify({
       schema_version: "p42-indexer-quarantine/v1", reason: sanitizedError(error),
       rejected_at_utc: iso(Date.now()), accepted_generation_id: current?.pointer.generation_id ?? null,
     })}\n`, { mode: 0o600 });
-    renameSync(stage, rejected);
-    syncDirectory(join(root, "quarantine"));
+    syncTreePostorder(stage, io);
+    syncDirectory(dirname(stage), io, "staging-parent-before-quarantine-rename");
+    syncDirectory(join(root, "quarantine"), io, "quarantine-parent-before-rename");
+    io.renameSync(stage, rejected, "quarantine-stage");
+    syncDirectory(dirname(stage), io, "staging-parent-after-quarantine-rename");
+    syncDirectory(join(root, "quarantine"), io, "quarantine-parent-after-rename");
   };
   const quarantineReplacedGeneration = (acceptedStorageId) => {
     if (!acceptedStorageId.includes("-recovery-")) return;
@@ -364,11 +396,14 @@ export function publishGenerationSync({
     const quarantined = join(root, "quarantine",
       `${recovery.replaced_storage_id}-replaced-by-${acceptedStorageId}`);
     if (!existsSync(replaced) || existsSync(quarantined)) return;
+    syncTreePostorder(replaced, io);
+    syncDirectory(join(root, "generations"), io, "generations-parent-before-quarantine-rename");
+    syncDirectory(join(root, "quarantine"), io, "quarantine-parent-before-replaced-rename");
     crashInjector("before_quarantine_rename");
-    renameSync(replaced, quarantined);
+    io.renameSync(replaced, quarantined, "quarantine-replaced-generation");
     crashInjector("after_quarantine_rename");
-    syncDirectory(join(root, "quarantine"));
-    syncDirectory(join(root, "generations"));
+    syncDirectory(join(root, "generations"), io, "generations-parent-after-quarantine-rename");
+    syncDirectory(join(root, "quarantine"), io, "quarantine-parent-after-replaced-rename");
   };
   let candidate;
   let decision;
@@ -403,12 +438,12 @@ export function publishGenerationSync({
       condition: existsSync(join(root, "generations", current.pointer.storage_id)) ? "corrupt" : "missing" };
     const recoveryDigest = createHash("sha256").update(stableStringify(recovery)).digest("hex");
     storageId = `${id}-recovery-${recoveryDigest}`;
-    writeFileSync(join(stage, "recovery.json"), `${stableStringify(recovery)}\n`, { mode: 0o600 });
+    io.writeFileSync(join(stage, "recovery.json"), `${stableStringify(recovery)}\n`, { mode: 0o600 });
   } else if (exactRetry) {
     storageId = current.pointer.storage_id;
   }
   const destination = join(root, "generations", storageId);
-  writeFileSync(join(stage, "generation.json"), `${stableStringify({
+  io.writeFileSync(join(stage, "generation.json"), `${stableStringify({
     schema_version: "p42-indexer-generation/v2", generation_id: id,
     archive_sha256: archiveSha256,
     checkpoint_sha256: createHash("sha256").update(readFileSync(candidatePath)).digest("hex"),
@@ -417,6 +452,7 @@ export function publishGenerationSync({
   })}\n`, { mode: 0o600 });
   validateGenerationDirectory(stage, id, validator,
     exactRetry && current.integrityError === null ? id : storageId);
+  syncTreePostorder(stage, io);
   if (exactRetry && current.integrityError === null) {
     const recovered = validateGenerationDirectory(destination, id, validator, storageId);
     if (stableStringify(recovered.checkpoint) !== stableStringify(candidate)) {
@@ -435,9 +471,12 @@ export function publishGenerationSync({
     assertMatchingGenerationTrees(join(destination, "archive"), join(stage, "archive"));
     rmSync(stage, { recursive: true, force: true });
   } else {
+    syncDirectory(dirname(stage), io, "staging-parent-before-generation-rename");
+    syncDirectory(join(root, "generations"), io, "generations-parent-before-rename");
     crashInjector("before_generation_rename");
-    renameSync(stage, destination);
-    syncDirectory(join(root, "generations"));
+    io.renameSync(stage, destination, "generation");
+    syncDirectory(dirname(stage), io, "staging-parent-after-generation-rename");
+    syncDirectory(join(root, "generations"), io, "generations-parent-after-rename");
     crashInjector("after_generation_rename");
   }
   const pointer = { schema_version: "p42-indexer-generation-pointer/v2", generation_id: id,
