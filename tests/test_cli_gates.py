@@ -54,7 +54,7 @@ def run_attestation_cli(command, builder, tmp_path: Path, *, mutate=None):
     report_path = tmp_path / "report.json"
     report_path.write_text(json.dumps(report), encoding="utf-8")
     registry_path = fixture.write_registry(registry)
-    if command == "governance-signoff-validate":
+    if command in {"governance-signoff-validate", "operational-controls-validate"}:
         with ExitStack() as stack:
             rpc_urls = [stack.enter_context(fixture.chain_rpc_server()) for _ in range(2)]
             policy_path, digest_path = fixture.write_governance_rpc_policy(rpc_urls)
@@ -225,6 +225,24 @@ def test_governance_v2_rejects_caller_selected_single_rpc(tmp_path: Path) -> Non
     assert "rejects caller-selected --chain-rpc-url" in completed.stderr
 
 
+def test_operational_controls_v3_rejects_caller_selected_single_rpc(tmp_path: Path) -> None:
+    report, fixture, registry = valid_operational_controls(tmp_path)
+    report_path = tmp_path / "single-rpc-operational.json"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    registry_path = fixture.write_registry(registry)
+    with fixture.chain_rpc_server() as rpc_url:
+        completed = run_cli(
+            "operational-controls-validate",
+            "--report", str(report_path),
+            "--trust-registry", str(registry_path),
+            "--artifact-root", str(tmp_path),
+            "--chain-rpc-url", rpc_url,
+            "--allow-test-trust-registry",
+        )
+    assert completed.returncode == 1
+    assert "v3 rejects caller-selected --chain-rpc-url" in completed.stderr
+
+
 def test_governance_cli_rejects_provider_state_disagreement(tmp_path: Path) -> None:
     completed = run_governance_cli_with_providers(
         tmp_path,
@@ -295,7 +313,6 @@ def test_launch_authorization_composite_uses_governance_quorum_reader(
         governance_rpc_policy=None,
         governance_rpc_policy_digest=None,
         authorization=str(tmp_path / "authorization.json"),
-        now_utc="2026-07-19T12:00:00Z",
         output=None,
     )
     monkeypatch.setattr(
@@ -318,6 +335,7 @@ def test_launch_authorization_composite_uses_governance_quorum_reader(
     assert cli._cmd_production_launch_authorization_validate(args) == 0
     assert captured["chain_reader"] is sentinel_reader
     assert captured["value"] == {"governance": "v2"}
+    assert captured["now_utc"] is None
 
 
 def test_launch_authorization_rejects_legacy_single_rpc_before_composition(

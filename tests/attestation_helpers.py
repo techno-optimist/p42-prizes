@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
 from contextlib import contextmanager
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import re
@@ -162,6 +164,38 @@ def _synthetic_capsule(git_commit: str) -> tuple[dict[str, Any], dict[str, str]]
         build_input = {"id": build_id, "solcVersion": "0.8.24", "solcLongVersion": "0.8.24+commit.e11b9ed9", "input": {"settings": settings, "sources": {input_source_name: {"content": source}}}}
         compiled = {"abi": abi, "evm": {"bytecode": {"object": "6000", "linkReferences": {}}, "deployedBytecode": {"object": runtime[2:], "linkReferences": {}, "immutableReferences": references}}}
         build_output = {"id": build_id, "output": {"sources": {input_source_name: {"ast": {"nodeType": "SourceUnit", "nodes": [{"nodeType": "ContractDefinition", "name": name, "nodes": nodes}]}}}, "contracts": {input_source_name: {name: compiled}}}}
+        if contract_index == 0:
+            wallet_source_name = "project/src/P42AgentWallet.sol"
+            wallet_source = "contract P42AgentWallet { address public immutable owner; }\n"
+            wallet_runtime = "11" * 16 + "00" * 32 + "22" * 16
+            wallet_compiled = {
+                "abi": [],
+                "evm": {
+                    "bytecode": {"object": "6001", "linkReferences": {}},
+                    "deployedBytecode": {
+                        "object": wallet_runtime,
+                        "linkReferences": {},
+                        "immutableReferences": {"999001": [{"start": 16, "length": 32}]},
+                    },
+                },
+            }
+            build_input["input"]["sources"][wallet_source_name] = {"content": wallet_source}
+            build_output["output"]["sources"][wallet_source_name] = {
+                "ast": {
+                    "nodeType": "SourceUnit",
+                    "nodes": [{
+                        "nodeType": "VariableDeclaration",
+                        "id": 999001,
+                        "name": "owner",
+                        "stateVariable": True,
+                        "mutability": "immutable",
+                        "typeDescriptions": {"typeString": "address"},
+                    }],
+                }
+            }
+            build_output["output"]["contracts"][wallet_source_name] = {
+                "P42AgentWallet": wallet_compiled
+            }
         artifact = {"_format": "hh3-artifact-1", "contractName": name, "sourceName": source_name, "abi": abi, "bytecode": "0x6000", "deployedBytecode": runtime, "linkReferences": {}, "deployedLinkReferences": {}, "immutableReferences": references, "inputSourceName": input_source_name, "buildInfoId": build_id}
         contracts.append({"name": name, "sourceName": source_name, "buildInfoId": build_id, "artifactDigest": _digest(artifact), "abi": abi, "creationCode": "0x6000", "runtimeTemplate": runtime, "immutableReferences": references, "immutableBindings": bindings, "linkReferences": {}, "deployedLinkReferences": {}})
         build_infos.append({"id": build_id, "inputDigest": _digest(build_input), "outputDigest": _digest(build_output), "compiler": {"version": "0.8.24", "longVersion": "0.8.24+commit.e11b9ed9"}, "settings": settings, "input": build_input, "output": build_output})
@@ -297,6 +331,7 @@ class AttestationFixture:
         self._artifacts: dict[str, dict[str, str]] = {}
         self._chain_id: int | None = None
         self._chain_state: dict[tuple[int, str, int], dict[str, Any]] = {}
+        self._authorization_wallet_rechecks: dict[str, dict[str, Any]] = {}
         self._capsule_authority_signer: dict[str, Any] | None = None
         self._run("git", "init", "-q")
         self._run("git", "config", "user.name", "P42 Test Attestor")
@@ -808,9 +843,69 @@ class AttestationFixture:
             "governance_state": dict(governance_state),
         }
 
-    def chain_reader(self, network: str, chain_id: int, address_value: str, block_number: int) -> dict[str, Any]:
+    def chain_reader(
+        self,
+        network: str,
+        chain_id: int,
+        address_value: str,
+        block_number: int,
+    ) -> dict[str, Any]:
         del network
-        return dict(self._chain_state[(chain_id, address_value.casefold(), block_number)])
+        state = self._chain_state[(chain_id, address_value.casefold(), block_number)]
+        return dict(state)
+
+    __call__ = chain_reader
+
+    def read_wallet_session_state(
+        self,
+        network: str,
+        chain_id: int,
+        address_value: str,
+        block_number: int,
+        query: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        del network, query
+        state = self._chain_state[(chain_id, address_value.casefold(), block_number)]
+        return {
+            "block_hash": state["block_hash"],
+            "block_timestamp": state["block_timestamp"],
+            "install_block_timestamp": state["install_block_timestamp"],
+            "deployment_policy_mutation_epoch": state["deployment_policy_mutation_epoch"],
+            "runtime_bytecode": state["runtime_bytecode"],
+            "runtime_code_hash": state["runtime_code_hash"],
+            "owner_address": state["owner_address"],
+            "creation_transaction": copy.deepcopy(state["creation_transaction"]),
+            "creation_logs": copy.deepcopy(state["creation_logs"]),
+            "transaction_receipt": copy.deepcopy(state["transaction_receipt"]),
+            "wallet_state": copy.deepcopy(state["wallet_state"]),
+        }
+
+    def replay_wallet_call(
+        self,
+        network: str,
+        chain_id: int,
+        address_value: str,
+        block_number: int,
+        replay_call: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        del network
+        state = self._chain_state[(chain_id, address_value.casefold(), block_number)]
+        return dict(state["replay_results"][canonical_json(replay_call)])
+
+    def recheck_operational_wallets(
+        self,
+        network: str,
+        chain_id: int,
+        issued_at_utc: str,
+        queries: list[Mapping[str, Any]],
+    ) -> dict[str, Any]:
+        key = canonical_json({
+            "network": network,
+            "chain_id": chain_id,
+            "issued_at_utc": issued_at_utc,
+            "queries": queries,
+        })
+        return copy.deepcopy(self._authorization_wallet_rechecks[key])
 
     @contextmanager
     def chain_rpc_server(
@@ -842,7 +937,26 @@ class AttestationFixture:
                 ),
                 None,
             )
-            return str(match["block_hash"]) if match else None
+            if match:
+                return str(match["block_hash"])
+            for state in fixture._chain_state.values():
+                receipt = state.get("transaction_receipt")
+                if isinstance(receipt, Mapping) and receipt.get("block_number") == block_number:
+                    return str(receipt["block_hash"])
+            return None
+
+        def recorded_timestamp(block_number: int) -> int:
+            for (_chain_id, _address, recorded_block), state in fixture._chain_state.items():
+                if recorded_block == block_number and isinstance(state.get("block_timestamp"), int):
+                    return state["block_timestamp"]
+                receipt = state.get("transaction_receipt")
+                if (
+                    isinstance(receipt, Mapping)
+                    and receipt.get("block_number") == block_number
+                    and isinstance(state.get("install_block_timestamp"), int)
+                ):
+                    return state["install_block_timestamp"]
+            return 1_800_000_000 + block_number
 
         final_hash = finalized_block_hash or recorded_hash(finalized_number) or (
             "0x" + hashlib.sha256(f"fixture-finalized:{finalized_number}".encode()).hexdigest()
@@ -861,6 +975,7 @@ class AttestationFixture:
                 method = request.get("method")
                 params = request.get("params", [])
                 result: Any
+                error: Any = None
                 if method == "eth_chainId":
                     result = hex(fixture._chain_id or 0)
                 elif method == "eth_getBlockByNumber":
@@ -877,10 +992,60 @@ class AttestationFixture:
                         if block_number == head_number:
                             block_hash = latest_hash
                     result = (
-                        {"number": hex(block_number), "hash": block_hash}
+                        {
+                            "number": hex(block_number),
+                            "hash": block_hash,
+                            "timestamp": hex(recorded_timestamp(block_number)),
+                        }
                         if block_hash is not None
                         else None
                     )
+                elif method == "eth_getTransactionReceipt":
+                    transaction_hash = str(params[0]).casefold()
+                    match = next((
+                        (address_value, state)
+                        for (_chain_id, address_value, _block), state in fixture._chain_state.items()
+                        if isinstance(state.get("transaction_receipt"), Mapping)
+                        and str(state["transaction_receipt"].get("transaction_hash", "")).casefold()
+                        == transaction_hash
+                    ), None)
+                    if match is None:
+                        result = None
+                    else:
+                        address_value, state = match
+                        receipt = state["transaction_receipt"]
+                        result = {
+                            "transactionHash": receipt["transaction_hash"],
+                            "blockNumber": hex(receipt["block_number"]),
+                            "blockHash": receipt["block_hash"],
+                            "transactionIndex": hex(receipt["transaction_index"]),
+                            "status": hex(receipt["status"]),
+                            "contractAddress": address_value,
+                            "logs": [
+                                {
+                                    "address": log["address"],
+                                    "topics": log["topics"],
+                                    "data": log["data"],
+                                    "logIndex": hex(7 + index),
+                                }
+                                for index, log in enumerate(state.get("creation_logs", []))
+                            ],
+                        }
+                elif method == "eth_getTransactionByHash":
+                    transaction_hash = str(params[0]).casefold()
+                    transaction = next((
+                        state.get("creation_transaction")
+                        for state in fixture._chain_state.values()
+                        if isinstance(state.get("creation_transaction"), Mapping)
+                        and str(state["creation_transaction"].get("transaction_hash", "")).casefold()
+                        == transaction_hash
+                    ), None)
+                    result = ({
+                        "hash": transaction["transaction_hash"],
+                        "from": transaction["from"],
+                        "to": transaction["to"],
+                        "input": transaction["input"],
+                    } if transaction is not None else None)
                 elif method == "eth_getCode":
                     address_value = str(params[0]).casefold()
                     block_number = int(params[1], 16)
@@ -892,6 +1057,96 @@ class AttestationFixture:
                     data = str(call.get("data", ""))
                     block_number = int(params[1], 16)
                     state = fixture._chain_state.get((fixture._chain_id or 0, address_value, block_number))
+                    epoch_selector = ethereum_keccak256(b"policyMutationEpoch()")[:10]
+                    if state is None and data[:10] == epoch_selector:
+                        created_state = next((
+                            candidate for (chain_id, recorded_address, _), candidate in fixture._chain_state.items()
+                            if chain_id == (fixture._chain_id or 0)
+                            and recorded_address == address_value
+                            and candidate.get("transaction_receipt", {}).get("block_number") == block_number
+                        ), None)
+                        if created_state is not None:
+                            result = "0x" + int(
+                                created_state["deployment_policy_mutation_epoch"]
+                            ).to_bytes(32, "big").hex()
+                            body = json.dumps({
+                                "jsonrpc": "2.0", "id": request.get("id"), "result": result,
+                            }).encode()
+                            self.send_response(200)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(body)))
+                            self.end_headers()
+                            self.wfile.write(body)
+                            return
+                    replay = (
+                        state.get("replay_results", {}).get(canonical_json(call))
+                        if state else None
+                    )
+                    if isinstance(replay, Mapping):
+                        if replay.get("reverted") is True:
+                            error = {"code": 3, "data": replay["raw_result"]}
+                            result = None
+                        else:
+                            result = replay["raw_result"]
+                    else:
+                        wallet = state.get("wallet_state") if state else None
+                        wallet_selectors = {
+                            ethereum_keccak256(signature.encode("ascii"))[:10]: signature
+                            for signature in (
+                                "owner()", "sessionKey()", "sessionExpiresAt()", "sessionChainId()",
+                                "revoked()", "perCallValueCapWei()", "totalSpendCapWei()", "spentWei()",
+                                "allowlistedPolicyCount()",
+                                "policyMutationEpoch()",
+                            )
+                        }
+                        wallet_signature = wallet_selectors.get(data[:10])
+                        if isinstance(wallet, Mapping) and wallet_signature:
+                            values = {
+                                "owner()": state["owner_address"],
+                                "sessionKey()": wallet["session_key"],
+                                "sessionExpiresAt()": int(datetime.fromisoformat(
+                                    wallet["session_expires_at_utc"].replace("Z", "+00:00")
+                                ).timestamp()),
+                                "sessionChainId()": wallet["session_chain_id"],
+                                "revoked()": int(wallet["revoked"]),
+                                "perCallValueCapWei()": int(wallet["per_call_value_cap_wei"]),
+                                "totalSpendCapWei()": int(wallet["total_spend_cap_wei"]),
+                                "spentWei()": int(wallet["spent_wei"]),
+                                "allowlistedPolicyCount()": wallet["allowlisted_policy_count"],
+                                "policyMutationEpoch()": wallet["policy_mutation_epoch"],
+                            }
+                            value = values[wallet_signature]
+                            if isinstance(value, str):
+                                value = int(value, 16)
+                            result = "0x" + int(value).to_bytes(32, "big").hex()
+                        elif isinstance(wallet, Mapping) and data[:10] in {
+                            ethereum_keccak256(b"allowed(address,bytes4)")[:10],
+                            ethereum_keccak256(b"callPolicies(address,bytes4)")[:10],
+                        }:
+                            target = "0x" + data[10 + 24:10 + 64]
+                            selector = "0x" + data[10 + 64:10 + 72]
+                            policy = next((
+                                item for item in wallet["policies"]
+                                if item["target_address"].casefold() == target.casefold()
+                                and item["selector"].casefold() == selector.casefold()
+                            ), None)
+                            if data[:10] == ethereum_keccak256(b"allowed(address,bytes4)")[:10]:
+                                result = "0x" + int(policy is not None).to_bytes(32, "big").hex()
+                            elif policy is None:
+                                result = "0x" + "00" * (32 * 7)
+                            else:
+                                words = [
+                                    1,
+                                    int(datetime.fromisoformat(
+                                        policy["policy_expires_at_utc"].replace("Z", "+00:00")
+                                    ).timestamp()),
+                                    policy["max_calls"], policy["current_calls"],
+                                    wallet["session_chain_id"], int(policy["calldata_hash"], 16),
+                                    int(policy["scope_hash"], 16),
+                                ]
+                                result = "0x" + "".join(int(word).to_bytes(32, "big").hex() for word in words)
+                        else:
+                            result = None
                     governance = state.get("governance_state") if state else None
                     if governance is None:
                         governance = next(
@@ -937,7 +1192,9 @@ class AttestationFixture:
                             value = governance.get("guardian")
                         elif signature == "governanceEpoch()":
                             value = governance.get("governance_epoch")
-                    if isinstance(value, int) and not isinstance(value, bool):
+                    if result is not None or error is not None:
+                        pass
+                    elif isinstance(value, int) and not isinstance(value, bool):
                         result = "0x" + value.to_bytes(32, "big").hex()
                     elif isinstance(value, str) and re.fullmatch(r"0x[0-9a-fA-F]{40}", value):
                         result = "0x" + bytes.fromhex(value[2:]).rjust(32, b"\x00").hex()
@@ -945,7 +1202,9 @@ class AttestationFixture:
                         result = None
                 else:
                     result = None
-                body = json.dumps({"jsonrpc": "2.0", "id": request.get("id"), "result": result}).encode()
+                response = {"jsonrpc": "2.0", "id": request.get("id")}
+                response["error" if error is not None else "result"] = error if error is not None else result
+                body = json.dumps(response).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))

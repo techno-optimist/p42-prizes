@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import copy
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 
 import jsonschema
 import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from attestation_helpers import AttestationFixture, attach_signatures
 import p42_prizes.launch_authorization as launch_module
@@ -22,6 +24,10 @@ from p42_prizes.cli import _enforce_gate_schema
 from p42_prizes.legal import build_attestation_context
 from p42_prizes.security_audit import normalize_security_audit
 from p42_prizes.verdict import canonical_json, sha256_bytes
+from test_operational_controls import (
+    valid_report as valid_operational_report,
+    normalize as normalize_operational_report,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +39,180 @@ WHATWG_IPV4_ALIASES = [
     "1.2.65535", "0xffffffff", "0300.0250.0001.0001",
 ]
 SAFE_DNS_HOSTS = ["127.0.0.1.example", "0x7f.rpc.example", "127.0x0.0.1.example", "123.example"]
+
+
+class ServiceProbeReader:
+    def __init__(self, registry: dict, private_keys: dict[str, Ed25519PrivateKey]) -> None:
+        self.registry = registry
+        self.private_keys = private_keys
+        self.calls: list[tuple[str, dict, int]] = []
+        self.attack: str | None = None
+        self.cached_response: dict | None = None
+
+    def post_service_probe(self, url: str, request: dict, max_bytes: int) -> dict:
+        self.calls.append((url, copy.deepcopy(request), max_bytes))
+        if self.attack == "redirect":
+            raise ValueError("redirect forbidden")
+        endpoint = next(item for item in self.registry["endpoints"] if item["endpoint_url"] == url)
+        if self.attack == "cache" and self.cached_response is not None:
+            return copy.deepcopy(self.cached_response)
+        control = request["control"]
+        selected = [item for item in self.registry["endpoints"] if control in item["controls"]]
+        deployment = {
+            "service_id": request["service_id"], "deployment_id": request["deployment_id"],
+            "build_digest": request["build_digest"],
+        }
+        issued = datetime.fromisoformat(request["challenge_issued_at_utc"].replace("Z", "+00:00"))
+        plan = launch_module._service_probe_plan(
+            control, deployment, issued,
+            endpoint_ids=[item["endpoint_id"] for item in selected],
+            challenge_nonce=request["challenge_nonce"],
+        )
+        response = {
+            "schema_version": "p42-service-probe-response/v1",
+            "challenge_digest": request["challenge_digest"],
+            "request_digest": sha256_bytes(canonical_json(request).encode("ascii")),
+            "control": control,
+            "release_binding_hash": request["release_binding_hash"],
+            "build_digest": request["build_digest"],
+            "endpoint_url": url,
+            "endpoint_id": endpoint["endpoint_id"],
+            "instance_id": endpoint["instance_id"],
+            "ownership_group": endpoint["ownership_group"],
+            "responded_at_utc": request["challenge_issued_at_utc"],
+            "raw_outcomes": plan["raw_outcomes"],
+            "derived_invariant": plan["derived_invariant"],
+        }
+        if self.attack in {"url", "instance", "operator", "build", "control"}:
+            field = {"url": "endpoint_url", "instance": "instance_id", "operator": "ownership_group", "build": "build_digest", "control": "control"}[self.attack]
+            response[field] = "wrong.example" if field == "endpoint_url" else "wrong-identity"
+        if self.attack == "backdated":
+            response["responded_at_utc"] = "2026-07-08T16:00:00Z"
+        response["signature"] = "ed25519:" + self.private_keys[url].sign(
+            launch_module._probe_response_message(response)
+        ).hex()
+        if self.cached_response is None:
+            self.cached_response = copy.deepcopy(response)
+        return response
+
+
+def _service_probe_recheck_fixture(tmp_path: Path):
+    report, fixture, registry = valid_operational_report(tmp_path)
+    normalized = normalize_operational_report(report, fixture, registry)
+    release = normalized["release_binding"]
+    controls = sorted(launch_module.SERVICE_CONTROLS)
+    build = next(
+        item["environment"]["service_probe"]["build_digest"]
+        for item in normalized["controls"] if item["control"] in launch_module.SERVICE_CONTROLS
+    )
+    keys = {
+        "https://probe-a.example/v1/p42/probe": Ed25519PrivateKey.from_private_bytes(b"a" * 32),
+        "https://probe-b.example/v1/p42/probe": Ed25519PrivateKey.from_private_bytes(b"b" * 32),
+    }
+    endpoints = []
+    for index, (url, private) in enumerate(keys.items(), start=1):
+        endpoints.append({
+            "endpoint_id": f"probe-endpoint-{index}", "endpoint_url": url,
+            "instance_id": f"service-instance-{index}", "ownership_group": f"probe-owner-{index}",
+            "expected_release_digest": launch_module._release_binding_hash(release),
+            "expected_build_digest": build,
+            "public_key": "ed25519:" + private.public_key().public_bytes_raw().hex(),
+            "controls": controls,
+        })
+    endpoint_registry = {
+        "schema": "p42-service-probe-endpoint-registry/v1",
+        "registry_id": "p42-service-probes-test",
+        "network": release["network"], "chain_id": release["chain_id"],
+        "release_binding_hash": launch_module._release_binding_hash(release),
+        "expected_build_digest": build,
+        "max_challenge_age_seconds": 120, "max_response_age_seconds": 30,
+        "max_response_bytes": 65536,
+        "distributed_public_keys": sorted(
+            "ed25519:" + private.public_key().public_bytes_raw().hex()
+            for private in keys.values()
+        ),
+        "endpoints": endpoints,
+    }
+    issued = datetime(2026, 7, 8, 18, 5, tzinfo=timezone.utc)
+    reader = ServiceProbeReader(endpoint_registry, keys)
+    evidence = launch_module.collect_operational_service_probe_recheck(
+        normalized, release, issued, endpoint_registry, reader,
+        challenge_nonce_factory=lambda: "0x" + "c" * 64,
+    )
+    return normalized, release, issued, endpoint_registry, reader, evidence
+
+
+def _authorization_recheck_fixture(tmp_path: Path):
+    report, fixture, registry = valid_operational_report(tmp_path)
+    normalized = normalize_operational_report(report, fixture, registry)
+    release = normalized["release_binding"]
+    domains = launch_module._operational_session_domains(normalized)
+    issued = datetime(2026, 7, 8, 18, 5, tzinfo=timezone.utc)
+    queries = [{
+        "board_number": domain["board_number"],
+        "problem_id": domain["problem_id"],
+        "wallet_address": domain["wallet_address"],
+        "install_transaction_hash": domain["state_snapshot"]["install_receipt"]["transaction_hash"],
+        "permissions": domain["permissions"],
+    } for domain in domains]
+    wallets = []
+    for domain in domains:
+        state = fixture._chain_state[(
+            domain["chain_id"], domain["wallet_address"],
+            domain["state_snapshot"]["block_number"],
+        )]
+        wallet = state["wallet_state"]
+        wallets.append({
+            "board_number": domain["board_number"],
+            "problem_id": domain["problem_id"],
+            "wallet_address": domain["wallet_address"],
+            "runtime_bytecode": state["runtime_bytecode"],
+            "runtime_code_hash": state["runtime_code_hash"],
+            "owner_address": state["owner_address"],
+            "allowlisted_policy_count": wallet["allowlisted_policy_count"],
+            "policy_mutation_epoch_baseline": state["deployment_policy_mutation_epoch"],
+            "policy_mutation_epoch": wallet["policy_mutation_epoch"],
+            "session_key": wallet["session_key"],
+            "session_chain_id": wallet["session_chain_id"],
+            "session_expires_at_utc": wallet["session_expires_at_utc"],
+            "revoked": wallet["revoked"],
+            "per_call_value_cap_wei": wallet["per_call_value_cap_wei"],
+            "total_spend_cap_wei": wallet["total_spend_cap_wei"],
+            "spent_wei": wallet["spent_wei"],
+            "policies": wallet["policies"],
+        })
+    observed = {
+        "finalized_block": {
+            "block_number": 40_000,
+            "block_hash": "0x" + "d" * 64,
+            "block_timestamp": int(datetime(2026, 7, 8, 18, 4, tzinfo=timezone.utc).timestamp()),
+        },
+        "wallets": wallets,
+        "rpc_quorum": {
+            "required": 2,
+            "provider_ids": ["provider-a", "provider-b"],
+            "ownership_groups": ["operator-a", "operator-b"],
+        },
+    }
+    key = canonical_json({
+        "network": release["network"], "chain_id": release["chain_id"],
+        "issued_at_utc": issued.isoformat().replace("+00:00", "Z"), "queries": queries,
+    })
+    fixture._authorization_wallet_rechecks[key] = copy.deepcopy(observed)
+    supplied = {
+        "schema_version": "p42-operational-wallet-recheck/v1",
+        "operational_controls_hash": normalized["operational_controls_hash"],
+        "operational_window_completed_at_utc": normalized["window_completed_at_utc"],
+        "authorization_issued_at_utc": issued.isoformat().replace("+00:00", "Z"),
+        "network": release["network"], "chain_id": release["chain_id"],
+        **copy.deepcopy(observed),
+    }
+    context = build_attestation_context(
+        "p42-production-launch-authorization/v1", trust_registry=registry,
+        artifact_root=fixture.root, chain_reader=fixture,
+        error_type=LaunchAuthorizationError,
+    )
+    return normalized, fixture, release, issued, supplied, context, key
 
 
 def canonical_topology_manifest() -> dict:
@@ -174,8 +354,259 @@ def test_launch_authorization_schema_is_valid_draft_2020_12() -> None:
     assert schema["properties"]["schema_version"]["const"] == "p42-production-launch-authorization/v1"
 
 
+def test_authorization_rechecks_exact_ten_wallets_at_later_finalized_block(
+    tmp_path: Path,
+) -> None:
+    report, _fixture, release, issued, supplied, context, _key = _authorization_recheck_fixture(tmp_path)
+    launch_module._require_fresh_operational_packet(report, issued)
+    launch_module._validate_authorization_wallet_recheck(
+        supplied, report, release, issued, context
+    )
+
+
+def test_authorization_rejects_stale_operational_packet(tmp_path: Path) -> None:
+    report, _fixture, _release, _issued, _supplied, _context, _key = _authorization_recheck_fixture(tmp_path)
+    with pytest.raises(LaunchAuthorizationError, match="packet is stale"):
+        launch_module._require_fresh_operational_packet(
+            report, datetime(2026, 7, 8, 18, 16, tzinfo=timezone.utc)
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation", ["runtime", "owner", "session", "revoked", "cap", "spent", "call_count", "extra_policy_count", "policy_substitution", "transient_policy_epoch"]
+)
+def test_authorization_rejects_post_report_wallet_mutation(
+    tmp_path: Path, mutation: str
+) -> None:
+    report, fixture, release, issued, supplied, context, key = _authorization_recheck_fixture(tmp_path)
+    wallet = fixture._authorization_wallet_rechecks[key]["wallets"][3]
+    if mutation == "runtime":
+        wallet["runtime_bytecode"] = "0x6000"
+    elif mutation == "owner":
+        wallet["owner_address"] = "0x" + "e" * 40
+    elif mutation == "session":
+        wallet["session_key"] = "0x" + "e" * 40
+    elif mutation == "revoked":
+        wallet["revoked"] = True
+    elif mutation == "cap":
+        wallet["total_spend_cap_wei"] = "1"
+    elif mutation == "spent":
+        wallet["spent_wei"] = "999"
+    elif mutation == "call_count":
+        wallet["policies"][0]["current_calls"] = 1
+    elif mutation == "extra_policy_count":
+        wallet["allowlisted_policy_count"] = 6
+    elif mutation == "policy_substitution":
+        wallet["policies"][0] = copy.deepcopy(wallet["policies"][1])
+    else:
+        wallet["policy_mutation_epoch"] = 7
+    with pytest.raises(
+        LaunchAuthorizationError,
+        match="disagrees with the operational packet|runtime disagrees",
+    ):
+        launch_module._validate_authorization_wallet_recheck(
+            supplied, report, release, issued, context
+        )
+
+
+def test_authorization_rejects_same_operator_wallet_quorum(tmp_path: Path) -> None:
+    report, fixture, release, issued, supplied, context, key = _authorization_recheck_fixture(tmp_path)
+    fixture._authorization_wallet_rechecks[key]["rpc_quorum"]["ownership_groups"] = [
+        "operator-a", "operator-a",
+    ]
+    with pytest.raises(LaunchAuthorizationError, match="operator-distinct RPC quorum"):
+        launch_module._validate_authorization_wallet_recheck(
+            supplied, report, release, issued, context
+        )
+
+
+def test_authorization_rejects_swapped_recheck_evidence(tmp_path: Path) -> None:
+    report, _fixture, release, issued, supplied, context, _key = _authorization_recheck_fixture(tmp_path)
+    supplied["finalized_block"]["block_hash"] = "0x" + "f" * 64
+    with pytest.raises(LaunchAuthorizationError, match="does not bind"):
+        launch_module._validate_authorization_wallet_recheck(
+            supplied, report, release, issued, context
+        )
+
+
+def test_authorization_collects_and_revalidates_fresh_signed_https_service_probes(
+    tmp_path: Path,
+) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    reader.calls.clear()
+    launch_module._validate_authorization_service_probe_recheck(
+        evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+        challenge_nonce_factory=lambda: "0x" + "d" * 64,
+    )
+    assert len(reader.calls) == 14
+    assert {url for url, _request, _limit in reader.calls} == {
+        "https://probe-a.example/v1/p42/probe", "https://probe-b.example/v1/p42/probe",
+    }
+
+
+@pytest.mark.parametrize("attack", ["cache", "backdated", "url", "instance", "operator", "build", "control", "redirect"])
+def test_authorization_rejects_service_probe_response_drift(
+    tmp_path: Path, attack: str,
+) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    reader.attack = attack
+    with pytest.raises(LaunchAuthorizationError, match="service probe"):
+        launch_module._validate_authorization_service_probe_recheck(
+            evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+            challenge_nonce_factory=lambda: "0x" + "d" * 64,
+        )
+
+
+def test_authorization_rejects_wrong_service_probe_key(tmp_path: Path) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    registry["endpoints"][0]["public_key"] = "ed25519:" + "f" * 64
+    with pytest.raises(
+        LaunchAuthorizationError,
+        match="challenge binding|signature|endpoint-key roster",
+    ):
+        launch_module._validate_authorization_service_probe_recheck(
+            evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+            challenge_nonce_factory=lambda: "0x" + "d" * 64,
+        )
+
+
+@pytest.mark.parametrize("attack", ["same_owner", "same_instance", "same_key", "same_url", "one_service_relabel", "wrong_build", "wrong_endpoint_build"])
+def test_authorization_rejects_untrusted_service_probe_registry(
+    tmp_path: Path, attack: str,
+) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    if attack == "same_owner":
+        registry["endpoints"][1]["ownership_group"] = registry["endpoints"][0]["ownership_group"]
+    elif attack == "same_instance":
+        registry["endpoints"][1]["instance_id"] = registry["endpoints"][0]["instance_id"]
+    elif attack == "same_key":
+        registry["endpoints"][1]["public_key"] = registry["endpoints"][0]["public_key"]
+    elif attack == "same_url":
+        registry["endpoints"][1]["endpoint_url"] = registry["endpoints"][0]["endpoint_url"]
+    elif attack == "one_service_relabel":
+        registry["endpoints"][1]["controls"].remove("distributed_rate_limit")
+    elif attack == "wrong_build":
+        registry["expected_build_digest"] = "sha256:" + "f" * 64
+    else:
+        registry["endpoints"][0]["expected_build_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(
+        LaunchAuthorizationError,
+        match="service probe|distributed_rate_limit|ownership group",
+    ):
+        launch_module._validate_authorization_service_probe_recheck(
+            evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+            challenge_nonce_factory=lambda: "0x" + "d" * 64,
+        )
+
+
+def test_service_probe_url_schema_and_runtime_share_the_canonical_boundary() -> None:
+    schema = json.loads((ROOT / "schemas" / "service-probe-endpoint-registry.schema.json").read_text())
+    endpoint_schema = schema["properties"]["endpoints"]["items"]["properties"]["endpoint_url"]
+    validator = jsonschema.Draft202012Validator(endpoint_schema)
+    accepted = [
+        "https://probe.example/v1/p42/probe",
+        "https://probe-2.ops.example:8443/v1/p42/probe",
+    ]
+    rejected_by_both = [
+        "http://probe.example/v1/p42/probe", "https://Probe.example/v1/p42/probe",
+        "https://probe.example", "https://probe.example/", "https://probe..example/v1/probe",
+        "https://probe.example/v1/%70robe", "https://user@probe.example/v1/probe",
+    ]
+    runtime_only_rejections = [
+        "https://127.0.0.1/v1/probe", "https://127.1/v1/probe",
+        "https://0x7f.0.0.1/v1/probe", "https://probe.example:443/v1/probe",
+        "https://probe.example:99999/v1/probe", "https://probe.example/v1//probe",
+    ]
+    for value in accepted:
+        assert validator.is_valid(value)
+        assert launch_module._canonical_service_probe_url(value) == value
+    for value in rejected_by_both:
+        assert not validator.is_valid(value)
+        with pytest.raises(LaunchAuthorizationError):
+            launch_module._canonical_service_probe_url(value)
+    for value in runtime_only_rejections:
+        assert validator.is_valid(value)
+        with pytest.raises(LaunchAuthorizationError):
+            launch_module._canonical_service_probe_url(value)
+
+
+def test_service_probe_registry_schema_rejects_duplicate_distributed_keys(tmp_path: Path) -> None:
+    _report, _release, _issued, registry, _reader, _evidence = _service_probe_recheck_fixture(tmp_path)
+    registry["distributed_public_keys"][1] = registry["distributed_public_keys"][0]
+    schema = json.loads((ROOT / "schemas" / "service-probe-endpoint-registry.schema.json").read_text())
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.Draft202012Validator(schema).validate(registry)
+
+
+def test_service_probe_registry_rejects_one_key_across_three_ownership_groups(tmp_path: Path) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    third = copy.deepcopy(registry["endpoints"][1])
+    third["endpoint_id"] = "probe-endpoint-3"
+    third["endpoint_url"] = "https://probe-c.example/v1/p42/probe"
+    third["instance_id"] = "service-instance-3"
+    third["ownership_group"] = "probe-owner-3"
+    third["public_key"] = registry["endpoints"][0]["public_key"]
+    registry["endpoints"].append(third)
+    with pytest.raises(LaunchAuthorizationError, match="key cannot represent multiple ownership groups"):
+        launch_module._validate_authorization_service_probe_recheck(
+            evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+            challenge_nonce_factory=lambda: "0x" + "d" * 64,
+        )
+
+
+def test_service_probe_registry_rejects_cross_control_key_owner_reuse(tmp_path: Path) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    third = copy.deepcopy(registry["endpoints"][0])
+    third["endpoint_id"] = "probe-endpoint-isolated"
+    third["endpoint_url"] = "https://probe-isolated.example/v1/p42/probe"
+    third["instance_id"] = "service-instance-isolated"
+    third["ownership_group"] = "probe-owner-isolated"
+    third["controls"] = ["abuse_alerting"]
+    for endpoint in registry["endpoints"]:
+        endpoint["controls"] = [item for item in endpoint["controls"] if item != "abuse_alerting"]
+    registry["endpoints"].append(third)
+    with pytest.raises(LaunchAuthorizationError, match="key cannot represent multiple ownership groups"):
+        launch_module._validate_authorization_service_probe_recheck(
+            evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+            challenge_nonce_factory=lambda: "0x" + "d" * 64,
+        )
+
+
+def test_authorization_rejects_old_deterministic_service_probe_nonce(tmp_path: Path) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    evidence["challenge_issued_at_utc"] = "2026-07-08T17:00:00Z"
+    with pytest.raises(LaunchAuthorizationError, match="not issuance-bound"):
+        launch_module._validate_authorization_service_probe_recheck(
+            evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+            challenge_nonce_factory=lambda: "0x" + "d" * 64,
+        )
+
+
+def test_authorization_validation_never_reuses_supplied_probe_nonce(tmp_path: Path) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    with pytest.raises(LaunchAuthorizationError, match="reused the archived nonce"):
+        launch_module._validate_authorization_service_probe_recheck(
+            evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+            challenge_nonce_factory=lambda: evidence["challenge_nonce"],
+        )
+
+
+def test_authorization_rejects_backdated_archived_probe_response(tmp_path: Path) -> None:
+    report, release, issued, registry, reader, evidence = _service_probe_recheck_fixture(tmp_path)
+    evidence["controls"][0]["responses"][0]["responded_at_utc"] = "2026-07-08T16:00:00Z"
+    with pytest.raises(LaunchAuthorizationError, match="backdated or stale"):
+        launch_module._validate_authorization_service_probe_recheck(
+            evidence, report, release, issued, issued + timedelta(seconds=10), registry, reader,
+            challenge_nonce_factory=lambda: "0x" + "d" * 64,
+        )
+
+
 def test_launch_authorization_schema_resolves_canonical_binding_and_validates_instance(tmp_path: Path) -> None:
     fixture = AttestationFixture(tmp_path)
+    operational, _probe_release, _probe_issued, _probe_registry, _probe_reader, probe_evidence = (
+        _service_probe_recheck_fixture(tmp_path / "service-probe-schema")
+    )
+    schema_policies = launch_module._operational_session_domains(operational)[0]["permissions"]
     release_binding = fixture.canonical_release_binding("base-sepolia")
     artifact = fixture.artifact("launch-schema-artifact")
     roles = [
@@ -190,12 +621,13 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
         "verifier_image_release", "verifier_image_publication_journal",
         "deployment_manifest", "reconciliation_report", "explorer_dossier",
         "explorer_operator_policy", "activation_rpc_operator_registry", "production_timestamp_dossier",
+        "service_probe_endpoint_registry",
     )
     authorization = {
         "schema_version": "p42-production-launch-authorization/v1",
         "status": "authorized",
         "issued_at_utc": "2026-07-08T17:00:00Z",
-        "expires_at_utc": "2026-07-09T17:00:00Z",
+        "expires_at_utc": "2026-07-08T17:05:00Z",
         "network": "base-sepolia",
         "chain_id": 84532,
         "funding_mode": "testnet-only",
@@ -215,6 +647,28 @@ def test_launch_authorization_schema_resolves_canonical_binding_and_validates_in
             }
             for index in range(1, 11)
         ],
+        "operational_wallet_recheck": {
+            "schema_version": "p42-operational-wallet-recheck/v1",
+            "operational_controls_hash": "sha256:" + "7" * 64,
+            "operational_window_completed_at_utc": "2026-07-08T16:55:00Z",
+            "authorization_issued_at_utc": "2026-07-08T17:00:00Z",
+            "network": "base-sepolia",
+            "chain_id": 84532,
+            "finalized_block": {"block_number": 1, "block_hash": "0x" + "8" * 64, "block_timestamp": 1783530000},
+            "wallets": [{
+                "board_number": index, "problem_id": str(index),
+                "wallet_address": "0x" + f"{index:040x}", "runtime_bytecode": "0x60",
+                "runtime_code_hash": "0x" + "9" * 64, "owner_address": "0x" + "a" * 40,
+                "allowlisted_policy_count": 5,
+                "policy_mutation_epoch_baseline": 0, "policy_mutation_epoch": 5,
+                "session_key": "0x" + "b" * 40, "session_chain_id": 84532,
+                "session_expires_at_utc": "2026-07-20T00:00:00Z", "revoked": False,
+                "per_call_value_cap_wei": "1", "total_spend_cap_wei": "10",
+                "spent_wei": "0", "policies": copy.deepcopy(schema_policies),
+            } for index in range(1, 11)],
+            "rpc_quorum": {"required": 2, "provider_ids": ["a", "b"], "ownership_groups": ["oa", "ob"]},
+        },
+        "operational_service_probe_recheck": probe_evidence,
         "authorizers": [
             {
                 "name": f"Authority Person {index}",
@@ -1379,13 +1833,15 @@ def test_composed_authorization_never_accepts_test_trust(tmp_path: Path) -> None
         "schema_version": "p42-production-launch-authorization/v1",
         "status": "authorized",
         "issued_at_utc": "2026-07-08T17:00:00Z",
-        "expires_at_utc": "2026-07-09T17:00:00Z",
+        "expires_at_utc": "2026-07-08T17:05:00Z",
         "network": "base-sepolia",
         "chain_id": 84532,
         "funding_mode": "testnet-only",
         "release_binding": {"network": "base-sepolia", "chain_id": 84532},
         "artifacts": {},
         "problem_reviews": [],
+        "operational_wallet_recheck": {},
+        "operational_service_probe_recheck": {},
         "authorizers": [],
         "authorization_digest": "sha256:" + "0" * 64,
         "authorization_signatures": [],
@@ -1397,8 +1853,48 @@ def test_composed_authorization_never_accepts_test_trust(tmp_path: Path) -> None
             trust_registry=registry,
             artifact_root=tmp_path,
             chain_reader=None,
-            now_utc=datetime(2026, 7, 8, 18, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 7, 8, 17, 1, tzinfo=timezone.utc),
         )
+
+
+def test_composed_authorization_rejects_lifetime_over_five_minutes(tmp_path: Path) -> None:
+    authorization = {
+        "schema_version": "p42-production-launch-authorization/v1",
+        "status": "authorized",
+        "issued_at_utc": "2026-07-08T17:00:00Z",
+        "expires_at_utc": "2026-07-08T17:05:01Z",
+        "network": "base-sepolia",
+        "chain_id": 84532,
+        "funding_mode": "testnet-only",
+        "release_binding": {"network": "base-sepolia", "chain_id": 84532},
+        "artifacts": {},
+        "problem_reviews": [],
+        "operational_wallet_recheck": {},
+        "operational_service_probe_recheck": {},
+        "authorizers": [],
+        "authorization_digest": "sha256:" + "0" * 64,
+        "authorization_signatures": [],
+    }
+    with pytest.raises(LaunchAuthorizationError, match="lifetime exceeds five minutes"):
+        normalize_launch_authorization(
+            authorization,
+            trust_registry={},
+            artifact_root=tmp_path,
+            chain_reader=None,
+            now_utc=datetime(2026, 7, 8, 17, 1, tzinfo=timezone.utc),
+        )
+
+
+@pytest.mark.parametrize(
+    "schema_version",
+    ["p42-operational-controls/v1", "p42-operational-controls/v2", None],
+)
+def test_launch_authorization_rejects_pre_exact_ten_operational_controls(
+    schema_version: str | None,
+) -> None:
+    report = {} if schema_version is None else {"schema_version": schema_version}
+    with pytest.raises(LaunchAuthorizationError, match="current exact-ten production schema"):
+        launch_module._require_current_operational_controls_schema(report)
 
 
 def test_composed_authorization_rejects_future_validity_window(tmp_path: Path) -> None:
@@ -1415,13 +1911,15 @@ def test_composed_authorization_rejects_future_validity_window(tmp_path: Path) -
         "schema_version": "p42-production-launch-authorization/v1",
         "status": "authorized",
         "issued_at_utc": "2026-07-10T17:00:00Z",
-        "expires_at_utc": "2026-07-11T17:00:00Z",
+        "expires_at_utc": "2026-07-10T17:05:00Z",
         "network": "base-sepolia",
         "chain_id": 84532,
         "funding_mode": "testnet-only",
         "release_binding": {"network": "base-sepolia", "chain_id": 84532},
         "artifacts": {},
         "problem_reviews": [],
+        "operational_wallet_recheck": {},
+        "operational_service_probe_recheck": {},
         "authorizers": [],
         "authorization_digest": "sha256:" + "0" * 64,
         "authorization_signatures": [],
@@ -1478,7 +1976,9 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
         if name == "legal_memo":
             report["schema_version"] = "p42-legal-memo/v2"
         if name == "operational_controls":
-            report["window_completed_at_utc"] = report.pop("completed_at_utc")
+            report.pop("completed_at_utc")
+            report["window_completed_at_utc"] = "2026-07-08T16:50:00Z"
+            report["schema_version"] = "p42-operational-controls/v3"
         artifacts[name] = fixture.artifact(name, content=report)
         monkeypatch.setitem(
             launch_module.GATE_NORMALIZERS,
@@ -1763,19 +2263,25 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             }],
         },
     )
+    artifacts["service_probe_endpoint_registry"] = fixture.artifact(
+        "service-probe-endpoint-registry-placeholder",
+        content={"schema": "inactive-release-never-reads-this-registry"},
+    )
     monkeypatch.setattr(launch_module, "_validate_problem_reviews", lambda *args, **kwargs: None)
     monkeypatch.setattr(launch_module, "_validate_explorer_with_node", lambda **kwargs: None)
     unsigned = {
         "schema_version": "p42-production-launch-authorization/v1",
         "status": "authorized",
         "issued_at_utc": "2026-07-08T17:00:00Z",
-        "expires_at_utc": "2026-07-09T17:00:00Z",
+        "expires_at_utc": "2026-07-08T17:05:00Z",
         "network": "base-sepolia",
         "chain_id": 84532,
         "funding_mode": "testnet-only",
         "release_binding": release_binding,
         "artifacts": artifacts,
         "problem_reviews": [],
+        "operational_wallet_recheck": {},
+        "operational_service_probe_recheck": {},
         "authorizers": authorizers,
     }
     authorization = dict(unsigned)
@@ -1793,7 +2299,7 @@ def test_composed_authorization_fails_closed_until_active_release_schema_exists(
             trust_registry=registry,
             artifact_root=tmp_path,
             chain_reader=None,
-            now_utc=datetime(2026, 7, 8, 18, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 7, 8, 17, 1, tzinfo=timezone.utc),
         )
 
 
@@ -1887,3 +2393,23 @@ def test_python_protected_rpc_registry_requires_immutable_canonical_bytes(tmp_pa
     ]):
         with pytest.raises(LaunchAuthorizationError, match="canonical"):
             attempt(f"noncanonical-{index}", payload=payload)
+
+    root = tmp_path / "root-required"
+    evidence = root / "evidence"
+    evidence.mkdir(parents=True, mode=0o700)
+    path = evidence / "registry.json"
+    path.write_bytes(canonical)
+    path.chmod(0o400)
+    reference = {
+        "uri": "repo://evidence/registry.json", "local_path": "evidence/registry.json",
+        "sha256": sha256_bytes(canonical), "created_at_utc": "2026-07-08T15:00:00Z",
+    }
+    context = launch_module.AttestationValidationContext(
+        schema_version="p42-production-launch-authorization/v1", trust_registry={},
+        artifact_root=root, chain_reader=None,
+    )
+    if path.stat().st_uid != 0:
+        with pytest.raises(LaunchAuthorizationError, match="unsafe|ancestor"):
+            launch_module._read_protected_activation_rpc_registry(
+                reference, "service registry", context, require_root=True,
+            )

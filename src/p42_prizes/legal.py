@@ -203,7 +203,7 @@ class AttestationValidationContext:
         return max(self.evidence_times, default=None)
 
 
-ChainReader = Callable[[str, int, str, int], Mapping[str, Any]]
+ChainReader = Callable[..., Mapping[str, Any]]
 
 
 def build_attestation_context(
