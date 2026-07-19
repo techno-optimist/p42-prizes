@@ -10,7 +10,7 @@ ordered ten-board slate in `protocol/production-board-set-v1.json`. The release
 script and contract ceremony both load that authority, while schema and portal
 copies are checked against it in CI. It refuses a dirty tree or a
 symbolic/abbreviated commit and accepts only a canonical lowercase registry
-repository base such as `ghcr.io/projectforty2/verifier-images`. It never edits
+repository base `ghcr.io/techno-optimist/p42-prizes-verifiers`. It never edits
 `problem.yaml`; applying reviewed immutable digests remains a separate human
 change with its own review.
 
@@ -21,7 +21,7 @@ other network operation:
 
 ```bash
 PYTHONPATH=src python3 scripts/release_verifier_images.py \
-  --registry-base ghcr.io/projectforty2/verifier-images \
+  --registry-base ghcr.io/techno-optimist/p42-prizes-verifiers \
   --verifier-source-commit "$S"
 ```
 
@@ -35,7 +35,7 @@ passes. It does not claim a final release configuration:
 
 ```bash
 PYTHONPATH=src python3 scripts/release_verifier_images.py \
-  --registry-base ghcr.io/projectforty2/verifier-images \
+  --registry-base ghcr.io/techno-optimist/p42-prizes-verifiers \
   --verifier-source-commit "$S" \
   --publish --journal verifier-image-publication.journal.json
 ```
