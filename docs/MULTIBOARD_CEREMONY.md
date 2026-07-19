@@ -156,6 +156,7 @@ P42_PRODUCTION_IMAGE_DOSSIER_PATH=../release-evidence/verifier-images.json \
 P42_PRODUCTION_IMAGE_DOSSIER_SHA256=sha256:<independent-dossier-file-digest> \
 P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH=../release-evidence/verifier-image-publication.journal.json \
 P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256=sha256:<independent-journal-file-digest> \
+P42_ADMISSION_HOST_SET_BUNDLES_JSON='[{"path":"host-a.bundle","hostSetHash":"sha256:<hash>"},{"path":"host-b.bundle","hostSetHash":"sha256:<hash>"},{"path":"host-c.bundle","hostSetHash":"sha256:<hash>"},{"path":"host-d.bundle","hostSetHash":"sha256:<hash>"}]' \
 P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH=../release-evidence/objective-verifier.json \
 P42_SP1_RUNTIME_ATTESTATION_PATH=../release-evidence/sp1-external-runtime-current.json \
 P42_RELEASE_EVIDENCE_ROOT=/absolute/path/release-evidence \

@@ -136,7 +136,7 @@ export function validateVerifierImageReleaseDossier(dossier, {
   now = Date.now(),
 } = {}) {
   const root = exactObject(dossier, IMAGE_RELEASE_KEYS, "verifier image release dossier");
-  if (root.schema_version !== "p42-verifier-image-release/v2" || root.identity_model !== "verifier-source-plus-release-config/v1") throw new Error("verifier image release dossier schema is invalid");
+  if (root.schema_version !== "p42-verifier-image-release/v2" || root.identity_model !== "p42-verifier-source-release-config/v1") throw new Error("verifier image release dossier schema is invalid");
   const publishedAt = Date.parse(root.published_at_utc);
   const canonicalPublishedAt = Number.isFinite(publishedAt) ? new Date(publishedAt).toISOString().replace(".000Z", "Z") : null;
   if (!Number.isFinite(now) || !Number.isFinite(publishedAt) || canonicalPublishedAt !== root.published_at_utc || publishedAt > now) throw new Error("verifier image release timestamp is invalid or future-dated");
@@ -392,6 +392,7 @@ export function validateProductionSlatePreflight(ethers, slate, config, {
   imageDossierSha256,
   publicationJournalPath,
   publicationJournalSha256,
+  hostSetBundles,
   pythonExecutable = process.env.P42_ADMISSION_PYTHON ?? process.env.P42_RUNTIME_PYTHON ?? "python3",
   runAdmitReleaseReady = runAdmitReleaseReadyCommand,
   readMatrixSnapshot = readContractsConfigJsonSyncWithBytes,
@@ -415,6 +416,7 @@ export function validateProductionSlatePreflight(ethers, slate, config, {
   const { bytes: journalBytes, value: journalValue } = readDossier(journalPath, { trustedRoot: evidence });
   if (`sha256:${createHash("sha256").update(journalBytes).digest("hex")}` !== publicationJournalSha256) throw new Error("publication journal file digest mismatch");
   if (journalValue?.journal_hash !== registry.publication_journal_hash || journalValue?.verifier_source_commit !== registry.verifier_source_commit) throw new Error("publication journal identity does not match the image dossier");
+  const pinnedHostSets = normalizeHostSetBundleInputs(hostSetBundles, evidence);
   const objectiveVerifierPath = resolveWithin(evidence, slate.objectiveVerifier.artifactPath, "objective verifier artifact path");
   const { bytes: objectiveVerifierBytes, value: objectiveVerifierArtifact } = readDossier(objectiveVerifierPath, { trustedRoot: evidence });
   if (`sha256:${createHash("sha256").update(objectiveVerifierBytes).digest("hex")}` !== slate.objectiveVerifier.artifactDigest) throw new Error("objective verifier artifact digest mismatch");
@@ -439,6 +441,7 @@ export function validateProductionSlatePreflight(ethers, slate, config, {
       imageDossierSha256,
       publicationJournalPath: journalPath,
       publicationJournalSha256,
+      hostSetBundles: pinnedHostSets,
       pythonExecutable,
     });
     if (matrix.matrix_hash !== board.admissionMatrixDigest || matrix.problem_id !== board.problemSlug || matrix.verifier_version !== board.verifierVersion || matrix.verifier_image !== board.verifierImageDigest) throw new Error(`production board ${index + 1} admission matrix identity mismatch`);
@@ -687,6 +690,7 @@ export function runAdmitReleaseReadyCommand({
   imageDossierSha256,
   publicationJournalPath,
   publicationJournalSha256,
+  hostSetBundles,
   pythonExecutable,
   run = execFileSync,
 }) {
@@ -702,6 +706,10 @@ export function runAdmitReleaseReadyCommand({
       "--image-dossier-sha256", imageDossierSha256,
       "--publication-journal", publicationJournalPath,
       "--publication-journal-sha256", publicationJournalSha256,
+      ...hostSetBundles.flatMap(({ path, hostSetHash }) => [
+        "--host-set-bundle", path,
+        "--host-set-hash", hostSetHash,
+      ]),
     ],
     {
       cwd: repoRoot,
@@ -714,6 +722,27 @@ export function runAdmitReleaseReadyCommand({
       },
     },
   );
+}
+
+export function normalizeHostSetBundleInputs(inputs, evidenceRoot) {
+  if (!Array.isArray(inputs) || inputs.length < 4) throw new Error("at least four independently pinned host-set bundles are required");
+  const root = resolve(evidenceRoot ?? "");
+  const normalized = inputs.map((input, index) => {
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).sort().join(",") !== "hostSetHash,path") throw new Error(`host-set bundle ${index + 1} input is invalid`);
+    if (!DIGEST_RE.test(input.hostSetHash ?? "")) throw new Error(`host-set bundle ${index + 1} hash is invalid`);
+    const path = resolveWithin(root, input.path, `host-set bundle ${index + 1} path`);
+    return { path, hostSetHash: input.hostSetHash };
+  });
+  if (new Set(normalized.map(({ path }) => path)).size !== normalized.length || new Set(normalized.map(({ hostSetHash }) => hostSetHash)).size !== normalized.length) throw new Error("host-set bundle inputs must use distinct paths and hashes");
+  return normalized;
+}
+
+export function parseHostSetBundleEnvironment(value) {
+  if (typeof value !== "string" || value.trim() !== value || value === "") throw new Error("P42_ADMISSION_HOST_SET_BUNDLES_JSON is missing or malformed");
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { throw new Error("P42_ADMISSION_HOST_SET_BUNDLES_JSON must be strict JSON"); }
+  if (!Array.isArray(parsed)) throw new Error("P42_ADMISSION_HOST_SET_BUNDLES_JSON must be a JSON array");
+  return parsed;
 }
 
 function runAdmitReadyCommand({ repoRoot, problemPath, matrixPath, matrixBytes, pythonExecutable }) {

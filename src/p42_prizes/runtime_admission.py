@@ -738,54 +738,210 @@ def reconcile_published_host_set(
 ) -> dict[str, Any]:
     """Accept an existing bundle only after complete independent revalidation."""
 
-    try:
-        metadata = output_dir.lstat()
-    except OSError as exc:
-        raise RuntimeAdmissionError(f"could not inspect existing host-set output: {exc}") from exc
-    if output_dir.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
-        raise RuntimeAdmissionError("existing host-set output must be a direct directory")
-    index = read_pinned_canonical_json(output_dir / "host-set.json", expected_sha256=None)
-    _validate_schema(index, root, "admission-host-set.schema.json", "host-set index")
-    boards = index.get("boards")
-    if not isinstance(boards, list):
-        raise RuntimeAdmissionError("existing host-set index boards are invalid")
-    artifact_names = []
-    for board in boards:
-        if not isinstance(board, Mapping):
-            continue
-        artifact_names.append(board.get("evidence_path"))
-        rehearsals = board.get("runtime_rehearsals")
-        if isinstance(rehearsals, list):
-            artifact_names.extend(
-                item.get("path") for item in rehearsals if isinstance(item, Mapping)
+    parent = output_dir.parent.resolve(strict=True)
+    parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    directory_fd = -1
+    held_children: list[tuple[str, int, tuple[int, ...]]] = []
+
+    def identity(metadata: os.stat_result) -> tuple[int, ...]:
+        values = [metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_nlink]
+        generation = getattr(metadata, "st_gen", None)
+        if generation is not None:
+            values.append(generation)
+        return tuple(values)
+
+    def directory_generation(metadata: os.stat_result) -> tuple[int, ...]:
+        return identity(metadata) + (metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns)
+
+    def read_child(name: str) -> dict[str, Any]:
+        if Path(name).name != name or name in ("", ".", ".."):
+            raise RuntimeAdmissionError("existing host-set artifact path is invalid")
+        try:
+            descriptor = os.open(
+                name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd,
             )
-    if (
-        len(artifact_names) != 30
-        or any(not isinstance(name, str) or Path(name).name != name for name in artifact_names)
-        or len(set(artifact_names)) != 30
-    ):
-        raise RuntimeAdmissionError("existing host-set artifact paths are invalid")
-    expected_names = {"host-set.json", *artifact_names}
-    if set(os.listdir(output_dir)) != expected_names:
-        raise RuntimeAdmissionError("existing host-set directory contains an incomplete or unexpected file set")
-    artifacts = {
-        name: read_pinned_canonical_json(output_dir / name, expected_sha256=None)
-        for name in artifact_names
+        except OSError as exc:
+            raise RuntimeAdmissionError("could not open a nofollow host-set artifact") from exc
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or opened.st_size < 2
+                or opened.st_size > MAX_JSON_BYTES
+            ):
+                raise RuntimeAdmissionError("existing host-set artifacts must be bounded singly linked regular files")
+            payload = b""
+            while len(payload) < opened.st_size:
+                chunk = os.read(descriptor, opened.st_size - len(payload))
+                if not chunk:
+                    raise RuntimeAdmissionError("existing host-set artifact was truncated while reading")
+                payload += chunk
+            final = os.fstat(descriptor)
+            if directory_generation(final) != directory_generation(opened):
+                raise RuntimeAdmissionError("existing host-set artifact changed while reading")
+            held_children.append((name, descriptor, directory_generation(opened)))
+        except Exception:
+            os.close(descriptor)
+            raise
+        try:
+            value = loads_strict_json(payload)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeAdmissionError("existing host-set artifact is not strict UTF-8 JSON") from exc
+        if not isinstance(value, dict) or payload != (canonical_json(value) + "\n").encode("utf-8"):
+            raise RuntimeAdmissionError("existing host-set artifacts must use canonical JSON bytes")
+        return value
+
+    try:
+        try:
+            pathname_metadata = os.stat(output_dir.name, dir_fd=parent_fd, follow_symlinks=False)
+            directory_fd = os.open(
+                output_dir.name,
+                os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            raise RuntimeAdmissionError(f"could not inspect existing host-set output: {exc}") from exc
+        opened_directory = os.fstat(directory_fd)
+        if not stat.S_ISDIR(pathname_metadata.st_mode) or identity(opened_directory) != identity(pathname_metadata):
+            raise RuntimeAdmissionError("existing host-set output must be a direct pinned directory")
+        initial_generation = directory_generation(opened_directory)
+        names = os.listdir(directory_fd)
+        if len(names) != len(set(names)):
+            raise RuntimeAdmissionError("existing host-set directory contains duplicate entries")
+        index = read_child("host-set.json")
+        _validate_schema(index, root, "admission-host-set.schema.json", "host-set index")
+        boards = index.get("boards")
+        if not isinstance(boards, list):
+            raise RuntimeAdmissionError("existing host-set index boards are invalid")
+        artifact_names = []
+        for board in boards:
+            if not isinstance(board, Mapping):
+                continue
+            artifact_names.append(board.get("evidence_path"))
+            rehearsals = board.get("runtime_rehearsals")
+            if isinstance(rehearsals, list):
+                artifact_names.extend(
+                    item.get("path") for item in rehearsals if isinstance(item, Mapping)
+                )
+        if (
+            len(artifact_names) != 30
+            or any(not isinstance(name, str) or Path(name).name != name for name in artifact_names)
+            or len(set(artifact_names)) != 30
+        ):
+            raise RuntimeAdmissionError("existing host-set artifact paths are invalid")
+        expected_names = {"host-set.json", *artifact_names}
+        if set(names) != expected_names:
+            raise RuntimeAdmissionError("existing host-set directory contains an incomplete or unexpected file set")
+        artifacts = {name: read_child(name) for name in artifact_names}
+        validate_host_set(
+            index,
+            artifacts,
+            root=root,
+            dossier=dossier,
+            fixtures=fixtures,
+            dossier_sha256=dossier_sha256,
+            fixture_sha256=fixture_sha256,
+            expected_host=expected_host,
+            expected_key_fingerprint=expected_key_fingerprint,
+            expected_runtime=expected_runtime,
+            runtime_report_validator=runtime_report_validator,
+        )
+        for name, descriptor, opened_generation in held_children:
+            final_child = os.fstat(descriptor)
+            pathname_child = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                directory_generation(final_child) != opened_generation
+                or identity(pathname_child) != identity(final_child)
+            ):
+                raise RuntimeAdmissionError("existing host-set artifact changed during reconciliation")
+        final_directory = os.fstat(directory_fd)
+        final_pathname = os.stat(output_dir.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            directory_generation(final_directory) != initial_generation
+            or identity(final_pathname) != identity(opened_directory)
+        ):
+            raise RuntimeAdmissionError("existing host-set directory changed during reconciliation")
+        return index
+    finally:
+        for _name, descriptor, _generation in reversed(held_children):
+            os.close(descriptor)
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        os.close(parent_fd)
+
+
+def validate_matrix_host_set_bundles(
+    matrix: Mapping[str, Any],
+    bundle_inputs: Sequence[tuple[Path, str]],
+    *,
+    root: Path,
+    dossier: Mapping[str, Any],
+    fixtures: Mapping[str, Any],
+    dossier_sha256: str,
+    fixture_sha256: str,
+    runtime_report_validator: Callable[[Mapping[str, Any], Mapping[str, Any]], Mapping[str, Any]] | None = None,
+) -> None:
+    """Bind every matrix host to one independently pinned signed all-ten bundle."""
+
+    bindings = matrix.get("host_sets")
+    evidence_items = matrix.get("evidence")
+    problem_id = matrix.get("problem_id")
+    if not isinstance(bindings, list) or not isinstance(evidence_items, list):
+        raise RuntimeAdmissionError("admission matrix host-set bindings are missing")
+    if len(bundle_inputs) != len(bindings):
+        raise RuntimeAdmissionError("release admission requires one pinned host-set bundle per matrix host")
+    binding_by_hash = {
+        item.get("host_set_hash"): item for item in bindings if isinstance(item, Mapping)
     }
-    validate_host_set(
-        index,
-        artifacts,
-        root=root,
-        dossier=dossier,
-        fixtures=fixtures,
-        dossier_sha256=dossier_sha256,
-        fixture_sha256=fixture_sha256,
-        expected_host=expected_host,
-        expected_key_fingerprint=expected_key_fingerprint,
-        expected_runtime=expected_runtime,
-        runtime_report_validator=runtime_report_validator,
-    )
-    return index
+    evidence_by_hash = {
+        item.get("evidence_hash"): item for item in evidence_items if isinstance(item, Mapping)
+    }
+    supplied_hashes = [expected_hash for _path, expected_hash in bundle_inputs]
+    if (
+        len(binding_by_hash) != len(bindings)
+        or len(set(supplied_hashes)) != len(supplied_hashes)
+        or set(supplied_hashes) != set(binding_by_hash)
+    ):
+        raise RuntimeAdmissionError("pinned host-set bundle cohort is missing, duplicated, or substituted")
+    for bundle_path, expected_hash in bundle_inputs:
+        _require_digest(expected_hash, "pinned host-set hash")
+        binding = binding_by_hash[expected_hash]
+        evidence = evidence_by_hash.get(binding.get("evidence_hash"))
+        if not isinstance(evidence, Mapping):
+            raise RuntimeAdmissionError("host-set binding refers to orphan matrix evidence")
+        expected_host = evidence.get("host")
+        attestation = evidence.get("attestation")
+        execution = evidence.get("execution")
+        if not isinstance(expected_host, Mapping) or not isinstance(attestation, Mapping) or not isinstance(execution, Mapping):
+            raise RuntimeAdmissionError("host-set binding matrix evidence is incomplete")
+        index = reconcile_published_host_set(
+            bundle_path,
+            root=root,
+            dossier=dossier,
+            fixtures=fixtures,
+            dossier_sha256=dossier_sha256,
+            fixture_sha256=fixture_sha256,
+            expected_host={key: str(value) for key, value in expected_host.items()},
+            expected_key_fingerprint=str(attestation.get("key_fingerprint")),
+            expected_runtime=str(execution.get("runtime")),
+            runtime_report_validator=runtime_report_validator,
+        )
+        if index.get("host_set_hash") != expected_hash:
+            raise RuntimeAdmissionError("host-set bundle does not match its independently pinned hash")
+        board = next(
+            (item for item in index.get("boards", []) if isinstance(item, Mapping) and item.get("slug") == problem_id),
+            None,
+        )
+        expected_binding = {
+            "host_set_hash": expected_hash,
+            "evidence_hash": board.get("evidence_hash") if isinstance(board, Mapping) else None,
+            "evidence_path": board.get("evidence_path") if isinstance(board, Mapping) else None,
+            "key_fingerprint": index.get("attestation", {}).get("key_fingerprint"),
+            "runtime_rehearsals": board.get("runtime_rehearsals") if isinstance(board, Mapping) else None,
+        }
+        if canonical_json(binding) != canonical_json(expected_binding):
+            raise RuntimeAdmissionError("admission matrix does not bind the exact host-set summary and raw receipt pair")
 
 
 def publish_host_set(

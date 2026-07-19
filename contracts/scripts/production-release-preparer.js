@@ -71,6 +71,7 @@ export async function prepareProductionRelease({
   imageDossierSha256,
   publicationJournalPath,
   publicationJournalSha256,
+  hostSetBundles,
   objectiveVerifierArtifactPath,
   sp1RuntimeAttestationPath,
   evidenceRoot,
@@ -149,6 +150,7 @@ export async function prepareProductionRelease({
     imageDossierSha256,
     publicationJournalPath: journalRelativePath,
     publicationJournalSha256,
+    hostSetBundles,
   });
   assertCleanCheckout(root, commit, run);
   await mkdir(output, { recursive: true, mode: 0o700 });
@@ -173,6 +175,7 @@ export function requiredReleaseEnvironment(env = process.env) {
     "P42_PRODUCTION_IMAGE_DOSSIER_SHA256",
     "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH",
     "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256",
+    "P42_ADMISSION_HOST_SET_BUNDLES_JSON",
     "P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH",
     "P42_SP1_RUNTIME_ATTESTATION_PATH",
     "P42_RELEASE_EVIDENCE_ROOT",

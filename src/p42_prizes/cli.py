@@ -389,7 +389,8 @@ def _cmd_admit_host(args: argparse.Namespace) -> int:
 def _cmd_admit_matrix(args: argparse.Namespace) -> int:
     try:
         evidence = [load_evidence_file(path) for path in args.evidence]
-        matrix = build_admission_matrix(evidence)
+        bindings = [load_evidence_file(path) for path in args.host_set_binding]
+        matrix = build_admission_matrix(evidence, host_set_bindings=bindings)
         _enforce_gate_schema(matrix, "admission-matrix.schema.json")
     except (AdmissionError, jsonschema.ValidationError) as exc:
         print(str(exc), file=sys.stderr)
@@ -429,9 +430,13 @@ def _cmd_admit_release_ready(args: argparse.Namespace) -> int:
         if not isinstance(matrix, dict):
             print("stdin admission matrix must be an object", file=sys.stderr)
             return 1
+    if len(args.host_set_bundle) != len(args.host_set_hash):
+        print("host-set bundle paths and hashes must have equal cardinality", file=sys.stderr)
+        return 1
     errors = validate_fundable_release_admission(
         args.problem, matrix, args.image_dossier, args.image_dossier_sha256,
         args.publication_journal, args.publication_journal_sha256,
+        list(zip(args.host_set_bundle, args.host_set_hash, strict=True)),
     )
     if errors:
         for error in errors:
@@ -1157,6 +1162,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="host evidence JSON file; repeat for every matrix host",
     )
+    admit_matrix.add_argument(
+        "--host-set-binding",
+        action="append",
+        required=True,
+        help="board-specific signed host-set binding; repeat for every matrix host",
+    )
     admit_matrix.add_argument("--output")
     admit_matrix.set_defaults(func=_cmd_admit_matrix)
 
@@ -1182,6 +1193,8 @@ def build_parser() -> argparse.ArgumentParser:
     admit_release_ready.add_argument("--image-dossier-sha256", required=True)
     admit_release_ready.add_argument("--publication-journal", required=True)
     admit_release_ready.add_argument("--publication-journal-sha256", required=True)
+    admit_release_ready.add_argument("--host-set-bundle", action="append", required=True)
+    admit_release_ready.add_argument("--host-set-hash", action="append", required=True)
     admit_release_ready.set_defaults(func=_cmd_admit_release_ready)
 
     seed_check = subparsers.add_parser(

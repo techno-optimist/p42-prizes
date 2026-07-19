@@ -19,11 +19,12 @@
     "coverage",
     "hosts",
     "evidence",
+    "host_sets",
     "matrix_hash"
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "p42-admission-matrix/v3" },
+    "schema_version": { "const": "p42-admission-matrix/v4" },
     "generated_at_utc": { "type": "string", "minLength": 1 },
     "problem_id": { "type": "string", "minLength": 1 },
     "verifier_version": { "type": "string", "minLength": 1 },
@@ -108,6 +109,36 @@
       "type": "array",
       "minItems": 4,
       "items": { "type": "object" }
+    },
+    "host_sets": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["host_set_hash", "evidence_hash", "evidence_path", "key_fingerprint", "runtime_rehearsals"],
+        "properties": {
+          "host_set_hash": { "$ref": "#/$defs/hash" },
+          "evidence_hash": { "$ref": "#/$defs/hash" },
+          "evidence_path": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.admission-host\\.json$" },
+          "key_fingerprint": { "type": "string", "pattern": "^SHA256:[A-Za-z0-9+/]+$" },
+          "runtime_rehearsals": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["path", "file_sha256", "rehearsal_hash"],
+              "properties": {
+                "path": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*\\.runtime-rehearsal-[12]\\.json$" },
+                "file_sha256": { "$ref": "#/$defs/hash" },
+                "rehearsal_hash": { "$ref": "#/$defs/hash" }
+              }
+            }
+          }
+        }
+      }
     },
     "matrix_hash": { "$ref": "#/$defs/hash" }
   },

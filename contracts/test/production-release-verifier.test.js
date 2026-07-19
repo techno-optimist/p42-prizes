@@ -32,6 +32,7 @@ function args(paths, overrides = {}) {
     imageDossierSha256: `sha256:${"f".repeat(64)}`,
     publicationJournalPath: join(paths.evidenceRoot, "publication-journal.json"),
     publicationJournalSha256: `sha256:${"9".repeat(64)}`,
+    hostSetBundles: Array.from({ length: 4 }, (_, index) => ({ path: `host-set-${index}`, hostSetHash: `sha256:${String(index + 1).repeat(64)}` })),
     capsulePath: join(paths.outputRoot, "capsules", "capsule.json"),
     slatePath: join(paths.outputRoot, "slates", "slate.json"),
     releaseIndexPath: join(paths.outputRoot, "releases", "index.json"),
@@ -68,8 +69,9 @@ function dependencies(events, { dirtyAtStatusCall, indexCapsuleDigest = CAPSULE,
     verifyRuntimeAttestation() { events.push("verify-runtime-attestation"); return { verified: true }; },
     assertRuntimeAttestationMatches() { events.push("bind-runtime-attestation"); },
     assertObjectiveVerifierBinding() { events.push("bind-objective-verifier"); },
-    preflightSlate() {
+    preflightSlate(_ethers, _slate, _config, options) {
       events.push("preflight-slate");
+      assert.equal(options.hostSetBundles.length, 4);
       return Array.from({ length: boardCount }, (_, index) => ({ problemId: String(index + 1), problemSlug: `board-${index + 1}`, matrixDigest: `sha256:${String(index).padStart(64, "0")}` }));
     },
   };
@@ -139,6 +141,7 @@ describe("offline production release verification", () => {
       P42_PRODUCTION_IMAGE_DOSSIER_SHA256: `sha256:${"f".repeat(64)}`,
       P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH: "publication-journal.json",
       P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256: `sha256:${"9".repeat(64)}`,
+      P42_ADMISSION_HOST_SET_BUNDLES_JSON: JSON.stringify(Array.from({ length: 4 }, (_, index) => ({ path: `host-${index}`, hostSetHash: `sha256:${String(index + 1).repeat(64)}` }))),
       P42_RELEASE_OUTPUT_ROOT: "/output", P42_RELEASE_CAPSULE: "capsule.json",
       P42_PRODUCTION_SLATE_PATH: "slate.json", P42_PRODUCTION_RELEASE_INDEX_PATH: "index.json",
       P42_SP1_RUNTIME_ATTESTATION_PATH: "sp1-runtime.json",

@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { network } from "hardhat";
 
 import { prepareProductionRelease, requiredReleaseEnvironment } from "./production-release-preparer.js";
+import { parseHostSetBundleEnvironment } from "./multiboard-ceremony-helper.js";
 
 const env = requiredReleaseEnvironment();
 const connection = await network.create();
@@ -15,6 +16,7 @@ try {
     imageDossierSha256: env.P42_PRODUCTION_IMAGE_DOSSIER_SHA256,
     publicationJournalPath: env.P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH,
     publicationJournalSha256: env.P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256,
+    hostSetBundles: parseHostSetBundleEnvironment(env.P42_ADMISSION_HOST_SET_BUNDLES_JSON),
     objectiveVerifierArtifactPath: env.P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH,
     sp1RuntimeAttestationPath: env.P42_SP1_RUNTIME_ATTESTATION_PATH,
     evidenceRoot: env.P42_RELEASE_EVIDENCE_ROOT,

@@ -46,6 +46,7 @@ import {
   validateProductionReleaseSlate,
   validateProductionReleaseIndex,
   validateProductionSlatePreflight,
+  parseHostSetBundleEnvironment,
   validateMultiBoardAdmissionPreflight,
   validateMultiBoardDeploymentTimestamps,
 } from "./multiboard-ceremony-helper.js";
@@ -760,6 +761,7 @@ async function deployMultiBoardCeremony(ethers, releaseMode) {
       imageDossierSha256: requiredEnv("P42_PRODUCTION_IMAGE_DOSSIER_SHA256"),
       publicationJournalPath: requiredEnv("P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH"),
       publicationJournalSha256: requiredEnv("P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256"),
+      hostSetBundles: parseHostSetBundleEnvironment(requiredEnv("P42_ADMISSION_HOST_SET_BUNDLES_JSON")),
     })
     : validateMultiBoardAdmissionPreflight(ethers, config, { repoRoot });
   console.log(`Validated fundable admission evidence for ${admissionPreflight.length} multi-board problems.`);

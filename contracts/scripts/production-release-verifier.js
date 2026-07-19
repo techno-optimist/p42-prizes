@@ -68,6 +68,7 @@ export async function verifyProductionRelease({
   imageDossierSha256,
   publicationJournalPath,
   publicationJournalSha256,
+  hostSetBundles,
   capsulePath,
   slatePath,
   releaseIndexPath,
@@ -129,6 +130,7 @@ export async function verifyProductionRelease({
     imageDossierSha256,
     publicationJournalPath,
     publicationJournalSha256,
+    hostSetBundles,
   });
   if (!Array.isArray(boards) || boards.length !== 10) throw new Error("offline release verification requires exactly ten admitted boards");
   assertCleanCheckout(root, commit, run);
@@ -154,6 +156,7 @@ export function requiredReleaseVerificationEnvironment(env = process.env) {
     "P42_PRODUCTION_IMAGE_DOSSIER_SHA256",
     "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH",
     "P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256",
+    "P42_ADMISSION_HOST_SET_BUNDLES_JSON",
     "P42_RELEASE_EVIDENCE_ROOT",
     "P42_RELEASE_OUTPUT_ROOT",
     "P42_RELEASE_CAPSULE",

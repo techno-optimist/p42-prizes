@@ -82,6 +82,7 @@ function dependencies(events, { preflightError, publishSlateError, dirtyAtStatus
       assert.match(options.imageDossierSha256, /^sha256:[0-9a-f]{64}$/);
       assert.equal(options.publicationJournalPath, "release/publication-journal.json");
       assert.match(options.publicationJournalSha256, /^sha256:[0-9a-f]{64}$/);
+      assert.equal(options.hostSetBundles.length, 4);
       if (preflightError) throw preflightError;
     },
     async publishCapsule() { events.push("publish-capsule"); return { digest: `sha256:${"b".repeat(64)}`, uri: `sha256://${"b".repeat(64)}`, path: "capsule" }; },
@@ -98,6 +99,7 @@ function argumentsFor(paths, overrides = {}) {
     imageDossierSha256: `sha256:${createHash("sha256").update("image-bytes\n").digest("hex")}`,
     publicationJournalPath: paths.journalPath,
     publicationJournalSha256: `sha256:${createHash("sha256").update("journal-bytes\n").digest("hex")}`,
+    hostSetBundles: Array.from({ length: 4 }, (_, index) => ({ path: `release/host-set-${index}`, hostSetHash: `sha256:${String(index + 1).repeat(64)}` })),
     objectiveVerifierArtifactPath: paths.objectiveVerifierPath,
     sp1RuntimeAttestationPath: paths.runtimeAttestationPath,
     evidenceRoot: paths.evidenceRoot, expectedDeployer: `0x${"1".repeat(40)}`,
@@ -160,6 +162,7 @@ describe("production release preparation", () => {
       P42_PRODUCTION_IMAGE_DOSSIER_SHA256: `sha256:${"a".repeat(64)}`,
       P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_PATH: "publication-journal.json",
       P42_VERIFIER_IMAGE_PUBLICATION_JOURNAL_SHA256: `sha256:${"b".repeat(64)}`,
+      P42_ADMISSION_HOST_SET_BUNDLES_JSON: JSON.stringify(Array.from({ length: 4 }, (_, index) => ({ path: `host-${index}`, hostSetHash: `sha256:${String(index + 1).repeat(64)}` }))),
       P42_OBJECTIVE_VERIFIER_ARTIFACT_PATH: "objective-verifier.json",
       P42_SP1_RUNTIME_ATTESTATION_PATH: "sp1-runtime.json",
       P42_RELEASE_EVIDENCE_ROOT: "/tmp/evidence",

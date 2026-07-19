@@ -284,9 +284,13 @@ PYTHONPATH=src python3 -m p42_prizes.cli admit-host \
 
 PYTHONPATH=src python3 -m p42_prizes.cli admit-matrix \
   --evidence x86-glibc-a.json \
+  --host-set-binding x86-glibc-a.host-set-binding.json \
   --evidence x86-glibc-b.json \
+  --host-set-binding x86-glibc-b.host-set-binding.json \
   --evidence arm-glibc-a.json \
+  --host-set-binding arm-glibc-a.host-set-binding.json \
   --evidence arm-glibc-b.json \
+  --host-set-binding arm-glibc-b.host-set-binding.json \
   --output admission-matrix.json
 ```
 

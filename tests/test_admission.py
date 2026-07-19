@@ -20,7 +20,7 @@ from p42_prizes.admission import (
     VerifierRun,
     _inspect_image,
     _seal_host_evidence,
-    build_admission_matrix,
+    build_admission_matrix as _build_admission_matrix,
     build_verifier_env,
     compute_source_hash,
     generate_host_evidence,
@@ -34,6 +34,33 @@ from p42_prizes.bounded_process import OutputLimitExceeded
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _host_set_bindings(evidence_items: list[dict]) -> list[dict]:
+    bindings = []
+    for index, evidence in enumerate(evidence_items):
+        slug = evidence["problem_id"]
+        bindings.append({
+            "host_set_hash": sha256_bytes(f"host-set-{index}".encode()),
+            "evidence_hash": evidence["evidence_hash"],
+            "evidence_path": f"{slug}.admission-host.json",
+            "key_fingerprint": evidence["attestation"].get("key_fingerprint", "SHA256:test-only-untrusted"),
+            "runtime_rehearsals": [
+                {
+                    "path": f"{slug}.runtime-rehearsal-{run}.json",
+                    "file_sha256": sha256_bytes(f"receipt-file-{index}-{run}".encode()),
+                    "rehearsal_hash": sha256_bytes(f"receipt-{index}-{run}".encode()),
+                }
+                for run in (1, 2)
+            ],
+        })
+    return bindings
+
+
+def build_admission_matrix(evidence_items, **kwargs):
+    materialized = list(evidence_items)
+    kwargs.setdefault("host_set_bindings", _host_set_bindings(materialized))
+    return _build_admission_matrix(materialized, **kwargs)
 
 
 def run_cli(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -242,7 +269,7 @@ def test_build_admission_matrix_accepts_signed_full_n_host_coverage(tmp_path: Pa
 
     schema = json.loads((ROOT / "schemas" / "admission-matrix.schema.json").read_text())
     jsonschema.validate(matrix, schema)
-    assert matrix["schema_version"] == "p42-admission-matrix/v3"
+    assert matrix["schema_version"] == "p42-admission-matrix/v4"
     assert matrix["coverage"]["host_count"] == 4
     assert matrix["coverage"]["signed_host_count"] == 4
     assert matrix["coverage"]["architectures"] == ["aarch64", "x86_64"]
@@ -258,8 +285,12 @@ def test_admit_matrix_cli_revalidates_signed_evidence(tmp_path: Path) -> None:
         paths.append(path)
 
     args: list[str] = ["admit-matrix"]
-    for path in paths:
+    bindings = _host_set_bindings(evidence)
+    for index, path in enumerate(paths):
         args.extend(["--evidence", str(path)])
+        binding_path = tmp_path / f"binding-{index}.json"
+        binding_path.write_text(canonical_json(bindings[index]), encoding="utf-8")
+        args.extend(["--host-set-binding", str(binding_path)])
     completed = run_cli(*args)
 
     assert completed.returncode == 0, completed.stderr

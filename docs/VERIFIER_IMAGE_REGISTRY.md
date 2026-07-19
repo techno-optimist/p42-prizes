@@ -151,13 +151,18 @@ PYTHONPATH=src python3 -m p42_prizes.cli admit-release-ready \
   --image-dossier verifier-image-release-v2.json \
   --image-dossier-sha256 sha256:<independent-dossier-file-digest> \
   --publication-journal verifier-image-publication.journal.json \
-  --publication-journal-sha256 sha256:<independent-journal-file-digest>
+  --publication-journal-sha256 sha256:<independent-journal-file-digest> \
+  --host-set-bundle host-a.bundle --host-set-hash sha256:<signed-host-set-hash> \
+  --host-set-bundle host-b.bundle --host-set-hash sha256:<signed-host-set-hash> \
+  --host-set-bundle host-c.bundle --host-set-hash sha256:<signed-host-set-hash> \
+  --host-set-bundle host-d.bundle --host-set-hash sha256:<signed-host-set-hash>
 ```
 
 `admit-ready` remains a matrix-only preflight and is not sufficient to activate
 a v2 image release. Canonical contract release preparation, offline
 verification, and production deployment use `admit-release-ready` with both
-independent file pins and the exact `R` checkout.
+independent file pins, every independently pinned signed host-set bundle, and
+the exact `R` checkout.
 
 `admit-ready` permanently rejects the `hadamard-mini` Phase 0 demo fixture and
 the current signed C3 package, even if a caller supplies an immutable image and

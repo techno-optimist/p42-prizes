@@ -3,7 +3,7 @@ from __future__ import annotations
 from fractions import Fraction
 from pathlib import Path
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from p42_prizes.admission import (
     AdmissionError,
@@ -336,6 +336,7 @@ def validate_fundable_release_admission(
     dossier_file_sha256: str,
     publication_journal_path: str | Path,
     publication_journal_file_sha256: str,
+    host_set_bundles: Sequence[tuple[str | Path, str]],
 ) -> list[str]:
     """Production gate: matrix admission plus exact v2 image adoption."""
 
@@ -361,4 +362,30 @@ def validate_fundable_release_admission(
         f"image dossier: {error}"
         for error in validate_problem_image_release_binding(problem_dir, dossier)
     )
+    if errors:
+        return errors
+    try:
+        from p42_prizes.runtime_admission import (
+            load_fixture_manifest,
+            validate_matrix_host_set_bundles,
+        )
+        from p42_prizes.verdict import sha256_file
+
+        root = repo_root_from_problem(Path(problem_dir).resolve())
+        fixture_path = root / "protocol" / "production-verifier-fixtures-v1.json"
+        fixture_sha256 = sha256_file(fixture_path)
+        fixtures = load_fixture_manifest(root, fixture_path, expected_sha256=fixture_sha256)
+        raw_matrix = dict(matrix_path) if isinstance(matrix_path, Mapping) else load_evidence_file(matrix_path)
+        checked_matrix = validate_admission_matrix(raw_matrix)
+        validate_matrix_host_set_bundles(
+            checked_matrix,
+            [(Path(path), expected_hash) for path, expected_hash in host_set_bundles],
+            root=root,
+            dossier=dossier,
+            fixtures=fixtures,
+            dossier_sha256=dossier_file_sha256,
+            fixture_sha256=fixture_sha256,
+        )
+    except AdmissionError as exc:
+        errors.append(f"host-set bundles: {exc}")
     return errors

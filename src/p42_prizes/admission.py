@@ -38,7 +38,7 @@ from p42_prizes.verdict import (
 
 
 HOST_SCHEMA_VERSION = "p42-admission-host/v3"
-MATRIX_SCHEMA_VERSION = "p42-admission-matrix/v3"
+MATRIX_SCHEMA_VERSION = "p42-admission-matrix/v4"
 IMAGE_RELEASE_SCHEMA_VERSION = "p42-verifier-image-release/v2"
 IMAGE_RELEASE_IDENTITY_MODEL = "p42-verifier-source-release-config/v1"
 REQUIRED_ARCHITECTURES = ("aarch64", "x86_64")
@@ -972,6 +972,7 @@ def _validate_host_evidence(evidence: Mapping[str, Any], index: int) -> tuple[di
 def build_admission_matrix(
     evidence_items: Iterable[Mapping[str, Any]],
     *,
+    host_set_bindings: Iterable[Mapping[str, Any]] | None = None,
     generated_at_utc: str | None = None,
 ) -> dict[str, Any]:
     validated = [_validate_host_evidence(evidence, index) for index, evidence in enumerate(evidence_items)]
@@ -1025,6 +1026,71 @@ def build_admission_matrix(
     if len(signed_fingerprints) != len(set(signed_fingerprints)):
         raise AdmissionError("signed host evidence must use distinct host signing keys")
 
+    bindings = list(host_set_bindings or [])
+    if len(bindings) != len(normalized):
+        raise AdmissionError("admission matrix requires one host-set binding per signed host")
+    evidence_by_hash = {item["evidence_hash"]: item for item in normalized}
+    normalized_bindings: list[dict[str, Any]] = []
+    seen_host_sets: set[str] = set()
+    seen_evidence: set[str] = set()
+    for index, supplied in enumerate(bindings):
+        if not isinstance(supplied, Mapping) or set(supplied) != {
+            "host_set_hash", "evidence_hash", "evidence_path", "key_fingerprint",
+            "runtime_rehearsals",
+        }:
+            raise AdmissionError(f"host_set_bindings[{index}] keys are invalid")
+        host_set_hash = supplied.get("host_set_hash")
+        evidence_hash = supplied.get("evidence_hash")
+        evidence = evidence_by_hash.get(evidence_hash)
+        if (
+            not isinstance(host_set_hash, str)
+            or not SOLUTION_HASH_RE.fullmatch(host_set_hash)
+            or host_set_hash in seen_host_sets
+            or evidence is None
+            or evidence_hash in seen_evidence
+            or supplied.get("key_fingerprint") != evidence.get("attestation", {}).get("key_fingerprint")
+        ):
+            raise AdmissionError(f"host_set_bindings[{index}] does not identify one unique signed matrix host")
+        evidence_path = supplied.get("evidence_path")
+        if not isinstance(evidence_path, str) or Path(evidence_path).name != evidence_path:
+            raise AdmissionError(f"host_set_bindings[{index}].evidence_path is invalid")
+        rehearsals = supplied.get("runtime_rehearsals")
+        if not isinstance(rehearsals, list) or len(rehearsals) != 2:
+            raise AdmissionError(f"host_set_bindings[{index}] must bind exactly two raw runtime rehearsals")
+        normalized_rehearsals: list[dict[str, str]] = []
+        receipt_paths: set[str] = set()
+        receipt_hashes: set[str] = set()
+        for receipt_index, receipt in enumerate(rehearsals):
+            if not isinstance(receipt, Mapping) or set(receipt) != {"path", "file_sha256", "rehearsal_hash"}:
+                raise AdmissionError(f"host_set_bindings[{index}] raw receipt {receipt_index} keys are invalid")
+            path = receipt.get("path")
+            file_sha256 = receipt.get("file_sha256")
+            rehearsal_hash = receipt.get("rehearsal_hash")
+            if (
+                not isinstance(path, str)
+                or Path(path).name != path
+                or not SOLUTION_HASH_RE.fullmatch(file_sha256 or "")
+                or not SOLUTION_HASH_RE.fullmatch(rehearsal_hash or "")
+                or path in receipt_paths
+                or rehearsal_hash in receipt_hashes
+            ):
+                raise AdmissionError(f"host_set_bindings[{index}] raw receipt {receipt_index} is invalid or duplicated")
+            receipt_paths.add(path)
+            receipt_hashes.add(rehearsal_hash)
+            normalized_rehearsals.append(dict(receipt))
+        seen_host_sets.add(host_set_hash)
+        seen_evidence.add(evidence_hash)
+        normalized_bindings.append({
+            "host_set_hash": host_set_hash,
+            "evidence_hash": evidence_hash,
+            "evidence_path": evidence_path,
+            "key_fingerprint": supplied["key_fingerprint"],
+            "runtime_rehearsals": normalized_rehearsals,
+        })
+    if seen_evidence != set(evidence_by_hash):
+        raise AdmissionError("host-set bindings do not cover the exact signed matrix evidence")
+    normalized_bindings.sort(key=lambda item: evidence_by_hash[item["evidence_hash"]]["host"]["label"])
+
     sorted_evidence = sorted(normalized, key=lambda value: value["host"]["label"])
     matrix = {
         "schema_version": MATRIX_SCHEMA_VERSION,
@@ -1063,6 +1129,7 @@ def build_admission_matrix(
             for item in sorted_evidence
         ],
         "evidence": sorted_evidence,
+        "host_sets": normalized_bindings,
     }
     matrix["matrix_hash"] = sha256_bytes(canonical_json(matrix).encode("utf-8"))
     return matrix
@@ -1081,7 +1148,11 @@ def validate_admission_matrix(matrix: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(evidence, list):
         raise AdmissionError("matrix.evidence must be an array")
     generated_at = _require_string(matrix, "generated_at_utc", "matrix")
-    rebuilt = build_admission_matrix(evidence, generated_at_utc=generated_at)
+    rebuilt = build_admission_matrix(
+        evidence,
+        host_set_bindings=matrix.get("host_sets"),
+        generated_at_utc=generated_at,
+    )
     if canonical_json(rebuilt) != canonical_json(dict(matrix)):
         raise AdmissionError("matrix summary does not match recomputed signed host evidence")
     return dict(matrix)

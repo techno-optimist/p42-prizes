@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
@@ -15,6 +16,10 @@ const fixture = JSON.parse(readFileSync(resolve(ROOT, "contracts/test/fixtures/m
 const fixtureProblems = fixture.problems.map((problem, index) => ({ ...problem, problemId: String(index + 1) }));
 const canonical = (value) => value === null || typeof value !== "object" ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(",")}]` : `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`;
 const digest = (label) => `sha256:${createHash("sha256").update(label).digest("hex")}`;
+const hostSetBundles = Array.from({ length: 4 }, (_, index) => ({
+  path: `release/host-set-${index + 1}`,
+  hostSetHash: digest(`host-set-${index + 1}`),
+}));
 const objectiveVerifierArtifact = { contractName: "P42ObjectiveVerifierGateway", deployedBytecode: "0x600160005260206000f3" };
 const objectiveVerifierArtifactBytes = Buffer.from(`${JSON.stringify(objectiveVerifierArtifact)}\n`);
 const objectiveVerifierRuntimeCodehash = keccak256(objectiveVerifierArtifact.deployedBytecode);
@@ -52,7 +57,7 @@ const imageDossier = (slate) => {
   const body = {
     schema_version: "p42-verifier-image-release/v2",
     published_at_utc: "2026-07-11T00:00:00Z",
-    identity_model: "verifier-source-plus-release-config/v1",
+    identity_model: "p42-verifier-source-release-config/v1",
     verifier_source_commit: verifierSourceCommit,
     verifier_source_archive_digest: digest("source-archive"),
     release_config_commit: slate.sourceCommit,
@@ -88,7 +93,18 @@ const imageDossier = (slate) => {
     })),
     publication_journal_hash: digest("journal"),
   };
-  return { ...body, dossier_hash: digest(canonical(body)) };
+  const script = [
+    "import importlib.util,json,sys",
+    `spec=importlib.util.spec_from_file_location('release_verifier_images',${JSON.stringify(resolve(ROOT, "scripts/release_verifier_images.py"))})`,
+    "module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)",
+    "print(module.canonical_json(module._finalize_dossier(json.load(sys.stdin))))",
+  ].join(";");
+  return JSON.parse(execFileSync("python3", ["-c", script], {
+    cwd: ROOT,
+    encoding: "utf8",
+    input: JSON.stringify(body),
+    env: { ...process.env, PYTHONPATH: resolve(ROOT, "src") },
+  }));
 };
 const publicationJournal = (dossier) => ({
   schema_version: "p42-verifier-image-publish-journal/v2",
@@ -184,8 +200,13 @@ describe("exact-ten production release slate", () => {
         imageDossierSha256: slate.imageRegistry.digest,
         publicationJournalPath: journalPath,
         publicationJournalSha256: `sha256:${createHash("sha256").update(journalBytes).digest("hex")}`,
+        hostSetBundles,
       };
       assert.equal(validateProductionSlatePreflight({}, ready, config, { ...preflightOptions, runAdmitReleaseReady: () => {} }).length, 10);
+      assert.throws(
+        () => validateProductionSlatePreflight({}, ready, config, { ...preflightOptions, hostSetBundles: undefined, runAdmitReleaseReady: () => {} }),
+        /host-set bundles are required/,
+      );
       await writeFile(join(evidenceRoot, ready.boards[0].objectiveGuestElfPath), "substituted-program");
       assert.throws(() => validateProductionSlatePreflight({}, ready, config, { ...preflightOptions, runAdmitReleaseReady: () => {} }), /guest ELF digest mismatch/);
       await writeFile(join(evidenceRoot, ready.boards[0].objectiveGuestElfPath), "objective-program-bytes-0");
@@ -265,13 +286,15 @@ describe("exact-ten production release slate", () => {
       imageDossierSha256: digest("dossier-file"),
       publicationJournalPath: "/evidence/journal.json",
       publicationJournalSha256: digest("journal-file"),
+      hostSetBundles: hostSetBundles.map((item) => ({ ...item, path: `/evidence/${item.path}` })),
       pythonExecutable: "python-exact",
       run(program, args, options) { invocation = { program, args, options }; },
     });
     assert.equal(invocation.program, "python-exact");
     assert.deepEqual(invocation.args.slice(0, 3), ["-m", "p42_prizes.cli", "admit-release-ready"]);
     assert.equal(invocation.args.includes("admit-ready"), false);
-    for (const flag of ["--matrix-stdin", "--image-dossier", "--image-dossier-sha256", "--publication-journal", "--publication-journal-sha256"]) assert.equal(invocation.args.includes(flag), true);
+    for (const flag of ["--matrix-stdin", "--image-dossier", "--image-dossier-sha256", "--publication-journal", "--publication-journal-sha256", "--host-set-bundle", "--host-set-hash"]) assert.equal(invocation.args.includes(flag), true);
+    assert.equal(invocation.args.filter((value) => value === "--host-set-bundle").length, 4);
     assert.deepEqual(invocation.options.input, Buffer.from("{}\n"));
   });
 
