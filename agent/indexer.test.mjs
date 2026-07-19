@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
@@ -21,6 +22,7 @@ import {
   SHARED_CONTRACT_KEYS,
   failMissingMultiboardTranscriptArchives,
   loadContractArtifacts,
+  parseIndexerCliOptions,
   queryHistoricalLogs,
   ReorgDetectedError,
   replayProtocolEvents,
@@ -85,6 +87,117 @@ it("indexer CLI configures trusted transcript retrieval", () => {
   assert.equal(typeof configured.fetchClient.fetchTranscript, "function");
 });
 
+it("indexer CLI wires the canonical SP1 security report path only into activation options", () => {
+  const fetchImpl = async () => { throw new Error("not called"); };
+  const ordinary = parseIndexerCliOptions(
+    ["node", "indexer.mjs", "--manifest", "/manifest", "--out", "/checkpoint",
+      "--transcript-endpoint", "https://one.example", "--transcript-endpoint", "https://two.example"],
+    {},
+    fetchImpl,
+  );
+  assert.equal(ordinary.sp1SecurityReportPath, null);
+
+  const activation = parseIndexerCliOptions([
+    "node", "indexer.mjs",
+    "--manifest", "/manifest", "--out", "/checkpoint",
+    "--sp1-security-report", "/canonical/security-report.json",
+    "--transcript-endpoint", "https://one.example", "--transcript-endpoint", "https://two.example",
+  ], {}, fetchImpl);
+  assert.equal(activation.sp1SecurityReportPath, "/canonical/security-report.json");
+});
+
+function activationIndexerValidatorFixture({ expectedReportBytes, scannerReportBytes }) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "p42-indexer-sp1-")));
+  const repoRoot = join(root, "repo");
+  mkdirSync(join(repoRoot, "scripts"), { recursive: true });
+  mkdirSync(join(repoRoot, "security"), { recursive: true });
+  writeFileSync(join(repoRoot, "scripts", "check_sp1_dependency_security.py"), "fixture\n");
+  writeFileSync(join(repoRoot, "security", "sp1-dependency-policy-v1.json"), "{}\n");
+
+  const registryDigest = `sha256:${"9".repeat(64)}`;
+  const authorizationBytes = `${JSON.stringify({
+    schema_version: "p42-production-launch-authorization/v1",
+    status: "authorized",
+    artifacts: { activation_rpc_operator_registry: { sha256: registryDigest } },
+  })}\n`;
+  const fakePython = join(root, "fixture-python");
+  writeFileSync(fakePython, [
+    "#!/usr/bin/env node",
+    `const scanner = ${JSON.stringify((scannerReportBytes ?? passingSecurityReportBytes).toString("utf8"))};`,
+    `const authorization = ${JSON.stringify(authorizationBytes)};`,
+    "process.stdout.write(process.argv[2]?.endsWith('check_sp1_dependency_security.py') ? scanner : authorization);",
+  ].join("\n"));
+  chmodSync(fakePython, 0o755);
+
+  const writeJson = (name, value) => {
+    const path = join(root, name);
+    writeFileSync(path, `${JSON.stringify(value)}\n`);
+    return path;
+  };
+  const reportPath = join(root, "security-report.json");
+  if (expectedReportBytes !== null) writeFileSync(reportPath, expectedReportBytes);
+  return {
+    manifestPath: writeJson("manifest.json", { indexer: { finalityPolicy: {} } }),
+    rpcUrl: "https://rpc-a.example",
+    outPath: join(root, "checkpoint.json"),
+    activationPlanPath: writeJson("activation-plan.json", {}),
+    activationCompletionPath: writeJson("activation-completion.json", {}),
+    activationAuthorizationPath: writeJson("authorization.json", {}),
+    activationTrustRegistryPath: writeJson("trust-registry.json", {}),
+    activationArtifactRoot: repoRoot,
+    activationPython: fakePython,
+    activationRepoRoot: repoRoot,
+    sp1SecurityReportPath: reportPath,
+    activationRpcRegistryPath: writeJson("rpc-registry.json", {}),
+    activationRpcRegistryTrustedRoot: root,
+    secondaryRpcUrl: "https://rpc-b.example",
+  };
+}
+
+const passingSecurityReportBytes = Buffer.from(`${JSON.stringify({
+  schema: "p42-objective-dependency-security-report/v1",
+  result: "pass",
+  summary: { highFindings: 0, findings: 0, trackedLockfiles: 7, sp1Lockfiles: 4 },
+}, null, 2)}\n`);
+
+it("activation checkpoint validation accepts the exact matching SP1 report", async () => {
+  const options = activationIndexerValidatorFixture({ expectedReportBytes: passingSecurityReportBytes });
+  chmodSync(options.activationRpcRegistryPath, 0o444);
+  await assert.rejects(
+    () => runIndexer(options),
+    /activation RPC operator registry digest does not match authorization/,
+  );
+});
+
+it("activation checkpoint validation rejects a missing or mismatched SP1 report", async () => {
+  const missing = activationIndexerValidatorFixture({ expectedReportBytes: null });
+  await assert.rejects(() => runIndexer(missing), /ENOENT|no such file/i);
+
+  const mismatched = activationIndexerValidatorFixture({
+    expectedReportBytes: Buffer.from(passingSecurityReportBytes.toString("utf8").replace('"pass"', '"blocked"')),
+  });
+  await assert.rejects(
+    () => runIndexer(mismatched),
+    /SP1 dependency security report is missing, changed, or not the exact fresh scanner output/,
+  );
+});
+
+it("activation checkpoint validation remains blocked by the current SP1 report", async () => {
+  const options = activationIndexerValidatorFixture({
+    expectedReportBytes: readFileSync(realpathSync(join(process.cwd(), "..", "docs", "evidence", "sp1-dependency-security-current.json"))),
+  });
+  options.activationPython = realpathSync(execFileSync(
+    "python3", ["-c", "import sys; print(sys.executable)"], { encoding: "utf8" },
+  ).trim());
+  options.activationRepoRoot = realpathSync(join(process.cwd(), ".."));
+  options.activationArtifactRoot = realpathSync(process.cwd());
+  options.sp1SecurityReportPath = realpathSync(join(process.cwd(), "..", "docs", "evidence", "sp1-dependency-security-current.json"));
+  await assert.rejects(
+    () => runIndexer(options),
+    /SP1 dependency security gate blocks production launch authorization/,
+  );
+});
+
 it("activation checkpointing requires exact canonical independent HTTPS RPC hosts", async () => {
   const pair = validateActivationRpcEndpointPair("https://rpc-a.example", "https://rpc-b.example");
   assert.equal(pair.primary.url, "https://rpc-a.example");
@@ -118,7 +231,7 @@ it("activation checkpointing requires exact canonical independent HTTPS RPC host
   await assert.rejects(() => runIndexer({
     manifestPath: "/not-read", rpcUrl: "https://rpc-a.example", outPath: "/not-written",
     activationPlanPath: "/not-read", secondaryRpcUrl: "https://rpc-b.example",
-  }), /requires plan, completion, authorization, protected RPC registry/);
+  }), /requires plan, completion, authorization, the SP1 security report, protected RPC registry/);
   await assert.rejects(() => runIndexer({
     manifestPath: "/not-read", rpcUrl: "https://rpc-a.example", outPath: "/not-written",
     activationPlanPath: "/not-read", secondaryRpcUrl: "https://rpc-b.example",

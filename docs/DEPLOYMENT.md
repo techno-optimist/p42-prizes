@@ -92,6 +92,7 @@ node agent/indexer.mjs --manifest deployment-manifest.json \
   --activation-artifact-root /app/release \
   --activation-python /app/.venv/bin/python \
   --activation-repo-root /app/p42-prizes \
+  --sp1-security-report /app/release/sp1-dependency-security-current.json \
   --activation-rpc-registry activation-rpc-operator-registry.json \
   --activation-rpc-registry-trusted-root /app/release \
   --activation-plan funding-activation-plan.json \
@@ -101,7 +102,9 @@ node agent/indexer.mjs --manifest deployment-manifest.json \
 
 Before constructing either static-network provider, the runner and indexer send
 a raw `eth_chainId` request over each no-redirect transport and require both raw
-values to equal the plan chain. The authorization references the protected,
+values to equal the plan chain. The indexer reruns the SP1 dependency scanner
+and requires its exact output bytes to match the supplied report before it
+accepts the launch authorization. The authorization references the protected,
 schema-validated operator-profile registry by exact artifact digest. The plan
 then binds that registry digest, two distinct stable operator IDs, exact endpoint
 origins, and canonical endpoint-profile digests. Different hostnames alone are
