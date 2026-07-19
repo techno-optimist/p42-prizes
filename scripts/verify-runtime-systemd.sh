@@ -35,6 +35,8 @@ line "$executor" 'StateDirectoryMode=0700'
 line "$executor" 'RuntimeDirectoryMode=0710'
 line "$executor" '  --docker-host unix:///run/p42-verifier-docker/docker.sock'
 line "$executor" '  --repository-root /opt/p42 \'
+line "$executor" '  --runtime-release /etc/p42/verifier-executor/runtime-release.json \'
+line "$executor" '  --runtime-release-sha256-file /etc/p42/verifier-executor/runtime-release.sha256 \'
 line "$executor" '  --cgroup-attestation /run/p42-verifier-docker/cgroup-attestation.json \'
 line "$executor" '  --reserve-memory-mb 2048 \'
 line "$executor" '  --memory-safety-factor 2.0 \'
@@ -74,8 +76,17 @@ effective_mb = math.ceil(max(board["required_memory_mb"] for board in boards) * 
 if effective_mb > parent_mb:
     raise SystemExit(f"effective={effective_mb}MiB parent={parent_mb}MiB")
 PY
-$PYTHON "$root/scripts/generate_production_executor_config.py" --check "$boards" >/dev/null \
-  || fail 'executor config must be the generated ordered exact-ten production identity projection'
+$PYTHON - "$boards" <<'PY' || fail 'test-only executor sample differs from the ordered exact-ten production identity projection'
+import hashlib, json, sys
+raw = open(sys.argv[1], "rb").read()
+assert hashlib.sha256(raw).hexdigest() == "7f6afa54ab127eb5046a5810a4e8014fa26834a88a2af6735e4a23c9c09cb602"
+value = json.loads(raw)
+assert value.get("schema_version") == "p42-verifier-executor-config/test-only-v1"
+assert value.get("test_only") is True
+PY
+if $PYTHON "$root/scripts/generate_production_executor_config.py" --check "$boards" >/dev/null 2>&1; then
+  fail 'test-only executor board sample must be unreachable by the production validator'
+fi
 line "$docker" 'ConditionPathExists=!/run/docker.sock'
 line "$docker" 'ConditionPathExists=!/var/run/docker.sock'
 

@@ -18,12 +18,20 @@ from p42_prizes.verdict import canonical_json
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", type=Path)
+    parser.add_argument("--release-artifact", type=Path)
+    parser.add_argument("--release-artifact-sha256")
+    parser.add_argument("--docker-host")
     args = parser.parse_args()
     if args.check:
-        validate_production_executor_config(read_strict_json_file(args.check), ROOT)
+        validate_production_executor_config(
+            read_strict_json_file(args.check), ROOT, docker_host=args.docker_host,
+        )
         print("production executor exact-ten config verified")
     else:
-        print(canonical_json(generate_production_executor_config(ROOT)))
+        print(canonical_json(generate_production_executor_config(
+            ROOT, release_artifact_path=args.release_artifact,
+            release_artifact_sha256=args.release_artifact_sha256, docker_host=args.docker_host,
+        )))
     return 0
 
 

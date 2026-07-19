@@ -23,8 +23,10 @@ from p42_prizes.runner_worker import (
     _run_isolated_verifier,
     _run_job,
     _run_verifier_for_transcript,
+    _validate_board_identity,
     run_next_job_once,
 )
+from p42_prizes.problem import load_manifest
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -68,6 +70,43 @@ def _write_problem(
     solution = problem / "solution.json"
     solution.write_text("{}", encoding="utf-8")
     return problem, solution
+
+
+def test_worker_revalidates_full_executor_board_identity_before_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "sha256:" + "a" * 64
+    repository = "ghcr.io/example/p42/worker-fixture"
+    problem, _ = _write_problem(
+        tmp_path, verifier_name="verify.py", verifier_body="print('{}')\n", wall_seconds=10,
+        image=digest, image_repository=repository,
+    )
+    manifest = load_manifest(problem)
+    source_hash = "sha256:" + "c" * 64
+    monkeypatch.setattr("p42_prizes.runner_worker.compute_source_hash", lambda _problem: source_hash)
+    resource = {"memory_mb": 128, "wall_seconds": 10}
+    identity = {
+        "problem_slug": "worker-fixture", "problem_path": str(problem.resolve()),
+        "verifier_command": "python3 verifier/verify.py --solution {solution}",
+        "verifier_image": f"{repository}@{digest}",
+        "verifier_source_sha256": source_hash,
+        "resource_identity": sha256_bytes(canonical_json(resource).encode()),
+        "memory_mb": 128, "wall_seconds": 10,
+    }
+    job = {"problem": str(problem), "required_memory_mb": 128, "board_identity": identity}
+    assert _validate_board_identity(job, manifest) == identity
+    for field, value, message in (
+        ("problem_slug", "other", "slug/path"),
+        ("verifier_command", "substitute", "command"),
+        ("verifier_image", f"{repository}@sha256:" + "b" * 64, "image"),
+        ("verifier_source_sha256", "sha256:" + "b" * 64, "source"),
+        ("resource_identity", "sha256:" + "b" * 64, "resource"),
+        ("memory_mb", 129, "resource"),
+    ):
+        with pytest.raises(RunnerWorkerError, match=message):
+            _validate_board_identity(
+                {**job, "board_identity": {**identity, field: value}}, manifest,
+            )
 
 
 def test_verifier_subprocess_does_not_inherit_host_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

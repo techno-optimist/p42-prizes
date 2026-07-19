@@ -23,6 +23,7 @@ from p42_prizes.admission import (
     load_evidence_file,
     validate_report_identity,
     validate_report_shape,
+    compute_source_hash,
 )
 from p42_prizes.bounded_process import (
     OutputLimitExceeded,
@@ -91,9 +92,57 @@ def _load_job_manifest(job: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(problem_value, str) or not problem_value:
         raise RunnerWorkerError("job.problem must be a non-empty string")
     try:
-        return load_manifest(Path(problem_value).resolve())
+        manifest = load_manifest(Path(problem_value).resolve())
+        _validate_board_identity(job, manifest)
+        return manifest
     except (OSError, TypeError, ValueError) as exc:
         raise RunnerWorkerError("could not load verifier manifest before leasing") from exc
+
+
+BOARD_IDENTITY_KEYS = {
+    "problem_slug", "problem_path", "verifier_command", "verifier_image",
+    "verifier_source_sha256", "resource_identity", "memory_mb", "wall_seconds",
+}
+
+
+def _validate_board_identity(job: Mapping[str, Any], manifest: Mapping[str, Any]) -> dict[str, Any]:
+    identity = job.get("board_identity")
+    # Direct runner invocations are retained solely for local tests. The
+    # production executor always injects this field before queue admission.
+    if identity is None:
+        return {}
+    if not isinstance(identity, dict) or set(identity) != BOARD_IDENTITY_KEYS:
+        raise RunnerWorkerError("job lacks the executor-forced closed board identity")
+    problem = Path(_require_string(job, "problem")).resolve()
+    if str(problem) != identity.get("problem_path") or manifest.get("problem_id") != identity.get("problem_slug"):
+        raise RunnerWorkerError("job problem slug/path differs from its board identity")
+    verifier = manifest.get("verifier")
+    if not isinstance(verifier, Mapping):
+        raise RunnerWorkerError("board verifier manifest is unavailable")
+    try:
+        image = compose_immutable_image_ref(verifier.get("image_repository"), verifier.get("image"))
+    except RunnerSandboxError as exc:
+        raise RunnerWorkerError("board verifier image is not an immutable reference") from exc
+    if image != identity.get("verifier_image"):
+        raise RunnerWorkerError("board verifier image differs from its executor identity")
+    if verifier.get("command") != identity.get("verifier_command"):
+        raise RunnerWorkerError("board verifier command differs from its executor identity")
+    limits = verifier.get("max_compute")
+    resource = {
+        "memory_mb": limits.get("memory_mb") if isinstance(limits, Mapping) else None,
+        "wall_seconds": limits.get("wall_seconds") if isinstance(limits, Mapping) else None,
+    }
+    expected_resource_hash = sha256_bytes(canonical_json(resource).encode("utf-8"))
+    if (
+        resource["memory_mb"] != identity.get("memory_mb")
+        or resource["wall_seconds"] != identity.get("wall_seconds")
+        or job.get("required_memory_mb") != identity.get("memory_mb")
+        or expected_resource_hash != identity.get("resource_identity")
+    ):
+        raise RunnerWorkerError("board verifier resource identity differs from executor identity")
+    if compute_source_hash(problem) != identity.get("verifier_source_sha256"):
+        raise RunnerWorkerError("board verifier source differs from executor identity")
+    return dict(identity)
 
 
 def _minimum_lease_seconds(manifest: Mapping[str, Any]) -> int:
@@ -626,6 +675,7 @@ def _run_job(
                 "chain job problem path must match the canonical source checkout for its problem_id"
             )
     pinned_manifest = copy.deepcopy(manifest) if manifest is not None else load_manifest(problem)
+    board_identity = _validate_board_identity(job, pinned_manifest)
     solution_value = job.get("solution")
     if not isinstance(solution_value, str) or not solution_value:
         if _is_explicit_retryable_da_failure(job.get("da_failure")):
@@ -734,6 +784,8 @@ def _run_job(
         "resource_limits": resource_limits,
         "verifier": verifier,
     }
+    if board_identity:
+        transcript["board_identity"] = board_identity
     transcript["transcript_hash"] = sha256_bytes(canonical_json(transcript).encode("utf-8"))
     transcript_path = _publish_transcript(transcript_dir, transcript)
     transcript["transcript_path"] = str(transcript_path)

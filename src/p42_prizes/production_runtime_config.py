@@ -1,89 +1,292 @@
-"""Deterministic production executor configuration from reviewed protocol inputs."""
+"""Production executor configuration from a pinned, release-ready exact-ten artifact."""
 
 from __future__ import annotations
 
-import hashlib
 import json
+import os
 from pathlib import Path
-from typing import Any, Mapping
+import re
+import subprocess
+from typing import Any, Callable, Mapping
 
-from .admission import compute_source_hash
-from .problem import load_manifest
-from .verdict import canonical_json
+from .verdict import canonical_json, sha256_bytes
 
 
 class ProductionRuntimeConfigError(ValueError):
     pass
 
 
-def _sha256(path: Path) -> str:
-    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+IMAGE_REF_RE = re.compile(r"^[a-z0-9.-]+(?::[0-9]{1,5})?/[a-z0-9._/-]+@sha256:[0-9a-f]{64}$")
+RUNTIME_RELEASE_SCHEMA = "p42-production-runtime-release/v1"
+EXPECTED_BOARD_KEYS = {
+    "slug", "problem_id", "registry_problem_id", "verifier_command", "verifier_image",
+    "verifier_source_sha256", "verifier_source_commit", "release_config_commit",
+    "resource", "resource_identity", "admission",
+}
 
 
 def _load(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def generate_production_executor_config(root: Path) -> dict[str, Any]:
+def _require_digest(value: Any, label: str) -> str:
+    if not isinstance(value, str) or DIGEST_RE.fullmatch(value) is None:
+        raise ProductionRuntimeConfigError(f"{label} must be sha256:<64 lowercase hex chars>")
+    return value
+
+
+def _resource_identity(resource: Mapping[str, Any]) -> str:
+    return sha256_bytes(canonical_json(dict(resource)).encode("utf-8"))
+
+
+def _load_external_evidence(root: Path, path_value: Any, pin: Any, label: str) -> dict[str, Any]:
+    _require_digest(pin, f"{label} file pin")
+    if not isinstance(path_value, str) or not Path(path_value).is_absolute():
+        raise ProductionRuntimeConfigError(f"{label} path must be absolute")
+    path = Path(path_value).resolve()
+    if path.is_relative_to(root):
+        raise ProductionRuntimeConfigError(f"{label} must be external to the source checkout")
+    try:
+        metadata = path.stat(follow_symlinks=False)
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ProductionRuntimeConfigError(f"{label} evidence is unavailable") from exc
+    if not path.is_file() or path.is_symlink() or metadata.st_mode & 0o022 or sha256_bytes(raw) != pin:
+        raise ProductionRuntimeConfigError(f"{label} evidence does not match its protected file pin")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ProductionRuntimeConfigError(f"{label} evidence is invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise ProductionRuntimeConfigError(f"{label} evidence must be an object")
+    return value
+
+
+def _default_image_probe(reference: str, docker_host: str | None) -> None:
+    env = {"PATH": "/usr/bin:/bin"}
+    if docker_host:
+        env["DOCKER_HOST"] = docker_host
+    try:
+        completed = subprocess.run(
+            ["docker", "pull", reference], text=True, capture_output=True, timeout=300,
+            check=False, env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ProductionRuntimeConfigError(f"immutable verifier image is not pullable: {reference}") from exc
+    if completed.returncode != 0:
+        raise ProductionRuntimeConfigError(f"immutable verifier image is not pullable: {reference}")
+
+
+def load_runtime_release(
+    root: Path,
+    path: Path,
+    *,
+    expected_sha256: str,
+    image_probe: Callable[[str, str | None], None] | None = None,
+    docker_host: str | None = None,
+) -> dict[str, Any]:
+    """Validate the externally pinned release artifact and all runtime identities."""
+
     root = root.resolve()
-    board_set_path = root / "protocol/production-board-set-v1.json"
-    bindings_path = root / "protocol/production-board-bindings-v1.json"
-    projection_path = root / "scripts/release-guard-problems-v1.json"
-    board_set = _load(board_set_path)
-    bindings = _load(bindings_path)
-    projection = _load(projection_path)
+    path = path.resolve()
+    _require_digest(expected_sha256, "runtime release artifact pin")
+    if path.is_relative_to(root):
+        raise ProductionRuntimeConfigError("production runtime release artifact must be external to the source checkout")
+    try:
+        metadata = path.stat(follow_symlinks=False)
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise ProductionRuntimeConfigError("production runtime release artifact is unavailable") from exc
+    if not path.is_file() or path.is_symlink() or metadata.st_mode & 0o022:
+        raise ProductionRuntimeConfigError("production runtime release artifact must be a protected regular file")
+    if sha256_bytes(raw) != expected_sha256:
+        raise ProductionRuntimeConfigError("production runtime release artifact pin mismatch")
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ProductionRuntimeConfigError("production runtime release artifact is invalid JSON") from exc
+    if not isinstance(value, dict) or value.get("schema_version") != RUNTIME_RELEASE_SCHEMA:
+        raise ProductionRuntimeConfigError("unsupported production runtime release artifact schema")
+    if value.get("status") != "finalized" or value.get("release_ready") is not True:
+        raise ProductionRuntimeConfigError("production runtime release artifact is not finalized and release-ready")
+    unsigned = {key: item for key, item in value.items() if key != "artifact_hash"}
+    if value.get("artifact_hash") != sha256_bytes(canonical_json(unsigned).encode("utf-8")):
+        raise ProductionRuntimeConfigError("production runtime release artifact hash mismatch")
+
+    image_release = value.get("verifier_image_release")
+    if not isinstance(image_release, dict) or set(image_release) != {
+        "schema_version", "file_sha256", "dossier_hash", "verifier_source_commit",
+        "release_config_commit", "publication_journal_hash",
+    }:
+        raise ProductionRuntimeConfigError("runtime release lacks an exact verifier-image v2 binding")
+    if image_release.get("schema_version") != "p42-verifier-image-release/v2":
+        raise ProductionRuntimeConfigError("production runtime requires verifier image release v2")
+    for field in ("file_sha256", "dossier_hash", "publication_journal_hash"):
+        _require_digest(image_release.get(field), f"verifier image release {field}")
+    for field in ("verifier_source_commit", "release_config_commit"):
+        if not isinstance(image_release.get(field), str) or re.fullmatch(r"[0-9a-f]{40}", image_release[field]) is None:
+            raise ProductionRuntimeConfigError(f"verifier image release {field} is invalid")
+
+    board_set = _load(root / "protocol/production-board-set-v1.json")
+    bindings = _load(root / "protocol/production-board-bindings-v1.json")
+    projected = _load(root / "scripts/release-guard-problems-v1.json")
     slugs = board_set.get("boards")
     records = bindings.get("records")
-    projected = projection.get("boards")
+    public = projected.get("boards")
+    boards = value.get("boards")
     if (
         not isinstance(slugs, list) or len(slugs) != 10 or len(set(slugs)) != 10
-        or not isinstance(records, list) or [record.get("slug") for record in records] != slugs
-        or not isinstance(projected, list) or [board.get("slug") for board in projected] != slugs
+        or not isinstance(records, list) or [item.get("slug") for item in records] != slugs
+        or not isinstance(public, list) or [item.get("slug") for item in public] != slugs
+        or not isinstance(boards, list) or [item.get("slug") for item in boards if isinstance(item, dict)] != slugs
     ):
-        raise ProductionRuntimeConfigError("production executor inputs are not the ordered exact-ten board set")
-    boards = []
-    for slug, record, public in zip(slugs, records, projected, strict=True):
-        manifest = load_manifest(root / "problems" / slug)
-        verifier = manifest["verifier"]
-        resource = verifier["max_compute"]
-        source_hash = compute_source_hash(root / "problems" / slug)
-        if source_hash != record["verifier"]["source_tree_sha256"]:
+        raise ProductionRuntimeConfigError("runtime release is not the ordered canonical exact-ten board set")
+
+    probe = image_probe or _default_image_probe
+    seen_images: set[str] = set()
+    for index, (slug, record, projection, board) in enumerate(zip(slugs, records, public, boards, strict=True)):
+        if not isinstance(board, dict) or set(board) != EXPECTED_BOARD_KEYS:
+            raise ProductionRuntimeConfigError(f"runtime release board {index} has an invalid closed identity")
+        if board["problem_id"] != slug or board["registry_problem_id"] != projection.get("id"):
+            raise ProductionRuntimeConfigError(f"{slug} registry/problem identity mismatch")
+        if board["verifier_source_commit"] != image_release["verifier_source_commit"]:
+            raise ProductionRuntimeConfigError(f"{slug} verifier source commit S mismatch")
+        if board["release_config_commit"] != image_release["release_config_commit"]:
+            raise ProductionRuntimeConfigError(f"{slug} release/config commit R mismatch")
+        source = board.get("verifier_source_sha256")
+        if source != record.get("verifier", {}).get("source_tree_sha256"):
             raise ProductionRuntimeConfigError(f"{slug} source identity differs from production bindings")
-        board_number = public.get("id")
-        if not isinstance(board_number, int) or board_number < 1:
-            raise ProductionRuntimeConfigError(f"{slug} has no canonical registry problem id")
+        _require_digest(source, f"{slug} source identity")
+        image = board.get("verifier_image")
+        if not isinstance(image, str) or IMAGE_REF_RE.fullmatch(image) is None or "local-dev" in image:
+            raise ProductionRuntimeConfigError(f"{slug} verifier image must be an immutable repository@digest reference")
+        if image in seen_images:
+            raise ProductionRuntimeConfigError(f"{slug} verifier image substitutes another board image")
+        seen_images.add(image)
+        command = board.get("verifier_command")
+        resource = board.get("resource")
+        if not isinstance(command, str) or not command or not isinstance(resource, dict) or set(resource) != {"memory_mb", "wall_seconds"}:
+            raise ProductionRuntimeConfigError(f"{slug} command/resource identity is invalid")
+        if any(not isinstance(resource[key], int) or isinstance(resource[key], bool) or resource[key] < 1 for key in resource):
+            raise ProductionRuntimeConfigError(f"{slug} resource identity is invalid")
+        if board.get("resource_identity") != _resource_identity(resource):
+            raise ProductionRuntimeConfigError(f"{slug} resource identity digest mismatch")
+        admission = board.get("admission")
+        if not isinstance(admission, dict) or set(admission) != {
+            "schema_version", "matrix_path", "matrix_file_sha256", "matrix_hash",
+            "host_sets", "release_ready",
+        }:
+            raise ProductionRuntimeConfigError(f"{slug} admit-release-ready evidence is incomplete")
+        host_files = admission.get("host_sets")
+        if (admission.get("schema_version") != "p42-admission-matrix/v4"
+                or admission.get("release_ready") is not True
+                or not isinstance(host_files, list) or len(host_files) < 4):
+            raise ProductionRuntimeConfigError(f"{slug} admit-release-ready host evidence is invalid")
+        _require_digest(admission.get("matrix_hash"), f"{slug} admission matrix")
+        matrix = _load_external_evidence(
+            root, admission.get("matrix_path"), admission.get("matrix_file_sha256"),
+            f"{slug} admission matrix",
+        )
+        image_digest = "sha256:" + image.rsplit("@sha256:", 1)[1]
+        matrix_source = matrix.get("source")
+        if (
+            matrix.get("schema_version") != "p42-admission-matrix/v4"
+            or matrix.get("matrix_hash") != admission["matrix_hash"]
+            or matrix.get("problem_id") != slug
+            or matrix.get("verifier_image") != image_digest
+            or not isinstance(matrix_source, dict)
+            or matrix_source.get("commit") != image_release["verifier_source_commit"]
+            or matrix_source.get("tree_hash") != source
+        ):
+            raise ProductionRuntimeConfigError(f"{slug} admission matrix identity mismatch")
+        matrix_host_sets = matrix.get("host_sets")
+        matrix_hashes = [item.get("host_set_hash") for item in matrix_host_sets if isinstance(item, dict)] if isinstance(matrix_host_sets, list) else []
+        observed_hashes: list[str] = []
+        for host_index, host_file in enumerate(host_files):
+            if not isinstance(host_file, dict) or set(host_file) != {"path", "file_sha256", "host_set_hash"}:
+                raise ProductionRuntimeConfigError(f"{slug} host-set file binding is invalid")
+            host_hash = _require_digest(host_file.get("host_set_hash"), f"{slug} host-set identity")
+            host_set = _load_external_evidence(
+                root, host_file.get("path"), host_file.get("file_sha256"),
+                f"{slug} host set {host_index + 1}",
+            )
+            host_slugs = [item.get("slug") for item in host_set.get("boards", []) if isinstance(item, dict)]
+            if (
+                host_set.get("schema_version") != "p42-admission-host-set/v3"
+                or host_set.get("host_set_hash") != host_hash
+                or host_set.get("dossier", {}).get("dossier_hash") != image_release["dossier_hash"]
+                or host_set.get("dossier", {}).get("verifier_source_commit") != image_release["verifier_source_commit"]
+                or host_set.get("dossier", {}).get("release_config_commit") != image_release["release_config_commit"]
+                or host_slugs != slugs
+            ):
+                raise ProductionRuntimeConfigError(f"{slug} host-set identity mismatch")
+            observed_hashes.append(host_hash)
+        if len(observed_hashes) != len(set(observed_hashes)) or observed_hashes != matrix_hashes:
+            raise ProductionRuntimeConfigError(f"{slug} matrix/host-set substitution detected")
+        probe(image, docker_host)
+    return value
+
+
+def generate_production_executor_config(
+    root: Path,
+    *,
+    release_artifact_path: Path | None = None,
+    release_artifact_sha256: str | None = None,
+    image_probe: Callable[[str, str | None], None] | None = None,
+    docker_host: str | None = None,
+) -> dict[str, Any]:
+    root = root.resolve()
+    if release_artifact_path is None:
+        configured = os.environ.get("P42_PRODUCTION_RUNTIME_RELEASE")
+        release_artifact_path = Path(configured) if configured else None
+    if release_artifact_sha256 is None:
+        release_artifact_sha256 = os.environ.get("P42_PRODUCTION_RUNTIME_RELEASE_SHA256")
+    if release_artifact_path is None or release_artifact_sha256 is None:
+        raise ProductionRuntimeConfigError("production runtime release artifact path and independent SHA-256 pin are required")
+    release = load_runtime_release(
+        root, release_artifact_path, expected_sha256=release_artifact_sha256,
+        image_probe=image_probe, docker_host=docker_host,
+    )
+    boards = []
+    for item in release["boards"]:
+        board_number = item["registry_problem_id"]
+        slug = item["slug"]
         base = f"/var/lib/p42/verifier-executor/boards/{board_number}"
+        resource = item["resource"]
+        identity = {
+            "problem_slug": slug,
+            "problem_path": str(root / "problems" / slug),
+            "verifier_command": item["verifier_command"],
+            "verifier_image": item["verifier_image"],
+            "verifier_source_sha256": item["verifier_source_sha256"],
+            "resource_identity": item["resource_identity"],
+            "memory_mb": resource["memory_mb"],
+            "wall_seconds": resource["wall_seconds"],
+        }
         boards.append({
-            "alerts": f"{base}/ALERTS.log",
-            "board_id": f"84532:{board_number}:{slug}",
-            "deadline_seconds": int(resource["wall_seconds"]) + 60,
-            "identity": {
-                "slug": slug,
-                "verifier_command": verifier["command"],
-                "verifier_image": verifier["image"],
-                "verifier_source_sha256": source_hash,
-                "verifier_version": verifier["version"],
-                "wall_seconds": int(resource["wall_seconds"]),
-                "memory_mb": int(resource["memory_mb"]),
-            },
-            "queue": f"{base}/runner-queue.json",
-            # The host-global cgroup policy deliberately allocates one uniform
-            # 4 GiB slot while identity records the verifier's exact reviewed cap.
-            "required_memory_mb": 4096,
-            "staging": f"{base}/sandbox-staging",
-            "transcripts": f"{base}/transcripts",
+            "alerts": f"{base}/ALERTS.log", "board_id": f"84532:{board_number}:{slug}",
+            "deadline_seconds": resource["wall_seconds"] + 60, "identity": identity,
+            "queue": f"{base}/runner-queue.json", "required_memory_mb": 4096,
+            "staging": f"{base}/sandbox-staging", "transcripts": f"{base}/transcripts",
         })
     return {
-        "schema_version": "p42-verifier-executor-config/v2",
-        "board_set": {"path": "protocol/production-board-set-v1.json", "sha256": _sha256(board_set_path)},
-        "board_bindings": {"path": "protocol/production-board-bindings-v1.json", "sha256": _sha256(bindings_path)},
+        "schema_version": "p42-verifier-executor-config/v3",
+        "runtime_release": {"path": str(release_artifact_path.resolve()), "sha256": release_artifact_sha256,
+                            "artifact_hash": release["artifact_hash"]},
         "boards": boards,
     }
 
 
-def validate_production_executor_config(value: Mapping[str, Any], root: Path) -> None:
-    expected = generate_production_executor_config(root)
+def validate_production_executor_config(
+    value: Mapping[str, Any], root: Path, *, image_probe=None, docker_host: str | None = None,
+) -> None:
+    pin = value.get("runtime_release") if isinstance(value, Mapping) else None
+    if not isinstance(pin, Mapping) or set(pin) != {"path", "sha256", "artifact_hash"}:
+        raise ProductionRuntimeConfigError("executor config lacks a pinned production runtime release")
+    expected = generate_production_executor_config(
+        root, release_artifact_path=Path(str(pin["path"])), release_artifact_sha256=str(pin["sha256"]),
+        image_probe=image_probe, docker_host=docker_host,
+    )
     if canonical_json(value) != canonical_json(expected):
-        raise ProductionRuntimeConfigError(
-            "executor config differs from the ordered exact-ten production identity projection"
-        )
+        raise ProductionRuntimeConfigError("executor config differs from the release-bound exact-ten identity projection")

@@ -1,4 +1,6 @@
 {
+  "schema_version": "p42-verifier-executor-config/test-only-v1",
+  "test_only": true,
   "board_bindings": {
     "path": "protocol/production-board-bindings-v1.json",
     "sha256": "sha256:311df150a00dba4570ef4b22de0e8295fc43a40594cba9c27f9159b0d6b3781c"
@@ -188,6 +190,5 @@
       "staging": "/var/lib/p42/verifier-executor/boards/10/sandbox-staging",
       "transcripts": "/var/lib/p42/verifier-executor/boards/10/transcripts"
     }
-  ],
-  "schema_version": "p42-verifier-executor-config/v2"
+  ]
 }

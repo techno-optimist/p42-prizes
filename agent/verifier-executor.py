@@ -75,7 +75,7 @@ def _remaining(deadline: float, monotonic=time.monotonic) -> float:
     return remaining
 
 
-def _terminate_and_reap(process: subprocess.Popen, deadline: float | None = None) -> None:
+def _terminate_and_reap(process: subprocess.Popen, deadline: float | None = None) -> bool:
     if process.poll() is None:
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -83,12 +83,21 @@ def _terminate_and_reap(process: subprocess.Popen, deadline: float | None = None
             process.kill()
     try:
         timeout = max(0.001, deadline - time.monotonic()) if deadline is not None else 5
-        process.communicate(timeout=timeout)
+        process.wait(timeout=timeout)
+        return True
     except subprocess.TimeoutExpired:
-        process.kill()
-        # SIGKILL has already ended execution. This final wait is cleanup, not
-        # a second authorization window: no protocol work can occur here.
-        process.communicate()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else 1.0
+        if remaining <= 0:
+            return process.poll() is not None
+        try:
+            process.wait(timeout=remaining)
+            return True
+        except subprocess.TimeoutExpired:
+            return False
 
 
 def release_authorization_fence(
@@ -100,10 +109,12 @@ def release_authorization_fence(
 ) -> None:
     """Release the queue fence under one monotonic IPC/process deadline."""
     deadline = time.monotonic() + timeout_seconds if deadline is None else deadline
+    cleanup_reserve = min(0.05, max(0.001, timeout_seconds / 4))
+    protocol_deadline = deadline - cleanup_reserve
     frame = bytearray()
     try:
         while b"\n" not in frame and len(frame) <= len(FENCE_RELEASE_FRAME):
-            remaining = _remaining(deadline)
+            remaining = _remaining(protocol_deadline)
             connection.settimeout(remaining)
             try:
                 chunk = connection.recv(len(FENCE_RELEASE_FRAME) + 1 - len(frame))
@@ -170,13 +181,13 @@ def run_authorization_fence(
         raise
 
 
-def load_boards(path: Path, repository_root: Path) -> dict[str, BoardExecution]:
+def load_boards(path: Path, repository_root: Path, *, docker_host: str | None = None) -> dict[str, BoardExecution]:
     metadata = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid not in {0, os.geteuid()} or metadata.st_mode & 0o022:
         raise VerifierExecutorError("executor config must be root/executor-owned and not group/world-writable")
     raw = json.loads(path.read_text(encoding="utf-8"))
     try:
-        validate_production_executor_config(raw, repository_root)
+        validate_production_executor_config(raw, repository_root, docker_host=docker_host)
     except ProductionRuntimeConfigError as exc:
         raise VerifierExecutorError(str(exc)) from exc
     result = {}
@@ -185,6 +196,7 @@ def load_boards(path: Path, repository_root: Path) -> dict[str, BoardExecution]:
             board_id=item["board_id"], queue=Path(item["queue"]), transcripts=Path(item["transcripts"]),
             staging=Path(item["staging"]), alerts=Path(item["alerts"]),
             required_memory_mb=int(item["required_memory_mb"]), deadline_seconds=int(item["deadline_seconds"]),
+            identity=dict(item["identity"]),
         )
         if not board.board_id or not all(path.is_absolute() for path in (board.queue, board.transcripts, board.staging, board.alerts)):
             raise VerifierExecutorError("executor board paths must be absolute")
@@ -207,6 +219,30 @@ def validate_effective_cgroup_policy(
         raise VerifierExecutorError("executor policy differs from effective cgroup readiness attestation")
 
 
+def bind_job_to_board(board: BoardExecution, supplied: dict) -> dict:
+    """Reject substitutions, then inject the executor-owned board identity."""
+    identity = dict(board.identity or {})
+    if not identity:
+        raise VerifierExecutorError("authorized board lacks a runtime identity")
+    caller_identity = supplied.get("board_identity")
+    if caller_identity is not None and canonical_json(caller_identity) != canonical_json(identity):
+        raise VerifierExecutorError("caller-provided board identity does not match the board key")
+    for key, expected in (
+        ("problem", identity["problem_path"]),
+        ("required_memory_mb", identity["memory_mb"]),
+    ):
+        if key in supplied and supplied[key] != expected:
+            raise VerifierExecutorError(f"caller-provided {key} does not match the board key")
+    claim = supplied.get("chain_claim")
+    if isinstance(claim, dict) and claim.get("problem_id") != identity["problem_slug"]:
+        raise VerifierExecutorError("caller-provided chain problem does not match the board key")
+    job = dict(supplied)
+    job["problem"] = identity["problem_path"]
+    job["required_memory_mb"] = identity["memory_mb"]
+    job["board_identity"] = identity
+    return job
+
+
 def serve(args: argparse.Namespace) -> None:
     if not 0 < args.ipc_read_timeout_seconds <= 60:
         raise VerifierExecutorError("executor IPC read deadline must be in (0, 60] seconds")
@@ -217,7 +253,17 @@ def serve(args: argparse.Namespace) -> None:
     expected_uid = pwd.getpwnam(args.operator_user).pw_uid
     submit_group = grp.getgrnam(args.submit_group).gr_gid
     singleton_lock_fd = acquire_singleton_lock(Path(args.lock))
-    boards = load_boards(Path(args.config), Path(args.repository_root))
+    pin_path = Path(args.runtime_release_sha256_file)
+    pin_metadata = pin_path.stat(follow_symlinks=False)
+    if not stat.S_ISREG(pin_metadata.st_mode) or pin_metadata.st_mode & 0o022:
+        raise VerifierExecutorError("runtime release pin file must be protected")
+    release_pin = pin_path.read_text(encoding="ascii").strip()
+    config_value = json.loads(Path(args.config).read_text(encoding="utf-8"))
+    configured_release = config_value.get("runtime_release", {})
+    if (configured_release.get("path") != str(Path(args.runtime_release).resolve())
+            or configured_release.get("sha256") != release_pin):
+        raise VerifierExecutorError("executor config does not match the independently pinned runtime release")
+    boards = load_boards(Path(args.config), Path(args.repository_root), docker_host=args.docker_host)
     capacity_reader = lambda: host_capacity_snapshot(Path(args.cgroup_attestation))
     startup_capacity = capacity_reader()
     validate_effective_cgroup_policy(
@@ -268,6 +314,7 @@ def serve(args: argparse.Namespace) -> None:
             job = request.get("job")
             if not isinstance(job, dict):
                 raise VerifierExecutorError("enqueue request has no job object")
+            job = bind_job_to_board(board, job)
             descriptor, temporary = tempfile.mkstemp(prefix="job-", suffix=".json", dir=Path(args.state).parent)
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
                 json.dump(job, output, sort_keys=True, separators=(",", ":"))
@@ -383,6 +430,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True); parser.add_argument("--socket", required=True)
     parser.add_argument("--repository-root", required=True)
+    parser.add_argument("--runtime-release", required=True)
+    parser.add_argument("--runtime-release-sha256-file", required=True)
     parser.add_argument("--state", required=True); parser.add_argument("--lock", required=True)
     parser.add_argument("--docker-host", required=True); parser.add_argument("--operator-user", default="p42-operator")
     parser.add_argument("--submit-group", default="p42-verifier-submitters")

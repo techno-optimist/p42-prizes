@@ -52,6 +52,7 @@ class BoardExecution:
     alerts: Path
     required_memory_mb: int
     deadline_seconds: int
+    identity: Mapping[str, Any] | None = None
 
 
 def read_boot_id(path: Path = Path("/proc/sys/kernel/random/boot_id")) -> str:
@@ -223,6 +224,7 @@ class VerifierExecutor:
     def recover(self) -> None:
         # A reboot invalidates monotonic deadlines, but never proves that the
         # Docker daemon has no restored containers. Reconciliation comes first.
+        self.docker.reconcile()
         capacity = self.capacity_reader()
         previous = None
         if self.state_path.exists():
@@ -268,7 +270,6 @@ class VerifierExecutor:
                     "end_oom": capacity.oom_events, "end_oom_kill": capacity.oom_kills,
                     "terminal_outcome": "reboot_during_active_request",
                 }
-        self.docker.reconcile()
         self._write_state(None)
 
     def _record_oom_attribution(
@@ -280,16 +281,60 @@ class VerifierExecutor:
             raise VerifierExecutorError("active holder lacks cgroup OOM counter identity")
         if capacity.oom_events < start_oom or capacity.oom_kills < start_kill:
             raise VerifierExecutorError("cgroup OOM counters regressed within one boot")
-        if capacity.oom_events == start_oom and capacity.oom_kills == start_kill:
-            return
         self._oom_attribution = {
             "schema_version": "p42-verifier-oom-attribution/v1",
             "request_id": holder["request_id"], "board_id": holder["board_id"],
             "start_boot_id": holder["boot_id"], "end_boot_id": capacity.boot_id,
             "start_oom": start_oom, "start_oom_kill": start_kill,
             "end_oom": capacity.oom_events, "end_oom_kill": capacity.oom_kills,
+            "oom_delta": capacity.oom_events - start_oom,
+            "oom_kill_delta": capacity.oom_kills - start_kill,
             "terminal_outcome": terminal_outcome,
         }
+
+    def _oom_guarded(self) -> bool:
+        attribution = self._oom_attribution
+        if not isinstance(attribution, Mapping):
+            return False
+        return (
+            attribution.get("oom_delta") is None
+            or attribution.get("oom_kill_delta") is None
+            or attribution.get("oom_delta", 0) > 0
+            or attribution.get("oom_kill_delta", 0) > 0
+        )
+
+    def _durable_alert(self, board: BoardExecution, request_id: str, detail: str) -> None:
+        board.alerts.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        payload = f"EXECUTOR {request_id} board={board.board_id}: {detail}\n".encode("utf-8")
+        descriptor = os.open(
+            board.alerts, os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600,
+        )
+        try:
+            os.write(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _terminate_and_reap_bounded(
+        self, process: subprocess.Popen[str], *, absolute_deadline: float,
+    ) -> bool:
+        """Best-effort TERM/KILL and reap without crossing the spawn-to-reap deadline."""
+        if process.poll() is not None:
+            return True
+        for signal_number in (signal.SIGTERM, signal.SIGKILL):
+            try:
+                os.killpg(process.pid, signal_number)
+            except ProcessLookupError:
+                return True
+            remaining = absolute_deadline - time.monotonic()
+            if remaining <= 0:
+                return process.poll() is not None
+            try:
+                process.wait(timeout=min(0.5, remaining))
+                return True
+            except subprocess.TimeoutExpired:
+                continue
+        return process.poll() is not None
 
     def execute(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if set(request) != {"schema_version", "request_id", "board_id", "chain_timestamp"}:
@@ -315,7 +360,7 @@ class VerifierExecutor:
             self._acknowledged_oom_events = capacity.oom_events
         if capacity.boot_id != self._boot_id:
             raise VerifierExecutorError("host reboot detected; executor restart and reconciliation required")
-        if (self._oom_attribution is not None
+        if (self._oom_guarded()
                 or capacity.oom_kills != self._acknowledged_oom_kills
                 or capacity.oom_events != self._acknowledged_oom_events):
             return {"reason": "oom_guard_tripped", "selected_job_id": None}
@@ -356,10 +401,12 @@ class VerifierExecutor:
                "P42_RUNNER_CHAIN_TIMESTAMP": chain_timestamp}
         process = None
         terminal_outcome = "executor_error"
+        absolute_deadline = time.monotonic() + board.deadline_seconds
         try:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        env=env, start_new_session=True)
-            stdout, stderr = process.communicate(timeout=board.deadline_seconds)
+            # Reserve a bounded reap window inside the one spawn-to-reap deadline.
+            stdout, stderr = process.communicate(timeout=max(0.001, board.deadline_seconds - 1.0))
             if process.returncode != 0:
                 terminal_outcome = "worker_failed"
                 raise VerifierExecutorError((stderr or stdout or "worker failed")[:512].strip())
@@ -374,17 +421,25 @@ class VerifierExecutor:
             terminal_outcome = "success"
         except subprocess.TimeoutExpired:
             assert process is not None
-            os.killpg(process.pid, signal.SIGKILL)
-            process.communicate()
-            terminal_outcome = "deadline_exceeded"
-            raise VerifierExecutorError("verifier execution exceeded host deadline")
+            reaped = self._terminate_and_reap_bounded(process, absolute_deadline=absolute_deadline)
+            terminal_outcome = "deadline_exceeded" if reaped else "deadline_exceeded_child_unreaped"
+            if not reaped:
+                self._durable_alert(
+                    board, request_id,
+                    "worker remained uninterruptible after TERM/KILL within the absolute spawn-to-reap deadline",
+                )
+            raise VerifierExecutorError(
+                "verifier execution exceeded host deadline"
+                + ("; child could not be reaped and was durably alerted" if not reaped else "")
+            )
         finally:
-            # Snapshot while the durable holder still identifies the request.
+            # Reconcile first, then snapshot while the durable holder still
+            # identifies the request and any cleanup-time OOM is attributable.
+            self.docker.reconcile()
             completed_capacity = self.capacity_reader()
             if completed_capacity.boot_id != self._boot_id:
                 raise VerifierExecutorError("host rebooted during verifier execution")
             self._record_oom_attribution(holder, completed_capacity, terminal_outcome)
             self._write_state(holder)
-            self.docker.reconcile()
             self._write_state(None)
         return result

@@ -90,6 +90,21 @@ class FailedProcess(FakeProcess):
         return "", "worker crashed"
 
 
+class UninterruptibleProcess(FakeProcess):
+    returncode = None
+
+    def communicate(self, timeout=None):
+        self.events.append(f"worker:{timeout}")
+        raise subprocess.TimeoutExpired("worker", timeout)
+
+    def poll(self):
+        return None
+
+    def wait(self, timeout=None):
+        self.events.append(f"wait:{timeout}")
+        raise subprocess.TimeoutExpired("worker", timeout)
+
+
 def executor(tmp_path: Path, docker, monotonic=lambda: 100):
     board = BoardExecution("board-1", tmp_path / "queue.json", tmp_path / "tx", tmp_path / "stage",
                            tmp_path / "alerts.log", 100, 7)
@@ -112,8 +127,37 @@ def test_executor_reconciles_before_lease_and_after_intrinsic_deadline_scope(tmp
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess(events))
     result = executor(tmp_path, FakeDocker(events)).execute(request())
     assert result == {"reason": "queue_empty"}
-    assert events == ["reconcile", "worker:7", "reconcile"]
+    assert events == ["reconcile", "worker:6.0", "reconcile"]
     assert json.loads((tmp_path / "private/state.json").read_text())["holder"] is None
+
+
+def test_zero_cleanup_oom_delta_is_persisted_and_next_admission_runs(tmp_path: Path, monkeypatch) -> None:
+    events = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess(events))
+    service = executor(tmp_path, FakeDocker(events))
+    assert service.execute(request()) == {"reason": "queue_empty"}
+    cleanup = json.loads(service.state_path.read_text())["oom_attribution"]
+    assert cleanup["terminal_outcome"] == "success"
+    assert cleanup["oom_delta"] == cleanup["oom_kill_delta"] == 0
+    assert service.execute(request()) == {"reason": "queue_empty"}
+
+
+def test_uninterruptible_worker_never_blocks_service_and_is_durably_alerted(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    events = []
+    process = UninterruptibleProcess(events)
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr(os, "killpg", lambda pid, sig: events.append(f"signal:{sig}"))
+    service = executor(tmp_path, FakeDocker(events))
+    with pytest.raises(VerifierExecutorError, match="durably alerted"):
+        service.execute(request())
+    alert = (tmp_path / "alerts.log").read_text()
+    assert request()["request_id"] in alert and "uninterruptible" in alert
+    state = json.loads(service.state_path.read_text())
+    assert state["holder"] is None
+    assert state["oom_attribution"]["terminal_outcome"] == "deadline_exceeded_child_unreaped"
+    assert process.poll() is None
 
 
 def test_orphan_reconcile_failure_prevents_any_new_lease(tmp_path: Path, monkeypatch) -> None:
@@ -197,6 +241,7 @@ def test_post_worker_oom_delta_is_durably_attributed_and_guards_next_admission(
         "request_id": request()["request_id"], "board_id": "board-1",
         "start_boot_id": "boot-a", "end_boot_id": "boot-a",
         "start_oom": 3, "start_oom_kill": 2, "end_oom": 5, "end_oom_kill": 3,
+        "oom_delta": 2, "oom_kill_delta": 1,
         "terminal_outcome": "success",
     }
     assert service.execute(request())["reason"] == "oom_guard_tripped"

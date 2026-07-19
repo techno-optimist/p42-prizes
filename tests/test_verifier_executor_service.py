@@ -192,3 +192,30 @@ def test_executor_startup_binds_board_factor_and_daemon_headroom_to_cgroup_attes
         SERVICE.validate_effective_cgroup_policy({"board": board}, capacity, 2.0, 4096)
     with pytest.raises(SERVICE.VerifierExecutorError, match="differs from effective cgroup"):
         SERVICE.validate_effective_cgroup_policy({"board": board}, capacity, 1.0, 2048)
+
+
+def test_board_key_forces_identity_and_rejects_shared_uid_substitution(tmp_path: Path) -> None:
+    identity = {
+        "problem_slug": "board", "problem_path": "/opt/p42/problems/board",
+        "verifier_command": "python3 verifier.py", "verifier_image": "ghcr.io/p42/board@sha256:" + "a" * 64,
+        "verifier_source_sha256": "sha256:" + "b" * 64,
+        "resource_identity": "sha256:" + "c" * 64, "memory_mb": 256, "wall_seconds": 30,
+    }
+    board = SERVICE.BoardExecution(
+        "84532:1:board", tmp_path / "queue", tmp_path / "transcripts", tmp_path / "stage",
+        tmp_path / "alerts", 4096, 90, identity,
+    )
+    supplied = {"job_id": "job", "chain_claim": {"problem_id": "board"}}
+    bound = SERVICE.bind_job_to_board(board, supplied)
+    assert bound["problem"] == identity["problem_path"]
+    assert bound["required_memory_mb"] == identity["memory_mb"]
+    assert bound["board_identity"] == identity
+    for field, value in (
+        ("problem", "/opt/p42/problems/other"),
+        ("required_memory_mb", 1),
+        ("board_identity", {**identity, "verifier_command": "substitute"}),
+    ):
+        with pytest.raises(SERVICE.VerifierExecutorError, match="does not match the board key"):
+            SERVICE.bind_job_to_board(board, {**supplied, field: value})
+    with pytest.raises(SERVICE.VerifierExecutorError, match="chain problem"):
+        SERVICE.bind_job_to_board(board, {"chain_claim": {"problem_id": "other"}})

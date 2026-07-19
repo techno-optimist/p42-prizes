@@ -79,6 +79,21 @@
         "generated_at_utc": { "type": "string", "minLength": 1 },
         "started_at_utc": { "type": "string", "minLength": 1 },
         "problem": { "type": "string", "minLength": 1 },
+        "board_identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["problem_slug", "problem_path", "verifier_command", "verifier_image", "verifier_source_sha256", "resource_identity", "memory_mb", "wall_seconds"],
+          "properties": {
+            "problem_slug": { "type": "string", "minLength": 1 },
+            "problem_path": { "type": "string", "minLength": 1 },
+            "verifier_command": { "type": "string", "minLength": 1 },
+            "verifier_image": { "type": "string", "pattern": "^[^@]+@sha256:[a-f0-9]{64}$" },
+            "verifier_source_sha256": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "resource_identity": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+            "memory_mb": { "type": "integer", "minimum": 1 },
+            "wall_seconds": { "type": "integer", "minimum": 1 }
+          }
+        },
         "solution": { "type": "string", "minLength": 1 },
         "da": {
           "anyOf": [
