@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://p42.xyz/schemas/incident-drill-v1.json",
-  "title": "P42 Incident Drill v1",
+  "$id": "https://p42.xyz/schemas/incident-drill-v2.json",
+  "title": "P42 Incident Drill v2",
   "type": "object",
   "required": [
     "schema_version",
@@ -17,6 +17,7 @@
     "comms_owner",
     "security_owner",
     "external_counsel",
+    "disclosure_probe_operator",
     "affected_scope",
     "evidence_preserved",
     "timeline",
@@ -32,7 +33,7 @@
   ],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "p42-incident-drill/v1" },
+    "schema_version": { "const": "p42-incident-drill/v2" },
     "drill_id": { "type": "string", "minLength": 1 },
     "started_at_utc": { "type": "string", "format": "date-time" },
     "completed_at_utc": { "type": "string", "format": "date-time" },
@@ -49,12 +50,15 @@
         "verifier_bug"
       ]
     },
-    "release_binding": { "$ref": "#/$defs/releaseBinding" },
+    "release_binding": {
+      "$ref": "https://p42.xyz/schemas/adversarial-campaign-v2.json#/$defs/releaseBinding"
+    },
     "facilitator": { "$ref": "#/$defs/facilitator" },
     "incident_lead": { "$ref": "#/$defs/incidentLead" },
     "comms_owner": { "$ref": "#/$defs/commsOwner" },
     "security_owner": { "$ref": "#/$defs/securityOwner" },
     "external_counsel": { "$ref": "#/$defs/externalCounsel" },
+    "disclosure_probe_operator": { "$ref": "#/$defs/disclosureProbeOperator" },
     "affected_scope": { "type": "string", "minLength": 1 },
     "evidence_preserved": {
       "type": "array",
@@ -147,7 +151,8 @@
         "scope_summary",
         "counsel_approved_at_utc",
         "activated_at_utc",
-        "activation_evidence"
+        "activation_evidence",
+        "external_probe_receipts"
       ],
       "additionalProperties": false,
       "properties": {
@@ -161,7 +166,13 @@
         "scope_summary": { "type": "string", "minLength": 1 },
         "counsel_approved_at_utc": { "type": "string", "format": "date-time" },
         "activated_at_utc": { "type": "string", "format": "date-time" },
-        "activation_evidence": { "$ref": "#/$defs/artifact" }
+        "activation_evidence": { "$ref": "#/$defs/artifact" },
+        "external_probe_receipts": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "$ref": "#/$defs/probeReceipt" }
+        }
       }
     },
     "open_followups": {
@@ -210,7 +221,6 @@
   },
   "$defs": {
     "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
-    "address": { "type": "string", "pattern": "^0x[a-fA-F0-9]{40}$" },
     "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
     "incidentRole": {
       "enum": ["facilitator", "incident-lead", "communications-owner", "security-owner"]
@@ -305,52 +315,65 @@
         "license_identifier": { "type": "string", "minLength": 4 }
       }
     },
-    "contract": {
-      "type": "object",
-      "required": ["name", "address", "runtime_bytecode_hash", "source_artifact", "runtime_bytecode_artifact", "chain_bytecode_artifact"],
-      "additionalProperties": false,
-      "properties": {
-        "name": {
-          "enum": [
-            "P42BountyPool",
-            "P42PayoutLedger",
-            "P42SubmissionManager",
-            "P42ChallengeManager",
-            "P42ProblemRegistry"
-          ]
-        },
-        "address": { "$ref": "#/$defs/address" },
-        "runtime_bytecode_hash": { "$ref": "#/$defs/hash" },
-        "source_artifact": { "$ref": "#/$defs/artifact" },
-        "runtime_bytecode_artifact": { "$ref": "#/$defs/artifact" },
-        "chain_bytecode_artifact": { "$ref": "#/$defs/artifact" }
-      }
-    },
-    "releaseBinding": {
+    "disclosureProbeOperator": {
       "type": "object",
       "required": [
-        "repository_uri",
-        "git_commit",
-        "network",
-        "chain_id",
-        "deployment_manifest",
-        "configuration_artifact",
-        "contracts"
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "independent_from_p42"
       ],
       "additionalProperties": false,
       "properties": {
-        "repository_uri": { "type": "string", "pattern": "^https://" },
-        "git_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
-        "network": { "enum": ["local", "base-sepolia", "base-mainnet"] },
-        "chain_id": { "type": "integer", "enum": [31337, 8453, 84532] },
-        "deployment_manifest": { "$ref": "#/$defs/artifact" },
-        "configuration_artifact": { "$ref": "#/$defs/artifact" },
-        "contracts": {
-          "type": "array",
-          "minItems": 5,
-          "maxItems": 5,
-          "items": { "$ref": "#/$defs/contract" }
-        }
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 2 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "external-disclosure-probe-operator" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
+        "independent_from_p42": { "const": true }
+      }
+    },
+    "probeReceipt": {
+      "type": "object",
+      "required": [
+        "receipt_type",
+        "target",
+        "outcome",
+        "policy_sha256",
+        "observed_at_utc",
+        "evidence",
+        "receipt_hash",
+        "operator_signature"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "receipt_type": {
+          "enum": ["public_disclosure_route", "private_advisory_delivery", "mailbox_receipt"]
+        },
+        "target": { "type": "string", "minLength": 3 },
+        "outcome": { "const": "confirmed" },
+        "policy_sha256": { "$ref": "#/$defs/hash" },
+        "observed_at_utc": { "type": "string", "format": "date-time" },
+        "evidence": { "$ref": "#/$defs/artifact" },
+        "receipt_hash": { "$ref": "#/$defs/hash" },
+        "operator_signature": { "$ref": "#/$defs/probeSignature" }
+      }
+    },
+    "probeSignature": {
+      "type": "object",
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "const": "external-disclosure-probe-operator" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
       }
     },
     "signature": {

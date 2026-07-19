@@ -5,11 +5,18 @@ import os
 from pathlib import Path
 import subprocess
 
-import jsonschema
 import pytest
 
-from attestation_helpers import AttestationFixture, attach_signatures, unsigned_hash
-from p42_prizes.incident import IncidentDrillError, normalize_incident_drill_report
+from attestation_helpers import AttestationFixture, _sign, attach_signatures, unsigned_hash
+from p42_prizes import cli
+from p42_prizes.incident import (
+    DISCLOSURE_PROBE_ROLE,
+    INCIDENT_DRILL_ATTESTATION_CLASS,
+    INCIDENT_DRILL_SCHEMA_VERSION,
+    IncidentDrillError,
+    normalize_incident_drill_report,
+)
+from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,20 +50,65 @@ def valid_drill_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
         bar_jurisdiction="Colorado",
         license_identifier="CO-434343",
     )
+    probe_operator = fixture.identity(
+        "external-disclosure-probe",
+        "Morgan Ellis",
+        DISCLOSURE_PROBE_ROLE,
+        organization="Ellis Security Operations",
+        independent=True,
+    )
+    release_binding = fixture.canonical_release_binding("base-sepolia")
+    policy_artifact = fixture.artifact("bug-bounty-policy")
+    receipt_specs = [
+        (
+            "public_disclosure_route",
+            "https://projectforty2.ai/prizes/security",
+            "2026-07-08T16:31:00Z",
+        ),
+        (
+            "private_advisory_delivery",
+            "https://github.com/techno-optimist/p42-prizes/security/advisories/new",
+            "2026-07-08T16:32:00Z",
+        ),
+        ("mailbox_receipt", "security@projectforty2.ai", "2026-07-08T16:33:00Z"),
+    ]
+    probe_receipts = []
+    for receipt_type, target, observed_at in receipt_specs:
+        receipt = {
+            "receipt_type": receipt_type,
+            "target": target,
+            "outcome": "confirmed",
+            "policy_sha256": policy_artifact["sha256"],
+            "observed_at_utc": observed_at,
+            "evidence": fixture.artifact(
+                f"disclosure-probe-{receipt_type}", created_at_utc=observed_at
+            ),
+        }
+        receipt_hash = sha256_bytes(canonical_json(receipt).encode("utf-8"))
+        receipt["receipt_hash"] = receipt_hash
+        receipt["operator_signature"] = _sign(
+            probe_operator,
+            DISCLOSURE_PROBE_ROLE,
+            INCIDENT_DRILL_ATTESTATION_CLASS,
+            receipt_hash,
+            observed_at,
+        )
+        probe_receipts.append(receipt)
     report = {
-        "schema_version": "p42-incident-drill/v1",
+        "schema_version": INCIDENT_DRILL_SCHEMA_VERSION,
         "drill_id": "gate2-verifier-bug-tabletop-2026-07",
         "started_at_utc": "2026-07-08T16:00:00Z",
         "completed_at_utc": "2026-07-08T18:00:00Z",
         "environment": "tabletop",
         "severity": "high",
         "scenario": "verifier_bug",
-        "release_binding": fixture.release_binding("base-sepolia"),
+        "release_binding": release_binding,
         "facilitator": facilitator,
         "incident_lead": incident_lead,
         "comms_owner": comms_owner,
         "security_owner": security_owner,
         "external_counsel": counsel,
+        "disclosure_probe_operator": probe_operator,
         "affected_scope": "one locked Base Sepolia problem",
         "evidence_preserved": [
             fixture.artifact("runner-transcript", created_at_utc="2026-07-08T16:31:00Z"),
@@ -118,7 +170,7 @@ def valid_drill_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
         },
         "bug_bounty": {
             "status": "active",
-            "policy_artifact": fixture.artifact("bug-bounty-policy"),
+            "policy_artifact": policy_artifact,
             "public_policy_uri": "https://projectforty2.ai/prizes/security",
             "private_reporting_uri": "https://github.com/techno-optimist/p42-prizes/security/advisories/new",
             "disclosure_contact": "security@projectforty2.ai",
@@ -130,6 +182,7 @@ def valid_drill_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
             "activation_evidence": fixture.artifact(
                 "disclosure-activation", created_at_utc="2026-07-08T16:35:00Z"
             ),
+            "external_probe_receipts": probe_receipts,
         },
         "open_followups": [],
         "human_signoff": {
@@ -149,12 +202,15 @@ def valid_drill_report(tmp_path: Path) -> tuple[dict, AttestationFixture, dict]:
     ]
     attach_signatures(
         report,
-        schema_version="p42-incident-drill/v1",
+        schema_version=INCIDENT_DRILL_ATTESTATION_CLASS,
         hash_field="drill_hash",
         signatures_field="attestations",
         signers=signers,
     )
-    return report, fixture, fixture.trust_registry("p42-incident-drill/v1", signers)
+    trusted_signers = signers + [
+        (DISCLOSURE_PROBE_ROLE, probe_operator, "2026-07-08T16:31:00Z")
+    ]
+    return report, fixture, fixture.trust_registry(INCIDENT_DRILL_ATTESTATION_CLASS, trusted_signers)
 
 
 def normalize(report: dict, fixture: AttestationFixture, registry: dict) -> dict:
@@ -170,8 +226,7 @@ def test_incident_drill_verifies_registered_signatures_resolved_bytes_and_schema
     report, fixture, registry = valid_drill_report(tmp_path)
     normalized = normalize(report, fixture, registry)
 
-    schema = json.loads((ROOT / "schemas" / "incident-drill.schema.json").read_text())
-    jsonschema.validate(normalized, schema, format_checker=jsonschema.FormatChecker())
+    cli._enforce_gate_schema(normalized, "incident-drill.schema.json")
     assert normalized["drill_hash"] == unsigned_hash(normalized, "drill_hash", "attestations")
 
 
@@ -292,4 +347,63 @@ def test_incident_drill_rejects_mismatched_hash(tmp_path: Path) -> None:
     report["drill_hash"] = "sha256:" + "0" * 64
 
     with pytest.raises(IncidentDrillError, match="drill_hash does not match"):
+        normalize(report, fixture, registry)
+
+
+def test_incident_drill_binds_canonical_47_contract_release(tmp_path: Path) -> None:
+    report, fixture, registry = valid_drill_report(tmp_path)
+
+    normalized = normalize(report, fixture, registry)
+
+    assert normalized["release_binding"]["binding_version"] == "p42-release-binding/v2"
+    assert len(normalized["release_binding"]["contracts"]) == 47
+
+
+def test_incident_drill_rejects_legacy_packet_for_launch(tmp_path: Path) -> None:
+    report, fixture, registry = valid_drill_report(tmp_path)
+    report["schema_version"] = "p42-incident-drill/v1"
+
+    with pytest.raises(IncidentDrillError, match="p42-incident-drill/v2"):
+        normalize(report, fixture, registry)
+
+
+def test_incident_drill_rejects_missing_external_probe_receipt(tmp_path: Path) -> None:
+    report, fixture, registry = valid_drill_report(tmp_path)
+    report["bug_bounty"]["external_probe_receipts"].pop()
+
+    with pytest.raises(IncidentDrillError, match="exactly three typed receipts"):
+        normalize(report, fixture, registry)
+
+
+def test_incident_drill_rejects_probe_receipt_for_wrong_target(tmp_path: Path) -> None:
+    report, fixture, registry = valid_drill_report(tmp_path)
+    report["bug_bounty"]["external_probe_receipts"][1]["target"] = report["bug_bounty"][
+        "public_policy_uri"
+    ]
+
+    with pytest.raises(IncidentDrillError, match="configured private_advisory_delivery target"):
+        normalize(report, fixture, registry)
+
+
+def test_incident_drill_rejects_tampered_probe_receipt_hash(tmp_path: Path) -> None:
+    report, fixture, registry = valid_drill_report(tmp_path)
+    report["bug_bounty"]["external_probe_receipts"][0]["receipt_hash"] = "sha256:" + "0" * 64
+
+    with pytest.raises(IncidentDrillError, match="receipt_hash does not match"):
+        normalize(report, fixture, registry)
+
+
+def test_incident_drill_rejects_probe_receipt_after_activation(tmp_path: Path) -> None:
+    report, fixture, registry = valid_drill_report(tmp_path)
+    report["bug_bounty"]["activated_at_utc"] = "2026-07-08T16:32:30Z"
+
+    with pytest.raises(IncidentDrillError, match="on/before activation"):
+        normalize(report, fixture, registry)
+
+
+def test_incident_drill_rejects_owner_as_external_probe_operator(tmp_path: Path) -> None:
+    report, fixture, registry = valid_drill_report(tmp_path)
+    report["disclosure_probe_operator"]["public_key"] = report["security_owner"]["public_key"]
+
+    with pytest.raises(IncidentDrillError, match="distinct public_key"):
         normalize(report, fixture, registry)

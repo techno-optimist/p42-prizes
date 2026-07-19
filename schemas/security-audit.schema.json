@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://p42.xyz/schemas/security-audit-v1.json",
-  "title": "P42 External Security Audit v1",
+  "$id": "https://p42.xyz/schemas/security-audit-v2.json",
+  "title": "P42 External Security Audit v2",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,14 +15,18 @@
     "engagement_identifier",
     "engagement_artifact",
     "audit_report",
+    "findings_register",
     "scope",
     "contracts_reviewed",
     "findings",
+    "security_owner",
+    "residual_risk_acceptance",
     "audit_hash",
-    "auditor_signature"
+    "auditor_signature",
+    "security_owner_signature"
   ],
   "properties": {
-    "schema_version": { "const": "p42-security-audit/v1" },
+    "schema_version": { "const": "p42-security-audit/v2" },
     "audit_id": { "type": "string", "minLength": 1 },
     "status": { "const": "passed" },
     "completed_at_utc": { "type": "string", "format": "date-time" },
@@ -34,27 +38,38 @@
     "engagement_identifier": { "type": "string", "minLength": 5 },
     "engagement_artifact": { "$ref": "#/$defs/artifact" },
     "audit_report": { "$ref": "#/$defs/artifact" },
+    "findings_register": { "$ref": "#/$defs/artifact" },
     "scope": {
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "solidity_source",
-        "deployed_runtime_bytecode",
-        "access_control_and_governance",
-        "upgrade_and_initialization",
-        "funding_and_payout_flows",
-        "submission_challenge_resolution",
-        "cryptographic_verifier_boundary",
+        "verifier_soundness_and_determinism",
+        "commit_reveal_and_data_availability",
+        "challenge_resolver_finality",
+        "payout_claim_bond_and_economic_transitions",
+        "api_and_local_persistence_concurrency",
+        "event_chain_integrity",
+        "agent_wallet_and_session_scoping",
+        "key_governance_pause_custody_recovery_and_cancellation",
+        "reconciliation",
+        "evidence_forgery",
+        "source_deployment_consistency",
+        "upgrade_or_immutability_assumptions",
         "denial_of_service"
       ],
       "properties": {
-        "solidity_source": { "const": true },
-        "deployed_runtime_bytecode": { "const": true },
-        "access_control_and_governance": { "const": true },
-        "upgrade_and_initialization": { "const": true },
-        "funding_and_payout_flows": { "const": true },
-        "submission_challenge_resolution": { "const": true },
-        "cryptographic_verifier_boundary": { "const": true },
+        "verifier_soundness_and_determinism": { "const": true },
+        "commit_reveal_and_data_availability": { "const": true },
+        "challenge_resolver_finality": { "const": true },
+        "payout_claim_bond_and_economic_transitions": { "const": true },
+        "api_and_local_persistence_concurrency": { "const": true },
+        "event_chain_integrity": { "const": true },
+        "agent_wallet_and_session_scoping": { "const": true },
+        "key_governance_pause_custody_recovery_and_cancellation": { "const": true },
+        "reconciliation": { "const": true },
+        "evidence_forgery": { "const": true },
+        "source_deployment_consistency": { "const": true },
+        "upgrade_or_immutability_assumptions": { "const": true },
         "denial_of_service": { "const": true }
       }
     },
@@ -68,8 +83,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/finding" }
     },
+    "security_owner": { "$ref": "#/$defs/securityOwner" },
+    "residual_risk_acceptance": { "$ref": "#/$defs/artifact" },
     "audit_hash": { "$ref": "#/$defs/hash" },
-    "auditor_signature": { "$ref": "#/$defs/signature" }
+    "auditor_signature": { "$ref": "#/$defs/auditorSignature" },
+    "security_owner_signature": { "$ref": "#/$defs/securityOwnerSignature" }
   },
   "$defs": {
     "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
@@ -98,6 +116,28 @@
         "public_key": { "$ref": "#/$defs/publicKey" },
         "identity_evidence": { "$ref": "#/$defs/artifact" },
         "independent_from_p42": { "const": true },
+        "signed_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "securityOwner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "organization",
+        "professional_email",
+        "role",
+        "public_key",
+        "identity_evidence",
+        "signed_at_utc"
+      ],
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "const": "security-owner" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
         "signed_at_utc": { "type": "string", "format": "date-time" }
       }
     },
@@ -133,15 +173,22 @@
     "finding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["finding_id", "title", "severity", "disposition"],
+      "required": ["finding_id", "title", "severity", "affected_code", "recommendation", "disposition", "residual_risk"],
       "properties": {
         "finding_id": { "type": "string", "minLength": 1 },
         "title": { "type": "string", "minLength": 1 },
         "severity": { "enum": ["critical", "high", "medium", "low", "informational"] },
+        "affected_code": { "type": "string", "minLength": 3 },
+        "recommendation": { "type": "string", "minLength": 3 },
         "disposition": { "enum": ["resolved", "accepted", "open"] },
-        "remediation_artifact": { "$ref": "#/$defs/artifact" },
-        "retest_artifact": { "$ref": "#/$defs/artifact" },
-        "risk_acceptance_artifact": { "$ref": "#/$defs/artifact" }
+        "residual_risk": { "type": "string", "minLength": 3 },
+        "remediation_commits": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[a-f0-9]{40}$" }
+        },
+        "retest_artifact": { "$ref": "#/$defs/artifact" }
       },
       "allOf": [
         {
@@ -153,8 +200,7 @@
             "required": ["disposition", "severity"]
           },
           "then": {
-            "required": ["remediation_artifact", "retest_artifact"],
-            "not": { "required": ["risk_acceptance_artifact"] }
+            "required": ["remediation_commits", "retest_artifact"]
           }
         },
         {
@@ -168,9 +214,8 @@
           "then": {
             "not": {
               "anyOf": [
-                { "required": ["remediation_artifact"] },
-                { "required": ["retest_artifact"] },
-                { "required": ["risk_acceptance_artifact"] }
+                { "required": ["remediation_commits"] },
+                { "required": ["retest_artifact"] }
               ]
             }
           }
@@ -182,10 +227,9 @@
           },
           "then": {
             "properties": { "severity": { "enum": ["medium", "low", "informational"] } },
-            "required": ["risk_acceptance_artifact"],
             "not": {
               "anyOf": [
-                { "required": ["remediation_artifact"] },
+                { "required": ["remediation_commits"] },
                 { "required": ["retest_artifact"] }
               ]
             }
@@ -200,22 +244,34 @@
             "properties": { "severity": { "const": "informational" } },
             "not": {
               "anyOf": [
-                { "required": ["remediation_artifact"] },
-                { "required": ["retest_artifact"] },
-                { "required": ["risk_acceptance_artifact"] }
+                { "required": ["remediation_commits"] },
+                { "required": ["retest_artifact"] }
               ]
             }
           }
         }
       ]
     },
-    "signature": {
+    "auditorSignature": {
       "type": "object",
       "additionalProperties": false,
       "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
       "properties": {
         "algorithm": { "const": "ed25519" },
         "signer_role": { "const": "external-security-auditor" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    },
+    "securityOwnerSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "const": "security-owner" },
         "public_key": { "$ref": "#/$defs/publicKey" },
         "signed_hash": { "$ref": "#/$defs/hash" },
         "signed_at_utc": { "type": "string", "format": "date-time" },
