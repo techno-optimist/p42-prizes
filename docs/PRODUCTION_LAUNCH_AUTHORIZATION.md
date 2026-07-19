@@ -28,10 +28,17 @@ The authorization references exact bytes beneath an immutable artifact root for:
 - current canonical 47-contract explorer verification dossier (target); and
 - a protected `p42-activation-rpc-operator-registry/v1` artifact whose exact
   bytes digest is signed through the authorization;
-- ten independent signed `p42-math-review/v2` packets. Each packet binds the
-  canonical digest of the complete board dossier, the canonical hash of that
-  board's ordered record, the deployed verifier image, and the admission
-  matrix.
+- ten strict `p42-math-review/v3` packets in canonical board order. Each packet
+  binds the complete board-dossier digest, that board's ordered record hash,
+  the deployed verifier image and admission matrix, and the exact verified
+  release/capsule/slate/index/config/deployment bindings. Legacy and
+  under-specified review packets are not launch evidence.
+- each math packet records reviewer expertise and conflict disclosures, the
+  literal statement and reduction, hash-resolved verifier/schema/positive and
+  negative fixtures, literature search, findings and dispositions, and exact
+  remediation/retest evidence. Approval requires both a registered independent
+  reviewer signature and a distinct, separately registered problem-owner
+  acceptance signature over the same canonical packet hash.
 
 Every existing gate normalizer is re-run. Declared report hashes are not trusted.
 Every gate must carry the identical release binding, and every problem review
@@ -85,13 +92,21 @@ provenance status, and objective-guest identity/status recorded in
 `protocol/production-board-bindings-v1.json`. The whole-dossier digest prevents
 a reviewed record from being transplanted into another cohort or ordering.
 Image and N-host admission digests are signed separately because they are
-release artifacts rather than source-dossier fields.
+release artifacts rather than source-dossier fields. V3 additionally signs the
+board position, deployment commit, release capsule, slate, index, verification,
+ceremony configuration, release-binding, and board-set digests derived by the
+launch validator from the deployed release evidence. A packet cannot supply its
+own alternate release identity.
 
-An approval attests that the named reviewer examined that exact finite claim
-and its verifier correspondence. It does not claim a global optimum, activate
-an objective proof guest, replace the N-host matrix, approve protocol economics,
-or substitute for contract, security, or legal review. A v1 math-review packet
-cannot satisfy the production authorization validator.
+An approval attests that the named reviewer examined that exact finite claim,
+reduction, verifier, schema, fixtures, and literature boundary, and disposed of
+every recorded finding. Resolved findings must be covered exactly by both
+remediation and retest artifacts. The problem owner's separate signature accepts
+that review without substitution; it does not erase reviewer independence. The
+packet does not claim a global optimum, activate an objective proof guest,
+replace the N-host matrix, approve protocol economics, or substitute for
+contract, security, or legal review. V1 and v2 math-review packets cannot satisfy
+the production authorization validator.
 
 Each submission manager requires three role-bound EIP-712 signatures:
 production launch, independent security, and governance. Every signature covers

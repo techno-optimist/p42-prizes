@@ -1,0 +1,294 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://p42.xyz/schemas/math-review.schema.json",
+  "title": "P42 production mathematics review packet v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "problem_id", "problem_slug", "board_bindings_digest",
+    "board_binding_hash", "verifier_image_digest", "admission_matrix_digest",
+    "deployed_release_binding", "status", "completed_at_utc", "reviewer",
+    "expertise_and_conflicts", "literal_statement_and_reduction",
+    "verifier_schema_and_fixtures", "literature_review", "findings",
+    "remediation_and_retest", "conclusion", "problem_owner_acceptance",
+    "review_hash", "reviewer_signature", "problem_owner_signature"
+  ],
+  "properties": {
+    "schema_version": { "const": "p42-math-review/v3" },
+    "problem_id": { "type": "string", "pattern": "^(?:[1-9]|10)$" },
+    "problem_slug": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "board_bindings_digest": { "$ref": "#/$defs/hash" },
+    "board_binding_hash": { "$ref": "#/$defs/hash" },
+    "verifier_image_digest": { "$ref": "#/$defs/hash" },
+    "admission_matrix_digest": { "$ref": "#/$defs/hash" },
+    "deployed_release_binding": { "$ref": "#/$defs/deployedReleaseBinding" },
+    "status": { "const": "approved" },
+    "completed_at_utc": { "type": "string", "format": "date-time" },
+    "reviewer": { "$ref": "#/$defs/reviewer" },
+    "expertise_and_conflicts": { "$ref": "#/$defs/expertiseAndConflicts" },
+    "literal_statement_and_reduction": { "$ref": "#/$defs/statementAndReduction" },
+    "verifier_schema_and_fixtures": { "$ref": "#/$defs/verifierReview" },
+    "literature_review": { "$ref": "#/$defs/literatureReview" },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "remediation_and_retest": { "$ref": "#/$defs/remediationAndRetest" },
+    "conclusion": { "$ref": "#/$defs/conclusion" },
+    "problem_owner_acceptance": { "$ref": "#/$defs/problemOwnerAcceptance" },
+    "review_hash": { "$ref": "#/$defs/hash" },
+    "reviewer_signature": { "$ref": "#/$defs/reviewerSignature" },
+    "problem_owner_signature": { "$ref": "#/$defs/problemOwnerSignature" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "publicKey": { "type": "string", "pattern": "^ed25519:[a-f0-9]{64}$" },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri", "local_path", "sha256", "created_at_utc"],
+      "properties": {
+        "uri": { "type": "string", "minLength": 1 },
+        "local_path": { "type": "string", "minLength": 1, "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+" },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "created_at_utc": { "type": "string", "format": "date-time" }
+      }
+    },
+    "identityBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "organization", "professional_email", "role", "public_key", "identity_evidence"],
+      "properties": {
+        "name": { "type": "string", "minLength": 3 },
+        "organization": { "type": "string", "minLength": 3 },
+        "professional_email": { "type": "string", "format": "email" },
+        "role": { "type": "string" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "identity_evidence": { "$ref": "#/$defs/artifact" },
+        "independent_from_p42": { "type": "boolean" }
+      }
+    },
+    "reviewer": {
+      "allOf": [
+        { "$ref": "#/$defs/identityBase" },
+        {
+          "properties": {
+            "role": { "const": "independent-math-reviewer" },
+            "independent_from_p42": { "const": true }
+          },
+          "required": ["independent_from_p42"]
+        }
+      ]
+    },
+    "problemOwner": {
+      "allOf": [
+        { "$ref": "#/$defs/identityBase" },
+        {
+          "properties": { "role": { "const": "problem-owner" } },
+          "not": { "required": ["independent_from_p42"] }
+        }
+      ]
+    },
+    "deployedReleaseBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "board_position", "deployment_commit", "release_capsule_digest",
+        "release_slate_digest", "release_index_digest", "release_verification_digest",
+        "ceremony_config_digest", "release_binding_digest", "board_set_digest"
+      ],
+      "properties": {
+        "board_position": { "type": "integer", "minimum": 1, "maximum": 10 },
+        "deployment_commit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+        "release_capsule_digest": { "$ref": "#/$defs/hash" },
+        "release_slate_digest": { "$ref": "#/$defs/hash" },
+        "release_index_digest": { "$ref": "#/$defs/hash" },
+        "release_verification_digest": { "$ref": "#/$defs/hash" },
+        "ceremony_config_digest": { "$ref": "#/$defs/hash" },
+        "release_binding_digest": { "$ref": "#/$defs/hash" },
+        "board_set_digest": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "expertiseAndConflicts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expertise_summary", "relevant_credentials", "expertise_evidence",
+        "prior_relationships_disclosed", "financial_interests_disclosed",
+        "conflicts", "independent_judgment", "did_not_author_reduction"
+      ],
+      "properties": {
+        "expertise_summary": { "type": "string", "minLength": 20 },
+        "relevant_credentials": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 5 } },
+        "expertise_evidence": { "$ref": "#/$defs/artifact" },
+        "prior_relationships_disclosed": { "const": true },
+        "financial_interests_disclosed": { "const": true },
+        "conflicts": { "type": "array", "items": { "type": "string", "minLength": 5 } },
+        "independent_judgment": { "const": true },
+        "did_not_author_reduction": { "const": true }
+      }
+    },
+    "statementAndReduction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "literal_problem_statement", "quantifiers_and_domain", "objective_direction",
+        "claimed_threshold_or_bound", "reduction_to_submission_format",
+        "acceptance_criterion", "statement_artifact", "reduction_artifact"
+      ],
+      "properties": {
+        "literal_problem_statement": { "type": "string", "minLength": 20 },
+        "quantifiers_and_domain": { "type": "string", "minLength": 10 },
+        "objective_direction": { "enum": ["minimize", "maximize", "feasibility"] },
+        "claimed_threshold_or_bound": { "type": "string", "minLength": 1 },
+        "reduction_to_submission_format": { "type": "string", "minLength": 20 },
+        "acceptance_criterion": { "type": "string", "minLength": 20 },
+        "statement_artifact": { "$ref": "#/$defs/artifact" },
+        "reduction_artifact": { "$ref": "#/$defs/artifact" }
+      }
+    },
+    "verifierReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verifier_source", "solution_schema", "valid_fixtures", "invalid_fixtures",
+        "replay_command", "replay_result", "statement_reduction_verifier_correspondence",
+        "schema_rejects_out_of_domain_inputs", "fixtures_cover_acceptance_boundary", "status"
+      ],
+      "properties": {
+        "verifier_source": { "$ref": "#/$defs/artifact" },
+        "solution_schema": { "$ref": "#/$defs/artifact" },
+        "valid_fixtures": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "invalid_fixtures": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } },
+        "replay_command": { "type": "string", "minLength": 5 },
+        "replay_result": { "$ref": "#/$defs/artifact" },
+        "statement_reduction_verifier_correspondence": { "const": true },
+        "schema_rejects_out_of_domain_inputs": { "const": true },
+        "fixtures_cover_acceptance_boundary": { "const": true },
+        "status": { "const": "passed" }
+      }
+    },
+    "literatureReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completed_at_utc", "search_strategy", "search_record", "sources", "novelty_boundary", "unresolved_literature_questions"],
+      "properties": {
+        "completed_at_utc": { "type": "string", "format": "date-time" },
+        "search_strategy": { "type": "string", "minLength": 20 },
+        "search_record": { "$ref": "#/$defs/artifact" },
+        "sources": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/literatureSource" } },
+        "novelty_boundary": { "type": "string", "minLength": 20 },
+        "unresolved_literature_questions": { "type": "array", "items": { "type": "string", "minLength": 5 } }
+      }
+    },
+    "literatureSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["citation", "locator", "relevance"],
+      "properties": {
+        "citation": { "type": "string", "minLength": 5 },
+        "locator": { "type": "string", "minLength": 5 },
+        "relevance": { "type": "string", "minLength": 10 }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["finding_id", "severity", "description", "disposition"],
+      "properties": {
+        "finding_id": { "type": "string", "pattern": "^[A-Z0-9][A-Z0-9._-]{1,63}$" },
+        "severity": { "enum": ["critical", "high", "medium", "low", "informational"] },
+        "description": { "type": "string", "minLength": 10 },
+        "disposition": { "enum": ["resolved", "accepted-nonblocking"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "severity": { "enum": ["critical", "high"] } }, "required": ["severity"] },
+          "then": { "properties": { "disposition": { "const": "resolved" } } }
+        }
+      ]
+    },
+    "remediationAndRetest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "finding_ids", "summary"],
+      "properties": {
+        "status": { "enum": ["completed", "not-required"] },
+        "finding_ids": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z0-9][A-Z0-9._-]{1,63}$" } },
+        "summary": { "type": "string", "minLength": 10 },
+        "remediation_artifact": { "$ref": "#/$defs/artifact" },
+        "retest_artifact": { "$ref": "#/$defs/artifact" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "completed" } }, "required": ["status"] },
+          "then": { "required": ["remediation_artifact", "retest_artifact"], "properties": { "finding_ids": { "minItems": 1 } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "not-required" } }, "required": ["status"] },
+          "then": {
+            "properties": { "finding_ids": { "maxItems": 0 } },
+            "not": { "anyOf": [{ "required": ["remediation_artifact"] }, { "required": ["retest_artifact"] }] }
+          }
+        }
+      ]
+    },
+    "conclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "literal_statement_verified", "reduction_is_sound", "verifier_is_faithful",
+        "schema_is_adequate", "fixtures_are_adequate", "literature_review_complete",
+        "no_blocking_findings", "residual_limitations", "recommendation"
+      ],
+      "properties": {
+        "literal_statement_verified": { "const": true },
+        "reduction_is_sound": { "const": true },
+        "verifier_is_faithful": { "const": true },
+        "schema_is_adequate": { "const": true },
+        "fixtures_are_adequate": { "const": true },
+        "literature_review_complete": { "const": true },
+        "no_blocking_findings": { "const": true },
+        "residual_limitations": { "type": "string", "minLength": 10 },
+        "recommendation": { "const": "approve-exact-deployed-release" }
+      }
+    },
+    "problemOwnerAcceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "accepted_at_utc", "accepted_without_substitution", "acceptance_statement"],
+      "properties": {
+        "owner": { "$ref": "#/$defs/problemOwner" },
+        "accepted_at_utc": { "type": "string", "format": "date-time" },
+        "accepted_without_substitution": { "const": true },
+        "acceptance_statement": { "const": "I accept this review and its exact deployed release bindings for the named problem." }
+      }
+    },
+    "signatureBase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "signer_role", "public_key", "signed_hash", "signed_at_utc", "signature"],
+      "properties": {
+        "algorithm": { "const": "ed25519" },
+        "signer_role": { "type": "string" },
+        "public_key": { "$ref": "#/$defs/publicKey" },
+        "signed_hash": { "$ref": "#/$defs/hash" },
+        "signed_at_utc": { "type": "string", "format": "date-time" },
+        "signature": { "type": "string", "pattern": "^ed25519:[a-f0-9]{128}$" }
+      }
+    },
+    "reviewerSignature": {
+      "allOf": [
+        { "$ref": "#/$defs/signatureBase" },
+        { "properties": { "signer_role": { "const": "independent-math-reviewer" } } }
+      ]
+    },
+    "problemOwnerSignature": {
+      "allOf": [
+        { "$ref": "#/$defs/signatureBase" },
+        { "properties": { "signer_role": { "const": "problem-owner" } } }
+      ]
+    }
+  }
+}

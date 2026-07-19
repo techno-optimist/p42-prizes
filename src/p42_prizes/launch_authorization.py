@@ -34,7 +34,7 @@ from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
 SCHEMA_VERSION = "p42-production-launch-authorization/v1"
-MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v2"
+MATH_REVIEW_SCHEMA_VERSION = "p42-math-review/v3"
 NETWORK_CHAIN_IDS = {"base-sepolia": 84532, "base-mainnet": 8453}
 AUTHORIZER_ROLES = {
     "production-launch-authority",
@@ -851,7 +851,11 @@ def _validate_problem_reviews(
             binding_position = int(problem_id)
         except (TypeError, ValueError) as exc:
             raise LaunchAuthorizationError("problem review id must be an exact canonical board position") from exc
-        if not 1 <= binding_position <= 10 or binding_records[binding_position - 1].get("slug") != slug:
+        if (
+            binding_position != index + 1
+            or not 1 <= binding_position <= 10
+            or binding_records[binding_position - 1].get("slug") != slug
+        ):
             raise LaunchAuthorizationError("problem review does not match its ordered canonical board binding")
         board = admitted.get(problem_id)
         if board is None or board.get("problemSlug") != slug or board.get("matrixDigest") != review.get("admission_matrix_digest"):
@@ -882,24 +886,150 @@ def _validate_problem_reviews(
             chain_reader=context.chain_reader,
             error_type=LaunchAuthorizationError,
         )
-        _validate_math_review(packet, review, trust_registry, review_context, issued)
+        release_evidence = deployment_manifest.get("releaseEvidence")
+        if not isinstance(release_evidence, Mapping):
+            raise LaunchAuthorizationError("deployment manifest has no production release evidence")
+        deployed_release_binding = {
+            "board_position": binding_position,
+            "deployment_commit": release_report.get("sourceCommit"),
+            "release_capsule_digest": release_report.get("capsuleDigest"),
+            "release_slate_digest": release_report.get("slateDigest"),
+            "release_index_digest": release_report.get("releaseIndexDigest"),
+            "release_verification_digest": release_report.get("verificationReportDigest"),
+            "ceremony_config_digest": release_report.get("ceremonyConfigDigest"),
+            "release_binding_digest": release_evidence.get("releaseBindingDigest"),
+            "board_set_digest": release_evidence.get("boardSetDigest"),
+        }
+        _validate_math_review(
+            packet,
+            review,
+            trust_registry,
+            review_context,
+            issued,
+            deployed_release_binding=deployed_release_binding,
+        )
         if review.get("review_hash") != packet.get("review_hash"):
             raise LaunchAuthorizationError(f"problem review {problem_id} hash mismatch")
 
 
-def _validate_math_review(packet: Mapping[str, Any], row: Mapping[str, Any], trust_registry: Mapping[str, Any], context: AttestationValidationContext, issued: datetime) -> None:
-    expected = {"schema_version", "problem_id", "problem_slug", "board_bindings_digest", "board_binding_hash", "verifier_image_digest", "admission_matrix_digest", "status", "completed_at_utc", "reviewer", "review_hash", "signature"}
-    if set(packet) != expected or packet.get("schema_version") != MATH_REVIEW_SCHEMA_VERSION or packet.get("status") != "approved":
-        raise LaunchAuthorizationError("math review packet has invalid shape or status")
+def _validate_math_review(
+    packet: Mapping[str, Any],
+    row: Mapping[str, Any],
+    trust_registry: Mapping[str, Any],
+    context: AttestationValidationContext,
+    issued: datetime,
+    *,
+    deployed_release_binding: Mapping[str, Any],
+) -> None:
+    del trust_registry
+    try:
+        schema = json.loads((_SCHEMA_DIR / "math-review.schema.json").read_text(encoding="utf-8"))
+        jsonschema.Draft202012Validator.check_schema(schema)
+        jsonschema.Draft202012Validator(
+            schema, format_checker=jsonschema.FormatChecker()
+        ).validate(packet)
+    except (OSError, ValueError, jsonschema.SchemaError, jsonschema.ValidationError) as exc:
+        raise LaunchAuthorizationError(f"math review packet failed v3 schema validation: {exc}") from exc
     for packet_key, row_key in (("problem_id", "problem_id"), ("problem_slug", "problem_slug"), ("board_bindings_digest", "board_bindings_digest"), ("board_binding_hash", "board_binding_hash"), ("verifier_image_digest", "verifier_image_digest"), ("admission_matrix_digest", "admission_matrix_digest")):
         if packet.get(packet_key) != row.get(row_key):
             raise LaunchAuthorizationError(f"math review {packet_key} does not match authorization")
+    if packet.get("deployed_release_binding") != dict(deployed_release_binding):
+        raise LaunchAuthorizationError("math review deployed_release_binding does not match exact deployed release")
     completed = _require_utc(packet.get("completed_at_utc"), "math_review.completed_at_utc", LaunchAuthorizationError)
     if completed > issued:
         raise LaunchAuthorizationError("math review completion must not follow authorization issuance")
-    reviewer = _validate_identity(packet.get("reviewer"), "math_review.reviewer", expected_role="independent-math-reviewer", require_independent=True, error_type=LaunchAuthorizationError, context=context)
-    unsigned = {key: value for key, value in packet.items() if key not in {"review_hash", "signature"}}
+    literature_completed = _require_utc(
+        packet["literature_review"].get("completed_at_utc"),
+        "math_review.literature_review.completed_at_utc",
+        LaunchAuthorizationError,
+    )
+    if literature_completed > completed:
+        raise LaunchAuthorizationError("math review literature review must complete before packet completion")
+
+    reviewer = _validate_identity(
+        packet.get("reviewer"), "math_review.reviewer",
+        expected_role="independent-math-reviewer", require_independent=True,
+        error_type=LaunchAuthorizationError, context=context,
+    )
+    acceptance = packet["problem_owner_acceptance"]
+    owner = _validate_identity(
+        acceptance.get("owner"), "math_review.problem_owner_acceptance.owner",
+        expected_role="problem-owner", error_type=LaunchAuthorizationError, context=context,
+    )
+    if reviewer["public_key"] == owner["public_key"]:
+        raise LaunchAuthorizationError("math reviewer and problem owner must use distinct registered keys")
+    accepted_at = _require_utc(
+        acceptance.get("accepted_at_utc"),
+        "math_review.problem_owner_acceptance.accepted_at_utc",
+        LaunchAuthorizationError,
+    )
+    if accepted_at > completed:
+        raise LaunchAuthorizationError("problem-owner acceptance must not follow math review completion")
+
+    for prefix, artifact in _math_review_artifacts(packet):
+        _validate_artifact_reference(artifact, prefix, LaunchAuthorizationError, context)
+
+    findings = packet["findings"]
+    finding_ids = [finding["finding_id"] for finding in findings]
+    if len(finding_ids) != len(set(finding_ids)):
+        raise LaunchAuthorizationError("math review finding_id values must be unique")
+    remediated = {finding["finding_id"] for finding in findings if finding["disposition"] == "resolved"}
+    remediation = packet["remediation_and_retest"]
+    if set(remediation["finding_ids"]) != remediated:
+        raise LaunchAuthorizationError("math review remediation finding_ids must cover every resolved finding exactly")
+    expected_remediation_status = "completed" if remediated else "not-required"
+    if remediation["status"] != expected_remediation_status:
+        raise LaunchAuthorizationError(
+            f"math review remediation status must be {expected_remediation_status} for its finding dispositions"
+        )
+
+    unsigned = {
+        key: value for key, value in packet.items()
+        if key not in {"review_hash", "reviewer_signature", "problem_owner_signature"}
+    }
     review_hash = sha256_bytes(canonical_json(unsigned).encode("utf-8"))
     if packet.get("review_hash") != review_hash:
         raise LaunchAuthorizationError("math review hash is not canonical")
-    _validate_signature(packet.get("signature"), "math_review.signature", schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash, identity=reviewer, expected_role="independent-math-reviewer", error_type=LaunchAuthorizationError, context=context, not_after=completed)
+    _validate_signature(
+        packet.get("reviewer_signature"), "math_review.reviewer_signature",
+        schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash,
+        identity=reviewer, expected_role="independent-math-reviewer",
+        error_type=LaunchAuthorizationError, context=context, not_after=completed,
+    )
+    _validate_signature(
+        packet.get("problem_owner_signature"), "math_review.problem_owner_signature",
+        schema_version=MATH_REVIEW_SCHEMA_VERSION, artifact_hash=review_hash,
+        identity=owner, expected_role="problem-owner",
+        error_type=LaunchAuthorizationError, context=context, not_after=completed,
+    )
+
+
+def _math_review_artifacts(packet: Mapping[str, Any]) -> list[tuple[str, Any]]:
+    expertise = packet["expertise_and_conflicts"]
+    statement = packet["literal_statement_and_reduction"]
+    verifier = packet["verifier_schema_and_fixtures"]
+    literature = packet["literature_review"]
+    artifacts = [
+        ("math_review.expertise_and_conflicts.expertise_evidence", expertise["expertise_evidence"]),
+        ("math_review.literal_statement_and_reduction.statement_artifact", statement["statement_artifact"]),
+        ("math_review.literal_statement_and_reduction.reduction_artifact", statement["reduction_artifact"]),
+        ("math_review.verifier_schema_and_fixtures.verifier_source", verifier["verifier_source"]),
+        ("math_review.verifier_schema_and_fixtures.solution_schema", verifier["solution_schema"]),
+        ("math_review.verifier_schema_and_fixtures.replay_result", verifier["replay_result"]),
+        ("math_review.literature_review.search_record", literature["search_record"]),
+    ]
+    artifacts.extend(
+        (f"math_review.verifier_schema_and_fixtures.valid_fixtures[{index}]", artifact)
+        for index, artifact in enumerate(verifier["valid_fixtures"])
+    )
+    artifacts.extend(
+        (f"math_review.verifier_schema_and_fixtures.invalid_fixtures[{index}]", artifact)
+        for index, artifact in enumerate(verifier["invalid_fixtures"])
+    )
+    remediation = packet["remediation_and_retest"]
+    if remediation["status"] == "completed":
+        artifacts.extend([
+            ("math_review.remediation_and_retest.remediation_artifact", remediation["remediation_artifact"]),
+            ("math_review.remediation_and_retest.retest_artifact", remediation["retest_artifact"]),
+        ])
+    return artifacts
