@@ -34,6 +34,7 @@ line "$executor" 'Requires=p42-verifier-docker.service'
 line "$executor" 'StateDirectoryMode=0700'
 line "$executor" 'RuntimeDirectoryMode=0710'
 line "$executor" '  --docker-host unix:///run/p42-verifier-docker/docker.sock'
+line "$executor" '  --repository-root /opt/p42 \'
 line "$executor" '  --cgroup-attestation /run/p42-verifier-docker/cgroup-attestation.json \'
 line "$executor" '  --reserve-memory-mb 2048 \'
 line "$executor" '  --memory-safety-factor 2.0 \'
@@ -73,6 +74,8 @@ effective_mb = math.ceil(max(board["required_memory_mb"] for board in boards) * 
 if effective_mb > parent_mb:
     raise SystemExit(f"effective={effective_mb}MiB parent={parent_mb}MiB")
 PY
+$PYTHON "$root/scripts/generate_production_executor_config.py" --check "$boards" >/dev/null \
+  || fail 'executor config must be the generated ordered exact-ten production identity projection'
 line "$docker" 'ConditionPathExists=!/run/docker.sock'
 line "$docker" 'ConditionPathExists=!/var/run/docker.sock'
 

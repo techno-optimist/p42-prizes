@@ -14,6 +14,7 @@ Group=p42-verifier-submitters
 ExecStartPre=/usr/bin/test -S /run/p42-verifier-docker/docker.sock
 ExecStart=/usr/bin/python3 /opt/p42/agent/verifier-executor.py \
   --config /etc/p42/verifier-executor/boards.json \
+  --repository-root /opt/p42 \
   --socket /run/p42-verifier-executor/executor.sock \
   --state /var/lib/p42/verifier-executor/state.json \
   --lock /var/lib/p42/verifier-executor/executor.lock \

@@ -5,6 +5,7 @@ from pathlib import Path
 import socket
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -82,17 +83,17 @@ def start_queue_fence(queue_path: Path) -> subprocess.Popen:
     process = subprocess.Popen(
         [sys.executable, str(ROOT / "agent/runtime_bridge.py"), "authorization-fence",
          "--queue", str(queue_path)],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
     assert process.stdout is not None
-    assert process.stdout.readline() == "READY\n"
+    assert process.stdout.readline() == b"READY\n"
     return process
 
 
 def assert_queue_lock_released(queue_path: Path) -> None:
     process = start_queue_fence(queue_path)
     assert process.stdin is not None
-    process.stdin.write("R")
+    process.stdin.write(b"R")
     process.stdin.flush()
     assert process.wait(timeout=5) == 0
 
@@ -125,6 +126,56 @@ def test_exact_fence_release_frame_releases_and_reaps_child(tmp_path: Path) -> N
         operator.sendall(SERVICE.FENCE_RELEASE_FRAME)
         SERVICE.release_authorization_fence(service, process, 1.0)
         assert process.returncode == 0
+    finally:
+        service.close()
+        operator.close()
+
+
+@pytest.mark.parametrize(
+    "program",
+    [
+        "import time; time.sleep(60)",
+        "import sys,time; sys.stdout.buffer.write(b'WRONG\\n'); sys.stdout.flush(); time.sleep(60)",
+        "import sys,time; sys.stdout.buffer.write(b'REA'); sys.stdout.flush(); time.sleep(60)",
+    ],
+)
+def test_fence_missing_wrong_or_partial_ready_is_killed_and_reaped(program: str) -> None:
+    service, operator = socket.socketpair()
+    children = []
+
+    def spawn(*args, **kwargs):
+        child = subprocess.Popen(*args, **kwargs)
+        children.append(child)
+        return child
+
+    try:
+        with pytest.raises(SERVICE.VerifierExecutorError, match="READY"):
+            SERVICE.run_authorization_fence(service, [sys.executable, "-c", program], 0.05, popen=spawn)
+        assert len(children) == 1 and children[0].poll() is not None
+    finally:
+        service.close()
+        operator.close()
+
+
+def test_fence_spawn_consumes_the_same_absolute_deadline() -> None:
+    service, operator = socket.socketpair()
+    children = []
+
+    def slow_spawn(*args, **kwargs):
+        child = subprocess.Popen(*args, **kwargs)
+        children.append(child)
+        time.sleep(0.05)
+        return child
+
+    try:
+        with pytest.raises(SERVICE.VerifierExecutorError, match="absolute deadline"):
+            SERVICE.run_authorization_fence(
+                service,
+                [sys.executable, "-c", "import time; time.sleep(60)"],
+                0.01,
+                popen=slow_spawn,
+            )
+        assert len(children) == 1 and children[0].poll() is not None
     finally:
         service.close()
         operator.close()

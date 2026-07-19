@@ -40,6 +40,7 @@ class HostCapacity:
     boot_id: str
     required_container_memory_mb: int = 0
     daemon_headroom_mb: int = 0
+    oom_events: int = 0
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,8 @@ def host_capacity_snapshot(
         raise VerifierExecutorError("effective rootless Docker cgroup cannot attribute OOM events")
     mib = 1024 * 1024
     memory = MemorySnapshot(maximum // mib, max(0, maximum - current) // mib, 0)
-    return HostCapacity(memory, values["oom_kill"], attestation["boot_id"], required_mb, daemon_mb)
+    return HostCapacity(memory, values["oom_kill"], attestation["boot_id"], required_mb, daemon_mb,
+                        values["oom"])
 
 
 def holder_expired(holder: Mapping[str, Any], *, boot_id: str, monotonic_ns: int) -> bool:
@@ -188,12 +190,16 @@ class VerifierExecutor:
         self.capacity_reader = capacity_reader
         self._boot_id: str | None = None
         self._acknowledged_oom_kills: int | None = None
+        self._acknowledged_oom_events: int | None = None
+        self._oom_attribution: dict[str, Any] | None = None
         self._last_recovery: str | None = None
 
     def _write_state(self, holder: Mapping[str, Any] | None) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        value = {"schema_version": "p42-verifier-executor-state/v1", "boot_id": self._boot_id,
+        value = {"schema_version": "p42-verifier-executor-state/v2", "boot_id": self._boot_id,
                  "acknowledged_oom_kills": self._acknowledged_oom_kills,
+                 "acknowledged_oom_events": self._acknowledged_oom_events,
+                 "oom_attribution": self._oom_attribution,
                  "last_recovery": self._last_recovery, "holder": holder}
         temporary = self.state_path.with_name(f".{self.state_path.name}.{os.getpid()}.tmp")
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -227,19 +233,63 @@ class VerifierExecutor:
             if not isinstance(acknowledged, int) or acknowledged < 0:
                 raise VerifierExecutorError("invalid persisted OOM acknowledgement")
             self._acknowledged_oom_kills = acknowledged
+            acknowledged_events = previous.get("acknowledged_oom_events")
+            if acknowledged_events is None and previous.get("schema_version") == "p42-verifier-executor-state/v1":
+                acknowledged_events = acknowledged
+            if not isinstance(acknowledged_events, int) or acknowledged_events < 0:
+                raise VerifierExecutorError("invalid persisted OOM event acknowledgement")
+            self._acknowledged_oom_events = acknowledged_events
+            attribution = previous.get("oom_attribution")
+            if attribution is not None and not isinstance(attribution, dict):
+                raise VerifierExecutorError("invalid persisted OOM attribution")
+            self._oom_attribution = attribution
             holder = previous.get("holder")
             if holder is not None:
                 expired = holder_expired(holder, boot_id=capacity.boot_id, monotonic_ns=self.monotonic_ns())
                 self._last_recovery = "same_boot_expired_holder" if expired else "same_boot_live_holder_forced_cleanup"
+                self._record_oom_attribution(holder, capacity, "executor_restart_recovery")
             else:
                 self._last_recovery = "same_boot_clean_restart"
         else:
             # OOM counters are boot-local. A reboot establishes a fresh baseline
             # only after Docker reconciliation proves restored work is absent.
             self._acknowledged_oom_kills = capacity.oom_kills
+            self._acknowledged_oom_events = capacity.oom_events
             self._last_recovery = "boot_changed_forced_cleanup"
+            holder = previous.get("holder") if isinstance(previous, dict) else None
+            prior_attribution = previous.get("oom_attribution") if isinstance(previous, dict) else None
+            self._oom_attribution = prior_attribution if isinstance(prior_attribution, dict) else None
+            if isinstance(holder, dict):
+                self._oom_attribution = {
+                    "schema_version": "p42-verifier-oom-attribution/v1",
+                    "request_id": holder.get("request_id"), "board_id": holder.get("board_id"),
+                    "start_boot_id": holder.get("boot_id"), "end_boot_id": capacity.boot_id,
+                    "start_oom": holder.get("start_oom"), "start_oom_kill": holder.get("start_oom_kill"),
+                    "end_oom": capacity.oom_events, "end_oom_kill": capacity.oom_kills,
+                    "terminal_outcome": "reboot_during_active_request",
+                }
         self.docker.reconcile()
         self._write_state(None)
+
+    def _record_oom_attribution(
+        self, holder: Mapping[str, Any], capacity: HostCapacity, terminal_outcome: str,
+    ) -> None:
+        start_oom = holder.get("start_oom")
+        start_kill = holder.get("start_oom_kill")
+        if not isinstance(start_oom, int) or not isinstance(start_kill, int):
+            raise VerifierExecutorError("active holder lacks cgroup OOM counter identity")
+        if capacity.oom_events < start_oom or capacity.oom_kills < start_kill:
+            raise VerifierExecutorError("cgroup OOM counters regressed within one boot")
+        if capacity.oom_events == start_oom and capacity.oom_kills == start_kill:
+            return
+        self._oom_attribution = {
+            "schema_version": "p42-verifier-oom-attribution/v1",
+            "request_id": holder["request_id"], "board_id": holder["board_id"],
+            "start_boot_id": holder["boot_id"], "end_boot_id": capacity.boot_id,
+            "start_oom": start_oom, "start_oom_kill": start_kill,
+            "end_oom": capacity.oom_events, "end_oom_kill": capacity.oom_kills,
+            "terminal_outcome": terminal_outcome,
+        }
 
     def execute(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if set(request) != {"schema_version", "request_id", "board_id", "chain_timestamp"}:
@@ -260,9 +310,14 @@ class VerifierExecutor:
         capacity = self.capacity_reader()
         if self._boot_id is None:
             self._boot_id, self._acknowledged_oom_kills = capacity.boot_id, capacity.oom_kills
+            self._acknowledged_oom_events = capacity.oom_events
+        elif self._acknowledged_oom_events is None:
+            self._acknowledged_oom_events = capacity.oom_events
         if capacity.boot_id != self._boot_id:
             raise VerifierExecutorError("host reboot detected; executor restart and reconciliation required")
-        if capacity.oom_kills != self._acknowledged_oom_kills:
+        if (self._oom_attribution is not None
+                or capacity.oom_kills != self._acknowledged_oom_kills
+                or capacity.oom_events != self._acknowledged_oom_events):
             return {"reason": "oom_guard_tripped", "selected_job_id": None}
         # The attested finite parent already reserves daemon headroom in its
         # total limit. Admission therefore needs one verifier container's
@@ -281,6 +336,8 @@ class VerifierExecutor:
             "boot_id": self.boot_id_reader(),
             "started_monotonic_ns": started,
             "deadline_monotonic_ns": deadline_ns,
+            "start_oom": capacity.oom_events,
+            "start_oom_kill": capacity.oom_kills,
             "pid": os.getpid(),
         }
         self._write_state(holder)
@@ -298,27 +355,36 @@ class VerifierExecutor:
         env = {"PATH": "/usr/bin:/bin", "PYTHONPATH": str(self.bridge_path.parents[1] / "src"),
                "P42_RUNNER_CHAIN_TIMESTAMP": chain_timestamp}
         process = None
+        terminal_outcome = "executor_error"
         try:
             process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                        env=env, start_new_session=True)
             stdout, stderr = process.communicate(timeout=board.deadline_seconds)
+            if process.returncode != 0:
+                terminal_outcome = "worker_failed"
+                raise VerifierExecutorError((stderr or stdout or "worker failed")[:512].strip())
+            try:
+                result = json.loads(stdout)
+            except json.JSONDecodeError as exc:
+                terminal_outcome = "worker_invalid_output"
+                raise VerifierExecutorError("worker returned invalid JSON") from exc
+            if not isinstance(result, dict):
+                terminal_outcome = "worker_invalid_output"
+                raise VerifierExecutorError("worker result must be an object")
+            terminal_outcome = "success"
         except subprocess.TimeoutExpired:
             assert process is not None
             os.killpg(process.pid, signal.SIGKILL)
             process.communicate()
+            terminal_outcome = "deadline_exceeded"
             raise VerifierExecutorError("verifier execution exceeded host deadline")
         finally:
-            # This must finish successfully before the single worker may take
-            # another FIFO request. A Docker failure therefore wedges closed.
+            # Snapshot while the durable holder still identifies the request.
+            completed_capacity = self.capacity_reader()
+            if completed_capacity.boot_id != self._boot_id:
+                raise VerifierExecutorError("host rebooted during verifier execution")
+            self._record_oom_attribution(holder, completed_capacity, terminal_outcome)
+            self._write_state(holder)
             self.docker.reconcile()
             self._write_state(None)
-        assert process is not None
-        if process.returncode != 0:
-            raise VerifierExecutorError((stderr or stdout or "worker failed")[:512].strip())
-        try:
-            result = json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise VerifierExecutorError("worker returned invalid JSON") from exc
-        if not isinstance(result, dict):
-            raise VerifierExecutorError("worker result must be an object")
         return result

@@ -54,6 +54,14 @@ FILES = (
     "agent/runtime-supervisor.mjs",
     "scripts/verify-runtime-execstart.mjs",
     "scripts/verify-runtime-systemd.sh",
+    "scripts/generate_production_executor_config.py",
+    "scripts/release-guard-problems-v1.json",
+    "protocol/production-board-set-v1.json",
+    "protocol/production-board-bindings-v1.json",
+    "schemas/problem.schema.json",
+    "Dockerfile.verifier",
+    ".dockerignore",
+    "requirements.runtime.lock",
     "scripts/p42_rootless_docker_preflight.py",
     "scripts/p42_rootless_docker_ready.py",
     "scripts/p42_rootless_docker_launch.py",
@@ -66,6 +74,9 @@ def copy_fixture(tmp_path: Path) -> Path:
         target = tmp_path / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
+    shutil.copytree(ROOT / "src", tmp_path / "src")
+    shutil.copytree(ROOT / "schemas", tmp_path / "schemas", dirs_exist_ok=True)
+    shutil.copytree(ROOT / "problems", tmp_path / "problems")
     return tmp_path
 
 
@@ -90,6 +101,31 @@ def test_runtime_systemd_templates_pass_static_verifier(tmp_path: Path) -> None:
     result = run_verifier(copy_fixture(tmp_path))
     assert result.returncode == 0, result.stderr
     assert "runtime systemd templates verified" in result.stdout
+
+
+@pytest.mark.parametrize("drift", ["cardinality", "order", "slug", "image", "source", "memory", "wall"])
+def test_runtime_systemd_rejects_exact_ten_identity_drift(tmp_path: Path, drift: str) -> None:
+    root = copy_fixture(tmp_path)
+    path = root / "deployments/p42-verifier-executor-boards.json.example"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    if drift == "cardinality":
+        config["boards"].pop()
+    elif drift == "order":
+        config["boards"][0], config["boards"][1] = config["boards"][1], config["boards"][0]
+    elif drift == "slug":
+        config["boards"][0]["identity"]["slug"] = "substitution"
+    elif drift == "image":
+        config["boards"][0]["identity"]["verifier_image"] = "sha256:" + "f" * 64
+    elif drift == "source":
+        config["boards"][0]["identity"]["verifier_source_sha256"] = "sha256:" + "f" * 64
+    elif drift == "memory":
+        config["boards"][0]["identity"]["memory_mb"] += 1
+    else:
+        config["boards"][0]["identity"]["wall_seconds"] += 1
+    path.write_text(json.dumps(config, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    result = run_verifier(root)
+    assert result.returncode != 0
+    assert "ordered exact-ten production identity projection" in result.stderr
 
 
 def test_rootless_preflight_rejects_overlapping_subordinate_ranges(tmp_path: Path) -> None:

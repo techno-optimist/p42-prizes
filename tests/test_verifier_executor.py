@@ -82,6 +82,14 @@ class FakeProcess:
         return json.dumps({"reason": "queue_empty"}) + "\n", ""
 
 
+class FailedProcess(FakeProcess):
+    returncode = 9
+
+    def communicate(self, timeout=None):
+        self.events.append(f"worker:{timeout}")
+        return "", "worker crashed"
+
+
 def executor(tmp_path: Path, docker, monotonic=lambda: 100):
     board = BoardExecution("board-1", tmp_path / "queue.json", tmp_path / "tx", tmp_path / "stage",
                            tmp_path / "alerts.log", 100, 7)
@@ -153,6 +161,7 @@ def test_same_boot_restart_preserves_oom_guard_and_reboot_resets_only_after_reco
     service = executor(tmp_path, FakeDocker(events))
     service._boot_id = "boot-a"
     service._acknowledged_oom_kills = 0
+    service._acknowledged_oom_events = 0
     service._write_state(None)
     service.capacity_reader = lambda: HostCapacity(MemorySnapshot(10_000, 9_000, 0), 1, "boot-a")
     service.recover()
@@ -164,3 +173,75 @@ def test_same_boot_restart_preserves_oom_guard_and_reboot_resets_only_after_reco
     assert rebooted._boot_id == "boot-b"
     assert rebooted._acknowledged_oom_kills == 0
     assert events.count("reconcile") >= 2
+
+
+def test_post_worker_oom_delta_is_durably_attributed_and_guards_next_admission(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    events = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeProcess(events))
+    baseline = HostCapacity(MemorySnapshot(10_000, 9_000, 0), 2, "boot-a", oom_events=3)
+    completed = HostCapacity(MemorySnapshot(10_000, 9_000, 0), 3, "boot-a", oom_events=5)
+    snapshots = iter([baseline, completed, completed])
+    service = executor(tmp_path, FakeDocker(events))
+    service._boot_id = "boot-a"
+    service._acknowledged_oom_kills = 2
+    service._acknowledged_oom_events = 3
+    service.capacity_reader = lambda: next(snapshots)
+
+    assert service.execute(request()) == {"reason": "queue_empty"}
+    state = json.loads(service.state_path.read_text())
+    assert state["holder"] is None
+    assert state["oom_attribution"] == {
+        "schema_version": "p42-verifier-oom-attribution/v1",
+        "request_id": request()["request_id"], "board_id": "board-1",
+        "start_boot_id": "boot-a", "end_boot_id": "boot-a",
+        "start_oom": 3, "start_oom_kill": 2, "end_oom": 5, "end_oom_kill": 3,
+        "terminal_outcome": "success",
+    }
+    assert service.execute(request())["reason"] == "oom_guard_tripped"
+
+
+def test_worker_crash_oom_delta_keeps_request_attribution(tmp_path: Path, monkeypatch) -> None:
+    events = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FailedProcess(events))
+    capacities = iter([
+        HostCapacity(MemorySnapshot(10_000, 9_000, 0), 0, "boot-a", oom_events=0),
+        HostCapacity(MemorySnapshot(10_000, 9_000, 0), 1, "boot-a", oom_events=1),
+    ])
+    service = executor(tmp_path, FakeDocker(events))
+    service.capacity_reader = lambda: next(capacities)
+    with pytest.raises(VerifierExecutorError, match="worker crashed"):
+        service.execute(request())
+    attribution = json.loads(service.state_path.read_text())["oom_attribution"]
+    assert attribution["request_id"] == request()["request_id"]
+    assert attribution["terminal_outcome"] == "worker_failed"
+    assert attribution["end_oom_kill"] == 1
+
+
+def test_restart_and_reboot_preserve_active_request_oom_attribution(tmp_path: Path) -> None:
+    events = []
+    service = executor(tmp_path, FakeDocker(events))
+    service._boot_id = "boot-a"
+    service._acknowledged_oom_kills = 4
+    service._acknowledged_oom_events = 5
+    holder = {
+        "request_id": request()["request_id"], "board_id": "board-1", "boot_id": "boot-a",
+        "started_monotonic_ns": 10, "deadline_monotonic_ns": 20, "pid": 42,
+        "start_oom": 5, "start_oom_kill": 4,
+    }
+    service._write_state(holder)
+    service.capacity_reader = lambda: HostCapacity(MemorySnapshot(10_000, 9_000, 0), 5, "boot-a", oom_events=7)
+    service.recover()
+    same_boot = json.loads(service.state_path.read_text())["oom_attribution"]
+    assert same_boot["terminal_outcome"] == "executor_restart_recovery"
+    assert same_boot["request_id"] == request()["request_id"]
+
+    service._write_state(holder)
+    rebooted = executor(tmp_path, FakeDocker(events))
+    rebooted.capacity_reader = lambda: HostCapacity(MemorySnapshot(10_000, 9_000, 0), 0, "boot-b", oom_events=0)
+    rebooted.recover()
+    across_boot = json.loads(rebooted.state_path.read_text())["oom_attribution"]
+    assert across_boot["terminal_outcome"] == "reboot_during_active_request"
+    assert across_boot["start_boot_id"] == "boot-a" and across_boot["end_boot_id"] == "boot-b"
+    assert rebooted.execute(request())["reason"] == "oom_guard_tripped"

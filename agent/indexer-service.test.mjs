@@ -196,12 +196,14 @@ describe("durable indexer publication", () => {
   it("repairs corrupt or missing accepted storage through a new durable storage identity", () => {
     for (const corruption of ["archive", "metadata", "missing"]) {
       const root = mkdtempSync(join(tmpdir(), `p42-indexer-same-height-${corruption}-`));
-      const makeStage = (name) => {
+      const makeStage = (name, toBlock = 120) => {
         const path = join(root, "staging", name); mkdirSync(join(path, "archive"), { recursive: true });
-        writePrivateJson(join(path, "checkpoint.json"), checkpoint(120));
+        writePrivateJson(join(path, "checkpoint.json"), checkpoint(toBlock));
         writeFileSync(join(path, "archive", "board.json"), "verified", { mode: 0o600 });
         return path;
       };
+      const predecessor = publishGenerationSync({ publicationRoot: root,
+        stagingPath: makeStage("predecessor", 110), validator: (v) => v });
       const first = publishGenerationSync({ publicationRoot: root, stagingPath: makeStage("first"), validator: (v) => v });
       const generation = join(root, "generations", first.storageId);
       if (corruption === "archive") writeFileSync(join(generation, "archive", "board.json"), "stale", { mode: 0o600 });
@@ -216,12 +218,54 @@ describe("durable indexer publication", () => {
       assert.equal(accepted.generation_id, repaired.generationId);
       assert.notEqual(repaired.storageId, first.storageId);
       assert.equal(accepted.storage_id, repaired.storageId);
+      assert.equal(accepted.previous_generation_id, predecessor.generationId);
+      assert.equal(JSON.parse(readFileSync(join(root, "generations", repaired.storageId, "generation.json"), "utf8")).previous_generation_id,
+        predecessor.generationId);
       assert.equal(readFileSync(join(root, "generations", repaired.storageId, "archive", "board.json"), "utf8"), "verified");
       assert.equal(JSON.parse(readFileSync(join(root, "generations", repaired.storageId, "recovery.json"), "utf8")).condition,
         corruption === "missing" ? "missing" : "corrupt");
-      assert.equal(readdirSync(join(root, "generations")).length, 1);
+      assert.equal(readdirSync(join(root, "generations")).length, 2);
       assert.equal(readdirSync(join(root, "quarantine")).length, corruption === "missing" ? 0 : 1);
     }
+  });
+
+  it("rejects predecessor tampering in pointer, metadata, and recovery evidence", () => {
+    const root = mkdtempSync(join(tmpdir(), "p42-indexer-continuity-tamper-"));
+    const makeStage = (name, toBlock) => {
+      const path = join(root, "staging", name); mkdirSync(join(path, "archive"), { recursive: true });
+      writePrivateJson(join(path, "checkpoint.json"), checkpoint(toBlock));
+      writeFileSync(join(path, "archive", "board.json"), "verified", { mode: 0o600 });
+      return path;
+    };
+    const predecessor = publishGenerationSync({ publicationRoot: root,
+      stagingPath: makeStage("predecessor", 110), validator: (v) => v });
+    const accepted = publishGenerationSync({ publicationRoot: root,
+      stagingPath: makeStage("accepted", 120), validator: (v) => v });
+    const pointerPath = join(root, "current.json");
+    const pointer = JSON.parse(readFileSync(pointerPath, "utf8"));
+    assert.equal(pointer.previous_generation_id, predecessor.generationId);
+
+    writePrivateJson(pointerPath, { ...pointer, previous_generation_id: "0".repeat(81) });
+    assert.throws(() => publishGenerationSync({ publicationRoot: root,
+      stagingPath: makeStage("pointer-tamper", 120), validator: (v) => v }), /generation identity/);
+    writePrivateJson(pointerPath, pointer);
+
+    const metadataPath = join(root, "generations", accepted.storageId, "generation.json");
+    const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+    writePrivateJson(metadataPath, { ...metadata, previous_generation_id: null });
+    const repaired = publishGenerationSync({ publicationRoot: root,
+      stagingPath: makeStage("metadata-repair", 120), validator: (v) => v });
+    const recoveryPath = join(root, "generations", repaired.storageId, "recovery.json");
+    const recovery = JSON.parse(readFileSync(recoveryPath, "utf8"));
+    assert.equal(recovery.previous_generation_id, predecessor.generationId);
+    writePrivateJson(recoveryPath, { ...recovery, previous_generation_id: null });
+    const secondRepair = publishGenerationSync({ publicationRoot: root,
+      stagingPath: makeStage("recovery-tamper", 120), validator: (v) => v });
+    assert.notEqual(secondRepair.storageId, repaired.storageId);
+    const secondRecovery = JSON.parse(readFileSync(
+      join(root, "generations", secondRepair.storageId, "recovery.json"), "utf8",
+    ));
+    assert.equal(secondRecovery.previous_generation_id, predecessor.generationId);
   });
 
   it("recovers deterministically from every repair rename and pointer crash boundary", () => {

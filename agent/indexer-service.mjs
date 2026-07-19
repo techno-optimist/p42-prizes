@@ -212,9 +212,12 @@ function archiveTreeDigest(path) {
 }
 
 
-function generationId(checkpoint, archiveSha256) {
+function generationId(checkpoint, archiveSha256, previousGenerationId) {
   const digest = createHash("sha256")
-    .update(`${stableStringify(checkpoint)}\0${archiveSha256}`)
+    .update(stableStringify({
+      checkpoint, archive_sha256: archiveSha256,
+      previous_generation_id: previousGenerationId,
+    }))
     .digest("hex");
   return `${String(checkpoint.range.toBlock).padStart(16, "0")}-${digest}`;
 }
@@ -248,13 +251,20 @@ function readCurrentGeneration(root, validator) {
   const pointer = join(root, "current.json");
   if (!existsSync(pointer)) return null;
   const current = readStrictJsonFileSync(pointer, CHECKPOINT_LIMITS);
-  const legacy = current.schema_version === "p42-indexer-generation-pointer/v1";
+  const legacy = current.schema_version !== "p42-indexer-generation-pointer/v3";
   const expectedKeys = legacy
-    ? ["archive_path", "checkpoint_path", "generation_id", "schema_version"]
-    : ["archive_path", "checkpoint_path", "generation_id", "schema_version", "storage_id"];
-  const storageId = legacy ? current.generation_id : current.storage_id;
+    ? (current.schema_version === "p42-indexer-generation-pointer/v1"
+      ? ["archive_path", "checkpoint_path", "generation_id", "schema_version"]
+      : ["archive_path", "checkpoint_path", "generation_id", "schema_version", "storage_id"])
+    : ["archive_path", "checkpoint_path", "generation_id", "previous_generation_id", "schema_version", "storage_id"];
+  const storageId = current.schema_version === "p42-indexer-generation-pointer/v1"
+    ? current.generation_id : current.storage_id;
   if (stableStringify(Object.keys(current).sort()) !== stableStringify(expectedKeys)
-      || (!legacy && current.schema_version !== "p42-indexer-generation-pointer/v2")
+      || (legacy && !["p42-indexer-generation-pointer/v1", "p42-indexer-generation-pointer/v2"].includes(current.schema_version))
+      || (!legacy && current.schema_version !== "p42-indexer-generation-pointer/v3")
+      || (!legacy && current.previous_generation_id !== null
+        && (typeof current.previous_generation_id !== "string"
+          || basename(current.previous_generation_id) !== current.previous_generation_id))
       || basename(current.generation_id) !== current.generation_id
       || typeof storageId !== "string" || basename(storageId) !== storageId
       || current.checkpoint_path !== `generations/${storageId}/checkpoint.json`
@@ -266,11 +276,15 @@ function readCurrentGeneration(root, validator) {
   }
   const path = join(root, "generations", storageId);
   try {
-    const validated = validateGenerationDirectory(path, current.generation_id, validator, storageId);
+    const validated = validateGenerationDirectory(path, current.generation_id, validator, storageId, legacy);
+    if (!legacy && validated.metadata.previous_generation_id !== current.previous_generation_id) {
+      throw new Error("accepted indexer pointer predecessor binding is invalid");
+    }
     if (!current.generation_id.startsWith(
       `${String(validated.checkpoint.range.toBlock).padStart(16, "0")}-`,
     )) throw new Error("accepted indexer generation id does not bind its checkpoint height");
-    return { pointer: { ...current, storage_id: storageId }, checkpoint: validated.checkpoint,
+    return { pointer: { ...current, storage_id: storageId,
+      previous_generation_id: validated.metadata.previous_generation_id }, checkpoint: validated.checkpoint,
       metadata: validated.metadata, integrityError: null };
   } catch (error) {
     let checkpoint = null;
@@ -285,7 +299,7 @@ function readCurrentGeneration(root, validator) {
 }
 
 
-function validateGenerationDirectory(path, id, validator, storageId = id) {
+function validateGenerationDirectory(path, id, validator, storageId = id, legacy = false) {
   const metadata = readStrictJsonFileSync(join(path, "generation.json"), CHECKPOINT_LIMITS);
   const checkpointPath = join(path, "checkpoint.json");
   const checkpointBytes = readFileSync(checkpointPath);
@@ -296,14 +310,19 @@ function validateGenerationDirectory(path, id, validator, storageId = id) {
   if (stableStringify(Object.keys(metadata).sort()) !== stableStringify([
     "archive_sha256", "checkpoint_sha256", "generation_id", "previous_generation_id", "schema_version",
   ])
-      || metadata.schema_version !== "p42-indexer-generation/v2"
+      || metadata.schema_version !== (legacy ? "p42-indexer-generation/v2" : "p42-indexer-generation/v3")
       || metadata.generation_id !== id
       || (metadata.previous_generation_id !== null
         && (typeof metadata.previous_generation_id !== "string"
           || basename(metadata.previous_generation_id) !== metadata.previous_generation_id))
       || metadata.checkpoint_sha256 !== createHash("sha256").update(checkpointBytes).digest("hex")
       || metadata.archive_sha256 !== archiveSha256
-      || generationId(checkpoint, archiveSha256) !== id
+      || (legacy
+        ? (() => {
+          const digest = createHash("sha256").update(`${stableStringify(checkpoint)}\0${archiveSha256}`).digest("hex");
+          return `${String(checkpoint.range.toBlock).padStart(16, "0")}-${digest}`;
+        })() !== id
+        : generationId(checkpoint, archiveSha256, metadata.previous_generation_id) !== id)
       || !lstatSync(join(path, "archive")).isDirectory()
       || lstatSync(join(path, "archive")).isSymbolicLink()) {
     throw new Error("indexer generation metadata or archive binding is invalid");
@@ -312,10 +331,11 @@ function validateGenerationDirectory(path, id, validator, storageId = id) {
     const recovery = readStrictJsonFileSync(join(path, "recovery.json"), CHECKPOINT_LIMITS);
     const recoveryDigest = createHash("sha256").update(stableStringify(recovery)).digest("hex");
     if (stableStringify(Object.keys(recovery).sort()) !== stableStringify([
-      "accepted_generation_id", "condition", "replaced_storage_id", "schema_version",
+      "accepted_generation_id", "condition", "previous_generation_id", "replaced_storage_id", "schema_version",
     ])
         || recovery.schema_version !== "p42-indexer-generation-recovery/v1"
         || recovery.accepted_generation_id !== id
+        || recovery.previous_generation_id !== metadata.previous_generation_id
         || !["corrupt", "missing"].includes(recovery.condition)
         || typeof recovery.replaced_storage_id !== "string"
         || basename(recovery.replaced_storage_id) !== recovery.replaced_storage_id
@@ -393,8 +413,10 @@ export function publishGenerationSync({
       join(root, "generations", acceptedStorageId, "recovery.json"), CHECKPOINT_LIMITS,
     );
     const replaced = join(root, "generations", recovery.replaced_storage_id);
-    const quarantined = join(root, "quarantine",
-      `${recovery.replaced_storage_id}-replaced-by-${acceptedStorageId}`);
+    const replacementLink = createHash("sha256")
+      .update(stableStringify({ replaced: recovery.replaced_storage_id, accepted: acceptedStorageId }))
+      .digest("hex");
+    const quarantined = join(root, "quarantine", `replaced-generation-${replacementLink}`);
     if (!existsSync(replaced) || existsSync(quarantined)) return;
     syncTreePostorder(replaced, io);
     syncDirectory(join(root, "generations"), io, "generations-parent-before-quarantine-rename");
@@ -413,8 +435,11 @@ export function publishGenerationSync({
     candidate = validatePublicationCheckpoint(readStrictJsonFileSync(candidatePath, CHECKPOINT_LIMITS), validator);
     if (!statSync(join(stage, "archive")).isDirectory()) throw new Error("indexer generation archive is absent");
     archiveSha256 = archiveTreeDigest(join(stage, "archive"));
-    id = generationId(candidate, archiveSha256);
     if (current?.integrityError) {
+      if (current.pointer.schema_version !== "p42-indexer-generation-pointer/v3") {
+        throw new Error("legacy accepted generation cannot be repaired without authenticated predecessor continuity");
+      }
+      id = generationId(candidate, archiveSha256, current.pointer.previous_generation_id);
       if (candidate.range.toBlock !== current.acceptedHeight || id !== current.pointer.generation_id) {
         throw new Error("indexer same-height recovery bytes do not match the accepted generation identity");
       }
@@ -422,6 +447,9 @@ export function publishGenerationSync({
         nextBlock: candidate.range.toBlock };
     } else {
       decision = monotonicCheckpointDecision(candidate, current?.checkpoint ?? null);
+      const previousGenerationId = decision.decision === "unchanged"
+        ? current?.metadata.previous_generation_id ?? null : current?.pointer.generation_id ?? null;
+      id = generationId(candidate, archiveSha256, previousGenerationId);
       if (decision.decision === "unchanged" && id !== current.pointer.generation_id) {
         throw new Error("indexer same-height archive bytes do not match the accepted generation identity");
       }
@@ -435,6 +463,7 @@ export function publishGenerationSync({
   if (exactRetry && current.integrityError) {
     const recovery = { schema_version: "p42-indexer-generation-recovery/v1",
       accepted_generation_id: id, replaced_storage_id: current.pointer.storage_id,
+      previous_generation_id: current.pointer.previous_generation_id,
       condition: existsSync(join(root, "generations", current.pointer.storage_id)) ? "corrupt" : "missing" };
     const recoveryDigest = createHash("sha256").update(stableStringify(recovery)).digest("hex");
     storageId = `${id}-recovery-${recoveryDigest}`;
@@ -444,11 +473,11 @@ export function publishGenerationSync({
   }
   const destination = join(root, "generations", storageId);
   io.writeFileSync(join(stage, "generation.json"), `${stableStringify({
-    schema_version: "p42-indexer-generation/v2", generation_id: id,
+    schema_version: "p42-indexer-generation/v3", generation_id: id,
     archive_sha256: archiveSha256,
     checkpoint_sha256: createHash("sha256").update(readFileSync(candidatePath)).digest("hex"),
     previous_generation_id: exactRetry
-      ? current.metadata?.previous_generation_id ?? null : current?.pointer.generation_id ?? null,
+      ? current.pointer.previous_generation_id : current?.pointer.generation_id ?? null,
   })}\n`, { mode: 0o600 });
   validateGenerationDirectory(stage, id, validator,
     exactRetry && current.integrityError === null ? id : storageId);
@@ -479,7 +508,9 @@ export function publishGenerationSync({
     syncDirectory(join(root, "generations"), io, "generations-parent-after-rename");
     crashInjector("after_generation_rename");
   }
-  const pointer = { schema_version: "p42-indexer-generation-pointer/v2", generation_id: id,
+  const pointer = { schema_version: "p42-indexer-generation-pointer/v3", generation_id: id,
+    previous_generation_id: exactRetry
+      ? current.pointer.previous_generation_id : current?.pointer.generation_id ?? null,
     storage_id: storageId, checkpoint_path: `generations/${storageId}/checkpoint.json`,
     archive_path: `generations/${storageId}/archive` };
   ownership?.assertOwned?.();

@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import pwd
 import queue
+import select
+import signal
 import socket
 import stat
 import struct
@@ -24,6 +26,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from p42_prizes.verdict import canonical_json  # noqa: E402
+from p42_prizes.production_runtime_config import (  # noqa: E402
+    ProductionRuntimeConfigError, validate_production_executor_config,
+)
 from p42_prizes.verifier_executor import (  # noqa: E402
     BoardExecution, DockerAuthority, ExecutorPolicy, VerifierExecutor, VerifierExecutorError, acquire_singleton_lock,
     host_capacity_snapshot,
@@ -63,13 +68,26 @@ def read_request_frame(connection: socket.socket, timeout_seconds: float) -> byt
     return payload
 
 
-def _terminate_and_reap(process: subprocess.Popen) -> None:
+def _remaining(deadline: float, monotonic=time.monotonic) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise VerifierExecutorError("authorization fence absolute deadline exceeded")
+    return remaining
+
+
+def _terminate_and_reap(process: subprocess.Popen, deadline: float | None = None) -> None:
     if process.poll() is None:
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            process.kill()
     try:
-        process.communicate(timeout=5)
+        timeout = max(0.001, deadline - time.monotonic()) if deadline is not None else 5
+        process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         process.kill()
+        # SIGKILL has already ended execution. This final wait is cleanup, not
+        # a second authorization window: no protocol work can occur here.
         process.communicate()
 
 
@@ -77,15 +95,15 @@ def release_authorization_fence(
     connection: socket.socket,
     process: subprocess.Popen,
     timeout_seconds: float,
+    *,
+    deadline: float | None = None,
 ) -> None:
     """Release the queue fence under one monotonic IPC/process deadline."""
-    deadline = time.monotonic() + timeout_seconds
+    deadline = time.monotonic() + timeout_seconds if deadline is None else deadline
     frame = bytearray()
     try:
         while b"\n" not in frame and len(frame) <= len(FENCE_RELEASE_FRAME):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise VerifierExecutorError("authorization fence release deadline exceeded")
+            remaining = _remaining(deadline)
             connection.settimeout(remaining)
             try:
                 chunk = connection.recv(len(FENCE_RELEASE_FRAME) + 1 - len(frame))
@@ -98,26 +116,69 @@ def release_authorization_fence(
             raise VerifierExecutorError("authorization fence release protocol failure")
         if process.stdin is None:
             raise VerifierExecutorError("authorization fence child stdin is unavailable")
-        process.stdin.write("R")
+        process.stdin.write(b"R")
         process.stdin.flush()
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise VerifierExecutorError("authorization fence release deadline exceeded")
+        remaining = _remaining(deadline)
         if process.wait(timeout=remaining) != 0:
             detail = process.stderr.read()[:512] if process.stderr is not None else ""
             raise VerifierExecutorError(detail or "authorization fence child failed")
     except Exception:
-        _terminate_and_reap(process)
+        _terminate_and_reap(process, deadline)
         raise
 
 
-def load_boards(path: Path) -> dict[str, BoardExecution]:
+def run_authorization_fence(
+    connection: socket.socket,
+    command: list[str],
+    timeout_seconds: float,
+    *,
+    popen=subprocess.Popen,
+    monotonic=time.monotonic,
+) -> None:
+    """Own spawn, READY, release, exit, termination, and reap under one deadline."""
+    deadline = monotonic() + timeout_seconds
+    process = None
+    try:
+        process = popen(
+            command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(ROOT / "src")},
+            start_new_session=True,
+        )
+        _remaining(deadline, monotonic)
+        if process.stdout is None:
+            raise VerifierExecutorError("authorization fence child stdout is unavailable")
+        frame = bytearray()
+        descriptor = process.stdout.fileno()
+        while b"\n" not in frame and len(frame) <= len(b"READY\n"):
+            ready, _, _ = select.select([descriptor], [], [], _remaining(deadline, monotonic))
+            if not ready:
+                raise VerifierExecutorError("authorization fence READY deadline exceeded")
+            chunk = os.read(descriptor, len(b"READY\n") + 1 - len(frame))
+            if not chunk:
+                break
+            frame.extend(chunk)
+        if bytes(frame) != b"READY\n":
+            raise VerifierExecutorError("authorization fence READY protocol failure")
+        try:
+            connection.sendall(b"READY\n")
+        except (BrokenPipeError, ConnectionError, OSError) as exc:
+            raise VerifierExecutorError("authorization fence client disconnected") from exc
+        release_authorization_fence(connection, process, timeout_seconds, deadline=deadline)
+    except Exception:
+        if process is not None:
+            _terminate_and_reap(process, deadline)
+        raise
+
+
+def load_boards(path: Path, repository_root: Path) -> dict[str, BoardExecution]:
     metadata = path.stat(follow_symlinks=False)
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid not in {0, os.geteuid()} or metadata.st_mode & 0o022:
         raise VerifierExecutorError("executor config must be root/executor-owned and not group/world-writable")
     raw = json.loads(path.read_text(encoding="utf-8"))
-    if raw.get("schema_version") != "p42-verifier-executor-config/v1" or not isinstance(raw.get("boards"), list):
-        raise VerifierExecutorError("invalid executor board configuration")
+    try:
+        validate_production_executor_config(raw, repository_root)
+    except ProductionRuntimeConfigError as exc:
+        raise VerifierExecutorError(str(exc)) from exc
     result = {}
     for item in raw["boards"]:
         board = BoardExecution(
@@ -156,7 +217,7 @@ def serve(args: argparse.Namespace) -> None:
     expected_uid = pwd.getpwnam(args.operator_user).pw_uid
     submit_group = grp.getgrnam(args.submit_group).gr_gid
     singleton_lock_fd = acquire_singleton_lock(Path(args.lock))
-    boards = load_boards(Path(args.config))
+    boards = load_boards(Path(args.config), Path(args.repository_root))
     capacity_reader = lambda: host_capacity_snapshot(Path(args.cgroup_attestation))
     startup_capacity = capacity_reader()
     validate_effective_cgroup_policy(
@@ -258,7 +319,6 @@ def serve(args: argparse.Namespace) -> None:
                 pending.task_done()
 
     def auxiliary(connection: socket.socket, request: dict) -> None:
-        fence_process = None
         try:
             if request.get("operation") == "bridge":
                 response = bridge_request(request)
@@ -266,19 +326,12 @@ def serve(args: argparse.Namespace) -> None:
                 board = executor.boards.get(str(request.get("board_id")))
                 if board is None:
                     raise VerifierExecutorError("unknown fence board")
-                process = subprocess.Popen(
-                    [sys.executable, str(ROOT / "agent/runtime_bridge.py"), "authorization-fence", "--queue", str(board.queue)],
-                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                    env={"PATH": "/usr/bin:/bin", "PYTHONPATH": str(ROOT / "src")},
+                run_authorization_fence(
+                    connection,
+                    [sys.executable, str(ROOT / "agent/runtime_bridge.py"), "authorization-fence",
+                     "--queue", str(board.queue)],
+                    args.authorization_fence_timeout_seconds,
                 )
-                fence_process = process
-                if process.stdout.readline() != "READY\n":
-                    raise VerifierExecutorError("authorization fence failed")
-                try:
-                    connection.sendall(b"READY\n")
-                except (BrokenPipeError, ConnectionError, OSError) as exc:
-                    raise VerifierExecutorError("authorization fence client disconnected") from exc
-                release_authorization_fence(connection, process, args.authorization_fence_timeout_seconds)
                 response = {"ok": True, "result": {"released": True}}
             else:
                 raise VerifierExecutorError("unsupported executor operation")
@@ -287,8 +340,6 @@ def serve(args: argparse.Namespace) -> None:
         try:
             send_response(connection, response)
         finally:
-            if fence_process is not None and fence_process.poll() is None:
-                _terminate_and_reap(fence_process)
             connection.close()
             auxiliary_slots.release()
 
@@ -331,6 +382,7 @@ def serve(args: argparse.Namespace) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True); parser.add_argument("--socket", required=True)
+    parser.add_argument("--repository-root", required=True)
     parser.add_argument("--state", required=True); parser.add_argument("--lock", required=True)
     parser.add_argument("--docker-host", required=True); parser.add_argument("--operator-user", default="p42-operator")
     parser.add_argument("--submit-group", default="p42-verifier-submitters")
