@@ -9,8 +9,15 @@ import re
 import subprocess
 from typing import Any, Callable, Mapping
 
+from .admission import (
+    AdmissionError,
+    load_image_release_dossier,
+    ssh_public_key_fingerprint,
+    validate_admission_matrix,
+)
 from .problem import load_manifest
-from .verdict import canonical_json, sha256_bytes
+from .runtime_admission import load_fixture_manifest, validate_matrix_host_set_bundles
+from .verdict import canonical_json, sha256_bytes, sha256_file
 
 
 class ProductionRuntimeConfigError(ValueError):
@@ -41,6 +48,43 @@ def _resource_identity(resource: Mapping[str, Any]) -> str:
     return sha256_bytes(canonical_json(dict(resource)).encode("utf-8"))
 
 
+def _trusted_operator_profiles(root: Path, slugs: list[str]) -> dict[str, dict[str, Any]]:
+    """Require one identical operator registry across the exact-ten manifests."""
+
+    trusted: dict[str, dict[str, Any]] | None = None
+    for slug in slugs:
+        manifest = load_manifest(root / "problems" / slug)
+        verifier = manifest.get("verifier")
+        admission = verifier.get("admission") if isinstance(verifier, Mapping) else None
+        profiles = admission.get("trusted_hosts") if isinstance(admission, Mapping) else None
+        if not isinstance(profiles, list):
+            raise ProductionRuntimeConfigError(f"{slug} has no registered admission operator profiles")
+        observed: dict[str, dict[str, Any]] = {}
+        try:
+            for profile in profiles:
+                if not isinstance(profile, dict) or not isinstance(profile.get("public_key"), str):
+                    raise ProductionRuntimeConfigError(
+                        f"{slug} has an invalid registered admission operator profile"
+                    )
+                fingerprint = ssh_public_key_fingerprint(profile["public_key"])
+                if fingerprint in observed:
+                    raise ProductionRuntimeConfigError(
+                        f"{slug} has duplicate registered admission operator keys"
+                    )
+                observed[fingerprint] = profile
+        except AdmissionError as exc:
+            raise ProductionRuntimeConfigError(
+                f"{slug} has an invalid registered admission operator key"
+            ) from exc
+        if trusted is None:
+            trusted = observed
+        elif canonical_json(observed) != canonical_json(trusted):
+            raise ProductionRuntimeConfigError(
+                "registered admission operator profiles differ across the exact-ten manifests"
+            )
+    return trusted or {}
+
+
 def _load_external_evidence(root: Path, path_value: Any, pin: Any, label: str) -> dict[str, Any]:
     _require_digest(pin, f"{label} file pin")
     if not isinstance(path_value, str) or not Path(path_value).is_absolute():
@@ -62,6 +106,28 @@ def _load_external_evidence(root: Path, path_value: Any, pin: Any, label: str) -
     if not isinstance(value, dict):
         raise ProductionRuntimeConfigError(f"{label} evidence must be an object")
     return value
+
+
+def _load_bound_dossier(
+    root: Path, path_value: Any, image_release: Mapping[str, Any],
+) -> dict[str, Any]:
+    dossier_value = _load_external_evidence(
+        root, path_value, image_release["file_sha256"], "verifier image release dossier",
+    )
+    try:
+        dossier = load_image_release_dossier(
+            path_value, expected_file_sha256=image_release["file_sha256"],
+        )
+    except AdmissionError as exc:
+        raise ProductionRuntimeConfigError(f"verifier image release dossier is invalid: {exc}") from exc
+    if canonical_json(dossier) != canonical_json(dossier_value) or (
+        dossier.get("dossier_hash") != image_release["dossier_hash"]
+        or dossier.get("verifier_source_commit") != image_release["verifier_source_commit"]
+        or dossier.get("release_config_commit") != image_release["release_config_commit"]
+        or dossier.get("publication_journal_hash") != image_release["publication_journal_hash"]
+    ):
+        raise ProductionRuntimeConfigError("verifier image release dossier binding mismatch")
+    return dossier
 
 
 def _default_image_probe(reference: str, docker_host: str | None) -> None:
@@ -144,8 +210,18 @@ def load_runtime_release(
     ):
         raise ProductionRuntimeConfigError("runtime release is not the ordered canonical exact-ten board set")
 
+    fixture_path = root / "protocol/production-verifier-fixtures-v1.json"
+    fixture_sha256 = sha256_file(fixture_path)
+    try:
+        fixtures = load_fixture_manifest(root, fixture_path, expected_sha256=fixture_sha256)
+    except AdmissionError as exc:
+        raise ProductionRuntimeConfigError(f"canonical production fixtures are invalid: {exc}") from exc
+    trusted_operator_profiles = _trusted_operator_profiles(root, slugs)
+
     probe = image_probe or _default_image_probe
     seen_images: set[str] = set()
+    bound_dossier: dict[str, Any] | None = None
+    bound_dossier_path: str | None = None
     for index, (slug, record, projection, board) in enumerate(zip(slugs, records, public, boards, strict=True)):
         if not isinstance(board, dict) or set(board) != EXPECTED_BOARD_KEYS:
             raise ProductionRuntimeConfigError(f"runtime release board {index} has an invalid closed identity")
@@ -199,10 +275,14 @@ def load_runtime_release(
                 or not isinstance(host_files, list) or len(host_files) < 4):
             raise ProductionRuntimeConfigError(f"{slug} admit-release-ready host evidence is invalid")
         _require_digest(admission.get("matrix_hash"), f"{slug} admission matrix")
-        matrix = _load_external_evidence(
+        raw_matrix = _load_external_evidence(
             root, admission.get("matrix_path"), admission.get("matrix_file_sha256"),
             f"{slug} admission matrix",
         )
+        try:
+            matrix = validate_admission_matrix(raw_matrix)
+        except AdmissionError as exc:
+            raise ProductionRuntimeConfigError(f"{slug} admission matrix is invalid: {exc}") from exc
         image_digest = "sha256:" + image.rsplit("@sha256:", 1)[1]
         matrix_source = matrix.get("source")
         if (
@@ -215,30 +295,48 @@ def load_runtime_release(
             or matrix_source.get("tree_hash") != source
         ):
             raise ProductionRuntimeConfigError(f"{slug} admission matrix identity mismatch")
-        matrix_host_sets = matrix.get("host_sets")
-        matrix_hashes = [item.get("host_set_hash") for item in matrix_host_sets if isinstance(item, dict)] if isinstance(matrix_host_sets, list) else []
-        observed_hashes: list[str] = []
+        bundle_inputs: list[tuple[Path, str]] = []
+        dossier_paths: set[str] = set()
         for host_index, host_file in enumerate(host_files):
             if not isinstance(host_file, dict) or set(host_file) != {"path", "file_sha256", "host_set_hash"}:
                 raise ProductionRuntimeConfigError(f"{slug} host-set file binding is invalid")
             host_hash = _require_digest(host_file.get("host_set_hash"), f"{slug} host-set identity")
+            bundle_path_value = host_file.get("path")
+            if not isinstance(bundle_path_value, str) or not Path(bundle_path_value).is_absolute():
+                raise ProductionRuntimeConfigError(f"{slug} host-set bundle path must be absolute")
+            bundle_path = Path(bundle_path_value)
+            if bundle_path.is_relative_to(root):
+                raise ProductionRuntimeConfigError(f"{slug} host-set bundle must be external to the source checkout")
             host_set = _load_external_evidence(
-                root, host_file.get("path"), host_file.get("file_sha256"),
+                root, str(bundle_path / "host-set.json"), host_file.get("file_sha256"),
                 f"{slug} host set {host_index + 1}",
             )
-            host_slugs = [item.get("slug") for item in host_set.get("boards", []) if isinstance(item, dict)]
-            if (
-                host_set.get("schema_version") != "p42-admission-host-set/v4"
-                or host_set.get("host_set_hash") != host_hash
-                or host_set.get("dossier", {}).get("dossier_hash") != image_release["dossier_hash"]
-                or host_set.get("dossier", {}).get("verifier_source_commit") != image_release["verifier_source_commit"]
-                or host_set.get("dossier", {}).get("release_config_commit") != image_release["release_config_commit"]
-                or host_slugs != slugs
-            ):
-                raise ProductionRuntimeConfigError(f"{slug} host-set identity mismatch")
-            observed_hashes.append(host_hash)
-        if len(observed_hashes) != len(set(observed_hashes)) or observed_hashes != matrix_hashes:
-            raise ProductionRuntimeConfigError(f"{slug} matrix/host-set substitution detected")
+            host_dossier_path = host_set.get("dossier", {}).get("path")
+            if not isinstance(host_dossier_path, str):
+                raise ProductionRuntimeConfigError(f"{slug} host-set dossier locator is invalid")
+            dossier_paths.add(host_dossier_path)
+            bundle_inputs.append((bundle_path, host_hash))
+        if len(dossier_paths) != 1:
+            raise ProductionRuntimeConfigError(f"{slug} host-set dossier substitution detected")
+        dossier_path = dossier_paths.pop()
+        if bound_dossier is None:
+            bound_dossier = _load_bound_dossier(root, dossier_path, image_release)
+            bound_dossier_path = dossier_path
+        elif dossier_path != bound_dossier_path:
+            raise ProductionRuntimeConfigError(f"{slug} host-set dossier substitution detected")
+        try:
+            validate_matrix_host_set_bundles(
+                matrix,
+                bundle_inputs,
+                root=root,
+                dossier=bound_dossier,
+                fixtures=fixtures,
+                dossier_sha256=image_release["file_sha256"],
+                fixture_sha256=fixture_sha256,
+                trusted_operator_profiles=trusted_operator_profiles,
+            )
+        except AdmissionError as exc:
+            raise ProductionRuntimeConfigError(f"{slug} host-set admission is invalid: {exc}") from exc
         probe(image, docker_host)
     return value
 

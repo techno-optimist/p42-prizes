@@ -6,12 +6,15 @@ from pathlib import Path
 
 import pytest
 
+import p42_prizes.production_runtime_config as runtime_config
+from p42_prizes.admission import AdmissionError
 from p42_prizes.production_runtime_config import (
     ProductionRuntimeConfigError,
     generate_production_executor_config,
     load_runtime_release,
 )
 from p42_prizes.problem import load_manifest
+from p42_prizes.runtime_admission import validate_matrix_host_set_bundles as replay_host_sets
 from p42_prizes.verdict import canonical_json, sha256_bytes
 
 
@@ -33,21 +36,36 @@ def _artifact(evidence_root: Path) -> dict:
     slugs = json.loads((ROOT / "protocol/production-board-set-v1.json").read_text())["boards"]
     records = json.loads((ROOT / "protocol/production-board-bindings-v1.json").read_text())["records"]
     projected = json.loads((ROOT / "scripts/release-guard-problems-v1.json").read_text())["boards"]
+    dossier = {
+        "dossier_hash": DIGEST_B,
+        "verifier_source_commit": COMMIT_S,
+        "release_config_commit": COMMIT_R,
+        "publication_journal_hash": "sha256:" + "c" * 64,
+        "boards": [
+            {"slug": slug, "release_manifest_path": f"problems/{slug}/problem.yaml"}
+            for slug in slugs
+        ],
+    }
+    dossier_path = evidence_root / "image-dossier.json"
+    dossier_file_sha256 = _evidence_file(dossier_path, dossier)
     host_files = []
     host_hashes = [f"sha256:{100 + host:064x}" for host in range(4)]
     for host, host_hash in enumerate(host_hashes):
         host_set = {
             "schema_version": "p42-admission-host-set/v4",
             "dossier": {
+                "path": str(dossier_path),
                 "dossier_hash": DIGEST_B, "verifier_source_commit": COMMIT_S,
                 "release_config_commit": COMMIT_R,
             },
             "boards": [{"slug": slug} for slug in slugs],
             "host_set_hash": host_hash,
         }
-        host_path = evidence_root / f"host-{host}.json"
+        host_path = evidence_root / f"host-{host}"
+        host_path.mkdir()
         host_files.append({
-            "path": str(host_path), "file_sha256": _evidence_file(host_path, host_set),
+            "path": str(host_path),
+            "file_sha256": _evidence_file(host_path / "host-set.json", host_set),
             "host_set_hash": host_hash,
         })
     boards = []
@@ -92,7 +110,7 @@ def _artifact(evidence_root: Path) -> dict:
         "release_ready": True,
         "verifier_image_release": {
             "schema_version": "p42-verifier-image-release/v2",
-            "file_sha256": DIGEST_A,
+            "file_sha256": dossier_file_sha256,
             "dossier_hash": DIGEST_B,
             "verifier_source_commit": COMMIT_S,
             "release_config_commit": COMMIT_R,
@@ -102,6 +120,27 @@ def _artifact(evidence_root: Path) -> dict:
     }
     value["artifact_hash"] = sha256_bytes(canonical_json(value).encode())
     return value
+
+
+@pytest.fixture(autouse=True)
+def _stub_expensive_admission_replay(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(runtime_config, "load_image_release_dossier", lambda path, **_: json.loads(Path(path).read_text()))
+    monkeypatch.setattr(runtime_config, "validate_admission_matrix", lambda matrix: dict(matrix))
+    monkeypatch.setattr(runtime_config, "_trusted_operator_profiles", lambda *_: {"fixture-key": {}})
+
+    def validate_bundles(matrix, bundles, *, dossier, **_kwargs) -> None:
+        matrix_hashes = [item.get("host_set_hash") for item in matrix.get("host_sets", [])]
+        bundle_hashes = [host_hash for _path, host_hash in bundles]
+        if matrix_hashes != bundle_hashes:
+            raise AdmissionError("pinned host-set bundle cohort is missing, duplicated, or substituted")
+        for bundle, _host_hash in bundles:
+            index = json.loads((bundle / "host-set.json").read_text())
+            if index.get("schema_version") != "p42-admission-host-set/v4":
+                raise AdmissionError("host-set schema is not v4")
+            if index.get("dossier", {}).get("dossier_hash") != dossier.get("dossier_hash"):
+                raise AdmissionError("host-set dossier binding does not match the independent release input")
+
+    monkeypatch.setattr(runtime_config, "validate_matrix_host_set_bundles", validate_bundles)
 
 
 def _write(path: Path, value: dict) -> str:
@@ -150,7 +189,7 @@ def test_production_config_requires_external_release_ready_exact_ten(tmp_path: P
         (lambda value: value["boards"][0]["admission"].update(release_ready=False), "host evidence"),
         (lambda value: value["boards"][0]["admission"].update(host_sets=[]), "host evidence"),
         (lambda value: value["boards"][0]["admission"].update(schema_version="p42-admission-matrix/v3"), "host evidence"),
-        (lambda value: value["boards"][0]["admission"]["host_sets"][0].update(host_set_hash=DIGEST_A), "host-set identity mismatch"),
+        (lambda value: value["boards"][0]["admission"]["host_sets"][0].update(host_set_hash=DIGEST_A), "substituted"),
         (lambda value: value["boards"][0]["admission"]["host_sets"][0].update(path="/nonexistent/p42-host-set.json"), "evidence is unavailable"),
     ],
 )
@@ -177,7 +216,7 @@ def test_runtime_release_rejects_unpullable_image(tmp_path: Path) -> None:
 def test_runtime_release_rejects_repinned_v3_host_set(tmp_path: Path) -> None:
     value = _artifact(tmp_path)
     host_binding = value["boards"][0]["admission"]["host_sets"][0]
-    host_path = Path(host_binding["path"])
+    host_path = Path(host_binding["path"]) / "host-set.json"
     host_set = json.loads(host_path.read_text())
     host_set["schema_version"] = "p42-admission-host-set/v3"
     v3_file_sha256 = _evidence_file(host_path, host_set)
@@ -186,7 +225,65 @@ def test_runtime_release_rejects_repinned_v3_host_set(tmp_path: Path) -> None:
     path = tmp_path / "runtime-release.json"
     pin = _write(path, value)
 
-    with pytest.raises(ProductionRuntimeConfigError, match="host-set identity mismatch"):
+    with pytest.raises(ProductionRuntimeConfigError, match="schema|host-set admission"):
+        load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=lambda *_: None)
+
+
+def test_runtime_release_rejects_skeletal_unsigned_v4_host_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    value = _artifact(tmp_path)
+    matrix_path = Path(value["boards"][0]["admission"]["matrix_path"])
+    matrix = json.loads(matrix_path.read_text())
+    fingerprints = [f"SHA256:{letter * 43}" for letter in "ABCD"]
+    evidence_hashes = [f"sha256:{200 + index:064x}" for index in range(4)]
+    matrix["evidence"] = [{
+        "evidence_hash": evidence_hash,
+        "host": {"label": f"host-{index}", "architecture": "x86_64", "os": "linux"},
+        "attestation": {"key_fingerprint": fingerprints[index]},
+        "execution": {"runtime": "docker"},
+    } for index, evidence_hash in enumerate(evidence_hashes)]
+    matrix["host_sets"] = [{
+        "host_set_hash": binding["host_set_hash"],
+        "evidence_hash": evidence_hashes[index],
+    } for index, binding in enumerate(value["boards"][0]["admission"]["host_sets"])]
+    value["boards"][0]["admission"]["matrix_file_sha256"] = _evidence_file(matrix_path, matrix)
+    monkeypatch.setattr(runtime_config, "validate_matrix_host_set_bundles", replay_host_sets)
+    monkeypatch.setattr(
+        runtime_config, "_trusted_operator_profiles",
+        lambda *_: {
+            fingerprint: {"operator_id": f"operator-host-{index}"}
+            for index, fingerprint in enumerate(fingerprints)
+        },
+    )
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, value)
+
+    with pytest.raises(ProductionRuntimeConfigError, match="schema|attestation"):
+        load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=lambda *_: None)
+
+
+@pytest.mark.parametrize("target", ["matrix", "dossier"])
+def test_runtime_release_rejects_admission_evidence_substitution(
+    tmp_path: Path, target: str,
+) -> None:
+    value = _artifact(tmp_path)
+    if target == "matrix":
+        matrix_path = Path(value["boards"][0]["admission"]["matrix_path"])
+        matrix = json.loads(matrix_path.read_text())
+        matrix["host_sets"][0]["host_set_hash"] = DIGEST_A
+        value["boards"][0]["admission"]["matrix_file_sha256"] = _evidence_file(matrix_path, matrix)
+    else:
+        bundle = Path(value["boards"][0]["admission"]["host_sets"][0]["path"])
+        host_set = json.loads((bundle / "host-set.json").read_text())
+        host_set["dossier"]["dossier_hash"] = DIGEST_A
+        hostile_pin = _evidence_file(bundle / "host-set.json", host_set)
+        for board in value["boards"]:
+            board["admission"]["host_sets"][0]["file_sha256"] = hostile_pin
+    path = tmp_path / "runtime-release.json"
+    pin = _write(path, value)
+
+    with pytest.raises(ProductionRuntimeConfigError, match="substituted|dossier binding"):
         load_runtime_release(ROOT, path, expected_sha256=pin, image_probe=lambda *_: None)
 
 
