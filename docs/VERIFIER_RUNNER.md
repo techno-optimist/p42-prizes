@@ -103,7 +103,7 @@ After the all-ten image release dossier exists, every production runner host
 must prove that it can execute the published bytes without rebuilding or using
 a mutable tag. The published mode of `scripts/rehearse_verifier_image.py`:
 
-- requires canonical, schema-valid `p42-verifier-image-release/v2` dossier
+- requires canonical, schema-valid `p42-verifier-image-release/v3` dossier
   bytes, an independently supplied digest of those bytes, and the exact fully
   clean release-config commit named by that dossier, while OCI labels bind the
   distinct verifier-source commit;

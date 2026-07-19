@@ -1604,7 +1604,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     admit_release_ready = subparsers.add_parser(
         "admit-release-ready",
-        help="require matrix admission and an exact v2 verifier-source/release-config dossier",
+        help="require matrix admission and an exact v3 verifier image release dossier",
     )
     admit_release_ready.add_argument("--problem", required=True)
     admit_release_matrix = admit_release_ready.add_mutually_exclusive_group(required=True)

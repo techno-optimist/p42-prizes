@@ -12,9 +12,25 @@ PYTHONPATH=src python3 -m p42_prizes.cli governance-signoff-validate \
   --output governance/base-mainnet-governance-signoff.normalized.json
 ```
 
-The `p42-governance-signoff/v1` packet must bind to the exact chain, frozen
-commit, deployment/configuration hashes, five contract addresses, contract
-source hashes, and runtime-bytecode hashes. It also requires:
+The production `p42-governance-signoff/v2` packet must use the canonical
+`p42-release-binding/v2` release binding and bind the exact chain, frozen source
+and deployment commits, release capsule, deployment/configuration artifacts,
+and all 47 ordered contract identities, source hashes, and runtime-bytecode
+hashes. Historical v1 packets remain validator-readable but cannot carry
+`production_binding` and are not production launch evidence.
+
+V2 also requires an exact `production_binding` object with ten fields:
+`deployment_commit`, `capsule_digest`, `slate_digest`, `config_digest`,
+`release_binding_digest`, `board_set_digest`, `timelock_address`,
+`treasury_address`, `resolver_quorum_address`, and `contracts`. The `contracts`
+array contains exactly 47 entries in canonical topology order. Each entry has
+exactly `topology_key`, `name`, `address`, `runtime_bytecode_hash`, and
+`manifest_runtime_code_hash`. The runtime derives every value from the resolved
+deployment manifest and release binding; it also matches the report's timelock,
+treasury multisig, signer set and threshold, and pause guardian against the
+manifest and finalized on-chain governance state.
+
+The packet also requires:
 
 - distinct, evidenced identities and Ed25519 keys for the governance owner,
   security owner, pause guardian, and at least five multisig signers;
@@ -41,7 +57,7 @@ and sign:
 
 ```text
 P42-ATTESTATION-V1
-p42-governance-signoff/v1
+p42-governance-signoff/v2
 sha256:<canonical-payload-digest>
 ```
 
@@ -51,7 +67,7 @@ signer. Agents may prepare the payload but may not generate human signatures.
 
 ## Governance Rehearsal Checklist
 
-- Freeze the target release and verify all five deployed runtime-bytecode
+- Freeze the target release and verify all 47 deployed runtime-bytecode
   hashes against the packet.
 - Confirm on-chain signer roster, threshold, timelock, guardian, pauser,
   treasury, resolver, and target permissions from an independent RPC.
@@ -81,11 +97,25 @@ This handoff skeleton is intentionally incomplete and cannot validate.
 
 ```json
 {
-  "schema_version": "p42-governance-signoff/v1",
+  "schema_version": "p42-governance-signoff/v2",
   "signoff_id": "<REQUIRED_SIGNOFF_ID>",
   "completed_at_utc": "<REQUIRED_UTC_AFTER_REHEARSAL_AND_SIGNATURES>",
   "network": "base-mainnet",
-  "release_binding": "<REQUIRED_CHAIN_CONTRACT_CONFIG_BINDING>",
+  "release_binding": "<REQUIRED_CANONICAL_P42_RELEASE_BINDING_V2_OBJECT>",
+  "production_binding": {
+    "deployment_commit": "<EXACT_40_HEX_DEPLOYMENT_COMMIT>",
+    "capsule_digest": "<EXACT_SHA256_FROM_RELEASE_EVIDENCE>",
+    "slate_digest": "<EXACT_SHA256_FROM_RELEASE_EVIDENCE>",
+    "config_digest": "<EXACT_SHA256_FROM_RELEASE_EVIDENCE>",
+    "release_binding_digest": "<EXACT_SHA256_FROM_RELEASE_EVIDENCE>",
+    "board_set_digest": "<EXACT_SHA256_FROM_RELEASE_EVIDENCE>",
+    "timelock_address": "<EXACT_MANIFEST_TIMELOCK_ADDRESS>",
+    "treasury_address": "<EXACT_MANIFEST_TREASURY_ADDRESS>",
+    "resolver_quorum_address": "<EXACT_MANIFEST_RESOLVER_QUORUM_ADDRESS>",
+    "contracts": [
+      "<EXACTLY_47_ORDERED_OBJECTS_WITH_TOPOLOGY_KEY_NAME_ADDRESS_RUNTIME_BYTECODE_HASH_AND_MANIFEST_RUNTIME_CODE_HASH>"
+    ]
+  },
   "governance_owner": {
     "name": "<REQUIRED_REAL_FULL_NAME>",
     "professional_email": "<REQUIRED_PROFESSIONAL_EMAIL>",
