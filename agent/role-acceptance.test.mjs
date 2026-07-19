@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,10 +15,12 @@ import {
   deploymentTopologyDigest,
   expectedRoleAcceptances,
   readRoleAcceptancePacketExact,
+  roleAcceptanceBytesDigest,
   roleAcceptanceManifestBinding,
   validateDeploymentRoleAcceptances,
 } from "./role-acceptance.mjs";
 import { writeExclusivePrivateJson } from "./role-acceptance-cli.mjs";
+import { publishRoleAcceptanceArtifact, readPreservedRoleAcceptanceArtifact } from "./role-acceptance-artifacts.mjs";
 
 const wallets = Array.from({ length: 10 }, (_, index) => new ethers.Wallet(`0x${(index + 1).toString(16).padStart(64, "0")}`));
 const address = (value) => `0x${value.toString(16).padStart(40, "0")}`;
@@ -73,6 +75,7 @@ test("prepare creates a CSPRNG-bound canonical 15-role request set and detached 
   assert.equal(requestSet.requests.filter(({ role }) => role === "timelock-signer").length, 5);
   assert.equal(requestSet.requests.filter(({ role }) => role === "resolver-quorum-signer").length, 5);
   assert.equal(validateDeploymentRoleAcceptances(ethers, manifest, packet, { validationTime: 1_900_000_000, ...inputs }), packet);
+  assert.throws(() => validateDeploymentRoleAcceptances(ethers, manifest, packet, { validationTime: 1_900_000_000 }), /externally observed/);
 });
 
 test("assembly rejects substituted artifacts and exact input drift", async () => {
@@ -80,6 +83,11 @@ test("assembly rejects substituted artifacts and exact input drift", async () =>
   const missing = artifacts.slice(1);
   assert.throws(() => assembleRoleAcceptancePacket({ manifest, ...inputs, requestSet, signatureArtifacts: missing }), /exactly 15/);
   assert.throws(() => assembleRoleAcceptancePacket({ manifest, ...inputs, capsuleBytesDigest: digest(99), requestSet, signatureArtifacts: artifacts }), /does not match exact assembly input/);
+  assert.throws(() => assembleRoleAcceptancePacket({ manifest, ...inputs, pendingManifestBytesDigest: digest(98), requestSet, signatureArtifacts: artifacts }), /does not match exact assembly input/);
+  const crossRole = structuredClone(artifacts); [crossRole[0].requestId, crossRole[1].requestId] = [crossRole[1].requestId, crossRole[0].requestId];
+  assert.throws(() => assembleRoleAcceptancePacket({ manifest, ...inputs, requestSet, signatureArtifacts: crossRole }), /exact request identity|missing/);
+  const replay = structuredClone(requestSet); replay.requests[1].nonce = replay.requests[0].nonce;
+  assert.throws(() => assembleRoleAcceptancePacket({ manifest, ...inputs, requestSet: replay, signatureArtifacts: artifacts }), /digest mismatch|replayed/);
 });
 
 test("stable manifest binding survives completion fields but rejects immutable deployment drift", () => {
@@ -87,6 +95,7 @@ test("stable manifest binding survives completion fields but rejects immutable d
   const completed = structuredClone(manifest);
   completed.status = "governance-setup-complete"; completed.governanceSetup = { status: "complete" };
   completed.sourceVerification = { status: "verified", dossierDigest: digest(12) };
+  completed.deploymentConfigHash = runtimeCodeHash(777);
   completed.setupTransactions[0] = { ...completed.setupTransactions[0], status: "executed", txHash: `0x${"f".repeat(64)}`, blockNumber: 2 };
   assert.equal(roleAcceptanceManifestBinding(completed), binding);
   completed.contracts.registry.runtimeCodeHash = runtimeCodeHash(999);
@@ -98,6 +107,10 @@ test("policy requires five signers and schema requires exactly 15 acceptances", 
   assert.equal(expectedRoleAcceptances(ethers, manifest).length, 15);
   const short = structuredClone(manifest); short.governance.signers.pop();
   assert.throws(() => expectedRoleAcceptances(ethers, short), /exactly five/);
+  const overlap = structuredClone(manifest); overlap.roles.treasury = overlap.governance.signers[0];
+  assert.throws(() => expectedRoleAcceptances(ethers, overlap), /ten unique authority accounts/);
+  const authorityOverlap = structuredClone(manifest); authorityOverlap.roles.governanceAuthority = authorityOverlap.roles.productionLaunchAuthority;
+  assert.throws(() => expectedRoleAcceptances(ethers, authorityOverlap), /ten unique authority accounts/);
   assert.match(deploymentTopologyDigest(manifest), /^sha256:/);
   assert.equal(canonicalTopologyDescriptors().length, CANONICAL_CONTRACT_COUNT);
   const schema = JSON.parse(readFileSync(new URL("../schemas/deployment-role-acceptance.schema.json", import.meta.url), "utf8"));
@@ -127,4 +140,26 @@ test("continuation exact-reader requires an independent packet bytes pin", async
     assert.deepEqual(readRoleAcceptancePacketExact(output, bytesDigest, { privateFile: true }).value, packet);
     assert.throws(() => readRoleAcceptancePacketExact(output, digest(99), { privateFile: true }), /exact bytes digest mismatch/);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("source inputs publish once to immutable content-addressed paths and reject path attacks", () => {
+  const root = mkdtempSync(join(tmpdir(), "p42-role-artifacts-"));
+  const outside = mkdtempSync(join(tmpdir(), "p42-role-outside-"));
+  try {
+    const bytes = Buffer.from("{\"schema\":\"pending\"}\n");
+    const first = publishRoleAcceptanceArtifact(bytes, root, "pending-manifest");
+    const second = publishRoleAcceptanceArtifact(bytes, root, "pending-manifest");
+    assert.equal(first.path, second.path); assert.equal(statSync(first.path).mode & 0o777, 0o444);
+    assert.deepEqual(readPreservedRoleAcceptanceArtifact(first.path, first.bytesDigest, "pending manifest").bytes, bytes);
+    const linkedArtifact = join(root, "sha256", `${"f".repeat(64)}.json`); symlinkSync(first.path, linkedArtifact);
+    assert.throws(() => readPreservedRoleAcceptanceArtifact(linkedArtifact, `sha256:${"f".repeat(64)}`, "pending manifest"), /ELOOP|metadata|content-addressed/);
+    const symlink = join(outside, "linked-root"); symlinkSync(root, symlink);
+    assert.throws(() => publishRoleAcceptanceArtifact(bytes, symlink, "pending-manifest"), /owner-controlled/);
+    assert.throws(() => readPreservedRoleAcceptanceArtifact(join(symlink, "sha256", `${first.bytesDigest.slice(7)}.json`), first.bytesDigest, "pending manifest"), /owner-controlled/);
+    const collisionBytes = Buffer.from("{\"schema\":\"capsule\"}\n");
+    const collisionDigest = roleAcceptanceBytesDigest(collisionBytes).slice(7);
+    const digestDirectory = join(root, "sha256"); mkdirSync(digestDirectory, { recursive: true, mode: 0o700 });
+    const collisionPath = join(digestDirectory, `${collisionDigest}.json`); writeFileSync(collisionPath, "different", { mode: 0o444 }); chmodSync(collisionPath, 0o444);
+    assert.throws(() => publishRoleAcceptanceArtifact(collisionBytes, root, "capsule"), /collision/);
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(outside, { recursive: true, force: true }); }
 });

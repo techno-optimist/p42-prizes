@@ -528,6 +528,9 @@ env -u BASE_SEPOLIA_PRIVATE_KEY \
   P42_EXPLORER_DOSSIER_PATH=... \
   P42_EXPLORER_DOSSIER_SHA256=sha256:... \
   P42_RELEASE_CAPSULE=... \
+  P42_ROLE_ACCEPTANCE_CAPSULE_SHA256=sha256:... \
+  P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_PATH=.../sha256/<digest>.json \
+  P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256=sha256:... \
   P42_EXPLORER_VERIFICATION_OPERATOR_ADDRESSES=0x...,0x... \
   P42_ROLE_ACCEPTANCE_PACKET=... \
   P42_ROLE_ACCEPTANCE_PACKET_SHA256=sha256:... \
@@ -540,6 +543,10 @@ packet path. Continuation hashes the exact packet bytes and rejects a packet
 whose bytes differ even when its internal canonical digest still verifies.
 Reconciliation repeats this exact-byte check against the digest recorded in the
 completed manifest.
+The capsule and pending-manifest paths must be the immutable content-addressed
+artifacts emitted by role-acceptance prepare, and their SHA-256 values must be
+observed independently. Indexer and reconciliation validation reject packet
+claims that are not accompanied by these external byte observations.
 
 Continuation is read-only on chain. It requires two operator-distinct RPCs to
 agree on Base Sepolia's canonical `finalized` and `safe` tags and on

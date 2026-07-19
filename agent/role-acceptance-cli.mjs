@@ -12,7 +12,8 @@ import {
   roleAcceptanceBytesDigest,
   roleAcceptanceCanonicalDigest,
 } from "./role-acceptance.mjs";
-import { readStrictJsonFileSyncWithBytes, writeTrustedFileExclusiveSync } from "./strict-json.mjs";
+import { preserveRoleAcceptanceInputs, readPreservedRoleAcceptanceArtifact } from "./role-acceptance-artifacts.mjs";
+import { parseStrictJsonBytes, readStrictJsonFileSyncWithBytes, writeTrustedFileExclusiveSync } from "./strict-json.mjs";
 
 const PRIVATE_JSON = Object.freeze({ maxBytes: 8 * 1024 * 1024, maxDepth: 128, trailingNewline: "require", privateFile: true });
 const PUBLIC_JSON = Object.freeze({ maxBytes: 32 * 1024 * 1024, maxDepth: 128, trailingNewline: "allow" });
@@ -54,6 +55,11 @@ function readPublicExact(path) {
 
 function readPrivate(path, trustedRoot) {
   return readStrictJsonFileSyncWithBytes(resolve(path), { ...PRIVATE_JSON, trustedRoot }).value;
+}
+
+function readPreservedExact(path, expectedDigest, label) {
+  const artifact = readPreservedRoleAcceptanceArtifact(resolve(path), expectedDigest, label);
+  return { ...artifact, value: parseStrictJsonBytes(artifact.bytes, PUBLIC_JSON) };
 }
 
 export function writeExclusivePrivateJson(path, trustedRoot, value) {
@@ -99,14 +105,17 @@ export function roleAcceptancePrepareMain() {
   const trustedRoot = realpathSync(resolve(required("trusted-root")));
   const expiresAt = Number(required("expires-at"));
   if (!Number.isSafeInteger(expiresAt) || expiresAt < 1) throw new Error("--expires-at must be a positive Unix timestamp");
+  const manifestFile = readPublicExact(required("pending-manifest"));
+  const capsuleFile = readPublicExact(required("capsule"));
+  const preserved = preserveRoleAcceptanceInputs({ manifestFile, capsuleFile, artifactRoot: required("artifact-root") });
   const requestSet = prepareRoleAcceptance({
-    manifestFile: readPublicExact(required("pending-manifest")),
-    capsuleFile: readPublicExact(required("capsule")),
+    manifestFile,
+    capsuleFile,
     expectedExplorerDossierDigest: digestArg("expected-explorer-dossier-sha256"),
     expiresAt,
   });
   const outputDigest = writeExclusivePrivateJson(required("output"), trustedRoot, requestSet);
-  process.stdout.write(`${requestSet.requestSetDigest} ${outputDigest}\n`);
+  process.stdout.write(`${requestSet.requestSetDigest} ${outputDigest} ${preserved.pendingManifest.path} ${preserved.capsule.path}\n`);
 }
 
 export function roleAcceptanceAssembleMain() {
@@ -116,8 +125,8 @@ export function roleAcceptanceAssembleMain() {
   const signatureArtifacts = args("signature").map((path) => readPrivate(path, trustedRoot));
   for (const artifact of signatureArtifacts) if (artifact?.schema !== ROLE_ACCEPTANCE_SIGNATURE_SCHEMA) throw new Error("invalid detached role acceptance signature schema");
   const packet = assembleRoleAcceptance({
-    manifestFile: readPublicExact(required("pending-manifest")),
-    capsuleFile: readPublicExact(required("capsule")),
+    manifestFile: readPreservedExact(required("pending-manifest"), requestSet.pendingManifestBytesDigest, "pending manifest"),
+    capsuleFile: readPreservedExact(required("capsule"), requestSet.capsuleBytesDigest, "capsule"),
     expectedExplorerDossierDigest: digestArg("expected-explorer-dossier-sha256"),
     requestSet,
     signatureArtifacts,

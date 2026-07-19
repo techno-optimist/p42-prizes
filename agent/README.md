@@ -26,12 +26,13 @@ p42-role-acceptance-prepare \
   --capsule /secure/release-capsule.json \
   --expected-explorer-dossier-sha256 sha256:... \
   --expires-at 1900000000 \
+  --artifact-root /secure/role-acceptance/artifacts \
   --trusted-root /secure/role-acceptance \
   --output /secure/role-acceptance/requests.json
 
 p42-role-acceptance-assemble \
-  --pending-manifest ../deployments/base-sepolia/p42-prizes.json \
-  --capsule /secure/release-capsule.json \
+  --pending-manifest /secure/role-acceptance/artifacts/sha256/<manifest-digest>.json \
+  --capsule /secure/role-acceptance/artifacts/sha256/<capsule-digest>.json \
   --expected-explorer-dossier-sha256 sha256:... \
   --trusted-root /secure/role-acceptance \
   --request-set /secure/role-acceptance/requests.json \
@@ -39,10 +40,19 @@ p42-role-acceptance-assemble \
   --output /secure/role-acceptance/packet.json
 ```
 
+Prepare first preserves the exact pending-manifest and capsule bytes as
+read-only `sha256/<digest>.json` artifacts beneath `--artifact-root`; an
+existing path is accepted only when its immutable metadata and bytes match.
 Supply all 15 `--signature` arguments. Both commands create owner-private files
 exclusively and refuse replacement. Assembly is offline: it performs no RPC
 calls and accepts no private key, mnemonic, or seed-phrase input. Expiry is
 checked later against the canonical finalized governance completion timestamp.
+Completed production indexer and reconciliation validation must read those
+preserved paths and receive independent pins through
+`P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_PATH`,
+`P42_ROLE_ACCEPTANCE_PENDING_MANIFEST_SHA256`, and
+`P42_ROLE_ACCEPTANCE_CAPSULE_SHA256`; packet-contained digests are not accepted
+as their own observations.
 
 ## Operator Path
 

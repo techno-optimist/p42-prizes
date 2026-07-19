@@ -96,6 +96,7 @@ function stableSetupOperation(operation) {
 export function roleAcceptanceManifestBinding(manifest) {
   const binding = structuredClone(manifest);
   delete binding.status;
+  delete binding.deploymentConfigHash;
   delete binding.governanceSetup;
   delete binding.roleAcceptances;
   delete binding.sourceVerification;
@@ -106,14 +107,26 @@ export function roleAcceptanceManifestBinding(manifest) {
 export function expectedRoleAcceptances(ethers, manifest) {
   const signers = manifest.governance?.signers ?? [];
   if (!Array.isArray(signers) || signers.length !== 5) throw new Error("role acceptance policy requires exactly five governance signers");
+  const signerAccounts = signers.map((address) => ethers.getAddress(address));
+  const singleRoleAccounts = [
+    manifest.governance?.guardian,
+    manifest.roles?.treasury,
+    manifest.roles?.productionLaunchAuthority,
+    manifest.roles?.independentSecurityAuthority,
+    manifest.roles?.governanceAuthority,
+  ].map((address) => ethers.getAddress(address));
+  const authorityAccounts = [...signerAccounts, ...singleRoleAccounts];
+  if (new Set(authorityAccounts.map((address) => address.toLowerCase())).size !== 10) {
+    throw new Error("role acceptance policy requires ten unique authority accounts; only signer/resolver dual roles are allowed");
+  }
   const values = [
-    ...signers.map((address) => ({ role: "timelock-signer", address })),
-    { role: "guardian", address: manifest.governance?.guardian },
-    { role: "treasury", address: manifest.roles?.treasury },
-    { role: "production-launch-authority", address: manifest.roles?.productionLaunchAuthority },
-    { role: "independent-security-authority", address: manifest.roles?.independentSecurityAuthority },
-    { role: "governance-authority", address: manifest.roles?.governanceAuthority },
-    ...signers.map((address) => ({ role: "resolver-quorum-signer", address })),
+    ...signerAccounts.map((address) => ({ role: "timelock-signer", address })),
+    { role: "guardian", address: singleRoleAccounts[0] },
+    { role: "treasury", address: singleRoleAccounts[1] },
+    { role: "production-launch-authority", address: singleRoleAccounts[2] },
+    { role: "independent-security-authority", address: singleRoleAccounts[3] },
+    { role: "governance-authority", address: singleRoleAccounts[4] },
+    ...signerAccounts.map((address) => ({ role: "resolver-quorum-signer", address })),
   ].map((entry) => ({ ...entry, address: ethers.getAddress(entry.address) }));
   const seen = new Set();
   const ordered = values.sort((a, b) => ROLE_ORDER.get(a.role) - ROLE_ORDER.get(b.role) || a.address.toLowerCase().localeCompare(b.address.toLowerCase()));
@@ -233,11 +246,12 @@ export function assembleRoleAcceptancePacket({ manifest, pendingManifestBytesDig
   return Object.freeze({ ...body, packetDigest: roleAcceptanceCanonicalDigest(body) });
 }
 
-export function validateDeploymentRoleAcceptances(ethers, manifest, packet, { validationTime = Math.floor(Date.now() / 1000), pendingManifestBytesDigest = packet?.pendingManifestBytesDigest, capsuleBytesDigest = packet?.capsuleBytesDigest, capsule = null, expectedExplorerDossierDigest = manifest.sourceVerification?.dossierDigest } = {}) {
+export function validateDeploymentRoleAcceptances(ethers, manifest, packet, { validationTime = Math.floor(Date.now() / 1000), pendingManifestBytesDigest, capsuleBytesDigest, capsule = null, expectedExplorerDossierDigest } = {}) {
   const keys = ["schema", "policyVersion", "chainId", "requestSetNonce", "requestSetDigest", "pendingManifestBytesDigest", "manifestBindingDigest", "releaseBindingDigest", "capsuleBytesDigest", "capsuleDigest", "expectedExplorerDossierDigest", "slateDigest", "configDigest", "deploymentCommit", "timelock", "topologyDigest", "contractCount", "expiresAt", "acceptances", "packetDigest"];
   const root = exactObject(packet, keys, "role acceptance packet");
   if (manifest.releaseMode !== "production") throw new Error("role acceptance verification is production-only; fixtures must be explicit");
   if (root.schema !== ROLE_ACCEPTANCE_SCHEMA || root.policyVersion !== ROLE_ACCEPTANCE_POLICY_VERSION) throw new Error("role acceptance schema or policy version mismatch");
+  for (const [label, value] of Object.entries({ pendingManifestBytesDigest, capsuleBytesDigest, expectedExplorerDossierDigest })) requireDigest(value, `externally observed ${label}`);
   const evidence = manifest.releaseEvidence ?? {};
   const bindings = { chainId: manifest.network.chainId, pendingManifestBytesDigest, manifestBindingDigest: roleAcceptanceManifestBinding(manifest), releaseBindingDigest: evidence.releaseBindingDigest, capsuleBytesDigest, capsuleDigest: capsule?.capsuleDigest ?? evidence.capsuleDigest, expectedExplorerDossierDigest, slateDigest: evidence.slateDigest, configDigest: evidence.configDigest, deploymentCommit: manifest.deploymentCommit, timelock: manifest.contracts.timelock.address, topologyDigest: deploymentTopologyDigest(manifest), contractCount: CANONICAL_CONTRACT_COUNT };
   for (const [field, expected] of Object.entries(bindings)) {
