@@ -11,6 +11,7 @@ import {
   canonicalActivationRpcOrigin,
   computePortalDeploymentConfigHash,
   configuredIndexerArtifactPaths,
+  loadActivatedIndexerSnapshot,
   loadProtectedActivationRpcOperatorRegistry,
   loadIndexerProvenance,
   portalRoleManifestBinding,
@@ -152,12 +153,66 @@ function artifacts() {
 }
 
 function roleArtifactFixture({ capsuleDigestOverride }: { capsuleDigestOverride?: string } = {}) {
-  const { manifest } = artifacts();
+  const { manifest, checkpoint } = artifacts();
+  const templateBoard = clone(checkpoint.boards[0]);
   manifest.problems = Array.from({ length: 10 }, (_, index) => {
-    const problem = clone(manifest.problems[0]); problem.problemId = String(index + 1);
+    const problem = clone(manifest.problems[0]);
+    problem.problemId = String(index + 1); problem.problemSlug = launchProblems[index].slug;
     for (const [offset, key] of boardKeys.entries()) problem.contracts[key].address = `0x${(1000 + index * 4 + offset).toString(16).padStart(40, "0")}`;
+    problem.pool = problem.contracts.pool.address; problem.ledger = problem.contracts.ledger.address;
+    problem.submissionManager = problem.contracts.submissions.address; problem.challengeManager = problem.contracts.challenges.address;
     return problem;
   });
+  manifest.releaseEvidence = {
+    mode: "production", slateDigest: digest("3"), capsuleDigest: digest("2"), configDigest: digest("4"),
+    releaseBindingDigest: digest("1"),
+    finalityPolicy: { schema: "p42-prizes/base-sepolia-finality-policy/v1", chainId: 84532, finalizedTag: "finalized", safeTag: "safe", l1EvidenceMethod: "optimism_syncStatus", rpcQuorum: 2 },
+    boardSetDigest: digest("a"), operationPlanDigest: digest("b"), contractCount: 47, boardCount: 10, operationCount: 110,
+  };
+  const transactionHash = (index: number) => `0x${index.toString(16).padStart(64, "0")}`;
+  manifest.setupTransactions = Array.from({ length: 110 }, (_, index) => {
+    const operation = clone(manifest.setupTransactions[index % manifest.setupTransactions.length]);
+    return { ...operation, sequence: index + 1, status: "executed", executedOperationId: operation.operationId,
+      executedOperationClass: "standard", txHash: transactionHash(index + 1), blockNumber: 100 + index };
+  });
+  manifest.problems.forEach((problem: Record<string, any>, index: number) => {
+    problem.registrationStatus = "registered-and-frozen"; problem.explicitlyFrozen = true;
+    problem.registerTxHash = transactionHash(1000 + index); problem.registerBlockNumber = 200 + index;
+    for (const key of ["submissions", "challenges"]) {
+      problem.contracts[key].factoryCreation = {
+        factoryAddress: manifest.contracts[`${key === "submissions" ? "submissionManager" : "challengeManager"}Factory`].address,
+        transactionHash: transactionHash(2000 + index), eventTopic: hash("1"), salt: hash("2"),
+        configurationHash: hash("3"), configurationReadCalldata: "0x", createdAddress: problem.contracts[key].address,
+      };
+    }
+  });
+  const completion = 1_900_000_000;
+  manifest.governanceSetup = {
+    status: "complete", completedAt: new Date(completion * 1000).toISOString(), completionBlock: 100,
+    acceptanceValidatedAt: new Date(completion * 1000).toISOString(), completionBlockTimestamp: completion,
+    completionBlockHash: hash("4"), roleAcceptancePacketBytesDigest: digest("6"),
+    completionBlockEvidence: { blockNumber: 100, blockHash: hash("4"), timestamp: completion,
+      primaryOperatorId: "operator-primary", secondaryOperatorId: "operator-secondary",
+      primaryBlockHash: hash("4"), secondaryBlockHash: hash("4") },
+    finalityAnchor: { schema: "p42-prizes/base-sepolia-finality-anchor/v1", checkedAt: new Date(completion * 1000).toISOString(),
+      l2: { finalized: { number: 100, hash: hash("4") }, safe: { number: 101, hash: hash("5") } },
+      l1: { origin: { number: 200, hash: hash("6") }, finalized: { number: 201, hash: hash("7") } },
+      operators: ["operator-primary", "operator-secondary"],
+      rpcEvidence: { primaryOperatorId: "operator-primary", secondaryOperatorId: "operator-secondary",
+        primaryOrigin: "https://primary.example", secondaryOrigin: "https://secondary.example",
+        primaryHost: "primary.example", secondaryHost: "secondary.example",
+        primaryEndpointDigest: digest("c"), secondaryEndpointDigest: digest("d") } },
+    checks: [{ name: "complete", ok: true }],
+  };
+  manifest.sourceVerification = { status: "verified", requiredExplorer: "https://sepolia.basescan.org", dossierDigest: digest("5"), contracts: {
+    timelock: "https://sepolia.basescan.org/address/timelock", registry: "https://sepolia.basescan.org/address/registry",
+    rolloverVault: "https://sepolia.basescan.org/address/rollover", submissionManagerFactory: "https://sepolia.basescan.org/address/submission-factory",
+    challengeManagerFactory: "https://sepolia.basescan.org/address/challenge-factory", objectiveVerifier: "https://sepolia.basescan.org/address/verifier",
+    resolverQuorum: "https://sepolia.basescan.org/address/resolver", boards: manifest.problems.map((problem: Record<string, any>) => ({
+      problemId: problem.problemId, pool: "https://sepolia.basescan.org/address/pool", ledger: "https://sepolia.basescan.org/address/ledger",
+      submissions: "https://sepolia.basescan.org/address/submissions", challenges: "https://sepolia.basescan.org/address/challenges",
+    })),
+  } };
   attachCompletedRolePacket(manifest);
   const pending = clone(manifest);
   pending.status = "pending-governance-setup";
@@ -170,6 +225,7 @@ function roleArtifactFixture({ capsuleDigestOverride }: { capsuleDigestOverride?
   const capsule = { ...capsuleBody, capsuleDigest };
   const capsuleBytes = Buffer.from(`${JSON.stringify(capsule)}\n`);
   pending.releaseEvidence.capsuleDigest = capsuleDigest;
+  pending.deploymentConfigHash = computePortalDeploymentConfigHash(pending);
   const pendingBytes = Buffer.from(`${JSON.stringify(pending)}\n`);
   attachCompletedRolePacket(manifest, {
     pendingManifestBytesDigest: `sha256:${createHash("sha256").update(pendingBytes).digest("hex")}`,
@@ -187,13 +243,23 @@ function roleArtifactFixture({ capsuleDigestOverride }: { capsuleDigestOverride?
   const pendingFile = writeProtected("pending.json", pendingBytes);
   const capsuleFile = writeProtected("capsule.json", capsuleBytes);
   manifest.governanceSetup.roleAcceptancePacketBytesDigest = packetFile.sha256;
+  manifest.deploymentConfigHash = computePortalDeploymentConfigHash(manifest);
+  const contractBinding = (entry: Record<string, any>) => ({ address: entry.address, deployedCodeHash: entry.deployedCodeHash, abiHash: entry.abiHash });
+  checkpoint.manifestBinding.deploymentConfigHash = manifest.deploymentConfigHash;
+  checkpoint.manifestBinding.boards = Object.fromEntries(manifest.problems.map((problem: Record<string, any>) => [
+    problem.problemId,
+    Object.fromEntries(boardKeys.map((key) => [key, contractBinding(problem.contracts[key])])),
+  ])) as typeof checkpoint.manifestBinding.boards;
+  checkpoint.boards = manifest.problems.map((problem: Record<string, any>) => ({
+    ...clone(templateBoard), problemId: problem.problemId, problemSlug: problem.problemSlug,
+  }));
   const paths = {
     deploymentManifestPath: "/unused/manifest.json", indexerCheckpointPath: "/unused/checkpoint.json",
     roleAcceptancePacketPath: packetFile.path, roleAcceptancePacketSha256: packetFile.sha256,
     roleAcceptancePendingManifestPath: pendingFile.path, roleAcceptancePendingManifestSha256: pendingFile.sha256,
     roleAcceptanceCapsulePath: capsuleFile.path, roleAcceptanceCapsuleSha256: capsuleFile.sha256,
   };
-  return { manifest, pending, capsule, paths, directory };
+  return { manifest, pending, capsule, checkpoint, paths, directory };
 }
 
 function writeArtifacts(manifest: unknown, checkpoint: unknown) {
@@ -398,6 +464,59 @@ describe("indexer provenance v2", () => {
     })).toThrow();
     chmodSync(valid.paths.roleAcceptancePacketPath, 0o600);
     expect(() => verifyPortalRoleArtifactBytes(valid.manifest, valid.paths)).toThrow();
+  });
+
+  it("fails closed through public loaders when completed production role artifact pins are missing or substituted", () => {
+    const { manifest, checkpoint, paths } = roleArtifactFixture();
+    const persisted = writeArtifacts(manifest, checkpoint);
+    const fundingPaths = (rolePaths: typeof persisted) => ({
+      ...rolePaths,
+      launchAuthorizationPath: "/missing/authorization.json",
+      fundingActivationPlanPath: "/missing/plan.json",
+      fundingActivationSignaturesPath: "/missing/signatures.json",
+      fundingActivationCompletionPath: "/missing/completion.json",
+      indexerCheckpointAttestationPath: "/missing/checkpoint-attestation.json",
+      activationRpcOperatorRegistryPath: "/missing/rpc-registry.json",
+      activationRpcOperatorRegistryTrustedRoot: "/missing",
+    });
+
+    expectLocalOnly(loadIndexerProvenance(launchProblems[0], persisted));
+    expect(loadActivatedIndexerSnapshot(launchProblems, fundingPaths(persisted))).toBeNull();
+
+    const substituted = { ...paths, ...persisted, roleAcceptancePacketSha256: digest("f") };
+    expectLocalOnly(loadIndexerProvenance(launchProblems[0], substituted));
+    expect(loadActivatedIndexerSnapshot(launchProblems, fundingPaths(substituted))).toBeNull();
+  });
+
+  it("accepts valid pinned role artifacts through the public loader", () => {
+    const { manifest, checkpoint, paths } = roleArtifactFixture();
+    const result = loadIndexerProvenance(launchProblems[0], { ...paths, ...writeArtifacts(manifest, checkpoint) });
+    expect(result).toMatchObject({
+      settlementState: "manifest-pending", source: "indexer-artifacts-v2",
+      reconciliationOk: true, poolAddress: null, donationWalletAddress: null,
+    });
+  });
+
+  it("keeps fixture and pending manifests operational without role artifacts", () => {
+    const fixture = artifacts();
+    expect(loadIndexerProvenance(problems[0], writeArtifacts(fixture.manifest, fixture.checkpoint))).toMatchObject({
+      settlementState: "manifest-pending", source: "indexer-artifacts-v2", reconciliationOk: true,
+    });
+
+    const { pending: preservedPending, checkpoint } = roleArtifactFixture();
+    const pending = clone(preservedPending);
+    pending.setupTransactions = pending.setupTransactions.map((operation: Record<string, any>) => ({
+      ...operation, status: "pending", executedOperationId: null, executedOperationClass: null, txHash: null, blockNumber: null,
+    }));
+    pending.problems = pending.problems.map((problem: Record<string, any>) => ({
+      ...problem, registrationStatus: "pending", explicitlyFrozen: false, registerTxHash: null, registerBlockNumber: null,
+    }));
+    pending.deploymentConfigHash = computePortalDeploymentConfigHash(pending);
+    const pendingCheckpoint = clone(checkpoint);
+    pendingCheckpoint.manifestBinding.deploymentConfigHash = pending.deploymentConfigHash;
+    expect(loadIndexerProvenance(launchProblems[0], writeArtifacts(pending, pendingCheckpoint))).toMatchObject({
+      settlementState: "manifest-pending", source: "indexer-artifacts-v2", reconciliationOk: true,
+    });
   });
 
   it("loads only a fully bound, completely reconstructed board and keeps funding disabled", () => {
